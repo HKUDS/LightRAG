@@ -1,3 +1,8 @@
+# This script has been modified by JRS to create an LightRAG API end point for updating the knowledge graph.
+# This refresh is required in order to see changes after merges, updates, adds, and deletes to the index.
+# This was the function added: async def set_all_update_flags_for_all_namespaces():
+# The function works with changes in lightrag/api/routers/graph_routes.py
+
 import os
 import sys
 import asyncio
@@ -1355,6 +1360,31 @@ async def set_all_update_flags(namespace: str, workspace: str | None = None):
         # Update flags for both modes
         for i in range(len(_update_flags[final_namespace])):
             _update_flags[final_namespace][i].value = True
+
+
+# Start of: Added by JRS
+async def set_all_update_flags_for_all_namespaces():
+    """
+    Set update flags for all existing namespaces, indicating that all workers
+    need to reload data from files for these namespaces.
+    """
+    global _update_flags
+    if _update_flags is None:
+        raise ValueError("Shared-Data is not initialized.")
+
+    async with get_internal_lock():
+        if not _update_flags:
+            direct_log("No namespaces found to set update flags for.")
+            return
+
+        for namespace in list(_update_flags.keys()): # Iterate over a copy of keys as _update_flags might change
+            direct_log(f"Setting update flags for namespace: {namespace}")
+            # Ensure the namespace exists before trying to iterate its flags
+            if namespace in _update_flags:
+                for i in range(len(_update_flags[namespace])):
+                    _update_flags[namespace][i].value = True
+        direct_log("All namespaces' update flags set to True.")
+# End of: Added by JRS
 
 
 async def clear_all_update_flags(namespace: str, workspace: str | None = None):

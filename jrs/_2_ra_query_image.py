@@ -112,7 +112,7 @@ def main():
     parser.add_argument("query", help="Your question about the images/charts")
     
     # Modes parameter: Split by comma to allow multiple (e.g., -m naive,hybrid)
-    parser.add_argument("--modes", "-m", default="hybrid", 
+    parser.add_argument("--modes", "-m", default="naive,local,global,hybrid,mix", 
                         help="Comma-separated list of modes: naive,local,global,hybrid,mix")
     
     # File parameter: Defaulting to LightRAG directory
@@ -120,7 +120,7 @@ def main():
                         help="Path to the output markdown file")
     
     parser.add_argument("--working_dir", "-w", 
-                        default="/home/js/LightRAG/jrs/work/seheult/_ra/nir_through_fabrics/_ra_seheult_work_dir",
+                        default="/home/js/LightRAG/jrs/work/mod_linx/_mod_linx_work_dir",
                         help="Path to directory where index of knowledge is stored")
     
     args = parser.parse_args()

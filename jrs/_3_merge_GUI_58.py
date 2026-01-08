@@ -14,7 +14,7 @@ from lightrag.utils import EmbeddingFunc
 from llama_index.embeddings.openai import OpenAIEmbedding
 
 # Configuration
-WORKING_DIR = "/home/js/LightRAG/jrs/work/seheult/_ra/ir_passes/_ra_seheult_work_dir"
+WORKING_DIR = "/home/js/LightRAG/jrs/work/mod_linx_text/mod_linx_work_dir"
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "text-embedding-3-large")
 EMBEDDING_DIM = int(os.getenv("EMBEDDING_DIM", 3072))
 API_KEY = os.getenv("EMBEDDING_BINDING_API_key")
@@ -242,7 +242,6 @@ class MergeGUI:
         
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
 
-    
     def copy_selected_text(self, widget):
         try:
             if isinstance(widget, tk.Text):
@@ -1554,5 +1553,26 @@ class MergeGUI:
 
 if __name__ == "__main__":
     root = tk.Tk()
+
+
+
+    # === ADD THIS BLOCK HERE ===
+    import tkinter.font as tkfont
+    
+    # Force a thicker, larger, more readable default font
+    default_font = tkfont.nametofont("TkDefaultFont")
+    default_font.configure(family="DejaVu Sans", size=12, weight="bold")
+    
+    # Also fix the other standard Tk fonts for consistency
+    tkfont.nametofont("TkTextFont").configure(family="DejaVu Sans", size=12)
+    tkfont.nametofont("TkFixedFont").configure(family="DejaVu Sans Mono", size=12)
+    
+    # Optional: if you prefer a different thick font that's likely available
+    # default_font.configure(family="Liberation Sans", size=12, weight="bold")
+    # or
+    # default_font.configure(family="Arial", size=12, weight="bold")
+    # ===========================
+
+
     app = MergeGUI(root)
     root.mainloop()
