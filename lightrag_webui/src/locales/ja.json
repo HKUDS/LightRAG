@@ -1,0 +1,465 @@
+{
+  "settings": {
+    "language": "言語",
+    "theme": "テーマ",
+    "light": "ライト",
+    "dark": "ダーク",
+    "system": "システム"
+  },
+  "header": {
+    "documents": "ドキュメント",
+    "knowledgeGraph": "ナレッジグラフ",
+    "retrieval": "検索",
+    "api": "API",
+    "projectRepository": "プロジェクトリポジトリ",
+    "logout": "ログアウト",
+    "frontendNeedsRebuild": "フロントエンドの再ビルドが必要です",
+    "themeToggle": {
+      "switchToLight": "ライトテーマに切り替え",
+      "switchToDark": "ダークテーマに切り替え"
+    }
+  },
+  "login": {
+    "description": "システムにログインするには、アカウントとパスワードを入力してください",
+    "username": "ユーザー名",
+    "usernamePlaceholder": "ユーザー名を入力してください",
+    "password": "パスワード",
+    "passwordPlaceholder": "パスワードを入力してください",
+    "loginButton": "ログイン",
+    "loggingIn": "ログイン中...",
+    "successMessage": "ログインに成功しました",
+    "errorEmptyFields": "ユーザー名とパスワードを入力してください",
+    "errorInvalidCredentials": "ログインに失敗しました。ユーザー名とパスワードを確認してください",
+    "authDisabled": "認証が無効になっています。ログインフリーモードを使用しています。",
+    "guestMode": "ログインフリー"
+  },
+  "common": {
+    "cancel": "キャンセル",
+    "save": "保存",
+    "saving": "保存中...",
+    "saveFailed": "保存に失敗しました"
+  },
+  "documentPanel": {
+    "clearDocuments": {
+      "button": "クリア",
+      "tooltip": "ドキュメントをクリア",
+      "title": "ドキュメントをクリア",
+      "description": "システムからすべてのドキュメントを削除します",
+      "warning": "警告: この操作はすべてのドキュメントを永続的に削除し、元に戻すことはできません！",
+      "confirm": "本当にすべてのドキュメントをクリアしますか？",
+      "confirmPrompt": "この操作を確認するには「yes」と入力してください",
+      "confirmPlaceholder": "確認するには「yes」と入力",
+      "clearCache": "LLMキャッシュをクリア",
+      "confirmButton": "はい",
+      "clearing": "クリア中...",
+      "timeout": "クリア操作がタイムアウトしました。もう一度お試しください",
+      "success": "ドキュメントが正常にクリアされました",
+      "cacheCleared": "キャッシュが正常にクリアされました",
+      "cacheClearFailed": "キャッシュのクリアに失敗しました:\n{{error}}",
+      "failed": "ドキュメントのクリアに失敗しました:\n{{message}}",
+      "error": "ドキュメントのクリアに失敗しました:\n{{error}}"
+    },
+    "deleteDocuments": {
+      "button": "削除",
+      "tooltip": "選択したドキュメントを削除",
+      "title": "ドキュメントを削除",
+      "description": "システムから選択したドキュメントを永続的に削除します",
+      "warning": "警告: この操作は選択したドキュメントを永続的に削除し、元に戻すことはできません！",
+      "confirm": "本当に{{count}}個の選択したドキュメントを削除しますか？",
+      "confirmPrompt": "この操作を確認するには「yes」と入力してください",
+      "confirmPlaceholder": "確認するには「yes」と入力",
+      "confirmButton": "はい",
+      "deleteFileOption": "アップロードされたファイルも削除",
+      "deleteFileTooltip": "このオプションを選択すると、サーバー上の対応するアップロードファイルも削除されます",
+      "deleteLLMCacheOption": "抽出されたLLMキャッシュも削除",
+      "success": "ドキュメント削除パイプラインが正常に開始されました",
+      "failed": "ドキュメントの削除に失敗しました:\n{{message}}",
+      "error": "ドキュメントの削除に失敗しました:\n{{error}}",
+      "busy": "パイプラインがビジーです。後でもう一度お試しください",
+      "notAllowed": "この操作を実行する権限がありません"
+    },
+    "selectDocuments": {
+      "selectCurrentPage": "現在のページを選択 ({{count}})",
+      "deselectAll": "すべての選択を解除 ({{count}})"
+    },
+    "uploadDocuments": {
+      "button": "アップロード",
+      "tooltip": "ドキュメントをアップロード",
+      "title": "ドキュメントをアップロード",
+      "description": "ドキュメントをここにドラッグ&ドロップするか、クリックして参照してください。",
+      "single": {
+        "uploading": "アップロード中 {{name}}: {{percent}}%",
+        "success": "アップロード成功:\n{{name}}が正常にアップロードされました",
+        "failed": "アップロード失敗:\n{{name}}\n{{message}}",
+        "error": "アップロード失敗:\n{{name}}\n{{error}}"
+      },
+      "batch": {
+        "uploading": "ファイルをアップロード中...",
+        "success": "ファイルが正常にアップロードされました",
+        "error": "一部のファイルのアップロードに失敗しました"
+      },
+      "generalError": "アップロード失敗\n{{error}}",
+      "fileTypes": "サポートされている形式: TXT, MD, DOCX, PDF, PPTX, XLSX, RTF, ODT, EPUB, HTML, HTM, TEX, JSON, XML, YAML, YML, CSV, LOG, CONF, INI, PROPERTIES, SQL, BAT, SH, C, CPP, PY, JAVA, JS, TS, SWIFT, GO, RB, PHP, CSS, SCSS, LESS",
+      "fileUploader": {
+        "singleFileLimit": "一度に1つ以上のファイルをアップロードできません",
+        "maxFilesLimit": "{{count}}個を超えるファイルをアップロードできません",
+        "fileRejected": "ファイル {{name}} は拒否されました",
+        "unsupportedType": "サポートされていないファイル形式",
+        "fileTooLarge": "ファイルが大きすぎます。最大サイズは{{maxSize}}です",
+        "dropHere": "ファイルをここにドロップ",
+        "dragAndDrop": "ファイルをここにドラッグ&ドロップするか、クリックしてファイルを選択",
+        "removeFile": "ファイルを削除",
+        "uploadDescription": "{{isMultiple ? '複数' : count}}個のファイルをアップロードできます（それぞれ最大{{maxSize}}まで）",
+        "duplicateFile": "ファイル名がサーバーキャッシュに既に存在します"
+      }
+    },
+    "documentManager": {
+      "title": "ドキュメント管理",
+      "scanButton": "スキャン/再試行",
+      "scanTooltip": "入力フォルダ内のドキュメントをスキャンして処理し、失敗したすべてのドキュメントも再処理します",
+      "refreshTooltip": "ドキュメントリストをリセット",
+      "pipelineStatusButton": "パイプライン",
+      "pipelineStatusTooltip": "ドキュメント処理パイプラインのステータスを表示",
+      "uploadedTitle": "アップロードされたドキュメント",
+      "uploadedDescription": "アップロードされたドキュメントとそのステータスのリスト。",
+      "emptyTitle": "ドキュメントなし",
+      "emptyDescription": "まだアップロードされたドキュメントがありません。",
+      "columns": {
+        "id": "ID",
+        "fileName": "ファイル名",
+        "summary": "概要",
+        "status": "ステータス",
+        "length": "長さ",
+        "chunks": "チャンク",
+        "created": "作成日時",
+        "updated": "更新日時",
+        "metadata": "メタデータ",
+        "select": "選択"
+      },
+      "status": {
+        "all": "すべて",
+        "completed": "完了",
+        "preprocessed": "前処理済み",
+        "processing": "処理中",
+        "pending": "保留中",
+        "failed": "失敗"
+      },
+      "errors": {
+        "loadFailed": "ドキュメントの読み込みに失敗しました\n{{error}}",
+        "scanFailed": "ドキュメントのスキャンに失敗しました\n{{error}}",
+        "scanProgressFailed": "スキャン進捗の取得に失敗しました\n{{error}}"
+      },
+      "fileNameLabel": "ファイル名",
+      "showButton": "表示",
+      "hideButton": "非表示",
+      "showFileNameTooltip": "ファイル名を表示",
+      "hideFileNameTooltip": "ファイル名を非表示"
+    },
+    "pipelineStatus": {
+      "title": "パイプラインステータス",
+      "busy": "パイプラインがビジー",
+      "requestPending": "リクエスト保留中",
+      "cancellationRequested": "キャンセル要求済み",
+      "jobName": "ジョブ名",
+      "startTime": "開始時刻",
+      "progress": "進捗",
+      "unit": "バッチ",
+      "pipelineMessages": "パイプラインメッセージ",
+      "cancelButton": "キャンセル",
+      "cancelTooltip": "パイプライン処理をキャンセル",
+      "cancelConfirmTitle": "パイプラインキャンセルの確認",
+      "cancelConfirmDescription": "これにより、進行中のパイプライン処理が中断されます。続行してもよろしいですか？",
+      "cancelConfirmButton": "キャンセルを確認",
+      "cancelInProgress": "キャンセル処理中...",
+      "pipelineNotRunning": "パイプラインは実行されていません",
+      "cancelSuccess": "パイプラインキャンセルが要求されました",
+      "cancelFailed": "パイプラインのキャンセルに失敗しました\n{{error}}",
+      "cancelNotBusy": "パイプラインは実行されていないため、キャンセルする必要はありません",
+      "errors": {
+        "fetchFailed": "パイプラインステータスの取得に失敗しました\n{{error}}"
+      }
+    }
+  },
+  "graphPanel": {
+    "dataIsTruncated": "グラフデータは最大ノード数に切り詰められました",
+    "statusDialog": {
+      "title": "LightRAGサーバー設定",
+      "description": "現在のシステムステータスと接続情報を表示"
+    },
+    "legend": "凡例",
+    "nodeTypes": {
+      "person": "人物",
+      "category": "カテゴリ",
+      "geo": "地理",
+      "location": "場所",
+      "organization": "組織",
+      "event": "イベント",
+      "equipment": "機器",
+      "weapon": "武器",
+      "animal": "動物",
+      "unknown": "不明",
+      "object": "オブジェクト",
+      "group": "グループ",
+      "technology": "技術",
+      "product": "製品",
+      "document": "ドキュメント",
+      "content": "コンテンツ",
+      "data": "データ",
+      "artifact": "アーティファクト",
+      "concept": "概念",
+      "naturalobject": "自然物",
+      "method": "方法",
+      "creature": "生物",
+      "plant": "植物",
+      "disease": "病気",
+      "drug": "薬",
+      "food": "食品",
+      "other": "その他"
+    },
+    "sideBar": {
+      "settings": {
+        "settings": "設定",
+        "healthCheck": "ヘルスチェック",
+        "showPropertyPanel": "プロパティパネルを表示",
+        "showSearchBar": "検索バーを表示",
+        "showNodeLabel": "ノードラベルを表示",
+        "nodeDraggable": "ノードをドラッグ可能",
+        "showEdgeLabel": "エッジラベルを表示",
+        "hideUnselectedEdges": "選択されていないエッジを非表示",
+        "edgeEvents": "エッジイベント",
+        "maxQueryDepth": "最大クエリ深度",
+        "maxNodes": "最大ノード数",
+        "maxLayoutIterations": "最大レイアウト反復回数",
+        "resetToDefault": "デフォルトにリセット",
+        "edgeSizeRange": "エッジサイズ範囲",
+        "depth": "D",
+        "max": "最大",
+        "degree": "次数",
+        "apiKey": "APIキー",
+        "enterYourAPIkey": "APIキーを入力してください",
+        "save": "保存",
+        "refreshLayout": "レイアウトを更新"
+      },
+      "zoomControl": {
+        "zoomIn": "ズームイン",
+        "zoomOut": "ズームアウト",
+        "resetZoom": "ズームをリセット",
+        "rotateCamera": "時計回りに回転",
+        "rotateCameraCounterClockwise": "反時計回りに回転"
+      },
+      "layoutsControl": {
+        "startAnimation": "レイアウトアニメーションを続行",
+        "stopAnimation": "レイアウトアニメーションを停止",
+        "layoutGraph": "グラフをレイアウト",
+        "layouts": {
+          "Circular": "円形",
+          "Circlepack": "サークルパック",
+          "Random": "ランダム",
+          "Noverlaps": "重複なし",
+          "Force Directed": "力指向",
+          "Force Atlas": "フォースアトラス"
+        }
+      },
+      "fullScreenControl": {
+        "fullScreen": "フルスクリーン",
+        "windowed": "ウィンドウ"
+      },
+      "legendControl": {
+        "toggleLegend": "凡例を切り替え"
+      }
+    },
+    "statusIndicator": {
+      "connected": "接続済み",
+      "disconnected": "切断済み"
+    },
+    "statusCard": {
+      "unavailable": "ステータス情報が利用できません",
+      "serverInfo": "サーバー情報",
+      "workingDirectory": "作業ディレクトリ",
+      "inputDirectory": "入力ディレクトリ",
+      "maxParallelInsert": "同時ドキュメント処理",
+      "summarySettings": "概要設定",
+      "llmConfig": "LLM設定",
+      "llmBinding": "LLMバインディング",
+      "llmBindingHost": "LLMエンドポイント",
+      "llmModel": "LLMモデル",
+      "embeddingConfig": "埋め込み設定",
+      "embeddingBinding": "埋め込みバインディング",
+      "embeddingBindingHost": "埋め込みエンドポイント",
+      "embeddingModel": "埋め込みモデル",
+      "storageConfig": "ストレージ設定",
+      "kvStorage": "KVストレージ",
+      "docStatusStorage": "ドキュメントステータスストレージ",
+      "graphStorage": "グラフストレージ",
+      "vectorStorage": "ベクトルストレージ",
+      "workspace": "ワークスペース",
+      "maxGraphNodes": "最大グラフノード数",
+      "rerankerConfig": "リランカー設定",
+      "rerankerBindingHost": "リランカーエンドポイント",
+      "rerankerModel": "リランカーモデル",
+      "lockStatus": "ロックステータス",
+      "threshold": "しきい値"
+    },
+    "propertiesView": {
+      "editProperty": "{{property}}を編集",
+      "editPropertyDescription": "下のテキストエリアでプロパティ値を編集してください。",
+      "errors": {
+        "duplicateName": "ノード名が既に存在します",
+        "updateFailed": "ノードの更新に失敗しました",
+        "tryAgainLater": "後でもう一度お試しください",
+        "updateSuccessButMergeFailed": "プロパティは更新されましたが、マージに失敗しました: {{error}}",
+        "mergeFailed": "マージに失敗しました: {{error}}"
+      },
+      "success": {
+        "entityUpdated": "ノードが正常に更新されました",
+        "relationUpdated": "関係が正常に更新されました",
+        "entityMerged": "ノードが正常にマージされました"
+      },
+      "mergeOptionLabel": "重複名が見つかった場合に自動的にマージ",
+      "mergeOptionDescription": "有効にすると、既存の名前に名前を変更すると、失敗する代わりにこのノードが既存のノードにマージされます。",
+      "mergeDialog": {
+        "title": "ノードがマージされました",
+        "description": "\"{{source}}\"が\"{{target}}\"にマージされました。",
+        "refreshHint": "グラフを更新して最新の構造を読み込みます。",
+        "keepCurrentStart": "更新して現在の開始ノードを保持",
+        "useMergedStart": "更新してマージされたノードを使用",
+        "refreshing": "グラフを更新中..."
+      },
+      "node": {
+        "title": "ノード",
+        "id": "ID",
+        "labels": "ラベル",
+        "degree": "次数",
+        "properties": "プロパティ",
+        "relationships": "関係（サブグラフ内）",
+        "expandNode": "ノードを展開",
+        "pruneNode": "ノードを剪定",
+        "deleteAllNodesError": "グラフ内のすべてのノードを削除することを拒否します",
+        "nodesRemoved": "{{count}}個のノードが削除されました（孤立ノードを含む）",
+        "noNewNodes": "展開可能なノードが見つかりませんでした",
+        "propertyNames": {
+          "description": "説明",
+          "entity_id": "名前",
+          "entity_type": "タイプ",
+          "source_id": "C-ID",
+          "Neighbour": "隣接",
+          "file_path": "ファイル",
+          "keywords": "キー",
+          "weight": "重み"
+        }
+      },
+      "edge": {
+        "title": "関係",
+        "id": "ID",
+        "type": "タイプ",
+        "source": "ソース",
+        "target": "ターゲット",
+        "properties": "プロパティ"
+      }
+    },
+    "search": {
+      "placeholder": "ページ内のノードを検索...",
+      "message": "その他{{count}}件"
+    },
+    "graphLabels": {
+      "selectTooltip": "ノード（ラベル）のサブグラフを取得",
+      "noLabels": "一致するノードが見つかりませんでした",
+      "label": "ノード名を検索",
+      "placeholder": "ノード名を検索...",
+      "andOthers": "その他{{count}}件",
+      "refreshGlobalTooltip": "グローバルグラフデータを更新し、検索履歴をリセット",
+      "refreshCurrentLabelTooltip": "現在のページのグラフデータを更新",
+      "refreshingTooltip": "データを更新中..."
+    },
+    "emptyGraph": "空（再読み込みをお試しください）"
+  },
+  "retrievePanel": {
+    "chatMessage": {
+      "copyTooltip": "クリップボードにコピー",
+      "copyError": "クリップボードへのテキストコピーに失敗しました",
+      "copyEmpty": "コピーするコンテンツがありません",
+      "copySuccess": "コンテンツがクリップボードにコピーされました",
+      "copySuccessLegacy": "コンテンツがコピーされました（レガシーメソッド）",
+      "copySuccessManual": "コンテンツがコピーされました（手動メソッド）",
+      "copyFailed": "コンテンツのコピーに失敗しました",
+      "copyManualInstruction": "テキストを手動で選択してコピーしてください",
+      "thinking": "思考中...",
+      "thinkingTime": "思考時間 {{time}}秒",
+      "thinkingInProgress": "思考中..."
+    },
+    "retrieval": {
+      "startPrompt": "下にクエリを入力して検索を開始",
+      "clear": "クリア",
+      "send": "送信",
+      "placeholder": "クエリを入力（プレフィックス対応: /<クエリモード>）",
+      "error": "エラー: 応答の取得に失敗しました",
+      "queryModeError": "次のクエリモードのみサポートされています: {{modes}}",
+      "queryModePrefixInvalid": "無効なクエリモードプレフィックス。使用: /<mode> [スペース] クエリ"
+    },
+    "querySettings": {
+      "parametersTitle": "パラメータ",
+      "parametersDescription": "クエリパラメータを設定",
+      "queryMode": "クエリモード",
+      "queryModeTooltip": "検索戦略を選択:\n• Naive: 従来のテキストチャンクベクトル検索\n• Local: エンティティ検索に焦点\n• Global: 関係検索に焦点\n• Hybrid: Local+Global\n• Mix: Local+Global+Naive\n• Bypass: 検索をスキップし、会話履歴と現在の質問をLLMに送信",
+      "queryModeOptions": {
+        "naive": "Naive",
+        "local": "Local",
+        "global": "Global",
+        "hybrid": "Hybrid",
+        "mix": "Mix",
+        "bypass": "Bypass"
+      },
+      "responseFormat": "応答形式",
+      "responseFormatTooltip": "応答形式を定義します。例:\n• 複数段落\n• 単一段落\n• 箇条書き",
+      "responseFormatOptions": {
+        "multipleParagraphs": "複数段落",
+        "singleParagraph": "単一段落",
+        "bulletPoints": "箇条書き"
+      },
+      "topK": "KG Top K",
+      "topKTooltip": "取得するエンティティと関係の数。非naiveモードに適用されます。",
+      "topKPlaceholder": "top_k値を入力",
+      "chunkTopK": "チャンクTop K",
+      "chunkTopKTooltip": "取得するテキストチャンクの数。すべてのモードに適用されます。",
+      "chunkTopKPlaceholder": "chunk_top_k値を入力",
+      "maxEntityTokens": "最大エンティティトークン数",
+      "maxEntityTokensTooltip": "統一トークン制御システムでエンティティコンテキストに割り当てられる最大トークン数",
+      "maxRelationTokens": "最大関係トークン数",
+      "maxRelationTokensTooltip": "統一トークン制御システムで関係コンテキストに割り当てられる最大トークン数",
+      "maxTotalTokens": "最大合計トークン数",
+      "maxTotalTokensTooltip": "クエリコンテキスト全体（エンティティ+関係+チャンク+システムプロンプト）の最大合計トークン予算",
+      "historyTurns": "履歴ターン数",
+      "historyTurnsTooltip": "応答コンテキストで考慮する完全な会話ターン（ユーザー-アシスタントペア）の数",
+      "historyTurnsPlaceholder": "履歴ターン数",
+      "onlyNeedContext": "コンテキストのみ必要",
+      "onlyNeedContextTooltip": "Trueの場合、応答を生成せずに取得されたコンテキストのみを返します",
+      "onlyNeedPrompt": "プロンプトのみ必要",
+      "onlyNeedPromptTooltip": "Trueの場合、応答を生成せずに生成されたプロンプトのみを返します",
+      "streamResponse": "ストリーム応答",
+      "streamResponseTooltip": "Trueの場合、リアルタイム応答のストリーミング出力を有効にします",
+      "userPrompt": "追加出力プロンプト",
+      "userPromptTooltip": "LLMに追加の応答要件を提供します（クエリコンテンツとは無関係で、出力処理のみに使用）。",
+      "userPromptPlaceholder": "カスタムプロンプトを入力（オプション）",
+      "enableRerank": "リランクを有効化",
+      "enableRerankTooltip": "取得されたテキストチャンクのリランクを有効にします。Trueに設定してもリランクモデルが設定されていない場合、警告が発行されます。デフォルトはTrueです。"
+    }
+  },
+  "apiSite": {
+    "loading": "APIドキュメントを読み込み中..."
+  },
+  "apiKeyAlert": {
+    "title": "APIキーが必要です",
+    "description": "サービスにアクセスするには、APIキーを入力してください",
+    "placeholder": "APIキーを入力",
+    "save": "保存"
+  },
+  "pagination": {
+    "showing": "{{start}}から{{end}}まで、全{{total}}件を表示",
+    "page": "ページ",
+    "pageSize": "ページサイズ",
+    "firstPage": "最初のページ",
+    "prevPage": "前のページ",
+    "nextPage": "次のページ",
+    "lastPage": "最後のページ"
+  }
+}
