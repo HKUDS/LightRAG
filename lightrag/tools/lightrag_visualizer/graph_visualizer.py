@@ -251,32 +251,72 @@ class GraphViewer:
                 if connections:
                     imgui.text("Connections:")
                     keys = next(iter(connections.values())).keys()
+
+                    # Add extra columns for inference info
+                    table_columns = ["Node"] + list(keys) + ["Type", "Inferred"]
+
                     if imgui.begin_table(
                         "Connections",
-                        len(keys) + 1,
+                        len(table_columns),
                         imgui.TableFlags_.borders
                         | imgui.TableFlags_.row_bg
                         | imgui.TableFlags_.resizable
                         | imgui.TableFlags_.hideable,
                     ):
-                        imgui.table_setup_column("Node")
-                        for key in keys:
-                            imgui.table_setup_column(key)
+                        for col_name in table_columns:
+                            imgui.table_setup_column(col_name)
                         imgui.table_headers_row()
 
                         for neighbor, edge_data in connections.items():
                             imgui.table_next_row()
+
+                            # Node name (clickable)
                             imgui.table_set_column_index(0)
                             if imgui.selectable(str(neighbor), True)[0]:
                                 # Select neighbor node
                                 self.selected_node = self.id_node_map[neighbor]
                                 self.position = self.selected_node.position - self.front
+
+                            # Original edge data
                             for idx, key in enumerate(keys):
                                 imgui.table_set_column_index(idx + 1)
                                 value = str(edge_data.get(key, ""))
                                 imgui.text(value)
                                 if value and imgui.is_item_hovered():
                                     imgui.set_tooltip(value)
+
+                            # Relationship type
+                            imgui.table_set_column_index(len(keys) + 1)
+                            rel_type = edge_data.get("relationship_type", "")
+                            if rel_type == "competitor":
+                                imgui.text_colored((1.0, 0.27, 0.23, 1.0), "🥊 Competitor")
+                            elif rel_type == "partnership":
+                                imgui.text_colored((0.2, 0.78, 0.35, 1.0), "🤝 Partner")
+                            elif rel_type == "supply_chain":
+                                imgui.text_colored((0.35, 0.78, 0.98, 1.0), "📦 Supply Chain")
+                            else:
+                                imgui.text(rel_type if rel_type else "-")
+
+                            # Inferred status
+                            imgui.table_set_column_index(len(keys) + 2)
+                            is_inferred = str(edge_data.get("inferred", "false")).lower() == "true"
+                            if is_inferred:
+                                confidence = edge_data.get("confidence", "")
+                                conf_text = f"Yes ({confidence})" if confidence else "Yes"
+                                imgui.text_colored((0.8, 0.8, 0.2, 1.0), conf_text)
+                                if imgui.is_item_hovered():
+                                    method = edge_data.get("inference_method", "")
+                                    tooltip = f"Inferred relationship"
+                                    if method:
+                                        tooltip += f"\nMethod: {method}"
+                                    if confidence:
+                                        tooltip += f"\nConfidence: {confidence}"
+                                    imgui.set_tooltip(tooltip)
+                            else:
+                                imgui.text("No")
+                                if imgui.is_item_hovered():
+                                    imgui.set_tooltip("Explicitly extracted")
+
                         imgui.end_table()
 
             imgui.end()
@@ -505,8 +545,11 @@ class GraphViewer:
         self.node_size_vbo = None
         self.edge_vbo = None
         self.edge_color_vbo = None
+        self.inferred_edge_vbo = None
+        self.inferred_edge_color_vbo = None
         self.node_vao = None
         self.edge_vao = None
+        self.inferred_edge_vao = None
         self.node_id_vao = None
         self.sphere_pos_vbo = None
         self.sphere_index_buffer = None
@@ -661,16 +704,47 @@ class GraphViewer:
         edge_positions = []
         edge_colors = []
 
+        # Separate inferred edges for different rendering
+        inferred_edge_positions = []
+        inferred_edge_colors = []
+
         for edge in self.graph.edges():
             start_node = self.id_node_map[edge[0]]
             end_node = self.id_node_map[edge[1]]
 
-            edge_positions.append(start_node.position)
-            edge_colors.append(start_node.color)
+            # Check if edge is inferred
+            edge_data = self.graph.get_edge_data(edge[0], edge[1])
+            is_inferred = edge_data and str(edge_data.get("inferred", "false")).lower() == "true"
 
-            edge_positions.append(end_node.position)
-            edge_colors.append(end_node.color)
+            if is_inferred:
+                # Inferred edges: use faded colors
+                relationship_type = edge_data.get("relationship_type", "")
 
+                # Color based on relationship type
+                if relationship_type == "competitor":
+                    edge_color = glm.vec3(1.0, 0.27, 0.23)  # Red
+                elif relationship_type == "partnership":
+                    edge_color = glm.vec3(0.2, 0.78, 0.35)  # Green
+                elif relationship_type == "supply_chain":
+                    edge_color = glm.vec3(0.35, 0.78, 0.98)  # Blue
+                else:
+                    edge_color = glm.vec3(0.6, 0.6, 0.6)  # Gray
+
+                # Make it faded (lower intensity)
+                edge_color *= 0.4
+
+                inferred_edge_positions.append(start_node.position)
+                inferred_edge_colors.append(edge_color)
+                inferred_edge_positions.append(end_node.position)
+                inferred_edge_colors.append(edge_color)
+            else:
+                # Explicit edges: normal rendering
+                edge_positions.append(start_node.position)
+                edge_colors.append(start_node.color)
+                edge_positions.append(end_node.position)
+                edge_colors.append(end_node.color)
+
+        # Create VAO for explicit edges
         if edge_positions:
             edge_positions = np.array(edge_positions, dtype=np.float32)
             edge_colors = np.array(edge_colors, dtype=np.float32)
@@ -685,6 +759,26 @@ class GraphViewer:
                     (self.edge_color_vbo, "3f", "in_color"),
                 ],
             )
+        else:
+            self.edge_vao = None
+
+        # Create VAO for inferred edges
+        if inferred_edge_positions:
+            inferred_edge_positions = np.array(inferred_edge_positions, dtype=np.float32)
+            inferred_edge_colors = np.array(inferred_edge_colors, dtype=np.float32)
+
+            self.inferred_edge_vbo = self.glctx.buffer(inferred_edge_positions.tobytes())
+            self.inferred_edge_color_vbo = self.glctx.buffer(inferred_edge_colors.tobytes())
+
+            self.inferred_edge_vao = self.glctx.vertex_array(
+                self.edge_prog,
+                [
+                    (self.inferred_edge_vbo, "3f", "in_position"),
+                    (self.inferred_edge_color_vbo, "3f", "in_color"),
+                ],
+            )
+        else:
+            self.inferred_edge_vao = None
 
     def update_view_proj_matrix(self):
         """Update view matrix based on camera parameters"""
@@ -869,16 +963,29 @@ class GraphViewer:
         mvp = self.proj_matrix * self.view_matrix
 
         # Render edges first (under nodes)
+        # First render explicit edges (solid, thicker)
         if self.edge_vao:
             self.edge_prog["mvp"].write(mvp.to_bytes())
             self.edge_prog["edge_width"].value = (
                 float(self.edge_width) * 2.0
-            )  # Double the width for better visibility
+            )  # Thicker for explicit edges
             self.edge_prog["viewport_size"].value = (
                 float(self.window_width),
                 float(self.window_height),
             )
             self.edge_vao.render(moderngl.LINES)
+
+        # Then render inferred edges (faded, thinner)
+        if self.inferred_edge_vao:
+            self.edge_prog["mvp"].write(mvp.to_bytes())
+            self.edge_prog["edge_width"].value = (
+                float(self.edge_width) * 0.8
+            )  # Thinner for inferred edges
+            self.edge_prog["viewport_size"].value = (
+                float(self.window_width),
+                float(self.window_height),
+            )
+            self.inferred_edge_vao.render(moderngl.LINES)
 
         # Render nodes
         if self.node_vao:
