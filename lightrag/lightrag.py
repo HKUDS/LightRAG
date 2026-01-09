@@ -224,12 +224,14 @@ class LightRAG:
     """Maximum number of tokens per text chunk when splitting documents."""
 
     chunk_overlap_token_size: int = field(
-        default=int(os.getenv("CHUNK_OVERLAP_SIZE", 250))
+        default=int(os.getenv("CHUNK_OVERLAP_SIZE", 400))
     )
     """Number of overlapping tokens between consecutive text chunks to preserve context.
-    
-    Note: Increased default from 100 to 250 tokens (20% overlap) to better preserve
+
+    Note: Increased default from 250 to 400 tokens (33% overlap) to better preserve
     entity relationships across chunks and reduce isolated nodes in knowledge graphs.
+    Higher overlap ensures entities mentioned in the same context appear together
+    in multiple chunks, improving co-occurrence counts for relationship inference.
     """
 
     tokenizer: Optional[Tokenizer] = field(default=None)

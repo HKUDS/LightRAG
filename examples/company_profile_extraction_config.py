@@ -33,7 +33,7 @@ def get_high_quality_extraction_config() -> dict:
         # === Chunking Strategy ===
         # Larger overlap preserves entity context across chunks
         "chunk_token_size": 1200,
-        "chunk_overlap_token_size": 250,  # 20% overlap (was 100/8%)
+        "chunk_overlap_token_size": 400,  # 33% overlap (was 250/20%, originally 100/8%)
         
         # === Extraction Quality ===
         # More gleaning passes = better coverage but slower
@@ -45,6 +45,13 @@ def get_high_quality_extraction_config() -> dict:
         "addon_params": {
             "enable_cooccurrence_inference": True,
             "min_cooccurrence": 4,  # Increased from 3 for higher quality
+
+            # === Advanced Company Relationship Inference ===
+            # Infer competitor, partnership, and supply chain relationships
+            "enable_company_relationship_inference": True,
+            "company_inference_min_cooccurrence": 2,
+            "company_inference_confidence_threshold": 0.5,
+
             "language": "English",
             "entity_types": [
                 "Company", "Person", "Technology", "Location",
@@ -249,7 +256,7 @@ if __name__ == "__main__":
     config = get_high_quality_extraction_config()
     print("\n1. Optimized Configuration:")
     print(f"   - Chunk size: {config['chunk_token_size']} tokens")
-    print(f"   - Chunk overlap: {config['chunk_overlap_token_size']} tokens (20%)")
+    print(f"   - Chunk overlap: {config['chunk_overlap_token_size']} tokens (33%)")
     print(f"   - Gleaning passes: {config['entity_extract_max_gleaning']}")
     print(f"   - Min co-occurrence: {config['addon_params']['min_cooccurrence']}")
     

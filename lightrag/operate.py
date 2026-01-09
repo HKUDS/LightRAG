@@ -2524,6 +2524,53 @@ async def merge_nodes_and_edges(
         # Update counts after inference
         total_relations_count = len(all_edges)
 
+    # ===== Advanced Company Relationship Inference Phase =====
+    # Infer competitor and partnership relationships between organizations
+    enable_company_inference = global_config.get(
+        "enable_company_relationship_inference", False
+    )
+
+    if enable_company_inference:
+        from .utils_company_relationships import infer_company_relationships
+
+        logger.info("Inferring advanced company relationships (competitors, partnerships)...")
+
+        # Build chunk contents map if available
+        chunk_contents = {}
+        if text_chunks and hasattr(text_chunks, 'items'):
+            for chunk_key, chunk_data in text_chunks.items():
+                chunk_id = chunk_data.get("full_doc_id", chunk_key)
+                chunk_contents[chunk_id] = chunk_data.get("content", "")
+
+        company_min_cooccurrence = global_config.get(
+            "company_inference_min_cooccurrence", 2
+        )
+        company_confidence_threshold = global_config.get(
+            "company_inference_confidence_threshold", 0.5
+        )
+
+        all_edges, company_stats = infer_company_relationships(
+            all_nodes,
+            all_edges,
+            chunk_contents=chunk_contents if chunk_contents else None,
+            min_cooccurrence=company_min_cooccurrence,
+            confidence_threshold=company_confidence_threshold,
+            enable_inference=True,
+        )
+
+        # Log statistics
+        if company_stats.get("competitor_relationships", 0) > 0 or \
+           company_stats.get("partnership_relationships", 0) > 0:
+            logger.info(
+                f"  ✓ COMPANY RELATIONSHIPS: "
+                f"Competitors: {company_stats.get('competitor_relationships', 0)}, "
+                f"Partnerships: {company_stats.get('partnership_relationships', 0)}, "
+                f"Supply Chain: {company_stats.get('supply_chain_relationships', 0)}"
+            )
+
+        # Update counts after company inference
+        total_relations_count = len(all_edges)
+
     # Get max async tasks limit from global_config for semaphore control
     graph_max_async = global_config.get("llm_model_max_async", 4) * 2
     semaphore = asyncio.Semaphore(graph_max_async)
