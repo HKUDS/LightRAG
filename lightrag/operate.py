@@ -382,10 +382,12 @@ async def _handle_single_entity_extraction(
     timestamp: int,
     file_path: str = "unknown_source",
 ):
-    if len(record_attributes) != 4 or "entity" not in record_attributes[0]:
+    # Support both 4-field (legacy) and 5-field (with verification_evidence) formats
+    expected_fields = [4, 5]
+    if len(record_attributes) not in expected_fields or "entity" not in record_attributes[0]:
         if len(record_attributes) > 1 and "entity" in record_attributes[0]:
             logger.warning(
-                f"{chunk_key}: LLM output format error; found {len(record_attributes)}/4 feilds on ENTITY `{record_attributes[1]}` @ `{record_attributes[2] if len(record_attributes) > 2 else 'N/A'}`"
+                f"{chunk_key}: LLM output format error; found {len(record_attributes)}/4-5 fields on ENTITY `{record_attributes[1]}` @ `{record_attributes[2] if len(record_attributes) > 2 else 'N/A'}`"
             )
             logger.debug(record_attributes)
         return None
@@ -427,7 +429,12 @@ async def _handle_single_entity_extraction(
             )
             return None
 
-        return dict(
+        # Extract verification evidence if present (5th field)
+        verification_evidence = None
+        if len(record_attributes) >= 5:
+            verification_evidence = sanitize_and_normalize_extracted_text(record_attributes[4])
+
+        result = dict(
             entity_name=entity_name,
             entity_type=entity_type,
             description=entity_description,
@@ -435,6 +442,12 @@ async def _handle_single_entity_extraction(
             file_path=file_path,
             timestamp=timestamp,
         )
+
+        # Add verification evidence if available
+        if verification_evidence:
+            result["verification_evidence"] = verification_evidence
+
+        return result
 
     except ValueError as e:
         logger.error(
@@ -454,12 +467,14 @@ async def _handle_single_relationship_extraction(
     timestamp: int,
     file_path: str = "unknown_source",
 ):
+    # Support both 5-field (legacy) and 6-field (with verification_evidence) formats
+    expected_fields = [5, 6]
     if (
-        len(record_attributes) != 5 or "relation" not in record_attributes[0]
+        len(record_attributes) not in expected_fields or "relation" not in record_attributes[0]
     ):  # treat "relationship" and "relation" interchangeable
         if len(record_attributes) > 1 and "relation" in record_attributes[0]:
             logger.warning(
-                f"{chunk_key}: LLM output format error; found {len(record_attributes)}/5 fields on REALTION `{record_attributes[1]}`~`{record_attributes[2] if len(record_attributes) > 2 else 'N/A'}`"
+                f"{chunk_key}: LLM output format error; found {len(record_attributes)}/5-6 fields on RELATION `{record_attributes[1]}`~`{record_attributes[2] if len(record_attributes) > 2 else 'N/A'}`"
             )
             logger.debug(record_attributes)
         return None
@@ -500,14 +515,23 @@ async def _handle_single_relationship_extraction(
         # Process relationship description with same cleaning pipeline
         edge_description = sanitize_and_normalize_extracted_text(record_attributes[4])
 
-        edge_source_id = chunk_key
-        weight = (
-            float(record_attributes[-1].strip('"').strip("'"))
-            if is_float_regex(record_attributes[-1].strip('"').strip("'"))
-            else 1.0
-        )
+        # Extract verification evidence if present (6th field)
+        verification_evidence = None
+        if len(record_attributes) >= 6:
+            verification_evidence = sanitize_and_normalize_extracted_text(record_attributes[5])
 
-        return dict(
+        edge_source_id = chunk_key
+
+        # For weight, check if last field (description or evidence) is a float
+        # In 5-field format: record_attributes[-1] is description (field 4)
+        # In 6-field format: record_attributes[-1] is verification_evidence (field 5)
+        # Weight is only from optional 6th/7th field, default to 1.0
+        weight = 1.0
+        last_field = record_attributes[-1].strip('"').strip("'")
+        if is_float_regex(last_field):
+            weight = float(last_field)
+
+        result = dict(
             src_id=source,
             tgt_id=target,
             weight=weight,
@@ -517,6 +541,12 @@ async def _handle_single_relationship_extraction(
             file_path=file_path,
             timestamp=timestamp,
         )
+
+        # Add verification evidence if available
+        if verification_evidence:
+            result["verification_evidence"] = verification_evidence
+
+        return result
 
     except ValueError as e:
         logger.warning(
