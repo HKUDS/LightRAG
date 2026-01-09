@@ -87,7 +87,8 @@ DEFAULT_TEMPERATURE = 1.0
 # Enable/disable co-occurrence-based relationship inference to reduce isolated nodes
 DEFAULT_ENABLE_COOCCURRENCE_INFERENCE = True
 # Minimum number of chunk co-occurrences required to infer a relationship
-DEFAULT_MIN_COOCCURRENCE = 2
+# Increased from 2 to 3 for higher quality inference (type-specific thresholds apply additionally)
+DEFAULT_MIN_COOCCURRENCE = 3
 
 # Async configuration defaults
 DEFAULT_MAX_ASYNC = 4  # Default maximum async operations

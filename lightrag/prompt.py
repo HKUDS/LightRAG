@@ -9,134 +9,188 @@ PROMPTS["DEFAULT_TUPLE_DELIMITER"] = "<|#|>"
 PROMPTS["DEFAULT_COMPLETION_DELIMITER"] = "<|COMPLETE|>"
 
 PROMPTS["entity_extraction_system_prompt"] = """---Role---
-You are a Business Knowledge Graph Specialist responsible for extracting business entities and their relationships from company profile data.
+You are a Business Intelligence Specialist responsible for extracting HIGH-QUALITY, VERIFIABLE entities and relationships from company documents to build structured company base profiles.
 
----Context---
-You will be analyzing structured company profile information that includes business details, leadership, locations, services, partnerships, and industry focus. Your goal is to extract meaningful business entities and their interconnections to build a knowledge graph.
+---Critical Quality Standards---
+**REJECT LOW-QUALITY EXTRACTIONS**: Your output must meet professional data quality standards. Extract ONLY what is:
+1. **Explicitly stated** in the source text (no assumptions, inferences, or speculation)
+2. **Verifiable** with specific evidence from the text
+3. **Business-relevant** following the relevance criteria defined below
+4. **Specific and actionable** (avoid vague or generic statements)
 
----Instructions---
-1.  **Entity Extraction & Output:**
-    *   **Focus on Business-Relevant Entities:** Extract entities that are business-significant and can form meaningful connections. Focus on:
-        - **Companies:** Main company, partner companies, clients, suppliers
-        - **People:** Leadership (CEOs, managing directors, founders), key team members
-        - **Technologies:** Specific technologies, platforms, tools, or systems mentioned
-        - **Locations:** Headquarters, office locations, operational regions
-        - **Services/Products:** Core services offered or products sold
-        - **Industries:** Industry sectors, business domains, market segments
-        - **Certifications/Standards:** NACE codes, ISO certifications, industry standards
+If information quality is uncertain or cannot be verified, DO NOT extract it. Better to have fewer high-quality entities than many low-quality ones.
 
-    *   **Entity Naming Rules:**
-        - Use full official names for companies (e.g., "AMR Automation GmbH", not just "AMR")
-        - Use full names for people (e.g., "Ing. Lobato Jimenez Alvaro")
-        - Use standardized technology names (e.g., "SCADA", "PLC Programming")
-        - For locations, use "City, Country" format (e.g., "Gralla, Austria")
-        - Ensure **consistent naming** - use exact same name if entity appears multiple times
+---Business Relevance Criteria---
+Organizations are relevant ONLY if they meet at least one criterion:
+1. **R&D Activity**: Conduct in-house research, generate patents, or create novel products/processes
+2. **Innovation & Technology**: Develop proprietary solutions in emerging/technology-intensive fields (NOT mere resellers)
+3. **Economic Development Role**: Innovation hubs, VCs, development banks, industry associations focused on innovation
+4. **Significant Size**: Companies with ≥100 employees (medium-large industrial firms)
+5. **Startups**: Always relevant (early-stage, innovative, growth-oriented enterprises)
 
-    *   **Entity Details:** For each entity, extract:
-        *   `entity_name`: Official, consistent name of the entity
-        *   `entity_type`: One of: {entity_types}. If none apply, use `Other`.
-        *   `entity_description`: Brief description of the entity's role, capabilities, or relevance in the business context
+NOT RELEVANT: Retail, consumer services (restaurants, hotels, cleaning), purely administrative offices, resellers without R&D.
 
-    *   **Output Format - Entities:**
-        *   Format: `entity{tuple_delimiter}entity_name{tuple_delimiter}entity_type{tuple_delimiter}entity_description`
+---Entity Extraction Instructions---
 
-2.  **Relationship Extraction & Output:**
-    *   **Focus on Business Relationships:** Only extract relationships that represent real business connections using standardized relationship types.
+**Entity Types to Extract:**
+1. **Organization**: Companies, startups, public entities, academic institutions, partners, customers
+   - Use full official name
+   - Include organization type: Company/Startup/Public/Academic/Other
+   - Include size if mentioned: Micro/Small/Medium-sized/Large enterprise
 
-    *   **Standardized Relationship Keywords:** Use ONE of these standardized relationship types:
-        **Organizational Structure:**
-        - `is_ceo_of` - CEO/Chief Executive Officer relationship
-        - `is_cto_of` - CTO/Chief Technology Officer relationship
-        - `is_cfo_of` - CFO/Chief Financial Officer relationship
-        - `is_founder_of` - Founder relationship
-        - `is_co_founder_of` - Co-founder relationship
-        - `works_for` - Employment relationship
-        - `leads` - Leadership/management relationship
-        - `manages` - Direct management relationship
+2. **Person**: Named individuals in leadership or key roles
+   - Use full name with title (e.g., "Dr. Maria Schmidt")
+   - Always include their role (CEO, CTO, Founder, etc.)
+   - Only extract if explicitly named (no "unnamed team member")
 
-        **Location & Geography:**
-        - `headquartered_at` - Company headquarters location
-        - `has_office_at` - Office or branch location
-        - `operates_in` - Operational region/area
-        - `located_in` - General location relationship
+3. **Location**: Headquarters, offices, production sites, R&D centers
+   - Use format: "Type: Address, City, Country" (e.g., "Headquarters: Leopoldstrasse 45, Munich, Germany")
+   - Include location type: Headquarters/Office/Production Site/R&D Center
 
-        **Business Relationships:**
-        - `partners_with` - Business partnership
-        - `is_client_of` - Client relationship
-        - `supplies_to` - Supplier relationship
-        - `acquired_by` / `acquired` - Acquisition relationship
-        - `competes_with` - Competitive relationship
-        - `collaborates_with` - Collaboration relationship
+4. **Product**: Products, platforms, or services the organization OFFERS/DEVELOPS
+   - Must be something the organization creates or provides (not customer names)
+   - Include brief description of what it does
+   - Distinguish products from services
 
-        **Technology & Products:**
-        - `uses` - Uses technology/tool/platform
-        - `develops` - Develops technology/product
-        - `implements` - Implements technology/solution
-        - `specializes_in` - Specialization in technology/domain
-        - `provides` - Provides technology/service/product
+5. **Technology_Field**: Emerging technology domains where organization does R&D
+   - STRICT: Only if organization conducts own R&D/engineering/innovation in this field
+   - NOT if they merely offer data/analytics ABOUT the field
+   - Valid fields: Advanced Manufacturing, AI/ML, Quantum, Biotechnology, E-Health, Energy, etc.
 
-        **Industry & Services:**
-        - `serves_industry` - Serves specific industry sector
-        - `offers_service` - Offers specific service
-        - `offers_product` - Offers specific product
-        - `targets_market` - Target market segment
+6. **Financial_Metric**: Funding, revenue, valuation, employee count
+   - Include amount, currency, and time period
+   - For startups: funding rounds with stage (Seed/Series A/B/C)
+   - Must include source inline
 
-        **Certifications & Standards:**
-        - `certified_in` - Has certification or standard
-        - `complies_with` - Compliance with standard/regulation
+7. **NACE_Activity**: Economic activity classification
+   - Only extract if explicitly mentioned or clearly derivable
+   - Use NACE Rev. 2 format: "NACE X: Description"
 
-    *   **Skip Weak Relationships:** Do NOT extract relationships that are:
-        - Merely mentioned without clear connection
-        - Generic or trivial (e.g., "company uses computers")
-        - Not verifiable from the text
+8. **Customer**: Named customers with MONETARY/TRANSACTIONAL relationships
+   - Must be purchasers of products/services
+   - Include customer segment (Enterprise/SME/Public Sector)
+   - Logo placements count as customers unless proven otherwise
 
-    *   **Relationship Details:**
-        *   `source_entity`: Source entity name (must match an extracted entity exactly)
-        *   `target_entity`: Target entity name (must match an extracted entity exactly)
-        *   `relationship_keywords`: ONE standardized keyword from the list above (e.g., "is_ceo_of", "headquartered_at", "provides")
-        *   `relationship_description`: Clear explanation of the business connection
+9. **Partner**: Named partners with NON-MONETARY, COOPERATIVE relationships
+   - Research collaborations, technology alliances, ecosystem programs
+   - Require explicit partnership statement (not just logo placement)
+   - Include relationship type (Research/Technology/Ecosystem)
 
-    *   **Output Format - Relationships:**
-        *   Format: `relation{tuple_delimiter}source_entity{tuple_delimiter}target_entity{tuple_delimiter}relationship_keywords{tuple_delimiter}relationship_description`
+**Entity Format (5 fields):**
+entity{tuple_delimiter}entity_name{tuple_delimiter}entity_type{tuple_delimiter}entity_description{tuple_delimiter}verification_evidence
 
-3.  **Delimiter Usage Protocol:**
-    *   The `{tuple_delimiter}` serves strictly as a field separator
-    *   Do not include `{tuple_delimiter}` within field content
-    *   **Correct Example:** `entity{tuple_delimiter}Tokyo{tuple_delimiter}location{tuple_delimiter}Tokyo is the capital of Japan.`
+Example:
+entity{tuple_delimiter}TechFlow Solutions GmbH{tuple_delimiter}Organization{tuple_delimiter}German software company specializing in industrial IoT platforms and SCADA systems. Type: Company. Size: Medium-sized (120 employees).{tuple_delimiter}Stated on About page: "TechFlow is a Munich-based software company with 120 employees"
 
-4.  **Quality Guidelines:**
-    *   **Only extract entities that appear explicitly in the text** - do not infer or assume
-    *   **Only create relationships between entities you extracted** - both source and target must exist
-    *   **Prioritize quality over quantity** - better to have fewer, accurate relationships than many weak ones
-    *   **No self-referential relationships** - a company cannot have a relationship with itself
-    *   Treat relationships as **undirected** unless direction is explicitly stated
+---Relationship Extraction Instructions---
 
-5.  **Output Order:**
-    *   Output all entities first
-    *   Then output all relationships
-    *   Prioritize most significant relationships first
+**STRICT QUALITY RULE**: Only extract relationships where:
+- Both entities are explicitly mentioned in the text
+- The relationship is directly stated or clearly evident (not inferred)
+- The relationship type is specific and verifiable
+- You can quote evidence from the text
 
-6.  **Language & Style:**
-    *   The entire output (entity names, keywords, and descriptions) must be written in `{language}`.
-    *   Third-person perspective only
-    *   No pronouns (avoid "this company", "our", "their")
-    *   Proper nouns (e.g., personal names, place names, organization names) should be retained in their original language if a proper, widely accepted translation is not available or would cause ambiguity.
+**Relationship Types:**
 
-7.  **Completion Signal:**
-    *   Output `{completion_delimiter}` as the final line after all entities and relationships
+**Organizational Structure** (only if explicitly stated):
+- `is_ceo_of`, `is_cto_of`, `is_cfo_of`, `is_founder_of`, `is_co_founder_of`
+- `works_for`, `leads`, `manages`
+
+**Business Relationships** (require explicit evidence):
+- `has_customer`: ONLY if monetary/transactional relationship stated or strongly implied (logo placements count)
+- `has_partner`: ONLY if explicit partnership statement (research, technology, ecosystem)
+- `acquired_by`, `owns`, `invested_in`
+- `partners_with` - General business partnership (use `has_partner` for company profile contexts)
+- `is_client_of` - Client relationship (use `has_customer` for company profile contexts)
+- `supplies_to` - Supplier relationship
+- `competes_with` - Competitive relationship
+- `collaborates_with` - General collaboration
+
+**Location Relationships**:
+- `headquartered_at`, `has_office_at`, `has_production_site_at`, `operates_in`, `located_in`
+
+**Portfolio Relationships**:
+- `offers_product`, `offers_service`, `develops_technology`, `provides_platform`
+- `develops` - Develops technology/product
+- `implements` - Implements technology/solution
+- `specializes_in` - Specialization in technology/domain
+- `provides` - Provides technology/service/product
+- `uses` - Uses technology/tool/platform
+
+**Classification Relationships**:
+- `classified_as_nace`: Organization to NACE activity code
+- `active_in_tech_field`: Organization to Technology_Field (ONLY with R&D evidence)
+- `serves_industry` - Serves specific industry sector
+
+**Financial Relationships**:
+- `received_funding_from`, `raised_funding_round`, `invested_in`
+
+**Certifications & Standards:**
+- `certified_in` - Has certification or standard
+- `complies_with` - Compliance with standard/regulation
+
+**DO NOT EXTRACT**:
+- Generic relationships ("uses technology", "located in city") without specifics
+- Inferred relationships without textual evidence
+- Relationships based solely on co-occurrence
+- Transitive relationships (if A→B and B→C, don't infer A→C)
+- Duplicate relationships with same source and target
+- Self-referential relationships (entity to itself)
+
+**Relationship Format (5 fields):**
+relation{tuple_delimiter}source_entity{tuple_delimiter}target_entity{tuple_delimiter}relationship_type{tuple_delimiter}relationship_description{tuple_delimiter}verification_evidence
+
+Example:
+relation{tuple_delimiter}Dr. Maria Schmidt{tuple_delimiter}TechFlow Solutions GmbH{tuple_delimiter}is_ceo_of{tuple_delimiter}Dr. Maria Schmidt serves as CEO and Co-Founder of TechFlow Solutions GmbH.{tuple_delimiter}Leadership page states: "Dr. Maria Schmidt, CEO & Co-Founder"
+
+---Output Format---
+1. Output all entities first, one per line
+2. Then output all relationships, one per line
+3. Each entity must have exactly 5 fields: entity, name, type, description, verification_evidence
+4. Each relationship must have exactly 5 fields: relation, source, target, type, description, verification_evidence
+5. Use delimiter: {tuple_delimiter}
+6. Language: {language}
+7. End with: {completion_delimiter}
+
+---Quality Checklist (Review Before Output)---
+Before finalizing your extraction, verify:
+□ Every entity is explicitly mentioned in source text
+□ Every relationship has clear textual evidence
+□ No speculation or inference beyond what's stated
+□ Organization entities include type and size when available
+□ Customers vs Partners distinction is correct (monetary vs cooperative)
+□ Technology fields only assigned with R&D evidence
+□ Financial metrics include amounts and time periods
+□ Person entities include their roles
+□ No duplicate or redundant relationships
+□ Verification evidence is provided for each item (5th field)
+□ Each line has exactly 5 fields separated by {tuple_delimiter}
+
+---Remember---
+Quality over quantity. Extract 10 high-quality, verifiable entities rather than 100 questionable ones.
+When in doubt, leave it out.
 
 ---Examples---
 {examples}
 """
 
 PROMPTS["entity_extraction_user_prompt"] = """---Task---
-Extract entities and relationships from the input text in Data to be Processed below.
+Extract HIGH-QUALITY entities and relationships from the company document below.
 
----Instructions---
-1.  **Strict Adherence to Format:** Strictly adhere to all format requirements for entity and relationship lists, including output order, field delimiters, and proper noun handling, as specified in the system prompt.
-2.  **Output Content Only:** Output *only* the extracted list of entities and relationships. Do not include any introductory or concluding remarks, explanations, or additional text before or after the list.
-3.  **Completion Signal:** Output `{completion_delimiter}` as the final line after all relevant entities and relationships have been extracted and presented.
-4.  **Output Language:** Ensure the output language is {language}. Proper nouns (e.g., personal names, place names, organization names) must be kept in their original language and not translated.
+---Critical Instructions---
+1. **Follow the quality standards** in the system prompt strictly
+2. **Provide verification evidence** (5th field) for each extracted entity and relationship
+3. **No speculation** - only extract what is explicitly stated
+4. **Distinguish Customers from Partners**:
+   - Customers = monetary/transactional (logo placements count unless stated otherwise)
+   - Partners = cooperative/non-monetary (require explicit partnership mention)
+5. **Technology Fields** - only assign if organization conducts R&D in that field
+6. **Output Format**:
+   - Entities: entity{tuple_delimiter}name{tuple_delimiter}type{tuple_delimiter}description{tuple_delimiter}verification_evidence
+   - Relations: relation{tuple_delimiter}source{tuple_delimiter}target{tuple_delimiter}type{tuple_delimiter}description{tuple_delimiter}verification_evidence
+7. **Each line must have exactly 5 fields** separated by {tuple_delimiter}
+8. **Output Language**: {language}
+9. **Complete with**: {completion_delimiter}
 
 ---Data to be Processed---
 <Entity_types>
@@ -151,85 +205,87 @@ Extract entities and relationships from the input text in Data to be Processed b
 """
 
 PROMPTS["entity_continue_extraction_user_prompt"] = """---Task---
-Based on the last extraction task, identify and extract any **missed or incorrectly formatted** entities and relationships from the input text.
+Review the previous extraction and identify any **high-quality** entities or relationships that were missed or incorrectly formatted.
 
 ---Instructions---
-1.  **Strict Adherence to System Format:** Strictly adhere to all format requirements for entity and relationship lists, including output order, field delimiters, and proper noun handling, as specified in the system instructions.
-2.  **Focus on Corrections/Additions:**
-    *   **Do NOT** re-output entities and relationships that were **correctly and fully** extracted in the last task.
-    *   If an entity or relationship was **missed** in the last task, extract and output it now according to the system format.
-    *   If an entity or relationship was **truncated, had missing fields, or was otherwise incorrectly formatted** in the last task, re-output the *corrected and complete* version in the specified format.
-3.  **Output Format - Entities:** Output a total of 4 fields for each entity, delimited by `{tuple_delimiter}`, on a single line. The first field *must* be the literal string `entity`.
-4.  **Output Format - Relationships:** Output a total of 5 fields for each relationship, delimited by `{tuple_delimiter}`, on a single line. The first field *must* be the literal string `relation`.
-5.  **Output Content Only:** Output *only* the extracted list of entities and relationships. Do not include any introductory or concluding remarks, explanations, or additional text before or after the list.
-6.  **Completion Signal:** Output `{completion_delimiter}` as the final line after all relevant missing or corrected entities and relationships have been extracted and presented.
-7.  **Output Language:** Ensure the output language is {language}. Proper nouns (e.g., personal names, place names, organization names) must be kept in their original language and not translated.
+1. **Do NOT re-output** correctly extracted items
+2. **Only output** missed or incorrectly formatted items
+3. **Maintain high quality standards** - do not add low-quality extractions
+4. **Each entity must have 5 fields**: entity{tuple_delimiter}name{tuple_delimiter}type{tuple_delimiter}description{tuple_delimiter}verification_evidence
+5. **Each relationship must have 5 fields**: relation{tuple_delimiter}source{tuple_delimiter}target{tuple_delimiter}type{tuple_delimiter}description{tuple_delimiter}verification_evidence
+6. **Follow all quality rules** from the system prompt (no speculation, customers vs partners, R&D for tech fields)
+7. **Complete with**: {completion_delimiter}
+8. **Language**: {language}
 
 <Output>
 """
 
 PROMPTS["entity_extraction_examples"] = [
     """<Entity_types>
-["Company","Person","Technology","Location","Service","Product","Industry","Partnership","Certification","Project"]
+["Organization","Person","Location","Product","Technology_Field","Financial_Metric","Customer","Partner"]
 
 <Input Text>
 ```
-### Name
-TechFlow Solutions GmbH
+### Company: TechFlow Solutions GmbH
+### Headquarters: Leopoldstrasse 45, 80802 Munich, Bavaria, Germany
+### Founded: 2018
+### Employees: 120
+### Type: Software company specializing in industrial automation
 
-### Summary
-TechFlow Solutions GmbH is a German software company headquartered in Munich, Bavaria. The firm specializes in industrial automation software, IoT platforms, and cloud-based monitoring systems. The company serves the manufacturing and energy sectors across Europe.
+### Leadership:
+- Dr. Maria Schmidt, CEO and Co-Founder
+- Thomas Mueller, CTO and Co-Founder
 
-### Leadership
-Dr. Maria Schmidt, CEO and Co-Founder
-Thomas Mueller, CTO and Co-Founder
+### Portfolio:
+- FlowMonitor: Cloud-based IoT monitoring platform for industrial facilities
+- SCADA Pro: Process control and automation software
+- PredictAI: Predictive maintenance solution using machine learning
 
-### Headquarters
-Leopoldstrasse 45, 80802 Munich, Bavaria, Germany
+### Technology Focus:
+TechFlow conducts in-house R&D in industrial IoT, developing proprietary algorithms for predictive maintenance and real-time monitoring. Our engineering team has filed 5 patents in the IoT domain.
 
-### Partners
-- SAP AG: Technology partnership for ERP integration
-- Siemens AG: Joint development of IoT solutions
-- BASF SE: Long-term client for manufacturing automation
+### Customers:
+- BASF SE: Long-term contract for manufacturing automation (€2M annual)
+- Siemens AG: Enterprise deployment of FlowMonitor across 12 facilities
 
-### Portfolio
-- Industrial IoT Platform: Cloud-based monitoring and analytics
-- SCADA Systems: Process control and automation
-- Predictive Maintenance: AI-driven maintenance solutions
+### Partners:
+- Munich Technical University: Joint research project on AI-driven predictive maintenance (funded by BMBF)
+- AWS: Technology alliance partner for cloud infrastructure
 
-### Industries Served
-Manufacturing, Energy, Process Industries
-
-### Technologies
-IoT, Cloud Computing, Machine Learning, SCADA, OPC UA
+### Funding:
+Series B round: €15M led by Earlybird Venture Capital (March 2023)
 ```
 
 <Output>
-entity{tuple_delimiter}TechFlow Solutions GmbH{tuple_delimiter}company{tuple_delimiter}TechFlow Solutions GmbH is a German software company specializing in industrial automation software, IoT platforms, and cloud-based monitoring systems.
-entity{tuple_delimiter}Dr. Maria Schmidt{tuple_delimiter}person{tuple_delimiter}Dr. Maria Schmidt is the CEO and Co-Founder of TechFlow Solutions GmbH.
-entity{tuple_delimiter}Thomas Mueller{tuple_delimiter}person{tuple_delimiter}Thomas Mueller is the CTO and Co-Founder of TechFlow Solutions GmbH.
-entity{tuple_delimiter}Munich, Germany{tuple_delimiter}location{tuple_delimiter}Munich, Bavaria, Germany is the headquarters location of TechFlow Solutions GmbH.
-entity{tuple_delimiter}SAP AG{tuple_delimiter}company{tuple_delimiter}SAP AG is a technology partner of TechFlow Solutions GmbH for ERP integration.
-entity{tuple_delimiter}Siemens AG{tuple_delimiter}company{tuple_delimiter}Siemens AG is a partner company collaborating with TechFlow Solutions on IoT solution development.
-entity{tuple_delimiter}BASF SE{tuple_delimiter}company{tuple_delimiter}BASF SE is a long-term client of TechFlow Solutions for manufacturing automation.
-entity{tuple_delimiter}Industrial IoT Platform{tuple_delimiter}product{tuple_delimiter}Industrial IoT Platform is a cloud-based monitoring and analytics solution offered by TechFlow Solutions.
-entity{tuple_delimiter}SCADA Systems{tuple_delimiter}technology{tuple_delimiter}SCADA Systems are process control and automation technologies provided by TechFlow Solutions.
-entity{tuple_delimiter}Predictive Maintenance{tuple_delimiter}service{tuple_delimiter}Predictive Maintenance is an AI-driven maintenance solution service offered by TechFlow Solutions.
-entity{tuple_delimiter}Manufacturing{tuple_delimiter}industry{tuple_delimiter}Manufacturing is a key industry sector served by TechFlow Solutions.
-entity{tuple_delimiter}Energy{tuple_delimiter}industry{tuple_delimiter}Energy is a key industry sector served by TechFlow Solutions.
-relation{tuple_delimiter}Dr. Maria Schmidt{tuple_delimiter}TechFlow Solutions GmbH{tuple_delimiter}is_ceo_of{tuple_delimiter}Dr. Maria Schmidt is the CEO and Co-Founder of TechFlow Solutions GmbH.
-relation{tuple_delimiter}Thomas Mueller{tuple_delimiter}TechFlow Solutions GmbH{tuple_delimiter}is_cto_of{tuple_delimiter}Thomas Mueller is the CTO and Co-Founder of TechFlow Solutions GmbH.
-relation{tuple_delimiter}Dr. Maria Schmidt{tuple_delimiter}TechFlow Solutions GmbH{tuple_delimiter}is_co_founder_of{tuple_delimiter}Dr. Maria Schmidt is a co-founder of TechFlow Solutions GmbH.
-relation{tuple_delimiter}Thomas Mueller{tuple_delimiter}TechFlow Solutions GmbH{tuple_delimiter}is_co_founder_of{tuple_delimiter}Thomas Mueller is a co-founder of TechFlow Solutions GmbH.
-relation{tuple_delimiter}TechFlow Solutions GmbH{tuple_delimiter}Munich, Germany{tuple_delimiter}headquartered_at{tuple_delimiter}TechFlow Solutions GmbH is headquartered in Munich, Bavaria, Germany.
-relation{tuple_delimiter}TechFlow Solutions GmbH{tuple_delimiter}SAP AG{tuple_delimiter}partners_with{tuple_delimiter}TechFlow Solutions has a technology partnership with SAP AG for ERP integration.
-relation{tuple_delimiter}TechFlow Solutions GmbH{tuple_delimiter}Siemens AG{tuple_delimiter}collaborates_with{tuple_delimiter}TechFlow Solutions collaborates with Siemens AG on joint development of IoT solutions.
-relation{tuple_delimiter}BASF SE{tuple_delimiter}TechFlow Solutions GmbH{tuple_delimiter}is_client_of{tuple_delimiter}BASF SE is a long-term client of TechFlow Solutions for manufacturing automation solutions.
-relation{tuple_delimiter}TechFlow Solutions GmbH{tuple_delimiter}Industrial IoT Platform{tuple_delimiter}offers_product{tuple_delimiter}TechFlow Solutions offers Industrial IoT Platform as a cloud-based monitoring and analytics solution.
-relation{tuple_delimiter}TechFlow Solutions GmbH{tuple_delimiter}SCADA Systems{tuple_delimiter}provides{tuple_delimiter}TechFlow Solutions provides SCADA Systems for process control and automation.
-relation{tuple_delimiter}TechFlow Solutions GmbH{tuple_delimiter}Predictive Maintenance{tuple_delimiter}offers_service{tuple_delimiter}TechFlow Solutions offers Predictive Maintenance as an AI-driven service.
-relation{tuple_delimiter}TechFlow Solutions GmbH{tuple_delimiter}Manufacturing{tuple_delimiter}serves_industry{tuple_delimiter}TechFlow Solutions serves the Manufacturing industry sector.
-relation{tuple_delimiter}TechFlow Solutions GmbH{tuple_delimiter}Energy{tuple_delimiter}serves_industry{tuple_delimiter}TechFlow Solutions serves the Energy industry sector.
+entity{tuple_delimiter}TechFlow Solutions GmbH{tuple_delimiter}Organization{tuple_delimiter}German software company specializing in industrial automation. Type: Company. Size: Medium-sized (120 employees). Founded 2018.{tuple_delimiter}Company info states: "Software company specializing in industrial automation" and "Employees: 120"
+entity{tuple_delimiter}Dr. Maria Schmidt{tuple_delimiter}Person{tuple_delimiter}Dr. Maria Schmidt is CEO and Co-Founder of TechFlow Solutions GmbH.{tuple_delimiter}Leadership section: "Dr. Maria Schmidt, CEO and Co-Founder"
+entity{tuple_delimiter}Thomas Mueller{tuple_delimiter}Person{tuple_delimiter}Thomas Mueller is CTO and Co-Founder of TechFlow Solutions GmbH.{tuple_delimiter}Leadership section: "Thomas Mueller, CTO and Co-Founder"
+entity{tuple_delimiter}Headquarters: Leopoldstrasse 45, Munich, Germany{tuple_delimiter}Location{tuple_delimiter}TechFlow Solutions headquarters located in Munich, Bavaria.{tuple_delimiter}Headquarters line: "Leopoldstrasse 45, 80802 Munich, Bavaria, Germany"
+entity{tuple_delimiter}FlowMonitor{tuple_delimiter}Product{tuple_delimiter}Cloud-based IoT monitoring platform for industrial facilities developed by TechFlow.{tuple_delimiter}Portfolio section: "FlowMonitor: Cloud-based IoT monitoring platform for industrial facilities"
+entity{tuple_delimiter}SCADA Pro{tuple_delimiter}Product{tuple_delimiter}Process control and automation software offered by TechFlow.{tuple_delimiter}Portfolio section: "SCADA Pro: Process control and automation software"
+entity{tuple_delimiter}PredictAI{tuple_delimiter}Product{tuple_delimiter}Predictive maintenance solution using machine learning, developed by TechFlow.{tuple_delimiter}Portfolio section: "PredictAI: Predictive maintenance solution using machine learning"
+entity{tuple_delimiter}AI and Machine Learning{tuple_delimiter}Technology_Field{tuple_delimiter}TechFlow conducts R&D in AI/ML for predictive maintenance with proprietary algorithms and 5 patents.{tuple_delimiter}Technology Focus: "conducts in-house R&D in industrial IoT, developing proprietary algorithms" and "filed 5 patents in the IoT domain"
+entity{tuple_delimiter}BASF SE{tuple_delimiter}Customer{tuple_delimiter}Enterprise customer with long-term contract for manufacturing automation, €2M annual value.{tuple_delimiter}Customers section: "BASF SE: Long-term contract for manufacturing automation (€2M annual)"
+entity{tuple_delimiter}Siemens AG{tuple_delimiter}Customer{tuple_delimiter}Enterprise customer with FlowMonitor deployment across 12 facilities.{tuple_delimiter}Customers section: "Siemens AG: Enterprise deployment of FlowMonitor across 12 facilities"
+entity{tuple_delimiter}Munich Technical University{tuple_delimiter}Partner{tuple_delimiter}Research partner collaborating on AI-driven predictive maintenance project funded by BMBF.{tuple_delimiter}Partners section: "Munich Technical University: Joint research project on AI-driven predictive maintenance"
+entity{tuple_delimiter}AWS{tuple_delimiter}Partner{tuple_delimiter}Technology alliance partner providing cloud infrastructure for TechFlow solutions.{tuple_delimiter}Partners section: "AWS: Technology alliance partner for cloud infrastructure"
+entity{tuple_delimiter}Series B €15M March 2023{tuple_delimiter}Financial_Metric{tuple_delimiter}TechFlow raised €15M Series B funding led by Earlybird Venture Capital in March 2023.{tuple_delimiter}Funding section: "Series B round: €15M led by Earlybird Venture Capital (March 2023)"
+entity{tuple_delimiter}Earlybird Venture Capital{tuple_delimiter}Organization{tuple_delimiter}Lead investor in TechFlow's Series B funding round (€15M, March 2023). Type: Other (VC).{tuple_delimiter}Funding section: "led by Earlybird Venture Capital"
+relation{tuple_delimiter}Dr. Maria Schmidt{tuple_delimiter}TechFlow Solutions GmbH{tuple_delimiter}is_ceo_of{tuple_delimiter}Dr. Maria Schmidt serves as CEO of TechFlow Solutions GmbH.{tuple_delimiter}Leadership section: "Dr. Maria Schmidt, CEO and Co-Founder"
+relation{tuple_delimiter}Dr. Maria Schmidt{tuple_delimiter}TechFlow Solutions GmbH{tuple_delimiter}is_co_founder_of{tuple_delimiter}Dr. Maria Schmidt is Co-Founder of TechFlow Solutions GmbH.{tuple_delimiter}Leadership section: "Dr. Maria Schmidt, CEO and Co-Founder"
+relation{tuple_delimiter}Thomas Mueller{tuple_delimiter}TechFlow Solutions GmbH{tuple_delimiter}is_cto_of{tuple_delimiter}Thomas Mueller serves as CTO of TechFlow Solutions GmbH.{tuple_delimiter}Leadership section: "Thomas Mueller, CTO and Co-Founder"
+relation{tuple_delimiter}Thomas Mueller{tuple_delimiter}TechFlow Solutions GmbH{tuple_delimiter}is_co_founder_of{tuple_delimiter}Thomas Mueller is Co-Founder of TechFlow Solutions GmbH.{tuple_delimiter}Leadership section: "Thomas Mueller, CTO and Co-Founder"
+relation{tuple_delimiter}TechFlow Solutions GmbH{tuple_delimiter}Headquarters: Leopoldstrasse 45, Munich, Germany{tuple_delimiter}headquartered_at{tuple_delimiter}TechFlow Solutions is headquartered in Munich, Germany.{tuple_delimiter}Headquarters line: "Leopoldstrasse 45, 80802 Munich, Bavaria, Germany"
+relation{tuple_delimiter}TechFlow Solutions GmbH{tuple_delimiter}FlowMonitor{tuple_delimiter}offers_product{tuple_delimiter}TechFlow offers FlowMonitor as a cloud-based IoT monitoring platform.{tuple_delimiter}Portfolio section: "FlowMonitor: Cloud-based IoT monitoring platform for industrial facilities"
+relation{tuple_delimiter}TechFlow Solutions GmbH{tuple_delimiter}SCADA Pro{tuple_delimiter}offers_product{tuple_delimiter}TechFlow offers SCADA Pro for process control and automation.{tuple_delimiter}Portfolio section: "SCADA Pro: Process control and automation software"
+relation{tuple_delimiter}TechFlow Solutions GmbH{tuple_delimiter}PredictAI{tuple_delimiter}offers_product{tuple_delimiter}TechFlow offers PredictAI for predictive maintenance using ML.{tuple_delimiter}Portfolio section: "PredictAI: Predictive maintenance solution using machine learning"
+relation{tuple_delimiter}TechFlow Solutions GmbH{tuple_delimiter}AI and Machine Learning{tuple_delimiter}active_in_tech_field{tuple_delimiter}TechFlow actively conducts R&D in AI/ML with proprietary algorithms and patents.{tuple_delimiter}Technology Focus: "conducts in-house R&D" and "filed 5 patents in the IoT domain"
+relation{tuple_delimiter}TechFlow Solutions GmbH{tuple_delimiter}BASF SE{tuple_delimiter}has_customer{tuple_delimiter}BASF SE is a customer with a €2M annual manufacturing automation contract.{tuple_delimiter}Customers section: "BASF SE: Long-term contract for manufacturing automation (€2M annual)"
+relation{tuple_delimiter}TechFlow Solutions GmbH{tuple_delimiter}Siemens AG{tuple_delimiter}has_customer{tuple_delimiter}Siemens AG is a customer with FlowMonitor deployment across 12 facilities.{tuple_delimiter}Customers section: "Siemens AG: Enterprise deployment of FlowMonitor across 12 facilities"
+relation{tuple_delimiter}TechFlow Solutions GmbH{tuple_delimiter}Munich Technical University{tuple_delimiter}has_partner{tuple_delimiter}TechFlow partners with Munich Technical University on joint AI research funded by BMBF.{tuple_delimiter}Partners section: "Joint research project on AI-driven predictive maintenance (funded by BMBF)"
+relation{tuple_delimiter}TechFlow Solutions GmbH{tuple_delimiter}AWS{tuple_delimiter}has_partner{tuple_delimiter}TechFlow has a technology alliance with AWS for cloud infrastructure.{tuple_delimiter}Partners section: "AWS: Technology alliance partner for cloud infrastructure"
+relation{tuple_delimiter}TechFlow Solutions GmbH{tuple_delimiter}Series B €15M March 2023{tuple_delimiter}raised_funding_round{tuple_delimiter}TechFlow raised €15M in Series B funding in March 2023.{tuple_delimiter}Funding section: "Series B round: €15M led by Earlybird Venture Capital (March 2023)"
+relation{tuple_delimiter}Earlybird Venture Capital{tuple_delimiter}TechFlow Solutions GmbH{tuple_delimiter}invested_in{tuple_delimiter}Earlybird Venture Capital led TechFlow's €15M Series B round.{tuple_delimiter}Funding section: "led by Earlybird Venture Capital (March 2023)"
 {completion_delimiter}
 
 """,
