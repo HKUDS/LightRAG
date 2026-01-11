@@ -31,9 +31,9 @@
 # This will cause the LightRAG directory to be created in your home directory.
 
 # !!!!!!!!!!!!!!!!     Important!      !!!!!!!!!!!!!!!!!
-# If you already have a directory named LightRAG then name it something else so that it will not be overwritten.
-# run the following bash command:
-# mv ~/LightRAG ~/LightRAG_BACKUP
+# If you already have a directory named LightRAG then change the 
+# REPO_DIR variable in this script to something other than LightRAG so that 
+# your orgininal work will not be overwritten.
 
 # This script here that you are reading will not run if it is not marked by the OS as an executable file.
 # Make this file executable with the following bash command in your terminal window:
