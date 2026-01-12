@@ -75,7 +75,7 @@ LightRAG provides flexible dependency groups for different use cases:
 ### Available Dependency Groups
 
 | Group | Description | Use Case |
-|-------|-------------|----------|
+| ----- | ----------- | -------- |
 | `api` | API server + document processing | FastAPI server with PDF, DOCX, PPTX, XLSX support |
 | `offline-storage` | Storage backends | Redis, Neo4j, MongoDB, PostgreSQL, etc. |
 | `offline-llm` | LLM providers | OpenAI, Anthropic, Ollama, etc. |
@@ -120,7 +120,7 @@ Tiktoken downloads BPE encoding models on first use. In offline environments, yo
 After installing LightRAG, use the built-in command:
 
 ```bash
-# Download to default location (~/.tiktoken_cache)
+# Download to default location (see output for exact path)
 lightrag-download-cache
 
 # Download to specific directory

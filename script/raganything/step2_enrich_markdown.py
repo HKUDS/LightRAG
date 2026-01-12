@@ -13,11 +13,10 @@ load_dotenv()
 
 # === 1. 設定區 (Configuration) ===
 # Azure OpenAI 設定
-AZURE_OPENAI_API_KEY = os.getenv("AZURE_OPENAI_API_KEY")
-AZURE_OPENAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT")
+AZURE_OPENAI_API_KEY = os.getenv("LLM_BINDING_API_KEY")
+AZURE_OPENAI_ENDPOINT = os.getenv("LLM_BINDING_HOST")
 AZURE_OPENAI_API_VERSION = os.getenv("AZURE_OPENAI_API_VERSION", "2024-02-15-preview")
-AZURE_DEPLOYMENT_NAME = os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-4o") 
-
+AZURE_DEPLOYMENT_NAME = os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-4o") # Must support Vision
 # 輸入與輸出路徑
 INPUT_BASE_DIR = "./data/output/step1_vlm_output"
 OUTPUT_SUFFIX = "_enriched" # 處理後的檔案會加上這個後綴，例如 doc_enriched.md

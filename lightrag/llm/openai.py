@@ -5,6 +5,7 @@ import logging
 from collections.abc import AsyncIterator
 
 import pipmaster as pm
+import tiktoken
 
 # install specific modules
 if not pm.is_installed("openai"):
@@ -72,6 +73,30 @@ class InvalidResponseError(Exception):
     """Custom exception class for triggering retry mechanism"""
 
     pass
+
+
+# Module-level cache for tiktoken encodings
+_TIKTOKEN_ENCODING_CACHE: dict[str, Any] = {}
+
+
+def _get_tiktoken_encoding_for_model(model: str) -> Any:
+    """Get tiktoken encoding for the specified model with caching.
+
+    Args:
+        model: The model name to get encoding for.
+
+    Returns:
+        The tiktoken encoding for the model.
+    """
+    if model not in _TIKTOKEN_ENCODING_CACHE:
+        try:
+            _TIKTOKEN_ENCODING_CACHE[model] = tiktoken.encoding_for_model(model)
+        except KeyError:
+            logger.debug(
+                f"Encoding for model '{model}' not found, falling back to cl100k_base"
+            )
+            _TIKTOKEN_ENCODING_CACHE[model] = tiktoken.get_encoding("cl100k_base")
+    return _TIKTOKEN_ENCODING_CACHE[model]
 
 
 def create_openai_async_client(
@@ -677,7 +702,9 @@ async def nvidia_openai_complete(
     return result
 
 
-@wrap_embedding_func_with_attrs(embedding_dim=1536, max_token_size=8192)
+@wrap_embedding_func_with_attrs(
+    embedding_dim=1536, max_token_size=8192, model_name="text-embedding-3-small"
+)
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=4, max=60),
@@ -693,15 +720,17 @@ async def openai_embed(
     base_url: str | None = None,
     api_key: str | None = None,
     embedding_dim: int | None = None,
+    max_token_size: int | None = None,
     client_configs: dict[str, Any] | None = None,
     token_tracker: Any | None = None,
     use_azure: bool = False,
     azure_deployment: str | None = None,
     api_version: str | None = None,
 ) -> np.ndarray:
-    """Generate embeddings for a list of texts using OpenAI's API.
+    """Generate embeddings for a list of texts using OpenAI's API with automatic text truncation.
 
-    This function supports both standard OpenAI and Azure OpenAI services.
+    This function supports both standard OpenAI and Azure OpenAI services. It automatically
+    truncates texts that exceed the model's token limit to prevent API errors.
 
     Args:
         texts: List of texts to embed.
@@ -717,6 +746,11 @@ async def openai_embed(
             The dimension is controlled by the @wrap_embedding_func_with_attrs decorator.
             Manually passing a different value will trigger a warning and be ignored.
             When provided (by EmbeddingFunc), it will be passed to the OpenAI API for dimension reduction.
+        max_token_size: Maximum tokens per text. Texts exceeding this limit will be truncated.
+            **IMPORTANT**: This parameter is automatically injected by the EmbeddingFunc wrapper
+            when the underlying function signature supports it (via inspect.signature check).
+            The value is controlled by the @wrap_embedding_func_with_attrs decorator.
+            Set max_token_size=0 to disable truncation.
         client_configs: Additional configuration options for the AsyncOpenAI/AsyncAzureOpenAI client.
             These will override any default configurations but will be overridden by
             explicit parameters (api_key, base_url). Supports proxy configuration,
@@ -738,6 +772,35 @@ async def openai_embed(
         RateLimitError: If the OpenAI API rate limit is exceeded.
         APITimeoutError: If the OpenAI API request times out.
     """
+    # Apply text truncation if max_token_size is provided
+    if max_token_size is not None and max_token_size > 0:
+        encoding = _get_tiktoken_encoding_for_model(model)
+        truncated_texts = []
+        truncation_count = 0
+
+        for text in texts:
+            if not text:
+                truncated_texts.append(text)
+                continue
+
+            tokens = encoding.encode(text)
+            if len(tokens) > max_token_size:
+                truncated_tokens = tokens[:max_token_size]
+                truncated_texts.append(encoding.decode(truncated_tokens))
+                truncation_count += 1
+                logger.debug(
+                    f"Text truncated from {len(tokens)} to {max_token_size} tokens"
+                )
+            else:
+                truncated_texts.append(text)
+
+        if truncation_count > 0:
+            logger.info(
+                f"Truncated {truncation_count}/{len(texts)} texts to fit token limit ({max_token_size})"
+            )
+
+        texts = truncated_texts
+
     # Create the OpenAI client (supports both OpenAI and Azure)
     openai_async_client = create_openai_async_client(
         api_key=api_key,
@@ -867,7 +930,11 @@ async def azure_openai_complete(
     return result
 
 
-@wrap_embedding_func_with_attrs(embedding_dim=1536, max_token_size=8192)
+@wrap_embedding_func_with_attrs(
+    embedding_dim=1536,
+    max_token_size=8192,
+    model_name="my-text-embedding-3-large-deployment",
+)
 async def azure_openai_embed(
     texts: list[str],
     model: str | None = None,

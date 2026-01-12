@@ -149,7 +149,6 @@ def _assert_no_timeline_overlap(timeline: List[Tuple[str, str]]) -> None:
 
 
 @pytest.mark.offline
-@pytest.mark.asyncio
 async def test_pipeline_status_isolation():
     """
     Test that pipeline status is isolated between different workspaces.
@@ -204,7 +203,6 @@ async def test_pipeline_status_isolation():
 
 
 @pytest.mark.offline
-@pytest.mark.asyncio
 async def test_lock_mechanism(stress_test_mode, parallel_workers):
     """
     Test that the new keyed lock mechanism works correctly without deadlocks.
@@ -274,7 +272,6 @@ async def test_lock_mechanism(stress_test_mode, parallel_workers):
 
 
 @pytest.mark.offline
-@pytest.mark.asyncio
 async def test_backward_compatibility():
     """
     Test that legacy code without workspace parameter still works correctly.
@@ -348,7 +345,6 @@ async def test_backward_compatibility():
 
 
 @pytest.mark.offline
-@pytest.mark.asyncio
 async def test_multi_workspace_concurrency():
     """
     Test that multiple workspaces can operate concurrently without interference.
@@ -432,7 +428,6 @@ async def test_multi_workspace_concurrency():
 
 
 @pytest.mark.offline
-@pytest.mark.asyncio
 async def test_namespace_lock_reentrance():
     """
     Test that NamespaceLock prevents re-entrance in the same coroutine
@@ -506,7 +501,6 @@ async def test_namespace_lock_reentrance():
 
 
 @pytest.mark.offline
-@pytest.mark.asyncio
 async def test_different_namespace_lock_isolation():
     """
     Test that locks for different namespaces (same workspace) are independent.
@@ -546,7 +540,6 @@ async def test_different_namespace_lock_isolation():
 
 
 @pytest.mark.offline
-@pytest.mark.asyncio
 async def test_error_handling():
     """
     Test error handling for invalid workspace configurations.
@@ -597,7 +590,6 @@ async def test_error_handling():
 
 
 @pytest.mark.offline
-@pytest.mark.asyncio
 async def test_update_flags_workspace_isolation():
     """
     Test that update flags are properly isolated between workspaces.
@@ -727,7 +719,6 @@ async def test_update_flags_workspace_isolation():
 
 
 @pytest.mark.offline
-@pytest.mark.asyncio
 async def test_empty_workspace_standardization():
     """
     Test that empty workspace is properly standardized to "" instead of "_".
@@ -781,7 +772,6 @@ async def test_empty_workspace_standardization():
 
 
 @pytest.mark.offline
-@pytest.mark.asyncio
 async def test_json_kv_storage_workspace_isolation(keep_test_artifacts):
     """
     Integration test: Verify JsonKVStorage properly isolates data between workspaces.
@@ -961,7 +951,6 @@ async def test_json_kv_storage_workspace_isolation(keep_test_artifacts):
 
 
 @pytest.mark.offline
-@pytest.mark.asyncio
 async def test_lightrag_end_to_end_workspace_isolation(keep_test_artifacts):
     """
     End-to-end test: Create two LightRAG instances with different workspaces,
