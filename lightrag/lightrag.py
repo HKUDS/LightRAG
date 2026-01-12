@@ -634,11 +634,13 @@ class LightRAG:
             embedding_func=self.embedding_func,
             meta_fields={"src_id", "tgt_id", "source_id", "content", "file_path"},
         )
+# 修改 self.chunks_vdb 的初始化
         self.chunks_vdb: BaseVectorStorage = self.vector_db_storage_cls(  # type: ignore
             namespace=NameSpace.VECTOR_STORE_CHUNKS,
             workspace=self.workspace,
             embedding_func=self.embedding_func,
-            meta_fields={"full_doc_id", "content", "file_path"},
+            # 關鍵：一定要在這裡加入 "priority"
+            meta_fields={"full_doc_id", "content", "file_path", "page_info", "priority"},
         )
 
         # Initialize document status storage
@@ -1183,68 +1185,111 @@ class LightRAG:
         return track_id
 
     # TODO: deprecated, use insert instead
-    def insert_custom_chunks(
+    def insert_structured_chunks(
         self,
         full_text: str,
-        text_chunks: list[str],
-        doc_id: str | list[str] | None = None,
+        text_chunks: list[str] | list[dict[str, Any]],
+        doc_id: str | None = None,
     ) -> None:
         loop = always_get_an_event_loop()
         loop.run_until_complete(
-            self.ainsert_custom_chunks(full_text, text_chunks, doc_id)
+            self.ainsert_structured_chunks(full_text, text_chunks, doc_id)
         )
 
     # TODO: deprecated, use ainsert instead
-    async def ainsert_custom_chunks(
-        self, full_text: str, text_chunks: list[str], doc_id: str | None = None
+# 原本是 ainsert_custom_chunks，我們改名並增強功能
+    async def ainsert_structured_chunks(
+        self, 
+        full_text: str, 
+        text_chunks: list[str] | list[dict[str, Any]], 
+        doc_id: str | None = None
     ) -> None:
+        """
+        Business Level Insert: Allows manual control over chunks, pages, and priority.
+        
+        Args:
+            full_text: The complete document text (for full_doc storage).
+            text_chunks: List of dictionaries containing content and metadata.
+                         Example: [{'content': '...', 'page_info': 'P1', 'priority': 'HIGH'}]
+        """
         update_storage = False
         try:
-            # Clean input texts
+            # 1. 處理全文 (Clean input texts)
             full_text = sanitize_text_for_encoding(full_text)
-            text_chunks = [sanitize_text_for_encoding(chunk) for chunk in text_chunks]
+            
+            # 嘗試從第一個 chunk 獲取 file_path
             file_path = ""
+            if text_chunks and isinstance(text_chunks[0], dict):
+                file_path = text_chunks[0].get("file_path", "")
 
-            # Process cleaned texts
+            # 2. 生成文檔 ID
             if doc_id is None:
                 doc_key = compute_mdhash_id(full_text, prefix="doc-")
             else:
                 doc_key = doc_id
+            
+            # 準備完整文檔數據
             new_docs = {doc_key: {"content": full_text, "file_path": file_path}}
 
+            # 檢查是否已存在
             _add_doc_keys = await self.full_docs.filter_keys({doc_key})
             new_docs = {k: v for k, v in new_docs.items() if k in _add_doc_keys}
+            
             if not len(new_docs):
-                logger.warning("This document is already in the storage.")
+                logger.warning(f"Document {doc_key} is already in the storage.")
                 return
 
             update_storage = True
-            logger.info(f"Inserting {len(new_docs)} docs")
+            logger.info(f"Inserting doc {doc_key} with structured chunks")
 
+            # 3. 構建 Chunk 數據 (Build Chunks with Metadata)
             inserting_chunks: dict[str, Any] = {}
-            for index, chunk_text in enumerate(text_chunks):
+            
+            for index, item in enumerate(text_chunks):
+                # --- 核心邏輯：解析字典 ---
+                if isinstance(item, dict):
+                    chunk_text = sanitize_text_for_encoding(item.get("content", ""))
+                    priority = item.get("priority", "NORMAL")
+                    page_info = item.get("page_info", "")
+                    chunk_file_path = item.get("file_path", file_path)
+                else:
+                    # 兼容舊的 list[str] 調用
+                    chunk_text = sanitize_text_for_encoding(item)
+                    priority = "NORMAL"
+                    page_info = ""
+                    chunk_file_path = file_path
+                
+                # 計算 Chunk ID
                 chunk_key = compute_mdhash_id(chunk_text, prefix="chunk-")
                 tokens = len(self.tokenizer.encode(chunk_text))
+                
                 inserting_chunks[chunk_key] = {
                     "content": chunk_text,
                     "full_doc_id": doc_key,
                     "tokens": tokens,
                     "chunk_order_index": index,
-                    "file_path": file_path,
+                    "file_path": chunk_file_path,
+                    "llm_cache_list": [],
+                    # --- 寫入我們的自定義欄位 ---
+                    "priority": priority,   
+                    "page_info": page_info, 
                 }
 
+            # 過濾已存在的 Chunks
             doc_ids = set(inserting_chunks.keys())
             add_chunk_keys = await self.text_chunks.filter_keys(doc_ids)
             inserting_chunks = {
                 k: v for k, v in inserting_chunks.items() if k in add_chunk_keys
             }
+            
             if not len(inserting_chunks):
                 logger.warning("All chunks are already in the storage.")
                 return
 
+            # 4. 執行寫入 (Execute Upsert)
             tasks = [
                 self.chunks_vdb.upsert(inserting_chunks),
-                self._process_extract_entities(inserting_chunks),
+                self._process_extract_entities(inserting_chunks), # 提取實體
                 self.full_docs.upsert(new_docs),
                 self.text_chunks.upsert(inserting_chunks),
             ]
@@ -1253,7 +1298,7 @@ class LightRAG:
         finally:
             if update_storage:
                 await self._insert_done()
-
+                
     async def apipeline_enqueue_documents(
         self,
         input: str | list[str],
@@ -2681,6 +2726,40 @@ class LightRAG:
         await self._query_done()
         return final_data
 
+# 在 LightRAG 類別中新增這個 helper method
+    def _apply_business_rules(self, chunks: list[dict]) -> list[dict]:
+        """
+        商業級過濾邏輯 (Business Rule Engine)
+        在這裡寫你的 Python 代碼來篩選 chunks。
+        """
+        if not chunks:
+            return []
+            
+        filtered_chunks = []
+        
+        # --- 例子：優先級過濾邏輯 ---
+        # 假設你的 chunk metadata 裡有 'priority' 和 'page_info'
+        # 1. 找出是否有 HIGH 優先級的內容
+        has_high_priority = any(c.get("priority") == "HIGH" for c in chunks)
+        
+        for chunk in chunks:
+            # 獲取 metadata (假設你在 insert_custom_chunks 時存入了這些字段)
+            priority = chunk.get("priority", "NORMAL")
+            page = chunk.get("page_info", "")
+            
+            # 規則 1: 如果存在 HIGH 優先級的文檔，則過濾掉 LOW 的
+            if has_high_priority and priority == "LOW":
+                continue
+                
+            # 規則 2: 只看特定頁面 (例如用戶指定了 page_filter)
+            # if "Page 1" not in page: continue 
+            
+            filtered_chunks.append(chunk)
+            
+        logger.info(f"Business Rules: Filtered {len(chunks)} -> {len(filtered_chunks)} chunks")
+        return filtered_chunks
+
+    # --- 修改原本的 aquery_llm ---
     async def aquery_llm(
         self,
         query: str,
@@ -2702,10 +2781,15 @@ class LightRAG:
             dict[str, Any]: Complete response with structured data and LLM response.
         """
         logger.debug(f"[aquery_llm] Query param: {param}")
-
         global_config = asdict(self)
 
         try:
+            # =======================================================
+            # 第一步：強制只做檢索，不生成答案 (Retrieve Only)
+            # =======================================================
+            # 我們創建一個臨時的 param，強制 only_need_context=True
+            retrieval_param = replace(param, only_need_context=True)
+            
             query_result = None
 
             if param.mode in ["local", "global", "hybrid", "mix"]:
@@ -2715,7 +2799,7 @@ class LightRAG:
                     self.entities_vdb,
                     self.relationships_vdb,
                     self.text_chunks,
-                    param,
+                    retrieval_param, # 使用修改後的 param
                     global_config,
                     hashing_kv=self.llm_response_cache,
                     system_prompt=system_prompt,
@@ -2725,98 +2809,125 @@ class LightRAG:
                 query_result = await naive_query(
                     query.strip(),
                     self.chunks_vdb,
-                    param,
+                    retrieval_param, # 使用修改後的 param
                     global_config,
                     hashing_kv=self.llm_response_cache,
                     system_prompt=system_prompt,
                 )
             elif param.mode == "bypass":
-                # Bypass mode: directly use LLM without knowledge retrieval
-                use_llm_func = param.model_func or global_config["llm_model_func"]
-                # Apply higher priority (8) to entity/relation summary tasks
-                use_llm_func = partial(use_llm_func, _priority=8)
+                # Bypass 模式不需要檢索，直接跳過
+                pass
+            else:
+                raise ValueError(f"Unknown mode {param.mode}")
 
-                param.stream = True if param.stream is None else param.stream
-                response = await use_llm_func(
+            # =======================================================
+            # 第二步：攔截並過濾 (Intercept & Filter)
+            # =======================================================
+            context_text = ""
+            raw_data = {}
+            
+            if param.mode != "bypass" and query_result:
+                raw_data = query_result.raw_data or {}
+                
+                # 獲取原始 chunks
+                original_chunks = raw_data.get("data", {}).get("chunks", [])
+                
+                # *** 執行你的商業規則 ***
+                filtered_chunks = self._apply_business_rules(original_chunks)
+                
+                # 更新 raw_data (讓前端也能看到過濾後的結果)
+                if "data" in raw_data:
+                    raw_data["data"]["chunks"] = filtered_chunks
+                
+                # 重組 Context 字串
+                # 這裡簡單地將 chunks 內容拼接。
+                # 如果是 hybrid/global 模式，可能還有 CSV 格式的 entity 列表，這裡簡化處理
+                if filtered_chunks:
+                    context_text = "\n------\n".join([c["content"] for c in filtered_chunks])
+                else:
+                    context_text = "" # 過濾後無內容
+
+            # =======================================================
+            # 第三步：手動調用 LLM 生成答案 (Generate Answer)
+            # =======================================================
+            
+            # 準備 Prompt
+            if system_prompt is None:
+                system_prompt = PROMPTS["rag_response"]
+            
+            # 使用 LightRAG 內部的 LLM 函數
+            # 注意：這裡我們手動傳入 context
+            
+            # 如果是 Bypass 模式，直接調用，不需要 context
+            if param.mode == "bypass":
+                response = await self.llm_model_func(
                     query.strip(),
                     system_prompt=system_prompt,
                     history_messages=param.conversation_history,
                     enable_cot=True,
                     stream=param.stream,
                 )
-                if type(response) is str:
-                    return {
-                        "status": "success",
-                        "message": "Bypass mode LLM non streaming response",
-                        "data": {},
-                        "metadata": {},
-                        "llm_response": {
-                            "content": response,
-                            "response_iterator": None,
-                            "is_streaming": False,
-                        },
-                    }
-                else:
-                    return {
-                        "status": "success",
-                        "message": "Bypass mode LLM streaming response",
-                        "data": {},
-                        "metadata": {},
-                        "llm_response": {
-                            "content": None,
-                            "response_iterator": response,
-                            "is_streaming": True,
-                        },
-                    }
             else:
-                raise ValueError(f"Unknown mode {param.mode}")
+                # 檢查是否有內容
+                if not context_text:
+                    return {
+                        "status": "success",
+                        "message": "No context found after filtering",
+                        "data": raw_data,
+                        "llm_response": {"content": "Sorry, I couldn't find any relevant information based on your criteria.", "is_streaming": False}
+                    }
 
-            await self._query_done()
+                # 構建最終 Prompt
+                # 這裡使用簡單的字串拼接，你也可以使用 PROMPTS.format(...)
+                string_prompts = [
+                    context_text,
+                    "Question: " + query.strip(),
+                ]
+                
+                # 調用 LLM
+                response = await self.llm_model_func(
+                    string_prompts, # 傳入列表，內部會自動合併
+                    system_prompt=system_prompt,
+                    history_messages=param.conversation_history,
+                    enable_cot=True,
+                    stream=param.stream,
+                )
 
-            # Check if query_result is None
-            if query_result is None:
-                return {
-                    "status": "failure",
-                    "message": "Query returned no results",
-                    "data": {},
-                    "metadata": {
-                        "failure_reason": "no_results",
-                        "mode": param.mode,
-                    },
-                    "llm_response": {
-                        "content": PROMPTS["fail_response"],
-                        "response_iterator": None,
-                        "is_streaming": False,
-                    },
+            # =======================================================
+            # 第四步：封裝返回結果 (Format Output)
+            # =======================================================
+            
+            # 處理 Streaming 和 Non-streaming 的差異
+            llm_response_data = {}
+            if inspect.isasyncgen(response) or hasattr(response, '__aiter__'):
+                 llm_response_data = {
+                    "content": None,
+                    "response_iterator": response,
+                    "is_streaming": True,
+                }
+            else:
+                 llm_response_data = {
+                    "content": response,
+                    "response_iterator": None,
+                    "is_streaming": False,
                 }
 
-            # Extract structured data from query result
-            raw_data = query_result.raw_data or {}
-            raw_data["llm_response"] = {
-                "content": query_result.content
-                if not query_result.is_streaming
-                else None,
-                "response_iterator": query_result.response_iterator
-                if query_result.is_streaming
-                else None,
-                "is_streaming": query_result.is_streaming,
+            # 合併結果
+            return {
+                "status": "success",
+                "message": "Query executed successfully with business rules",
+                "data": raw_data.get("data", {}),
+                "metadata": raw_data.get("metadata", {}),
+                "llm_response": llm_response_data,
             }
-
-            return raw_data
 
         except Exception as e:
             logger.error(f"Query failed: {e}")
-            # Return error response
             return {
                 "status": "failure",
                 "message": f"Query failed: {str(e)}",
                 "data": {},
-                "metadata": {},
-                "llm_response": {
-                    "content": None,
-                    "response_iterator": None,
-                    "is_streaming": False,
-                },
+                "llm_response": {"content": None, "is_streaming": False},
             }
 
     def query_llm(
