@@ -10,7 +10,9 @@ services:
     ports:
       - "${PORT:-9621}:9621"
     volumes:
+      - ./lightrag_webui/src/features/RetrievalTesting.tsx:/app/lightrag_webui/src/features/RetrievalTesting.tsx
       - ./lightrag/prompt.py:/app/lightrag/prompt.py
+      - ./lightrag/lightrag.py:/app/lightrag/lightrag.py
       - ./data/rag_storage:/app/data/rag_storage
       - ./data/input:/app/data/inputs
       - ./config.ini:/app/config.ini
