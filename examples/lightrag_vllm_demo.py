@@ -29,7 +29,6 @@ Usage:
 import os
 import asyncio
 import nest_asyncio
-import numpy as np
 from functools import partial
 from dotenv import load_dotenv
 
