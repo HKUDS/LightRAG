@@ -35,8 +35,14 @@ load_dotenv()
 
 # === 🔥 Configuration (Business Rules) ===
 SKIP_FILES = [    
-    "0001_2024", "0775_2024", "1038_2024", "1113_2024", "0008_2024", "6823_2024",
-    "SFC", "Strategic Investment Partners",
+    # "0001_2024",
+    #   "0775_2024", 
+    #   "1038_2024",
+    #     "1113_2024",
+          "0008_2024",
+            "6823_2024",
+    # "SFC", 
+    "Strategic Investment Partners",
     "Global Market Insights",
 ]
 
@@ -129,7 +135,7 @@ async def main():
         ),
         chunk_token_size=512, 
         chunk_overlap_token_size=50,
-        embedding_func_max_async=2, 
+        embedding_func_max_async=1, 
         max_parallel_insert=1,
         # 只傳遞 timeout，其他的交給 lightrag.py 內部處理
         addon_params={"timeout": 600} 

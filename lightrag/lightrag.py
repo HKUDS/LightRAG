@@ -2752,54 +2752,38 @@ class LightRAG:
 
     def _apply_business_rules(self, chunks: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """
-        [Business Rule Engine - Enhanced]
-        更強健的優先級讀取邏輯 + Debug Log
+        [Business Rule Engine - Hybrid Strategy]
+        策略：保留所有資料，但根據優先級進行「排序」。
+        1. HIGH 排在最前面 -> LLM 會優先看到，權威性最高。
+        2. LOW 排在最後面 -> 作為補充資料。
         """
         if not chunks:
             return []
             
-        # 輔助函數：更強健地獲取 Priority
-        def get_chunk_priority(c):
-            # 1. 嘗試直接獲取
+        # 1. 定義優先級分數
+        def get_chunk_priority_score(c):
             p = c.get("priority")
-            # 2. 嘗試從 metadata 字典獲取 (有些 VDB 會包一層)
+            # 兼容 metadata 寫法
             if not p and isinstance(c.get("metadata"), dict):
                 p = c["metadata"].get("priority")
-            # 3. 嘗試從 content 文本推斷 (作為最後防線)
-            content = c.get("content", "")
-            if not p:
-                if "| HIGH" in content[:100]: p = "HIGH"
-                elif "| LOW" in content[:100]: p = "LOW"
             
-            return p if p in ["HIGH", "LOW", "NORMAL"] else "NORMAL"
+            priority_map = {
+                "HIGH": 3,    # 最高分
+                "NORMAL": 2,
+                "LOW": 1      # 最低分
+            }
+            return priority_map.get(p, 2) # 默認 NORMAL
 
-        # 1. 掃描全場
-        priorities = [get_chunk_priority(c) for c in chunks]
-        has_high = "HIGH" in priorities
-        has_normal = "NORMAL" in priorities
+        # 2. 執行排序：分數高的排前面 (Reverse=True)
+        # 這樣 HIGH 的內容會出現在 Context 的最上方
+        sorted_chunks = sorted(chunks, key=get_chunk_priority_score, reverse=True)
         
-        filtered_chunks = []
-        
-        for chunk in chunks:
-            priority = get_chunk_priority(chunk)
-            
-            # --- 規則 A: 至尊 (Supreme Rule) ---
-            # 如果場上有 HIGH，任何不是 HIGH 的都不要
-            if has_high and priority != "HIGH":
-                logger.debug(f"🛑 Filtered out {priority} chunk because HIGH exists.")
-                continue
-                
-            # --- 規則 B: 次級壓制 (Secondary Rule) ---
-            # 如果場上沒有 HIGH，但有 NORMAL，那麼 LOW 的就不要
-            if not has_high and has_normal and priority == "LOW":
-                logger.debug(f"🛑 Filtered out LOW chunk because NORMAL exists.")
-                continue
+        # Log 方便 Debug
+        priorities = [get_chunk_priority_score(c) for c in sorted_chunks]
+        logger.info(f"🛡️ Business Rules: Sorted {len(chunks)} chunks. Priorities: {priorities}")
 
-            filtered_chunks.append(chunk)
-            
-        logger.info(f"🛡️ Business Rules: Reduced {len(chunks)} chunks to {len(filtered_chunks)}")
-        return filtered_chunks
-#
+        return sorted_chunks
+    
     async def aquery_llm(
         self,
         query: str,
