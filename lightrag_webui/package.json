@@ -86,7 +86,7 @@
     "@types/bun": "^1.3.5",
     "@tailwindcss/vite": "^4.1.18",
     "@types/katex": "^0.16.8",
-    "@types/node": "^24.10.4",
+    "@types/node": "^25.0.2",
     "@tailwindcss/typography": "^0.5.15",
     "@types/react": "^19.2.8",
     "@types/react-dom": "^19.2.3",
