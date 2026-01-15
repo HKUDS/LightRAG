@@ -1,0 +1,465 @@
+{
+  "settings": {
+    "language": "언어",
+    "theme": "테마",
+    "light": "라이트",
+    "dark": "다크",
+    "system": "시스템"
+  },
+  "header": {
+    "documents": "문서",
+    "knowledgeGraph": "지식 그래프",
+    "retrieval": "검색",
+    "api": "API",
+    "projectRepository": "프로젝트 저장소",
+    "logout": "로그아웃",
+    "frontendNeedsRebuild": "프론트엔드 재빌드 필요",
+    "themeToggle": {
+      "switchToLight": "라이트 테마로 전환",
+      "switchToDark": "다크 테마로 전환"
+    }
+  },
+  "login": {
+    "description": "시스템에 로그인하려면 계정과 비밀번호를 입력하세요",
+    "username": "사용자 이름",
+    "usernamePlaceholder": "사용자 이름을 입력하세요",
+    "password": "비밀번호",
+    "passwordPlaceholder": "비밀번호를 입력하세요",
+    "loginButton": "로그인",
+    "loggingIn": "로그인 중...",
+    "successMessage": "로그인 성공",
+    "errorEmptyFields": "사용자 이름과 비밀번호를 입력하세요",
+    "errorInvalidCredentials": "로그인 실패, 사용자 이름과 비밀번호를 확인하세요",
+    "authDisabled": "인증이 비활성화되었습니다. 게스트 모드를 사용합니다.",
+    "guestMode": "게스트 모드"
+  },
+  "common": {
+    "cancel": "취소",
+    "save": "저장",
+    "saving": "저장 중...",
+    "saveFailed": "저장 실패"
+  },
+  "documentPanel": {
+    "clearDocuments": {
+      "button": "문서 전체 삭제",
+      "tooltip": "문서 전체 삭제",
+      "title": "문서 전체 삭제",
+      "description": "시스템에서 모든 문서를 제거합니다",
+      "warning": "경고: 이 작업은 모든 문서를 영구적으로 삭제하며 되돌릴 수 없습니다!",
+      "confirm": "모든 문서를 정말로 삭제하시겠습니까?",
+      "confirmPrompt": "확인하려면 'yes'를 입력하세요",
+      "confirmPlaceholder": "확인하려면 'yes' 입력",
+      "clearCache": "LLM 캐시 삭제",
+      "confirmButton": "예",
+      "clearing": "삭제하는 중...",
+      "timeout": "삭제 작업 시간 초과, 다시 시도해주세요",
+      "success": "문서가 성공적으로 삭제되었습니다",
+      "cacheCleared": "캐시가 성공적으로 삭제되었습니다",
+      "cacheClearFailed": "캐시 삭제 실패:\n{{error}}",
+      "failed": "문서 삭제 실패:\n{{message}}",
+      "error": "문서 삭제 실패:\n{{error}}"
+    },
+    "deleteDocuments": {
+      "button": "삭제",
+      "tooltip": "선택한 문서 삭제",
+      "title": "문서 삭제",
+      "description": "선택한 문서를 시스템에서 영구적으로 삭제합니다",
+      "warning": "경고: 이 작업은 선택한 문서를 영구적으로 삭제하며 되돌릴 수 없습니다!",
+      "confirm": "선택한 {{count}}개의 문서를 정말로 삭제하시겠습니까?",
+      "confirmPrompt": "확인하려면 'yes'를 입력하세요",
+      "confirmPlaceholder": "확인하려면 'yes' 입력",
+      "confirmButton": "예",
+      "deleteFileOption": "업로드된 파일도 삭제",
+      "deleteFileTooltip": "서버에 있는 해당 업로드 파일도 삭제하려면 이 옵션을 선택하세요",
+      "deleteLLMCacheOption": "추출된 LLM 캐시도 삭제",
+      "success": "문서 삭제 파이프라인이 성공적으로 시작되었습니다",
+      "failed": "문서 삭제 실패:\n{{message}}",
+      "error": "문서 삭제 실패:\n{{error}}",
+      "busy": "파이프라인이 현재 작업 중입니다. 잠시 후 다시 시도해 주세요.",
+      "notAllowed": "이 작업을 수행할 권한이 없습니다"
+    },
+    "selectDocuments": {
+      "selectCurrentPage": "현재 페이지 선택 ({{count}})",
+      "deselectAll": "전체 선택 해제 ({{count}})"
+    },
+    "uploadDocuments": {
+      "button": "업로드",
+      "tooltip": "문서 업로드",
+      "title": "문서 업로드",
+      "description": "문서를 여기로 드래그 앤 드롭하거나 클릭하여 찾아보세요.",
+      "single": {
+        "uploading": "업로드 중 {{name}}: {{percent}}%",
+        "success": "업로드 성공:\n{{name}} 업로드 완료",
+        "failed": "업로드 실패:\n{{name}}\n{{message}}",
+        "error": "업로드 실패:\n{{name}}\n{{error}}"
+      },
+      "batch": {
+        "uploading": "파일 업로드 중...",
+        "success": "파일이 성공적으로 업로드되었습니다",
+        "error": "일부 파일 업로드 실패"
+      },
+      "generalError": "업로드 실패\n{{error}}",
+      "fileTypes": "지원되는 유형: TXT, MD, DOCX, PDF, PPTX, XLSX, RTF, ODT, EPUB, HTML, HTM, TEX, JSON, XML, YAML, YML, CSV, LOG, CONF, INI, PROPERTIES, SQL, BAT, SH, C, CPP, PY, JAVA, JS, TS, SWIFT, GO, RB, PHP, CSS, SCSS, LESS",
+      "fileUploader": {
+        "singleFileLimit": "한 번에 1개의 파일만 업로드할 수 있습니다",
+        "maxFilesLimit": "{{count}}개 이상의 파일은 업로드할 수 없습니다",
+        "fileRejected": "{{name}} 파일이 거부되었습니다",
+        "unsupportedType": "지원되지 않는 파일 형식",
+        "fileTooLarge": "파일이 너무 큽니다. 최대 크기는 {{maxSize}}입니다",
+        "dropHere": "여기에 파일을 놓으세요",
+        "dragAndDrop": "여기에 파일을 드래그 앤 드롭하거나 클릭하여 선택하세요",
+        "removeFile": "파일 제거",
+        "uploadDescription": "{{isMultiple ? '여러' : count}}개의 파일을 업로드할 수 있습니다 (각 최대 {{maxSize}})",
+        "duplicateFile": "파일 이름이 서버 캐시에 이미 존재합니다"
+      }
+    },
+    "documentManager": {
+      "title": "문서 관리",
+      "scanButton": "스캔/재시도",
+      "scanTooltip": "문서 관리의 목록을 스캔하고, 실패한 모든 문서를 재처리합니다",
+      "refreshTooltip": "문서 목록 초기화",
+      "pipelineStatusButton": "파이프라인",
+      "pipelineStatusTooltip": "문서 처리 파이프라인 상태 보기",
+      "uploadedTitle": "업로드된 문서",
+      "uploadedDescription": "업로드된 문서 목록 및 상태.",
+      "emptyTitle": "문서 없음",
+      "emptyDescription": "아직 업로드된 문서가 없습니다.",
+      "columns": {
+        "id": "ID",
+        "fileName": "파일명",
+        "summary": "요약",
+        "status": "상태",
+        "length": "길이",
+        "chunks": "청크",
+        "created": "생성일",
+        "updated": "수정일",
+        "metadata": "메타데이터",
+        "select": "선택"
+      },
+      "status": {
+        "all": "전체",
+        "completed": "완료",
+        "preprocessed": "전처리 완료",
+        "processing": "처리 중",
+        "pending": "대기 중",
+        "failed": "실패"
+      },
+      "errors": {
+        "loadFailed": "문서 불러오기 실패\n{{error}}",
+        "scanFailed": "문서 스캔 실패\n{{error}}",
+        "scanProgressFailed": "스캔 진행 상황 가져오기 실패\n{{error}}"
+      },
+      "fileNameLabel": "파일명",
+      "showButton": "표시",
+      "hideButton": "숨기기",
+      "showFileNameTooltip": "파일명 표시",
+      "hideFileNameTooltip": "파일명 숨기기"
+    },
+    "pipelineStatus": {
+      "title": "파이프라인 상태",
+      "busy": "파이프라인 작업 중",
+      "requestPending": "요청 대기 중",
+      "cancellationRequested": "취소 요청됨",
+      "jobName": "작업 이름",
+      "startTime": "시작 시간",
+      "progress": "진행 상황",
+      "unit": "배치",
+      "pipelineMessages": "파이프라인 메시지",
+      "cancelButton": "취소",
+      "cancelTooltip": "파이프라인 처리 취소",
+      "cancelConfirmTitle": "파이프라인 취소 확인",
+      "cancelConfirmDescription": "현재 진행 중인 파이프라인 처리가 중단됩니다. 계속하시겠습니까?",
+      "cancelConfirmButton": "취소 확인",
+      "cancelInProgress": "취소 중...",
+      "pipelineNotRunning": "파이프라인이 작업 중이 아닙니다",
+      "cancelSuccess": "파이프라인 취소가 요청되었습니다",
+      "cancelFailed": "파이프라인 취소 실패\n{{error}}",
+      "cancelNotBusy": "파이프라인이 작업 중이 아니므로 취소할 필요가 없습니다",
+      "errors": {
+        "fetchFailed": "파이프라인 상태 가져오기 실패\n{{error}}"
+      }
+    }
+  },
+  "graphPanel": {
+    "dataIsTruncated": "그래프 데이터가 최대 노드 수로 제한되었습니다",
+    "statusDialog": {
+      "title": "LightRAG 서버 설정",
+      "description": "현재 시스템 상태 및 연결 정보 보기"
+    },
+    "legend": "범례",
+    "nodeTypes": {
+      "person": "사람",
+      "category": "카테고리",
+      "geo": "지리",
+      "location": "장소",
+      "organization": "조직",
+      "event": "이벤트",
+      "equipment": "장비",
+      "weapon": "무기",
+      "animal": "동물",
+      "unknown": "알 수 없음",
+      "object": "사물",
+      "group": "그룹",
+      "technology": "기술",
+      "product": "제품",
+      "document": "문서",
+      "content": "내용",
+      "data": "데이터",
+      "artifact": "아티팩트",
+      "concept": "개념",
+      "naturalobject": "자연물",
+      "method": "방법",
+      "creature": "생물",
+      "plant": "식물",
+      "disease": "질병",
+      "drug": "의약품",
+      "food": "식품",
+      "other": "기타"
+    },
+    "sideBar": {
+      "settings": {
+        "settings": "설정",
+        "healthCheck": "헬스 체크",
+        "showPropertyPanel": "속성 패널 표시",
+        "showSearchBar": "검색 바 표시",
+        "showNodeLabel": "노드 레이블 표시",
+        "nodeDraggable": "노드 드래그 가능",
+        "showEdgeLabel": "엣지 레이블 표시",
+        "hideUnselectedEdges": "선택되지 않은 엣지 숨기기",
+        "edgeEvents": "엣지 이벤트",
+        "maxQueryDepth": "최대 쿼리 깊이",
+        "maxNodes": "최대 노드",
+        "maxLayoutIterations": "최대 레이아웃 반복",
+        "resetToDefault": "기본값으로 재설정",
+        "edgeSizeRange": "엣지 크기 범위",
+        "depth": "D",
+        "max": "최대",
+        "degree": "차수",
+        "apiKey": "API 키",
+        "enterYourAPIkey": "API 키를 입력하세요",
+        "save": "저장",
+        "refreshLayout": "레이아웃 새로고침"
+      },
+      "zoomControl": {
+        "zoomIn": "확대",
+        "zoomOut": "축소",
+        "resetZoom": "줌 초기화",
+        "rotateCamera": "시계 방향 회전",
+        "rotateCameraCounterClockwise": "반시계 방향 회전"
+      },
+      "layoutsControl": {
+        "startAnimation": "레이아웃 애니메이션 계속",
+        "stopAnimation": "레이아웃 애니메이션 중지",
+        "layoutGraph": "그래프 레이아웃",
+        "layouts": {
+          "Circular": "원형",
+          "Circlepack": "서클 패킹",
+          "Random": "무작위",
+          "Noverlaps": "겹침 없음",
+          "Force Directed": "역학 기반",
+          "Force Atlas": "포스 아틀라스"
+        }
+      },
+      "fullScreenControl": {
+        "fullScreen": "전체 화면",
+        "windowed": "창 모드"
+      },
+      "legendControl": {
+        "toggleLegend": "범례 토글"
+      }
+    },
+    "statusIndicator": {
+      "connected": "연결됨",
+      "disconnected": "연결 끊김"
+    },
+    "statusCard": {
+      "unavailable": "상태 정보를 사용할 수 없음",
+      "serverInfo": "서버 정보",
+      "workingDirectory": "작업 디렉토리",
+      "inputDirectory": "입력 디렉토리",
+      "maxParallelInsert": "동시 문서 처리",
+      "summarySettings": "요약 설정",
+      "llmConfig": "LLM 구성",
+      "llmBinding": "LLM 바인딩",
+      "llmBindingHost": "LLM 엔드포인트",
+      "llmModel": "LLM 모델",
+      "embeddingConfig": "임베딩 구성",
+      "embeddingBinding": "임베딩 바인딩",
+      "embeddingBindingHost": "임베딩 엔드포인트",
+      "embeddingModel": "임베딩 모델",
+      "storageConfig": "스토리지 구성",
+      "kvStorage": "KV 스토리지",
+      "docStatusStorage": "문서 상태 스토리지",
+      "graphStorage": "그래프 스토리지",
+      "vectorStorage": "벡터 스토리지",
+      "workspace": "작업 공간",
+      "maxGraphNodes": "최대 그래프 노드",
+      "rerankerConfig": "Reranker 구성",
+      "rerankerBindingHost": "Reranker 엔드포인트",
+      "rerankerModel": "Reranker 모델",
+      "lockStatus": "잠금 상태",
+      "threshold": "임계값"
+    },
+    "propertiesView": {
+      "editProperty": "{{property}} 수정",
+      "editPropertyDescription": "아래 텍스트 영역에서 속성 값을 수정하세요.",
+      "errors": {
+        "duplicateName": "노드 이름이 이미 존재합니다",
+        "updateFailed": "노드 업데이트 실패",
+        "tryAgainLater": "나중에 다시 시도해주세요",
+        "updateSuccessButMergeFailed": "속성이 업데이트되었으나 병합 실패: {{error}}",
+        "mergeFailed": "병합 실패: {{error}}"
+      },
+      "success": {
+        "entityUpdated": "노드가 성공적으로 업데이트되었습니다",
+        "relationUpdated": "관계가 성공적으로 업데이트되었습니다",
+        "entityMerged": "노드가 성공적으로 병합되었습니다"
+      },
+      "mergeOptionLabel": "중복 이름 발견 시 자동으로 병합",
+      "mergeOptionDescription": "이 옵션을 활성화하면 기존 이름으로 변경 시 실패하는 대신 해당 노드로 병합됩니다.",
+      "mergeDialog": {
+        "title": "노드 병합됨",
+        "description": "\"{{source}}\" 노드가 \"{{target}}\" 노드로 병합되었습니다.",
+        "refreshHint": "최신 구조를 로드하려면 그래프를 새로고침하세요.",
+        "keepCurrentStart": "새로고침 및 현재 시작 노드 유지",
+        "useMergedStart": "새로고침 및 병합된 노드 사용",
+        "refreshing": "그래프 새로고침 중..."
+      },
+      "node": {
+        "title": "노드",
+        "id": "ID",
+        "labels": "레이블",
+        "degree": "차수",
+        "properties": "속성",
+        "relationships": "관계(하위 그래프 내)",
+        "expandNode": "노드 확장",
+        "pruneNode": "노드 가지치기",
+        "deleteAllNodesError": "그래프의 모든 노드 삭제 실패",
+        "nodesRemoved": "고아 노드를 포함하여 {{count}}개의 노드가 제거되었습니다",
+        "noNewNodes": "확장 가능한 노드를 찾을 수 없습니다",
+        "propertyNames": {
+          "description": "설명",
+          "entity_id": "이름",
+          "entity_type": "유형",
+          "source_id": "C-ID",
+          "Neighbour": "인접 노드",
+          "file_path": "파일",
+          "keywords": "키워드",
+          "weight": "가중치"
+        }
+      },
+      "edge": {
+        "title": "관계",
+        "id": "ID",
+        "type": "유형",
+        "source": "소스",
+        "target": "대상",
+        "properties": "속성"
+      }
+    },
+    "search": {
+      "placeholder": "페이지 내 노드 검색...",
+      "message": "외 {{count}}개"
+    },
+    "graphLabels": {
+      "selectTooltip": "노드의 하위 그래프 가져오기 (레이블)",
+      "noLabels": "일치하는 노드를 찾을 수 없습니다",
+      "label": "노드 이름 검색",
+      "placeholder": "노드 이름 검색...",
+      "andOthers": "외 {{count}}개",
+      "refreshGlobalTooltip": "전역 그래프 데이터 새로고침 및 검색 기록 초기화",
+      "refreshCurrentLabelTooltip": "현재 페이지 그래프 데이터 새로고침",
+      "refreshingTooltip": "데이터 새로고침 중..."
+    },
+    "emptyGraph": "데이터 없음(새로고침을 시도해보세요)"
+  },
+  "retrievePanel": {
+    "chatMessage": {
+      "copyTooltip": "클립보드에 복사",
+      "copyError": "텍스트를 클립보드에 복사 실패",
+      "copyEmpty": "복사할 내용이 없습니다",
+      "copySuccess": "내용이 클립보드에 복사되었습니다",
+      "copySuccessLegacy": "내용이 복사되었습니다 (레거시 방식)",
+      "copySuccessManual": "내용이 복사되었습니다 (수동 방식)",
+      "copyFailed": "내용 복사 실패",
+      "copyManualInstruction": "텍스트를 직접 선택하여 복사하세요",
+      "thinking": "생각 중...",
+      "thinkingTime": "생각 소요 시간 {{time}}초",
+      "thinkingInProgress": "생각 진행 중..."
+    },
+    "retrieval": {
+      "startPrompt": "아래에 질문을 입력하여 검색을 시작하세요",
+      "clear": "지우기",
+      "send": "전송",
+      "placeholder": "질문을 입력하세요 (접두사 지원: /<쿼리 모드>)",
+      "error": "오류: 응답을 가져오지 못했습니다",
+      "queryModeError": "다음 쿼리 모드만 지원합니다: {{modes}}",
+      "queryModePrefixInvalid": "잘못된 쿼리 모드 접두사입니다. 사용법: /<모드> [공백] 질문"
+    },
+    "querySettings": {
+      "parametersTitle": "매개변수",
+      "parametersDescription": "쿼리 매개변수를 구성하세요",
+      "queryMode": "쿼리 모드",
+      "queryModeTooltip": "검색 전략을 선택하세요:\n• Naive: 전통적인 텍스트 청크 벡터 검색\n• Local: 엔티티 검색에 집중\n• Global: 관계 검색에 집중\n• Hybrid: Local+Global\n• Mix: Local+Global+Naive\n• Bypass: 검색 건너뛰기, 대화 기록과 현재 질문을 LLM에 전송",
+      "queryModeOptions": {
+        "naive": "Naive",
+        "local": "Local",
+        "global": "Global",
+        "hybrid": "Hybrid",
+        "mix": "Mix",
+        "bypass": "Bypass"
+      },
+      "responseFormat": "응답 형식",
+      "responseFormatTooltip": "응답 형식을 정의합니다. 예:\n• 여러 단락\n• 단일 단락\n• 글머리 기호",
+      "responseFormatOptions": {
+        "multipleParagraphs": "여러 단락",
+        "singleParagraph": "단일 단락",
+        "bulletPoints": "글머리 기호"
+      },
+      "topK": "KG Top K",
+      "topKTooltip": "검색할 엔티티 및 관계 수. Naive가 아닌 모드에 적용됩니다.",
+      "topKPlaceholder": "top_k 값 입력",
+      "chunkTopK": "Chunk Top K",
+      "chunkTopKTooltip": "검색할 텍스트 청크 수, 모든 모드에 적용됩니다.",
+      "chunkTopKPlaceholder": "chunk_top_k 값 입력",
+      "maxEntityTokens": "최대 엔티티 토큰",
+      "maxEntityTokensTooltip": "통합 토큰 제어 시스템에서 엔티티 컨텍스트에 할당된 최대 토큰 수",
+      "maxRelationTokens": "최대 관계 토큰",
+      "maxRelationTokensTooltip": "통합 토큰 제어 시스템에서 관계 컨텍스트에 할당된 최대 토큰 수",
+      "maxTotalTokens": "최대 총 토큰",
+      "maxTotalTokensTooltip": "전체 쿼리 컨텍스트(엔티티 + 관계 + 청크 + 시스템 프롬프트)에 대한 최대 총 토큰 예산",
+      "historyTurns": "대화 턴 수",
+      "historyTurnsTooltip": "응답 컨텍스트에서 고려할 전체 대화 턴(사용자-어시스턴트 쌍) 수",
+      "historyTurnsPlaceholder": "대화 턴 수",
+      "onlyNeedContext": "컨텍스트만 필요",
+      "onlyNeedContextTooltip": "True일 경우, 응답을 생성하지 않고 검색된 컨텍스트만 반환합니다",
+      "onlyNeedPrompt": "프롬프트만 필요",
+      "onlyNeedPromptTooltip": "True일 경우, 응답을 생성하지 않고 생성된 프롬프트만 반환합니다",
+      "streamResponse": "스트림 응답",
+      "streamResponseTooltip": "True일 경우, 실시간 응답을 위한 스트리밍 출력을 활성화합니다",
+      "userPrompt": "추가 출력 프롬프트",
+      "userPromptTooltip": "LLM에 추가 응답 요구 사항을 제공합니다 (쿼리 내용과 무관, 출력 처리에만 사용).",
+      "userPromptPlaceholder": "사용자 지정 프롬프트 입력 (선택 사항)",
+      "enableRerank": "Rerank 활성화",
+      "enableRerankTooltip": "검색된 텍스트 청크에 대해 Rerank를 활성화합니다. True이지만 Rerank 모델이 구성되지 않은 경우 경고가 발생합니다. 기본값은 True입니다."
+    }
+  },
+  "apiSite": {
+    "loading": "API 문서 로드 중..."
+  },
+  "apiKeyAlert": {
+    "title": "API 키가 필요합니다",
+    "description": "서비스에 액세스하려면 API 키를 입력하세요",
+    "placeholder": "API 키 입력",
+    "save": "저장"
+  },
+  "pagination": {
+    "showing": "전체 {{total}}개 중 {{start}}-{{end}}",
+    "page": "페이지",
+    "pageSize": "페이지 크기",
+    "firstPage": "첫 페이지",
+    "prevPage": "이전 페이지",
+    "nextPage": "다음 페이지",
+    "lastPage": "마지막 페이지"
+  }
+}
