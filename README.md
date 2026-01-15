@@ -955,6 +955,7 @@ Example connection configurations for each storage type can be found in the `env
 export NEO4J_URI="neo4j://localhost:7687"
 export NEO4J_USERNAME="neo4j"
 export NEO4J_PASSWORD="password"
+export NEO4J_DATABASE="neo4j" #<----------- If you are using community edition neo4j docker image.
 
 # Setup logger for LightRAG
 setup_logger("lightrag", level="INFO")
