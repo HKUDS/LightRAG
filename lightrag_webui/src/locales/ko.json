@@ -99,7 +99,7 @@
         "error": "일부 파일 업로드 실패"
       },
       "generalError": "업로드 실패\n{{error}}",
-      "fileTypes": "지원되는 유형: TXT, MD, DOCX, PDF, PPTX, XLSX, RTF, ODT, EPUB, HTML, HTM, TEX, JSON, XML, YAML, YML, CSV, LOG, CONF, INI, PROPERTIES, SQL, BAT, SH, C, CPP, PY, JAVA, JS, TS, SWIFT, GO, RB, PHP, CSS, SCSS, LESS",
+      "fileTypes": "지원되는 유형: TXT, MD, MDX, DOCX, PDF, PPTX, XLSX, RTF, ODT, EPUB, HTML, HTM, TEX, JSON, XML, YAML, YML, CSV, LOG, CONF, INI, PROPERTIES, SQL, BAT, SH, C, CPP, PY, JAVA, JS, TS, SWIFT, GO, RB, PHP, CSS, SCSS, LESS",
       "fileUploader": {
         "singleFileLimit": "한 번에 1개의 파일만 업로드할 수 있습니다",
         "maxFilesLimit": "{{count}}개 이상의 파일은 업로드할 수 없습니다",
