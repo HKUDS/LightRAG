@@ -22,13 +22,15 @@ Prerequisites:
 
     2. Prepare a text file to index (default: Data/book-small.txt)
 
+    3. Configure storage backends via environment variables or modify
+       the storage parameters in initialize_rag() below.
+
 Usage:
     python examples/lightrag_vllm_demo.py
 """
 
 import os
 import asyncio
-import nest_asyncio
 from functools import partial
 from dotenv import load_dotenv
 
@@ -37,7 +39,6 @@ from lightrag.llm.openai import openai_complete_if_cache, openai_embed
 from lightrag.utils import EmbeddingFunc
 from lightrag.rerank import jina_rerank
 
-nest_asyncio.apply()
 load_dotenv()
 
 # --------------------------------------------------
@@ -51,7 +52,10 @@ BOOK_FILE = "Data/book-small.txt"
 # LLM function (vLLM, OpenAI-compatible)
 # --------------------------------------------------
 
-async def llm_model_func(prompt, system_prompt=None, history_messages=[], **kwargs) -> str:
+
+async def llm_model_func(
+    prompt, system_prompt=None, history_messages=[], **kwargs
+) -> str:
     return await openai_complete_if_cache(
         model=os.getenv("LLM_MODEL", "Qwen/Qwen3-14B-AWQ"),
         prompt=prompt,
@@ -62,6 +66,7 @@ async def llm_model_func(prompt, system_prompt=None, history_messages=[], **kwar
         timeout=600,
         **kwargs,
     )
+
 
 # --------------------------------------------------
 # Embedding function (vLLM)
@@ -101,66 +106,75 @@ jina_rerank_model_func = partial(
 # Initialize RAG
 # --------------------------------------------------
 
+
 async def initialize_rag():
     rag = LightRAG(
         working_dir=WORKING_DIR,
-
         llm_model_func=llm_model_func,
         embedding_func=vLLM_emb_func,
         rerank_model_func=jina_rerank_model_func,
-
-        # Storage backends (read from .env automatically)
-        kv_storage="PGKVStorage",
-        doc_status_storage="PGDocStatusStorage",
-        vector_storage="PGVectorStorage",
-        graph_storage="Neo4JStorage",
+        # Storage backends (configurable via environment or modify here)
+        kv_storage=os.getenv("KV_STORAGE", "PGKVStorage"),
+        doc_status_storage=os.getenv("DOC_STATUS_STORAGE", "PGDocStatusStorage"),
+        vector_storage=os.getenv("VECTOR_STORAGE", "PGVectorStorage"),
+        graph_storage=os.getenv("GRAPH_STORAGE", "Neo4JStorage"),
     )
 
-    # 🔑 REQUIRED
     await rag.initialize_storages()
     return rag
+
 
 # --------------------------------------------------
 # Main
 # --------------------------------------------------
 
-def main():
-    # Validate book file exists
-    if not os.path.exists(BOOK_FILE):
-        raise FileNotFoundError(
-            f"'{BOOK_FILE}' not found. Please provide a text file to index."
+
+async def main():
+    rag = None
+    try:
+        # Validate book file exists
+        if not os.path.exists(BOOK_FILE):
+            raise FileNotFoundError(
+                f"'{BOOK_FILE}' not found. Please provide a text file to index."
+            )
+
+        rag = await initialize_rag()
+
+        # --------------------------------------------------
+        # Data Ingestion
+        # --------------------------------------------------
+        print(f"Indexing {BOOK_FILE}...")
+        with open(BOOK_FILE, "r", encoding="utf-8") as f:
+            await rag.ainsert(f.read())
+        print("Indexing complete.")
+
+        # --------------------------------------------------
+        # Query
+        # --------------------------------------------------
+        query = (
+            "What are the main themes of the book, and how do the key characters "
+            "evolve throughout the story?"
         )
 
-    rag = asyncio.run(initialize_rag())
+        print("\nHybrid Search with Reranking:")
+        result = await rag.aquery(
+            query,
+            param=QueryParam(
+                mode="hybrid",
+                stream=False,
+                enable_rerank=True,
+            ),
+        )
 
-    # --------------------------------------------------
-    # Data Ingestion
-    # --------------------------------------------------
-    print(f"Indexing {BOOK_FILE}...")
-    with open(BOOK_FILE, "r", encoding="utf-8") as f:
-        rag.insert(f.read())
-    print("Indexing complete.")
+        print("\nResult:\n", result)
 
-    # --------------------------------------------------
-    # Query
-    # --------------------------------------------------
-    query = (
-        "What are the main themes of the book, and how do the key characters "
-        "evolve throughout the story?"
-    )
-
-    print("\nHybrid Search with Reranking:")
-    result = rag.query(
-        query,
-        param=QueryParam(
-            mode="hybrid",
-            stream=False,
-            enable_rerank=True,
-        ),
-    )
-
-    print("\nResult:\n", result)
+    except Exception as e:
+        print(f"An error occurred: {e}")
+    finally:
+        if rag:
+            await rag.finalize_storages()
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
+    print("\nDone!")
