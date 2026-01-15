@@ -525,19 +525,44 @@ class _GlobalArgsProxy:
 
     This maintains backward compatibility with existing code while
     allowing programmatic control over initialization timing.
+
+    The proxy fully delegates to the underlying argparse.Namespace,
+    including support for vars() calls which is used by binding_options
+    to extract provider-specific configuration options.
     """
 
-    def __getattr__(self, name):
+    def __getattribute__(self, name):
+        """Override attribute access to support vars() and regular attribute access.
+
+        This method intercepts __dict__ access (used by vars()) and delegates
+        to the underlying _global_args namespace, ensuring binding options
+        can be properly extracted.
+        """
+        global _initialized, _global_args
+
+        # Handle __dict__ access for vars() support
+        if name == "__dict__":
+            if not _initialized:
+                initialize_config()
+            return vars(_global_args)
+
+        # Handle class-level attributes that should come from the proxy itself
+        if name in ("__class__", "__repr__", "__getattribute__", "__setattr__"):
+            return object.__getattribute__(self, name)
+
+        # Delegate all other attribute access to the underlying namespace
         if not _initialized:
             initialize_config()
         return getattr(_global_args, name)
 
     def __setattr__(self, name, value):
+        global _initialized, _global_args
         if not _initialized:
             initialize_config()
         setattr(_global_args, name, value)
 
     def __repr__(self):
+        global _initialized, _global_args
         if not _initialized:
             return "<GlobalArgsProxy: Not initialized>"
         return repr(_global_args)
