@@ -35,6 +35,7 @@ dependencies = [
     "pydantic",
     "pypinyin",
     "python-dotenv",
+    "rapidfuzz>=3.0.0",
     "setuptools",
     "tenacity",
     "tiktoken",

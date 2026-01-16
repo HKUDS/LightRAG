@@ -53,6 +53,12 @@ from lightrag.constants import (
     DEFAULT_SOURCE_IDS_LIMIT_METHOD,
     DEFAULT_MAX_FILE_PATHS,
     DEFAULT_FILE_PATH_MORE_PLACEHOLDER,
+    # Entity Resolution and Conflict Detection
+    DEFAULT_ENABLE_ENTITY_RESOLUTION,
+    DEFAULT_ENTITY_SIMILARITY_THRESHOLD,
+    DEFAULT_ENTITY_MIN_NAME_LENGTH,
+    DEFAULT_ENABLE_CONFLICT_DETECTION,
+    DEFAULT_CONFLICT_CONFIDENCE_THRESHOLD,
 )
 from lightrag.utils import get_env_value
 
@@ -426,6 +432,47 @@ class LightRAG:
             "entity_types": get_env_value("ENTITY_TYPES", DEFAULT_ENTITY_TYPES, list),
         }
     )
+
+    # Entity Resolution
+    # ---
+
+    enable_entity_resolution: bool = field(
+        default=get_env_value(
+            "ENABLE_ENTITY_RESOLUTION", DEFAULT_ENABLE_ENTITY_RESOLUTION, bool
+        )
+    )
+    """If True, enables fuzzy matching and deduplication of similar entity names during ingestion."""
+
+    entity_similarity_threshold: float = field(
+        default=get_env_value(
+            "ENTITY_SIMILARITY_THRESHOLD", DEFAULT_ENTITY_SIMILARITY_THRESHOLD, float
+        )
+    )
+    """Minimum similarity score (0.0-1.0) for entity name matching. Higher values = stricter matching."""
+
+    entity_min_name_length: int = field(
+        default=get_env_value(
+            "ENTITY_MIN_NAME_LENGTH", DEFAULT_ENTITY_MIN_NAME_LENGTH, int
+        )
+    )
+    """Minimum character length for fuzzy matching eligibility. Names shorter than this are not matched."""
+
+    # Conflict Detection
+    # ---
+
+    enable_conflict_detection: bool = field(
+        default=get_env_value(
+            "ENABLE_CONFLICT_DETECTION", DEFAULT_ENABLE_CONFLICT_DETECTION, bool
+        )
+    )
+    """If True, enables detection of contradictions in entity descriptions during summarization."""
+
+    conflict_confidence_threshold: float = field(
+        default=get_env_value(
+            "CONFLICT_CONFIDENCE_THRESHOLD", DEFAULT_CONFLICT_CONFIDENCE_THRESHOLD, float
+        )
+    )
+    """Minimum confidence score (0.0-1.0) for logging detected conflicts."""
 
     # Storages Management
     # ---
