@@ -3111,7 +3111,7 @@ class LightRAG:
         return found_statuses
 
     async def adelete_by_doc_id(
-        self, doc_id: str, delete_llm_cache: bool = False
+        self, doc_id: str, delete_llm_cache: bool = False, skip_rebuild: bool = False
     ) -> DeletionResult:
         """Delete a document and all its related data, including chunks, graph elements.
 
@@ -3140,10 +3140,19 @@ class LightRAG:
         - Prevents concurrent single deletions that could cause race conditions
         - Rejects operations when pipeline is busy with non-deletion tasks
 
+        **Batch Deletion Optimization:**
+
+        When skip_rebuild=True, the rebuild step is skipped and the entities/relationships
+        that need rebuilding are returned in the DeletionResult. This allows batch deletion
+        to collect all rebuild data and perform a single rebuild at the end, which is more
+        efficient and avoids state corruption issues.
+
         Args:
             doc_id (str): The unique identifier of the document to be deleted.
             delete_llm_cache (bool): Whether to delete cached LLM extraction results
                 associated with the document. Defaults to False.
+            skip_rebuild (bool): Whether to skip the rebuild step and return rebuild data
+                instead. Used for batch deletion optimization. Defaults to False.
 
         Returns:
             DeletionResult: An object containing the outcome of the deletion process.
@@ -3152,6 +3161,8 @@ class LightRAG:
                 - `message` (str): A summary of the operation's result.
                 - `status_code` (int): HTTP status code (e.g., 200, 404, 403, 500).
                 - `file_path` (str | None): The file path of the deleted document, if available.
+                - `entities_to_rebuild` (dict | None): When skip_rebuild=True, entities needing rebuild.
+                - `relationships_to_rebuild` (dict | None): When skip_rebuild=True, relationships needing rebuild.
         """
         # Get pipeline status shared data and lock for validation
         pipeline_status = await get_namespace_data(
@@ -3769,28 +3780,38 @@ class LightRAG:
                     # The cache entries will be orphaned but won't affect the rebuild
 
             # 9. Rebuild entities and relationships from remaining chunks
+            # When skip_rebuild=True (batch deletion), defer rebuild to the end
             if entities_to_rebuild or relationships_to_rebuild:
-                try:
-                    await rebuild_knowledge_from_chunks(
-                        entities_to_rebuild=entities_to_rebuild,
-                        relationships_to_rebuild=relationships_to_rebuild,
-                        knowledge_graph_inst=self.chunk_entity_relation_graph,
-                        entities_vdb=self.entities_vdb,
-                        relationships_vdb=self.relationships_vdb,
-                        text_chunks_storage=self.text_chunks,
-                        llm_response_cache=self.llm_response_cache,
-                        global_config=asdict(self),
-                        pipeline_status=pipeline_status,
-                        pipeline_status_lock=pipeline_status_lock,
-                        entity_chunks_storage=self.entity_chunks,
-                        relation_chunks_storage=self.relation_chunks,
-                    )
+                if skip_rebuild:
+                    # Deferred rebuild: log and return rebuild data for batch processing
+                    defer_msg = f"Deferred rebuild for {len(entities_to_rebuild)} entities and {len(relationships_to_rebuild)} relationships"
+                    logger.info(defer_msg)
+                    async with pipeline_status_lock:
+                        pipeline_status["latest_message"] = defer_msg
+                        pipeline_status["history_messages"].append(defer_msg)
+                else:
+                    # Immediate rebuild for single document deletion
+                    try:
+                        await rebuild_knowledge_from_chunks(
+                            entities_to_rebuild=entities_to_rebuild,
+                            relationships_to_rebuild=relationships_to_rebuild,
+                            knowledge_graph_inst=self.chunk_entity_relation_graph,
+                            entities_vdb=self.entities_vdb,
+                            relationships_vdb=self.relationships_vdb,
+                            text_chunks_storage=self.text_chunks,
+                            llm_response_cache=self.llm_response_cache,
+                            global_config=asdict(self),
+                            pipeline_status=pipeline_status,
+                            pipeline_status_lock=pipeline_status_lock,
+                            entity_chunks_storage=self.entity_chunks,
+                            relation_chunks_storage=self.relation_chunks,
+                        )
 
-                except Exception as e:
-                    logger.error(f"Failed to rebuild knowledge from chunks: {e}")
-                    raise Exception(f"Failed to rebuild knowledge graph: {e}") from e
+                    except Exception as e:
+                        logger.error(f"Failed to rebuild knowledge from chunks: {e}")
+                        raise Exception(f"Failed to rebuild knowledge graph: {e}") from e
 
-            # 9. Delete from full_entities and full_relations storage
+            # 10. Delete from full_entities and full_relations storage
             try:
                 await self.full_entities.delete([doc_id])
                 await self.full_relations.delete([doc_id])
@@ -3808,12 +3829,15 @@ class LightRAG:
                 logger.error(f"Failed to delete document and status: {e}")
                 raise Exception(f"Failed to delete document and status: {e}") from e
 
+            # Return rebuild data when skip_rebuild=True for batch processing
             return DeletionResult(
                 status="success",
                 doc_id=doc_id,
                 message=log_message,
                 status_code=200,
                 file_path=file_path,
+                entities_to_rebuild=entities_to_rebuild if skip_rebuild else None,
+                relationships_to_rebuild=relationships_to_rebuild if skip_rebuild else None,
             )
 
         except Exception as e:
@@ -3827,6 +3851,8 @@ class LightRAG:
                 message=error_message,
                 status_code=500,
                 file_path=file_path,
+                entities_to_rebuild=None,
+                relationships_to_rebuild=None,
             )
 
         finally:
