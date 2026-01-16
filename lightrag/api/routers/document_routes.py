@@ -22,9 +22,12 @@ from fastapi import (
 )
 from pydantic import BaseModel, Field, field_validator
 
+from dataclasses import asdict
+
 from lightrag import LightRAG
 from lightrag.base import DeletionResult, DocProcessingStatus, DocStatus
 from lightrag.utils import generate_track_id
+from lightrag.operate import rebuild_knowledge_from_chunks
 from lightrag.api.utils_api import get_combined_auth_dependency
 from lightrag.api.workspace_manager import get_rag
 from ..config import global_args
@@ -1804,6 +1807,12 @@ async def background_delete_documents(
     successful_deletions = []
     failed_deletions = []
 
+    # For batch deletion optimization: accumulate rebuild data across all deletions
+    # and perform a single rebuild at the end
+    is_batch_deletion = total_docs > 1
+    all_entities_to_rebuild: dict[str, list[str]] = {}
+    all_relationships_to_rebuild: dict[tuple[str, str], list[str]] = {}
+
     # Double-check pipeline status before proceeding
     async with pipeline_status_lock:
         if pipeline_status.get("busy", False):
@@ -1854,8 +1863,11 @@ async def background_delete_documents(
 
             file_path = "#"
             try:
+                # For batch deletion, skip rebuild and collect rebuild data for single rebuild at end
                 result = await rag.adelete_by_doc_id(
-                    doc_id, delete_llm_cache=delete_llm_cache
+                    doc_id,
+                    delete_llm_cache=delete_llm_cache,
+                    skip_rebuild=is_batch_deletion,
                 )
                 file_path = (
                     getattr(result, "file_path", "-") if "result" in locals() else "-"
@@ -1868,6 +1880,25 @@ async def background_delete_documents(
                     logger.info(success_msg)
                     async with pipeline_status_lock:
                         pipeline_status["history_messages"].append(success_msg)
+
+                    # Collect rebuild data for batch processing (single rebuild at end)
+                    if is_batch_deletion and result.entities_to_rebuild:
+                        for entity_name, chunk_ids in result.entities_to_rebuild.items():
+                            if entity_name not in all_entities_to_rebuild:
+                                all_entities_to_rebuild[entity_name] = []
+                            # Merge chunk IDs, avoiding duplicates
+                            for chunk_id in chunk_ids:
+                                if chunk_id not in all_entities_to_rebuild[entity_name]:
+                                    all_entities_to_rebuild[entity_name].append(chunk_id)
+
+                    if is_batch_deletion and result.relationships_to_rebuild:
+                        for rel_key, chunk_ids in result.relationships_to_rebuild.items():
+                            if rel_key not in all_relationships_to_rebuild:
+                                all_relationships_to_rebuild[rel_key] = []
+                            # Merge chunk IDs, avoiding duplicates
+                            for chunk_id in chunk_ids:
+                                if chunk_id not in all_relationships_to_rebuild[rel_key]:
+                                    all_relationships_to_rebuild[rel_key].append(chunk_id)
 
                     # Handle file deletion if requested and file_path is available
                     if (
@@ -1997,6 +2028,45 @@ async def background_delete_documents(
                 async with pipeline_status_lock:
                     pipeline_status["latest_message"] = error_msg
                     pipeline_status["history_messages"].append(error_msg)
+
+        # Perform single rebuild at end of batch deletion with all accumulated data
+        if is_batch_deletion and (all_entities_to_rebuild or all_relationships_to_rebuild):
+            try:
+                rebuild_msg = f"Starting single rebuild for batch deletion: {len(all_entities_to_rebuild)} entities, {len(all_relationships_to_rebuild)} relationships"
+                logger.info(rebuild_msg)
+                async with pipeline_status_lock:
+                    pipeline_status["latest_message"] = rebuild_msg
+                    pipeline_status["history_messages"].append(rebuild_msg)
+
+                await rebuild_knowledge_from_chunks(
+                    entities_to_rebuild=all_entities_to_rebuild,
+                    relationships_to_rebuild=all_relationships_to_rebuild,
+                    knowledge_graph_inst=rag.chunk_entity_relation_graph,
+                    entities_vdb=rag.entities_vdb,
+                    relationships_vdb=rag.relationships_vdb,
+                    text_chunks_storage=rag.text_chunks,
+                    llm_response_cache=rag.llm_response_cache,
+                    global_config=asdict(rag),
+                    pipeline_status=pipeline_status,
+                    pipeline_status_lock=pipeline_status_lock,
+                    entity_chunks_storage=rag.entity_chunks,
+                    relation_chunks_storage=rag.relation_chunks,
+                )
+
+                rebuild_complete_msg = f"Batch rebuild completed: {len(all_entities_to_rebuild)} entities, {len(all_relationships_to_rebuild)} relationships"
+                logger.info(rebuild_complete_msg)
+                async with pipeline_status_lock:
+                    pipeline_status["latest_message"] = rebuild_complete_msg
+                    pipeline_status["history_messages"].append(rebuild_complete_msg)
+
+            except Exception as rebuild_error:
+                rebuild_error_msg = f"Failed to rebuild knowledge after batch deletion: {rebuild_error}"
+                logger.error(rebuild_error_msg)
+                logger.error(traceback.format_exc())
+                async with pipeline_status_lock:
+                    pipeline_status["latest_message"] = rebuild_error_msg
+                    pipeline_status["history_messages"].append(rebuild_error_msg)
+                # Don't raise - deletions succeeded, rebuild failure is logged but not fatal
 
     except Exception as e:
         error_msg = f"Critical error during batch deletion: {str(e)}"

@@ -209,6 +209,44 @@ Description List:
 ---Output---
 """
 
+PROMPTS["summarize_with_conflicts"] = """---Role---
+You are a Knowledge Graph Specialist with expertise in data reconciliation.
+
+---IMPORTANT: Conflicts Detected---
+The following conflicting information was found from different sources:
+
+{conflict_details}
+
+---Task---
+Your task is to synthesize a list of descriptions of a given entity or relation into a single, comprehensive summary while acknowledging the detected conflicts.
+
+---Instructions---
+1. Input Format: The description list is provided in JSON format. Each JSON object appears on a new line within the `Description List` section.
+2. Output Format: The merged description will be returned as plain text, presented in multiple paragraphs.
+3. Comprehensiveness: The summary must integrate all key information from every provided description.
+4. Conflict Handling - CRITICAL:
+   - For each conflict listed above: mention BOTH values with uncertainty language.
+   - Example: "Founded in 2003 or 2004 according to different sources."
+   - Example: "Sources differ on the founder, citing either John Smith or Jane Doe."
+   - Do NOT arbitrarily pick one version over another.
+   - Do NOT omit conflicting information.
+5. Non-conflicting information should be presented normally.
+6. Context: Write from an objective, third-person perspective. Explicitly mention the entity/relation name.
+7. Length Constraint: The summary's total length must not exceed {summary_length} tokens.
+8. Language: The entire output must be written in {language}.
+
+---Input---
+{description_type} Name: {description_name}
+
+Description List:
+
+```
+{description_list}
+```
+
+---Output---
+"""
+
 PROMPTS["fail_response"] = (
     "Sorry, I'm not able to provide an answer to that question.[no-context]"
 )

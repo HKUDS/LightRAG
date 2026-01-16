@@ -795,13 +795,20 @@ class StoragesStatus(str, Enum):
 
 @dataclass
 class DeletionResult:
-    """Represents the result of a deletion operation."""
+    """Represents the result of a deletion operation.
+
+    When skip_rebuild=True is used during batch deletion, entities_to_rebuild
+    and relationships_to_rebuild contain the data needed for deferred rebuild.
+    """
 
     status: Literal["success", "not_found", "fail"]
     doc_id: str
     message: str
     status_code: int = 200
     file_path: str | None = None
+    # For deferred rebuild during batch deletion
+    entities_to_rebuild: dict[str, list[str]] | None = None
+    relationships_to_rebuild: dict[tuple[str, str], list[str]] | None = None
 
 
 # Unified Query Result Data Structures for Reference List Support

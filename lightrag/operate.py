@@ -66,6 +66,8 @@ from lightrag.constants import (
     DEFAULT_ENTITY_NAME_MAX_LENGTH,
 )
 from lightrag.kg.shared_storage import get_storage_keyed_lock
+from lightrag.entity_resolution import EntityResolver
+from lightrag.conflict_detection import ConflictDetector
 import time
 from dotenv import load_dotenv
 
@@ -169,6 +171,7 @@ async def _handle_entity_relation_summary(
     seperator: str,
     global_config: dict,
     llm_response_cache: BaseKVStorage | None = None,
+    conflict_details: str | None = None,
 ) -> tuple[str, bool]:
     """Handle entity relation description summary using map-reduce approach.
 
@@ -184,6 +187,7 @@ async def _handle_entity_relation_summary(
         description_list: List of description strings to summarize
         global_config: Global configuration containing tokenizer and limits
         llm_response_cache: Optional cache for LLM responses
+        conflict_details: Optional conflict details to pass to LLM for conflict-aware summary
 
     Returns:
         Tuple of (final_summarized_description_string, llm_was_used_boolean)
@@ -231,6 +235,7 @@ async def _handle_entity_relation_summary(
                     current_list,
                     global_config,
                     llm_response_cache,
+                    conflict_details=conflict_details,
                 )
                 return final_summary, True  # LLM was used for final summarization
 
@@ -300,6 +305,7 @@ async def _summarize_descriptions(
     description_list: list[str],
     global_config: dict,
     llm_response_cache: BaseKVStorage | None = None,
+    conflict_details: str | None = None,
 ) -> str:
     """Helper function to summarize a list of descriptions using LLM.
 
@@ -308,6 +314,7 @@ async def _summarize_descriptions(
         descriptions: List of description strings to summarize
         global_config: Global configuration containing LLM function and settings
         llm_response_cache: Optional cache for LLM responses
+        conflict_details: Optional conflict details to include in the prompt
 
     Returns:
         Summarized description string
@@ -320,7 +327,11 @@ async def _summarize_descriptions(
 
     summary_length_recommended = global_config["summary_length_recommended"]
 
-    prompt_template = PROMPTS["summarize_entity_descriptions"]
+    # Use conflict-aware prompt if conflicts were detected
+    if conflict_details:
+        prompt_template = PROMPTS["summarize_with_conflicts"]
+    else:
+        prompt_template = PROMPTS["summarize_entity_descriptions"]
 
     # Convert descriptions to JSONL format and apply token-based truncation
     tokenizer = global_config["tokenizer"]
@@ -350,6 +361,9 @@ async def _summarize_descriptions(
         summary_length=summary_length_recommended,
         language=language,
     )
+    # Add conflict_details if present (for conflict-aware prompt)
+    if conflict_details:
+        context_base["conflict_details"] = conflict_details
     use_prompt = prompt_template.format(**context_base)
 
     # Use LLM function with cache (higher priority for summary generation)
@@ -1729,6 +1743,31 @@ async def _merge_nodes_then_upsert(
             if pipeline_status.get("cancellation_requested", False):
                 raise PipelineCancelledException("User cancelled during entity summary")
 
+    # 7.5 Detect conflicts in descriptions if enabled
+    conflict_details = None
+    if global_config.get("enable_conflict_detection", True) and len(description_list) >= 2:
+        # Build description tuples with source IDs for conflict detection
+        descriptions_with_sources = []
+        # Add existing descriptions (no individual source_id available)
+        for desc in already_description:
+            descriptions_with_sources.append((desc, "existing"))
+        # Add new descriptions with their source IDs
+        for dp in sorted_nodes:
+            desc = dp.get("description", "")
+            source_id = dp.get("source_id", "unknown")
+            if desc:
+                descriptions_with_sources.append((desc, source_id))
+
+        # Run conflict detection
+        detector = ConflictDetector(
+            confidence_threshold=global_config.get("conflict_confidence_threshold", 0.7)
+        )
+        conflicts = detector.detect_conflicts(entity_name, descriptions_with_sources)
+
+        # Format conflicts for prompt if any were found
+        if conflicts:
+            conflict_details = "\n".join(c.to_prompt_context() for c in conflicts)
+
     # 8. Get summary description an LLM usage status
     description, llm_was_used = await _handle_entity_relation_summary(
         "Entity",
@@ -1737,6 +1776,7 @@ async def _merge_nodes_then_upsert(
         GRAPH_FIELD_SEP,
         global_config,
         llm_response_cache,
+        conflict_details=conflict_details,
     )
 
     # 9. Build file_path within MAX_FILE_PATHS
@@ -2058,14 +2098,41 @@ async def _merge_edges_then_upsert(
                     "User cancelled during relation summary"
                 )
 
+    # 7.5 Detect conflicts in descriptions if enabled
+    relation_name = f"({src_id}, {tgt_id})"
+    conflict_details = None
+    if global_config.get("enable_conflict_detection", True) and len(description_list) >= 2:
+        # Build description tuples with source IDs for conflict detection
+        descriptions_with_sources = []
+        # Add existing descriptions (no individual source_id available)
+        for desc in already_description:
+            descriptions_with_sources.append((desc, "existing"))
+        # Add new descriptions with their source IDs
+        for dp in sorted_edges:
+            desc = dp.get("description", "")
+            source_id = dp.get("source_id", "unknown")
+            if desc:
+                descriptions_with_sources.append((desc, source_id))
+
+        # Run conflict detection
+        detector = ConflictDetector(
+            confidence_threshold=global_config.get("conflict_confidence_threshold", 0.7)
+        )
+        conflicts = detector.detect_conflicts(relation_name, descriptions_with_sources)
+
+        # Format conflicts for prompt if any were found
+        if conflicts:
+            conflict_details = "\n".join(c.to_prompt_context() for c in conflicts)
+
     # 8. Get summary description an LLM usage status
     description, llm_was_used = await _handle_entity_relation_summary(
         "Relation",
-        f"({src_id}, {tgt_id})",
+        relation_name,
         description_list,
         GRAPH_FIELD_SEP,
         global_config,
         llm_response_cache,
+        conflict_details=conflict_details,
     )
 
     # 9. Build file_path within MAX_FILE_PATHS limit
@@ -2458,6 +2525,27 @@ async def merge_nodes_and_edges(
         for edge_key, edges in maybe_edges.items():
             sorted_edge_key = tuple(sorted(edge_key))
             all_edges[sorted_edge_key].extend(edges)
+
+    # ===== Entity Resolution: Consolidate similar entity names =====
+    if global_config.get("enable_entity_resolution", True):
+        original_count = len(all_nodes)
+        resolver = EntityResolver(
+            similarity_threshold=global_config.get("entity_similarity_threshold", 0.85),
+            min_name_length=global_config.get("entity_min_name_length", 3),
+        )
+        all_nodes = resolver.consolidate_entities(dict(all_nodes))
+        # Convert back to defaultdict for consistency with downstream code
+        consolidated_nodes = defaultdict(list)
+        for entity_name, entities in all_nodes.items():
+            consolidated_nodes[entity_name] = entities
+        all_nodes = consolidated_nodes
+
+        resolved_count = len(all_nodes)
+        if original_count != resolved_count:
+            logger.info(
+                f"Entity resolution: {original_count} → {resolved_count} entities "
+                f"(merged {original_count - resolved_count})"
+            )
 
     total_entities_count = len(all_nodes)
     total_relations_count = len(all_edges)
