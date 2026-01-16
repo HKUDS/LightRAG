@@ -2071,8 +2071,15 @@ def create_document_routes(
         # Generate track_id with "scan" prefix for scanning operation
         track_id = generate_track_id("scan")
 
+        # Create workspace-scoped DocumentManager for proper multi-tenant isolation
+        workspace_doc_manager = DocumentManager(
+            input_dir=doc_manager.base_input_dir,
+            workspace=rag.workspace,
+            supported_extensions=doc_manager.supported_extensions,
+        )
+
         # Start the scanning process in the background with track_id
-        background_tasks.add_task(run_scanning_process, rag, doc_manager, track_id)
+        background_tasks.add_task(run_scanning_process, rag, workspace_doc_manager, track_id)
         return ScanResponse(
             status="scanning_started",
             message="Scanning process has been initiated in the background",
@@ -2106,13 +2113,20 @@ def create_document_routes(
             HTTPException: If the file type is not supported (400) or other errors occur (500).
         """
         try:
-            # Sanitize filename to prevent Path Traversal attacks
-            safe_filename = sanitize_filename(file.filename, doc_manager.input_dir)
+            # Create workspace-scoped DocumentManager for proper multi-tenant isolation
+            workspace_doc_manager = DocumentManager(
+                input_dir=doc_manager.base_input_dir,
+                workspace=rag.workspace,
+                supported_extensions=doc_manager.supported_extensions,
+            )
 
-            if not doc_manager.is_supported_file(safe_filename):
+            # Sanitize filename to prevent Path Traversal attacks
+            safe_filename = sanitize_filename(file.filename, workspace_doc_manager.input_dir)
+
+            if not workspace_doc_manager.is_supported_file(safe_filename):
                 raise HTTPException(
                     status_code=400,
-                    detail=f"Unsupported file type. Supported types: {doc_manager.supported_extensions}",
+                    detail=f"Unsupported file type. Supported types: {workspace_doc_manager.supported_extensions}",
                 )
 
             # Check if filename already exists in doc_status storage
@@ -2126,7 +2140,7 @@ def create_document_routes(
                     track_id="",
                 )
 
-            file_path = doc_manager.input_dir / safe_filename
+            file_path = workspace_doc_manager.input_dir / safe_filename
             # Check if file already exists in file system
             if file_path.exists():
                 return InsertResponse(
@@ -2310,6 +2324,13 @@ def create_document_routes(
             HTTPException: Raised when a serious error occurs during the clearing process,
                           with status code 500 and error details in the detail field.
         """
+        # Create workspace-scoped DocumentManager for proper multi-tenant isolation
+        workspace_doc_manager = DocumentManager(
+            input_dir=doc_manager.base_input_dir,
+            workspace=rag.workspace,
+            supported_extensions=doc_manager.supported_extensions,
+        )
+
         from lightrag.kg.shared_storage import (
             get_namespace_data,
             get_namespace_lock,
@@ -2428,7 +2449,7 @@ def create_document_routes(
             deleted_files_count = 0
             file_errors_count = 0
 
-            for file_path in doc_manager.input_dir.glob("*"):
+            for file_path in workspace_doc_manager.input_dir.glob("*"):
                 if file_path.is_file():
                     try:
                         file_path.unlink()
