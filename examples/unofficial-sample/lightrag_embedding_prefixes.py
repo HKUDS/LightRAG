@@ -116,8 +116,8 @@ async def initialize_rag():
         embedding_func=EmbeddingFunc(
             embedding_dim=int(os.getenv("EMBEDDING_DIM", "1024")),
             max_token_size=int(os.getenv("MAX_EMBED_TOKENS", "8192")),
-            query_prefix=os.get_env("QUERY_PREFIX", "search_query: "),
-            document_prefix=os.getenv("DOCUMENT_PREFIX", "search_document: "),
+            query_prefix=os.getenv("EMBEDDING_QUERY_PREFIX", "search_query: "),
+            document_prefix=os.getenv("EMBEDDING_DOCUMENT_PREFIX", "search_document: "),
             func=partial(
                 ollama_embed.func,  # Access the unwrapped function to avoid double EmbeddingFunc wrapping
                 embed_model=os.getenv("EMBEDDING_MODEL", "FRIDA:latest"),
