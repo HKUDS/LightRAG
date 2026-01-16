@@ -1354,17 +1354,46 @@ class LightRAG:
         # Exclude IDs of documents that are already enqueued
         unique_new_doc_ids = await self.doc_status.filter_keys(all_new_doc_ids)
 
-        # Log ignored document IDs (documents that were filtered out because they already exist)
+        # Handle duplicate documents - create trackable records with current track_id
         ignored_ids = list(all_new_doc_ids - unique_new_doc_ids)
         if ignored_ids:
+            duplicate_docs: dict[str, Any] = {}
             for doc_id in ignored_ids:
                 file_path = new_docs.get(doc_id, {}).get("file_path", "unknown_source")
-                logger.warning(
-                    f"Ignoring document ID (already exists): {doc_id} ({file_path})"
+                logger.warning(f"Duplicate document detected: {doc_id} ({file_path})")
+
+                # Get existing document info for reference
+                existing_doc = await self.doc_status.get_by_id(doc_id)
+                existing_status = (
+                    existing_doc.get("status", "unknown") if existing_doc else "unknown"
                 )
-            if len(ignored_ids) > 3:
-                logger.warning(
-                    f"Total Ignoring {len(ignored_ids)} document IDs that already exist in storage"
+                existing_track_id = (
+                    existing_doc.get("track_id", "") if existing_doc else ""
+                )
+
+                # Create a new record with unique ID for this duplicate attempt
+                dup_record_id = compute_mdhash_id(f"{doc_id}-{track_id}", prefix="dup-")
+                duplicate_docs[dup_record_id] = {
+                    "status": DocStatus.FAILED,
+                    "content_summary": f"[DUPLICATE] Original document: {doc_id}",
+                    "content_length": new_docs.get(doc_id, {}).get("content_length", 0),
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                    "file_path": file_path,
+                    "track_id": track_id,  # Use current track_id for tracking
+                    "error_msg": f"Content already exists. Original doc_id: {doc_id}, Status: {existing_status}",
+                    "metadata": {
+                        "is_duplicate": True,
+                        "original_doc_id": doc_id,
+                        "original_track_id": existing_track_id,
+                    },
+                }
+
+            # Store duplicate records in doc_status
+            if duplicate_docs:
+                await self.doc_status.upsert(duplicate_docs)
+                logger.info(
+                    f"Created {len(duplicate_docs)} duplicate document records with track_id: {track_id}"
                 )
 
         # Filter new_docs to only include documents with unique IDs
