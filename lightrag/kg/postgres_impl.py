@@ -1619,34 +1619,34 @@ class ClientManager:
             ),
             # Connection retry configuration
             "connection_retry_attempts": min(
-                10,
+                100,  # Increased from 10 to 100 for long-running operations
                 int(
                     os.environ.get(
                         "POSTGRES_CONNECTION_RETRIES",
-                        config.get("postgres", "connection_retries", fallback=3),
+                        config.get("postgres", "connection_retries", fallback=10),
                     )
                 ),
             ),
             "connection_retry_backoff": min(
-                5.0,
+                300.0,  # Increased from 5.0 to 300.0 (5 minutes) for PG switchover scenarios
                 float(
                     os.environ.get(
                         "POSTGRES_CONNECTION_RETRY_BACKOFF",
                         config.get(
-                            "postgres", "connection_retry_backoff", fallback=0.5
+                            "postgres", "connection_retry_backoff", fallback=3.0
                         ),
                     )
                 ),
             ),
             "connection_retry_backoff_max": min(
-                60.0,
+                600.0,  # Increased from 60.0 to 600.0 (10 minutes) for PG switchover scenarios
                 float(
                     os.environ.get(
                         "POSTGRES_CONNECTION_RETRY_BACKOFF_MAX",
                         config.get(
                             "postgres",
                             "connection_retry_backoff_max",
-                            fallback=5.0,
+                            fallback=30.0,
                         ),
                     )
                 ),
