@@ -266,59 +266,51 @@ def parse_args() -> argparse.Namespace:
         help="Enable DOCLING document loading engine (default: from env or DEFAULT)",
     )
 
-    # Conditionally add binding options defined in binding_options module
-    # This will add command line arguments for all binding options (e.g., --ollama-embedding-num_ctx)
-    # and corresponding environment variables (e.g., OLLAMA_EMBEDDING_NUM_CTX)
+    # Conditionally add binding-specific options (Ollama, OpenAI, Azure OpenAI, Gemini)
+    # This registers command line arguments (e.g., --openai-llm-temperature)
+    # and reads corresponding environment variables (e.g., OPENAI_LLM_TEMPERATURE)
+
+    # Determine LLM binding value consistently from command line or environment
+    llm_binding_value = None
     if "--llm-binding" in sys.argv:
         try:
             idx = sys.argv.index("--llm-binding")
-            if idx + 1 < len(sys.argv) and sys.argv[idx + 1] == "ollama":
-                OllamaLLMOptions.add_args(parser)
+            if idx + 1 < len(sys.argv) and not sys.argv[idx + 1].startswith("-"):
+                llm_binding_value = sys.argv[idx + 1]
         except IndexError:
             pass
-    elif os.environ.get("LLM_BINDING") == "ollama":
-        OllamaLLMOptions.add_args(parser)
 
+    # Fall back to environment variable using same function as argparse default
+    if llm_binding_value is None:
+        llm_binding_value = get_env_value("LLM_BINDING", "ollama")
+
+    # Add LLM binding options based on determined value
+    if llm_binding_value == "ollama":
+        OllamaLLMOptions.add_args(parser)
+    elif llm_binding_value in ["openai", "azure_openai"]:
+        OpenAILLMOptions.add_args(parser)
+    elif llm_binding_value == "gemini":
+        GeminiLLMOptions.add_args(parser)
+
+    # Determine embedding binding value consistently from command line or environment
+    embedding_binding_value = None
     if "--embedding-binding" in sys.argv:
         try:
             idx = sys.argv.index("--embedding-binding")
-            if idx + 1 < len(sys.argv):
-                if sys.argv[idx + 1] == "ollama":
-                    OllamaEmbeddingOptions.add_args(parser)
-                elif sys.argv[idx + 1] == "gemini":
-                    GeminiEmbeddingOptions.add_args(parser)
+            if idx + 1 < len(sys.argv) and not sys.argv[idx + 1].startswith("-"):
+                embedding_binding_value = sys.argv[idx + 1]
         except IndexError:
             pass
-    else:
-        env_embedding_binding = os.environ.get("EMBEDDING_BINDING")
-        if env_embedding_binding == "ollama":
-            OllamaEmbeddingOptions.add_args(parser)
-        elif env_embedding_binding == "gemini":
-            GeminiEmbeddingOptions.add_args(parser)
 
-    # Add OpenAI LLM options when llm-binding is openai or azure_openai
-    if "--llm-binding" in sys.argv:
-        try:
-            idx = sys.argv.index("--llm-binding")
-            if idx + 1 < len(sys.argv) and sys.argv[idx + 1] in [
-                "openai",
-                "azure_openai",
-            ]:
-                OpenAILLMOptions.add_args(parser)
-        except IndexError:
-            pass
-    elif os.environ.get("LLM_BINDING") in ["openai", "azure_openai"]:
-        OpenAILLMOptions.add_args(parser)
+    # Fall back to environment variable using same function as argparse default
+    if embedding_binding_value is None:
+        embedding_binding_value = get_env_value("EMBEDDING_BINDING", "ollama")
 
-    if "--llm-binding" in sys.argv:
-        try:
-            idx = sys.argv.index("--llm-binding")
-            if idx + 1 < len(sys.argv) and sys.argv[idx + 1] == "gemini":
-                GeminiLLMOptions.add_args(parser)
-        except IndexError:
-            pass
-    elif os.environ.get("LLM_BINDING") == "gemini":
-        GeminiLLMOptions.add_args(parser)
+    # Add embedding binding options based on determined value
+    if embedding_binding_value == "ollama":
+        OllamaEmbeddingOptions.add_args(parser)
+    elif embedding_binding_value == "gemini":
+        GeminiEmbeddingOptions.add_args(parser)
 
     args = parser.parse_args()
 
@@ -542,19 +534,44 @@ class _GlobalArgsProxy:
 
     This maintains backward compatibility with existing code while
     allowing programmatic control over initialization timing.
+
+    The proxy fully delegates to the underlying argparse.Namespace,
+    including support for vars() calls which is used by binding_options
+    to extract provider-specific configuration options.
     """
 
-    def __getattr__(self, name):
+    def __getattribute__(self, name):
+        """Override attribute access to support vars() and regular attribute access.
+
+        This method intercepts __dict__ access (used by vars()) and delegates
+        to the underlying _global_args namespace, ensuring binding options
+        can be properly extracted.
+        """
+        global _initialized, _global_args
+
+        # Handle __dict__ access for vars() support
+        if name == "__dict__":
+            if not _initialized:
+                initialize_config()
+            return vars(_global_args)
+
+        # Handle class-level attributes that should come from the proxy itself
+        if name in ("__class__", "__repr__", "__getattribute__", "__setattr__"):
+            return object.__getattribute__(self, name)
+
+        # Delegate all other attribute access to the underlying namespace
         if not _initialized:
             initialize_config()
         return getattr(_global_args, name)
 
     def __setattr__(self, name, value):
+        global _initialized, _global_args
         if not _initialized:
             initialize_config()
         setattr(_global_args, name, value)
 
     def __repr__(self):
+        global _initialized, _global_args
         if not _initialized:
             return "<GlobalArgsProxy: Not initialized>"
         return repr(_global_args)
