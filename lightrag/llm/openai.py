@@ -825,7 +825,12 @@ async def openai_embed(
 
         # Add dimensions parameter only if embedding_dim is provided
         if embedding_dim is not None:
-            api_params["dimensions"] = embedding_dim
+            # Voyage AI requires 'output_dimension' via extra_body, not 'dimensions'
+            is_voyage_ai = base_url and "voyageai.com" in base_url
+            if is_voyage_ai:
+                api_params["extra_body"] = {"output_dimension": embedding_dim}
+            else:
+                api_params["dimensions"] = embedding_dim
 
         # Make API call
         response = await openai_async_client.embeddings.create(**api_params)
