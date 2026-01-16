@@ -650,16 +650,32 @@ class RedisDocStatusStorage(DocStatusStorage):
         await self.close()
 
     async def filter_keys(self, keys: set[str]) -> set[str]:
-        """Return keys that should be processed (not in storage or not successfully processed)"""
+        """Return keys that should be processed.
+
+        Returns keys that are either new OR belong to failed documents
+        (failed documents can be re-indexed with the same content).
+        """
         async with self._get_redis_connection() as redis:
             pipe = redis.pipeline()
             keys_list = list(keys)
             for key in keys_list:
-                pipe.exists(f"{self.final_namespace}:{key}")
+                # Get the full document to check its status
+                pipe.get(f"{self.final_namespace}:{key}")
             results = await pipe.execute()
 
-            existing_ids = {keys_list[i] for i, exists in enumerate(results) if exists}
-            return set(keys) - existing_ids
+            # Only consider documents as "existing" if they are NOT failed
+            # This allows re-indexing of content that previously failed
+            existing_non_failed_ids = set()
+            for i, result_data in enumerate(results):
+                if result_data:
+                    try:
+                        doc = json.loads(result_data)
+                        if doc.get("status") != "failed":
+                            existing_non_failed_ids.add(keys_list[i])
+                    except json.JSONDecodeError:
+                        # If we can't parse, consider it as existing (safer)
+                        existing_non_failed_ids.add(keys_list[i])
+            return set(keys) - existing_non_failed_ids
 
     async def get_by_ids(self, ids: list[str]) -> list[dict[str, Any]]:
         ordered_results: list[dict[str, Any] | None] = []

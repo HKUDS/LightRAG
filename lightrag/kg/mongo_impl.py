@@ -392,7 +392,17 @@ class MongoDocStatusStorage(DocStatusStorage):
         return ordered_results
 
     async def filter_keys(self, data: set[str]) -> set[str]:
-        cursor = self._data.find({"_id": {"$in": list(data)}}, {"_id": 1})
+        """Return keys that should be processed.
+
+        Returns keys that are either new OR belong to failed documents
+        (failed documents can be re-indexed with the same content).
+        """
+        # Only consider documents as "existing" if they are NOT failed
+        # This allows re-indexing of content that previously failed
+        cursor = self._data.find(
+            {"_id": {"$in": list(data)}, "status": {"$ne": "failed"}},
+            {"_id": 1}
+        )
         existing_ids = {str(x["_id"]) async for x in cursor}
         return data - existing_ids
 

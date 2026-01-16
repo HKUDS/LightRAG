@@ -71,11 +71,21 @@ class JsonDocStatusStorage(DocStatusStorage):
                     )
 
     async def filter_keys(self, keys: set[str]) -> set[str]:
-        """Return keys that should be processed (not in storage or not successfully processed)"""
+        """Return keys that should be processed.
+
+        Returns keys that are either new OR belong to failed documents
+        (failed documents can be re-indexed with the same content).
+        """
         if self._storage_lock is None:
             raise StorageNotInitializedError("JsonDocStatusStorage")
         async with self._storage_lock:
-            return set(keys) - set(self._data.keys())
+            # Only consider documents as "existing" if they are NOT failed
+            # This allows re-indexing of content that previously failed
+            existing_non_failed = {
+                key for key, doc in self._data.items()
+                if doc.get("status") != DocStatus.FAILED.value
+            }
+            return set(keys) - existing_non_failed
 
     async def get_by_ids(self, ids: list[str]) -> list[dict[str, Any]]:
         ordered_results: list[dict[str, Any] | None] = []

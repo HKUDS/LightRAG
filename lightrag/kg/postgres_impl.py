@@ -2599,12 +2599,18 @@ class PGDocStatusStorage(DocStatusStorage):
             self.db = None
 
     async def filter_keys(self, keys: set[str]) -> set[str]:
-        """Filter out duplicated content"""
+        """Filter out duplicated content.
+
+        Returns keys that are either new OR belong to failed documents
+        (failed documents can be re-indexed with the same content).
+        """
         if not keys:
             return set()
 
         table_name = namespace_to_table_name(self.namespace)
-        sql = f"SELECT id FROM {table_name} WHERE workspace=$1 AND id = ANY($2)"
+        # Only consider documents as "existing" if they are NOT failed
+        # This allows re-indexing of content that previously failed
+        sql = f"SELECT id FROM {table_name} WHERE workspace=$1 AND id = ANY($2) AND status != 'failed'"
         params = {"workspace": self.workspace, "ids": list(keys)}
         try:
             res = await self.db.query(sql, list(params.values()), multirows=True)
@@ -2613,8 +2619,6 @@ class PGDocStatusStorage(DocStatusStorage):
             else:
                 exist_keys = []
             new_keys = set([s for s in keys if s not in exist_keys])
-            # print(f"keys: {keys}")
-            # print(f"new_keys: {new_keys}")
             return new_keys
         except Exception as e:
             logger.error(
