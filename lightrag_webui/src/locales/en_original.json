@@ -8,7 +8,6 @@
   },
   "header": {
     "documents": "Documents",
-    "sanitizeData":"Sanitize Data",
     "knowledgeGraph": "Knowledge Graph",
     "retrieval": "Retrieval",
     "api": "API",

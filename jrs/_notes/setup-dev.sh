@@ -165,6 +165,9 @@ To DEVELOP and MODIFY the WebUI, follow these steps:
    cd $REPO_DIR
    source .venv/bin/activate
 
+2. CREATE A PROMPT THAT TAKES UP LESS SPACE.
+   export PS1='(.venv) \w\$ '
+   
 2. START THE BACKEND:
    lightrag-server
 
