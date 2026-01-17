@@ -216,6 +216,25 @@ class TestEntityResolver:
         assert "Paris" in result
         assert "Paris Hilton" in result
 
+    def test_entity_type_case_insensitive(self):
+        """Test that entity types with different cases are treated as the same type."""
+        resolver = EntityResolver(similarity_threshold=0.85)
+
+        # Same entity with different entity_type casing (common LLM output variation)
+        all_nodes = {
+            "THALIE": [{"entity_type": "ORGANIZATION", "description": "Version 1"}],
+            "Thalie": [{"entity_type": "Organization", "description": "Version 2"}],
+            "thalie": [{"entity_type": "organization", "description": "Version 3"}],
+        }
+
+        result = resolver.consolidate_entities(all_nodes)
+
+        # All should merge despite different entity_type casing
+        assert len(result) == 1
+        # Should have all 3 descriptions
+        canonical_key = list(result.keys())[0]
+        assert len(result[canonical_key]) == 3
+
     # T016: test_consolidate_entities_batch - batch processing works
     def test_consolidate_entities_batch(self):
         """Test batch processing of multiple entities."""
