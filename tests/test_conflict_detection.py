@@ -412,20 +412,66 @@ class TestTemporalConflictFiltering:
         temporal_conflicts = [c for c in conflicts if c.conflict_type == "temporal"]
         assert len(temporal_conflicts) == 0
 
-    def test_temporal_detected_for_organization_type(self):
-        """Test that temporal conflicts are still detected for 'organization' type."""
+    def test_skip_temporal_for_person_entity_type(self):
+        """Test that temporal conflicts are skipped for 'person' entity type.
+
+        People have multiple legitimate dates (birthdate, employment, events)
+        that aren't contradictions. E.g., "Born 1956" vs "Meeting in 2023".
+        """
+        detector = ConflictDetector(confidence_threshold=0.7)
+
+        descriptions = [
+            ("Jacques Bondoux, né le 03/11/1956.", "doc_001"),
+            ("Jacques Bondoux a signé le contrat en 2023.", "doc_002"),
+        ]
+
+        # With entity_type="person", temporal conflicts should be skipped
+        conflicts = detector.detect_conflicts(
+            "Jacques Bondoux",
+            descriptions,
+            entity_type="person"
+        )
+
+        temporal_conflicts = [c for c in conflicts if c.conflict_type == "temporal"]
+        assert len(temporal_conflicts) == 0
+
+    def test_skip_temporal_for_organization_type(self):
+        """Test that temporal conflicts are skipped for 'organization' type.
+
+        Organizations have multiple legitimate dates (founding, contracts, reports)
+        that the naive pattern-based detection can't distinguish from real conflicts.
+        """
         detector = ConflictDetector(confidence_threshold=0.7)
 
         descriptions = [
             ("Tesla was founded in 2003.", "doc_001"),
-            ("Tesla was founded in 2004.", "doc_002"),
+            ("Tesla annual report 2023.", "doc_002"),
         ]
 
-        # With entity_type="organization", temporal conflicts should be detected
+        # With entity_type="organization", temporal conflicts should be skipped
         conflicts = detector.detect_conflicts(
             "Tesla",
             descriptions,
             entity_type="organization"
+        )
+
+        temporal_conflicts = [c for c in conflicts if c.conflict_type == "temporal"]
+        assert len(temporal_conflicts) == 0
+
+    def test_temporal_detected_for_unknown_type(self):
+        """Test that temporal conflicts are detected for unknown/unspecified entity types."""
+        detector = ConflictDetector(confidence_threshold=0.7)
+
+        descriptions = [
+            ("Event happened in 2003.", "doc_001"),
+            ("Event happened in 2004.", "doc_002"),
+        ]
+
+        # With no entity_type specified, temporal conflicts should be detected
+        conflicts = detector.detect_conflicts(
+            "SomeEvent",
+            descriptions,
+            entity_type=None
         )
 
         temporal_conflicts = [c for c in conflicts if c.conflict_type == "temporal"]
@@ -518,14 +564,15 @@ class TestTemporalConflictFiltering:
 
         # Ensure standalone dates are far from period patterns (>50 chars)
         descriptions = [
-            ("The company was founded in 2003. This is important historical information that should be noted for reference.", "doc_001"),
-            ("The company was founded in 2004. Another description with different founding year.", "doc_002"),
+            ("The item was created in 2003. This is important historical information that should be noted for reference.", "doc_001"),
+            ("The item was created in 2004. Another description with different creation year.", "doc_002"),
         ]
 
+        # Use entity_type=None to test temporal detection (organizations skip it)
         conflicts = detector.detect_conflicts(
-            "Company",
+            "SomeItem",
             descriptions,
-            entity_type="organization"
+            entity_type=None
         )
 
         temporal_conflicts = [c for c in conflicts if c.conflict_type == "temporal"]
