@@ -76,9 +76,18 @@ class ConflictInfo:
 
 
 # Entity types that should skip temporal conflict detection
-# These types often contain dates as part of their identity (e.g., "SFJB 2018", "Rapport Q1 2023")
+# These types often have multiple legitimate dates that aren't contradictions:
+# - PERSON: birthdate vs employment dates vs event dates
+# - ORGANIZATION: founding date vs contract dates vs report dates
+# - DATA/ARTIFACT/DOCUMENT: dates are part of identity (e.g., "SFJB 2018")
+#
+# Temporal conflict detection requires semantic context to distinguish:
+# - "Founded in 2003" vs "Founded in 2004" = REAL conflict (same attribute)
+# - "Founded in 2003" vs "Report 2023" = NOT a conflict (different contexts)
+# Current pattern-based detection can't make this distinction, so we skip most types.
 SKIP_TEMPORAL_TYPES: set[str] = {
     "data", "artifact", "document", "report", "period", "event",
+    "person", "organization", "company", "geo", "location",
 }
 
 # Period patterns - dates within these patterns should not trigger conflicts
