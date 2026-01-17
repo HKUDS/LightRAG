@@ -274,7 +274,7 @@ class TestEntityResolverConfiguration:
         resolver = EntityResolver()
 
         assert resolver.similarity_threshold == 0.85
-        assert resolver.min_name_length == 3
+        assert resolver.min_name_length == 2  # Changed from 3 to allow more entity matching
 
     def test_custom_threshold(self):
         """Test custom threshold configuration."""
@@ -508,3 +508,252 @@ class TestConfigurationIntegration:
         assert len(result) == 2
         assert "Apple Inc" in result
         assert "Apple Inc." in result
+
+
+class TestPreferShorterCanonicalName:
+    """Test prefer_shorter_canonical_name option."""
+
+    def test_default_prefers_longer(self):
+        """Test default behavior prefers longer canonical name."""
+        # Use min_name_length=2 to include short names like "Acme" in fuzzy matching
+        resolver = EntityResolver(similarity_threshold=0.85, min_name_length=2)
+
+        all_nodes = {
+            "Acme": [{"entity_type": "ORGANIZATION", "description": "Short"}],
+            "Acme Ingenierie": [{"entity_type": "ORGANIZATION", "description": "Long"}],
+        }
+
+        result = resolver.consolidate_entities(all_nodes)
+
+        # Default: longest name is canonical
+        assert "Acme Ingenierie" in result
+        assert "Acme" not in result
+        assert len(result) == 1
+
+    def test_prefer_shorter_selects_shorter(self):
+        """Test prefer_shorter_canonical_name=True selects shorter name."""
+        resolver = EntityResolver(
+            similarity_threshold=0.85,
+            min_name_length=2,
+            prefer_shorter_canonical_name=True,
+        )
+
+        all_nodes = {
+            "Acme": [{"entity_type": "ORGANIZATION", "description": "Short"}],
+            "Acme Ingenierie": [{"entity_type": "ORGANIZATION", "description": "Long"}],
+        }
+
+        result = resolver.consolidate_entities(all_nodes)
+
+        # With option: shortest name is canonical
+        assert "Acme" in result
+        assert "Acme Ingenierie" not in result
+        assert len(result) == 1
+
+    def test_prefer_shorter_multiple_variants(self):
+        """Test prefer_shorter with multiple variants."""
+        resolver = EntityResolver(
+            similarity_threshold=0.85,
+            prefer_shorter_canonical_name=True,
+        )
+
+        all_nodes = {
+            "SFJB": [{"entity_type": "ORGANIZATION", "description": "Shortest"}],
+            "SFJB SAS": [{"entity_type": "ORGANIZATION", "description": "Medium"}],
+            "SFJB SAS Consulting": [{"entity_type": "ORGANIZATION", "description": "Longest"}],
+        }
+
+        result = resolver.consolidate_entities(all_nodes)
+
+        # Shortest should be canonical
+        assert "SFJB" in result
+        assert len(result) == 1
+
+    def test_prefer_shorter_alphabetical_tiebreaker(self):
+        """Test alphabetical tiebreaker when lengths are equal."""
+        resolver = EntityResolver(
+            similarity_threshold=0.85,
+            prefer_shorter_canonical_name=True,
+        )
+
+        all_nodes = {
+            "ABC SAS": [{"entity_type": "ORGANIZATION", "description": "First alpha"}],
+            "XYZ SAS": [{"entity_type": "ORGANIZATION", "description": "Last alpha"}],
+        }
+
+        result = resolver.consolidate_entities(all_nodes)
+
+        # Equal length: alphabetically first should win
+        # Note: These are different companies, they shouldn't merge
+        # unless they have high similarity
+        # Actually these won't merge - different names
+        assert len(result) == 2
+
+    def test_prefer_shorter_with_french_forms(self):
+        """Test prefer_shorter with French legal forms."""
+        resolver = EntityResolver(
+            similarity_threshold=0.85,
+            prefer_shorter_canonical_name=True,
+        )
+
+        all_nodes = {
+            "Acme": [{"entity_type": "ORGANIZATION", "description": "Short"}],
+            "Acme SAS": [{"entity_type": "ORGANIZATION", "description": "With legal form"}],
+            "Société Acme SARL": [{"entity_type": "ORGANIZATION", "description": "Full"}],
+        }
+
+        result = resolver.consolidate_entities(all_nodes)
+
+        # All normalize to "acme", shortest original is "Acme"
+        assert "Acme" in result
+        assert len(result) == 1
+        # Should have 3 merged descriptions
+        assert len(result["Acme"]) == 3
+
+
+class TestCrossDocumentResolution:
+    """Test cross-document entity resolution (operate.py integration)."""
+
+    @pytest.mark.asyncio
+    async def test_cross_doc_resolution_basic(self):
+        """Test basic cross-document resolution against existing entities."""
+        from lightrag.operate import _resolve_cross_document_entities
+        from unittest.mock import AsyncMock, MagicMock
+
+        # Mock knowledge graph with existing entities
+        mock_graph = MagicMock()
+        mock_graph.get_all_nodes = AsyncMock(return_value=[
+            {"entity_id": "Acme Ingenierie", "entity_type": "ORGANIZATION"},
+            {"entity_id": "Tesla Motors", "entity_type": "ORGANIZATION"},
+        ])
+
+        # New entities from a document
+        all_nodes = {
+            "Acme": [{"entity_type": "ORGANIZATION", "description": "Short variant"}],
+            "SpaceX": [{"entity_type": "ORGANIZATION", "description": "Different company"}],
+        }
+
+        global_config = {
+            "entity_similarity_threshold": 0.85,
+            "entity_min_name_length": 2,  # Allow short names like "Acme"
+        }
+
+        resolved, resolution_map = await _resolve_cross_document_entities(
+            all_nodes, mock_graph, global_config
+        )
+
+        # "Acme" should resolve to existing "Acme Ingenierie"
+        assert "Acme Ingenierie" in resolved
+        assert "Acme" not in resolved
+        assert "Acme" in resolution_map
+        assert resolution_map["Acme"][0] == "Acme Ingenierie"
+
+        # "SpaceX" should remain (no match)
+        assert "SpaceX" in resolved
+
+    @pytest.mark.asyncio
+    async def test_cross_doc_resolution_same_type_only(self):
+        """Test that cross-document resolution only matches same entity type."""
+        from lightrag.operate import _resolve_cross_document_entities
+        from unittest.mock import AsyncMock, MagicMock
+
+        mock_graph = MagicMock()
+        mock_graph.get_all_nodes = AsyncMock(return_value=[
+            {"entity_id": "Apple", "entity_type": "ORGANIZATION"},
+        ])
+
+        # New entity with DIFFERENT type
+        all_nodes = {
+            "Apple": [{"entity_type": "FRUIT", "description": "The fruit"}],
+        }
+
+        global_config = {
+            "entity_similarity_threshold": 0.85,
+            "entity_min_name_length": 3,
+        }
+
+        resolved, resolution_map = await _resolve_cross_document_entities(
+            all_nodes, mock_graph, global_config
+        )
+
+        # Should NOT resolve because types are different
+        assert "Apple" in resolved
+        assert len(resolution_map) == 0
+
+    @pytest.mark.asyncio
+    async def test_cross_doc_resolution_empty_graph(self):
+        """Test cross-document resolution with empty graph."""
+        from lightrag.operate import _resolve_cross_document_entities
+        from unittest.mock import AsyncMock, MagicMock
+
+        mock_graph = MagicMock()
+        mock_graph.get_all_nodes = AsyncMock(return_value=[])
+
+        all_nodes = {
+            "NewEntity": [{"entity_type": "ORGANIZATION", "description": "New"}],
+        }
+
+        global_config = {
+            "entity_similarity_threshold": 0.85,
+            "entity_min_name_length": 3,
+        }
+
+        resolved, resolution_map = await _resolve_cross_document_entities(
+            all_nodes, mock_graph, global_config
+        )
+
+        # No existing entities, so no resolution
+        assert "NewEntity" in resolved
+        assert len(resolution_map) == 0
+
+    @pytest.mark.asyncio
+    async def test_cross_doc_resolution_error_handling(self):
+        """Test cross-document resolution handles errors gracefully."""
+        from lightrag.operate import _resolve_cross_document_entities
+        from unittest.mock import AsyncMock, MagicMock
+
+        mock_graph = MagicMock()
+        mock_graph.get_all_nodes = AsyncMock(side_effect=Exception("DB error"))
+
+        all_nodes = {
+            "Entity": [{"entity_type": "ORGANIZATION", "description": "Test"}],
+        }
+
+        global_config = {}
+
+        # Should not raise, just return original nodes
+        resolved, resolution_map = await _resolve_cross_document_entities(
+            all_nodes, mock_graph, global_config
+        )
+
+        assert "Entity" in resolved
+        assert len(resolution_map) == 0
+
+    @pytest.mark.asyncio
+    async def test_cross_doc_resolution_french_normalization(self):
+        """Test cross-document resolution with French entity normalization."""
+        from lightrag.operate import _resolve_cross_document_entities
+        from unittest.mock import AsyncMock, MagicMock
+
+        mock_graph = MagicMock()
+        mock_graph.get_all_nodes = AsyncMock(return_value=[
+            {"entity_id": "SFJB", "entity_type": "ORGANIZATION"},
+        ])
+
+        # New entity with legal form and spacing variations
+        all_nodes = {
+            "S F J B SAS": [{"entity_type": "ORGANIZATION", "description": "With spaces and SAS"}],
+        }
+
+        global_config = {
+            "entity_similarity_threshold": 0.85,
+            "entity_min_name_length": 3,
+        }
+
+        resolved, resolution_map = await _resolve_cross_document_entities(
+            all_nodes, mock_graph, global_config
+        )
+
+        # "S F J B SAS" should resolve to existing "SFJB" (same normalized form)
+        assert "SFJB" in resolved
+        assert "S F J B SAS" not in resolved

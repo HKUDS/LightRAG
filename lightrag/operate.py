@@ -2464,6 +2464,118 @@ async def _merge_edges_then_upsert(
     return edge_data
 
 
+async def _resolve_cross_document_entities(
+    all_nodes: dict[str, list[dict]],
+    knowledge_graph_inst: BaseGraphStorage,
+    global_config: dict,
+) -> tuple[dict[str, list[dict]], dict[str, tuple[str, float]]]:
+    """
+    Resolve new entities against existing entities in the knowledge graph.
+
+    This enables cross-document deduplication where "2CB" from Document A
+    and "2 C B SAS" from Document B are recognized as the same entity.
+
+    The function compares normalized forms of entity names using fuzzy matching.
+    When a match is found, the new entity is merged under the existing entity's name.
+
+    Args:
+        all_nodes: Dict mapping entity_name -> list of entity records.
+        knowledge_graph_inst: Knowledge graph storage instance.
+        global_config: Global configuration dict.
+
+    Returns:
+        Tuple of (resolved_nodes dict, resolution_map dict).
+        - resolved_nodes: Dict with entities resolved to canonical names.
+        - resolution_map: Dict mapping old_name -> (new_name, score) for logging.
+    """
+    from rapidfuzz import fuzz
+    from lightrag.entity_resolution import _normalize_for_matching
+
+    similarity_threshold = global_config.get("entity_similarity_threshold", 0.85)
+    min_name_length = global_config.get("entity_min_name_length", 3)
+
+    # 1. Get existing entity names from the knowledge graph
+    try:
+        existing_nodes = await knowledge_graph_inst.get_all_nodes()
+    except Exception as e:
+        logger.warning(f"Failed to get existing nodes for cross-doc resolution: {e}")
+        return dict(all_nodes), {}
+
+    if not existing_nodes:
+        return dict(all_nodes), {}
+
+    # 2. Build index of existing entity names (by type for efficiency)
+    # type -> {normalized_name -> original_name}
+    existing_by_type: dict[str, dict[str, str]] = defaultdict(dict)
+    for node in existing_nodes:
+        entity_name = node.get("entity_id") or node.get("id")
+        entity_type = node.get("entity_type", "UNKNOWN")
+        if entity_name and len(entity_name) > min_name_length:
+            normalized = _normalize_for_matching(entity_name)
+            existing_by_type[entity_type.upper()][normalized] = entity_name
+
+    # 3. Resolve each new entity against existing entities
+    resolved_nodes: dict[str, list[dict]] = defaultdict(list)
+    resolution_map: dict[str, tuple[str, float]] = {}
+
+    for entity_name, entities in all_nodes.items():
+        # Get entity type (assume all records have same type)
+        entity_type = (
+            entities[0].get("entity_type", "UNKNOWN").upper() if entities else "UNKNOWN"
+        )
+
+        # Skip short names
+        if len(entity_name) <= min_name_length:
+            resolved_nodes[entity_name].extend(entities)
+            continue
+
+        # Find best matching existing entity of the same type
+        normalized_new = _normalize_for_matching(entity_name)
+        existing_same_type = existing_by_type.get(entity_type, {})
+
+        best_match = None
+        best_score = 0.0
+
+        for normalized_existing, existing_name in existing_same_type.items():
+            # Skip if it's the same entity (already exists with exact name)
+            if existing_name == entity_name:
+                best_match = existing_name
+                best_score = 1.0
+                break
+
+            # Exact normalized match (e.g., "2 C B SAS" matches existing "2CB" via normalization)
+            if normalized_existing == normalized_new:
+                best_match = existing_name
+                best_score = 1.0
+                break
+
+            # Compare using token_set_ratio (handles word order and partial matches)
+            score = fuzz.token_set_ratio(normalized_new, normalized_existing) / 100.0
+            if score >= similarity_threshold and score > best_score:
+                best_match = existing_name
+                best_score = score
+
+        if best_match and best_match != entity_name:
+            # Resolve to existing entity
+            # Note: For cross-document resolution, we always resolve to the existing
+            # entity name to avoid creating duplicates in the graph. If you prefer
+            # the shorter name as canonical, delete the graph and re-index all documents.
+            resolution_map[entity_name] = (best_match, best_score)
+            resolved_nodes[best_match].extend(entities)
+
+            # Log info when new name is shorter (user might prefer it)
+            if len(entity_name) < len(best_match):
+                logger.debug(
+                    f"Cross-doc: '{entity_name}' is shorter than existing '{best_match}'. "
+                    f"To use shorter names, re-index with prefer_shorter_canonical_name=True."
+                )
+        else:
+            # Keep original name (no match found)
+            resolved_nodes[entity_name].extend(entities)
+
+    return dict(resolved_nodes), resolution_map
+
+
 async def merge_nodes_and_edges(
     chunk_results: list,
     knowledge_graph_inst: BaseGraphStorage,
@@ -2534,6 +2646,7 @@ async def merge_nodes_and_edges(
         resolver = EntityResolver(
             similarity_threshold=global_config.get("entity_similarity_threshold", 0.85),
             min_name_length=global_config.get("entity_min_name_length", 3),
+            prefer_shorter_canonical_name=global_config.get("prefer_shorter_canonical_name", False),
         )
         all_nodes = resolver.consolidate_entities(dict(all_nodes))
         # Convert back to defaultdict for consistency with downstream code
@@ -2547,6 +2660,30 @@ async def merge_nodes_and_edges(
             logger.info(
                 f"Entity resolution: {original_count} → {resolved_count} entities "
                 f"(merged {original_count - resolved_count})"
+            )
+
+    # ===== Cross-Document Entity Resolution: Match against existing graph entities =====
+    if global_config.get("enable_entity_resolution", True):
+        pre_cross_doc_count = len(all_nodes)
+        all_nodes, cross_doc_resolutions = await _resolve_cross_document_entities(
+            all_nodes, knowledge_graph_inst, global_config
+        )
+        # Convert back to defaultdict for consistency with downstream code
+        cross_doc_nodes = defaultdict(list)
+        for entity_name, entities in all_nodes.items():
+            cross_doc_nodes[entity_name] = entities
+        all_nodes = cross_doc_nodes
+
+        # Log cross-document resolutions
+        if cross_doc_resolutions:
+            for old_name, (new_name, score) in cross_doc_resolutions.items():
+                logger.info(
+                    f"Cross-doc resolution: '{old_name}' → '{new_name}' (score: {score:.2f})"
+                )
+            post_cross_doc_count = len(all_nodes)
+            logger.info(
+                f"Cross-doc resolution: {pre_cross_doc_count} → {post_cross_doc_count} entities "
+                f"(merged {len(cross_doc_resolutions)})"
             )
 
     total_entities_count = len(all_nodes)
