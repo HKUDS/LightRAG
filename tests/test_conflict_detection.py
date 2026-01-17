@@ -369,3 +369,170 @@ class TestDisableConflictDetection:
 
         # When disabled, no conflicts should be returned
         assert len(conflicts) == 0
+
+
+class TestTemporalConflictFiltering:
+    """Test filtering of temporal conflicts to avoid false positives."""
+
+    def test_skip_temporal_for_data_entity_type(self):
+        """Test that temporal conflicts are skipped for 'data' entity type."""
+        detector = ConflictDetector(confidence_threshold=0.7)
+
+        descriptions = [
+            ("Période Du 01/01/2022 Au 31/12/2022", "doc_001"),
+            ("Période Du 01/04/2022 Au 28/02/2023", "doc_002"),
+        ]
+
+        # With entity_type="data", temporal conflicts should be skipped
+        conflicts = detector.detect_conflicts(
+            "Période Du 01/01/2022 Au 31/12/2022",
+            descriptions,
+            entity_type="data"
+        )
+
+        temporal_conflicts = [c for c in conflicts if c.conflict_type == "temporal"]
+        assert len(temporal_conflicts) == 0
+
+    def test_skip_temporal_for_artifact_entity_type(self):
+        """Test that temporal conflicts are skipped for 'artifact' entity type."""
+        detector = ConflictDetector(confidence_threshold=0.7)
+
+        descriptions = [
+            ("Report from 2018.", "doc_001"),
+            ("Report from 2019.", "doc_002"),
+        ]
+
+        # With entity_type="artifact", temporal conflicts should be skipped
+        conflicts = detector.detect_conflicts(
+            "SFJB Report",
+            descriptions,
+            entity_type="artifact"
+        )
+
+        temporal_conflicts = [c for c in conflicts if c.conflict_type == "temporal"]
+        assert len(temporal_conflicts) == 0
+
+    def test_temporal_detected_for_organization_type(self):
+        """Test that temporal conflicts are still detected for 'organization' type."""
+        detector = ConflictDetector(confidence_threshold=0.7)
+
+        descriptions = [
+            ("Tesla was founded in 2003.", "doc_001"),
+            ("Tesla was founded in 2004.", "doc_002"),
+        ]
+
+        # With entity_type="organization", temporal conflicts should be detected
+        conflicts = detector.detect_conflicts(
+            "Tesla",
+            descriptions,
+            entity_type="organization"
+        )
+
+        temporal_conflicts = [c for c in conflicts if c.conflict_type == "temporal"]
+        assert len(temporal_conflicts) >= 1
+
+    def test_date_in_entity_name_not_conflict(self):
+        """Test that dates in entity name don't trigger conflicts."""
+        detector = ConflictDetector(confidence_threshold=0.7)
+
+        descriptions = [
+            ("SFJB report for fiscal year 2018.", "doc_001"),
+            ("SFJB annual report 2019.", "doc_002"),
+        ]
+
+        # The entity name contains "2018", so 2018 vs other years should be filtered
+        conflicts = detector.detect_conflicts(
+            "SFJB 2018",
+            descriptions,
+            entity_type="organization"
+        )
+
+        # 2018 should not trigger conflict because it's in entity name
+        temporal_conflicts = [c for c in conflicts if c.conflict_type == "temporal"]
+        # At most we might detect 2019 vs nothing (since 2018 is filtered)
+        # but we shouldn't detect 2018 vs 2019 as a conflict
+        for c in temporal_conflicts:
+            assert c.value_a != "2018" or c.value_b != "2019"
+            assert c.value_a != "2019" or c.value_b != "2018"
+
+    def test_period_pattern_not_conflict(self):
+        """Test that dates within period patterns don't trigger conflicts."""
+        detector = ConflictDetector(confidence_threshold=0.7)
+
+        descriptions = [
+            ("Données du 01/01/2022 au 31/12/2022.", "doc_001"),
+            ("Données du 01/04/2022 au 28/02/2023.", "doc_002"),
+        ]
+
+        # Dates within "du X au Y" period patterns should be filtered
+        conflicts = detector.detect_conflicts(
+            "Sales Data",
+            descriptions,
+            entity_type="organization"  # Not a "data" type
+        )
+
+        temporal_conflicts = [c for c in conflicts if c.conflict_type == "temporal"]
+        # Period dates should be filtered even for organization type
+        assert len(temporal_conflicts) == 0
+
+    def test_year_range_not_conflict(self):
+        """Test that year ranges don't trigger conflicts."""
+        detector = ConflictDetector(confidence_threshold=0.7)
+
+        descriptions = [
+            ("Période 2022-2023.", "doc_001"),
+            ("Période 2021-2022.", "doc_002"),
+        ]
+
+        conflicts = detector.detect_conflicts(
+            "Fiscal Period",
+            descriptions,
+            entity_type="organization"
+        )
+
+        temporal_conflicts = [c for c in conflicts if c.conflict_type == "temporal"]
+        assert len(temporal_conflicts) == 0
+
+    def test_attribution_still_detected_for_data_type(self):
+        """Test that attribution conflicts are still detected even for data type."""
+        detector = ConflictDetector(confidence_threshold=0.7)
+
+        descriptions = [
+            ("Created by John Smith.", "doc_001"),
+            ("Created by Jane Doe.", "doc_002"),
+        ]
+
+        # Even with entity_type="data", attribution conflicts should be detected
+        conflicts = detector.detect_conflicts(
+            "Report 2022",
+            descriptions,
+            entity_type="data"
+        )
+
+        attribution_conflicts = [c for c in conflicts if c.conflict_type == "attribution"]
+        assert len(attribution_conflicts) >= 1
+
+    def test_mixed_period_and_standalone_dates(self):
+        """Test that standalone dates outside periods can still conflict."""
+        detector = ConflictDetector(confidence_threshold=0.7)
+
+        # Ensure standalone dates are far from period patterns (>50 chars)
+        descriptions = [
+            ("The company was founded in 2003. This is important historical information that should be noted for reference.", "doc_001"),
+            ("The company was founded in 2004. Another description with different founding year.", "doc_002"),
+        ]
+
+        conflicts = detector.detect_conflicts(
+            "Company",
+            descriptions,
+            entity_type="organization"
+        )
+
+        temporal_conflicts = [c for c in conflicts if c.conflict_type == "temporal"]
+        # 2003 vs 2004 should be detected (standalone dates, no period pattern nearby)
+        standalone_conflicts = [
+            c for c in temporal_conflicts
+            if ("2003" in c.value_a or "2003" in c.value_b)
+            and ("2004" in c.value_a or "2004" in c.value_b)
+        ]
+        assert len(standalone_conflicts) >= 1

@@ -75,6 +75,22 @@ class ConflictInfo:
         )
 
 
+# Entity types that should skip temporal conflict detection
+# These types often contain dates as part of their identity (e.g., "SFJB 2018", "Rapport Q1 2023")
+SKIP_TEMPORAL_TYPES: set[str] = {
+    "data", "artifact", "document", "report", "period", "event",
+}
+
+# Period patterns - dates within these patterns should not trigger conflicts
+# Examples: "Du 01/01/2022 Au 31/12/2022", "Période 2022-2023"
+PERIOD_PATTERNS: list[str] = [
+    r"(?:du|from)\s+\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\s+(?:au|to)\s+\d{1,2}[/-]\d{1,2}[/-]\d{2,4}",
+    r"période\s+(?:du\s+)?\d{1,2}[/-]\d{1,2}[/-]\d{2,4}",
+    r"période\s+\d{4}(?:\s*[-–]\s*\d{4})?",
+    r"\d{4}\s*[-–]\s*\d{4}",  # Year ranges like "2022-2023"
+]
+
+
 @dataclass
 class ConflictDetector:
     """
@@ -237,8 +253,60 @@ class ConflictDetector:
 
         return text[sentence_start:sentence_end].strip()
 
+    def _is_date_in_entity_name(self, entity_name: str, date_value: str) -> bool:
+        """
+        Check if a date/year value appears in the entity name.
+
+        This helps avoid false positives when comparing entities like
+        "SFJB 2018" and "SFJB 2019" which are different reports, not conflicts.
+
+        Args:
+            entity_name: Name of the entity.
+            date_value: The date or year value to check.
+
+        Returns:
+            True if the date appears in the entity name.
+        """
+        # Extract year from date if it's a full date
+        year_match = re.search(r"(19|20)\d{2}", date_value)
+        if year_match:
+            year = year_match.group(0)
+            if year in entity_name:
+                return True
+        return date_value in entity_name
+
+    def _is_within_period_pattern(self, text: str, value: str, start: int) -> bool:
+        """
+        Check if a date value is part of a period pattern.
+
+        Period patterns like "Du 01/01/2022 Au 31/12/2022" should not trigger
+        conflicts because they represent time ranges, not contradictory dates.
+
+        Args:
+            text: Full text containing the date.
+            value: The date value found.
+            start: Start position of the date in text.
+
+        Returns:
+            True if the date is part of a period pattern.
+        """
+        # Check a window around the date for period indicators
+        window_start = max(0, start - 50)
+        window_end = min(len(text), start + len(value) + 50)
+        window = text[window_start:window_end].lower()
+
+        # Check for period patterns in the window
+        for pattern in PERIOD_PATTERNS:
+            if re.search(pattern, window, re.IGNORECASE):
+                return True
+
+        return False
+
     def detect_conflicts(
-        self, entity_name: str, descriptions: list[tuple[str, str]]
+        self,
+        entity_name: str,
+        descriptions: list[tuple[str, str]],
+        entity_type: str | None = None,
     ) -> list[ConflictInfo]:
         """
         Detect conflicts in a list of descriptions.
@@ -246,9 +314,14 @@ class ConflictDetector:
         This method compares all pairs of descriptions to find contradictions
         in temporal, attribution, and numerical data.
 
+        Temporal conflict detection is skipped for entity types that commonly
+        contain dates as part of their identity (data, artifact, document, etc.).
+
         Args:
             entity_name: Name of the entity being analyzed.
             descriptions: List of (description_text, source_id) tuples.
+            entity_type: Optional entity type (e.g., "organization", "data").
+                        Used to skip temporal checks for date-based entities.
 
         Returns:
             List of detected ConflictInfo objects.
@@ -258,12 +331,20 @@ class ConflictDetector:
 
         conflicts: list[ConflictInfo] = []
 
+        # Determine which conflict types to check based on entity type
+        skip_temporal = (
+            entity_type is not None
+            and entity_type.lower() in SKIP_TEMPORAL_TYPES
+        )
+
         # Define what to check for each conflict type
-        conflict_checks = [
-            ("temporal", self.DATE_PATTERNS),
+        conflict_checks = []
+        if not skip_temporal:
+            conflict_checks.append(("temporal", self.DATE_PATTERNS))
+        conflict_checks.extend([
             ("attribution", self.ATTRIBUTION_PATTERNS),
             ("numerical", self.NUMBER_PATTERNS),
-        ]
+        ])
 
         # Compare all pairs of descriptions
         for i, (desc_a, source_a) in enumerate(descriptions):
@@ -275,6 +356,23 @@ class ConflictDetector:
 
                     if not values_a or not values_b:
                         continue
+
+                    # For temporal conflicts, filter out dates in entity names
+                    # and dates within period patterns
+                    if conflict_type == "temporal":
+                        values_a = [
+                            v for v in values_a
+                            if not self._is_date_in_entity_name(entity_name, v[0])
+                            and not self._is_within_period_pattern(desc_a, v[0], v[1])
+                        ]
+                        values_b = [
+                            v for v in values_b
+                            if not self._is_date_in_entity_name(entity_name, v[0])
+                            and not self._is_within_period_pattern(desc_b, v[0], v[1])
+                        ]
+
+                        if not values_a or not values_b:
+                            continue
 
                     # Compare values for conflicts
                     detected = self._compare_values(values_a, values_b, conflict_type)
