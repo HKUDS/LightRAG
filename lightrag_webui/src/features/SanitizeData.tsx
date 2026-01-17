@@ -2,11 +2,13 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 
-const API_BASE = 'http://localhost:9621'; // ← change if your server runs elsewhere
+const API_BASE = 'http://localhost:9621'; // Adjust if your server is on a different port/host
+const PAGE_SIZE = 35;
 
 export default function SanitizeData() {
   const [entities, setEntities] = useState<string[]>([]);
   const [filterText, setFilterText] = useState('');
+  const [currentPage, setCurrentPage] = useState(1);
   const [selectedEntities, setSelectedEntities] = useState<string[]>([]);
   const [firstEntity, setFirstEntity] = useState<string | null>(null);
   const [targetEntity, setTargetEntity] = useState('');
@@ -15,7 +17,7 @@ export default function SanitizeData() {
   const [sourceIdStrategy, setSourceIdStrategy] = useState('join_unique');
   const [showDescriptions, setShowDescriptions] = useState(false);
 
-  // Fetch entities on mount
+  // Fetch all entities once on mount
   useEffect(() => {
     const fetchEntities = async () => {
       try {
@@ -27,17 +29,32 @@ export default function SanitizeData() {
         console.log(`Loaded ${sorted.length} entities`);
       } catch (err) {
         console.error('Failed to load entities:', err);
-        // Optional: show error toast/message later
       }
     };
 
     fetchEntities();
   }, []);
 
-  // Simple client-side filter
+  // Filtered entities (client-side)
   const filteredEntities = entities.filter((e) =>
     e.toLowerCase().includes(filterText.toLowerCase())
   );
+
+  // Pagination calculations
+  const totalPages = Math.max(1, Math.ceil(filteredEntities.length / PAGE_SIZE));
+  const startIndex = (currentPage - 1) * PAGE_SIZE;
+  const paginatedEntities = filteredEntities.slice(startIndex, startIndex + PAGE_SIZE);
+
+  // Reset to page 1 when filter changes significantly
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [filterText]);
+
+  // Pagination handlers
+  const goToFirst = () => setCurrentPage(1);
+  const goToPrev = () => setCurrentPage((prev) => Math.max(1, prev - 1));
+  const goToNext = () => setCurrentPage((prev) => Math.min(totalPages, prev + 1));
+  const goToLast = () => setCurrentPage(totalPages);
 
   return (
     <div className="h-full flex flex-col">
@@ -74,26 +91,43 @@ export default function SanitizeData() {
             </button>
           </div>
 
+          {/* Pagination controls - now functional */}
           <div className="flex flex-wrap gap-1 items-center">
-            <button className="px-2 py-0.5 bg-gray-100 hover:bg-gray-200 border border-gray-300 rounded text-xs font-medium">
+            <button
+              onClick={goToFirst}
+              disabled={currentPage === 1}
+              className="px-2 py-0.5 bg-gray-100 hover:bg-gray-200 border border-gray-300 rounded text-xs font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+            >
               First
             </button>
-            <button className="px-2 py-0.5 bg-gray-100 hover:bg-gray-200 border border-gray-300 rounded text-xs font-medium">
+            <button
+              onClick={goToPrev}
+              disabled={currentPage === 1}
+              className="px-2 py-0.5 bg-gray-100 hover:bg-gray-200 border border-gray-300 rounded text-xs font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+            >
               Prev
             </button>
             <div className="px-2 py-0.5 bg-gray-50 border border-gray-300 rounded text-xs whitespace-nowrap">
-              Pg 1/{Math.ceil(filteredEntities.length / 35) || 1}
+              Pg {currentPage}/{totalPages}
             </div>
-            <button className="px-2 py-0.5 bg-gray-100 hover:bg-gray-200 border border-gray-300 rounded text-xs font-medium">
+            <button
+              onClick={goToNext}
+              disabled={currentPage === totalPages}
+              className="px-2 py-0.5 bg-gray-100 hover:bg-gray-200 border border-gray-300 rounded text-xs font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+            >
               Next
             </button>
-            <button className="px-2 py-0.5 bg-gray-100 hover:bg-gray-200 border border-gray-300 rounded text-xs font-medium">
+            <button
+              onClick={goToLast}
+              disabled={currentPage === totalPages}
+              className="px-2 py-0.5 bg-gray-100 hover:bg-gray-200 border border-gray-300 rounded text-xs font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+            >
               Last
             </button>
           </div>
         </div>
 
-        {/* Upper Right */}
+        {/* Upper Right – unchanged for now */}
         <div className="w-3/4 p-2.5 flex flex-col gap-2.5">
           <div className="flex flex-wrap items-end gap-2.5">
             <div className="flex-1 min-w-[220px]">
@@ -117,9 +151,7 @@ export default function SanitizeData() {
             </div>
 
             <div className="min-w-[200px]">
-              <button
-                className="block w-full px-3 py-0.5 bg-gray-200 hover:bg-gray-300 border border-gray-300 border-b-0 rounded-t-md text-xs font-medium text-gray-800 text-left cursor-pointer shadow-sm"
-              >
+              <button className="block w-full px-3 py-0.5 bg-gray-200 hover:bg-gray-300 border border-gray-300 border-b-0 rounded-t-md text-xs font-medium text-gray-800 text-left cursor-pointer shadow-sm">
                 Select Type
               </button>
               <div className="relative">
@@ -211,7 +243,7 @@ export default function SanitizeData() {
             </div>
 
             <div className="flex-1 overflow-y-auto bg-white">
-              {filteredEntities.slice(0, 35).map((entityName) => (   // ← simple first-page limit
+              {paginatedEntities.map((entityName) => (
                 <div
                   key={entityName}
                   className="grid grid-cols-[40px_40px_1fr] items-center px-2 py-1.5 border-b border-gray-100 hover:bg-gray-50 text-sm"
@@ -246,12 +278,11 @@ export default function SanitizeData() {
           </div>
         </div>
 
-        {/* Lower Right */}
+        {/* Lower Right – still placeholder details */}
         <div className="flex-1 p-3 flex flex-col">
           <div className="flex-1 overflow-y-auto bg-white border border-gray-200 rounded p-3">
             {showDescriptions ? (
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-                {/* We'll show real details here later */}
                 {selectedEntities.slice(0, 9).map((name) => (
                   <div key={name} className="border border-gray-200 rounded p-3 bg-gray-50 text-sm">
                     <div className="font-medium mb-1 flex justify-between items-center">
