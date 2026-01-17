@@ -11,15 +11,16 @@ export default function SanitizeData() {
   const [sourceIdStrategy, setSourceIdStrategy] = useState('join_unique');
   const [showDescriptions, setShowDescriptions] = useState(false);
 
-  // Pagination placeholders (to be made dynamic later)
+  // Pagination placeholders (dynamic later)
   const currentPage = 2;
   const totalPages = 5;
 
   return (
     <div className="h-full flex flex-col">
-      {/* Top row */}
-      <div className="h-1/2 flex border-b border-gray-300">
-        {/* Upper Left - very compact */}
+      {/* Top row – made shorter by moving h-1/2 → h-[38%] (adjust as needed) */}
+      <div className="h-auto flex border-b border-gray-300">    {/* let content decide height */}
+      {/* <div className="h-[38%] flex border-b border-gray-300"> */}
+        {/* Upper Left */}
         <div className="w-1/4 border-r border-gray-300 p-2.5 flex flex-col gap-2.5">
           <input
             type="text"
@@ -93,15 +94,17 @@ export default function SanitizeData() {
               </div>
             </div>
 
-            {/* Entity Type - "Select Type" button now acts as label above the input */}
+            {/* Entity Type – "Select Type" as label above input */}
             <div className="min-w-[200px]">
-              <button className="block w-full px-3 py-0.5 bg-gray-200 hover:bg-gray-300 border border-gray-300 border-b-0 rounded-t text-xs font-medium text-gray-800 text-left cursor-default">
+              <button
+                className="block w-full px-3 py-0.5 bg-gray-200 hover:bg-gray-300 border border-gray-300 border-b-0 rounded-t-md text-xs font-medium text-gray-800 text-left cursor-pointer shadow-sm"
+              >
                 Select Type
               </button>
               <div className="relative">
                 <input
                   type="text"
-                  className="w-full px-3 py-1.5 border border-gray-300 rounded-b text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  className="w-full px-3 py-1.5 border border-gray-300 rounded-b-md text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
                   value={entityType}
                   onChange={(e) => setEntityType(e.target.value)}
                   placeholder="Type or filter..."
@@ -162,18 +165,29 @@ export default function SanitizeData() {
 
       {/* Bottom row */}
       <div className="flex-1 flex">
-        {/* Lower Left - Entity List */}
+        {/* Lower Left */}
         <div className="w-1/4 border-r border-gray-300 flex flex-row">
-          {/* Vertical Show Desc button - rounded corners, more button-like */}
-          <button
-            onClick={() => setShowDescriptions(!showDescriptions)}
-            className="w-10 bg-gradient-to-b from-gray-100 to-gray-300 hover:from-gray-200 hover:to-gray-400 border-r border-gray-400 flex flex-col items-center justify-center text-xs font-medium text-gray-800 shadow-md rounded-r-lg active:bg-gray-400 transition-all"
-          >
-            <span>Show</span>
-            <span>Desc</span>
-          </button>
+          {/* Header area + vertical button column */}
+          <div className="flex flex-col w-10">
+            {/* Small header panel above the button – same height as top headers */}
+            <div className="h-[42px] bg-gray-100 border-b border-gray-300 flex items-center justify-center">
+              <span className="text-xs font-medium text-gray-700 leading-tight text-center">
+                Show<br />Desc
+              </span>
+            </div>
 
-          <div className="flex-1 flex flex-col p-2.5">
+            {/* Vertical button */}
+            <button
+              onClick={() => setShowDescriptions(!showDescriptions)}
+              className="flex-1 bg-gradient-to-b from-gray-100 to-gray-300 hover:from-gray-200 hover:to-gray-400 border-r border-gray-400 flex flex-col items-center justify-center text-xs font-medium text-gray-800 shadow-md rounded-r-lg active:bg-gray-400 transition-all"
+            >
+              <span>Show</span>
+              <span>Desc</span>
+            </button>
+          </div>
+
+          <div className="flex-1 flex flex-col">
+            {/* Main header row */}
             <div className="grid grid-cols-[40px_40px_1fr] gap-1 px-2 py-1.5 bg-gray-100 border-b border-gray-300 text-xs font-medium text-center">
               <div className="text-left pl-1.5">Keep<br/>First</div>
               <div className="text-left pl-1.5">Select<br/>Entities</div>
