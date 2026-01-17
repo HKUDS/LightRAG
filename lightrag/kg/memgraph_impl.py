@@ -313,7 +313,7 @@ class MemgraphStorage(BaseGraphStorage):
 
     async def get_all_labels(self) -> list[str]:
         """
-        Get all existing node labels in the database
+        Get all existing node labels(entity names) in the database
         Returns:
             ["Person", "Company", ...]  # Alphabetically sorted label list
 
@@ -1046,10 +1046,10 @@ class MemgraphStorage(BaseGraphStorage):
         """Get popular labels by node degree (most connected entities)
 
         Args:
-            limit: Maximum number of labels to return
+            limit: Maximum number of labels(entity names) to return
 
         Returns:
-            List of labels sorted by degree (highest first)
+            List of labels(entity names) sorted by degree (highest first)
         """
         if self._driver is None:
             raise RuntimeError(
@@ -1088,14 +1088,14 @@ class MemgraphStorage(BaseGraphStorage):
             return []
 
     async def search_labels(self, query: str, limit: int = 50) -> list[str]:
-        """Search labels with fuzzy matching
+        """Search labels(entity names) with fuzzy matching
 
         Args:
             query: Search query string
             limit: Maximum number of results to return
 
         Returns:
-            List of matching labels sorted by relevance
+            List of matching labels(entity names) sorted by relevance
         """
         if self._driver is None:
             raise RuntimeError(
