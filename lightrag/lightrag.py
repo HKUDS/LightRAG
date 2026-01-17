@@ -57,6 +57,7 @@ from lightrag.constants import (
     DEFAULT_ENABLE_ENTITY_RESOLUTION,
     DEFAULT_ENTITY_SIMILARITY_THRESHOLD,
     DEFAULT_ENTITY_MIN_NAME_LENGTH,
+    DEFAULT_PREFER_SHORTER_CANONICAL_NAME,
     DEFAULT_ENABLE_CONFLICT_DETECTION,
     DEFAULT_CONFLICT_CONFIDENCE_THRESHOLD,
 )
@@ -456,6 +457,13 @@ class LightRAG:
         )
     )
     """Minimum character length for fuzzy matching eligibility. Names shorter than this are not matched."""
+
+    prefer_shorter_canonical_name: bool = field(
+        default=get_env_value(
+            "PREFER_SHORTER_CANONICAL_NAME", DEFAULT_PREFER_SHORTER_CANONICAL_NAME, bool
+        )
+    )
+    """If True, prefer shorter entity names as canonical (e.g., '2CB' instead of '2CB Ingenierie')."""
 
     # Conflict Detection
     # ---
