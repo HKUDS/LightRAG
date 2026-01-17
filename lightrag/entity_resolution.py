@@ -208,10 +208,13 @@ class EntityResolver:
         """
         Compute similarity score between two entity names.
 
-        Uses rapidfuzz's token_set_ratio for robust matching that handles:
-        - Word order variations ("Apple Inc" vs "Inc Apple")
-        - Partial matches ("Apple" vs "Apple Inc")
-        - Punctuation differences ("Apple Inc." vs "Apple Inc")
+        Uses a CONSERVATIVE matching approach to minimize false positives:
+        - Uses fuzz.ratio (not token_set_ratio) for strict character-level matching
+        - Requires numeric tokens to match exactly
+        - Rejects first-name mismatches for person names
+
+        This approach prioritizes precision over recall - it's better to miss
+        a valid merge than to incorrectly merge different entities.
 
         Args:
             name1: First entity name.
@@ -226,8 +229,31 @@ class EntityResolver:
         normalized1 = self._normalize_name(name1)
         normalized2 = self._normalize_name(name2)
 
-        # token_set_ratio handles word order and partial matches well
-        score = fuzz.token_set_ratio(normalized1, normalized2) / 100.0
+        # Protection 1: Check numeric tokens - they must match exactly
+        # This prevents "Facture 24012823" matching "Facture 24012815"
+        nums1 = set(re.findall(r"\d+", normalized1))
+        nums2 = set(re.findall(r"\d+", normalized2))
+        if nums1 and nums2 and nums1 != nums2:
+            # Both have numbers but they're different
+            return 0.0
+
+        # Protection 2: For 2-token names (likely person names), check first token similarity
+        # This prevents "J. Bondoux" matching "Sylvie Bondoux"
+        tokens1 = normalized1.split()
+        tokens2 = normalized2.split()
+        if len(tokens1) == 2 and len(tokens2) == 2:
+            # If first tokens are very different, it's likely different people
+            first_sim = fuzz.ratio(tokens1[0], tokens2[0]) / 100.0
+            if first_sim < 0.6:
+                return 0.0
+
+        # Use fuzz.ratio for STRICT character-level matching
+        # This gives lower scores for partial/subset matches, avoiding false positives:
+        # - "Jacques" vs "Jacques Bondoux" → 0.64 (won't merge at 0.92 threshold)
+        # - "THALIE" vs "Thalie" → 1.00 (will merge)
+        # - "SAS SFJB" vs "SFJB" → 1.00 after normalization (will merge)
+        score = fuzz.ratio(normalized1, normalized2) / 100.0
+
         return score
 
     def _select_canonical_name(self, names: set[str]) -> str:
