@@ -62,6 +62,7 @@ def _coalesce_single_chars(text: str) -> str:
         "2 C B SAS" → "2CB SAS"
         "S F J B" → "SFJB"
         "A B C Company" → "ABC Company"
+        "2 CB" → "2CB"
     """
     # Match patterns like "X Y Z" or "2 C B" where each part is 1 char
     # We look for sequences of single characters separated by spaces
@@ -70,14 +71,21 @@ def _coalesce_single_chars(text: str) -> str:
         # Remove all spaces between single characters
         return match.group(0).replace(" ", "")
 
-    # Pattern: single char + (space + single char)+
+    # Pattern 1: single char + (space + single char)+
     # This matches "A B C" but not "AB CD"
-    pattern = r'\b([A-Za-z0-9])((?:\s+[A-Za-z0-9])+)\b'
+    pattern1 = r'\b([A-Za-z0-9])((?:\s+[A-Za-z0-9])+)\b'
+
+    # Pattern 2: single DIGIT + space + short acronym (2-3 letters)
+    # This matches "2 CB", "2 cb" but excludes French articles (la, le, un, du, de, les, des)
+    # Uses negative lookahead to avoid breaking article removal
+    pattern2 = r'\b([0-9])\s+(?!la\b|le\b|un\b|du\b|de\b|les\b|des\b)([A-Za-z]{2,3})\b'
 
     result = text
     # Keep applying until no more changes (handles overlapping patterns)
     while True:
-        new_result = re.sub(pattern, coalesce_match, result)
+        new_result = re.sub(pattern1, coalesce_match, result)
+        # Also apply pattern 2 for short acronym fragments
+        new_result = re.sub(pattern2, r'\1\2', new_result)
         if new_result == result:
             break
         result = new_result
