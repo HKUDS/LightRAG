@@ -1,7 +1,11 @@
 // src/pages/SanitizeData.tsx
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
+import axios from 'axios';
+
+const API_BASE = 'http://localhost:9621'; // ← change if your server runs elsewhere
 
 export default function SanitizeData() {
+  const [entities, setEntities] = useState<string[]>([]);
   const [filterText, setFilterText] = useState('');
   const [selectedEntities, setSelectedEntities] = useState<string[]>([]);
   const [firstEntity, setFirstEntity] = useState<string | null>(null);
@@ -11,15 +15,34 @@ export default function SanitizeData() {
   const [sourceIdStrategy, setSourceIdStrategy] = useState('join_unique');
   const [showDescriptions, setShowDescriptions] = useState(false);
 
-  // Pagination placeholders (dynamic later)
-  const currentPage = 2;
-  const totalPages = 5;
+  // Fetch entities on mount
+  useEffect(() => {
+    const fetchEntities = async () => {
+      try {
+        const response = await axios.get(`${API_BASE}/graph/label/list`);
+        const sorted = (response.data as string[]).sort((a, b) =>
+          a.toLowerCase().localeCompare(b.toLowerCase())
+        );
+        setEntities(sorted);
+        console.log(`Loaded ${sorted.length} entities`);
+      } catch (err) {
+        console.error('Failed to load entities:', err);
+        // Optional: show error toast/message later
+      }
+    };
+
+    fetchEntities();
+  }, []);
+
+  // Simple client-side filter
+  const filteredEntities = entities.filter((e) =>
+    e.toLowerCase().includes(filterText.toLowerCase())
+  );
 
   return (
     <div className="h-full flex flex-col">
-      {/* Top row – made shorter by moving h-1/2 → h-[38%] (adjust as needed) */}
-      <div className="h-auto flex border-b border-gray-300">    {/* let content decide height */}
-      {/* <div className="h-[38%] flex border-b border-gray-300"> */}
+      {/* Top row – auto height */}
+      <div className="h-auto flex border-b border-gray-300">
         {/* Upper Left */}
         <div className="w-1/4 border-r border-gray-300 p-2.5 flex flex-col gap-2.5">
           <input
@@ -59,7 +82,7 @@ export default function SanitizeData() {
               Prev
             </button>
             <div className="px-2 py-0.5 bg-gray-50 border border-gray-300 rounded text-xs whitespace-nowrap">
-              Pg {currentPage}/{totalPages}
+              Pg 1/{Math.ceil(filteredEntities.length / 35) || 1}
             </div>
             <button className="px-2 py-0.5 bg-gray-100 hover:bg-gray-200 border border-gray-300 rounded text-xs font-medium">
               Next
@@ -73,7 +96,6 @@ export default function SanitizeData() {
         {/* Upper Right */}
         <div className="w-3/4 p-2.5 flex flex-col gap-2.5">
           <div className="flex flex-wrap items-end gap-2.5">
-            {/* Target Entity */}
             <div className="flex-1 min-w-[220px]">
               <label className="block text-xs font-medium text-gray-700 mb-0.5">
                 Target Entity
@@ -94,7 +116,6 @@ export default function SanitizeData() {
               </div>
             </div>
 
-            {/* Entity Type – "Select Type" as label above input */}
             <div className="min-w-[200px]">
               <button
                 className="block w-full px-3 py-0.5 bg-gray-200 hover:bg-gray-300 border border-gray-300 border-b-0 rounded-t-md text-xs font-medium text-gray-800 text-left cursor-pointer shadow-sm"
@@ -117,7 +138,6 @@ export default function SanitizeData() {
               </div>
             </div>
 
-            {/* Strategies */}
             <div className="min-w-[140px]">
               <label className="block text-xs font-medium text-gray-700 mb-0.5">
                 Desc Strategy
@@ -167,16 +187,13 @@ export default function SanitizeData() {
       <div className="flex-1 flex">
         {/* Lower Left */}
         <div className="w-1/4 border-r border-gray-300 flex flex-row">
-          {/* Header area + vertical button column */}
           <div className="flex flex-col w-10">
-            {/* Small header panel above the button – same height as top headers */}
             <div className="h-[42px] bg-gray-100 border-b border-gray-300 flex items-center justify-center">
               <span className="text-xs font-medium text-gray-700 leading-tight text-center">
                 Show<br />Desc
               </span>
             </div>
 
-            {/* Vertical button */}
             <button
               onClick={() => setShowDescriptions(!showDescriptions)}
               className="flex-1 bg-gradient-to-b from-gray-100 to-gray-300 hover:from-gray-200 hover:to-gray-400 border-r border-gray-400 flex flex-col items-center justify-center text-xs font-medium text-gray-800 shadow-md rounded-r-lg active:bg-gray-400 transition-all"
@@ -187,7 +204,6 @@ export default function SanitizeData() {
           </div>
 
           <div className="flex-1 flex flex-col">
-            {/* Main header row */}
             <div className="grid grid-cols-[40px_40px_1fr] gap-1 px-2 py-1.5 bg-gray-100 border-b border-gray-300 text-xs font-medium text-center">
               <div className="text-left pl-1.5">Keep<br/>First</div>
               <div className="text-left pl-1.5">Select<br/>Entities</div>
@@ -195,40 +211,37 @@ export default function SanitizeData() {
             </div>
 
             <div className="flex-1 overflow-y-auto bg-white">
-              {Array.from({ length: 20 }).map((_, i) => {
-                const entityName = `Entity_${i + 1}_Example ${i % 3 === 0 ? '(Person)' : ''}`;
-                return (
-                  <div
-                    key={i}
-                    className="grid grid-cols-[40px_40px_1fr] items-center px-2 py-1.5 border-b border-gray-100 hover:bg-gray-50 text-sm"
-                  >
-                    <div className="flex justify-center">
-                      <input
-                        type="radio"
-                        name="first-entity"
-                        checked={firstEntity === entityName}
-                        onChange={() => setFirstEntity(entityName)}
-                        className="h-4 w-4 text-blue-600"
-                      />
-                    </div>
-                    <div className="flex justify-center">
-                      <input
-                        type="checkbox"
-                        checked={selectedEntities.includes(entityName)}
-                        onChange={(e) => {
-                          if (e.target.checked) {
-                            setSelectedEntities([...selectedEntities, entityName]);
-                          } else {
-                            setSelectedEntities(selectedEntities.filter(e => e !== entityName));
-                          }
-                        }}
-                        className="h-4 w-4 text-blue-600 rounded"
-                      />
-                    </div>
-                    <div className="truncate pl-2">{entityName}</div>
+              {filteredEntities.slice(0, 35).map((entityName) => (   // ← simple first-page limit
+                <div
+                  key={entityName}
+                  className="grid grid-cols-[40px_40px_1fr] items-center px-2 py-1.5 border-b border-gray-100 hover:bg-gray-50 text-sm"
+                >
+                  <div className="flex justify-center">
+                    <input
+                      type="radio"
+                      name="first-entity"
+                      checked={firstEntity === entityName}
+                      onChange={() => setFirstEntity(entityName)}
+                      className="h-4 w-4 text-blue-600"
+                    />
                   </div>
-                );
-              })}
+                  <div className="flex justify-center">
+                    <input
+                      type="checkbox"
+                      checked={selectedEntities.includes(entityName)}
+                      onChange={(e) => {
+                        if (e.target.checked) {
+                          setSelectedEntities([...selectedEntities, entityName]);
+                        } else {
+                          setSelectedEntities(selectedEntities.filter((e) => e !== entityName));
+                        }
+                      }}
+                      className="h-4 w-4 text-blue-600 rounded"
+                    />
+                  </div>
+                  <div className="truncate pl-2">{entityName}</div>
+                </div>
+              ))}
             </div>
           </div>
         </div>
@@ -238,19 +251,20 @@ export default function SanitizeData() {
           <div className="flex-1 overflow-y-auto bg-white border border-gray-200 rounded p-3">
             {showDescriptions ? (
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-                {Array.from({ length: 9 }).map((_, i) => (
-                  <div key={i} className="border border-gray-200 rounded p-3 bg-gray-50 text-sm">
+                {/* We'll show real details here later */}
+                {selectedEntities.slice(0, 9).map((name) => (
+                  <div key={name} className="border border-gray-200 rounded p-3 bg-gray-50 text-sm">
                     <div className="font-medium mb-1 flex justify-between items-center">
-                      <span>Entity_Name_{i + 1}</span>
+                      <span>{name}</span>
                       <button className="text-xs text-blue-600 hover:underline">
                         Edit
                       </button>
                     </div>
                     <div className="text-gray-600 mb-1.5 line-clamp-3">
-                      Placeholder description...
+                      Loading description...
                     </div>
                     <div className="text-xs text-gray-500">
-                      Type: Concept • Rel: 4 • Src: doc_001.pdf
+                      Type: ? • Rel: ? • Src: ?
                     </div>
                   </div>
                 ))}
