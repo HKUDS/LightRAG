@@ -4,11 +4,19 @@ Entity Resolution module for LightRAG.
 This module provides fuzzy matching and deduplication of similar entity names
 during document ingestion. Entities like "Apple Inc", "Apple Inc.", and "Apple"
 are consolidated under a single canonical name.
+
+Enhanced with French legal entity support:
+- Removes legal forms (SAS, SARL, etc.)
+- Normalizes accents (é → e)
+- Coalesces acronyms (S F J B → SFJB)
+- Removes articles (La, Le, Société)
 """
 
 from __future__ import annotations
 
 import logging
+import re
+import unicodedata
 from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Any
@@ -20,6 +28,109 @@ from lightrag.constants import (
 )
 
 logger = logging.getLogger("lightrag.entity_resolution")
+
+
+# French legal forms to remove during normalization (case-insensitive)
+FRENCH_LEGAL_FORMS = {
+    "sas", "sarl", "sa", "sasu", "eurl", "sci", "snc", "sca", "scop",
+    "saem", "sem", "eirl", "ei", "gie", "gmbh", "ag", "ltd", "llc",
+    "inc", "corp", "corporation", "incorporated", "limited",
+}
+
+# French articles and common prefixes to remove
+# Note: "compagnie" is NOT included as it's often the main name
+FRENCH_ARTICLES = {
+    "la", "le", "les", "l", "un", "une", "des", "du", "de", "d",
+    "société", "societe", "ste", "entreprise", "ets", "etablissements",
+    "groupe", "holding", "cie",
+}
+
+
+def _remove_accents(text: str) -> str:
+    """Remove accents from text (é → e, è → e, etc.)."""
+    # NFD normalization separates base characters from combining marks
+    normalized = unicodedata.normalize("NFD", text)
+    # Remove combining marks (accents)
+    return "".join(c for c in normalized if unicodedata.category(c) != "Mn")
+
+
+def _coalesce_single_chars(text: str) -> str:
+    """
+    Coalesce single characters separated by spaces into acronyms.
+
+    Examples:
+        "2 C B SAS" → "2CB SAS"
+        "S F J B" → "SFJB"
+        "A B C Company" → "ABC Company"
+    """
+    # Match patterns like "X Y Z" or "2 C B" where each part is 1 char
+    # We look for sequences of single characters separated by spaces
+
+    def coalesce_match(match):
+        # Remove all spaces between single characters
+        return match.group(0).replace(" ", "")
+
+    # Pattern: single char + (space + single char)+
+    # This matches "A B C" but not "AB CD"
+    pattern = r'\b([A-Za-z0-9])((?:\s+[A-Za-z0-9])+)\b'
+
+    result = text
+    # Keep applying until no more changes (handles overlapping patterns)
+    while True:
+        new_result = re.sub(pattern, coalesce_match, result)
+        if new_result == result:
+            break
+        result = new_result
+
+    return result
+
+
+def _normalize_for_matching(name: str) -> str:
+    """
+    Normalize entity name for fuzzy matching comparison.
+
+    This is more aggressive than display normalization:
+    1. Lowercase
+    2. Remove accents
+    3. Remove punctuation
+    4. Coalesce single characters (acronyms)
+    5. Remove French legal forms
+    6. Remove French articles
+    7. Normalize whitespace
+
+    Args:
+        name: The entity name to normalize.
+
+    Returns:
+        Normalized string for comparison.
+    """
+    # Step 1: Basic normalization
+    result = name.lower().strip()
+
+    # Step 2: Remove accents
+    result = _remove_accents(result)
+
+    # Step 3: Remove punctuation (keep alphanumeric and spaces)
+    result = re.sub(r"[^\w\s]", " ", result)
+
+    # Step 4: Coalesce single characters into acronyms
+    result = _coalesce_single_chars(result)
+
+    # Step 5: Tokenize (split on whitespace, removes empty tokens)
+    tokens = result.split()
+
+    # Step 6: Remove legal forms and articles
+    filtered_tokens = [
+        token for token in tokens
+        if token not in FRENCH_LEGAL_FORMS and token not in FRENCH_ARTICLES
+    ]
+
+    # Step 7: If all tokens were removed, keep original tokens
+    if not filtered_tokens:
+        filtered_tokens = tokens
+
+    # Step 8: Rejoin with single spaces
+    return " ".join(filtered_tokens)
 
 
 @dataclass
@@ -66,18 +177,22 @@ class EntityResolver:
 
     def _normalize_name(self, name: str) -> str:
         """
-        Normalize entity name for comparison.
+        Normalize entity name for fuzzy matching comparison.
 
-        Performs case-insensitive normalization while preserving
-        the original structure for display purposes.
+        Applies comprehensive normalization for better matching:
+        - Case-insensitive comparison
+        - Accent normalization (é → e)
+        - Single character coalescence (S F J B → SFJB)
+        - French legal form removal (SAS, SARL, etc.)
+        - French article removal (La, Le, Société)
 
         Args:
             name: The entity name to normalize.
 
         Returns:
-            Lowercase version of the name for comparison.
+            Normalized version of the name for comparison.
         """
-        return name.lower().strip()
+        return _normalize_for_matching(name)
 
     def _compute_similarity(self, name1: str, name2: str) -> float:
         """
@@ -112,19 +227,26 @@ class EntityResolver:
         Selection criteria (per FR-003):
         1. Longest name is preferred (more specific/complete)
         2. If equal length, first alphabetically (deterministic)
+        3. Ensure first letter is capitalized for display
 
         Args:
             names: Set of similar entity names.
 
         Returns:
-            The selected canonical name.
+            The selected canonical name with proper capitalization.
         """
         if not names:
             raise ValueError("Cannot select canonical name from empty set")
 
         # Sort by length (descending), then alphabetically for ties
         sorted_names = sorted(names, key=lambda n: (-len(n), n))
-        return sorted_names[0]
+        canonical = sorted_names[0]
+
+        # Ensure first letter is capitalized for proper display in graph
+        if canonical and canonical[0].islower():
+            canonical = canonical[0].upper() + canonical[1:]
+
+        return canonical
 
     def resolve(self, entity_name: str, entity_type: str) -> str:
         """
