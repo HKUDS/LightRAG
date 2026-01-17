@@ -120,5 +120,8 @@ DEFAULT_ENTITY_MIN_NAME_LENGTH = 2
 DEFAULT_PREFER_SHORTER_CANONICAL_NAME = False
 
 # Conflict Detection configuration defaults
-DEFAULT_ENABLE_CONFLICT_DETECTION = True
+# Disabled by default: pattern-based detection produces too many false positives
+# (different dates for same entity are not conflicts, e.g., birthdate vs activity date)
+# Enable only for specific use cases where semantic conflict detection is needed
+DEFAULT_ENABLE_CONFLICT_DETECTION = False
 DEFAULT_CONFLICT_CONFIDENCE_THRESHOLD = 0.7
