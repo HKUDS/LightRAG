@@ -310,8 +310,8 @@ class EntityResolver:
         for entity_name, records in all_nodes.items():
             if not records:
                 continue
-            # Get entity type from first record
-            entity_type = records[0].get("entity_type", "UNKNOWN")
+            # Get entity type from first record (normalize to uppercase for consistent grouping)
+            entity_type = records[0].get("entity_type", "UNKNOWN").upper()
             entities_by_type[entity_type][entity_name] = records
 
         # Process each type group separately
