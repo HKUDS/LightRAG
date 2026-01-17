@@ -353,6 +353,18 @@ class TestNormalization:
         assert resolver._normalize_name("S F J B") == "sfjb"
         assert resolver._normalize_name("A B C Company") == "abc company"
 
+    def test_normalize_coalesces_partial_acronyms(self):
+        """Test that digit + 2-3 char acronym fragments are coalesced."""
+        resolver = EntityResolver()
+
+        # Partial acronyms: digit + short acronym
+        assert resolver._normalize_name("2 CB") == "2cb"
+        assert resolver._normalize_name("2 CB SAS") == "2cb"
+        assert resolver._normalize_name("3 AB test") == "3ab test"
+        # French articles should NOT be coalesced
+        assert resolver._normalize_name("2 le chat") == "2 chat"  # "le" removed as article
+        assert resolver._normalize_name("2 la maison") == "2 maison"  # "la" removed as article
+
     def test_normalize_combined(self):
         """Test combination of all normalization rules."""
         resolver = EntityResolver()
@@ -399,7 +411,8 @@ class TestFrenchEntityResolution:
 
         all_nodes = {
             "2CB SAS": [{"entity_type": "ORGANIZATION", "description": "Normal"}],
-            "2 C B SAS": [{"entity_type": "ORGANIZATION", "description": "With spaces"}],
+            "2 C B SAS": [{"entity_type": "ORGANIZATION", "description": "With full spaces"}],
+            "2 CB": [{"entity_type": "ORGANIZATION", "description": "Partial acronym"}],
             "SAS 2CB": [{"entity_type": "ORGANIZATION", "description": "Reversed"}],
         }
 
