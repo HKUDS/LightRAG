@@ -303,13 +303,64 @@ class TestEntityResolverConfiguration:
 class TestNormalization:
     """Test name normalization."""
 
-    def test_normalize_preserves_structure(self):
-        """Test that normalization handles various inputs."""
+    def test_normalize_basic(self):
+        """Test basic normalization: lowercase, strip whitespace."""
         resolver = EntityResolver()
 
-        assert resolver._normalize_name("Apple Inc") == "apple inc"
-        assert resolver._normalize_name("  Apple Inc  ") == "apple inc"
-        assert resolver._normalize_name("APPLE INC") == "apple inc"
+        # Basic case normalization
+        assert resolver._normalize_name("Apple") == "apple"
+        assert resolver._normalize_name("  Apple  ") == "apple"
+        assert resolver._normalize_name("APPLE") == "apple"
+
+    def test_normalize_removes_legal_forms(self):
+        """Test that French and English legal forms are removed."""
+        resolver = EntityResolver()
+
+        # French legal forms
+        assert resolver._normalize_name("SFJB SAS") == "sfjb"
+        assert resolver._normalize_name("SAS SFJB") == "sfjb"
+        assert resolver._normalize_name("THALIE SARL") == "thalie"
+        assert resolver._normalize_name("EURL Dupont") == "dupont"
+        # English legal forms
+        assert resolver._normalize_name("Apple Inc") == "apple"
+        assert resolver._normalize_name("Google LLC") == "google"
+        assert resolver._normalize_name("Microsoft Corporation") == "microsoft"
+
+    def test_normalize_removes_articles(self):
+        """Test that French articles and prefixes are removed."""
+        resolver = EntityResolver()
+
+        assert resolver._normalize_name("Société THALIE") == "thalie"
+        assert resolver._normalize_name("La Compagnie") == "compagnie"
+        assert resolver._normalize_name("Groupe Bondoux") == "bondoux"
+        assert resolver._normalize_name("Entreprise Martin") == "martin"
+
+    def test_normalize_removes_accents(self):
+        """Test that accents are normalized."""
+        resolver = EntityResolver()
+
+        assert resolver._normalize_name("Études Techniques") == "etudes techniques"
+        assert resolver._normalize_name("Financière de Rozier") == "financiere rozier"
+        assert resolver._normalize_name("Ingénierie") == "ingenierie"
+        assert resolver._normalize_name("Crèche Étoile") == "creche etoile"
+
+    def test_normalize_coalesces_acronyms(self):
+        """Test that single characters are coalesced into acronyms."""
+        resolver = EntityResolver()
+
+        # Single characters with spaces become acronyms
+        assert resolver._normalize_name("2 C B SAS") == "2cb"
+        assert resolver._normalize_name("S F J B") == "sfjb"
+        assert resolver._normalize_name("A B C Company") == "abc company"
+
+    def test_normalize_combined(self):
+        """Test combination of all normalization rules."""
+        resolver = EntityResolver()
+
+        # Complex case: accents + legal form + acronym
+        assert resolver._normalize_name("2 C B SAS Ingénierie, Études Techniques") == "2cb ingenierie etudes techniques"
+        # Legal form in middle
+        assert resolver._normalize_name("Société Financière de Rozier SAS") == "financiere rozier"
 
     def test_similarity_with_punctuation(self):
         """Test similarity handles punctuation differences."""
@@ -318,6 +369,90 @@ class TestNormalization:
         # Punctuation has minor effect on similarity (~0.94 for period)
         similarity = resolver._compute_similarity("Apple Inc.", "Apple Inc")
         assert similarity > 0.90  # Still very high similarity
+
+
+class TestFrenchEntityResolution:
+    """Test entity resolution with French legal entities."""
+
+    def test_sfjb_variations_merge(self):
+        """Test that SFJB variations are properly merged."""
+        resolver = EntityResolver(similarity_threshold=0.85)
+
+        all_nodes = {
+            "SAS SFJB": [{"entity_type": "ORGANIZATION", "description": "Version 1"}],
+            "SFJB SAS": [{"entity_type": "ORGANIZATION", "description": "Version 2"}],
+            "SFJB": [{"entity_type": "ORGANIZATION", "description": "Version 3"}],
+            "Société SFJB": [{"entity_type": "ORGANIZATION", "description": "Version 4"}],
+        }
+
+        result = resolver.consolidate_entities(all_nodes)
+
+        # All should merge into one entity
+        assert len(result) == 1
+        # Should have all 4 descriptions
+        canonical_key = list(result.keys())[0]
+        assert len(result[canonical_key]) == 4
+
+    def test_2cb_variations_merge(self):
+        """Test that 2CB variations with spaces are properly merged."""
+        resolver = EntityResolver(similarity_threshold=0.85)
+
+        all_nodes = {
+            "2CB SAS": [{"entity_type": "ORGANIZATION", "description": "Normal"}],
+            "2 C B SAS": [{"entity_type": "ORGANIZATION", "description": "With spaces"}],
+            "SAS 2CB": [{"entity_type": "ORGANIZATION", "description": "Reversed"}],
+        }
+
+        result = resolver.consolidate_entities(all_nodes)
+
+        # All should merge into one entity
+        assert len(result) == 1
+
+    def test_thalie_variations_merge(self):
+        """Test that THALIE variations are properly merged."""
+        resolver = EntityResolver(similarity_threshold=0.85)
+
+        all_nodes = {
+            "THALIE": [{"entity_type": "ORGANIZATION", "description": "Uppercase"}],
+            "Thalie": [{"entity_type": "ORGANIZATION", "description": "Titlecase"}],
+            "SAS THALIE": [{"entity_type": "ORGANIZATION", "description": "With SAS"}],
+            "Société THALIE": [{"entity_type": "ORGANIZATION", "description": "With Société"}],
+        }
+
+        result = resolver.consolidate_entities(all_nodes)
+
+        # All should merge into one entity
+        assert len(result) == 1
+
+    def test_accent_variations_merge(self):
+        """Test that accent variations are properly merged."""
+        resolver = EntityResolver(similarity_threshold=0.85)
+
+        all_nodes = {
+            "Financière de Rozier": [{"entity_type": "ORGANIZATION", "description": "With accents"}],
+            "Financiere de Rozier": [{"entity_type": "ORGANIZATION", "description": "Without accents"}],
+            "SAS Financière de Rozier": [{"entity_type": "ORGANIZATION", "description": "With SAS"}],
+        }
+
+        result = resolver.consolidate_entities(all_nodes)
+
+        # All should merge into one entity
+        assert len(result) == 1
+
+    def test_canonical_name_preserves_original(self):
+        """Test that the canonical name is the longest original (not normalized)."""
+        resolver = EntityResolver(similarity_threshold=0.85)
+
+        all_nodes = {
+            "SFJB": [{"entity_type": "ORGANIZATION", "description": "Short"}],
+            "SFJB SAS Consulting": [{"entity_type": "ORGANIZATION", "description": "Long"}],
+        }
+
+        result = resolver.consolidate_entities(all_nodes)
+
+        # Canonical should be the longest original name
+        assert "SFJB SAS Consulting" in result
+        assert len(result) == 1
 
 
 class TestConfigurationIntegration:
