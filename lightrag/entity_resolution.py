@@ -25,6 +25,7 @@ from lightrag.constants import (
     DEFAULT_ENABLE_ENTITY_RESOLUTION,
     DEFAULT_ENTITY_SIMILARITY_THRESHOLD,
     DEFAULT_ENTITY_MIN_NAME_LENGTH,
+    DEFAULT_PREFER_SHORTER_CANONICAL_NAME,
 )
 
 logger = logging.getLogger("lightrag.entity_resolution")
@@ -166,6 +167,7 @@ class EntityResolver:
 
     similarity_threshold: float = DEFAULT_ENTITY_SIMILARITY_THRESHOLD
     min_name_length: int = DEFAULT_ENTITY_MIN_NAME_LENGTH
+    prefer_shorter_canonical_name: bool = DEFAULT_PREFER_SHORTER_CANONICAL_NAME
 
     # Internal state - maps original names to their canonical form
     canonical_names: dict[str, str] = field(default_factory=dict)
@@ -232,10 +234,11 @@ class EntityResolver:
         """
         Select the canonical name from a set of similar names.
 
-        Selection criteria (per FR-003):
-        1. Longest name is preferred (more specific/complete)
-        2. If equal length, first alphabetically (deterministic)
-        3. Ensure first letter is capitalized for display
+        Selection criteria:
+        1. By default, longest name is preferred (more specific/complete)
+        2. If prefer_shorter_canonical_name is True, shortest name is preferred
+        3. If equal length, first alphabetically (deterministic)
+        4. Ensure first letter is capitalized for display
 
         Args:
             names: Set of similar entity names.
@@ -246,8 +249,12 @@ class EntityResolver:
         if not names:
             raise ValueError("Cannot select canonical name from empty set")
 
-        # Sort by length (descending), then alphabetically for ties
-        sorted_names = sorted(names, key=lambda n: (-len(n), n))
+        # Sort by length (ascending if prefer_shorter, descending otherwise)
+        # Then alphabetically for ties
+        if self.prefer_shorter_canonical_name:
+            sorted_names = sorted(names, key=lambda n: (len(n), n))
+        else:
+            sorted_names = sorted(names, key=lambda n: (-len(n), n))
         canonical = sorted_names[0]
 
         # Ensure first letter is capitalized for proper display in graph
