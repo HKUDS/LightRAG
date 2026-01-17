@@ -94,6 +94,7 @@ from lightrag.base import (
 from lightrag.namespace import NameSpace
 from lightrag.operate import (
     chunking_by_token_size,
+    consolidate_graph_entities,
     extract_entities,
     merge_nodes_and_edges,
     kg_query,
@@ -2246,6 +2247,39 @@ class LightRAG:
 
                     # Exit directly (document statuses already updated in process_document)
                     return
+
+                # Post-processing: consolidate duplicate entities that may have been
+                # created due to race conditions in parallel document processing
+                if self.enable_entity_resolution and self.max_parallel_insert > 1:
+                    try:
+                        log_message = "Running post-processing entity consolidation"
+                        logger.info(log_message)
+                        async with pipeline_status_lock:
+                            pipeline_status["latest_message"] = log_message
+                            pipeline_status["history_messages"].append(log_message)
+
+                        consolidation_map = await consolidate_graph_entities(
+                            knowledge_graph_inst=self.chunk_entity_relation_graph,
+                            entity_vdb=self.entities_vdb,
+                            relationships_vdb=self.relationships_vdb,
+                            global_config=asdict(self),
+                            full_entities_storage=self.full_entities,
+                            full_relations_storage=self.full_relations,
+                            entity_chunks_storage=self.entity_chunks,
+                            relation_chunks_storage=self.relation_chunks,
+                        )
+
+                        if consolidation_map:
+                            log_message = (
+                                f"Post-processing: consolidated {len(consolidation_map)} "
+                                f"duplicate entities"
+                            )
+                            logger.info(log_message)
+                            async with pipeline_status_lock:
+                                pipeline_status["latest_message"] = log_message
+                                pipeline_status["history_messages"].append(log_message)
+                    except Exception as e:
+                        logger.warning(f"Post-processing consolidation failed: {e}")
 
                 # Check if there's a pending request to process more documents (with lock)
                 has_pending_request = False
