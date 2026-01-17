@@ -776,3 +776,220 @@ class TestCrossDocumentResolution:
         # "S F J B SAS" should resolve to existing "SFJB" (same normalized form)
         assert "SFJB" in resolved
         assert "S F J B SAS" not in resolved
+
+
+class TestPostProcessingConsolidation:
+    """Test post-processing entity consolidation for parallel document processing."""
+
+    @pytest.mark.asyncio
+    async def test_consolidate_graph_basic(self):
+        """Test basic consolidation of duplicate entities in graph."""
+        from lightrag.operate import consolidate_graph_entities
+        from unittest.mock import AsyncMock, MagicMock
+
+        # Mock graph with duplicate entities (race condition result)
+        mock_graph = MagicMock()
+        mock_graph.get_all_nodes = AsyncMock(return_value=[
+            {"entity_id": "THALIE", "entity_type": "ORGANIZATION", "description": "Version 1"},
+            {"entity_id": "Thalie", "entity_type": "ORGANIZATION", "description": "Version 2"},
+        ])
+        mock_graph.get_node = AsyncMock(side_effect=lambda name: {
+            "THALIE": {"entity_id": "THALIE", "entity_type": "ORGANIZATION", "description": "Version 1"},
+            "Thalie": {"entity_id": "Thalie", "entity_type": "ORGANIZATION", "description": "Version 2"},
+        }.get(name))
+        mock_graph.get_node_edges = AsyncMock(return_value=[])
+        mock_graph.upsert_node = AsyncMock()
+        mock_graph.delete_node = AsyncMock()
+
+        mock_entity_vdb = MagicMock()
+        mock_entity_vdb.delete_entity = AsyncMock()
+
+        mock_rel_vdb = MagicMock()
+        mock_rel_vdb.delete_entity_relation = AsyncMock()
+
+        global_config = {
+            "enable_entity_resolution": True,
+            "entity_similarity_threshold": 0.85,
+            "entity_min_name_length": 3,
+        }
+
+        consolidation_map = await consolidate_graph_entities(
+            mock_graph, mock_entity_vdb, mock_rel_vdb, global_config
+        )
+
+        # Should have merged one entity
+        assert len(consolidation_map) == 1
+        # One of them should be merged into the other
+        assert "Thalie" in consolidation_map or "THALIE" in consolidation_map
+
+    @pytest.mark.asyncio
+    async def test_consolidate_graph_case_variations(self):
+        """Test consolidation of case variations like Vincent BONDOUX vs Vincent Bondoux."""
+        from lightrag.operate import consolidate_graph_entities
+        from unittest.mock import AsyncMock, MagicMock
+
+        mock_graph = MagicMock()
+        mock_graph.get_all_nodes = AsyncMock(return_value=[
+            {"entity_id": "Vincent BONDOUX", "entity_type": "PERSON", "description": "Person 1"},
+            {"entity_id": "Vincent Bondoux", "entity_type": "PERSON", "description": "Person 2"},
+            {"entity_id": "VINCENT BONDOUX", "entity_type": "PERSON", "description": "Person 3"},
+        ])
+        mock_graph.get_node = AsyncMock(return_value={"description": "Test"})
+        mock_graph.get_node_edges = AsyncMock(return_value=[])
+        mock_graph.upsert_node = AsyncMock()
+        mock_graph.delete_node = AsyncMock()
+
+        mock_entity_vdb = MagicMock()
+        mock_entity_vdb.delete_entity = AsyncMock()
+
+        mock_rel_vdb = MagicMock()
+        mock_rel_vdb.delete_entity_relation = AsyncMock()
+
+        global_config = {
+            "enable_entity_resolution": True,
+            "entity_similarity_threshold": 0.85,
+            "entity_min_name_length": 3,
+        }
+
+        consolidation_map = await consolidate_graph_entities(
+            mock_graph, mock_entity_vdb, mock_rel_vdb, global_config
+        )
+
+        # Should have merged 2 entities (3 → 1)
+        assert len(consolidation_map) == 2
+
+    @pytest.mark.asyncio
+    async def test_consolidate_graph_disabled(self):
+        """Test that consolidation is skipped when entity resolution is disabled."""
+        from lightrag.operate import consolidate_graph_entities
+        from unittest.mock import AsyncMock, MagicMock
+
+        mock_graph = MagicMock()
+        mock_graph.get_all_nodes = AsyncMock()  # Should not be called
+
+        mock_entity_vdb = MagicMock()
+        mock_rel_vdb = MagicMock()
+
+        global_config = {
+            "enable_entity_resolution": False,
+        }
+
+        consolidation_map = await consolidate_graph_entities(
+            mock_graph, mock_entity_vdb, mock_rel_vdb, global_config
+        )
+
+        # Should return empty map and not call get_all_nodes
+        assert len(consolidation_map) == 0
+        mock_graph.get_all_nodes.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_consolidate_graph_empty(self):
+        """Test consolidation with empty or small graph."""
+        from lightrag.operate import consolidate_graph_entities
+        from unittest.mock import AsyncMock, MagicMock
+
+        mock_graph = MagicMock()
+        mock_graph.get_all_nodes = AsyncMock(return_value=[
+            {"entity_id": "SingleEntity", "entity_type": "ORGANIZATION"},
+        ])
+
+        mock_entity_vdb = MagicMock()
+        mock_rel_vdb = MagicMock()
+
+        global_config = {
+            "enable_entity_resolution": True,
+        }
+
+        consolidation_map = await consolidate_graph_entities(
+            mock_graph, mock_entity_vdb, mock_rel_vdb, global_config
+        )
+
+        # With only one entity, no consolidation possible
+        assert len(consolidation_map) == 0
+
+    @pytest.mark.asyncio
+    async def test_consolidate_graph_different_types(self):
+        """Test that consolidation respects entity types."""
+        from lightrag.operate import consolidate_graph_entities
+        from unittest.mock import AsyncMock, MagicMock
+
+        mock_graph = MagicMock()
+        mock_graph.get_all_nodes = AsyncMock(return_value=[
+            {"entity_id": "Apple", "entity_type": "ORGANIZATION", "description": "Company"},
+            {"entity_id": "Apple", "entity_type": "FRUIT", "description": "Fruit"},
+        ])
+
+        mock_entity_vdb = MagicMock()
+        mock_rel_vdb = MagicMock()
+
+        global_config = {
+            "enable_entity_resolution": True,
+            "entity_similarity_threshold": 0.85,
+            "entity_min_name_length": 3,
+        }
+
+        consolidation_map = await consolidate_graph_entities(
+            mock_graph, mock_entity_vdb, mock_rel_vdb, global_config
+        )
+
+        # Different types should not be merged
+        assert len(consolidation_map) == 0
+
+    @pytest.mark.asyncio
+    async def test_consolidate_graph_edge_reconnection(self):
+        """Test that edges are reconnected when entities are merged."""
+        from lightrag.operate import consolidate_graph_entities
+        from unittest.mock import AsyncMock, MagicMock
+
+        mock_graph = MagicMock()
+        mock_graph.get_all_nodes = AsyncMock(return_value=[
+            {"entity_id": "SFJB", "entity_type": "ORGANIZATION"},
+            {"entity_id": "S F J B", "entity_type": "ORGANIZATION"},
+        ])
+        mock_graph.get_node = AsyncMock(return_value={"description": "Test"})
+        mock_graph.get_node_edges = AsyncMock(return_value=[
+            {"source": "S F J B", "target": "OtherEntity", "relation": "WORKS_WITH"}
+        ])
+        mock_graph.upsert_node = AsyncMock()
+        mock_graph.upsert_edge = AsyncMock()
+        mock_graph.delete_node = AsyncMock()
+
+        mock_entity_vdb = MagicMock()
+        mock_entity_vdb.delete_entity = AsyncMock()
+
+        mock_rel_vdb = MagicMock()
+        mock_rel_vdb.delete_entity_relation = AsyncMock()
+
+        global_config = {
+            "enable_entity_resolution": True,
+            "entity_similarity_threshold": 0.85,
+            "entity_min_name_length": 2,  # Allow short names
+        }
+
+        await consolidate_graph_entities(mock_graph, mock_entity_vdb, mock_rel_vdb, global_config)
+
+        # Should have called upsert_edge to reconnect
+        assert mock_graph.upsert_edge.called
+
+    @pytest.mark.asyncio
+    async def test_consolidate_graph_error_handling(self):
+        """Test consolidation handles errors gracefully."""
+        from lightrag.operate import consolidate_graph_entities
+        from unittest.mock import AsyncMock, MagicMock
+
+        mock_graph = MagicMock()
+        mock_graph.get_all_nodes = AsyncMock(side_effect=Exception("DB error"))
+
+        mock_entity_vdb = MagicMock()
+        mock_rel_vdb = MagicMock()
+
+        global_config = {
+            "enable_entity_resolution": True,
+        }
+
+        # Should not raise
+        consolidation_map = await consolidate_graph_entities(
+            mock_graph, mock_entity_vdb, mock_rel_vdb, global_config
+        )
+
+        assert len(consolidation_map) == 0
