@@ -64,6 +64,9 @@ from lightrag.constants import (
     DEFAULT_FILE_PATH_MORE_PLACEHOLDER,
     DEFAULT_MAX_FILE_PATHS,
     DEFAULT_ENTITY_NAME_MAX_LENGTH,
+    DEFAULT_ENTITY_SIMILARITY_THRESHOLD,
+    DEFAULT_ENTITY_MIN_NAME_LENGTH,
+    DEFAULT_PREFER_SHORTER_CANONICAL_NAME,
 )
 from lightrag.kg.shared_storage import get_storage_keyed_lock
 from lightrag.entity_resolution import EntityResolver
@@ -2491,8 +2494,8 @@ async def _resolve_cross_document_entities(
     from rapidfuzz import fuzz
     from lightrag.entity_resolution import _normalize_for_matching
 
-    similarity_threshold = global_config.get("entity_similarity_threshold", 0.85)
-    min_name_length = global_config.get("entity_min_name_length", 3)
+    similarity_threshold = global_config.get("entity_similarity_threshold", DEFAULT_ENTITY_SIMILARITY_THRESHOLD)
+    min_name_length = global_config.get("entity_min_name_length", DEFAULT_ENTITY_MIN_NAME_LENGTH)
 
     # 1. Get existing entity names from the knowledge graph
     try:
@@ -2619,8 +2622,8 @@ async def consolidate_graph_entities(
     if not global_config.get("enable_entity_resolution", True):
         return {}
 
-    similarity_threshold = global_config.get("entity_similarity_threshold", 0.85)
-    min_name_length = global_config.get("entity_min_name_length", 3)
+    similarity_threshold = global_config.get("entity_similarity_threshold", DEFAULT_ENTITY_SIMILARITY_THRESHOLD)
+    min_name_length = global_config.get("entity_min_name_length", DEFAULT_ENTITY_MIN_NAME_LENGTH)
     prefer_shorter = global_config.get("prefer_shorter_canonical_name", False)
 
     # 1. Get all entities from the knowledge graph
@@ -2895,9 +2898,9 @@ async def merge_nodes_and_edges(
     if global_config.get("enable_entity_resolution", True):
         original_count = len(all_nodes)
         resolver = EntityResolver(
-            similarity_threshold=global_config.get("entity_similarity_threshold", 0.85),
-            min_name_length=global_config.get("entity_min_name_length", 3),
-            prefer_shorter_canonical_name=global_config.get("prefer_shorter_canonical_name", False),
+            similarity_threshold=global_config.get("entity_similarity_threshold", DEFAULT_ENTITY_SIMILARITY_THRESHOLD),
+            min_name_length=global_config.get("entity_min_name_length", DEFAULT_ENTITY_MIN_NAME_LENGTH),
+            prefer_shorter_canonical_name=global_config.get("prefer_shorter_canonical_name", DEFAULT_PREFER_SHORTER_CANONICAL_NAME),
         )
         all_nodes = resolver.consolidate_entities(dict(all_nodes))
         # Convert back to defaultdict for consistency with downstream code
