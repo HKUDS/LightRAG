@@ -112,7 +112,8 @@ DEFAULT_OLLAMA_DIGEST = "sha256:lightrag"
 
 # Entity Resolution configuration defaults
 DEFAULT_ENABLE_ENTITY_RESOLUTION = True
-DEFAULT_ENTITY_SIMILARITY_THRESHOLD = 0.85
+# Higher threshold (0.92) to avoid false positives like "J. Bondoux" vs "Sylvie Bondoux"
+DEFAULT_ENTITY_SIMILARITY_THRESHOLD = 0.92
 DEFAULT_ENTITY_MIN_NAME_LENGTH = 2
 # When True, prefer shorter canonical names (e.g., "2CB" over "2CB Ingenierie")
 # When False (default), prefer longer names (more information preserved)
