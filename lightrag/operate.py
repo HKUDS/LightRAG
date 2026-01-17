@@ -2733,11 +2733,14 @@ async def consolidate_graph_entities(
                         )
 
                 # Get edges connected to old node and reconnect to canonical
+                # get_node_edges returns list[tuple[str, str]] - (source_id, target_id)
                 old_edges = await knowledge_graph_inst.get_node_edges(old_name)
                 if old_edges:
-                    for edge in old_edges:
-                        src = edge.get("source") or edge.get("src_id")
-                        tgt = edge.get("target") or edge.get("tgt_id")
+                    for src, tgt in old_edges:  # Unpack tuple directly
+                        # Get the actual edge data for the upsert
+                        edge_data = await knowledge_graph_inst.get_edge(src, tgt)
+                        if not edge_data:
+                            edge_data = {}
 
                         # Determine new source and target
                         new_src = canonical_name if src == old_name else src
@@ -2747,11 +2750,11 @@ async def consolidate_graph_entities(
                         if new_src == new_tgt:
                             continue
 
-                        # Upsert the redirected edge
+                        # Upsert the redirected edge with its data
                         await knowledge_graph_inst.upsert_edge(
                             new_src,
                             new_tgt,
-                            edge_data=edge
+                            edge_data=edge_data
                         )
 
                 # Delete the old node from graph

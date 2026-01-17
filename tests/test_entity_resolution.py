@@ -947,9 +947,12 @@ class TestPostProcessingConsolidation:
             {"entity_id": "S F J B", "entity_type": "ORGANIZATION"},
         ])
         mock_graph.get_node = AsyncMock(return_value={"description": "Test"})
+        # get_node_edges returns list[tuple[str, str]] - (source_id, target_id)
         mock_graph.get_node_edges = AsyncMock(return_value=[
-            {"source": "S F J B", "target": "OtherEntity", "relation": "WORKS_WITH"}
+            ("S F J B", "OtherEntity")
         ])
+        # get_edge returns the edge data as a dictionary
+        mock_graph.get_edge = AsyncMock(return_value={"relation": "WORKS_WITH"})
         mock_graph.upsert_node = AsyncMock()
         mock_graph.upsert_edge = AsyncMock()
         mock_graph.delete_node = AsyncMock()
