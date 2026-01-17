@@ -1762,7 +1762,9 @@ async def _merge_nodes_then_upsert(
         detector = ConflictDetector(
             confidence_threshold=global_config.get("conflict_confidence_threshold", 0.7)
         )
-        conflicts = detector.detect_conflicts(entity_name, descriptions_with_sources)
+        conflicts = detector.detect_conflicts(
+            entity_name, descriptions_with_sources, entity_type=entity_type
+        )
 
         # Format conflicts for prompt if any were found
         if conflicts:
