@@ -11,7 +11,7 @@ export default function SanitizeData() {
   const [sourceIdStrategy, setSourceIdStrategy] = useState('join_unique');
   const [showDescriptions, setShowDescriptions] = useState(false);
 
-  // Pagination placeholders (dynamic later)
+  // Pagination placeholders (to be made dynamic later)
   const currentPage = 2;
   const totalPages = 5;
 
@@ -31,12 +31,6 @@ export default function SanitizeData() {
 
           <div className="flex flex-wrap gap-1">
             <button className="px-2 py-0.5 bg-gray-100 hover:bg-gray-200 border border-gray-300 rounded text-xs">
-              Show Sel. Only
-            </button>
-            <button className="px-2 py-0.5 bg-gray-100 hover:bg-gray-200 border border-gray-300 rounded text-xs">
-              Show All
-            </button>            
-            <button className="px-2 py-0.5 bg-gray-100 hover:bg-gray-200 border border-gray-300 rounded text-xs">
               All Of Type
             </button>
             <button className="px-2 py-0.5 bg-gray-100 hover:bg-gray-200 border border-gray-300 rounded text-xs">
@@ -44,6 +38,12 @@ export default function SanitizeData() {
             </button>
             <button className="px-2 py-0.5 bg-gray-100 hover:bg-gray-200 border border-gray-300 rounded text-xs">
               Clear Sel.
+            </button>
+            <button className="px-2 py-0.5 bg-gray-100 hover:bg-gray-200 border border-gray-300 rounded text-xs">
+              Show Sel. Only
+            </button>
+            <button className="px-2 py-0.5 bg-gray-100 hover:bg-gray-200 border border-gray-300 rounded text-xs">
+              Show All
             </button>
             <button className="px-2 py-0.5 bg-red-50 hover:bg-red-100 border border-red-200 rounded text-xs text-red-700">
               Reset All
@@ -69,7 +69,7 @@ export default function SanitizeData() {
           </div>
         </div>
 
-        {/* Upper Right - compact */}
+        {/* Upper Right */}
         <div className="w-3/4 p-2.5 flex flex-col gap-2.5">
           <div className="flex flex-wrap items-end gap-2.5">
             {/* Target Entity */}
@@ -93,28 +93,23 @@ export default function SanitizeData() {
               </div>
             </div>
 
-            {/* Entity Type - aligned label */}
+            {/* Entity Type - "Select Type" button now acts as label above the input */}
             <div className="min-w-[200px]">
-              <label className="block text-xs font-medium text-gray-700 mb-0.5">
-                Entity Type
-              </label>
-              <div className="flex items-center gap-1">
-                <button className="px-2 py-1 bg-gray-100 hover:bg-gray-200 border border-gray-300 rounded text-xs font-medium whitespace-nowrap">
-                  Select Type
-                </button>
-                <div className="flex-1 relative">
-                  <input
-                    type="text"
-                    className="w-full px-3 py-1.5 border border-gray-300 rounded text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
-                    value={entityType}
-                    onChange={(e) => setEntityType(e.target.value)}
-                    placeholder="Type or filter..."
-                  />
-                  <div className="absolute inset-y-0 right-0 flex items-center px-2 pointer-events-none">
-                    <svg className="w-3.5 h-3.5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-                    </svg>
-                  </div>
+              <button className="block w-full px-3 py-0.5 bg-gray-200 hover:bg-gray-300 border border-gray-300 border-b-0 rounded-t text-xs font-medium text-gray-800 text-left cursor-default">
+                Select Type
+              </button>
+              <div className="relative">
+                <input
+                  type="text"
+                  className="w-full px-3 py-1.5 border border-gray-300 rounded-b text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  value={entityType}
+                  onChange={(e) => setEntityType(e.target.value)}
+                  placeholder="Type or filter..."
+                />
+                <div className="absolute inset-y-0 right-0 flex items-center px-2 pointer-events-none">
+                  <svg className="w-3.5 h-3.5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                  </svg>
                 </div>
               </div>
             </div>
@@ -169,17 +164,16 @@ export default function SanitizeData() {
       <div className="flex-1 flex">
         {/* Lower Left - Entity List */}
         <div className="w-1/4 border-r border-gray-300 flex flex-row">
-          {/* Vertical Show Desc button */}
+          {/* Vertical Show Desc button - rounded corners, more button-like */}
           <button
             onClick={() => setShowDescriptions(!showDescriptions)}
-            className="w-10 bg-gradient-to-b from-gray-100 to-gray-200 hover:from-gray-200 hover:to-gray-300 border-r border-gray-400 flex flex-col items-center justify-center text-xs font-medium text-gray-700 shadow-sm active:bg-gray-300 transition-colors"
+            className="w-10 bg-gradient-to-b from-gray-100 to-gray-300 hover:from-gray-200 hover:to-gray-400 border-r border-gray-400 flex flex-col items-center justify-center text-xs font-medium text-gray-800 shadow-md rounded-r-lg active:bg-gray-400 transition-all"
           >
             <span>Show</span>
             <span>Desc</span>
           </button>
 
           <div className="flex-1 flex flex-col p-2.5">
-            {/* Column Headers */}
             <div className="grid grid-cols-[40px_40px_1fr] gap-1 px-2 py-1.5 bg-gray-100 border-b border-gray-300 text-xs font-medium text-center">
               <div className="text-left pl-1.5">Keep<br/>First</div>
               <div className="text-left pl-1.5">Select<br/>Entities</div>
@@ -249,7 +243,7 @@ export default function SanitizeData() {
               </div>
             ) : (
               <div className="flex items-center justify-center h-full text-gray-500 text-sm">
-                Select entities on the left • Click the vertical button to compare
+                Select entities on the left • Click vertical button to compare
               </div>
             )}
           </div>
