@@ -3254,6 +3254,7 @@ class LightRAG:
 
         deletion_operations_started = False
         original_exception = None
+        persist_done = False  # Track if _insert_done() was already called
         doc_llm_cache_ids: list[str] = []
 
         async with pipeline_status_lock:
@@ -3780,6 +3781,7 @@ class LightRAG:
 
             # Persist changes to graph database before entity and relationship rebuild
             await self._insert_done()
+            persist_done = True  # Mark that persistence is complete
 
             # Log after-deletion node count for verification (002-fix-graph-deletion-sync)
             try:
@@ -3898,8 +3900,10 @@ class LightRAG:
             )
 
         finally:
-            # ALWAYS ensure persistence if any deletion operations were started
-            if deletion_operations_started:
+            # Ensure persistence only if operations started AND not already persisted
+            # This prevents double _insert_done() calls which can corrupt batch deletion state
+            # (fix for: batch deletion fails after first document due to state corruption)
+            if deletion_operations_started and not persist_done:
                 try:
                     await self._insert_done()
                 except Exception as persistence_error:
@@ -3918,7 +3922,7 @@ class LightRAG:
                         )
                     # If there was an original exception, log the persistence error but don't override the original error
                     # The original error result was already returned in the except block
-            else:
+            elif not deletion_operations_started:
                 logger.debug(
                     f"No deletion operations were started for document {doc_id}, skipping persistence"
                 )
