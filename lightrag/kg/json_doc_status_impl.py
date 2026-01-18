@@ -349,8 +349,8 @@ class JsonDocStatusStorage(DocStatusStorage):
         """Delete specific records from storage by their IDs
 
         Importance notes for in-memory storage:
-        1. Changes will be persisted to disk during the next index_done_callback
-        2. update flags to notify other processes that data persistence is needed
+        1. Changes are persisted to disk immediately via index_done_callback
+        2. Update flags notify other processes that data persistence occurred
 
         Args:
             ids (list[str]): List of document IDs to be deleted from storage
@@ -364,9 +364,16 @@ class JsonDocStatusStorage(DocStatusStorage):
                 result = self._data.pop(doc_id, None)
                 if result is not None:
                     any_deleted = True
+                    logger.debug(
+                        f"[{self.workspace}] Deleted document {doc_id} from {self.namespace}"
+                    )
 
             if any_deleted:
                 await set_all_update_flags(self.namespace, workspace=self.workspace)
+
+        # Persist changes immediately (consistent with upsert() and drop())
+        if any_deleted:
+            await self.index_done_callback()
 
     async def get_doc_by_file_path(self, file_path: str) -> Union[dict[str, Any], None]:
         """Get document by file path

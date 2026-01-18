@@ -3265,10 +3265,28 @@ class LightRAG:
 
         try:
             # 1. Get the document status and related data
+            # Debug: Log doc_status state before lookup (batch deletion debugging)
+            try:
+                all_doc_ids = list(self.doc_status._data.keys()) if hasattr(self.doc_status, '_data') else []
+                logger.debug(
+                    f"[{self.workspace}] doc_status contains {len(all_doc_ids)} documents. "
+                    f"Looking for {doc_id}. Exists: {doc_id in all_doc_ids}"
+                )
+            except Exception as debug_err:
+                logger.debug(f"[{self.workspace}] Could not get doc_status state: {debug_err}")
+
             doc_status_data = await self.doc_status.get_by_id(doc_id)
             file_path = doc_status_data.get("file_path") if doc_status_data else None
             if not doc_status_data:
-                logger.warning(f"Document {doc_id} not found")
+                # Debug: List available documents when not found (batch deletion debugging)
+                try:
+                    available_docs = list(self.doc_status._data.keys())[:10] if hasattr(self.doc_status, '_data') else []
+                    logger.warning(
+                        f"Document {doc_id} not found. "
+                        f"Available docs (first 10): {available_docs}"
+                    )
+                except Exception:
+                    logger.warning(f"Document {doc_id} not found")
                 return DeletionResult(
                     status="not_found",
                     doc_id=doc_id,
