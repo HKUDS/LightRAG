@@ -35,33 +35,27 @@ export default function SanitizeData() {
     fetchEntities();
   }, []);
 
-  // Calculate how many rows actually fit
+  // Calculate visible rows dynamically
   useEffect(() => {
     const updateRowsPerPage = () => {
       if (!listContainerRef.current) return;
 
       const container = listContainerRef.current;
       const containerHeight = container.clientHeight;
-
-      // Measure one row height (we take the first row if available)
       const firstRow = container.querySelector('div.grid');
-      const rowHeight = firstRow ? firstRow.getBoundingClientRect().height : 36; // fallback ~36px
+      const rowHeight = firstRow ? firstRow.getBoundingClientRect().height : 36; // fallback
 
-      // Safety margin for headers, borders, etc.
-      const headerHeight = 42; // known header height
-
+      const headerHeight = 42;
       const availableHeight = containerHeight - headerHeight;
-      const calculatedRows = Math.max(5, Math.floor(availableHeight / rowHeight));
+      const calculated = Math.max(5, Math.floor(availableHeight / rowHeight));
 
-      setRowsPerPage(calculatedRows);
+      setRowsPerPage(calculated);
     };
 
     updateRowsPerPage();
-
-    // Re-calculate on window resize
     window.addEventListener('resize', updateRowsPerPage);
     return () => window.removeEventListener('resize', updateRowsPerPage);
-  }, [entities, filterText]); // re-run when list content changes
+  }, [entities, filterText]);
 
   const filteredEntities = entities.filter((e) =>
     e.toLowerCase().includes(filterText.toLowerCase())
@@ -76,6 +70,7 @@ export default function SanitizeData() {
     setCurrentPage(1);
   }, [filterText]);
 
+  // Pagination handlers
   const goToFirst = () => setCurrentPage(1);
   const goToPrev = () => setCurrentPage((p) => Math.max(1, p - 1));
   const goToNext = () => setCurrentPage((p) => Math.min(totalPages, p + 1));
@@ -90,10 +85,28 @@ export default function SanitizeData() {
     }
   };
 
+  // New: Show Selected Only
+  const handleShowSelectedOnly = () => {
+    if (selectedEntities.length === 0) return;
+    setFilterText(''); // clear filter so we see all selected
+    setCurrentPage(1);
+    // We'll show only selected by overriding filtered list in render
+  };
+
+  // New: Reset All
+  const handleResetAll = () => {
+    setSelectedEntities([]);
+    setFirstEntity(null);
+    setFilterText('');
+    setCurrentPage(1);
+  };
+  // JRS Always show the normal paginated list (we'll add "Show Sel. Only" mode later)
+  const displayEntities = paginatedEntities;      
+
   return (
     <div className="h-full flex flex-col">
-      {/* Top row */}
-      <div className="h-auto flex border-b border-gray-300">
+      {/* Top row - minimum height to ensure controls are visible */}
+      <div className="min-h-[180px] flex border-b border-gray-300">
         {/* Upper Left */}
         <div className="w-1/4 border-r border-gray-300 p-2.5 flex flex-col gap-2.5">
           <input
@@ -104,7 +117,6 @@ export default function SanitizeData() {
             onChange={(e) => setFilterText(e.target.value)}
           />
 
-          {/* Selection preset buttons */}
           <div className="flex flex-wrap gap-1">
             <button className="px-2 py-0.5 bg-gray-100 hover:bg-gray-200 border border-gray-300 rounded text-xs">
               All Of Type
@@ -115,18 +127,30 @@ export default function SanitizeData() {
             <button className="px-2 py-0.5 bg-gray-100 hover:bg-gray-200 border border-gray-300 rounded text-xs">
               Clear Sel.
             </button>
-            <button className="px-2 py-0.5 bg-gray-100 hover:bg-gray-200 border border-gray-300 rounded text-xs">
+            <button
+              onClick={handleShowSelectedOnly}
+              className="px-2 py-0.5 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 rounded text-xs text-indigo-700"
+            >
               Show Sel. Only
             </button>
-            <button className="px-2 py-0.5 bg-gray-100 hover:bg-gray-200 border border-gray-300 rounded text-xs">
+            <button
+              onClick={() => {
+                setFilterText('');
+                setCurrentPage(1);
+              }}
+              className="px-2 py-0.5 bg-gray-100 hover:bg-gray-200 border border-gray-300 rounded text-xs"
+            >
               Show All
             </button>
-            <button className="px-2 py-0.5 bg-red-50 hover:bg-red-100 border border-red-200 rounded text-xs text-red-700">
+            <button
+              onClick={handleResetAll}
+              className="px-2 py-0.5 bg-red-50 hover:bg-red-100 border border-red-200 rounded text-xs text-red-700"
+            >
               Reset All
             </button>
           </div>
 
-          {/* Pagination controls */}
+          {/* Pagination */}
           <div className="flex flex-wrap gap-1 items-center">
             <button
               onClick={goToFirst}
@@ -148,24 +172,24 @@ export default function SanitizeData() {
               <input
                 type="number"
                 min={1}
-                max={totalPages}
+                max={Math.ceil(filteredEntities.length / rowsPerPage) || 1}
                 value={currentPage}
                 onChange={handlePageInputChange}
                 className="w-10 text-center border border-gray-400 rounded text-xs focus:outline-none focus:ring-1 focus:ring-blue-500 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
               />
-              /{totalPages}
+              /{Math.ceil(filteredEntities.length / rowsPerPage) || 1}
             </div>
 
             <button
               onClick={goToNext}
-              disabled={currentPage >= totalPages}
+              disabled={currentPage >= Math.ceil(filteredEntities.length / rowsPerPage)}
               className="px-2 py-0.5 bg-gray-100 hover:bg-gray-200 border border-gray-300 rounded text-xs font-medium disabled:opacity-50 disabled:cursor-not-allowed"
             >
               Next
             </button>
             <button
               onClick={goToLast}
-              disabled={currentPage >= totalPages}
+              disabled={currentPage >= Math.ceil(filteredEntities.length / rowsPerPage)}
               className="px-2 py-0.5 bg-gray-100 hover:bg-gray-200 border border-gray-300 rounded text-xs font-medium disabled:opacity-50 disabled:cursor-not-allowed"
             >
               Last
@@ -173,8 +197,92 @@ export default function SanitizeData() {
           </div>
         </div>
 
-        {/* Upper Right - unchanged */}
-        {/* ... same as previous version ... */}
+        {/* Upper Right - should now always be visible */}
+        <div className="w-3/4 p-2.5 flex flex-col gap-2.5">
+          <div className="flex flex-wrap items-end gap-2.5">
+            <div className="flex-1 min-w-[220px]">
+              <label className="block text-xs font-medium text-gray-700 mb-0.5">
+                Target Entity
+              </label>
+              <div className="relative">
+                <input
+                  type="text"
+                  className="w-full px-3 py-1.5 border border-gray-300 rounded text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  value={targetEntity}
+                  onChange={(e) => setTargetEntity(e.target.value)}
+                  placeholder="Enter or select target..."
+                />
+                <div className="absolute inset-y-0 right-0 flex items-center px-2 pointer-events-none">
+                  <svg className="w-3.5 h-3.5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                  </svg>
+                </div>
+              </div>
+            </div>
+
+            <div className="min-w-[200px]">
+              <button className="block w-full px-3 py-0.5 bg-gray-200 hover:bg-gray-300 border border-gray-300 border-b-0 rounded-t-md text-xs font-medium text-gray-800 text-left cursor-pointer shadow-sm">
+                Select Type
+              </button>
+              <div className="relative">
+                <input
+                  type="text"
+                  className="w-full px-3 py-1.5 border border-gray-300 rounded-b-md text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  value={entityType}
+                  onChange={(e) => setEntityType(e.target.value)}
+                  placeholder="Type or filter..."
+                />
+                <div className="absolute inset-y-0 right-0 flex items-center px-2 pointer-events-none">
+                  <svg className="w-3.5 h-3.5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                  </svg>
+                </div>
+              </div>
+            </div>
+
+            <div className="min-w-[140px]">
+              <label className="block text-xs font-medium text-gray-700 mb-0.5">
+                Desc Strategy
+              </label>
+              <select
+                className="w-full px-2 py-1.5 border border-gray-300 rounded text-sm"
+                value={descriptionStrategy}
+                onChange={(e) => setDescriptionStrategy(e.target.value)}
+              >
+                <option value="join_unique">Join Unique</option>
+                <option value="concatenate">Concatenate</option>
+                <option value="keep_first">Keep First</option>
+              </select>
+            </div>
+
+            <div className="min-w-[140px]">
+              <label className="block text-xs font-medium text-gray-700 mb-0.5">
+                Source ID Strat.
+              </label>
+              <select
+                className="w-full px-2 py-1.5 border border-gray-300 rounded text-sm"
+                value={sourceIdStrategy}
+                onChange={(e) => setSourceIdStrategy(e.target.value)}
+              >
+                <option value="join_unique">Join Unique</option>
+                <option value="concatenate">Concatenate</option>
+                <option value="keep_first">Keep First</option>
+              </select>
+            </div>
+          </div>
+
+          <div className="flex gap-2">
+            <button className="px-3.5 py-1.5 bg-blue-600 text-white rounded hover:bg-blue-700 text-sm disabled:opacity-50">
+              Merge Entities
+            </button>
+            <button className="px-3.5 py-1.5 bg-green-600 text-white rounded hover:bg-green-700 text-sm disabled:opacity-50">
+              Create Rel.
+            </button>
+            <button className="px-3.5 py-1.5 bg-red-600 text-white rounded hover:bg-red-700 text-sm disabled:opacity-50">
+              Delete
+            </button>
+          </div>
+        </div>
       </div>
 
       {/* Bottom row */}
@@ -205,7 +313,7 @@ export default function SanitizeData() {
             </div>
 
             <div ref={listContainerRef} className="flex-1 overflow-y-auto bg-white">
-              {paginatedEntities.map((entityName) => (
+              {displayEntities.map((entityName) => (
                 <div
                   key={entityName}
                   className="grid grid-cols-[40px_40px_1fr] items-center px-2 py-1.5 border-b border-gray-100 hover:bg-gray-50 text-sm"
@@ -237,15 +345,11 @@ export default function SanitizeData() {
                 </div>
               ))}
 
-              {paginatedEntities.length === 0 && filteredEntities.length > 0 && (
+              {displayEntities.length === 0 && (
                 <div className="p-4 text-center text-gray-500 text-sm">
-                  No entities on this page — try another page
-                </div>
-              )}
-
-              {filteredEntities.length === 0 && (
-                <div className="p-4 text-center text-gray-500 text-sm">
-                  No entities match current filter
+                  {selectedEntities.length > 0
+                    ? "No selected entities to show"
+                    : "No entities match current filter"}
                 </div>
               )}
             </div>
