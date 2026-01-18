@@ -135,7 +135,7 @@ async def anthropic_complete_if_cache(
             async for event in response:
                 content = (
                     event.delta.text
-                    if hasattr(event, "delta") and event.delta.text
+                    if hasattr(event, "delta") and hasattr(event.delta, "text") and event.delta.text
                     else None
                 )
                 if content is None:
