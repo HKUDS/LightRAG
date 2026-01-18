@@ -100,8 +100,6 @@ async def anthropic_complete_if_cache(
     )
 
     messages: list[dict[str, Any]] = []
-    if system_prompt:
-        messages.append({"role": "system", "content": system_prompt})
     messages.extend(history_messages)
     messages.append({"role": "user", "content": prompt})
 
@@ -112,9 +110,16 @@ async def anthropic_complete_if_cache(
     verbose_debug(f"System prompt: {system_prompt}")
 
     try:
-        response = await anthropic_async_client.messages.create(
-            model=model, messages=messages, stream=True, **kwargs
-        )
+        create_params = {
+            'model': model,
+            'messages': messages,
+            'stream': True,
+            **kwargs
+        }
+        if system_prompt:
+            create_params['system'] = system_prompt
+        response = await anthropic_async_client.messages.create(**create_params)
+
     except APIConnectionError as e:
         logger.error(f"Anthropic API Connection Error: {e}")
         raise
