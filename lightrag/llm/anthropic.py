@@ -110,14 +110,9 @@ async def anthropic_complete_if_cache(
     verbose_debug(f"System prompt: {system_prompt}")
 
     try:
-        create_params = {
-            'model': model,
-            'messages': messages,
-            'stream': True,
-            **kwargs
-        }
+        create_params = {"model": model, "messages": messages, "stream": True, **kwargs}
         if system_prompt:
-            create_params['system'] = system_prompt
+            create_params["system"] = system_prompt
         response = await anthropic_async_client.messages.create(**create_params)
 
     except APIConnectionError as e:
@@ -140,7 +135,9 @@ async def anthropic_complete_if_cache(
             async for event in response:
                 content = (
                     event.delta.text
-                    if hasattr(event, "delta") and hasattr(event.delta, "text") and event.delta.text
+                    if hasattr(event, "delta")
+                    and hasattr(event.delta, "text")
+                    and event.delta.text
                     else None
                 )
                 if content is None:
