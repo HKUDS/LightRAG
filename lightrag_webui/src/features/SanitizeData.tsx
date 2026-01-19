@@ -20,6 +20,12 @@ export default function SanitizeData() {
   // Dropdown suggestions = currently selected entities
   const targetOptions = [...selectedEntities].sort((a, b) => a.localeCompare(b));
 
+  // Store fetched details: entityName → { desc, type, sourceId, filePath, relatedEntities, relationships }
+  const [entityDetails, setEntityDetails] = useState<Record<string, any>>({});
+
+  // Loading state (optional but nice UX)
+  const [loadingDetails, setLoadingDetails] = useState<string[]>([]);
+
 
   const listContainerRef = useRef<HTMLDivElement>(null);
   const [rowsPerPage, setRowsPerPage] = useState(20); // initial guess
@@ -70,6 +76,15 @@ export default function SanitizeData() {
   const startIndex = (currentPage - 1) * rowsPerPage;
   const paginatedEntities = filteredEntities.slice(startIndex, startIndex + rowsPerPage);
 
+  // Fetch details for all selected entities when "Show Desc" is turned on
+  useEffect(() => {
+    if (showDescriptions && selectedEntities.length > 0) {
+      selectedEntities.forEach((entityName) => {
+        fetchEntityDetail(entityName);
+      });
+    }
+  }, [showDescriptions, selectedEntities]);  // Run when toggle changes or selection changes
+
   // Reset page when filter changes
   useEffect(() => {
     setCurrentPage(1);
@@ -108,11 +123,101 @@ export default function SanitizeData() {
     setCurrentPage(1);                   // go back to first page
   };
 
-    const handleClearSelected = () => {
-      setSelectedEntities([]);     // uncheck all checkboxes
-      setFirstEntity(null);        // deselect "Keep First" radio
-      // Nothing else — no change to filter, page, or showSelectedOnlyMode
-    };
+  const handleClearSelected = () => {
+    setSelectedEntities([]);     // uncheck all checkboxes
+    setFirstEntity(null);        // deselect "Keep First" radio
+    // Nothing else — no change to filter, page, or showSelectedOnlyMode
+  };
+
+  const fetchEntityDetail = async (entityName: string) => {
+
+    console.log(`fetchEntityDetail called for: "${entityName}"`);
+
+    // Skip if we already have it
+    //if (entityDetails[entityName]) return;
+    if (entityDetails[entityName]) {
+      console.log(`Already have details for "${entityName}" - skipping`);
+      return;
+    }
+
+    console.log(`Fetching details for "${entityName}"...`);
+
+    setLoadingDetails((prev) => [...prev, entityName]);
+
+    try {
+      console.log("Making axios request...");
+      const encodedName = encodeURIComponent(entityName);
+      const url = `${API_BASE}/graphs?label=${encodedName}&max_depth=1&max_nodes=20000`;
+      console.log("Request URL:", url);
+
+    const response = await axios.get(url);
+    console.log("Response received:", response.status, response.data);
+
+      const data = response.data;
+
+      // Parse the response (based on your Python code structure)
+      let mainDesc = "No description found.";
+      let mainType = "";
+      let mainSourceId = "";
+      let mainFilePath = "";
+
+      const related: any[] = [];
+      const edges: any[] = [];
+
+      // Process nodes
+      (data.nodes || []).forEach((node: any) => {
+        const props = node.properties || {};
+        if (node.id === entityName) {
+          mainDesc = props.description || mainDesc;
+          mainType = props.entity_type || mainType;
+          mainSourceId = props.source_id || "";
+          mainFilePath = props.file_path || "";
+        } else {
+          related.push({
+            name: node.id,
+            type: props.entity_type || "",
+            description: props.description || "No description",
+          });
+        }
+      });
+
+      // Process edges/relationships
+      (data.edges || []).forEach((edge: any) => {
+        const props = edge.properties || {};
+        edges.push({
+          from: edge.source,
+          to: edge.target,
+          relation: props.description || "",
+          weight: props.weight || 1.0,
+          keywords: props.keywords || "",
+        });
+      });
+
+      // Store the parsed data
+      setEntityDetails((prev) => ({
+        ...prev,
+        [entityName]: {
+          type: mainType,
+          description: mainDesc,
+          sourceId: mainSourceId,
+          filePath: mainFilePath,
+          relatedEntities: related,
+          relationships: edges,
+        },
+      }));
+    } catch (err) {
+      console.error(`Error fetching "${entityName}":`, err);  
+      // Optional: store error state
+    } finally {
+      setLoadingDetails((prev) => prev.filter((n) => n !== entityName));
+    }
+  };
+
+
+
+
+
+
 
   const displayEntities = showSelectedOnlyMode 
    ? selectedEntities 
@@ -433,23 +538,41 @@ export default function SanitizeData() {
                   <div key={name} className="border border-gray-200 rounded p-3 bg-gray-50 text-sm">
                     <div className="font-medium mb-1 flex justify-between items-center">
                       <span>{name}</span>
-                      <button className="text-xs text-blue-600 hover:underline">
-                        Edit
-                      </button>
+                      <div className="flex gap-2">
+                        <button className="text-xs text-blue-600 hover:underline">
+                          Edit Description
+                        </button>
+                        <button className="text-xs text-green-600 hover:underline">
+                          Edit Relationships
+                        </button>
+                      </div>
                     </div>
-                    <div className="text-gray-600 mb-1.5 line-clamp-3">
-                      Loading description...
-                    </div>
-                    <div className="text-xs text-gray-500">
-                      Type: ? • Rel: ? • Src: ?
-                    </div>
+
+                    {loadingDetails.includes(name) ? (
+                      <div className="text-gray-500 italic">Loading details...</div>
+                    ) : entityDetails[name] ? (
+                      <>
+                        <div className="text-gray-700 mb-1">
+                          <strong>Type:</strong> {entityDetails[name].type || "Unknown"}
+                        </div>
+                        <div className="text-gray-600 mb-2">
+                          <strong>Description:</strong><br />
+                          {entityDetails[name].description || "No description available"}
+                        </div>
+                        {/* We'll add Related Entities, Source ID, Relationships, etc. in next step */}
+                      </>
+                    ) : (
+                      <div className="text-red-600">Failed to load details</div>
+                    )}
                   </div>
                 ))}
               </div>
             ) : (
-              <div className="flex items-center justify-center h-full text-gray-500 text-sm">
-                Select entities on the left • Click vertical button to compare
-              </div>
+              <div className="text-gray-600 mb-1.5 line-clamp-3">
+                {loadingDetails.includes(name) 
+                  ? "Loading details..." 
+                  : entityDetails[name]?.description || "No description available"}
+              </div>    
             )}
           </div>
         </div>
