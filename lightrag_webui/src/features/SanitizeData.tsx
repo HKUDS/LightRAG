@@ -17,6 +17,9 @@ export default function SanitizeData() {
   const [showDescriptions, setShowDescriptions] = useState(false);
   const [showSelectedOnlyMode, setShowSelectedOnlyMode] = useState(false);
 
+  // Dropdown suggestions = currently selected entities
+  const targetOptions = [...selectedEntities].sort((a, b) => a.localeCompare(b));
+
 
   const listContainerRef = useRef<HTMLDivElement>(null);
   const [rowsPerPage, setRowsPerPage] = useState(20); // initial guess
@@ -261,16 +264,27 @@ export default function SanitizeData() {
               <div className="relative">
                 <input
                   type="text"
+                  list="target-entity-options"
                   className="w-full px-3 py-1.5 border border-gray-300 rounded text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
                   value={targetEntity}
                   onChange={(e) => setTargetEntity(e.target.value)}
-                  placeholder="Enter or select target..."
+                  placeholder="Type or select target..."
+                  autoComplete="off"  // prevents browser suggestions from interfering
                 />
+                
+                {/* Dropdown arrow icon (visual hint only) */}
                 <div className="absolute inset-y-0 right-0 flex items-center px-2 pointer-events-none">
                   <svg className="w-3.5 h-3.5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
                   </svg>
                 </div>
+
+                {/* The actual dropdown suggestions */}
+                <datalist id="target-entity-options">
+                  {targetOptions.map((option) => (
+                    <option key={option} value={option} />
+                  ))}
+                </datalist>
               </div>
             </div>
 
