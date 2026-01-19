@@ -3459,7 +3459,7 @@ async def _perform_kg_search(
         actual_embedding_func = text_chunks_db.embedding_func
         if actual_embedding_func:
             try:
-                query_embedding = await actual_embedding_func([query])
+                query_embedding = await actual_embedding_func([query], context="query")
                 query_embedding = query_embedding[
                     0
                 ]  # Extract first embedding from batch result
