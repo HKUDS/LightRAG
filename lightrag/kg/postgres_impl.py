@@ -2612,6 +2612,11 @@ class PGDocStatusStorage(DocStatusStorage):
         # This allows re-indexing of content that previously failed
         sql = f"SELECT id FROM {table_name} WHERE workspace=$1 AND id = ANY($2) AND status != 'failed'"
         params = {"workspace": self.workspace, "ids": list(keys)}
+        # Diagnostic logging for cross-workspace bug investigation
+        logger.debug(
+            f"[{self.workspace}] PGDocStatusStorage.filter_keys: checking {len(keys)} keys, "
+            f"db.workspace={getattr(self.db, 'workspace', 'N/A')}"
+        )
         try:
             res = await self.db.query(sql, list(params.values()), multirows=True)
             if res:
@@ -2619,6 +2624,12 @@ class PGDocStatusStorage(DocStatusStorage):
             else:
                 exist_keys = []
             new_keys = set([s for s in keys if s not in exist_keys])
+            # Log result for debugging cross-workspace issues
+            if exist_keys:
+                logger.info(
+                    f"[{self.workspace}] PGDocStatusStorage.filter_keys: found {len(exist_keys)} existing keys, "
+                    f"returning {len(new_keys)} new keys"
+                )
             return new_keys
         except Exception as e:
             logger.error(
