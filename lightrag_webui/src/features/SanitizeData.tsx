@@ -96,14 +96,20 @@ export default function SanitizeData() {
     setFilterText('');
   };
 
-  // New: Reset All
+  // Reset All
   const handleResetAll = () => {
-    setShowSelectedOnlyMode(false);
-    setSelectedEntities([]);
-    setFirstEntity(null);
-    setFilterText('');
-    setCurrentPage(1);
-  };     
+    setShowSelectedOnlyMode(false);      // exit selected-only mode
+    setSelectedEntities([]);             // clear all checkboxes
+    setFirstEntity(null);                // clear the radio "Keep First" selection
+    setFilterText('');                   // remove any filter
+    setCurrentPage(1);                   // go back to first page
+  };
+
+    const handleClearSelected = () => {
+      setSelectedEntities([]);     // uncheck all checkboxes
+      setFirstEntity(null);        // deselect "Keep First" radio
+      // Nothing else — no change to filter, page, or showSelectedOnlyMode
+    };
 
   const displayEntities = showSelectedOnlyMode 
    ? selectedEntities 
@@ -114,7 +120,22 @@ export default function SanitizeData() {
       {/* Top row - minimum height to ensure controls are visible */}
       <div className="h-auto flex border-b border-gray-300">  
         {/* Upper Left */}
-        <div className="w-1/4 border-r border-gray-300 p-2.5 flex flex-col gap-2.5">
+
+
+        {/*<div className="w-1/4 border-r border-gray-300 p-2.5 flex flex-col gap-2.5">*/}
+
+
+
+        <div className={`w-1/4 border-r border-gray-300 p-2.5 flex flex-col gap-2.5 ${
+          showSelectedOnlyMode ? 'bg-indigo-50' : ''
+        }`}>
+
+          {showSelectedOnlyMode && (
+            <div className="text-xs text-indigo-700 bg-indigo-50 p-2 rounded mb-2">
+              Showing only selected entities ({selectedEntities.length})
+            </div>
+          )}
+
           {!showSelectedOnlyMode && (
               <>
                 <input
@@ -182,9 +203,18 @@ export default function SanitizeData() {
               )}
 
           <div className="flex flex-wrap gap-1">
-            <button className="px-2 py-0.5 bg-gray-100 hover:bg-gray-200 border border-gray-300 rounded text-xs">
-              Clear Sel.
-            </button>
+            
+            {!showSelectedOnlyMode ? (
+              <button
+                onClick={handleClearSelected}
+                className="px-2 py-0.5 bg-gray-100 hover:bg-gray-200 border border-gray-300 rounded text-xs"
+              >
+                Clear Sel.
+              </button>
+            ) : (
+              <div className="w-[78px]" />   // ← invisible placeholder with same approximate width
+            )}
+
             <button
               onClick={handleShowSelectedOnly}
               className={`px-2 py-0.5 border rounded text-xs transition-colors ${
@@ -208,9 +238,11 @@ export default function SanitizeData() {
             </button>
             <button
               onClick={() => {
-                setShowSelectedOnlyMode(false);
-                setFilterText('');
-                setCurrentPage(1);
+                setShowSelectedOnlyMode(false);     // Exit "Show Sel. Only" mode
+                setSelectedEntities([]);            // Clear all checkboxes
+                setFirstEntity(null);               // Clear the "Keep First" radio selection
+                setFilterText('');                  // Remove any active filter
+                setCurrentPage(1);                  // Reset to first page
               }}
               className="px-2 py-0.5 bg-red-50 hover:bg-red-100 border border-red-200 rounded text-xs text-red-700"
             >
