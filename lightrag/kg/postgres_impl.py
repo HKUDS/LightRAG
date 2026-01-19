@@ -2613,7 +2613,7 @@ class PGDocStatusStorage(DocStatusStorage):
         sql = f"SELECT id FROM {table_name} WHERE workspace=$1 AND id = ANY($2) AND status != 'failed'"
         params = {"workspace": self.workspace, "ids": list(keys)}
         # Diagnostic logging for cross-workspace bug investigation
-        logger.debug(
+        logger.info(
             f"[{self.workspace}] PGDocStatusStorage.filter_keys: checking {len(keys)} keys, "
             f"db.workspace={getattr(self.db, 'workspace', 'N/A')}"
         )
