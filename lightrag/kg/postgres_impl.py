@@ -2629,8 +2629,28 @@ class PGDocStatusStorage(DocStatusStorage):
     async def get_by_id(self, id: str) -> Union[dict[str, Any], None]:
         sql = "select * from LIGHTRAG_DOC_STATUS where workspace=$1 and id=$2"
         params = {"workspace": self.workspace, "id": id}
+        logger.debug(
+            f"[{self.workspace}] PGDocStatusStorage.get_by_id: querying for id={id}, "
+            f"db.workspace={getattr(self.db, 'workspace', 'N/A')}"
+        )
         result = await self.db.query(sql, list(params.values()), True)
         if result is None or result == []:
+            # Additional query to check if document exists with any workspace (diagnostic)
+            try:
+                check_sql = "SELECT workspace, id FROM LIGHTRAG_DOC_STATUS WHERE id=$1 LIMIT 1"
+                check_result = await self.db.query(check_sql, [id], True)
+                if check_result:
+                    actual_workspace = check_result[0].get('workspace', 'unknown')
+                    logger.warning(
+                        f"[{self.workspace}] PGDocStatusStorage.get_by_id: document {id} not found "
+                        f"with workspace='{self.workspace}', but EXISTS with workspace='{actual_workspace}'"
+                    )
+                else:
+                    logger.debug(
+                        f"[{self.workspace}] PGDocStatusStorage.get_by_id: document {id} not found in any workspace"
+                    )
+            except Exception as e:
+                logger.debug(f"[{self.workspace}] Could not run diagnostic query: {e}")
             return None
         else:
             # Parse chunks_list JSON string back to list
