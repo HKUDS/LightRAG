@@ -142,6 +142,102 @@ def _normalize_for_matching(name: str) -> str:
     return " ".join(filtered_tokens)
 
 
+def compute_entity_similarity(name1: str, name2: str) -> float:
+    """
+    Compute similarity score between two entity names.
+
+    This is a standalone function that can be used for cross-document entity
+    resolution and graph consolidation. It uses a CONSERVATIVE matching approach
+    to minimize false positives:
+    - Uses fuzz.ratio (not token_set_ratio) for strict character-level matching
+    - Requires numeric tokens to match exactly
+    - Rejects first-name mismatches for person names
+
+    This approach prioritizes precision over recall - it's better to miss
+    a valid merge than to incorrectly merge different entities.
+
+    Args:
+        name1: First entity name.
+        name2: Second entity name.
+
+    Returns:
+        Similarity score between 0.0 and 1.0.
+
+    Examples:
+        >>> compute_entity_similarity("Apple Inc", "Apple Inc.") > 0.9
+        True
+        >>> compute_entity_similarity("Senozan", "617 Impasse, 71260 Senozan") < 0.5
+        True
+        >>> compute_entity_similarity("J. Bondoux", "Sylvie Bondoux") < 0.5
+        True
+    """
+    # Import here to avoid loading rapidfuzz if entity resolution is disabled
+    from rapidfuzz import fuzz
+
+    normalized1 = _normalize_for_matching(name1)
+    normalized2 = _normalize_for_matching(name2)
+
+    # Exact normalized match - this IS valid (e.g., "2 C B SAS" matches "2CB")
+    if normalized1 == normalized2:
+        return 1.0
+
+    # Protection 1: Check numeric tokens - they must match exactly
+    # This prevents "Facture 24012823" matching "Facture 24012815"
+    nums1 = set(re.findall(r"\d+", normalized1))
+    nums2 = set(re.findall(r"\d+", normalized2))
+    if nums1 and nums2 and nums1 != nums2:
+        # Both have numbers but they're different
+        return 0.0
+
+    # Protection 2: For 2-token names (likely person names), check first token similarity
+    # This prevents "J. Bondoux" matching "Sylvie Bondoux"
+    tokens1 = normalized1.split()
+    tokens2 = normalized2.split()
+    if len(tokens1) == 2 and len(tokens2) == 2:
+        # If first tokens are very different, it's likely different people
+        first_sim = fuzz.ratio(tokens1[0], tokens2[0]) / 100.0
+        if first_sim < 0.6:
+            return 0.0
+
+    # Protection 3: Reject if one name is embedded in a much longer unrelated string
+    # This prevents "Senozan" matching "617 Impasse du Pré denfer, 71260 Senozan"
+    # But allows "Acme" to match "Acme Ingenierie" (proper prefix/subset)
+    len_ratio = len(normalized1) / len(normalized2) if len(normalized2) > 0 else 0
+    is_prefix_match = False
+
+    if len_ratio < 0.4 or len_ratio > 2.5:
+        # One is much shorter - check if it's a valid prefix/subset
+        shorter_norm = normalized1 if len(normalized1) < len(normalized2) else normalized2
+        longer_norm = normalized2 if len(normalized1) < len(normalized2) else normalized1
+        shorter_tokens = set(tokens1) if len(normalized1) < len(normalized2) else set(tokens2)
+        longer_tokens = set(tokens2) if len(normalized1) < len(normalized2) else set(tokens1)
+
+        # Check if shorter name is a PREFIX of longer name (starts with it)
+        # "acme" is prefix of "acme ingenierie" → valid
+        # "senozan" is NOT prefix of "617 impasse..." → invalid
+        if longer_norm.startswith(shorter_norm):
+            is_prefix_match = True
+        elif not shorter_tokens.issubset(longer_tokens):
+            # Not a prefix and not a subset → reject
+            return 0.0
+        else:
+            # Subset but not prefix - check if embedded in unrelated context
+            # If the longer name has many more tokens, it's likely an address/description
+            if len(longer_tokens) > len(shorter_tokens) * 3:
+                return 0.0
+
+    # For valid prefix matches, give high score
+    # This handles "Acme" → "Acme Ingenierie" where fuzz.ratio would be low
+    if is_prefix_match:
+        return 0.95
+
+    # Use fuzz.ratio for STRICT character-level matching
+    # This gives lower scores for partial/subset matches, avoiding false positives
+    score = fuzz.ratio(normalized1, normalized2) / 100.0
+
+    return score
+
+
 @dataclass
 class EntityResolver:
     """

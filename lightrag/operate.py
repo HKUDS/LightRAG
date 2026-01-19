@@ -2491,8 +2491,7 @@ async def _resolve_cross_document_entities(
         - resolved_nodes: Dict with entities resolved to canonical names.
         - resolution_map: Dict mapping old_name -> (new_name, score) for logging.
     """
-    from rapidfuzz import fuzz
-    from lightrag.entity_resolution import _normalize_for_matching
+    from lightrag.entity_resolution import _normalize_for_matching, compute_entity_similarity
 
     similarity_threshold = global_config.get("entity_similarity_threshold", DEFAULT_ENTITY_SIMILARITY_THRESHOLD)
     min_name_length = global_config.get("entity_min_name_length", DEFAULT_ENTITY_MIN_NAME_LENGTH)
@@ -2508,14 +2507,14 @@ async def _resolve_cross_document_entities(
         return dict(all_nodes), {}
 
     # 2. Build index of existing entity names (by type for efficiency)
-    # type -> {normalized_name -> original_name}
-    existing_by_type: dict[str, dict[str, str]] = defaultdict(dict)
+    # type -> list of (original_name, normalized_name)
+    existing_by_type: dict[str, list[tuple[str, str]]] = defaultdict(list)
     for node in existing_nodes:
         entity_name = node.get("entity_id") or node.get("id")
         entity_type = node.get("entity_type", "UNKNOWN")
         if entity_name and len(entity_name) > min_name_length:
             normalized = _normalize_for_matching(entity_name)
-            existing_by_type[entity_type.upper()][normalized] = entity_name
+            existing_by_type[entity_type.upper()].append((entity_name, normalized))
 
     # 3. Resolve each new entity against existing entities
     resolved_nodes: dict[str, list[dict]] = defaultdict(list)
@@ -2533,27 +2532,21 @@ async def _resolve_cross_document_entities(
             continue
 
         # Find best matching existing entity of the same type
-        normalized_new = _normalize_for_matching(entity_name)
-        existing_same_type = existing_by_type.get(entity_type, {})
+        existing_same_type = existing_by_type.get(entity_type, [])
 
         best_match = None
         best_score = 0.0
 
-        for normalized_existing, existing_name in existing_same_type.items():
+        for existing_name, normalized_existing in existing_same_type:
             # Skip if it's the same entity (already exists with exact name)
             if existing_name == entity_name:
                 best_match = existing_name
                 best_score = 1.0
                 break
 
-            # Exact normalized match (e.g., "2 C B SAS" matches existing "2CB" via normalization)
-            if normalized_existing == normalized_new:
-                best_match = existing_name
-                best_score = 1.0
-                break
-
-            # Compare using token_set_ratio (handles word order and partial matches)
-            score = fuzz.token_set_ratio(normalized_new, normalized_existing) / 100.0
+            # Use conservative similarity computation (fuzz.ratio with protections)
+            # This prevents false positives like "Senozan" matching full addresses
+            score = compute_entity_similarity(entity_name, existing_name)
             if score >= similarity_threshold and score > best_score:
                 best_match = existing_name
                 best_score = score
@@ -2616,8 +2609,10 @@ async def consolidate_graph_entities(
     Returns:
         Dict mapping old entity names to their canonical names (for logging).
     """
-    from rapidfuzz import fuzz
-    from lightrag.entity_resolution import _normalize_for_matching, EntityResolver
+    from lightrag.entity_resolution import (
+        _normalize_for_matching,
+        compute_entity_similarity,
+    )
 
     if not global_config.get("enable_entity_resolution", True):
         return {}
@@ -2669,14 +2664,9 @@ async def consolidate_graph_entities(
                 if other_name in used:
                     continue
 
-                # Check for exact normalized match first
-                if normalized == other_normalized:
-                    cluster.add(other_name)
-                    used.add(other_name)
-                    continue
-
-                # Fuzzy match
-                score = fuzz.token_set_ratio(normalized, other_normalized) / 100.0
+                # Use conservative similarity computation (fuzz.ratio with protections)
+                # This prevents false positives like partial address matches
+                score = compute_entity_similarity(name, other_name)
                 if score >= similarity_threshold:
                     cluster.add(other_name)
                     used.add(other_name)
