@@ -1826,6 +1826,26 @@ class PGKVStorage(BaseKVStorage):
             response["create_time"] = create_time
             response["update_time"] = create_time if update_time == 0 else update_time
 
+        # Diagnostic: check if document exists in other workspaces when not found in full_docs
+        if not response and is_namespace(self.namespace, NameSpace.KV_STORE_FULL_DOCS):
+            try:
+                check_sql = "SELECT workspace, id FROM LIGHTRAG_DOC_FULL WHERE id=$1 LIMIT 1"
+                check_result = await self.db.query(check_sql, [id], True)
+                if check_result:
+                    actual_workspace = check_result[0].get('workspace', 'unknown')
+                    logger.warning(
+                        f"[{self.workspace}] PGKVStorage.get_by_id(full_docs): doc_id={id} "
+                        f"NOT found with workspace='{self.workspace}', "
+                        f"but EXISTS with workspace='{actual_workspace}'"
+                    )
+                else:
+                    logger.debug(
+                        f"[{self.workspace}] PGKVStorage.get_by_id(full_docs): doc_id={id} "
+                        f"not found in any workspace"
+                    )
+            except Exception as e:
+                logger.debug(f"[{self.workspace}] Could not run diagnostic query: {e}")
+
         return response if response else None
 
     # Query by id
@@ -2015,6 +2035,10 @@ class PGKVStorage(BaseKVStorage):
                 }
                 await self.db.execute(upsert_sql, _data)
         elif is_namespace(self.namespace, NameSpace.KV_STORE_FULL_DOCS):
+            # Diagnostic: log full_docs upsert details
+            logger.info(
+                f"[{self.workspace}] PGKVStorage.upsert(full_docs): upserting {len(data)} documents"
+            )
             for k, v in data.items():
                 upsert_sql = SQL_TEMPLATES["upsert_doc_full"]
                 _data = {
@@ -2023,6 +2047,10 @@ class PGKVStorage(BaseKVStorage):
                     "doc_name": v.get("file_path", ""),  # Map file_path to doc_name
                     "workspace": self.workspace,
                 }
+                logger.info(
+                    f"[{self.workspace}] PGKVStorage.upsert(full_docs): upserting doc_id={k}, "
+                    f"file={v.get('file_path', 'unknown')}"
+                )
                 await self.db.execute(upsert_sql, _data)
         elif is_namespace(self.namespace, NameSpace.KV_STORE_LLM_RESPONSE_CACHE):
             for k, v in data.items():

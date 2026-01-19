@@ -1500,13 +1500,24 @@ class LightRAG:
             }
             for doc_id in new_docs.keys()
         }
+        # Diagnostic: log workspace info before storing documents
+        full_docs_workspace = getattr(self.full_docs, 'workspace', 'unknown')
+        doc_status_workspace = getattr(self.doc_status, 'workspace', 'unknown')
+        logger.info(
+            f"[{self.workspace}] Enqueue: storing {len(full_docs_data)} docs in full_docs "
+            f"(full_docs.workspace={full_docs_workspace})"
+        )
         await self.full_docs.upsert(full_docs_data)
         # Persist data to disk immediately
         await self.full_docs.index_done_callback()
 
         # Store document status (without content)
+        logger.info(
+            f"[{self.workspace}] Enqueue: storing {len(new_docs)} docs in doc_status "
+            f"(doc_status.workspace={doc_status_workspace})"
+        )
         await self.doc_status.upsert(new_docs)
-        logger.debug(f"Stored {len(new_docs)} new unique documents")
+        logger.info(f"[{self.workspace}] Stored {len(new_docs)} new unique documents")
 
         return track_id
 
@@ -1592,11 +1603,27 @@ class LightRAG:
         failed_docs_to_preserve = []
         successful_deletions = 0
 
+        # Diagnostic: log workspace info at start of consistency check
+        full_docs_workspace = getattr(self.full_docs, 'workspace', 'unknown')
+        doc_status_workspace = getattr(self.doc_status, 'workspace', 'unknown')
+        logger.info(
+            f"[{self.workspace}] _validate_and_fix_document_consistency: "
+            f"checking {len(to_process_docs)} docs, "
+            f"full_docs.workspace={full_docs_workspace}, "
+            f"doc_status.workspace={doc_status_workspace}"
+        )
+
         # Check each document's data consistency
         for doc_id, status_doc in to_process_docs.items():
             # Check if corresponding content exists in full_docs
             content_data = await self.full_docs.get_by_id(doc_id)
             if not content_data:
+                # Diagnostic: log when document is not found in full_docs
+                file_path = getattr(status_doc, "file_path", "unknown")
+                logger.warning(
+                    f"[{self.workspace}] Consistency check: doc_id={doc_id} ({file_path}) "
+                    f"NOT found in full_docs (workspace={full_docs_workspace})"
+                )
                 # Check if this is a failed document that should be preserved
                 if (
                     hasattr(status_doc, "status")
