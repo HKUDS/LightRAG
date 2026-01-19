@@ -15,6 +15,8 @@ export default function SanitizeData() {
   const [descriptionStrategy, setDescriptionStrategy] = useState('join_unique');
   const [sourceIdStrategy, setSourceIdStrategy] = useState('join_unique');
   const [showDescriptions, setShowDescriptions] = useState(false);
+  const [showSelectedOnlyMode, setShowSelectedOnlyMode] = useState(false);
+
 
   const listContainerRef = useRef<HTMLDivElement>(null);
   const [rowsPerPage, setRowsPerPage] = useState(20); // initial guess
@@ -85,56 +87,118 @@ export default function SanitizeData() {
     }
   };
 
-  // New: Show Selected Only
   const handleShowSelectedOnly = () => {
     if (selectedEntities.length === 0) return;
-    setFilterText(''); // clear filter so we see all selected
+    
+    setShowSelectedOnlyMode(true);
     setCurrentPage(1);
-    // We'll show only selected by overriding filtered list in render
+    // Optional: clear filter when entering selected-only mode
+    setFilterText('');
   };
 
   // New: Reset All
   const handleResetAll = () => {
+    setShowSelectedOnlyMode(false);
     setSelectedEntities([]);
     setFirstEntity(null);
     setFilterText('');
     setCurrentPage(1);
-  };
-  // JRS Always show the normal paginated list (we'll add "Show Sel. Only" mode later)
-  const displayEntities = paginatedEntities;      
+  };     
+
+  const displayEntities = showSelectedOnlyMode 
+   ? selectedEntities 
+   : paginatedEntities;  
 
   return (
     <div className="h-full flex flex-col">
       {/* Top row - minimum height to ensure controls are visible */}
-      <div className="min-h-[180px] flex border-b border-gray-300">
+      <div className="h-auto flex border-b border-gray-300">  
         {/* Upper Left */}
         <div className="w-1/4 border-r border-gray-300 p-2.5 flex flex-col gap-2.5">
-          <input
-            type="text"
-            placeholder="Filter entities..."
-            className="w-full px-3 py-1 border border-gray-300 rounded text-xs focus:outline-none focus:ring-1 focus:ring-blue-500"
-            value={filterText}
-            onChange={(e) => setFilterText(e.target.value)}
-          />
+          {!showSelectedOnlyMode && (
+              <>
+                <input
+                  type="text"
+                  placeholder="Filter entities..."
+                  className="w-full px-3 py-1 border border-gray-300 rounded text-xs focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  value={filterText}
+                  onChange={(e) => setFilterText(e.target.value)}
+                />
+                <div className="flex flex-wrap gap-1">
+                  <button className="px-2 py-0.5 bg-gray-100 hover:bg-gray-200 border border-gray-300 rounded text-xs">
+                    All Of Type
+                  </button>
+                  <button className="px-2 py-0.5 bg-gray-100 hover:bg-gray-200 border border-gray-300 rounded text-xs">
+                    Orphans
+                  </button>
+
+                  {/* Pagination */}
+                  <div className="flex flex-wrap gap-1 items-center">
+                    <button
+                      onClick={goToFirst}
+                      disabled={currentPage === 1}
+                      className="px-2 py-0.5 bg-gray-100 hover:bg-gray-200 border border-gray-300 rounded text-xs font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      First
+                    </button>
+                    <button
+                      onClick={goToPrev}
+                      disabled={currentPage === 1}
+                      className="px-2 py-0.5 bg-gray-100 hover:bg-gray-200 border border-gray-300 rounded text-xs font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      Prev
+                    </button>
+
+                    <div className="flex items-center gap-1 bg-gray-50 border border-gray-300 rounded px-1.5 py-0.5 text-xs">
+                      Pg
+                      <input
+                        type="number"
+                        min={1}
+                        max={Math.ceil(filteredEntities.length / rowsPerPage) || 1}
+                        value={currentPage}
+                        onChange={handlePageInputChange}
+                        className="w-10 text-center border border-gray-400 rounded text-xs focus:outline-none focus:ring-1 focus:ring-blue-500 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                      />
+                      /{Math.ceil(filteredEntities.length / rowsPerPage) || 1}
+                    </div>
+
+                    <button
+                      onClick={goToNext}
+                      disabled={currentPage >= Math.ceil(filteredEntities.length / rowsPerPage)}
+                      className="px-2 py-0.5 bg-gray-100 hover:bg-gray-200 border border-gray-300 rounded text-xs font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      Next
+                    </button>
+                    <button
+                      onClick={goToLast}
+                      disabled={currentPage >= Math.ceil(filteredEntities.length / rowsPerPage)}
+                      className="px-2 py-0.5 bg-gray-100 hover:bg-gray-200 border border-gray-300 rounded text-xs font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      Last
+                    </button>
+                  </div>
+                </div>
+              </>
+              )}
 
           <div className="flex flex-wrap gap-1">
-            <button className="px-2 py-0.5 bg-gray-100 hover:bg-gray-200 border border-gray-300 rounded text-xs">
-              All Of Type
-            </button>
-            <button className="px-2 py-0.5 bg-gray-100 hover:bg-gray-200 border border-gray-300 rounded text-xs">
-              Orphans
-            </button>
             <button className="px-2 py-0.5 bg-gray-100 hover:bg-gray-200 border border-gray-300 rounded text-xs">
               Clear Sel.
             </button>
             <button
               onClick={handleShowSelectedOnly}
-              className="px-2 py-0.5 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 rounded text-xs text-indigo-700"
+              className={`px-2 py-0.5 border rounded text-xs transition-colors ${
+                showSelectedOnlyMode
+                  ? 'bg-indigo-600 text-white border-indigo-700'
+                  : 'bg-indigo-50 hover:bg-indigo-100 border-indigo-200 text-indigo-700'
+              }`}
+              disabled={selectedEntities.length === 0}
             >
               Show Sel. Only
             </button>
             <button
               onClick={() => {
+                setShowSelectedOnlyMode(false);    // ← exit selected-only mode
                 setFilterText('');
                 setCurrentPage(1);
               }}
@@ -143,56 +207,14 @@ export default function SanitizeData() {
               Show All
             </button>
             <button
-              onClick={handleResetAll}
+              onClick={() => {
+                setShowSelectedOnlyMode(false);
+                setFilterText('');
+                setCurrentPage(1);
+              }}
               className="px-2 py-0.5 bg-red-50 hover:bg-red-100 border border-red-200 rounded text-xs text-red-700"
             >
               Reset All
-            </button>
-          </div>
-
-          {/* Pagination */}
-          <div className="flex flex-wrap gap-1 items-center">
-            <button
-              onClick={goToFirst}
-              disabled={currentPage === 1}
-              className="px-2 py-0.5 bg-gray-100 hover:bg-gray-200 border border-gray-300 rounded text-xs font-medium disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              First
-            </button>
-            <button
-              onClick={goToPrev}
-              disabled={currentPage === 1}
-              className="px-2 py-0.5 bg-gray-100 hover:bg-gray-200 border border-gray-300 rounded text-xs font-medium disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              Prev
-            </button>
-
-            <div className="flex items-center gap-1 bg-gray-50 border border-gray-300 rounded px-1.5 py-0.5 text-xs">
-              Pg
-              <input
-                type="number"
-                min={1}
-                max={Math.ceil(filteredEntities.length / rowsPerPage) || 1}
-                value={currentPage}
-                onChange={handlePageInputChange}
-                className="w-10 text-center border border-gray-400 rounded text-xs focus:outline-none focus:ring-1 focus:ring-blue-500 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
-              />
-              /{Math.ceil(filteredEntities.length / rowsPerPage) || 1}
-            </div>
-
-            <button
-              onClick={goToNext}
-              disabled={currentPage >= Math.ceil(filteredEntities.length / rowsPerPage)}
-              className="px-2 py-0.5 bg-gray-100 hover:bg-gray-200 border border-gray-300 rounded text-xs font-medium disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              Next
-            </button>
-            <button
-              onClick={goToLast}
-              disabled={currentPage >= Math.ceil(filteredEntities.length / rowsPerPage)}
-              className="px-2 py-0.5 bg-gray-100 hover:bg-gray-200 border border-gray-300 rounded text-xs font-medium disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              Last
             </button>
           </div>
         </div>
