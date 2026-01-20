@@ -769,6 +769,7 @@ class DocumentManager:
         supported_extensions: tuple = (
             ".txt",
             ".md",
+            ".mdx",  # MDX (Markdown + JSX)
             ".pdf",
             ".docx",
             ".pptx",
@@ -1268,6 +1269,7 @@ async def pipeline_enqueue_file(
                 case (
                     ".txt"
                     | ".md"
+                    | ".mdx"
                     | ".html"
                     | ".htm"
                     | ".tex"
@@ -2078,13 +2080,41 @@ def create_document_routes(
         uploaded file is of a supported type, saves it in the specified input directory,
         indexes it for retrieval, and returns a success status with relevant details.
 
+        **Duplicate Detection Behavior:**
+
+        This endpoint handles two types of duplicate scenarios differently:
+
+        1. **Filename Duplicate (Synchronous Detection)**:
+           - Detected immediately before file processing
+           - Returns `status="duplicated"` with the existing document's track_id
+           - Two cases:
+             - If filename exists in document storage: returns existing track_id
+             - If filename exists in file system only: returns empty track_id ("")
+
+        2. **Content Duplicate (Asynchronous Detection)**:
+           - Detected during background processing after content extraction
+           - Returns `status="success"` with a new track_id immediately
+           - The duplicate is detected later when processing the file content
+           - Use `/documents/track_status/{track_id}` to check the final result:
+             - Document will have `status="FAILED"`
+             - `error_msg` contains "Content already exists. Original doc_id: xxx"
+             - `metadata.is_duplicate=true` with reference to original document
+             - `metadata.original_doc_id` points to the existing document
+             - `metadata.original_track_id` shows the original upload's track_id
+
+        **Why Different Behavior?**
+        - Filename check is fast (simple lookup), done synchronously
+        - Content extraction is expensive (PDF/DOCX parsing), done asynchronously
+        - This design prevents blocking the client during expensive operations
+
         Args:
             background_tasks: FastAPI BackgroundTasks for async processing
             file (UploadFile): The file to be uploaded. It must have an allowed extension.
 
         Returns:
             InsertResponse: A response object containing the upload status and a message.
-                status can be "success", "duplicated", or error is thrown.
+                - status="success": File accepted and queued for processing
+                - status="duplicated": Filename already exists (see track_id for existing document)
 
         Raises:
             HTTPException: If the file type is not supported (400) or other errors occur (500).

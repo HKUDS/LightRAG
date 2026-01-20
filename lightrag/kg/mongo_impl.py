@@ -1112,7 +1112,7 @@ class MongoGraphStorage(BaseGraphStorage):
 
     async def get_all_labels(self) -> list[str]:
         """
-        Get all existing node _id in the database
+        Get all existing node _ids(entity names) in the database
         Returns:
             [id1, id2, ...]  # Alphabetically sorted id list
         """
@@ -1608,13 +1608,13 @@ class MongoGraphStorage(BaseGraphStorage):
         return edges
 
     async def get_popular_labels(self, limit: int = 300) -> list[str]:
-        """Get popular labels by node degree (most connected entities)
+        """Get popular labels(entity names) by node degree (most connected entities)
 
         Args:
             limit: Maximum number of labels to return
 
         Returns:
-            List of labels sorted by degree (highest first)
+            List of labels(entity names) sorted by degree (highest first)
         """
         try:
             # Use aggregation pipeline to count edges per node and sort by degree
@@ -1829,7 +1829,7 @@ class MongoGraphStorage(BaseGraphStorage):
 
     async def search_labels(self, query: str, limit: int = 50) -> list[str]:
         """
-        Search labels with progressive fallback strategy:
+        Search labels(entity names) with progressive fallback strategy:
         1. Atlas text search (simple and fast)
         2. Atlas autocomplete search (prefix matching with fuzzy)
         3. Atlas compound search (comprehensive matching)

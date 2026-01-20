@@ -4815,7 +4815,7 @@ class PGGraphStorage(BaseGraphStorage):
 
     async def get_all_labels(self) -> list[str]:
         """
-        Get all labels (node IDs) in the graph.
+        Get all labels(node IDs, entity names) in the graph.
 
         Returns:
             list[str]: A list of all labels in the graph.
