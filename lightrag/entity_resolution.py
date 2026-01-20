@@ -14,6 +14,7 @@ Enhanced with French legal entity support:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 import unicodedata
@@ -26,6 +27,7 @@ from lightrag.constants import (
     DEFAULT_ENTITY_SIMILARITY_THRESHOLD,
     DEFAULT_ENTITY_MIN_NAME_LENGTH,
     DEFAULT_PREFER_SHORTER_CANONICAL_NAME,
+    DEFAULT_CPU_YIELD_INTERVAL,
 )
 
 logger = logging.getLogger("lightrag.entity_resolution")
@@ -249,6 +251,7 @@ class EntityResolver:
     Attributes:
         similarity_threshold: Minimum similarity score (0.0-1.0) for matching.
         min_name_length: Minimum character length for fuzzy matching eligibility.
+        cpu_yield_interval: Yield control to event loop every N comparisons.
 
     Example:
         >>> resolver = EntityResolver(similarity_threshold=0.85)
@@ -264,6 +267,7 @@ class EntityResolver:
     similarity_threshold: float = DEFAULT_ENTITY_SIMILARITY_THRESHOLD
     min_name_length: int = DEFAULT_ENTITY_MIN_NAME_LENGTH
     prefer_shorter_canonical_name: bool = DEFAULT_PREFER_SHORTER_CANONICAL_NAME
+    cpu_yield_interval: int = DEFAULT_CPU_YIELD_INTERVAL
 
     # Internal state - maps original names to their canonical form
     canonical_names: dict[str, str] = field(default_factory=dict)
@@ -279,6 +283,10 @@ class EntityResolver:
         if self.min_name_length < 1:
             raise ValueError(
                 f"min_name_length must be at least 1, got {self.min_name_length}"
+            )
+        if self.cpu_yield_interval < 1:
+            raise ValueError(
+                f"cpu_yield_interval must be at least 1, got {self.cpu_yield_interval}"
             )
 
     def _normalize_name(self, name: str) -> str:
@@ -404,7 +412,7 @@ class EntityResolver:
             return self.canonical_names[entity_name]
         return entity_name
 
-    def consolidate_entities(
+    async def consolidate_entities(
         self, all_nodes: dict[str, list[dict[str, Any]]]
     ) -> dict[str, list[dict[str, Any]]]:
         """
@@ -415,6 +423,9 @@ class EntityResolver:
         2. For each type group, identifies clusters of similar names
         3. Merges entity records under canonical names
         4. Logs all merge operations
+
+        Note: This method is async to allow CPU yielding during intensive
+        fuzzy matching operations, preventing event loop blocking.
 
         Args:
             all_nodes: Dict mapping entity_name -> list of entity records.
@@ -440,18 +451,22 @@ class EntityResolver:
         consolidated: dict[str, list[dict[str, Any]]] = {}
 
         for entity_type, type_entities in entities_by_type.items():
-            type_consolidated = self._consolidate_same_type_entities(
+            type_consolidated = await self._consolidate_same_type_entities(
                 type_entities, entity_type
             )
             consolidated.update(type_consolidated)
 
         return consolidated
 
-    def _consolidate_same_type_entities(
+    async def _consolidate_same_type_entities(
         self, entities: dict[str, list[dict[str, Any]]], entity_type: str
     ) -> dict[str, list[dict[str, Any]]]:
         """
         Consolidate entities of the same type.
+
+        This method performs O(n²) fuzzy matching comparisons which can be
+        CPU-intensive. It yields control back to the event loop periodically
+        to prevent blocking other async operations.
 
         Args:
             entities: Dict mapping entity_name -> list of entity records.
@@ -477,6 +492,10 @@ class EntityResolver:
         clusters: list[set[str]] = []
         used_names: set[str] = set()
 
+        # CPU yielding configuration: yield every N comparisons
+        comparison_count = 0
+        yield_interval = self.cpu_yield_interval
+
         for name in matchable_names:
             if name in used_names:
                 continue
@@ -491,11 +510,24 @@ class EntityResolver:
                     continue
 
                 similarity = self._compute_similarity(name, other_name)
+                comparison_count += 1
+
+                # CPU yielding: allow other async tasks to run
+                if comparison_count % yield_interval == 0:
+                    await asyncio.sleep(0)
+
                 if similarity >= self.similarity_threshold:
                     cluster.add(other_name)
                     used_names.add(other_name)
 
             clusters.append(cluster)
+
+        # Log total comparisons for debugging
+        if comparison_count > 1000:
+            logger.debug(
+                f"Entity resolution ({entity_type}): {comparison_count} comparisons, "
+                f"{len(matchable_names)} entities"
+            )
 
         # Build consolidated result
         consolidated: dict[str, list[dict[str, Any]]] = {}

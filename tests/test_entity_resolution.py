@@ -28,7 +28,8 @@ class TestEntityResolver:
         assert resolver._compute_similarity("Tesla", "Toyota") < 0.85
 
     # T011: test_threshold_behavior - verify 0.85 default threshold
-    def test_threshold_behavior(self):
+    @pytest.mark.asyncio
+    async def test_threshold_behavior(self):
         """Test that threshold correctly filters matches."""
         resolver = EntityResolver(similarity_threshold=0.85)
 
@@ -38,7 +39,7 @@ class TestEntityResolver:
             "Google": [{"entity_type": "ORGANIZATION", "description": "Search engine"}],
         }
 
-        result = resolver.consolidate_entities(all_nodes)
+        result = await resolver.consolidate_entities(all_nodes)
 
         # Apple Inc and Apple Inc. should be merged
         assert "Apple Inc" in result or "Apple Inc." in result
@@ -47,7 +48,8 @@ class TestEntityResolver:
         # Total should be 2 entities
         assert len(result) == 2
 
-    def test_threshold_strict(self):
+    @pytest.mark.asyncio
+    async def test_threshold_strict(self):
         """Test stricter threshold (0.95) requires very close matches."""
         resolver = EntityResolver(similarity_threshold=0.95)
 
@@ -56,14 +58,15 @@ class TestEntityResolver:
             "Apple": [{"entity_type": "ORGANIZATION", "description": "Based in Cupertino"}],
         }
 
-        result = resolver.consolidate_entities(all_nodes)
+        result = await resolver.consolidate_entities(all_nodes)
 
         # With strict threshold, "Apple" and "Apple Inc" might not merge
         # depending on exact similarity score
         # This tests that threshold is respected
         assert len(result) >= 1
 
-    def test_threshold_lenient(self):
+    @pytest.mark.asyncio
+    async def test_threshold_lenient(self):
         """Test lenient threshold (0.75) merges more variations."""
         resolver = EntityResolver(similarity_threshold=0.75)
 
@@ -73,7 +76,7 @@ class TestEntityResolver:
             "Apple Incorporated": [{"entity_type": "ORGANIZATION", "description": "Full name"}],
         }
 
-        result = resolver.consolidate_entities(all_nodes)
+        result = await resolver.consolidate_entities(all_nodes)
 
         # With lenient threshold, Apple variants with shared tokens should merge
         # "Apple" and "Apple Inc" have ~80% similarity
@@ -81,7 +84,8 @@ class TestEntityResolver:
         assert len(result) <= 2  # At least some merging happens
 
     # T012: test_case_insensitive_matching - "APPLE" matches "Apple"
-    def test_case_insensitive_matching(self):
+    @pytest.mark.asyncio
+    async def test_case_insensitive_matching(self):
         """Test that matching is case-insensitive."""
         resolver = EntityResolver(similarity_threshold=0.85)
 
@@ -91,13 +95,14 @@ class TestEntityResolver:
             "apple inc": [{"entity_type": "ORGANIZATION", "description": "Cupertino based"}],
         }
 
-        result = resolver.consolidate_entities(all_nodes)
+        result = await resolver.consolidate_entities(all_nodes)
 
         # All case variations should merge into one
         assert len(result) == 1
 
     # T013: test_short_name_exclusion - names ≤2 chars never matched (FR-018)
-    def test_short_name_exclusion(self):
+    @pytest.mark.asyncio
+    async def test_short_name_exclusion(self):
         """Test that short names (≤2 chars) are excluded from fuzzy matching."""
         resolver = EntityResolver(similarity_threshold=0.85, min_name_length=3)
 
@@ -107,7 +112,7 @@ class TestEntityResolver:
             "ML": [{"entity_type": "CONCEPT", "description": "Machine Learning"}],
         }
 
-        result = resolver.consolidate_entities(all_nodes)
+        result = await resolver.consolidate_entities(all_nodes)
 
         # Short names should remain as-is, not merged
         assert "AI" in result
@@ -115,7 +120,8 @@ class TestEntityResolver:
         # AI Systems should be separate (not fuzzy matched with short "AI")
         assert len(result) == 3
 
-    def test_short_name_exclusion_with_similar_long_names(self):
+    @pytest.mark.asyncio
+    async def test_short_name_exclusion_with_similar_long_names(self):
         """Test short names don't interfere with longer name matching."""
         # Note: With conservative matching (fuzz.ratio), "United States" and
         # "United States of America" won't merge (score ~0.70) which is safer.
@@ -127,7 +133,7 @@ class TestEntityResolver:
             "United States of America": [{"entity_type": "LOCATION", "description": "USA full name"}],
         }
 
-        result = resolver.consolidate_entities(all_nodes)
+        result = await resolver.consolidate_entities(all_nodes)
 
         # "US" should remain separate (too short)
         assert "US" in result
@@ -135,7 +141,8 @@ class TestEntityResolver:
         assert "United States" in result or "United States of America" in result
 
     # T014: test_canonical_name_selection - longest name wins (FR-003)
-    def test_canonical_name_selection(self):
+    @pytest.mark.asyncio
+    async def test_canonical_name_selection(self):
         """Test that the longest name is selected as canonical."""
         resolver = EntityResolver(similarity_threshold=0.85)
 
@@ -145,14 +152,15 @@ class TestEntityResolver:
             "Apple Inc.": [{"entity_type": "ORGANIZATION", "description": "With period"}],
         }
 
-        result = resolver.consolidate_entities(all_nodes)
+        result = await resolver.consolidate_entities(all_nodes)
 
         # Longest name should be the canonical one
         # "Apple Inc." has 11 chars, "Apple Inc" has 9, "Apple" has 5
         assert "Apple Inc." in result
         assert len(result) == 1
 
-    def test_canonical_name_alphabetical_tie_breaker(self):
+    @pytest.mark.asyncio
+    async def test_canonical_name_alphabetical_tie_breaker(self):
         """Test that alphabetical order breaks ties for equal-length names."""
         resolver = EntityResolver(similarity_threshold=0.85)
 
@@ -163,7 +171,7 @@ class TestEntityResolver:
             "apple inc": [{"entity_type": "ORGANIZATION", "description": "Lowercase"}],
         }
 
-        result = resolver.consolidate_entities(all_nodes)
+        result = await resolver.consolidate_entities(all_nodes)
 
         # Both should merge (same name different case)
         assert len(result) == 1
@@ -173,7 +181,8 @@ class TestEntityResolver:
         assert canonical == "APPLE INC"
 
     # T015: test_entity_type_constraint - same-type entities only (FR-006)
-    def test_entity_type_constraint(self):
+    @pytest.mark.asyncio
+    async def test_entity_type_constraint(self):
         """Test that only entities of the same type are merged."""
         resolver = EntityResolver(similarity_threshold=0.85)
 
@@ -190,7 +199,7 @@ class TestEntityResolver:
             "Apple Corp.": [{"entity_type": "ORGANIZATION", "description": "Full name"}],
         }
 
-        result = resolver.consolidate_entities(all_nodes)
+        result = await resolver.consolidate_entities(all_nodes)
 
         # ORGANIZATION entities should merge, FRUIT should stay separate
         org_count = sum(1 for records in result.values()
@@ -201,7 +210,8 @@ class TestEntityResolver:
         assert org_count == 1  # Merged organizations
         assert fruit_count == 1  # Separate fruit
 
-    def test_entity_type_constraint_prevents_cross_type_merge(self):
+    @pytest.mark.asyncio
+    async def test_entity_type_constraint_prevents_cross_type_merge(self):
         """Test that entities of different types are never merged even if names match."""
         resolver = EntityResolver(similarity_threshold=0.85)
 
@@ -210,14 +220,15 @@ class TestEntityResolver:
             "Paris Hilton": [{"entity_type": "PERSON", "description": "Celebrity"}],
         }
 
-        result = resolver.consolidate_entities(all_nodes)
+        result = await resolver.consolidate_entities(all_nodes)
 
         # Both should remain separate (different types)
         assert len(result) == 2
         assert "Paris" in result
         assert "Paris Hilton" in result
 
-    def test_entity_type_case_insensitive(self):
+    @pytest.mark.asyncio
+    async def test_entity_type_case_insensitive(self):
         """Test that entity types with different cases are treated as the same type."""
         resolver = EntityResolver(similarity_threshold=0.85)
 
@@ -228,7 +239,7 @@ class TestEntityResolver:
             "thalie": [{"entity_type": "organization", "description": "Version 3"}],
         }
 
-        result = resolver.consolidate_entities(all_nodes)
+        result = await resolver.consolidate_entities(all_nodes)
 
         # All should merge despite different entity_type casing
         assert len(result) == 1
@@ -237,7 +248,8 @@ class TestEntityResolver:
         assert len(result[canonical_key]) == 3
 
     # T016: test_consolidate_entities_batch - batch processing works
-    def test_consolidate_entities_batch(self):
+    @pytest.mark.asyncio
+    async def test_consolidate_entities_batch(self):
         """Test batch processing of multiple entities."""
         resolver = EntityResolver(similarity_threshold=0.85)
 
@@ -253,7 +265,7 @@ class TestEntityResolver:
             "Microsoft": [{"entity_type": "ORGANIZATION", "description": "Windows maker"}],
         }
 
-        result = resolver.consolidate_entities(all_nodes)
+        result = await resolver.consolidate_entities(all_nodes)
 
         # Should have 3 consolidated entities
         assert len(result) == 3
@@ -267,14 +279,16 @@ class TestEntityResolver:
             else:
                 assert len(records) == 1
 
-    def test_consolidate_entities_empty_input(self):
+    @pytest.mark.asyncio
+    async def test_consolidate_entities_empty_input(self):
         """Test handling of empty input."""
         resolver = EntityResolver()
 
-        result = resolver.consolidate_entities({})
+        result = await resolver.consolidate_entities({})
         assert result == {}
 
-    def test_consolidate_entities_single_entity(self):
+    @pytest.mark.asyncio
+    async def test_consolidate_entities_single_entity(self):
         """Test handling of single entity."""
         resolver = EntityResolver()
 
@@ -282,7 +296,7 @@ class TestEntityResolver:
             "Apple": [{"entity_type": "ORGANIZATION", "description": "Tech company"}]
         }
 
-        result = resolver.consolidate_entities(all_nodes)
+        result = await resolver.consolidate_entities(all_nodes)
         assert result == all_nodes
 
 
@@ -407,7 +421,8 @@ class TestNormalization:
 class TestFrenchEntityResolution:
     """Test entity resolution with French legal entities."""
 
-    def test_sfjb_variations_merge(self):
+    @pytest.mark.asyncio
+    async def test_sfjb_variations_merge(self):
         """Test that SFJB variations are properly merged."""
         resolver = EntityResolver(similarity_threshold=0.85)
 
@@ -418,7 +433,7 @@ class TestFrenchEntityResolution:
             "Société SFJB": [{"entity_type": "ORGANIZATION", "description": "Version 4"}],
         }
 
-        result = resolver.consolidate_entities(all_nodes)
+        result = await resolver.consolidate_entities(all_nodes)
 
         # All should merge into one entity
         assert len(result) == 1
@@ -426,7 +441,8 @@ class TestFrenchEntityResolution:
         canonical_key = list(result.keys())[0]
         assert len(result[canonical_key]) == 4
 
-    def test_2cb_variations_merge(self):
+    @pytest.mark.asyncio
+    async def test_2cb_variations_merge(self):
         """Test that 2CB variations with spaces are properly merged."""
         resolver = EntityResolver(similarity_threshold=0.85)
 
@@ -437,12 +453,13 @@ class TestFrenchEntityResolution:
             "SAS 2CB": [{"entity_type": "ORGANIZATION", "description": "Reversed"}],
         }
 
-        result = resolver.consolidate_entities(all_nodes)
+        result = await resolver.consolidate_entities(all_nodes)
 
         # All should merge into one entity
         assert len(result) == 1
 
-    def test_thalie_variations_merge(self):
+    @pytest.mark.asyncio
+    async def test_thalie_variations_merge(self):
         """Test that THALIE variations are properly merged."""
         resolver = EntityResolver(similarity_threshold=0.85)
 
@@ -453,12 +470,13 @@ class TestFrenchEntityResolution:
             "Société THALIE": [{"entity_type": "ORGANIZATION", "description": "With Société"}],
         }
 
-        result = resolver.consolidate_entities(all_nodes)
+        result = await resolver.consolidate_entities(all_nodes)
 
         # All should merge into one entity
         assert len(result) == 1
 
-    def test_accent_variations_merge(self):
+    @pytest.mark.asyncio
+    async def test_accent_variations_merge(self):
         """Test that accent variations are properly merged."""
         resolver = EntityResolver(similarity_threshold=0.85)
 
@@ -468,12 +486,13 @@ class TestFrenchEntityResolution:
             "SAS Financière de Rozier": [{"entity_type": "ORGANIZATION", "description": "With SAS"}],
         }
 
-        result = resolver.consolidate_entities(all_nodes)
+        result = await resolver.consolidate_entities(all_nodes)
 
         # All should merge into one entity
         assert len(result) == 1
 
-    def test_canonical_name_preserves_original(self):
+    @pytest.mark.asyncio
+    async def test_canonical_name_preserves_original(self):
         """Test canonical name selection with variations that DO merge."""
         # With conservative matching (fuzz.ratio), we need names that normalize
         # to the same string for 100% match
@@ -484,7 +503,7 @@ class TestFrenchEntityResolution:
             "SAS SFJB": [{"entity_type": "ORGANIZATION", "description": "With legal form"}],
         }
 
-        result = resolver.consolidate_entities(all_nodes)
+        result = await resolver.consolidate_entities(all_nodes)
 
         # Both normalize to "sfjb", so they merge
         # Canonical should be the longest original name
@@ -495,7 +514,8 @@ class TestFrenchEntityResolution:
 class TestConfigurationIntegration:
     """Test configuration integration with global_config (T055-T056)."""
 
-    def test_configuration_changes(self):
+    @pytest.mark.asyncio
+    async def test_configuration_changes(self):
         """Test that threshold configuration changes affect matching behavior."""
         # Strict threshold - fewer matches
         strict_resolver = EntityResolver(similarity_threshold=0.95)
@@ -506,13 +526,14 @@ class TestConfigurationIntegration:
             "Apple": [{"entity_type": "ORGANIZATION", "description": "Phones"}],
         }
 
-        strict_result = strict_resolver.consolidate_entities(all_nodes.copy())
-        lenient_result = lenient_resolver.consolidate_entities(all_nodes.copy())
+        strict_result = await strict_resolver.consolidate_entities(all_nodes.copy())
+        lenient_result = await lenient_resolver.consolidate_entities(all_nodes.copy())
 
         # Lenient should merge more
         assert len(lenient_result) <= len(strict_result)
 
-    def test_disable_entity_resolution(self):
+    @pytest.mark.asyncio
+    async def test_disable_entity_resolution(self):
         """Test that entity resolution can be disabled via config check."""
         # Simulate disabled entity resolution (feature toggle in operate.py)
         enable_entity_resolution = False
@@ -524,7 +545,7 @@ class TestConfigurationIntegration:
 
         if enable_entity_resolution:
             resolver = EntityResolver()
-            result = resolver.consolidate_entities(all_nodes)
+            result = await resolver.consolidate_entities(all_nodes)
         else:
             result = all_nodes  # No resolution
 
@@ -537,7 +558,8 @@ class TestConfigurationIntegration:
 class TestPreferShorterCanonicalName:
     """Test prefer_shorter_canonical_name option."""
 
-    def test_default_prefers_longer(self):
+    @pytest.mark.asyncio
+    async def test_default_prefers_longer(self):
         """Test default behavior prefers longer canonical name."""
         # Use names that normalize to the same string for guaranteed merge
         resolver = EntityResolver(similarity_threshold=0.92, min_name_length=2)
@@ -547,14 +569,15 @@ class TestPreferShorterCanonicalName:
             "SAS SFJB": [{"entity_type": "ORGANIZATION", "description": "With legal form"}],
         }
 
-        result = resolver.consolidate_entities(all_nodes)
+        result = await resolver.consolidate_entities(all_nodes)
 
         # Default: longest name is canonical
         assert "SAS SFJB" in result
         assert "SFJB" not in result
         assert len(result) == 1
 
-    def test_prefer_shorter_selects_shorter(self):
+    @pytest.mark.asyncio
+    async def test_prefer_shorter_selects_shorter(self):
         """Test prefer_shorter_canonical_name=True selects shorter name."""
         resolver = EntityResolver(
             similarity_threshold=0.92,
@@ -567,14 +590,15 @@ class TestPreferShorterCanonicalName:
             "SAS SFJB": [{"entity_type": "ORGANIZATION", "description": "With legal form"}],
         }
 
-        result = resolver.consolidate_entities(all_nodes)
+        result = await resolver.consolidate_entities(all_nodes)
 
         # With option: shortest name is canonical
         assert "SFJB" in result
         assert "SAS SFJB" not in result
         assert len(result) == 1
 
-    def test_prefer_shorter_multiple_variants(self):
+    @pytest.mark.asyncio
+    async def test_prefer_shorter_multiple_variants(self):
         """Test prefer_shorter with multiple variants that normalize to same string."""
         resolver = EntityResolver(
             similarity_threshold=0.92,
@@ -588,13 +612,14 @@ class TestPreferShorterCanonicalName:
             "Société SFJB": [{"entity_type": "ORGANIZATION", "description": "With article"}],
         }
 
-        result = resolver.consolidate_entities(all_nodes)
+        result = await resolver.consolidate_entities(all_nodes)
 
         # Shortest should be canonical
         assert "SFJB" in result
         assert len(result) == 1
 
-    def test_prefer_shorter_alphabetical_tiebreaker(self):
+    @pytest.mark.asyncio
+    async def test_prefer_shorter_alphabetical_tiebreaker(self):
         """Test alphabetical tiebreaker when lengths are equal."""
         resolver = EntityResolver(
             similarity_threshold=0.85,
@@ -606,7 +631,7 @@ class TestPreferShorterCanonicalName:
             "XYZ SAS": [{"entity_type": "ORGANIZATION", "description": "Last alpha"}],
         }
 
-        result = resolver.consolidate_entities(all_nodes)
+        result = await resolver.consolidate_entities(all_nodes)
 
         # Equal length: alphabetically first should win
         # Note: These are different companies, they shouldn't merge
@@ -614,7 +639,8 @@ class TestPreferShorterCanonicalName:
         # Actually these won't merge - different names
         assert len(result) == 2
 
-    def test_prefer_shorter_with_french_forms(self):
+    @pytest.mark.asyncio
+    async def test_prefer_shorter_with_french_forms(self):
         """Test prefer_shorter with French legal forms."""
         resolver = EntityResolver(
             similarity_threshold=0.85,
@@ -627,7 +653,7 @@ class TestPreferShorterCanonicalName:
             "Société Acme SARL": [{"entity_type": "ORGANIZATION", "description": "Full"}],
         }
 
-        result = resolver.consolidate_entities(all_nodes)
+        result = await resolver.consolidate_entities(all_nodes)
 
         # All normalize to "acme", shortest original is "Acme"
         assert "Acme" in result
