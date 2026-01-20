@@ -14,7 +14,6 @@ export default function SanitizeData() {
   const [entityType, setEntityType] = useState('');
   const [descriptionStrategy, setDescriptionStrategy] = useState('join_unique');
   const [sourceIdStrategy, setSourceIdStrategy] = useState('join_unique');
-  const [showDescriptions, setShowDescriptions] = useState(false);
   const [showSelectedOnlyMode, setShowSelectedOnlyMode] = useState(false);
 
   // Dropdown suggestions = currently selected entities
@@ -78,12 +77,12 @@ export default function SanitizeData() {
 
   // Fetch details for all selected entities when "Show Desc" is turned on
   useEffect(() => {
-    if (showDescriptions && selectedEntities.length > 0) {
+    if (selectedEntities.length > 0) {
       selectedEntities.forEach((entityName) => {
         fetchEntityDetail(entityName);
       });
     }
-  }, [showDescriptions, selectedEntities]);  // Run when toggle changes or selection changes
+  }, [selectedEntities]);  // ← only this dependency now
 
   // Reset page when filter changes
   useEffect(() => {
@@ -112,15 +111,6 @@ export default function SanitizeData() {
     setCurrentPage(1);
     // Optional: clear filter when entering selected-only mode
     setFilterText('');
-  };
-
-  // Reset All
-  const handleResetAll = () => {
-    setShowSelectedOnlyMode(false);      // exit selected-only mode
-    setSelectedEntities([]);             // clear all checkboxes
-    setFirstEntity(null);                // clear the radio "Keep First" selection
-    setFilterText('');                   // remove any filter
-    setCurrentPage(1);                   // go back to first page
   };
 
   const handleClearSelected = () => {
@@ -462,22 +452,6 @@ export default function SanitizeData() {
       <div className="flex-1 flex overflow-hidden">
         {/* Lower Left */}
         <div className="w-1/4 border-r border-gray-300 flex flex-row">
-          <div className="flex flex-col w-10">
-            <div className="h-[42px] bg-gray-100 border-b border-gray-300 flex items-center justify-center">
-              <span className="text-xs font-medium text-gray-700 leading-tight text-center">
-                Show<br />Desc
-              </span>
-            </div>
-
-            <button
-              onClick={() => setShowDescriptions(!showDescriptions)}
-              className="flex-1 bg-gradient-to-b from-gray-100 to-gray-300 hover:from-gray-200 hover:to-gray-400 border-r border-gray-400 flex flex-col items-center justify-center text-xs font-medium text-gray-800 shadow-md rounded-r-lg active:bg-gray-400 transition-all"
-            >
-              <span>Show</span>
-              <span>Desc</span>
-            </button>
-          </div>
-
           <div className="flex-1 flex flex-col overflow-hidden">
             <div className="grid grid-cols-[40px_40px_1fr] gap-1 px-2 py-1.5 bg-gray-100 border-b border-gray-300 text-xs font-medium text-center">
               <div className="text-left pl-1.5">Keep<br/>First</div>
@@ -529,14 +503,16 @@ export default function SanitizeData() {
           </div>
         </div>
 
-        {/* Lower Right */}
+        {/* Lower Right – always shows details for current selection (no "Show Desc" needed) */}
         <div className="flex-1 p-3 flex flex-col">
           <div className="flex-1 overflow-y-auto bg-white border border-gray-200 rounded p-3">
-            {showDescriptions ? (
+            {selectedEntities.length === 0 ? (
+              <div className="flex items-center justify-center h-full text-gray-500 text-sm">
+                Select one or more entities on the left to view their details
+              </div>
+            ) : (
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-
-
-                {selectedEntities.map((name) => (  // Removed .slice(0,9) to show all selected
+                {selectedEntities.map((name) => (
                   <div key={name} className="border border-gray-200 rounded p-3 bg-gray-50 text-sm">
                     <div className="font-medium mb-2 flex justify-between items-center">
                       <span>{name}</span>
@@ -551,7 +527,7 @@ export default function SanitizeData() {
                     </div>
 
                     {loadingDetails.includes(name) ? (
-                      <div className="text-gray-500 italic">Loading details...</div>
+                      <div className="text-gray-500 italic py-4 text-center">Loading details...</div>
                     ) : entityDetails[name] ? (
                       <div className="space-y-2 text-gray-700">
                         {/* Type */}
@@ -611,7 +587,7 @@ export default function SanitizeData() {
                           <div className="mt-3">
                             {entityDetails[name].relatedEntities.map((rel: any, idx: number) => (
                               <div key={idx} className="mb-2">
-                                <strong>Related Entity {idx + 1}: {rel.name}</strong> 
+                                <strong>Related Entity {idx + 1}: {rel.name}</strong>
                                 <div className="pl-4">
                                   (Type: {rel.type || ""})
                                 </div>
@@ -630,7 +606,7 @@ export default function SanitizeData() {
                           </div>
                         )}
 
-                        {/* Relationships list - formatted with <SEP> split into lines */}
+                        {/* Relationships list */}
                         {entityDetails[name].relationships?.length > 0 && (
                           <div className="mt-4">
                             <span className="font-medium text-gray-700 block mb-2"><strong>Relationships:</strong></span>
@@ -667,6 +643,15 @@ export default function SanitizeData() {
                                           ))}
                                       </span>
                                     )}
+
+                                    <hr style={{
+                                      height: '5px',         // Sets the thickness of the line
+                                      backgroundColor: 'black', // Sets the color of the line (or just use 'border')
+                                      border: 'none',        // Removes default browser border/styling
+                                      width: '100%',         // Makes it full width (optional, defaults to 100%)
+                                      margin: '20px 0'       // Adds some vertical spacing (optional)
+                                    }} />
+
                                   </div>
                                 </div>
                               ))}
@@ -675,19 +660,11 @@ export default function SanitizeData() {
                         )}
                       </div>
                     ) : (
-                      <div className="text-red-600">Failed to load details</div>
+                      <div className="text-red-600 py-4 text-center">Failed to load details</div>
                     )}
                   </div>
                 ))}
-
-
               </div>
-            ) : (
-              <div className="text-gray-600 mb-1.5 line-clamp-3">
-                {loadingDetails.includes(name) 
-                  ? "Loading details..." 
-                  : entityDetails[name]?.description || "No description available"}
-              </div>    
             )}
           </div>
         </div>
