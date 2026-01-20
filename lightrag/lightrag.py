@@ -1206,6 +1206,7 @@ class LightRAG:
     ) -> None:
         """
         Business Level Insert: Allows manual control over chunks, pages, and priority.
+        Supports appending chunks to an existing document ID (Batching friendly).
         """
         update_storage = False
         try:
@@ -1226,16 +1227,19 @@ class LightRAG:
             # 準備完整文檔數據
             new_docs = {doc_key: {"content": full_text, "file_path": file_path}}
 
-            # 檢查是否已存在
-            _add_doc_keys = await self.full_docs.filter_keys({doc_key})
-            new_docs = {k: v for k, v in new_docs.items() if k in _add_doc_keys}
-            
-            if not len(new_docs):
-                logger.warning(f"Document {doc_key} is already in the storage.")
-                return
+            # =========================================================
+            # 🔥 [關鍵修改] 允許追加模式 (Append Mode)
+            # 我們不再檢查 "doc_key 是否存在就退出"，而是允許繼續往下跑
+            # 這樣 step3.py 的 Batching 才能正常運作
+            # =========================================================
+            # _add_doc_keys = await self.full_docs.filter_keys({doc_key})
+            # new_docs = {k: v for k, v in new_docs.items() if k in _add_doc_keys}
+            # if not len(new_docs):
+            #     logger.warning(f"Document {doc_key} is already in the storage.")
+            #     return
 
             update_storage = True
-            logger.info(f"Inserting doc {doc_key} with structured chunks")
+            logger.info(f"Inserting doc {doc_key} with structured chunks (Append Mode)")
 
             # 3. 構建 Chunk 數據
             inserting_chunks: dict[str, Any] = {}
@@ -1266,6 +1270,7 @@ class LightRAG:
                     "page_info": page_info, 
                 }
 
+            # 這裡仍然檢查 Chunk 是否重複，避免重複計算 Embedding
             doc_ids = set(inserting_chunks.keys())
             add_chunk_keys = await self.text_chunks.filter_keys(doc_ids)
             inserting_chunks = {
@@ -1273,11 +1278,11 @@ class LightRAG:
             }
             
             if not len(inserting_chunks):
-                logger.warning("All chunks are already in the storage.")
+                logger.warning(f"All chunks in this batch are already in the storage (Doc: {doc_key}).")
                 return
 
             # ==================================================
-            # 🔥 修正部分：初始化 Dummy Status
+            # 🔥 [Dummy Status] 防止 merge_nodes_and_edges 報錯
             # ==================================================
             
             # 1. 先寫入基礎文檔和向量
@@ -1285,20 +1290,29 @@ class LightRAG:
             await self.text_chunks.upsert(inserting_chunks)
             await self.chunks_vdb.upsert(inserting_chunks)
 
-            # 2. 提取實體
-            logger.info(f"Extracting entities for {len(inserting_chunks)} chunks...")
-            chunk_results = await self._process_extract_entities(inserting_chunks)
-
-            # 3. 準備 Dummy 對象 (補全缺失的 Key 防止 KeyError)
-            # 這裡我們模擬一個完整的 status 對象
+            # ==============================================================================
+            # ✅ [Fix 1] Move definition UP (Before use)
+            # 定義 Dummy Status 必須在 _process_extract_entities 之前
+            # ==============================================================================
             dummy_pipeline_status = {
-                "history_messages": [],   # <--- 之前缺了這個
+                "history_messages": [], 
                 "latest_message": "",
                 "cancellation_requested": False
             }
             dummy_pipeline_status_lock = asyncio.Lock()
 
-            # 4. 合併入圖譜
+            # 2. 提取實體
+            logger.info(f"Extracting entities for {len(inserting_chunks)} chunks...")
+            
+            # ✅ [Fix 2] Pass the dummy status/lock correctly
+            # 這裡如果 LLM 404，現在會正確記錄 Log 而不是 Crash
+            chunk_results = await self._process_extract_entities(
+                inserting_chunks,
+                pipeline_status=dummy_pipeline_status,
+                pipeline_status_lock=dummy_pipeline_status_lock
+            )
+
+            # 3. 合併入圖譜
             await merge_nodes_and_edges(
                 chunk_results=chunk_results,
                 knowledge_graph_inst=self.chunk_entity_relation_graph,
@@ -1312,7 +1326,7 @@ class LightRAG:
                 entity_chunks_storage=self.entity_chunks,
                 relation_chunks_storage=self.relation_chunks,
                 file_path=file_path,
-                # 傳入修復後的 Dummy 對象
+                # 傳入定義好的 Dummy 對象
                 pipeline_status=dummy_pipeline_status,
                 pipeline_status_lock=dummy_pipeline_status_lock,
             )
@@ -1322,7 +1336,7 @@ class LightRAG:
         finally:
             if update_storage:
                 await self._insert_done()
-                
+                                
     async def apipeline_enqueue_documents(
         self,
         input: str | list[str],
