@@ -67,6 +67,7 @@ from lightrag.constants import (
     DEFAULT_ENTITY_SIMILARITY_THRESHOLD,
     DEFAULT_ENTITY_MIN_NAME_LENGTH,
     DEFAULT_PREFER_SHORTER_CANONICAL_NAME,
+    DEFAULT_CPU_YIELD_INTERVAL,
 )
 from lightrag.kg.shared_storage import get_storage_keyed_lock
 from lightrag.entity_resolution import EntityResolver
@@ -2520,6 +2521,10 @@ async def _resolve_cross_document_entities(
     resolved_nodes: dict[str, list[dict]] = defaultdict(list)
     resolution_map: dict[str, tuple[str, float]] = {}
 
+    # CPU yielding configuration: yield every N comparisons
+    comparison_count = 0
+    yield_interval = global_config.get("cpu_yield_interval", DEFAULT_CPU_YIELD_INTERVAL)
+
     for entity_name, entities in all_nodes.items():
         # Get entity type (assume all records have same type)
         entity_type = (
@@ -2547,6 +2552,12 @@ async def _resolve_cross_document_entities(
             # Use conservative similarity computation (fuzz.ratio with protections)
             # This prevents false positives like "Senozan" matching full addresses
             score = compute_entity_similarity(entity_name, existing_name)
+            comparison_count += 1
+
+            # CPU yielding: allow other async tasks to run
+            if comparison_count % yield_interval == 0:
+                await asyncio.sleep(0)
+
             if score >= similarity_threshold and score > best_score:
                 best_match = existing_name
                 best_score = score
@@ -2568,6 +2579,13 @@ async def _resolve_cross_document_entities(
         else:
             # Keep original name (no match found)
             resolved_nodes[entity_name].extend(entities)
+
+    # Log total comparisons for debugging
+    if comparison_count > 1000:
+        logger.debug(
+            f"Cross-doc entity resolution: {comparison_count} comparisons, "
+            f"{len(all_nodes)} new entities vs {len(existing_nodes)} existing"
+        )
 
     return dict(resolved_nodes), resolution_map
 
@@ -2645,6 +2663,10 @@ async def consolidate_graph_entities(
     # 3. Find clusters of similar entities within each type
     consolidation_map: dict[str, str] = {}  # old_name -> canonical_name
 
+    # CPU yielding configuration: yield every N comparisons
+    total_comparison_count = 0
+    yield_interval = global_config.get("cpu_yield_interval", DEFAULT_CPU_YIELD_INTERVAL)
+
     for entity_type, entities in entities_by_type.items():
         if len(entities) < 2:
             continue
@@ -2667,6 +2689,12 @@ async def consolidate_graph_entities(
                 # Use conservative similarity computation (fuzz.ratio with protections)
                 # This prevents false positives like partial address matches
                 score = compute_entity_similarity(name, other_name)
+                total_comparison_count += 1
+
+                # CPU yielding: allow other async tasks to run
+                if total_comparison_count % yield_interval == 0:
+                    await asyncio.sleep(0)
+
                 if score >= similarity_threshold:
                     cluster.add(other_name)
                     used.add(other_name)
@@ -2891,8 +2919,9 @@ async def merge_nodes_and_edges(
             similarity_threshold=global_config.get("entity_similarity_threshold", DEFAULT_ENTITY_SIMILARITY_THRESHOLD),
             min_name_length=global_config.get("entity_min_name_length", DEFAULT_ENTITY_MIN_NAME_LENGTH),
             prefer_shorter_canonical_name=global_config.get("prefer_shorter_canonical_name", DEFAULT_PREFER_SHORTER_CANONICAL_NAME),
+            cpu_yield_interval=global_config.get("cpu_yield_interval", DEFAULT_CPU_YIELD_INTERVAL),
         )
-        all_nodes = resolver.consolidate_entities(dict(all_nodes))
+        all_nodes = await resolver.consolidate_entities(dict(all_nodes))
         # Convert back to defaultdict for consistency with downstream code
         consolidated_nodes = defaultdict(list)
         for entity_name, entities in all_nodes.items():

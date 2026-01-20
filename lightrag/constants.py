@@ -118,6 +118,9 @@ DEFAULT_ENTITY_MIN_NAME_LENGTH = 2
 # When True, prefer shorter canonical names (e.g., "2CB" over "2CB Ingenierie")
 # When False (default), prefer longer names (more information preserved)
 DEFAULT_PREFER_SHORTER_CANONICAL_NAME = False
+# CPU yielding interval: yield control to event loop every N comparisons
+# Lower = more responsive but slower, Higher = faster but may block event loop
+DEFAULT_CPU_YIELD_INTERVAL = 100
 
 # Conflict Detection configuration defaults
 # Disabled by default: pattern-based detection produces too many false positives
