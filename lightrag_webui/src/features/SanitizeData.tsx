@@ -29,6 +29,11 @@ export default function SanitizeData() {
   const listContainerRef = useRef<HTMLDivElement>(null);
   const [rowsPerPage, setRowsPerPage] = useState(20); // initial guess
 
+  // Modal state for editing description
+  const [editDescriptionModalOpen, setEditDescriptionModalOpen] = useState(false);
+  const [editingEntityName, setEditingEntityName] = useState<string | null>(null);
+  const [editedDescription, setEditedDescription] = useState('');
+
   // Fetch entities
   useEffect(() => {
     const fetchEntities = async () => {
@@ -203,10 +208,50 @@ export default function SanitizeData() {
     }
   };
 
+  const openEditDescriptionModal = (entityName: string) => {
+    setEditingEntityName(entityName);
+    setEditedDescription(entityDetails[entityName]?.description || '');
+    setEditDescriptionModalOpen(true);
+  };
 
 
+  const saveDescription = async () => {
+  if (!editingEntityName) return;
 
+  try {
+    const response = await axios.post(`${API_BASE}/graph/entity/edit`, {
+      entity_name: editingEntityName,
+      updated_data: {
+        description: editedDescription,
+      },
+      allow_rename: false,  // matches your Python code
+    });
 
+    if (response.status === 200) {
+      console.log(`Successfully saved description for ${editingEntityName}`);
+
+      // Update local state with the new description
+      setEntityDetails((prev) => ({
+        ...prev,
+        [editingEntityName]: {
+          ...prev[editingEntityName],
+          description: editedDescription,
+        },
+      }));
+
+      // Close modal
+      setEditDescriptionModalOpen(false);
+      setEditingEntityName(null);
+      setEditedDescription('');
+
+      // Optional: show success message (you can use a toast library later)
+      // alert("Description saved successfully!");
+    }
+  } catch (err) {
+    console.error("Failed to save description:", err);
+    alert("Error saving description. Check console for details.");
+  }
+  };
 
 
   const displayEntities = showSelectedOnlyMode 
@@ -517,9 +562,14 @@ export default function SanitizeData() {
                     <div className="font-medium mb-2 flex justify-between items-center">
                       <span>{name}</span>
                       <div className="flex gap-2">
-                        <button className="text-xs text-blue-600 hover:underline">
+
+                        <button
+                          onClick={() => openEditDescriptionModal(name)}
+                          className="text-xs text-blue-600 hover:underline"
+                        >
                           Edit Description
                         </button>
+
                         <button className="text-xs text-blue-600 hover:underline">
                           Edit/Delete Relationships
                         </button>
@@ -669,6 +719,40 @@ export default function SanitizeData() {
           </div>
         </div>
       </div>
+
+      {/* Edit Description Modal */}
+      {editDescriptionModalOpen && editingEntityName && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg shadow-xl w-full max-w-2xl mx-4 p-6">
+            <h2 className="text-xl font-semibold mb-4">
+              Edit Description for: {editingEntityName}
+            </h2>
+
+            <textarea
+              className="w-full h-64 p-3 border border-gray-300 rounded resize-y focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono text-sm"
+              value={editedDescription}
+              onChange={(e) => setEditedDescription(e.target.value)}
+              placeholder="Enter description (use <SEP> to separate paragraphs if needed)"
+            />
+
+            <div className="mt-6 flex justify-end gap-3">
+              <button
+                onClick={() => setEditDescriptionModalOpen(false)}
+                className="px-4 py-2 bg-gray-200 hover:bg-gray-300 rounded text-gray-800"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={saveDescription}
+                className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded"
+              >
+                Save
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
     </div>
   );
 }
