@@ -534,16 +534,18 @@ export default function SanitizeData() {
           <div className="flex-1 overflow-y-auto bg-white border border-gray-200 rounded p-3">
             {showDescriptions ? (
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-                {selectedEntities.slice(0, 9).map((name) => (
+
+
+                {selectedEntities.map((name) => (  // Removed .slice(0,9) to show all selected
                   <div key={name} className="border border-gray-200 rounded p-3 bg-gray-50 text-sm">
-                    <div className="font-medium mb-1 flex justify-between items-center">
+                    <div className="font-medium mb-2 flex justify-between items-center">
                       <span>{name}</span>
                       <div className="flex gap-2">
                         <button className="text-xs text-blue-600 hover:underline">
                           Edit Description
                         </button>
-                        <button className="text-xs text-green-600 hover:underline">
-                          Edit Relationships
+                        <button className="text-xs text-blue-600 hover:underline">
+                          Edit/Delete Relationships
                         </button>
                       </div>
                     </div>
@@ -551,21 +553,134 @@ export default function SanitizeData() {
                     {loadingDetails.includes(name) ? (
                       <div className="text-gray-500 italic">Loading details...</div>
                     ) : entityDetails[name] ? (
-                      <>
-                        <div className="text-gray-700 mb-1">
-                          <strong>Type:</strong> {entityDetails[name].type || "Unknown"}
+                      <div className="space-y-2 text-gray-700">
+                        {/* Type */}
+                        <div>
+                          <strong>Type:</strong> {entityDetails[name].type || "No type found."}
                         </div>
-                        <div className="text-gray-600 mb-2">
-                          <strong>Description:</strong><br />
-                          {entityDetails[name].description || "No description available"}
+
+                        {/* Related Entities count */}
+                        <div>
+                          <strong>Related Entities:</strong> {entityDetails[name].relatedEntities?.length || 0}
                         </div>
-                        {/* We'll add Related Entities, Source ID, Relationships, etc. in next step */}
-                      </>
+
+                        {/* Description */}
+                        <div>
+                          <strong>Description:</strong>
+                          <div className="pl-4 mt-1">
+                            {entityDetails[name].description
+                              ?.split('<SEP>')
+                              .map((part: string, i: number) => (
+                                <p key={i} className="mb-1">
+                                  {part.trim() || "No description found."}
+                                </p>
+                              )) || "No description found."}
+                          </div>
+                        </div>
+
+                        {/* Source ID */}
+                        <div>
+                          <strong>Source ID:</strong>
+                          <div className="pl-4 mt-1">
+                            {entityDetails[name].sourceId
+                              ?.split('<SEP>')
+                              .map((id: string, i: number) => (
+                                <p key={i} className="mb-1">
+                                  {id.trim() || ""}
+                                </p>
+                              )) || ""}
+                          </div>
+                        </div>
+
+                        {/* File Path */}
+                        <div>
+                          <strong>File Path:</strong>
+                          <div className="pl-4 mt-1 text-gray-600 break-all">
+                            {entityDetails[name].filePath
+                              ?.split('<SEP>')
+                              .map((path: string, i: number) => (
+                                <p key={i} className="mb-1">
+                                  {path.trim() || ""}
+                                </p>
+                              )) || "No file path"}
+                          </div>
+                        </div>
+
+                        {/* Related Entities list */}
+                        {entityDetails[name].relatedEntities?.length > 0 && (
+                          <div className="mt-3">
+                            {entityDetails[name].relatedEntities.map((rel: any, idx: number) => (
+                              <div key={idx} className="mb-2">
+                                <strong>Related Entity {idx + 1}: {rel.name}</strong> 
+                                <div className="pl-4">
+                                  (Type: {rel.type || ""})
+                                </div>
+                                <div className="pl-4 mt-1">
+                                  Description:
+                                  {rel.description
+                                    ?.split('<SEP>')
+                                    .map((part: string, j: number) => (
+                                      <p key={j} className="ml-2 mb-1">
+                                        {part.trim()}
+                                      </p>
+                                    )) || "No description found."}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+
+                        {/* Relationships list - formatted with <SEP> split into lines */}
+                        {entityDetails[name].relationships?.length > 0 && (
+                          <div className="mt-4">
+                            <span className="font-medium text-gray-700 block mb-2"><strong>Relationships:</strong></span>
+                            <div className="pl-4 mt-1 space-y-4 border-l-2 border-gray-200">
+                              {entityDetails[name].relationships.map((rel: any, idx: number) => (
+                                <div key={idx} className="text-gray-700">
+                                  <div className="font-medium">
+                                    From: {rel.from}
+                                    <br /> To: {rel.to}
+                                  </div>
+                                  <div className="mt-1">
+                                    <strong>Relation:</strong>
+                                    <div className="pl-4 mt-0.5">
+                                      {rel.relation
+                                        ?.split('<SEP>')
+                                        .map((part: string, j: number) => (
+                                          <p key={j} className="mb-1 last:mb-0">
+                                            {part.trim() || "No relation description provided."}
+                                          </p>
+                                        )) || "No relation description provided."}
+                                    </div>
+                                  </div>
+                                  <div className="text-gray-600 mt-1">
+                                    <strong>Weight:</strong> {rel.weight || 1.0}
+                                    {rel.keywords && (
+                                      <span className="ml-4">
+                                        <strong>Keywords:</strong>{' '}
+                                        {rel.keywords
+                                          .split(',')
+                                          .map((kw: string, j: number) => (
+                                            <span key={j} className="mr-1">
+                                              {kw.trim()}
+                                            </span>
+                                          ))}
+                                      </span>
+                                    )}
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </div>
                     ) : (
                       <div className="text-red-600">Failed to load details</div>
                     )}
                   </div>
                 ))}
+
+
               </div>
             ) : (
               <div className="text-gray-600 mb-1.5 line-clamp-3">
