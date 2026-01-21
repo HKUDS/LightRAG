@@ -1066,11 +1066,9 @@ class Neo4JStorage(BaseGraphStorage):
             indicating whether the graph was truncated due to max_nodes limit
         """
         # Get max_nodes from global_config if not provided
+        # Note: The limit check is already done in LightRAG.get_knowledge_graph()
         if max_nodes is None:
             max_nodes = self.global_config.get("max_graph_nodes", 1000)
-        else:
-            # Limit max_nodes to not exceed global_config max_graph_nodes
-            max_nodes = min(max_nodes, self.global_config.get("max_graph_nodes", 1000))
 
         workspace_label = self._get_workspace_label()
         result = KnowledgeGraph()
