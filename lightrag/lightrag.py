@@ -2097,6 +2097,8 @@ class LightRAG:
 
                         # Concurrency is controlled by keyed lock for individual entities and relationships
                         if file_extraction_stage_ok:
+                            # Create separate token tracker for deduplication/merge phase
+                            dedup_token_tracker = TokenTracker()
                             try:
                                 # Check for cancellation before merge
                                 async with pipeline_status_lock:
@@ -2107,13 +2109,17 @@ class LightRAG:
                                             "User cancelled"
                                         )
 
+                                # Build global_config with dedup token_tracker for merge phase
+                                merge_config = asdict(self)
+                                merge_config["token_tracker"] = dedup_token_tracker
+
                                 # Use chunk_results from entity_relation_task
                                 await merge_nodes_and_edges(
                                     chunk_results=chunk_results,  # result collected from entity_relation_task
                                     knowledge_graph_inst=self.chunk_entity_relation_graph,
                                     entity_vdb=self.entities_vdb,
                                     relationships_vdb=self.relationships_vdb,
-                                    global_config=asdict(self),
+                                    global_config=merge_config,
                                     full_entities_storage=self.full_entities,
                                     full_relations_storage=self.full_relations,
                                     doc_id=doc_id,
@@ -2130,9 +2136,11 @@ class LightRAG:
                                 # Record processing end time
                                 processing_end_time = int(time.time())
 
-                                # Build token_usage from TokenTracker
+                                # Build token_usage from TokenTracker (extraction phase)
                                 llm_usage = token_tracker.get_llm_usage()
                                 embedding_usage = token_tracker.get_embedding_usage()
+                                # Get deduplication token usage (merge phase)
+                                dedup_llm_usage = dedup_token_tracker.get_llm_usage()
                                 token_usage = {
                                     "embedding_tokens": embedding_usage.get("total_tokens", 0),
                                     "llm_input_tokens": llm_usage.get("prompt_tokens", 0),
@@ -2140,7 +2148,18 @@ class LightRAG:
                                     "total_chunks": len(chunks),
                                     "embedding_model": embedding_usage.get("model"),
                                     "llm_model": llm_usage.get("model"),
+                                    # Deduplication/merge phase tokens (separate tracking)
+                                    "dedup_input_tokens": dedup_llm_usage.get("prompt_tokens", 0),
+                                    "dedup_output_tokens": dedup_llm_usage.get("completion_tokens", 0),
                                 }
+
+                                # Log dedup token usage for debugging
+                                if dedup_llm_usage.get("prompt_tokens", 0) > 0 or dedup_llm_usage.get("completion_tokens", 0) > 0:
+                                    logger.info(
+                                        f"[DEDUP] Token usage for doc {doc_id}: "
+                                        f"input={dedup_llm_usage.get('prompt_tokens', 0)}, "
+                                        f"output={dedup_llm_usage.get('completion_tokens', 0)}"
+                                    )
 
                                 await self.doc_status.upsert(
                                     {
@@ -2216,6 +2235,8 @@ class LightRAG:
                                 # Build partial token_usage from TokenTracker (may have partial data)
                                 llm_usage = token_tracker.get_llm_usage()
                                 embedding_usage = token_tracker.get_embedding_usage()
+                                # Get partial deduplication token usage (merge phase)
+                                dedup_llm_usage = dedup_token_tracker.get_llm_usage()
                                 partial_token_usage = {
                                     "embedding_tokens": embedding_usage.get("total_tokens", 0),
                                     "llm_input_tokens": llm_usage.get("prompt_tokens", 0),
@@ -2223,6 +2244,9 @@ class LightRAG:
                                     "total_chunks": len(chunks) if chunks else 0,
                                     "embedding_model": embedding_usage.get("model"),
                                     "llm_model": llm_usage.get("model"),
+                                    # Deduplication/merge phase tokens (separate tracking, may be partial)
+                                    "dedup_input_tokens": dedup_llm_usage.get("prompt_tokens", 0),
+                                    "dedup_output_tokens": dedup_llm_usage.get("completion_tokens", 0),
                                 }
 
                                 # Update document status to failed
