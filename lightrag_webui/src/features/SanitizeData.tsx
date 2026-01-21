@@ -34,6 +34,10 @@ export default function SanitizeData() {
   const [editingEntityName, setEditingEntityName] = useState<string | null>(null);
   const [editedDescription, setEditedDescription] = useState('');
 
+  // Modal state for editing relationships
+const [editRelationshipsModalOpen, setEditRelationshipsModalOpen] = useState(false);
+const [editingEntityForRel, setEditingEntityForRel] = useState<string | null>(null);
+
   // Fetch entities
   useEffect(() => {
     const fetchEntities = async () => {
@@ -212,6 +216,11 @@ export default function SanitizeData() {
     setEditingEntityName(entityName);
     setEditedDescription(entityDetails[entityName]?.description || '');
     setEditDescriptionModalOpen(true);
+  };
+
+  const openEditRelationshipsModal = (entityName: string) => {
+    setEditingEntityForRel(entityName);
+    setEditRelationshipsModalOpen(true);
   };
 
 
@@ -570,7 +579,10 @@ export default function SanitizeData() {
                           Edit Description
                         </button>
 
-                        <button className="text-xs text-blue-600 hover:underline">
+                        <button
+                          onClick={() => openEditRelationshipsModal(name)}
+                          className="text-xs text-green-600 hover:underline"
+                        >
                           Edit/Delete Relationships
                         </button>
                       </div>
@@ -752,6 +764,108 @@ export default function SanitizeData() {
           </div>
         </div>
       )}
+
+      {/* Edit Relationships Modal */}
+      {editRelationshipsModalOpen && editingEntityForRel && entityDetails[editingEntityForRel] && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 overflow-y-auto">
+          <div className="bg-white rounded-lg shadow-2xl w-full max-w-4xl mx-4 my-8 p-6">
+            <h2 className="text-xl font-semibold mb-4">
+              Edit/Delete Relationships for: {editingEntityForRel}
+            </h2>
+
+            {entityDetails[editingEntityForRel].relationships?.length === 0 ? (
+              <div className="text-gray-500 py-6 text-center">
+                No relationships found for this entity.
+              </div>
+            ) : (
+              <div className="space-y-6 max-h-[60vh] overflow-y-auto pr-2">
+                {entityDetails[editingEntityForRel].relationships.map((rel: any, idx: number) => (
+                  <div key={idx} className="border border-gray-200 rounded p-4 bg-gray-50">
+                    <div className="font-medium mb-3">
+                      {rel.from} → {rel.to}
+                    </div>
+
+                    {/* Relation Description */}
+                    <div className="mb-3">
+                      <label className="block text-sm font-medium text-gray-700 mb-1">
+                        Relation Description
+                      </label>
+                      <textarea
+                        className="w-full p-2 border border-gray-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        rows={3}
+                        value={rel.relation || ''}
+                        onChange={(e) => {
+                          // We'll implement real editing in step 5
+                          console.log("Would update relation:", e.target.value);
+                        }}
+                      />
+                    </div>
+
+                    {/* Weight */}
+                    <div className="mb-3">
+                      <label className="block text-sm font-medium text-gray-700 mb-1">
+                        Weight (1.0–10.0)
+                      </label>
+                      <input
+                        type="number"
+                        step="0.1"
+                        min="1"
+                        max="10"
+                        className="w-24 p-2 border border-gray-300 rounded text-sm"
+                        value={rel.weight || 1.0}
+                        onChange={(e) => console.log("Would update weight:", e.target.value)}
+                      />
+                    </div>
+
+                    {/* Keywords */}
+                    <div className="mb-3">
+                      <label className="block text-sm font-medium text-gray-700 mb-1">
+                        Keywords (comma-separated)
+                      </label>
+                      <input
+                        type="text"
+                        className="w-full p-2 border border-gray-300 rounded text-sm"
+                        value={rel.keywords || ''}
+                        onChange={(e) => console.log("Would update keywords:", e.target.value)}
+                      />
+                    </div>
+
+                    {/* Delete button */}
+                    <button
+                      onClick={() => {
+                        console.log("Would delete relationship:", rel.from, "→", rel.to);
+                      }}
+                      className="mt-2 px-3 py-1.5 bg-red-100 hover:bg-red-200 text-red-700 rounded text-sm"
+                    >
+                      Delete This Relationship
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Modal footer */}
+            <div className="mt-6 flex justify-end gap-3">
+              <button
+                onClick={() => setEditRelationshipsModalOpen(false)}
+                className="px-5 py-2 bg-gray-200 hover:bg-gray-300 rounded text-gray-800"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => {
+                  console.log("Would save all relationship changes");
+                  setEditRelationshipsModalOpen(false);
+                }}
+                className="px-5 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded"
+              >
+                Save Changes
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
 
     </div>
   );
