@@ -13,7 +13,8 @@ from lightrag.conflict_detection import ConflictDetector, ConflictInfo
 class TestEntityResolutionIntegration:
     """Integration tests for entity resolution workflow."""
 
-    def test_entity_resolution_full_workflow(self):
+    @pytest.mark.asyncio
+    async def test_entity_resolution_full_workflow(self):
         """Test complete entity resolution workflow with name variations."""
         # Simulate entities extracted from multiple documents
         all_nodes = {
@@ -42,7 +43,7 @@ class TestEntityResolutionIntegration:
         }
 
         resolver = EntityResolver(similarity_threshold=0.85)
-        result = resolver.consolidate_entities(all_nodes)
+        result = await resolver.consolidate_entities(all_nodes)
 
         # Should have 3 consolidated entities: Apple, Google, Tesla
         assert len(result) == 3
@@ -114,7 +115,8 @@ class TestConflictDetectionIntegration:
 class TestCombinedWorkflow:
     """Test entity resolution and conflict detection working together."""
 
-    def test_resolution_then_conflict_detection(self):
+    @pytest.mark.asyncio
+    async def test_resolution_then_conflict_detection(self):
         """Test that conflict detection works on resolved entities."""
         # First, resolve entities
         all_nodes = {
@@ -131,7 +133,7 @@ class TestCombinedWorkflow:
 
         # Resolve entities
         resolver = EntityResolver(similarity_threshold=0.85)
-        resolved = resolver.consolidate_entities(all_nodes)
+        resolved = await resolver.consolidate_entities(all_nodes)
 
         # Should have 1 consolidated Tesla entity
         assert len(resolved) == 1
@@ -158,7 +160,8 @@ class TestCombinedWorkflow:
 class TestEdgeCasesIntegration:
     """Test edge cases in integration scenarios."""
 
-    def test_short_names_excluded_from_resolution(self):
+    @pytest.mark.asyncio
+    async def test_short_names_excluded_from_resolution(self):
         """Test that short names don't get fuzzy matched."""
         all_nodes = {
             "AI": [{"entity_type": "CONCEPT", "description": "Artificial Intelligence"}],
@@ -166,14 +169,15 @@ class TestEdgeCasesIntegration:
         }
 
         resolver = EntityResolver(similarity_threshold=0.85, min_name_length=3)
-        result = resolver.consolidate_entities(all_nodes)
+        result = await resolver.consolidate_entities(all_nodes)
 
         # "AI" should remain separate (too short for fuzzy matching)
         # "AI Inc" should also remain separate (different type)
         assert "AI" in result
         assert len(result) == 2
 
-    def test_different_types_not_merged(self):
+    @pytest.mark.asyncio
+    async def test_different_types_not_merged(self):
         """Test that entities of different types are not merged."""
         all_nodes = {
             "Paris France": [{"entity_type": "LOCATION", "description": "City in France"}],
@@ -181,7 +185,7 @@ class TestEdgeCasesIntegration:
         }
 
         resolver = EntityResolver(similarity_threshold=0.85)
-        result = resolver.consolidate_entities(all_nodes)
+        result = await resolver.consolidate_entities(all_nodes)
 
         # Different types should not merge
         assert len(result) == 2

@@ -176,6 +176,7 @@ async def _handle_entity_relation_summary(
     global_config: dict,
     llm_response_cache: BaseKVStorage | None = None,
     conflict_details: str | None = None,
+    token_tracker: "TokenTracker | None" = None,
 ) -> tuple[str, bool]:
     """Handle entity relation description summary using map-reduce approach.
 
@@ -192,6 +193,7 @@ async def _handle_entity_relation_summary(
         global_config: Global configuration containing tokenizer and limits
         llm_response_cache: Optional cache for LLM responses
         conflict_details: Optional conflict details to pass to LLM for conflict-aware summary
+        token_tracker: Optional token tracker for usage monitoring
 
     Returns:
         Tuple of (final_summarized_description_string, llm_was_used_boolean)
@@ -240,6 +242,7 @@ async def _handle_entity_relation_summary(
                     global_config,
                     llm_response_cache,
                     conflict_details=conflict_details,
+                    token_tracker=token_tracker,
                 )
                 return final_summary, True  # LLM was used for final summarization
 
@@ -295,6 +298,7 @@ async def _handle_entity_relation_summary(
                     chunk,
                     global_config,
                     llm_response_cache,
+                    token_tracker=token_tracker,
                 )
                 new_summaries.append(summary)
                 llm_was_used = True  # Mark that LLM was used in reduce phase
@@ -310,6 +314,7 @@ async def _summarize_descriptions(
     global_config: dict,
     llm_response_cache: BaseKVStorage | None = None,
     conflict_details: str | None = None,
+    token_tracker: "TokenTracker | None" = None,
 ) -> str:
     """Helper function to summarize a list of descriptions using LLM.
 
@@ -319,6 +324,7 @@ async def _summarize_descriptions(
         global_config: Global configuration containing LLM function and settings
         llm_response_cache: Optional cache for LLM responses
         conflict_details: Optional conflict details to include in the prompt
+        token_tracker: Optional token tracker for usage monitoring
 
     Returns:
         Summarized description string
@@ -376,6 +382,7 @@ async def _summarize_descriptions(
         use_llm_func,
         llm_response_cache=llm_response_cache,
         cache_type="summary",
+        token_tracker=token_tracker,
     )
 
     # Check summary token length against embedding limit
@@ -1618,6 +1625,7 @@ async def _merge_nodes_then_upsert(
     pipeline_status_lock=None,
     llm_response_cache: BaseKVStorage | None = None,
     entity_chunks_storage: BaseKVStorage | None = None,
+    token_tracker: "TokenTracker | None" = None,
 ):
     """Get existing nodes from knowledge graph use name,if exists, merge data, else create, then upsert."""
     already_entity_types = []
@@ -1783,6 +1791,7 @@ async def _merge_nodes_then_upsert(
         global_config,
         llm_response_cache,
         conflict_details=conflict_details,
+        token_tracker=token_tracker,
     )
 
     # 9. Build file_path within MAX_FILE_PATHS
@@ -1928,6 +1937,7 @@ async def _merge_edges_then_upsert(
     added_entities: list = None,  # New parameter to track entities added during edge processing
     relation_chunks_storage: BaseKVStorage | None = None,
     entity_chunks_storage: BaseKVStorage | None = None,
+    token_tracker: "TokenTracker | None" = None,
 ):
     if src_id == tgt_id:
         return None
@@ -2139,6 +2149,7 @@ async def _merge_edges_then_upsert(
         global_config,
         llm_response_cache,
         conflict_details=conflict_details,
+        token_tracker=token_tracker,
     )
 
     # 9. Build file_path within MAX_FILE_PATHS limit
@@ -3018,6 +3029,7 @@ async def merge_nodes_and_edges(
                         pipeline_status_lock,
                         llm_response_cache,
                         entity_chunks_storage,
+                        token_tracker=global_config.get("token_tracker"),
                     )
 
                     return entity_data
@@ -3133,6 +3145,7 @@ async def merge_nodes_and_edges(
                         added_entities,  # Pass list to collect added entities
                         relation_chunks_storage,
                         entity_chunks_storage,  # Add entity_chunks_storage parameter
+                        token_tracker=global_config.get("token_tracker"),
                     )
 
                     if edge_data is None:
