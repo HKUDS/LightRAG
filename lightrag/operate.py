@@ -2619,6 +2619,10 @@ async def _resolve_cross_document_entities_vdb(
 
     This provides O(n × log m) complexity with VDB approximate nearest neighbor search.
 
+    Performance optimizations:
+    - Batch embedding generation (1 call instead of N calls)
+    - Parallel VDB queries with asyncio.gather
+
     Args:
         all_nodes: Dict mapping entity_name -> list of entity records.
         knowledge_graph_inst: Knowledge graph storage instance.
@@ -2630,6 +2634,7 @@ async def _resolve_cross_document_entities_vdb(
         - resolved_nodes: Dict with entities resolved to canonical names.
         - resolution_map: Dict mapping old_name -> (new_name, score) for logging.
     """
+    import time as time_module
     from lightrag.entity_resolution import compute_entity_similarity
 
     similarity_threshold = global_config.get("entity_similarity_threshold", DEFAULT_ENTITY_SIMILARITY_THRESHOLD)
@@ -2639,28 +2644,66 @@ async def _resolve_cross_document_entities_vdb(
     resolved_nodes: dict[str, list[dict]] = defaultdict(list)
     resolution_map: dict[str, tuple[str, float]] = {}
 
+    # Step 1: Separate entities that need VDB lookup from those that don't
+    entities_to_query: list[tuple[str, list[dict], str]] = []  # (name, entities, entity_type)
+
     for entity_name, entities in all_nodes.items():
-        # Get entity type (assume all records have same type)
         entity_type = (
             entities[0].get("entity_type", "UNKNOWN").upper() if entities else "UNKNOWN"
         )
 
-        # Skip short names
+        # Skip short names - add directly to resolved
         if len(entity_name) <= min_name_length:
             resolved_nodes[entity_name].extend(entities)
-            continue
+        else:
+            entities_to_query.append((entity_name, entities, entity_type))
 
-        # Query VDB for similar entities
-        try:
-            # Query with entity_type filter if supported
-            vdb_results = await entity_vdb.query(entity_name, top_k=vdb_top_k)
-        except Exception as e:
-            logger.warning(f"VDB query failed for '{entity_name}': {e}. Keeping entity as-is.")
+    if not entities_to_query:
+        return dict(resolved_nodes), resolution_map
+
+    # Step 2: Batch generate embeddings for all entity names
+    entity_names = [e[0] for e in entities_to_query]
+
+    embed_start = time_module.perf_counter()
+    try:
+        embeddings = await entity_vdb.embedding_func(entity_names)
+        embed_time = (time_module.perf_counter() - embed_start) * 1000
+        logger.debug(f"VDB resolution: batch embedding for {len(entity_names)} entities took {embed_time:.1f}ms")
+    except Exception as e:
+        logger.warning(f"Batch embedding failed: {e}. Falling back to keeping all entities as-is.")
+        for entity_name, entities, _ in entities_to_query:
             resolved_nodes[entity_name].extend(entities)
-            continue
+        return dict(resolved_nodes), resolution_map
+
+    # Step 3: Create VDB query tasks with pre-computed embeddings
+    async def query_vdb_for_entity(idx: int) -> tuple[int, list[dict]]:
+        """Query VDB for a single entity using pre-computed embedding."""
+        entity_name = entity_names[idx]
+        embedding = embeddings[idx]
+        try:
+            # Pass pre-computed embedding to avoid re-computing
+            results = await entity_vdb.query(
+                entity_name,
+                top_k=vdb_top_k,
+                query_embedding=embedding
+            )
+            return (idx, results)
+        except Exception as e:
+            logger.debug(f"VDB query failed for '{entity_name}': {e}")
+            return (idx, [])
+
+    # Step 4: Run all VDB queries in parallel
+    query_start = time_module.perf_counter()
+    query_tasks = [query_vdb_for_entity(i) for i in range(len(entities_to_query))]
+    query_results = await asyncio.gather(*query_tasks)
+    query_time = (time_module.perf_counter() - query_start) * 1000
+    logger.debug(f"VDB resolution: {len(query_tasks)} parallel queries took {query_time:.1f}ms")
+
+    # Step 5: Process results
+    for idx, vdb_results in query_results:
+        entity_name, entities, entity_type = entities_to_query[idx]
 
         if not vdb_results:
-            # No candidates found, keep original
             resolved_nodes[entity_name].extend(entities)
             continue
 
