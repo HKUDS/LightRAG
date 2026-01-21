@@ -1976,10 +1976,10 @@ class PGKVStorage(BaseKVStorage):
                 except json.JSONDecodeError:
                     llm_cache_list = []
             response["llm_cache_list"] = llm_cache_list
-            
+
             # Parse custom_data JSON string back to dict and merge into response
             self._merge_custom_data_into_chunk(response)
-            
+
             create_time = response.get("create_time", 0)
             update_time = response.get("update_time", 0)
             response["create_time"] = create_time
@@ -2114,10 +2114,10 @@ class PGKVStorage(BaseKVStorage):
                     except json.JSONDecodeError:
                         llm_cache_list = []
                 result["llm_cache_list"] = llm_cache_list
-                
+
                 # Parse custom_data JSON string back to dict and merge into result
                 self._merge_custom_data_into_chunk(result)
-                
+
                 create_time = result.get("create_time", 0)
                 update_time = result.get("update_time", 0)
                 result["create_time"] = create_time
@@ -2253,11 +2253,18 @@ class PGKVStorage(BaseKVStorage):
                 upsert_sql = SQL_TEMPLATES["upsert_text_chunk"]
                 # Extract custom_data from chunk data, excluding standard fields
                 custom_data = {}
-                standard_fields = {"tokens", "chunk_order_index", "full_doc_id", "content", "file_path", "llm_cache_list"}
+                standard_fields = {
+                    "tokens",
+                    "chunk_order_index",
+                    "full_doc_id",
+                    "content",
+                    "file_path",
+                    "llm_cache_list",
+                }
                 for field_key, field_value in v.items():
                     if field_key not in standard_fields:
                         custom_data[field_key] = field_value
-                
+
                 _data = {
                     "workspace": self.workspace,
                     "id": k,
