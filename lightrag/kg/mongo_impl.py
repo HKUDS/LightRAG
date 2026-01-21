@@ -1893,6 +1893,27 @@ class MongoGraphStorage(BaseGraphStorage):
         )
         return await self._fallback_regex_search(query_strip, limit)
 
+    async def get_node_count(self) -> int:
+        """Get the total count of nodes in the graph.
+
+        This method has O(1) complexity for use in hybrid cross-document
+        resolution mode switching. Uses estimated_document_count() for O(1)
+        performance when available, with fallback to count_documents().
+
+        Returns:
+            int: Total number of nodes in the graph for this workspace
+        """
+        try:
+            # estimated_document_count() is O(1) as it uses collection metadata
+            return await self.collection.estimated_document_count()
+        except Exception:
+            # Fallback to count_documents() if estimated fails
+            try:
+                return await self.collection.count_documents({})
+            except Exception as e:
+                logger.error(f"[{self.workspace}] Error getting node count: {str(e)}")
+                raise
+
     async def _check_if_index_needs_rebuild(
         self, indexes: list, index_name: str
     ) -> bool:

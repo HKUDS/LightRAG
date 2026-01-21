@@ -68,6 +68,9 @@ from lightrag.constants import (
     DEFAULT_ENTITY_MIN_NAME_LENGTH,
     DEFAULT_PREFER_SHORTER_CANONICAL_NAME,
     DEFAULT_CPU_YIELD_INTERVAL,
+    DEFAULT_CROSS_DOC_RESOLUTION_MODE,
+    DEFAULT_CROSS_DOC_THRESHOLD_ENTITIES,
+    DEFAULT_CROSS_DOC_VDB_TOP_K,
 )
 from lightrag.kg.shared_storage import get_storage_keyed_lock
 from lightrag.entity_resolution import EntityResolver
@@ -2601,6 +2604,200 @@ async def _resolve_cross_document_entities(
     return dict(resolved_nodes), resolution_map
 
 
+async def _resolve_cross_document_entities_vdb(
+    all_nodes: dict[str, list[dict]],
+    knowledge_graph_inst: BaseGraphStorage,
+    entity_vdb: BaseVectorStorage,
+    global_config: dict,
+) -> tuple[dict[str, list[dict]], dict[str, tuple[str, float]]]:
+    """
+    VDB-assisted cross-document entity resolution for large graphs.
+
+    Instead of comparing against ALL existing entities (O(n × m)), this function:
+    1. For each new entity, queries the VDB for top-K similar entities
+    2. Only compares against those candidates (O(n × k) where k << m)
+
+    This provides O(n × log m) complexity with VDB approximate nearest neighbor search.
+
+    Args:
+        all_nodes: Dict mapping entity_name -> list of entity records.
+        knowledge_graph_inst: Knowledge graph storage instance.
+        entity_vdb: Entity vector database for similarity search.
+        global_config: Global configuration dict.
+
+    Returns:
+        Tuple of (resolved_nodes dict, resolution_map dict).
+        - resolved_nodes: Dict with entities resolved to canonical names.
+        - resolution_map: Dict mapping old_name -> (new_name, score) for logging.
+    """
+    from lightrag.entity_resolution import compute_entity_similarity
+
+    similarity_threshold = global_config.get("entity_similarity_threshold", DEFAULT_ENTITY_SIMILARITY_THRESHOLD)
+    min_name_length = global_config.get("entity_min_name_length", DEFAULT_ENTITY_MIN_NAME_LENGTH)
+    vdb_top_k = global_config.get("cross_doc_vdb_top_k", DEFAULT_CROSS_DOC_VDB_TOP_K)
+
+    resolved_nodes: dict[str, list[dict]] = defaultdict(list)
+    resolution_map: dict[str, tuple[str, float]] = {}
+
+    for entity_name, entities in all_nodes.items():
+        # Get entity type (assume all records have same type)
+        entity_type = (
+            entities[0].get("entity_type", "UNKNOWN").upper() if entities else "UNKNOWN"
+        )
+
+        # Skip short names
+        if len(entity_name) <= min_name_length:
+            resolved_nodes[entity_name].extend(entities)
+            continue
+
+        # Query VDB for similar entities
+        try:
+            # Query with entity_type filter if supported
+            vdb_results = await entity_vdb.query(entity_name, top_k=vdb_top_k)
+        except Exception as e:
+            logger.warning(f"VDB query failed for '{entity_name}': {e}. Keeping entity as-is.")
+            resolved_nodes[entity_name].extend(entities)
+            continue
+
+        if not vdb_results:
+            # No candidates found, keep original
+            resolved_nodes[entity_name].extend(entities)
+            continue
+
+        # Find best match among VDB candidates
+        best_match = None
+        best_score = 0.0
+
+        for candidate in vdb_results:
+            candidate_name = candidate.get("id") or candidate.get("entity_id")
+            candidate_type = candidate.get("entity_type", "UNKNOWN").upper()
+
+            if not candidate_name:
+                continue
+
+            # Skip candidates of different types
+            if candidate_type != entity_type:
+                continue
+
+            # Skip if it's the same entity (already exists with exact name)
+            if candidate_name == entity_name:
+                best_match = candidate_name
+                best_score = 1.0
+                break
+
+            # Compute similarity
+            score = compute_entity_similarity(entity_name, candidate_name)
+
+            if score >= similarity_threshold and score > best_score:
+                best_match = candidate_name
+                best_score = score
+
+        if best_match and best_match != entity_name:
+            # Resolve to existing entity
+            resolution_map[entity_name] = (best_match, best_score)
+            resolved_nodes[best_match].extend(entities)
+        else:
+            # Keep original name (no match found)
+            resolved_nodes[entity_name].extend(entities)
+
+    return dict(resolved_nodes), resolution_map
+
+
+async def _resolve_cross_document_entities_hybrid(
+    all_nodes: dict[str, list[dict]],
+    knowledge_graph_inst: BaseGraphStorage,
+    entity_vdb: BaseVectorStorage,
+    global_config: dict,
+) -> tuple[dict[str, list[dict]], dict[str, tuple[str, float]], str]:
+    """
+    Hybrid cross-document entity resolution with automatic mode switching.
+
+    This function selects the best resolution strategy based on configuration
+    and graph size:
+    - "full": Always use full O(n × m) matching (maximum precision)
+    - "vdb": Always use VDB-assisted O(n × k) matching (maximum speed)
+    - "hybrid": Auto-switch based on entity count threshold
+    - "disabled": Skip cross-document resolution entirely
+
+    Args:
+        all_nodes: Dict mapping entity_name -> list of entity records.
+        knowledge_graph_inst: Knowledge graph storage instance.
+        entity_vdb: Entity vector database for similarity search.
+        global_config: Global configuration dict.
+
+    Returns:
+        Tuple of (resolved_nodes dict, resolution_map dict, mode_used str).
+        - resolved_nodes: Dict with entities resolved to canonical names.
+        - resolution_map: Dict mapping old_name -> (new_name, score).
+        - mode_used: The actual mode used ("full", "vdb", or "disabled").
+    """
+    import time as time_module
+
+    mode = global_config.get("cross_doc_resolution_mode", DEFAULT_CROSS_DOC_RESOLUTION_MODE)
+    threshold = global_config.get("cross_doc_threshold_entities", DEFAULT_CROSS_DOC_THRESHOLD_ENTITIES)
+
+    start_time = time_module.perf_counter()
+
+    # Handle disabled mode
+    if mode == "disabled":
+        logger.info("Cross-document resolution is disabled")
+        return dict(all_nodes), {}, "disabled"
+
+    # Determine actual mode to use
+    if mode == "full":
+        actual_mode = "full"
+    elif mode == "vdb":
+        actual_mode = "vdb"
+    elif mode == "hybrid":
+        # Get entity count for threshold check
+        try:
+            entity_count = await knowledge_graph_inst.get_node_count()
+        except Exception as e:
+            logger.warning(f"Failed to get node count: {e}. Using full mode as fallback.")
+            entity_count = 0
+
+        if entity_count >= threshold:
+            actual_mode = "vdb"
+            logger.info(
+                f"Hybrid mode: using VDB resolution (entity_count={entity_count} >= threshold={threshold})"
+            )
+        else:
+            actual_mode = "full"
+            logger.debug(
+                f"Hybrid mode: using full resolution (entity_count={entity_count} < threshold={threshold})"
+            )
+    else:
+        logger.warning(f"Unknown cross_doc_resolution_mode '{mode}'. Using hybrid.")
+        actual_mode = "full"
+
+    # Execute resolution
+    if actual_mode == "vdb":
+        resolved_nodes, resolution_map = await _resolve_cross_document_entities_vdb(
+            all_nodes=all_nodes,
+            knowledge_graph_inst=knowledge_graph_inst,
+            entity_vdb=entity_vdb,
+            global_config=global_config,
+        )
+    else:  # full mode
+        resolved_nodes, resolution_map = await _resolve_cross_document_entities(
+            all_nodes=all_nodes,
+            knowledge_graph_inst=knowledge_graph_inst,
+            global_config=global_config,
+        )
+
+    # Log performance metrics
+    elapsed_ms = (time_module.perf_counter() - start_time) * 1000
+    duplicates_found = len(resolution_map)
+    entities_checked = len(all_nodes)
+
+    logger.info(
+        f"PERF cross_doc_resolution mode={actual_mode} "
+        f"entities={entities_checked} duplicates={duplicates_found} time_ms={elapsed_ms:.1f}"
+    )
+
+    return resolved_nodes, resolution_map, actual_mode
+
+
 async def consolidate_graph_entities(
     knowledge_graph_inst: BaseGraphStorage,
     entity_vdb: BaseVectorStorage,
@@ -2958,8 +3155,8 @@ async def merge_nodes_and_edges(
     if global_config.get("enable_entity_resolution", True):
         cross_doc_start = perf_time.perf_counter()
         pre_cross_doc_count = len(all_nodes)
-        all_nodes, cross_doc_resolutions = await _resolve_cross_document_entities(
-            all_nodes, knowledge_graph_inst, global_config
+        all_nodes, cross_doc_resolutions, cross_doc_mode = await _resolve_cross_document_entities_hybrid(
+            all_nodes, knowledge_graph_inst, entity_vdb, global_config
         )
         # Convert back to defaultdict for consistency with downstream code
         cross_doc_nodes = defaultdict(list)
@@ -2967,7 +3164,7 @@ async def merge_nodes_and_edges(
             cross_doc_nodes[entity_name] = entities
         all_nodes = cross_doc_nodes
         cross_doc_time = perf_time.perf_counter()
-        logger.info(f"[PERF] Cross-doc resolution: {(cross_doc_time - cross_doc_start)*1000:.1f}ms ({len(cross_doc_resolutions)} resolved)")
+        logger.info(f"[PERF] Cross-doc resolution ({cross_doc_mode}): {(cross_doc_time - cross_doc_start)*1000:.1f}ms ({len(cross_doc_resolutions)} resolved)")
 
         # Log cross-document resolutions
         if cross_doc_resolutions:
