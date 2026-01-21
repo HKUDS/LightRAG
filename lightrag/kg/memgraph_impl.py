@@ -1136,3 +1136,33 @@ class MemgraphStorage(BaseGraphStorage):
             if result is not None:
                 await result.consume()
             return []
+
+    async def get_node_count(self) -> int:
+        """Get the total count of nodes in the graph.
+
+        This method has O(1) complexity for use in hybrid cross-document
+        resolution mode switching.
+
+        Returns:
+            int: Total number of nodes in the graph for this workspace
+        """
+        if self._driver is None:
+            raise RuntimeError(
+                "Memgraph driver is not initialized. Call 'await initialize()' first."
+            )
+        workspace_label = self._get_workspace_label()
+        async with self._driver.session(
+            database=self._DATABASE, default_access_mode="READ"
+        ) as session:
+            result = None
+            try:
+                query = f"MATCH (n:`{workspace_label}`) RETURN count(n) as total"
+                result = await session.run(query)
+                record = await result.single()
+                await result.consume()
+                return record["total"] if record else 0
+            except Exception as e:
+                logger.error(f"[{self.workspace}] Error getting node count: {str(e)}")
+                if result is not None:
+                    await result.consume()
+                raise

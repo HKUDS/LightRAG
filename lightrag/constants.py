@@ -128,3 +128,11 @@ DEFAULT_CPU_YIELD_INTERVAL = 100
 # Enable only for specific use cases where semantic conflict detection is needed
 DEFAULT_ENABLE_CONFLICT_DETECTION = False
 DEFAULT_CONFLICT_CONFIDENCE_THRESHOLD = 0.7
+
+# Cross-Document Resolution configuration defaults
+# Mode: "full" (max precision), "vdb" (max speed), "hybrid" (auto-switch), "disabled"
+DEFAULT_CROSS_DOC_RESOLUTION_MODE = "hybrid"
+# Entity count threshold for hybrid mode to switch from full to VDB matching
+DEFAULT_CROSS_DOC_THRESHOLD_ENTITIES = 5000
+# Number of VDB candidates to retrieve for similarity comparison
+DEFAULT_CROSS_DOC_VDB_TOP_K = 10

@@ -60,6 +60,10 @@ from lightrag.constants import (
     DEFAULT_PREFER_SHORTER_CANONICAL_NAME,
     DEFAULT_ENABLE_CONFLICT_DETECTION,
     DEFAULT_CONFLICT_CONFIDENCE_THRESHOLD,
+    # Cross-Document Resolution
+    DEFAULT_CROSS_DOC_RESOLUTION_MODE,
+    DEFAULT_CROSS_DOC_THRESHOLD_ENTITIES,
+    DEFAULT_CROSS_DOC_VDB_TOP_K,
 )
 from lightrag.utils import get_env_value
 
@@ -482,6 +486,30 @@ class LightRAG:
         )
     )
     """Minimum confidence score (0.0-1.0) for logging detected conflicts."""
+
+    # Cross-Document Resolution
+    # ---
+
+    cross_doc_resolution_mode: str = field(
+        default=get_env_value(
+            "CROSS_DOC_RESOLUTION_MODE", DEFAULT_CROSS_DOC_RESOLUTION_MODE, str
+        )
+    )
+    """Mode for cross-document entity resolution: 'full', 'vdb', 'hybrid', or 'disabled'."""
+
+    cross_doc_threshold_entities: int = field(
+        default=get_env_value(
+            "CROSS_DOC_THRESHOLD_ENTITIES", DEFAULT_CROSS_DOC_THRESHOLD_ENTITIES, int
+        )
+    )
+    """Entity count threshold for hybrid mode to switch from full to VDB matching."""
+
+    cross_doc_vdb_top_k: int = field(
+        default=get_env_value(
+            "CROSS_DOC_VDB_TOP_K", DEFAULT_CROSS_DOC_VDB_TOP_K, int
+        )
+    )
+    """Number of VDB candidates to retrieve for similarity comparison in VDB mode."""
 
     # Storages Management
     # ---

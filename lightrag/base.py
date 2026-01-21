@@ -663,6 +663,17 @@ class BaseGraphStorage(StorageNameSpace, ABC):
             List of matching labels sorted by relevance
         """
 
+    @abstractmethod
+    async def get_node_count(self) -> int:
+        """Get the total count of nodes in the graph.
+
+        This method must have O(1) complexity for use in hybrid cross-document
+        resolution mode switching. The count is workspace-scoped.
+
+        Returns:
+            int: Total number of nodes in the graph for this workspace
+        """
+
 
 class DocStatus(str, Enum):
     """Document processing status"""

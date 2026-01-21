@@ -4752,6 +4752,30 @@ class PGGraphStorage(BaseGraphStorage):
             )
             return []
 
+    async def get_node_count(self) -> int:
+        """Get the total count of nodes in the graph.
+
+        This method has O(1) complexity for use in hybrid cross-document
+        resolution mode switching.
+
+        Returns:
+            int: Total number of nodes in the graph for this workspace
+        """
+        try:
+            count_query = f"""SELECT * FROM cypher('{self.graph_name}', $$
+                            MATCH (n)
+                            RETURN count(n) as total
+                            $$) AS (total agtype)"""
+            results = await self._query(count_query)
+            if results and len(results) > 0:
+                # AGE returns agtype, need to convert to int
+                total = results[0].get("total", 0)
+                return int(total) if total is not None else 0
+            return 0
+        except Exception as e:
+            logger.error(f"[{self.workspace}] Error getting node count: {str(e)}")
+            raise
+
     async def drop(self) -> dict[str, str]:
         """Drop the storage"""
         try:

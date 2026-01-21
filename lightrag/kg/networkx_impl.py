@@ -313,6 +313,18 @@ class NetworkXStorage(BaseGraphStorage):
 
         return search_results
 
+    async def get_node_count(self) -> int:
+        """Get the total count of nodes in the graph.
+
+        This method has O(1) complexity for use in hybrid cross-document
+        resolution mode switching.
+
+        Returns:
+            int: Total number of nodes in the graph for this workspace
+        """
+        graph = await self._get_graph()
+        return graph.number_of_nodes()
+
     async def get_knowledge_graph(
         self,
         node_label: str,

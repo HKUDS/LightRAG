@@ -54,10 +54,33 @@ for entity_name in all_nodes:                               # For each new entit
 ### Configuration Options
 
 ```python
-# New configuration parameters
-CROSS_DOC_RESOLUTION_MODE = "hybrid"  # "full" | "vdb" | "hybrid" | "disabled"
-CROSS_DOC_THRESHOLD_ENTITIES = 5000   # Switch to VDB mode after this many entities
-CROSS_DOC_VDB_TOP_K = 10              # Number of VDB candidates to check
+# Environment variables (in .env or OS)
+CROSS_DOC_RESOLUTION_MODE = "hybrid"       # "full" | "vdb" | "hybrid" | "disabled"
+CROSS_DOC_THRESHOLD_ENTITIES = 5000        # Switch to VDB mode after this many entities
+CROSS_DOC_VDB_TOP_K = 10                   # Number of VDB candidates to check
+```
+
+```python
+# lightrag/constants.py
+import os
+
+DEFAULT_CROSS_DOC_RESOLUTION_MODE = "hybrid"
+DEFAULT_CROSS_DOC_THRESHOLD_ENTITIES = 5000
+DEFAULT_CROSS_DOC_VDB_TOP_K = 10
+
+# Loaded from environment with defaults
+CROSS_DOC_RESOLUTION_MODE = os.getenv(
+    "CROSS_DOC_RESOLUTION_MODE",
+    DEFAULT_CROSS_DOC_RESOLUTION_MODE
+)
+CROSS_DOC_THRESHOLD_ENTITIES = int(os.getenv(
+    "CROSS_DOC_THRESHOLD_ENTITIES",
+    str(DEFAULT_CROSS_DOC_THRESHOLD_ENTITIES)
+))
+CROSS_DOC_VDB_TOP_K = int(os.getenv(
+    "CROSS_DOC_VDB_TOP_K",
+    str(DEFAULT_CROSS_DOC_VDB_TOP_K)
+))
 ```
 
 ### Mode Comparison
@@ -213,26 +236,125 @@ The VDB mode also reduces LLM summarization calls (fewer merged entities = fewer
 | vdb (5K entities)  | ~500                | ~100K            |
 | disabled          | 0                   | 0                |
 
+## Pre-requisites Analysis
+
+### 1. Entity VDB - ALREADY EXISTS
+
+The `entities_vdb` is already created and populated during entity indexing:
+
+```python
+# lightrag/lightrag.py:674
+self.entities_vdb: BaseVectorStorage = self.vector_db_storage_cls(
+    namespace=NameSpace.VECTOR_STORE_ENTITIES,
+    workspace=self.workspace,
+    ...
+)
+```
+
+Entities are already indexed in the VDB when created. **No additional work required.**
+
+### 2. get_node_count() - MUST BE O(1)
+
+Currently NOT in `BaseGraphStorage`. Must be added as abstract method with O(1) implementations:
+
+**MongoDB** (already has the pattern):
+```python
+# lightrag/kg/mongo_impl.py:1185
+total_node_count = await self.collection.count_documents({})  # O(1)
+```
+
+**PostgreSQL**:
+```sql
+SELECT count(*) FROM entity_nodes WHERE workspace = $1;  -- O(1) with proper indexing
+```
+
+**NetworkX** (in-memory):
+```python
+return len(self._graph.nodes())  # O(1)
+```
+
+### 3. Concurrency Behavior - ACCEPTABLE
+
+If multiple documents are indexed in parallel near the threshold:
+
+```
+Doc A: count = 4999 → mode full
+Doc B: count = 4999 → mode full
+# Both execute, create 200 entities each
+# Result: 5199 entities but both processed in full mode
+```
+
+This is **acceptable behavior** - the switch is "eventual" not instant. Document in release notes.
+
+### 4. Billing Estimates - REQUIRE BENCHMARKING
+
+The billing table values (~2500 vs ~500 summarize calls) are **estimates**.
+
+**Action**: Add metrics to `token_tracker` to validate in production:
+
+```python
+token_tracker.track_event("cross_doc_resolution", {
+    "mode": mode_used,
+    "candidates_checked": candidates_count,
+    "duplicates_found": duplicates_count,
+    "summarize_calls_triggered": summarize_count,
+})
+```
+
+### 5. Default Threshold - REQUIRE BENCHMARKING
+
+The 5000 entities threshold is an estimate based on observed performance (7.6s at 11K entities).
+
+**Action**: Benchmark with real data to find the inflection point:
+- Test at: 1000, 2000, 5000, 10000 entities
+- Measure: time, precision, recall of merges
+- Adjust default based on results
+
+### 6. Option C (Gradual) - DEFERRED
+
+Start with **Option A (Fixed Threshold)** for simplicity. Iterate if needed based on production feedback.
+
+---
+
 ## Implementation Checklist
 
+### Phase 1: Infrastructure
+- [ ] Add `get_node_count()` abstract method to `BaseGraphStorage`
+- [ ] Implement `get_node_count()` in all graph backends (postgres, mongo, networkx, neo4j, etc.)
+- [ ] Ensure all implementations are O(1)
+
+### Phase 2: Core Implementation
 - [ ] Add configuration parameters to `LightRAG` class
 - [ ] Implement `_resolve_cross_document_entities_vdb()` function
 - [ ] Implement `_resolve_cross_document_entities_hybrid()` wrapper
-- [ ] Add `get_node_count()` method to graph storage backends
-- [ ] Add metrics logging for cross-doc resolution
+- [ ] Add mode selection logic based on entity count
+
+### Phase 3: Observability
+- [ ] Add metrics logging for cross-doc resolution (mode, time, duplicates found)
+- [ ] Add token_tracker events for billing analysis
+
+### Phase 4: Validation
+- [ ] Add unit tests for all modes
+- [ ] Performance benchmarks at various entity counts
 - [ ] Update documentation
-- [ ] Add tests for all modes
-- [ ] Performance benchmarks
 
 ## Files to Modify
 
-1. **lightrag/lightrag.py** - Add configuration parameters
-2. **lightrag/operate.py** - Implement VDB and hybrid resolution
-3. **lightrag/kg/*.py** - Add `get_node_count()` method
-4. **tests/test_entity_resolution.py** - Add tests
+| File | Change | Priority |
+|------|--------|----------|
+| `lightrag/base.py` | Add `get_node_count()` abstract method | High |
+| `lightrag/kg/postgres_impl.py` | Implement `get_node_count()` | High |
+| `lightrag/kg/mongo_impl.py` | Implement `get_node_count()` | High |
+| `lightrag/kg/networkx_impl.py` | Implement `get_node_count()` | High |
+| `lightrag/kg/neo4j_impl.py` | Implement `get_node_count()` | Medium |
+| `lightrag/lightrag.py` | Add configuration parameters | High |
+| `lightrag/operate.py` | Implement VDB and hybrid resolution | High |
+| `lightrag/constants.py` | Add threshold constants | Medium |
+| `tests/test_cross_doc_resolution.py` | Add tests | Medium |
 
 ## References
 
 - Current implementation: `lightrag/operate.py:2471` (`_resolve_cross_document_entities`)
-- Entity VDB: `lightrag/lightrag.py` - `entity_vdb` storage
+- Entity VDB: `lightrag/lightrag.py:674` - `self.entities_vdb` storage
 - Similarity computation: `lightrag/entity_resolution.py` - `compute_entity_similarity()`
+- MongoDB count pattern: `lightrag/kg/mongo_impl.py:1185`
