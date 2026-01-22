@@ -42,6 +42,29 @@ jobs:
         with:
           fetch-depth: 1
 
+      # Checkout PR branch for fork PRs - fixes issue where claude-code-action
+      # tries to fetch the PR branch from origin, but for fork-based PRs the
+      # branch only exists in the contributor's fork repository.
+      # See: https://github.com/anthropics/claude-code-action/issues/46
+      - name: Checkout PR branch (handles forks)
+        if: github.event.issue.pull_request || github.event_name == 'pull_request_review_comment' || github.event_name == 'pull_request_review'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Get PR number from the event
+          if [ "${{ github.event_name }}" == "issue_comment" ]; then
+            PR_NUMBER=${{ github.event.issue.number }}
+          elif [ "${{ github.event_name }}" == "pull_request_review_comment" ]; then
+            PR_NUMBER=${{ github.event.pull_request.number }}
+          elif [ "${{ github.event_name }}" == "pull_request_review" ]; then
+            PR_NUMBER=${{ github.event.pull_request.number }}
+          fi
+
+          if [ -n "$PR_NUMBER" ]; then
+            echo "Checking out PR #$PR_NUMBER (handles fork PRs)"
+            gh pr checkout $PR_NUMBER
+          fi
+
       - name: Run Claude Code
         id: claude
         uses: anthropics/claude-code-action@v1
