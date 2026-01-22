@@ -793,7 +793,9 @@ class DocumentManager:
             ".bat",  # Batch files
             ".sh",  # Shell scripts
             ".c",  # C source code
+            ".h",  # C header
             ".cpp",  # C++ source code
+            ".hpp",  # C++ header
             ".py",  # Python source code
             ".java",  # Java source code
             ".js",  # JavaScript source code
@@ -1289,7 +1291,9 @@ async def pipeline_enqueue_file(
                     | ".bat"
                     | ".sh"
                     | ".c"
+                    | ".h"
                     | ".cpp"
+                    | ".hpp"
                     | ".py"
                     | ".java"
                     | ".js"
