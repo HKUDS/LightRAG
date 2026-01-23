@@ -34,6 +34,7 @@ embedding_func = EmbeddingFunc(
     ),
 )
 
+
 async def initialize_rag():
     rag = LightRAG(
         working_dir=WORKING_DIR,
@@ -126,9 +127,9 @@ async def main():
             f.write(f"Query mode: {mode}\n")
             f.write("=====================\n")
             resp = await rag.aquery(
-                "What product did CompanyA create?", 
+                "What product did CompanyA create?",
                 param=QueryParam(mode=mode, stream=False),
-                )
+            )
             f.write(str(resp) + "\n")
     print(f"所有查询结果已写入: {output_file}")
 

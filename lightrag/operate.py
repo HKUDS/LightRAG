@@ -3078,7 +3078,7 @@ async def kg_query(
         "mix",
         "local_graph",
         "hybrid_graph",
-        ]:
+    ]:
         logger.warning("low_level_keywords is empty")
     if hl_keywords == [] and query_param.mode in [
         "global",
@@ -3086,7 +3086,7 @@ async def kg_query(
         "mix",
         "global_graph",
         "hybrid_graph",
-        ]:
+    ]:
         logger.warning("high_level_keywords is empty")
     if hl_keywords == [] and ll_keywords == []:
         if len(query) < 50:

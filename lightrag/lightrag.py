@@ -2647,7 +2647,7 @@ class LightRAG:
             "local_graph",
             "global_graph",
             "hybrid_graph",
-            ]:
+        ]:
             logger.debug(f"[aquery_data] Using kg_query for mode: {data_param.mode}")
             query_result = await kg_query(
                 query.strip(),
@@ -2752,8 +2752,8 @@ class LightRAG:
                 "mix",
                 "local_graph",
                 "global_graph",
-                "hybrid_graph"
-                ]:
+                "hybrid_graph",
+            ]:
                 query_result = await kg_query(
                     query.strip(),
                     self.chunk_entity_relation_graph,
