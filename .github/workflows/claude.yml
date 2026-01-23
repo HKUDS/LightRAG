@@ -37,17 +37,9 @@ jobs:
       id-token: write
       actions: read # Required for Claude to read CI results on PRs
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v6
-        with:
-          fetch-depth: 1
-
-      # Checkout PR branch for fork PRs - fixes issue where claude-code-action
-      # tries to fetch the PR branch from origin, but for fork-based PRs the
-      # branch only exists in the contributor's fork repository.
-      # See: https://github.com/anthropics/claude-code-action/issues/46
-      - name: Checkout PR branch (handles forks)
+      - name: Get PR details for checkout
         if: github.event.issue.pull_request || github.event_name == 'pull_request_review_comment' || github.event_name == 'pull_request_review'
+        id: pr_details
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -61,9 +53,25 @@ jobs:
           fi
 
           if [ -n "$PR_NUMBER" ]; then
-            echo "Checking out PR #$PR_NUMBER (handles fork PRs)"
-            gh pr checkout $PR_NUMBER
+            echo "Fetching PR #$PR_NUMBER details"
+            PR_DATA=$(gh pr view $PR_NUMBER --json headRefName,headRepository,headRepositoryOwner)
+            HEAD_REF=$(echo "$PR_DATA" | jq -r '.headRefName')
+            HEAD_REPO=$(echo "$PR_DATA" | jq -r '.headRepository.name')
+            HEAD_OWNER=$(echo "$PR_DATA" | jq -r '.headRepositoryOwner.login')
+
+            echo "pr_number=$PR_NUMBER" >> $GITHUB_OUTPUT
+            echo "head_ref=$HEAD_REF" >> $GITHUB_OUTPUT
+            echo "head_repo=$HEAD_REPO" >> $GITHUB_OUTPUT
+            echo "head_owner=$HEAD_OWNER" >> $GITHUB_OUTPUT
+            echo "repository=$HEAD_OWNER/$HEAD_REPO" >> $GITHUB_OUTPUT
           fi
+
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ steps.pr_details.outputs.repository || github.repository }}
+          ref: ${{ steps.pr_details.outputs.head_ref || github.ref }}
+          fetch-depth: 0
 
       - name: Run Claude Code
         id: claude
