@@ -833,7 +833,7 @@ class Neo4JStorage(BaseGraphStorage):
         ) as session:
             query = f"""
             UNWIND $pairs AS pair
-            MATCH (start:`{workspace_label}` {{entity_id: pair.src}})-[r:DIRECTED]-(end:`{workspace_label}` {{entity_id: pair.tgt}})
+            MATCH (start:`{workspace_label}` {{entity_id: pair.src}})-[r]-(end:`{workspace_label}` {{entity_id: pair.tgt}})
             RETURN pair.src AS src_id, pair.tgt AS tgt_id, collect(properties(r)) AS edges
             """
             result = await session.run(query, pairs=pairs)
@@ -1078,11 +1078,15 @@ class Neo4JStorage(BaseGraphStorage):
 
                 async def execute_upsert(tx: AsyncManagedTransaction):
                     workspace_label = self._get_workspace_label()
+                    keywords_original = edge_properties.get("keywords", "RELATED")
+                    keywords_list = keywords_original.split(",")
+                    first_keyword = keywords_list[0].strip()
+                    relationship_type = first_keyword.replace(" ", "_")
                     query = f"""
                     MATCH (source:`{workspace_label}` {{entity_id: $source_entity_id}})
                     WITH source
                     MATCH (target:`{workspace_label}` {{entity_id: $target_entity_id}})
-                    MERGE (source)-[r:DIRECTED]-(target)
+                    MERGE (source)-[r:`{relationship_type}`]-(target)
                     SET r += $properties
                     RETURN r, source, target
                     """
