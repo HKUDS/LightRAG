@@ -1098,6 +1098,9 @@ maxclients 500
 
 为了保持与旧数据的兼容性，当未配置工作区时，PostgreSQL 非图存储的默认工作区为 `default`，PostgreSQL AGE 图存储的默认工作区为 null，Neo4j 图存储的默认工作区为 `base`。对于所有外部存储，系统提供专用的工作区环境变量来覆盖通用的 `WORKSPACE` 环境变量配置。这些存储特定的工作区环境变量包括：`REDIS_WORKSPACE`、`MILVUS_WORKSPACE`、`QDRANT_WORKSPACE`、`MONGODB_WORKSPACE`、`POSTGRES_WORKSPACE`、`NEO4J_WORKSPACE`。
 
+**使用示例：**
+有关在单个应用程序中管理多个隔离知识库（例如，将"书籍"内容与"人力资源政策"分开）的实际演示，请参阅 [Workspace Demo](examples/lightrag_gemini_workspace_demo.py)。
+
 ### AGENTS.md -- 指导编码代理
 
 AGENTS.md 是一种简单、开放的格式，用于指导编码代理（https://agents.md/）。它是一个专门的、可预测的地方，用于提供上下文和指令，帮助 AI 编码代理在 LightRAG 项目上工作。不同的 AI 编码器不应单独维护各自的指导文件。如果任何 AI 编码器无法自动识别 AGENTS.md，可以使用符号链接作为解决方案。建立符号链接后，可以通过配置本地的 `.gitignore_global` 来防止它们被提交到 Git 仓库。
