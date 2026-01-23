@@ -2141,7 +2141,7 @@ def create_document_routes(
             if global_args.max_upload_size and global_args.max_upload_size > 0:
                 # Safe access to file size (not available in older Starlette versions)
                 file_size = getattr(file, "size", None)
-                
+
                 # Pre-flight size check (only if size is available)
                 if file_size is not None and file_size > 0:
                     if file_size > global_args.max_upload_size:
