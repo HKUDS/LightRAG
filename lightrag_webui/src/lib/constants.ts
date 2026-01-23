@@ -64,7 +64,9 @@ export const supportedFileTypes = {
     '.bat', // # Batch files
     '.sh', // # Shell scripts
     '.c', // # C source code
+    '.h', // # C header
     '.cpp', // # C++ source code
+    '.hpp', // # C++ header
     '.py', // # Python source code
     '.java', // # Java source code
     '.js', // # JavaScript source code
