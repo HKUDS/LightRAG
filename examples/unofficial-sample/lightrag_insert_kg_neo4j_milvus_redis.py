@@ -27,7 +27,7 @@ os.environ["MILVUS_PASSWORD"] = "Milvus"
 os.environ["MILVUS_DB_NAME"] = "lightrag"
 
 embedding_func = EmbeddingFunc(
-    embedding_dim=1024,  
+    embedding_dim=1024,
     max_token_size=8192,
     func=lambda texts: ollama_embed(
         texts, embed_model="bge-m3:latest", host="http://localhost:11434"
@@ -37,7 +37,7 @@ embedding_func = EmbeddingFunc(
 async def initialize_rag():
     rag = LightRAG(
         working_dir=WORKING_DIR,
-        llm_model_func=ollama_model_complete,  
+        llm_model_func=ollama_model_complete,
         llm_model_name="deepseek-r1:32b",
         llm_model_kwargs={
             "host": "http://localhost:11434",
@@ -56,10 +56,11 @@ async def initialize_rag():
     await initialize_pipeline_status()
     return rag
 
+
 async def main():
     rag = await initialize_rag()
-##       relaton_types: keywords
-##       Entity and relationship attributes can be placed in their respective description fields.
+    ##       relaton_types: keywords
+    ##       Entity and relationship attributes can be placed in their respective description fields.
     custom_kg = {
         "entities": [
             {
@@ -105,7 +106,6 @@ async def main():
                 "tgt_id": "UniversityB",
                 "description": "PersonA works at UniversityB",
                 "keywords": "employment",
-    
             },
             {
                 "src_id": "CityC",
@@ -113,7 +113,7 @@ async def main():
                 "description": "EventY is hosted in CityC",
                 "keywords": "host",
             },
-        ]
+        ],
     }
 
     print("Inserting custom Knowledge Graph...")
@@ -125,9 +125,13 @@ async def main():
             f.write("\n=====================\n")
             f.write(f"Query mode: {mode}\n")
             f.write("=====================\n")
-            resp = await rag.aquery("What product did CompanyA create?", param=QueryParam(mode=mode, stream=False))
+            resp = await rag.aquery(
+                "What product did CompanyA create?", 
+                param=QueryParam(mode=mode, stream=False),
+                )
             f.write(str(resp) + "\n")
     print(f"所有查询结果已写入: {output_file}")
+
 
 if __name__ == "__main__":
     asyncio.run(main())
