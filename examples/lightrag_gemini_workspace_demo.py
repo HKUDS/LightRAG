@@ -30,6 +30,7 @@ import numpy as np
 from lightrag import LightRAG, QueryParam
 from lightrag.llm.gemini import gemini_model_complete, gemini_embed
 from lightrag.utils import wrap_embedding_func_with_attrs
+from lightrag.constants import DEFAULT_ENTITY_TYPES
 
 
 async def llm_model_func(
@@ -58,14 +59,25 @@ async def embedding_func(texts: list[str]) -> np.ndarray:
 
 async def initialize_rag(
     workspace: str = "default_workspace",
-    entities=json.loads(os.getenv("ENTITY_TYPES", "[]")),
+    entities=None,
 ) -> LightRAG:
     """
     Initializes a LightRAG instance with data isolation.
 
-    The 'workspace' parameter determines the subdirectory where LightRAG
-    persists its graph and vector data, preventing cross-contamination.
+    - entities (if provided) overrides everything
+    - else ENTITY_TYPES env var is used
+    - else DEFAULT_ENTITY_TYPES is used
     """
+
+    if entities is not None:
+        entity_types = entities
+    else:
+        env_entities = os.getenv("ENTITY_TYPES")
+        if env_entities:
+            entity_types = json.loads(env_entities)
+        else:
+            entity_types = DEFAULT_ENTITY_TYPES
+
     rag = LightRAG(
         workspace=workspace,
         llm_model_name="gemini-2.0-flash",
@@ -74,7 +86,7 @@ async def initialize_rag(
         embedding_func_max_async=4,
         embedding_batch_num=8,
         llm_model_max_async=2,
-        addon_params={"entity_types": entities},
+        addon_params={"entity_types": entity_types},
     )
 
     await rag.initialize_storages()
@@ -109,7 +121,8 @@ async def main():
         # 4. Context-Specific Querying
         print("\n--- Querying Literature Workspace ---")
         res1 = await rag_1.aquery(
-            "What is the main theme?", param=QueryParam(mode="hybrid")
+            "What is the main theme?",
+            param=QueryParam(mode="hybrid", stream=False),
         )
         print(f"Book Analysis: {res1[:200]}...")
 
