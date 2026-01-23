@@ -6,7 +6,6 @@ import asyncio
 from functools import lru_cache
 from lightrag.utils import logger, get_pinyin_sort_key
 import aiofiles
-import shutil
 import traceback
 from datetime import datetime, timezone
 from pathlib import Path
@@ -2084,6 +2083,11 @@ def create_document_routes(
         uploaded file is of a supported type, saves it in the specified input directory,
         indexes it for retrieval, and returns a success status with relevant details.
 
+        **File Size Limit:**
+        - Configurable via `MAX_UPLOAD_SIZE` environment variable (default: 100MB)
+        - Set to `None` or `0` for unlimited upload size
+        - Returns HTTP 413 (Request Entity Too Large) if file exceeds limit
+
         **Duplicate Detection Behavior:**
 
         This endpoint handles two types of duplicate scenarios differently:
@@ -2121,7 +2125,7 @@ def create_document_routes(
                 - status="duplicated": Filename already exists (see track_id for existing document)
 
         Raises:
-            HTTPException: If the file type is not supported (400) or other errors occur (500).
+            HTTPException: If the file type is not supported (400), file too large (413), or other errors occur (500).
         """
         try:
             # Sanitize filename to prevent Path Traversal attacks
@@ -2132,6 +2136,24 @@ def create_document_routes(
                     status_code=400,
                     detail=f"Unsupported file type. Supported types: {doc_manager.supported_extensions}",
                 )
+
+            # Check file size limit (if configured)
+            if global_args.max_upload_size and global_args.max_upload_size > 0:
+                # Get file size if available from UploadFile
+                file_size = 0
+                if file.size:
+                    file_size = file.size
+                else:
+                    # If size not available, we'll check during streaming
+                    logger.debug(
+                        f"File size not available in UploadFile for {safe_filename}, will check during streaming"
+                    )
+
+                if file_size > 0 and file_size > global_args.max_upload_size:
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"File too large. Maximum size: {global_args.max_upload_size / 1024 / 1024:.1f}MB, uploaded: {file_size / 1024 / 1024:.1f}MB",
+                    )
 
             # Check if filename already exists in doc_status storage
             existing_doc_data = await rag.doc_status.get_doc_by_file_path(safe_filename)
@@ -2155,8 +2177,37 @@ def create_document_routes(
                     track_id="",
                 )
 
-            with open(file_path, "wb") as buffer:
-                shutil.copyfileobj(file.file, buffer)
+            # Async streaming write with size check
+            bytes_written = 0
+            chunk_size = 1024 * 1024  # 1MB chunks
+
+            async with aiofiles.open(file_path, "wb") as out_file:
+                while True:
+                    # Read chunk from upload stream
+                    chunk = await file.read(chunk_size)
+                    if not chunk:
+                        break
+
+                    # Check size limit during streaming (if not checked before)
+                    if global_args.max_upload_size and global_args.max_upload_size > 0:
+                        bytes_written += len(chunk)
+                        if bytes_written > global_args.max_upload_size:
+                            # Clean up partial file
+                            try:
+                                await out_file.close()
+                                file_path.unlink()
+                            except Exception as cleanup_error:
+                                logger.error(
+                                    f"Error cleaning up oversized file {safe_filename}: {cleanup_error}"
+                                )
+
+                            raise HTTPException(
+                                status_code=413,
+                                detail=f"File too large. Maximum size: {global_args.max_upload_size / 1024 / 1024:.1f}MB",
+                            )
+
+                    # Write chunk to file
+                    await out_file.write(chunk)
 
             track_id = generate_track_id("upload")
 
@@ -2169,6 +2220,9 @@ def create_document_routes(
                 track_id=track_id,
             )
 
+        except HTTPException:
+            # Re-raise HTTP exceptions (400, 413, etc.)
+            raise
         except Exception as e:
             logger.error(f"Error /documents/upload: {file.filename}: {str(e)}")
             logger.error(traceback.format_exc())
