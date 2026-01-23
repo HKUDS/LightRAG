@@ -4097,8 +4097,8 @@ async def _build_query_context(
 
     # Stage 3: Merge chunks using filtered entities/relations
     graph_modes = {"local_graph", "global_graph", "hybrid_graph"}
-    merged_chunks=[]
-    if(query_param.mode not in graph_modes):
+    merged_chunks = []
+    if query_param.mode not in graph_modes:
         merged_chunks = await _merge_all_chunks(
             filtered_entities=truncation_result["filtered_entities"],
             filtered_relations=truncation_result["filtered_relations"],
