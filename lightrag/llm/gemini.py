@@ -378,7 +378,8 @@ async def gemini_complete_if_cache(
                                 usage, "candidates_token_count", 0
                             ),
                             "total_tokens": getattr(usage, "total_token_count", 0),
-                        }
+                        },
+                        model=model,
                     )
 
         return _async_stream()
@@ -420,7 +421,8 @@ async def gemini_complete_if_cache(
                 "prompt_tokens": getattr(usage, "prompt_token_count", 0),
                 "completion_tokens": getattr(usage, "candidates_token_count", 0),
                 "total_tokens": getattr(usage, "total_token_count", 0),
-            }
+            },
+            model=model,
         )
 
     logger.debug("Gemini response length: %s", len(final_text))

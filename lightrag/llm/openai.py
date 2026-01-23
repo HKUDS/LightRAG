@@ -431,7 +431,7 @@ async def openai_complete_if_cache(
                         ),
                         "total_tokens": getattr(final_chunk_usage, "total_tokens", 0),
                     }
-                    token_tracker.add_usage(token_counts)
+                    token_tracker.add_usage(token_counts, model=model)
                     logger.debug(f"Streaming token usage (from API): {token_counts}")
                 elif token_tracker:
                     logger.debug("No usage information available in streaming response")
@@ -582,7 +582,7 @@ async def openai_complete_if_cache(
                     ),
                     "total_tokens": getattr(response.usage, "total_tokens", 0),
                 }
-                token_tracker.add_usage(token_counts)
+                token_tracker.add_usage(token_counts, model=getattr(response, "model", model))
 
             logger.debug(f"Response content len: {len(final_content)}")
             verbose_debug(f"Response: {response}")
