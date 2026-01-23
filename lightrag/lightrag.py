@@ -2346,6 +2346,7 @@ class LightRAG:
                             full_relations_storage=self.full_relations,
                             entity_chunks_storage=self.entity_chunks,
                             relation_chunks_storage=self.relation_chunks,
+                            text_chunks_storage=self.text_chunks,
                         )
 
                         if consolidation_map:

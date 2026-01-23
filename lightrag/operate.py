@@ -2850,6 +2850,7 @@ async def consolidate_graph_entities(
     full_relations_storage: BaseKVStorage = None,
     entity_chunks_storage: BaseKVStorage = None,
     relation_chunks_storage: BaseKVStorage = None,
+    text_chunks_storage: BaseKVStorage = None,
 ) -> dict[str, str]:
     """
     Post-processing consolidation of duplicate entities in the knowledge graph.
@@ -2874,6 +2875,7 @@ async def consolidate_graph_entities(
         full_relations_storage: Optional storage for doc → relation mappings.
         entity_chunks_storage: Optional storage for entity → chunk mappings.
         relation_chunks_storage: Optional storage for relation → chunk mappings.
+        text_chunks_storage: Optional storage for chunk data (used to get doc_ids).
 
     Returns:
         Dict mapping old entity names to their canonical names (for logging).
@@ -3039,17 +3041,20 @@ async def consolidate_graph_entities(
                     pass  # Old entity might not be in VDB
 
                 # Update entity_chunks storage (entity → chunk mappings)
+                # Also collect chunk_ids for full_entities update
+                old_chunk_ids = []
                 if entity_chunks_storage:
                     try:
                         old_chunks = await entity_chunks_storage.get_by_id(old_name)
                         if old_chunks:
+                            old_chunk_ids = old_chunks.get("chunk_ids", [])
                             # Merge with canonical entity's chunks
                             canonical_chunks = await entity_chunks_storage.get_by_id(canonical_name)
                             if canonical_chunks:
                                 # Merge chunk lists
                                 merged_chunks = list(set(
                                     canonical_chunks.get("chunk_ids", []) +
-                                    old_chunks.get("chunk_ids", [])
+                                    old_chunk_ids
                                 ))
                                 await entity_chunks_storage.upsert({
                                     canonical_name: {"chunk_ids": merged_chunks}
@@ -3062,20 +3067,50 @@ async def consolidate_graph_entities(
                             # Delete old mapping
                             await entity_chunks_storage.delete_by_ids([old_name])
                     except Exception as e:
-                        logger.debug(f"Could not update entity_chunks for '{old_name}': {e}")
+                        logger.warning(f"Could not update entity_chunks for '{old_name}': {e}")
 
                 # Update full_entities storage (doc → entity mappings)
-                # This is more complex as we need to scan all docs
-                if full_entities_storage:
+                # Use chunk_ids to find affected documents
+                if full_entities_storage and text_chunks_storage and old_chunk_ids:
                     try:
-                        # Get all doc IDs that reference the old entity
-                        # This requires scanning - implementation depends on storage backend
-                        # For now, we log that this may need manual cleanup
-                        logger.debug(
-                            f"Note: full_entities may need manual update for '{old_name}' → '{canonical_name}'"
+                        # Get doc_ids from chunk data
+                        chunk_data_list = await text_chunks_storage.get_by_ids(old_chunk_ids)
+                        affected_doc_ids = set()
+                        for chunk_data in chunk_data_list:
+                            if chunk_data and isinstance(chunk_data, dict):
+                                doc_id = chunk_data.get("full_doc_id")
+                                if doc_id:
+                                    affected_doc_ids.add(doc_id)
+
+                        # Update each affected document's entity list
+                        for doc_id in affected_doc_ids:
+                            try:
+                                doc_entities = await full_entities_storage.get_by_id(doc_id)
+                                if doc_entities and "entity_names" in doc_entities:
+                                    entity_names = doc_entities["entity_names"]
+                                    if old_name in entity_names:
+                                        # Replace old_name with canonical_name
+                                        updated_names = [
+                                            canonical_name if e == old_name else e
+                                            for e in entity_names
+                                        ]
+                                        # Deduplicate (canonical might already exist)
+                                        updated_names = list(set(updated_names))
+                                        await full_entities_storage.upsert({
+                                            doc_id: {"entity_names": updated_names}
+                                        })
+                                        logger.debug(
+                                            f"Updated full_entities for doc '{doc_id}': "
+                                            f"'{old_name}' → '{canonical_name}'"
+                                        )
+                            except Exception as doc_e:
+                                logger.warning(
+                                    f"Could not update full_entities for doc '{doc_id}': {doc_e}"
+                                )
+                    except Exception as e:
+                        logger.warning(
+                            f"Could not update full_entities for '{old_name}' → '{canonical_name}': {e}"
                         )
-                    except Exception:
-                        pass
 
                 # Update relationships that reference the old entity in the VDB
                 # This is handled by the edge reconnection above for the graph,
