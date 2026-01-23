@@ -2097,6 +2097,9 @@ class LightRAG:
                                 "total_chunks": 0,  # Unknown on failure
                                 "embedding_model": embedding_usage.get("model"),
                                 "llm_model": llm_usage.get("model"),
+                                # No merge phase occurred, so dedup tokens are 0
+                                "dedup_input_tokens": 0,
+                                "dedup_output_tokens": 0,
                             }
 
                             # Update document status to failed
