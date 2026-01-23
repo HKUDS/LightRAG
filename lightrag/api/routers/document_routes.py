@@ -2138,12 +2138,15 @@ def create_document_routes(
                 )
 
             # Check file size limit (if configured)
-            if global_args.max_upload_size and global_args.max_upload_size > 0:
+            if (
+                global_args.max_upload_size is not None
+                and global_args.max_upload_size > 0
+            ):
                 # Safe access to file size (not available in older Starlette versions)
                 file_size = getattr(file, "size", None)
 
                 # Pre-flight size check (only if size is available)
-                if file_size is not None and file_size > 0:
+                if file_size is not None:
                     if file_size > global_args.max_upload_size:
                         raise HTTPException(
                             status_code=413,
@@ -2180,6 +2183,7 @@ def create_document_routes(
             # Async streaming write with size check
             bytes_written = 0
             chunk_size = 1024 * 1024  # 1MB chunks
+            needs_cleanup = False
 
             async with aiofiles.open(file_path, "wb") as out_file:
                 while True:
@@ -2189,25 +2193,31 @@ def create_document_routes(
                         break
 
                     # Check size limit during streaming (if not checked before)
-                    if global_args.max_upload_size and global_args.max_upload_size > 0:
+                    if (
+                        global_args.max_upload_size is not None
+                        and global_args.max_upload_size > 0
+                    ):
                         bytes_written += len(chunk)
                         if bytes_written > global_args.max_upload_size:
-                            # Clean up partial file
-                            try:
-                                await out_file.close()
-                                file_path.unlink()
-                            except Exception as cleanup_error:
-                                logger.error(
-                                    f"Error cleaning up oversized file {safe_filename}: {cleanup_error}"
-                                )
-
-                            raise HTTPException(
-                                status_code=413,
-                                detail=f"File too large. Maximum size: {global_args.max_upload_size / 1024 / 1024:.1f}MB",
-                            )
+                            needs_cleanup = True
+                            break
 
                     # Write chunk to file
                     await out_file.write(chunk)
+
+            # Cleanup after file is closed
+            if needs_cleanup:
+                try:
+                    file_path.unlink()
+                except Exception as cleanup_error:
+                    logger.error(
+                        f"Error cleaning up oversized file {safe_filename}: {cleanup_error}"
+                    )
+
+                raise HTTPException(
+                    status_code=413,
+                    detail=f"File too large. Maximum size: {global_args.max_upload_size / 1024 / 1024:.1f}MB",
+                )
 
             track_id = generate_track_id("upload")
 
