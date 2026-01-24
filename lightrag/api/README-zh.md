@@ -15,10 +15,12 @@ LightRAG 服务器旨在提供 Web 界面和 API 支持。Web 界面便于文档
 * 从 PyPI 安装
 
 ```bash
-# 使用 uv (推荐)
-uv pip install "lightrag-hku[api]"
+### 使用 uv 安装 LightRAG 服务器（作为工具，推荐)
+uv tool install "lightrag-hku[api]"
 
-# 或使用 pip
+### 或使用 pip
+# python -m venv .venv
+# source .venv/bin/activate  # Windows: .venv\Scripts\activate
 # pip install "lightrag-hku[api]"
 ```
 
