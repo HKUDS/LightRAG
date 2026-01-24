@@ -101,6 +101,22 @@ export default function SanitizeData() {
     setCurrentPage(1);
   }, [filterText]);
 
+  // Listen for Esc key to cancel any open modal
+  useEffect(() => {
+    const handleEscKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        if (editDescriptionModalOpen) {
+          setEditDescriptionModalOpen(false);
+        } else if (editRelationshipsModalOpen) {
+          setEditRelationshipsModalOpen(false);
+        }
+      }
+    };
+
+  document.addEventListener('keydown', handleEscKey);
+  return () => document.removeEventListener('keydown', handleEscKey);
+}, [editDescriptionModalOpen, editRelationshipsModalOpen]);
+
   // Pagination handlers
   const goToFirst = () => setCurrentPage(1);
   const goToPrev = () => setCurrentPage((p) => Math.max(1, p - 1));
@@ -135,15 +151,12 @@ export default function SanitizeData() {
 
     console.log(`fetchEntityDetail called for: "${entityName}"`);
 
-
-    /* Commented out because it was preventing a refresh 
     // Skip if we already have it
     //if (entityDetails[entityName]) return;
-    if (entityDetails[entityName]) {
+    if (entityDetails[entityName] && !force) {
       console.log(`Already have details for "${entityName}" - skipping`);
       return;
     }
-    */
 
     console.log(`Fetching details for "${entityName}"...`);
 
@@ -341,6 +354,44 @@ export default function SanitizeData() {
     } catch (err) {
       console.error("Failed to save relationship changes:", err);
       alert("Error saving relationships. Check console.");
+    }
+  };
+
+  const deleteRelationship = async (from: string, to: string) => {
+    if (!confirm(`Are you sure you want to delete the relationship from ${from} to ${to}? This cannot be undone.`)) {
+      return;
+    }
+
+    try {
+      // Change to DELETE method + correct parameter names
+      await axios.delete(`${API_BASE}/documents/delete_relation`, {
+        data: {  // Use 'data' for body in DELETE (axios requires this for non-GET methods)
+          source_entity: from,
+          target_entity: to,
+        },
+      });
+
+      console.log(`Deleted relationship: ${from} → ${to}`);
+
+      // Remove from temp edits
+      setRelationshipEdits((prev) => {
+        const newEdits = { ...prev };
+        delete newEdits[`${from}-${to}`];
+        return newEdits;
+      });
+
+      // Re-fetch entity details to update local cache
+      if (editingEntityForRel) {
+        await fetchEntityDetail(editingEntityForRel, true); // Force refresh
+      }
+
+      // Trigger full graph refresh
+      // await triggerGraphRefresh(); // Commented out because it has no effect
+
+      alert("Relationship deleted successfully!");
+    } catch (err) {
+      console.error("Failed to delete relationship:", err);
+      alert("Error deleting relationship. Check console.");
     }
   };
 
@@ -891,15 +942,15 @@ export default function SanitizeData() {
                     {/* Weight */}
                     <div className="mb-3">
                       <label className="block text-sm font-medium text-gray-700 mb-1">
-                        Weight (1.0–10.0)
+                        Weight
                       </label>
                       <input
                         type="number"
-                        step="0.1"
+                        step="1"
                         min="1"
-                        max="10"
+                        max="10000"
                         className="w-24 p-2 border border-gray-300 rounded text-sm"
-                        value={relationshipEdits[`${rel.from}-${rel.to}`]?.weight ?? rel.weight ?? 1.0}
+                        value={relationshipEdits[`${rel.from}-${rel.to}`]?.weight ?? rel.weight ?? 1}
                         onChange={(e) => {
                           const key = `${rel.from}-${rel.to}`;
                           setRelationshipEdits((prev) => ({
@@ -937,12 +988,7 @@ export default function SanitizeData() {
 
                     {/* Delete button */}
                     <button
-                      onClick={() => {
-                        if (confirm(`Delete relationship from ${rel.from} to ${rel.to}?`)) {
-                          // We'll implement actual delete in next step
-                          console.log("Would delete:", rel.from, "→", rel.to);
-                        }
-                      }}
+                      onClick={() => deleteRelationship(rel.from, rel.to)}
                       className="mt-2 px-3 py-1.5 bg-red-100 hover:bg-red-200 text-red-700 rounded text-sm"
                     >
                       Delete This Relationship
