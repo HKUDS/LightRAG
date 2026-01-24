@@ -2216,7 +2216,7 @@ def create_document_routes(
 
                 raise HTTPException(
                     status_code=413,
-                    detail=f"File too large. Maximum size: {global_args.max_upload_size / 1024 / 1024:.1f}MB",
+                    detail=f"File too large. Maximum size: {global_args.max_upload_size / 1024 / 1024:.1f}MB, uploaded: {bytes_written / 1024 / 1024:.1f}MB",
                 )
 
             track_id = generate_track_id("upload")
