@@ -110,12 +110,15 @@ The LightRAG Server is designed to provide Web UI and API support. The Web UI fa
 * Install from PyPI
 
 ```bash
-# Using uv (recommended)
+### Install LightRAG Server as tool using uv (recommended)
 uv tool install "lightrag-hku[api]"
-# Or using pip
+
+### Or using pip
+# python -m venv .venv
+# source .venv/bin/activate  # Windows: .venv\Scripts\activate
 # pip install "lightrag-hku[api]"
 
-# Build front-end artifacts
+### Build front-end artifacts
 cd lightrag_webui
 bun install --frozen-lockfile
 bun run build
@@ -141,7 +144,7 @@ source .venv/bin/activate  # Activate the virtual environment (Linux/macOS)
 
 ### Or using pip with virtual environment
 # python -m venv .venv
-### source .venv/bin/activate  # Windows: .venv\Scripts\activate
+# source .venv/bin/activate  # Windows: .venv\Scripts\activate
 # pip install -e ".[api]"
 
 # Build front-end artifacts

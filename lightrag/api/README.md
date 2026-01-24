@@ -15,10 +15,12 @@ The LightRAG Server is designed to provide a Web UI and API support. The Web UI 
 * Install from PyPI
 
 ```bash
-# Using uv (recommended)
-uv pip install "lightrag-hku[api]"
+### Install LightRAG Server as tool using uv (recommended)
+uv tool install "lightrag-hku[api]"
 
-# Or using pip
+### Or using pip
+# python -m venv .venv
+# source .venv/bin/activate  # Windows: .venv\Scripts\activate
 # pip install "lightrag-hku[api]"
 ```
 

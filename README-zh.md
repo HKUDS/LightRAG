@@ -110,12 +110,15 @@ LightRAG服务器旨在提供Web UI和API支持。Web UI便于文档索引、知
 * 从PyPI安装
 
 ```bash
-# 使用 uv (推荐)
-uv pip install "lightrag-hku[api]"
-# 或使用 pip
+### 使用 uv 安装 LightRAG 服务器（作为工具，推荐)
+uv tool install "lightrag-hku[api]"
+
+### 或使用 pip
+# python -m venv .venv
+# source .venv/bin/activate  # Windows: .venv\Scripts\activate
 # pip install "lightrag-hku[api]"
 
-# 构建前端代码
+### 构建前端代码
 cd lightrag_webui
 bun install --frozen-lockfile
 bun run build
@@ -141,7 +144,7 @@ source .venv/bin/activate  # 激活虚拟环境 (Linux/macOS)
 
 ### 或使用 pip 和虚拟环境
 # python -m venv .venv
-### source .venv/bin/activate  # Windows: .venv\Scripts\activate
+# source .venv/bin/activate  # Windows: .venv\Scripts\activate
 # pip install -e ".[api]"
 
 # 构建前端代码
@@ -955,6 +958,7 @@ MongoDocStatusStorage       MongoDB
 export NEO4J_URI="neo4j://localhost:7687"
 export NEO4J_USERNAME="neo4j"
 export NEO4J_PASSWORD="password"
+export NEO4J_DATABASE="neo4j" #<----------- 使用 neo4j 社区版 docker 镜像时数据库实例必须为neo4j
 
 # 为 LightRAG 设置日志
 setup_logger("lightrag", level="INFO")
