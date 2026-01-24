@@ -9,7 +9,7 @@ from tenacity import (
     wait_exponential,
     retry_if_exception_type,
 )
-from .utils import logger
+from .utils import logger, current_token_tracker
 
 from dotenv import load_dotenv
 
@@ -329,6 +329,28 @@ async def generic_rerank_api(
             if not results:
                 logger.warning("Rerank API returned empty results")
                 return []
+
+            # Track usage if token_tracker is available
+            token_tracker = current_token_tracker.get()
+            if token_tracker:
+                # Cohere format: {"meta": {"billed_units": {"search_units": N}}}
+                # Aliyun format: {"usage": {...}} (may vary)
+                usage_data = {}
+                if response_format == "standard":
+                    meta = response_json.get("meta", {})
+                    billed_units = meta.get("billed_units", {})
+                    search_units = billed_units.get("search_units", 0)
+                    if search_units:
+                        usage_data["search_units"] = search_units
+                elif response_format == "aliyun":
+                    # Aliyun may have different usage format
+                    usage = response_json.get("usage", {})
+                    if usage:
+                        usage_data["search_units"] = usage.get("total_tokens", 0)
+
+                if usage_data:
+                    token_tracker.add_rerank_usage(usage_data, model=model)
+                    logger.debug(f"Rerank usage tracked: {usage_data}, model: {model}")
 
             # Standardize return format
             standardized_results = [

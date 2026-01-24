@@ -2571,6 +2571,11 @@ class TokenTracker:
         self.embedding_call_count = 0
         self.embedding_model = None
 
+        # Rerank usage tracking (Cohere uses search_units)
+        self.rerank_search_units = 0
+        self.rerank_call_count = 0
+        self.rerank_model = None
+
     def add_usage(self, token_counts, model: str = None):
         """Add token usage from one LLM call.
 
@@ -2640,9 +2645,35 @@ class TokenTracker:
             "model": self.embedding_model,
         }
 
+    def add_rerank_usage(self, usage_data: dict, model: str = None):
+        """Add usage from one rerank call.
+
+        Args:
+            usage_data: A dictionary containing rerank usage info.
+                - For Cohere: {"search_units": N} from billed_units
+                - For Jina: {"tokens": N} if available
+            model: Optional model name/identifier used for this call
+        """
+        # Cohere uses search_units for billing
+        self.rerank_search_units += usage_data.get("search_units", 0)
+        self.rerank_call_count += 1
+
+        # Track model name (use first model seen, or update if not set)
+        if model and not self.rerank_model:
+            self.rerank_model = model
+
+    def get_rerank_usage(self):
+        """Get rerank-specific usage statistics including model name."""
+        return {
+            "search_units": self.rerank_search_units,
+            "call_count": self.rerank_call_count,
+            "model": self.rerank_model,
+        }
+
     def __str__(self):
         usage = self.get_usage()
         embedding = self.get_embedding_usage()
+        rerank = self.get_rerank_usage()
         parts = [
             f"LLM call count: {usage['call_count']}",
             f"Prompt tokens: {usage['prompt_tokens']}",
@@ -2653,6 +2684,11 @@ class TokenTracker:
             parts.extend([
                 f"Embedding calls: {embedding['call_count']}",
                 f"Embedding tokens: {embedding['total_tokens']}",
+            ])
+        if rerank["call_count"] > 0:
+            parts.extend([
+                f"Rerank calls: {rerank['call_count']}",
+                f"Rerank search_units: {rerank['search_units']}",
             ])
         return ", ".join(parts)
 

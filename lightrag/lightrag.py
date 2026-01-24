@@ -2954,6 +2954,8 @@ class LightRAG:
         # Create token tracker if provided for usage metering
         if token_tracker is not None:
             token_tracker.reset()
+            # Set context variable for rerank and other functions to access
+            current_token_tracker.set(token_tracker)
 
         global_config = asdict(self)
 
