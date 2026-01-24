@@ -35,8 +35,11 @@ export default function SanitizeData() {
   const [editedDescription, setEditedDescription] = useState('');
 
   // Modal state for editing relationships
-const [editRelationshipsModalOpen, setEditRelationshipsModalOpen] = useState(false);
-const [editingEntityForRel, setEditingEntityForRel] = useState<string | null>(null);
+  const [editRelationshipsModalOpen, setEditRelationshipsModalOpen] = useState(false);
+  const [editingEntityForRel, setEditingEntityForRel] = useState<string | null>(null);
+
+  // Temporary edits for relationships while modal is open
+  const [relationshipEdits, setRelationshipEdits] = useState<Record<string, any>>({});  
 
   // Fetch entities
   useEffect(() => {
@@ -128,16 +131,19 @@ const [editingEntityForRel, setEditingEntityForRel] = useState<string | null>(nu
     // Nothing else — no change to filter, page, or showSelectedOnlyMode
   };
 
-  const fetchEntityDetail = async (entityName: string) => {
+  const fetchEntityDetail = async (entityName: string, force = false) => {
 
     console.log(`fetchEntityDetail called for: "${entityName}"`);
 
+
+    /* Commented out because it was preventing a refresh 
     // Skip if we already have it
     //if (entityDetails[entityName]) return;
     if (entityDetails[entityName]) {
       console.log(`Already have details for "${entityName}" - skipping`);
       return;
     }
+    */
 
     console.log(`Fetching details for "${entityName}"...`);
 
@@ -220,9 +226,18 @@ const [editingEntityForRel, setEditingEntityForRel] = useState<string | null>(nu
 
   const openEditRelationshipsModal = (entityName: string) => {
     setEditingEntityForRel(entityName);
+
+    // Initialize editable copies of relationships
+    const initialEdits: Record<string, any> = {};
+    entityDetails[entityName]?.relationships?.forEach((rel: any) => {
+      const key = `${rel.from}-${rel.to}`; // simple unique key
+      initialEdits[key] = { ...rel }; // shallow copy
+    });
+
+    setRelationshipEdits(initialEdits);
+
     setEditRelationshipsModalOpen(true);
   };
-
 
   const saveDescription = async () => {
   if (!editingEntityName) return;
@@ -262,6 +277,72 @@ const [editingEntityForRel, setEditingEntityForRel] = useState<string | null>(nu
   }
   };
 
+  const triggerGraphRefresh = async () => {
+  try {
+    const response = await axios.post(`${API_BASE}/graph/refresh-data`);
+    if (response.status === 200) {
+      console.log("Graph data refresh triggered successfully");
+      // Optional: show toast/alert later
+    }
+  } catch (err) {
+    console.error("Failed to trigger graph refresh:", err);
+    alert("Changes saved, but failed to refresh graph view. Please restart server or try again.");
+  }
+  };
+
+  const saveAllRelationshipChanges = async () => {
+    if (!editingEntityForRel) return;
+
+    try {
+      let successCount = 0;
+
+      for (const [key, editedRel] of Object.entries(relationshipEdits)) {
+        const originalRel = entityDetails[editingEntityForRel].relationships.find(
+          (r: any) => `${r.from}-${r.to}` === key
+        );
+
+        if (!originalRel) continue;
+
+        // Only send if something changed
+        if (
+          editedRel.relation !== originalRel.relation ||
+          editedRel.weight !== originalRel.weight ||
+          editedRel.keywords !== originalRel.keywords
+        ) {
+          const payload = {
+            source_id: editedRel.from,
+            target_id: editedRel.to,
+            updated_data: {
+              description: editedRel.relation,
+              keywords: editedRel.keywords,
+              weight: editedRel.weight,
+            },
+          };
+
+          const res = await axios.post(`${API_BASE}/graph/relation/edit`, payload);
+          if (res.status === 200) successCount++;
+        }
+      }
+
+      if (successCount > 0) {
+        // Refresh local cache (optional but nice)
+        await fetchEntityDetail(editingEntityForRel, true);
+
+        // Commented out because it isn't needed to see updates without refreshing the webpage.
+        // Trigger full graph refresh so other parts of UI see changes
+        // await triggerGraphRefresh();
+
+        alert(`Saved ${successCount} relationship change(s) successfully!`);
+      } else {
+        alert("No changes detected.");
+      }      
+
+      setEditRelationshipsModalOpen(false);
+    } catch (err) {
+      console.error("Failed to save relationship changes:", err);
+      alert("Error saving relationships. Check console.");
+    }
+  };
 
   const displayEntities = showSelectedOnlyMode 
    ? selectedEntities 
@@ -793,10 +874,16 @@ const [editingEntityForRel, setEditingEntityForRel] = useState<string | null>(nu
                       <textarea
                         className="w-full p-2 border border-gray-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                         rows={3}
-                        value={rel.relation || ''}
+                        value={relationshipEdits[`${rel.from}-${rel.to}`]?.relation || rel.relation || ''}
                         onChange={(e) => {
-                          // We'll implement real editing in step 5
-                          console.log("Would update relation:", e.target.value);
+                          const key = `${rel.from}-${rel.to}`;
+                          setRelationshipEdits((prev) => ({
+                            ...prev,
+                            [key]: {
+                              ...prev[key],
+                              relation: e.target.value,
+                            },
+                          }));
                         }}
                       />
                     </div>
@@ -812,8 +899,17 @@ const [editingEntityForRel, setEditingEntityForRel] = useState<string | null>(nu
                         min="1"
                         max="10"
                         className="w-24 p-2 border border-gray-300 rounded text-sm"
-                        value={rel.weight || 1.0}
-                        onChange={(e) => console.log("Would update weight:", e.target.value)}
+                        value={relationshipEdits[`${rel.from}-${rel.to}`]?.weight ?? rel.weight ?? 1.0}
+                        onChange={(e) => {
+                          const key = `${rel.from}-${rel.to}`;
+                          setRelationshipEdits((prev) => ({
+                            ...prev,
+                            [key]: {
+                              ...prev[key],
+                              weight: parseFloat(e.target.value) || 1.0,
+                            },
+                          }));
+                        }}
                       />
                     </div>
 
@@ -825,15 +921,27 @@ const [editingEntityForRel, setEditingEntityForRel] = useState<string | null>(nu
                       <input
                         type="text"
                         className="w-full p-2 border border-gray-300 rounded text-sm"
-                        value={rel.keywords || ''}
-                        onChange={(e) => console.log("Would update keywords:", e.target.value)}
+                        value={relationshipEdits[`${rel.from}-${rel.to}`]?.keywords || rel.keywords || ''}
+                        onChange={(e) => {
+                          const key = `${rel.from}-${rel.to}`;
+                          setRelationshipEdits((prev) => ({
+                            ...prev,
+                            [key]: {
+                              ...prev[key],
+                              keywords: e.target.value,
+                            },
+                          }));
+                        }}
                       />
                     </div>
 
                     {/* Delete button */}
                     <button
                       onClick={() => {
-                        console.log("Would delete relationship:", rel.from, "→", rel.to);
+                        if (confirm(`Delete relationship from ${rel.from} to ${rel.to}?`)) {
+                          // We'll implement actual delete in next step
+                          console.log("Would delete:", rel.from, "→", rel.to);
+                        }
                       }}
                       className="mt-2 px-3 py-1.5 bg-red-100 hover:bg-red-200 text-red-700 rounded text-sm"
                     >
@@ -853,10 +961,7 @@ const [editingEntityForRel, setEditingEntityForRel] = useState<string | null>(nu
                 Cancel
               </button>
               <button
-                onClick={() => {
-                  console.log("Would save all relationship changes");
-                  setEditRelationshipsModalOpen(false);
-                }}
+                onClick={saveAllRelationshipChanges}
                 className="px-5 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded"
               >
                 Save Changes
