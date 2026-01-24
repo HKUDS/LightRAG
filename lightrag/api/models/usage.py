@@ -110,6 +110,25 @@ class EmbeddingUsageInfo(BaseModel):
     )
 
 
+class RerankUsageInfo(BaseModel):
+    """Rerank usage details for a request (Cohere/Jina billing)."""
+
+    search_units: int = Field(
+        default=0,
+        description="Number of search units billed by rerank API",
+        ge=0,
+    )
+    calls: int = Field(
+        default=0,
+        description="Number of rerank API calls made",
+        ge=0,
+    )
+    model: Optional[str] = Field(
+        default=None,
+        description="Model identifier used for rerank calls",
+    )
+
+
 class UsageInfo(BaseModel):
     """Per-request usage information included in API responses."""
 
@@ -120,6 +139,10 @@ class UsageInfo(BaseModel):
     embedding: Optional[EmbeddingUsageInfo] = Field(
         default=None,
         description="Embedding usage details (null if no embedding calls were made)",
+    )
+    rerank: Optional[RerankUsageInfo] = Field(
+        default=None,
+        description="Rerank usage details (null if rerank not used)",
     )
     estimated_cost_usd: Optional[float] = Field(
         default=None,
@@ -144,6 +167,7 @@ class UsageInfo(BaseModel):
         """
         llm_usage = None
         embedding_usage = None
+        rerank_usage = None
 
         # Get LLM usage if available
         llm_data = token_tracker.get_llm_usage()
@@ -165,9 +189,19 @@ class UsageInfo(BaseModel):
                 model=embedding_data.get("model"),
             )
 
+        # Get rerank usage if available
+        rerank_data = token_tracker.get_rerank_usage()
+        if rerank_data.get("call_count", 0) > 0:
+            rerank_usage = RerankUsageInfo(
+                search_units=rerank_data.get("search_units", 0),
+                calls=rerank_data.get("call_count", 0),
+                model=rerank_data.get("model"),
+            )
+
         return cls(
             llm=llm_usage,
             embedding=embedding_usage,
+            rerank=rerank_usage,
             estimated_cost_usd=estimated_cost,
         )
 
@@ -203,6 +237,15 @@ class QueryTokenUsage(BaseModel):
         description="Tokens used to embed the query",
         ge=0,
     )
+    rerank_model: Optional[str] = Field(
+        default=None,
+        description="Model ID used for reranking (null if rerank not used)",
+    )
+    rerank_search_units: int = Field(
+        default=0,
+        description="Search units billed by rerank API (Cohere billing metric)",
+        ge=0,
+    )
 
     @classmethod
     def from_token_tracker(cls, token_tracker) -> "QueryTokenUsage":
@@ -216,6 +259,7 @@ class QueryTokenUsage(BaseModel):
         """
         llm_data = token_tracker.get_llm_usage()
         embedding_data = token_tracker.get_embedding_usage()
+        rerank_data = token_tracker.get_rerank_usage()
 
         return cls(
             llm_model=llm_data.get("model"),
@@ -223,6 +267,8 @@ class QueryTokenUsage(BaseModel):
             llm_output_tokens=llm_data.get("completion_tokens", 0),
             embedding_model=embedding_data.get("model"),
             embedding_tokens=embedding_data.get("total_tokens", 0),
+            rerank_model=rerank_data.get("model"),
+            rerank_search_units=rerank_data.get("search_units", 0),
         )
 
 
