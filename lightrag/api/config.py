@@ -450,6 +450,12 @@ def parse_args() -> argparse.Namespace:
         "EMBEDDING_TOKEN_LIMIT", None, int, special_none=True
     )
 
+    # File upload size limit (in bytes, None for unlimited)
+    # Default: 100MB (104857600 bytes)
+    args.max_upload_size = get_env_value(
+        "MAX_UPLOAD_SIZE", 104857600, int, special_none=True
+    )
+
     ollama_server_infos.LIGHTRAG_NAME = args.simulated_model_name
     ollama_server_infos.LIGHTRAG_TAG = args.simulated_model_tag
 

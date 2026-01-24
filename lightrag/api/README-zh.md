@@ -58,6 +58,7 @@ LightRAG 需要同时集成 LLM（大型语言模型）和嵌入模型以有效�
 * openai 或 openai 兼容
 * azure_openai
 * aws_bedrock
+* gemini
 
 建议使用环境变量来配置 LightRAG 服务器。项目根目录中有一个名为 `env.example` 的示例环境变量文件。请将此文件复制到启动目录并重命名为 `.env`。之后，您可以在 `.env` 文件中修改与 LLM 和嵌入模型相关的参数。需要注意的是，LightRAG 服务器每次启动时都会将 `.env` 中的环境变量加载到系统环境变量中。**LightRAG 服务器会优先使用系统环境变量中的设置**。
 
@@ -79,6 +80,8 @@ EMBEDDING_MODEL=bge-m3:latest
 EMBEDDING_DIM=1024
 # EMBEDDING_BINDING_API_KEY=your_api_key
 ```
+
+> 如果改为使用 Google Gemini, 设置 `LLM_BINDING=gemini`, 选择模型 `LLM_MODEL=gemini-flash-latest`, 并设置访问密钥 `LLM_BINDING_API_KEY` (或 `GEMINI_API_KEY`).
 
 * Ollama LLM + Ollama 嵌入
 
@@ -112,6 +115,7 @@ lightrag-server
 ```
 lightrag-gunicorn --workers 4
 ```
+
 启动LightRAG的时候，当前工作目录必须含有`.env`配置文件。**要求将.env文件置于启动目录中是经过特意设计的**。 这样做的目的是支持用户同时启动多个LightRAG实例，并为不同实例配置不同的.env文件。**修改.env文件后，您需要重新打开终端以使新设置生效**。 这是因为每次启动时，LightRAG Server会将.env文件中的环境变量加载至系统环境变量，且系统环境变量的设置具有更高优先级。
 
 启动时可以通过命令行参数覆盖`.env`文件中的配置。常用的命令行参数包括：
@@ -127,17 +131,83 @@ lightrag-gunicorn --workers 4
 ### 使用 Docker 启动 LightRAG 服务器
 
 使用 Docker Compose 是部署和运行 LightRAG Server 最便捷的方式。
+
 - 创建一个项目目录。
 - 将 LightRAG 仓库中的 `docker-compose.yml` 文件复制到您的项目目录中。
 - 准备 `.env` 文件：复制示例文件 [`env.example`](https://ai.znipower.com:5013/c/env.example) 创建自定义的 `.env` 文件，并根据您的具体需求配置 LLM 和嵌入参数。
-
-* 通过以下命令启动 LightRAG 服务器：
+- 通过以下命令启动 LightRAG 服务器：
 
 ```shell
 docker compose up
 # 如果希望启动后让程序退到后台运行，需要在命令的最后添加 -d 参数
 ```
+
 > 可以通过以下链接获取官方的docker compose文件：[docker-compose.yml]( https://raw.githubusercontent.com/HKUDS/LightRAG/refs/heads/main/docker-compose.yml) 。如需获取LightRAG的历史版本镜像，可以访问以下链接: [LightRAG Docker Images]( https://github.com/HKUDS/LightRAG/pkgs/container/lightrag). 如需获取更多关于docker部署的信息，请参阅 [DockerDeployment.md](./../../docs/DockerDeployment.md).
+
+### Nginx 反向代理配置
+
+在 LightRAG 服务器前使用 Nginx 作为反向代理时，需要为 `/documents/upload` 端点配置 `client_max_body_size` 以处理大文件上传。如果不进行此配置，Nginx 将拒绝大于 1MB（默认限制）的文件，并在请求到达 LightRAG 之前返回 `413 Request Entity Too Large` 错误。
+
+**推荐配置：**
+
+```nginx
+server {
+    listen 80;
+    server_name your-domain.com;
+
+    # 全局默认：8MB 用于 LLM 长上下文查询
+    client_max_body_size 8M;
+
+    # 上传端点：100MB 用于大文件上传
+    location /documents/upload {
+        client_max_body_size 100M;
+
+        proxy_pass http://localhost:9621;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # 大文件上传需要更长超时时间
+        proxy_read_timeout 300s;
+        proxy_send_timeout 300s;
+    }
+
+    # 流式端点：LLM 响应流式传输
+    location ~ ^/(query/stream|api/chat|api/generate) {
+        gzip off;  # 禁用流式响应的压缩
+
+        proxy_pass http://localhost:9621;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # LLM 生成需要较长超时
+        proxy_read_timeout 300s;
+    }
+
+    # 其他端点
+    location / {
+        proxy_pass http://localhost:9621;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+```
+
+**关键要点：**
+
+1. **全局限制（8MB）**：足以处理具有长对话历史和上下文的 LLM 查询（128K tokens ≈ 512KB + JSON 开销）。
+2. **上传端点（100MB）**：必须匹配或超过 `.env` 文件中的 `MAX_UPLOAD_SIZE`。默认 `MAX_UPLOAD_SIZE` 为 100MB。
+3. **流式端点**：为流式端点禁用 gzip 压缩（`gzip off`）以确保实时响应传输。LightRAG 自动设置 `X-Accel-Buffering: no` 头以禁用响应缓冲。
+4. **超时设置**：大文件上传和 LLM 生成需要更长的超时时间；相应调整 `proxy_read_timeout` 和 `proxy_send_timeout`。
+5. **大小验证层**：
+   - Nginx 首先验证 `Content-Length` 头
+   - LightRAG 在上传过程中执行流式验证
+   - 在两层设置适当的限制可确保更好的错误消息和安全性
 
 ### 离线部署
 
@@ -201,6 +271,7 @@ WorkingDirectory=/home/netman/lightrag-xyj
 # ExecStart=/home/netman/lightrag-xyj/venv/bin/lightrag-server
 ExecStart=/home/netman/lightrag-xyj/venv/bin/lightrag-gunicorn
 ```
+
 > ExecStart命令必须是 lightrag-gunicorn 或 lightrag-server 中的一个，不能使用其它脚本包裹它们。因为停止服务必须要求主进程必须是这两个进程。
 
 安装 LightRAG 服务。如果您的系统是 Ubuntu，以下命令将生效：
@@ -468,6 +539,59 @@ RERANK_BINDING_API_KEY=your_rerank_api_key_here
 RERANK_BY_DEFAULT=False
 ```
 
+### 在参考文件中包含文本块内容
+
+默认情况下 `/query` and `/query/stream` 端点在返回引用内容仅包括 `reference_id` 和 `file_path`. 为了评估、调试或引用的需要，你可以要求在返回的引用内容包括实际检索到的文本块内容.
+
+参数 `include_chunk_content` (默认值: `false`) 将控制返回的引用内容总是否包含召回文本块中的原文内容。这对于一下情形是非常有用的:
+
+- **RAG 评估**: 类似 RAGAS 这一类评估系统的工作需要获取到召回的原文才能工作
+- **Debugging**: 检查和验证用于生成答案到底使用了哪些原文
+- **Citation Display**: 向用户展现回答应用了哪些原文
+- **Transparency**: 为RAG检索提供一个可以观察的过程
+
+**重要**: `content` 字段是一个**字符串数组**，其中每个字符串代表来自同一文件的分块（chunk）。由于单个文件可能对应多个分块，因此内容以列表形式返回，以保留分块边界。
+
+**API请求示例:**
+
+```json
+{
+  "query": "What is LightRAG?",
+  "mode": "mix",
+  "include_references": true,
+  "include_chunk_content": true
+}
+```
+
+**响应示例(含文本块内容):**
+
+```json
+{
+  "response": "LightRAG is a graph-based RAG system...",
+  "references": [
+    {
+      "reference_id": "1",
+      "file_path": "/documents/intro.md",
+      "content": [
+        "LightRAG is a retrieval-augmented generation system that combines knowledge graphs with vector similarity search...",
+        "The system uses a dual-indexing approach with both vector embeddings and graph structures for enhanced retrieval..."
+      ]
+    },
+    {
+      "reference_id": "2",
+      "file_path": "/documents/features.md",
+      "content": [
+        "The system provides multiple query modes including local, global, hybrid, and mix modes..."
+      ]
+    }
+  ]
+}
+```
+
+**说明**:
+- 此参数仅用于配合 `include_references=true` 参数工作. 如果没有包含引用参数，`include_chunk_content=true` 设置是不会生效的.
+- **破坏性变化**: 之前版本返回的 `content` 是一个链接在一起的字符串。现在返回的是一个字符串数组，每个字符串代表一个分块的内容。这是为了保留分块边界，避免在合并时丢失信息。如果需要将所有分块合并为一个字符串，可使用 `"\n\n".join(content)` 等方法。
+
 ### .env 文件示例
 
 ```bash
@@ -491,6 +615,7 @@ LLM_BINDING_HOST=https://api.openai.com/v1
 LLM_BINDING_API_KEY=your-api-key
 
 ### Embedding Configuration (Use valid host. For local services installed with docker, you can use host.docker.internal)
+# see also env.ollama-binding-options.example for fine tuning ollama
 EMBEDDING_MODEL=bge-m3:latest
 EMBEDDING_DIM=1024
 EMBEDDING_BINDING=ollama
@@ -504,75 +629,6 @@ EMBEDDING_BINDING_HOST=http://localhost:11434
 # LIGHTRAG_API_KEY=your-secure-api-key-here-123
 # WHITELIST_PATHS=/api/*
 # WHITELIST_PATHS=/health,/api/*
-```
-
-#### 使用 ollama 默认本地服务器作为 llm 和嵌入后端运行 Lightrag 服务器
-
-Ollama 是 llm 和嵌入的默认后端，因此默认情况下您可以不带参数运行 lightrag-server，将使用默认值。确保已安装 ollama 并且正在运行，且默认模型已安装在 ollama 上。
-
-```bash
-# 使用 ollama 运行 lightrag，llm 使用 mistral-nemo:latest，嵌入使用 bge-m3:latest
-lightrag-server
-
-# 使用认证密钥
-lightrag-server --key my-key
-```
-
-#### 使用 lollms 默认本地服务器作为 llm 和嵌入后端运行 Lightrag 服务器
-
-```bash
-# 使用 lollms 运行 lightrag，llm 使用 mistral-nemo:latest，嵌入使用 bge-m3:latest
-# 在 .env 或 config.ini 中配置 LLM_BINDING=lollms 和 EMBEDDING_BINDING=lollms
-lightrag-server
-
-# 使用认证密钥
-lightrag-server --key my-key
-```
-
-#### 使用 openai 服务器作为 llm 和嵌入后端运行 Lightrag 服务器
-
-```bash
-# 使用 openai 运行 lightrag，llm 使用 GPT-4o-mini，嵌入使用 text-embedding-3-small
-# 在 .env 或 config.ini 中配置：
-# LLM_BINDING=openai
-# LLM_MODEL=GPT-4o-mini
-# EMBEDDING_BINDING=openai
-# EMBEDDING_MODEL=text-embedding-3-small
-lightrag-server
-
-# 使用认证密钥
-lightrag-server --key my-key
-```
-
-#### 使用 azure openai 服务器作为 llm 和嵌入后端运行 Lightrag 服务器
-
-```bash
-# 使用 azure_openai 运行 lightrag
-# 在 .env 或 config.ini 中配置：
-# LLM_BINDING=azure_openai
-# LLM_MODEL=your-model
-# EMBEDDING_BINDING=azure_openai
-# EMBEDDING_MODEL=your-embedding-model
-lightrag-server
-
-# 使用认证密钥
-lightrag-server --key my-key
-```
-
-**重要说明：**
-- 对于 LoLLMs：确保指定的模型已安装在您的 LoLLMs 实例中
-- 对于 Ollama：确保指定的模型已安装在您的 Ollama 实例中
-- 对于 OpenAI：确保您已设置 OPENAI_API_KEY 环境变量
-- 对于 Azure OpenAI：按照先决条件部分所述构建和配置您的服务器
-
-要获取任何服务器的帮助，使用 --help 标志：
-```bash
-lightrag-server --help
-```
-
-注意：如果您不需要 API 功能，可以使用以下命令安装不带 API 支持的基本包：
-```bash
-pip install lightrag-hku
 ```
 
 ## 文档和块处理逻辑说明
@@ -612,6 +668,7 @@ LightRAG 中的文档处理流程有些复杂，分为两个主要阶段：提�
 LightRAG采用异步文档索引机制，便于前端监控和查询文档处理进度。用户通过指定端点上传文件或插入文本时，系统将返回唯一的跟踪ID，以便实时监控处理进度。
 
 **支持生成跟踪ID的API端点：**
+
 * `/documents/upload`
 * `/documents/text`
 * `/documents/texts`

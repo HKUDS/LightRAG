@@ -132,13 +132,10 @@ During startup, configurations in the `.env` file can be overridden by command-l
 
 Using Docker Compose is the most convenient way to deploy and run the LightRAG Server.
 
-* Create a project directory.
-
-* Copy the `docker-compose.yml` file from the LightRAG repository into your project directory.
-
-* Prepare the `.env` file: Duplicate the sample file [`env.example`](https://ai.znipower.com:5013/c/env.example)to create a customized `.env` file, and configure the LLM and embedding parameters according to your specific requirements.
-
-* Start the LightRAG Server with the following command:
+- Create a project directory.
+- Copy the `docker-compose.yml` file from the LightRAG repository into your project directory.
+- Prepare the `.env` file: Duplicate the sample file [`env.example`](https://ai.znipower.com:5013/c/env.example)to create a customized `.env` file, and configure the LLM and embedding parameters according to your specific requirements.
+- Start the LightRAG Server with the following command:
 
 ```shell
 docker compose up
@@ -146,6 +143,71 @@ docker compose up
 ```
 
 You can get the official docker compose file from here: [docker-compose.yml](https://raw.githubusercontent.com/HKUDS/LightRAG/refs/heads/main/docker-compose.yml). For historical versions of LightRAG docker images, visit this link: [LightRAG Docker Images](https://github.com/HKUDS/LightRAG/pkgs/container/lightrag). For more details about docker deployment, please refer to [DockerDeployment.md](./../../docs/DockerDeployment.md).
+
+### Nginx Reverse Proxy Configuration
+
+When using Nginx as a reverse proxy in front of LightRAG Server, you need to configure `client_max_body_size` for the `/documents/upload` endpoint to handle large file uploads. Without this configuration, Nginx will reject files larger than 1MB (the default limit) with a `413 Request Entity Too Large` error before the request reaches LightRAG.
+
+**Recommended Configuration:**
+
+```nginx
+server {
+    listen 80;
+    server_name your-domain.com;
+
+    # Global default: 8MB for LLM queries with long context
+    client_max_body_size 8M;
+
+    # Upload endpoint: 100MB for large file uploads
+    location /documents/upload {
+        client_max_body_size 100M;
+
+        proxy_pass http://localhost:9621;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # Increase timeouts for large file uploads
+        proxy_read_timeout 300s;
+        proxy_send_timeout 300s;
+    }
+
+    # Streaming endpoints: LLM response streaming
+    location ~ ^/(query/stream|api/chat|api/generate) {
+        gzip off;  # Disable compression for streaming responses
+
+        proxy_pass http://localhost:9621;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # Long timeout for LLM generation
+        proxy_read_timeout 300s;
+    }
+
+    # Other endpoints
+    location / {
+        proxy_pass http://localhost:9621;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+```
+
+**Key Points:**
+
+1. **Global Limit (8MB)**: Sufficient for LLM queries with long conversation history and context (128K tokens ≈ 512KB + JSON overhead).
+2. **Upload Endpoint (100MB)**: Must match or exceed `MAX_UPLOAD_SIZE` in your `.env` file. The default `MAX_UPLOAD_SIZE` is 100MB.
+3. **Streaming Endpoints**: Disable gzip compression (`gzip off`) for streaming endpoints to ensure real-time response delivery. LightRAG automatically sets `X-Accel-Buffering: no` header to disable response buffering.
+4. **Timeout Settings**: Large file uploads and LLM generation require longer timeouts; adjust `proxy_read_timeout` and `proxy_send_timeout` accordingly.
+5. **Size Validation Layers**:
+   - Nginx validates the `Content-Length` header first
+   - LightRAG performs streaming validation during upload
+   - Setting appropriate limits at both layers ensures better error messages and security
 
 ### Offline Deployment
 
@@ -208,7 +270,6 @@ Environment="PATH=/home/netman/lightrag-xyj/venv/bin"
 WorkingDirectory=/home/netman/lightrag-xyj
 # ExecStart=/home/netman/lightrag-xyj/venv/bin/lightrag-server
 ExecStart=/home/netman/lightrag-xyj/venv/bin/lightrag-gunicorn
-
 ```
 
 > The ExecStart command must be either `lightrag-gunicorn` or `lightrag-server`; no wrapper scripts are allowed. This is because service termination requires the main process to be one of these two executables.
@@ -568,10 +629,9 @@ EMBEDDING_BINDING_HOST=http://localhost:11434
 # LIGHTRAG_API_KEY=your-secure-api-key-here-123
 # WHITELIST_PATHS=/api/*
 # WHITELIST_PATHS=/health,/api/*
-
 ```
 
-## Document and Chunk  Processing Login Clarification
+## Document and Chunk Processing
 
 The document processing pipeline in LightRAG is somewhat complex and is divided into two primary stages: the Extraction stage (entity and relationship extraction) and the Merging stage (entity and relationship merging). There are two key parameters that control pipeline concurrency: the maximum number of files processed in parallel (MAX_PARALLEL_INSERT) and the maximum number of concurrent LLM requests (MAX_ASYNC). The workflow is described as follows:
 
