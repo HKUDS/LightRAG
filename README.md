@@ -111,7 +111,9 @@ The LightRAG Server is designed to provide Web UI and API support. The Web UI fa
 
 ```bash
 # Using uv (recommended)
-uv pip install "lightrag-hku[api]"
+uv tool install "lightrag-hku[api]"
+# or using a virtual environment
+uv add "lightrag-hku[api]"
 # Or using pip
 # pip install "lightrag-hku[api]"
 
