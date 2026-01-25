@@ -41,6 +41,9 @@ export default function SanitizeData() {
   // Temporary edits for relationships while modal is open
   const [relationshipEdits, setRelationshipEdits] = useState<Record<string, any>>({});  
 
+  // Unique entity types from selected entities
+  const [uniqueEntityTypes, setUniqueEntityTypes] = useState<string[]>([]);
+
   // Fetch entities
   useEffect(() => {
     const fetchEntities = async () => {
@@ -112,10 +115,23 @@ export default function SanitizeData() {
         }
       }
     };
+    document.addEventListener('keydown', handleEscKey);
+    return () => document.removeEventListener('keydown', handleEscKey);
+  }, [editDescriptionModalOpen, editRelationshipsModalOpen]);
 
-  document.addEventListener('keydown', handleEscKey);
-  return () => document.removeEventListener('keydown', handleEscKey);
-}, [editDescriptionModalOpen, editRelationshipsModalOpen]);
+  // Update unique entity types from selected entities' details
+  useEffect(() => {
+    const types = new Set<string>();
+
+    selectedEntities.forEach((name) => {
+      const type = entityDetails[name]?.type;
+      if (type) {
+        types.add(type);
+      }
+    });
+
+    setUniqueEntityTypes(Array.from(types).sort());
+  }, [selectedEntities, entityDetails]);
 
   // Pagination handlers
   const goToFirst = () => setCurrentPage(1);
@@ -576,16 +592,25 @@ export default function SanitizeData() {
               <div className="relative">
                 <input
                   type="text"
+                  list="entity-type-options"  // ← connects to datalist
                   className="w-full px-3 py-1.5 border border-gray-300 rounded-b-md text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
                   value={entityType}
                   onChange={(e) => setEntityType(e.target.value)}
                   placeholder="Type or filter..."
+                  autoComplete="off"
                 />
                 <div className="absolute inset-y-0 right-0 flex items-center px-2 pointer-events-none">
                   <svg className="w-3.5 h-3.5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
                   </svg>
                 </div>
+
+                {/* Dropdown suggestions */}
+                <datalist id="entity-type-options">
+                  {uniqueEntityTypes.map((type) => (
+                    <option key={type} value={type} />
+                  ))}
+                </datalist>
               </div>
             </div>
 
