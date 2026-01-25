@@ -2985,54 +2985,86 @@ async def consolidate_graph_entities(
             f"Post-processing consolidation: merging {len(consolidation_map)} duplicate entities"
         )
 
+        # Check if graph storage supports optimized consolidation (stored procedure)
+        use_stored_procedure = hasattr(knowledge_graph_inst, "consolidate_entity")
+        if use_stored_procedure:
+            logger.info("Using database stored procedure for graph consolidation (optimized)")
+
         for old_name, canonical_name in consolidation_map.items():
             try:
-                # Get the old node data
-                old_node = await knowledge_graph_inst.get_node(old_name)
-                if not old_node:
-                    continue
-
-                # Get or create the canonical node
-                canonical_node = await knowledge_graph_inst.get_node(canonical_name)
-
-                if canonical_node:
-                    # Merge descriptions
-                    old_desc = old_node.get("description", "")
-                    canonical_desc = canonical_node.get("description", "")
-                    if old_desc and old_desc not in canonical_desc:
-                        merged_desc = f"{canonical_desc}\n{old_desc}".strip()
-                        await knowledge_graph_inst.upsert_node(
-                            canonical_name,
-                            node_data={**canonical_node, "description": merged_desc}
-                        )
-
-                # Get edges connected to old node and reconnect to canonical
-                # get_node_edges returns list[tuple[str, str]] - (source_id, target_id)
-                old_edges = await knowledge_graph_inst.get_node_edges(old_name)
-                if old_edges:
-                    for src, tgt in old_edges:  # Unpack tuple directly
-                        # Get the actual edge data for the upsert
-                        edge_data = await knowledge_graph_inst.get_edge(src, tgt)
-                        if not edge_data:
-                            edge_data = {}
-
-                        # Determine new source and target
-                        new_src = canonical_name if src == old_name else src
-                        new_tgt = canonical_name if tgt == old_name else tgt
-
-                        # Skip self-loops that would be created
-                        if new_src == new_tgt:
+                # Use stored procedure if available (1 DB call vs ~7 calls)
+                if use_stored_procedure:
+                    result = await knowledge_graph_inst.consolidate_entity(
+                        old_name, canonical_name
+                    )
+                    if result.get("status") == "error":
+                        if result.get("message") == "stored_procedure_not_available":
+                            # Fall back to Python method for remaining entities
+                            logger.warning(
+                                "Stored procedure not available, falling back to Python method"
+                            )
+                            use_stored_procedure = False
+                        else:
+                            logger.warning(
+                                f"Consolidation error for '{old_name}': {result.get('message')}"
+                            )
                             continue
-
-                        # Upsert the redirected edge with its data
-                        await knowledge_graph_inst.upsert_edge(
-                            new_src,
-                            new_tgt,
-                            edge_data=edge_data
+                    elif result.get("status") == "skipped":
+                        # Node not found, continue to KV/VDB cleanup
+                        pass
+                    else:
+                        logger.debug(
+                            f"Consolidated '{old_name}' → '{canonical_name}': {result}"
                         )
 
-                # Delete the old node from graph
-                await knowledge_graph_inst.delete_node(old_name)
+                # Fall back to Python method if stored procedure not available
+                if not use_stored_procedure:
+                    # Get the old node data
+                    old_node = await knowledge_graph_inst.get_node(old_name)
+                    if not old_node:
+                        continue
+
+                    # Get or create the canonical node
+                    canonical_node = await knowledge_graph_inst.get_node(canonical_name)
+
+                    if canonical_node:
+                        # Merge descriptions
+                        old_desc = old_node.get("description", "")
+                        canonical_desc = canonical_node.get("description", "")
+                        if old_desc and old_desc not in canonical_desc:
+                            merged_desc = f"{canonical_desc}\n{old_desc}".strip()
+                            await knowledge_graph_inst.upsert_node(
+                                canonical_name,
+                                node_data={**canonical_node, "description": merged_desc}
+                            )
+
+                    # Get edges connected to old node and reconnect to canonical
+                    # get_node_edges returns list[tuple[str, str]] - (source_id, target_id)
+                    old_edges = await knowledge_graph_inst.get_node_edges(old_name)
+                    if old_edges:
+                        for src, tgt in old_edges:  # Unpack tuple directly
+                            # Get the actual edge data for the upsert
+                            edge_data = await knowledge_graph_inst.get_edge(src, tgt)
+                            if not edge_data:
+                                edge_data = {}
+
+                            # Determine new source and target
+                            new_src = canonical_name if src == old_name else src
+                            new_tgt = canonical_name if tgt == old_name else tgt
+
+                            # Skip self-loops that would be created
+                            if new_src == new_tgt:
+                                continue
+
+                            # Upsert the redirected edge with its data
+                            await knowledge_graph_inst.upsert_edge(
+                                new_src,
+                                new_tgt,
+                                edge_data=edge_data
+                            )
+
+                    # Delete the old node from graph
+                    await knowledge_graph_inst.delete_node(old_name)
 
                 # Update vector database - delete old entity
                 try:
