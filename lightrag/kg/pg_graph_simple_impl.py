@@ -30,7 +30,7 @@ GRAPH_SIMPLE_TABLES = {
             node_id VARCHAR(512) NOT NULL,
             properties JSONB NOT NULL DEFAULT '{}',
             create_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            update_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             CONSTRAINT LIGHTRAG_GRAPH_NODES_PK PRIMARY KEY (workspace, node_id)
         )""",
         "indexes": [
@@ -44,7 +44,7 @@ GRAPH_SIMPLE_TABLES = {
             target_id VARCHAR(512) NOT NULL,
             properties JSONB NOT NULL DEFAULT '{}',
             create_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            update_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             CONSTRAINT LIGHTRAG_GRAPH_EDGES_PK PRIMARY KEY (workspace, source_id, target_id)
         )""",
         "indexes": [
@@ -167,10 +167,10 @@ class PGGraphStorageSimple(BaseGraphStorage):
             return
 
         query = """
-            INSERT INTO LIGHTRAG_GRAPH_NODES (workspace, node_id, properties, update_time)
+            INSERT INTO LIGHTRAG_GRAPH_NODES (workspace, node_id, properties, updated_at)
             VALUES ($1, $2, $3, CURRENT_TIMESTAMP)
             ON CONFLICT (workspace, node_id)
-            DO UPDATE SET properties = $3, update_time = CURRENT_TIMESTAMP
+            DO UPDATE SET properties = $3, updated_at = CURRENT_TIMESTAMP
         """
 
         async with self.db.pool.acquire() as conn:
@@ -316,10 +316,10 @@ class PGGraphStorageSimple(BaseGraphStorage):
             return
 
         query = """
-            INSERT INTO LIGHTRAG_GRAPH_EDGES (workspace, source_id, target_id, properties, update_time)
+            INSERT INTO LIGHTRAG_GRAPH_EDGES (workspace, source_id, target_id, properties, updated_at)
             VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP)
             ON CONFLICT (workspace, source_id, target_id)
-            DO UPDATE SET properties = $4, update_time = CURRENT_TIMESTAMP
+            DO UPDATE SET properties = $4, updated_at = CURRENT_TIMESTAMP
         """
 
         async with self.db.pool.acquire() as conn:
@@ -712,7 +712,11 @@ class PGGraphStorageSimple(BaseGraphStorage):
         self, consolidation_map: dict[str, str]
     ) -> dict[str, dict[str, Any]]:
         """
-        Consolidate multiple entities using the stored procedure.
+        Consolidate multiple entities using the batch stored procedure.
+
+        This method uses a single database call to consolidate all entities,
+        which is much more efficient than individual calls (~10-20ms total
+        vs 100+ round-trips for large batches).
 
         Args:
             consolidation_map: Dict mapping old_name -> canonical_name
@@ -720,8 +724,77 @@ class PGGraphStorageSimple(BaseGraphStorage):
         Returns:
             Dict mapping old_name -> consolidation result
         """
+        if not consolidation_map:
+            return {}
+
+        # Build JSONB array for batch procedure
+        consolidations = [
+            {"old": old_name, "canonical": canonical_name}
+            for old_name, canonical_name in consolidation_map.items()
+        ]
+
+        try:
+            async with self.db.pool.acquire() as conn:
+                result = await conn.fetchval(
+                    "SELECT lightrag_consolidate_entities_batch($1, $2::jsonb)",
+                    self.workspace,
+                    json.dumps(consolidations),
+                )
+
+                # Parse result
+                if isinstance(result, str):
+                    batch_result = json.loads(result)
+                else:
+                    batch_result = dict(result) if result else {}
+
+                # Check for batch-level error
+                if batch_result.get("status") == "error":
+                    error_msg = batch_result.get("message", "Unknown error")
+                    if "lightrag_consolidate_entities_batch" in error_msg and "does not exist" in error_msg:
+                        logger.warning(
+                            f"[{self.workspace}] Batch stored procedure not available, "
+                            "falling back to individual calls"
+                        )
+                        return await self._consolidate_entities_fallback(consolidation_map)
+                    logger.error(f"[{self.workspace}] Batch consolidation error: {error_msg}")
+                    return {old: {"status": "error", "message": error_msg} for old in consolidation_map}
+
+                # Convert results array to dict keyed by old_name
+                results = {}
+                for item_result in batch_result.get("results", []):
+                    old_name = item_result.get("old_name")
+                    if old_name:
+                        results[old_name] = item_result
+
+                logger.info(
+                    f"[{self.workspace}] Batch consolidated {batch_result.get('processed', 0)} entities "
+                    f"in single DB call"
+                )
+
+                self._node_count_cache = None  # Invalidate cache
+                return results
+
+        except Exception as e:
+            error_msg = str(e)
+            if "lightrag_consolidate_entities_batch" in error_msg and "does not exist" in error_msg:
+                logger.warning(
+                    f"[{self.workspace}] Batch stored procedure not available, "
+                    "falling back to individual calls"
+                )
+                return await self._consolidate_entities_fallback(consolidation_map)
+            logger.error(f"[{self.workspace}] Batch consolidation error: {e}")
+            return {old: {"status": "error", "message": error_msg} for old in consolidation_map}
+
+    async def _consolidate_entities_fallback(
+        self, consolidation_map: dict[str, str]
+    ) -> dict[str, dict[str, Any]]:
+        """
+        Fallback method: consolidate entities one by one.
+
+        Used when batch stored procedure is not available.
+        """
         results = {}
         for old_name, canonical_name in consolidation_map.items():
             results[old_name] = await self.consolidate_entity(old_name, canonical_name)
-        self._node_count_cache = None  # Invalidate cache after consolidation
+        self._node_count_cache = None
         return results
