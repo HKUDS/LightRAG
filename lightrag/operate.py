@@ -2985,86 +2985,109 @@ async def consolidate_graph_entities(
             f"Post-processing consolidation: merging {len(consolidation_map)} duplicate entities"
         )
 
-        # Check if graph storage supports optimized consolidation (stored procedure)
-        use_stored_procedure = hasattr(knowledge_graph_inst, "consolidate_entity")
-        if use_stored_procedure:
-            logger.info("Using database stored procedure for graph consolidation (optimized)")
+        # Step 5a: Batch graph consolidation (1 DB call for all entities)
+        use_batch_procedure = hasattr(knowledge_graph_inst, "consolidate_entities_batch")
+        graph_results = {}
 
+        if use_batch_procedure:
+            logger.info(
+                f"Using batch stored procedure for graph consolidation "
+                f"({len(consolidation_map)} entities in 1 DB call)"
+            )
+            try:
+                graph_results = await knowledge_graph_inst.consolidate_entities_batch(
+                    consolidation_map
+                )
+                # Log summary
+                merged_count = sum(
+                    1 for r in graph_results.values() if r.get("status") == "merged"
+                )
+                renamed_count = sum(
+                    1 for r in graph_results.values() if r.get("status") == "renamed"
+                )
+                skipped_count = sum(
+                    1 for r in graph_results.values() if r.get("status") == "skipped"
+                )
+                logger.info(
+                    f"Graph consolidation complete: {merged_count} merged, "
+                    f"{renamed_count} renamed, {skipped_count} skipped"
+                )
+            except Exception as e:
+                logger.warning(f"Batch consolidation failed, falling back to individual: {e}")
+                use_batch_procedure = False
+
+        # Fallback: individual consolidation (if batch not available)
+        if not use_batch_procedure:
+            use_single_procedure = hasattr(knowledge_graph_inst, "consolidate_entity")
+            if use_single_procedure:
+                logger.info("Using single stored procedure for graph consolidation")
+
+            for old_name, canonical_name in consolidation_map.items():
+                try:
+                    if use_single_procedure:
+                        result = await knowledge_graph_inst.consolidate_entity(
+                            old_name, canonical_name
+                        )
+                        if result.get("status") == "error":
+                            if result.get("message") == "stored_procedure_not_available":
+                                logger.warning(
+                                    "Stored procedure not available, falling back to Python"
+                                )
+                                use_single_procedure = False
+                            else:
+                                logger.warning(
+                                    f"Consolidation error for '{old_name}': {result.get('message')}"
+                                )
+                                continue
+                        graph_results[old_name] = result
+
+                    # Python fallback method
+                    if not use_single_procedure:
+                        old_node = await knowledge_graph_inst.get_node(old_name)
+                        if not old_node:
+                            graph_results[old_name] = {"status": "skipped", "reason": "not_found"}
+                            continue
+
+                        canonical_node = await knowledge_graph_inst.get_node(canonical_name)
+
+                        if canonical_node:
+                            old_desc = old_node.get("description", "")
+                            canonical_desc = canonical_node.get("description", "")
+                            if old_desc and old_desc not in canonical_desc:
+                                merged_desc = f"{canonical_desc}\n{old_desc}".strip()
+                                await knowledge_graph_inst.upsert_node(
+                                    canonical_name,
+                                    node_data={**canonical_node, "description": merged_desc}
+                                )
+
+                        old_edges = await knowledge_graph_inst.get_node_edges(old_name)
+                        if old_edges:
+                            for src, tgt in old_edges:
+                                edge_data = await knowledge_graph_inst.get_edge(src, tgt)
+                                if not edge_data:
+                                    edge_data = {}
+                                new_src = canonical_name if src == old_name else src
+                                new_tgt = canonical_name if tgt == old_name else tgt
+                                if new_src == new_tgt:
+                                    continue
+                                await knowledge_graph_inst.upsert_edge(
+                                    new_src, new_tgt, edge_data=edge_data
+                                )
+
+                        await knowledge_graph_inst.delete_node(old_name)
+                        graph_results[old_name] = {"status": "merged"}
+
+                except Exception as e:
+                    logger.error(f"Graph consolidation failed for '{old_name}': {e}")
+                    graph_results[old_name] = {"status": "error", "message": str(e)}
+
+        # Step 5b: KV/VDB cleanup (per-entity, lightweight operations)
         for old_name, canonical_name in consolidation_map.items():
             try:
-                # Use stored procedure if available (1 DB call vs ~7 calls)
-                if use_stored_procedure:
-                    result = await knowledge_graph_inst.consolidate_entity(
-                        old_name, canonical_name
-                    )
-                    if result.get("status") == "error":
-                        if result.get("message") == "stored_procedure_not_available":
-                            # Fall back to Python method for remaining entities
-                            logger.warning(
-                                "Stored procedure not available, falling back to Python method"
-                            )
-                            use_stored_procedure = False
-                        else:
-                            logger.warning(
-                                f"Consolidation error for '{old_name}': {result.get('message')}"
-                            )
-                            continue
-                    elif result.get("status") == "skipped":
-                        # Node not found, continue to KV/VDB cleanup
-                        pass
-                    else:
-                        logger.debug(
-                            f"Consolidated '{old_name}' → '{canonical_name}': {result}"
-                        )
-
-                # Fall back to Python method if stored procedure not available
-                if not use_stored_procedure:
-                    # Get the old node data
-                    old_node = await knowledge_graph_inst.get_node(old_name)
-                    if not old_node:
-                        continue
-
-                    # Get or create the canonical node
-                    canonical_node = await knowledge_graph_inst.get_node(canonical_name)
-
-                    if canonical_node:
-                        # Merge descriptions
-                        old_desc = old_node.get("description", "")
-                        canonical_desc = canonical_node.get("description", "")
-                        if old_desc and old_desc not in canonical_desc:
-                            merged_desc = f"{canonical_desc}\n{old_desc}".strip()
-                            await knowledge_graph_inst.upsert_node(
-                                canonical_name,
-                                node_data={**canonical_node, "description": merged_desc}
-                            )
-
-                    # Get edges connected to old node and reconnect to canonical
-                    # get_node_edges returns list[tuple[str, str]] - (source_id, target_id)
-                    old_edges = await knowledge_graph_inst.get_node_edges(old_name)
-                    if old_edges:
-                        for src, tgt in old_edges:  # Unpack tuple directly
-                            # Get the actual edge data for the upsert
-                            edge_data = await knowledge_graph_inst.get_edge(src, tgt)
-                            if not edge_data:
-                                edge_data = {}
-
-                            # Determine new source and target
-                            new_src = canonical_name if src == old_name else src
-                            new_tgt = canonical_name if tgt == old_name else tgt
-
-                            # Skip self-loops that would be created
-                            if new_src == new_tgt:
-                                continue
-
-                            # Upsert the redirected edge with its data
-                            await knowledge_graph_inst.upsert_edge(
-                                new_src,
-                                new_tgt,
-                                edge_data=edge_data
-                            )
-
-                    # Delete the old node from graph
-                    await knowledge_graph_inst.delete_node(old_name)
+                # Skip if graph consolidation failed for this entity
+                result = graph_results.get(old_name, {})
+                if result.get("status") == "error":
+                    continue
 
                 # Update vector database - delete old entity
                 try:
