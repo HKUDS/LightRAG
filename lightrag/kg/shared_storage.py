@@ -1697,3 +1697,47 @@ def get_pipeline_status_lock(
     return get_namespace_lock(
         "pipeline_status", workspace=actual_workspace, enable_logging=enable_logging
     )
+
+
+def is_any_pipeline_busy() -> dict:
+    """
+    Check if any pipeline is currently busy across all workspaces on this instance.
+
+    This function is used for autoscaling readiness checks. When any pipeline
+    is busy, the instance should not be scaled down to avoid interrupting
+    ongoing document processing.
+
+    Returns:
+        dict: {
+            "busy": bool,  # True if any pipeline is busy
+            "busy_workspaces": list[str],  # List of workspace IDs with active pipelines
+        }
+    """
+    global _shared_dicts
+
+    if _shared_dicts is None:
+        return {"busy": False, "busy_workspaces": []}
+
+    busy_workspaces = []
+
+    # Iterate through all namespaces to find pipeline_status entries
+    for namespace_key in list(_shared_dicts.keys()):
+        # Check if this is a pipeline_status namespace
+        if namespace_key.endswith(":pipeline_status") or namespace_key == "pipeline_status":
+            try:
+                pipeline_data = _shared_dicts[namespace_key]
+                if pipeline_data.get("busy", False):
+                    # Extract workspace from namespace key
+                    if ":" in namespace_key:
+                        workspace_id = namespace_key.rsplit(":pipeline_status", 1)[0]
+                    else:
+                        workspace_id = "(default)"
+                    busy_workspaces.append(workspace_id)
+            except Exception:
+                # Ignore errors accessing individual namespaces
+                pass
+
+    return {
+        "busy": len(busy_workspaces) > 0,
+        "busy_workspaces": busy_workspaces,
+    }

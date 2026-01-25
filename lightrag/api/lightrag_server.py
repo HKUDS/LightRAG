@@ -67,6 +67,7 @@ from lightrag.kg.shared_storage import (
     # set_default_workspace,
     cleanup_keyed_lock,
     finalize_share_data,
+    is_any_pipeline_busy,
 )
 from fastapi.security import OAuth2PasswordRequestForm
 from lightrag.api.auth import auth_handler
@@ -1368,6 +1369,67 @@ def create_app(args):
         except Exception as e:
             logger.error(f"Error getting health status: {str(e)}")
             raise HTTPException(status_code=500, detail=str(e))
+
+    @app.get(
+        "/ready",
+        summary="Readiness check for autoscaling",
+        description=(
+            "Returns 200 if the instance is ready to accept new work, "
+            "503 if any pipeline is currently busy. Use this endpoint for "
+            "Render/Kubernetes readiness probes to prevent scale-down during "
+            "active document processing."
+        ),
+        responses={
+            200: {
+                "description": "Instance is ready (no active pipelines)",
+                "content": {
+                    "application/json": {
+                        "example": {
+                            "ready": True,
+                            "busy_workspaces": [],
+                        }
+                    }
+                },
+            },
+            503: {
+                "description": "Instance is busy (pipeline active)",
+                "content": {
+                    "application/json": {
+                        "example": {
+                            "ready": False,
+                            "busy_workspaces": ["workspace1", "workspace2"],
+                        }
+                    }
+                },
+            },
+        },
+    )
+    async def get_readiness():
+        """
+        Readiness probe for autoscaling platforms.
+
+        Returns 200 when ready to accept new work, 503 when busy.
+        Configure your autoscaler (Render, K8s) to use this endpoint
+        to prevent scale-down during active pipelines.
+        """
+        pipeline_status = is_any_pipeline_busy()
+
+        if pipeline_status["busy"]:
+            logger.debug(
+                f"Readiness check: NOT READY - busy workspaces: {pipeline_status['busy_workspaces']}"
+            )
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "ready": False,
+                    "busy_workspaces": pipeline_status["busy_workspaces"],
+                },
+            )
+
+        return {
+            "ready": True,
+            "busy_workspaces": [],
+        }
 
     # Custom StaticFiles class for smart caching
     class SmartStaticFiles(StaticFiles):  # Renamed from NoCacheStaticFiles
