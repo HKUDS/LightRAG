@@ -152,17 +152,38 @@ class PGGraphStorageSimple(BaseGraphStorage):
 
     async def upsert_node(self, node_id: str, node_data: dict[str, str]) -> None:
         """Insert or update a node."""
+        # Use batch method for single node to maintain consistency
+        await self.upsert_nodes_batch({node_id: node_data})
+
+    async def upsert_nodes_batch(self, nodes: dict[str, dict[str, str]]) -> None:
+        """Insert or update multiple nodes in a single transaction.
+
+        This is much more efficient than individual upserts for bulk operations.
+
+        Args:
+            nodes: Dictionary mapping node_id to node properties
+        """
+        if not nodes:
+            return
+
         query = """
             INSERT INTO LIGHTRAG_GRAPH_NODES (workspace, node_id, properties, update_time)
             VALUES ($1, $2, $3, CURRENT_TIMESTAMP)
             ON CONFLICT (workspace, node_id)
             DO UPDATE SET properties = $3, update_time = CURRENT_TIMESTAMP
         """
-        props_json = json.dumps(node_data, ensure_ascii=False)
+
         async with self.db.pool.acquire() as conn:
-            await conn.execute(query, self.workspace, node_id, props_json)
+            # Use executemany for batch insert
+            records = [
+                (self.workspace, node_id, json.dumps(node_data, ensure_ascii=False))
+                for node_id, node_data in nodes.items()
+            ]
+            await conn.executemany(query, records)
+
         # Invalidate cache
         self._node_count_cache = None
+        logger.debug(f"[{self.workspace}] Batch upserted {len(nodes)} nodes")
 
     async def delete_node(self, node_id: str) -> None:
         """Delete a node and its connected edges."""
@@ -278,9 +299,21 @@ class PGGraphStorageSimple(BaseGraphStorage):
         self, source_node_id: str, target_node_id: str, edge_data: dict[str, str]
     ) -> None:
         """Insert or update an edge."""
-        # Normalize edge direction (alphabetically) for consistency
-        if source_node_id > target_node_id:
-            source_node_id, target_node_id = target_node_id, source_node_id
+        # Use batch method for single edge to maintain consistency
+        await self.upsert_edges_batch([(source_node_id, target_node_id, edge_data)])
+
+    async def upsert_edges_batch(
+        self, edges: list[tuple[str, str, dict[str, str]]]
+    ) -> None:
+        """Insert or update multiple edges in a single transaction.
+
+        This is much more efficient than individual upserts for bulk operations.
+
+        Args:
+            edges: List of (source_id, target_id, edge_data) tuples
+        """
+        if not edges:
+            return
 
         query = """
             INSERT INTO LIGHTRAG_GRAPH_EDGES (workspace, source_id, target_id, properties, update_time)
@@ -288,11 +321,20 @@ class PGGraphStorageSimple(BaseGraphStorage):
             ON CONFLICT (workspace, source_id, target_id)
             DO UPDATE SET properties = $4, update_time = CURRENT_TIMESTAMP
         """
-        props_json = json.dumps(edge_data, ensure_ascii=False)
+
         async with self.db.pool.acquire() as conn:
-            await conn.execute(
-                query, self.workspace, source_node_id, target_node_id, props_json
-            )
+            # Normalize edge direction and prepare records
+            records = []
+            for source_id, target_id, edge_data in edges:
+                # Normalize direction (alphabetically) for consistency
+                if source_id > target_id:
+                    source_id, target_id = target_id, source_id
+                records.append(
+                    (self.workspace, source_id, target_id, json.dumps(edge_data, ensure_ascii=False))
+                )
+            await conn.executemany(query, records)
+
+        logger.debug(f"[{self.workspace}] Batch upserted {len(edges)} edges")
 
     async def remove_edges(self, edges: list[tuple[str, str]]) -> None:
         """Delete multiple edges."""
