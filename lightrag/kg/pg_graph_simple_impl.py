@@ -658,3 +658,70 @@ class PGGraphStorageSimple(BaseGraphStorage):
         except Exception as e:
             logger.error(f"[{self.workspace}] Error dropping graph: {e}")
             return {"status": "error", "message": str(e)}
+
+    # ========== Entity Consolidation (Stored Procedure) ==========
+
+    async def consolidate_entity(
+        self, old_name: str, canonical_name: str
+    ) -> dict[str, Any]:
+        """
+        Consolidate two entities using the database stored procedure.
+
+        This is much more efficient than doing multiple round-trips:
+        - Merges descriptions from old_name into canonical_name
+        - Redirects all edges from old_name to canonical_name
+        - Deletes the old node
+
+        Args:
+            old_name: The entity name to be merged (will be deleted)
+            canonical_name: The target canonical name (will be kept)
+
+        Returns:
+            dict with status and details:
+            - {"status": "skipped", "reason": "old_node_not_found"}
+            - {"status": "renamed", "old_name": ..., "new_name": ...}
+            - {"status": "merged", "old_name": ..., "canonical_name": ...,
+               "edges_redirected": N, "edges_deleted": N}
+            - {"status": "error", "message": ...} if stored proc not available
+        """
+        try:
+            async with self.db.pool.acquire() as conn:
+                result = await conn.fetchval(
+                    "SELECT lightrag_consolidate_entity($1, $2, $3)",
+                    self.workspace,
+                    old_name,
+                    canonical_name,
+                )
+                # Result is JSONB, asyncpg returns it as dict or str
+                if isinstance(result, str):
+                    return json.loads(result)
+                return dict(result) if result else {"status": "error", "message": "No result"}
+        except Exception as e:
+            # Stored procedure might not exist - fall back gracefully
+            error_msg = str(e)
+            if "lightrag_consolidate_entity" in error_msg and "does not exist" in error_msg:
+                logger.warning(
+                    f"[{self.workspace}] Stored procedure not available, "
+                    "consolidation will use fallback method"
+                )
+                return {"status": "error", "message": "stored_procedure_not_available"}
+            logger.error(f"[{self.workspace}] Error consolidating entity: {e}")
+            return {"status": "error", "message": error_msg}
+
+    async def consolidate_entities_batch(
+        self, consolidation_map: dict[str, str]
+    ) -> dict[str, dict[str, Any]]:
+        """
+        Consolidate multiple entities using the stored procedure.
+
+        Args:
+            consolidation_map: Dict mapping old_name -> canonical_name
+
+        Returns:
+            Dict mapping old_name -> consolidation result
+        """
+        results = {}
+        for old_name, canonical_name in consolidation_map.items():
+            results[old_name] = await self.consolidate_entity(old_name, canonical_name)
+        self._node_count_cache = None  # Invalidate cache after consolidation
+        return results
