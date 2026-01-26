@@ -3120,7 +3120,7 @@ async def consolidate_graph_entities(
                                     canonical_name: old_chunks
                                 })
                             # Delete old mapping
-                            await entity_chunks_storage.delete_by_ids([old_name])
+                            await entity_chunks_storage.delete([old_name])
                     except Exception as e:
                         logger.warning(f"Could not update entity_chunks for '{old_name}': {e}")
 
