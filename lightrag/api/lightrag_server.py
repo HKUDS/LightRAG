@@ -361,8 +361,9 @@ def create_app(args):
     doc_manager = DocumentManager(args.input_dir, workspace=args.workspace)
 
     # Graceful shutdown timeout (in seconds) - configurable via env var
-    # Default: 900 seconds (15 minutes) for long document processing
-    GRACEFUL_SHUTDOWN_TIMEOUT = int(os.getenv("LIGHTRAG_GRACEFUL_SHUTDOWN_TIMEOUT", "900"))
+    # Default: 300 seconds (5 minutes) - matches Render's maximum grace period
+    # Note: Render maxShutdownDelaySeconds caps at 300s, so higher values are useless on Render
+    GRACEFUL_SHUTDOWN_TIMEOUT = int(os.getenv("LIGHTRAG_GRACEFUL_SHUTDOWN_TIMEOUT", "300"))
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
