@@ -134,3 +134,11 @@ class QdrantMigrationError(Exception):
     def __init__(self, message: str):
         super().__init__(message)
         self.message = message
+
+
+class PoolNotAvailableError(RuntimeError):
+    """Raised when the database connection pool is not available and cannot be recovered."""
+
+    def __init__(self, message: str = "Database connection pool is not available"):
+        super().__init__(message)
+        self.message = message
