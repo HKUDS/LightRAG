@@ -76,21 +76,35 @@ class PGGraphStorageSimple(BaseGraphStorage):
     async def _acquire_connection(self):
         """Safely acquire a database connection, ensuring pool is available.
 
-        This method handles the case where the pool may have been closed during
-        heavy operations (like indexing) and needs to be recreated.
+        This method handles two failure scenarios:
+        1. self.db is None - get a new client from ClientManager
+        2. self.db.pool is None/closed - call _ensure_pool() to recreate
 
         Raises:
-            PoolNotAvailableError: If db is None and cannot be recovered.
+            PoolNotAvailableError: If recovery fails after all attempts.
 
         Yields:
             asyncpg.Connection: An active database connection.
         """
+        # Recover db client if None
         if self.db is None:
-            logger.error(f"[{getattr(self, 'workspace', 'unknown')}] Database client is None")
-            raise PoolNotAvailableError("Database client is not initialized")
+            workspace = getattr(self, "workspace", "unknown")
+            logger.warning(f"[{workspace}] Database client is None, attempting recovery...")
+            try:
+                self.db = await ClientManager.get_client()
+                if self.db and self.db.workspace:
+                    self.workspace = self.db.workspace
+                logger.info(f"[{self.workspace}] Database client recovered successfully")
+            except Exception as e:
+                logger.error(f"[{workspace}] Failed to recover database client: {e}")
+                raise PoolNotAvailableError(f"Failed to recover database client: {e}")
 
         # Ensure pool is available (recreate if closed)
-        await self.db._ensure_pool()
+        try:
+            await self.db._ensure_pool()
+        except Exception as e:
+            logger.error(f"[{self.workspace}] Failed to ensure pool: {e}")
+            raise PoolNotAvailableError(f"Failed to ensure pool: {e}")
 
         if self.db.pool is None:
             logger.error(f"[{self.workspace}] Pool is still None after _ensure_pool")
