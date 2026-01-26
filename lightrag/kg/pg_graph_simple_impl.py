@@ -12,10 +12,12 @@ Tables:
 """
 
 import json
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any, final
 
 from lightrag.base import BaseGraphStorage
+from lightrag.exceptions import PoolNotAvailableError
 from lightrag.types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
 from lightrag.utils import logger
 
@@ -70,6 +72,33 @@ class PGGraphStorageSimple(BaseGraphStorage):
         self.db: PostgreSQLDB | None = None
         self._node_count_cache: int | None = None
 
+    @asynccontextmanager
+    async def _acquire_connection(self):
+        """Safely acquire a database connection, ensuring pool is available.
+
+        This method handles the case where the pool may have been closed during
+        heavy operations (like indexing) and needs to be recreated.
+
+        Raises:
+            PoolNotAvailableError: If db is None and cannot be recovered.
+
+        Yields:
+            asyncpg.Connection: An active database connection.
+        """
+        if self.db is None:
+            logger.error(f"[{getattr(self, 'workspace', 'unknown')}] Database client is None")
+            raise PoolNotAvailableError("Database client is not initialized")
+
+        # Ensure pool is available (recreate if closed)
+        await self.db._ensure_pool()
+
+        if self.db.pool is None:
+            logger.error(f"[{self.workspace}] Pool is still None after _ensure_pool")
+            raise PoolNotAvailableError("Failed to initialize connection pool")
+
+        async with self.db.pool.acquire() as conn:
+            yield conn
+
     async def initialize(self):
         """Initialize the storage and create tables if needed."""
         async with get_data_init_lock():
@@ -87,7 +116,7 @@ class PGGraphStorageSimple(BaseGraphStorage):
             )
 
             # Create tables and indexes
-            async with self.db.pool.acquire() as conn:
+            async with self._acquire_connection() as conn:
                 for table_name, table_def in GRAPH_SIMPLE_TABLES.items():
                     try:
                         await conn.execute(table_def["ddl"])
@@ -121,7 +150,7 @@ class PGGraphStorageSimple(BaseGraphStorage):
             WHERE workspace = $1 AND node_id = $2
             LIMIT 1
         """
-        async with self.db.pool.acquire() as conn:
+        async with self._acquire_connection() as conn:
             result = await conn.fetchval(query, self.workspace, node_id)
             return result is not None
 
@@ -131,7 +160,7 @@ class PGGraphStorageSimple(BaseGraphStorage):
             SELECT properties FROM LIGHTRAG_GRAPH_NODES
             WHERE workspace = $1 AND node_id = $2
         """
-        async with self.db.pool.acquire() as conn:
+        async with self._acquire_connection() as conn:
             row = await conn.fetchrow(query, self.workspace, node_id)
             if row:
                 props = row["properties"]
@@ -146,7 +175,7 @@ class PGGraphStorageSimple(BaseGraphStorage):
             SELECT COUNT(*) FROM LIGHTRAG_GRAPH_EDGES
             WHERE workspace = $1 AND (source_id = $2 OR target_id = $2)
         """
-        async with self.db.pool.acquire() as conn:
+        async with self._acquire_connection() as conn:
             count = await conn.fetchval(query, self.workspace, node_id)
             return count or 0
 
@@ -173,7 +202,7 @@ class PGGraphStorageSimple(BaseGraphStorage):
             DO UPDATE SET properties = $3, updated_at = CURRENT_TIMESTAMP
         """
 
-        async with self.db.pool.acquire() as conn:
+        async with self._acquire_connection() as conn:
             # Use executemany for batch insert
             records = [
                 (self.workspace, node_id, json.dumps(node_data, ensure_ascii=False))
@@ -187,7 +216,7 @@ class PGGraphStorageSimple(BaseGraphStorage):
 
     async def delete_node(self, node_id: str) -> None:
         """Delete a node and its connected edges."""
-        async with self.db.pool.acquire() as conn:
+        async with self._acquire_connection() as conn:
             async with conn.transaction():
                 # Delete edges first
                 await conn.execute(
@@ -214,7 +243,7 @@ class PGGraphStorageSimple(BaseGraphStorage):
         """Delete multiple nodes and their edges."""
         if not nodes:
             return
-        async with self.db.pool.acquire() as conn:
+        async with self._acquire_connection() as conn:
             async with conn.transaction():
                 # Delete edges
                 await conn.execute(
@@ -248,7 +277,7 @@ class PGGraphStorageSimple(BaseGraphStorage):
                    OR (source_id = $3 AND target_id = $2))
             LIMIT 1
         """
-        async with self.db.pool.acquire() as conn:
+        async with self._acquire_connection() as conn:
             result = await conn.fetchval(
                 query, self.workspace, source_node_id, target_node_id
             )
@@ -265,7 +294,7 @@ class PGGraphStorageSimple(BaseGraphStorage):
                    OR (source_id = $3 AND target_id = $2))
             LIMIT 1
         """
-        async with self.db.pool.acquire() as conn:
+        async with self._acquire_connection() as conn:
             row = await conn.fetchrow(
                 query, self.workspace, source_node_id, target_node_id
             )
@@ -291,7 +320,7 @@ class PGGraphStorageSimple(BaseGraphStorage):
             SELECT source_id, target_id FROM LIGHTRAG_GRAPH_EDGES
             WHERE workspace = $1 AND (source_id = $2 OR target_id = $2)
         """
-        async with self.db.pool.acquire() as conn:
+        async with self._acquire_connection() as conn:
             rows = await conn.fetch(query, self.workspace, source_node_id)
             return [(row["source_id"], row["target_id"]) for row in rows]
 
@@ -322,7 +351,7 @@ class PGGraphStorageSimple(BaseGraphStorage):
             DO UPDATE SET properties = $4, updated_at = CURRENT_TIMESTAMP
         """
 
-        async with self.db.pool.acquire() as conn:
+        async with self._acquire_connection() as conn:
             # Normalize edge direction and prepare records
             records = []
             for source_id, target_id, edge_data in edges:
@@ -341,7 +370,7 @@ class PGGraphStorageSimple(BaseGraphStorage):
         if not edges:
             return
 
-        async with self.db.pool.acquire() as conn:
+        async with self._acquire_connection() as conn:
             for source_id, target_id in edges:
                 # Try both directions since graph is undirected
                 await conn.execute(
@@ -368,7 +397,7 @@ class PGGraphStorageSimple(BaseGraphStorage):
             SELECT node_id, properties FROM LIGHTRAG_GRAPH_NODES
             WHERE workspace = $1 AND node_id = ANY($2)
         """
-        async with self.db.pool.acquire() as conn:
+        async with self._acquire_connection() as conn:
             rows = await conn.fetch(query, self.workspace, node_ids)
             result = {}
             for row in rows:
@@ -395,7 +424,7 @@ class PGGraphStorageSimple(BaseGraphStorage):
             ) edges
             GROUP BY node_id
         """
-        async with self.db.pool.acquire() as conn:
+        async with self._acquire_connection() as conn:
             rows = await conn.fetch(query, self.workspace, node_ids)
             result = {nid: 0 for nid in node_ids}
             for row in rows:
@@ -410,7 +439,7 @@ class PGGraphStorageSimple(BaseGraphStorage):
             return {}
 
         result = {}
-        async with self.db.pool.acquire() as conn:
+        async with self._acquire_connection() as conn:
             for pair in pairs:
                 src_id = pair["src"]
                 tgt_id = pair["tgt"]
@@ -428,7 +457,7 @@ class PGGraphStorageSimple(BaseGraphStorage):
             WHERE workspace = $1
             ORDER BY node_id
         """
-        async with self.db.pool.acquire() as conn:
+        async with self._acquire_connection() as conn:
             rows = await conn.fetch(query, self.workspace)
             return [row["node_id"] for row in rows]
 
@@ -451,7 +480,7 @@ class PGGraphStorageSimple(BaseGraphStorage):
             ORDER BY COALESCE(d.degree, 0) DESC
             LIMIT $2
         """
-        async with self.db.pool.acquire() as conn:
+        async with self._acquire_connection() as conn:
             rows = await conn.fetch(query, self.workspace, limit)
             return [row["node_id"] for row in rows]
 
@@ -464,7 +493,7 @@ class PGGraphStorageSimple(BaseGraphStorage):
             LIMIT $3
         """
         pattern = f"%{query_str}%"
-        async with self.db.pool.acquire() as conn:
+        async with self._acquire_connection() as conn:
             rows = await conn.fetch(query, self.workspace, pattern, limit)
             return [row["node_id"] for row in rows]
 
@@ -474,7 +503,7 @@ class PGGraphStorageSimple(BaseGraphStorage):
             SELECT node_id, properties FROM LIGHTRAG_GRAPH_NODES
             WHERE workspace = $1
         """
-        async with self.db.pool.acquire() as conn:
+        async with self._acquire_connection() as conn:
             rows = await conn.fetch(query, self.workspace)
             result = []
             for row in rows:
@@ -493,7 +522,7 @@ class PGGraphStorageSimple(BaseGraphStorage):
             SELECT source_id, target_id, properties FROM LIGHTRAG_GRAPH_EDGES
             WHERE workspace = $1
         """
-        async with self.db.pool.acquire() as conn:
+        async with self._acquire_connection() as conn:
             rows = await conn.fetch(query, self.workspace)
             result = []
             for row in rows:
@@ -516,7 +545,7 @@ class PGGraphStorageSimple(BaseGraphStorage):
             SELECT COUNT(*) FROM LIGHTRAG_GRAPH_NODES
             WHERE workspace = $1
         """
-        async with self.db.pool.acquire() as conn:
+        async with self._acquire_connection() as conn:
             count = await conn.fetchval(query, self.workspace)
             self._node_count_cache = count or 0
             return self._node_count_cache
@@ -565,7 +594,7 @@ class PGGraphStorageSimple(BaseGraphStorage):
 
         The stored procedure performs BFS server-side, eliminating N+1 queries.
         """
-        async with self.db.pool.acquire() as conn:
+        async with self._acquire_connection() as conn:
             result = await conn.fetchval(
                 "SELECT lightrag_get_knowledge_graph($1, $2, $3, $4)",
                 self.workspace,
@@ -632,7 +661,7 @@ class PGGraphStorageSimple(BaseGraphStorage):
         edges_dict: dict[str, KnowledgeGraphEdge] = {}  # Use dict to deduplicate edges
         is_truncated = False
 
-        async with self.db.pool.acquire() as conn:
+        async with self._acquire_connection() as conn:
             # Find starting nodes
             if node_label == "*":
                 start_query = """
@@ -756,7 +785,7 @@ class PGGraphStorageSimple(BaseGraphStorage):
     async def drop(self) -> dict[str, str]:
         """Drop all graph data for this workspace."""
         try:
-            async with self.db.pool.acquire() as conn:
+            async with self._acquire_connection() as conn:
                 async with conn.transaction():
                     await conn.execute(
                         "DELETE FROM LIGHTRAG_GRAPH_EDGES WHERE workspace = $1",
@@ -801,7 +830,7 @@ class PGGraphStorageSimple(BaseGraphStorage):
             - {"status": "error", "message": ...} if stored proc not available
         """
         try:
-            async with self.db.pool.acquire() as conn:
+            async with self._acquire_connection() as conn:
                 result = await conn.fetchval(
                     "SELECT lightrag_consolidate_entity($1, $2, $3)",
                     self.workspace,
@@ -850,7 +879,7 @@ class PGGraphStorageSimple(BaseGraphStorage):
         ]
 
         try:
-            async with self.db.pool.acquire() as conn:
+            async with self._acquire_connection() as conn:
                 result = await conn.fetchval(
                     "SELECT lightrag_consolidate_entities_batch($1, $2::jsonb)",
                     self.workspace,
