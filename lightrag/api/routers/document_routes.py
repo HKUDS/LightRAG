@@ -29,7 +29,7 @@ from lightrag.base import DeletionResult, DocProcessingStatus, DocStatus
 from lightrag.utils import generate_track_id
 from lightrag.operate import rebuild_knowledge_from_chunks
 from lightrag.api.utils_api import get_combined_auth_dependency
-from lightrag.api.workspace_manager import get_rag
+from lightrag.api.workspace_manager import get_rag, get_workspace_pool
 from ..config import global_args
 
 
@@ -355,6 +355,69 @@ class ClearCacheResponse(BaseModel):
             "example": {
                 "status": "success",
                 "message": "Successfully cleared cache for modes: ['default', 'naive']",
+            }
+        }
+
+
+class ClearQueueRequest(BaseModel):
+    """Request model for clearing the document processing queue
+
+    Attributes:
+        statuses: List of statuses to clear (PENDING, FAILED, or both)
+        workspace: Workspace to clear (empty or "all" for all workspaces)
+    """
+
+    statuses: List[Literal["pending", "failed"]] = Field(
+        default=["pending", "failed"],
+        description="Which document statuses to clear from the queue. "
+        "Options: 'pending' (waiting to process), 'failed' (processing errors). "
+        "Default clears both.",
+    )
+    workspace: str = Field(
+        default="",
+        description="Workspace to clear. Empty string or 'all' clears all workspaces. "
+        "Specify a workspace ID to clear only that workspace.",
+    )
+
+    class Config:
+        json_schema_extra = {
+            "example": {"statuses": ["pending", "failed"], "workspace": ""},
+        }
+
+
+class ClearQueueResponse(BaseModel):
+    """Response model for queue clearing operation
+
+    Attributes:
+        status: Status of the clear operation
+        message: Detailed message describing the operation result
+        cleared_counts: Dictionary with counts of cleared documents by status
+        workspace_results: Per-workspace breakdown (when clearing multiple workspaces)
+    """
+
+    status: Literal["success", "partial_success", "fail"] = Field(
+        description="Status of the clear operation"
+    )
+    message: str = Field(description="Message describing the operation result")
+    cleared_counts: Dict[str, int] = Field(
+        default_factory=dict,
+        description="Total documents cleared by status (aggregated across workspaces)",
+    )
+    workspace_results: Dict[str, Dict[str, int]] = Field(
+        default_factory=dict,
+        description="Per-workspace breakdown of cleared documents",
+    )
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "status": "success",
+                "message": "Cleared 25 documents from queue across 2 workspaces",
+                "cleared_counts": {"pending": 15, "failed": 10},
+                "workspace_results": {
+                    "workspace1": {"pending": 10, "failed": 5},
+                    "workspace2": {"pending": 5, "failed": 5},
+                },
             }
         }
 
@@ -2923,6 +2986,154 @@ def create_document_routes(
             logger.error(f"Error clearing cache: {str(e)}")
             logger.error(traceback.format_exc())
             raise HTTPException(status_code=500, detail=str(e))
+
+    @router.delete(
+        "/clear_queue",
+        response_model=ClearQueueResponse,
+        dependencies=[Depends(combined_auth)],
+    )
+    async def clear_queue(
+        request: ClearQueueRequest = ClearQueueRequest(),
+    ):
+        """
+        Clear documents from the processing queue by status.
+
+        This endpoint removes documents with PENDING and/or FAILED status from the
+        doc_status storage. This only clears the queue entries - it does NOT delete
+        any processed data (chunks, embeddings, graph nodes). Use this to:
+
+        - Clear stuck/abandoned documents from the queue
+        - Reset failed documents without re-indexing
+        - Clean up after cancelled operations
+
+        To fully delete documents (including all data), use DELETE /documents/delete_document.
+
+        Args:
+            request (ClearQueueRequest): Optional request body specifying:
+                - statuses: Which statuses to clear (default: both 'pending' and 'failed')
+                - workspace: Workspace ID to clear (empty or 'all' for all workspaces)
+
+        Returns:
+            ClearQueueResponse: A response object containing the status, message, counts,
+            and per-workspace breakdown.
+
+        Raises:
+            HTTPException: If an error occurs (500).
+
+        Note:
+            This endpoint clears PENDING and FAILED documents which are NOT currently
+            being processed. It is safe to call even when pipelines are active - only
+            documents in PROCESSING status are being worked on.
+        """
+        from lightrag.kg.shared_storage import get_namespace_data
+
+        try:
+            # Map request statuses to DocStatus enum
+            status_mapping = {
+                "pending": DocStatus.PENDING,
+                "failed": DocStatus.FAILED,
+            }
+
+            # Determine which workspaces to clear
+            pool = get_workspace_pool()
+            if pool is None:
+                return ClearQueueResponse(
+                    status="fail",
+                    message="Workspace pool not initialized",
+                    cleared_counts={},
+                    workspace_results={},
+                )
+
+            target_workspace = request.workspace.strip().lower()
+
+            if target_workspace == "" or target_workspace == "all":
+                # Clear all workspaces
+                workspaces_to_clear = list(pool._instances.keys())
+            else:
+                # Clear specific workspace
+                if request.workspace not in pool._instances:
+                    return ClearQueueResponse(
+                        status="fail",
+                        message=f"Workspace '{request.workspace}' not found. "
+                        f"Available: {list(pool._instances.keys())}",
+                        cleared_counts={},
+                        workspace_results={},
+                    )
+                workspaces_to_clear = [request.workspace]
+
+            # Log warning if any pipeline is busy (but proceed anyway - PENDING/FAILED are safe to clear)
+            busy_workspaces = []
+            for ws_id in workspaces_to_clear:
+                pipeline_status = await get_namespace_data("pipeline_status", workspace=ws_id)
+                if pipeline_status and pipeline_status.get("is_busy"):
+                    busy_workspaces.append(ws_id)
+
+            if busy_workspaces:
+                logger.warning(
+                    f"Clearing queue while pipelines active in: {busy_workspaces}. "
+                    "PENDING/FAILED documents are safe to clear (not being processed)."
+                )
+
+            # Clear queue for each workspace
+            total_counts: Dict[str, int] = {s: 0 for s in request.statuses}
+            workspace_results: Dict[str, Dict[str, int]] = {}
+            total_cleared = 0
+
+            for ws_id in workspaces_to_clear:
+                instance = pool._instances.get(ws_id)
+                if instance is None:
+                    continue
+
+                rag = instance.rag_instance
+                ws_counts: Dict[str, int] = {}
+
+                for status_str in request.statuses:
+                    doc_status = status_mapping.get(status_str)
+                    if doc_status is None:
+                        continue
+
+                    # Get all documents with this status
+                    docs = await rag.doc_status.get_docs_by_status(doc_status)
+                    if docs:
+                        doc_ids = list(docs.keys())
+                        # Delete the doc_status entries
+                        await rag.doc_status.delete(doc_ids)
+                        ws_counts[status_str] = len(doc_ids)
+                        total_counts[status_str] += len(doc_ids)
+                        total_cleared += len(doc_ids)
+                        logger.info(
+                            f"[{ws_id}] Cleared {len(doc_ids)} documents with status {status_str}"
+                        )
+                    else:
+                        ws_counts[status_str] = 0
+
+                # Only include workspace in results if something was cleared
+                if any(c > 0 for c in ws_counts.values()):
+                    workspace_results[ws_id] = ws_counts
+
+            # Build response message
+            if total_cleared == 0:
+                message = "No documents found in queue to clear"
+            else:
+                parts = [f"{count} {status}" for status, count in total_counts.items() if count > 0]
+                ws_count = len(workspace_results)
+                if ws_count == 1:
+                    message = f"Cleared {total_cleared} documents from queue ({', '.join(parts)})"
+                else:
+                    message = f"Cleared {total_cleared} documents from queue across {ws_count} workspaces ({', '.join(parts)})"
+
+            return ClearQueueResponse(
+                status="success",
+                message=message,
+                cleared_counts=total_counts,
+                workspace_results=workspace_results,
+            )
+
+        except Exception as e:
+            error_msg = f"Error clearing queue: {str(e)}"
+            logger.error(error_msg)
+            logger.error(traceback.format_exc())
+            raise HTTPException(status_code=500, detail=error_msg)
 
     @router.delete(
         "/delete_entity",
