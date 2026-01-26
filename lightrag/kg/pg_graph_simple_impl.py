@@ -524,7 +524,104 @@ class PGGraphStorageSimple(BaseGraphStorage):
     async def get_knowledge_graph(
         self, node_label: str, max_depth: int = 3, max_nodes: int = 1000
     ) -> KnowledgeGraph:
-        """Retrieve a connected subgraph starting from nodes matching the label."""
+        """Retrieve a connected subgraph starting from nodes matching the label.
+
+        This method first attempts to use the optimized stored procedure
+        `lightrag_get_knowledge_graph` which performs BFS server-side in a single
+        round-trip. If the stored procedure is not available, it falls back to
+        the Python-based BFS implementation.
+
+        Args:
+            node_label: Label to match nodes (use "*" for all nodes)
+            max_depth: Maximum BFS depth (default: 3)
+            max_nodes: Maximum nodes to return (default: 1000)
+
+        Returns:
+            KnowledgeGraph with nodes, edges, and is_truncated flag
+        """
+        # Try stored procedure first (single round-trip, much faster)
+        try:
+            return await self._get_knowledge_graph_stored_proc(
+                node_label, max_depth, max_nodes
+            )
+        except Exception as e:
+            error_msg = str(e)
+            if "lightrag_get_knowledge_graph" in error_msg and "does not exist" in error_msg:
+                logger.debug(
+                    f"[{self.workspace}] Stored procedure not available, using BFS fallback"
+                )
+            else:
+                logger.warning(
+                    f"[{self.workspace}] Stored procedure failed ({e}), using BFS fallback"
+                )
+
+        # Fallback to Python BFS implementation
+        return await self._get_knowledge_graph_bfs(node_label, max_depth, max_nodes)
+
+    async def _get_knowledge_graph_stored_proc(
+        self, node_label: str, max_depth: int, max_nodes: int
+    ) -> KnowledgeGraph:
+        """Retrieve knowledge graph using the optimized stored procedure.
+
+        The stored procedure performs BFS server-side, eliminating N+1 queries.
+        """
+        async with self.db.pool.acquire() as conn:
+            result = await conn.fetchval(
+                "SELECT lightrag_get_knowledge_graph($1, $2, $3, $4)",
+                self.workspace,
+                node_label,
+                max_depth,
+                max_nodes,
+            )
+
+            if result is None:
+                return KnowledgeGraph(nodes=[], edges=[], is_truncated=False)
+
+            # Parse JSON result
+            if isinstance(result, str):
+                data = json.loads(result)
+            else:
+                data = dict(result)
+
+            # Convert to Pydantic models
+            nodes = [
+                KnowledgeGraphNode(
+                    id=n["id"],
+                    labels=n.get("labels", ["entity"]),
+                    properties=n.get("properties", {}),
+                )
+                for n in data.get("nodes", [])
+            ]
+
+            edges = [
+                KnowledgeGraphEdge(
+                    id=e["id"],
+                    type=e.get("type", "related_to"),
+                    source=e["source"],
+                    target=e["target"],
+                    properties=e.get("properties", {}),
+                )
+                for e in data.get("edges", [])
+            ]
+
+            logger.debug(
+                f"[{self.workspace}] Stored proc returned {len(nodes)} nodes, "
+                f"{len(edges)} edges (truncated: {data.get('is_truncated', False)})"
+            )
+
+            return KnowledgeGraph(
+                nodes=nodes,
+                edges=edges,
+                is_truncated=data.get("is_truncated", False),
+            )
+
+    async def _get_knowledge_graph_bfs(
+        self, node_label: str, max_depth: int, max_nodes: int
+    ) -> KnowledgeGraph:
+        """Retrieve knowledge graph using Python-based BFS (fallback method).
+
+        This is slower due to multiple round-trips but works without the stored procedure.
+        """
         nodes_dict: dict[str, KnowledgeGraphNode] = {}
         edges_list: list[KnowledgeGraphEdge] = []
         is_truncated = False
