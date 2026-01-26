@@ -31,16 +31,47 @@ jobs:
       )
     runs-on: ubuntu-latest
     permissions:
-      contents: read
-      pull-requests: read
-      issues: read
+      contents: write
+      pull-requests: write
+      issues: write
       id-token: write
       actions: read # Required for Claude to read CI results on PRs
     steps:
+      - name: Get PR details for checkout
+        if: github.event.issue.pull_request || github.event_name == 'pull_request_review_comment' || github.event_name == 'pull_request_review'
+        id: pr_details
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Get PR number from the event
+          if [ "${{ github.event_name }}" == "issue_comment" ]; then
+            PR_NUMBER=${{ github.event.issue.number }}
+          elif [ "${{ github.event_name }}" == "pull_request_review_comment" ]; then
+            PR_NUMBER=${{ github.event.pull_request.number }}
+          elif [ "${{ github.event_name }}" == "pull_request_review" ]; then
+            PR_NUMBER=${{ github.event.pull_request.number }}
+          fi
+
+          if [ -n "$PR_NUMBER" ]; then
+            echo "Fetching PR #$PR_NUMBER details"
+            PR_DATA=$(gh pr view $PR_NUMBER -R ${{ github.repository }} --json headRefName,headRepository,headRepositoryOwner)
+            HEAD_REF=$(echo "$PR_DATA" | jq -r '.headRefName')
+            HEAD_REPO=$(echo "$PR_DATA" | jq -r '.headRepository.name')
+            HEAD_OWNER=$(echo "$PR_DATA" | jq -r '.headRepositoryOwner.login')
+
+            echo "pr_number=$PR_NUMBER" >> $GITHUB_OUTPUT
+            echo "head_ref=$HEAD_REF" >> $GITHUB_OUTPUT
+            echo "head_repo=$HEAD_REPO" >> $GITHUB_OUTPUT
+            echo "head_owner=$HEAD_OWNER" >> $GITHUB_OUTPUT
+            echo "repository=$HEAD_OWNER/$HEAD_REPO" >> $GITHUB_OUTPUT
+          fi
+
       - name: Checkout repository
         uses: actions/checkout@v6
         with:
-          fetch-depth: 1
+          repository: ${{ steps.pr_details.outputs.repository || github.repository }}
+          ref: ${{ steps.pr_details.outputs.head_ref || github.ref }}
+          fetch-depth: 0
 
       - name: Run Claude Code
         id: claude
