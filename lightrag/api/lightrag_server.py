@@ -13,6 +13,8 @@ import os
 import logging
 import logging.config
 import sys
+import signal
+import asyncio
 import uvicorn
 import pipmaster as pm
 from fastapi.staticfiles import StaticFiles
@@ -69,6 +71,9 @@ from lightrag.kg.shared_storage import (
     cleanup_keyed_lock,
     finalize_share_data,
     is_any_pipeline_busy,
+    set_drain_mode,
+    get_drain_mode,
+    is_drain_mode_enabled,
 )
 from fastapi.security import OAuth2PasswordRequestForm
 from lightrag.api.auth import auth_handler
@@ -355,11 +360,34 @@ def create_app(args):
     # Initialize document manager with workspace support for data isolation
     doc_manager = DocumentManager(args.input_dir, workspace=args.workspace)
 
+    # Graceful shutdown timeout (in seconds) - configurable via env var
+    # Default: 900 seconds (15 minutes) for long document processing
+    GRACEFUL_SHUTDOWN_TIMEOUT = int(os.getenv("LIGHTRAG_GRACEFUL_SHUTDOWN_TIMEOUT", "900"))
+
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         """Lifespan context manager for startup and shutdown events"""
         # Store background tasks
         app.state.background_tasks = set()
+
+        # SIGTERM handler for graceful shutdown
+        shutdown_event = asyncio.Event()
+
+        def sigterm_handler(signum, frame):
+            """Handle SIGTERM signal for graceful shutdown."""
+            logger.info("SIGTERM received - initiating graceful shutdown...")
+            set_drain_mode(enabled=True, reason="SIGTERM received - graceful shutdown")
+            # Signal the shutdown event (but don't block here)
+            # The actual waiting happens in the finally block
+
+        # Register signal handler (only in main thread)
+        try:
+            signal.signal(signal.SIGTERM, sigterm_handler)
+            signal.signal(signal.SIGINT, sigterm_handler)
+            logger.debug("Registered SIGTERM/SIGINT handlers for graceful shutdown")
+        except ValueError:
+            # Signal handlers can only be set in main thread
+            logger.debug("Not main thread - skipping signal handler registration")
 
         try:
             # Initialize database connections
@@ -374,22 +402,64 @@ def create_app(args):
             yield
 
         finally:
-            # Clean up workspace pool (finalize all workspace instances)
+            # === GRACEFUL SHUTDOWN SEQUENCE ===
+            logger.info("Starting graceful shutdown sequence...")
+
+            # Step 1: Enable drain mode (prevent new jobs)
+            if not is_drain_mode_enabled():
+                set_drain_mode(enabled=True, reason="Server shutdown")
+
+            # Step 2: Wait for active pipelines to complete (with timeout)
+            start_time = asyncio.get_event_loop().time()
+            check_interval = 2  # Check every 2 seconds
+            timeout = GRACEFUL_SHUTDOWN_TIMEOUT
+
+            while True:
+                pipeline_status = is_any_pipeline_busy()
+                elapsed = asyncio.get_event_loop().time() - start_time
+
+                if not pipeline_status["busy"]:
+                    logger.info(
+                        f"All pipelines completed - proceeding with shutdown "
+                        f"(waited {elapsed:.1f}s)"
+                    )
+                    break
+
+                if elapsed >= timeout:
+                    logger.warning(
+                        f"Graceful shutdown timeout ({timeout}s) reached with "
+                        f"{len(pipeline_status['busy_workspaces'])} pipelines still busy: "
+                        f"{pipeline_status['busy_workspaces']}. "
+                        f"Documents will be recovered on next startup."
+                    )
+                    break
+
+                logger.info(
+                    f"Waiting for {len(pipeline_status['busy_workspaces'])} pipelines to complete... "
+                    f"({elapsed:.0f}s/{timeout}s) - workspaces: {pipeline_status['busy_workspaces']}"
+                )
+                await asyncio.sleep(check_interval)
+
+            # Step 3: Clean up resources
+            logger.info("Finalizing workspace pool...")
             pool = get_workspace_pool()
             await pool.finalize_all()
 
             # Clean up default RAG instance's database connections
+            logger.info("Finalizing storage connections...")
             await rag.finalize_storages()
 
             if "LIGHTRAG_GUNICORN_MODE" not in os.environ:
                 # Only perform cleanup in Uvicorn single-process mode
-                logger.debug("Unvicorn Mode: finalizing shared storage...")
+                logger.debug("Uvicorn Mode: finalizing shared storage...")
                 finalize_share_data()
             else:
                 # In Gunicorn mode with preload_app=True, cleanup is handled by on_exit hooks
                 logger.debug(
                     "Gunicorn Mode: postpone shared storage finalization to master process"
                 )
+
+            logger.info("Graceful shutdown complete")
 
     # Initialize FastAPI
     base_description = (
@@ -1409,10 +1479,26 @@ def create_app(args):
         """
         Readiness probe for autoscaling platforms.
 
-        Returns 200 when ready to accept new work, 503 when busy.
+        Returns 200 when ready to accept new work, 503 when busy or draining.
         Configure your autoscaler (Render, K8s) to use this endpoint
         to prevent scale-down during active pipelines.
         """
+        # Check drain mode first
+        drain_status = get_drain_mode()
+        if drain_status["enabled"]:
+            logger.debug(
+                f"Readiness check: NOT READY - drain mode enabled: {drain_status['reason']}"
+            )
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "ready": False,
+                    "drain_mode": True,
+                    "drain_reason": drain_status["reason"],
+                    "busy_workspaces": [],
+                },
+            )
+
         pipeline_status = is_any_pipeline_busy()
 
         if pipeline_status["busy"]:
@@ -1423,13 +1509,96 @@ def create_app(args):
                 status_code=503,
                 content={
                     "ready": False,
+                    "drain_mode": False,
                     "busy_workspaces": pipeline_status["busy_workspaces"],
                 },
             )
 
         return {
             "ready": True,
+            "drain_mode": False,
             "busy_workspaces": [],
+        }
+
+    @app.get(
+        "/drain",
+        summary="Get drain mode status",
+        description=(
+            "Returns the current drain mode status. When drain mode is enabled, "
+            "the instance will not accept new document processing jobs but will "
+            "continue processing jobs that are already in progress."
+        ),
+    )
+    async def get_drain_status():
+        """
+        Get current drain mode status.
+
+        Drain mode prevents new jobs from starting while allowing current jobs
+        to complete. Use this for graceful shutdown coordination.
+        """
+        drain_status = get_drain_mode()
+        pipeline_status = is_any_pipeline_busy()
+
+        return {
+            "drain_mode": drain_status["enabled"],
+            "reason": drain_status["reason"],
+            "started_at": drain_status["started_at"],
+            "pipelines_busy": pipeline_status["busy"],
+            "busy_workspaces": pipeline_status["busy_workspaces"],
+        }
+
+    @app.post(
+        "/drain",
+        summary="Enable or disable drain mode",
+        description=(
+            "Enable drain mode to stop accepting new document processing jobs. "
+            "Use this before scaling down to allow current jobs to complete gracefully. "
+            "Call with enable=false to resume normal operation."
+        ),
+        responses={
+            200: {
+                "description": "Drain mode status changed",
+                "content": {
+                    "application/json": {
+                        "example": {
+                            "drain_mode": True,
+                            "reason": "Pre-scale-down drain",
+                            "started_at": "2024-01-01T00:00:00Z",
+                            "pipelines_busy": True,
+                            "busy_workspaces": ["workspace1"],
+                        }
+                    }
+                },
+            },
+        },
+    )
+    async def set_drain_status(
+        enable: bool = True,
+        reason: str = "Manual drain mode activation",
+    ):
+        """
+        Enable or disable drain mode for graceful shutdown.
+
+        Args:
+            enable: True to enable drain mode, False to disable
+            reason: Human-readable reason for enabling drain mode
+
+        When drain mode is enabled:
+        - New document processing jobs are rejected with 503
+        - /ready endpoint returns 503 (not ready for new work)
+        - Current jobs continue to completion
+        - Once pipelines_busy becomes False, it's safe to scale down
+        """
+        set_drain_mode(enabled=enable, reason=reason)
+        drain_status = get_drain_mode()
+        pipeline_status = is_any_pipeline_busy()
+
+        return {
+            "drain_mode": drain_status["enabled"],
+            "reason": drain_status["reason"],
+            "started_at": drain_status["started_at"],
+            "pipelines_busy": pipeline_status["busy"],
+            "busy_workspaces": pipeline_status["busy_workspaces"],
         }
 
     @app.get(
@@ -1542,6 +1711,10 @@ def create_app(args):
             "# HELP lightrag_pipelines_busy Number of currently active pipelines",
             "# TYPE lightrag_pipelines_busy gauge",
             f'lightrag_pipelines_busy{{workspace="all"}} {busy_pipeline_count}',
+            "",
+            "# HELP lightrag_drain_mode Drain mode status (1=enabled, 0=disabled)",
+            "# TYPE lightrag_drain_mode gauge",
+            f'lightrag_drain_mode{{instance="local"}} {1 if is_drain_mode_enabled() else 0}',
             "",
             "# ====== DOCUMENT STATUS METRICS ======",
             "",
