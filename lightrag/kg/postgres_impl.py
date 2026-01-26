@@ -2075,11 +2075,12 @@ class PGKVStorage(BaseKVStorage):
             current_time = datetime.datetime.now(timezone.utc).replace(tzinfo=None)
             for k, v in data.items():
                 upsert_sql = SQL_TEMPLATES["upsert_full_entities"]
+                entity_names = v.get("entity_names", [])
                 _data = {
                     "workspace": self.workspace,
                     "id": k,
-                    "entity_names": json.dumps(v["entity_names"]),
-                    "count": v["count"],
+                    "entity_names": json.dumps(entity_names),
+                    "count": v.get("count", len(entity_names)),
                     "create_time": current_time,
                     "update_time": current_time,
                 }
@@ -2089,11 +2090,12 @@ class PGKVStorage(BaseKVStorage):
             current_time = datetime.datetime.now(timezone.utc).replace(tzinfo=None)
             for k, v in data.items():
                 upsert_sql = SQL_TEMPLATES["upsert_full_relations"]
+                relation_pairs = v.get("relation_pairs", [])
                 _data = {
                     "workspace": self.workspace,
                     "id": k,
-                    "relation_pairs": json.dumps(v["relation_pairs"]),
-                    "count": v["count"],
+                    "relation_pairs": json.dumps(relation_pairs),
+                    "count": v.get("count", len(relation_pairs)),
                     "create_time": current_time,
                     "update_time": current_time,
                 }
@@ -2103,11 +2105,12 @@ class PGKVStorage(BaseKVStorage):
             current_time = datetime.datetime.now(timezone.utc).replace(tzinfo=None)
             for k, v in data.items():
                 upsert_sql = SQL_TEMPLATES["upsert_entity_chunks"]
+                chunk_ids = v.get("chunk_ids", [])
                 _data = {
                     "workspace": self.workspace,
                     "id": k,
-                    "chunk_ids": json.dumps(v["chunk_ids"]),
-                    "count": v["count"],
+                    "chunk_ids": json.dumps(chunk_ids),
+                    "count": v.get("count", len(chunk_ids)),
                     "create_time": current_time,
                     "update_time": current_time,
                 }
@@ -2117,11 +2120,12 @@ class PGKVStorage(BaseKVStorage):
             current_time = datetime.datetime.now(timezone.utc).replace(tzinfo=None)
             for k, v in data.items():
                 upsert_sql = SQL_TEMPLATES["upsert_relation_chunks"]
+                chunk_ids = v.get("chunk_ids", [])
                 _data = {
                     "workspace": self.workspace,
                     "id": k,
-                    "chunk_ids": json.dumps(v["chunk_ids"]),
-                    "count": v["count"],
+                    "chunk_ids": json.dumps(chunk_ids),
+                    "count": v.get("count", len(chunk_ids)),
                     "create_time": current_time,
                     "update_time": current_time,
                 }
@@ -2337,17 +2341,75 @@ class PGVectorStorage(BaseVectorStorage):
         embeddings = np.concatenate(embeddings_list)
         for i, d in enumerate(list_data):
             d["__vector__"] = embeddings[i]
-        for item in list_data:
-            if is_namespace(self.namespace, NameSpace.VECTOR_STORE_CHUNKS):
-                upsert_sql, data = self._upsert_chunks(item, current_time)
-            elif is_namespace(self.namespace, NameSpace.VECTOR_STORE_ENTITIES):
-                upsert_sql, data = self._upsert_entities(item, current_time)
-            elif is_namespace(self.namespace, NameSpace.VECTOR_STORE_RELATIONSHIPS):
-                upsert_sql, data = self._upsert_relationships(item, current_time)
-            else:
-                raise ValueError(f"{self.namespace} is not supported")
 
-            await self.db.execute(upsert_sql, data)
+        # Prepare batch records based on namespace
+        records = []
+        upsert_sql = None
+
+        if is_namespace(self.namespace, NameSpace.VECTOR_STORE_CHUNKS):
+            upsert_sql = SQL_TEMPLATES["upsert_chunk"]
+            for item in list_data:
+                records.append((
+                    self.workspace,
+                    item["__id__"],
+                    item["tokens"],
+                    item["chunk_order_index"],
+                    item["full_doc_id"],
+                    item["content"],
+                    json.dumps(item["__vector__"].tolist()),
+                    item["file_path"],
+                    current_time,
+                    current_time,
+                ))
+        elif is_namespace(self.namespace, NameSpace.VECTOR_STORE_ENTITIES):
+            upsert_sql = SQL_TEMPLATES["upsert_entity"]
+            for item in list_data:
+                source_id = item["source_id"]
+                if isinstance(source_id, str) and "<SEP>" in source_id:
+                    chunk_ids = source_id.split("<SEP>")
+                else:
+                    chunk_ids = [source_id]
+                records.append((
+                    self.workspace,
+                    item["__id__"],
+                    item["entity_name"],
+                    item["content"],
+                    json.dumps(item["__vector__"].tolist()),
+                    chunk_ids,
+                    item.get("file_path"),
+                    current_time,
+                    current_time,
+                ))
+        elif is_namespace(self.namespace, NameSpace.VECTOR_STORE_RELATIONSHIPS):
+            upsert_sql = SQL_TEMPLATES["upsert_relationship"]
+            for item in list_data:
+                source_id = item["source_id"]
+                if isinstance(source_id, str) and "<SEP>" in source_id:
+                    chunk_ids = source_id.split("<SEP>")
+                else:
+                    chunk_ids = [source_id]
+                records.append((
+                    self.workspace,
+                    item["__id__"],
+                    item["src_id"],
+                    item["tgt_id"],
+                    item["content"],
+                    json.dumps(item["__vector__"].tolist()),
+                    chunk_ids,
+                    item.get("file_path"),
+                    current_time,
+                    current_time,
+                ))
+        else:
+            raise ValueError(f"{self.namespace} is not supported")
+
+        # Execute batch insert using executemany
+        if records and upsert_sql:
+            async with self.db.pool.acquire() as conn:
+                await conn.executemany(upsert_sql, records)
+            logger.debug(
+                f"[{self.workspace}] Batch inserted {len(records)} records to {self.namespace}"
+            )
 
     #################### query method ###############
     async def query(
