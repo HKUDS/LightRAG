@@ -408,9 +408,21 @@ def create_app(args):
 
             # Initialize instance registry if using PostgreSQL
             # This enables coordinated drain across multiple instances
-            if hasattr(rag, "_db") and rag._db is not None and hasattr(rag._db, "pool"):
+            # Check for PostgreSQL pool in doc_status storage (PGDocStatusStorage)
+            pg_pool = None
+            if (
+                hasattr(rag, "doc_status")
+                and rag.doc_status is not None
+                and hasattr(rag.doc_status, "db")
+                and rag.doc_status.db is not None
+                and hasattr(rag.doc_status.db, "pool")
+                and rag.doc_status.db.pool is not None
+            ):
+                pg_pool = rag.doc_status.db.pool
+
+            if pg_pool is not None:
                 try:
-                    instance_registry = InstanceRegistry(pool=rag._db.pool)
+                    instance_registry = InstanceRegistry(pool=pg_pool)
                     await instance_registry.initialize()
 
                     # Set callback to activate local drain mode when DB drain is requested
