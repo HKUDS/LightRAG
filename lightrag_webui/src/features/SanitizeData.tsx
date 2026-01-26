@@ -25,7 +25,6 @@ export default function SanitizeData() {
   // Loading state (optional but nice UX)
   const [loadingDetails, setLoadingDetails] = useState<string[]>([]);
 
-
   const listContainerRef = useRef<HTMLDivElement>(null);
   const [rowsPerPage, setRowsPerPage] = useState(20); // initial guess
 
@@ -43,6 +42,55 @@ export default function SanitizeData() {
 
   // Unique entity types from selected entities
   const [uniqueEntityTypes, setUniqueEntityTypes] = useState<string[]>([]);
+
+  // Modal state for selecting entity type
+  const [selectTypeModalOpen, setSelectTypeModalOpen] = useState(false);
+
+  // State for the "Select Type" Modal
+  const [allEntityTypes, setAllEntityTypes] = useState<string[]>([]);
+  const [selectedModalType, setSelectedModalType] = useState<string>('');
+  const [loadingTypes, setLoadingTypes] = useState(false);
+  const [modalFilterText, setModalFilterText] = useState('');
+
+  // For loading the Select Type modal window
+  const fetchAllTypes = async () => {
+    setLoadingTypes(true);
+    try {
+      // 1. Get all entity names
+      const listRes = await axios.get(`${API_BASE}/graph/label/list`);
+      const entityNames = listRes.data as string[];
+      
+      // 2. Fetch types for each name (in parallel)
+      // Note: If you have thousands of entities, we may need to chunk this later.
+      const typeSet = new Set<string>();
+      
+      await Promise.all(
+        entityNames.map(async (name) => {
+          try {
+            const detailRes = await axios.get(
+              `${API_BASE}/graphs?label=${encodeURIComponent(name)}&max_depth=1&max_nodes=1`
+            );
+            const type = detailRes.data.nodes?.[0]?.properties?.entity_type;
+            if (type) typeSet.add(type);
+          } catch (err) {
+            console.error(`Error fetching type for ${name}:`, err);
+          }
+        })
+      );
+
+      setAllEntityTypes(Array.from(typeSet).sort());
+    } catch (err) {
+      console.error('Failed to fetch full type list:', err);
+    } finally {
+      setLoadingTypes(false);
+    }
+  };
+
+  useEffect(() => {
+    if (selectTypeModalOpen) {
+      fetchAllTypes();
+    }
+  }, [selectTypeModalOpen]);
 
   // Fetch entities
   useEffect(() => {
@@ -112,12 +160,14 @@ export default function SanitizeData() {
           setEditDescriptionModalOpen(false);
         } else if (editRelationshipsModalOpen) {
           setEditRelationshipsModalOpen(false);
+        } else if (selectTypeModalOpen) { // ← Add this line
+          setSelectTypeModalOpen(false);
         }
       }
     };
     document.addEventListener('keydown', handleEscKey);
     return () => document.removeEventListener('keydown', handleEscKey);
-  }, [editDescriptionModalOpen, editRelationshipsModalOpen]);
+  }, [editDescriptionModalOpen, editRelationshipsModalOpen, selectTypeModalOpen]);
 
   // Update unique entity types from selected entities' details
   useEffect(() => {
@@ -129,9 +179,15 @@ export default function SanitizeData() {
         types.add(type);
       }
     });
-
     setUniqueEntityTypes(Array.from(types).sort());
   }, [selectedEntities, entityDetails]);
+
+  useEffect(() => {
+    if (selectTypeModalOpen) {
+      setModalFilterText(''); // Reset the search box
+      fetchAllTypes();
+    }
+  }, [selectTypeModalOpen]);
 
   // Pagination handlers
   const goToFirst = () => setCurrentPage(1);
@@ -411,6 +467,10 @@ export default function SanitizeData() {
     }
   };
 
+  const filteredModalTypes = allEntityTypes.filter((type) =>
+    type.toLowerCase().includes(modalFilterText.toLowerCase())
+  );  
+
   const displayEntities = showSelectedOnlyMode 
    ? selectedEntities 
    : paginatedEntities;  
@@ -586,10 +646,14 @@ export default function SanitizeData() {
             </div>
 
             <div className="min-w-[200px]">
-              <button className="block w-full px-3 py-0.5 bg-gray-200 hover:bg-gray-300 border border-gray-300 border-b-0 rounded-t-md text-xs font-medium text-gray-800 text-left cursor-pointer shadow-sm">
+              <button 
+                onClick={() => setSelectTypeModalOpen(true)} // ← Add this line
+                className="block w-full px-3 py-0.5 bg-gray-200 hover:bg-gray-300 border border-gray-300 border-b-0 rounded-t-md text-xs font-medium text-gray-800 text-left cursor-pointer shadow-sm"
+              >
                 Select Type
               </button>
               <div className="relative">
+
                 <input
                   type="text"
                   list="entity-type-options"  // ← connects to datalist
@@ -599,6 +663,7 @@ export default function SanitizeData() {
                   placeholder="Type or filter..."
                   autoComplete="off"
                 />
+
                 <div className="absolute inset-y-0 right-0 flex items-center px-2 pointer-events-none">
                   <svg className="w-3.5 h-3.5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
@@ -1041,6 +1106,84 @@ export default function SanitizeData() {
           </div>
         </div>
       )}
+      
+      {/* Select Entity Type Modal */}
+      {selectTypeModalOpen && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg shadow-xl w-full max-w-md mx-4 p-6">
+            <h2 className="text-xl font-semibold mb-4 text-gray-800">
+              Select Entity Type
+            </h2>
+
+            {/* Step 3: Filter Edit Control */}
+            <div className="mb-3">
+              <input
+                type="text"
+                placeholder="Search types..."
+                className="w-full px-3 py-2 border border-gray-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                value={modalFilterText}
+                onChange={(e) => setModalFilterText(e.target.value)}
+                autoFocus
+              />
+            </div>
+
+            <div className="border border-gray-200 rounded-md h-64 overflow-y-auto mb-4 bg-gray-50">
+              {loadingTypes ? (
+                <div className="flex flex-col items-center justify-center h-full text-gray-500">
+                  <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mb-2"></div>
+                  <p className="text-xs">Scanning index for unique types...</p>
+                </div>
+              ) : filteredModalTypes.length > 0 ? ( // Switched to filtered list
+                filteredModalTypes.map((type) => (
+                  <div
+                    key={type}
+                    onClick={() => setSelectedModalType(type)}
+                    onDoubleClick={() => {
+                      setEntityType(type);
+                      setSelectTypeModalOpen(false);
+                    }}                    
+                    className={`px-4 py-2 cursor-pointer border-b border-gray-100 last:border-0 text-sm transition-colors ${
+                      selectedModalType === type 
+                        ? 'bg-blue-100 text-blue-800 font-semibold' 
+                        : 'hover:bg-gray-100 text-gray-700'
+                    }`}
+                  >
+                    {type}
+                  </div>
+                ))
+              ) : (
+                <div className="p-4 text-center text-gray-400 italic text-sm">
+                  {modalFilterText ? "No matching types found." : "No entity types found."}
+                </div>
+              )}
+            </div>
+
+            <div className="flex justify-end gap-3">
+              <button
+                onClick={() => setSelectTypeModalOpen(false)}
+                className="px-4 py-2 bg-gray-200 hover:bg-gray-300 rounded text-gray-800 text-sm transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => {
+                  setEntityType(selectedModalType); 
+                  setSelectTypeModalOpen(false);
+                }}
+                disabled={!selectedModalType}
+                className={`px-4 py-2 rounded text-sm transition-colors ${
+                  selectedModalType 
+                    ? 'bg-blue-600 hover:bg-blue-700 text-white' 
+                    : 'bg-gray-300 text-gray-500 cursor-not-allowed'
+                }`}
+              >
+                Select
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
 
 
     </div>
