@@ -18,6 +18,10 @@ services:
     # Auto-deploy on push
     autoDeploy: true
 
+    # Graceful shutdown: wait up to 300s for pipelines to complete before terminating
+    # This allows document processing to finish during scale-down
+    maxShutdownDelaySeconds: 300
+
     # Disk for local file storage (NetworkX graphs, inputs)
     disk:
       name: lightrag-data
