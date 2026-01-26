@@ -75,6 +75,11 @@ from lightrag.kg.shared_storage import (
     get_drain_mode,
     is_drain_mode_enabled,
 )
+from lightrag.instance_registry import (
+    InstanceRegistry,
+    get_instance_registry,
+    set_instance_registry,
+)
 from fastapi.security import OAuth2PasswordRequestForm
 from lightrag.api.auth import auth_handler
 
@@ -390,6 +395,9 @@ def create_app(args):
             # Signal handlers can only be set in main thread
             logger.debug("Not main thread - skipping signal handler registration")
 
+        # Instance registry for multi-instance coordination (PostgreSQL only)
+        instance_registry = None
+
         try:
             # Initialize database connections
             # Note: initialize_storages() now auto-initializes pipeline_status for rag.workspace
@@ -397,6 +405,33 @@ def create_app(args):
 
             # Data migration regardless of storage implementation
             await rag.check_and_migrate_data()
+
+            # Initialize instance registry if using PostgreSQL
+            # This enables coordinated drain across multiple instances
+            if hasattr(rag, "_db") and rag._db is not None and hasattr(rag._db, "pool"):
+                try:
+                    instance_registry = InstanceRegistry(pool=rag._db.pool)
+                    await instance_registry.initialize()
+
+                    # Set callback to activate local drain mode when DB drain is requested
+                    def on_drain_requested(drain_requested: bool, reason: str):
+                        if drain_requested and not is_drain_mode_enabled():
+                            set_drain_mode(enabled=True, reason=reason or "Coordinated drain request")
+
+                    instance_registry.set_drain_callback(on_drain_requested)
+
+                    # Start background tasks (heartbeat + drain polling)
+                    await instance_registry.start_background_tasks()
+
+                    # Make registry globally available
+                    set_instance_registry(instance_registry)
+
+                    logger.info(
+                        f"Instance registry enabled (id: {instance_registry.instance_id})"
+                    )
+                except Exception as e:
+                    logger.warning(f"Instance registry initialization failed: {e}")
+                    instance_registry = None
 
             ASCIIColors.green("\nServer is ready to accept connections! 🚀\n")
 
@@ -441,7 +476,13 @@ def create_app(args):
                 )
                 await asyncio.sleep(check_interval)
 
-            # Step 3: Clean up resources
+            # Step 3: Clean up instance registry
+            if instance_registry is not None:
+                logger.info("Stopping instance registry...")
+                await instance_registry.stop_background_tasks()
+                set_instance_registry(None)
+
+            # Step 4: Clean up resources
             logger.info("Finalizing workspace pool...")
             pool = get_workspace_pool()
             await pool.finalize_all()
@@ -1600,6 +1641,153 @@ def create_app(args):
             "started_at": drain_status["started_at"],
             "pipelines_busy": pipeline_status["busy"],
             "busy_workspaces": pipeline_status["busy_workspaces"],
+        }
+
+    # ========== Multi-Instance Coordination Endpoints ==========
+
+    @app.get(
+        "/instances",
+        summary="List all registered instances",
+        description=(
+            "Returns the status of all registered LightRAG instances. "
+            "Each instance registers itself at startup and sends periodic heartbeats. "
+            "Use this endpoint to monitor instance health and drain status."
+        ),
+    )
+    async def get_instances():
+        """
+        Get status of all registered instances.
+
+        Returns instance details including:
+        - instance_id: Unique identifier
+        - hostname: Machine hostname
+        - started_at: When the instance started
+        - last_heartbeat: Last heartbeat timestamp
+        - drain_requested: Whether drain has been requested
+        - pipeline_busy: Whether any pipeline is currently busy
+        - alive: Whether the instance is considered alive (heartbeat within 5 min)
+        """
+        registry = get_instance_registry()
+        if registry is None:
+            return {
+                "enabled": False,
+                "message": "Instance registry not available (requires PostgreSQL)",
+                "instances": [],
+            }
+
+        instances = await registry.get_all_instances()
+        return {
+            "enabled": True,
+            "this_instance": registry.instance_id,
+            "instances": instances,
+        }
+
+    @app.get(
+        "/drain/status",
+        summary="Get aggregated drain status for autoscaling",
+        description=(
+            "Returns aggregated status across all instances, including whether "
+            "it's safe to scale down. Use this endpoint for autoscaling decisions."
+        ),
+    )
+    async def get_drain_aggregate_status():
+        """
+        Get aggregated drain status for autoscaling decisions.
+
+        Returns:
+        - total_instances: Total registered instances
+        - alive_instances: Instances with recent heartbeat
+        - active_instances: Instances not draining
+        - draining_instances: Instances marked for drain
+        - safe_to_scale_down: True if all draining instances are idle
+        """
+        registry = get_instance_registry()
+        if registry is None:
+            # Fall back to local-only status
+            drain_status = get_drain_mode()
+            pipeline_status = is_any_pipeline_busy()
+            return {
+                "enabled": False,
+                "message": "Instance registry not available (requires PostgreSQL)",
+                "total_instances": 1,
+                "alive_instances": 1,
+                "active_instances": 0 if drain_status["enabled"] else 1,
+                "draining_instances": 1 if drain_status["enabled"] else 0,
+                "safe_to_scale_down": drain_status["enabled"] and not pipeline_status["busy"],
+                "instances": [],
+            }
+
+        status = await registry.get_drain_status()
+        status["enabled"] = True
+        status["this_instance"] = registry.instance_id
+        return status
+
+    @app.post(
+        "/drain/request",
+        summary="Request drain for N instances",
+        description=(
+            "Request drain for N instances (excluding the oldest/primary). "
+            "Use FOR UPDATE SKIP LOCKED to avoid race conditions. "
+            "Draining instances will activate their local drain mode automatically."
+        ),
+    )
+    async def request_instance_drain(
+        count: int = 1,
+        reason: str = "scale-down",
+    ):
+        """
+        Request drain for N instances.
+
+        Args:
+            count: Number of instances to drain (default: 1)
+            reason: Reason for drain request
+
+        The oldest instance (primary) is never selected for drain.
+        Selected instances will activate their local drain mode via polling.
+        """
+        registry = get_instance_registry()
+        if registry is None:
+            raise HTTPException(
+                status_code=503,
+                detail="Instance registry not available (requires PostgreSQL)",
+            )
+
+        drained_ids = await registry.request_drain(count=count, reason=reason)
+
+        return {
+            "success": True,
+            "drained_count": len(drained_ids),
+            "drained_instances": drained_ids,
+            "reason": reason,
+        }
+
+    @app.post(
+        "/drain/cancel",
+        summary="Cancel all drain requests",
+        description=(
+            "Cancel all pending drain requests. Use this to rollback "
+            "if scale-down cannot proceed for any reason."
+        ),
+    )
+    async def cancel_instance_drain():
+        """
+        Cancel all drain requests across all instances.
+
+        Instances that were draining will continue to accept new work
+        after their next poll cycle (within 5 seconds).
+        """
+        registry = get_instance_registry()
+        if registry is None:
+            raise HTTPException(
+                status_code=503,
+                detail="Instance registry not available (requires PostgreSQL)",
+            )
+
+        cancelled_count = await registry.cancel_drain()
+
+        return {
+            "success": True,
+            "cancelled_count": cancelled_count,
         }
 
     @app.get(
