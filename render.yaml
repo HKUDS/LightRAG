@@ -22,11 +22,7 @@ services:
     # This allows document processing to finish during scale-down
     maxShutdownDelaySeconds: 300
 
-    # Disk for local file storage (NetworkX graphs, inputs)
-    disk:
-      name: lightrag-data
-      mountPath: /app/data
-      sizeGB: 10
+    # No disk needed - all data stored in PostgreSQL
 
     envVars:
       #############################
@@ -58,7 +54,7 @@ services:
         value: "/app/data/inputs"
 
       #############################
-      # Storage Backends (PostgreSQL + NetworkX)
+      # Storage Backends (Full PostgreSQL)
       #############################
       - key: LIGHTRAG_KV_STORAGE
         value: "PGKVStorage"
@@ -67,7 +63,7 @@ services:
       - key: LIGHTRAG_VECTOR_STORAGE
         value: "PGVectorStorage"
       - key: LIGHTRAG_GRAPH_STORAGE
-        value: "NetworkXStorage"
+        value: "PGGraphStorageSimple"
 
       #############################
       # PostgreSQL (Supabase)
