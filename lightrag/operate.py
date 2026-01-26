@@ -8,6 +8,8 @@ import json_repair
 from typing import Any, AsyncIterator, overload, Literal
 from collections import Counter, defaultdict
 
+import os
+
 from lightrag.exceptions import (
     PipelineCancelledException,
     ChunkTokenLimitExceededError,
@@ -2870,57 +2872,69 @@ async def extract_entities(
 
         # Process additional gleaning results only 1 time when entity_extract_max_gleaning is greater than zero.
         if entity_extract_max_gleaning > 0:
-            glean_result, timestamp = await use_llm_func_with_cache(
-                entity_continue_extraction_user_prompt,
-                use_llm_func,
-                system_prompt=entity_extraction_system_prompt,
-                llm_response_cache=llm_response_cache,
-                history_messages=history,
-                cache_type="extract",
-                chunk_id=chunk_key,
-                cache_keys_collector=cache_keys_collector,
-            )
+            # Calculate total tokens for the gleaning request to prevent context window overflow
+            tokenizer = global_config["tokenizer"]
+            max_input_tokens = int(os.environ.get("MAX_EXTRACT_INPUT_TOKENS", 20480))
+            
+            # Estimate total tokens: System Prompt + History (Previous Round) + Current User Prompt
+            history_str = json.dumps(history, ensure_ascii=False)
+            full_context_str = entity_extraction_system_prompt + history_str + entity_continue_extraction_user_prompt
+            token_count = len(tokenizer.encode(full_context_str))
+            
+            if token_count > max_input_tokens:
+                logger.warning(f"Gleaning stopped for chunk {chunk_key}: Input tokens ({token_count}) exceeded limit ({max_input_tokens}).")
+            else:
+                glean_result, timestamp = await use_llm_func_with_cache(
+                    entity_continue_extraction_user_prompt,
+                    use_llm_func,
+                    system_prompt=entity_extraction_system_prompt,
+                    llm_response_cache=llm_response_cache,
+                    history_messages=history,
+                    cache_type="extract",
+                    chunk_id=chunk_key,
+                    cache_keys_collector=cache_keys_collector,
+                )
 
-            # Process gleaning result separately with file path
-            glean_nodes, glean_edges = await _process_extraction_result(
-                glean_result,
-                chunk_key,
-                timestamp,
-                file_path,
-                tuple_delimiter=context_base["tuple_delimiter"],
-                completion_delimiter=context_base["completion_delimiter"],
-            )
+                # Process gleaning result separately with file path
+                glean_nodes, glean_edges = await _process_extraction_result(
+                    glean_result,
+                    chunk_key,
+                    timestamp,
+                    file_path,
+                    tuple_delimiter=context_base["tuple_delimiter"],
+                    completion_delimiter=context_base["completion_delimiter"],
+                )
 
-            # Merge results - compare description lengths to choose better version
-            for entity_name, glean_entities in glean_nodes.items():
-                if entity_name in maybe_nodes:
-                    # Compare description lengths and keep the better one
-                    original_desc_len = len(
-                        maybe_nodes[entity_name][0].get("description", "") or ""
-                    )
-                    glean_desc_len = len(glean_entities[0].get("description", "") or "")
+                # Merge results - compare description lengths to choose better version
+                for entity_name, glean_entities in glean_nodes.items():
+                    if entity_name in maybe_nodes:
+                        # Compare description lengths and keep the better one
+                        original_desc_len = len(
+                            maybe_nodes[entity_name][0].get("description", "") or ""
+                        )
+                        glean_desc_len = len(glean_entities[0].get("description", "") or "")
 
-                    if glean_desc_len > original_desc_len:
+                        if glean_desc_len > original_desc_len:
+                            maybe_nodes[entity_name] = list(glean_entities)
+                        # Otherwise keep original version
+                    else:
+                        # New entity from gleaning stage
                         maybe_nodes[entity_name] = list(glean_entities)
-                    # Otherwise keep original version
-                else:
-                    # New entity from gleaning stage
-                    maybe_nodes[entity_name] = list(glean_entities)
 
-            for edge_key, glean_edges in glean_edges.items():
-                if edge_key in maybe_edges:
-                    # Compare description lengths and keep the better one
-                    original_desc_len = len(
-                        maybe_edges[edge_key][0].get("description", "") or ""
-                    )
-                    glean_desc_len = len(glean_edges[0].get("description", "") or "")
+                for edge_key, glean_edges in glean_edges.items():
+                    if edge_key in maybe_edges:
+                        # Compare description lengths and keep the better one
+                        original_desc_len = len(
+                            maybe_edges[edge_key][0].get("description", "") or ""
+                        )
+                        glean_desc_len = len(glean_edges[0].get("description", "") or "")
 
-                    if glean_desc_len > original_desc_len:
+                        if glean_desc_len > original_desc_len:
+                            maybe_edges[edge_key] = list(glean_edges)
+                        # Otherwise keep original version
+                    else:
+                        # New edge from gleaning stage
                         maybe_edges[edge_key] = list(glean_edges)
-                    # Otherwise keep original version
-                else:
-                    # New edge from gleaning stage
-                    maybe_edges[edge_key] = list(glean_edges)
 
         # Batch update chunk's llm_cache_list with all collected cache keys
         if cache_keys_collector and text_chunks_storage:
