@@ -560,9 +560,11 @@ class PGGraphStorageSimple(BaseGraphStorage):
                     props = row["properties"]
                     if isinstance(props, str):
                         props = json.loads(props)
+                    # Extract entity_type for labels, default to "entity"
+                    entity_type = (props or {}).get("entity_type", "entity")
                     nodes_dict[node_id] = KnowledgeGraphNode(
                         id=node_id,
-                        label=node_id,
+                        labels=[entity_type] if entity_type else ["entity"],
                         properties=props or {},
                     )
 
@@ -594,8 +596,11 @@ class PGGraphStorageSimple(BaseGraphStorage):
                             edge_props = json.loads(edge_props)
 
                         # Add edge
+                        edge_type = (edge_props or {}).get("relationship", "related_to")
                         edges_list.append(
                             KnowledgeGraphEdge(
+                                id=f"{source_id}-{target_id}",
+                                type=edge_type,
                                 source=source_id,
                                 target=target_id,
                                 properties=edge_props or {},
@@ -623,9 +628,11 @@ class PGGraphStorageSimple(BaseGraphStorage):
                                 n_props = neighbor_row["properties"]
                                 if isinstance(n_props, str):
                                     n_props = json.loads(n_props)
+                                # Extract entity_type for labels, default to "entity"
+                                n_entity_type = (n_props or {}).get("entity_type", "entity")
                                 nodes_dict[neighbor_id] = KnowledgeGraphNode(
                                     id=neighbor_id,
-                                    label=neighbor_id,
+                                    labels=[n_entity_type] if n_entity_type else ["entity"],
                                     properties=n_props or {},
                                 )
 
