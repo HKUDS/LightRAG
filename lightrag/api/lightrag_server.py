@@ -4,7 +4,7 @@ LightRAG FastAPI Server
 
 from fastapi import FastAPI, Depends, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 from fastapi.openapi.docs import (
     get_swagger_ui_html,
     get_swagger_ui_oauth2_redirect_html,
@@ -35,6 +35,7 @@ from .config import (
 )
 from lightrag.utils import get_env_value
 from lightrag import LightRAG, __version__ as core_version
+from lightrag.base import DocStatus
 from lightrag.api import __api_version__
 from lightrag.types import GPTKeywordExtractionFormat
 from lightrag.utils import EmbeddingFunc
@@ -1430,6 +1431,168 @@ def create_app(args):
             "ready": True,
             "busy_workspaces": [],
         }
+
+    @app.get(
+        "/metrics",
+        summary="Prometheus metrics for autoscaling",
+        description=(
+            "Returns Prometheus-format metrics for queue depth, processing status, "
+            "and system health. Use this endpoint to configure custom autoscaling "
+            "triggers based on document queue depth rather than CPU usage."
+        ),
+        response_class=PlainTextResponse,
+    )
+    async def get_metrics():
+        """
+        Prometheus metrics endpoint for autoscaling and monitoring.
+
+        Key metrics for autoscaling:
+        - lightrag_queue_depth: Documents pending processing (PENDING + FAILED)
+        - lightrag_processing_count: Documents currently being processed
+
+        Additional metrics for monitoring:
+        - lightrag_processed_total: Total documents processed
+        - lightrag_workspaces_active: Active workspace instances
+        - lightrag_pipelines_busy: Currently active pipelines
+        - lightrag_graph_nodes_total: Total nodes in knowledge graph
+        - lightrag_graph_edges_total: Total edges in knowledge graph
+
+        Configure Render/K8s to scale when lightrag_queue_depth > threshold.
+        """
+        import time
+
+        pool = get_workspace_pool()
+        if pool is None:
+            # No pool initialized yet
+            return PlainTextResponse(
+                content="# No workspace pool initialized\n",
+                media_type="text/plain; version=0.0.4; charset=utf-8",
+            )
+
+        # Aggregate metrics across all workspaces
+        total_pending = 0
+        total_processing = 0
+        total_processed = 0
+        total_failed = 0
+        total_preprocessed = 0
+        total_graph_nodes = 0
+        total_graph_edges = 0
+        workspace_count = len(pool._instances)
+
+        # Get pipeline status
+        pipeline_status = is_any_pipeline_busy()
+        busy_pipeline_count = len(pipeline_status.get("busy_workspaces", []))
+
+        # Access instances directly (read-only, no lock needed for iteration)
+        for workspace_id, instance in list(pool._instances.items()):
+            try:
+                rag = instance.rag_instance
+
+                # Document status metrics
+                if hasattr(rag, "doc_status") and rag.doc_status is not None:
+                    pending_docs = await rag.doc_status.get_docs_by_status(DocStatus.PENDING)
+                    processing_docs = await rag.doc_status.get_docs_by_status(DocStatus.PROCESSING)
+                    processed_docs = await rag.doc_status.get_docs_by_status(DocStatus.PROCESSED)
+                    failed_docs = await rag.doc_status.get_docs_by_status(DocStatus.FAILED)
+                    preprocessed_docs = await rag.doc_status.get_docs_by_status(DocStatus.PREPROCESSED)
+
+                    total_pending += len(pending_docs) if pending_docs else 0
+                    total_processing += len(processing_docs) if processing_docs else 0
+                    total_processed += len(processed_docs) if processed_docs else 0
+                    total_failed += len(failed_docs) if failed_docs else 0
+                    total_preprocessed += len(preprocessed_docs) if preprocessed_docs else 0
+
+                # Graph metrics (if available)
+                if hasattr(rag, "knowledge_graph_inst") and rag.knowledge_graph_inst is not None:
+                    kg = rag.knowledge_graph_inst
+                    # Try to get node count (some backends cache this)
+                    if hasattr(kg, "get_node_count"):
+                        try:
+                            node_count = await kg.get_node_count()
+                            total_graph_nodes += node_count if node_count else 0
+                        except Exception:
+                            pass
+                    # Try to get edge count
+                    if hasattr(kg, "get_edge_count"):
+                        try:
+                            edge_count = await kg.get_edge_count()
+                            total_graph_edges += edge_count if edge_count else 0
+                        except Exception:
+                            pass
+
+            except Exception as e:
+                logger.warning(f"Error getting metrics for workspace {workspace_id}: {e}")
+                continue
+
+        # Queue depth = pending + failed (documents that need processing)
+        queue_depth = total_pending + total_failed
+
+        # Build Prometheus metrics output
+        metrics_lines = [
+            "# ====== AUTOSCALING METRICS (Primary) ======",
+            "",
+            "# HELP lightrag_queue_depth Number of documents pending processing (pending + failed)",
+            "# TYPE lightrag_queue_depth gauge",
+            f'lightrag_queue_depth{{workspace="all"}} {queue_depth}',
+            "",
+            "# HELP lightrag_processing_count Documents currently being processed",
+            "# TYPE lightrag_processing_count gauge",
+            f'lightrag_processing_count{{workspace="all"}} {total_processing}',
+            "",
+            "# HELP lightrag_pipelines_busy Number of currently active pipelines",
+            "# TYPE lightrag_pipelines_busy gauge",
+            f'lightrag_pipelines_busy{{workspace="all"}} {busy_pipeline_count}',
+            "",
+            "# ====== DOCUMENT STATUS METRICS ======",
+            "",
+            "# HELP lightrag_pending_count Documents in pending status",
+            "# TYPE lightrag_pending_count gauge",
+            f'lightrag_pending_count{{workspace="all"}} {total_pending}',
+            "",
+            "# HELP lightrag_failed_count Documents in failed status",
+            "# TYPE lightrag_failed_count gauge",
+            f'lightrag_failed_count{{workspace="all"}} {total_failed}',
+            "",
+            "# HELP lightrag_preprocessed_count Documents in preprocessed status",
+            "# TYPE lightrag_preprocessed_count gauge",
+            f'lightrag_preprocessed_count{{workspace="all"}} {total_preprocessed}',
+            "",
+            "# HELP lightrag_processed_total Total documents successfully processed",
+            "# TYPE lightrag_processed_total counter",
+            f'lightrag_processed_total{{workspace="all"}} {total_processed}',
+            "",
+            "# ====== SYSTEM METRICS ======",
+            "",
+            "# HELP lightrag_workspaces_active Number of active workspace instances",
+            "# TYPE lightrag_workspaces_active gauge",
+            f'lightrag_workspaces_active{{pool="default"}} {workspace_count}',
+            "",
+            "# HELP lightrag_workspaces_max Maximum workspace instances allowed",
+            "# TYPE lightrag_workspaces_max gauge",
+            f'lightrag_workspaces_max{{pool="default"}} {pool.max_size}',
+            "",
+            "# ====== KNOWLEDGE GRAPH METRICS ======",
+            "",
+            "# HELP lightrag_graph_nodes_total Total nodes in knowledge graph",
+            "# TYPE lightrag_graph_nodes_total gauge",
+            f'lightrag_graph_nodes_total{{workspace="all"}} {total_graph_nodes}',
+            "",
+            "# HELP lightrag_graph_edges_total Total edges in knowledge graph",
+            "# TYPE lightrag_graph_edges_total gauge",
+            f'lightrag_graph_edges_total{{workspace="all"}} {total_graph_edges}',
+            "",
+            "# ====== INFO ======",
+            "",
+            "# HELP lightrag_info LightRAG version info",
+            "# TYPE lightrag_info gauge",
+            f'lightrag_info{{version="{core_version}",api_version="{__api_version__}"}} 1',
+            "",
+        ]
+
+        return PlainTextResponse(
+            content="\n".join(metrics_lines),
+            media_type="text/plain; version=0.0.4; charset=utf-8",
+        )
 
     # Custom StaticFiles class for smart caching
     class SmartStaticFiles(StaticFiles):  # Renamed from NoCacheStaticFiles
