@@ -10,6 +10,7 @@ from contextvars import ContextVar
 from typing import Any, Dict, List, Optional, Union, TypeVar, Generic
 
 from lightrag.exceptions import PipelineNotInitializedError
+from lightrag.utils import logger
 
 DEBUG_LOCKS = False
 
