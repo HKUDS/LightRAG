@@ -1741,3 +1741,81 @@ def is_any_pipeline_busy() -> dict:
         "busy": len(busy_workspaces) > 0,
         "busy_workspaces": busy_workspaces,
     }
+
+
+# ========== Drain Mode for Graceful Shutdown ==========
+# Global drain mode state (module-level, shared across all code in this process)
+_drain_mode: dict = {
+    "enabled": False,
+    "reason": "",
+    "started_at": None,
+}
+
+
+def set_drain_mode(enabled: bool, reason: str = "") -> dict:
+    """
+    Enable or disable drain mode for graceful shutdown.
+
+    When drain mode is enabled:
+    - New document processing jobs are rejected
+    - Existing jobs continue to completion
+    - /ready endpoint returns 503 (not ready for new work)
+
+    Args:
+        enabled: True to enable drain mode, False to disable
+        reason: Human-readable reason for enabling drain mode
+
+    Returns:
+        dict with current drain mode state
+    """
+    global _drain_mode
+    from datetime import datetime, timezone
+
+    if enabled and not _drain_mode["enabled"]:
+        # Entering drain mode
+        _drain_mode = {
+            "enabled": True,
+            "reason": reason or "Manual drain mode activation",
+            "started_at": datetime.now(timezone.utc).isoformat(),
+        }
+        logger.info(f"Drain mode ENABLED: {_drain_mode['reason']}")
+    elif not enabled and _drain_mode["enabled"]:
+        # Exiting drain mode
+        logger.info(f"Drain mode DISABLED (was enabled since {_drain_mode['started_at']})")
+        _drain_mode = {
+            "enabled": False,
+            "reason": "",
+            "started_at": None,
+        }
+
+    return get_drain_mode()
+
+
+def get_drain_mode() -> dict:
+    """
+    Get the current drain mode state.
+
+    Returns:
+        dict: {
+            "enabled": bool,
+            "reason": str,
+            "started_at": str | None (ISO timestamp),
+        }
+    """
+    global _drain_mode
+    return {
+        "enabled": _drain_mode["enabled"],
+        "reason": _drain_mode["reason"],
+        "started_at": _drain_mode["started_at"],
+    }
+
+
+def is_drain_mode_enabled() -> bool:
+    """
+    Quick check if drain mode is currently enabled.
+
+    Returns:
+        bool: True if drain mode is active
+    """
+    global _drain_mode
+    return _drain_mode["enabled"]

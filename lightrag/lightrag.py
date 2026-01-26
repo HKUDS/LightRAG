@@ -79,6 +79,7 @@ from lightrag.kg.shared_storage import (
     get_default_workspace,
     set_default_workspace,
     get_namespace_lock,
+    is_drain_mode_enabled,
 )
 
 from lightrag.base import (
@@ -1762,6 +1763,13 @@ class LightRAG:
 
         # Check if another process is already processing the queue
         async with pipeline_status_lock:
+            # Check if drain mode is enabled (graceful shutdown in progress)
+            if is_drain_mode_enabled():
+                logger.info(
+                    f"[{self.workspace}] Pipeline blocked: drain mode enabled (graceful shutdown)"
+                )
+                return
+
             # Ensure only one worker is processing documents
             if not pipeline_status.get("busy", False):
                 processing_docs, failed_docs, pending_docs = await asyncio.gather(
@@ -1810,7 +1818,7 @@ class LightRAG:
                     if pipeline_status.get("cancellation_requested", False):
                         # Clear pending request
                         pipeline_status["request_pending"] = False
-                        # Celar cancellation flag
+                        # Clear cancellation flag
                         pipeline_status["cancellation_requested"] = False
 
                         log_message = "Pipeline cancelled by user"
@@ -1820,6 +1828,20 @@ class LightRAG:
 
                         # Exit directly, skipping request_pending check
                         return
+
+                # Check if drain mode was enabled (graceful shutdown in progress)
+                # Allow current document to complete but stop picking up new ones
+                if is_drain_mode_enabled():
+                    log_message = (
+                        f"[{self.workspace}] Drain mode detected - "
+                        f"stopping after current batch for graceful shutdown"
+                    )
+                    logger.info(log_message)
+                    async with pipeline_status_lock:
+                        pipeline_status["latest_message"] = log_message
+                        pipeline_status["history_messages"].append(log_message)
+                    # Don't return immediately - let the finally block clean up properly
+                    break
 
                 if not to_process_docs:
                     log_message = "All enqueued documents have been processed"
