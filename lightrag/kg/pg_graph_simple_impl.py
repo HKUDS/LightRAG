@@ -583,26 +583,32 @@ class PGGraphStorageSimple(BaseGraphStorage):
             else:
                 data = dict(result)
 
-            # Convert to Pydantic models
-            nodes = [
-                KnowledgeGraphNode(
-                    id=n["id"],
-                    labels=n.get("labels", ["entity"]),
-                    properties=n.get("properties", {}),
-                )
-                for n in data.get("nodes", [])
-            ]
+            # Convert to Pydantic models with robust field mapping
+            nodes = []
+            for n in data.get("nodes", []):
+                try:
+                    nodes.append(KnowledgeGraphNode(
+                        id=n.get("id", n.get("node_id", "")),
+                        labels=n.get("labels", [n.get("entity_type", "entity")]),
+                        properties=n.get("properties", {}),
+                    ))
+                except Exception as node_err:
+                    logger.warning(f"[{self.workspace}] Skipping invalid node: {node_err}")
 
-            edges = [
-                KnowledgeGraphEdge(
-                    id=e["id"],
-                    type=e.get("type", "related_to"),
-                    source=e["source"],
-                    target=e["target"],
-                    properties=e.get("properties", {}),
-                )
-                for e in data.get("edges", [])
-            ]
+            edges = []
+            for e in data.get("edges", []):
+                try:
+                    source = e.get("source", e.get("source_id", ""))
+                    target = e.get("target", e.get("target_id", ""))
+                    edges.append(KnowledgeGraphEdge(
+                        id=e.get("id", f"{source}-{target}"),
+                        type=e.get("type", e.get("relationship", "related_to")),
+                        source=source,
+                        target=target,
+                        properties=e.get("properties", {}),
+                    ))
+                except Exception as edge_err:
+                    logger.warning(f"[{self.workspace}] Skipping invalid edge: {edge_err}")
 
             logger.debug(
                 f"[{self.workspace}] Stored proc returned {len(nodes)} nodes, "
@@ -623,7 +629,7 @@ class PGGraphStorageSimple(BaseGraphStorage):
         This is slower due to multiple round-trips but works without the stored procedure.
         """
         nodes_dict: dict[str, KnowledgeGraphNode] = {}
-        edges_list: list[KnowledgeGraphEdge] = []
+        edges_dict: dict[str, KnowledgeGraphEdge] = {}  # Use dict to deduplicate edges
         is_truncated = False
 
         async with self.db.pool.acquire() as conn:
@@ -692,17 +698,18 @@ class PGGraphStorageSimple(BaseGraphStorage):
                         if isinstance(edge_props, str):
                             edge_props = json.loads(edge_props)
 
-                        # Add edge
+                        # Add edge (use normalized key for deduplication)
                         edge_type = (edge_props or {}).get("relationship", "related_to")
-                        edges_list.append(
-                            KnowledgeGraphEdge(
+                        # Normalize edge key (alphabetically) for deduplication
+                        edge_key = f"{min(source_id, target_id)}-{max(source_id, target_id)}"
+                        if edge_key not in edges_dict:
+                            edges_dict[edge_key] = KnowledgeGraphEdge(
                                 id=f"{source_id}-{target_id}",
                                 type=edge_type,
                                 source=source_id,
                                 target=target_id,
                                 properties=edge_props or {},
                             )
-                        )
 
                         # Add neighbor node if not visited
                         neighbor_id = target_id if source_id == node_id else source_id
@@ -735,9 +742,14 @@ class PGGraphStorageSimple(BaseGraphStorage):
 
                 frontier = next_frontier
 
+        logger.debug(
+            f"[{self.workspace}] BFS fallback returned {len(nodes_dict)} nodes, "
+            f"{len(edges_dict)} edges (truncated: {is_truncated})"
+        )
+
         return KnowledgeGraph(
             nodes=list(nodes_dict.values()),
-            edges=edges_list,
+            edges=list(edges_dict.values()),
             is_truncated=is_truncated,
         )
 
