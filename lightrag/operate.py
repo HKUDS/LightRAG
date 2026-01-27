@@ -1238,7 +1238,7 @@ async def _rebuild_single_entity(
                 seen_paths.add(file_path)
 
     # Apply MAX_FILE_PATHS limit
-    max_file_paths = global_config.get("max_file_paths")
+    max_file_paths = global_config.get("max_file_paths", DEFAULT_MAX_FILE_PATHS)
     file_path_placeholder = global_config.get(
         "file_path_more_placeholder", DEFAULT_FILE_PATH_MORE_PLACEHOLDER
     )
@@ -1397,7 +1397,7 @@ async def _rebuild_single_relationship(
                 seen_paths.add(file_path)
 
     # Apply count limit
-    max_file_paths = global_config.get("max_file_paths")
+    max_file_paths = global_config.get("max_file_paths", DEFAULT_MAX_FILE_PATHS)
     file_path_placeholder = global_config.get(
         "file_path_more_placeholder", DEFAULT_FILE_PATH_MORE_PLACEHOLDER
     )
@@ -1416,7 +1416,7 @@ async def _rebuild_single_relationship(
             f"...{file_path_placeholder}...({limit_method} {max_file_paths}/{original_count})"
         )
         logger.info(
-            f"Limited `{src}`~`{tgt}`: file_path {original_count} -> {max_file_paths} ({limit_method})"
+            f"Limited `{src}`- `{tgt}``: file_path {original_count} -> {max_file_paths} ({limit_method})"
         )
 
     # Remove duplicates while preserving order
@@ -2096,8 +2096,6 @@ async def _merge_edges_then_upsert(
             seen_paths.add(file_path_item)
 
     # Apply count limit
-    max_file_paths = global_config.get("max_file_paths")
-
     if len(file_paths_list) > max_file_paths:
         limit_method = global_config.get(
             "source_ids_limit_method", SOURCE_IDS_LIMIT_METHOD_KEEP
