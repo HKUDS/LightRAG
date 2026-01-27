@@ -16,7 +16,6 @@ CREATE OR REPLACE FUNCTION lightrag_get_knowledge_graph(
     p_max_nodes INT
 ) RETURNS JSONB AS $$
 DECLARE
-    v_result JSONB;
     v_nodes JSONB := '[]'::jsonb;
     v_edges JSONB := '[]'::jsonb;
     v_is_truncated BOOLEAN := FALSE;
@@ -56,43 +55,20 @@ BEGIN
 
     v_visited := v_frontier;
 
-    -- Add starting nodes to result
-    SELECT jsonb_agg(
-        jsonb_build_object(
-            'id', n.node_id,
-            'labels', jsonb_build_array(COALESCE(n.properties->>'entity_type', 'entity')),
-            'properties', n.properties
-        )
-    )
-    INTO v_nodes
-    FROM lightrag_graph_nodes n
-    WHERE n.workspace = p_workspace AND n.node_id = ANY(v_frontier);
-
-    IF v_nodes IS NULL THEN
-        v_nodes := '[]'::jsonb;
-    END IF;
-
-    -- BFS traversal (only when not already truncated from initial load)
+    -- BFS traversal: discover new nodes via edges (only when not already truncated)
+    -- Note: edges are NOT accumulated here. We fetch all edges in a single query at the end
+    -- to guarantee that every edge has both endpoints in the returned node set.
     WHILE v_depth < p_max_depth AND array_length(v_frontier, 1) > 0 AND NOT v_is_truncated LOOP
         v_next_frontier := '{}';
 
-        -- Get all edges from current frontier
+        -- Traverse edges from current frontier to discover neighbors
         FOR rec IN
-            SELECT DISTINCT e.source_id, e.target_id, e.properties
+            SELECT DISTINCT e.source_id, e.target_id
             FROM lightrag_graph_edges e
             WHERE e.workspace = p_workspace
               AND (e.source_id = ANY(v_frontier) OR e.target_id = ANY(v_frontier))
         LOOP
-            -- Add edge to results
-            v_edges := v_edges || jsonb_build_object(
-                'id', rec.source_id || '-' || rec.target_id,
-                'type', COALESCE(rec.properties->>'relationship', 'related_to'),
-                'source', rec.source_id,
-                'target', rec.target_id,
-                'properties', rec.properties
-            );
-
-            -- Check neighbors
+            -- Discover unvisited neighbors
             IF NOT rec.target_id = ANY(v_visited) THEN
                 IF array_length(v_visited, 1) + 1 > p_max_nodes THEN
                     v_is_truncated := TRUE;
@@ -112,49 +88,43 @@ BEGIN
             END IF;
         END LOOP;
 
-        -- Add new frontier nodes to result
-        IF array_length(v_next_frontier, 1) > 0 THEN
-            SELECT v_nodes || COALESCE(jsonb_agg(
-                jsonb_build_object(
-                    'id', n.node_id,
-                    'labels', jsonb_build_array(COALESCE(n.properties->>'entity_type', 'entity')),
-                    'properties', n.properties
-                )
-            ), '[]'::jsonb)
-            INTO v_nodes
-            FROM lightrag_graph_nodes n
-            WHERE n.workspace = p_workspace AND n.node_id = ANY(v_next_frontier);
-        END IF;
-
         v_frontier := v_next_frontier;
         v_depth := v_depth + 1;
     END LOOP;
 
-    -- Always fetch edges between ALL visited nodes.
-    -- This is critical when the initial node load already hit max_nodes (truncated),
-    -- because the BFS loop above is skipped in that case, leaving v_edges empty.
-    -- Even when BFS did run, this ensures we capture edges between initial nodes
-    -- that were not traversed via the frontier expansion.
-    IF v_edges = '[]'::jsonb OR v_is_truncated THEN
-        SELECT COALESCE(jsonb_agg(
-            jsonb_build_object(
-                'id', e.source_id || '-' || e.target_id,
-                'type', COALESCE(e.properties->>'relationship', 'related_to'),
-                'source', e.source_id,
-                'target', e.target_id,
-                'properties', e.properties
-            )
-        ), '[]'::jsonb)
-        INTO v_edges
-        FROM lightrag_graph_edges e
-        WHERE e.workspace = p_workspace
-          AND e.source_id = ANY(v_visited)
-          AND e.target_id = ANY(v_visited);
-    END IF;
+    -- Build nodes JSONB from all visited node IDs
+    SELECT COALESCE(jsonb_agg(
+        jsonb_build_object(
+            'id', n.node_id,
+            'labels', jsonb_build_array(COALESCE(n.properties->>'entity_type', 'entity')),
+            'properties', n.properties
+        )
+    ), '[]'::jsonb)
+    INTO v_nodes
+    FROM lightrag_graph_nodes n
+    WHERE n.workspace = p_workspace AND n.node_id = ANY(v_visited);
+
+    -- Fetch ALL edges where BOTH endpoints are in the visited set.
+    -- This guarantees no orphan edges (edges referencing nodes not in the result),
+    -- which would crash frontend graph renderers like d3.js force layout.
+    SELECT COALESCE(jsonb_agg(
+        jsonb_build_object(
+            'id', e.source_id || '-' || e.target_id,
+            'type', COALESCE(e.properties->>'relationship', 'related_to'),
+            'source', e.source_id,
+            'target', e.target_id,
+            'properties', e.properties
+        )
+    ), '[]'::jsonb)
+    INTO v_edges
+    FROM lightrag_graph_edges e
+    WHERE e.workspace = p_workspace
+      AND e.source_id = ANY(v_visited)
+      AND e.target_id = ANY(v_visited);
 
     RETURN jsonb_build_object(
-        'nodes', COALESCE(v_nodes, '[]'::jsonb),
-        'edges', COALESCE(v_edges, '[]'::jsonb),
+        'nodes', v_nodes,
+        'edges', v_edges,
         'is_truncated', v_is_truncated
     );
 END;
