@@ -362,6 +362,9 @@ def create_app(args):
     # Check if API key is provided either through env var or args
     api_key = os.getenv("LIGHTRAG_API_KEY") or args.key
 
+    # Track whether any authentication is configured (used to disable unprotected webui)
+    auth_configured = bool(api_key) or bool(getattr(args, "auth_accounts", ""))
+
     # Initialize document manager with workspace support for data isolation
     doc_manager = DocumentManager(args.input_dir, workspace=args.workspace)
 
@@ -1317,7 +1320,7 @@ def create_app(args):
     @app.get("/")
     async def redirect_to_webui():
         """Redirect root path based on WebUI availability"""
-        if webui_assets_exist:
+        if webui_assets_exist and not auth_configured:
             return RedirectResponse(url="/webui")
         else:
             return RedirectResponse(url="/docs")
@@ -1441,7 +1444,7 @@ def create_app(args):
 
             return {
                 "status": "healthy",
-                "webui_available": webui_assets_exist,
+                "webui_available": webui_assets_exist and not auth_configured,
                 "working_directory": str(args.working_dir),
                 "input_directory": str(args.input_dir),
                 "configuration": {
@@ -2004,8 +2007,10 @@ def create_app(args):
             name="swagger-ui-static",
         )
 
-    # Conditionally mount WebUI only if assets exist
-    if webui_assets_exist:
+    # Conditionally mount WebUI only if assets exist AND no auth is configured.
+    # When API key or user accounts are configured, the webui is disabled because
+    # app.mount() does not support FastAPI dependencies (no auth possible on static files).
+    if webui_assets_exist and not auth_configured:
         static_dir = Path(__file__).parent / "webui"
         static_dir.mkdir(exist_ok=True)
         app.mount(
@@ -2017,13 +2022,19 @@ def create_app(args):
         )
         logger.info("WebUI assets mounted at /webui")
     else:
-        logger.info("WebUI assets not available, /webui route not mounted")
+        if auth_configured:
+            logger.info(
+                "WebUI disabled: authentication is configured but /webui "
+                "cannot be protected (static mount does not support auth dependencies)"
+            )
+        else:
+            logger.info("WebUI assets not available, /webui route not mounted")
 
-        # Add redirect for /webui when assets are not available
+        # Add redirect for /webui when assets are not available or disabled
         @app.get("/webui")
         @app.get("/webui/")
         async def webui_redirect_to_docs():
-            """Redirect /webui to /docs when WebUI is not available"""
+            """Redirect /webui to /docs when WebUI is not available or disabled"""
             return RedirectResponse(url="/docs")
 
     return app
