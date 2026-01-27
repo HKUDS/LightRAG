@@ -21,6 +21,7 @@ Architecture:
 import asyncio
 import os
 import socket
+from contextlib import asynccontextmanager
 from typing import Any, Optional
 
 from .utils import logger
@@ -72,7 +73,7 @@ class InstanceRegistry:
 
     def __init__(
         self,
-        pool,  # asyncpg connection pool
+        db,  # PostgreSQLDB instance (has pool + _ensure_pool for recovery)
         instance_id: Optional[str] = None,
         heartbeat_interval: int = 30,
         drain_poll_interval: int = 5,
@@ -82,13 +83,13 @@ class InstanceRegistry:
         Initialize the instance registry.
 
         Args:
-            pool: asyncpg connection pool
+            db: PostgreSQLDB instance (provides pool with auto-reconnection)
             instance_id: Unique ID for this instance (auto-generated if None)
             heartbeat_interval: Seconds between heartbeat updates
             drain_poll_interval: Seconds between drain status polls
             dead_instance_timeout: Seconds after which an instance is considered dead
         """
-        self.pool = pool
+        self._db = db
         self.instance_id = instance_id or generate_instance_id()
         self.hostname = socket.gethostname()
         self.heartbeat_interval = heartbeat_interval
@@ -102,9 +103,19 @@ class InstanceRegistry:
         # Callback for when drain is requested
         self._on_drain_requested: Optional[callable] = None
 
+    @asynccontextmanager
+    async def _acquire_connection(self):
+        """Safely acquire a connection, ensuring pool is available.
+
+        Calls _ensure_pool() to recreate the pool if it was closed.
+        """
+        await self._db._ensure_pool()
+        async with self._db.pool.acquire() as conn:
+            yield conn
+
     async def initialize(self) -> None:
         """Initialize the registry table if it doesn't exist."""
-        async with self.pool.acquire() as conn:
+        async with self._acquire_connection() as conn:
             # Create table
             await conn.execute(INSTANCE_REGISTRY_TABLE["LIGHTRAG_INSTANCES"]["ddl"])
 
@@ -120,7 +131,7 @@ class InstanceRegistry:
 
     async def register(self) -> None:
         """Register this instance in the database."""
-        async with self.pool.acquire() as conn:
+        async with self._acquire_connection() as conn:
             await conn.execute(
                 """
                 INSERT INTO LIGHTRAG_INSTANCES (instance_id, hostname, started_at, last_heartbeat)
@@ -140,7 +151,7 @@ class InstanceRegistry:
 
     async def unregister(self) -> None:
         """Unregister this instance from the database."""
-        async with self.pool.acquire() as conn:
+        async with self._acquire_connection() as conn:
             await conn.execute(
                 "DELETE FROM LIGHTRAG_INSTANCES WHERE instance_id = $1",
                 self.instance_id,
@@ -154,7 +165,7 @@ class InstanceRegistry:
         pipeline_busy: bool = False,
     ) -> None:
         """Send a heartbeat update."""
-        async with self.pool.acquire() as conn:
+        async with self._acquire_connection() as conn:
             await conn.execute(
                 """
                 UPDATE LIGHTRAG_INSTANCES
@@ -174,7 +185,7 @@ class InstanceRegistry:
         Returns:
             Tuple of (drain_requested, drain_reason)
         """
-        async with self.pool.acquire() as conn:
+        async with self._acquire_connection() as conn:
             row = await conn.fetchrow(
                 """
                 SELECT drain_requested, drain_reason
@@ -206,7 +217,7 @@ class InstanceRegistry:
         Returns:
             List of instance IDs marked for drain
         """
-        async with self.pool.acquire() as conn:
+        async with self._acquire_connection() as conn:
             # Select N instances to drain (newest first, skip the oldest = primary)
             # Use FOR UPDATE SKIP LOCKED to prevent race conditions
             result = await conn.fetch(
@@ -243,7 +254,7 @@ class InstanceRegistry:
         Returns:
             Number of instances that had drain cancelled
         """
-        async with self.pool.acquire() as conn:
+        async with self._acquire_connection() as conn:
             result = await conn.execute(
                 """
                 UPDATE LIGHTRAG_INSTANCES
@@ -262,7 +273,7 @@ class InstanceRegistry:
 
     async def get_all_instances(self) -> list[dict[str, Any]]:
         """Get status of all registered instances."""
-        async with self.pool.acquire() as conn:
+        async with self._acquire_connection() as conn:
             rows = await conn.fetch(
                 """
                 SELECT
@@ -324,7 +335,7 @@ class InstanceRegistry:
         Returns:
             Number of instances removed
         """
-        async with self.pool.acquire() as conn:
+        async with self._acquire_connection() as conn:
             result = await conn.execute(
                 f"""
                 DELETE FROM LIGHTRAG_INSTANCES
