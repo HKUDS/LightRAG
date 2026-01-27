@@ -1416,7 +1416,7 @@ async def _rebuild_single_relationship(
             f"...{file_path_placeholder}...({limit_method} {max_file_paths}/{original_count})"
         )
         logger.info(
-            f"Limited `{src}`- `{tgt}``: file_path {original_count} -> {max_file_paths} ({limit_method})"
+            f"Limited `{src}`~`{tgt}`: file_path {original_count} -> {max_file_paths} ({limit_method})"
         )
 
     # Remove duplicates while preserving order
