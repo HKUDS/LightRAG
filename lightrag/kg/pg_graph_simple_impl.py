@@ -774,9 +774,15 @@ class PGGraphStorageSimple(BaseGraphStorage):
         """Retrieve knowledge graph using Python-based BFS (fallback method).
 
         This is slower due to multiple round-trips but works without the stored procedure.
+
+        Strategy:
+        1. BFS traversal to discover nodes (no edge accumulation during BFS)
+        2. Single final query to fetch all edges where BOTH endpoints are in the node set
+
+        This guarantees no orphan edges (edges referencing nodes not in the result),
+        which would crash frontend graph renderers like d3.js force layout.
         """
         nodes_dict: dict[str, KnowledgeGraphNode] = {}
-        edges_dict: dict[str, KnowledgeGraphEdge] = {}  # Use dict to deduplicate edges
         is_truncated = False
 
         async with self._acquire_connection() as conn:
@@ -810,7 +816,6 @@ class PGGraphStorageSimple(BaseGraphStorage):
                     props = row["properties"]
                     if isinstance(props, str):
                         props = json.loads(props)
-                    # Extract entity_type for labels, default to "entity"
                     entity_type = (props or {}).get("entity_type", "entity")
                     nodes_dict[node_id] = KnowledgeGraphNode(
                         id=node_id,
@@ -818,7 +823,7 @@ class PGGraphStorageSimple(BaseGraphStorage):
                         properties=props or {},
                     )
 
-            # BFS traversal (only expands to new nodes when not already truncated)
+            # BFS traversal: discover new nodes only (edges fetched at the end)
             for depth in range(max_depth):
                 if not frontier or len(nodes_dict) >= max_nodes:
                     if len(nodes_dict) >= max_nodes:
@@ -831,35 +836,19 @@ class PGGraphStorageSimple(BaseGraphStorage):
                         is_truncated = True
                         break
 
-                    # Get edges for current node
+                    # Get neighbor IDs from edges
                     edges_query = """
-                        SELECT source_id, target_id, properties FROM LIGHTRAG_GRAPH_EDGES
+                        SELECT source_id, target_id FROM LIGHTRAG_GRAPH_EDGES
                         WHERE workspace = $1 AND (source_id = $2 OR target_id = $2)
                     """
                     edge_rows = await conn.fetch(edges_query, self.workspace, node_id)
 
                     for edge_row in edge_rows:
-                        source_id = edge_row["source_id"]
-                        target_id = edge_row["target_id"]
-                        edge_props = edge_row["properties"]
-                        if isinstance(edge_props, str):
-                            edge_props = json.loads(edge_props)
-
-                        # Add edge (use normalized key for deduplication)
-                        edge_type = (edge_props or {}).get("relationship", "related_to")
-                        # Normalize edge key (alphabetically) for deduplication
-                        edge_key = f"{min(source_id, target_id)}-{max(source_id, target_id)}"
-                        if edge_key not in edges_dict:
-                            edges_dict[edge_key] = KnowledgeGraphEdge(
-                                id=f"{source_id}-{target_id}",
-                                type=edge_type,
-                                source=source_id,
-                                target=target_id,
-                                properties=edge_props or {},
-                            )
-
-                        # Add neighbor node if not visited
-                        neighbor_id = target_id if source_id == node_id else source_id
+                        neighbor_id = (
+                            edge_row["target_id"]
+                            if edge_row["source_id"] == node_id
+                            else edge_row["source_id"]
+                        )
                         if neighbor_id not in visited:
                             if len(nodes_dict) >= max_nodes:
                                 is_truncated = True
@@ -868,18 +857,14 @@ class PGGraphStorageSimple(BaseGraphStorage):
                             next_frontier.append(neighbor_id)
 
                             # Fetch neighbor properties
-                            neighbor_query = """
-                                SELECT properties FROM LIGHTRAG_GRAPH_NODES
-                                WHERE workspace = $1 AND node_id = $2
-                            """
                             neighbor_row = await conn.fetchrow(
-                                neighbor_query, self.workspace, neighbor_id
+                                "SELECT properties FROM LIGHTRAG_GRAPH_NODES WHERE workspace = $1 AND node_id = $2",
+                                self.workspace, neighbor_id,
                             )
                             if neighbor_row:
                                 n_props = neighbor_row["properties"]
                                 if isinstance(n_props, str):
                                     n_props = json.loads(n_props)
-                                # Extract entity_type for labels, default to "entity"
                                 n_entity_type = (n_props or {}).get("entity_type", "entity")
                                 nodes_dict[neighbor_id] = KnowledgeGraphNode(
                                     id=neighbor_id,
@@ -889,10 +874,11 @@ class PGGraphStorageSimple(BaseGraphStorage):
 
                 frontier = next_frontier
 
-            # When BFS was skipped (truncated from initial load), fetch edges
-            # between the loaded nodes so the graph has connections.
-            if is_truncated and not edges_dict:
-                all_node_ids = list(nodes_dict.keys())
+            # Fetch ALL edges where BOTH endpoints are in the visited node set.
+            # This guarantees no orphan edges that would crash the frontend.
+            all_node_ids = list(nodes_dict.keys())
+            edges_dict: dict[str, KnowledgeGraphEdge] = {}
+            if all_node_ids:
                 edges_query = """
                     SELECT source_id, target_id, properties FROM LIGHTRAG_GRAPH_EDGES
                     WHERE workspace = $1
