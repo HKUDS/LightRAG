@@ -52,31 +52,28 @@ export default function SanitizeData() {
   const [loadingTypes, setLoadingTypes] = useState(false);
   const [modalFilterText, setModalFilterText] = useState('');
 
+  // State used to select all of a particular entity type.
+  const [filterBySelectedType, setFilterBySelectedType] = useState(false);
+
   // For loading the Select Type modal window
   const fetchAllTypes = async () => {
     setLoadingTypes(true);
     try {
-      // 1. Get all entity names
       const listRes = await axios.get(`${API_BASE}/graph/label/list`);
       const entityNames = listRes.data as string[];
       
-      // 2. Fetch types for each name (in parallel)
-      // Note: If you have thousands of entities, we may need to chunk this later.
-      const typeSet = new Set<string>();
-      
+      // We use fetchEntityDetail for every entity. 
+      // This populates the cache with FULL data (Desc, Source, Rel, etc.)
       await Promise.all(
-        entityNames.map(async (name) => {
-          try {
-            const detailRes = await axios.get(
-              `${API_BASE}/graphs?label=${encodeURIComponent(name)}&max_depth=1&max_nodes=1`
-            );
-            const type = detailRes.data.nodes?.[0]?.properties?.entity_type;
-            if (type) typeSet.add(type);
-          } catch (err) {
-            console.error(`Error fetching type for ${name}:`, err);
-          }
-        })
+        entityNames.map((name) => fetchEntityDetail(name))
       );
+
+      // After all fetches are done, we extract the unique types from the cache
+      const typeSet = new Set<string>();
+      entityNames.forEach(name => {
+        const type = entityDetails[name]?.type;
+        if (type) typeSet.add(type);
+      });
 
       setAllEntityTypes(Array.from(typeSet).sort());
     } catch (err) {
@@ -124,15 +121,24 @@ export default function SanitizeData() {
 
       setRowsPerPage(calculated);
     };
-
     updateRowsPerPage();
     window.addEventListener('resize', updateRowsPerPage);
     return () => window.removeEventListener('resize', updateRowsPerPage);
   }, [entities, filterText]);
 
-  const filteredEntities = entities.filter((e) =>
-    e.toLowerCase().includes(filterText.toLowerCase())
-  );
+  const filteredEntities = entities.filter((e) => {
+    // 1. Text Search Filter (the one you already had)
+    const matchesText = e.toLowerCase().includes(filterText.toLowerCase());
+
+    // 2. Type Filter (the new logic)
+    let matchesType = true;
+    if (filterBySelectedType && entityType) {
+      // Check if we have the details for this entity and if the type matches
+      matchesType = entityDetails[e]?.type === entityType;
+    }
+
+    return matchesText && matchesType;
+  });
 
   const totalPages = Math.max(1, Math.ceil(filteredEntities.length / rowsPerPage));
   const startIndex = (currentPage - 1) * rowsPerPage;
@@ -221,7 +227,7 @@ export default function SanitizeData() {
 
   const fetchEntityDetail = async (entityName: string, force = false) => {
 
-    console.log(`fetchEntityDetail called for: "${entityName}"`);
+    // console.log(`fetchEntityDetail called for: "${entityName}"`);
 
     // Skip if we already have it
     //if (entityDetails[entityName]) return;
@@ -230,18 +236,18 @@ export default function SanitizeData() {
       return;
     }
 
-    console.log(`Fetching details for "${entityName}"...`);
+    // console.log(`Fetching details for "${entityName}"...`);
 
     setLoadingDetails((prev) => [...prev, entityName]);
 
     try {
-      console.log("Making axios request...");
+      ///console.log("Making axios request...");
       const encodedName = encodeURIComponent(entityName);
       const url = `${API_BASE}/graphs?label=${encodedName}&max_depth=1&max_nodes=20000`;
-      console.log("Request URL:", url);
+      // console.log("Request URL:", url);
 
     const response = await axios.get(url);
-    console.log("Response received:", response.status, response.data);
+    // console.log("Response received:", response.status, response.data);
 
       const data = response.data;
 
@@ -283,7 +289,7 @@ export default function SanitizeData() {
         });
       });
 
-      // Store the parsed data
+      // Store the parsed data using the functional update pattern
       setEntityDetails((prev) => ({
         ...prev,
         [entityName]: {
@@ -295,6 +301,12 @@ export default function SanitizeData() {
           relationships: edges,
         },
       }));
+      // EXTRA STEP: Also update allEntityTypes so the modal list grows as it fetches
+      if (mainType) {
+        setAllEntityTypes((prev) => 
+          prev.includes(mainType) ? prev : [...prev, mainType].sort()
+        );
+      }
     } catch (err) {
       console.error(`Error fetching "${entityName}":`, err);  
       // Optional: store error state
@@ -506,8 +518,16 @@ export default function SanitizeData() {
                   onChange={(e) => setFilterText(e.target.value)}
                 />
                 <div className="flex flex-wrap gap-1">
-                  <button className="px-2 py-0.5 bg-gray-100 hover:bg-gray-200 border border-gray-300 rounded text-xs">
-                    All Of Type
+                  <button 
+                    onClick={() => setFilterBySelectedType(!filterBySelectedType)}
+                    className={`px-2 py-0.5 border rounded text-xs transition-colors ${
+                      filterBySelectedType 
+                        ? 'bg-blue-600 text-white border-blue-700' 
+                        : 'bg-gray-100 hover:bg-gray-200 border-gray-300 text-gray-800'
+                    }`}
+                    title={entityType ? `Show only ${entityType} entities` : "Select a type first"}
+                  >
+                    {filterBySelectedType ? 'Showing Type' : 'All Of Type'}
                   </button>
                   <button className="px-2 py-0.5 bg-gray-100 hover:bg-gray-200 border border-gray-300 rounded text-xs">
                     Orphans
