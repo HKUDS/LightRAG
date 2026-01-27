@@ -1560,7 +1560,7 @@ class ClientManager:
             ),
             "max_connections": os.environ.get(
                 "POSTGRES_MAX_CONNECTIONS",
-                config.get("postgres", "max_connections", fallback=10),
+                config.get("postgres", "max_connections", fallback=5),
             ),
             "min_connections": os.environ.get(
                 "POSTGRES_MIN_CONNECTIONS",
