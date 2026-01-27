@@ -62,6 +62,10 @@ class PostgreSQLDB:
         self.database = config["database"]
         self.workspace = config["workspace"]
         self.max = int(config["max_connections"])
+        self.min = int(config.get("min_connections", 1))
+        self.max_inactive_connection_lifetime = float(
+            config.get("max_inactive_connection_lifetime", 300.0)
+        )
         self.increment = 1
         self.pool: Pool | None = None
 
@@ -114,6 +118,12 @@ class PostgreSQLDB:
             config["connection_retry_backoff_max"],
         )
         self.pool_close_timeout = config["pool_close_timeout"]
+        logger.info(
+            "PostgreSQL, Pool config: min_size=%s, max_size=%s, max_inactive_lifetime=%.0fs",
+            self.min,
+            self.max,
+            self.max_inactive_connection_lifetime,
+        )
         logger.info(
             "PostgreSQL, Retry config: attempts=%s, backoff=%.1fs, backoff_max=%.1fs, pool_close_timeout=%.1fs",
             self.connection_retry_attempts,
@@ -200,8 +210,9 @@ class PostgreSQLDB:
             "database": self.database,
             "host": self.host,
             "port": self.port,
-            "min_size": 1,
+            "min_size": self.min,
             "max_size": self.max,
+            "max_inactive_connection_lifetime": self.max_inactive_connection_lifetime,
         }
 
         # Only add statement_cache_size if it's configured
@@ -1549,7 +1560,15 @@ class ClientManager:
             ),
             "max_connections": os.environ.get(
                 "POSTGRES_MAX_CONNECTIONS",
-                config.get("postgres", "max_connections", fallback=50),
+                config.get("postgres", "max_connections", fallback=10),
+            ),
+            "min_connections": os.environ.get(
+                "POSTGRES_MIN_CONNECTIONS",
+                config.get("postgres", "min_connections", fallback=1),
+            ),
+            "max_inactive_connection_lifetime": os.environ.get(
+                "POSTGRES_MAX_INACTIVE_CONNECTION_LIFETIME",
+                config.get("postgres", "max_inactive_connection_lifetime", fallback=300.0),
             ),
             # SSL configuration
             "ssl_mode": os.environ.get(
