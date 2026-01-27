@@ -26,7 +26,7 @@ from dataclasses import asdict
 
 from lightrag import LightRAG
 from lightrag.base import DeletionResult, DocProcessingStatus, DocStatus
-from lightrag.utils import generate_track_id
+from lightrag.utils import generate_track_id, sanitize_text_for_encoding, compute_mdhash_id
 from lightrag.operate import rebuild_knowledge_from_chunks
 from lightrag.api.utils_api import get_combined_auth_dependency
 from lightrag.api.workspace_manager import get_rag, get_workspace_pool
@@ -293,6 +293,14 @@ class InsertResponse(BaseModel):
     )
     message: str = Field(description="Message describing the operation result")
     track_id: str = Field(description="Tracking ID for monitoring processing status")
+    doc_id: Optional[str] = Field(
+        default=None,
+        description="Document ID (for duplicates: the original doc_id)",
+    )
+    original_status: Optional[str] = Field(
+        default=None,
+        description="Status of the original document (for duplicates)",
+    )
 
     class Config:
         json_schema_extra = {
@@ -2372,6 +2380,23 @@ def create_document_routes(
                         track_id="",
                     )
 
+            # Check if content already exists (synchronous content-hash check)
+            try:
+                sanitized = sanitize_text_for_encoding(request.text)
+                doc_id = compute_mdhash_id(sanitized, prefix="doc-")
+                existing_doc = await rag.doc_status.get_by_id(doc_id)
+                if existing_doc and existing_doc.get("status") != "failed":
+                    return InsertResponse(
+                        status="duplicated",
+                        message=f"Content already exists (Status: {existing_doc.get('status', 'unknown')}).",
+                        track_id=existing_doc.get("track_id", ""),
+                        doc_id=doc_id,
+                        original_status=existing_doc.get("status", "unknown"),
+                    )
+            except Exception as e:
+                # Non-blocking: if hash check fails, fall through to normal processing
+                logger.warning(f"Content hash check failed, proceeding with normal flow: {e}")
+
             # Generate track_id for text insertion
             track_id = generate_track_id("insert")
 
@@ -2439,6 +2464,29 @@ def create_document_routes(
                                 message=f"File source '{file_source}' already exists in document storage (Status: {status}).",
                                 track_id="",
                             )
+
+            # Check content hashes for all texts (synchronous duplicate detection)
+            if request.texts:
+                for i, text in enumerate(request.texts):
+                    try:
+                        sanitized = sanitize_text_for_encoding(text)
+                        doc_id = compute_mdhash_id(sanitized, prefix="doc-")
+                        existing_doc = await rag.doc_status.get_by_id(doc_id)
+                        if existing_doc and existing_doc.get("status") != "failed":
+                            file_source = (
+                                request.file_sources[i]
+                                if request.file_sources and i < len(request.file_sources)
+                                else "unknown"
+                            )
+                            return InsertResponse(
+                                status="duplicated",
+                                message=f"Content of text #{i+1} ('{file_source}') already exists (Status: {existing_doc.get('status', 'unknown')}).",
+                                track_id=existing_doc.get("track_id", ""),
+                                doc_id=doc_id,
+                                original_status=existing_doc.get("status", "unknown"),
+                            )
+                    except Exception:
+                        continue  # Non-blocking: proceed with normal processing
 
             # Generate track_id for texts insertion
             track_id = generate_track_id("insert")
