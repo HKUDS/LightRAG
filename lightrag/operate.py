@@ -2875,14 +2875,20 @@ async def extract_entities(
             # Calculate total tokens for the gleaning request to prevent context window overflow
             tokenizer = global_config["tokenizer"]
             max_input_tokens = int(os.environ.get("MAX_EXTRACT_INPUT_TOKENS", 20480))
-            
+
             # Estimate total tokens: System Prompt + History (Previous Round) + Current User Prompt
             history_str = json.dumps(history, ensure_ascii=False)
-            full_context_str = entity_extraction_system_prompt + history_str + entity_continue_extraction_user_prompt
+            full_context_str = (
+                entity_extraction_system_prompt
+                + history_str
+                + entity_continue_extraction_user_prompt
+            )
             token_count = len(tokenizer.encode(full_context_str))
-            
+
             if token_count > max_input_tokens:
-                logger.warning(f"Gleaning stopped for chunk {chunk_key}: Input tokens ({token_count}) exceeded limit ({max_input_tokens}).")
+                logger.warning(
+                    f"Gleaning stopped for chunk {chunk_key}: Input tokens ({token_count}) exceeded limit ({max_input_tokens})."
+                )
             else:
                 glean_result, timestamp = await use_llm_func_with_cache(
                     entity_continue_extraction_user_prompt,
@@ -2912,7 +2918,9 @@ async def extract_entities(
                         original_desc_len = len(
                             maybe_nodes[entity_name][0].get("description", "") or ""
                         )
-                        glean_desc_len = len(glean_entities[0].get("description", "") or "")
+                        glean_desc_len = len(
+                            glean_entities[0].get("description", "") or ""
+                        )
 
                         if glean_desc_len > original_desc_len:
                             maybe_nodes[entity_name] = list(glean_entities)
@@ -2927,7 +2935,9 @@ async def extract_entities(
                         original_desc_len = len(
                             maybe_edges[edge_key][0].get("description", "") or ""
                         )
-                        glean_desc_len = len(glean_edges[0].get("description", "") or "")
+                        glean_desc_len = len(
+                            glean_edges[0].get("description", "") or ""
+                        )
 
                         if glean_desc_len > original_desc_len:
                             maybe_edges[edge_key] = list(glean_edges)
