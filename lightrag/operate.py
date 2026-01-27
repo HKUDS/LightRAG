@@ -1952,39 +1952,37 @@ async def _merge_edges_then_upsert(
     already_keywords = []
     already_file_paths = []
 
-    # 1. Get existing edge data from graph storage
-    if await knowledge_graph_inst.has_edge(src_id, tgt_id):
-        already_edge = await knowledge_graph_inst.get_edge(src_id, tgt_id)
-        # Handle the case where get_edge returns None or missing fields
-        if already_edge:
-            # Get weight with default 1.0 if missing
-            already_weights.append(already_edge.get("weight", 1.0))
+    # 1. Get existing edge data from graph storage (single call, no redundant has_edge)
+    already_edge = await knowledge_graph_inst.get_edge(src_id, tgt_id)
+    if already_edge:
+        # Get weight with default 1.0 if missing
+        already_weights.append(already_edge.get("weight", 1.0))
 
-            # Get source_id with empty string default if missing or None
-            if already_edge.get("source_id") is not None:
-                already_source_ids.extend(
-                    already_edge["source_id"].split(GRAPH_FIELD_SEP)
-                )
+        # Get source_id with empty string default if missing or None
+        if already_edge.get("source_id") is not None:
+            already_source_ids.extend(
+                already_edge["source_id"].split(GRAPH_FIELD_SEP)
+            )
 
-            # Get file_path with empty string default if missing or None
-            if already_edge.get("file_path") is not None:
-                already_file_paths.extend(
-                    already_edge["file_path"].split(GRAPH_FIELD_SEP)
-                )
+        # Get file_path with empty string default if missing or None
+        if already_edge.get("file_path") is not None:
+            already_file_paths.extend(
+                already_edge["file_path"].split(GRAPH_FIELD_SEP)
+            )
 
-            # Get description with empty string default if missing or None
-            if already_edge.get("description") is not None:
-                already_description.extend(
-                    already_edge["description"].split(GRAPH_FIELD_SEP)
-                )
+        # Get description with empty string default if missing or None
+        if already_edge.get("description") is not None:
+            already_description.extend(
+                already_edge["description"].split(GRAPH_FIELD_SEP)
+            )
 
-            # Get keywords with empty string default if missing or None
-            if already_edge.get("keywords") is not None:
-                already_keywords.extend(
-                    split_string_by_multi_markers(
-                        already_edge["keywords"], [GRAPH_FIELD_SEP]
-                    )
+        # Get keywords with empty string default if missing or None
+        if already_edge.get("keywords") is not None:
+            already_keywords.extend(
+                split_string_by_multi_markers(
+                    already_edge["keywords"], [GRAPH_FIELD_SEP]
                 )
+            )
 
     new_source_ids = [dp["source_id"] for dp in edges_data if dp.get("source_id")]
 

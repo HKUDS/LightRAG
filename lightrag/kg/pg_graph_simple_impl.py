@@ -14,6 +14,7 @@ Tables:
 import json
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, final
 
 from lightrag.base import BaseGraphStorage
@@ -144,11 +145,39 @@ class PGGraphStorageSimple(BaseGraphStorage):
                         logger.error(f"Error creating table {table_name}: {e}")
                         raise
 
+            # Deploy stored procedures (best-effort, non-blocking)
+            await self._deploy_stored_procedures()
+
     async def finalize(self):
         """Release database connection."""
         if self.db is not None:
             await ClientManager.release_client(self.db)
             self.db = None
+
+    async def _deploy_stored_procedures(self) -> None:
+        """Deploy SQL stored procedures from the sql/ directory.
+
+        Uses CREATE OR REPLACE FUNCTION so it's safe to run on every startup.
+        Failures are logged as warnings and do not block initialization.
+        """
+        sql_dir = Path(__file__).parent / "sql"
+        if not sql_dir.exists():
+            return
+
+        sql_files = sorted(sql_dir.glob("*.sql"))
+        if not sql_files:
+            return
+
+        async with self._acquire_connection() as conn:
+            for sql_file in sql_files:
+                try:
+                    sql = sql_file.read_text(encoding="utf-8")
+                    await conn.execute(sql)
+                    logger.info(f"[{self.workspace}] Deployed stored procedure: {sql_file.name}")
+                except Exception as e:
+                    logger.warning(
+                        f"[{self.workspace}] Could not deploy {sql_file.name}: {e}"
+                    )
 
     async def index_done_callback(self) -> None:
         """Called when indexing is complete. PostgreSQL handles persistence automatically."""
@@ -320,23 +349,44 @@ class PGGraphStorageSimple(BaseGraphStorage):
             return None
 
     async def edge_degree(self, src_id: str, tgt_id: str) -> int:
-        """Get total degree of an edge (sum of source and target node degrees)."""
-        src_degree = await self.node_degree(src_id)
-        tgt_degree = await self.node_degree(tgt_id)
-        return src_degree + tgt_degree
+        """Get total degree of an edge (sum of source and target node degrees).
+
+        Uses a single SQL query instead of two separate node_degree() calls.
+        """
+        query = """
+            SELECT COALESCE(SUM(cnt), 0)::int AS total FROM (
+                SELECT COUNT(*) AS cnt FROM LIGHTRAG_GRAPH_EDGES
+                WHERE workspace = $1 AND (source_id = $2 OR target_id = $2)
+                UNION ALL
+                SELECT COUNT(*) AS cnt FROM LIGHTRAG_GRAPH_EDGES
+                WHERE workspace = $1 AND (source_id = $3 OR target_id = $3)
+            ) sub
+        """
+        async with self._acquire_connection() as conn:
+            return await conn.fetchval(query, self.workspace, src_id, tgt_id)
 
     async def get_node_edges(self, source_node_id: str) -> list[tuple[str, str]] | None:
-        """Get all edges connected to a node."""
-        if not await self.has_node(source_node_id):
-            return None
+        """Get all edges connected to a node.
 
+        Uses a single connection: queries edges first, and only checks node
+        existence when no edges are found (to distinguish "no edges" from
+        "node not found").
+        """
         query = """
             SELECT source_id, target_id FROM LIGHTRAG_GRAPH_EDGES
             WHERE workspace = $1 AND (source_id = $2 OR target_id = $2)
         """
         async with self._acquire_connection() as conn:
             rows = await conn.fetch(query, self.workspace, source_node_id)
-            return [(row["source_id"], row["target_id"]) for row in rows]
+            if rows:
+                return [(row["source_id"], row["target_id"]) for row in rows]
+            # No edges found — check if node exists at all
+            exists = await conn.fetchval(
+                "SELECT 1 FROM LIGHTRAG_GRAPH_NODES WHERE workspace = $1 AND node_id = $2",
+                self.workspace,
+                source_node_id,
+            )
+            return [] if exists else None
 
     async def upsert_edge(
         self, source_node_id: str, target_node_id: str, edge_data: dict[str, str]
@@ -380,24 +430,31 @@ class PGGraphStorageSimple(BaseGraphStorage):
         logger.debug(f"[{self.workspace}] Batch upserted {len(edges)} edges")
 
     async def remove_edges(self, edges: list[tuple[str, str]]) -> None:
-        """Delete multiple edges."""
+        """Delete multiple edges in a single SQL statement.
+
+        Uses ANY() arrays to batch-delete all edges instead of
+        individual DELETE statements per edge.
+        """
         if not edges:
             return
 
+        src_ids = [s for s, t in edges]
+        tgt_ids = [t for s, t in edges]
+
         async with self._acquire_connection() as conn:
-            for source_id, target_id in edges:
-                # Try both directions since graph is undirected
-                await conn.execute(
-                    """
-                    DELETE FROM LIGHTRAG_GRAPH_EDGES
-                    WHERE workspace = $1
-                      AND ((source_id = $2 AND target_id = $3)
-                           OR (source_id = $3 AND target_id = $2))
-                    """,
-                    self.workspace,
-                    source_id,
-                    target_id,
-                )
+            await conn.execute(
+                """
+                DELETE FROM LIGHTRAG_GRAPH_EDGES
+                WHERE workspace = $1
+                  AND (
+                      (source_id = ANY($2) AND target_id = ANY($3))
+                      OR (source_id = ANY($3) AND target_id = ANY($2))
+                  )
+                """,
+                self.workspace,
+                src_ids,
+                tgt_ids,
+            )
         logger.debug(f"[{self.workspace}] Deleted {len(edges)} edges")
 
     # ========== Batch Operations ==========
@@ -445,21 +502,68 @@ class PGGraphStorageSimple(BaseGraphStorage):
                 result[row["node_id"]] = row["degree"]
             return result
 
+    async def edge_degrees_batch(
+        self, edge_pairs: list[tuple[str, str]]
+    ) -> dict[tuple[str, str], int]:
+        """Get edge degrees for multiple edges in a single query.
+
+        Collects all unique node IDs, fetches their degrees in one batch,
+        then sums src+tgt degrees for each edge pair.
+        """
+        if not edge_pairs:
+            return {}
+
+        all_node_ids = list(set(nid for pair in edge_pairs for nid in pair))
+        degrees = await self.node_degrees_batch(all_node_ids)
+        return {
+            (src, tgt): degrees.get(src, 0) + degrees.get(tgt, 0)
+            for src, tgt in edge_pairs
+        }
+
     async def get_edges_batch(
         self, pairs: list[dict[str, str]]
     ) -> dict[tuple[str, str], dict]:
-        """Get multiple edges in one query."""
+        """Get multiple edges in a single SQL query.
+
+        Uses unnest() to fetch all requested edges in one round-trip
+        instead of N individual get_edge() calls.
+        """
         if not pairs:
             return {}
 
-        result = {}
+        src_ids = [p["src"] for p in pairs]
+        tgt_ids = [p["tgt"] for p in pairs]
+
+        query = """
+            SELECT source_id, target_id, properties
+            FROM LIGHTRAG_GRAPH_EDGES
+            WHERE workspace = $1
+              AND (
+                  (source_id = ANY($2) AND target_id = ANY($3))
+                  OR (source_id = ANY($3) AND target_id = ANY($2))
+              )
+        """
         async with self._acquire_connection() as conn:
-            for pair in pairs:
-                src_id = pair["src"]
-                tgt_id = pair["tgt"]
-                edge = await self.get_edge(src_id, tgt_id)
-                if edge is not None:
-                    result[(src_id, tgt_id)] = edge
+            rows = await conn.fetch(query, self.workspace, src_ids, tgt_ids)
+
+        # Build result dict, matching requested pairs to found edges
+        # Index found edges by both directions for O(1) lookup
+        found_edges: dict[tuple[str, str], dict] = {}
+        for row in rows:
+            props = row["properties"]
+            if isinstance(props, str):
+                props = json.loads(props)
+            else:
+                props = dict(props) if props else {}
+            found_edges[(row["source_id"], row["target_id"])] = props
+
+        result = {}
+        for pair in pairs:
+            src_id = pair["src"]
+            tgt_id = pair["tgt"]
+            edge = found_edges.get((src_id, tgt_id)) or found_edges.get((tgt_id, src_id))
+            if edge is not None:
+                result[(src_id, tgt_id)] = edge
         return result
 
     # ========== Query Operations ==========
