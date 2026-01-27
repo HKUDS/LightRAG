@@ -10,6 +10,7 @@ import {
   DialogTrigger
 } from '@/components/ui/Dialog'
 import FileUploader from '@/components/ui/FileUploader'
+import EntityTypeConfig from '@/components/documents/EntityTypeConfig'
 import { toast } from 'sonner'
 import { errorMessage } from '@/lib/utils'
 import { uploadDocument } from '@/api/lightrag'
@@ -19,14 +20,34 @@ import { useTranslation } from 'react-i18next'
 
 interface UploadDocumentsDialogProps {
   onDocumentsUploaded?: () => Promise<void>
+  defaultEntityTypes?: string[]
 }
 
-export default function UploadDocumentsDialog({ onDocumentsUploaded }: UploadDocumentsDialogProps) {
+export default function UploadDocumentsDialog({
+  onDocumentsUploaded,
+  defaultEntityTypes = []
+}: UploadDocumentsDialogProps) {
   const { t } = useTranslation()
   const [open, setOpen] = useState(false)
   const [isUploading, setIsUploading] = useState(false)
   const [progresses, setProgresses] = useState<Record<string, number>>({})
   const [fileErrors, setFileErrors] = useState<Record<string, string>>({})
+  const [entityTypes, setEntityTypes] = useState<string[]>([])
+  const [pendingFiles, setPendingFiles] = useState<File[]>([])
+  const [uploadedFiles, setUploadedFiles] = useState<Set<string>>(new Set())
+
+  // 当对话框关闭时，重置实体类型配置
+  const handleOpenChange = (newOpen: boolean) => {
+    if (!newOpen && !isUploading) {
+      // 对话框关闭时重置所有状态
+      setProgresses({})
+      setFileErrors({})
+      setEntityTypes([])
+      setPendingFiles([])
+      setUploadedFiles(new Set())
+    }
+    setOpen(newOpen)
+  }
 
   const handleRejectedFiles = useCallback(
     (rejectedFiles: FileRejection[]) => {
@@ -101,7 +122,7 @@ export default function UploadDocumentsDialog({ onDocumentsUploaded }: UploadDoc
                 ...pre,
                 [file.name]: percentCompleted
               }))
-            })
+            }, entityTypes.length > 0 ? entityTypes : undefined)
 
             if (result.status === 'duplicated') {
               uploadErrors[file.name] = t('documentPanel.uploadDocuments.fileUploader.duplicateFile')
@@ -118,6 +139,8 @@ export default function UploadDocumentsDialog({ onDocumentsUploaded }: UploadDoc
             } else {
               // Mark that we had at least one successful upload
               hasSuccessfulUpload = true
+              // Mark file as uploaded
+              setUploadedFiles(prev => new Set(prev).add(file.name))
             }
           } catch (err) {
             console.error(`Upload failed for ${file.name}:`, err)
@@ -161,6 +184,10 @@ export default function UploadDocumentsDialog({ onDocumentsUploaded }: UploadDoc
 
         // Only update if at least one file was uploaded successfully
         if (hasSuccessfulUpload) {
+          // Clear pending files after successful upload
+          setPendingFiles([])
+          setProgresses({})
+          setFileErrors({})
           // Refresh document list
           if (onDocumentsUploaded) {
             onDocumentsUploaded().catch(err => {
@@ -175,22 +202,27 @@ export default function UploadDocumentsDialog({ onDocumentsUploaded }: UploadDoc
         setIsUploading(false)
       }
     },
-    [setIsUploading, setProgresses, setFileErrors, t, onDocumentsUploaded]
+    [setIsUploading, setProgresses, setFileErrors, t, onDocumentsUploaded, entityTypes]
   )
+
+  // Handle files selected (not yet uploaded)
+  const handleFilesSelected = useCallback((files: File[]) => {
+    setPendingFiles(files)
+    setProgresses({})
+    setFileErrors({})
+  }, [])
+
+  // Handle upload button click
+  const handleUploadButtonClick = useCallback(() => {
+    if (pendingFiles.length > 0) {
+      handleDocumentsUpload(pendingFiles)
+    }
+  }, [pendingFiles, handleDocumentsUpload])
 
   return (
     <Dialog
       open={open}
-      onOpenChange={(open) => {
-        if (isUploading) {
-          return
-        }
-        if (!open) {
-          setProgresses({})
-          setFileErrors({})
-        }
-        setOpen(open)
-      }}
+      onOpenChange={handleOpenChange}
     >
       <DialogTrigger asChild>
         <Button variant="default" side="bottom" tooltip={t('documentPanel.uploadDocuments.tooltip')} size="sm">
@@ -204,16 +236,49 @@ export default function UploadDocumentsDialog({ onDocumentsUploaded }: UploadDoc
             {t('documentPanel.uploadDocuments.description')}
           </DialogDescription>
         </DialogHeader>
-        <FileUploader
-          maxFileCount={Infinity}
-          maxSize={200 * 1024 * 1024}
-          description={t('documentPanel.uploadDocuments.fileTypes')}
-          onUpload={handleDocumentsUpload}
-          onReject={handleRejectedFiles}
-          progresses={progresses}
-          fileErrors={fileErrors}
-          disabled={isUploading}
-        />
+        <div className="space-y-4">
+          <EntityTypeConfig
+            entityTypes={entityTypes}
+            onEntityTypesChange={setEntityTypes}
+            defaultEntityTypes={defaultEntityTypes}
+          />
+          <FileUploader
+            value={pendingFiles}
+            onValueChange={handleFilesSelected}
+            maxFileCount={Infinity}
+            maxSize={200 * 1024 * 1024}
+            description={t('documentPanel.uploadDocuments.fileTypes')}
+            onReject={handleRejectedFiles}
+            progresses={progresses}
+            fileErrors={fileErrors}
+            disabled={isUploading}
+            multiple
+          />
+          {pendingFiles.length > 0 && (
+            <div className="flex justify-end gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => {
+                  setPendingFiles([])
+                  setProgresses({})
+                  setFileErrors({})
+                }}
+                disabled={isUploading}
+              >
+                {t('documentPanel.uploadDocuments.cancel')}
+              </Button>
+              <Button
+                type="button"
+                variant="default"
+                onClick={handleUploadButtonClick}
+                disabled={isUploading || pendingFiles.length === 0}
+              >
+                {isUploading ? t('documentPanel.uploadDocuments.uploading') : t('documentPanel.uploadDocuments.startUpload')}
+              </Button>
+            </div>
+          )}
+        </div>
       </DialogContent>
     </Dialog>
   )

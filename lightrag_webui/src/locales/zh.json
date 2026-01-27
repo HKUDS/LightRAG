@@ -99,6 +99,9 @@
         "error": "部分文件上传失败"
       },
       "generalError": "上传失败\n{{error}}",
+      "startUpload": "开始上传",
+      "uploading": "上传中...",
+      "cancel": "清空",
       "fileTypes": "支持的文件类型：TXT, MD, MDX, DOCX, PDF, PPTX, XLSX, RTF, ODT, EPUB, HTML, HTM, TEX, JSON, XML, YAML, YML, CSV, LOG, CONF, INI, PROPERTIES, SQL, BAT, SH, C, CPP, H, HPP, PY, JAVA, JS, TS, SWIFT, GO, RB, PHP, CSS, SCSS, LESS",
       "fileUploader": {
         "singleFileLimit": "一次只能上传一个文件",
@@ -113,11 +116,29 @@
         "duplicateFile": "文件名与服务器上的缓存重复"
       }
     },
+    "entityTypeConfig": {
+      "advancedSettings": "高级设置",
+      "useDefaultForUpload": "使用默认实体类型",
+      "useDefaultForScan": "使用原实体类型",
+      "customTypes": "自定义实体类型",
+      "fillDefault": "填充默认类型",
+      "placeholder": "每行输入一个实体类型，例如：\n人物\n组织\n地点\n事件",
+      "count": "{{count}} 个类型",
+      "hint": "每行一个类型",
+      "defaultLabel": "默认实体类型："
+    },
     "documentManager": {
       "title": "文档管理",
       "scanButton": "扫描/重试",
       "scanTooltip": "扫描处理输入目录中的文档，同时重新处理所有失败的文档",
       "refreshTooltip": "复位文档清单",
+      "scanConfig": {
+        "title": "配置实体类型",
+        "description": "选择用于扫描文档的实体类型配置",
+        "cancel": "取消",
+        "confirm": "开始扫描",
+        "scanning": "扫描中..."
+      },
       "pipelineStatusButton": "流水线",
       "pipelineStatusTooltip": "查看文档处理流水线状态",
       "uploadedTitle": "已上传文档",

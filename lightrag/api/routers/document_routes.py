@@ -16,6 +16,7 @@ from fastapi import (
     BackgroundTasks,
     Depends,
     File,
+    Form,
     HTTPException,
     UploadFile,
 )
@@ -212,6 +213,7 @@ class InsertTextRequest(BaseModel):
     Attributes:
         text: The text content to be inserted into the RAG system
         file_source: Source of the text (optional)
+        entity_types: Custom entity types for extraction (optional)
     """
 
     text: str = Field(
@@ -219,6 +221,10 @@ class InsertTextRequest(BaseModel):
         description="The text to insert",
     )
     file_source: str = Field(default=None, min_length=0, description="File Source")
+    entity_types: list[str] | None = Field(
+        default=None,
+        description="Custom entity types for extraction (optional, uses default if not provided)",
+    )
 
     @field_validator("text", mode="after")
     @classmethod
@@ -245,6 +251,7 @@ class InsertTextsRequest(BaseModel):
     Attributes:
         texts: List of text contents to be inserted into the RAG system
         file_sources: Sources of the texts (optional)
+        entity_types: Custom entity types for extraction (optional)
     """
 
     texts: list[str] = Field(
@@ -253,6 +260,10 @@ class InsertTextsRequest(BaseModel):
     )
     file_sources: list[str] = Field(
         default=None, min_length=0, description="Sources of the texts"
+    )
+    entity_types: list[str] | None = Field(
+        default=None,
+        description="Custom entity types for extraction (optional, uses default if not provided)",
     )
 
     @field_validator("texts", mode="after")
@@ -1192,7 +1203,7 @@ def _extract_xlsx(file_bytes: bytes) -> str:
 
 
 async def pipeline_enqueue_file(
-    rag: LightRAG, file_path: Path, track_id: str = None
+    rag: LightRAG, file_path: Path, track_id: str = None, entity_types: list[str] = None
 ) -> tuple[bool, str]:
     """Add a file to the queue for processing
 
@@ -1200,6 +1211,7 @@ async def pipeline_enqueue_file(
         rag: LightRAG instance
         file_path: Path to the saved file
         track_id: Optional tracking ID, if not provided will be generated
+        entity_types: Optional custom entity types for extraction
     Returns:
         tuple: (success: bool, track_id: str)
     """
@@ -1564,7 +1576,7 @@ async def pipeline_enqueue_file(
 
             try:
                 await rag.apipeline_enqueue_documents(
-                    content, file_paths=file_path.name, track_id=track_id
+                    content, file_paths=file_path.name, track_id=track_id, entity_types=entity_types
                 )
 
                 logger.info(
@@ -1648,17 +1660,20 @@ async def pipeline_enqueue_file(
                 logger.error(f"Error deleting file {file_path}: {str(e)}")
 
 
-async def pipeline_index_file(rag: LightRAG, file_path: Path, track_id: str = None):
+async def pipeline_index_file(
+    rag: LightRAG, file_path: Path, track_id: str = None, entity_types: list[str] = None
+):
     """Index a file with track_id
 
     Args:
         rag: LightRAG instance
         file_path: Path to the saved file
         track_id: Optional tracking ID
+        entity_types: Optional custom entity types for extraction
     """
     try:
         success, returned_track_id = await pipeline_enqueue_file(
-            rag, file_path, track_id
+            rag, file_path, track_id, entity_types
         )
         if success:
             await rag.apipeline_process_enqueue_documents()
@@ -1669,7 +1684,7 @@ async def pipeline_index_file(rag: LightRAG, file_path: Path, track_id: str = No
 
 
 async def pipeline_index_files(
-    rag: LightRAG, file_paths: List[Path], track_id: str = None
+    rag: LightRAG, file_paths: List[Path], track_id: str = None, entity_types: list[str] = None
 ):
     """Index multiple files sequentially to avoid high CPU load
 
@@ -1677,6 +1692,7 @@ async def pipeline_index_files(
         rag: LightRAG instance
         file_paths: Paths to the files to index
         track_id: Optional tracking ID to pass to all files
+        entity_types: Optional custom entity types for extraction
     """
     if not file_paths:
         return
@@ -1690,7 +1706,7 @@ async def pipeline_index_files(
 
         # Process files sequentially with track_id
         for file_path in sorted_file_paths:
-            success, _ = await pipeline_enqueue_file(rag, file_path, track_id)
+            success, _ = await pipeline_enqueue_file(rag, file_path, track_id, entity_types)
             if success:
                 enqueued = True
 
@@ -1707,6 +1723,7 @@ async def pipeline_index_texts(
     texts: List[str],
     file_sources: List[str] = None,
     track_id: str = None,
+    entity_types: list[str] = None,
 ):
     """Index a list of texts with track_id
 
@@ -1715,6 +1732,7 @@ async def pipeline_index_texts(
         texts: The texts to index
         file_sources: Sources of the texts
         track_id: Optional tracking ID
+        entity_types: Optional custom entity types for extraction
     """
     if not texts:
         return
@@ -1725,13 +1743,13 @@ async def pipeline_index_texts(
                 for _ in range(len(file_sources), len(texts))
             ]
     await rag.apipeline_enqueue_documents(
-        input=texts, file_paths=file_sources, track_id=track_id
+        input=texts, file_paths=file_sources, track_id=track_id, entity_types=entity_types
     )
     await rag.apipeline_process_enqueue_documents()
 
 
 async def run_scanning_process(
-    rag: LightRAG, doc_manager: DocumentManager, track_id: str = None
+    rag: LightRAG, doc_manager: DocumentManager, track_id: str = None, entity_types: list[str] = None
 ):
     """Background task to scan and index documents
 
@@ -1739,6 +1757,7 @@ async def run_scanning_process(
         rag: LightRAG instance
         doc_manager: DocumentManager instance
         track_id: Optional tracking ID to pass to all scanned files
+        entity_types: Optional custom entity types for extraction
     """
     try:
         new_files = doc_manager.scan_directory_for_new_files()
@@ -1764,7 +1783,7 @@ async def run_scanning_process(
 
             # Process valid files (new files + non-PROCESSED status files)
             if valid_files:
-                await pipeline_index_files(rag, valid_files, track_id)
+                await pipeline_index_files(rag, valid_files, track_id, entity_types)
                 if processed_files:
                     logger.info(
                         f"Scanning process completed: {len(valid_files)} files Processed {len(processed_files)} skipped."
@@ -1782,7 +1801,7 @@ async def run_scanning_process(
             logger.info(
                 "No upload file found, check if there are any documents in the queue..."
             )
-            await rag.apipeline_process_enqueue_documents()
+            await rag.apipeline_process_enqueue_documents(entity_types=entity_types)
 
     except Exception as e:
         logger.error(f"Error during scanning process: {str(e)}")
@@ -2048,7 +2067,10 @@ def create_document_routes(
     @router.post(
         "/scan", response_model=ScanResponse, dependencies=[Depends(combined_auth)]
     )
-    async def scan_for_new_documents(background_tasks: BackgroundTasks):
+    async def scan_for_new_documents(
+        background_tasks: BackgroundTasks,
+        entity_types: list[str] | None = None
+    ):
         """
         Trigger the scanning process for new documents.
 
@@ -2056,14 +2078,17 @@ def create_document_routes(
         and processes them. If a scanning process is already running, it returns a status indicating
         that fact.
 
+        Args:
+            entity_types: Optional custom entity types for extraction. If not provided, uses default configuration.
+
         Returns:
             ScanResponse: A response object containing the scanning status and track_id
         """
         # Generate track_id with "scan" prefix for scanning operation
         track_id = generate_track_id("scan")
 
-        # Start the scanning process in the background with track_id
-        background_tasks.add_task(run_scanning_process, rag, doc_manager, track_id)
+        # Start the scanning process in the background with track_id and entity_types
+        background_tasks.add_task(run_scanning_process, rag, doc_manager, track_id, entity_types)
         return ScanResponse(
             status="scanning_started",
             message="Scanning process has been initiated in the background",
@@ -2074,7 +2099,9 @@ def create_document_routes(
         "/upload", response_model=InsertResponse, dependencies=[Depends(combined_auth)]
     )
     async def upload_to_input_dir(
-        background_tasks: BackgroundTasks, file: UploadFile = File(...)
+        background_tasks: BackgroundTasks,
+        file: UploadFile = File(...),
+        entity_types: str | None = Form(None),
     ):
         """
         Upload a file to the input directory and index it.
@@ -2118,6 +2145,7 @@ def create_document_routes(
         Args:
             background_tasks: FastAPI BackgroundTasks for async processing
             file (UploadFile): The file to be uploaded. It must have an allowed extension.
+            entity_types (str, optional): JSON string of custom entity types for extraction.
 
         Returns:
             InsertResponse: A response object containing the upload status and a message.
@@ -2220,9 +2248,35 @@ def create_document_routes(
                 )
 
             track_id = generate_track_id("upload")
+            # Parse entity_types if provided
+            parsed_entity_types = None
+            if entity_types:
+                try:
+                    import json
+                    parsed_entity_types = json.loads(entity_types)
+                    if not isinstance(parsed_entity_types, list):
+                        raise HTTPException(
+                            status_code=400,
+                            detail="entity_types must be a JSON array of strings",
+                        )
+                    if not all(isinstance(et, str) for et in parsed_entity_types):
+                        raise HTTPException(
+                            status_code=400,
+                            detail="All entity types must be strings",
+                        )
+                    if parsed_entity_types:
+                        parsed_entity_types = [et.strip() for et in parsed_entity_types if et.strip()]
+                        logger.info(f"User-provided entity types: {parsed_entity_types}")
+                except json.JSONDecodeError:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="entity_types must be valid JSON array",
+                    )
 
             # Add to background tasks and get track_id
-            background_tasks.add_task(pipeline_index_file, rag, file_path, track_id)
+            background_tasks.add_task(
+                pipeline_index_file, rag, file_path, track_id, parsed_entity_types
+            )
 
             return InsertResponse(
                 status="success",
@@ -2304,6 +2358,7 @@ def create_document_routes(
                 [request.text],
                 file_sources=[request.file_source],
                 track_id=track_id,
+                entity_types=request.entity_types,
             )
 
             return InsertResponse(
@@ -2387,6 +2442,7 @@ def create_document_routes(
                 request.texts,
                 file_sources=request.file_sources,
                 track_id=track_id,
+                entity_types=request.entity_types,
             )
 
             return InsertResponse(
