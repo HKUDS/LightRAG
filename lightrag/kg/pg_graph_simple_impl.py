@@ -786,18 +786,37 @@ class PGGraphStorageSimple(BaseGraphStorage):
         is_truncated = False
 
         async with self._acquire_connection() as conn:
-            # Find starting nodes
+            # Find starting nodes, ordered by degree (most connected first)
+            # so BFS starts from central/hub nodes rather than peripheral ones.
             if node_label == "*":
                 start_query = """
-                    SELECT node_id, properties FROM LIGHTRAG_GRAPH_NODES
-                    WHERE workspace = $1
+                    SELECT n.node_id, n.properties
+                    FROM LIGHTRAG_GRAPH_NODES n
+                    LEFT JOIN (
+                        SELECT node_id, COUNT(*) AS degree FROM (
+                            SELECT source_id AS node_id FROM LIGHTRAG_GRAPH_EDGES WHERE workspace = $1
+                            UNION ALL
+                            SELECT target_id AS node_id FROM LIGHTRAG_GRAPH_EDGES WHERE workspace = $1
+                        ) e GROUP BY node_id
+                    ) d ON n.node_id = d.node_id
+                    WHERE n.workspace = $1
+                    ORDER BY COALESCE(d.degree, 0) DESC
                     LIMIT $2
                 """
                 start_rows = await conn.fetch(start_query, self.workspace, max_nodes)
             else:
                 start_query = """
-                    SELECT node_id, properties FROM LIGHTRAG_GRAPH_NODES
-                    WHERE workspace = $1 AND node_id ILIKE $2
+                    SELECT n.node_id, n.properties
+                    FROM LIGHTRAG_GRAPH_NODES n
+                    LEFT JOIN (
+                        SELECT node_id, COUNT(*) AS degree FROM (
+                            SELECT source_id AS node_id FROM LIGHTRAG_GRAPH_EDGES WHERE workspace = $1
+                            UNION ALL
+                            SELECT target_id AS node_id FROM LIGHTRAG_GRAPH_EDGES WHERE workspace = $1
+                        ) e GROUP BY node_id
+                    ) d ON n.node_id = d.node_id
+                    WHERE n.workspace = $1 AND n.node_id ILIKE $2
+                    ORDER BY COALESCE(d.degree, 0) DESC
                     LIMIT $3
                 """
                 pattern = f"%{node_label}%"

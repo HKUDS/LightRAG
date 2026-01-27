@@ -26,21 +26,40 @@ DECLARE
     v_node_count INT := 0;
     rec RECORD;
 BEGIN
-    -- Find starting nodes
+    -- Find starting nodes, ordered by degree (most connected first)
+    -- so BFS starts from central/hub nodes rather than peripheral ones.
     IF p_node_label = '*' THEN
         SELECT array_agg(node_id), count(*)
         INTO v_frontier, v_node_count
         FROM (
-            SELECT node_id FROM lightrag_graph_nodes
-            WHERE workspace = p_workspace
+            SELECT n.node_id
+            FROM lightrag_graph_nodes n
+            LEFT JOIN (
+                SELECT node_id, COUNT(*) AS degree FROM (
+                    SELECT source_id AS node_id FROM lightrag_graph_edges WHERE workspace = p_workspace
+                    UNION ALL
+                    SELECT target_id AS node_id FROM lightrag_graph_edges WHERE workspace = p_workspace
+                ) e GROUP BY node_id
+            ) d ON n.node_id = d.node_id
+            WHERE n.workspace = p_workspace
+            ORDER BY COALESCE(d.degree, 0) DESC
             LIMIT p_max_nodes
         ) sub;
     ELSE
         SELECT array_agg(node_id), count(*)
         INTO v_frontier, v_node_count
         FROM (
-            SELECT node_id FROM lightrag_graph_nodes
-            WHERE workspace = p_workspace AND node_id ILIKE '%' || p_node_label || '%'
+            SELECT n.node_id
+            FROM lightrag_graph_nodes n
+            LEFT JOIN (
+                SELECT node_id, COUNT(*) AS degree FROM (
+                    SELECT source_id AS node_id FROM lightrag_graph_edges WHERE workspace = p_workspace
+                    UNION ALL
+                    SELECT target_id AS node_id FROM lightrag_graph_edges WHERE workspace = p_workspace
+                ) e GROUP BY node_id
+            ) d ON n.node_id = d.node_id
+            WHERE n.workspace = p_workspace AND n.node_id ILIKE '%' || p_node_label || '%'
+            ORDER BY COALESCE(d.degree, 0) DESC
             LIMIT p_max_nodes
         ) sub;
     END IF;
