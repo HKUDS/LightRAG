@@ -167,9 +167,9 @@ services:
       # Performance Configuration
       #############################
       - key: MAX_ASYNC
-        value: "256"
+        value: "512"
       - key: MAX_PARALLEL_INSERT
-        value: "32"
+        value: "64"
       - key: MAX_GRAPH_NODES
         value: "3000"
       - key: CPU_YIELD_INTERVAL
