@@ -72,7 +72,7 @@ BEGIN
         v_nodes := '[]'::jsonb;
     END IF;
 
-    -- BFS traversal
+    -- BFS traversal (only when not already truncated from initial load)
     WHILE v_depth < p_max_depth AND array_length(v_frontier, 1) > 0 AND NOT v_is_truncated LOOP
         v_next_frontier := '{}';
 
@@ -83,7 +83,7 @@ BEGIN
             WHERE e.workspace = p_workspace
               AND (e.source_id = ANY(v_frontier) OR e.target_id = ANY(v_frontier))
         LOOP
-            -- Add edge to results (deduplicated by checking both directions)
+            -- Add edge to results
             v_edges := v_edges || jsonb_build_object(
                 'id', rec.source_id || '-' || rec.target_id,
                 'type', COALESCE(rec.properties->>'relationship', 'related_to'),
@@ -129,6 +129,28 @@ BEGIN
         v_frontier := v_next_frontier;
         v_depth := v_depth + 1;
     END LOOP;
+
+    -- Always fetch edges between ALL visited nodes.
+    -- This is critical when the initial node load already hit max_nodes (truncated),
+    -- because the BFS loop above is skipped in that case, leaving v_edges empty.
+    -- Even when BFS did run, this ensures we capture edges between initial nodes
+    -- that were not traversed via the frontier expansion.
+    IF v_edges = '[]'::jsonb OR v_is_truncated THEN
+        SELECT COALESCE(jsonb_agg(
+            jsonb_build_object(
+                'id', e.source_id || '-' || e.target_id,
+                'type', COALESCE(e.properties->>'relationship', 'related_to'),
+                'source', e.source_id,
+                'target', e.target_id,
+                'properties', e.properties
+            )
+        ), '[]'::jsonb)
+        INTO v_edges
+        FROM lightrag_graph_edges e
+        WHERE e.workspace = p_workspace
+          AND e.source_id = ANY(v_visited)
+          AND e.target_id = ANY(v_visited);
+    END IF;
 
     RETURN jsonb_build_object(
         'nodes', COALESCE(v_nodes, '[]'::jsonb),

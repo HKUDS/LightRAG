@@ -818,7 +818,7 @@ class PGGraphStorageSimple(BaseGraphStorage):
                         properties=props or {},
                     )
 
-            # BFS traversal
+            # BFS traversal (only expands to new nodes when not already truncated)
             for depth in range(max_depth):
                 if not frontier or len(nodes_dict) >= max_nodes:
                     if len(nodes_dict) >= max_nodes:
@@ -888,6 +888,36 @@ class PGGraphStorageSimple(BaseGraphStorage):
                                 )
 
                 frontier = next_frontier
+
+            # When BFS was skipped (truncated from initial load), fetch edges
+            # between the loaded nodes so the graph has connections.
+            if is_truncated and not edges_dict:
+                all_node_ids = list(nodes_dict.keys())
+                edges_query = """
+                    SELECT source_id, target_id, properties FROM LIGHTRAG_GRAPH_EDGES
+                    WHERE workspace = $1
+                      AND source_id = ANY($2)
+                      AND target_id = ANY($3)
+                """
+                edge_rows = await conn.fetch(
+                    edges_query, self.workspace, all_node_ids, all_node_ids
+                )
+                for edge_row in edge_rows:
+                    source_id = edge_row["source_id"]
+                    target_id = edge_row["target_id"]
+                    edge_props = edge_row["properties"]
+                    if isinstance(edge_props, str):
+                        edge_props = json.loads(edge_props)
+                    edge_type = (edge_props or {}).get("relationship", "related_to")
+                    edge_key = f"{min(source_id, target_id)}-{max(source_id, target_id)}"
+                    if edge_key not in edges_dict:
+                        edges_dict[edge_key] = KnowledgeGraphEdge(
+                            id=f"{source_id}-{target_id}",
+                            type=edge_type,
+                            source=source_id,
+                            target=target_id,
+                            properties=edge_props or {},
+                        )
 
         logger.debug(
             f"[{self.workspace}] BFS fallback returned {len(nodes_dict)} nodes, "
