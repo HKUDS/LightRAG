@@ -28,13 +28,15 @@ DECLARE
 BEGIN
     -- Find starting nodes, ordered by degree (most connected first)
     -- so BFS starts from central/hub nodes rather than peripheral ones.
+    -- For '*' (all nodes): use INNER JOIN to exclude isolated nodes (degree=0)
+    -- that would clutter the graph visualization with disconnected points.
     IF p_node_label = '*' THEN
         SELECT array_agg(node_id), count(*)
         INTO v_frontier, v_node_count
         FROM (
             SELECT n.node_id
             FROM lightrag_graph_nodes n
-            LEFT JOIN (
+            INNER JOIN (
                 SELECT node_id, COUNT(*) AS degree FROM (
                     SELECT source_id AS node_id FROM lightrag_graph_edges WHERE workspace = p_workspace
                     UNION ALL
@@ -42,7 +44,7 @@ BEGIN
                 ) e GROUP BY node_id
             ) d ON n.node_id = d.node_id
             WHERE n.workspace = p_workspace
-            ORDER BY COALESCE(d.degree, 0) DESC
+            ORDER BY d.degree DESC
             LIMIT p_max_nodes
         ) sub;
     ELSE

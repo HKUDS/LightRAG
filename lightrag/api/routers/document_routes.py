@@ -8,7 +8,7 @@ from lightrag.utils import logger, get_pinyin_sort_key
 import aiofiles
 import shutil
 import traceback
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Literal
 from io import BytesIO
@@ -310,6 +310,40 @@ class InsertResponse(BaseModel):
                 "track_id": "upload_20250729_170612_abc123",
             }
         }
+
+
+# Documents stuck in pending/processing for longer than this are considered
+# abandoned (e.g. instance was killed during downscale) and can be re-submitted.
+STUCK_DOCUMENT_TIMEOUT_MINUTES = 10
+
+
+def _is_stuck_document(doc: dict) -> bool:
+    """Check if a document is stuck in pending/processing state.
+
+    A document is considered stuck if it has been in pending or processing
+    status for longer than STUCK_DOCUMENT_TIMEOUT_MINUTES. This typically
+    happens when an instance is killed (e.g. during downscale) while
+    processing a document.
+    """
+    status = doc.get("status")
+    if status not in ("pending", "processing"):
+        return False
+    updated_at = doc.get("updated_at")
+    if not updated_at:
+        return False
+    try:
+        if isinstance(updated_at, str):
+            # Parse ISO format string (may or may not have timezone)
+            updated_dt = datetime.fromisoformat(updated_at.replace("Z", "+00:00"))
+        else:
+            updated_dt = updated_at
+        # Ensure timezone-aware comparison
+        if updated_dt.tzinfo is None:
+            updated_dt = updated_dt.replace(tzinfo=timezone.utc)
+        now = datetime.now(timezone.utc)
+        return (now - updated_dt) > timedelta(minutes=STUCK_DOCUMENT_TIMEOUT_MINUTES)
+    except Exception:
+        return False
 
 
 class ClearDocumentsResponse(BaseModel):
@@ -2301,13 +2335,19 @@ def create_document_routes(
             # Check if filename already exists in doc_status storage
             existing_doc_data = await rag.doc_status.get_doc_by_file_path(safe_filename)
             if existing_doc_data:
-                # Get document status information for error message
                 status = existing_doc_data.get("status", "unknown")
-                return InsertResponse(
-                    status="duplicated",
-                    message=f"File '{safe_filename}' already exists in document storage (Status: {status}).",
-                    track_id="",
-                )
+                if _is_stuck_document(existing_doc_data):
+                    logger.info(
+                        f"Document '{safe_filename}' is stuck in '{status}' state, allowing re-upload"
+                    )
+                else:
+                    return InsertResponse(
+                        status="duplicated",
+                        message=f"File '{safe_filename}' already exists in document storage (Status: {status}).",
+                        track_id=existing_doc_data.get("track_id") or "",
+                        doc_id=existing_doc_data.get("id"),
+                        original_status=status,
+                    )
 
             file_path = workspace_doc_manager.input_dir / safe_filename
             # Check if file already exists in file system
@@ -2372,13 +2412,20 @@ def create_document_routes(
                     request.file_source
                 )
                 if existing_doc_data:
-                    # Get document status information for error message
                     status = existing_doc_data.get("status", "unknown")
-                    return InsertResponse(
-                        status="duplicated",
-                        message=f"File source '{request.file_source}' already exists in document storage (Status: {status}).",
-                        track_id="",
-                    )
+                    # Stuck documents (pending/processing for too long) should be allowed to re-submit
+                    if _is_stuck_document(existing_doc_data):
+                        logger.info(
+                            f"Document '{request.file_source}' is stuck in '{status}' state, allowing re-submission"
+                        )
+                    else:
+                        return InsertResponse(
+                            status="duplicated",
+                            message=f"File source '{request.file_source}' already exists in document storage (Status: {status}).",
+                            track_id=existing_doc_data.get("track_id") or "",
+                            doc_id=existing_doc_data.get("id"),
+                            original_status=status,
+                        )
 
             # Check if content already exists (synchronous content-hash check)
             try:
@@ -2386,13 +2433,19 @@ def create_document_routes(
                 doc_id = compute_mdhash_id(sanitized, prefix="doc-")
                 existing_doc = await rag.doc_status.get_by_id(doc_id)
                 if existing_doc and existing_doc.get("status") != "failed":
-                    return InsertResponse(
-                        status="duplicated",
-                        message=f"Content already exists (Status: {existing_doc.get('status', 'unknown')}).",
-                        track_id=existing_doc.get("track_id", ""),
-                        doc_id=doc_id,
-                        original_status=existing_doc.get("status", "unknown"),
-                    )
+                    # Stuck documents (pending/processing for too long) should be allowed to re-submit
+                    if _is_stuck_document(existing_doc):
+                        logger.info(
+                            f"Document {doc_id} is stuck in '{existing_doc.get('status')}' state, allowing re-submission"
+                        )
+                    else:
+                        return InsertResponse(
+                            status="duplicated",
+                            message=f"Content already exists (Status: {existing_doc.get('status', 'unknown')}).",
+                            track_id=existing_doc.get("track_id") or "",
+                            doc_id=doc_id,
+                            original_status=existing_doc.get("status", "unknown"),
+                        )
             except Exception as e:
                 # Non-blocking: if hash check fails, fall through to normal processing
                 logger.warning(f"Content hash check failed, proceeding with normal flow: {e}")
@@ -2457,13 +2510,19 @@ def create_document_routes(
                             file_source
                         )
                         if existing_doc_data:
-                            # Get document status information for error message
                             status = existing_doc_data.get("status", "unknown")
-                            return InsertResponse(
-                                status="duplicated",
-                                message=f"File source '{file_source}' already exists in document storage (Status: {status}).",
-                                track_id="",
-                            )
+                            if _is_stuck_document(existing_doc_data):
+                                logger.info(
+                                    f"Document '{file_source}' is stuck in '{status}' state, allowing re-submission"
+                                )
+                            else:
+                                return InsertResponse(
+                                    status="duplicated",
+                                    message=f"File source '{file_source}' already exists in document storage (Status: {status}).",
+                                    track_id=existing_doc_data.get("track_id") or "",
+                                    doc_id=existing_doc_data.get("id"),
+                                    original_status=status,
+                                )
 
             # Check content hashes for all texts (synchronous duplicate detection)
             if request.texts:
@@ -2473,18 +2532,23 @@ def create_document_routes(
                         doc_id = compute_mdhash_id(sanitized, prefix="doc-")
                         existing_doc = await rag.doc_status.get_by_id(doc_id)
                         if existing_doc and existing_doc.get("status") != "failed":
-                            file_source = (
-                                request.file_sources[i]
-                                if request.file_sources and i < len(request.file_sources)
-                                else "unknown"
-                            )
-                            return InsertResponse(
-                                status="duplicated",
-                                message=f"Content of text #{i+1} ('{file_source}') already exists (Status: {existing_doc.get('status', 'unknown')}).",
-                                track_id=existing_doc.get("track_id", ""),
-                                doc_id=doc_id,
-                                original_status=existing_doc.get("status", "unknown"),
-                            )
+                            if _is_stuck_document(existing_doc):
+                                logger.info(
+                                    f"Document {doc_id} is stuck in '{existing_doc.get('status')}' state, allowing re-submission"
+                                )
+                            else:
+                                file_source = (
+                                    request.file_sources[i]
+                                    if request.file_sources and i < len(request.file_sources)
+                                    else "unknown"
+                                )
+                                return InsertResponse(
+                                    status="duplicated",
+                                    message=f"Content of text #{i+1} ('{file_source}') already exists (Status: {existing_doc.get('status', 'unknown')}).",
+                                    track_id=existing_doc.get("track_id") or "",
+                                    doc_id=doc_id,
+                                    original_status=existing_doc.get("status", "unknown"),
+                                )
                     except Exception:
                         continue  # Non-blocking: proceed with normal processing
 

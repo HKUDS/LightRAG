@@ -788,11 +788,13 @@ class PGGraphStorageSimple(BaseGraphStorage):
         async with self._acquire_connection() as conn:
             # Find starting nodes, ordered by degree (most connected first)
             # so BFS starts from central/hub nodes rather than peripheral ones.
+            # For '*' (all nodes): use INNER JOIN to exclude isolated nodes (degree=0)
+            # that would clutter the graph visualization with disconnected points.
             if node_label == "*":
                 start_query = """
                     SELECT n.node_id, n.properties
                     FROM LIGHTRAG_GRAPH_NODES n
-                    LEFT JOIN (
+                    INNER JOIN (
                         SELECT node_id, COUNT(*) AS degree FROM (
                             SELECT source_id AS node_id FROM LIGHTRAG_GRAPH_EDGES WHERE workspace = $1
                             UNION ALL
@@ -800,7 +802,7 @@ class PGGraphStorageSimple(BaseGraphStorage):
                         ) e GROUP BY node_id
                     ) d ON n.node_id = d.node_id
                     WHERE n.workspace = $1
-                    ORDER BY COALESCE(d.degree, 0) DESC
+                    ORDER BY d.degree DESC
                     LIMIT $2
                 """
                 start_rows = await conn.fetch(start_query, self.workspace, max_nodes)
