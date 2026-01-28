@@ -3755,11 +3755,20 @@ class LightRAG:
 
             # Log before-deletion node count for verification (002-fix-graph-deletion-sync)
             try:
-                graph_before = await self.chunk_entity_relation_graph._get_graph()
-                node_count_before = graph_before.number_of_nodes() if graph_before else 0
-                edge_count_before = graph_before.number_of_edges() if graph_before else 0
+                graph_store = self.chunk_entity_relation_graph
+                if hasattr(graph_store, "_get_graph"):
+                    graph_before = await graph_store._get_graph()
+                    node_count_before = graph_before.number_of_nodes() if graph_before else 0
+                    edge_count_before = graph_before.number_of_edges() if graph_before else 0
+                elif hasattr(graph_store, "get_node_count"):
+                    node_count_before = await graph_store.get_node_count()
+                    edge_count_before = -1  # Not available without _get_graph
+                else:
+                    node_count_before = 0
+                    edge_count_before = -1
                 logger.info(
-                    f"[{self.workspace}] Graph before deletion: {node_count_before} nodes, {edge_count_before} edges"
+                    f"[{self.workspace}] Graph before deletion: {node_count_before} nodes"
+                    + (f", {edge_count_before} edges" if edge_count_before >= 0 else "")
                 )
             except Exception as e:
                 logger.warning(f"Could not get pre-deletion graph stats: {e}")
@@ -3904,12 +3913,21 @@ class LightRAG:
 
             # Log after-deletion node count for verification (002-fix-graph-deletion-sync)
             try:
-                graph_after = await self.chunk_entity_relation_graph._get_graph()
-                node_count_after = graph_after.number_of_nodes() if graph_after else 0
-                edge_count_after = graph_after.number_of_edges() if graph_after else 0
+                graph_store = self.chunk_entity_relation_graph
+                if hasattr(graph_store, "_get_graph"):
+                    graph_after = await graph_store._get_graph()
+                    node_count_after = graph_after.number_of_nodes() if graph_after else 0
+                    edge_count_after = graph_after.number_of_edges() if graph_after else 0
+                elif hasattr(graph_store, "get_node_count"):
+                    node_count_after = await graph_store.get_node_count()
+                    edge_count_after = -1
+                else:
+                    node_count_after = 0
+                    edge_count_after = -1
                 logger.info(
-                    f"[{self.workspace}] Graph after deletion: {node_count_after} nodes, {edge_count_after} edges "
-                    f"(delta: {node_count_after - node_count_before} nodes)"
+                    f"[{self.workspace}] Graph after deletion: {node_count_after} nodes"
+                    + (f", {edge_count_after} edges" if edge_count_after >= 0 else "")
+                    + f" (delta: {node_count_after - node_count_before} nodes)"
                 )
             except Exception as e:
                 logger.warning(f"Could not get post-deletion graph stats: {e}")
