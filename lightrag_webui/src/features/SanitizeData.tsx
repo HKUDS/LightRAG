@@ -14,7 +14,6 @@ export default function SanitizeData() {
   const [entityType, setEntityType] = useState('');
   const [descriptionStrategy, setDescriptionStrategy] = useState('join_unique');
   const [sourceIdStrategy, setSourceIdStrategy] = useState('join_unique');
-  const [showSelectedOnlyMode, setShowSelectedOnlyMode] = useState(false);
 
   // Dropdown suggestions = currently selected entities
   const targetOptions = [...selectedEntities].sort((a, b) => a.localeCompare(b));
@@ -52,28 +51,36 @@ export default function SanitizeData() {
   const [loadingTypes, setLoadingTypes] = useState(false);
   const [modalFilterText, setModalFilterText] = useState('');
 
-  // State used to select all of a particular entity type.
-  const [filterBySelectedType, setFilterBySelectedType] = useState(false);
+
+  const [filterMode, setFilterMode] = useState<'none' | 'selected' | 'type'>('none');
+  const [typeFilteredEntities, setTypeFilteredEntities] = useState<string[]>([]);
+  const [entityTypeMap, setEntityTypeMap] = useState<Record<string, string>>({});
 
   // For loading the Select Type modal window
   const fetchAllTypes = async () => {
     setLoadingTypes(true);
     try {
+      // 1. Get all entity names
       const listRes = await axios.get(`${API_BASE}/graph/label/list`);
       const entityNames = listRes.data as string[];
       
-      // We use fetchEntityDetail for every entity. 
-      // This populates the cache with FULL data (Desc, Source, Rel, etc.)
-      await Promise.all(
-        entityNames.map((name) => fetchEntityDetail(name))
-      );
-
-      // After all fetches are done, we extract the unique types from the cache
+      // 2. Fetch types for each name (in parallel)
+      // Note: If you have thousands of entities, we may need to chunk this later.
       const typeSet = new Set<string>();
-      entityNames.forEach(name => {
-        const type = entityDetails[name]?.type;
-        if (type) typeSet.add(type);
-      });
+      
+      await Promise.all(
+        entityNames.map(async (name) => {
+          try {
+            const detailRes = await axios.get(
+              `${API_BASE}/graphs?label=${encodeURIComponent(name)}&max_depth=1&max_nodes=1`
+            );
+            const type = detailRes.data.nodes?.[0]?.properties?.entity_type;
+            if (type) typeSet.add(type);
+          } catch (err) {
+            console.error(`Error fetching type for ${name}:`, err);
+          }
+        })
+      );
 
       setAllEntityTypes(Array.from(typeSet).sort());
     } catch (err) {
@@ -98,6 +105,30 @@ export default function SanitizeData() {
           a.toLowerCase().localeCompare(b.toLowerCase())
         );
         setEntities(sorted);
+
+        // New: Build entityTypeMap
+        const fetchEntityTypes = async () => {
+          try {
+            const typeMap: Record<string, string> = {};
+            await Promise.all(
+              sorted.map(async (name) => {
+                try {
+                  const detailRes = await axios.get(
+                    `${API_BASE}/graphs?label=${encodeURIComponent(name)}&max_depth=1&max_nodes=1`
+                  );
+                  const type = detailRes.data.nodes?.[0]?.properties?.entity_type || '';
+                  typeMap[name] = type;
+                } catch (err) {
+                  console.error(`Error fetching type for ${name}:`, err);
+                }
+              })
+            );
+            setEntityTypeMap(typeMap);
+          } catch (err) {
+            console.error('Failed to fetch entity types:', err);
+          }
+        };
+        fetchEntityTypes();
       } catch (err) {
         console.error('Failed to load entities:', err);
       }
@@ -121,24 +152,15 @@ export default function SanitizeData() {
 
       setRowsPerPage(calculated);
     };
+
     updateRowsPerPage();
     window.addEventListener('resize', updateRowsPerPage);
     return () => window.removeEventListener('resize', updateRowsPerPage);
   }, [entities, filterText]);
 
-  const filteredEntities = entities.filter((e) => {
-    // 1. Text Search Filter (the one you already had)
-    const matchesText = e.toLowerCase().includes(filterText.toLowerCase());
-
-    // 2. Type Filter (the new logic)
-    let matchesType = true;
-    if (filterBySelectedType && entityType) {
-      // Check if we have the details for this entity and if the type matches
-      matchesType = entityDetails[e]?.type === entityType;
-    }
-
-    return matchesText && matchesType;
-  });
+  const filteredEntities = entities.filter((e) =>
+    e.toLowerCase().includes(filterText.toLowerCase())
+  );
 
   const totalPages = Math.max(1, Math.ceil(filteredEntities.length / rowsPerPage));
   const startIndex = (currentPage - 1) * rowsPerPage;
@@ -211,23 +233,40 @@ export default function SanitizeData() {
   };
 
   const handleShowSelectedOnly = () => {
-    if (selectedEntities.length === 0) return;
+    if (selectedEntities.length === 0) {
+      alert('Please select at least one entity first (check the boxes on the left).');
+      return;
+    }
     
-    setShowSelectedOnlyMode(true);
+    setFilterMode('selected');
     setCurrentPage(1);
-    // Optional: clear filter when entering selected-only mode
+    setFilterText('');
+  };
+
+  const handleShowAllOfType = () => {
+    if (!entityType) {
+      alert('Please select or enter an entity type first.');
+      return;
+    }
+    
+    const entitiesOfType = entities.filter((name) => entityTypeMap[name] === entityType).sort((a, b) =>
+      a.toLowerCase().localeCompare(b.toLowerCase())
+    );
+    setTypeFilteredEntities(entitiesOfType);
+    setFilterMode('type');
+    setCurrentPage(1);
+    // Optional: clear filter when entering mode
     setFilterText('');
   };
 
   const handleClearSelected = () => {
     setSelectedEntities([]);     // uncheck all checkboxes
     setFirstEntity(null);        // deselect "Keep First" radio
-    // Nothing else — no change to filter, page, or showSelectedOnlyMode
   };
 
   const fetchEntityDetail = async (entityName: string, force = false) => {
 
-    // console.log(`fetchEntityDetail called for: "${entityName}"`);
+    console.log(`fetchEntityDetail called for: "${entityName}"`);
 
     // Skip if we already have it
     //if (entityDetails[entityName]) return;
@@ -236,18 +275,18 @@ export default function SanitizeData() {
       return;
     }
 
-    // console.log(`Fetching details for "${entityName}"...`);
+    console.log(`Fetching details for "${entityName}"...`);
 
     setLoadingDetails((prev) => [...prev, entityName]);
 
     try {
-      ///console.log("Making axios request...");
+      console.log("Making axios request...");
       const encodedName = encodeURIComponent(entityName);
       const url = `${API_BASE}/graphs?label=${encodedName}&max_depth=1&max_nodes=20000`;
-      // console.log("Request URL:", url);
+      console.log("Request URL:", url);
 
     const response = await axios.get(url);
-    // console.log("Response received:", response.status, response.data);
+    console.log("Response received:", response.status, response.data);
 
       const data = response.data;
 
@@ -289,7 +328,7 @@ export default function SanitizeData() {
         });
       });
 
-      // Store the parsed data using the functional update pattern
+      // Store the parsed data
       setEntityDetails((prev) => ({
         ...prev,
         [entityName]: {
@@ -301,12 +340,6 @@ export default function SanitizeData() {
           relationships: edges,
         },
       }));
-      // EXTRA STEP: Also update allEntityTypes so the modal list grows as it fetches
-      if (mainType) {
-        setAllEntityTypes((prev) => 
-          prev.includes(mainType) ? prev : [...prev, mainType].sort()
-        );
-      }
     } catch (err) {
       console.error(`Error fetching "${entityName}":`, err);  
       // Optional: store error state
@@ -483,108 +516,97 @@ export default function SanitizeData() {
     type.toLowerCase().includes(modalFilterText.toLowerCase())
   );  
 
-  const displayEntities = showSelectedOnlyMode 
-   ? selectedEntities 
-   : paginatedEntities;  
+  const displayEntities = filterMode === 'selected'
+    ? [...selectedEntities].sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()))
+    : filterMode === 'type'
+    ? typeFilteredEntities
+    : paginatedEntities;  
 
   return (
     <div className="h-full flex flex-col">
       {/* Top row - minimum height to ensure controls are visible */}
       <div className="h-auto flex border-b border-gray-300">  
         {/* Upper Left */}
-
-
-        {/*<div className="w-1/4 border-r border-gray-300 p-2.5 flex flex-col gap-2.5">*/}
-
-
-
-        <div className={`w-1/4 border-r border-gray-300 p-2.5 flex flex-col gap-2.5 ${
-          showSelectedOnlyMode ? 'bg-indigo-50' : ''
-        }`}>
-
-          {showSelectedOnlyMode && (
+        <div className={`w-1/4 border-r border-gray-300 p-2.5 flex flex-col gap-2.5 ${filterMode !== 'none' ? 'bg-indigo-50' : ''}`}>
+          {filterMode !== 'none' && (
             <div className="text-xs text-indigo-700 bg-indigo-50 p-2 rounded mb-2">
-              Showing only selected entities ({selectedEntities.length})
+              {filterMode === 'type'
+                ? `Showing only entities of type: ${entityType} (${displayEntities.length})`
+                : `Showing only selected entities (${displayEntities.length})`}
             </div>
           )}
 
-          {!showSelectedOnlyMode && (
-              <>
-                <input
-                  type="text"
-                  placeholder="Filter entities..."
-                  className="w-full px-3 py-1 border border-gray-300 rounded text-xs focus:outline-none focus:ring-1 focus:ring-blue-500"
-                  value={filterText}
-                  onChange={(e) => setFilterText(e.target.value)}
-                />
-                <div className="flex flex-wrap gap-1">
-                  <button 
-                    onClick={() => setFilterBySelectedType(!filterBySelectedType)}
-                    className={`px-2 py-0.5 border rounded text-xs transition-colors ${
-                      filterBySelectedType 
-                        ? 'bg-blue-600 text-white border-blue-700' 
-                        : 'bg-gray-100 hover:bg-gray-200 border-gray-300 text-gray-800'
-                    }`}
-                    title={entityType ? `Show only ${entityType} entities` : "Select a type first"}
+          {filterMode === 'none' && (
+            <>
+              <input
+                type="text"
+                placeholder="Filter entities..."
+                className="w-full px-3 py-1 border border-gray-300 rounded text-xs focus:outline-none focus:ring-1 focus:ring-blue-500"
+                value={filterText}
+                onChange={(e) => setFilterText(e.target.value)}
+              />
+              <div className="flex flex-wrap gap-1">
+                <button 
+                  onClick={handleShowAllOfType}  // ← Added onClick
+                  className="px-2 py-0.5 bg-gray-100 hover:bg-gray-200 border border-gray-300 rounded text-xs"
+                >
+                  All Of Type
+                </button>
+                <button className="px-2 py-0.5 bg-gray-100 hover:bg-gray-200 border border-gray-300 rounded text-xs">
+                  Orphans
+                </button>
+
+                {/* Pagination */}
+                <div className="flex flex-wrap gap-1 items-center">
+                  <button
+                    onClick={goToFirst}
+                    disabled={currentPage === 1}
+                    className="px-2 py-0.5 bg-gray-100 hover:bg-gray-200 border border-gray-300 rounded text-xs font-medium disabled:opacity-50 disabled:cursor-not-allowed"
                   >
-                    {filterBySelectedType ? 'Showing Type' : 'All Of Type'}
+                    First
                   </button>
-                  <button className="px-2 py-0.5 bg-gray-100 hover:bg-gray-200 border border-gray-300 rounded text-xs">
-                    Orphans
+                  <button
+                    onClick={goToPrev}
+                    disabled={currentPage === 1}
+                    className="px-2 py-0.5 bg-gray-100 hover:bg-gray-200 border border-gray-300 rounded text-xs font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    Prev
                   </button>
 
-                  {/* Pagination */}
-                  <div className="flex flex-wrap gap-1 items-center">
-                    <button
-                      onClick={goToFirst}
-                      disabled={currentPage === 1}
-                      className="px-2 py-0.5 bg-gray-100 hover:bg-gray-200 border border-gray-300 rounded text-xs font-medium disabled:opacity-50 disabled:cursor-not-allowed"
-                    >
-                      First
-                    </button>
-                    <button
-                      onClick={goToPrev}
-                      disabled={currentPage === 1}
-                      className="px-2 py-0.5 bg-gray-100 hover:bg-gray-200 border border-gray-300 rounded text-xs font-medium disabled:opacity-50 disabled:cursor-not-allowed"
-                    >
-                      Prev
-                    </button>
-
-                    <div className="flex items-center gap-1 bg-gray-50 border border-gray-300 rounded px-1.5 py-0.5 text-xs">
-                      Pg
-                      <input
-                        type="number"
-                        min={1}
-                        max={Math.ceil(filteredEntities.length / rowsPerPage) || 1}
-                        value={currentPage}
-                        onChange={handlePageInputChange}
-                        className="w-10 text-center border border-gray-400 rounded text-xs focus:outline-none focus:ring-1 focus:ring-blue-500 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
-                      />
-                      /{Math.ceil(filteredEntities.length / rowsPerPage) || 1}
-                    </div>
-
-                    <button
-                      onClick={goToNext}
-                      disabled={currentPage >= Math.ceil(filteredEntities.length / rowsPerPage)}
-                      className="px-2 py-0.5 bg-gray-100 hover:bg-gray-200 border border-gray-300 rounded text-xs font-medium disabled:opacity-50 disabled:cursor-not-allowed"
-                    >
-                      Next
-                    </button>
-                    <button
-                      onClick={goToLast}
-                      disabled={currentPage >= Math.ceil(filteredEntities.length / rowsPerPage)}
-                      className="px-2 py-0.5 bg-gray-100 hover:bg-gray-200 border border-gray-300 rounded text-xs font-medium disabled:opacity-50 disabled:cursor-not-allowed"
-                    >
-                      Last
-                    </button>
+                  <div className="flex items-center gap-1 bg-gray-50 border border-gray-300 rounded px-1.5 py-0.5 text-xs">
+                    Pg
+                    <input
+                      type="number"
+                      min={1}
+                      max={Math.ceil(filteredEntities.length / rowsPerPage) || 1}
+                      value={currentPage}
+                      onChange={handlePageInputChange}
+                      className="w-10 text-center border border-gray-400 rounded text-xs focus:outline-none focus:ring-1 focus:ring-blue-500 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                    />
+                    /{Math.ceil(filteredEntities.length / rowsPerPage) || 1}
                   </div>
+
+                  <button
+                    onClick={goToNext}
+                    disabled={currentPage >= Math.ceil(filteredEntities.length / rowsPerPage)}
+                    className="px-2 py-0.5 bg-gray-100 hover:bg-gray-200 border border-gray-300 rounded text-xs font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    Next
+                  </button>
+                  <button
+                    onClick={goToLast}
+                    disabled={currentPage >= Math.ceil(filteredEntities.length / rowsPerPage)}
+                    className="px-2 py-0.5 bg-gray-100 hover:bg-gray-200 border border-gray-300 rounded text-xs font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    Last
+                  </button>
                 </div>
-              </>
-              )}
+              </div>
+            </>
+          )}
 
           <div className="flex flex-wrap gap-1">
-            
-            {!showSelectedOnlyMode ? (
+            {filterMode === 'none' ? (
               <button
                 onClick={handleClearSelected}
                 className="px-2 py-0.5 bg-gray-100 hover:bg-gray-200 border border-gray-300 rounded text-xs"
@@ -592,23 +614,33 @@ export default function SanitizeData() {
                 Clear Sel.
               </button>
             ) : (
-              <div className="w-[78px]" />   // ← invisible placeholder with same approximate width
+              <div className="w-[78px]" />   // ← invisible placeholder
+            )}
+
+            {filterMode === 'type' ? (
+              <button
+                className="px-2 py-0.5 border rounded text-xs transition-colors bg-indigo-600 text-white border-indigo-700"
+                disabled
+              >
+                All Of Type
+              </button>
+            ) : (
+              <button
+                onClick={handleShowSelectedOnly}
+                className={`px-2 py-0.5 border rounded text-xs transition-colors ${
+                  filterMode === 'selected'
+                    ? 'bg-indigo-600 text-white border-indigo-700'
+                    : 'bg-indigo-50 hover:bg-indigo-100 border-indigo-200 text-indigo-700'
+                }`}
+                disabled={filterMode === 'selected'}
+              >
+                Show Sel. Only
+              </button>
             )}
 
             <button
-              onClick={handleShowSelectedOnly}
-              className={`px-2 py-0.5 border rounded text-xs transition-colors ${
-                showSelectedOnlyMode
-                  ? 'bg-indigo-600 text-white border-indigo-700'
-                  : 'bg-indigo-50 hover:bg-indigo-100 border-indigo-200 text-indigo-700'
-              }`}
-              disabled={selectedEntities.length === 0}
-            >
-              Show Sel. Only
-            </button>
-            <button
               onClick={() => {
-                setShowSelectedOnlyMode(false);    // ← exit selected-only mode
+                setFilterMode('none');
                 setFilterText('');
                 setCurrentPage(1);
               }}
@@ -618,11 +650,12 @@ export default function SanitizeData() {
             </button>
             <button
               onClick={() => {
-                setShowSelectedOnlyMode(false);     // Exit "Show Sel. Only" mode
-                setSelectedEntities([]);            // Clear all checkboxes
-                setFirstEntity(null);               // Clear the "Keep First" radio selection
-                setFilterText('');                  // Remove any active filter
-                setCurrentPage(1);                  // Reset to first page
+                setFilterMode('none');
+                setSelectedEntities([]);
+                setFirstEntity(null);
+                setFilterText('');
+                setCurrentPage(1);
+                setEntityType('');
               }}
               className="px-2 py-0.5 bg-red-50 hover:bg-red-100 border border-red-200 rounded text-xs text-red-700"
             >
