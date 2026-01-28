@@ -2103,13 +2103,10 @@ async def background_delete_documents(
                                             logger.warning(security_msg)
 
                             if deleted_files == []:
-                                file_error_msg = f"File deletion skipped, missing or unsafe file: {result.file_path}"
-                                logger.warning(file_error_msg)
-                                async with pipeline_status_lock:
-                                    pipeline_status["latest_message"] = file_error_msg
-                                    pipeline_status["history_messages"].append(
-                                        file_error_msg
-                                    )
+                                # Expected for text-only documents (inserted via /documents/text)
+                                # which have no physical file on disk
+                                file_info_msg = f"No physical file to delete for: {result.file_path} (normal for text-only documents)"
+                                logger.debug(file_info_msg)
 
                         except Exception as file_error:
                             file_error_msg = f"Failed to delete file {result.file_path}: {str(file_error)}"
@@ -2120,13 +2117,9 @@ async def background_delete_documents(
                                     file_error_msg
                                 )
                     elif delete_file:
-                        no_file_msg = (
-                            f"File deletion skipped, missing file path: {doc_id}"
-                        )
-                        logger.warning(no_file_msg)
-                        async with pipeline_status_lock:
-                            pipeline_status["latest_message"] = no_file_msg
-                            pipeline_status["history_messages"].append(no_file_msg)
+                        # Normal for text-only documents without file_path
+                        no_file_msg = f"No file path for document: {doc_id} (normal for text-only documents)"
+                        logger.debug(no_file_msg)
                 else:
                     failed_deletions.append(doc_id)
                     error_msg = f"Failed to delete {i}/{total_docs}: {doc_id}[{file_path}] - {result.message}"
