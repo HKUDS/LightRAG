@@ -88,28 +88,28 @@ services:
         value: "60"
 
       #############################
-      # LLM Configuration (Vercel AI Gateway)
+      # LLM Configuration (Direct OpenAI - Tier 4)
       #############################
       - key: LLM_BINDING
         value: "openai"
       - key: LLM_BINDING_HOST
-        value: "https://ai-gateway.vercel.sh/v1"
+        value: "https://api.openai.com/v1"
       - key: LLM_MODEL
-        value: "openai/gpt-5-nano"
+        value: "gpt-5-nano"  # Fast & cheap, ideal for entity extraction
       - key: LLM_BINDING_API_KEY
         sync: false  # Set in Render Dashboard as secret
       - key: LLM_TIMEOUT
-        value: "120"
+        value: "60"  # Direct OpenAI should be much faster
 
       #############################
-      # Embedding Configuration (Vercel AI Gateway)
+      # Embedding Configuration (Direct OpenAI - Tier 4)
       #############################
       - key: EMBEDDING_BINDING
         value: "openai"
       - key: EMBEDDING_BINDING_HOST
-        value: "https://ai-gateway.vercel.sh/v1"
+        value: "https://api.openai.com/v1"
       - key: EMBEDDING_MODEL
-        value: "openai/text-embedding-3-small"
+        value: "text-embedding-3-small"
       - key: EMBEDDING_DIM
         value: "1536"
       - key: EMBEDDING_BATCH_NUM
