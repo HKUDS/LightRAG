@@ -650,6 +650,7 @@ def priority_limit_async_func_call(
     max_queue_size: int = 1000,
     cleanup_timeout: float = 2.0,
     queue_name: str = "limit_async",
+    worker_idle_timeout: int = 30,
 ):
     """
     Enhanced priority-limited asynchronous function call decorator with robust timeout handling
@@ -659,6 +660,7 @@ def priority_limit_async_func_call(
     - Task state tracking to prevent race conditions
     - Enhanced health check system with stuck task detection
     - Proper resource cleanup and error recovery
+    - Worker idle timeout to free resources when not in use
 
     Args:
         max_size: Maximum number of concurrent calls
@@ -668,6 +670,7 @@ def priority_limit_async_func_call(
         max_task_duration: Maximum time before health check intervenes (defaults to llm_timeout + 60s)
         cleanup_timeout: Maximum time to wait for cleanup operations (defaults to 2.0s)
         queue_name: Optional queue name for logging identification (defaults to "limit_async")
+        worker_idle_timeout: Seconds of inactivity before worker exits (defaults to 30s, 0 to disable)
 
     Returns:
         Decorator function
@@ -706,6 +709,7 @@ def priority_limit_async_func_call(
 
         async def worker():
             """Enhanced worker that processes tasks with proper timeout and state management"""
+            idle_seconds = 0  # Track consecutive idle seconds
             try:
                 while not shutdown_event.is_set():
                     try:
@@ -718,7 +722,16 @@ def priority_limit_async_func_call(
                                 args,
                                 kwargs,
                             ) = await asyncio.wait_for(queue.get(), timeout=1.0)
+                            idle_seconds = 0  # Reset idle counter on successful task retrieval
                         except asyncio.TimeoutError:
+                            # Check idle timeout (if enabled)
+                            if worker_idle_timeout > 0:
+                                idle_seconds += 1
+                                if idle_seconds >= worker_idle_timeout:
+                                    logger.debug(
+                                        f"{queue_name}: Worker exiting after {idle_seconds}s idle"
+                                    )
+                                    return  # Exit worker gracefully
                             continue
 
                         # Get task state and mark worker as started
@@ -841,17 +854,23 @@ def priority_limit_async_func_call(
                                         )
                                     task_states.pop(task_id, None)
 
-                    # Worker recovery logic
+                    # Worker recovery logic - only spawn workers when there's pending work
                     current_tasks = set(tasks)
                     done_tasks = {t for t in current_tasks if t.done()}
                     tasks.difference_update(done_tasks)
 
                     active_tasks_count = len(tasks)
-                    workers_needed = max_size - active_tasks_count
+                    pending_queue_items = queue.qsize()
 
-                    if workers_needed > 0:
+                    # Only spawn workers if there's work waiting and not enough workers
+                    if pending_queue_items > 0 and active_tasks_count < max_size:
+                        # Spawn enough workers to handle pending work, up to max_size
+                        workers_needed = min(
+                            pending_queue_items,
+                            max_size - active_tasks_count
+                        )
                         logger.info(
-                            f"{queue_name}: Creating {workers_needed} new workers"
+                            f"{queue_name}: Creating {workers_needed} workers for {pending_queue_items} pending tasks"
                         )
                         new_tasks = set()
                         for _ in range(workers_needed):
@@ -896,12 +915,14 @@ def priority_limit_async_func_call(
                         f"{queue_name}: {active_tasks_count} tasks still running during reinitialization"
                     )
 
-                # Create worker tasks
-                workers_needed = max_size - active_tasks_count
-                for _ in range(workers_needed):
-                    task = asyncio.create_task(worker())
-                    tasks.add(task)
-                    task.add_done_callback(tasks.discard)
+                # Create initial worker tasks - start with minimal workers
+                # Health check will scale up as needed when queue has pending work
+                initial_workers = min(4, max_size) - active_tasks_count  # Start with up to 4 workers
+                if initial_workers > 0:
+                    for _ in range(initial_workers):
+                        task = asyncio.create_task(worker())
+                        tasks.add(task)
+                        task.add_done_callback(tasks.discard)
 
                 # Start enhanced health check
                 worker_health_check_task = asyncio.create_task(enhanced_health_check())
@@ -915,12 +936,15 @@ def priority_limit_async_func_call(
                     timeout_info.append(f"Worker: {max_execution_timeout}s")
                 if max_task_duration is not None:
                     timeout_info.append(f"Health Check: {max_task_duration}s")
+                if worker_idle_timeout > 0:
+                    timeout_info.append(f"Idle: {worker_idle_timeout}s")
 
                 timeout_str = (
                     f"(Timeouts: {', '.join(timeout_info)})" if timeout_info else ""
                 )
+                actual_workers = len(tasks)
                 logger.info(
-                    f"{queue_name}: {workers_needed} new workers initialized {timeout_str}"
+                    f"{queue_name}: {actual_workers} initial workers (max: {max_size}, scales on demand) {timeout_str}"
                 )
 
         async def shutdown():
