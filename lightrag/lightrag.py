@@ -2089,13 +2089,16 @@ class LightRAG:
                                         error_msg
                                     )
 
-                            # Cancel tasks that are not yet completed
+                            # Cancel tasks that are not yet completed and await their cancellation
                             all_tasks = first_stage_tasks + (
                                 [entity_relation_task] if entity_relation_task else []
                             )
-                            for task in all_tasks:
-                                if task and not task.done():
-                                    task.cancel()
+                            tasks_to_cancel = [t for t in all_tasks if t and not t.done()]
+                            for task in tasks_to_cancel:
+                                task.cancel()
+                            # Await cancellation to prevent phantom workers
+                            if tasks_to_cancel:
+                                await asyncio.gather(*tasks_to_cancel, return_exceptions=True)
 
                             # Persistent llm cache with error handling
                             if self.llm_response_cache:
