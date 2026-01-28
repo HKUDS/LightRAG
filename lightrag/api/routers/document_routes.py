@@ -553,6 +553,14 @@ class DocStatusResponse(BaseModel):
         default=None, description="Additional metadata about the document"
     )
     file_path: str = Field(description="Path to the document file")
+    is_duplicate: bool = Field(
+        default=False,
+        description="True if this document was detected as a duplicate of existing content"
+    )
+    original_doc_id: Optional[str] = Field(
+        default=None,
+        description="If is_duplicate=true, the doc_id of the original document"
+    )
 
     class Config:
         json_schema_extra = {
@@ -565,9 +573,11 @@ class DocStatusResponse(BaseModel):
                 "updated_at": "2025-03-31T12:35:30",
                 "track_id": "upload_20250729_170612_abc123",
                 "chunks_count": 12,
-                "error": None,
+                "error_msg": None,
                 "metadata": {"author": "John Doe", "year": 2025},
                 "file_path": "research_paper.pdf",
+                "is_duplicate": False,
+                "original_doc_id": None,
             }
         }
 
@@ -2948,6 +2958,8 @@ def create_document_routes(
                     if status not in response.statuses:
                         response.statuses[status] = []
 
+                    # Extract duplicate info from metadata
+                    doc_metadata = doc_status.metadata or {}
                     response.statuses[status].append(
                         DocStatusResponse(
                             id=doc_id,
@@ -2961,6 +2973,8 @@ def create_document_routes(
                             error_msg=doc_status.error_msg,
                             metadata=doc_status.metadata,
                             file_path=doc_status.file_path,
+                            is_duplicate=doc_metadata.get("is_duplicate", False),
+                            original_doc_id=doc_metadata.get("original_doc_id"),
                         )
                     )
 
@@ -3359,6 +3373,11 @@ def create_document_routes(
             status_summary = {}
 
             for doc_id, doc_status in docs_by_track_id.items():
+                # Extract duplicate info from metadata for easier access
+                metadata = doc_status.metadata or {}
+                is_duplicate = metadata.get("is_duplicate", False)
+                original_doc_id = metadata.get("original_doc_id")
+
                 documents.append(
                     DocStatusResponse(
                         id=doc_id,
@@ -3372,6 +3391,8 @@ def create_document_routes(
                         error_msg=doc_status.error_msg,
                         metadata=doc_status.metadata,
                         file_path=doc_status.file_path,
+                        is_duplicate=is_duplicate,
+                        original_doc_id=original_doc_id,
                     )
                 )
 
@@ -3441,6 +3462,8 @@ def create_document_routes(
             # Convert documents to response format
             doc_responses = []
             for doc_id, doc in documents_with_ids:
+                # Extract duplicate info from metadata
+                doc_metadata = doc.metadata or {}
                 doc_responses.append(
                     DocStatusResponse(
                         id=doc_id,
@@ -3454,6 +3477,8 @@ def create_document_routes(
                         error_msg=doc.error_msg,
                         metadata=doc.metadata,
                         file_path=doc.file_path,
+                        is_duplicate=doc_metadata.get("is_duplicate", False),
+                        original_doc_id=doc_metadata.get("original_doc_id"),
                     )
                 )
 

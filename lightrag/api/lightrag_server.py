@@ -63,7 +63,7 @@ from lightrag.api.workspace_manager import (
     get_rag,
 )
 
-from lightrag.utils import logger, set_verbose_debug
+from lightrag.utils import logger, set_verbose_debug, get_llm_metrics
 from lightrag.kg.shared_storage import (
     get_namespace_data,
     get_default_workspace,
@@ -1956,13 +1956,44 @@ def create_app(args):
             "# TYPE lightrag_graph_edges_total gauge",
             f'lightrag_graph_edges_total{{workspace="all"}} {total_graph_edges}',
             "",
+            "# ====== LLM METRICS ======",
+            "",
+        ]
+
+        # Get LLM metrics once
+        llm_metrics = get_llm_metrics().get_metrics()
+        metrics_lines.extend([
+            "# HELP lightrag_llm_active_calls Number of LLM calls currently in flight",
+            "# TYPE lightrag_llm_active_calls gauge",
+            f'lightrag_llm_active_calls{{instance="local"}} {llm_metrics["active_calls"]}',
+            "",
+            "# HELP lightrag_llm_total_calls Total LLM calls since startup",
+            "# TYPE lightrag_llm_total_calls counter",
+            f'lightrag_llm_total_calls{{instance="local"}} {llm_metrics["total_calls"]}',
+            "",
+            "# HELP lightrag_llm_errors_total Total LLM call errors since startup",
+            "# TYPE lightrag_llm_errors_total counter",
+            f'lightrag_llm_errors_total{{instance="local"}} {llm_metrics["total_errors"]}',
+            "",
+            "# HELP lightrag_llm_latency_avg_ms Average LLM call latency (rolling window, ms)",
+            "# TYPE lightrag_llm_latency_avg_ms gauge",
+            f'lightrag_llm_latency_avg_ms{{instance="local"}} {llm_metrics["avg_latency_ms"]}',
+            "",
+            "# HELP lightrag_llm_queue_size Current LLM call queue depth",
+            "# TYPE lightrag_llm_queue_size gauge",
+            f'lightrag_llm_queue_size{{instance="local"}} {llm_metrics["queue_size"]}',
+            "",
+            "# HELP lightrag_llm_max_concurrent Peak concurrent LLM calls since startup",
+            "# TYPE lightrag_llm_max_concurrent gauge",
+            f'lightrag_llm_max_concurrent{{instance="local"}} {llm_metrics["max_concurrent"]}',
+            "",
             "# ====== INFO ======",
             "",
             "# HELP lightrag_info LightRAG version info",
             "# TYPE lightrag_info gauge",
             f'lightrag_info{{version="{core_version}",api_version="{__api_version__}"}} 1',
             "",
-        ]
+        ])
 
         return PlainTextResponse(
             content="\n".join(metrics_lines),

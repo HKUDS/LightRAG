@@ -567,6 +567,81 @@ class HealthCheckTimeoutError(Exception):
         )
 
 
+class LLMMetrics:
+    """Global metrics tracker for LLM calls.
+
+    Tracks:
+    - active_calls: Current number of LLM calls in flight
+    - total_calls: Total LLM calls made since startup
+    - total_errors: Total LLM call errors
+    - latency_samples: Rolling window of recent latencies (ms)
+    - queue_size: Current queue depth
+    """
+
+    _instance: "LLMMetrics | None" = None
+    _lock = asyncio.Lock()
+
+    def __init__(self):
+        self._active_calls = 0
+        self._total_calls = 0
+        self._total_errors = 0
+        self._latency_samples: list[float] = []
+        self._max_samples = 100  # Keep last 100 samples for rolling average
+        self._queue_size = 0
+        self._max_concurrent = 0  # High watermark
+
+    @classmethod
+    def get_instance(cls) -> "LLMMetrics":
+        """Get or create the singleton instance."""
+        if cls._instance is None:
+            cls._instance = cls()
+        return cls._instance
+
+    def call_started(self) -> None:
+        """Record that an LLM call has started."""
+        self._active_calls += 1
+        self._total_calls += 1
+        if self._active_calls > self._max_concurrent:
+            self._max_concurrent = self._active_calls
+
+    def call_completed(self, latency_ms: float) -> None:
+        """Record that an LLM call has completed."""
+        self._active_calls = max(0, self._active_calls - 1)
+        self._latency_samples.append(latency_ms)
+        if len(self._latency_samples) > self._max_samples:
+            self._latency_samples.pop(0)
+
+    def call_error(self) -> None:
+        """Record that an LLM call has errored."""
+        self._active_calls = max(0, self._active_calls - 1)
+        self._total_errors += 1
+
+    def set_queue_size(self, size: int) -> None:
+        """Update the current queue size."""
+        self._queue_size = size
+
+    def get_metrics(self) -> dict[str, float]:
+        """Get current metrics as a dict."""
+        avg_latency = (
+            sum(self._latency_samples) / len(self._latency_samples)
+            if self._latency_samples
+            else 0.0
+        )
+        return {
+            "active_calls": self._active_calls,
+            "total_calls": self._total_calls,
+            "total_errors": self._total_errors,
+            "avg_latency_ms": round(avg_latency, 2),
+            "queue_size": self._queue_size,
+            "max_concurrent": self._max_concurrent,
+        }
+
+
+def get_llm_metrics() -> LLMMetrics:
+    """Get the global LLM metrics instance."""
+    return LLMMetrics.get_instance()
+
+
 def priority_limit_async_func_call(
     max_size: int,
     llm_timeout: float = None,
@@ -922,9 +997,16 @@ def priority_limit_async_func_call(
             future = asyncio.Future()
 
             # Create task state
+            call_start_time = asyncio.get_event_loop().time()
             task_state = TaskState(
-                future=future, start_time=asyncio.get_event_loop().time()
+                future=future, start_time=call_start_time
             )
+
+            # Track metrics
+            metrics = get_llm_metrics()
+            metrics.call_started()
+            metrics.set_queue_size(queue.qsize())
+            call_succeeded = False
 
             try:
                 # Register task state
@@ -952,6 +1034,8 @@ def priority_limit_async_func_call(
                         await queue.put(
                             (_priority, current_count, task_id, args, kwargs)
                         )
+                    # Update queue size after put
+                    metrics.set_queue_size(queue.qsize())
                 except asyncio.TimeoutError:
                     raise QueueFullError(
                         f"{queue_name}: Queue full, timeout after {_queue_timeout} seconds"
@@ -965,9 +1049,11 @@ def priority_limit_async_func_call(
                 # Wait for result with timeout handling
                 try:
                     if _timeout is not None:
-                        return await asyncio.wait_for(future, _timeout)
+                        result = await asyncio.wait_for(future, _timeout)
                     else:
-                        return await future
+                        result = await future
+                    call_succeeded = True
+                    return result
                 except asyncio.TimeoutError:
                     # This is user-level timeout (asyncio.wait_for caused)
                     # Mark cancellation request
@@ -999,6 +1085,15 @@ def priority_limit_async_func_call(
                     raise TimeoutError(f"{queue_name}: {str(e)}")
 
             finally:
+                # Track metrics completion
+                call_end_time = asyncio.get_event_loop().time()
+                latency_ms = (call_end_time - call_start_time) * 1000
+                if call_succeeded:
+                    metrics.call_completed(latency_ms)
+                else:
+                    metrics.call_error()
+                metrics.set_queue_size(queue.qsize())
+
                 # Ensure cleanup
                 active_futures.discard(future)
                 async with task_states_lock:
