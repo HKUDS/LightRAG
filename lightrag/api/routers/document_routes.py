@@ -2456,6 +2456,29 @@ def create_document_routes(
             # Generate track_id for text insertion
             track_id = generate_track_id("insert")
 
+            # Pre-register document to prevent race conditions with concurrent requests
+            # This atomic operation ensures that subsequent requests for the same content
+            # will see this document exists before the background task starts
+            try:
+                sanitized = sanitize_text_for_encoding(request.text)
+                doc_id = compute_mdhash_id(sanitized, prefix="doc-")
+                pre_register_data = {
+                    doc_id: {
+                        "status": "pending",
+                        "content_summary": sanitized[:100] + "..." if len(sanitized) > 100 else sanitized,
+                        "content_length": len(sanitized),
+                        "created_at": datetime.now(timezone.utc).isoformat(),
+                        "updated_at": datetime.now(timezone.utc).isoformat(),
+                        "file_path": request.file_source or "unknown_source",
+                        "track_id": track_id,
+                    }
+                }
+                await rag.doc_status.upsert(pre_register_data)
+                logger.debug(f"Pre-registered document {doc_id} with track_id {track_id}")
+            except Exception as e:
+                # Non-blocking: if pre-registration fails, fall through to normal processing
+                logger.warning(f"Document pre-registration failed, proceeding with normal flow: {e}")
+
             background_tasks.add_task(
                 pipeline_index_texts,
                 rag,
@@ -2557,6 +2580,33 @@ def create_document_routes(
 
             # Generate track_id for texts insertion
             track_id = generate_track_id("insert")
+
+            # Pre-register all documents to prevent race conditions with concurrent requests
+            try:
+                pre_register_data = {}
+                for i, text in enumerate(request.texts):
+                    sanitized = sanitize_text_for_encoding(text)
+                    doc_id = compute_mdhash_id(sanitized, prefix="doc-")
+                    file_source = (
+                        request.file_sources[i]
+                        if request.file_sources and i < len(request.file_sources)
+                        else "unknown_source"
+                    )
+                    pre_register_data[doc_id] = {
+                        "status": "pending",
+                        "content_summary": sanitized[:100] + "..." if len(sanitized) > 100 else sanitized,
+                        "content_length": len(sanitized),
+                        "created_at": datetime.now(timezone.utc).isoformat(),
+                        "updated_at": datetime.now(timezone.utc).isoformat(),
+                        "file_path": file_source,
+                        "track_id": track_id,
+                    }
+                if pre_register_data:
+                    await rag.doc_status.upsert(pre_register_data)
+                    logger.debug(f"Pre-registered {len(pre_register_data)} documents with track_id {track_id}")
+            except Exception as e:
+                # Non-blocking: if pre-registration fails, fall through to normal processing
+                logger.warning(f"Document pre-registration failed, proceeding with normal flow: {e}")
 
             background_tasks.add_task(
                 pipeline_index_texts,
