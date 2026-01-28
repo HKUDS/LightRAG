@@ -99,7 +99,7 @@ services:
       - key: LLM_BINDING_API_KEY
         sync: false  # Set in Render Dashboard as secret
       - key: LLM_TIMEOUT
-        value: "300"
+        value: "120"
 
       #############################
       # Embedding Configuration (Vercel AI Gateway)
@@ -167,7 +167,7 @@ services:
       # Performance Configuration
       #############################
       - key: MAX_ASYNC
-        value: "512"
+        value: "128"
       - key: MAX_PARALLEL_INSERT
         value: "64"
       - key: MAX_GRAPH_NODES
