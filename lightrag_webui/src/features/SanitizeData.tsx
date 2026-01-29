@@ -51,10 +51,13 @@ export default function SanitizeData() {
   const [loadingTypes, setLoadingTypes] = useState(false);
   const [modalFilterText, setModalFilterText] = useState('');
 
-
-  const [filterMode, setFilterMode] = useState<'none' | 'selected' | 'type'>('none');
+  const [typesLoading, setTypesLoading] = useState(true);  
+  const [filterMode, setFilterMode] = useState<'none' | 'selected' | 'type' | 'orphan'>('none');
   const [typeFilteredEntities, setTypeFilteredEntities] = useState<string[]>([]);
   const [entityTypeMap, setEntityTypeMap] = useState<Record<string, string>>({});
+
+  const [orphanFilteredEntities, setOrphanFilteredEntities] = useState<string[]>([]);
+  const [entityOrphanMap, setEntityOrphanMap] = useState<Record<string, boolean>>({});
 
   // For loading the Select Type modal window
   const fetchAllTypes = async () => {
@@ -110,22 +113,32 @@ export default function SanitizeData() {
         const fetchEntityTypes = async () => {
           try {
             const typeMap: Record<string, string> = {};
+            const orphanMap: Record<string, boolean> = {};
             await Promise.all(
               sorted.map(async (name) => {
                 try {
                   const detailRes = await axios.get(
-                    `${API_BASE}/graphs?label=${encodeURIComponent(name)}&max_depth=1&max_nodes=1`
+                    `${API_BASE}/graphs?label=${encodeURIComponent(name)}&max_depth=1&max_nodes=2`
                   );
                   const type = detailRes.data.nodes?.[0]?.properties?.entity_type || '';
                   typeMap[name] = type;
+
+                  // Detect orphan: no extra nodes or edges
+                  const isOrphan = (detailRes.data.nodes?.length || 0) <= 1 && (detailRes.data.edges?.length || 0) === 0;
+                  orphanMap[name] = isOrphan;
                 } catch (err) {
-                  console.error(`Error fetching type for ${name}:`, err);
+                  console.error(`Error fetching details for ${name}:`, err);
                 }
               })
             );
             setEntityTypeMap(typeMap);
+            setEntityOrphanMap(orphanMap);
+            console.log('Types loaded:', Object.keys(typeMap).length); // Debug
+            console.log('Orphans loaded:', Object.values(orphanMap).filter(Boolean).length); // Debug: count of orphans
           } catch (err) {
-            console.error('Failed to fetch entity types:', err);
+            console.error('Failed to fetch entity details:', err);
+          } finally {
+            setTypesLoading(false);
           }
         };
         fetchEntityTypes();
@@ -256,6 +269,24 @@ export default function SanitizeData() {
     setFilterMode('type');
     setCurrentPage(1);
     // Optional: clear filter when entering mode
+    setFilterText('');
+  };
+
+  const handleShowOrphans = () => {
+    if (typesLoading) {  // Reuses the same loading state (since orphans load with types)
+      alert('Entity details are still loading. Please wait a moment and try again.');
+      return;
+    }
+    
+    console.log('Showing orphans'); // Debug
+    const orphans = entities.filter((name) => entityOrphanMap[name] === true).sort((a, b) =>
+      a.toLowerCase().localeCompare(b.toLowerCase())
+    );
+    console.log('Orphan count:', orphans.length); // Debug
+    
+    setOrphanFilteredEntities(orphans);
+    setFilterMode('orphan');
+    setCurrentPage(1);
     setFilterText('');
   };
 
@@ -520,7 +551,9 @@ export default function SanitizeData() {
     ? [...selectedEntities].sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()))
     : filterMode === 'type'
     ? typeFilteredEntities
-    : paginatedEntities;  
+    : filterMode === 'orphan'
+    ? orphanFilteredEntities
+    : paginatedEntities; 
 
   return (
     <div className="h-full flex flex-col">
@@ -532,6 +565,8 @@ export default function SanitizeData() {
             <div className="text-xs text-indigo-700 bg-indigo-50 p-2 rounded mb-2">
               {filterMode === 'type'
                 ? `Showing only entities of type: ${entityType} (${displayEntities.length})`
+                : filterMode === 'orphan'
+                ? `Showing only orphan entities (${displayEntities.length})`
                 : `Showing only selected entities (${displayEntities.length})`}
             </div>
           )}
@@ -547,16 +582,21 @@ export default function SanitizeData() {
               />
               <div className="flex flex-wrap gap-1">
                 <button 
-                  onClick={handleShowAllOfType}  // ← Added onClick
-                  className="px-2 py-0.5 bg-gray-100 hover:bg-gray-200 border border-gray-300 rounded text-xs"
+                  onClick={handleShowAllOfType}
+                  disabled={typesLoading}
+                  className={`px-2 py-0.5 bg-gray-100 hover:bg-gray-200 border border-gray-300 rounded text-xs ${typesLoading ? 'opacity-50 cursor-not-allowed' : ''}`}
                 >
                   All Of Type
                 </button>
-                <button className="px-2 py-0.5 bg-gray-100 hover:bg-gray-200 border border-gray-300 rounded text-xs">
+                <button 
+                  onClick={handleShowOrphans}  // ← Added onClick and disabled
+                  disabled={typesLoading}
+                  className={`px-2 py-0.5 bg-gray-100 hover:bg-gray-200 border border-gray-300 rounded text-xs ${typesLoading ? 'opacity-50 cursor-not-allowed' : ''}`}
+                >
                   Orphans
                 </button>
 
-                {/* Pagination */}
+                {/* Pagination (unchanged) */}
                 <div className="flex flex-wrap gap-1 items-center">
                   <button
                     onClick={goToFirst}
@@ -624,6 +664,13 @@ export default function SanitizeData() {
               >
                 All Of Type
               </button>
+            ) : filterMode === 'orphan' ? (
+              <button
+                className="px-2 py-0.5 border rounded text-xs transition-colors bg-indigo-600 text-white border-indigo-700"
+                disabled
+              >
+                Orphans
+              </button>
             ) : (
               <button
                 onClick={handleShowSelectedOnly}
@@ -643,6 +690,7 @@ export default function SanitizeData() {
                 setFilterMode('none');
                 setFilterText('');
                 setCurrentPage(1);
+                setEntityType('');  // Optional: clears type as in previous guidance
               }}
               className="px-2 py-0.5 bg-gray-100 hover:bg-gray-200 border border-gray-300 rounded text-xs"
             >
@@ -655,7 +703,7 @@ export default function SanitizeData() {
                 setFirstEntity(null);
                 setFilterText('');
                 setCurrentPage(1);
-                setEntityType('');
+                setEntityType('');  // Optional: clears type as in previous guidance
               }}
               className="px-2 py-0.5 bg-red-50 hover:bg-red-100 border border-red-200 rounded text-xs text-red-700"
             >
