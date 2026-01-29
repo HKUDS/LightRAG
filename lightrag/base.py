@@ -794,6 +794,31 @@ class DocStatusStorage(BaseKVStorage, ABC):
             Returns the same format as get_by_ids method
         """
 
+    async def try_claim(self, doc_id: str, data: dict[str, Any]) -> tuple[bool, dict[str, Any] | None]:
+        """Atomically try to claim a document ID for processing.
+
+        Uses INSERT ... ON CONFLICT DO NOTHING to ensure only one caller
+        can claim a given doc_id. This prevents race conditions when
+        multiple concurrent requests try to insert the same content.
+
+        Args:
+            doc_id: The document ID to claim
+            data: The document data to insert if claim succeeds
+
+        Returns:
+            Tuple of (claimed: bool, existing_doc: dict | None)
+            - (True, None): Successfully claimed, document was inserted
+            - (False, existing_doc): Already claimed by another request,
+              returns the existing document data for reference
+        """
+        # Default implementation using get_by_id + upsert (not truly atomic)
+        # Subclasses should override with database-specific atomic implementation
+        existing = await self.get_by_id(doc_id)
+        if existing is not None:
+            return (False, existing)
+        await self.upsert({doc_id: data})
+        return (True, None)
+
 
 class StoragesStatus(str, Enum):
     """Storages status"""
