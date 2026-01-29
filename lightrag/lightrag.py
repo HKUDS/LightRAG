@@ -1784,15 +1784,35 @@ class LightRAG:
             "pipeline_status", workspace=self.workspace
         )
 
-        # Check if another process is already processing the queue
-        async with pipeline_status_lock:
-            # Check if drain mode is enabled (graceful shutdown in progress)
-            if is_drain_mode_enabled():
+        # Track whether we acquired the PostgreSQL advisory lock
+        # This is CRITICAL for multi-instance coordination
+        pg_lock_acquired = False
+        use_pg_lock = hasattr(self.doc_status, "db") and self.doc_status.db is not None
+
+        # Check if drain mode is enabled (graceful shutdown in progress)
+        if is_drain_mode_enabled():
+            logger.info(
+                f"[{self.workspace}] Pipeline blocked: drain mode enabled (graceful shutdown)"
+            )
+            return
+
+        # MULTI-INSTANCE COORDINATION:
+        # Use PostgreSQL advisory lock to coordinate across instances.
+        # Python locks (asyncio.Lock) are local to each process and don't
+        # work across separate container instances.
+        if use_pg_lock:
+            pg_lock_acquired = await self.doc_status.db.try_pipeline_lock(self.workspace)
+            if not pg_lock_acquired:
+                # Another instance is processing - queue request and return
+                async with pipeline_status_lock:
+                    pipeline_status["request_pending"] = True
                 logger.info(
-                    f"[{self.workspace}] Pipeline blocked: drain mode enabled (graceful shutdown)"
+                    f"[{self.workspace}] Another instance is processing the document queue (PostgreSQL lock held). Request queued."
                 )
                 return
 
+        # Check if another process is already processing the queue
+        async with pipeline_status_lock:
             # Ensure only one worker is processing documents
             if not pipeline_status.get("busy", False):
                 processing_docs, failed_docs, pending_docs = await asyncio.gather(
@@ -1808,6 +1828,9 @@ class LightRAG:
 
                 if not to_process_docs:
                     logger.info("No documents to process")
+                    # Release the PostgreSQL lock since we're not processing
+                    if use_pg_lock and pg_lock_acquired:
+                        await self.doc_status.db.release_pipeline_lock(self.workspace)
                     return
 
                 pipeline_status.update(
@@ -1831,6 +1854,9 @@ class LightRAG:
                 logger.info(
                     "Another process is already processing the document queue. Request queued."
                 )
+                # Release the PostgreSQL lock since we're not processing
+                if use_pg_lock and pg_lock_acquired:
+                    await self.doc_status.db.release_pipeline_lock(self.workspace)
                 return
 
         try:
@@ -2451,6 +2477,13 @@ class LightRAG:
                 )
                 pipeline_status["latest_message"] = log_message
                 pipeline_status["history_messages"].append(log_message)
+
+            # Release the PostgreSQL advisory lock so other instances can process
+            if use_pg_lock and pg_lock_acquired:
+                try:
+                    await self.doc_status.db.release_pipeline_lock(self.workspace)
+                except Exception as e:
+                    logger.warning(f"[{self.workspace}] Failed to release pipeline lock: {e}")
 
     async def _process_extract_entities(
         self, chunk: dict[str, Any], pipeline_status=None, pipeline_status_lock=None,
