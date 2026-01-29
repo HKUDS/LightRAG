@@ -430,3 +430,246 @@ Output:
 
 """,
 ]
+
+PROMPTS["goal_clean_strict"] = """
+--- Goal ---
+    You are a knowledge point deduplication specialist. Merge entities ONLY if they represent the exact same real-world concept based on their descriptions. Focus on semantic meaning analysis rather than just surface-level text similarity. Output strictly follows the format below.
+--- Format Requirements ---
+    "merge" section:A list of entities to merge, each containing:
+        'summary': MUST be one of the entity names from the 'keywords' list (choose the most complete/standard form from existing keywords, NO CREATION OF NEW NAMES)
+        'keywords': List of merged entities (≥2 elements, verbatim from input, preserving case/special characters)
+--- Critical Rules ---
+1. Analysis Priority - MUST analyze entity descriptions first:
+    - Read and understand each entity's description carefully
+    - Compare the actual semantic meanings and contexts
+    - Consider the real-world concepts each entity represents
+    - Only merge if descriptions indicate they refer to the same entity
+2. Allowed Merges (must meet ALL conditions):
+    - Descriptions clearly indicate the same real-world entity/concept
+    - Spelling variations or different naming conventions for the same entity
+    - Abbreviations vs. full forms of the same entity (e.g., "AI" vs. "Artificial Intelligence")
+    - Language variants (e.g., "New York" vs. "Nueva York" for the same city)
+3. Forbidden Merges:
+    - Different entities even if in related domains (e.g., "Apple Inc." vs. "Apple fruit")
+    - General categories vs. specific instances (e.g., "Car" vs. "Tesla Model 3")
+    - Similar but distinct concepts (e.g., "Machine Learning" vs. "Deep Learning")
+    - Entities with different contexts in their descriptions
+4. Output Handling:
+    - If no entities meet merge criteria based on description analysis, output null
+    - Keywords must EXACTLY MATCH INPUT (no creation, no modification)
+    - Summary must be EXACTLY ONE OF THE KEYWORDS (no new name creation allowed)
+    - Always provide reasoning based on description analysis
+"""
+
+PROMPTS["goal_clean_medium"] = """
+--- Goal ---
+You are a knowledge point deduplication specialist. Merge entities if they represent the same core concept based on description analysis, including near-synonyms or semantically equivalent concepts. Output strictly follows the format below.
+--- Format Requirements ---
+"merge" section: A list of entities to merge, each containing:
+    'summary': MUST be one of the entity names from the 'keywords' list (choose the most complete form from existing keywords, NO CREATION OF NEW NAMES)
+    'keywords': List of merged entities (≥2 elements, verbatim from input)
+--- Critical Rules ---
+1. Analysis Priority - Focus on entity descriptions:
+    - Analyze entity descriptions to understand their meanings
+    - Compare semantic concepts rather than just text similarity
+    - Consider contextual equivalence in their descriptions
+2. Allowed Merges (must meet ≥1 condition based on description analysis):
+    - Descriptions indicate the same core concept with different expressions
+    - Spelling/naming variations for the same entity (e.g., "climte" → "climate")
+    - Lexical variants describing equivalent concepts (e.g., "retrieval frameworks" ↔ "retrieval paradigm")
+    - Abbreviations vs. full forms with consistent descriptions (e.g., "EP" vs. "Environmental Protection")
+    - Contextually equivalent concepts (e.g., "soil health" ↔ "soil fertility" in agricultural contexts)
+3. Forbidden Merges:
+    - Descriptions indicate different entities despite surface similarity
+    - Hierarchical relationships (e.g., "Energy" vs. "Solar Energy" are parent-child concepts)
+    - Related but distinct concepts (e.g., "Waste" vs. "Plastic Waste")
+4. Output Handling:
+    - If no entities meet criteria based on description analysis, output null
+    - Keywords must EXACTLY MATCH INPUT (no modification)
+    - Summary must be EXACTLY ONE OF THE KEYWORDS (no new name creation allowed)
+"""
+
+PROMPTS["goal_clean_loose"] = """
+--- Goal ---
+You are a knowledge point deduplication specialist. Merge entities sharing conceptual affinity based on their descriptions, including topic-level associations and thematic connections. Output strictly follows the format below.
+--- Format Requirements ---
+"merge" section: A list of entities to merge, each containing:
+    'summary': MUST be one of the entity names from the 'keywords' list (choose the most representative one from existing keywords, NO CREATION OF NEW NAMES)
+    'keywords': List of merged entities (≥2 elements, verbatim from input)
+--- Critical Rules ---
+1. Analysis Priority - Description-based thematic analysis:
+    - Examine entity descriptions for thematic connections
+    - Look for conceptual relationships and shared contexts
+    - Consider functional or causal relationships mentioned in descriptions
+2. Allowed Merges (must meet ≥1 condition based on description analysis):
+    - Descriptions show thematic synonymity (e.g., "coastal protection" ↔ "shoreline conservation")
+    - Descriptions indicate causal/functional relations (e.g., "deforestation" → "habitat loss")
+    - Descriptions suggest co-occurring domain concepts (e.g., "urban planning" + "zoning" ↔ "city development")
+    - Descriptions reveal complementary aspects of the same phenomenon
+3. Forbidden Merges:
+    - Descriptions indicate cross-domain terms without contextual overlap
+    - Descriptions show explicitly disjoint concepts (e.g., "Software development" ≠ "Hardware manufacturing")
+    - Entities with contradictory or conflicting descriptions
+4. Output Handling:
+    - Prioritize clusters of ≥3 related terms with strong thematic connections
+    - Keywords must EXACTLY MATCH INPUT
+    - Summary must be EXACTLY ONE OF THE KEYWORDS (no new name creation allowed)
+    - Allow merging pairs if descriptions show strong contextual justification
+"""
+
+PROMPTS["goal_clean_examples"] = """
+--- Examples of Valid vs Invalid Merges ---
+    VALID:
+    {
+    "merge": [
+        {
+        "summary": "Retrieval paradigms",
+        "keywords": [
+            "lomCost Retrievel",
+            "high-level-0nly Retrieval",
+            "dual-level retrieval paradigm"
+        ]
+        },
+        {
+        "summary": "Indigenous perspectives",
+        "keywords": [
+            "Indigenous perspectives",
+            "indigenous ownership"
+        ]
+        }
+    ]
+    }
+"""
+
+PROMPTS["name_only_analysis_instruction"] = """
+--- Please analyze based on the following entity names ---
+Please carefully analyze the names of each entity to determine which entities might refer to the same real-world concept or entity.
+Focus on:
+1. Different naming conventions that might refer to the same entity (such as language variants, abbreviations vs. full forms, etc.)
+2. Surface similarity of entity names and possible semantic associations
+3. Avoid merging entities that are only literally similar but essentially different
+
+Note: This is a preliminary analysis, and more detailed semantic verification will be conducted later.
+
+Entity list:
+"""
+
+PROMPTS["secondary_merge_verification"] = """
+--- Role ---
+You are a knowledge entity verification specialist. Your task is to perform a final verification and refinement of entity merging based on detailed descriptions.
+
+--- Goal ---
+Analyze the provided entities and their descriptions to determine which entities truly represent the same real-world concept and should be merged together. Focus on semantic meaning and contextual analysis to create accurate merge groups.
+
+--- Instructions ---
+1. **Description Analysis**: Carefully read and analyze each entity's description
+2. **Semantic Comparison**: Compare the actual meanings, contexts, and concepts described
+3. **Real-world Mapping**: Determine if entities refer to the same real-world object, person, concept, or phenomenon
+4. **Context Consideration**: Consider the context in which each entity appears
+5. **Group Formation**: Create merge groups containing only entities that truly represent the same concept
+
+--- Decision Criteria ---
+**SHOULD BE IN SAME MERGE GROUP if:**
+- Descriptions clearly indicate the same real-world entity or concept
+- Different naming conventions but same underlying concept (e.g., "Napoleon" vs "Bonaparte" - same historical figure)
+- Language variants or transliterations of the same entity
+- Abbreviations vs full forms with consistent meaning
+
+**SHOULD NOT BE IN SAME MERGE GROUP if:**
+- Descriptions indicate different entities despite surface similarity (e.g., "Apple Inc." vs "Apple fruit" - different concepts)
+- Different contexts or meanings in their descriptions
+- Similar but distinct concepts (e.g., parent-child relationships like father and daughter)
+- Conflicting or contradictory information in descriptions
+
+--- Output Format ---
+Return a JSON object with merge operations. Each merge operation contains entities that should be merged together:
+{
+    "merge": [
+        {
+            "summary": "preferred_entity_name_FROM_KEYWORDS_LIST",
+            "keywords": ["entity1", "entity2", "entity3"]
+        }
+    ]
+}
+
+CRITICAL: The "summary" field MUST be one of the entity names from the "keywords" list. You CANNOT create new entity names. Choose the most appropriate existing entity name from the keywords list.
+
+If no entities should be merged, return:
+{
+    "merge": []
+}
+
+--- Analysis Request ---
+Please analyze the following entities and determine which ones should be merged together:
+
+{entities_with_descriptions}
+
+--- Output ---
+"""
+
+PROMPTS["secondary_verification_examples"] = """
+--- Examples ---
+
+Example 1 - MERGE GROUP FOUND:
+Entities:
+1. Napoleon Bonaparte - French military leader and emperor who rose to prominence during the French Revolution
+2. Napoleon I - Emperor of the French from 1804 to 1814, known for his military campaigns across Europe
+3. Bonaparte - French general and political leader who became Emperor Napoleon I
+
+Output:
+{
+    "merge": [
+        {
+            "summary": "Napoleon Bonaparte",
+            "keywords": ["Napoleon Bonaparte", "Napoleon I", "Bonaparte"]
+        }
+    ]
+}
+
+Example 2 - NO MERGE (DIFFERENT ENTITIES):
+Entities:
+1. Apple Inc. - American multinational technology company headquartered in Cupertino, California
+2. Apple fruit - Edible fruit produced by apple trees, commonly consumed worldwide
+
+Output:
+{
+    "merge": []
+}
+
+Example 3 - PARTIAL MERGE (MIXED ENTITIES):
+Entities:
+1. Steve Jobs - Co-founder and former CEO of Apple Inc., technology visionary
+2. Steven Paul Jobs - American entrepreneur and business magnate, Apple co-founder
+3. Tim Cook - Current CEO of Apple Inc., successor to Steve Jobs
+4. Apple CEO - Chief Executive Officer position at Apple Inc.
+5. Apple Leadership - Executive management team at Apple Inc.
+
+Output:
+{
+    "merge": [
+        {
+            "summary": "Steve Jobs",
+            "keywords": ["Steve Jobs", "Steven Paul Jobs"]
+        },
+        {
+            "summary": "Apple CEO",
+            "keywords": ["Apple CEO", "Apple Leadership"]
+        }
+    ]
+}
+
+Example 4 - MERGE WITH AI EXAMPLE:
+Entities:
+1. AI - Artificial intelligence technology that simulates human intelligence in computer systems
+2. Artificial Intelligence - Computer science field studying how to make machines simulate human intelligent behavior
+
+Output:
+{
+    "merge": [
+        {
+            "summary": "AI",
+            "keywords": ["AI", "Artificial Intelligence"]
+        }
+    ]
+}
+"""
