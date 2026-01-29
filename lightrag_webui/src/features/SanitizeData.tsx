@@ -812,13 +812,43 @@ export default function SanitizeData() {
           </div>
 
           <div className="flex gap-2">
-            <button className="px-3.5 py-1.5 bg-blue-600 text-white rounded hover:bg-blue-700 text-sm disabled:opacity-50">
+            <button 
+              className="px-3.5 py-1.5 bg-blue-600 text-white rounded hover:bg-blue-700 text-sm disabled:opacity-50"
+              disabled={selectedEntities.length < 1 || filterMode !== 'selected'}
+              title={
+                filterMode !== 'selected' 
+                  ? "Enter 'Show Sel. Only' mode first to act on selected entities" 
+                  : selectedEntities.length < 1 
+                  ? "Select at least one entity first (check the boxes on the left)" 
+                  : undefined
+              }
+            >
               Merge Entities
             </button>
-            <button className="px-3.5 py-1.5 bg-green-600 text-white rounded hover:bg-green-700 text-sm disabled:opacity-50">
+            <button 
+              className="px-3.5 py-1.5 bg-green-600 text-white rounded hover:bg-green-700 text-sm disabled:opacity-50"
+              disabled={selectedEntities.length !== 2 || filterMode !== 'selected'}
+              title={
+                filterMode !== 'selected' 
+                  ? "Enter 'Show Sel. Only' mode first to act on selected entities" 
+                  : selectedEntities.length !== 2 
+                  ? "Select exactly two entities first (check the boxes on the left)" 
+                  : undefined
+              }
+            >
               Create Rel.
             </button>
-            <button className="px-3.5 py-1.5 bg-red-600 text-white rounded hover:bg-red-700 text-sm disabled:opacity-50">
+            <button 
+              className="px-3.5 py-1.5 bg-red-600 text-white rounded hover:bg-red-700 text-sm disabled:opacity-50"
+              disabled={selectedEntities.length < 1 || filterMode !== 'selected'}
+              title={
+                filterMode !== 'selected' 
+                  ? "Enter 'Show Sel. Only' mode first to act on selected entities" 
+                  : selectedEntities.length < 1 
+                  ? "Select at least one entity first (check the boxes on the left)" 
+                  : undefined
+              }
+            >
               Delete
             </button>
           </div>
