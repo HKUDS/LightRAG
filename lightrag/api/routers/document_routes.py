@@ -288,8 +288,8 @@ class InsertResponse(BaseModel):
         track_id: Tracking ID for monitoring processing status
     """
 
-    status: Literal["success", "duplicated", "partial_success", "failure"] = Field(
-        description="Status of the operation"
+    status: Literal["success", "duplicated", "in_progress", "partial_success", "failure"] = Field(
+        description="Status of the operation. 'in_progress' indicates content is already being processed - use returned track_id to poll."
     )
     message: str = Field(description="Message describing the operation result")
     track_id: str = Field(description="Tracking ID for monitoring processing status")
@@ -2343,6 +2343,18 @@ def create_document_routes(
                     logger.info(
                         f"Document '{safe_filename}' is stuck in '{status}' state, allowing re-upload"
                     )
+                elif status in ("pending", "processing"):
+                    # Document is currently being processed - return in_progress
+                    logger.info(
+                        f"Document '{safe_filename}' is currently being processed (status={status})"
+                    )
+                    return InsertResponse(
+                        status="in_progress",
+                        message=f"File '{safe_filename}' is already being processed (Status: {status}). Use track_id to poll status.",
+                        track_id=existing_doc_data.get("track_id") or "",
+                        doc_id=existing_doc_data.get("id"),
+                        original_status=status,
+                    )
                 else:
                     return InsertResponse(
                         status="duplicated",
@@ -2421,6 +2433,18 @@ def create_document_routes(
                         logger.info(
                             f"Document '{request.file_source}' is stuck in '{status}' state, allowing re-submission"
                         )
+                    elif status in ("pending", "processing"):
+                        # Document is currently being processed - return in_progress
+                        logger.info(
+                            f"Document '{request.file_source}' is currently being processed (status={status})"
+                        )
+                        return InsertResponse(
+                            status="in_progress",
+                            message=f"File source '{request.file_source}' is already being processed (Status: {status}). Use track_id to poll status.",
+                            track_id=existing_doc_data.get("track_id") or "",
+                            doc_id=existing_doc_data.get("id"),
+                            original_status=status,
+                        )
                     else:
                         return InsertResponse(
                             status="duplicated",
@@ -2465,8 +2489,22 @@ def create_document_routes(
                             f"Document {doc_id} is stuck in '{existing_status}' state, allowing re-submission"
                         )
                         await rag.doc_status.upsert({doc_id: claim_data})
+                    elif existing_status in ("pending", "processing"):
+                        # Document is currently being processed - return in_progress
+                        # Client should poll the returned track_id instead of retrying
+                        logger.info(
+                            f"Document {doc_id} is currently being processed (status={existing_status}), "
+                            f"returning existing track_id for polling"
+                        )
+                        return InsertResponse(
+                            status="in_progress",
+                            message=f"Content is already being processed (Status: {existing_status}). Use track_id to poll status.",
+                            track_id=existing_doc.get("track_id") or "",
+                            doc_id=doc_id,
+                            original_status=existing_status,
+                        )
                     else:
-                        # True duplicate - return immediately
+                        # True duplicate (processed, skipped, etc.) - return immediately
                         return InsertResponse(
                             status="duplicated",
                             message=f"Content already exists (Status: {existing_status}).",
@@ -2543,6 +2581,18 @@ def create_document_routes(
                                 logger.info(
                                     f"Document '{file_source}' is stuck in '{status}' state, allowing re-submission"
                                 )
+                            elif status in ("pending", "processing"):
+                                # Document is currently being processed
+                                logger.info(
+                                    f"Document '{file_source}' is currently being processed (status={status})"
+                                )
+                                return InsertResponse(
+                                    status="in_progress",
+                                    message=f"File source '{file_source}' is already being processed (Status: {status}). Use track_id to poll status.",
+                                    track_id=existing_doc_data.get("track_id") or "",
+                                    doc_id=existing_doc_data.get("id"),
+                                    original_status=status,
+                                )
                             else:
                                 return InsertResponse(
                                     status="duplicated",
@@ -2594,8 +2644,21 @@ def create_document_routes(
                             )
                             await rag.doc_status.upsert({doc_id: claim_data})
                             claimed_count += 1
+                        elif existing_status in ("pending", "processing"):
+                            # Document is currently being processed - return in_progress
+                            logger.info(
+                                f"Document {doc_id} is currently being processed (status={existing_status}), "
+                                f"returning existing track_id for polling"
+                            )
+                            return InsertResponse(
+                                status="in_progress",
+                                message=f"Content of text #{i+1} ('{file_source}') is already being processed (Status: {existing_status}). Use track_id to poll status.",
+                                track_id=existing_doc.get("track_id") or "",
+                                doc_id=doc_id,
+                                original_status=existing_status,
+                            )
                         else:
-                            # True duplicate - return immediately
+                            # True duplicate (processed, skipped, etc.) - return immediately
                             return InsertResponse(
                                 status="duplicated",
                                 message=f"Content of text #{i+1} ('{file_source}') already exists (Status: {existing_status}).",

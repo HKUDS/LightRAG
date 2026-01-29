@@ -1993,6 +1993,67 @@ def create_app(args):
             "# TYPE lightrag_asyncio_tasks_total gauge",
             f'lightrag_asyncio_tasks_total{{instance="local"}} {len(asyncio.all_tasks())}',
             "",
+        ])
+
+        # Database pool metrics (if PostgreSQL backend is used)
+        db_pool_size = 0
+        db_pool_idle = 0
+        db_pool_max = 0
+        db_pool_min = 0
+        db_pool_available = False
+
+        # Try to get pool from any active workspace
+        for workspace_id, instance in list(pool._instances.items()):
+            try:
+                rag = instance.rag_instance
+                # Check doc_status storage for db access
+                if hasattr(rag, "doc_status") and rag.doc_status is not None:
+                    storage = rag.doc_status
+                    if hasattr(storage, "db") and storage.db is not None:
+                        db = storage.db
+                        if hasattr(db, "pool") and db.pool is not None:
+                            pg_pool = db.pool
+                            db_pool_size = pg_pool.get_size()
+                            db_pool_idle = pg_pool.get_idle_size()
+                            db_pool_max = pg_pool.get_max_size()
+                            db_pool_min = pg_pool.get_min_size()
+                            db_pool_available = True
+                            break  # Only need one pool (shared across storages)
+            except Exception as e:
+                logger.debug(f"Could not get DB pool metrics from workspace {workspace_id}: {e}")
+                continue
+
+        if db_pool_available:
+            metrics_lines.extend([
+                "# ====== DATABASE POOL METRICS ======",
+                "",
+                "# HELP lightrag_db_pool_size Current number of connections in pool",
+                "# TYPE lightrag_db_pool_size gauge",
+                f'lightrag_db_pool_size{{instance="local"}} {db_pool_size}',
+                "",
+                "# HELP lightrag_db_pool_idle Number of idle connections in pool",
+                "# TYPE lightrag_db_pool_idle gauge",
+                f'lightrag_db_pool_idle{{instance="local"}} {db_pool_idle}',
+                "",
+                "# HELP lightrag_db_pool_active Number of active (in-use) connections",
+                "# TYPE lightrag_db_pool_active gauge",
+                f'lightrag_db_pool_active{{instance="local"}} {db_pool_size - db_pool_idle}',
+                "",
+                "# HELP lightrag_db_pool_max Maximum pool size",
+                "# TYPE lightrag_db_pool_max gauge",
+                f'lightrag_db_pool_max{{instance="local"}} {db_pool_max}',
+                "",
+                "# HELP lightrag_db_pool_min Minimum pool size",
+                "# TYPE lightrag_db_pool_min gauge",
+                f'lightrag_db_pool_min{{instance="local"}} {db_pool_min}',
+                "",
+                "# HELP lightrag_db_pool_utilization Pool utilization percentage",
+                "# TYPE lightrag_db_pool_utilization gauge",
+                f'lightrag_db_pool_utilization{{instance="local"}} {(db_pool_size - db_pool_idle) / db_pool_max * 100 if db_pool_max > 0 else 0:.1f}',
+                "",
+            ])
+
+        metrics_lines.extend([
             "# ====== INFO ======",
             "",
             "# HELP lightrag_info LightRAG version info",
