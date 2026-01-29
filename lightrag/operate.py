@@ -3760,6 +3760,18 @@ async def extract_entities(
                 completion_delimiter=context_base["completion_delimiter"],
             )
 
+            # Gleaning statistics tracking
+            glean_stats = {
+                "new_entities": 0,
+                "improved_entities": 0,
+                "new_relations": 0,
+                "improved_relations": 0,
+                "initial_entities": len(maybe_nodes),
+                "initial_relations": len(maybe_edges),
+                "glean_entities": len(glean_nodes),
+                "glean_relations": len(glean_edges),
+            }
+
             # Merge results - compare description lengths to choose better version
             for entity_name, glean_entities in glean_nodes.items():
                 if entity_name in maybe_nodes:
@@ -3771,25 +3783,51 @@ async def extract_entities(
 
                     if glean_desc_len > original_desc_len:
                         maybe_nodes[entity_name] = list(glean_entities)
+                        glean_stats["improved_entities"] += 1
                     # Otherwise keep original version
                 else:
                     # New entity from gleaning stage
                     maybe_nodes[entity_name] = list(glean_entities)
+                    glean_stats["new_entities"] += 1
 
-            for edge_key, glean_edges in glean_edges.items():
+            for edge_key, glean_edges_list in glean_edges.items():
                 if edge_key in maybe_edges:
                     # Compare description lengths and keep the better one
                     original_desc_len = len(
                         maybe_edges[edge_key][0].get("description", "") or ""
                     )
-                    glean_desc_len = len(glean_edges[0].get("description", "") or "")
+                    glean_desc_len = len(glean_edges_list[0].get("description", "") or "")
 
                     if glean_desc_len > original_desc_len:
-                        maybe_edges[edge_key] = list(glean_edges)
+                        maybe_edges[edge_key] = list(glean_edges_list)
+                        glean_stats["improved_relations"] += 1
                     # Otherwise keep original version
                 else:
                     # New edge from gleaning stage
-                    maybe_edges[edge_key] = list(glean_edges)
+                    maybe_edges[edge_key] = list(glean_edges_list)
+                    glean_stats["new_relations"] += 1
+
+            # Log gleaning usefulness
+            total_contributions = (
+                glean_stats["new_entities"]
+                + glean_stats["improved_entities"]
+                + glean_stats["new_relations"]
+                + glean_stats["improved_relations"]
+            )
+            if total_contributions > 0:
+                logger.info(
+                    f"Gleaning useful for {chunk_key}: "
+                    f"+{glean_stats['new_entities']} new entities, "
+                    f"+{glean_stats['new_relations']} new relations, "
+                    f"{glean_stats['improved_entities']} improved entity descriptions, "
+                    f"{glean_stats['improved_relations']} improved relation descriptions"
+                )
+            else:
+                logger.debug(
+                    f"Gleaning produced no new content for {chunk_key} "
+                    f"(initial: {glean_stats['initial_entities']} ent/{glean_stats['initial_relations']} rel, "
+                    f"glean found: {glean_stats['glean_entities']} ent/{glean_stats['glean_relations']} rel)"
+                )
 
         # Batch update chunk's llm_cache_list with all collected cache keys
         if cache_keys_collector and text_chunks_storage:
