@@ -813,13 +813,19 @@ export default function SanitizeData() {
 
           <div className="flex gap-2">
             <button 
+              onClick={() => alert('Create Entity functionality coming soon!')}  // ← Placeholder for future logic
+              className="px-3.5 py-1.5 bg-purple-600 text-white rounded hover:bg-purple-700 text-sm"
+            >
+              Create Entity
+            </button>            
+            <button 
               className="px-3.5 py-1.5 bg-blue-600 text-white rounded hover:bg-blue-700 text-sm disabled:opacity-50"
               disabled={selectedEntities.length < 1 || filterMode !== 'selected'}
               title={
                 filterMode !== 'selected' 
-                  ? "Enter 'Show Sel. Only' mode first to act on selected entities" 
+                  ? "Enter 'Show Sel. Only' mode first\nto act on selected entities" 
                   : selectedEntities.length < 1 
-                  ? "Select at least one entity first (check the boxes on the left)" 
+                  ? "Select at least one entity\nto enable this button" 
                   : undefined
               }
             >
@@ -830,9 +836,9 @@ export default function SanitizeData() {
               disabled={selectedEntities.length !== 2 || filterMode !== 'selected'}
               title={
                 filterMode !== 'selected' 
-                  ? "Enter 'Show Sel. Only' mode first to act on selected entities" 
+                  ? "Enter 'Show Sel. Only' mode first\nto act on selected entities" 
                   : selectedEntities.length !== 2 
-                  ? "Select exactly two entities first (check the boxes on the left)" 
+                  ? "Select exactly two entities\nto enable this button" 
                   : undefined
               }
             >
@@ -843,9 +849,9 @@ export default function SanitizeData() {
               disabled={selectedEntities.length < 1 || filterMode !== 'selected'}
               title={
                 filterMode !== 'selected' 
-                  ? "Enter 'Show Sel. Only' mode first to act on selected entities" 
+                  ? "Enter 'Show Sel. Only' mode first\nto act on selected entities" 
                   : selectedEntities.length < 1 
-                  ? "Select at least one entity first (check the boxes on the left)" 
+                  ? "Select at least one entity\nto enable this button" 
                   : undefined
               }
             >
@@ -879,6 +885,12 @@ export default function SanitizeData() {
                       checked={firstEntity === entityName}
                       onChange={() => setFirstEntity(entityName)}
                       className="h-4 w-4 text-blue-600"
+                      disabled={!selectedEntities.includes(entityName)}
+                      title={
+                        !selectedEntities.includes(entityName)
+                          ? "Select the entity first using the checkbox.\nThen the Keep First radio button will be enabled."
+                          : undefined
+                      }
                     />
                   </div>
                   <div className="flex justify-center">
@@ -890,6 +902,10 @@ export default function SanitizeData() {
                           setSelectedEntities([...selectedEntities, entityName]);
                         } else {
                           setSelectedEntities(selectedEntities.filter((e) => e !== entityName));
+                          // New: If this was the firstEntity, clear it
+                          if (firstEntity === entityName) {
+                            setFirstEntity(null);
+                          }
                         }
                       }}
                       className="h-4 w-4 text-blue-600 rounded"
