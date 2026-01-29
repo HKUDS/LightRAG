@@ -1439,13 +1439,16 @@ class LightRAG:
         # Exclude IDs of documents that are already enqueued
         unique_new_doc_ids = await self.doc_status.filter_keys(all_new_doc_ids)
 
-        # Handle duplicate documents - create trackable records with current track_id
+        # Handle potentially duplicate documents
+        # Some may be pre-registered by our own API request (same track_id) - not duplicates
+        # Others are true duplicates from different requests
         ignored_ids = list(all_new_doc_ids - unique_new_doc_ids)
         if ignored_ids:
             duplicate_docs: dict[str, Any] = {}
+            pre_registered_ids: list[str] = []
+
             for doc_id in ignored_ids:
                 file_path = new_docs.get(doc_id, {}).get("file_path", "unknown_source")
-                logger.warning(f"Duplicate document detected: {doc_id} ({file_path})")
 
                 # Get existing document info for reference
                 existing_doc = await self.doc_status.get_by_id(doc_id)
@@ -1455,6 +1458,19 @@ class LightRAG:
                 existing_track_id = (
                     existing_doc.get("track_id", "") if existing_doc else ""
                 )
+
+                # Check if this doc was pre-registered by our own request (same track_id)
+                # This happens when the API pre-registers docs to prevent race conditions
+                if existing_track_id == track_id:
+                    # Same track_id means WE pre-registered this doc - not a duplicate
+                    pre_registered_ids.append(doc_id)
+                    logger.debug(
+                        f"Document {doc_id} was pre-registered by same request (track_id: {track_id})"
+                    )
+                    continue
+
+                # True duplicate: different track_id
+                logger.warning(f"Duplicate document detected: {doc_id} ({file_path})")
 
                 # Create a new record with unique ID for this duplicate attempt
                 dup_record_id = compute_mdhash_id(f"{doc_id}-{track_id}", prefix="dup-")
@@ -1473,6 +1489,13 @@ class LightRAG:
                         "original_track_id": existing_track_id,
                     },
                 }
+
+            # Add pre-registered docs back to unique set (they should be processed)
+            if pre_registered_ids:
+                unique_new_doc_ids.update(pre_registered_ids)
+                logger.info(
+                    f"Recognized {len(pre_registered_ids)} pre-registered docs for track_id: {track_id}"
+                )
 
             # Store duplicate records in doc_status
             if duplicate_docs:
