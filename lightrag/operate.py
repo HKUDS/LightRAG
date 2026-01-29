@@ -8,8 +8,6 @@ import json_repair
 from typing import Any, AsyncIterator, overload, Literal
 from collections import Counter, defaultdict
 
-import os
-
 from lightrag.exceptions import (
     PipelineCancelledException,
     ChunkTokenLimitExceededError,
@@ -2874,7 +2872,7 @@ async def extract_entities(
         if entity_extract_max_gleaning > 0:
             # Calculate total tokens for the gleaning request to prevent context window overflow
             tokenizer = global_config["tokenizer"]
-            max_input_tokens = int(os.environ.get("MAX_EXTRACT_INPUT_TOKENS", 20480))
+            max_input_tokens = global_config["max_extract_input_tokens"]
 
             # Estimate total tokens: System Prompt + History (Previous Round) + Current User Prompt
             history_str = json.dumps(history, ensure_ascii=False)
