@@ -650,7 +650,7 @@ def priority_limit_async_func_call(
     max_queue_size: int = 1000,
     cleanup_timeout: float = 2.0,
     queue_name: str = "limit_async",
-    worker_idle_timeout: int = 30,
+    worker_idle_timeout: int = 300,  # 5 minutes idle before worker exits (was 30s, too aggressive)
 ):
     """
     Enhanced priority-limited asynchronous function call decorator with robust timeout handling
@@ -666,8 +666,8 @@ def priority_limit_async_func_call(
         max_size: Maximum number of concurrent calls
         max_queue_size: Maximum queue capacity to prevent memory overflow
         llm_timeout: LLM provider timeout (from global config), used to calculate other timeouts
-        max_execution_timeout: Maximum time for worker to execute function (defaults to llm_timeout + 30s)
-        max_task_duration: Maximum time before health check intervenes (defaults to llm_timeout + 60s)
+        max_execution_timeout: Maximum time for worker to execute function (defaults to llm_timeout*3+30s to allow retries)
+        max_task_duration: Maximum time before health check intervenes (defaults to llm_timeout*3+45s)
         cleanup_timeout: Maximum time to wait for cleanup operations (defaults to 2.0s)
         queue_name: Optional queue name for logging identification (defaults to "limit_async")
         worker_idle_timeout: Seconds of inactivity before worker exits (defaults to 30s, 0 to disable)
@@ -682,16 +682,18 @@ def priority_limit_async_func_call(
             raise TypeError(f"Expected a callable object, got {type(func)}")
 
         # Calculate timeout hierarchy if llm_timeout is provided (Dynamic Timeout Calculation)
+        # Note: OpenAI retry config is 3 attempts with exponential backoff (4-10s waits)
+        # Worst case: 3 × timeout + ~20s waits = 3 × timeout + 30s buffer
         if llm_timeout is not None:
             nonlocal max_execution_timeout, max_task_duration
             if max_execution_timeout is None:
                 max_execution_timeout = (
-                    llm_timeout * 2
-                )  # Reserved timeout buffer for low-level retry
+                    llm_timeout * 3 + 30
+                )  # Allow 3 retry attempts + exponential backoff waits
             if max_task_duration is None:
                 max_task_duration = (
-                    llm_timeout * 2 + 15
-                )  # Reserved timeout buffer for health check phase
+                    llm_timeout * 3 + 45
+                )  # Health check buffer: max_execution_timeout + 15s
 
         queue = asyncio.PriorityQueue(maxsize=max_queue_size)
         tasks = set()
@@ -915,9 +917,9 @@ def priority_limit_async_func_call(
                         f"{queue_name}: {active_tasks_count} tasks still running during reinitialization"
                     )
 
-                # Create initial worker tasks - start with minimal workers
+                # Create initial worker tasks - start with reasonable worker count
                 # Health check will scale up as needed when queue has pending work
-                initial_workers = min(4, max_size) - active_tasks_count  # Start with up to 4 workers
+                initial_workers = min(16, max_size) - active_tasks_count  # Start with up to 16 workers
                 if initial_workers > 0:
                     for _ in range(initial_workers):
                         task = asyncio.create_task(worker())

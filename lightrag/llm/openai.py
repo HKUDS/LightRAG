@@ -1,6 +1,7 @@
 from ..utils import verbose_debug, VERBOSE_DEBUG
 import os
 import logging
+import time
 
 from collections.abc import AsyncIterator
 
@@ -20,6 +21,7 @@ from tenacity import (
     stop_after_attempt,
     wait_exponential,
     retry_if_exception_type,
+    before_sleep_log,
 )
 from lightrag.utils import (
     wrap_embedding_func_with_attrs,
@@ -160,6 +162,17 @@ def create_openai_async_client(
         return AsyncOpenAI(**merged_configs)
 
 
+def _log_retry_attempt(retry_state):
+    """Log retry attempts with timing information."""
+    exception = retry_state.outcome.exception() if retry_state.outcome else None
+    attempt = retry_state.attempt_number
+    elapsed = retry_state.seconds_since_start
+    logger.warning(
+        f"LLM API retry #{attempt} after {elapsed:.1f}s total. "
+        f"Error: {type(exception).__name__ if exception else 'Unknown'}: {exception}"
+    )
+
+
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=4, max=10),
@@ -169,6 +182,7 @@ def create_openai_async_client(
         | retry_if_exception_type(APITimeoutError)
         | retry_if_exception_type(InvalidResponseError)
     ),
+    before_sleep=_log_retry_attempt,
 )
 async def openai_complete_if_cache(
     model: str,
@@ -300,6 +314,14 @@ async def openai_complete_if_cache(
     # For Azure OpenAI, we must use the deployment name instead of the model name
     api_model = azure_deployment if use_azure and azure_deployment else model
 
+    # Estimate prompt size for logging
+    prompt_chars = len(prompt) + len(system_prompt or "") + sum(len(m.get("content", "")) for m in history_messages)
+    logger.info(
+        f"LLM call starting: model={api_model}, timeout={timeout}s, "
+        f"prompt_chars={prompt_chars}, base_url={base_url}"
+    )
+    call_start_time = time.time()
+
     try:
         # Don't use async with context manager, use client directly
         if "response_format" in kwargs:
@@ -310,21 +332,27 @@ async def openai_complete_if_cache(
             response = await openai_async_client.chat.completions.create(
                 model=api_model, messages=messages, **kwargs
             )
+        call_duration = time.time() - call_start_time
+        logger.info(f"LLM call completed: model={api_model}, duration={call_duration:.2f}s")
     except APITimeoutError as e:
-        logger.error(f"OpenAI API Timeout Error: {e}")
+        call_duration = time.time() - call_start_time
+        logger.error(f"OpenAI API Timeout after {call_duration:.2f}s: {e}")
         await openai_async_client.close()  # Ensure client is closed
         raise
     except APIConnectionError as e:
-        logger.error(f"OpenAI API Connection Error: {e}")
+        call_duration = time.time() - call_start_time
+        logger.error(f"OpenAI API Connection Error after {call_duration:.2f}s: {e}")
         await openai_async_client.close()  # Ensure client is closed
         raise
     except RateLimitError as e:
-        logger.error(f"OpenAI API Rate Limit Error: {e}")
+        call_duration = time.time() - call_start_time
+        logger.error(f"OpenAI API Rate Limit Error after {call_duration:.2f}s: {e}")
         await openai_async_client.close()  # Ensure client is closed
         raise
     except Exception as e:
+        call_duration = time.time() - call_start_time
         logger.error(
-            f"OpenAI API Call Failed,\nModel: {model},\nParams: {kwargs}, Got: {e}"
+            f"OpenAI API Call Failed after {call_duration:.2f}s,\nModel: {model},\nParams: {kwargs}, Got: {e}"
         )
         await openai_async_client.close()  # Ensure client is closed
         raise
@@ -687,6 +715,7 @@ async def nvidia_openai_complete(
         | retry_if_exception_type(APIConnectionError)
         | retry_if_exception_type(APITimeoutError)
     ),
+    before_sleep=_log_retry_attempt,
 )
 async def openai_embed(
     texts: list[str],
@@ -765,8 +794,19 @@ async def openai_embed(
         if embedding_dim is not None:
             api_params["dimensions"] = embedding_dim
 
+        # Log embedding call start
+        total_chars = sum(len(t) for t in texts)
+        logger.info(
+            f"Embedding call starting: model={api_model}, texts={len(texts)}, "
+            f"total_chars={total_chars}, base_url={base_url}"
+        )
+        call_start_time = time.time()
+
         # Make API call
         response = await openai_async_client.embeddings.create(**api_params)
+
+        call_duration = time.time() - call_start_time
+        logger.info(f"Embedding call completed: model={api_model}, duration={call_duration:.2f}s")
 
         # Use explicit token_tracker, or fall back to context variable
         effective_tracker = token_tracker or current_token_tracker.get()
