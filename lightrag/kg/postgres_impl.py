@@ -3316,6 +3316,93 @@ class PGDocStatusStorage(DocStatusStorage):
                 },
             )
 
+    async def try_claim(self, doc_id: str, data: dict[str, Any]) -> tuple[bool, dict[str, Any] | None]:
+        """Atomically try to claim a document ID for processing.
+
+        Uses INSERT ... ON CONFLICT DO NOTHING to ensure only one caller
+        can claim a given doc_id. This prevents race conditions when
+        multiple concurrent requests try to insert the same content.
+
+        Args:
+            doc_id: The document ID to claim
+            data: The document data to insert if claim succeeds
+
+        Returns:
+            Tuple of (claimed: bool, existing_doc: dict | None)
+            - (True, None): Successfully claimed, document was inserted
+            - (False, existing_doc): Already claimed by another request
+        """
+        def parse_datetime(dt_str):
+            """Parse datetime and ensure it's stored as UTC time in database"""
+            if dt_str is None:
+                return None
+            if isinstance(dt_str, (datetime.date, datetime.datetime)):
+                if isinstance(dt_str, datetime.datetime):
+                    if dt_str.tzinfo is None:
+                        dt_str = dt_str.replace(tzinfo=timezone.utc)
+                    return dt_str.astimezone(timezone.utc).replace(tzinfo=None)
+                return dt_str
+            try:
+                dt = datetime.datetime.fromisoformat(dt_str)
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                return dt.astimezone(timezone.utc).replace(tzinfo=None)
+            except (ValueError, TypeError):
+                return None
+
+        created_at = parse_datetime(data.get("created_at"))
+        updated_at = parse_datetime(data.get("updated_at"))
+
+        # Use INSERT ... ON CONFLICT DO NOTHING with RETURNING to atomically claim
+        # If INSERT succeeds, it returns the inserted row; if conflict, returns nothing
+        sql = """
+            INSERT INTO LIGHTRAG_DOC_STATUS(
+                workspace, id, content_summary, content_length, chunks_count,
+                status, file_path, chunks_list, track_id, metadata, error_msg,
+                created_at, updated_at
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+            ON CONFLICT (id, workspace) DO NOTHING
+            RETURNING id
+        """
+
+        params = [
+            self.workspace,
+            doc_id,
+            data["content_summary"],
+            data["content_length"],
+            data.get("chunks_count", -1),
+            data["status"],
+            data.get("file_path", "unknown_source"),
+            json.dumps(data.get("chunks_list", [])),
+            data.get("track_id"),
+            json.dumps(data.get("metadata", {})),
+            data.get("error_msg"),
+            created_at,
+            updated_at,
+        ]
+
+        try:
+            result = await self.db.query(sql, params, multirows=False)
+            if result and result.get("id"):
+                # Successfully claimed - INSERT succeeded
+                logger.debug(f"[{self.workspace}] Successfully claimed doc {doc_id}")
+                return (True, None)
+            else:
+                # Conflict - document already exists, fetch it
+                existing = await self.get_by_id(doc_id)
+                logger.debug(
+                    f"[{self.workspace}] Doc {doc_id} already claimed by track_id={existing.get('track_id') if existing else 'unknown'}"
+                )
+                return (False, existing)
+        except Exception as e:
+            logger.error(f"[{self.workspace}] try_claim failed for {doc_id}: {e}")
+            # On error, check if document exists
+            existing = await self.get_by_id(doc_id)
+            if existing:
+                return (False, existing)
+            raise
+
     async def drop(self) -> dict[str, str]:
         """Drop the storage"""
         try:
