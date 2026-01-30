@@ -27,6 +27,7 @@ from dataclasses import asdict
 from lightrag import LightRAG
 from lightrag.base import DeletionResult, DocProcessingStatus, DocStatus
 from lightrag.utils import generate_track_id, sanitize_text_for_encoding, compute_mdhash_id
+from lightrag.exceptions import PipelineNotInitializedError
 from lightrag.operate import rebuild_knowledge_from_chunks
 from lightrag.api.utils_api import get_combined_auth_dependency
 from lightrag.api.workspace_manager import get_rag, get_workspace_pool
@@ -3300,9 +3301,13 @@ def create_document_routes(
             # Log warning if any pipeline is busy (but proceed anyway - PENDING/FAILED are safe to clear)
             busy_workspaces = []
             for ws_id in workspaces_to_clear:
-                pipeline_status = await get_namespace_data("pipeline_status", workspace=ws_id)
-                if pipeline_status and pipeline_status.get("is_busy"):
-                    busy_workspaces.append(ws_id)
+                try:
+                    pipeline_status = await get_namespace_data("pipeline_status", workspace=ws_id)
+                    if pipeline_status and pipeline_status.get("is_busy"):
+                        busy_workspaces.append(ws_id)
+                except PipelineNotInitializedError:
+                    # Workspace never had a pipeline run - safe to proceed
+                    pass
 
             if busy_workspaces:
                 logger.warning(
