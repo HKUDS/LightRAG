@@ -2791,6 +2791,14 @@ class TokenTracker:
             "model": self.rerank_model,
         }
 
+    def to_dict(self):
+        """Return all usage statistics as a dictionary."""
+        return {
+            "llm": self.get_llm_usage(),
+            "embedding": self.get_embedding_usage(),
+            "rerank": self.get_rerank_usage(),
+        }
+
     def __str__(self):
         usage = self.get_usage()
         embedding = self.get_embedding_usage()
