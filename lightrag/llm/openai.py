@@ -185,8 +185,8 @@ def create_openai_async_client(
 
 
 @retry(
-    stop=stop_after_attempt(3),
-    wait=wait_exponential(multiplier=1, min=4, max=10),
+    stop=stop_after_attempt(10),  # 🔥 修改：增加到 10 次
+    wait=wait_exponential(multiplier=1, min=4, max=60), # 🔥 修改：最大等待 60 秒
     retry=(
         retry_if_exception_type(RateLimitError)
         | retry_if_exception_type(APIConnectionError)
@@ -706,7 +706,7 @@ async def nvidia_openai_complete(
     embedding_dim=1536, max_token_size=8192, model_name="text-embedding-3-small"
 )
 @retry(
-    stop=stop_after_attempt(3),
+    stop=stop_after_attempt(10),
     wait=wait_exponential(multiplier=1, min=4, max=60),
     retry=(
         retry_if_exception_type(RateLimitError)

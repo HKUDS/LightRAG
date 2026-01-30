@@ -172,7 +172,7 @@ export default function RetrievalTesting() {
     })
   }, [])
 
-  const handleSubmit = useCallback(
+const handleSubmit = useCallback(
     async (e: React.FormEvent) => {
       e.preventDefault()
       if (!inputValue.trim() || isLoading) return
@@ -354,9 +354,31 @@ export default function RetrievalTesting() {
         ? 3
         : configuredHistoryTurns
 
+      // =================================================================
+      // 🔥 [New] Force Reference Format Instruction
+      // This tells the LLM to explicitly write out the page number: [1] Source [Page X]
+      // =================================================================
+     // =================================================================
+      // 🔥 [更新] 更嚴格的 Prompt，禁止使用 Entity Name 作為 Source
+      // =================================================================
+      const pageNumberInstruction = `
+      
+Please answer based on the context. At the end of your response, you MUST list the references in the following strict format:
+References
+[1] Source_Name [Page X]
+[2] Source_Name [Page Y]
+
+CRITICAL RULES FOR REFERENCES:
+1. Identify the 'Source:' and 'Page' fields explicitly provided at the beginning of each text chunk (e.g., "Source: HSBC_Report_Source_A | Page 1").
+2. USE ONLY that specific 'Source_Name' and 'Page Number' for the citation.
+3. DO NOT use Entity Names (like "HSBC Annual Financial Overview") as the source name.
+4. Ensure the Source_Name matches the 'Source:' field exactly.`;
+      
+      const finalQuery = actualQuery + pageNumberInstruction;
+
       const queryParams = {
         ...state.querySettings,
-        query: actualQuery,
+        query: finalQuery, // Use finalQuery with the added instruction
         response_type: 'Multiple Paragraphs',
         conversation_history: effectiveHistoryTurns > 0
           ? prevMessages
@@ -382,7 +404,13 @@ export default function RetrievalTesting() {
           }
         } else {
           const response = await queryText(queryParams)
-          updateAssistantMessage(response.response)
+          // Fix for updated Backend API structure: Check llm_response.content first
+          if (response.llm_response && response.llm_response.content) {
+             updateAssistantMessage(response.llm_response.content)
+          } else {
+             // Fallback for older backend versions
+             updateAssistantMessage(response.response)
+          }
         }
       } catch (err) {
         // Handle error
