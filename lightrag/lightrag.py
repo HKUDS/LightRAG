@@ -2773,10 +2773,10 @@ class LightRAG:
         except Exception as e:
             raise Exception(f"Entity extraction failed: {str(e)}")
 
-        # Check for cancellation before merge phase
+        # Check for cancellation before processing results
         async with pipeline_status_lock:
             if pipeline_status.get("cancellation_requested", False):
-                raise PipelineCancelledException("User cancelled before merge")
+                raise PipelineCancelledException("User cancelled before processing results")
 
         # Create separate token tracker for deduplication/merge phase
         dedup_token_tracker = TokenTracker()
@@ -2785,7 +2785,7 @@ class LightRAG:
         merge_config = asdict(self)
         merge_config["token_tracker"] = dedup_token_tracker
 
-        # Use full merge workflow (entity resolution, KV stores, etc.)
+        # Use full merge_nodes_and_edges workflow (entity resolution, stored procedures, etc.)
         await merge_nodes_and_edges(
             chunk_results=chunk_results,
             knowledge_graph_inst=self.chunk_entity_relation_graph,

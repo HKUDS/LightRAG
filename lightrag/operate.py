@@ -1630,7 +1630,11 @@ async def _merge_nodes_then_upsert(
     entity_chunks_storage: BaseKVStorage | None = None,
     token_tracker: "TokenTracker | None" = None,
 ):
-    """Get existing nodes from knowledge graph use name,if exists, merge data, else create, then upsert."""
+    """Get existing nodes from knowledge graph use name,if exists, merge data, else create, then upsert.
+
+    Returns:
+        tuple: (node_data, vdb_data) where vdb_data is dict for batch VDB upsert or None if entity_vdb is None
+    """
     already_entity_types = []
     already_source_ids = []
     already_description = []
@@ -1904,10 +1908,13 @@ async def _merge_nodes_then_upsert(
         node_data=node_data,
     )
     node_data["entity_name"] = entity_name
+
+    # Prepare VDB data for batch upsert (caller will do the actual upsert)
+    vdb_data = None
     if entity_vdb is not None:
         entity_vdb_id = compute_mdhash_id(str(entity_name), prefix="ent-")
         entity_content = f"{entity_name}\n{description}"
-        data_for_vdb = {
+        vdb_data = {
             entity_vdb_id: {
                 "entity_name": entity_name,
                 "entity_type": entity_type,
@@ -1916,14 +1923,8 @@ async def _merge_nodes_then_upsert(
                 "file_path": file_path,
             }
         }
-        await safe_vdb_operation_with_exception(
-            operation=lambda payload=data_for_vdb: entity_vdb.upsert(payload),
-            operation_name="entity_upsert",
-            entity_name=entity_name,
-            max_retries=3,
-            retry_delay=0.1,
-        )
-    return node_data
+
+    return node_data, vdb_data
 
 
 async def _merge_edges_then_upsert(
@@ -1942,8 +1943,14 @@ async def _merge_edges_then_upsert(
     entity_chunks_storage: BaseKVStorage | None = None,
     token_tracker: "TokenTracker | None" = None,
 ):
+    """Merge edge data and prepare for VDB upsert.
+
+    Returns:
+        tuple: (edge_data, vdb_data) where vdb_data is dict for batch VDB upsert or None
+               Returns (None, None) if src_id == tgt_id (self-loop)
+    """
     if src_id == tgt_id:
-        return None
+        return None, None
 
     already_edge = None
     already_weights = []
@@ -2447,9 +2454,12 @@ async def _merge_edges_then_upsert(
     if src_id > tgt_id:
         src_id, tgt_id = tgt_id, src_id
 
+    # Prepare VDB data for batch upsert (caller will do the actual upsert)
+    rel_vdb_data = None
     if relationships_vdb is not None:
         rel_vdb_id = compute_mdhash_id(src_id + tgt_id, prefix="rel-")
         rel_vdb_id_reverse = compute_mdhash_id(tgt_id + src_id, prefix="rel-")
+        # Delete old records immediately (before batch upsert)
         try:
             await relationships_vdb.delete([rel_vdb_id, rel_vdb_id_reverse])
         except Exception as e:
@@ -2457,7 +2467,7 @@ async def _merge_edges_then_upsert(
                 f"Could not delete old relationship vector records {rel_vdb_id}, {rel_vdb_id_reverse}: {e}"
             )
         rel_content = f"{keywords}\t{src_id}\n{tgt_id}\n{description}"
-        vdb_data = {
+        rel_vdb_data = {
             rel_vdb_id: {
                 "src_id": src_id,
                 "tgt_id": tgt_id,
@@ -2469,15 +2479,8 @@ async def _merge_edges_then_upsert(
                 "file_path": file_path,
             }
         }
-        await safe_vdb_operation_with_exception(
-            operation=lambda payload=vdb_data: relationships_vdb.upsert(payload),
-            operation_name="relationship_upsert",
-            entity_name=f"{src_id}-{tgt_id}",
-            max_retries=3,
-            retry_delay=0.2,
-        )
 
-    return edge_data
+    return edge_data, rel_vdb_data
 
 
 async def _resolve_cross_document_entities(
@@ -3347,7 +3350,7 @@ async def merge_nodes_and_edges(
             ):
                 try:
                     logger.debug(f"Processing entity {entity_name}")
-                    entity_data = await _merge_nodes_then_upsert(
+                    entity_data, vdb_data = await _merge_nodes_then_upsert(
                         entity_name,
                         entities,
                         knowledge_graph_inst,
@@ -3360,7 +3363,7 @@ async def merge_nodes_and_edges(
                         token_tracker=global_config.get("token_tracker"),
                     )
 
-                    return entity_data
+                    return entity_data, vdb_data
 
                 except Exception as e:
                     error_msg = f"Error processing entity `{entity_name}`: {e}"
@@ -3394,6 +3397,7 @@ async def merge_nodes_and_edges(
 
     # Execute entity tasks with error handling
     processed_entities = []
+    entity_vdb_batch = {}  # Collect VDB data for batch upsert
     if entity_tasks:
         done, pending = await asyncio.wait(
             entity_tasks, return_when=asyncio.FIRST_EXCEPTION
@@ -3404,12 +3408,14 @@ async def merge_nodes_and_edges(
 
         for task in done:
             try:
-                result = task.result()
+                entity_data, vdb_data = task.result()
             except BaseException as e:
                 if first_exception is None:
                     first_exception = e
             else:
-                processed_entities.append(result)
+                processed_entities.append(entity_data)
+                if vdb_data:
+                    entity_vdb_batch.update(vdb_data)
 
         if pending:
             for task in pending:
@@ -3420,13 +3426,24 @@ async def merge_nodes_and_edges(
                     if first_exception is None:
                         first_exception = result
                 else:
-                    processed_entities.append(result)
+                    entity_data, vdb_data = result
+                    processed_entities.append(entity_data)
+                    if vdb_data:
+                        entity_vdb_batch.update(vdb_data)
 
         if first_exception is not None:
             raise first_exception
 
     phase1_time = perf_time.perf_counter()
     logger.info(f"[PERF] Phase 1 (entities): {(phase1_time - phase1_start)*1000:.1f}ms ({total_entities_count} entities)")
+
+    # Batch VDB upsert for entities
+    if entity_vdb and entity_vdb_batch:
+        vdb_upsert_start = perf_time.perf_counter()
+        logger.info(f"[PERF] Entity VDB batch upsert starting: {len(entity_vdb_batch)} entities")
+        await entity_vdb.upsert(entity_vdb_batch)
+        vdb_upsert_time = perf_time.perf_counter()
+        logger.info(f"[PERF] Entity VDB batch upsert: {(vdb_upsert_time - vdb_upsert_start)*1000:.1f}ms ({len(entity_vdb_batch)} entities)")
 
     # ===== Phase 2: Process all relationships concurrently =====
     phase2_start = perf_time.perf_counter()
@@ -3459,7 +3476,7 @@ async def merge_nodes_and_edges(
                     added_entities = []  # Track entities added during edge processing
 
                     logger.debug(f"Processing relation {sorted_edge_key}")
-                    edge_data = await _merge_edges_then_upsert(
+                    edge_data, rel_vdb_data = await _merge_edges_then_upsert(
                         edge_key[0],
                         edge_key[1],
                         edges,
@@ -3477,9 +3494,9 @@ async def merge_nodes_and_edges(
                     )
 
                     if edge_data is None:
-                        return None, []
+                        return None, [], None
 
-                    return edge_data, added_entities
+                    return edge_data, added_entities, rel_vdb_data
 
                 except Exception as e:
                     error_msg = f"Error processing relation `{sorted_edge_key}`: {e}"
@@ -3514,6 +3531,7 @@ async def merge_nodes_and_edges(
     # Execute relationship tasks with error handling
     processed_edges = []
     all_added_entities = []
+    rel_vdb_batch = {}  # Collect VDB data for batch upsert
 
     if edge_tasks:
         done, pending = await asyncio.wait(
@@ -3524,7 +3542,7 @@ async def merge_nodes_and_edges(
 
         for task in done:
             try:
-                edge_data, added_entities = task.result()
+                edge_data, added_entities, rel_vdb_data = task.result()
             except BaseException as e:
                 if first_exception is None:
                     first_exception = e
@@ -3532,6 +3550,8 @@ async def merge_nodes_and_edges(
                 if edge_data is not None:
                     processed_edges.append(edge_data)
                 all_added_entities.extend(added_entities)
+                if rel_vdb_data:
+                    rel_vdb_batch.update(rel_vdb_data)
 
         if pending:
             for task in pending:
@@ -3542,16 +3562,26 @@ async def merge_nodes_and_edges(
                     if first_exception is None:
                         first_exception = result
                 else:
-                    edge_data, added_entities = result
+                    edge_data, added_entities, rel_vdb_data = result
                     if edge_data is not None:
                         processed_edges.append(edge_data)
                     all_added_entities.extend(added_entities)
+                    if rel_vdb_data:
+                        rel_vdb_batch.update(rel_vdb_data)
 
         if first_exception is not None:
             raise first_exception
 
     phase2_time = perf_time.perf_counter()
     logger.info(f"[PERF] Phase 2 (relations): {(phase2_time - phase2_start)*1000:.1f}ms ({total_relations_count} relations)")
+
+    # Batch VDB upsert for relationships
+    if relationships_vdb and rel_vdb_batch:
+        rel_vdb_upsert_start = perf_time.perf_counter()
+        logger.info(f"[PERF] Relationship VDB batch upsert starting: {len(rel_vdb_batch)} relationships")
+        await relationships_vdb.upsert(rel_vdb_batch)
+        rel_vdb_upsert_time = perf_time.perf_counter()
+        logger.info(f"[PERF] Relationship VDB batch upsert: {(rel_vdb_upsert_time - rel_vdb_upsert_start)*1000:.1f}ms ({len(rel_vdb_batch)} relationships)")
 
     # ===== Phase 3: Update full_entities and full_relations storage =====
     phase3_start = perf_time.perf_counter()
