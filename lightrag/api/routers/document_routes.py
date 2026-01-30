@@ -2458,38 +2458,29 @@ def create_document_routes(
             # Generate track_id for text insertion
             track_id = generate_track_id("insert")
 
-            # Atomically try to claim the document to prevent race conditions
-            # This uses INSERT ... ON CONFLICT DO NOTHING to ensure only one request wins
+            # Check for duplicate content BEFORE adding background task
+            # This is a read-only check - we do NOT insert into doc_status here
+            # to avoid orphaned records if the background task fails
             try:
                 sanitized = sanitize_text_for_encoding(request.text)
                 doc_id = compute_mdhash_id(sanitized, prefix="doc-")
-                claim_data = {
-                    "status": "pending",
-                    "content_summary": sanitized[:100] + "..." if len(sanitized) > 100 else sanitized,
-                    "content_length": len(sanitized),
-                    "created_at": datetime.now(timezone.utc).isoformat(),
-                    "updated_at": datetime.now(timezone.utc).isoformat(),
-                    "file_path": request.file_source or "unknown_source",
-                    "track_id": track_id,
-                }
 
-                claimed, existing_doc = await rag.doc_status.try_claim(doc_id, claim_data)
+                # Check if document already exists (read-only, no INSERT)
+                existing_doc = await rag.doc_status.get_by_id(doc_id)
 
-                if not claimed and existing_doc:
-                    # Document already exists - check if it's re-submittable
+                if existing_doc:
                     existing_status = existing_doc.get("status", "unknown")
 
-                    # Failed documents can be re-indexed
+                    # Failed documents can be re-indexed - proceed to background task
                     if existing_status == "failed":
                         logger.info(f"Document {doc_id} previously failed, allowing re-submission")
-                        # Update the existing record to retry
-                        await rag.doc_status.upsert({doc_id: claim_data})
+                        # Don't insert here - let apipeline_enqueue_documents handle it
                     # Stuck documents can be re-submitted
                     elif _is_stuck_document(existing_doc):
                         logger.info(
                             f"Document {doc_id} is stuck in '{existing_status}' state, allowing re-submission"
                         )
-                        await rag.doc_status.upsert({doc_id: claim_data})
+                        # Don't insert here - let apipeline_enqueue_documents handle it
                     elif existing_status in ("pending", "processing"):
                         # Document is currently being processed - return in_progress
                         # Client should poll the returned track_id instead of retrying
@@ -2514,11 +2505,11 @@ def create_document_routes(
                             original_status=existing_status,
                         )
 
-                logger.debug(f"Document {doc_id} claimed with track_id {track_id}")
+                logger.debug(f"Document {doc_id} will be processed with track_id {track_id}")
 
             except Exception as e:
-                # Non-blocking: if claim fails, fall through to normal processing
-                logger.warning(f"Document claim failed, proceeding with normal flow: {e}")
+                # Non-blocking: if duplicate check fails, fall through to normal processing
+                logger.warning(f"Duplicate check failed, proceeding with normal flow: {e}")
 
             background_tasks.add_task(
                 pipeline_index_texts,
@@ -2606,9 +2597,10 @@ def create_document_routes(
             # Generate track_id for texts insertion
             track_id = generate_track_id("insert")
 
-            # Atomically try to claim all documents to prevent race conditions
-            # Use try_claim for each document - if any is a true duplicate, return early
-            claimed_count = 0
+            # Check for duplicate content BEFORE adding background task
+            # This is a read-only check - we do NOT insert into doc_status here
+            # to avoid orphaned records if the background task fails
+            processable_count = 0
             try:
                 for i, text in enumerate(request.texts):
                     sanitized = sanitize_text_for_encoding(text)
@@ -2618,33 +2610,23 @@ def create_document_routes(
                         if request.file_sources and i < len(request.file_sources)
                         else "unknown_source"
                     )
-                    claim_data = {
-                        "status": "pending",
-                        "content_summary": sanitized[:100] + "..." if len(sanitized) > 100 else sanitized,
-                        "content_length": len(sanitized),
-                        "created_at": datetime.now(timezone.utc).isoformat(),
-                        "updated_at": datetime.now(timezone.utc).isoformat(),
-                        "file_path": file_source,
-                        "track_id": track_id,
-                    }
 
-                    claimed, existing_doc = await rag.doc_status.try_claim(doc_id, claim_data)
+                    # Check if document already exists (read-only, no INSERT)
+                    existing_doc = await rag.doc_status.get_by_id(doc_id)
 
-                    if not claimed and existing_doc:
+                    if existing_doc:
                         existing_status = existing_doc.get("status", "unknown")
 
-                        # Failed documents can be re-indexed
+                        # Failed documents can be re-indexed - count as processable
                         if existing_status == "failed":
                             logger.info(f"Document {doc_id} previously failed, allowing re-submission")
-                            await rag.doc_status.upsert({doc_id: claim_data})
-                            claimed_count += 1
+                            processable_count += 1
                         # Stuck documents can be re-submitted
                         elif _is_stuck_document(existing_doc):
                             logger.info(
                                 f"Document {doc_id} is stuck in '{existing_status}' state, allowing re-submission"
                             )
-                            await rag.doc_status.upsert({doc_id: claim_data})
-                            claimed_count += 1
+                            processable_count += 1
                         elif existing_status in ("pending", "processing"):
                             # Document is currently being processed - return in_progress
                             logger.info(
@@ -2668,13 +2650,13 @@ def create_document_routes(
                                 original_status=existing_status,
                             )
                     else:
-                        claimed_count += 1
+                        processable_count += 1
 
-                logger.debug(f"Claimed {claimed_count} documents with track_id {track_id}")
+                logger.debug(f"Found {processable_count} processable documents for track_id {track_id}")
 
             except Exception as e:
-                # Non-blocking: if claim fails, fall through to normal processing
-                logger.warning(f"Document claim failed, proceeding with normal flow: {e}")
+                # Non-blocking: if duplicate check fails, fall through to normal processing
+                logger.warning(f"Duplicate check failed, proceeding with normal flow: {e}")
 
             background_tasks.add_task(
                 pipeline_index_texts,
