@@ -2592,6 +2592,7 @@ class LightRAG:
                             "content_summary": claimed_doc.get("content_summary", ""),
                             "content_length": claimed_doc.get("content_length", 0),
                             "file_path": file_path,
+                            "track_id": claimed_doc.get("track_id"),  # Preserve track_id
                         }
                     })
 
@@ -2682,6 +2683,7 @@ class LightRAG:
                     "content_length": claimed_doc.get("content_length", 0),
                     "chunks_count": 0,
                     "file_path": file_path,
+                    "track_id": claimed_doc.get("track_id"),  # Preserve track_id
                 }
             })
             return
@@ -2697,6 +2699,7 @@ class LightRAG:
                 "content_summary": claimed_doc.get("content_summary", ""),
                 "content_length": claimed_doc.get("content_length", 0),
                 "file_path": file_path,
+                "track_id": claimed_doc.get("track_id"),  # Preserve track_id
             }
         })
 
@@ -2735,6 +2738,7 @@ class LightRAG:
                 "chunks_count": len(chunks),
                 "chunks_list": list(chunks.keys()),
                 "file_path": file_path,
+                "track_id": claimed_doc.get("track_id"),  # Preserve track_id
                 "metadata": {
                     **claimed_doc.get("metadata", {}),
                     "processing_time_seconds": processing_time,
