@@ -738,6 +738,8 @@ class DocProcessingStatus:
     """Error message if failed"""
     metadata: dict[str, Any] = field(default_factory=dict)
     """Additional metadata"""
+    entity_types: list[str] | None = None
+    """Custom entity types for extraction (optional, overrides default configuration)"""
     multimodal_processed: bool | None = field(default=None, repr=False)
     """Internal field: indicates if multimodal processing is complete. Not shown in repr() but accessible for debugging."""
 

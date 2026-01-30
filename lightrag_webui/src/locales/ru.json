@@ -111,7 +111,10 @@
         "removeFile": "Удалить файл",
         "uploadDescription": "Вы можете загрузить {{isMultiple ? 'несколько' : count}} файлов (до {{maxSize}} каждый)",
         "duplicateFile": "Имя файла уже существует в кэше сервера"
-      }
+      },
+      "startUpload": "Начать загрузку",
+      "uploading": "Загрузка...",
+      "cancel": "Очистить"
     },
     "documentManager": {
       "title": "Управление документами",
@@ -153,7 +156,14 @@
       "showButton": "Показать",
       "hideButton": "Скрыть",
       "showFileNameTooltip": "Показать имя файла",
-      "hideFileNameTooltip": "Скрыть имя файла"
+      "hideFileNameTooltip": "Скрыть имя файла",
+      "scanConfig": {
+        "title": "Настроить типы сущностей",
+        "description": "Выберите конфигурацию типов сущностей для сканирования документов",
+        "cancel": "Отмена",
+        "confirm": "Начать сканирование",
+        "scanning": "Сканирование..."
+      }
     },
     "pipelineStatus": {
       "title": "Статус конвейера",
@@ -178,6 +188,17 @@
       "errors": {
         "fetchFailed": "Не удалось получить статус конвейера\n{{error}}"
       }
+    },
+    "entityTypeConfig": {
+      "advancedSettings": "Расширенные настройки",
+      "useDefaultForUpload": "Использовать типы сущностей по умолчанию",
+      "useDefaultForScan": "Использовать исходные типы сущностей",
+      "customTypes": "Пользовательские типы сущностей",
+      "fillDefault": "Заполнить типы по умолчанию",
+      "placeholder": "Введите один тип сущности на строку, например:\\nЧеловек\\nОрганизация\\nМестоположение\\nСобытие",
+      "count": "{{count}} типов",
+      "hint": "Один тип на строку",
+      "defaultLabel": "Типы сущностей по умолчанию:"
     }
   },
   "graphPanel": {

@@ -111,7 +111,10 @@
         "removeFile": "إزالة الملف",
         "uploadDescription": "يمكنك رفع {{isMultiple ? 'عدة' : count}} ملفات (حتى {{maxSize}} لكل منها)",
         "duplicateFile": "اسم الملف موجود بالفعل في ذاكرة التخزين المؤقت للخادم"
-      }
+      },
+      "startUpload": "بدء الرفع",
+      "uploading": "جاري الرفع...",
+      "cancel": "مسح"
     },
     "documentManager": {
       "title": "إدارة المستندات",
@@ -153,7 +156,14 @@
       "showButton": "عرض",
       "hideButton": "إخفاء",
       "showFileNameTooltip": "عرض اسم الملف",
-      "hideFileNameTooltip": "إخفاء اسم الملف"
+      "hideFileNameTooltip": "إخفاء اسم الملف",
+      "scanConfig": {
+        "title": "تكوين أنواع الكيانات",
+        "description": "اختر تكوين أنواع الكيانات لمسح المستندات",
+        "cancel": "إلغاء",
+        "confirm": "بدء المسح",
+        "scanning": "جاري المسح..."
+      }
     },
     "pipelineStatus": {
       "title": "حالة خط الأنابيب",
@@ -178,6 +188,17 @@
       "errors": {
         "fetchFailed": "فشل في جلب حالة خط الأنابيب\n{{error}}"
       }
+    },
+    "entityTypeConfig": {
+      "advancedSettings": "إعدادات متقدمة",
+      "useDefaultForUpload": "استخدام أنواع الكيانات الافتراضية",
+      "useDefaultForScan": "استخدام أنواع الكيانات الأصلية",
+      "customTypes": "أنواع كيانات مخصصة",
+      "fillDefault": "ملء الأنواع الافتراضية",
+      "placeholder": "أدخل نوع كيان واحد لكل سطر، مثلاً:\\nشخص\\nمنظمة\\nموقع\\nحدث",
+      "count": "{{count}} أنواع",
+      "hint": "نوع واحد لكل سطر",
+      "defaultLabel": "أنواع الكيانات الافتراضية:"
     }
   },
   "graphPanel": {

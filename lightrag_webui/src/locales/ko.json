@@ -111,7 +111,10 @@
         "removeFile": "파일 제거",
         "uploadDescription": "{{isMultiple ? '여러' : count}}개의 파일을 업로드할 수 있습니다 (각 최대 {{maxSize}})",
         "duplicateFile": "파일 이름이 서버 캐시에 이미 존재합니다"
-      }
+      },
+      "startUpload": "업로드 시작",
+      "uploading": "업로드 중...",
+      "cancel": "지우기"
     },
     "documentManager": {
       "title": "문서 관리",
@@ -153,7 +156,14 @@
       "showButton": "표시",
       "hideButton": "숨기기",
       "showFileNameTooltip": "파일명 표시",
-      "hideFileNameTooltip": "파일명 숨기기"
+      "hideFileNameTooltip": "파일명 숨기기",
+      "scanConfig": {
+        "title": "엔티티 유형 구성",
+        "description": "문서 스캔을 위한 엔티티 유형 구성 선택",
+        "cancel": "취소",
+        "confirm": "스캔 시작",
+        "scanning": "스캔 중..."
+      }
     },
     "pipelineStatus": {
       "title": "파이프라인 상태",
@@ -178,6 +188,17 @@
       "errors": {
         "fetchFailed": "파이프라인 상태 가져오기 실패\n{{error}}"
       }
+    },
+    "entityTypeConfig": {
+      "advancedSettings": "고급 설정",
+      "useDefaultForUpload": "기본 엔티티 유형 사용",
+      "useDefaultForScan": "원본 엔티티 유형 사용",
+      "customTypes": "사용자 정의 엔티티 유형",
+      "fillDefault": "기본 유형 채우기",
+      "placeholder": "줄당 하나의 엔티티 유형을 입력하세요 (예):\\n사람\\n조직\\n장소\\n이벤트",
+      "count": "{{count}}개 유형",
+      "hint": "줄당 하나의 유형",
+      "defaultLabel": "기본 엔티티 유형:"
     }
   },
   "graphPanel": {

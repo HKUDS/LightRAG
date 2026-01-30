@@ -493,8 +493,8 @@ export const getDocuments = async (): Promise<DocsStatusesResponse> => {
   return response.data
 }
 
-export const scanNewDocuments = async (): Promise<ScanResponse> => {
-  const response = await axiosInstance.post('/documents/scan')
+export const scanNewDocuments = async (entityTypes?: string[]): Promise<ScanResponse> => {
+  const response = await axiosInstance.post('/documents/scan', entityTypes || null)
   return response.data
 }
 
@@ -791,10 +791,16 @@ export const insertTexts = async (texts: string[]): Promise<DocActionResponse> =
 
 export const uploadDocument = async (
   file: File,
-  onUploadProgress?: (percentCompleted: number) => void
+  onUploadProgress?: (percentCompleted: number) => void,
+  entityTypes?: string[]
 ): Promise<DocActionResponse> => {
   const formData = new FormData()
   formData.append('file', file)
+
+  // Add entity_types if provided
+  if (entityTypes && entityTypes.length > 0) {
+    formData.append('entity_types', JSON.stringify(entityTypes))
+  }
 
   const response = await axiosInstance.post('/documents/upload', formData, {
     headers: {

@@ -1099,6 +1099,38 @@ class PostgreSQLDB:
                 f"Failed to add metadata/error_msg columns to LIGHTRAG_DOC_STATUS: {e}"
             )
 
+    async def _migrate_add_entity_types_column(self):
+        """Add entity_types column to LIGHTRAG_DOC_STATUS table if it doesn't exist"""
+        try:
+            # Check if entity_types column exists
+            check_entity_types_sql = """
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_name = 'lightrag_doc_status'
+            AND column_name = 'entity_types'
+            """
+
+            entity_types_info = await self.query(check_entity_types_sql)
+            if not entity_types_info:
+                logger.info("Adding entity_types column to LIGHTRAG_DOC_STATUS table")
+                add_entity_types_sql = """
+                ALTER TABLE LIGHTRAG_DOC_STATUS
+                ADD COLUMN entity_types JSONB NULL DEFAULT '[]'::jsonb
+                """
+                await self.execute(add_entity_types_sql)
+                logger.info(
+                    "Successfully added entity_types column to LIGHTRAG_DOC_STATUS table"
+                )
+            else:
+                logger.info(
+                    "entity_types column already exists in LIGHTRAG_DOC_STATUS table"
+                )
+
+        except Exception as e:
+            logger.warning(
+                f"Failed to add entity_types column to LIGHTRAG_DOC_STATUS: {e}"
+            )
+
     async def _migrate_field_lengths(self):
         """Migrate database field lengths: entity_name, source_id, target_id, and file_path"""
         # Define the field changes needed
@@ -1393,6 +1425,14 @@ class PostgreSQLDB:
         except Exception as e:
             logger.error(
                 f"PostgreSQL, Failed to migrate doc status metadata/error_msg fields: {e}"
+            )
+
+        # Migrate doc status to add entity_types field if needed
+        try:
+            await self._migrate_add_entity_types_column()
+        except Exception as e:
+            logger.error(
+                f"PostgreSQL, Failed to migrate doc status entity_types field: {e}"
             )
 
         # Create pagination optimization indexes for LIGHTRAG_DOC_STATUS
@@ -3299,6 +3339,14 @@ class PGDocStatusStorage(DocStatusStorage):
                 except json.JSONDecodeError:
                     metadata = {}
 
+            # Parse entity_types JSON string back to list
+            entity_types = result[0].get("entity_types", [])
+            if isinstance(entity_types, str):
+                try:
+                    entity_types = json.loads(entity_types)
+                except json.JSONDecodeError:
+                    entity_types = []
+
             # Convert datetime objects to ISO format strings with timezone info
             created_at = self._format_datetime_with_timezone(result[0]["created_at"])
             updated_at = self._format_datetime_with_timezone(result[0]["updated_at"])
@@ -3315,6 +3363,7 @@ class PGDocStatusStorage(DocStatusStorage):
                 metadata=metadata,
                 error_msg=result[0].get("error_msg"),
                 track_id=result[0].get("track_id"),
+                entity_types=entity_types,
             )
 
     async def get_by_ids(self, ids: list[str]) -> list[dict[str, Any]]:
@@ -3348,6 +3397,14 @@ class PGDocStatusStorage(DocStatusStorage):
                 except json.JSONDecodeError:
                     metadata = {}
 
+            # Parse entity_types JSON string back to list
+            entity_types = row.get("entity_types", [])
+            if isinstance(entity_types, str):
+                try:
+                    entity_types = json.loads(entity_types)
+                except json.JSONDecodeError:
+                    entity_types = []
+
             # Convert datetime objects to ISO format strings with timezone info
             created_at = self._format_datetime_with_timezone(row["created_at"])
             updated_at = self._format_datetime_with_timezone(row["updated_at"])
@@ -3364,6 +3421,7 @@ class PGDocStatusStorage(DocStatusStorage):
                 "metadata": metadata,
                 "error_msg": row.get("error_msg"),
                 "track_id": row.get("track_id"),
+                "entity_types": entity_types,
             }
 
         ordered_results: list[dict[str, Any] | None] = []
@@ -3405,6 +3463,14 @@ class PGDocStatusStorage(DocStatusStorage):
                 except json.JSONDecodeError:
                     metadata = {}
 
+            # Parse entity_types JSON string back to list
+            entity_types = result[0].get("entity_types", [])
+            if isinstance(entity_types, str):
+                try:
+                    entity_types = json.loads(entity_types)
+                except json.JSONDecodeError:
+                    entity_types = []
+
             # Convert datetime objects to ISO format strings with timezone info
             created_at = self._format_datetime_with_timezone(result[0]["created_at"])
             updated_at = self._format_datetime_with_timezone(result[0]["updated_at"])
@@ -3421,6 +3487,7 @@ class PGDocStatusStorage(DocStatusStorage):
                 metadata=metadata,
                 error_msg=result[0].get("error_msg"),
                 track_id=result[0].get("track_id"),
+                entity_types=entity_types,
             )
 
     async def get_status_counts(self) -> dict[str, int]:
@@ -3465,6 +3532,14 @@ class PGDocStatusStorage(DocStatusStorage):
             if not isinstance(metadata, dict):
                 metadata = {}
 
+            # Parse entity_types JSON string back to list
+            entity_types = element.get("entity_types", [])
+            if isinstance(entity_types, str):
+                try:
+                    entity_types = json.loads(entity_types)
+                except json.JSONDecodeError:
+                    entity_types = []
+
             # Safe handling for file_path
             file_path = element.get("file_path")
             if file_path is None:
@@ -3486,6 +3561,7 @@ class PGDocStatusStorage(DocStatusStorage):
                 metadata=metadata,
                 error_msg=element.get("error_msg"),
                 track_id=element.get("track_id"),
+                entity_types=entity_types,
             )
 
         return docs_by_status
@@ -3639,6 +3715,14 @@ class PGDocStatusStorage(DocStatusStorage):
                 except json.JSONDecodeError:
                     metadata = {}
 
+            # Parse entity_types JSON string back to list
+            entity_types = element.get("entity_types", [])
+            if isinstance(entity_types, str):
+                try:
+                    entity_types = json.loads(entity_types)
+                except json.JSONDecodeError:
+                    entity_types = []
+
             # Convert datetime objects to ISO format strings with timezone info
             created_at = self._format_datetime_with_timezone(element["created_at"])
             updated_at = self._format_datetime_with_timezone(element["updated_at"])
@@ -3655,6 +3739,7 @@ class PGDocStatusStorage(DocStatusStorage):
                 track_id=element.get("track_id"),
                 metadata=metadata,
                 error_msg=element.get("error_msg"),
+                entity_types=entity_types,
             )
             documents.append((doc_id, doc_status))
 
@@ -3782,8 +3867,8 @@ class PGDocStatusStorage(DocStatusStorage):
 
         # Modified SQL to include created_at, updated_at, chunks_list, track_id, metadata, and error_msg in both INSERT and UPDATE operations
         # All fields are updated from the input data in both INSERT and UPDATE cases
-        sql = """insert into LIGHTRAG_DOC_STATUS(workspace,id,content_summary,content_length,chunks_count,status,file_path,chunks_list,track_id,metadata,error_msg,created_at,updated_at)
-                 values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+        sql = """insert into LIGHTRAG_DOC_STATUS(workspace,id,content_summary,content_length,chunks_count,status,file_path,chunks_list,track_id,metadata,error_msg,entity_types,created_at,updated_at)
+                 values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
                   on conflict(id,workspace) do update set
                   content_summary = EXCLUDED.content_summary,
                   content_length = EXCLUDED.content_length,
@@ -3794,6 +3879,7 @@ class PGDocStatusStorage(DocStatusStorage):
                   track_id = EXCLUDED.track_id,
                   metadata = EXCLUDED.metadata,
                   error_msg = EXCLUDED.error_msg,
+                  entity_types = EXCLUDED.entity_types,
                   created_at = EXCLUDED.created_at,
                   updated_at = EXCLUDED.updated_at"""
         for k, v in data.items():
@@ -3801,7 +3887,7 @@ class PGDocStatusStorage(DocStatusStorage):
             created_at = parse_datetime(v.get("created_at"))
             updated_at = parse_datetime(v.get("updated_at"))
 
-            # chunks_count, chunks_list, track_id, metadata, and error_msg are optional
+            # chunks_count, chunks_list, track_id, metadata, error_msg, and entity_types are optional
             await self.db.execute(
                 sql,
                 {
@@ -3818,6 +3904,9 @@ class PGDocStatusStorage(DocStatusStorage):
                         v.get("metadata", {})
                     ),  # Add metadata support
                     "error_msg": v.get("error_msg"),  # Add error_msg support
+                    "entity_types": json.dumps(
+                        v.get("entity_types", [])
+                    ),  # Add entity_types support
                     "created_at": created_at,  # Use the converted datetime object
                     "updated_at": updated_at,  # Use the converted datetime object
                 },
@@ -5495,6 +5584,7 @@ TABLES = {
 	               track_id varchar(255) NULL,
 	               metadata JSONB NULL DEFAULT '{}'::jsonb,
 	               error_msg TEXT NULL,
+	               entity_types JSONB NULL DEFAULT '[]'::jsonb,
 	               created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 	               updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 	               CONSTRAINT LIGHTRAG_DOC_STATUS_PK PRIMARY KEY (workspace, id)

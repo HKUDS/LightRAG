@@ -111,7 +111,10 @@
         "removeFile": "Видалити файл",
         "uploadDescription": "Ви можете завантажити {{isMultiple ? 'кілька' : count}} файлів (до {{maxSize}} кожен)",
         "duplicateFile": "Ім'я файлу вже існує в кеші сервера"
-      }
+      },
+      "startUpload": "Почати завантаження",
+      "uploading": "Завантаження...",
+      "cancel": "Очистити"
     },
     "documentManager": {
       "title": "Управління документами",
@@ -153,7 +156,14 @@
       "showButton": "Показати",
       "hideButton": "Приховати",
       "showFileNameTooltip": "Показати ім'я файлу",
-      "hideFileNameTooltip": "Приховати ім'я файлу"
+      "hideFileNameTooltip": "Приховати ім'я файлу",
+      "scanConfig": {
+        "title": "Налаштувати типи сутностей",
+        "description": "Виберіть конфігурацію типів сутностей для сканування документів",
+        "cancel": "Скасувати",
+        "confirm": "Почати сканування",
+        "scanning": "Сканування..."
+      }
     },
     "pipelineStatus": {
       "title": "Статус пайплайну",
@@ -178,6 +188,17 @@
       "errors": {
         "fetchFailed": "Не вдалося отримати статус пайплайну\n{{error}}"
       }
+    },
+    "entityTypeConfig": {
+      "advancedSettings": "Розширені налаштування",
+      "useDefaultForUpload": "Використовувати типи сутностей за замовчуванням",
+      "useDefaultForScan": "Використовувати початкові типи сутностей",
+      "customTypes": "Користувацькі типи сутностей",
+      "fillDefault": "Заповнити типи за замовчуванням",
+      "placeholder": "Введіть один тип сутності на рядок, наприклад:\\nОсоба\\nОрганізація\\nМісце\\nПодія",
+      "count": "{{count}} типів",
+      "hint": "Один тип на рядок",
+      "defaultLabel": "Типи сутностей за замовчуванням:"
     }
   },
   "graphPanel": {

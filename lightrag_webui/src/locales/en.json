@@ -99,6 +99,9 @@
         "error": "Some files failed to upload"
       },
       "generalError": "Upload Failed\n{{error}}",
+      "startUpload": "Start Upload",
+      "uploading": "Uploading...",
+      "cancel": "Clear",
       "fileTypes": "Supported types: TXT, MD, MDX, DOCX, PDF, PPTX, XLSX, RTF, ODT, EPUB, HTML, HTM, TEX, JSON, XML, YAML, YML, CSV, LOG, CONF, INI, PROPERTIES, SQL, BAT, SH, C, H, CPP, HPP, PY, JAVA, JS, TS, SWIFT, GO, RB, PHP, CSS, SCSS, LESS",
       "fileUploader": {
         "singleFileLimit": "Cannot upload more than 1 file at a time",
@@ -113,11 +116,29 @@
         "duplicateFile": "File name already exists in server cache"
       }
     },
+    "entityTypeConfig": {
+      "advancedSettings": "Advanced Settings",
+      "useDefaultForUpload": "Use default entity types",
+      "useDefaultForScan": "Use original entity types",
+      "customTypes": "Custom entity types",
+      "fillDefault": "Fill default types",
+      "placeholder": "Enter one entity type per line, e.g.:\nPerson\nOrganization\nLocation\nEvent",
+      "count": "{{count}} types",
+      "hint": "One type per line",
+      "defaultLabel": "Default entity types:"
+    },
     "documentManager": {
       "title": "Document Management",
       "scanButton": "Scan/Retry",
       "scanTooltip": "Scan and process documents in input folder, and also reprocess all failed documents",
       "refreshTooltip": "Reset document list",
+      "scanConfig": {
+        "title": "Configure Entity Types",
+        "description": "Select entity type configuration for scanning documents",
+        "cancel": "Cancel",
+        "confirm": "Start Scan",
+        "scanning": "Scanning..."
+      },
       "pipelineStatusButton": "Pipeline",
       "pipelineStatusTooltip": "View document processing pipeline status",
       "uploadedTitle": "Uploaded Documents",
