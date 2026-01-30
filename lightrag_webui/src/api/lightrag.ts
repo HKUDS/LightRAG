@@ -144,6 +144,37 @@ export type QueryResponse = {
   response: string
 }
 
+// Prompt templates
+export type PromptType = 'kg' | 'query' | 'keyword' | 'ned'
+export type PromptOrigin = 'system' | 'user'
+
+export type PromptTemplateInfo = {
+  type: PromptType
+  name: string
+  origin: PromptOrigin
+  file_path: string
+}
+
+export type PromptTemplateDetail = PromptTemplateInfo & {
+  content: string
+}
+
+export type ListPromptTemplatesParams = {
+  type?: PromptType
+  origin?: PromptOrigin
+  resolved?: boolean
+}
+
+export type PromptUpdateRequest = {
+  content: string
+  commit_message?: string
+}
+
+export type PromptUpdateResponse = {
+  template: PromptTemplateDetail
+  user_repo_head?: string | null
+}
+
 export type EntityUpdateResponse = {
   status: string
   message: string
@@ -277,6 +308,32 @@ export type LoginResponse = {
 
 export const InvalidApiKeyError = 'Invalid API Key'
 export const RequireApiKeError = 'API Key required'
+
+// ========== Prompt Templates ==========
+
+export const listPromptTemplates = async (
+  params: ListPromptTemplatesParams = { resolved: true }
+): Promise<PromptTemplateInfo[]> => {
+  const response = await axiosInstance.get('/prompts', { params })
+  return response.data
+}
+
+export const getPromptTemplate = async (
+  type: PromptType,
+  name: string
+): Promise<PromptTemplateDetail> => {
+  const response = await axiosInstance.get(`/prompts/${type}/${encodeURIComponent(name)}`)
+  return response.data
+}
+
+export const upsertPromptTemplate = async (
+  type: PromptType,
+  name: string,
+  req: PromptUpdateRequest
+): Promise<PromptUpdateResponse> => {
+  const response = await axiosInstance.put(`/prompts/${type}/${encodeURIComponent(name)}`, req)
+  return response.data
+}
 
 // Axios instance
 const axiosInstance = axios.create({

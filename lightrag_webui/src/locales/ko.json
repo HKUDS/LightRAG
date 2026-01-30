@@ -10,6 +10,7 @@
     "documents": "문서",
     "knowledgeGraph": "지식 그래프",
     "retrieval": "검색",
+    "prompts": "프롬프트",
     "api": "API",
     "projectRepository": "프로젝트 저장소",
     "logout": "로그아웃",

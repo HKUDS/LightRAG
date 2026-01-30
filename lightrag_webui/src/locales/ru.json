@@ -10,6 +10,7 @@
     "documents": "Документы",
     "knowledgeGraph": "Граф знаний",
     "retrieval": "Поиск",
+    "prompts": "Промпты",
     "api": "API",
     "projectRepository": "Репозиторий проекта",
     "logout": "Выйти",

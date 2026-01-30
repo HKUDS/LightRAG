@@ -10,6 +10,7 @@
     "documents": "Documents",
     "knowledgeGraph": "Graphe de connaissances",
     "retrieval": "Récupération",
+    "prompts": "Prompts",
     "api": "API",
     "projectRepository": "Référentiel du projet",
     "logout": "Déconnexion",
