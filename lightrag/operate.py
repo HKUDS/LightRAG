@@ -380,13 +380,14 @@ async def _summarize_descriptions(
     use_prompt = prompt_template.format(**context_base)
 
     # Use LLM function with cache (higher priority for summary generation)
-    # Pass max_tokens to enforce summary length limit (prevents output > input tokens)
+    # Note: We rely on the prompt's length constraint instead of max_tokens/max_completion_tokens
+    # because newer reasoning models (gpt-5, o1, o3) need tokens for internal reasoning,
+    # and a low max_completion_tokens causes empty responses.
     summary, _ = await use_llm_func_with_cache(
         use_prompt,
         use_llm_func,
         llm_response_cache=llm_response_cache,
         cache_type="summary",
-        max_tokens=summary_length_recommended,
         token_tracker=token_tracker,
     )
 
