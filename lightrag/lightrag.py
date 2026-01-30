@@ -2811,13 +2811,18 @@ class LightRAG:
             return
 
         # Prepare node data for graph storage
+        # NOTE: PGVectorStorage.upsert() requires 'content' for embeddings
+        # and 'entity_name' for VECTOR_STORE_ENTITIES namespace
         graph_nodes = {}
         for name, data_list in nodes.items():
             data = data_list[0] if data_list else {}
+            description = data.get("description", "")
             graph_nodes[name] = {
                 "entity_type": data.get("entity_type", "entity"),
-                "description": data.get("description", ""),
+                "description": description,
                 "source_id": data.get("source_id", ""),
+                "entity_name": name,  # Required by PGVectorStorage
+                "content": description,  # Required for embedding generation
             }
 
         # Store in graph
@@ -2834,17 +2839,20 @@ class LightRAG:
             return
 
         # Prepare edge data
+        # NOTE: PGVectorStorage.upsert() requires 'content' for embeddings
         graph_edges = {}
         for key, data_list in edges.items():
             data = data_list[0] if data_list else {}
             src, tgt = key if isinstance(key, tuple) else (key.split("<SEP>") + ["", ""])[:2]
+            description = data.get("description", "")
             graph_edges[key] = {
                 "src_id": src,
                 "tgt_id": tgt,
                 "relationship": data.get("relationship", "related_to"),
-                "description": data.get("description", ""),
+                "description": description,
                 "source_id": data.get("source_id", ""),
                 "keywords": data.get("keywords", ""),
+                "content": description,  # Required for embedding generation
             }
 
         # Store in vector DB
