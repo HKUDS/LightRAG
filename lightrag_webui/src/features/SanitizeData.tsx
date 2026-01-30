@@ -50,6 +50,7 @@ export default function SanitizeData() {
   const [selectedModalType, setSelectedModalType] = useState<string>('');
   const [loadingTypes, setLoadingTypes] = useState(false);
   const [modalFilterText, setModalFilterText] = useState('');
+  const [typeSelectionContext, setTypeSelectionContext] = useState<'main' | 'create'>('main');
 
   const [typesLoading, setTypesLoading] = useState(true);  
   const [filterMode, setFilterMode] = useState<'none' | 'selected' | 'type' | 'orphan'>('none');
@@ -58,6 +59,14 @@ export default function SanitizeData() {
 
   const [orphanFilteredEntities, setOrphanFilteredEntities] = useState<string[]>([]);
   const [entityOrphanMap, setEntityOrphanMap] = useState<Record<string, boolean>>({});
+
+  // Create Entity Modal state
+  const [createEntityModalOpen, setCreateEntityModalOpen] = useState(false);
+  const [createEntityName, setCreateEntityName] = useState('');
+  const [createEntityDescription, setCreateEntityDescription] = useState('');
+  const [createEntityType, setCreateEntityType] = useState('');
+  const [createEntitySourceId, setCreateEntitySourceId] = useState('');
+  const [createError, setCreateError] = useState<string | null>(null);  // For error messages
 
   // For loading the Select Type modal window
   const fetchAllTypes = async () => {
@@ -201,8 +210,10 @@ export default function SanitizeData() {
           setEditDescriptionModalOpen(false);
         } else if (editRelationshipsModalOpen) {
           setEditRelationshipsModalOpen(false);
-        } else if (selectTypeModalOpen) { // ← Add this line
+        } else if (selectTypeModalOpen) { 
           setSelectTypeModalOpen(false);
+        } else if (createEntityModalOpen) { 
+          setCreateEntityModalOpen(false);
         }
       }
     };
@@ -293,6 +304,49 @@ export default function SanitizeData() {
   const handleClearSelected = () => {
     setSelectedEntities([]);     // uncheck all checkboxes
     setFirstEntity(null);        // deselect "Keep First" radio
+  };
+
+  const handleCreateEntity = async () => {
+    if (!createEntityName.trim()) {
+      setCreateError('Entity name is required.');
+      return;
+    }
+
+    setCreateError(null);
+
+    try {
+      const entityData: Record<string, any> = {
+        description: createEntityDescription,
+        entity_type: createEntityType,
+      };
+      if (createEntitySourceId.trim()) {
+        entityData.source_id = createEntitySourceId;
+      }
+
+      const response = await axios.post(`${API_BASE}/graph/entity/create`, {
+        entity_name: createEntityName,
+        entity_data: entityData,
+      });
+
+      if (response.status === 200) {
+        // Success: Close modal, refresh entities
+        setCreateEntityModalOpen(false);
+        // Refresh entity list (re-fetch)
+        const listRes = await axios.get(`${API_BASE}/graph/label/list`);
+        const sorted = (listRes.data as string[]).sort((a, b) =>
+          a.toLowerCase().localeCompare(b.toLowerCase())
+        );
+        setEntities(sorted);
+        // Also refresh types/orphans map if needed (call fetchEntityTypes again)
+        // For simplicity, reload page or add a full refresh here if necessary
+
+        alert(response.data.message);  // Show success message
+      }
+    } catch (err: any) {
+      console.error('Failed to create entity:', err);
+      const errorMsg = err.response?.data?.message || 'Failed to create entity. Check console.';
+      setCreateError(errorMsg);  // Show in modal
+    }
   };
 
   const fetchEntityDetail = async (entityName: string, force = false) => {
@@ -748,7 +802,10 @@ export default function SanitizeData() {
 
             <div className="min-w-[200px]">
               <button 
-                onClick={() => setSelectTypeModalOpen(true)} // ← Add this line
+                onClick={() => {
+                  setTypeSelectionContext('main');
+                  setSelectTypeModalOpen(true);
+                }}
                 className="block w-full px-3 py-0.5 bg-gray-200 hover:bg-gray-300 border border-gray-300 border-b-0 rounded-t-md text-xs font-medium text-gray-800 text-left cursor-pointer shadow-sm"
               >
                 Select Type
@@ -813,7 +870,14 @@ export default function SanitizeData() {
 
           <div className="flex gap-2">
             <button 
-              onClick={() => alert('Create Entity functionality coming soon!')}  // ← Placeholder for future logic
+              onClick={() => {
+                setCreateEntityModalOpen(true);
+                setCreateError(null);  // Clear any previous errors
+                setCreateEntityName('');  // Reset fields
+                setCreateEntityDescription('');
+                setCreateEntityType('');
+                setCreateEntitySourceId('');
+              }}
               className="px-3.5 py-1.5 bg-purple-600 text-white rounded hover:bg-purple-700 text-sm"
             >
               Create Entity
@@ -1256,7 +1320,7 @@ export default function SanitizeData() {
       
       {/* Select Entity Type Modal */}
       {selectTypeModalOpen && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-60">
           <div className="bg-white rounded-lg shadow-xl w-full max-w-md mx-4 p-6">
             <h2 className="text-xl font-semibold mb-4 text-gray-800">
               Select Entity Type
@@ -1286,9 +1350,13 @@ export default function SanitizeData() {
                     key={type}
                     onClick={() => setSelectedModalType(type)}
                     onDoubleClick={() => {
-                      setEntityType(type);
+                      if (typeSelectionContext === 'main') {
+                        setEntityType(type);
+                      } else if (typeSelectionContext === 'create') {
+                        setCreateEntityType(type);
+                      }
                       setSelectTypeModalOpen(false);
-                    }}                    
+                    }}                   
                     className={`px-4 py-2 cursor-pointer border-b border-gray-100 last:border-0 text-sm transition-colors ${
                       selectedModalType === type 
                         ? 'bg-blue-100 text-blue-800 font-semibold' 
@@ -1314,7 +1382,11 @@ export default function SanitizeData() {
               </button>
               <button
                 onClick={() => {
-                  setEntityType(selectedModalType); 
+                  if (typeSelectionContext === 'main') {
+                    setEntityType(selectedModalType); 
+                  } else if (typeSelectionContext === 'create') {
+                    setCreateEntityType(selectedModalType);
+                  }
                   setSelectTypeModalOpen(false);
                 }}
                 disabled={!selectedModalType}
@@ -1331,6 +1403,110 @@ export default function SanitizeData() {
         </div>
       )}
 
+      {/* Create Entity Modal */}
+      {createEntityModalOpen && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg shadow-xl w-full max-w-2xl mx-4 p-6">
+            <h2 className="text-xl font-semibold mb-4 text-gray-800">
+              Create New Entity
+            </h2>
+
+            {createError && (
+              <div className="mb-4 p-3 bg-red-100 text-red-700 rounded text-sm">
+                {createError}
+              </div>
+            )}
+
+            <div className="space-y-4">
+              {/* Entity Name */}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Entity Name (required, unique)
+                </label>
+                <input
+                  type="text"
+                  className="w-full px-3 py-2 border border-gray-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  value={createEntityName}
+                  onChange={(e) => setCreateEntityName(e.target.value)}
+                  placeholder="e.g., Tesla"
+                />
+              </div>
+
+              {/* Description */}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Description
+                </label>
+                <textarea
+                  className="w-full h-32 p-3 border border-gray-300 rounded resize-y focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
+                  value={createEntityDescription}
+                  onChange={(e) => setCreateEntityDescription(e.target.value)}
+                  placeholder="e.g., Electric vehicle manufacturer (use <SEP> for paragraphs)"
+                />
+              </div>
+
+              {/* Entity Type */}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Entity Type
+                </label>
+                <div className="flex items-stretch">
+                  <button 
+                    onClick={() => {
+                      setTypeSelectionContext('create');
+                      setSelectTypeModalOpen(true);
+                    }}
+                    className="px-3 py-2 bg-gray-200 hover:bg-gray-300 border border-gray-300 border-r-0 rounded-l-md text-sm font-medium text-gray-800 cursor-pointer shadow-sm"
+                  >
+                    Select Type
+                  </button>
+                  <input
+                    type="text"
+                    className="flex-1 px-3 py-2 border border-gray-300 rounded-r-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    value={createEntityType}
+                    onChange={(e) => setCreateEntityType(e.target.value)}
+                    placeholder="Type or select (e.g., ORGANIZATION)"
+                  />
+                </div>
+              </div>
+
+              {/* Source ID */}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Source ID (optional)
+                </label>
+                <input
+                  type="text"
+                  className="w-full px-3 py-2 border border-gray-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  value={createEntitySourceId}
+                  onChange={(e) => setCreateEntitySourceId(e.target.value)}
+                  placeholder="e.g., chunk-123"
+                />
+              </div>
+            </div>
+
+            <div className="mt-6 flex justify-end gap-3">
+              <button
+                onClick={() => setCreateEntityModalOpen(false)}
+                className="px-4 py-2 bg-gray-200 hover:bg-gray-300 rounded text-gray-800 text-sm"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleCreateEntity}
+                disabled={!createEntityName.trim()}  // Disable if no name
+                className={`px-4 py-2 rounded text-sm ${
+                  createEntityName.trim()
+                    ? 'bg-blue-600 hover:bg-blue-700 text-white'
+                    : 'bg-gray-300 text-gray-500 cursor-not-allowed'
+                }`}
+              >
+                Create
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
 
     </div>
