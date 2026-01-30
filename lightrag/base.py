@@ -905,3 +905,219 @@ class QueryContextResult:
     def reference_list(self) -> List[Dict[str, str]]:
         """Convenient property to extract reference list from raw_data."""
         return self.raw_data.get("data", {}).get("references", [])
+
+
+# Prompt Template Management Data Models
+
+
+class PromptType(str, Enum):
+    """Template type identifiers.
+
+    Each type corresponds to a specific use case in LightRAG:
+    - KG: Knowledge graph extraction (entity_extraction_*, summarize_*)
+    - QUERY: Query response generation (rag_response, naive_rag_response)
+    - KEYWORD: Keyword extraction from queries
+    - NED: Named Entity Disambiguation
+    """
+
+    KG = "kg"
+    QUERY = "query"
+    KEYWORD = "keyword"
+    NED = "ned"
+
+
+class PromptOrigin(str, Enum):
+    """Origin type for prompt templates.
+
+    Attributes:
+        SYSTEM: Built-in templates provided by LightRAG (read-only)
+        USER: User-defined templates that can override system templates
+    """
+
+    SYSTEM = "system"
+    USER = "user"
+
+
+@dataclass
+class PromptTypeSpec:
+    """Specification for a prompt template type.
+
+    LightRAG uses PromptType-level variable validation as a strict baseline:
+    templates of a given PromptType may only reference variables from the
+    corresponding `allowed_variables` set.
+
+    Per-template required variables are inferred from the template content
+    (e.g., via Jinja2 AST analysis) by the concrete PromptManager.
+    """
+
+    allowed_variables: set[str]
+    description: str
+
+
+@dataclass
+class PromptTemplate:
+    """A loaded prompt template instance.
+
+    Represents a template that has been loaded from the file system
+    and is ready for rendering.
+
+    Attributes:
+        type: The template type (kg, query, keyword, ned)
+        name: Template name (e.g., "default", "medical")
+        origin: Whether this is a system or user template
+        content: Raw Jinja2 template content
+        file_path: Absolute path to the template file
+    """
+
+    type: PromptType
+    name: str
+    origin: PromptOrigin
+    content: str
+    file_path: str
+
+
+# PromptType-level variable allowlists (strict baseline).
+# Concrete prompt managers should additionally validate per-template required vars.
+PROMPT_TYPE_SPECS: dict[PromptType, PromptTypeSpec] = {
+    PromptType.KG: PromptTypeSpec(
+        allowed_variables={
+            "tuple_delimiter",
+            "completion_delimiter",
+            "entity_types",
+            "language",
+            "examples",
+            "input_text",
+            "description_type",
+            "description_name",
+            "description_list",
+            "summary_length",
+        },
+        description="Knowledge Graph entity and relationship extraction",
+    ),
+    PromptType.QUERY: PromptTypeSpec(
+        allowed_variables={
+            "context_data",
+            "content_data",
+            "response_type",
+            "user_prompt",
+            "entities_str",
+            "relations_str",
+            "text_chunks_str",
+            "reference_list_str",
+        },
+        description="Query response generation",
+    ),
+    PromptType.KEYWORD: PromptTypeSpec(
+        allowed_variables={
+            "query",
+            "examples",
+            "language",
+        },
+        description="Keyword extraction from queries",
+    ),
+    PromptType.NED: PromptTypeSpec(
+        allowed_variables={
+            "entities",
+            "context",
+        },
+        description="Named Entity Disambiguation",
+    ),
+}
+
+# Default template names
+DEFAULT_TEMPLATE_NAME = "default"
+
+
+class BasePromptManager(ABC):
+    """Abstract base class for prompt template management.
+
+    Defines the interface for managing and rendering prompt templates.
+    Implementations can use different backends (file system, database, etc.)
+    """
+
+    async def initialize(self) -> None:
+        """Initialize prompt manager resources (e.g., ensure git repo, load templates)."""
+
+    async def finalize(self) -> None:
+        """Finalize prompt manager resources (optional)."""
+
+    @abstractmethod
+    async def get_template(
+        self,
+        prompt_type: PromptType,
+        template_name: str = DEFAULT_TEMPLATE_NAME,
+    ) -> Optional[PromptTemplate]:
+        """Get a prompt template by type and name.
+
+        User templates take precedence over system templates.
+
+        Args:
+            prompt_type: The type of template (kg, query, keyword, ned)
+            template_name: Template name (default: "default")
+
+        Returns:
+            PromptTemplate if found, None otherwise.
+        """
+
+    @abstractmethod
+    async def render(
+        self,
+        prompt_type: PromptType,
+        template_name: str = DEFAULT_TEMPLATE_NAME,
+        **variables: Any,
+    ) -> str:
+        """Render a template with the provided variables.
+
+        Args:
+            prompt_type: The type of template
+            template_name: Template name (default: "default")
+            **variables: Variables to substitute in the template
+
+        Returns:
+            Rendered template string.
+
+        Raises:
+            ValueError: If required variables are missing or template not found.
+        """
+
+    @abstractmethod
+    async def upsert_user_template(
+        self,
+        prompt_type: PromptType,
+        template_name: str,
+        *,
+        content: str,
+        author: str,
+        commit_message: Optional[str] = None,
+    ) -> PromptTemplate:
+        """Create or update a user template and persist it (e.g., git commit).
+
+        Implementations must enforce access control at the API layer; this method
+        assumes the caller is authorized.
+        """
+
+    @abstractmethod
+    def list_templates(
+        self,
+        prompt_type: Optional[PromptType] = None,
+    ) -> list[PromptTemplate]:
+        """List all available templates.
+
+        Args:
+            prompt_type: Filter by template type. If None, returns all.
+
+        Returns:
+            List of PromptTemplate objects.
+        """
+
+    @abstractmethod
+    def reload_templates(self) -> None:
+        """Reload all templates from the file system.
+
+        This clears the cache and rescans template directories.
+        Useful after admin updates template files.
+        """
+
+    def get_user_repo_head(self) -> Optional[str]:
+        """Return current user prompt repo HEAD commit hash if applicable."""
+        return None
