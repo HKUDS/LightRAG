@@ -3502,6 +3502,120 @@ class PGDocStatusStorage(DocStatusStorage):
                 return (False, existing)
             raise
 
+    async def claim_next_document(self, instance_id: str = None) -> dict[str, Any] | None:
+        """Atomically claim the next pending/failed document for processing.
+
+        Uses SELECT ... FOR UPDATE SKIP LOCKED to ensure only one instance
+        can claim each document, enabling true parallel processing across
+        multiple instances.
+
+        This is the key to multi-instance scale-out:
+        - Instance A claims doc-1
+        - Instance B claims doc-2 (skips doc-1 which is locked)
+        - Instance C claims doc-3
+        All three work in parallel on different documents.
+
+        Args:
+            instance_id: Optional instance identifier for logging
+
+        Returns:
+            Document data dict if a document was claimed, None if no documents available
+        """
+        await self.db._ensure_pool()
+        assert self.db.pool is not None
+
+        # Use a transaction to atomically SELECT and UPDATE
+        async with self.db.pool.acquire() as conn:
+            async with conn.transaction():
+                # SELECT FOR UPDATE SKIP LOCKED:
+                # - Locks the selected row
+                # - Skips rows already locked by other transactions
+                # - Returns only unlocked rows
+                # Priority: pending first, then failed (for retry)
+                row = await conn.fetchrow(
+                    """
+                    SELECT id, content_summary, content_length, chunks_count,
+                           status, file_path, chunks_list, track_id, metadata,
+                           error_msg, created_at, updated_at
+                    FROM LIGHTRAG_DOC_STATUS
+                    WHERE workspace = $1
+                      AND status IN ('pending', 'failed')
+                    ORDER BY
+                        CASE status WHEN 'pending' THEN 0 ELSE 1 END,
+                        created_at ASC
+                    LIMIT 1
+                    FOR UPDATE SKIP LOCKED
+                    """,
+                    self.workspace,
+                )
+
+                if not row:
+                    return None
+
+                doc_id = row["id"]
+
+                # Update status to PROCESSING within the same transaction
+                await conn.execute(
+                    """
+                    UPDATE LIGHTRAG_DOC_STATUS
+                    SET status = 'processing',
+                        updated_at = NOW()
+                    WHERE workspace = $1 AND id = $2
+                    """,
+                    self.workspace,
+                    doc_id,
+                )
+
+                inst_info = f" by {instance_id}" if instance_id else ""
+                logger.info(
+                    f"[{self.workspace}] Claimed document {doc_id}{inst_info} "
+                    f"(was {row['status']})"
+                )
+
+                # Parse JSON fields
+                chunks_list = row.get("chunks_list", [])
+                if isinstance(chunks_list, str):
+                    try:
+                        chunks_list = json.loads(chunks_list)
+                    except json.JSONDecodeError:
+                        chunks_list = []
+
+                metadata = row.get("metadata", {})
+                if isinstance(metadata, str):
+                    try:
+                        metadata = json.loads(metadata)
+                    except json.JSONDecodeError:
+                        metadata = {}
+
+                return {
+                    "id": doc_id,
+                    "content_summary": row["content_summary"],
+                    "content_length": row["content_length"],
+                    "chunks_count": row["chunks_count"],
+                    "status": "processing",  # We just updated it
+                    "file_path": row["file_path"] or "unknown_source",
+                    "chunks_list": chunks_list,
+                    "track_id": row["track_id"],
+                    "metadata": metadata,
+                    "error_msg": row["error_msg"],
+                    "created_at": row["created_at"],
+                    "updated_at": row["updated_at"],
+                }
+
+    async def get_pending_count(self) -> int:
+        """Get count of pending/failed documents waiting to be processed.
+
+        Useful for checking if there's work to do before entering the processing loop.
+        """
+        sql = """
+            SELECT COUNT(*) as cnt
+            FROM LIGHTRAG_DOC_STATUS
+            WHERE workspace = $1
+              AND status IN ('pending', 'failed')
+        """
+        result = await self.db.query(sql, [self.workspace], multirows=False)
+        return result.get("cnt", 0) if result else 0
+
     async def drop(self) -> dict[str, str]:
         """Drop the storage"""
         try:
