@@ -1637,13 +1637,18 @@ async def _merge_nodes_then_upsert(
     Returns:
         tuple: (node_data, vdb_data) where vdb_data is dict for batch VDB upsert or None if entity_vdb is None
     """
+    import time as perf_time
+    merge_start = perf_time.perf_counter()
+
     already_entity_types = []
     already_source_ids = []
     already_description = []
     already_file_paths = []
 
     # 1. Get existing node data from knowledge graph
+    step_start = perf_time.perf_counter()
     already_node = await knowledge_graph_inst.get_node(entity_name)
+    get_node_time = (perf_time.perf_counter() - step_start) * 1000
     if already_node:
         already_entity_types.append(already_node["entity_type"])
         already_source_ids.extend(already_node["source_id"].split(GRAPH_FIELD_SEP))
@@ -1653,12 +1658,14 @@ async def _merge_nodes_then_upsert(
     new_source_ids = [dp["source_id"] for dp in nodes_data if dp.get("source_id")]
 
     existing_full_source_ids = []
+    step_start = perf_time.perf_counter()
     if entity_chunks_storage is not None:
         stored_chunks = await entity_chunks_storage.get_by_id(entity_name)
         if stored_chunks and isinstance(stored_chunks, dict):
             existing_full_source_ids = [
                 chunk_id for chunk_id in stored_chunks.get("chunk_ids", []) if chunk_id
             ]
+    get_chunks_time = (perf_time.perf_counter() - step_start) * 1000
 
     if not existing_full_source_ids:
         existing_full_source_ids = [
@@ -1668,6 +1675,7 @@ async def _merge_nodes_then_upsert(
     # 2. Merging new source ids with existing ones
     full_source_ids = merge_source_ids(existing_full_source_ids, new_source_ids)
 
+    step_start = perf_time.perf_counter()
     if entity_chunks_storage is not None and full_source_ids:
         await entity_chunks_storage.upsert(
             {
@@ -1677,6 +1685,7 @@ async def _merge_nodes_then_upsert(
                 }
             }
         )
+    upsert_chunks_time = (perf_time.perf_counter() - step_start) * 1000
 
     # 3. Finalize source_id by applying source ids limit
     limit_method = global_config.get("source_ids_limit_method")
@@ -1765,6 +1774,7 @@ async def _merge_nodes_then_upsert(
                 raise PipelineCancelledException("User cancelled during entity summary")
 
     # 7.5 Detect conflicts in descriptions if enabled
+    step_start = perf_time.perf_counter()
     conflict_details = None
     if global_config.get("enable_conflict_detection", True) and len(description_list) >= 2:
         # Build description tuples with source IDs for conflict detection
@@ -1790,8 +1800,10 @@ async def _merge_nodes_then_upsert(
         # Format conflicts for prompt if any were found
         if conflicts:
             conflict_details = "\n".join(c.to_prompt_context() for c in conflicts)
+    conflict_time = (perf_time.perf_counter() - step_start) * 1000
 
     # 8. Get summary description an LLM usage status
+    step_start = perf_time.perf_counter()
     description, llm_was_used = await _handle_entity_relation_summary(
         "Entity",
         entity_name,
@@ -1802,6 +1814,7 @@ async def _merge_nodes_then_upsert(
         conflict_details=conflict_details,
         token_tracker=token_tracker,
     )
+    summary_time = (perf_time.perf_counter() - step_start) * 1000
 
     # 9. Build file_path within MAX_FILE_PATHS
     file_paths_list = []
@@ -1905,10 +1918,12 @@ async def _merge_nodes_then_upsert(
         created_at=int(time.time()),
         truncate=truncation_info,
     )
+    step_start = perf_time.perf_counter()
     await knowledge_graph_inst.upsert_node(
         entity_name,
         node_data=node_data,
     )
+    upsert_node_time = (perf_time.perf_counter() - step_start) * 1000
     node_data["entity_name"] = entity_name
 
     # Prepare VDB data for batch upsert (caller will do the actual upsert)
@@ -1925,6 +1940,17 @@ async def _merge_nodes_then_upsert(
                 "file_path": file_path,
             }
         }
+
+    total_time = (perf_time.perf_counter() - merge_start) * 1000
+    # Log detailed timing only if significant time was spent (> 100ms) or LLM was used
+    if total_time > 100 or llm_was_used:
+        logger.info(
+            f"[PERF] Entity merge '{entity_name}': total={total_time:.1f}ms "
+            f"(get_node={get_node_time:.1f}, get_chunks={get_chunks_time:.1f}, "
+            f"upsert_chunks={upsert_chunks_time:.1f}, conflict={conflict_time:.1f}, "
+            f"summary={summary_time:.1f}, upsert_node={upsert_node_time:.1f}) "
+            f"descs={len(description_list)} llm={llm_was_used}"
+        )
 
     return node_data, vdb_data
 
@@ -1954,6 +1980,9 @@ async def _merge_edges_then_upsert(
     if src_id == tgt_id:
         return None, None
 
+    import time as perf_time
+    merge_start = perf_time.perf_counter()
+
     already_edge = None
     already_weights = []
     already_source_ids = []
@@ -1962,7 +1991,9 @@ async def _merge_edges_then_upsert(
     already_file_paths = []
 
     # 1. Get existing edge data from graph storage (single call, no redundant has_edge)
+    step_start = perf_time.perf_counter()
     already_edge = await knowledge_graph_inst.get_edge(src_id, tgt_id)
+    get_edge_time = (perf_time.perf_counter() - step_start) * 1000
     if already_edge:
         # Get weight with default 1.0 if missing
         already_weights.append(already_edge.get("weight", 1.0))
@@ -1997,12 +2028,14 @@ async def _merge_edges_then_upsert(
 
     storage_key = make_relation_chunk_key(src_id, tgt_id)
     existing_full_source_ids = []
+    step_start = perf_time.perf_counter()
     if relation_chunks_storage is not None:
         stored_chunks = await relation_chunks_storage.get_by_id(storage_key)
         if stored_chunks and isinstance(stored_chunks, dict):
             existing_full_source_ids = [
                 chunk_id for chunk_id in stored_chunks.get("chunk_ids", []) if chunk_id
             ]
+    get_chunks_time = (perf_time.perf_counter() - step_start) * 1000
 
     if not existing_full_source_ids:
         existing_full_source_ids = [
@@ -2012,6 +2045,7 @@ async def _merge_edges_then_upsert(
     # 2. Merge new source ids with existing ones
     full_source_ids = merge_source_ids(existing_full_source_ids, new_source_ids)
 
+    step_start = perf_time.perf_counter()
     if relation_chunks_storage is not None and full_source_ids:
         await relation_chunks_storage.upsert(
             {
@@ -2021,6 +2055,7 @@ async def _merge_edges_then_upsert(
                 }
             }
         )
+    upsert_chunks_time = (perf_time.perf_counter() - step_start) * 1000
 
     # 3. Finalize source_id by applying source ids limit
     limit_method = global_config.get("source_ids_limit_method")
@@ -2126,6 +2161,7 @@ async def _merge_edges_then_upsert(
 
     # 7.5 Detect conflicts in descriptions if enabled
     relation_name = f"({src_id}, {tgt_id})"
+    step_start = perf_time.perf_counter()
     conflict_details = None
     if global_config.get("enable_conflict_detection", True) and len(description_list) >= 2:
         # Build description tuples with source IDs for conflict detection
@@ -2149,8 +2185,10 @@ async def _merge_edges_then_upsert(
         # Format conflicts for prompt if any were found
         if conflicts:
             conflict_details = "\n".join(c.to_prompt_context() for c in conflicts)
+    conflict_time = (perf_time.perf_counter() - step_start) * 1000
 
     # 8. Get summary description an LLM usage status
+    step_start = perf_time.perf_counter()
     description, llm_was_used = await _handle_entity_relation_summary(
         "Relation",
         relation_name,
@@ -2161,6 +2199,7 @@ async def _merge_edges_then_upsert(
         conflict_details=conflict_details,
         token_tracker=token_tracker,
     )
+    summary_time = (perf_time.perf_counter() - step_start) * 1000
 
     # 9. Build file_path within MAX_FILE_PATHS limit
     file_paths_list = []
@@ -2259,6 +2298,7 @@ async def _merge_edges_then_upsert(
         logger.debug(status_message)
 
     # 11. Update both graph and vector db
+    step_start = perf_time.perf_counter()
     for need_insert_id in [src_id, tgt_id]:
         # Optimization: Use get_node instead of has_node + get_node
         existing_node = await knowledge_graph_inst.get_node(need_insert_id)
@@ -2425,7 +2465,10 @@ async def _merge_edges_then_upsert(
                         pipeline_status["latest_message"] = status_message
                         pipeline_status["history_messages"].append(status_message)
 
+    check_entities_time = (perf_time.perf_counter() - step_start) * 1000
+
     edge_created_at = int(time.time())
+    step_start = perf_time.perf_counter()
     await knowledge_graph_inst.upsert_edge(
         src_id,
         tgt_id,
@@ -2439,6 +2482,7 @@ async def _merge_edges_then_upsert(
             truncate=truncation_info,
         ),
     )
+    upsert_edge_time = (perf_time.perf_counter() - step_start) * 1000
 
     edge_data = dict(
         src_id=src_id,
@@ -2481,6 +2525,18 @@ async def _merge_edges_then_upsert(
                 "file_path": file_path,
             }
         }
+
+    total_time = (perf_time.perf_counter() - merge_start) * 1000
+    # Log detailed timing only if significant time was spent (> 100ms) or LLM was used
+    if total_time > 100 or llm_was_used:
+        logger.info(
+            f"[PERF] Relation merge '{src_id}'~'{tgt_id}': total={total_time:.1f}ms "
+            f"(get_edge={get_edge_time:.1f}, get_chunks={get_chunks_time:.1f}, "
+            f"upsert_chunks={upsert_chunks_time:.1f}, conflict={conflict_time:.1f}, "
+            f"summary={summary_time:.1f}, check_entities={check_entities_time:.1f}, "
+            f"upsert_edge={upsert_edge_time:.1f}) "
+            f"descs={len(description_list)} llm={llm_was_used}"
+        )
 
     return edge_data, rel_vdb_data
 
