@@ -2709,8 +2709,11 @@ class LightRAG:
             }
         })
 
-        # Store chunks
-        await self.text_chunks.upsert(chunks)
+        # Store chunks (text + vector embeddings in parallel)
+        await asyncio.gather(
+            self.text_chunks.upsert(chunks),
+            self.chunks_vdb.upsert(chunks),
+        )
 
         # Extract entities and relationships
         try:
@@ -2723,17 +2726,60 @@ class LightRAG:
         except Exception as e:
             raise Exception(f"Entity extraction failed: {str(e)}")
 
-        # Process extraction results (entities, relationships, etc.)
-        await self._process_extraction_results(
-            doc_id,
-            chunks,
-            chunk_results,
-            pipeline_status,
-            pipeline_status_lock,
+        # Create separate token tracker for deduplication/merge phase
+        dedup_token_tracker = TokenTracker()
+
+        # Build global_config with dedup token_tracker for merge phase
+        merge_config = asdict(self)
+        merge_config["token_tracker"] = dedup_token_tracker
+
+        # Use full merge workflow (entity resolution, KV stores, etc.)
+        await merge_nodes_and_edges(
+            chunk_results=chunk_results,
+            knowledge_graph_inst=self.chunk_entity_relation_graph,
+            entity_vdb=self.entities_vdb,
+            relationships_vdb=self.relationships_vdb,
+            global_config=merge_config,
+            full_entities_storage=self.full_entities,
+            full_relations_storage=self.full_relations,
+            doc_id=doc_id,
+            pipeline_status=pipeline_status,
+            pipeline_status_lock=pipeline_status_lock,
+            llm_response_cache=self.llm_response_cache,
+            entity_chunks_storage=self.entity_chunks,
+            relation_chunks_storage=self.relation_chunks,
+            current_file_number=1,
+            total_files=1,
+            file_path=file_path,
         )
 
         # Calculate processing time
         processing_time = int(time.time()) - processing_start_time
+
+        # Build token_usage from TokenTracker (extraction phase)
+        llm_usage = token_tracker.get_llm_usage()
+        embedding_usage = token_tracker.get_embedding_usage()
+        # Get deduplication token usage (merge phase)
+        dedup_llm_usage = dedup_token_tracker.get_llm_usage()
+        token_usage = {
+            "embedding_tokens": embedding_usage.get("total_tokens", 0),
+            "llm_input_tokens": llm_usage.get("prompt_tokens", 0),
+            "llm_output_tokens": llm_usage.get("completion_tokens", 0),
+            "total_chunks": len(chunks),
+            "embedding_model": embedding_usage.get("model"),
+            "llm_model": llm_usage.get("model"),
+            # Deduplication/merge phase tokens (separate tracking)
+            "dedup_input_tokens": dedup_llm_usage.get("prompt_tokens", 0),
+            "dedup_output_tokens": dedup_llm_usage.get("completion_tokens", 0),
+        }
+
+        # Log dedup token usage for debugging
+        if dedup_llm_usage.get("prompt_tokens", 0) > 0 or dedup_llm_usage.get("completion_tokens", 0) > 0:
+            logger.info(
+                f"[DEDUP] Token usage for doc {doc_id}: "
+                f"input={dedup_llm_usage.get('prompt_tokens', 0)}, "
+                f"output={dedup_llm_usage.get('completion_tokens', 0)}"
+            )
 
         # Mark document as processed
         await self.doc_status.upsert({
@@ -2750,139 +2796,19 @@ class LightRAG:
                 "metadata": {
                     **claimed_doc.get("metadata", {}),
                     "processing_time_seconds": processing_time,
-                    "token_usage": token_tracker.to_dict() if token_tracker else {},
+                    "token_usage": token_usage,
                 },
             }
         })
+
+        # Persist data after processing
+        await self._insert_done()
 
         log_message = f"Document {doc_id} processed in {processing_time}s"
         logger.info(log_message)
         async with pipeline_status_lock:
             pipeline_status["latest_message"] = log_message
             pipeline_status["history_messages"].append(log_message)
-
-    async def _process_extraction_results(
-        self,
-        doc_id: str,
-        chunks: dict,
-        chunk_results: list,
-        pipeline_status: dict,
-        pipeline_status_lock: asyncio.Lock,
-    ) -> None:
-        """Process entity extraction results and store in graph.
-
-        Handles entity/relationship deduplication, graph storage, and vector embeddings.
-        """
-        # Aggregate results from all chunks
-        all_nodes = {}
-        all_edges = {}
-
-        for result in chunk_results:
-            if result is None:
-                continue
-            nodes, edges = result
-            if nodes:
-                for name, data in nodes.items():
-                    if name in all_nodes:
-                        # Merge: keep longer description
-                        existing_desc = all_nodes[name][0].get("description", "") or ""
-                        new_desc = data[0].get("description", "") or ""
-                        if len(new_desc) > len(existing_desc):
-                            all_nodes[name] = data
-                    else:
-                        all_nodes[name] = data
-            if edges:
-                for key, data in edges.items():
-                    if key in all_edges:
-                        existing_desc = all_edges[key][0].get("description", "") or ""
-                        new_desc = data[0].get("description", "") or ""
-                        if len(new_desc) > len(existing_desc):
-                            all_edges[key] = data
-                    else:
-                        all_edges[key] = data
-
-        if not all_nodes and not all_edges:
-            logger.info(f"No entities or relationships extracted from document {doc_id}")
-            return
-
-        log_message = f"Document {doc_id}: {len(all_nodes)} entities, {len(all_edges)} relationships"
-        logger.info(log_message)
-        async with pipeline_status_lock:
-            pipeline_status["history_messages"].append(log_message)
-
-        # Store entities and relationships
-        # This uses the existing storage methods which handle deduplication
-        await asyncio.gather(
-            self._insert_nodes_batch(all_nodes),
-            self._insert_edges_batch(all_edges),
-        )
-
-    async def _insert_nodes_batch(self, nodes: dict) -> None:
-        """Insert nodes into graph and vector storage."""
-        if not nodes:
-            return
-
-        # Prepare node data for graph storage
-        # NOTE: PGVectorStorage.upsert() requires 'content' for embeddings
-        # and 'entity_name' for VECTOR_STORE_ENTITIES namespace
-        graph_nodes = {}
-        for name, data_list in nodes.items():
-            data = data_list[0] if data_list else {}
-            description = data.get("description", "")
-            graph_nodes[name] = {
-                "entity_type": data.get("entity_type", "entity"),
-                "description": description,
-                "source_id": data.get("source_id", ""),
-                "entity_name": name,  # Required by PGVectorStorage
-                "content": description,  # Required for embedding generation
-            }
-
-        # Store in vector DB for semantic search
-        await self.entities_vdb.upsert(graph_nodes)
-
-        # Also update graph storage if available (check for actual storage object, not string)
-        if hasattr(self, "graph_storage") and hasattr(self.graph_storage, "upsert_node"):
-            for name, props in graph_nodes.items():
-                await self.graph_storage.upsert_node(name, props)
-
-    async def _insert_edges_batch(self, edges: dict) -> None:
-        """Insert edges into graph and vector storage."""
-        if not edges:
-            return
-
-        # Prepare edge data
-        # NOTE: PGVectorStorage.upsert() requires 'content' for embeddings
-        # and string keys (not tuples)
-        graph_edges = {}
-        for key, data_list in edges.items():
-            data = data_list[0] if data_list else {}
-            # Extract source and target from key (could be tuple or string)
-            if isinstance(key, tuple):
-                src, tgt = key
-                str_key = f"{src}<SEP>{tgt}"
-            else:
-                str_key = key
-                parts = key.split("<SEP>")
-                src = parts[0] if len(parts) > 0 else ""
-                tgt = parts[1] if len(parts) > 1 else ""
-            description = data.get("description", "")
-            graph_edges[str_key] = {
-                "src_id": src,
-                "tgt_id": tgt,
-                "relationship": data.get("relationship", "related_to"),
-                "description": description,
-                "source_id": data.get("source_id", ""),
-                "keywords": data.get("keywords", ""),
-                "content": description,  # Required for embedding generation
-            }
-
-        # Store in vector DB for semantic search
-        await self.relationships_vdb.upsert(graph_edges)
-
-        # Also update graph storage if available (check for actual storage object, not string)
-        if hasattr(self, "graph_storage") and hasattr(self.graph_storage, "upsert_edge"):
-            for str_key, props in graph_edges.items():
-                await self.graph_storage.upsert_edge(props["src_id"], props["tgt_id"], props)
 
     async def _process_extract_entities(
         self, chunk: dict[str, Any], pipeline_status=None, pipeline_status_lock=None,
