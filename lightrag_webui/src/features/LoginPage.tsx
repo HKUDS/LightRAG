@@ -18,6 +18,7 @@ const LoginPage = () => {
   const [loading, setLoading] = useState(false)
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
+  const [orgId, setOrgId] = useState('org_default')
   const [checkingAuth, setCheckingAuth] = useState(true)
   const authCheckRef = useRef(false); // Prevent duplicate calls in Vite dev mode
 
@@ -93,7 +94,7 @@ const LoginPage = () => {
 
     try {
       setLoading(true)
-      const response = await loginToServer(username, password)
+      const response = await loginToServer(username, password, orgId)
 
       // Get previous username from localStorage
       const previousUsername = localStorage.getItem('LIGHTRAG-PREVIOUS-USER')
@@ -190,6 +191,18 @@ const LoginPage = () => {
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 required
+                className="h-11 flex-1"
+              />
+            </div>
+            <div className="flex items-center gap-4">
+              <label htmlFor="org-id-input" className="text-sm font-medium w-16 shrink-0">
+                {t('login.orgId', 'Org ID')}
+              </label>
+              <Input
+                id="org-id-input"
+                placeholder="org_default"
+                value={orgId}
+                onChange={(e) => setOrgId(e.target.value)}
                 className="h-11 flex-1"
               />
             </div>
