@@ -2507,14 +2507,18 @@ async def _resolve_cross_document_entities(
         - resolved_nodes: Dict with entities resolved to canonical names.
         - resolution_map: Dict mapping old_name -> (new_name, score) for logging.
     """
+    import time as time_module
     from lightrag.entity_resolution import _normalize_for_matching, compute_entity_similarity
 
     similarity_threshold = global_config.get("entity_similarity_threshold", DEFAULT_ENTITY_SIMILARITY_THRESHOLD)
     min_name_length = global_config.get("entity_min_name_length", DEFAULT_ENTITY_MIN_NAME_LENGTH)
 
     # 1. Get existing entity names from the knowledge graph
+    get_all_start = time_module.perf_counter()
     try:
         existing_nodes = await knowledge_graph_inst.get_all_nodes()
+        get_all_time = (time_module.perf_counter() - get_all_start) * 1000
+        logger.info(f"[PERF] Cross-doc full: get_all_nodes={get_all_time:.1f}ms ({len(existing_nodes)} existing entities)")
     except Exception as e:
         logger.warning(f"Failed to get existing nodes for cross-doc resolution: {e}")
         return dict(all_nodes), {}
@@ -2595,12 +2599,12 @@ async def _resolve_cross_document_entities(
             # Keep original name (no match found)
             resolved_nodes[entity_name].extend(entities)
 
-    # Log total comparisons for debugging
-    if comparison_count > 1000:
-        logger.debug(
-            f"Cross-doc entity resolution: {comparison_count} comparisons, "
-            f"{len(all_nodes)} new entities vs {len(existing_nodes)} existing"
-        )
+    # Log total comparisons for performance analysis
+    total_time = (time_module.perf_counter() - get_all_start) * 1000
+    logger.info(
+        f"[PERF] Cross-doc full: total={total_time:.1f}ms, comparisons={comparison_count}, "
+        f"new={len(all_nodes)}, existing={len(existing_nodes)}, resolved={len(resolution_map)}"
+    )
 
     return dict(resolved_nodes), resolution_map
 
@@ -2665,11 +2669,12 @@ async def _resolve_cross_document_entities_vdb(
     # Step 2: Batch generate embeddings for all entity names
     entity_names = [e[0] for e in entities_to_query]
 
+    vdb_start = time_module.perf_counter()
     embed_start = time_module.perf_counter()
     try:
         embeddings = await entity_vdb.embedding_func(entity_names)
         embed_time = (time_module.perf_counter() - embed_start) * 1000
-        logger.debug(f"VDB resolution: batch embedding for {len(entity_names)} entities took {embed_time:.1f}ms")
+        logger.info(f"[PERF] Cross-doc VDB: embedding={embed_time:.1f}ms ({len(entity_names)} entities)")
     except Exception as e:
         logger.warning(f"Batch embedding failed: {e}. Falling back to keeping all entities as-is.")
         for entity_name, entities, _ in entities_to_query:
@@ -2698,7 +2703,7 @@ async def _resolve_cross_document_entities_vdb(
     query_tasks = [query_vdb_for_entity(i) for i in range(len(entities_to_query))]
     query_results = await asyncio.gather(*query_tasks)
     query_time = (time_module.perf_counter() - query_start) * 1000
-    logger.debug(f"VDB resolution: {len(query_tasks)} parallel queries took {query_time:.1f}ms")
+    logger.info(f"[PERF] Cross-doc VDB: queries={query_time:.1f}ms ({len(query_tasks)} parallel queries)")
 
     # Step 5: Process results
     for idx, vdb_results in query_results:
@@ -2743,6 +2748,13 @@ async def _resolve_cross_document_entities_vdb(
         else:
             # Keep original name (no match found)
             resolved_nodes[entity_name].extend(entities)
+
+    # Log total performance
+    total_time = (time_module.perf_counter() - vdb_start) * 1000
+    logger.info(
+        f"[PERF] Cross-doc VDB: total={total_time:.1f}ms, new={len(all_nodes)}, "
+        f"queried={len(entities_to_query)}, resolved={len(resolution_map)}"
+    )
 
     return dict(resolved_nodes), resolution_map
 

@@ -2253,10 +2253,13 @@ class PGKVStorage(BaseKVStorage):
 
         # Execute batch insert using executemany (single DB round-trip)
         if records and upsert_sql:
+            import time as time_module
+            upsert_start = time_module.perf_counter()
             async with self.db.pool.acquire() as conn:
                 await conn.executemany(upsert_sql, records)
-            logger.debug(
-                f"[{self.workspace}] Batch inserted {len(records)} KV records to {self.namespace}"
+            upsert_time = (time_module.perf_counter() - upsert_start) * 1000
+            logger.info(
+                f"[PERF] KV upsert: {self.namespace}={upsert_time:.1f}ms ({len(records)} records)"
             )
 
     async def index_done_callback(self) -> None:
@@ -2463,8 +2466,12 @@ class PGVectorStorage(BaseVectorStorage):
             for i in range(0, len(contents), self._max_batch_size)
         ]
 
+        import time as time_module
+        embed_start = time_module.perf_counter()
         embedding_tasks = [self.embedding_func(batch) for batch in batches]
         embeddings_list = await asyncio.gather(*embedding_tasks)
+        embed_time = (time_module.perf_counter() - embed_start) * 1000
+        logger.info(f"[PERF] VDB upsert: embedding={embed_time:.1f}ms ({len(contents)} items in {len(batches)} batches)")
 
         embeddings = np.concatenate(embeddings_list)
         for i, d in enumerate(list_data):
@@ -2533,10 +2540,12 @@ class PGVectorStorage(BaseVectorStorage):
 
         # Execute batch insert using executemany
         if records and upsert_sql:
+            db_start = time_module.perf_counter()
             async with self.db.pool.acquire() as conn:
                 await conn.executemany(upsert_sql, records)
-            logger.debug(
-                f"[{self.workspace}] Batch inserted {len(records)} records to {self.namespace}"
+            db_time = (time_module.perf_counter() - db_start) * 1000
+            logger.info(
+                f"[PERF] VDB upsert: db_insert={db_time:.1f}ms ({len(records)} records to {self.namespace})"
             )
 
     #################### query method ###############
@@ -3531,6 +3540,9 @@ class PGDocStatusStorage(DocStatusStorage):
         Returns:
             Document data dict if a document was claimed, None if no documents available
         """
+        import time as time_module
+        claim_start = time_module.perf_counter()
+
         await self.db._ensure_pool()
         assert self.db.pool is not None
 
@@ -3543,6 +3555,7 @@ class PGDocStatusStorage(DocStatusStorage):
                 # - Returns only unlocked rows
                 # Priority: pending first, then failed (for retry)
                 # Exclude documents marked as duplicates (they have no content in full_docs)
+                select_start = time_module.perf_counter()
                 row = await conn.fetchrow(
                     """
                     SELECT id, content_summary, content_length, chunks_count,
@@ -3561,11 +3574,14 @@ class PGDocStatusStorage(DocStatusStorage):
                     """,
                     self.workspace,
                 )
+                select_time = (time_module.perf_counter() - select_start) * 1000
 
                 if not row:
+                    logger.info(f"[PERF] Claim document: select={select_time:.1f}ms (no document available)")
                     return None
 
                 doc_id = row["id"]
+                logger.info(f"[PERF] Claim document: select={select_time:.1f}ms (found {doc_id})")
 
                 # Update status to PROCESSING within the same transaction
                 await conn.execute(
@@ -3599,6 +3615,9 @@ class PGDocStatusStorage(DocStatusStorage):
                         metadata = json.loads(metadata)
                     except json.JSONDecodeError:
                         metadata = {}
+
+                total_claim_time = (time_module.perf_counter() - claim_start) * 1000
+                logger.info(f"[PERF] Claim document: total={total_claim_time:.1f}ms (claimed {doc_id})")
 
                 return {
                     "id": doc_id,
