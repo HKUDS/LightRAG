@@ -2627,8 +2627,23 @@ class LightRAG:
         # Get document content from full_docs
         content_data = await self.full_docs.get_by_id(doc_id)
         if not content_data:
-            raise Exception(f"Document content not found in full_docs for doc_id: {doc_id}")
+            raise Exception(
+                f"Document content not found in full_docs for doc_id: {doc_id}. "
+                f"The document exists in doc_status but not in full_docs storage. "
+                f"This may indicate an incomplete enqueue or data inconsistency."
+            )
+        if "content" not in content_data:
+            raise Exception(
+                f"Document {doc_id} found in full_docs but missing 'content' key. "
+                f"Keys present: {list(content_data.keys())}. "
+                f"Data: {str(content_data)[:200]}"
+            )
         content = content_data["content"]
+        if not content:
+            raise Exception(
+                f"Document {doc_id} has empty content in full_docs. "
+                f"Content length: {len(content) if content else 0}"
+            )
 
         # Chunk the document
         chunking_result = self.chunking_func(
