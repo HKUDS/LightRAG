@@ -446,6 +446,105 @@ class PostgreSQLDB:
                 f"PostgreSQL, VCHORDRQ epsilon set to: {self.vchordrq_epsilon}"
             )
 
+    # ========== Advisory Locks for Cross-Instance Coordination ==========
+    #
+    # PostgreSQL advisory locks work across all connections/instances,
+    # providing proper coordination for multi-instance deployments.
+    # Python locks (asyncio.Lock, multiprocessing.Lock) are local to each
+    # process and don't coordinate across separate container instances.
+
+    @staticmethod
+    def _workspace_lock_key(workspace: str, lock_type: str = "pipeline") -> int:
+        """Convert workspace name and lock type to a unique 64-bit advisory lock key.
+
+        Uses a simple hash to generate a consistent key for each workspace+lock_type
+        combination. The key space is large enough to avoid collisions in practice.
+
+        Args:
+            workspace: The workspace identifier
+            lock_type: Type of lock (e.g., "pipeline", "document")
+
+        Returns:
+            A 64-bit integer suitable for PostgreSQL advisory lock functions
+        """
+        # Combine workspace and lock_type for unique key
+        combined = f"{workspace}:{lock_type}"
+        # Use Python's hash but ensure it's positive and fits in 63 bits
+        # (PostgreSQL advisory locks use signed 64-bit integers)
+        return abs(hash(combined)) % (2**62)
+
+    async def try_advisory_lock(self, lock_key: int) -> bool:
+        """Try to acquire a PostgreSQL advisory lock (non-blocking).
+
+        This is a session-level lock that works across all database connections
+        and instances. Perfect for coordinating work across multiple server instances.
+
+        Args:
+            lock_key: The 64-bit integer key for the lock
+
+        Returns:
+            True if lock was acquired, False if already held by another session
+        """
+        await self._ensure_pool()
+        assert self.pool is not None
+        async with self.pool.acquire() as conn:
+            result = await conn.fetchval(
+                "SELECT pg_try_advisory_lock($1)", lock_key
+            )
+            return bool(result)
+
+    async def release_advisory_lock(self, lock_key: int) -> bool:
+        """Release a PostgreSQL advisory lock.
+
+        Args:
+            lock_key: The 64-bit integer key for the lock
+
+        Returns:
+            True if lock was released, False if we didn't hold it
+        """
+        await self._ensure_pool()
+        assert self.pool is not None
+        async with self.pool.acquire() as conn:
+            result = await conn.fetchval(
+                "SELECT pg_advisory_unlock($1)", lock_key
+            )
+            return bool(result)
+
+    async def try_pipeline_lock(self, workspace: str) -> bool:
+        """Try to acquire the pipeline processing lock for a workspace.
+
+        Only one instance should process the document queue at a time.
+        This prevents duplicate processing when multiple instances are running.
+
+        Args:
+            workspace: The workspace to lock
+
+        Returns:
+            True if lock acquired (this instance should process), False otherwise
+        """
+        lock_key = self._workspace_lock_key(workspace, "pipeline")
+        acquired = await self.try_advisory_lock(lock_key)
+        if acquired:
+            logger.info(f"[{workspace}] Acquired pipeline lock (key={lock_key})")
+        else:
+            logger.debug(f"[{workspace}] Pipeline lock held by another instance (key={lock_key})")
+        return acquired
+
+    async def release_pipeline_lock(self, workspace: str) -> bool:
+        """Release the pipeline processing lock for a workspace.
+
+        Args:
+            workspace: The workspace to unlock
+
+        Returns:
+            True if released, False if we didn't hold it
+        """
+        lock_key = self._workspace_lock_key(workspace, "pipeline")
+        released = await self.release_advisory_lock(lock_key)
+        if released:
+            logger.info(f"[{workspace}] Released pipeline lock (key={lock_key})")
+        return released
+
     async def _migrate_llm_cache_schema(self):
         """Migrate LLM cache schema: add new columns and remove deprecated mode field"""
         try:
