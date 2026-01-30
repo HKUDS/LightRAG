@@ -2825,11 +2825,11 @@ class LightRAG:
                 "content": description,  # Required for embedding generation
             }
 
-        # Store in graph
+        # Store in vector DB for semantic search
         await self.entities_vdb.upsert(graph_nodes)
 
-        # Also update graph storage if available
-        if hasattr(self, "graph_storage") and self.graph_storage:
+        # Also update graph storage if available (check for actual storage object, not string)
+        if hasattr(self, "graph_storage") and hasattr(self.graph_storage, "upsert_node"):
             for name, props in graph_nodes.items():
                 await self.graph_storage.upsert_node(name, props)
 
@@ -2840,12 +2840,21 @@ class LightRAG:
 
         # Prepare edge data
         # NOTE: PGVectorStorage.upsert() requires 'content' for embeddings
+        # and string keys (not tuples)
         graph_edges = {}
         for key, data_list in edges.items():
             data = data_list[0] if data_list else {}
-            src, tgt = key if isinstance(key, tuple) else (key.split("<SEP>") + ["", ""])[:2]
+            # Extract source and target from key (could be tuple or string)
+            if isinstance(key, tuple):
+                src, tgt = key
+                str_key = f"{src}<SEP>{tgt}"
+            else:
+                str_key = key
+                parts = key.split("<SEP>")
+                src = parts[0] if len(parts) > 0 else ""
+                tgt = parts[1] if len(parts) > 1 else ""
             description = data.get("description", "")
-            graph_edges[key] = {
+            graph_edges[str_key] = {
                 "src_id": src,
                 "tgt_id": tgt,
                 "relationship": data.get("relationship", "related_to"),
@@ -2855,14 +2864,13 @@ class LightRAG:
                 "content": description,  # Required for embedding generation
             }
 
-        # Store in vector DB
+        # Store in vector DB for semantic search
         await self.relationships_vdb.upsert(graph_edges)
 
-        # Also update graph storage if available
-        if hasattr(self, "graph_storage") and self.graph_storage:
-            for key, props in graph_edges.items():
-                src, tgt = key if isinstance(key, tuple) else (key.split("<SEP>") + ["", ""])[:2]
-                await self.graph_storage.upsert_edge(src, tgt, props)
+        # Also update graph storage if available (check for actual storage object, not string)
+        if hasattr(self, "graph_storage") and hasattr(self.graph_storage, "upsert_edge"):
+            for str_key, props in graph_edges.items():
+                await self.graph_storage.upsert_edge(props["src_id"], props["tgt_id"], props)
 
     async def _process_extract_entities(
         self, chunk: dict[str, Any], pipeline_status=None, pipeline_status_lock=None,
