@@ -2571,6 +2571,9 @@ class LightRAG:
                     pipeline_status["latest_message"] = log_message
                     pipeline_status["history_messages"].append(log_message)
 
+                # Track processing start time for failed cases too
+                processing_start_time = int(time.time())
+
                 try:
                     # Process the document (similar to original process_document logic)
                     await self._process_single_claimed_document(
@@ -2582,7 +2585,29 @@ class LightRAG:
                         pipeline_status_lock,
                     )
                 except Exception as e:
-                    # Mark document as failed
+                    # Record processing end time for failed case
+                    processing_end_time = int(time.time())
+
+                    # Build partial token_usage from current context token tracker
+                    # (may have partial data if extraction started but merge failed)
+                    token_tracker = current_token_tracker.get()
+                    if token_tracker:
+                        llm_usage = token_tracker.get_llm_usage()
+                        embedding_usage = token_tracker.get_embedding_usage()
+                        partial_token_usage = {
+                            "embedding_tokens": embedding_usage.get("total_tokens", 0),
+                            "llm_input_tokens": llm_usage.get("prompt_tokens", 0),
+                            "llm_output_tokens": llm_usage.get("completion_tokens", 0),
+                            "total_chunks": 0,  # Unknown on failure
+                            "embedding_model": embedding_usage.get("model"),
+                            "llm_model": llm_usage.get("model"),
+                            "dedup_input_tokens": 0,
+                            "dedup_output_tokens": 0,
+                        }
+                    else:
+                        partial_token_usage = {}
+
+                    # Mark document as failed with timing and partial token usage
                     error_msg = f"Processing failed: {str(e)}"
                     logger.error(f"[{self.workspace}] Document {doc_id} failed: {error_msg}")
                     await self.doc_status.upsert({
@@ -2595,6 +2620,12 @@ class LightRAG:
                             "track_id": claimed_doc.get("track_id"),  # Preserve track_id
                             "created_at": claimed_doc.get("created_at"),  # Preserve created_at
                             "updated_at": datetime.now(timezone.utc).isoformat(),
+                            "metadata": {
+                                **claimed_doc.get("metadata", {}),
+                                "processing_start_time": processing_start_time,
+                                "processing_end_time": processing_end_time,
+                                "token_usage": partial_token_usage,
+                            },
                         }
                     })
 
@@ -2725,6 +2756,11 @@ class LightRAG:
             )
         except Exception as e:
             raise Exception(f"Entity extraction failed: {str(e)}")
+
+        # Check for cancellation before merge phase
+        async with pipeline_status_lock:
+            if pipeline_status.get("cancellation_requested", False):
+                raise PipelineCancelledException("User cancelled before merge")
 
         # Create separate token tracker for deduplication/merge phase
         dedup_token_tracker = TokenTracker()
