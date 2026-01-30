@@ -344,7 +344,14 @@ export default function SanitizeData() {
       }
     } catch (err: any) {
       console.error('Failed to create entity:', err);
-      const errorMsg = err.response?.data?.message || 'Failed to create entity. Check console.';
+      let errorMsg = 'Failed to create entity. Check console for details.';
+      if (err.response?.data?.detail) {
+        errorMsg = err.response.data.detail;  // e.g., "Entity 'Walsh' already exists"
+      } else if (err.response?.data?.message) {
+        errorMsg = err.response.data.message;  // Fallback if API uses "message"
+      } else if (err.message) {
+        errorMsg = err.message;  // Broader fallback (e.g., network errors)
+      }
       setCreateError(errorMsg);  // Show in modal
     }
   };
