@@ -3616,6 +3616,68 @@ class PGDocStatusStorage(DocStatusStorage):
         result = await self.db.query(sql, [self.workspace], multirows=False)
         return result.get("cnt", 0) if result else 0
 
+    async def get_aggregated_metrics(
+        self, workspace: str | None = None
+    ) -> dict[str, Any]:
+        """Get aggregated metrics across all workspaces using stored procedure.
+
+        Uses the lightrag_get_metrics stored procedure to efficiently aggregate
+        document status counts, graph node/edge counts in a single database call.
+        This replaces multiple round-trips (N*5+ queries) with one query.
+
+        Args:
+            workspace: Specific workspace to get metrics for, or None for all workspaces
+
+        Returns:
+            Dict with aggregated metrics:
+            {
+                "status": "ok",
+                "documents": {"pending": N, "processing": N, "processed": N, "failed": N, "preprocessed": N},
+                "graph": {"nodes": N, "edges": N},
+                "workspace_count": N,
+                "queue_depth": N  # pending + failed
+            }
+        """
+        try:
+            # Call stored procedure with NULL for all workspaces or specific workspace
+            sql = "SELECT lightrag_get_metrics($1)"
+            result = await self.db.query(sql, [workspace], multirows=False)
+
+            if result is None:
+                return {
+                    "status": "error",
+                    "message": "No result from stored procedure",
+                    "documents": {"pending": 0, "processing": 0, "processed": 0, "failed": 0, "preprocessed": 0},
+                    "graph": {"nodes": 0, "edges": 0},
+                    "workspace_count": 0,
+                    "queue_depth": 0,
+                }
+
+            # Parse JSONB result
+            metrics = result.get("lightrag_get_metrics")
+            if isinstance(metrics, str):
+                metrics = json.loads(metrics)
+
+            return metrics if metrics else {
+                "status": "ok",
+                "documents": {"pending": 0, "processing": 0, "processed": 0, "failed": 0, "preprocessed": 0},
+                "graph": {"nodes": 0, "edges": 0},
+                "workspace_count": 0,
+                "queue_depth": 0,
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to get aggregated metrics: {e}")
+            # Return fallback structure on error
+            return {
+                "status": "error",
+                "message": str(e),
+                "documents": {"pending": 0, "processing": 0, "processed": 0, "failed": 0, "preprocessed": 0},
+                "graph": {"nodes": 0, "edges": 0},
+                "workspace_count": 0,
+                "queue_depth": 0,
+            }
+
     async def drop(self) -> dict[str, str]:
         """Drop the storage"""
         try:

@@ -1830,8 +1830,6 @@ def create_app(args):
 
         Configure Render/K8s to scale when lightrag_queue_depth > threshold.
         """
-        import time
-
         pool = get_workspace_pool()
         if pool is None:
             # No pool initialized yet
@@ -1840,7 +1838,27 @@ def create_app(args):
                 media_type="text/plain; version=0.0.4; charset=utf-8",
             )
 
-        # Aggregate metrics across all workspaces
+        # Try to use stored procedure for efficient aggregation (single DB query)
+        # This replaces N*5+ queries with a single query
+        use_stored_procedure = False
+        pg_doc_status = None
+
+        # Find a workspace instance with PostgreSQL doc_status storage
+        for workspace_id, instance in list(pool._instances.items()):
+            try:
+                rag = instance.rag_instance
+                if (
+                    hasattr(rag, "doc_status")
+                    and rag.doc_status is not None
+                    and hasattr(rag.doc_status, "get_aggregated_metrics")
+                ):
+                    pg_doc_status = rag.doc_status
+                    use_stored_procedure = True
+                    break
+            except Exception:
+                continue
+
+        # Initialize metrics
         total_pending = 0
         total_processing = 0
         total_processed = 0
@@ -1850,50 +1868,71 @@ def create_app(args):
         total_graph_edges = 0
         workspace_count = len(pool._instances)
 
+        if use_stored_procedure and pg_doc_status is not None:
+            # FAST PATH: Use stored procedure for all metrics in one query
+            try:
+                metrics = await pg_doc_status.get_aggregated_metrics(workspace=None)
+                if metrics.get("status") == "ok":
+                    docs = metrics.get("documents", {})
+                    total_pending = docs.get("pending", 0)
+                    total_processing = docs.get("processing", 0)
+                    total_processed = docs.get("processed", 0)
+                    total_failed = docs.get("failed", 0)
+                    total_preprocessed = docs.get("preprocessed", 0)
+
+                    graph = metrics.get("graph", {})
+                    total_graph_nodes = graph.get("nodes", 0)
+                    total_graph_edges = graph.get("edges", 0)
+                    workspace_count = metrics.get("workspace_count", workspace_count)
+            except Exception as e:
+                logger.warning(f"Stored procedure metrics failed, falling back to iteration: {e}")
+                use_stored_procedure = False
+
+        if not use_stored_procedure:
+            # SLOW PATH: Fall back to iterating through workspaces (for non-PostgreSQL backends)
+            for workspace_id, instance in list(pool._instances.items()):
+                try:
+                    rag = instance.rag_instance
+
+                    # Document status metrics
+                    if hasattr(rag, "doc_status") and rag.doc_status is not None:
+                        pending_docs = await rag.doc_status.get_docs_by_status(DocStatus.PENDING)
+                        processing_docs = await rag.doc_status.get_docs_by_status(DocStatus.PROCESSING)
+                        processed_docs = await rag.doc_status.get_docs_by_status(DocStatus.PROCESSED)
+                        failed_docs = await rag.doc_status.get_docs_by_status(DocStatus.FAILED)
+                        preprocessed_docs = await rag.doc_status.get_docs_by_status(DocStatus.PREPROCESSED)
+
+                        total_pending += len(pending_docs) if pending_docs else 0
+                        total_processing += len(processing_docs) if processing_docs else 0
+                        total_processed += len(processed_docs) if processed_docs else 0
+                        total_failed += len(failed_docs) if failed_docs else 0
+                        total_preprocessed += len(preprocessed_docs) if preprocessed_docs else 0
+
+                    # Graph metrics (if available)
+                    if hasattr(rag, "knowledge_graph_inst") and rag.knowledge_graph_inst is not None:
+                        kg = rag.knowledge_graph_inst
+                        # Try to get node count (some backends cache this)
+                        if hasattr(kg, "get_node_count"):
+                            try:
+                                node_count = await kg.get_node_count()
+                                total_graph_nodes += node_count if node_count else 0
+                            except Exception:
+                                pass
+                        # Try to get edge count
+                        if hasattr(kg, "get_edge_count"):
+                            try:
+                                edge_count = await kg.get_edge_count()
+                                total_graph_edges += edge_count if edge_count else 0
+                            except Exception:
+                                pass
+
+                except Exception as e:
+                    logger.warning(f"Error getting metrics for workspace {workspace_id}: {e}")
+                    continue
+
         # Get pipeline status
         pipeline_status = is_any_pipeline_busy()
         busy_pipeline_count = len(pipeline_status.get("busy_workspaces", []))
-
-        # Access instances directly (read-only, no lock needed for iteration)
-        for workspace_id, instance in list(pool._instances.items()):
-            try:
-                rag = instance.rag_instance
-
-                # Document status metrics
-                if hasattr(rag, "doc_status") and rag.doc_status is not None:
-                    pending_docs = await rag.doc_status.get_docs_by_status(DocStatus.PENDING)
-                    processing_docs = await rag.doc_status.get_docs_by_status(DocStatus.PROCESSING)
-                    processed_docs = await rag.doc_status.get_docs_by_status(DocStatus.PROCESSED)
-                    failed_docs = await rag.doc_status.get_docs_by_status(DocStatus.FAILED)
-                    preprocessed_docs = await rag.doc_status.get_docs_by_status(DocStatus.PREPROCESSED)
-
-                    total_pending += len(pending_docs) if pending_docs else 0
-                    total_processing += len(processing_docs) if processing_docs else 0
-                    total_processed += len(processed_docs) if processed_docs else 0
-                    total_failed += len(failed_docs) if failed_docs else 0
-                    total_preprocessed += len(preprocessed_docs) if preprocessed_docs else 0
-
-                # Graph metrics (if available)
-                if hasattr(rag, "knowledge_graph_inst") and rag.knowledge_graph_inst is not None:
-                    kg = rag.knowledge_graph_inst
-                    # Try to get node count (some backends cache this)
-                    if hasattr(kg, "get_node_count"):
-                        try:
-                            node_count = await kg.get_node_count()
-                            total_graph_nodes += node_count if node_count else 0
-                        except Exception:
-                            pass
-                    # Try to get edge count
-                    if hasattr(kg, "get_edge_count"):
-                        try:
-                            edge_count = await kg.get_edge_count()
-                            total_graph_edges += edge_count if edge_count else 0
-                        except Exception:
-                            pass
-
-            except Exception as e:
-                logger.warning(f"Error getting metrics for workspace {workspace_id}: {e}")
-                continue
 
         # Queue depth = pending + failed (documents that need processing)
         queue_depth = total_pending + total_failed
