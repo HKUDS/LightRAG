@@ -1784,11 +1784,6 @@ class LightRAG:
             "pipeline_status", workspace=self.workspace
         )
 
-        # Track whether we acquired the PostgreSQL advisory lock
-        # This is CRITICAL for multi-instance coordination
-        pg_lock_acquired = False
-        use_pg_lock = hasattr(self.doc_status, "db") and self.doc_status.db is not None
-
         # Check if drain mode is enabled (graceful shutdown in progress)
         if is_drain_mode_enabled():
             logger.info(
@@ -1796,20 +1791,29 @@ class LightRAG:
             )
             return
 
-        # MULTI-INSTANCE COORDINATION:
-        # Use PostgreSQL advisory lock to coordinate across instances.
-        # Python locks (asyncio.Lock) are local to each process and don't
-        # work across separate container instances.
-        if use_pg_lock:
-            pg_lock_acquired = await self.doc_status.db.try_pipeline_lock(self.workspace)
-            if not pg_lock_acquired:
-                # Another instance is processing - queue request and return
-                async with pipeline_status_lock:
-                    pipeline_status["request_pending"] = True
-                logger.info(
-                    f"[{self.workspace}] Another instance is processing the document queue (PostgreSQL lock held). Request queued."
-                )
-                return
+        # MULTI-INSTANCE PARALLELISM:
+        # Check if we can use document-level claiming (PostgreSQL with claim_next_document)
+        # This enables TRUE parallel processing across multiple instances.
+        use_doc_claiming = (
+            hasattr(self.doc_status, "claim_next_document")
+            and hasattr(self.doc_status, "db")
+            and self.doc_status.db is not None
+        )
+
+        if use_doc_claiming:
+            # NEW: Document-level claiming for true multi-instance parallelism
+            # Each instance claims documents one by one using SELECT FOR UPDATE SKIP LOCKED
+            # This allows multiple instances to work on DIFFERENT documents simultaneously
+            await self._process_with_document_claiming(
+                split_by_character,
+                split_by_character_only,
+                pipeline_status,
+                pipeline_status_lock,
+            )
+            return
+
+        # FALLBACK: Original behavior for non-PostgreSQL storage (e.g., JSON)
+        # Uses pipeline-level locking - only one instance processes at a time
 
         # Check if another process is already processing the queue
         async with pipeline_status_lock:
@@ -1828,9 +1832,6 @@ class LightRAG:
 
                 if not to_process_docs:
                     logger.info("No documents to process")
-                    # Release the PostgreSQL lock since we're not processing
-                    if use_pg_lock and pg_lock_acquired:
-                        await self.doc_status.db.release_pipeline_lock(self.workspace)
                     return
 
                 pipeline_status.update(
@@ -1854,9 +1855,6 @@ class LightRAG:
                 logger.info(
                     "Another process is already processing the document queue. Request queued."
                 )
-                # Release the PostgreSQL lock since we're not processing
-                if use_pg_lock and pg_lock_acquired:
-                    await self.doc_status.db.release_pipeline_lock(self.workspace)
                 return
 
         try:
@@ -2478,12 +2476,370 @@ class LightRAG:
                 pipeline_status["latest_message"] = log_message
                 pipeline_status["history_messages"].append(log_message)
 
-            # Release the PostgreSQL advisory lock so other instances can process
-            if use_pg_lock and pg_lock_acquired:
+    async def _process_with_document_claiming(
+        self,
+        split_by_character: str | None,
+        split_by_character_only: bool,
+        pipeline_status: dict,
+        pipeline_status_lock: asyncio.Lock,
+    ) -> None:
+        """Process documents using document-level claiming for true multi-instance parallelism.
+
+        This method enables REAL parallel processing across multiple instances:
+        - Each instance claims documents one by one using SELECT FOR UPDATE SKIP LOCKED
+        - The database ensures no two instances claim the same document
+        - Multiple instances work on DIFFERENT documents simultaneously
+
+        This is the key to horizontal scaling:
+        - Instance A claims doc-1, processes it
+        - Instance B claims doc-2 (skips doc-1 which is locked), processes it
+        - Instance C claims doc-3, processes it
+        All three instances work in parallel on different documents.
+        """
+        from .instance_registry import get_instance_registry
+
+        # Get instance ID for logging
+        registry = get_instance_registry()
+        instance_id = registry.instance_id if registry else "unknown"
+
+        # Check if there are any documents to process
+        pending_count = await self.doc_status.get_pending_count()
+        if pending_count == 0:
+            logger.info(f"[{self.workspace}] No documents to process")
+            return
+
+        logger.info(
+            f"[{self.workspace}] Instance {instance_id} starting document-level processing "
+            f"({pending_count} pending documents in queue)"
+        )
+
+        # Mark pipeline as busy locally (for this instance's status tracking)
+        async with pipeline_status_lock:
+            pipeline_status.update({
+                "busy": True,
+                "job_name": f"Parallel processing (instance {instance_id[:8]})",
+                "job_start": datetime.now(timezone.utc).isoformat(),
+                "docs": 0,
+                "batchs": pending_count,  # Approximate - may change as other instances claim
+                "cur_batch": 0,
+                "request_pending": False,
+                "cancellation_requested": False,
+                "latest_message": f"Starting parallel document processing",
+            })
+            del pipeline_status["history_messages"][:]
+
+        processed_count = 0
+        try:
+            while True:
+                # Check for cancellation
+                async with pipeline_status_lock:
+                    if pipeline_status.get("cancellation_requested", False):
+                        logger.info(f"[{self.workspace}] Pipeline cancelled by user")
+                        break
+
+                # Check for drain mode
+                if is_drain_mode_enabled():
+                    logger.info(f"[{self.workspace}] Drain mode - stopping document claiming")
+                    break
+
+                # Try to claim the next document
+                # This is atomic: uses SELECT FOR UPDATE SKIP LOCKED
+                claimed_doc = await self.doc_status.claim_next_document(instance_id)
+
+                if claimed_doc is None:
+                    # No more documents available (either none left, or all locked by other instances)
+                    # Check if there are still pending docs (being processed by others)
+                    remaining = await self.doc_status.get_pending_count()
+                    if remaining > 0:
+                        logger.debug(
+                            f"[{self.workspace}] No claimable docs, {remaining} still pending "
+                            f"(likely being processed by other instances)"
+                        )
+                    else:
+                        logger.info(f"[{self.workspace}] All documents processed")
+                    break
+
+                # Process the claimed document
+                doc_id = claimed_doc["id"]
+                file_path = claimed_doc.get("file_path", "unknown_source")
+
+                async with pipeline_status_lock:
+                    processed_count += 1
+                    pipeline_status["cur_batch"] = processed_count
+                    log_message = f"Processing doc {processed_count}: {file_path} ({doc_id})"
+                    logger.info(log_message)
+                    pipeline_status["latest_message"] = log_message
+                    pipeline_status["history_messages"].append(log_message)
+
                 try:
-                    await self.doc_status.db.release_pipeline_lock(self.workspace)
+                    # Process the document (similar to original process_document logic)
+                    await self._process_single_claimed_document(
+                        doc_id,
+                        claimed_doc,
+                        split_by_character,
+                        split_by_character_only,
+                        pipeline_status,
+                        pipeline_status_lock,
+                    )
                 except Exception as e:
-                    logger.warning(f"[{self.workspace}] Failed to release pipeline lock: {e}")
+                    # Mark document as failed
+                    error_msg = f"Processing failed: {str(e)}"
+                    logger.error(f"[{self.workspace}] Document {doc_id} failed: {error_msg}")
+                    await self.doc_status.upsert({
+                        doc_id: {
+                            "status": DocStatus.FAILED,
+                            "error_msg": error_msg[:1000],  # Truncate long errors
+                            "content_summary": claimed_doc.get("content_summary", ""),
+                            "content_length": claimed_doc.get("content_length", 0),
+                            "file_path": file_path,
+                        }
+                    })
+
+        finally:
+            log_message = f"Instance {instance_id[:8]} processed {processed_count} documents"
+            logger.info(f"[{self.workspace}] {log_message}")
+            async with pipeline_status_lock:
+                pipeline_status["busy"] = False
+                pipeline_status["cancellation_requested"] = False
+                pipeline_status["latest_message"] = log_message
+                pipeline_status["history_messages"].append(log_message)
+
+    async def _process_single_claimed_document(
+        self,
+        doc_id: str,
+        claimed_doc: dict,
+        split_by_character: str | None,
+        split_by_character_only: bool,
+        pipeline_status: dict,
+        pipeline_status_lock: asyncio.Lock,
+    ) -> None:
+        """Process a single claimed document.
+
+        This is a simplified version of the original process_document function,
+        adapted for the document-claiming workflow.
+        """
+        file_path = claimed_doc.get("file_path", "unknown_source")
+
+        # Create token tracker for this document
+        token_tracker = TokenTracker()
+        current_token_tracker.set(token_tracker)
+
+        # Get document content from full_docs
+        content_data = await self.full_docs.get_by_id(doc_id)
+        if not content_data:
+            raise Exception(f"Document content not found in full_docs for doc_id: {doc_id}")
+        content = content_data["content"]
+
+        # Chunk the document
+        chunking_result = self.chunking_func(
+            self.tokenizer,
+            content,
+            split_by_character,
+            split_by_character_only,
+            self.chunk_overlap_token_size,
+            self.chunk_token_size,
+        )
+
+        if inspect.isawaitable(chunking_result):
+            chunking_result = await chunking_result
+
+        if not isinstance(chunking_result, (list, tuple)):
+            raise TypeError(f"chunking_func must return a list or tuple, got {type(chunking_result)}")
+
+        # Build chunks dictionary
+        chunks = {
+            compute_mdhash_id(dp["content"], prefix="chunk-"): {
+                **dp,
+                "full_doc_id": doc_id,
+                "file_path": file_path,
+                "llm_cache_list": [],
+            }
+            for dp in chunking_result
+        }
+
+        if not chunks:
+            logger.warning(f"No chunks generated for document {doc_id}")
+            # Mark as processed anyway
+            await self.doc_status.upsert({
+                doc_id: {
+                    "status": DocStatus.PROCESSED,
+                    "content_summary": claimed_doc.get("content_summary", ""),
+                    "content_length": claimed_doc.get("content_length", 0),
+                    "chunks_count": 0,
+                    "file_path": file_path,
+                }
+            })
+            return
+
+        processing_start_time = int(time.time())
+
+        # Update document status with chunks info
+        await self.doc_status.upsert({
+            doc_id: {
+                "status": DocStatus.PROCESSING,
+                "chunks_count": len(chunks),
+                "chunks_list": list(chunks.keys()),
+                "content_summary": claimed_doc.get("content_summary", ""),
+                "content_length": claimed_doc.get("content_length", 0),
+                "file_path": file_path,
+            }
+        })
+
+        # Store chunks
+        await self.text_chunks.upsert(chunks)
+
+        # Extract entities and relationships
+        try:
+            chunk_results = await self._process_extract_entities(
+                chunks,
+                pipeline_status=pipeline_status,
+                pipeline_status_lock=pipeline_status_lock,
+                token_tracker=token_tracker,
+            )
+        except Exception as e:
+            raise Exception(f"Entity extraction failed: {str(e)}")
+
+        # Process extraction results (entities, relationships, etc.)
+        await self._process_extraction_results(
+            doc_id,
+            chunks,
+            chunk_results,
+            pipeline_status,
+            pipeline_status_lock,
+        )
+
+        # Calculate processing time
+        processing_time = int(time.time()) - processing_start_time
+
+        # Mark document as processed
+        await self.doc_status.upsert({
+            doc_id: {
+                "status": DocStatus.PROCESSED,
+                "content_summary": claimed_doc.get("content_summary", ""),
+                "content_length": claimed_doc.get("content_length", 0),
+                "chunks_count": len(chunks),
+                "chunks_list": list(chunks.keys()),
+                "file_path": file_path,
+                "metadata": {
+                    **claimed_doc.get("metadata", {}),
+                    "processing_time_seconds": processing_time,
+                    "token_usage": token_tracker.to_dict() if token_tracker else {},
+                },
+            }
+        })
+
+        log_message = f"Document {doc_id} processed in {processing_time}s"
+        logger.info(log_message)
+        async with pipeline_status_lock:
+            pipeline_status["latest_message"] = log_message
+            pipeline_status["history_messages"].append(log_message)
+
+    async def _process_extraction_results(
+        self,
+        doc_id: str,
+        chunks: dict,
+        chunk_results: list,
+        pipeline_status: dict,
+        pipeline_status_lock: asyncio.Lock,
+    ) -> None:
+        """Process entity extraction results and store in graph.
+
+        Handles entity/relationship deduplication, graph storage, and vector embeddings.
+        """
+        # Aggregate results from all chunks
+        all_nodes = {}
+        all_edges = {}
+
+        for result in chunk_results:
+            if result is None:
+                continue
+            nodes, edges = result
+            if nodes:
+                for name, data in nodes.items():
+                    if name in all_nodes:
+                        # Merge: keep longer description
+                        existing_desc = all_nodes[name][0].get("description", "") or ""
+                        new_desc = data[0].get("description", "") or ""
+                        if len(new_desc) > len(existing_desc):
+                            all_nodes[name] = data
+                    else:
+                        all_nodes[name] = data
+            if edges:
+                for key, data in edges.items():
+                    if key in all_edges:
+                        existing_desc = all_edges[key][0].get("description", "") or ""
+                        new_desc = data[0].get("description", "") or ""
+                        if len(new_desc) > len(existing_desc):
+                            all_edges[key] = data
+                    else:
+                        all_edges[key] = data
+
+        if not all_nodes and not all_edges:
+            logger.info(f"No entities or relationships extracted from document {doc_id}")
+            return
+
+        log_message = f"Document {doc_id}: {len(all_nodes)} entities, {len(all_edges)} relationships"
+        logger.info(log_message)
+        async with pipeline_status_lock:
+            pipeline_status["history_messages"].append(log_message)
+
+        # Store entities and relationships
+        # This uses the existing storage methods which handle deduplication
+        await asyncio.gather(
+            self._insert_nodes_batch(all_nodes),
+            self._insert_edges_batch(all_edges),
+        )
+
+    async def _insert_nodes_batch(self, nodes: dict) -> None:
+        """Insert nodes into graph and vector storage."""
+        if not nodes:
+            return
+
+        # Prepare node data for graph storage
+        graph_nodes = {}
+        for name, data_list in nodes.items():
+            data = data_list[0] if data_list else {}
+            graph_nodes[name] = {
+                "entity_type": data.get("entity_type", "entity"),
+                "description": data.get("description", ""),
+                "source_id": data.get("source_id", ""),
+            }
+
+        # Store in graph
+        await self.entities_vdb.upsert(graph_nodes)
+
+        # Also update graph storage if available
+        if hasattr(self, "graph_storage") and self.graph_storage:
+            for name, props in graph_nodes.items():
+                await self.graph_storage.upsert_node(name, props)
+
+    async def _insert_edges_batch(self, edges: dict) -> None:
+        """Insert edges into graph and vector storage."""
+        if not edges:
+            return
+
+        # Prepare edge data
+        graph_edges = {}
+        for key, data_list in edges.items():
+            data = data_list[0] if data_list else {}
+            src, tgt = key if isinstance(key, tuple) else (key.split("<SEP>") + ["", ""])[:2]
+            graph_edges[key] = {
+                "src_id": src,
+                "tgt_id": tgt,
+                "relationship": data.get("relationship", "related_to"),
+                "description": data.get("description", ""),
+                "source_id": data.get("source_id", ""),
+                "keywords": data.get("keywords", ""),
+            }
+
+        # Store in vector DB
+        await self.relationships_vdb.upsert(graph_edges)
+
+        # Also update graph storage if available
+        if hasattr(self, "graph_storage") and self.graph_storage:
+            for key, props in graph_edges.items():
+                src, tgt = key if isinstance(key, tuple) else (key.split("<SEP>") + ["", ""])[:2]
+                await self.graph_storage.upsert_edge(src, tgt, props)
 
     async def _process_extract_entities(
         self, chunk: dict[str, Any], pipeline_status=None, pipeline_status_lock=None,
