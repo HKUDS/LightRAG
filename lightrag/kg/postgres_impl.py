@@ -3532,6 +3532,7 @@ class PGDocStatusStorage(DocStatusStorage):
                 # - Skips rows already locked by other transactions
                 # - Returns only unlocked rows
                 # Priority: pending first, then failed (for retry)
+                # Exclude documents marked as duplicates (they have no content in full_docs)
                 row = await conn.fetchrow(
                     """
                     SELECT id, content_summary, content_length, chunks_count,
@@ -3540,6 +3541,8 @@ class PGDocStatusStorage(DocStatusStorage):
                     FROM LIGHTRAG_DOC_STATUS
                     WHERE workspace = $1
                       AND status IN ('pending', 'failed')
+                      AND (metadata->>'is_duplicate' IS NULL
+                           OR metadata->>'is_duplicate' != 'true')
                     ORDER BY
                         CASE status WHEN 'pending' THEN 0 ELSE 1 END,
                         created_at ASC
@@ -3606,12 +3609,15 @@ class PGDocStatusStorage(DocStatusStorage):
         """Get count of pending/failed documents waiting to be processed.
 
         Useful for checking if there's work to do before entering the processing loop.
+        Excludes duplicate documents (is_duplicate: true) which have no content.
         """
         sql = """
             SELECT COUNT(*) as cnt
             FROM LIGHTRAG_DOC_STATUS
             WHERE workspace = $1
               AND status IN ('pending', 'failed')
+              AND (metadata->>'is_duplicate' IS NULL
+                   OR metadata->>'is_duplicate' != 'true')
         """
         result = await self.db.query(sql, [self.workspace], multirows=False)
         return result.get("cnt", 0) if result else 0

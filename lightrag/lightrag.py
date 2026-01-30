@@ -1437,6 +1437,11 @@ class LightRAG:
         # Get docs ids
         all_new_doc_ids = set(new_docs.keys())
         # Exclude IDs of documents that are already enqueued
+        doc_status_workspace = getattr(self.doc_status, 'workspace', 'unknown')
+        logger.debug(
+            f"[{self.workspace}] Checking for duplicates: {len(all_new_doc_ids)} doc_ids, "
+            f"doc_status.workspace={doc_status_workspace}"
+        )
         unique_new_doc_ids = await self.doc_status.filter_keys(all_new_doc_ids)
 
         # Handle potentially duplicate documents
@@ -1470,7 +1475,18 @@ class LightRAG:
                     continue
 
                 # True duplicate: different track_id
-                logger.warning(f"Duplicate document detected: {doc_id} ({file_path})")
+                existing_file_path = (
+                    existing_doc.get("file_path", "unknown") if existing_doc else "unknown"
+                )
+                existing_created_at = (
+                    existing_doc.get("created_at", "unknown") if existing_doc else "unknown"
+                )
+                logger.warning(
+                    f"[{self.workspace}] Duplicate document detected: {doc_id}\n"
+                    f"  New file: {file_path} (track_id: {track_id})\n"
+                    f"  Original: {existing_file_path} (track_id: {existing_track_id}, "
+                    f"status: {existing_status}, created: {existing_created_at})"
+                )
 
                 # Create a new record with unique ID for this duplicate attempt
                 dup_record_id = compute_mdhash_id(f"{doc_id}-{track_id}", prefix="dup-")
