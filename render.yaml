@@ -83,7 +83,7 @@ services:
       - key: POSTGRES_STATEMENT_CACHE_SIZE
         value: "0"  # Required for Supavisor transaction mode (no prepared statements)
       - key: POSTGRES_MAX_CONNECTIONS
-        value: "75"  # asyncpg pool size per instance (Supavisor handles multiplexing)
+        value: "100"  # asyncpg pool size per instance (Supavisor handles multiplexing)
       - key: POSTGRES_MAX_INACTIVE_CONNECTION_LIFETIME
         value: "60"
       # Retry configuration for transient errors (deadlocks, connection issues)
@@ -186,7 +186,7 @@ services:
       # Performance Configuration
       #############################
       - key: MAX_ASYNC
-        value: "128"
+        value: "512"
       - key: MAX_PARALLEL_INSERT
         value: "64"
       - key: MAX_GRAPH_NODES
