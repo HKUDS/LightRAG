@@ -1820,13 +1820,15 @@ class PGKVStorage(BaseKVStorage):
             if self.db is None:
                 self.db = await ClientManager.get_client()
 
-            # Implement workspace priority: PostgreSQLDB.workspace > self.workspace > "default"
-            if self.db.workspace:
-                # Use PostgreSQLDB's workspace (highest priority)
-                self.workspace = self.db.workspace
-            elif hasattr(self, "workspace") and self.workspace:
-                # Use storage class's workspace (medium priority)
+            # Implement workspace priority: self.workspace > PostgreSQLDB.workspace > "default"
+            # IMPORTANT: self.workspace (passed during storage initialization) has highest priority
+            # to ensure proper workspace isolation when multiple workspaces share the same DB connection
+            if hasattr(self, "workspace") and self.workspace:
+                # Use storage class's workspace (highest priority) - passed from LightRAG instance
                 pass
+            elif self.db.workspace:
+                # Use PostgreSQLDB's workspace (medium priority) - from env config
+                self.workspace = self.db.workspace
             else:
                 # Use "default" for compatibility (lowest priority)
                 self.workspace = "default"
@@ -2358,13 +2360,15 @@ class PGVectorStorage(BaseVectorStorage):
             if self.db is None:
                 self.db = await ClientManager.get_client()
 
-            # Implement workspace priority: PostgreSQLDB.workspace > self.workspace > "default"
-            if self.db.workspace:
-                # Use PostgreSQLDB's workspace (highest priority)
-                self.workspace = self.db.workspace
-            elif hasattr(self, "workspace") and self.workspace:
-                # Use storage class's workspace (medium priority)
+            # Implement workspace priority: self.workspace > PostgreSQLDB.workspace > "default"
+            # IMPORTANT: self.workspace (passed during storage initialization) has highest priority
+            # to ensure proper workspace isolation when multiple workspaces share the same DB connection
+            if hasattr(self, "workspace") and self.workspace:
+                # Use storage class's workspace (highest priority) - passed from LightRAG instance
                 pass
+            elif self.db.workspace:
+                # Use PostgreSQLDB's workspace (medium priority) - from env config
+                self.workspace = self.db.workspace
             else:
                 # Use "default" for compatibility (lowest priority)
                 self.workspace = "default"
@@ -2809,13 +2813,15 @@ class PGDocStatusStorage(DocStatusStorage):
             if self.db is None:
                 self.db = await ClientManager.get_client()
 
-            # Implement workspace priority: PostgreSQLDB.workspace > self.workspace > "default"
-            if self.db.workspace:
-                # Use PostgreSQLDB's workspace (highest priority)
-                self.workspace = self.db.workspace
-            elif hasattr(self, "workspace") and self.workspace:
-                # Use storage class's workspace (medium priority)
+            # Implement workspace priority: self.workspace > PostgreSQLDB.workspace > "default"
+            # IMPORTANT: self.workspace (passed during storage initialization) has highest priority
+            # to ensure proper workspace isolation when multiple workspaces share the same DB connection
+            if hasattr(self, "workspace") and self.workspace:
+                # Use storage class's workspace (highest priority) - passed from LightRAG instance
                 pass
+            elif self.db.workspace:
+                # Use PostgreSQLDB's workspace (medium priority) - from env config
+                self.workspace = self.db.workspace
             else:
                 # Use "default" for compatibility (lowest priority)
                 self.workspace = "default"
@@ -3804,13 +3810,15 @@ class PGGraphStorage(BaseGraphStorage):
             if self.db is None:
                 self.db = await ClientManager.get_client()
 
-            # Implement workspace priority: PostgreSQLDB.workspace > self.workspace > "default"
-            if self.db.workspace:
-                # Use PostgreSQLDB's workspace (highest priority)
-                self.workspace = self.db.workspace
-            elif hasattr(self, "workspace") and self.workspace:
-                # Use storage class's workspace (medium priority)
+            # Implement workspace priority: self.workspace > PostgreSQLDB.workspace > "default"
+            # IMPORTANT: self.workspace (passed during storage initialization) has highest priority
+            # to ensure proper workspace isolation when multiple workspaces share the same DB connection
+            if hasattr(self, "workspace") and self.workspace:
+                # Use storage class's workspace (highest priority) - passed from LightRAG instance
                 pass
+            elif self.db.workspace:
+                # Use PostgreSQLDB's workspace (medium priority) - from env config
+                self.workspace = self.db.workspace
             else:
                 # Use "default" for compatibility (lowest priority)
                 self.workspace = "default"
