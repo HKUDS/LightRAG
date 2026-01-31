@@ -1646,15 +1646,30 @@ async def _merge_nodes_then_upsert(
     already_description = []
     already_file_paths = []
 
+    # Entity Maturity feature: check if entity is already summarized
+    enable_entity_maturity = global_config.get("enable_entity_maturity", True)
+    pending_summarize_threshold = global_config.get("pending_summarize_threshold", 2000)
+    tokenizer: "Tokenizer" = global_config["tokenizer"]
+
     # 1. Get existing node data from knowledge graph
     step_start = perf_time.perf_counter()
     already_node = await knowledge_graph_inst.get_node(entity_name)
     get_node_time = (perf_time.perf_counter() - step_start) * 1000
+
+    # Entity maturity state from existing node
+    is_summarized = False
+    existing_pending_descriptions = ""
+    existing_pending_tokens = 0
+
     if already_node:
         already_entity_types.append(already_node["entity_type"])
         already_source_ids.extend(already_node["source_id"].split(GRAPH_FIELD_SEP))
         already_file_paths.extend(already_node["file_path"].split(GRAPH_FIELD_SEP))
         already_description.extend(already_node["description"].split(GRAPH_FIELD_SEP))
+        # Get maturity state
+        is_summarized = already_node.get("is_summarized", False)
+        existing_pending_descriptions = already_node.get("pending_descriptions", "") or ""
+        existing_pending_tokens = already_node.get("pending_tokens", 0) or 0
 
     new_source_ids = [dp["source_id"] for dp in nodes_data if dp.get("source_id")]
 
@@ -1774,48 +1789,107 @@ async def _merge_nodes_then_upsert(
             if pipeline_status.get("cancellation_requested", False):
                 raise PipelineCancelledException("User cancelled during entity summary")
 
-    # 7.5 Detect conflicts in descriptions if enabled
-    step_start = perf_time.perf_counter()
+    # =============================================================================
+    # ENTITY MATURITY FAST PATH
+    # If entity has already been summarized, accumulate new descriptions in pending
+    # instead of re-summarizing on every merge. Only re-summarize when pending
+    # tokens exceed the threshold.
+    # =============================================================================
+    new_pending_descriptions = ""
+    new_pending_tokens = 0
+    use_maturity_fast_path = False
+
+    if enable_entity_maturity and is_summarized and sorted_descriptions:
+        # Entity is mature: accumulate new descriptions in pending
+        # Join new descriptions with existing pending
+        new_descs_text = GRAPH_FIELD_SEP.join(sorted_descriptions)
+        if existing_pending_descriptions:
+            new_pending_descriptions = existing_pending_descriptions + GRAPH_FIELD_SEP + new_descs_text
+        else:
+            new_pending_descriptions = new_descs_text
+
+        # Count tokens in pending
+        new_pending_tokens = len(tokenizer.encode(new_pending_descriptions))
+
+        if new_pending_tokens < pending_summarize_threshold:
+            # FAST PATH: Don't re-summarize, just update pending
+            use_maturity_fast_path = True
+            logger.info(
+                f"[MATURITY] Entity '{entity_name}': fast path, pending={new_pending_tokens} tokens "
+                f"(threshold={pending_summarize_threshold})"
+            )
+        else:
+            # Pending exceeds threshold: trigger re-summarization
+            # Combine current description with all pending descriptions
+            pending_descs_list = new_pending_descriptions.split(GRAPH_FIELD_SEP)
+            # Use current description (first item of already_description after summarization)
+            # plus all pending descriptions as input for new summarization
+            description_list = already_description[:1] + pending_descs_list
+            # Reset pending after summarization
+            new_pending_descriptions = ""
+            new_pending_tokens = 0
+            logger.info(
+                f"[MATURITY] Entity '{entity_name}': re-summarizing, pending was {existing_pending_tokens} tokens"
+            )
+
+    # Initialize maturity state variables for non-fast-path
+    conflict_time = 0.0
+    summary_time = 0.0
     conflict_details = None
-    if global_config.get("enable_conflict_detection", True) and len(description_list) >= 2:
-        # Build description tuples with source IDs for conflict detection
-        descriptions_with_sources = []
-        # Add existing descriptions (no individual source_id available)
-        for desc in already_description:
-            descriptions_with_sources.append((desc, "existing"))
-        # Add new descriptions with their source IDs
-        for dp in sorted_nodes:
-            desc = dp.get("description", "")
-            source_id = dp.get("source_id", "unknown")
-            if desc:
-                descriptions_with_sources.append((desc, source_id))
+    llm_was_used = False
 
-        # Run conflict detection
-        detector = ConflictDetector(
-            confidence_threshold=global_config.get("conflict_confidence_threshold", 0.7)
+    if use_maturity_fast_path:
+        # FAST PATH: Use existing description, skip conflict detection and summarization
+        description = already_node["description"]
+        is_summarized = True  # Keep it summarized
+    else:
+        # NORMAL PATH: Conflict detection and summarization
+
+        # 7.5 Detect conflicts in descriptions if enabled
+        step_start = perf_time.perf_counter()
+        if global_config.get("enable_conflict_detection", True) and len(description_list) >= 2:
+            # Build description tuples with source IDs for conflict detection
+            descriptions_with_sources = []
+            # Add existing descriptions (no individual source_id available)
+            for desc in already_description:
+                descriptions_with_sources.append((desc, "existing"))
+            # Add new descriptions with their source IDs
+            for dp in sorted_nodes:
+                desc = dp.get("description", "")
+                source_id_item = dp.get("source_id", "unknown")
+                if desc:
+                    descriptions_with_sources.append((desc, source_id_item))
+
+            # Run conflict detection
+            detector = ConflictDetector(
+                confidence_threshold=global_config.get("conflict_confidence_threshold", 0.7)
+            )
+            conflicts = detector.detect_conflicts(
+                entity_name, descriptions_with_sources, entity_type=entity_type
+            )
+
+            # Format conflicts for prompt if any were found
+            if conflicts:
+                conflict_details = "\n".join(c.to_prompt_context() for c in conflicts)
+        conflict_time = (perf_time.perf_counter() - step_start) * 1000
+
+        # 8. Get summary description an LLM usage status
+        step_start = perf_time.perf_counter()
+        description, llm_was_used = await _handle_entity_relation_summary(
+            "Entity",
+            entity_name,
+            description_list,
+            GRAPH_FIELD_SEP,
+            global_config,
+            llm_response_cache,
+            conflict_details=conflict_details,
+            token_tracker=token_tracker,
         )
-        conflicts = detector.detect_conflicts(
-            entity_name, descriptions_with_sources, entity_type=entity_type
-        )
+        summary_time = (perf_time.perf_counter() - step_start) * 1000
 
-        # Format conflicts for prompt if any were found
-        if conflicts:
-            conflict_details = "\n".join(c.to_prompt_context() for c in conflicts)
-    conflict_time = (perf_time.perf_counter() - step_start) * 1000
-
-    # 8. Get summary description an LLM usage status
-    step_start = perf_time.perf_counter()
-    description, llm_was_used = await _handle_entity_relation_summary(
-        "Entity",
-        entity_name,
-        description_list,
-        GRAPH_FIELD_SEP,
-        global_config,
-        llm_response_cache,
-        conflict_details=conflict_details,
-        token_tracker=token_tracker,
-    )
-    summary_time = (perf_time.perf_counter() - step_start) * 1000
+        # Update maturity state: mark as summarized if LLM was used
+        if llm_was_used:
+            is_summarized = True
 
     # 9. Build file_path within MAX_FILE_PATHS
     file_paths_list = []
@@ -1918,6 +1992,10 @@ async def _merge_nodes_then_upsert(
         file_path=file_path,
         created_at=int(time.time()),
         truncate=truncation_info,
+        # Entity maturity fields
+        is_summarized=is_summarized,
+        pending_descriptions=new_pending_descriptions if enable_entity_maturity else "",
+        pending_tokens=new_pending_tokens if enable_entity_maturity else 0,
     )
     step_start = perf_time.perf_counter()
     await knowledge_graph_inst.upsert_node(
@@ -1928,6 +2006,8 @@ async def _merge_nodes_then_upsert(
     node_data["entity_name"] = entity_name
 
     # Prepare VDB data for batch upsert (caller will do the actual upsert)
+    # Note: Maturity fields (is_summarized, pending_descriptions, pending_tokens) are stored
+    # in graph storage only, not in VDB. VDB is for vector search only.
     vdb_data = None
     if entity_vdb is not None:
         entity_vdb_id = compute_mdhash_id(str(entity_name), prefix="ent-")
@@ -1945,12 +2025,13 @@ async def _merge_nodes_then_upsert(
     total_time = (perf_time.perf_counter() - merge_start) * 1000
     # Log detailed timing only if significant time was spent (> 100ms) or LLM was used
     if total_time > 100 or llm_was_used:
+        maturity_info = f" mature={is_summarized} pending={new_pending_tokens}" if enable_entity_maturity else ""
         logger.info(
             f"[PERF] Entity merge '{entity_name}': total={total_time:.1f}ms "
             f"(get_node={get_node_time:.1f}, get_chunks={get_chunks_time:.1f}, "
             f"upsert_chunks={upsert_chunks_time:.1f}, conflict={conflict_time:.1f}, "
             f"summary={summary_time:.1f}, upsert_node={upsert_node_time:.1f}) "
-            f"descs={len(description_list)} llm={llm_was_used}"
+            f"descs={len(description_list)} llm={llm_was_used}{maturity_info}"
         )
 
     return node_data, vdb_data
@@ -1991,6 +2072,16 @@ async def _merge_edges_then_upsert(
     already_keywords = []
     already_file_paths = []
 
+    # Relation Maturity feature: check if relation is already summarized
+    enable_entity_maturity = global_config.get("enable_entity_maturity", True)
+    pending_summarize_threshold = global_config.get("pending_summarize_threshold", 2000)
+    tokenizer: "Tokenizer" = global_config["tokenizer"]
+
+    # Relation maturity state
+    is_summarized = False
+    existing_pending_descriptions = ""
+    existing_pending_tokens = 0
+
     # 1. Get existing edge data from graph storage (single call, no redundant has_edge)
     step_start = perf_time.perf_counter()
     already_edge = await knowledge_graph_inst.get_edge(src_id, tgt_id)
@@ -2024,6 +2115,11 @@ async def _merge_edges_then_upsert(
                     already_edge["keywords"], [GRAPH_FIELD_SEP]
                 )
             )
+
+        # Get maturity state
+        is_summarized = already_edge.get("is_summarized", False)
+        existing_pending_descriptions = already_edge.get("pending_descriptions", "") or ""
+        existing_pending_tokens = already_edge.get("pending_tokens", 0) or 0
 
     new_source_ids = [dp["source_id"] for dp in edges_data if dp.get("source_id")]
 
@@ -2160,47 +2256,101 @@ async def _merge_edges_then_upsert(
                     "User cancelled during relation summary"
                 )
 
-    # 7.5 Detect conflicts in descriptions if enabled
     relation_name = f"({src_id}, {tgt_id})"
-    step_start = perf_time.perf_counter()
+
+    # =============================================================================
+    # RELATION MATURITY FAST PATH
+    # Same logic as entity maturity: accumulate new descriptions in pending
+    # instead of re-summarizing on every merge.
+    # =============================================================================
+    new_pending_descriptions = ""
+    new_pending_tokens = 0
+    use_maturity_fast_path = False
+
+    if enable_entity_maturity and is_summarized and sorted_descriptions:
+        # Relation is mature: accumulate new descriptions in pending
+        new_descs_text = GRAPH_FIELD_SEP.join(sorted_descriptions)
+        if existing_pending_descriptions:
+            new_pending_descriptions = existing_pending_descriptions + GRAPH_FIELD_SEP + new_descs_text
+        else:
+            new_pending_descriptions = new_descs_text
+
+        # Count tokens in pending
+        new_pending_tokens = len(tokenizer.encode(new_pending_descriptions))
+
+        if new_pending_tokens < pending_summarize_threshold:
+            # FAST PATH: Don't re-summarize, just update pending
+            use_maturity_fast_path = True
+            logger.info(
+                f"[MATURITY] Relation '{relation_name}': fast path, pending={new_pending_tokens} tokens "
+                f"(threshold={pending_summarize_threshold})"
+            )
+        else:
+            # Pending exceeds threshold: trigger re-summarization
+            pending_descs_list = new_pending_descriptions.split(GRAPH_FIELD_SEP)
+            description_list = already_description[:1] + pending_descs_list
+            new_pending_descriptions = ""
+            new_pending_tokens = 0
+            logger.info(
+                f"[MATURITY] Relation '{relation_name}': re-summarizing, pending was {existing_pending_tokens} tokens"
+            )
+
+    # Initialize maturity state variables for non-fast-path
+    conflict_time = 0.0
+    summary_time = 0.0
     conflict_details = None
-    if global_config.get("enable_conflict_detection", True) and len(description_list) >= 2:
-        # Build description tuples with source IDs for conflict detection
-        descriptions_with_sources = []
-        # Add existing descriptions (no individual source_id available)
-        for desc in already_description:
-            descriptions_with_sources.append((desc, "existing"))
-        # Add new descriptions with their source IDs
-        for dp in sorted_edges:
-            desc = dp.get("description", "")
-            source_id = dp.get("source_id", "unknown")
-            if desc:
-                descriptions_with_sources.append((desc, source_id))
+    llm_was_used = False
 
-        # Run conflict detection
-        detector = ConflictDetector(
-            confidence_threshold=global_config.get("conflict_confidence_threshold", 0.7)
+    if use_maturity_fast_path:
+        # FAST PATH: Use existing description, skip conflict detection and summarization
+        description = already_edge["description"]
+        is_summarized = True
+    else:
+        # NORMAL PATH: Conflict detection and summarization
+
+        # 7.5 Detect conflicts in descriptions if enabled
+        step_start = perf_time.perf_counter()
+        if global_config.get("enable_conflict_detection", True) and len(description_list) >= 2:
+            # Build description tuples with source IDs for conflict detection
+            descriptions_with_sources = []
+            # Add existing descriptions (no individual source_id available)
+            for desc in already_description:
+                descriptions_with_sources.append((desc, "existing"))
+            # Add new descriptions with their source IDs
+            for dp in sorted_edges:
+                desc = dp.get("description", "")
+                source_id_item = dp.get("source_id", "unknown")
+                if desc:
+                    descriptions_with_sources.append((desc, source_id_item))
+
+            # Run conflict detection
+            detector = ConflictDetector(
+                confidence_threshold=global_config.get("conflict_confidence_threshold", 0.7)
+            )
+            conflicts = detector.detect_conflicts(relation_name, descriptions_with_sources)
+
+            # Format conflicts for prompt if any were found
+            if conflicts:
+                conflict_details = "\n".join(c.to_prompt_context() for c in conflicts)
+        conflict_time = (perf_time.perf_counter() - step_start) * 1000
+
+        # 8. Get summary description an LLM usage status
+        step_start = perf_time.perf_counter()
+        description, llm_was_used = await _handle_entity_relation_summary(
+            "Relation",
+            relation_name,
+            description_list,
+            GRAPH_FIELD_SEP,
+            global_config,
+            llm_response_cache,
+            conflict_details=conflict_details,
+            token_tracker=token_tracker,
         )
-        conflicts = detector.detect_conflicts(relation_name, descriptions_with_sources)
+        summary_time = (perf_time.perf_counter() - step_start) * 1000
 
-        # Format conflicts for prompt if any were found
-        if conflicts:
-            conflict_details = "\n".join(c.to_prompt_context() for c in conflicts)
-    conflict_time = (perf_time.perf_counter() - step_start) * 1000
-
-    # 8. Get summary description an LLM usage status
-    step_start = perf_time.perf_counter()
-    description, llm_was_used = await _handle_entity_relation_summary(
-        "Relation",
-        relation_name,
-        description_list,
-        GRAPH_FIELD_SEP,
-        global_config,
-        llm_response_cache,
-        conflict_details=conflict_details,
-        token_tracker=token_tracker,
-    )
-    summary_time = (perf_time.perf_counter() - step_start) * 1000
+        # Update maturity state: mark as summarized if LLM was used
+        if llm_was_used:
+            is_summarized = True
 
     # 9. Build file_path within MAX_FILE_PATHS limit
     file_paths_list = []
@@ -2481,6 +2631,10 @@ async def _merge_edges_then_upsert(
             file_path=file_path,
             created_at=edge_created_at,
             truncate=truncation_info,
+            # Relation maturity fields
+            is_summarized=is_summarized,
+            pending_descriptions=new_pending_descriptions if enable_entity_maturity else "",
+            pending_tokens=new_pending_tokens if enable_entity_maturity else 0,
         ),
     )
     upsert_edge_time = (perf_time.perf_counter() - step_start) * 1000
@@ -2495,6 +2649,10 @@ async def _merge_edges_then_upsert(
         created_at=edge_created_at,
         truncate=truncation_info,
         weight=weight,
+        # Relation maturity fields
+        is_summarized=is_summarized,
+        pending_descriptions=new_pending_descriptions if enable_entity_maturity else "",
+        pending_tokens=new_pending_tokens if enable_entity_maturity else 0,
     )
 
     # Sort src_id and tgt_id to ensure consistent ordering (smaller string first)
@@ -2514,6 +2672,7 @@ async def _merge_edges_then_upsert(
                 f"Could not delete old relationship vector records {rel_vdb_id}, {rel_vdb_id_reverse}: {e}"
             )
         rel_content = f"{keywords}\t{src_id}\n{tgt_id}\n{description}"
+        # Note: Maturity fields are stored in graph storage only, not in VDB
         rel_vdb_data = {
             rel_vdb_id: {
                 "src_id": src_id,
@@ -2530,13 +2689,14 @@ async def _merge_edges_then_upsert(
     total_time = (perf_time.perf_counter() - merge_start) * 1000
     # Log detailed timing only if significant time was spent (> 100ms) or LLM was used
     if total_time > 100 or llm_was_used:
+        maturity_info = f" mature={is_summarized} pending={new_pending_tokens}" if enable_entity_maturity else ""
         logger.info(
             f"[PERF] Relation merge '{src_id}'~'{tgt_id}': total={total_time:.1f}ms "
             f"(get_edge={get_edge_time:.1f}, get_chunks={get_chunks_time:.1f}, "
             f"upsert_chunks={upsert_chunks_time:.1f}, conflict={conflict_time:.1f}, "
             f"summary={summary_time:.1f}, check_entities={check_entities_time:.1f}, "
             f"upsert_edge={upsert_edge_time:.1f}) "
-            f"descs={len(description_list)} llm={llm_was_used}"
+            f"descs={len(description_list)} llm={llm_was_used}{maturity_info}"
         )
 
     return edge_data, rel_vdb_data
