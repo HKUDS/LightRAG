@@ -109,6 +109,7 @@ export default function SanitizeData() {
   }, [selectTypeModalOpen]);
 
   // Fetch entities
+  // Fetch entities
   useEffect(() => {
     const fetchEntities = async () => {
       try {
@@ -118,42 +119,30 @@ export default function SanitizeData() {
         );
         setEntities(sorted);
 
-        // New: Build entityTypeMap and entityOrphanMap separately
-        const fetchEntityTypes = async () => {
+        // Build entityTypeMap and entityOrphanMap with single fetch per entity
+        const fetchEntityDetails = async () => {
           try {
             const typeMap: Record<string, string> = {};
-            // First loop: Fetch types with max_nodes=1
-            await Promise.all(
-              sorted.map(async (name) => {
-                try {
-                  const detailRes = await axios.get(
-                    `${API_BASE}/graphs?label=${encodeURIComponent(name)}&max_depth=1&max_nodes=1`
-                  );
-                  const type = detailRes.data.nodes?.[0]?.properties?.entity_type || '';
-                  typeMap[name] = type;
-                } catch (err) {
-                  console.error(`Error fetching type for ${name}:`, err);
-                }
-              })
-            );
-
             const orphanMap: Record<string, boolean> = {};
-            // Second loop: Fetch for orphans with max_nodes=2
             await Promise.all(
-              sorted.map(async (name) => {
+              sorted.map(async (name: string) => {
                 try {
                   const detailRes = await axios.get(
                     `${API_BASE}/graphs?label=${encodeURIComponent(name)}&max_depth=1&max_nodes=2`
                   );
-                  // Detect orphan: no extra nodes or edges
+                  // Find main node by id (robust to order)
+                  const mainNode = detailRes.data.nodes?.find((node: any) => node.id === name);
+                  const type = mainNode?.properties?.entity_type || '';
+                  typeMap[name] = type;
+
+                  // Detect orphan from the same response (unchanged)
                   const isOrphan = (detailRes.data.nodes?.length || 0) <= 1 && (detailRes.data.edges?.length || 0) === 0;
                   orphanMap[name] = isOrphan;
                 } catch (err) {
-                  console.error(`Error fetching orphan details for ${name}:`, err);
+                  console.error(`Error fetching details for ${name}:`, err);
                 }
               })
             );
-
             setEntityTypeMap(typeMap);
             setEntityOrphanMap(orphanMap);
             // console.log('Types loaded:', Object.keys(typeMap).length); // Debug
@@ -164,7 +153,7 @@ export default function SanitizeData() {
             setTypesLoading(false);
           }
         };
-        fetchEntityTypes();
+        fetchEntityDetails();  // ← Call the details fetch after setting entities
       } catch (err) {
         console.error('Failed to load entities:', err);
       }
