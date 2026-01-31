@@ -86,6 +86,13 @@ services:
         value: "75"  # asyncpg pool size per instance (Supavisor handles multiplexing)
       - key: POSTGRES_MAX_INACTIVE_CONNECTION_LIFETIME
         value: "60"
+      # Retry configuration for transient errors (deadlocks, connection issues)
+      - key: POSTGRES_CONNECTION_RETRY_ATTEMPTS
+        value: "5"
+      - key: POSTGRES_CONNECTION_RETRY_BACKOFF
+        value: "1.0"
+      - key: POSTGRES_CONNECTION_RETRY_BACKOFF_MAX
+        value: "10.0"
 
       #############################
       # LLM Configuration (Direct OpenAI - Tier 4)
@@ -162,6 +169,16 @@ services:
         value: "5000"
       - key: CROSS_DOC_VDB_TOP_K
         value: "10"
+
+      #############################
+      # Entity Maturity (LLM Call Optimization)
+      # Reduces LLM summarization calls by accumulating new descriptions
+      # in a pending field instead of re-summarizing on every merge
+      #############################
+      - key: ENABLE_ENTITY_MATURITY
+        value: "true"
+      - key: PENDING_SUMMARIZE_THRESHOLD
+        value: "4000"  # tokens threshold to trigger re-summarization
 
       #############################
       # Performance Configuration

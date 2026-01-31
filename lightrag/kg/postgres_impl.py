@@ -108,6 +108,10 @@ class PostgreSQLDB:
             asyncpg.exceptions.PostgresConnectionError,
             asyncpg.exceptions.ConnectionDoesNotExistError,
             asyncpg.exceptions.ConnectionFailureError,
+            # Deadlock and serialization errors are transient - safe to retry with backoff
+            # These occur during concurrent uploads to the same workspace
+            asyncpg.exceptions.DeadlockDetectedError,
+            asyncpg.exceptions.SerializationError,
         )
 
         # Connection retry configuration
@@ -322,13 +326,33 @@ class PostgreSQLDB:
     async def _before_sleep(self, retry_state: RetryCallState) -> None:
         """Hook invoked by tenacity before sleeping between retries."""
         exc = retry_state.outcome.exception() if retry_state.outcome else None
-        logger.warning(
-            "PostgreSQL transient connection issue on attempt %s/%s: %r",
-            retry_state.attempt_number,
-            self.connection_retry_attempts,
+
+        # Check if this is a deadlock/serialization error (not a connection issue)
+        is_deadlock = isinstance(
             exc,
+            (
+                asyncpg.exceptions.DeadlockDetectedError,
+                asyncpg.exceptions.SerializationError,
+            ),
         )
-        await self._reset_pool()
+
+        if is_deadlock:
+            # Deadlock is a concurrency issue, not a connection issue - don't reset pool
+            logger.warning(
+                "PostgreSQL deadlock/serialization on attempt %s/%s (will retry): %r",
+                retry_state.attempt_number,
+                self.connection_retry_attempts,
+                exc,
+            )
+        else:
+            # Connection-related transient error - reset pool
+            logger.warning(
+                "PostgreSQL transient connection issue on attempt %s/%s: %r",
+                retry_state.attempt_number,
+                self.connection_retry_attempts,
+                exc,
+            )
+            await self._reset_pool()
 
     async def _run_with_retry(
         self,
