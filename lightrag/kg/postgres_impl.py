@@ -1847,10 +1847,12 @@ class PGKVStorage(BaseKVStorage):
             # Implement workspace priority: self.workspace > PostgreSQLDB.workspace > "default"
             # IMPORTANT: self.workspace (passed during storage initialization) has highest priority
             # to ensure proper workspace isolation when multiple workspaces share the same DB connection
-            if hasattr(self, "workspace") and self.workspace:
+            # NOTE: Use "is not None" instead of truthiness to handle empty strings correctly!
+            # Empty string "" is a valid workspace value and should NOT be overwritten.
+            if hasattr(self, "workspace") and self.workspace is not None:
                 # Use storage class's workspace (highest priority) - passed from LightRAG instance
                 pass
-            elif self.db.workspace:
+            elif self.db.workspace is not None:
                 # Use PostgreSQLDB's workspace (medium priority) - from env config
                 self.workspace = self.db.workspace
             else:
@@ -2387,10 +2389,12 @@ class PGVectorStorage(BaseVectorStorage):
             # Implement workspace priority: self.workspace > PostgreSQLDB.workspace > "default"
             # IMPORTANT: self.workspace (passed during storage initialization) has highest priority
             # to ensure proper workspace isolation when multiple workspaces share the same DB connection
-            if hasattr(self, "workspace") and self.workspace:
+            # NOTE: Use "is not None" instead of truthiness to handle empty strings correctly!
+            # Empty string "" is a valid workspace value and should NOT be overwritten.
+            if hasattr(self, "workspace") and self.workspace is not None:
                 # Use storage class's workspace (highest priority) - passed from LightRAG instance
                 pass
-            elif self.db.workspace:
+            elif self.db.workspace is not None:
                 # Use PostgreSQLDB's workspace (medium priority) - from env config
                 self.workspace = self.db.workspace
             else:
@@ -2840,10 +2844,12 @@ class PGDocStatusStorage(DocStatusStorage):
             # Implement workspace priority: self.workspace > PostgreSQLDB.workspace > "default"
             # IMPORTANT: self.workspace (passed during storage initialization) has highest priority
             # to ensure proper workspace isolation when multiple workspaces share the same DB connection
-            if hasattr(self, "workspace") and self.workspace:
+            # NOTE: Use "is not None" instead of truthiness to handle empty strings correctly!
+            # Empty string "" is a valid workspace value and should NOT be overwritten.
+            if hasattr(self, "workspace") and self.workspace is not None:
                 # Use storage class's workspace (highest priority) - passed from LightRAG instance
                 pass
-            elif self.db.workspace:
+            elif self.db.workspace is not None:
                 # Use PostgreSQLDB's workspace (medium priority) - from env config
                 self.workspace = self.db.workspace
             else:
@@ -3837,10 +3843,12 @@ class PGGraphStorage(BaseGraphStorage):
             # Implement workspace priority: self.workspace > PostgreSQLDB.workspace > "default"
             # IMPORTANT: self.workspace (passed during storage initialization) has highest priority
             # to ensure proper workspace isolation when multiple workspaces share the same DB connection
-            if hasattr(self, "workspace") and self.workspace:
+            # NOTE: Use "is not None" instead of truthiness to handle empty strings correctly!
+            # Empty string "" is a valid workspace value and should NOT be overwritten.
+            if hasattr(self, "workspace") and self.workspace is not None:
                 # Use storage class's workspace (highest priority) - passed from LightRAG instance
                 pass
-            elif self.db.workspace:
+            elif self.db.workspace is not None:
                 # Use PostgreSQLDB's workspace (medium priority) - from env config
                 self.workspace = self.db.workspace
             else:
