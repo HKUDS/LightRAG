@@ -43,7 +43,7 @@ services:
       - key: LIGHTRAG_DEFAULT_WORKSPACE
         value: "default"
       - key: LIGHTRAG_ALLOW_DEFAULT_WORKSPACE
-        value: "true"
+        value: "false"  # Reject requests without explicit workspace header
       - key: LIGHTRAG_MAX_WORKSPACES_IN_POOL
         value: "50"
 
