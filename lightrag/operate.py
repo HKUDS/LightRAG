@@ -380,6 +380,9 @@ async def _summarize_descriptions(
     use_prompt = prompt_template.format(**context_base)
 
     # Use LLM function with cache (higher priority for summary generation)
+    # Note: We rely on the prompt's length constraint instead of max_tokens/max_completion_tokens
+    # because newer reasoning models (gpt-5, o1, o3) need tokens for internal reasoning,
+    # and a low max_completion_tokens causes empty responses.
     summary, _ = await use_llm_func_with_cache(
         use_prompt,
         use_llm_func,
@@ -1630,29 +1633,55 @@ async def _merge_nodes_then_upsert(
     entity_chunks_storage: BaseKVStorage | None = None,
     token_tracker: "TokenTracker | None" = None,
 ):
-    """Get existing nodes from knowledge graph use name,if exists, merge data, else create, then upsert."""
+    """Get existing nodes from knowledge graph use name,if exists, merge data, else create, then upsert.
+
+    Returns:
+        tuple: (node_data, vdb_data) where vdb_data is dict for batch VDB upsert or None if entity_vdb is None
+    """
+    import time as perf_time
+    merge_start = perf_time.perf_counter()
+
     already_entity_types = []
     already_source_ids = []
     already_description = []
     already_file_paths = []
 
+    # Entity Maturity feature: check if entity is already summarized
+    enable_entity_maturity = global_config.get("enable_entity_maturity", True)
+    pending_summarize_threshold = global_config.get("pending_summarize_threshold", 2000)
+    tokenizer: "Tokenizer" = global_config["tokenizer"]
+
     # 1. Get existing node data from knowledge graph
+    step_start = perf_time.perf_counter()
     already_node = await knowledge_graph_inst.get_node(entity_name)
+    get_node_time = (perf_time.perf_counter() - step_start) * 1000
+
+    # Entity maturity state from existing node
+    is_summarized = False
+    existing_pending_descriptions = ""
+    existing_pending_tokens = 0
+
     if already_node:
         already_entity_types.append(already_node["entity_type"])
         already_source_ids.extend(already_node["source_id"].split(GRAPH_FIELD_SEP))
         already_file_paths.extend(already_node["file_path"].split(GRAPH_FIELD_SEP))
         already_description.extend(already_node["description"].split(GRAPH_FIELD_SEP))
+        # Get maturity state
+        is_summarized = already_node.get("is_summarized", False)
+        existing_pending_descriptions = already_node.get("pending_descriptions", "") or ""
+        existing_pending_tokens = already_node.get("pending_tokens", 0) or 0
 
     new_source_ids = [dp["source_id"] for dp in nodes_data if dp.get("source_id")]
 
     existing_full_source_ids = []
+    step_start = perf_time.perf_counter()
     if entity_chunks_storage is not None:
         stored_chunks = await entity_chunks_storage.get_by_id(entity_name)
         if stored_chunks and isinstance(stored_chunks, dict):
             existing_full_source_ids = [
                 chunk_id for chunk_id in stored_chunks.get("chunk_ids", []) if chunk_id
             ]
+    get_chunks_time = (perf_time.perf_counter() - step_start) * 1000
 
     if not existing_full_source_ids:
         existing_full_source_ids = [
@@ -1662,6 +1691,7 @@ async def _merge_nodes_then_upsert(
     # 2. Merging new source ids with existing ones
     full_source_ids = merge_source_ids(existing_full_source_ids, new_source_ids)
 
+    step_start = perf_time.perf_counter()
     if entity_chunks_storage is not None and full_source_ids:
         await entity_chunks_storage.upsert(
             {
@@ -1671,6 +1701,7 @@ async def _merge_nodes_then_upsert(
                 }
             }
         )
+    upsert_chunks_time = (perf_time.perf_counter() - step_start) * 1000
 
     # 3. Finalize source_id by applying source ids limit
     limit_method = global_config.get("source_ids_limit_method")
@@ -1758,44 +1789,107 @@ async def _merge_nodes_then_upsert(
             if pipeline_status.get("cancellation_requested", False):
                 raise PipelineCancelledException("User cancelled during entity summary")
 
-    # 7.5 Detect conflicts in descriptions if enabled
+    # =============================================================================
+    # ENTITY MATURITY FAST PATH
+    # If entity has already been summarized, accumulate new descriptions in pending
+    # instead of re-summarizing on every merge. Only re-summarize when pending
+    # tokens exceed the threshold.
+    # =============================================================================
+    new_pending_descriptions = ""
+    new_pending_tokens = 0
+    use_maturity_fast_path = False
+
+    if enable_entity_maturity and is_summarized and sorted_descriptions:
+        # Entity is mature: accumulate new descriptions in pending
+        # Join new descriptions with existing pending
+        new_descs_text = GRAPH_FIELD_SEP.join(sorted_descriptions)
+        if existing_pending_descriptions:
+            new_pending_descriptions = existing_pending_descriptions + GRAPH_FIELD_SEP + new_descs_text
+        else:
+            new_pending_descriptions = new_descs_text
+
+        # Count tokens in pending
+        new_pending_tokens = len(tokenizer.encode(new_pending_descriptions))
+
+        if new_pending_tokens < pending_summarize_threshold:
+            # FAST PATH: Don't re-summarize, just update pending
+            use_maturity_fast_path = True
+            logger.info(
+                f"[MATURITY] Entity '{entity_name}': fast path, pending={new_pending_tokens} tokens "
+                f"(threshold={pending_summarize_threshold})"
+            )
+        else:
+            # Pending exceeds threshold: trigger re-summarization
+            # Combine current description with all pending descriptions
+            pending_descs_list = new_pending_descriptions.split(GRAPH_FIELD_SEP)
+            # Use current description (first item of already_description after summarization)
+            # plus all pending descriptions as input for new summarization
+            description_list = already_description[:1] + pending_descs_list
+            # Reset pending after summarization
+            new_pending_descriptions = ""
+            new_pending_tokens = 0
+            logger.info(
+                f"[MATURITY] Entity '{entity_name}': re-summarizing, pending was {existing_pending_tokens} tokens"
+            )
+
+    # Initialize maturity state variables for non-fast-path
+    conflict_time = 0.0
+    summary_time = 0.0
     conflict_details = None
-    if global_config.get("enable_conflict_detection", True) and len(description_list) >= 2:
-        # Build description tuples with source IDs for conflict detection
-        descriptions_with_sources = []
-        # Add existing descriptions (no individual source_id available)
-        for desc in already_description:
-            descriptions_with_sources.append((desc, "existing"))
-        # Add new descriptions with their source IDs
-        for dp in sorted_nodes:
-            desc = dp.get("description", "")
-            source_id = dp.get("source_id", "unknown")
-            if desc:
-                descriptions_with_sources.append((desc, source_id))
+    llm_was_used = False
 
-        # Run conflict detection
-        detector = ConflictDetector(
-            confidence_threshold=global_config.get("conflict_confidence_threshold", 0.7)
+    if use_maturity_fast_path:
+        # FAST PATH: Use existing description, skip conflict detection and summarization
+        description = already_node["description"]
+        is_summarized = True  # Keep it summarized
+    else:
+        # NORMAL PATH: Conflict detection and summarization
+
+        # 7.5 Detect conflicts in descriptions if enabled
+        step_start = perf_time.perf_counter()
+        if global_config.get("enable_conflict_detection", True) and len(description_list) >= 2:
+            # Build description tuples with source IDs for conflict detection
+            descriptions_with_sources = []
+            # Add existing descriptions (no individual source_id available)
+            for desc in already_description:
+                descriptions_with_sources.append((desc, "existing"))
+            # Add new descriptions with their source IDs
+            for dp in sorted_nodes:
+                desc = dp.get("description", "")
+                source_id_item = dp.get("source_id", "unknown")
+                if desc:
+                    descriptions_with_sources.append((desc, source_id_item))
+
+            # Run conflict detection
+            detector = ConflictDetector(
+                confidence_threshold=global_config.get("conflict_confidence_threshold", 0.7)
+            )
+            conflicts = detector.detect_conflicts(
+                entity_name, descriptions_with_sources, entity_type=entity_type
+            )
+
+            # Format conflicts for prompt if any were found
+            if conflicts:
+                conflict_details = "\n".join(c.to_prompt_context() for c in conflicts)
+        conflict_time = (perf_time.perf_counter() - step_start) * 1000
+
+        # 8. Get summary description an LLM usage status
+        step_start = perf_time.perf_counter()
+        description, llm_was_used = await _handle_entity_relation_summary(
+            "Entity",
+            entity_name,
+            description_list,
+            GRAPH_FIELD_SEP,
+            global_config,
+            llm_response_cache,
+            conflict_details=conflict_details,
+            token_tracker=token_tracker,
         )
-        conflicts = detector.detect_conflicts(
-            entity_name, descriptions_with_sources, entity_type=entity_type
-        )
+        summary_time = (perf_time.perf_counter() - step_start) * 1000
 
-        # Format conflicts for prompt if any were found
-        if conflicts:
-            conflict_details = "\n".join(c.to_prompt_context() for c in conflicts)
-
-    # 8. Get summary description an LLM usage status
-    description, llm_was_used = await _handle_entity_relation_summary(
-        "Entity",
-        entity_name,
-        description_list,
-        GRAPH_FIELD_SEP,
-        global_config,
-        llm_response_cache,
-        conflict_details=conflict_details,
-        token_tracker=token_tracker,
-    )
+        # Update maturity state: mark as summarized if LLM was used
+        if llm_was_used:
+            is_summarized = True
 
     # 9. Build file_path within MAX_FILE_PATHS
     file_paths_list = []
@@ -1898,16 +1992,27 @@ async def _merge_nodes_then_upsert(
         file_path=file_path,
         created_at=int(time.time()),
         truncate=truncation_info,
+        # Entity maturity fields
+        is_summarized=is_summarized,
+        pending_descriptions=new_pending_descriptions if enable_entity_maturity else "",
+        pending_tokens=new_pending_tokens if enable_entity_maturity else 0,
     )
+    step_start = perf_time.perf_counter()
     await knowledge_graph_inst.upsert_node(
         entity_name,
         node_data=node_data,
     )
+    upsert_node_time = (perf_time.perf_counter() - step_start) * 1000
     node_data["entity_name"] = entity_name
+
+    # Prepare VDB data for batch upsert (caller will do the actual upsert)
+    # Note: Maturity fields (is_summarized, pending_descriptions, pending_tokens) are stored
+    # in graph storage only, not in VDB. VDB is for vector search only.
+    vdb_data = None
     if entity_vdb is not None:
         entity_vdb_id = compute_mdhash_id(str(entity_name), prefix="ent-")
         entity_content = f"{entity_name}\n{description}"
-        data_for_vdb = {
+        vdb_data = {
             entity_vdb_id: {
                 "entity_name": entity_name,
                 "entity_type": entity_type,
@@ -1916,14 +2021,20 @@ async def _merge_nodes_then_upsert(
                 "file_path": file_path,
             }
         }
-        await safe_vdb_operation_with_exception(
-            operation=lambda payload=data_for_vdb: entity_vdb.upsert(payload),
-            operation_name="entity_upsert",
-            entity_name=entity_name,
-            max_retries=3,
-            retry_delay=0.1,
+
+    total_time = (perf_time.perf_counter() - merge_start) * 1000
+    # Log detailed timing only if significant time was spent (> 100ms) or LLM was used
+    if total_time > 100 or llm_was_used:
+        maturity_info = f" mature={is_summarized} pending={new_pending_tokens}" if enable_entity_maturity else ""
+        logger.info(
+            f"[PERF] Entity merge '{entity_name}': total={total_time:.1f}ms "
+            f"(get_node={get_node_time:.1f}, get_chunks={get_chunks_time:.1f}, "
+            f"upsert_chunks={upsert_chunks_time:.1f}, conflict={conflict_time:.1f}, "
+            f"summary={summary_time:.1f}, upsert_node={upsert_node_time:.1f}) "
+            f"descs={len(description_list)} llm={llm_was_used}{maturity_info}"
         )
-    return node_data
+
+    return node_data, vdb_data
 
 
 async def _merge_edges_then_upsert(
@@ -1942,8 +2053,17 @@ async def _merge_edges_then_upsert(
     entity_chunks_storage: BaseKVStorage | None = None,
     token_tracker: "TokenTracker | None" = None,
 ):
+    """Merge edge data and prepare for VDB upsert.
+
+    Returns:
+        tuple: (edge_data, vdb_data) where vdb_data is dict for batch VDB upsert or None
+               Returns (None, None) if src_id == tgt_id (self-loop)
+    """
     if src_id == tgt_id:
-        return None
+        return None, None
+
+    import time as perf_time
+    merge_start = perf_time.perf_counter()
 
     already_edge = None
     already_weights = []
@@ -1952,8 +2072,20 @@ async def _merge_edges_then_upsert(
     already_keywords = []
     already_file_paths = []
 
+    # Relation Maturity feature: check if relation is already summarized
+    enable_entity_maturity = global_config.get("enable_entity_maturity", True)
+    pending_summarize_threshold = global_config.get("pending_summarize_threshold", 2000)
+    tokenizer: "Tokenizer" = global_config["tokenizer"]
+
+    # Relation maturity state
+    is_summarized = False
+    existing_pending_descriptions = ""
+    existing_pending_tokens = 0
+
     # 1. Get existing edge data from graph storage (single call, no redundant has_edge)
+    step_start = perf_time.perf_counter()
     already_edge = await knowledge_graph_inst.get_edge(src_id, tgt_id)
+    get_edge_time = (perf_time.perf_counter() - step_start) * 1000
     if already_edge:
         # Get weight with default 1.0 if missing
         already_weights.append(already_edge.get("weight", 1.0))
@@ -1984,16 +2116,23 @@ async def _merge_edges_then_upsert(
                 )
             )
 
+        # Get maturity state
+        is_summarized = already_edge.get("is_summarized", False)
+        existing_pending_descriptions = already_edge.get("pending_descriptions", "") or ""
+        existing_pending_tokens = already_edge.get("pending_tokens", 0) or 0
+
     new_source_ids = [dp["source_id"] for dp in edges_data if dp.get("source_id")]
 
     storage_key = make_relation_chunk_key(src_id, tgt_id)
     existing_full_source_ids = []
+    step_start = perf_time.perf_counter()
     if relation_chunks_storage is not None:
         stored_chunks = await relation_chunks_storage.get_by_id(storage_key)
         if stored_chunks and isinstance(stored_chunks, dict):
             existing_full_source_ids = [
                 chunk_id for chunk_id in stored_chunks.get("chunk_ids", []) if chunk_id
             ]
+    get_chunks_time = (perf_time.perf_counter() - step_start) * 1000
 
     if not existing_full_source_ids:
         existing_full_source_ids = [
@@ -2003,6 +2142,7 @@ async def _merge_edges_then_upsert(
     # 2. Merge new source ids with existing ones
     full_source_ids = merge_source_ids(existing_full_source_ids, new_source_ids)
 
+    step_start = perf_time.perf_counter()
     if relation_chunks_storage is not None and full_source_ids:
         await relation_chunks_storage.upsert(
             {
@@ -2012,6 +2152,7 @@ async def _merge_edges_then_upsert(
                 }
             }
         )
+    upsert_chunks_time = (perf_time.perf_counter() - step_start) * 1000
 
     # 3. Finalize source_id by applying source ids limit
     limit_method = global_config.get("source_ids_limit_method")
@@ -2115,43 +2256,101 @@ async def _merge_edges_then_upsert(
                     "User cancelled during relation summary"
                 )
 
-    # 7.5 Detect conflicts in descriptions if enabled
     relation_name = f"({src_id}, {tgt_id})"
+
+    # =============================================================================
+    # RELATION MATURITY FAST PATH
+    # Same logic as entity maturity: accumulate new descriptions in pending
+    # instead of re-summarizing on every merge.
+    # =============================================================================
+    new_pending_descriptions = ""
+    new_pending_tokens = 0
+    use_maturity_fast_path = False
+
+    if enable_entity_maturity and is_summarized and sorted_descriptions:
+        # Relation is mature: accumulate new descriptions in pending
+        new_descs_text = GRAPH_FIELD_SEP.join(sorted_descriptions)
+        if existing_pending_descriptions:
+            new_pending_descriptions = existing_pending_descriptions + GRAPH_FIELD_SEP + new_descs_text
+        else:
+            new_pending_descriptions = new_descs_text
+
+        # Count tokens in pending
+        new_pending_tokens = len(tokenizer.encode(new_pending_descriptions))
+
+        if new_pending_tokens < pending_summarize_threshold:
+            # FAST PATH: Don't re-summarize, just update pending
+            use_maturity_fast_path = True
+            logger.info(
+                f"[MATURITY] Relation '{relation_name}': fast path, pending={new_pending_tokens} tokens "
+                f"(threshold={pending_summarize_threshold})"
+            )
+        else:
+            # Pending exceeds threshold: trigger re-summarization
+            pending_descs_list = new_pending_descriptions.split(GRAPH_FIELD_SEP)
+            description_list = already_description[:1] + pending_descs_list
+            new_pending_descriptions = ""
+            new_pending_tokens = 0
+            logger.info(
+                f"[MATURITY] Relation '{relation_name}': re-summarizing, pending was {existing_pending_tokens} tokens"
+            )
+
+    # Initialize maturity state variables for non-fast-path
+    conflict_time = 0.0
+    summary_time = 0.0
     conflict_details = None
-    if global_config.get("enable_conflict_detection", True) and len(description_list) >= 2:
-        # Build description tuples with source IDs for conflict detection
-        descriptions_with_sources = []
-        # Add existing descriptions (no individual source_id available)
-        for desc in already_description:
-            descriptions_with_sources.append((desc, "existing"))
-        # Add new descriptions with their source IDs
-        for dp in sorted_edges:
-            desc = dp.get("description", "")
-            source_id = dp.get("source_id", "unknown")
-            if desc:
-                descriptions_with_sources.append((desc, source_id))
+    llm_was_used = False
 
-        # Run conflict detection
-        detector = ConflictDetector(
-            confidence_threshold=global_config.get("conflict_confidence_threshold", 0.7)
+    if use_maturity_fast_path:
+        # FAST PATH: Use existing description, skip conflict detection and summarization
+        description = already_edge["description"]
+        is_summarized = True
+    else:
+        # NORMAL PATH: Conflict detection and summarization
+
+        # 7.5 Detect conflicts in descriptions if enabled
+        step_start = perf_time.perf_counter()
+        if global_config.get("enable_conflict_detection", True) and len(description_list) >= 2:
+            # Build description tuples with source IDs for conflict detection
+            descriptions_with_sources = []
+            # Add existing descriptions (no individual source_id available)
+            for desc in already_description:
+                descriptions_with_sources.append((desc, "existing"))
+            # Add new descriptions with their source IDs
+            for dp in sorted_edges:
+                desc = dp.get("description", "")
+                source_id_item = dp.get("source_id", "unknown")
+                if desc:
+                    descriptions_with_sources.append((desc, source_id_item))
+
+            # Run conflict detection
+            detector = ConflictDetector(
+                confidence_threshold=global_config.get("conflict_confidence_threshold", 0.7)
+            )
+            conflicts = detector.detect_conflicts(relation_name, descriptions_with_sources)
+
+            # Format conflicts for prompt if any were found
+            if conflicts:
+                conflict_details = "\n".join(c.to_prompt_context() for c in conflicts)
+        conflict_time = (perf_time.perf_counter() - step_start) * 1000
+
+        # 8. Get summary description an LLM usage status
+        step_start = perf_time.perf_counter()
+        description, llm_was_used = await _handle_entity_relation_summary(
+            "Relation",
+            relation_name,
+            description_list,
+            GRAPH_FIELD_SEP,
+            global_config,
+            llm_response_cache,
+            conflict_details=conflict_details,
+            token_tracker=token_tracker,
         )
-        conflicts = detector.detect_conflicts(relation_name, descriptions_with_sources)
+        summary_time = (perf_time.perf_counter() - step_start) * 1000
 
-        # Format conflicts for prompt if any were found
-        if conflicts:
-            conflict_details = "\n".join(c.to_prompt_context() for c in conflicts)
-
-    # 8. Get summary description an LLM usage status
-    description, llm_was_used = await _handle_entity_relation_summary(
-        "Relation",
-        relation_name,
-        description_list,
-        GRAPH_FIELD_SEP,
-        global_config,
-        llm_response_cache,
-        conflict_details=conflict_details,
-        token_tracker=token_tracker,
-    )
+        # Update maturity state: mark as summarized if LLM was used
+        if llm_was_used:
+            is_summarized = True
 
     # 9. Build file_path within MAX_FILE_PATHS limit
     file_paths_list = []
@@ -2250,6 +2449,7 @@ async def _merge_edges_then_upsert(
         logger.debug(status_message)
 
     # 11. Update both graph and vector db
+    step_start = perf_time.perf_counter()
     for need_insert_id in [src_id, tgt_id]:
         # Optimization: Use get_node instead of has_node + get_node
         existing_node = await knowledge_graph_inst.get_node(need_insert_id)
@@ -2416,7 +2616,10 @@ async def _merge_edges_then_upsert(
                         pipeline_status["latest_message"] = status_message
                         pipeline_status["history_messages"].append(status_message)
 
+    check_entities_time = (perf_time.perf_counter() - step_start) * 1000
+
     edge_created_at = int(time.time())
+    step_start = perf_time.perf_counter()
     await knowledge_graph_inst.upsert_edge(
         src_id,
         tgt_id,
@@ -2428,8 +2631,13 @@ async def _merge_edges_then_upsert(
             file_path=file_path,
             created_at=edge_created_at,
             truncate=truncation_info,
+            # Relation maturity fields
+            is_summarized=is_summarized,
+            pending_descriptions=new_pending_descriptions if enable_entity_maturity else "",
+            pending_tokens=new_pending_tokens if enable_entity_maturity else 0,
         ),
     )
+    upsert_edge_time = (perf_time.perf_counter() - step_start) * 1000
 
     edge_data = dict(
         src_id=src_id,
@@ -2441,15 +2649,22 @@ async def _merge_edges_then_upsert(
         created_at=edge_created_at,
         truncate=truncation_info,
         weight=weight,
+        # Relation maturity fields
+        is_summarized=is_summarized,
+        pending_descriptions=new_pending_descriptions if enable_entity_maturity else "",
+        pending_tokens=new_pending_tokens if enable_entity_maturity else 0,
     )
 
     # Sort src_id and tgt_id to ensure consistent ordering (smaller string first)
     if src_id > tgt_id:
         src_id, tgt_id = tgt_id, src_id
 
+    # Prepare VDB data for batch upsert (caller will do the actual upsert)
+    rel_vdb_data = None
     if relationships_vdb is not None:
         rel_vdb_id = compute_mdhash_id(src_id + tgt_id, prefix="rel-")
         rel_vdb_id_reverse = compute_mdhash_id(tgt_id + src_id, prefix="rel-")
+        # Delete old records immediately (before batch upsert)
         try:
             await relationships_vdb.delete([rel_vdb_id, rel_vdb_id_reverse])
         except Exception as e:
@@ -2457,7 +2672,8 @@ async def _merge_edges_then_upsert(
                 f"Could not delete old relationship vector records {rel_vdb_id}, {rel_vdb_id_reverse}: {e}"
             )
         rel_content = f"{keywords}\t{src_id}\n{tgt_id}\n{description}"
-        vdb_data = {
+        # Note: Maturity fields are stored in graph storage only, not in VDB
+        rel_vdb_data = {
             rel_vdb_id: {
                 "src_id": src_id,
                 "tgt_id": tgt_id,
@@ -2469,15 +2685,21 @@ async def _merge_edges_then_upsert(
                 "file_path": file_path,
             }
         }
-        await safe_vdb_operation_with_exception(
-            operation=lambda payload=vdb_data: relationships_vdb.upsert(payload),
-            operation_name="relationship_upsert",
-            entity_name=f"{src_id}-{tgt_id}",
-            max_retries=3,
-            retry_delay=0.2,
+
+    total_time = (perf_time.perf_counter() - merge_start) * 1000
+    # Log detailed timing only if significant time was spent (> 100ms) or LLM was used
+    if total_time > 100 or llm_was_used:
+        maturity_info = f" mature={is_summarized} pending={new_pending_tokens}" if enable_entity_maturity else ""
+        logger.info(
+            f"[PERF] Relation merge '{src_id}'~'{tgt_id}': total={total_time:.1f}ms "
+            f"(get_edge={get_edge_time:.1f}, get_chunks={get_chunks_time:.1f}, "
+            f"upsert_chunks={upsert_chunks_time:.1f}, conflict={conflict_time:.1f}, "
+            f"summary={summary_time:.1f}, check_entities={check_entities_time:.1f}, "
+            f"upsert_edge={upsert_edge_time:.1f}) "
+            f"descs={len(description_list)} llm={llm_was_used}{maturity_info}"
         )
 
-    return edge_data
+    return edge_data, rel_vdb_data
 
 
 async def _resolve_cross_document_entities(
@@ -2504,14 +2726,18 @@ async def _resolve_cross_document_entities(
         - resolved_nodes: Dict with entities resolved to canonical names.
         - resolution_map: Dict mapping old_name -> (new_name, score) for logging.
     """
+    import time as time_module
     from lightrag.entity_resolution import _normalize_for_matching, compute_entity_similarity
 
     similarity_threshold = global_config.get("entity_similarity_threshold", DEFAULT_ENTITY_SIMILARITY_THRESHOLD)
     min_name_length = global_config.get("entity_min_name_length", DEFAULT_ENTITY_MIN_NAME_LENGTH)
 
     # 1. Get existing entity names from the knowledge graph
+    get_all_start = time_module.perf_counter()
     try:
         existing_nodes = await knowledge_graph_inst.get_all_nodes()
+        get_all_time = (time_module.perf_counter() - get_all_start) * 1000
+        logger.info(f"[PERF] Cross-doc full: get_all_nodes={get_all_time:.1f}ms ({len(existing_nodes)} existing entities)")
     except Exception as e:
         logger.warning(f"Failed to get existing nodes for cross-doc resolution: {e}")
         return dict(all_nodes), {}
@@ -2592,12 +2818,12 @@ async def _resolve_cross_document_entities(
             # Keep original name (no match found)
             resolved_nodes[entity_name].extend(entities)
 
-    # Log total comparisons for debugging
-    if comparison_count > 1000:
-        logger.debug(
-            f"Cross-doc entity resolution: {comparison_count} comparisons, "
-            f"{len(all_nodes)} new entities vs {len(existing_nodes)} existing"
-        )
+    # Log total comparisons for performance analysis
+    total_time = (time_module.perf_counter() - get_all_start) * 1000
+    logger.info(
+        f"[PERF] Cross-doc full: total={total_time:.1f}ms, comparisons={comparison_count}, "
+        f"new={len(all_nodes)}, existing={len(existing_nodes)}, resolved={len(resolution_map)}"
+    )
 
     return dict(resolved_nodes), resolution_map
 
@@ -2662,11 +2888,12 @@ async def _resolve_cross_document_entities_vdb(
     # Step 2: Batch generate embeddings for all entity names
     entity_names = [e[0] for e in entities_to_query]
 
+    vdb_start = time_module.perf_counter()
     embed_start = time_module.perf_counter()
     try:
         embeddings = await entity_vdb.embedding_func(entity_names)
         embed_time = (time_module.perf_counter() - embed_start) * 1000
-        logger.debug(f"VDB resolution: batch embedding for {len(entity_names)} entities took {embed_time:.1f}ms")
+        logger.info(f"[PERF] Cross-doc VDB: embedding={embed_time:.1f}ms ({len(entity_names)} entities)")
     except Exception as e:
         logger.warning(f"Batch embedding failed: {e}. Falling back to keeping all entities as-is.")
         for entity_name, entities, _ in entities_to_query:
@@ -2695,7 +2922,7 @@ async def _resolve_cross_document_entities_vdb(
     query_tasks = [query_vdb_for_entity(i) for i in range(len(entities_to_query))]
     query_results = await asyncio.gather(*query_tasks)
     query_time = (time_module.perf_counter() - query_start) * 1000
-    logger.debug(f"VDB resolution: {len(query_tasks)} parallel queries took {query_time:.1f}ms")
+    logger.info(f"[PERF] Cross-doc VDB: queries={query_time:.1f}ms ({len(query_tasks)} parallel queries)")
 
     # Step 5: Process results
     for idx, vdb_results in query_results:
@@ -2740,6 +2967,13 @@ async def _resolve_cross_document_entities_vdb(
         else:
             # Keep original name (no match found)
             resolved_nodes[entity_name].extend(entities)
+
+    # Log total performance
+    total_time = (time_module.perf_counter() - vdb_start) * 1000
+    logger.info(
+        f"[PERF] Cross-doc VDB: total={total_time:.1f}ms, new={len(all_nodes)}, "
+        f"queried={len(entities_to_query)}, resolved={len(resolution_map)}"
+    )
 
     return dict(resolved_nodes), resolution_map
 
@@ -3347,7 +3581,7 @@ async def merge_nodes_and_edges(
             ):
                 try:
                     logger.debug(f"Processing entity {entity_name}")
-                    entity_data = await _merge_nodes_then_upsert(
+                    entity_data, vdb_data = await _merge_nodes_then_upsert(
                         entity_name,
                         entities,
                         knowledge_graph_inst,
@@ -3360,7 +3594,7 @@ async def merge_nodes_and_edges(
                         token_tracker=global_config.get("token_tracker"),
                     )
 
-                    return entity_data
+                    return entity_data, vdb_data
 
                 except Exception as e:
                     error_msg = f"Error processing entity `{entity_name}`: {e}"
@@ -3394,6 +3628,7 @@ async def merge_nodes_and_edges(
 
     # Execute entity tasks with error handling
     processed_entities = []
+    entity_vdb_batch = {}  # Collect VDB data for batch upsert
     if entity_tasks:
         done, pending = await asyncio.wait(
             entity_tasks, return_when=asyncio.FIRST_EXCEPTION
@@ -3404,12 +3639,14 @@ async def merge_nodes_and_edges(
 
         for task in done:
             try:
-                result = task.result()
+                entity_data, vdb_data = task.result()
             except BaseException as e:
                 if first_exception is None:
                     first_exception = e
             else:
-                processed_entities.append(result)
+                processed_entities.append(entity_data)
+                if vdb_data:
+                    entity_vdb_batch.update(vdb_data)
 
         if pending:
             for task in pending:
@@ -3420,13 +3657,24 @@ async def merge_nodes_and_edges(
                     if first_exception is None:
                         first_exception = result
                 else:
-                    processed_entities.append(result)
+                    entity_data, vdb_data = result
+                    processed_entities.append(entity_data)
+                    if vdb_data:
+                        entity_vdb_batch.update(vdb_data)
 
         if first_exception is not None:
             raise first_exception
 
     phase1_time = perf_time.perf_counter()
     logger.info(f"[PERF] Phase 1 (entities): {(phase1_time - phase1_start)*1000:.1f}ms ({total_entities_count} entities)")
+
+    # Batch VDB upsert for entities
+    if entity_vdb and entity_vdb_batch:
+        vdb_upsert_start = perf_time.perf_counter()
+        logger.info(f"[PERF] Entity VDB batch upsert starting: {len(entity_vdb_batch)} entities")
+        await entity_vdb.upsert(entity_vdb_batch)
+        vdb_upsert_time = perf_time.perf_counter()
+        logger.info(f"[PERF] Entity VDB batch upsert: {(vdb_upsert_time - vdb_upsert_start)*1000:.1f}ms ({len(entity_vdb_batch)} entities)")
 
     # ===== Phase 2: Process all relationships concurrently =====
     phase2_start = perf_time.perf_counter()
@@ -3459,7 +3707,7 @@ async def merge_nodes_and_edges(
                     added_entities = []  # Track entities added during edge processing
 
                     logger.debug(f"Processing relation {sorted_edge_key}")
-                    edge_data = await _merge_edges_then_upsert(
+                    edge_data, rel_vdb_data = await _merge_edges_then_upsert(
                         edge_key[0],
                         edge_key[1],
                         edges,
@@ -3477,9 +3725,9 @@ async def merge_nodes_and_edges(
                     )
 
                     if edge_data is None:
-                        return None, []
+                        return None, [], None
 
-                    return edge_data, added_entities
+                    return edge_data, added_entities, rel_vdb_data
 
                 except Exception as e:
                     error_msg = f"Error processing relation `{sorted_edge_key}`: {e}"
@@ -3514,6 +3762,7 @@ async def merge_nodes_and_edges(
     # Execute relationship tasks with error handling
     processed_edges = []
     all_added_entities = []
+    rel_vdb_batch = {}  # Collect VDB data for batch upsert
 
     if edge_tasks:
         done, pending = await asyncio.wait(
@@ -3524,7 +3773,7 @@ async def merge_nodes_and_edges(
 
         for task in done:
             try:
-                edge_data, added_entities = task.result()
+                edge_data, added_entities, rel_vdb_data = task.result()
             except BaseException as e:
                 if first_exception is None:
                     first_exception = e
@@ -3532,6 +3781,8 @@ async def merge_nodes_and_edges(
                 if edge_data is not None:
                     processed_edges.append(edge_data)
                 all_added_entities.extend(added_entities)
+                if rel_vdb_data:
+                    rel_vdb_batch.update(rel_vdb_data)
 
         if pending:
             for task in pending:
@@ -3542,16 +3793,26 @@ async def merge_nodes_and_edges(
                     if first_exception is None:
                         first_exception = result
                 else:
-                    edge_data, added_entities = result
+                    edge_data, added_entities, rel_vdb_data = result
                     if edge_data is not None:
                         processed_edges.append(edge_data)
                     all_added_entities.extend(added_entities)
+                    if rel_vdb_data:
+                        rel_vdb_batch.update(rel_vdb_data)
 
         if first_exception is not None:
             raise first_exception
 
     phase2_time = perf_time.perf_counter()
     logger.info(f"[PERF] Phase 2 (relations): {(phase2_time - phase2_start)*1000:.1f}ms ({total_relations_count} relations)")
+
+    # Batch VDB upsert for relationships
+    if relationships_vdb and rel_vdb_batch:
+        rel_vdb_upsert_start = perf_time.perf_counter()
+        logger.info(f"[PERF] Relationship VDB batch upsert starting: {len(rel_vdb_batch)} relationships")
+        await relationships_vdb.upsert(rel_vdb_batch)
+        rel_vdb_upsert_time = perf_time.perf_counter()
+        logger.info(f"[PERF] Relationship VDB batch upsert: {(rel_vdb_upsert_time - rel_vdb_upsert_start)*1000:.1f}ms ({len(rel_vdb_batch)} relationships)")
 
     # ===== Phase 3: Update full_entities and full_relations storage =====
     phase3_start = perf_time.perf_counter()

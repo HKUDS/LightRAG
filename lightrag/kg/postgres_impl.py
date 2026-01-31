@@ -2130,124 +2130,137 @@ class PGKVStorage(BaseKVStorage):
 
     ################ INSERT METHODS ################
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
+        """Batch upsert data to KV storage using executemany for performance.
+
+        Instead of N individual INSERT statements (N round-trips), this method
+        collects all records and executes them in a single batch operation.
+        """
         logger.debug(f"[{self.workspace}] Inserting {len(data)} to {self.namespace}")
         if not data:
             return
 
+        # Get current UTC time and convert to naive datetime for database storage
+        current_time = datetime.datetime.now(timezone.utc).replace(tzinfo=None)
+        records = []
+        upsert_sql = None
+
         if is_namespace(self.namespace, NameSpace.KV_STORE_TEXT_CHUNKS):
-            # Get current UTC time and convert to naive datetime for database storage
-            current_time = datetime.datetime.now(timezone.utc).replace(tzinfo=None)
+            upsert_sql = SQL_TEMPLATES["upsert_text_chunk"]
+            # SQL params order: $1=workspace, $2=id, $3=tokens, $4=chunk_order_index,
+            # $5=full_doc_id, $6=content, $7=file_path, $8=llm_cache_list, $9=create_time, $10=update_time
             for k, v in data.items():
-                upsert_sql = SQL_TEMPLATES["upsert_text_chunk"]
-                _data = {
-                    "workspace": self.workspace,
-                    "id": k,
-                    "tokens": v["tokens"],
-                    "chunk_order_index": v["chunk_order_index"],
-                    "full_doc_id": v["full_doc_id"],
-                    "content": v["content"],
-                    "file_path": v["file_path"],
-                    "llm_cache_list": json.dumps(v.get("llm_cache_list", [])),
-                    "create_time": current_time,
-                    "update_time": current_time,
-                }
-                await self.db.execute(upsert_sql, _data)
+                records.append((
+                    self.workspace,
+                    k,
+                    v["tokens"],
+                    v["chunk_order_index"],
+                    v["full_doc_id"],
+                    v["content"],
+                    v["file_path"],
+                    json.dumps(v.get("llm_cache_list", [])),
+                    current_time,
+                    current_time,
+                ))
+
         elif is_namespace(self.namespace, NameSpace.KV_STORE_FULL_DOCS):
-            # Diagnostic: log full_docs upsert details
             logger.info(
                 f"[{self.workspace}] PGKVStorage.upsert(full_docs): upserting {len(data)} documents"
             )
+            upsert_sql = SQL_TEMPLATES["upsert_doc_full"]
+            # SQL params order: $1=id, $2=content, $3=doc_name, $4=workspace
             for k, v in data.items():
-                upsert_sql = SQL_TEMPLATES["upsert_doc_full"]
-                _data = {
-                    "id": k,
-                    "content": v["content"],
-                    "doc_name": v.get("file_path", ""),  # Map file_path to doc_name
-                    "workspace": self.workspace,
-                }
                 logger.info(
                     f"[{self.workspace}] PGKVStorage.upsert(full_docs): upserting doc_id={k}, "
                     f"file={v.get('file_path', 'unknown')}"
                 )
-                await self.db.execute(upsert_sql, _data)
-        elif is_namespace(self.namespace, NameSpace.KV_STORE_LLM_RESPONSE_CACHE):
-            for k, v in data.items():
-                upsert_sql = SQL_TEMPLATES["upsert_llm_response_cache"]
-                _data = {
-                    "workspace": self.workspace,
-                    "id": k,  # Use flattened key as id
-                    "original_prompt": v["original_prompt"],
-                    "return_value": v["return"],
-                    "chunk_id": v.get("chunk_id"),
-                    "cache_type": v.get(
-                        "cache_type", "extract"
-                    ),  # Get cache_type from data
-                    "queryparam": json.dumps(v.get("queryparam"))
-                    if v.get("queryparam")
-                    else None,
-                }
+                records.append((
+                    k,
+                    v["content"],
+                    v.get("file_path", ""),  # Map file_path to doc_name
+                    self.workspace,
+                ))
 
-                await self.db.execute(upsert_sql, _data)
+        elif is_namespace(self.namespace, NameSpace.KV_STORE_LLM_RESPONSE_CACHE):
+            upsert_sql = SQL_TEMPLATES["upsert_llm_response_cache"]
+            # SQL params order: $1=workspace, $2=id, $3=original_prompt, $4=return_value,
+            # $5=chunk_id, $6=cache_type, $7=queryparam
+            for k, v in data.items():
+                records.append((
+                    self.workspace,
+                    k,  # Use flattened key as id
+                    v["original_prompt"],
+                    v["return"],
+                    v.get("chunk_id"),
+                    v.get("cache_type", "extract"),
+                    json.dumps(v.get("queryparam")) if v.get("queryparam") else None,
+                ))
+
         elif is_namespace(self.namespace, NameSpace.KV_STORE_FULL_ENTITIES):
-            # Get current UTC time and convert to naive datetime for database storage
-            current_time = datetime.datetime.now(timezone.utc).replace(tzinfo=None)
+            upsert_sql = SQL_TEMPLATES["upsert_full_entities"]
+            # SQL params order: $1=workspace, $2=id, $3=entity_names, $4=count, $5=create_time, $6=update_time
             for k, v in data.items():
-                upsert_sql = SQL_TEMPLATES["upsert_full_entities"]
                 entity_names = v.get("entity_names", [])
-                _data = {
-                    "workspace": self.workspace,
-                    "id": k,
-                    "entity_names": json.dumps(entity_names),
-                    "count": v.get("count", len(entity_names)),
-                    "create_time": current_time,
-                    "update_time": current_time,
-                }
-                await self.db.execute(upsert_sql, _data)
+                records.append((
+                    self.workspace,
+                    k,
+                    json.dumps(entity_names),
+                    v.get("count", len(entity_names)),
+                    current_time,
+                    current_time,
+                ))
+
         elif is_namespace(self.namespace, NameSpace.KV_STORE_FULL_RELATIONS):
-            # Get current UTC time and convert to naive datetime for database storage
-            current_time = datetime.datetime.now(timezone.utc).replace(tzinfo=None)
+            upsert_sql = SQL_TEMPLATES["upsert_full_relations"]
+            # SQL params order: $1=workspace, $2=id, $3=relation_pairs, $4=count, $5=create_time, $6=update_time
             for k, v in data.items():
-                upsert_sql = SQL_TEMPLATES["upsert_full_relations"]
                 relation_pairs = v.get("relation_pairs", [])
-                _data = {
-                    "workspace": self.workspace,
-                    "id": k,
-                    "relation_pairs": json.dumps(relation_pairs),
-                    "count": v.get("count", len(relation_pairs)),
-                    "create_time": current_time,
-                    "update_time": current_time,
-                }
-                await self.db.execute(upsert_sql, _data)
+                records.append((
+                    self.workspace,
+                    k,
+                    json.dumps(relation_pairs),
+                    v.get("count", len(relation_pairs)),
+                    current_time,
+                    current_time,
+                ))
+
         elif is_namespace(self.namespace, NameSpace.KV_STORE_ENTITY_CHUNKS):
-            # Get current UTC time and convert to naive datetime for database storage
-            current_time = datetime.datetime.now(timezone.utc).replace(tzinfo=None)
+            upsert_sql = SQL_TEMPLATES["upsert_entity_chunks"]
+            # SQL params order: $1=workspace, $2=id, $3=chunk_ids, $4=count, $5=create_time, $6=update_time
             for k, v in data.items():
-                upsert_sql = SQL_TEMPLATES["upsert_entity_chunks"]
                 chunk_ids = v.get("chunk_ids", [])
-                _data = {
-                    "workspace": self.workspace,
-                    "id": k,
-                    "chunk_ids": json.dumps(chunk_ids),
-                    "count": v.get("count", len(chunk_ids)),
-                    "create_time": current_time,
-                    "update_time": current_time,
-                }
-                await self.db.execute(upsert_sql, _data)
+                records.append((
+                    self.workspace,
+                    k,
+                    json.dumps(chunk_ids),
+                    v.get("count", len(chunk_ids)),
+                    current_time,
+                    current_time,
+                ))
+
         elif is_namespace(self.namespace, NameSpace.KV_STORE_RELATION_CHUNKS):
-            # Get current UTC time and convert to naive datetime for database storage
-            current_time = datetime.datetime.now(timezone.utc).replace(tzinfo=None)
+            upsert_sql = SQL_TEMPLATES["upsert_relation_chunks"]
+            # SQL params order: $1=workspace, $2=id, $3=chunk_ids, $4=count, $5=create_time, $6=update_time
             for k, v in data.items():
-                upsert_sql = SQL_TEMPLATES["upsert_relation_chunks"]
                 chunk_ids = v.get("chunk_ids", [])
-                _data = {
-                    "workspace": self.workspace,
-                    "id": k,
-                    "chunk_ids": json.dumps(chunk_ids),
-                    "count": v.get("count", len(chunk_ids)),
-                    "create_time": current_time,
-                    "update_time": current_time,
-                }
-                await self.db.execute(upsert_sql, _data)
+                records.append((
+                    self.workspace,
+                    k,
+                    json.dumps(chunk_ids),
+                    v.get("count", len(chunk_ids)),
+                    current_time,
+                    current_time,
+                ))
+
+        # Execute batch insert using executemany (single DB round-trip)
+        if records and upsert_sql:
+            import time as time_module
+            upsert_start = time_module.perf_counter()
+            async with self.db.pool.acquire() as conn:
+                await conn.executemany(upsert_sql, records)
+            upsert_time = (time_module.perf_counter() - upsert_start) * 1000
+            logger.info(
+                f"[PERF] KV upsert: {self.namespace}={upsert_time:.1f}ms ({len(records)} records)"
+            )
 
     async def index_done_callback(self) -> None:
         # PG handles persistence automatically
@@ -2453,8 +2466,12 @@ class PGVectorStorage(BaseVectorStorage):
             for i in range(0, len(contents), self._max_batch_size)
         ]
 
+        import time as time_module
+        embed_start = time_module.perf_counter()
         embedding_tasks = [self.embedding_func(batch) for batch in batches]
         embeddings_list = await asyncio.gather(*embedding_tasks)
+        embed_time = (time_module.perf_counter() - embed_start) * 1000
+        logger.info(f"[PERF] VDB upsert: embedding={embed_time:.1f}ms ({len(contents)} items in {len(batches)} batches)")
 
         embeddings = np.concatenate(embeddings_list)
         for i, d in enumerate(list_data):
@@ -2523,10 +2540,12 @@ class PGVectorStorage(BaseVectorStorage):
 
         # Execute batch insert using executemany
         if records and upsert_sql:
+            db_start = time_module.perf_counter()
             async with self.db.pool.acquire() as conn:
                 await conn.executemany(upsert_sql, records)
-            logger.debug(
-                f"[{self.workspace}] Batch inserted {len(records)} records to {self.namespace}"
+            db_time = (time_module.perf_counter() - db_start) * 1000
+            logger.info(
+                f"[PERF] VDB upsert: db_insert={db_time:.1f}ms ({len(records)} records to {self.namespace})"
             )
 
     #################### query method ###############
@@ -3521,6 +3540,9 @@ class PGDocStatusStorage(DocStatusStorage):
         Returns:
             Document data dict if a document was claimed, None if no documents available
         """
+        import time as time_module
+        claim_start = time_module.perf_counter()
+
         await self.db._ensure_pool()
         assert self.db.pool is not None
 
@@ -3532,6 +3554,8 @@ class PGDocStatusStorage(DocStatusStorage):
                 # - Skips rows already locked by other transactions
                 # - Returns only unlocked rows
                 # Priority: pending first, then failed (for retry)
+                # Exclude documents marked as duplicates (they have no content in full_docs)
+                select_start = time_module.perf_counter()
                 row = await conn.fetchrow(
                     """
                     SELECT id, content_summary, content_length, chunks_count,
@@ -3540,6 +3564,8 @@ class PGDocStatusStorage(DocStatusStorage):
                     FROM LIGHTRAG_DOC_STATUS
                     WHERE workspace = $1
                       AND status IN ('pending', 'failed')
+                      AND (metadata->>'is_duplicate' IS NULL
+                           OR metadata->>'is_duplicate' != 'true')
                     ORDER BY
                         CASE status WHEN 'pending' THEN 0 ELSE 1 END,
                         created_at ASC
@@ -3548,11 +3574,14 @@ class PGDocStatusStorage(DocStatusStorage):
                     """,
                     self.workspace,
                 )
+                select_time = (time_module.perf_counter() - select_start) * 1000
 
                 if not row:
+                    logger.info(f"[PERF] Claim document: select={select_time:.1f}ms (no document available)")
                     return None
 
                 doc_id = row["id"]
+                logger.info(f"[PERF] Claim document: select={select_time:.1f}ms (found {doc_id})")
 
                 # Update status to PROCESSING within the same transaction
                 await conn.execute(
@@ -3587,6 +3616,9 @@ class PGDocStatusStorage(DocStatusStorage):
                     except json.JSONDecodeError:
                         metadata = {}
 
+                total_claim_time = (time_module.perf_counter() - claim_start) * 1000
+                logger.info(f"[PERF] Claim document: total={total_claim_time:.1f}ms (claimed {doc_id})")
+
                 return {
                     "id": doc_id,
                     "content_summary": row["content_summary"],
@@ -3606,12 +3638,15 @@ class PGDocStatusStorage(DocStatusStorage):
         """Get count of pending/failed documents waiting to be processed.
 
         Useful for checking if there's work to do before entering the processing loop.
+        Excludes duplicate documents (is_duplicate: true) which have no content.
         """
         sql = """
             SELECT COUNT(*) as cnt
             FROM LIGHTRAG_DOC_STATUS
             WHERE workspace = $1
               AND status IN ('pending', 'failed')
+              AND (metadata->>'is_duplicate' IS NULL
+                   OR metadata->>'is_duplicate' != 'true')
         """
         result = await self.db.query(sql, [self.workspace], multirows=False)
         return result.get("cnt", 0) if result else 0

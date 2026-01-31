@@ -1809,7 +1809,8 @@ def create_app(args):
         description=(
             "Returns Prometheus-format metrics for queue depth, processing status, "
             "and system health. Use this endpoint to configure custom autoscaling "
-            "triggers based on document queue depth rather than CPU usage."
+            "triggers based on document queue depth rather than CPU usage. "
+            "All metrics include instance_id label to identify which instance responded."
         ),
         response_class=PlainTextResponse,
     )
@@ -1827,9 +1828,22 @@ def create_app(args):
         - lightrag_pipelines_busy: Currently active pipelines
         - lightrag_graph_nodes_total: Total nodes in knowledge graph
         - lightrag_graph_edges_total: Total edges in knowledge graph
+        - lightrag_instance_info: Instance identification (instance_id, hostname)
 
+        All instance-local metrics include instance_id label for multi-instance deployments.
         Configure Render/K8s to scale when lightrag_queue_depth > threshold.
         """
+        # Get instance identification
+        registry = get_instance_registry()
+        if registry is not None:
+            instance_id = registry.instance_id
+            hostname = registry.hostname
+        else:
+            # Fallback if registry not initialized
+            import socket
+            instance_id = "unknown"
+            hostname = socket.gethostname()
+
         pool = get_workspace_pool()
         if pool is None:
             # No pool initialized yet
@@ -1955,7 +1969,7 @@ def create_app(args):
             "",
             "# HELP lightrag_drain_mode Drain mode status (1=enabled, 0=disabled)",
             "# TYPE lightrag_drain_mode gauge",
-            f'lightrag_drain_mode{{instance="local"}} {1 if is_drain_mode_enabled() else 0}',
+            f'lightrag_drain_mode{{instance_id="{instance_id}"}} {1 if is_drain_mode_enabled() else 0}',
             "",
             "# ====== DOCUMENT STATUS METRICS ======",
             "",
@@ -2004,33 +2018,33 @@ def create_app(args):
         metrics_lines.extend([
             "# HELP lightrag_llm_active_calls Number of LLM calls currently in flight",
             "# TYPE lightrag_llm_active_calls gauge",
-            f'lightrag_llm_active_calls{{instance="local"}} {llm_metrics["active_calls"]}',
+            f'lightrag_llm_active_calls{{instance_id="{instance_id}"}} {llm_metrics["active_calls"]}',
             "",
             "# HELP lightrag_llm_total_calls Total LLM calls since startup",
             "# TYPE lightrag_llm_total_calls counter",
-            f'lightrag_llm_total_calls{{instance="local"}} {llm_metrics["total_calls"]}',
+            f'lightrag_llm_total_calls{{instance_id="{instance_id}"}} {llm_metrics["total_calls"]}',
             "",
             "# HELP lightrag_llm_errors_total Total LLM call errors since startup",
             "# TYPE lightrag_llm_errors_total counter",
-            f'lightrag_llm_errors_total{{instance="local"}} {llm_metrics["total_errors"]}',
+            f'lightrag_llm_errors_total{{instance_id="{instance_id}"}} {llm_metrics["total_errors"]}',
             "",
             "# HELP lightrag_llm_latency_avg_ms Average LLM call latency (rolling window, ms)",
             "# TYPE lightrag_llm_latency_avg_ms gauge",
-            f'lightrag_llm_latency_avg_ms{{instance="local"}} {llm_metrics["avg_latency_ms"]}',
+            f'lightrag_llm_latency_avg_ms{{instance_id="{instance_id}"}} {llm_metrics["avg_latency_ms"]}',
             "",
             "# HELP lightrag_llm_queue_size Current LLM call queue depth",
             "# TYPE lightrag_llm_queue_size gauge",
-            f'lightrag_llm_queue_size{{instance="local"}} {llm_metrics["queue_size"]}',
+            f'lightrag_llm_queue_size{{instance_id="{instance_id}"}} {llm_metrics["queue_size"]}',
             "",
             "# HELP lightrag_llm_max_concurrent Peak concurrent LLM calls since startup",
             "# TYPE lightrag_llm_max_concurrent gauge",
-            f'lightrag_llm_max_concurrent{{instance="local"}} {llm_metrics["max_concurrent"]}',
+            f'lightrag_llm_max_concurrent{{instance_id="{instance_id}"}} {llm_metrics["max_concurrent"]}',
             "",
             "# ====== ASYNCIO TASKS ======",
             "",
             "# HELP lightrag_asyncio_tasks_total Total number of asyncio tasks in event loop",
             "# TYPE lightrag_asyncio_tasks_total gauge",
-            f'lightrag_asyncio_tasks_total{{instance="local"}} {len(asyncio.all_tasks())}',
+            f'lightrag_asyncio_tasks_total{{instance_id="{instance_id}"}} {len(asyncio.all_tasks())}',
             "",
         ])
 
@@ -2068,36 +2082,40 @@ def create_app(args):
                 "",
                 "# HELP lightrag_db_pool_size Current number of connections in pool",
                 "# TYPE lightrag_db_pool_size gauge",
-                f'lightrag_db_pool_size{{instance="local"}} {db_pool_size}',
+                f'lightrag_db_pool_size{{instance_id="{instance_id}"}} {db_pool_size}',
                 "",
                 "# HELP lightrag_db_pool_idle Number of idle connections in pool",
                 "# TYPE lightrag_db_pool_idle gauge",
-                f'lightrag_db_pool_idle{{instance="local"}} {db_pool_idle}',
+                f'lightrag_db_pool_idle{{instance_id="{instance_id}"}} {db_pool_idle}',
                 "",
                 "# HELP lightrag_db_pool_active Number of active (in-use) connections",
                 "# TYPE lightrag_db_pool_active gauge",
-                f'lightrag_db_pool_active{{instance="local"}} {db_pool_size - db_pool_idle}',
+                f'lightrag_db_pool_active{{instance_id="{instance_id}"}} {db_pool_size - db_pool_idle}',
                 "",
                 "# HELP lightrag_db_pool_max Maximum pool size",
                 "# TYPE lightrag_db_pool_max gauge",
-                f'lightrag_db_pool_max{{instance="local"}} {db_pool_max}',
+                f'lightrag_db_pool_max{{instance_id="{instance_id}"}} {db_pool_max}',
                 "",
                 "# HELP lightrag_db_pool_min Minimum pool size",
                 "# TYPE lightrag_db_pool_min gauge",
-                f'lightrag_db_pool_min{{instance="local"}} {db_pool_min}',
+                f'lightrag_db_pool_min{{instance_id="{instance_id}"}} {db_pool_min}',
                 "",
                 "# HELP lightrag_db_pool_utilization Pool utilization percentage",
                 "# TYPE lightrag_db_pool_utilization gauge",
-                f'lightrag_db_pool_utilization{{instance="local"}} {(db_pool_size - db_pool_idle) / db_pool_max * 100 if db_pool_max > 0 else 0:.1f}',
+                f'lightrag_db_pool_utilization{{instance_id="{instance_id}"}} {(db_pool_size - db_pool_idle) / db_pool_max * 100 if db_pool_max > 0 else 0:.1f}',
                 "",
             ])
 
         metrics_lines.extend([
             "# ====== INFO ======",
             "",
+            "# HELP lightrag_instance_info Instance identification for multi-instance deployments",
+            "# TYPE lightrag_instance_info gauge",
+            f'lightrag_instance_info{{instance_id="{instance_id}",hostname="{hostname}"}} 1',
+            "",
             "# HELP lightrag_info LightRAG version info",
             "# TYPE lightrag_info gauge",
-            f'lightrag_info{{version="{core_version}",api_version="{__api_version__}"}} 1',
+            f'lightrag_info{{version="{core_version}",api_version="{__api_version__}",instance_id="{instance_id}"}} 1',
             "",
         ])
 

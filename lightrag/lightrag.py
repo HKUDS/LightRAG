@@ -64,6 +64,9 @@ from lightrag.constants import (
     DEFAULT_CROSS_DOC_RESOLUTION_MODE,
     DEFAULT_CROSS_DOC_THRESHOLD_ENTITIES,
     DEFAULT_CROSS_DOC_VDB_TOP_K,
+    # Entity/Relation Maturity
+    DEFAULT_ENABLE_ENTITY_MATURITY,
+    DEFAULT_PENDING_SUMMARIZE_THRESHOLD,
 )
 from lightrag.utils import get_env_value
 
@@ -231,6 +234,23 @@ class LightRAG:
             "FORCE_LLM_SUMMARY_ON_MERGE", DEFAULT_FORCE_LLM_SUMMARY_ON_MERGE, int
         )
     )
+
+    enable_entity_maturity: bool = field(
+        default=get_env_value(
+            "ENABLE_ENTITY_MATURITY", DEFAULT_ENABLE_ENTITY_MATURITY, bool
+        )
+    )
+    """When enabled, entities that have been summarized accumulate new descriptions
+    in a pending field instead of re-summarizing on every merge. Re-summarization
+    only occurs when pending_tokens exceeds pending_summarize_threshold."""
+
+    pending_summarize_threshold: int = field(
+        default=get_env_value(
+            "PENDING_SUMMARIZE_THRESHOLD", DEFAULT_PENDING_SUMMARIZE_THRESHOLD, int
+        )
+    )
+    """Token threshold for pending descriptions to trigger re-summarization
+    of mature entities. Only used when enable_entity_maturity is True."""
 
     # Text chunking
     # ---
@@ -1437,6 +1457,11 @@ class LightRAG:
         # Get docs ids
         all_new_doc_ids = set(new_docs.keys())
         # Exclude IDs of documents that are already enqueued
+        doc_status_workspace = getattr(self.doc_status, 'workspace', 'unknown')
+        logger.debug(
+            f"[{self.workspace}] Checking for duplicates: {len(all_new_doc_ids)} doc_ids, "
+            f"doc_status.workspace={doc_status_workspace}"
+        )
         unique_new_doc_ids = await self.doc_status.filter_keys(all_new_doc_ids)
 
         # Handle potentially duplicate documents
@@ -1470,7 +1495,18 @@ class LightRAG:
                     continue
 
                 # True duplicate: different track_id
-                logger.warning(f"Duplicate document detected: {doc_id} ({file_path})")
+                existing_file_path = (
+                    existing_doc.get("file_path", "unknown") if existing_doc else "unknown"
+                )
+                existing_created_at = (
+                    existing_doc.get("created_at", "unknown") if existing_doc else "unknown"
+                )
+                logger.warning(
+                    f"[{self.workspace}] Duplicate document detected: {doc_id}\n"
+                    f"  New file: {file_path} (track_id: {track_id})\n"
+                    f"  Original: {existing_file_path} (track_id: {existing_track_id}, "
+                    f"status: {existing_status}, created: {existing_created_at})"
+                )
 
                 # Create a new record with unique ID for this duplicate attempt
                 dup_record_id = compute_mdhash_id(f"{doc_id}-{track_id}", prefix="dup-")
@@ -2757,10 +2793,10 @@ class LightRAG:
         except Exception as e:
             raise Exception(f"Entity extraction failed: {str(e)}")
 
-        # Check for cancellation before merge phase
+        # Check for cancellation before processing results
         async with pipeline_status_lock:
             if pipeline_status.get("cancellation_requested", False):
-                raise PipelineCancelledException("User cancelled before merge")
+                raise PipelineCancelledException("User cancelled before processing results")
 
         # Create separate token tracker for deduplication/merge phase
         dedup_token_tracker = TokenTracker()
@@ -2769,7 +2805,7 @@ class LightRAG:
         merge_config = asdict(self)
         merge_config["token_tracker"] = dedup_token_tracker
 
-        # Use full merge workflow (entity resolution, KV stores, etc.)
+        # Use full merge_nodes_and_edges workflow (entity resolution, stored procedures, etc.)
         await merge_nodes_and_edges(
             chunk_results=chunk_results,
             knowledge_graph_inst=self.chunk_entity_relation_graph,

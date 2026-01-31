@@ -245,6 +245,8 @@ class PGGraphStorageSimple(BaseGraphStorage):
             DO UPDATE SET properties = $3, updated_at = CURRENT_TIMESTAMP
         """
 
+        import time as time_module
+        upsert_start = time_module.perf_counter()
         async with self._acquire_connection() as conn:
             # Use executemany for batch insert
             records = [
@@ -252,10 +254,11 @@ class PGGraphStorageSimple(BaseGraphStorage):
                 for node_id, node_data in nodes.items()
             ]
             await conn.executemany(query, records)
+        upsert_time = (time_module.perf_counter() - upsert_start) * 1000
 
         # Invalidate cache
         self._node_count_cache = None
-        logger.debug(f"[{self.workspace}] Batch upserted {len(nodes)} nodes")
+        logger.info(f"[PERF] Graph upsert_nodes: {upsert_time:.1f}ms ({len(nodes)} nodes)")
 
     async def delete_node(self, node_id: str) -> None:
         """Delete a node and its connected edges."""
@@ -415,6 +418,8 @@ class PGGraphStorageSimple(BaseGraphStorage):
             DO UPDATE SET properties = $4, updated_at = CURRENT_TIMESTAMP
         """
 
+        import time as time_module
+        upsert_start = time_module.perf_counter()
         async with self._acquire_connection() as conn:
             # Normalize edge direction and prepare records
             records = []
@@ -426,8 +431,9 @@ class PGGraphStorageSimple(BaseGraphStorage):
                     (self.workspace, source_id, target_id, json.dumps(edge_data, ensure_ascii=False))
                 )
             await conn.executemany(query, records)
+        upsert_time = (time_module.perf_counter() - upsert_start) * 1000
 
-        logger.debug(f"[{self.workspace}] Batch upserted {len(edges)} edges")
+        logger.info(f"[PERF] Graph upsert_edges: {upsert_time:.1f}ms ({len(edges)} edges)")
 
     async def remove_edges(self, edges: list[tuple[str, str]]) -> None:
         """Delete multiple edges in a single SQL statement.
@@ -617,6 +623,8 @@ class PGGraphStorageSimple(BaseGraphStorage):
 
     async def get_all_nodes(self) -> list[dict]:
         """Get all nodes in the graph."""
+        import time as time_module
+        start_time = time_module.perf_counter()
         query = """
             SELECT node_id, properties FROM LIGHTRAG_GRAPH_NODES
             WHERE workspace = $1
@@ -632,7 +640,9 @@ class PGGraphStorageSimple(BaseGraphStorage):
                     node_data = dict(props) if props else {}
                 node_data["id"] = row["node_id"]
                 result.append(node_data)
-            return result
+        elapsed = (time_module.perf_counter() - start_time) * 1000
+        logger.info(f"[PERF] Graph get_all_nodes: {elapsed:.1f}ms ({len(result)} nodes)")
+        return result
 
     async def get_all_edges(self) -> list[dict]:
         """Get all edges in the graph."""

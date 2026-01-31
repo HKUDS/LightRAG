@@ -23,6 +23,13 @@ DEFAULT_SUMMARY_MAX_TOKENS = 1200
 DEFAULT_SUMMARY_LENGTH_RECOMMENDED = 600
 # Maximum token size sent to LLM for summary
 DEFAULT_SUMMARY_CONTEXT_SIZE = 12000
+
+# Entity/Relation Maturity configuration defaults
+# Once an entity is summarized, new descriptions are accumulated in pending_descriptions
+# until pending_tokens exceeds this threshold, triggering a new summarization
+DEFAULT_ENABLE_ENTITY_MATURITY = True
+DEFAULT_PENDING_SUMMARIZE_THRESHOLD = 2000  # tokens threshold to trigger re-summarization
+
 # Default entities to extract if ENTITY_TYPES is not specified in .env
 DEFAULT_ENTITY_TYPES = [
     "Person",
