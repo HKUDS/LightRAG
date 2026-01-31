@@ -69,6 +69,7 @@ api = [
     "xlsxwriter>=3.1.0",
     "google-api-core>=2.0.0,<3.0.0",
     "google-genai>=1.0.0,<2.0.0",
+    "ollama>=0.1.0,<1.0.0",
     # API-specific dependencies
     "aiofiles",
     "ascii_colors",
