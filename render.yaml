@@ -43,7 +43,7 @@ services:
       - key: LIGHTRAG_DEFAULT_WORKSPACE
         value: "default"
       - key: LIGHTRAG_ALLOW_DEFAULT_WORKSPACE
-        value: "true"
+        value: "false"  # Reject requests without explicit workspace header
       - key: LIGHTRAG_MAX_WORKSPACES_IN_POOL
         value: "50"
 
@@ -83,7 +83,7 @@ services:
       - key: POSTGRES_STATEMENT_CACHE_SIZE
         value: "0"  # Required for Supavisor transaction mode (no prepared statements)
       - key: POSTGRES_MAX_CONNECTIONS
-        value: "75"  # asyncpg pool size per instance (Supavisor handles multiplexing)
+        value: "100"  # asyncpg pool size per instance (Supavisor handles multiplexing)
       - key: POSTGRES_MAX_INACTIVE_CONNECTION_LIFETIME
         value: "60"
       # Retry configuration for transient errors (deadlocks, connection issues)
@@ -179,16 +179,22 @@ services:
         value: "true"
       - key: PENDING_SUMMARIZE_THRESHOLD
         value: "4000"  # tokens threshold to trigger re-summarization
+      - key: FORCE_LLM_SUMMARY_ON_MERGE
+        value: "20"  # Number of description fragments to trigger LLM summary
 
       #############################
       # Performance Configuration
       #############################
       - key: MAX_ASYNC
-        value: "128"
+        value: "512"
       - key: MAX_PARALLEL_INSERT
         value: "64"
       - key: MAX_GRAPH_NODES
         value: "3000"
+      - key: MIN_DEGREE_FOR_GRAPH_BFS
+        value: "2"  # Exclude peripheral nodes (degree < 2) from graph visualization
+      - key: GRAPH_MAX_ASYNC_MULTIPLIER
+        value: "4"  # Multiplier for async operations in graph storage
       - key: CPU_YIELD_INTERVAL
         value: "50"
 

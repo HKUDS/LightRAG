@@ -9,6 +9,10 @@ consistency and makes maintenance easier.
 # Default values for server settings
 DEFAULT_WOKERS = 2
 DEFAULT_MAX_GRAPH_NODES = 1000
+# Minimum degree (connections) for a node to be included in BFS graph traversal
+# Nodes with fewer connections are considered peripheral and excluded from visualization
+# Set to 0 to include all nodes, 2+ to focus on well-connected central nodes
+DEFAULT_MIN_DEGREE_FOR_GRAPH_BFS = 1
 
 # Default values for extraction settings
 DEFAULT_SUMMARY_LANGUAGE = "English"  # Default language for document processing
