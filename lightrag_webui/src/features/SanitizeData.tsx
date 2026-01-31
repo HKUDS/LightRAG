@@ -118,32 +118,46 @@ export default function SanitizeData() {
         );
         setEntities(sorted);
 
-        // New: Build entityTypeMap
+        // New: Build entityTypeMap and entityOrphanMap separately
         const fetchEntityTypes = async () => {
           try {
             const typeMap: Record<string, string> = {};
+            // First loop: Fetch types with max_nodes=1
+            await Promise.all(
+              sorted.map(async (name) => {
+                try {
+                  const detailRes = await axios.get(
+                    `${API_BASE}/graphs?label=${encodeURIComponent(name)}&max_depth=1&max_nodes=1`
+                  );
+                  const type = detailRes.data.nodes?.[0]?.properties?.entity_type || '';
+                  typeMap[name] = type;
+                } catch (err) {
+                  console.error(`Error fetching type for ${name}:`, err);
+                }
+              })
+            );
+
             const orphanMap: Record<string, boolean> = {};
+            // Second loop: Fetch for orphans with max_nodes=2
             await Promise.all(
               sorted.map(async (name) => {
                 try {
                   const detailRes = await axios.get(
                     `${API_BASE}/graphs?label=${encodeURIComponent(name)}&max_depth=1&max_nodes=2`
                   );
-                  const type = detailRes.data.nodes?.[0]?.properties?.entity_type || '';
-                  typeMap[name] = type;
-
                   // Detect orphan: no extra nodes or edges
                   const isOrphan = (detailRes.data.nodes?.length || 0) <= 1 && (detailRes.data.edges?.length || 0) === 0;
                   orphanMap[name] = isOrphan;
                 } catch (err) {
-                  console.error(`Error fetching details for ${name}:`, err);
+                  console.error(`Error fetching orphan details for ${name}:`, err);
                 }
               })
             );
+
             setEntityTypeMap(typeMap);
             setEntityOrphanMap(orphanMap);
-            console.log('Types loaded:', Object.keys(typeMap).length); // Debug
-            console.log('Orphans loaded:', Object.values(orphanMap).filter(Boolean).length); // Debug: count of orphans
+            // console.log('Types loaded:', Object.keys(typeMap).length); // Debug
+            // console.log('Orphans loaded:', Object.values(orphanMap).filter(Boolean).length); // Debug: count of orphans
           } catch (err) {
             console.error('Failed to fetch entity details:', err);
           } finally {
@@ -241,6 +255,18 @@ export default function SanitizeData() {
     }
   }, [selectTypeModalOpen]);
 
+  useEffect(() => {
+    if (filterMode === 'type' && entityType) {
+      // console.log('Re-filtering for type:', entityType); // Optional debug
+      const entitiesOfType = entities.filter((name) => entityTypeMap[name] === entityType).sort((a, b) =>
+        a.toLowerCase().localeCompare(b.toLowerCase())
+      );
+      setTypeFilteredEntities(entitiesOfType);
+    } else if (filterMode === 'type' && !entityType) {
+      setTypeFilteredEntities([]); // Clear if type is empty
+    }
+  }, [entityType, filterMode, entities, entityTypeMap]);
+
   // Pagination handlers
   const goToFirst = () => setCurrentPage(1);
   const goToPrev = () => setCurrentPage((p) => Math.max(1, p - 1));
@@ -268,18 +294,25 @@ export default function SanitizeData() {
   };
 
   const handleShowAllOfType = () => {
+    if (typesLoading) {
+      alert('Entity types are still loading. Please wait a moment and try again.');
+      return;
+    }
     if (!entityType) {
       alert('Please select or enter an entity type first.');
       return;
     }
     
+    // console.log('Showing all of type:', entityType);
     const entitiesOfType = entities.filter((name) => entityTypeMap[name] === entityType).sort((a, b) =>
       a.toLowerCase().localeCompare(b.toLowerCase())
     );
+    // console.log('Filtered count:', entitiesOfType.length);
+    // console.log('entityTypeMap sample:', Object.entries(entityTypeMap).slice(0, 5));
+    
     setTypeFilteredEntities(entitiesOfType);
     setFilterMode('type');
     setCurrentPage(1);
-    // Optional: clear filter when entering mode
     setFilterText('');
   };
 
@@ -358,16 +391,16 @@ export default function SanitizeData() {
 
   const fetchEntityDetail = async (entityName: string, force = false) => {
 
-    console.log(`fetchEntityDetail called for: "${entityName}"`);
+    // console.log(`fetchEntityDetail called for: "${entityName}"`);
 
     // Skip if we already have it
     //if (entityDetails[entityName]) return;
     if (entityDetails[entityName] && !force) {
-      console.log(`Already have details for "${entityName}" - skipping`);
+      // console.log(`Already have details for "${entityName}" - skipping`);
       return;
     }
 
-    console.log(`Fetching details for "${entityName}"...`);
+    // console.log(`Fetching details for "${entityName}"...`);
 
     setLoadingDetails((prev) => [...prev, entityName]);
 
@@ -474,7 +507,7 @@ export default function SanitizeData() {
     });
 
     if (response.status === 200) {
-      console.log(`Successfully saved description for ${editingEntityName}`);
+      // console.log(`Successfully saved description for ${editingEntityName}`);
 
       // Update local state with the new description
       setEntityDetails((prev) => ({
@@ -503,7 +536,7 @@ export default function SanitizeData() {
   try {
     const response = await axios.post(`${API_BASE}/graph/refresh-data`);
     if (response.status === 200) {
-      console.log("Graph data refresh triggered successfully");
+      // console.log("Graph data refresh triggered successfully");
       // Optional: show toast/alert later
     }
   } catch (err) {
@@ -580,7 +613,7 @@ export default function SanitizeData() {
         },
       });
 
-      console.log(`Deleted relationship: ${from} → ${to}`);
+      // console.log(`Deleted relationship: ${from} → ${to}`);
 
       // Remove from temp edits
       setRelationshipEdits((prev) => {
