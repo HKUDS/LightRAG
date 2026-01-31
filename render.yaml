@@ -179,6 +179,8 @@ services:
         value: "true"
       - key: PENDING_SUMMARIZE_THRESHOLD
         value: "4000"  # tokens threshold to trigger re-summarization
+      - key: FORCE_LLM_SUMMARY_ON_MERGE
+        value: "20"  # Number of description fragments to trigger LLM summary
 
       #############################
       # Performance Configuration
@@ -189,6 +191,10 @@ services:
         value: "64"
       - key: MAX_GRAPH_NODES
         value: "3000"
+      - key: MIN_DEGREE_FOR_GRAPH_BFS
+        value: "2"  # Exclude peripheral nodes (degree < 2) from graph visualization
+      - key: GRAPH_MAX_ASYNC_MULTIPLIER
+        value: "4"  # Multiplier for async operations in graph storage
       - key: CPU_YIELD_INTERVAL
         value: "50"
 
