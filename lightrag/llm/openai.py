@@ -310,6 +310,12 @@ async def openai_complete_if_cache(
     if timeout is not None:
         kwargs["timeout"] = timeout
 
+    # Convert max_tokens to max_completion_tokens for newer models (gpt-5, o1, o3, etc.)
+    # The max_completion_tokens parameter is the newer standard that works with all recent models
+    if "max_tokens" in kwargs:
+        max_tokens_value = kwargs.pop("max_tokens")
+        kwargs["max_completion_tokens"] = max_tokens_value
+
     # Determine the correct model identifier to use
     # For Azure OpenAI, we must use the deployment name instead of the model name
     api_model = azure_deployment if use_azure and azure_deployment else model

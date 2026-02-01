@@ -9,6 +9,10 @@ consistency and makes maintenance easier.
 # Default values for server settings
 DEFAULT_WOKERS = 2
 DEFAULT_MAX_GRAPH_NODES = 1000
+# Minimum degree (connections) for a node to be included in BFS graph traversal
+# Nodes with fewer connections are considered peripheral and excluded from visualization
+# Set to 0 to include all nodes, 2+ to focus on well-connected central nodes
+DEFAULT_MIN_DEGREE_FOR_GRAPH_BFS = 1
 
 # Default values for extraction settings
 DEFAULT_SUMMARY_LANGUAGE = "English"  # Default language for document processing
@@ -23,6 +27,13 @@ DEFAULT_SUMMARY_MAX_TOKENS = 1200
 DEFAULT_SUMMARY_LENGTH_RECOMMENDED = 600
 # Maximum token size sent to LLM for summary
 DEFAULT_SUMMARY_CONTEXT_SIZE = 12000
+
+# Entity/Relation Maturity configuration defaults
+# Once an entity is summarized, new descriptions are accumulated in pending_descriptions
+# until pending_tokens exceeds this threshold, triggering a new summarization
+DEFAULT_ENABLE_ENTITY_MATURITY = True
+DEFAULT_PENDING_SUMMARIZE_THRESHOLD = 2000  # tokens threshold to trigger re-summarization
+
 # Default entities to extract if ENTITY_TYPES is not specified in .env
 DEFAULT_ENTITY_TYPES = [
     "Person",

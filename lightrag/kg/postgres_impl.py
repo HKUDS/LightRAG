@@ -108,6 +108,10 @@ class PostgreSQLDB:
             asyncpg.exceptions.PostgresConnectionError,
             asyncpg.exceptions.ConnectionDoesNotExistError,
             asyncpg.exceptions.ConnectionFailureError,
+            # Deadlock and serialization errors are transient - safe to retry with backoff
+            # These occur during concurrent uploads to the same workspace
+            asyncpg.exceptions.DeadlockDetectedError,
+            asyncpg.exceptions.SerializationError,
         )
 
         # Connection retry configuration
@@ -322,13 +326,33 @@ class PostgreSQLDB:
     async def _before_sleep(self, retry_state: RetryCallState) -> None:
         """Hook invoked by tenacity before sleeping between retries."""
         exc = retry_state.outcome.exception() if retry_state.outcome else None
-        logger.warning(
-            "PostgreSQL transient connection issue on attempt %s/%s: %r",
-            retry_state.attempt_number,
-            self.connection_retry_attempts,
+
+        # Check if this is a deadlock/serialization error (not a connection issue)
+        is_deadlock = isinstance(
             exc,
+            (
+                asyncpg.exceptions.DeadlockDetectedError,
+                asyncpg.exceptions.SerializationError,
+            ),
         )
-        await self._reset_pool()
+
+        if is_deadlock:
+            # Deadlock is a concurrency issue, not a connection issue - don't reset pool
+            logger.warning(
+                "PostgreSQL deadlock/serialization on attempt %s/%s (will retry): %r",
+                retry_state.attempt_number,
+                self.connection_retry_attempts,
+                exc,
+            )
+        else:
+            # Connection-related transient error - reset pool
+            logger.warning(
+                "PostgreSQL transient connection issue on attempt %s/%s: %r",
+                retry_state.attempt_number,
+                self.connection_retry_attempts,
+                exc,
+            )
+            await self._reset_pool()
 
     async def _run_with_retry(
         self,
@@ -1624,6 +1648,32 @@ class PostgreSQLDB:
             logger.error(f"PostgreSQL database,\nsql:{sql},\ndata:{data},\nerror:{e}")
             raise
 
+    async def executemany(
+        self,
+        sql: str,
+        records: list[tuple],
+    ) -> None:
+        """Execute a batch operation with automatic retry for transient failures.
+
+        This method wraps asyncpg's executemany with the same retry logic used
+        by execute() and query(), handling deadlocks and connection errors.
+
+        Args:
+            sql: The SQL statement to execute with $1, $2, ... placeholders
+            records: List of tuples, each tuple contains values for one row
+        """
+        async def _operation(connection: asyncpg.Connection) -> None:
+            await connection.executemany(sql, records)
+
+        try:
+            await self._run_with_retry(_operation)
+        except Exception as e:
+            logger.error(
+                f"PostgreSQL executemany failed: sql={sql[:100]}..., "
+                f"records_count={len(records)}, error={e}"
+            )
+            raise
+
 
 class ClientManager:
     _instances: dict[str, Any] = {"db": None, "ref_count": 0}
@@ -1820,13 +1870,17 @@ class PGKVStorage(BaseKVStorage):
             if self.db is None:
                 self.db = await ClientManager.get_client()
 
-            # Implement workspace priority: PostgreSQLDB.workspace > self.workspace > "default"
-            if self.db.workspace:
-                # Use PostgreSQLDB's workspace (highest priority)
-                self.workspace = self.db.workspace
-            elif hasattr(self, "workspace") and self.workspace:
-                # Use storage class's workspace (medium priority)
+            # Implement workspace priority: self.workspace > PostgreSQLDB.workspace > "default"
+            # IMPORTANT: self.workspace (passed during storage initialization) has highest priority
+            # to ensure proper workspace isolation when multiple workspaces share the same DB connection
+            # NOTE: Use "is not None" instead of truthiness to handle empty strings correctly!
+            # Empty string "" is a valid workspace value and should NOT be overwritten.
+            if hasattr(self, "workspace") and self.workspace is not None:
+                # Use storage class's workspace (highest priority) - passed from LightRAG instance
                 pass
+            elif self.db.workspace is not None:
+                # Use PostgreSQLDB's workspace (medium priority) - from env config
+                self.workspace = self.db.workspace
             else:
                 # Use "default" for compatibility (lowest priority)
                 self.workspace = "default"
@@ -2251,12 +2305,14 @@ class PGKVStorage(BaseKVStorage):
                     current_time,
                 ))
 
-        # Execute batch insert using executemany (single DB round-trip)
+        # Execute batch insert using executemany with retry for deadlocks
         if records and upsert_sql:
-            async with self.db.pool.acquire() as conn:
-                await conn.executemany(upsert_sql, records)
-            logger.debug(
-                f"[{self.workspace}] Batch inserted {len(records)} KV records to {self.namespace}"
+            import time as time_module
+            upsert_start = time_module.perf_counter()
+            await self.db.executemany(upsert_sql, records)
+            upsert_time = (time_module.perf_counter() - upsert_start) * 1000
+            logger.info(
+                f"[PERF] KV upsert: {self.namespace}={upsert_time:.1f}ms ({len(records)} records)"
             )
 
     async def index_done_callback(self) -> None:
@@ -2355,13 +2411,17 @@ class PGVectorStorage(BaseVectorStorage):
             if self.db is None:
                 self.db = await ClientManager.get_client()
 
-            # Implement workspace priority: PostgreSQLDB.workspace > self.workspace > "default"
-            if self.db.workspace:
-                # Use PostgreSQLDB's workspace (highest priority)
-                self.workspace = self.db.workspace
-            elif hasattr(self, "workspace") and self.workspace:
-                # Use storage class's workspace (medium priority)
+            # Implement workspace priority: self.workspace > PostgreSQLDB.workspace > "default"
+            # IMPORTANT: self.workspace (passed during storage initialization) has highest priority
+            # to ensure proper workspace isolation when multiple workspaces share the same DB connection
+            # NOTE: Use "is not None" instead of truthiness to handle empty strings correctly!
+            # Empty string "" is a valid workspace value and should NOT be overwritten.
+            if hasattr(self, "workspace") and self.workspace is not None:
+                # Use storage class's workspace (highest priority) - passed from LightRAG instance
                 pass
+            elif self.db.workspace is not None:
+                # Use PostgreSQLDB's workspace (medium priority) - from env config
+                self.workspace = self.db.workspace
             else:
                 # Use "default" for compatibility (lowest priority)
                 self.workspace = "default"
@@ -2463,8 +2523,12 @@ class PGVectorStorage(BaseVectorStorage):
             for i in range(0, len(contents), self._max_batch_size)
         ]
 
+        import time as time_module
+        embed_start = time_module.perf_counter()
         embedding_tasks = [self.embedding_func(batch) for batch in batches]
         embeddings_list = await asyncio.gather(*embedding_tasks)
+        embed_time = (time_module.perf_counter() - embed_start) * 1000
+        logger.info(f"[PERF] VDB upsert: embedding={embed_time:.1f}ms ({len(contents)} items in {len(batches)} batches)")
 
         embeddings = np.concatenate(embeddings_list)
         for i, d in enumerate(list_data):
@@ -2531,12 +2595,13 @@ class PGVectorStorage(BaseVectorStorage):
         else:
             raise ValueError(f"{self.namespace} is not supported")
 
-        # Execute batch insert using executemany
+        # Execute batch insert using executemany with retry for deadlocks
         if records and upsert_sql:
-            async with self.db.pool.acquire() as conn:
-                await conn.executemany(upsert_sql, records)
-            logger.debug(
-                f"[{self.workspace}] Batch inserted {len(records)} records to {self.namespace}"
+            db_start = time_module.perf_counter()
+            await self.db.executemany(upsert_sql, records)
+            db_time = (time_module.perf_counter() - db_start) * 1000
+            logger.info(
+                f"[PERF] VDB upsert: db_insert={db_time:.1f}ms ({len(records)} records to {self.namespace})"
             )
 
     #################### query method ###############
@@ -2800,13 +2865,17 @@ class PGDocStatusStorage(DocStatusStorage):
             if self.db is None:
                 self.db = await ClientManager.get_client()
 
-            # Implement workspace priority: PostgreSQLDB.workspace > self.workspace > "default"
-            if self.db.workspace:
-                # Use PostgreSQLDB's workspace (highest priority)
-                self.workspace = self.db.workspace
-            elif hasattr(self, "workspace") and self.workspace:
-                # Use storage class's workspace (medium priority)
+            # Implement workspace priority: self.workspace > PostgreSQLDB.workspace > "default"
+            # IMPORTANT: self.workspace (passed during storage initialization) has highest priority
+            # to ensure proper workspace isolation when multiple workspaces share the same DB connection
+            # NOTE: Use "is not None" instead of truthiness to handle empty strings correctly!
+            # Empty string "" is a valid workspace value and should NOT be overwritten.
+            if hasattr(self, "workspace") and self.workspace is not None:
+                # Use storage class's workspace (highest priority) - passed from LightRAG instance
                 pass
+            elif self.db.workspace is not None:
+                # Use PostgreSQLDB's workspace (medium priority) - from env config
+                self.workspace = self.db.workspace
             else:
                 # Use "default" for compatibility (lowest priority)
                 self.workspace = "default"
@@ -3533,6 +3602,9 @@ class PGDocStatusStorage(DocStatusStorage):
         Returns:
             Document data dict if a document was claimed, None if no documents available
         """
+        import time as time_module
+        claim_start = time_module.perf_counter()
+
         await self.db._ensure_pool()
         assert self.db.pool is not None
 
@@ -3545,6 +3617,7 @@ class PGDocStatusStorage(DocStatusStorage):
                 # - Returns only unlocked rows
                 # Priority: pending first, then failed (for retry)
                 # Exclude documents marked as duplicates (they have no content in full_docs)
+                select_start = time_module.perf_counter()
                 row = await conn.fetchrow(
                     """
                     SELECT id, content_summary, content_length, chunks_count,
@@ -3563,11 +3636,14 @@ class PGDocStatusStorage(DocStatusStorage):
                     """,
                     self.workspace,
                 )
+                select_time = (time_module.perf_counter() - select_start) * 1000
 
                 if not row:
+                    logger.info(f"[PERF] Claim document: select={select_time:.1f}ms (no document available)")
                     return None
 
                 doc_id = row["id"]
+                logger.info(f"[PERF] Claim document: select={select_time:.1f}ms (found {doc_id})")
 
                 # Update status to PROCESSING within the same transaction
                 await conn.execute(
@@ -3601,6 +3677,9 @@ class PGDocStatusStorage(DocStatusStorage):
                         metadata = json.loads(metadata)
                     except json.JSONDecodeError:
                         metadata = {}
+
+                total_claim_time = (time_module.perf_counter() - claim_start) * 1000
+                logger.info(f"[PERF] Claim document: total={total_claim_time:.1f}ms (claimed {doc_id})")
 
                 return {
                     "id": doc_id,
@@ -3787,13 +3866,17 @@ class PGGraphStorage(BaseGraphStorage):
             if self.db is None:
                 self.db = await ClientManager.get_client()
 
-            # Implement workspace priority: PostgreSQLDB.workspace > self.workspace > "default"
-            if self.db.workspace:
-                # Use PostgreSQLDB's workspace (highest priority)
-                self.workspace = self.db.workspace
-            elif hasattr(self, "workspace") and self.workspace:
-                # Use storage class's workspace (medium priority)
+            # Implement workspace priority: self.workspace > PostgreSQLDB.workspace > "default"
+            # IMPORTANT: self.workspace (passed during storage initialization) has highest priority
+            # to ensure proper workspace isolation when multiple workspaces share the same DB connection
+            # NOTE: Use "is not None" instead of truthiness to handle empty strings correctly!
+            # Empty string "" is a valid workspace value and should NOT be overwritten.
+            if hasattr(self, "workspace") and self.workspace is not None:
+                # Use storage class's workspace (highest priority) - passed from LightRAG instance
                 pass
+            elif self.db.workspace is not None:
+                # Use PostgreSQLDB's workspace (medium priority) - from env config
+                self.workspace = self.db.workspace
             else:
                 # Use "default" for compatibility (lowest priority)
                 self.workspace = "default"

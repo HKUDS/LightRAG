@@ -64,6 +64,9 @@ from lightrag.constants import (
     DEFAULT_CROSS_DOC_RESOLUTION_MODE,
     DEFAULT_CROSS_DOC_THRESHOLD_ENTITIES,
     DEFAULT_CROSS_DOC_VDB_TOP_K,
+    # Entity/Relation Maturity
+    DEFAULT_ENABLE_ENTITY_MATURITY,
+    DEFAULT_PENDING_SUMMARIZE_THRESHOLD,
 )
 from lightrag.utils import get_env_value
 
@@ -231,6 +234,23 @@ class LightRAG:
             "FORCE_LLM_SUMMARY_ON_MERGE", DEFAULT_FORCE_LLM_SUMMARY_ON_MERGE, int
         )
     )
+
+    enable_entity_maturity: bool = field(
+        default=get_env_value(
+            "ENABLE_ENTITY_MATURITY", DEFAULT_ENABLE_ENTITY_MATURITY, bool
+        )
+    )
+    """When enabled, entities that have been summarized accumulate new descriptions
+    in a pending field instead of re-summarizing on every merge. Re-summarization
+    only occurs when pending_tokens exceeds pending_summarize_threshold."""
+
+    pending_summarize_threshold: int = field(
+        default=get_env_value(
+            "PENDING_SUMMARIZE_THRESHOLD", DEFAULT_PENDING_SUMMARIZE_THRESHOLD, int
+        )
+    )
+    """Token threshold for pending descriptions to trigger re-summarization
+    of mature entities. Only used when enable_entity_maturity is True."""
 
     # Text chunking
     # ---
@@ -1521,6 +1541,7 @@ class LightRAG:
                         "original_doc_id": doc_id,
                         "original_workspace": existing_workspace,  # Include workspace for Cleo verification
                         "original_track_id": existing_track_id,
+                        "original_status": existing_status,  # "processing", "pending", "done", etc.
                     },
                 }
 

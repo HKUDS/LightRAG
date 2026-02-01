@@ -12,15 +12,25 @@ Tables:
 """
 
 import json
+import os
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, final
 
 from lightrag.base import BaseGraphStorage
+from lightrag.constants import DEFAULT_MIN_DEGREE_FOR_GRAPH_BFS
 from lightrag.exceptions import PoolNotAvailableError
 from lightrag.types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
 from lightrag.utils import logger
+
+
+def _get_min_degree_for_graph_bfs() -> int:
+    """Get minimum degree threshold for graph BFS from environment or default."""
+    try:
+        return int(os.getenv("MIN_DEGREE_FOR_GRAPH_BFS", str(DEFAULT_MIN_DEGREE_FOR_GRAPH_BFS)))
+    except ValueError:
+        return DEFAULT_MIN_DEGREE_FOR_GRAPH_BFS
 
 from .postgres_impl import PostgreSQLDB, ClientManager, get_data_init_lock
 
@@ -245,6 +255,8 @@ class PGGraphStorageSimple(BaseGraphStorage):
             DO UPDATE SET properties = $3, updated_at = CURRENT_TIMESTAMP
         """
 
+        import time as time_module
+        upsert_start = time_module.perf_counter()
         async with self._acquire_connection() as conn:
             # Use executemany for batch insert
             records = [
@@ -252,10 +264,11 @@ class PGGraphStorageSimple(BaseGraphStorage):
                 for node_id, node_data in nodes.items()
             ]
             await conn.executemany(query, records)
+        upsert_time = (time_module.perf_counter() - upsert_start) * 1000
 
         # Invalidate cache
         self._node_count_cache = None
-        logger.debug(f"[{self.workspace}] Batch upserted {len(nodes)} nodes")
+        logger.info(f"[PERF] Graph upsert_nodes: {upsert_time:.1f}ms ({len(nodes)} nodes)")
 
     async def delete_node(self, node_id: str) -> None:
         """Delete a node and its connected edges."""
@@ -415,6 +428,8 @@ class PGGraphStorageSimple(BaseGraphStorage):
             DO UPDATE SET properties = $4, updated_at = CURRENT_TIMESTAMP
         """
 
+        import time as time_module
+        upsert_start = time_module.perf_counter()
         async with self._acquire_connection() as conn:
             # Normalize edge direction and prepare records
             records = []
@@ -426,8 +441,9 @@ class PGGraphStorageSimple(BaseGraphStorage):
                     (self.workspace, source_id, target_id, json.dumps(edge_data, ensure_ascii=False))
                 )
             await conn.executemany(query, records)
+        upsert_time = (time_module.perf_counter() - upsert_start) * 1000
 
-        logger.debug(f"[{self.workspace}] Batch upserted {len(edges)} edges")
+        logger.info(f"[PERF] Graph upsert_edges: {upsert_time:.1f}ms ({len(edges)} edges)")
 
     async def remove_edges(self, edges: list[tuple[str, str]]) -> None:
         """Delete multiple edges in a single SQL statement.
@@ -617,6 +633,8 @@ class PGGraphStorageSimple(BaseGraphStorage):
 
     async def get_all_nodes(self) -> list[dict]:
         """Get all nodes in the graph."""
+        import time as time_module
+        start_time = time_module.perf_counter()
         query = """
             SELECT node_id, properties FROM LIGHTRAG_GRAPH_NODES
             WHERE workspace = $1
@@ -632,7 +650,9 @@ class PGGraphStorageSimple(BaseGraphStorage):
                     node_data = dict(props) if props else {}
                 node_data["id"] = row["node_id"]
                 result.append(node_data)
-            return result
+        elapsed = (time_module.perf_counter() - start_time) * 1000
+        logger.info(f"[PERF] Graph get_all_nodes: {elapsed:.1f}ms ({len(result)} nodes)")
+        return result
 
     async def get_all_edges(self) -> list[dict]:
         """Get all edges in the graph."""
@@ -776,16 +796,33 @@ class PGGraphStorageSimple(BaseGraphStorage):
         This is slower due to multiple round-trips but works without the stored procedure.
 
         Strategy:
-        1. BFS traversal to discover nodes (no edge accumulation during BFS)
-        2. Single final query to fetch all edges where BOTH endpoints are in the node set
+        1. Precompute all node degrees in the workspace
+        2. BFS traversal to discover nodes, filtering by minimum degree
+        3. Single final query to fetch all edges where BOTH endpoints are in the node set
 
         This guarantees no orphan edges (edges referencing nodes not in the result),
         which would crash frontend graph renderers like d3.js force layout.
         """
         nodes_dict: dict[str, KnowledgeGraphNode] = {}
         is_truncated = False
+        min_degree = _get_min_degree_for_graph_bfs()
 
         async with self._acquire_connection() as conn:
+            # Precompute all node degrees for efficient filtering during BFS
+            # This single query is more efficient than per-neighbor lookups
+            degree_query = """
+                SELECT node_id, COUNT(*) AS degree FROM (
+                    SELECT source_id AS node_id FROM LIGHTRAG_GRAPH_EDGES WHERE workspace = $1
+                    UNION ALL
+                    SELECT target_id AS node_id FROM LIGHTRAG_GRAPH_EDGES WHERE workspace = $1
+                ) e GROUP BY node_id
+            """
+            degree_rows = await conn.fetch(degree_query, self.workspace)
+            node_degrees: dict[str, int] = {row["node_id"]: row["degree"] for row in degree_rows}
+            logger.debug(
+                f"[GRAPH] Precomputed degrees for {len(node_degrees)} nodes, "
+                f"min_degree_filter={min_degree}"
+            )
             # Find starting nodes, ordered by degree (most connected first)
             # so BFS starts from central/hub nodes rather than peripheral ones.
             # For '*' (all nodes): use INNER JOIN to exclude isolated nodes (degree=0)
@@ -871,6 +908,12 @@ class PGGraphStorageSimple(BaseGraphStorage):
                             else edge_row["source_id"]
                         )
                         if neighbor_id not in visited:
+                            # Filter by minimum degree to exclude peripheral/isolated nodes
+                            # This keeps the graph focused on well-connected central entities
+                            neighbor_degree = node_degrees.get(neighbor_id, 0)
+                            if neighbor_degree < min_degree:
+                                continue  # Skip low-degree peripheral nodes
+
                             if len(nodes_dict) >= max_nodes:
                                 is_truncated = True
                                 break
