@@ -1,6 +1,9 @@
 -- lightrag_get_knowledge_graph: Server-side BFS for knowledge graph retrieval.
 -- Eliminates N+1 round-trips by performing BFS entirely in PostgreSQL.
 --
+-- Algorithm: Start from ONE seed node (highest degree) and BFS outward.
+-- This guarantees all returned nodes are connected (no orphan nodes).
+--
 -- Parameters:
 --   p_workspace: workspace identifier
 --   p_node_label: label to match nodes ('*' for all)
@@ -25,8 +28,9 @@ DECLARE
     v_next_frontier TEXT[];
     v_visited TEXT[] := '{}';
     v_depth INT := 0;
-    v_node_count INT := 0;
     v_node_degrees JSONB;
+    v_seed_node TEXT;
+    v_total_eligible INT;
     rec RECORD;
 BEGIN
     -- Precompute all node degrees for filtering during BFS
@@ -41,61 +45,79 @@ BEGIN
         ) e GROUP BY node_id
     ) deg;
 
-    -- Find starting nodes, ordered by degree (most connected first)
-    -- so BFS starts from central/hub nodes rather than peripheral ones.
-    -- Filter by p_min_degree to exclude peripheral nodes from the start.
+    -- Find ONE seed node (highest degree) to start BFS from.
+    -- This ensures all returned nodes are connected via BFS traversal.
     IF p_node_label = '*' THEN
-        SELECT array_agg(node_id), count(*)
-        INTO v_frontier, v_node_count
-        FROM (
-            SELECT n.node_id
-            FROM lightrag_graph_nodes n
-            INNER JOIN (
-                SELECT node_id, COUNT(*) AS degree FROM (
-                    SELECT source_id AS node_id FROM lightrag_graph_edges WHERE workspace = p_workspace
-                    UNION ALL
-                    SELECT target_id AS node_id FROM lightrag_graph_edges WHERE workspace = p_workspace
-                ) e GROUP BY node_id
-            ) d ON n.node_id = d.node_id
-            WHERE n.workspace = p_workspace
-              AND d.degree >= p_min_degree  -- Filter by minimum degree
-            ORDER BY d.degree DESC
-            LIMIT p_max_nodes
-        ) sub;
+        -- Get the single highest-degree node as seed
+        SELECT n.node_id INTO v_seed_node
+        FROM lightrag_graph_nodes n
+        INNER JOIN (
+            SELECT node_id, COUNT(*) AS degree FROM (
+                SELECT source_id AS node_id FROM lightrag_graph_edges WHERE workspace = p_workspace
+                UNION ALL
+                SELECT target_id AS node_id FROM lightrag_graph_edges WHERE workspace = p_workspace
+            ) e GROUP BY node_id
+        ) d ON n.node_id = d.node_id
+        WHERE n.workspace = p_workspace
+          AND d.degree >= p_min_degree
+        ORDER BY d.degree DESC
+        LIMIT 1;
+
+        -- Count total eligible nodes (for is_truncated)
+        SELECT COUNT(*) INTO v_total_eligible
+        FROM lightrag_graph_nodes n
+        INNER JOIN (
+            SELECT node_id, COUNT(*) AS degree FROM (
+                SELECT source_id AS node_id FROM lightrag_graph_edges WHERE workspace = p_workspace
+                UNION ALL
+                SELECT target_id AS node_id FROM lightrag_graph_edges WHERE workspace = p_workspace
+            ) e GROUP BY node_id
+        ) d ON n.node_id = d.node_id
+        WHERE n.workspace = p_workspace
+          AND d.degree >= p_min_degree;
     ELSE
-        SELECT array_agg(node_id), count(*)
-        INTO v_frontier, v_node_count
-        FROM (
-            SELECT n.node_id
-            FROM lightrag_graph_nodes n
-            LEFT JOIN (
-                SELECT node_id, COUNT(*) AS degree FROM (
-                    SELECT source_id AS node_id FROM lightrag_graph_edges WHERE workspace = p_workspace
-                    UNION ALL
-                    SELECT target_id AS node_id FROM lightrag_graph_edges WHERE workspace = p_workspace
-                ) e GROUP BY node_id
-            ) d ON n.node_id = d.node_id
-            WHERE n.workspace = p_workspace
-              AND n.node_id ILIKE '%' || p_node_label || '%'
-              AND COALESCE(d.degree, 0) >= p_min_degree  -- Filter by minimum degree
-            ORDER BY COALESCE(d.degree, 0) DESC
-            LIMIT p_max_nodes
-        ) sub;
+        -- For label search, get the highest-degree matching node as seed
+        SELECT n.node_id INTO v_seed_node
+        FROM lightrag_graph_nodes n
+        LEFT JOIN (
+            SELECT node_id, COUNT(*) AS degree FROM (
+                SELECT source_id AS node_id FROM lightrag_graph_edges WHERE workspace = p_workspace
+                UNION ALL
+                SELECT target_id AS node_id FROM lightrag_graph_edges WHERE workspace = p_workspace
+            ) e GROUP BY node_id
+        ) d ON n.node_id = d.node_id
+        WHERE n.workspace = p_workspace
+          AND n.node_id ILIKE '%' || p_node_label || '%'
+          AND COALESCE(d.degree, 0) >= p_min_degree
+        ORDER BY COALESCE(d.degree, 0) DESC
+        LIMIT 1;
+
+        -- Count total eligible matching nodes
+        SELECT COUNT(*) INTO v_total_eligible
+        FROM lightrag_graph_nodes n
+        LEFT JOIN (
+            SELECT node_id, COUNT(*) AS degree FROM (
+                SELECT source_id AS node_id FROM lightrag_graph_edges WHERE workspace = p_workspace
+                UNION ALL
+                SELECT target_id AS node_id FROM lightrag_graph_edges WHERE workspace = p_workspace
+            ) e GROUP BY node_id
+        ) d ON n.node_id = d.node_id
+        WHERE n.workspace = p_workspace
+          AND n.node_id ILIKE '%' || p_node_label || '%'
+          AND COALESCE(d.degree, 0) >= p_min_degree;
     END IF;
 
-    IF v_frontier IS NULL THEN
+    -- No seed found - return empty result
+    IF v_seed_node IS NULL THEN
         RETURN jsonb_build_object('nodes', '[]'::jsonb, 'edges', '[]'::jsonb, 'is_truncated', FALSE);
     END IF;
 
-    IF v_node_count >= p_max_nodes THEN
-        v_is_truncated := TRUE;
-    END IF;
+    -- Initialize BFS with the single seed node
+    v_frontier := ARRAY[v_seed_node];
+    v_visited := ARRAY[v_seed_node];
 
-    v_visited := v_frontier;
-
-    -- BFS traversal: discover new nodes via edges (only when not already truncated)
-    -- Note: edges are NOT accumulated here. We fetch all edges in a single query at the end
-    -- to guarantee that every edge has both endpoints in the returned node set.
+    -- BFS traversal: discover new nodes via edges until max_nodes reached.
+    -- This guarantees all nodes in v_visited are connected (reachable from seed).
     -- Filter neighbors by minimum degree to exclude peripheral nodes during traversal.
     WHILE v_depth < p_max_depth AND array_length(v_frontier, 1) > 0 AND NOT v_is_truncated LOOP
         v_next_frontier := '{}';
@@ -136,6 +158,11 @@ BEGIN
         v_frontier := v_next_frontier;
         v_depth := v_depth + 1;
     END LOOP;
+
+    -- Set truncated if we couldn't include all eligible nodes
+    IF v_total_eligible > array_length(v_visited, 1) THEN
+        v_is_truncated := TRUE;
+    END IF;
 
     -- Build nodes JSONB from all visited node IDs
     SELECT COALESCE(jsonb_agg(
