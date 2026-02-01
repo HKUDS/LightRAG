@@ -27,11 +27,6 @@ export default function SanitizeData() {
   const listContainerRef = useRef<HTMLDivElement>(null);
   const [rowsPerPage, setRowsPerPage] = useState(20); // initial guess
 
-  // Modal state for editing description
-  const [editDescriptionModalOpen, setEditDescriptionModalOpen] = useState(false);
-  const [editingEntityName, setEditingEntityName] = useState<string | null>(null);
-  const [editedDescription, setEditedDescription] = useState('');
-
   // Modal state for editing relationships
   const [editRelationshipsModalOpen, setEditRelationshipsModalOpen] = useState(false);
   const [editingEntityForRel, setEditingEntityForRel] = useState<string | null>(null);
@@ -50,7 +45,7 @@ export default function SanitizeData() {
   const [selectedModalType, setSelectedModalType] = useState<string>('');
   const [loadingTypes, setLoadingTypes] = useState(false);
   const [modalFilterText, setModalFilterText] = useState('');
-  const [typeSelectionContext, setTypeSelectionContext] = useState<'main' | 'create'>('main');
+  const [typeSelectionContext, setTypeSelectionContext] = useState<'main' | 'create' | 'edit'>('main');
 
   const [typesLoading, setTypesLoading] = useState(true);  
   const [filterMode, setFilterMode] = useState<'none' | 'selected' | 'type' | 'orphan'>('none');
@@ -67,6 +62,50 @@ export default function SanitizeData() {
   const [createEntityType, setCreateEntityType] = useState('');
   const [createEntitySourceId, setCreateEntitySourceId] = useState('');
   const [createError, setCreateError] = useState<string | null>(null);  // For error messages
+
+    // Edit Entity Modal state (replaces old description-only)
+  const [editEntityModalOpen, setEditEntityModalOpen] = useState(false);
+  const [editEntityOriginalName, setEditEntityOriginalName] = useState<string | null>(null); // For rename detection
+  const [editEntityName, setEditEntityName] = useState('');
+  const [editEntityDescription, setEditEntityDescription] = useState('');
+  const [editEntityType, setEditEntityType] = useState('');
+  const [editEntitySourceId, setEditEntitySourceId] = useState('');
+  const [editError, setEditError] = useState<string | null>(null);
+
+  // Build entityTypeMap and entityOrphanMap with single fetch per entity
+  const fetchEntityDetails = async (entityList: string[]) => {
+    try {
+      const typeMap: Record<string, string> = {};
+      const orphanMap: Record<string, boolean> = {};
+      await Promise.all(
+        entityList.map(async (name: string) => {
+          try {
+            const detailRes = await axios.get(
+              `${API_BASE}/graphs?label=${encodeURIComponent(name)}&max_depth=1&max_nodes=2`
+            );
+            // Find main node by id (robust to order)
+            const mainNode = detailRes.data.nodes?.find((node: any) => node.id === name);
+            const type = mainNode?.properties?.entity_type || '';
+            typeMap[name] = type;
+
+            // Detect orphan from the same response
+            const isOrphan = (detailRes.data.nodes?.length || 0) <= 1 && (detailRes.data.edges?.length || 0) === 0;
+            orphanMap[name] = isOrphan;
+          } catch (err) {
+            console.error(`Error fetching details for ${name}:`, err);
+          }
+        })
+      );
+      setEntityTypeMap(typeMap);
+      setEntityOrphanMap(orphanMap);
+      // console.log('Types loaded:', Object.keys(typeMap).length); // Debug
+      // console.log('Orphans loaded:', Object.values(orphanMap).filter(Boolean).length); // Debug
+    } catch (err) {
+      console.error('Failed to fetch entity details:', err);
+    } finally {
+      setTypesLoading(false);
+    }
+  };
 
   // For loading the Select Type modal window
   const fetchAllTypes = async () => {
@@ -109,7 +148,6 @@ export default function SanitizeData() {
   }, [selectTypeModalOpen]);
 
   // Fetch entities
-  // Fetch entities
   useEffect(() => {
     const fetchEntities = async () => {
       try {
@@ -118,42 +156,7 @@ export default function SanitizeData() {
           a.toLowerCase().localeCompare(b.toLowerCase())
         );
         setEntities(sorted);
-
-        // Build entityTypeMap and entityOrphanMap with single fetch per entity
-        const fetchEntityDetails = async () => {
-          try {
-            const typeMap: Record<string, string> = {};
-            const orphanMap: Record<string, boolean> = {};
-            await Promise.all(
-              sorted.map(async (name: string) => {
-                try {
-                  const detailRes = await axios.get(
-                    `${API_BASE}/graphs?label=${encodeURIComponent(name)}&max_depth=1&max_nodes=2`
-                  );
-                  // Find main node by id (robust to order)
-                  const mainNode = detailRes.data.nodes?.find((node: any) => node.id === name);
-                  const type = mainNode?.properties?.entity_type || '';
-                  typeMap[name] = type;
-
-                  // Detect orphan from the same response (unchanged)
-                  const isOrphan = (detailRes.data.nodes?.length || 0) <= 1 && (detailRes.data.edges?.length || 0) === 0;
-                  orphanMap[name] = isOrphan;
-                } catch (err) {
-                  console.error(`Error fetching details for ${name}:`, err);
-                }
-              })
-            );
-            setEntityTypeMap(typeMap);
-            setEntityOrphanMap(orphanMap);
-            // console.log('Types loaded:', Object.keys(typeMap).length); // Debug
-            // console.log('Orphans loaded:', Object.values(orphanMap).filter(Boolean).length); // Debug: count of orphans
-          } catch (err) {
-            console.error('Failed to fetch entity details:', err);
-          } finally {
-            setTypesLoading(false);
-          }
-        };
-        fetchEntityDetails();  // ← Call the details fetch after setting entities
+        fetchEntityDetails(sorted);  // ← Pass sorted here
       } catch (err) {
         console.error('Failed to load entities:', err);
       }
@@ -209,20 +212,20 @@ export default function SanitizeData() {
   useEffect(() => {
     const handleEscKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
-        if (editDescriptionModalOpen) {
-          setEditDescriptionModalOpen(false);
-        } else if (editRelationshipsModalOpen) {
+        if (editRelationshipsModalOpen) {
           setEditRelationshipsModalOpen(false);
         } else if (selectTypeModalOpen) { 
           setSelectTypeModalOpen(false);
         } else if (createEntityModalOpen) { 
           setCreateEntityModalOpen(false);
+        } else if (editEntityModalOpen) {
+          setEditEntityModalOpen(false);
         }
       }
     };
     document.addEventListener('keydown', handleEscKey);
     return () => document.removeEventListener('keydown', handleEscKey);
-  }, [editDescriptionModalOpen, editRelationshipsModalOpen, selectTypeModalOpen]);
+  }, [createEntityModalOpen, editEntityModalOpen, editRelationshipsModalOpen, selectTypeModalOpen]);
 
   // Update unique entity types from selected entities' details
   useEffect(() => {
@@ -362,6 +365,8 @@ export default function SanitizeData() {
         // Also refresh types/orphans map if needed (call fetchEntityTypes again)
         // For simplicity, reload page or add a full refresh here if necessary
 
+        fetchSingleEntityDetails(createEntityName);
+
         alert(response.data.message);  // Show success message
       }
     } catch (err: any) {
@@ -375,6 +380,135 @@ export default function SanitizeData() {
         errorMsg = err.message;  // Broader fallback (e.g., network errors)
       }
       setCreateError(errorMsg);  // Show in modal
+    }
+  };
+
+  const handleSaveEntity = async () => {
+    if (!editEntityName.trim()) {
+      setEditError('Entity name is required.');
+      return;
+    }
+    // Prevent duplicate name frontend (but backend will confirm)
+    if (editEntityName !== editEntityOriginalName && entities.includes(editEntityName)) {
+      setEditError(`Entity name "${editEntityName}" already exists.`);
+      return;
+    }
+    setEditError(null);
+
+    try {
+      const updatedData: Record<string, any> = {
+        description: editEntityDescription,
+        entity_type: editEntityType,
+        source_id: editEntitySourceId || '',
+      };
+
+      const allowRename = editEntityName !== editEntityOriginalName;
+      const allowMerge = false;  // Explicitly false to prevent merge on conflict
+
+      if (allowRename) {
+        updatedData.entity_name = editEntityName;  // ← Put new name in updated_data
+      }
+
+      const payload = {
+        entity_name: editEntityOriginalName,
+        updated_data: updatedData,
+        allow_rename: allowRename,
+        allow_merge: allowMerge,
+      };
+
+      console.log('Sending edit payload:', JSON.stringify(payload, null, 2));  // Debug
+
+      const response = await axios.post(`${API_BASE}/graph/entity/edit`, payload);
+
+      console.log('Edit response:', response.data);  // Debug
+
+      if (response.status === 200) {
+        setEditEntityModalOpen(false);
+        setEditEntityOriginalName(null);
+
+        if (allowRename && editEntityOriginalName) {
+          // Update selectedEntities with new name
+          setSelectedEntities((prev) =>
+            prev.map((n) => (n === editEntityOriginalName ? editEntityName : n))
+          );
+
+          // Update firstEntity if it was the old name
+          if (firstEntity === editEntityOriginalName) {
+            setFirstEntity(editEntityName);
+          }
+
+          // Migrate entityDetails to new key
+          setEntityDetails((prev) => {
+            if (prev[editEntityOriginalName]) {
+              const newDetails = { ...prev };
+              newDetails[editEntityName] = { ...prev[editEntityOriginalName] };
+              delete newDetails[editEntityOriginalName];
+              return newDetails;
+            }
+            return prev;
+          });
+        }
+
+        // Full refresh
+        const listRes = await axios.get(`${API_BASE}/graph/label/list`);
+        const sorted = (listRes.data as string[]).sort((a, b) =>
+          a.toLowerCase().localeCompare(b.toLowerCase())
+        );
+        setEntities(sorted);
+        fetchEntityDetails(sorted);
+
+        if (allowRename && editEntityOriginalName) {
+          // Update orphanFilteredEntities if in orphan mode
+          if (filterMode === 'orphan') {
+            setOrphanFilteredEntities((prev) =>
+              prev.map((n) => (n === editEntityOriginalName ? editEntityName : n))
+            );
+          }
+
+          // Re-fetch single details (already there, but ensure)
+          fetchSingleEntityDetails(editEntityName);
+        }
+
+        // Re-fetch details for the renamed entity (ensures panel sync)
+        fetchEntityDetail(editEntityName, true);  // Force refresh
+
+        // Re-fetch details for final entity
+        const finalName = response.data.operation_summary?.final_entity || editEntityName;
+        fetchEntityDetail(finalName, true);
+
+        alert('Entity updated successfully!');
+      } else {
+        setEditError('Update failed with status: ' + response.status);
+      }
+    } catch (err: any) {
+      console.error('Failed to edit entity:', err);
+      let errorMsg = 'Failed to update entity.';
+      if (err.response?.data?.detail) {
+        errorMsg = err.response.data.detail;
+      } else if (err.response?.data?.message) {
+        errorMsg = err.response.data.message;
+      } else if (err.message) {
+        errorMsg = err.message;
+      }
+      setEditError(errorMsg);
+    }
+  };
+
+  const fetchSingleEntityDetails = async (name: string) => {
+    try {
+      const detailRes = await axios.get(
+        `${API_BASE}/graphs?label=${encodeURIComponent(name)}&max_depth=1&max_nodes=2`
+      );
+      // Find main node by id (robust to order)
+      const mainNode = detailRes.data.nodes?.find((node: any) => node.id === name);
+      const type = mainNode?.properties?.entity_type || '';
+      
+      const isOrphan = (detailRes.data.nodes?.length || 0) <= 1 && (detailRes.data.edges?.length || 0) === 0;
+      
+      setEntityTypeMap(prev => ({ ...prev, [name]: type }));
+      setEntityOrphanMap(prev => ({ ...prev, [name]: isOrphan }));
+    } catch (err) {
+      console.error(`Error fetching single entity details for ${name}:`, err);
     }
   };
 
@@ -462,10 +596,14 @@ export default function SanitizeData() {
     }
   };
 
-  const openEditDescriptionModal = (entityName: string) => {
-    setEditingEntityName(entityName);
-    setEditedDescription(entityDetails[entityName]?.description || '');
-    setEditDescriptionModalOpen(true);
+  const openEditEntityModal = (entityName: string) => {
+    setEditEntityOriginalName(entityName);
+    setEditEntityName(entityName);
+    setEditEntityDescription(entityDetails[entityName]?.description || '');
+    setEditEntityType(entityDetails[entityName]?.type || '');
+    setEditEntitySourceId(entityDetails[entityName]?.sourceId || '');
+    setEditError(null);
+    setEditEntityModalOpen(true);
   };
 
   const openEditRelationshipsModal = (entityName: string) => {
@@ -481,44 +619,6 @@ export default function SanitizeData() {
     setRelationshipEdits(initialEdits);
 
     setEditRelationshipsModalOpen(true);
-  };
-
-  const saveDescription = async () => {
-  if (!editingEntityName) return;
-
-  try {
-    const response = await axios.post(`${API_BASE}/graph/entity/edit`, {
-      entity_name: editingEntityName,
-      updated_data: {
-        description: editedDescription,
-      },
-      allow_rename: false,  // matches your Python code
-    });
-
-    if (response.status === 200) {
-      // console.log(`Successfully saved description for ${editingEntityName}`);
-
-      // Update local state with the new description
-      setEntityDetails((prev) => ({
-        ...prev,
-        [editingEntityName]: {
-          ...prev[editingEntityName],
-          description: editedDescription,
-        },
-      }));
-
-      // Close modal
-      setEditDescriptionModalOpen(false);
-      setEditingEntityName(null);
-      setEditedDescription('');
-
-      // Optional: show success message (you can use a toast library later)
-      // alert("Description saved successfully!");
-    }
-  } catch (err) {
-    console.error("Failed to save description:", err);
-    alert("Error saving description. Check console for details.");
-  }
   };
 
   const triggerGraphRefresh = async () => {
@@ -1035,10 +1135,10 @@ export default function SanitizeData() {
                       <div className="flex gap-2">
 
                         <button
-                          onClick={() => openEditDescriptionModal(name)}
+                          onClick={() => openEditEntityModal(name)}
                           className="text-xs text-blue-600 hover:underline"
                         >
-                          Edit Description
+                          Edit Entity
                         </button>
 
                         <button
@@ -1194,31 +1294,97 @@ export default function SanitizeData() {
         </div>
       </div>
 
-      {/* Edit Description Modal */}
-      {editDescriptionModalOpen && editingEntityName && (
+      {/* Edit Entity Modal */}
+      {editEntityModalOpen && editEntityOriginalName && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
           <div className="bg-white rounded-lg shadow-xl w-full max-w-2xl mx-4 p-6">
-            <h2 className="text-xl font-semibold mb-4">
-              Edit Description for: {editingEntityName}
+            <h2 className="text-xl font-semibold mb-4 text-gray-800">
+              Edit Entity: {editEntityOriginalName}
             </h2>
-
-            <textarea
-              className="w-full h-64 p-3 border border-gray-300 rounded resize-y focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono text-sm"
-              value={editedDescription}
-              onChange={(e) => setEditedDescription(e.target.value)}
-              placeholder="Enter description (use <SEP> to separate paragraphs if needed)"
-            />
-
+            {editError && (
+              <div className="mb-4 p-3 bg-red-100 text-red-700 rounded text-sm">
+                {editError}
+              </div>
+            )}
+            <div className="space-y-4">
+              {/* Entity Name */}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Entity Name (required, unique)
+                </label>
+                <input
+                  type="text"
+                  className="w-full px-3 py-2 border border-gray-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  value={editEntityName}
+                  onChange={(e) => setEditEntityName(e.target.value)}
+                  placeholder="e.g., Tesla"
+                />
+              </div>
+              {/* Description */}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Description
+                </label>
+                <textarea
+                  className="w-full h-32 p-3 border border-gray-300 rounded resize-y focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
+                  value={editEntityDescription}
+                  onChange={(e) => setEditEntityDescription(e.target.value)}
+                  placeholder="e.g., Electric vehicle manufacturer (use <SEP> for paragraphs)"
+                />
+              </div>
+              {/* Entity Type */}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Entity Type
+                </label>
+                <div className="flex items-stretch">
+                  <button 
+                    onClick={() => {
+                      setTypeSelectionContext('edit');
+                      setSelectTypeModalOpen(true);
+                    }}
+                    className="px-3 py-2 bg-gray-200 hover:bg-gray-300 border border-gray-300 border-r-0 rounded-l-md text-sm font-medium text-gray-800 cursor-pointer shadow-sm"
+                  >
+                    Select Type
+                  </button>
+                  <input
+                    type="text"
+                    className="flex-1 px-3 py-2 border border-gray-300 rounded-r-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    value={editEntityType}
+                    onChange={(e) => setEditEntityType(e.target.value)}
+                    placeholder="Type or select (e.g., ORGANIZATION)"
+                  />
+                </div>
+              </div>
+              {/* Source ID */}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Source ID (optional)
+                </label>
+                <input
+                  type="text"
+                  className="w-full px-3 py-2 border border-gray-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  value={editEntitySourceId}
+                  onChange={(e) => setEditEntitySourceId(e.target.value)}
+                  placeholder="e.g., chunk-123"
+                />
+              </div>
+            </div>
             <div className="mt-6 flex justify-end gap-3">
               <button
-                onClick={() => setEditDescriptionModalOpen(false)}
-                className="px-4 py-2 bg-gray-200 hover:bg-gray-300 rounded text-gray-800"
+                onClick={() => setEditEntityModalOpen(false)}
+                className="px-4 py-2 bg-gray-200 hover:bg-gray-300 rounded text-gray-800 text-sm"
               >
                 Cancel
               </button>
               <button
-                onClick={saveDescription}
-                className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded"
+                onClick={handleSaveEntity}
+                disabled={!editEntityName.trim()}
+                className={`px-4 py-2 rounded text-sm ${
+                  editEntityName.trim()
+                    ? 'bg-blue-600 hover:bg-blue-700 text-white'
+                    : 'bg-gray-300 text-gray-500 cursor-not-allowed'
+                }`}
               >
                 Save
               </button>
@@ -1383,6 +1549,8 @@ export default function SanitizeData() {
                         setEntityType(type);
                       } else if (typeSelectionContext === 'create') {
                         setCreateEntityType(type);
+                      } else if (typeSelectionContext === 'edit') {
+                        setEditEntityType(type);
                       }
                       setSelectTypeModalOpen(false);
                     }}                   
@@ -1411,13 +1579,15 @@ export default function SanitizeData() {
               </button>
               <button
                 onClick={() => {
-                  if (typeSelectionContext === 'main') {
-                    setEntityType(selectedModalType); 
-                  } else if (typeSelectionContext === 'create') {
-                    setCreateEntityType(selectedModalType);
-                  }
-                  setSelectTypeModalOpen(false);
-                }}
+                    if (typeSelectionContext === 'main') {
+                      setEntityType(selectedModalType); 
+                    } else if (typeSelectionContext === 'create') {
+                      setCreateEntityType(selectedModalType);
+                    } else if (typeSelectionContext === 'edit') {
+                      setEditEntityType(selectedModalType);
+                    }
+                    setSelectTypeModalOpen(false);
+                  }}
                 disabled={!selectedModalType}
                 className={`px-4 py-2 rounded text-sm transition-colors ${
                   selectedModalType 
