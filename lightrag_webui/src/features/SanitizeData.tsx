@@ -72,6 +72,13 @@ export default function SanitizeData() {
   const [editEntitySourceId, setEditEntitySourceId] = useState('');
   const [editError, setEditError] = useState<string | null>(null);
 
+  // Create Relationship Modal state
+  const [createRelModalOpen, setCreateRelModalOpen] = useState(false);
+  const [createRelDescription, setCreateRelDescription] = useState('');
+  const [createRelKeywords, setCreateRelKeywords] = useState('');
+  const [createRelWeight, setCreateRelWeight] = useState(1.0);
+  const [createRelError, setCreateRelError] = useState<string | null>(null);  
+
   // Build entityTypeMap and entityOrphanMap with single fetch per entity
   const fetchEntityDetails = async (entityList: string[]) => {
     try {
@@ -220,12 +227,14 @@ export default function SanitizeData() {
           setCreateEntityModalOpen(false);
         } else if (editEntityModalOpen) {
           setEditEntityModalOpen(false);
+        } else if (createRelModalOpen) {
+          setCreateRelModalOpen(false);
         }
       }
     };
     document.addEventListener('keydown', handleEscKey);
     return () => document.removeEventListener('keydown', handleEscKey);
-  }, [createEntityModalOpen, editEntityModalOpen, editRelationshipsModalOpen, selectTypeModalOpen]);
+  }, [createRelModalOpen, createEntityModalOpen, editEntityModalOpen, editRelationshipsModalOpen, selectTypeModalOpen]);
 
   // Update unique entity types from selected entities' details
   useEffect(() => {
@@ -550,6 +559,70 @@ export default function SanitizeData() {
     } catch (err) {
       console.error('Unexpected error during delete:', err);
       alert('An unexpected error occurred during delete.');
+    }
+  };
+
+  const handleCreateRelationship = async () => {
+    if (!createRelDescription.trim()) {
+      setCreateRelError('Relationship description is required.');
+      return;
+    }
+    setCreateRelError(null);
+
+    // Derive source and target
+    if (selectedEntities.length !== 2 || !targetEntity || !selectedEntities.includes(targetEntity)) {
+      setCreateRelError('Invalid selection or target.');
+      return;
+    }
+    const sourceEntity = selectedEntities.find((n) => n !== targetEntity) || '';
+
+    try {
+      const relationData: Record<string, any> = {
+        description: createRelDescription,
+        keywords: createRelKeywords,
+        weight: createRelWeight,
+      };
+
+      const payload = {
+        source_entity: sourceEntity,
+        target_entity: targetEntity,
+        relation_data: relationData,
+      };
+
+      console.log('Create rel payload:', JSON.stringify(payload, null, 2));  // Debug
+
+      const response = await axios.post(`${API_BASE}/graph/relation/create`, payload);
+
+      console.log('Create rel response:', response.data);  // Debug
+
+      if (response.status === 200) {
+        setCreateRelModalOpen(false);
+
+        // Refresh details for affected entities
+        fetchEntityDetail(sourceEntity, true);
+        fetchEntityDetail(targetEntity, true);
+
+        // Optional: Full refresh if needed (e.g., for orphans if relations change)
+        // const listRes = await axios.get(`${API_BASE}/graph/label/list`);
+        // const sorted = (listRes.data as string[]).sort(...);
+        // setEntities(sorted);
+        // fetchEntityDetails(sorted);
+
+        alert('Relationship created successfully!');
+      }
+    } catch (err: any) {
+      console.error('Failed to create relationship:', err);
+      let errorMsg = 'Failed to create relationship.';
+      if (err.response?.status === 400) {
+        errorMsg = err.response?.data?.detail || 'Invalid request—check if entities exist or duplicate relationship.';
+      } else if (err.response?.data?.detail) {
+        errorMsg = err.response.data.detail;
+      } else if (err.response?.data?.message) {
+        errorMsg = err.response.data.message;
+      } else if (err.message) {
+        errorMsg = err.message;
+      }
+      setCreateRelError(errorMsg);
     }
   };
 
@@ -1086,11 +1159,22 @@ export default function SanitizeData() {
             <button 
               className="px-3.5 py-1.5 bg-green-600 text-white rounded hover:bg-green-700 text-sm disabled:opacity-50"
               disabled={selectedEntities.length !== 2 || filterMode !== 'selected'}
+              onClick={() => {
+                if (!targetEntity || !selectedEntities.includes(targetEntity)) {
+                  alert('Please select a target entity from the dropdown first.');
+                  return;
+                }
+                setCreateRelModalOpen(true);
+                setCreateRelError(null);
+                setCreateRelDescription('');
+                setCreateRelKeywords('');
+                setCreateRelWeight(1.0);
+              }}
               title={
                 filterMode !== 'selected' 
                   ? "Enter 'Show Sel. Only' mode first\nto act on selected entities" 
                   : selectedEntities.length !== 2 
-                  ? "Select exactly two entities\nto enable this button" 
+                  ? "Select exactly two entities first\n(check the boxes on the left)" 
                   : undefined
               }
             >
@@ -1766,6 +1850,109 @@ export default function SanitizeData() {
           </div>
         </div>
       )}
+
+      {/* Create Relationship Modal */}
+      {createRelModalOpen && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg shadow-xl w-full max-w-2xl mx-4 p-6">
+            <h2 className="text-xl font-semibold mb-4 text-gray-800">
+              Create Relationship
+            </h2>
+            {createRelError && (
+              <div className="mb-4 p-3 bg-red-100 text-red-700 rounded text-sm">
+                {createRelError}
+              </div>
+            )}
+            <div className="space-y-4">
+              {/* Source and Target (non-editable) */}
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Source Entity
+                  </label>
+                  <input
+                    type="text"
+                    className="w-full px-3 py-2 border border-gray-300 rounded text-sm bg-gray-100 cursor-not-allowed"
+                    value={selectedEntities.find((n) => n !== targetEntity) || ''}
+                    disabled
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Target Entity
+                  </label>
+                  <input
+                    type="text"
+                    className="w-full px-3 py-2 border border-gray-300 rounded text-sm bg-gray-100 cursor-not-allowed"
+                    value={targetEntity}
+                    disabled
+                  />
+                </div>
+              </div>
+              {/* Description */}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Relationship Description (required)
+                </label>
+                <textarea
+                  className="w-full h-24 p-3 border border-gray-300 rounded resize-y focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
+                  value={createRelDescription}
+                  onChange={(e) => setCreateRelDescription(e.target.value)}
+                  placeholder="e.g., Elon Musk is the CEO of Tesla"
+                />
+              </div>
+              {/* Keywords */}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Keywords (comma-separated)
+                </label>
+                <input
+                  type="text"
+                  className="w-full px-3 py-2 border border-gray-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  value={createRelKeywords}
+                  onChange={(e) => setCreateRelKeywords(e.target.value)}
+                  placeholder="e.g., CEO, founder"
+                />
+              </div>
+              {/* Weight */}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Weight (default 1.0)
+                </label>
+                <input
+                  type="number"
+                  step="0.1"
+                  min="0.1"
+                  className="w-24 px-3 py-2 border border-gray-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  value={createRelWeight}
+                  onChange={(e) => setCreateRelWeight(parseFloat(e.target.value) || 1.0)}
+                />
+              </div>
+            </div>
+            <div className="mt-6 flex justify-end gap-3">
+              <button
+                onClick={() => setCreateRelModalOpen(false)}
+                className="px-4 py-2 bg-gray-200 hover:bg-gray-300 rounded text-gray-800 text-sm"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleCreateRelationship}
+                disabled={!createRelDescription.trim()}
+                className={`px-4 py-2 rounded text-sm ${
+                  createRelDescription.trim()
+                    ? 'bg-green-600 hover:bg-green-700 text-white'
+                    : 'bg-gray-300 text-gray-500 cursor-not-allowed'
+                }`}
+              >
+                Create
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+
 
 
     </div>
