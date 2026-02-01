@@ -494,6 +494,65 @@ export default function SanitizeData() {
     }
   };
 
+  const handleDeleteEntities = async () => {
+    if (selectedEntities.length === 0 || filterMode !== 'selected') return;  // Safety check
+
+    if (!confirm(`Are you sure you want to delete ${selectedEntities.length} entity/entities? This cannot be undone.`)) {
+      return;
+    }
+
+    try {
+      let successCount = 0;
+      let errorMessages: string[] = [];
+
+      for (const entityName of selectedEntities) {
+        try {
+          const payload = { entity_name: entityName };
+          const response = await axios.delete(`${API_BASE}/documents/delete_entity`, { data: payload });
+
+          if (response.status === 200) {
+            successCount++;
+          } else {
+            errorMessages.push(`Failed to delete ${entityName} (status: ${response.status})`);
+          }
+        } catch (err: any) {
+          console.error(`Error deleting ${entityName}:`, err);
+          let msg = `Failed to delete ${entityName}.`;
+          if (err.response?.status === 404) {
+            msg = `${entityName} not found.`;
+          } else if (err.response?.data?.detail) {
+            msg = err.response.data.detail;
+          }
+          errorMessages.push(msg);
+        }
+      }
+
+      // Full refresh after deletes
+      const listRes = await axios.get(`${API_BASE}/graph/label/list`);
+      const sorted = (listRes.data as string[]).sort((a, b) =>
+        a.toLowerCase().localeCompare(b.toLowerCase())
+      );
+      setEntities(sorted);
+      fetchEntityDetails(sorted);
+
+      // Clear selections and firstEntity
+      setSelectedEntities([]);
+      setFirstEntity(null);
+
+      // Show summary
+      if (successCount === selectedEntities.length) {
+        alert('All selected entities deleted successfully!');
+      } else if (successCount > 0) {
+        alert(`Deleted ${successCount} entity/entities successfully. Errors: ${errorMessages.join(', ')}`);
+      } else {
+        alert(`Failed to delete any entities. Errors: ${errorMessages.join(', ')}`);
+      }
+    } catch (err) {
+      console.error('Unexpected error during delete:', err);
+      alert('An unexpected error occurred during delete.');
+    }
+  };
+
   const fetchSingleEntityDetails = async (name: string) => {
     try {
       const detailRes = await axios.get(
@@ -1040,6 +1099,7 @@ export default function SanitizeData() {
             <button 
               className="px-3.5 py-1.5 bg-red-600 text-white rounded hover:bg-red-700 text-sm disabled:opacity-50"
               disabled={selectedEntities.length < 1 || filterMode !== 'selected'}
+              onClick={handleDeleteEntities}
               title={
                 filterMode !== 'selected' 
                   ? "Enter 'Show Sel. Only' mode first\nto act on selected entities" 
@@ -1048,7 +1108,7 @@ export default function SanitizeData() {
                   : undefined
               }
             >
-              Delete
+              Delete Entity
             </button>
           </div>
         </div>
