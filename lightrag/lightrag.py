@@ -1463,6 +1463,23 @@ class LightRAG:
                 existing_track_id = (
                     existing_doc.get("track_id", "") if existing_doc else ""
                 )
+                # Get workspace from existing doc for verification (should match self.workspace)
+                existing_workspace = (
+                    existing_doc.get("workspace", self.workspace) if existing_doc else self.workspace
+                )
+
+                # CRITICAL: Verify workspace isolation
+                # If existing document is from a different workspace, this is a bug!
+                if existing_doc and existing_workspace != self.workspace:
+                    logger.error(
+                        f"[{self.workspace}] CRITICAL: Cross-workspace duplicate detected! "
+                        f"doc_id={doc_id} exists in workspace='{existing_workspace}' "
+                        f"but current workspace is '{self.workspace}'. "
+                        f"This should NOT happen - treating as new document."
+                    )
+                    # Don't mark as duplicate - this is a cross-workspace document
+                    # The document should be processed independently in this workspace
+                    continue
 
                 # Check if this doc was pre-registered by our own request (same track_id)
                 # This happens when the API pre-registers docs to prevent race conditions
@@ -1474,7 +1491,7 @@ class LightRAG:
                     )
                     continue
 
-                # True duplicate: different track_id
+                # True duplicate: different track_id, same workspace
                 existing_file_path = (
                     existing_doc.get("file_path", "unknown") if existing_doc else "unknown"
                 )
@@ -1485,7 +1502,7 @@ class LightRAG:
                     f"[{self.workspace}] Duplicate document detected: {doc_id}\n"
                     f"  New file: {file_path} (track_id: {track_id})\n"
                     f"  Original: {existing_file_path} (track_id: {existing_track_id}, "
-                    f"status: {existing_status}, created: {existing_created_at})"
+                    f"status: {existing_status}, created: {existing_created_at}, workspace: {existing_workspace})"
                 )
 
                 # Create a new record with unique ID for this duplicate attempt
@@ -1502,6 +1519,7 @@ class LightRAG:
                     "metadata": {
                         "is_duplicate": True,
                         "original_doc_id": doc_id,
+                        "original_workspace": existing_workspace,  # Include workspace for Cleo verification
                         "original_track_id": existing_track_id,
                     },
                 }

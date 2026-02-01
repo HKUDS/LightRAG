@@ -2904,6 +2904,7 @@ class PGDocStatusStorage(DocStatusStorage):
 
             return dict(
                 id=str(result[0]["id"]),
+                workspace=result[0].get("workspace"),  # Include workspace for verification
                 content_length=result[0]["content_length"],
                 content_summary=result[0]["content_summary"],
                 status=result[0]["status"],
@@ -3012,6 +3013,7 @@ class PGDocStatusStorage(DocStatusStorage):
 
             return dict(
                 id=str(result[0]["id"]),
+                workspace=result[0].get("workspace"),  # Include workspace for verification
                 content_length=result[0]["content_length"],
                 content_summary=result[0]["content_summary"],
                 status=result[0]["status"],
