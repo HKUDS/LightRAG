@@ -732,13 +732,16 @@ class PGGraphStorageSimple(BaseGraphStorage):
 
         The stored procedure performs BFS server-side, eliminating N+1 queries.
         """
+        min_degree = _get_min_degree_for_graph_bfs()
+
         async with self._acquire_connection() as conn:
             result = await conn.fetchval(
-                "SELECT lightrag_get_knowledge_graph($1, $2, $3, $4)",
+                "SELECT lightrag_get_knowledge_graph($1, $2, $3, $4, $5)",
                 self.workspace,
                 node_label,
                 max_depth,
                 max_nodes,
+                min_degree,
             )
 
             if result is None:
