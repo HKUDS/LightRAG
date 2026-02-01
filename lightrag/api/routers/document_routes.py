@@ -2470,6 +2470,23 @@ def create_document_routes(
 
                 if existing_doc:
                     existing_status = existing_doc.get("status", "unknown")
+                    existing_workspace = existing_doc.get("workspace", rag.workspace)
+
+                    # CRITICAL: Verify workspace isolation
+                    # get_by_id filters by workspace, so this should never happen
+                    # But if it does, log an error and proceed with processing
+                    if existing_workspace != rag.workspace:
+                        logger.error(
+                            f"[{rag.workspace}] CRITICAL: Cross-workspace duplicate detected! "
+                            f"doc_id={doc_id} returned workspace='{existing_workspace}' "
+                            f"but current workspace is '{rag.workspace}'. "
+                            f"This should NOT happen - proceeding with normal processing."
+                        )
+                        # Fall through to normal processing
+                        existing_doc = None
+
+                if existing_doc:
+                    existing_status = existing_doc.get("status", "unknown")
 
                     # Failed documents can be re-indexed - proceed to background task
                     if existing_status == "failed":
