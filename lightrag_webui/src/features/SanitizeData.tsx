@@ -1164,7 +1164,7 @@ export default function SanitizeData() {
               </div>
             </div>
 
-            <div className="min-w-[140px]">
+            <div className="min-w-[140px] hidden">
               <label className="block text-xs font-medium text-gray-700 mb-0.5">
                 Desc Strategy
               </label>
@@ -1179,7 +1179,7 @@ export default function SanitizeData() {
               </select>
             </div>
 
-            <div className="min-w-[140px]">
+            <div className="min-w-[140px] hidden">
               <label className="block text-xs font-medium text-gray-700 mb-0.5">
                 Source ID Strat.
               </label>
@@ -1270,8 +1270,7 @@ export default function SanitizeData() {
         {/* Lower Left */}
         <div className="w-1/4 border-r border-gray-300 flex flex-row">
           <div className="flex-1 flex flex-col overflow-hidden">
-            <div className="grid grid-cols-[40px_40px_1fr] gap-1 px-2 py-1.5 bg-gray-100 border-b border-gray-300 text-xs font-medium text-center">
-              <div className="text-left pl-1.5">Keep<br/>First</div>
+            <div className="grid grid-cols-[40px_1fr] gap-1 px-2 py-1.5 bg-gray-100 border-b border-gray-300 text-xs font-medium text-center">
               <div className="text-left pl-1.5">Select<br/>Entities</div>
               <div className="text-left pl-2">Entity Name</div>
             </div>
@@ -1280,23 +1279,8 @@ export default function SanitizeData() {
               {displayEntities.map((entityName) => (
                 <div
                   key={entityName}
-                  className="grid grid-cols-[40px_40px_1fr] items-center px-2 py-1.5 border-b border-gray-100 hover:bg-gray-50 text-sm"
+                  className="grid grid-cols-[40px_1fr] items-center px-2 py-1.5 border-b border-gray-100 hover:bg-gray-50 text-sm"  // ← Changed to [40px_1fr]
                 >
-                  <div className="flex justify-center">
-                    <input
-                      type="radio"
-                      name="first-entity"
-                      checked={firstEntity === entityName}
-                      onChange={() => setFirstEntity(entityName)}
-                      className="h-4 w-4 text-blue-600"
-                      disabled={!selectedEntities.includes(entityName)}
-                      title={
-                        !selectedEntities.includes(entityName)
-                          ? "Select the entity first using the checkbox.\nThen the Keep First radio button will be enabled."
-                          : undefined
-                      }
-                    />
-                  </div>
                   <div className="flex justify-center">
                     <input
                       type="checkbox"
@@ -1306,7 +1290,6 @@ export default function SanitizeData() {
                           setSelectedEntities([...selectedEntities, entityName]);
                         } else {
                           setSelectedEntities(selectedEntities.filter((e) => e !== entityName));
-                          // New: If this was the firstEntity, clear it
                           if (firstEntity === entityName) {
                             setFirstEntity(null);
                           }
