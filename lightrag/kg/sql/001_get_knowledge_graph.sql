@@ -170,11 +170,14 @@ BEGIN
     END IF;
 
     -- Build nodes JSONB from all visited node IDs
+    -- Include degree in properties for client-side visualization (node sizing, filtering)
     SELECT COALESCE(jsonb_agg(
         jsonb_build_object(
             'id', n.node_id,
             'labels', jsonb_build_array(COALESCE(n.properties->>'entity_type', 'entity')),
-            'properties', n.properties
+            'properties', n.properties || jsonb_build_object(
+                'degree', COALESCE((v_node_degrees->>n.node_id)::int, 0)
+            )
         )
     ), '[]'::jsonb)
     INTO v_nodes
