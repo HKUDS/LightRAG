@@ -626,6 +626,72 @@ export default function SanitizeData() {
     }
   };
 
+  const handleMergeEntities = async () => {
+    if (selectedEntities.length < 2 || filterMode !== 'selected') return;  // Need at least 2 for merge
+
+    if (!targetEntity || !selectedEntities.includes(targetEntity)) {
+      alert('Please select a target entity from the dropdown first.');
+      return;
+    }
+
+    const entitiesToChange = selectedEntities.filter((n) => n !== targetEntity);
+
+    if (entitiesToChange.length === 0) {
+      alert('No source entities to merge (select at least one besides the target).');
+      return;
+    }
+
+    if (!confirm(`Are you sure you want to merge ${entitiesToChange.length} entity/entities into "${targetEntity}"? Sources will be deleted. This cannot be undone.`)) {
+      return;
+    }
+
+    try {
+      const payload = {
+        entities_to_change: entitiesToChange,
+        entity_to_change_into: targetEntity,
+      };
+
+      console.log('Merge payload:', JSON.stringify(payload, null, 2));  // Debug
+
+      const response = await axios.post(`${API_BASE}/graph/entities/merge`, payload);
+
+      console.log('Merge response:', response.data);  // Debug
+
+      if (response.status === 200) {
+        // Full refresh after merge
+        const listRes = await axios.get(`${API_BASE}/graph/label/list`);
+        const sorted = (listRes.data as string[]).sort((a, b) =>
+          a.toLowerCase().localeCompare(b.toLowerCase())
+        );
+        setEntities(sorted);
+        fetchEntityDetails(sorted);
+
+        // Refresh target details (shows transferred relations)
+        fetchEntityDetail(targetEntity, true);
+
+        // Clear selections and firstEntity
+        setSelectedEntities([]);
+        setFirstEntity(null);
+        setTargetEntity('');  // Optional: clear target
+
+        alert(response.data.message || 'Entities merged successfully!');
+      }
+    } catch (err: any) {
+      console.error('Failed to merge entities:', err);
+      let errorMsg = 'Failed to merge entities.';
+      if (err.response?.status === 400) {
+        errorMsg = err.response?.data?.detail || 'Invalid request—check if target exists or sources are valid.';
+      } else if (err.response?.data?.detail) {
+        errorMsg = err.response.data.detail;
+      } else if (err.response?.data?.message) {
+        errorMsg = err.response.data.message;
+      } else if (err.message) {
+        errorMsg = err.message;
+      }
+      alert(errorMsg);
+    }
+  };
+
   const fetchSingleEntityDetails = async (name: string) => {
     try {
       const detailRes = await axios.get(
@@ -1146,11 +1212,12 @@ export default function SanitizeData() {
             <button 
               className="px-3.5 py-1.5 bg-blue-600 text-white rounded hover:bg-blue-700 text-sm disabled:opacity-50"
               disabled={selectedEntities.length < 1 || filterMode !== 'selected'}
+              onClick={handleMergeEntities}  // ← Add this
               title={
                 filterMode !== 'selected' 
                   ? "Enter 'Show Sel. Only' mode first\nto act on selected entities" 
                   : selectedEntities.length < 1 
-                  ? "Select at least one entity\nto enable this button" 
+                  ? "Select at least one entity first\n(check the boxes on the left)" 
                   : undefined
               }
             >
