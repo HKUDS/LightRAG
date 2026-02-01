@@ -1648,6 +1648,32 @@ class PostgreSQLDB:
             logger.error(f"PostgreSQL database,\nsql:{sql},\ndata:{data},\nerror:{e}")
             raise
 
+    async def executemany(
+        self,
+        sql: str,
+        records: list[tuple],
+    ) -> None:
+        """Execute a batch operation with automatic retry for transient failures.
+
+        This method wraps asyncpg's executemany with the same retry logic used
+        by execute() and query(), handling deadlocks and connection errors.
+
+        Args:
+            sql: The SQL statement to execute with $1, $2, ... placeholders
+            records: List of tuples, each tuple contains values for one row
+        """
+        async def _operation(connection: asyncpg.Connection) -> None:
+            await connection.executemany(sql, records)
+
+        try:
+            await self._run_with_retry(_operation)
+        except Exception as e:
+            logger.error(
+                f"PostgreSQL executemany failed: sql={sql[:100]}..., "
+                f"records_count={len(records)}, error={e}"
+            )
+            raise
+
 
 class ClientManager:
     _instances: dict[str, Any] = {"db": None, "ref_count": 0}
@@ -2279,12 +2305,11 @@ class PGKVStorage(BaseKVStorage):
                     current_time,
                 ))
 
-        # Execute batch insert using executemany (single DB round-trip)
+        # Execute batch insert using executemany with retry for deadlocks
         if records and upsert_sql:
             import time as time_module
             upsert_start = time_module.perf_counter()
-            async with self.db.pool.acquire() as conn:
-                await conn.executemany(upsert_sql, records)
+            await self.db.executemany(upsert_sql, records)
             upsert_time = (time_module.perf_counter() - upsert_start) * 1000
             logger.info(
                 f"[PERF] KV upsert: {self.namespace}={upsert_time:.1f}ms ({len(records)} records)"
@@ -2570,11 +2595,10 @@ class PGVectorStorage(BaseVectorStorage):
         else:
             raise ValueError(f"{self.namespace} is not supported")
 
-        # Execute batch insert using executemany
+        # Execute batch insert using executemany with retry for deadlocks
         if records and upsert_sql:
             db_start = time_module.perf_counter()
-            async with self.db.pool.acquire() as conn:
-                await conn.executemany(upsert_sql, records)
+            await self.db.executemany(upsert_sql, records)
             db_time = (time_module.perf_counter() - db_start) * 1000
             logger.info(
                 f"[PERF] VDB upsert: db_insert={db_time:.1f}ms ({len(records)} records to {self.namespace})"

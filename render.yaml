@@ -106,7 +106,7 @@ services:
       - key: LLM_BINDING_API_KEY
         sync: false  # Set in Render Dashboard as secret
       - key: LLM_TIMEOUT
-        value: "60"  # Direct OpenAI should be much faster
+        value: "300"  # Worker timeout = LLM_TIMEOUT * 3 + 30 = 930s
 
       #############################
       # Embedding Configuration (Direct OpenAI - Tier 4)

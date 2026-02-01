@@ -1523,6 +1523,7 @@ class LightRAG:
                         "is_duplicate": True,
                         "original_doc_id": doc_id,
                         "original_track_id": existing_track_id,
+                        "original_status": existing_status,  # "processing", "pending", "done", etc.
                     },
                 }
 
