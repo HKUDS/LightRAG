@@ -1484,7 +1484,7 @@ class Neo4JStorage(BaseGraphStorage):
 
     async def get_all_labels(self) -> list[str]:
         """
-        Get all existing node labels in the database
+        Get all existing entity_ids(entity names) in the database
         Returns:
             ["Person", "Company", ...]  # Alphabetically sorted label list
         """
@@ -1670,13 +1670,13 @@ class Neo4JStorage(BaseGraphStorage):
             return edges
 
     async def get_popular_labels(self, limit: int = 300) -> list[str]:
-        """Get popular labels by node degree (most connected entities)
+        """Get popular labels(entity names) by node degree (most connected entities)
 
         Args:
             limit: Maximum number of labels to return
 
         Returns:
-            List of labels sorted by degree (highest first)
+            List of labels(entity names) sorted by degree (highest first)
         """
         workspace_label = self._get_workspace_label()
         async with self._driver.session(
@@ -1713,7 +1713,7 @@ class Neo4JStorage(BaseGraphStorage):
 
     async def search_labels(self, query: str, limit: int = 50) -> list[str]:
         """
-        Search labels with fuzzy matching, using a full-text index for performance if available.
+        Search labels(entity names) with fuzzy matching, using a full-text index for performance if available.
         Enhanced with Chinese text support using CJK analyzer.
         Falls back to a slower CONTAINS search if the index is not available or fails.
         """
