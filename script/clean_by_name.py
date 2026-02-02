@@ -1,131 +1,105 @@
 import os
 import asyncio
-from lightrag import LightRAG
-from lightrag.utils import EmbeddingFunc
-from lightrag.llm.ollama import ollama_embed
-from lightrag.llm.openai import azure_openai_complete 
-from lightrag.base import DocStatus  # 引入 DocStatus 枚舉
-from functools import partial
+import sys
+import numpy as np
+from loguru import logger
 from dotenv import load_dotenv
 
+# === Load Env ===
 load_dotenv()
 
-# === 設定 ===
+# LightRAG Imports
+from lightrag import LightRAG
+from lightrag.utils import EmbeddingFunc
+from lightrag.llm.openai import azure_openai_complete, openai_embed
+from lightrag.utils import DocStatus # 引入狀態枚舉
+
+# === Path Setup ===
+current_path = os.path.abspath(__file__)
+project_root = os.path.dirname(os.path.dirname(current_path))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+
+# === Config ===
 WORKING_DIR = "./data/rag_storage"
-OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")
-EMBEDDING_MODEL = "bge-m3"
-EMBEDDING_DIM = 1024
+TARGET_DOC_ID = "doc-1a240209386d418c61ec3d1ae4a8a738" # 🔥 填入那個頑固的 ID
 
-# === 🎯 定義你要刪除的文件關鍵字 ===
-# 只要文件路徑 (file_path) 包含這些字，就會被刪除
-TARGET_FILES_TO_DELETE = [
-    "0001_2024",
-    "0775_2024",
-    "1038_2024",
-    "1366_2024",
-    "Global Market Insights",
-    "HSBC_Report_Source_A",
-    "SFC",
-    "Strategic Investment Partners",
-    "HSBC_Report_Source_B",
-    # "SFC_Report_2023.pdf",   # 例子：完整文件名
-    # "Draft_v1",              # 例子：文件名的一部分
-    # "Old_Data_Folder"        # 例子：某個文件夾下的所有文件
-]
-
-async def find_ids_by_filename(rag, targets):
-    """
-    遍歷所有狀態的文檔，尋找匹配文件名的 ID
-    """
-    print("🔍 正在掃描數據庫中的文檔...")
-    
-    found_ids = set()
-    
-    # 我們需要檢查所有可能的狀態
-    statuses_to_check = [
-        DocStatus.PROCESSED, 
-        DocStatus.FAILED, 
-        DocStatus.PENDING, 
-        DocStatus.PROCESSING
-    ]
-    
-    total_scanned = 0
-    
-    for status in statuses_to_check:
-        # 獲取該狀態下的所有文檔
-        docs_dict = await rag.doc_status.get_docs_by_status(status)
-        
-        for doc_id, doc_obj in docs_dict.items():
-            total_scanned += 1
-            # 獲取文件路徑 (兼容字典或對象訪問)
-            file_path = getattr(doc_obj, "file_path", "") or doc_obj.get("file_path", "")
-            
-            # 檢查是否包含我們要刪除的關鍵字
-            for target in targets:
-                if target in file_path:
-                    print(f"   🎯 找到目標: {file_path} (ID: {doc_id}) [Status: {status}]")
-                    found_ids.add(doc_id)
-                    break # 找到一個關鍵字匹配就夠了
-                    
-    print(f"📊 掃描完成: 共檢查 {total_scanned} 個文檔，找到 {len(found_ids)} 個待刪除。")
-    return list(found_ids)
+# === Helper ===
+def get_clean_env(key, default=None):
+    val = os.getenv(key, default)
+    return val.strip() if val else val
 
 async def main():
-    print(f"🚀 初始化 LightRAG 以進行清理...")
+    logger.info(f"🚑 啟動 LightRAG 修復程序 (Fixer Mode)...")
     
+    # 1. 初始化 LightRAG (為了連接 Storage)
+    embed_model_name = get_clean_env("EMBEDDING_MODEL")
+    embed_api_key = get_clean_env("EMBEDDING_BINDING_API_KEY") 
+    embed_base_url = get_clean_env("EMBEDDING_BINDING_HOST")
+    embed_dim = int(get_clean_env("EMBEDDING_DIM", "1024"))
+
+    async def embedding_func_wrapper(texts: list[str]) -> np.ndarray:
+        return await openai_embed.func(
+            texts=texts,
+            model=embed_model_name,
+            api_key=embed_api_key,     
+            base_url=embed_base_url
+        )
+
     rag = LightRAG(
         working_dir=WORKING_DIR,
-        llm_model_func=azure_openai_complete, 
+        llm_model_func=azure_openai_complete,
         embedding_func=EmbeddingFunc(
-            embedding_dim=EMBEDDING_DIM,
+            embedding_dim=embed_dim,
             max_token_size=8192,
-            func=partial(
-                ollama_embed, 
-                host=OLLAMA_HOST,
-                embed_model=EMBEDDING_MODEL
-            )
-        )
+            func=embedding_func_wrapper
+        ),
     )
-
-    print("⚙️ 正在初始化 Storage...")
     await rag.initialize_storages()
 
-    # 1. 根據文件名查找 ID
-    if not TARGET_FILES_TO_DELETE:
-        print("⚠️ 沒有設定要刪除的文件名 (TARGET_FILES_TO_DELETE 為空)。")
-        return
-
-    ids_to_delete = await find_ids_by_filename(rag, TARGET_FILES_TO_DELETE)
-
-    if not ids_to_delete:
-        print("✅ 沒有發現需要刪除的文件，系統乾淨。")
-        return
-
-    # 2. 用戶確認 (防止誤刪)
-    confirm = input(f"⚠️ 即將刪除 {len(ids_to_delete)} 個文檔 (包含相關的 Chunks 和 Graph Nodes)。確定嗎? (y/n): ")
-    if confirm.lower() != 'y':
-        print("❌ 操作已取消。")
-        return
-
-    # 3. 執行刪除
-    print(f"🗑️ 開始刪除...")
+    # 2. 嘗試掃描所有 Chunks，找出屬於目標文檔的孤兒
+    logger.info("🔍 正在掃描 text_chunks 尋找孤兒碎片...")
     
-    for i, doc_id in enumerate(ids_to_delete):
-        try:
-            print(f" [{i+1}/{len(ids_to_delete)}] 正在刪除 ID: {doc_id} ...")
-            
-            # 調用 LightRAG 的刪除接口
-            await rag.adelete_by_doc_id(doc_id)
-            
-            print(f"   ✅ 刪除成功")
-        except Exception as e:
-            # 忽略 "Not found" 錯誤，因為可能已經被清理過
-            if "not found" in str(e).lower():
-                print(f"   ⚠️ 文檔已不存在 (視為成功)")
-            else:
-                print(f"   ❌ 刪除失敗: {str(e)}")
+    # 存取內部數據 (Private Access)
+    if not hasattr(rag.text_chunks, "_data"):
+        logger.error("❌ 無法存取 text_chunks，操作中止。")
+        return
 
-    print("🏁 所有指定文件清理完成！")
+    all_chunks = rag.text_chunks._data
+    found_chunk_ids = []
+
+    for chunk_id, chunk_data in all_chunks.items():
+        # 檢查這個 chunk 是否屬於我們的目標文檔
+        # 通常 chunk_data 會有 'doc_id' 欄位
+        if chunk_data.get("doc_id") == TARGET_DOC_ID:
+            found_chunk_ids.append(chunk_id)
+
+    logger.info(f"📊 找到 {len(found_chunk_ids)} 個屬於 {TARGET_DOC_ID} 的孤兒碎片。")
+
+    # 3. 偽造 doc_status (Mocking the Status)
+    logger.info("🛠️ 正在偽造 doc_status 記錄...")
+    
+    fake_status = {
+        "status": DocStatus.PROCESSED, # 告訴系統這是處理好的
+        "file_path": "force_restored_file", # 隨便填，唔重要
+        "chunks_list": found_chunk_ids, # 🔥 關鍵：把找到的 ID 塞進去
+        "chunks_count": len(found_chunk_ids),
+        "create_time": 0,
+        "update_time": 0
+    }
+
+    # 強制寫入 KV Store
+    await rag.doc_status.upsert({TARGET_DOC_ID: fake_status})
+    logger.success("✅ doc_status 已成功修復！")
+
+    # 4. 現在可以執行正規刪除了！
+    logger.info("🗑️ 執行正規刪除 (adelete_by_doc_id)...")
+    try:
+        # 因為 doc_status 存在了，這次它會乖乖刪除 vector, graph 和 text chunks
+        await rag.adelete_by_doc_id(TARGET_DOC_ID)
+        logger.success("🎉 完美！文檔及其所有碎片已被徹底清除。")
+    except Exception as e:
+        logger.error(f"❌ 刪除失敗: {e}")
 
 if __name__ == "__main__":
     asyncio.run(main())

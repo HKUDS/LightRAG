@@ -2834,13 +2834,13 @@ class LightRAG:
         system_prompt: str | None = None,
     ) -> dict[str, Any]:
         """
-        Asynchronous complete query API with Dual-Layer Filtering (Code + Prompt).
+        Updated Strategy: Silent Overwrite (Topic-Level).
         """
         logger.debug(f"[aquery_llm] Query param: {param}")
         global_config = asdict(self)
 
         try:
-            # 1. Retrieve Only
+            # 1. Retrieve Only (保持不變)
             retrieval_param = replace(param, only_need_context=True)
             query_result = None
 
@@ -2871,7 +2871,7 @@ class LightRAG:
             else:
                 raise ValueError(f"Unknown mode {param.mode}")
 
-            # 2. Filter & Context Construction
+            # 2. Context Construction (保持 Sorting，確保 HIGH 排最前)
             context_text = ""
             raw_data = {}
             
@@ -2879,7 +2879,7 @@ class LightRAG:
                 raw_data = query_result.raw_data or {}
                 original_chunks = raw_data.get("data", {}).get("chunks", [])
                 
-                # *** Apply Business Rules ***
+                # Apply Sorting: HIGH first
                 filtered_chunks = self._apply_business_rules(original_chunks)
                 
                 if "data" in raw_data:
@@ -2894,9 +2894,27 @@ class LightRAG:
             if system_prompt is None:
                 system_prompt = PROMPTS["rag_response"]
             
-            # 🔥 [Prompt Injection] 雙重保險：告訴 LLM 也要遵守規則
-            # 這樣就算代碼過濾漏了，LLM 看到 content 裡的 "| HIGH" 標籤也會傾向於選它
-            system_prompt += "\n\nIMPORTANT RULE: The context contains sources marked with priority levels (HIGH, NORMAL, LOW). You MUST prioritize facts from 'HIGH' sources over 'LOW' sources if they conflict. Ignore 'LOW' priority information if it contradicts 'HIGH' priority information."
+            # 🔥 [Logic Layer] System Prompt - 霸道靜音版
+            system_prompt += """
+            
+            STRICT 'SILENT OVERWRITE' RULES:
+            The context contains sources with priorities (HIGH > NORMAL > LOW). 
+            You must apply the following logic for EACH specific fact (e.g., Revenue, Date, CEO):
+
+            1. CHECK HIGH SOURCE: 
+               - If a 'HIGH' source provides the fact, USE IT EXCLUSIVELY. 
+               - SILENTLY DISCARD any conflicting values from 'NORMAL' or 'LOW' sources.
+               - DO NOT mention that other values exist. DO NOT write "However, another report says...". Act as if the lower sources do not exist for this specific fact.
+
+            2. CHECK NORMAL SOURCE (Backup):
+               - Use 'NORMAL' source ONLY if the fact is COMPLETELY MISSING from 'HIGH' sources.
+               - If used, SILENTLY DISCARD any conflicting 'LOW' sources.
+
+            3. CITATION STYLE:
+               - Cite ONLY the source you actually used. 
+               - Do NOT cite sources you discarded.
+               - Format: "Fact statement [1]." (Inline citation)
+            """
 
             if param.mode == "bypass":
                 response = await self.llm_model_func(
@@ -2915,8 +2933,18 @@ class LightRAG:
                         "llm_response": {"content": "Sorry, I couldn't find any relevant information based on your criteria.", "is_streaming": False}
                     }
 
-                # Combine into single string for API compatibility
-                final_prompt = f"{context_text}\n\nQuestion: {query.strip()}"
+                # 🔥 [Format Layer] User Prompt
+                citation_instruction = """
+                
+                [REQUIRED FORMAT]
+                1. State facts directly with inline citations: e.g. "**$1M** [1]".
+                2. DO NOT mention conflicting lower-priority data.
+                3. At the end, list ONLY the used references:
+                   ### References
+                   [1] Source_Name [Page X] (Priority: LEVEL)
+                """
+
+                final_prompt = f"{context_text}\n\nQuestion: {query.strip()}\n{citation_instruction}"
                 
                 response = await self.llm_model_func(
                     final_prompt, 
@@ -2926,7 +2954,7 @@ class LightRAG:
                     stream=param.stream,
                 )
 
-            # 4. Format Output
+            # 4. Output Formatting (保持不變)
             llm_response_data = {}
             if inspect.isasyncgen(response) or hasattr(response, '__aiter__'):
                  llm_response_data = {
@@ -2943,7 +2971,7 @@ class LightRAG:
 
             return {
                 "status": "success",
-                "message": "Query executed successfully with strict business rules",
+                "message": "Query executed successfully",
                 "data": raw_data.get("data", {}),
                 "metadata": raw_data.get("metadata", {}),
                 "llm_response": llm_response_data,
@@ -2957,7 +2985,7 @@ class LightRAG:
                 "data": {},
                 "llm_response": {"content": None, "is_streaming": False},
             }
-        
+               
     def query_llm(
         self,
         query: str,
