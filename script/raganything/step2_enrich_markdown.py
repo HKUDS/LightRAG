@@ -4,6 +4,7 @@ import time
 import base64
 import sys
 import glob
+import json
 from loguru import logger
 from dotenv import load_dotenv
 from openai import AzureOpenAI
@@ -12,15 +13,18 @@ from openai import AzureOpenAI
 load_dotenv()
 
 # === 1. 設定區 (Configuration) ===
-# Azure OpenAI 設定
-AZURE_OPENAI_API_KEY = os.getenv("AZURE_OPENAI_API_KEY")
-AZURE_OPENAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT")
+# Azure OpenAI 設定 (優先使用 AZURE_ 前綴，否則使用 LLM_BINDING_ 前綴)
+AZURE_OPENAI_API_KEY = os.getenv("AZURE_OPENAI_API_KEY") or os.getenv("LLM_BINDING_API_KEY")
+AZURE_OPENAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT") or os.getenv("LLM_BINDING_HOST")
 AZURE_OPENAI_API_VERSION = os.getenv("AZURE_OPENAI_API_VERSION", "2024-02-15-preview")
-AZURE_DEPLOYMENT_NAME = os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-4o") 
+AZURE_DEPLOYMENT_NAME = os.getenv("AZURE_OPENAI_DEPLOYMENT") or os.getenv("LLM_MODEL", "gpt-4o") 
 
 # 輸入與輸出路徑
 INPUT_BASE_DIR = "./data/output/step1_vlm_output"
 OUTPUT_SUFFIX = "_enriched" # 處理後的檔案會加上這個後綴，例如 doc_enriched.md
+
+# 目標檔案列表 (直接在這裡設定)
+TARGET_FILES = ["SFC/vlm/SFC.md"]  # 例如: ["data/output/step1_vlm_output/folder1/vlm/file1.md", "data/output/step1_vlm_output/folder2/vlm/file2.md"]
 
 # Log 設定
 LOG_DIR = "./logs"
@@ -35,6 +39,10 @@ HAS_AI = False
 ai_client = None
 
 try:
+    logger.info(f"🔍 檢查 Azure OpenAI 設定...")
+    logger.info(f"   API Key: {'已設定' if AZURE_OPENAI_API_KEY else '未設定'}")
+    logger.info(f"   Endpoint: {AZURE_OPENAI_ENDPOINT if AZURE_OPENAI_ENDPOINT else '未設定'}")
+    
     if AZURE_OPENAI_API_KEY and AZURE_OPENAI_ENDPOINT:
         ai_client = AzureOpenAI(
             api_key=AZURE_OPENAI_API_KEY,
@@ -47,6 +55,8 @@ try:
         logger.warning("⚠️ 未設定 Azure API Key 或 Endpoint，AI 功能將跳過")
 except ImportError:
     logger.error("⚠️ 缺少 openai 套件，請執行: pip install openai")
+except Exception as e:
+    logger.error(f"❌ Azure OpenAI 初始化失敗: {e}")
 
 def encode_image(image_path):
     if not os.path.exists(image_path):
@@ -97,6 +107,10 @@ def generate_image_description(img_path, context_text=""):
 
 def process_single_markdown(md_file_path):
     """處理單個 Markdown 檔案"""
+    if not os.path.exists(md_file_path):
+        logger.error(f"❌ 檔案不存在: {md_file_path}")
+        return
+    
     file_dir = os.path.dirname(md_file_path)
     file_name = os.path.basename(md_file_path)
     file_stem = os.path.splitext(file_name)[0]
@@ -104,11 +118,6 @@ def process_single_markdown(md_file_path):
     # 定義輸出檔案路徑
     output_path = os.path.join(file_dir, f"{file_stem}{OUTPUT_SUFFIX}.md")
     
-    # 如果已經處理過，可以選擇跳過 (這裡設為 True 則跳過)
-    if os.path.exists(output_path):
-        logger.info(f"⏭️ 檔案已存在，跳過: {output_path}")
-        return
-
     logger.info(f"📖 讀取檔案: {md_file_path}")
     
     with open(md_file_path, "r", encoding="utf-8") as f:
@@ -181,23 +190,22 @@ def process_single_markdown(md_file_path):
     logger.info(f"   💾 儲存至: {output_path}")
 
 def main():
-    # 1. 搜尋所有 Markdown 檔案
-    # 路徑模式: data/output/step1_vlm_output/<folder>/vlm/<file>.md
-    # 使用遞迴搜尋
-    search_pattern = os.path.join(INPUT_BASE_DIR, "**", "*.md")
-    all_md_files = glob.glob(search_pattern, recursive=True)
-    
-    # 過濾掉已經是 _enriched 的檔案，避免重複處理
-    target_files = [f for f in all_md_files if OUTPUT_SUFFIX not in f and "README" not in f]
+    # 使用直接設定的目標檔案列表，如果是相對路徑則在 INPUT_BASE_DIR 下
+    target_files = []
+    for f in TARGET_FILES:
+        if os.path.isabs(f):
+            target_files.append(f)
+        else:
+            target_files.append(os.path.join(INPUT_BASE_DIR, f))
 
     if not target_files:
-        logger.error(f"❌ 在 {INPUT_BASE_DIR} 找不到任何 Markdown (.md) 檔案")
+        logger.error("❌ 沒有設定目標檔案列表")
         return
 
     logger.info(f"📦 總共發現 {len(target_files)} 個 Markdown 檔案待處理")
 
     for i, md_path in enumerate(target_files):
-        logger.info(f"\n🚀 [{i+1}/{len(target_files)}] 處理文件...")
+        logger.info(f"\n🚀 [{i+1}/{len(target_files)}] 處理文件: {md_path}")
         process_single_markdown(md_path)
 
     logger.success("\n🎉 所有 Markdown 檔案處理完畢！")

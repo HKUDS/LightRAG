@@ -17,8 +17,26 @@ services:
       - ./data/input:/app/data/inputs
       - ./config.ini:/app/config.ini
       - ./.env:/app/.env
+      - ./data/mineru_models:/app/data/mineru_models
     env_file:
       - .env
     restart: unless-stopped
     extra_hosts:
       - "host.docker.internal:host-gateway"
+
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    environment:
+      - WORKERS=1
+      - TIMEOUT=1800
+      - LIGHTRAG_WORKER_TIMEOUT=1800
+      - LIGHTRAG_FUNC_TIMEOUT=1800
+      - MINERU_DEVICE_MODE=cuda
+      - MINERU_MODEL_DIR=/app/data/mineru_models
+      - MAGIC_PDF_CONFIG_JSON=/app/magic-pdf.json
+      - MAGIC_PDF_CONFIG=/app/magic-pdf.json

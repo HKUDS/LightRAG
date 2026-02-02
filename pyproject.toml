@@ -11,7 +11,7 @@ authors = [
 description = "LightRAG: Simple and Fast Retrieval-Augmented Generation"
 readme = "README.md"
 license = {text = "MIT"}
-requires-python = ">=3.10"
+requires-python = ">=3.10, <3.13"
 classifiers = [
     "Development Status :: 4 - Beta",
     "Programming Language :: Python :: 3",
@@ -26,9 +26,10 @@ dependencies = [
     "google-api-core>=2.0.0,<3.0.0",
     "google-genai>=1.0.0,<2.0.0",
     "json_repair",
+    "lightrag>=0.1.0b6",
     "nano-vectordb",
     "networkx",
-    "numpy>=1.24.0,<3.0.0",
+    "numpy>=1.24.0,<2.0.0",
     "pandas>=2.0.0,<2.4.0",
     "pipmaster",
     "pydantic",
@@ -37,8 +38,8 @@ dependencies = [
     "setuptools",
     "tenacity",
     "tiktoken",
-    "transformers==4.56.0",
     "xlsxwriter>=3.1.0",
+    "raganything @ git+https://github.com/SammiHungsm/RAG-Anything.git",
 ]
 
 [project.optional-dependencies]
@@ -57,7 +58,7 @@ api = [
     "json_repair",
     "nano-vectordb",
     "networkx",
-    "numpy>=1.24.0,<3.0.0",
+    "numpy>=1.24.0,<2.0.0",  # 保持一致
     "openai>=2.0.0,<3.0.0",
     "pandas>=2.0.0,<2.4.0",
     "pipmaster",
@@ -87,11 +88,11 @@ api = [
     "uvicorn",
     "gunicorn",
     # Document processing dependencies (required for API document upload functionality)
-    "openpyxl>=3.0.0,<4.0.0",      # XLSX processing
-    "pycryptodome>=3.0.0,<4.0.0",  # PDF encryption support
+    "openpyxl>=3.0.0,<4.0.0",       # XLSX processing
+    "pycryptodome>=3.0.0,<4.0.0",   # PDF encryption support
     "pypdf>=6.1.0",                 # PDF processing
-    "python-docx>=0.8.11,<2.0.0",  # DOCX processing
-    "python-pptx>=0.6.21,<2.0.0",  # PPTX processing
+    "python-docx>=0.8.11,<2.0.0",   # DOCX processing
+    "python-pptx>=0.6.21,<2.0.0",   # PPTX processing
 ]
 
 # Advanced document processing engine (optional)
@@ -121,7 +122,7 @@ offline-llm = [
     "zhipuai>=2.0.0,<3.0.0",
     "aioboto3>=12.0.0,<16.0.0",
     "voyageai>=0.2.0,<1.0.0",
-    "llama-index>=0.14.0,<1.0.0",  # Updated to ensure compatibility with openai 2.x
+    "llama-index>=0.14.0,<1.0.0",   # Updated to ensure compatibility with openai 2.x
     "llama-index-llms-openai>=0.6.12",  # Explicitly require version that supports openai 2.x
     "google-api-core>=2.0.0,<3.0.0",
     "google-genai>=1.0.0,<2.0.0",

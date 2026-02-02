@@ -157,7 +157,7 @@ const LoginPage = () => {
               <ZapIcon className="size-10 text-emerald-400" aria-hidden="true" />
             </div>
             <div className="text-center space-y-2">
-              <h1 className="text-3xl font-bold tracking-tight">LightRAG</h1>
+              <h1 className="text-3xl font-bold tracking-tight">KAG</h1>
               <p className="text-muted-foreground text-sm">
                 {t('login.description')}
               </p>
