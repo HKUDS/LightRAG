@@ -2748,12 +2748,18 @@ async def _resolve_cross_document_entities(
     # 2. Build index of existing entity names (by type for efficiency)
     # type -> list of (original_name, normalized_name)
     existing_by_type: dict[str, list[tuple[str, str]]] = defaultdict(list)
+    # Also build a cross-type index for exact normalized matches (handles case differences)
+    # normalized_name -> original_name (first occurrence wins)
+    normalized_to_existing: dict[str, str] = {}
     for node in existing_nodes:
         entity_name = node.get("entity_id") or node.get("id")
         entity_type = node.get("entity_type", "UNKNOWN")
         if entity_name and len(entity_name) > min_name_length:
             normalized = _normalize_for_matching(entity_name)
             existing_by_type[entity_type.upper()].append((entity_name, normalized))
+            # Store first occurrence for cross-type exact matching
+            if normalized not in normalized_to_existing:
+                normalized_to_existing[normalized] = entity_name
 
     # 3. Resolve each new entity against existing entities
     resolved_nodes: dict[str, list[dict]] = defaultdict(list)
@@ -2773,6 +2779,20 @@ async def _resolve_cross_document_entities(
         if len(entity_name) <= min_name_length:
             resolved_nodes[entity_name].extend(entities)
             continue
+
+        # FIRST: Check for exact normalized match across ALL types
+        # This handles case differences like "THALIE" vs "Thalie" regardless of entity_type
+        normalized_new = _normalize_for_matching(entity_name)
+        if normalized_new in normalized_to_existing:
+            existing_match = normalized_to_existing[normalized_new]
+            if existing_match != entity_name:
+                # Exact normalized match found - resolve to existing entity
+                resolution_map[entity_name] = (existing_match, 1.0)
+                resolved_nodes[existing_match].extend(entities)
+                logger.debug(
+                    f"Cross-doc (cross-type exact match): '{entity_name}' → '{existing_match}'"
+                )
+                continue
 
         # Find best matching existing entity of the same type
         existing_same_type = existing_by_type.get(entity_type, [])
@@ -2859,7 +2879,7 @@ async def _resolve_cross_document_entities_vdb(
         - resolution_map: Dict mapping old_name -> (new_name, score) for logging.
     """
     import time as time_module
-    from lightrag.entity_resolution import compute_entity_similarity
+    from lightrag.entity_resolution import _normalize_for_matching, compute_entity_similarity
 
     similarity_threshold = global_config.get("entity_similarity_threshold", DEFAULT_ENTITY_SIMILARITY_THRESHOLD)
     min_name_length = global_config.get("entity_min_name_length", DEFAULT_ENTITY_MIN_NAME_LENGTH)
@@ -2932,7 +2952,31 @@ async def _resolve_cross_document_entities_vdb(
             resolved_nodes[entity_name].extend(entities)
             continue
 
-        # Find best match among VDB candidates
+        # FIRST: Check for exact normalized match across ALL candidates (regardless of type)
+        # This handles case differences like "THALIE" vs "Thalie" even with different entity_types
+        normalized_new = _normalize_for_matching(entity_name)
+        cross_type_match = None
+
+        for candidate in vdb_results:
+            candidate_name = candidate.get("id") or candidate.get("entity_id")
+            if not candidate_name or candidate_name == entity_name:
+                continue
+
+            normalized_candidate = _normalize_for_matching(candidate_name)
+            if normalized_new == normalized_candidate:
+                cross_type_match = candidate_name
+                break
+
+        if cross_type_match:
+            # Exact normalized match found - resolve regardless of type
+            resolution_map[entity_name] = (cross_type_match, 1.0)
+            resolved_nodes[cross_type_match].extend(entities)
+            logger.debug(
+                f"Cross-doc VDB (cross-type exact match): '{entity_name}' → '{cross_type_match}'"
+            )
+            continue
+
+        # Find best match among VDB candidates of the same type
         best_match = None
         best_score = 0.0
 
@@ -2943,7 +2987,7 @@ async def _resolve_cross_document_entities_vdb(
             if not candidate_name:
                 continue
 
-            # Skip candidates of different types
+            # Skip candidates of different types (for fuzzy matching)
             if candidate_type != entity_type:
                 continue
 
