@@ -22,32 +22,57 @@
     #   git add .
     #   git commit -m "Checkpoint: Save WebUI modifications and built assets"
 
-# 4.  --- SYNC WITH UPSTREAM (HKUDS/LightRAG) ---
+# 4.  --- CREATE CHECKPOINT FOR DISASTER ROLLBACK --
+    # git branch backup/pre-migration-2026-02-02   !!! USE THE CORRECT DATE !!!
+    # git push origin backup/pre-migration-2026-02-02
+
+# 5.  --- SYNC WITH UPSTREAM (HKUDS/LightRAG) ---
     #   git fetch upstream
     #   git merge upstream/main
 #     --> Note: If conflicts occur, prioritize keeping your new WebUI files 
 #         but accept upstream fixes for the core RAG logic.
 
-# 5.  --- REFRESH LOCK FILES ---
+# 6.  --- UPDATE DEPENDENCY LOCK FILES ---
 #     Ensure both Python and Frontend dependencies are healthy after the merge
     #   uv lock
     #   cd lightrag_webui
     #   bun install
     #   cd ..
 
-# 6.  --- FINAL COMMIT ---
+# 7.  --- OPTIONAL AND UNTESTED: PURGE GHOST ARTIFACTS ---
+# Clear Python/uv cache
+    # uv cache clean
+
+# Navigate to WebUI and clear Vite/Bun cache
+    # cd lightrag_webui
+
+# Remove the local 'dist' and Vite's internal cache
+    # rm -rf dist node_modules/.vite
+# (Optional) Re-run build to ensure everything is fresh
+    # bun run build
+    # cd ..
+
+# 8.  --- FINAL COMMIT ---
     #   git add .
     #   git commit -m "Final sync: Integrated upstream changes & updated lock files"
 #     --> (Only required if Step 4 had conflicts or Step 5 updated locks)
 
-# 7.  --- PUSH TO YOUR FORK ---
+# 9.  --- PUSH TO YOUR FORK ---
     #   git push origin main
 
-# 8.  --- VERIFY ---
+# 10. --- VERIFY ---
     #   git status
 #     --> Should see: "Your branch is up to date with 'origin/main'"
 # ==============================================================================
 
+
+
+
+# ==============================================================================
+# INCASE OF DISASTER WITH THE ABOVE SYNC OPERATION, RECOVER WITH:
+# git checkout main 
+# git reset --hard backup/pre-migration-2026-02-02
+# ==============================================================================
 
 
 
