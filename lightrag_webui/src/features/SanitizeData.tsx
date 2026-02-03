@@ -46,6 +46,8 @@ export default function SanitizeData() {
   const [loadingTypes, setLoadingTypes] = useState(false);
   const [modalFilterText, setModalFilterText] = useState('');
   const [typeSelectionContext, setTypeSelectionContext] = useState<'main' | 'create' | 'edit'>('main');
+  const modalInputRef = useRef<HTMLInputElement>(null);
+  const typeItemRefs = useRef<HTMLDivElement[]>([]);
 
   const [typesLoading, setTypesLoading] = useState(true);  
   const [filterMode, setFilterMode] = useState<'none' | 'selected' | 'type' | 'orphan'>('none');
@@ -78,6 +80,13 @@ export default function SanitizeData() {
   const [createRelKeywords, setCreateRelKeywords] = useState('');
   const [createRelWeight, setCreateRelWeight] = useState(1.0);
   const [createRelError, setCreateRelError] = useState<string | null>(null);  
+
+  const createNameRef = useRef<HTMLInputElement>(null);
+  const createSourceRef = useRef<HTMLInputElement>(null);
+
+  const filteredModalTypes = allEntityTypes.filter((type) =>
+    type.toLowerCase().includes(modalFilterText.toLowerCase())
+  );
 
   // Build entityTypeMap and entityOrphanMap with single fetch per entity
   const fetchEntityDetails = async (entityList: string[]) => {
@@ -267,6 +276,22 @@ export default function SanitizeData() {
       setTypeFilteredEntities([]); // Clear if type is empty
     }
   }, [entityType, filterMode, entities, entityTypeMap]);
+
+  useEffect(() => {
+    typeItemRefs.current = [];
+  }, [filteredModalTypes]);
+
+  useEffect(() => {
+    if (filteredModalTypes.length > 0 && !selectedModalType) {
+      setSelectedModalType(filteredModalTypes[0]);
+    }
+  }, [filteredModalTypes, selectedModalType]);
+
+  useEffect(() => {
+    if (createEntityModalOpen) {
+      createNameRef.current?.focus();
+    }
+  }, [createEntityModalOpen]);  
 
   // Pagination handlers
   const goToFirst = () => setCurrentPage(1);
@@ -922,11 +947,7 @@ export default function SanitizeData() {
       console.error("Failed to delete relationship:", err);
       alert("Error deleting relationship. Check console.");
     }
-  };
-
-  const filteredModalTypes = allEntityTypes.filter((type) =>
-    type.toLowerCase().includes(modalFilterText.toLowerCase())
-  );  
+  };  
 
   const displayEntities = filterMode === 'selected'
     ? [...selectedEntities].sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()))
@@ -1681,8 +1702,6 @@ export default function SanitizeData() {
             <h2 className="text-xl font-semibold mb-4 text-gray-800">
               Select Entity Type
             </h2>
-
-            {/* Step 3: Filter Edit Control */}
             <div className="mb-3">
               <input
                 type="text"
@@ -1691,35 +1710,70 @@ export default function SanitizeData() {
                 value={modalFilterText}
                 onChange={(e) => setModalFilterText(e.target.value)}
                 autoFocus
+                ref={modalInputRef}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && selectedModalType && filteredModalTypes.includes(selectedModalType)) {
+                    e.preventDefault();
+                    if (typeSelectionContext === 'main') {
+                      setEntityType(selectedModalType);
+                    } else if (typeSelectionContext === 'create') {
+                      setCreateEntityType(selectedModalType);
+                    } else if (typeSelectionContext === 'edit') {
+                      setEditEntityType(selectedModalType);
+                    }
+                    setSelectTypeModalOpen(false);
+                  }
+                }}
               />
             </div>
-
-            <div className="border border-gray-200 rounded-md h-64 overflow-y-auto mb-4 bg-gray-50">
+            <div
+              className="border border-gray-200 rounded-md h-64 overflow-y-auto mb-4 bg-gray-50"
+              role="listbox"
+              aria-label="Entity Types"
+            >
               {loadingTypes ? (
                 <div className="flex flex-col items-center justify-center h-full text-gray-500">
                   <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mb-2"></div>
                   <p className="text-xs">Scanning index for unique types...</p>
                 </div>
-              ) : filteredModalTypes.length > 0 ? ( // Switched to filtered list
-                filteredModalTypes.map((type) => (
+              ) : filteredModalTypes.length > 0 ? (
+                filteredModalTypes.map((type, index) => (
                   <div
                     key={type}
+                    ref={(el) => { typeItemRefs.current[index] = el!; }}
                     onClick={() => setSelectedModalType(type)}
                     onDoubleClick={() => {
                       if (typeSelectionContext === 'main') {
                         setEntityType(type);
                       } else if (typeSelectionContext === 'create') {
                         setCreateEntityType(type);
+                        createSourceRef.current?.focus();
                       } else if (typeSelectionContext === 'edit') {
                         setEditEntityType(type);
                       }
                       setSelectTypeModalOpen(false);
-                    }}                   
-                    className={`px-4 py-2 cursor-pointer border-b border-gray-100 last:border-0 text-sm transition-colors ${
-                      selectedModalType === type 
-                        ? 'bg-blue-100 text-blue-800 font-semibold' 
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        if (typeSelectionContext === 'main') {
+                          setEntityType(type);
+                        } else if (typeSelectionContext === 'create') {
+                          setCreateEntityType(type);
+                        } else if (typeSelectionContext === 'edit') {
+                          setEditEntityType(type);
+                        }
+                        setSelectTypeModalOpen(false);
+                      }
+                    }}
+                    className={`px-4 py-2 cursor-pointer border-b border-gray-100 last:border-0 text-sm transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-blue-50 ${
+                      selectedModalType === type
+                        ? 'bg-blue-100 text-blue-800 font-semibold'
                         : 'hover:bg-gray-100 text-gray-700'
                     }`}
+                    tabIndex={0}
+                    role="option"
+                    aria-selected={selectedModalType === type}
                   >
                     {type}
                   </div>
@@ -1730,29 +1784,33 @@ export default function SanitizeData() {
                 </div>
               )}
             </div>
-
             <div className="flex justify-end gap-3">
               <button
-                onClick={() => setSelectTypeModalOpen(false)}
+                onClick={() => {
+                  setSelectTypeModalOpen(false);
+                  setSelectedModalType('');
+                }}
                 className="px-4 py-2 bg-gray-200 hover:bg-gray-300 rounded text-gray-800 text-sm transition-colors"
               >
                 Cancel
               </button>
               <button
                 onClick={() => {
-                    if (typeSelectionContext === 'main') {
-                      setEntityType(selectedModalType); 
-                    } else if (typeSelectionContext === 'create') {
-                      setCreateEntityType(selectedModalType);
-                    } else if (typeSelectionContext === 'edit') {
-                      setEditEntityType(selectedModalType);
-                    }
-                    setSelectTypeModalOpen(false);
-                  }}
+                  if (typeSelectionContext === 'main') {
+                    setEntityType(selectedModalType);
+                  } else if (typeSelectionContext === 'create') {
+                    setCreateEntityType(selectedModalType);
+                    // Add focus here after setting type
+                    createSourceRef.current?.focus();
+                  } else if (typeSelectionContext === 'edit') {
+                    setEditEntityType(selectedModalType);
+                  }
+                  setSelectTypeModalOpen(false);
+                }}
                 disabled={!selectedModalType}
                 className={`px-4 py-2 rounded text-sm transition-colors ${
-                  selectedModalType 
-                    ? 'bg-blue-600 hover:bg-blue-700 text-white' 
+                  selectedModalType
+                    ? 'bg-blue-600 hover:bg-blue-700 text-white'
                     : 'bg-gray-300 text-gray-500 cursor-not-allowed'
                 }`}
               >
@@ -1789,6 +1847,7 @@ export default function SanitizeData() {
                   value={createEntityName}
                   onChange={(e) => setCreateEntityName(e.target.value)}
                   placeholder="e.g., Tesla"
+                  ref={createNameRef}
                 />
               </div>
 
@@ -1841,6 +1900,7 @@ export default function SanitizeData() {
                   value={createEntitySourceId}
                   onChange={(e) => setCreateEntitySourceId(e.target.value)}
                   placeholder="e.g., chunk-123"
+                  ref={createSourceRef}
                 />
               </div>
             </div>
