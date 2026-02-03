@@ -6,8 +6,6 @@
 import os
 import argparse
 import asyncio
-import sys
-from pathlib import Path
 
 from raganything import RAGAnything, RAGAnythingConfig
 from lightrag.llm.openai import openai_complete_if_cache, openai_embed
@@ -86,7 +84,8 @@ async def run_text_query(query_text, api_key, base_url, working_dir, modes, outp
         # --- CLEANUP ---
         if hasattr(rag, 'finalize_storages'):
             res = rag.finalize_storages()
-            if asyncio.iscoroutine(res): await res
+            if asyncio.iscoroutine(res): 
+                await res
         
         if hasattr(rag, 'lightrag') and rag.lightrag:
             if hasattr(rag.lightrag, 'storage') and hasattr(rag.lightrag.storage, 'close'):

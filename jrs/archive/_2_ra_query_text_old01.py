@@ -66,7 +66,6 @@ async def run_query(query_text, api_key, base_url, working_dir, mode):
 
     except Exception as e:
         print(f"Query Error: {e}")
-        import traceback
         # print(traceback.format_exc()) # Uncomment if you need deeper debugging
 
 def main():

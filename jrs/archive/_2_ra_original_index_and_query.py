@@ -24,9 +24,9 @@ sys.path.append(str(Path(__file__).parent.parent))
 current_dir = Path(__file__).resolve().parent
 sys.path.append(str(current_dir.parent))
 
-from lightrag.llm.openai import openai_complete_if_cache, openai_embed
-from lightrag.utils import EmbeddingFunc, logger, set_verbose_debug
-from raganything import RAGAnything, RAGAnythingConfig
+from lightrag.llm.openai import openai_complete_if_cache, openai_embed # noqa: E402
+from lightrag.utils import EmbeddingFunc, logger, set_verbose_debug # noqa: E402
+from raganything import RAGAnything, RAGAnythingConfig # noqa: E402
 
 
 def configure_logging():

@@ -3,7 +3,6 @@ import asyncio
 import logging
 import logging.config
 import json
-import re
 import numpy as np
 from lightrag import LightRAG
 from lightrag.llm.openai import gpt_4o_mini_complete
@@ -75,7 +74,6 @@ def configure_logging():
 if not os.path.exists(WORKING_DIR):
     os.makedirs(WORKING_DIR)
 
-import numpy as np  # Ensure this is at the very top of your file
 
 async def initialize_rag():
     """Initialize LightRAG with custom embedding function."""

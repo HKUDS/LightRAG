@@ -1,5 +1,5 @@
 import tkinter as tk
-from tkinter import ttk, messagebox, simpledialog
+from tkinter import ttk, messagebox
 import asyncio
 import requests
 import os
@@ -280,7 +280,7 @@ class MergeGUI:
                 with open(self.config_file, 'r') as f:
                     saved_config = json.load(f)
                     self.window_config.update(saved_config)
-            except:
+            except Exception:
                 pass
 
     def set_initial_paned_position(self):
@@ -294,7 +294,7 @@ class MergeGUI:
                 position = 300
             
             self.paned_window.sashpos(0, position)
-        except Exception as e:
+        except Exception:
             self.paned_window.sashpos(0, 300)
 
     def save_window_config(self):
@@ -311,7 +311,7 @@ class MergeGUI:
             
             with open(self.config_file, 'w') as f:
                 json.dump(config, f)
-        except:
+        except Exception:
             pass
 
     def setup_main_window(self):
@@ -459,7 +459,7 @@ class MergeGUI:
                         self.canvas.yview_scroll(1, "units")
                     elif hasattr(event, 'delta') and event.delta:
                         self.canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
-            except:
+            except Exception:
                 pass
             return "break"
 
@@ -474,7 +474,7 @@ class MergeGUI:
         for event in scroll_events:
             try:
                 self.canvas.bind(event, _on_mousewheel)
-            except:
+            except Exception:
                 pass
 
         def on_canvas_enter(event):
@@ -753,7 +753,7 @@ class MergeGUI:
                         self.desc_canvas.yview_scroll(1, "units")
                     elif hasattr(event, 'delta') and event.delta:
                         self.desc_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
-            except:
+            except Exception:
                 pass
             return "break"
 
@@ -768,7 +768,7 @@ class MergeGUI:
         for event in desc_scroll_events:
             try:
                 self.desc_canvas.bind(event, _on_desc_mousewheel)
-            except:
+            except Exception:
                 pass
 
     def open_all_entity_types_modal(self):
@@ -936,7 +936,8 @@ class MergeGUI:
 
             if available_width < 100:
                 available_width = self.right_panel.winfo_width() - 20
-                if available_width < 100: available_width = 800
+                if available_width < 100: 
+                    available_width = 800
             if available_height < 100:
                 available_height = 600
 
@@ -980,11 +981,11 @@ class MergeGUI:
                     ttk.Label(header_sub_frame, text=label, font=("TkDefaultFont", 10, "bold")).grid(row=0, column=0, sticky="w")
                     
                     edit_button = ttk.Button(header_sub_frame, text="Edit Description", 
-                                            command=lambda l=label: self.open_edit_description_modal(l))
+                                            command=lambda lbl=label: self.open_edit_description_modal(lbl))
                     edit_button.grid(row=0, column=1, sticky="e", padx=(5,5))
                     
                     edit_rel_button = ttk.Button(header_sub_frame, text="Edit/Delete Relationships",
-                                                command=lambda l=label: self.open_edit_relationships_modal(l))
+                                                command=lambda lbl=label: self.open_edit_relationships_modal(lbl))
                     edit_rel_button.grid(row=0, column=2, sticky="e", padx=(0,5))
 
                     text_frame = ttk.Frame(desc_frame)

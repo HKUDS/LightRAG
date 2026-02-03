@@ -2,12 +2,10 @@
 import os
 import argparse
 import asyncio
-import sys
-from pathlib import Path
 
 from raganything import RAGAnything, RAGAnythingConfig
 from lightrag.llm.openai import openai_complete_if_cache, openai_embed
-from lightrag.utils import EmbeddingFunc, logger
+from lightrag.utils import EmbeddingFunc
 
 async def run_indexing(file_path, output_dir, api_key, base_url, working_dir):
     try:
@@ -57,7 +55,8 @@ async def run_indexing(file_path, output_dir, api_key, base_url, working_dir):
         
         if hasattr(rag, 'close'):
             res = rag.close()
-            if asyncio.iscoroutine(res): await res
+            if asyncio.iscoroutine(res): 
+                await res
         print("--- Indexing Success ---")
 
     except Exception as e:

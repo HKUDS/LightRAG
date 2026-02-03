@@ -2,14 +2,11 @@ import os
 import asyncio
 import logging
 import logging.config
-import json
-import re
 from lightrag import LightRAG
 from lightrag.llm.openai import gpt_4o_mini_complete
 from lightrag.kg.shared_storage import initialize_pipeline_status
 from lightrag.utils import logger, set_verbose_debug, EmbeddingFunc
 from llama_index.embeddings.openai import OpenAIEmbedding
-import textract
 
 # Configuration
 WORKING_DIR = "_0_jack_work_dir_02"

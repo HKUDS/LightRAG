@@ -121,9 +121,9 @@ async def main():
       
          
         for mode in ["naive", "local", "global", "hybrid", "mix"]:  # "naive", "local", "global", "hybrid", "mix"
-            print(f"\n=====================")
+            print("\n=====================")
             print(f"Query mode: {mode}")
-            print(f"=====================")
+            print("=====================")
             response = await rag.aquery(
                 query,
                 param=QueryParam(mode=mode, top_k=70),  # top_k=70, only_need_context=True, only_need_prompt=True

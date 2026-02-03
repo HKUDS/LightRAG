@@ -12,8 +12,10 @@ export default function SanitizeData() {
   const [firstEntity, setFirstEntity] = useState<string | null>(null);
   const [targetEntity, setTargetEntity] = useState('');
   const [entityType, setEntityType] = useState('');
-  const [descriptionStrategy, setDescriptionStrategy] = useState('join_unique');
-  const [sourceIdStrategy, setSourceIdStrategy] = useState('join_unique');
+
+  // For controls that exist but are not being used.
+  // const [descriptionStrategy, setDescriptionStrategy] = useState('join_unique');
+  // const [sourceIdStrategy, setSourceIdStrategy] = useState('join_unique');
 
   // Dropdown suggestions = currently selected entities
   const targetOptions = [...selectedEntities].sort((a, b) => a.localeCompare(b));
