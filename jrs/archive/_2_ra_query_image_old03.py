@@ -13,8 +13,9 @@ from lightrag.llm.openai import openai_complete_if_cache, openai_embed
 from lightrag.utils import EmbeddingFunc
 
 
-
-async def run_image_query(query_text, api_key, base_url, working_dir, modes, output_file, query_params):
+async def run_image_query(
+    query_text, api_key, base_url, working_dir, modes, output_file, query_params
+):
     try:
         config = RAGAnythingConfig(
             working_dir=working_dir,
@@ -24,30 +25,57 @@ async def run_image_query(query_text, api_key, base_url, working_dir, modes, out
 
         def llm_model_func(prompt, system_prompt=None, history_messages=[], **kwargs):
             return openai_complete_if_cache(
-                "gpt-4o-mini", prompt, system_prompt=system_prompt,
-                history_messages=history_messages, api_key=api_key,
-                base_url=base_url, **kwargs
+                "gpt-4o-mini",
+                prompt,
+                system_prompt=system_prompt,
+                history_messages=history_messages,
+                api_key=api_key,
+                base_url=base_url,
+                **kwargs,
             )
 
-        def vision_model_func(prompt, system_prompt=None, history_messages=[], image_data=None, **kwargs):
+        def vision_model_func(
+            prompt, system_prompt=None, history_messages=[], image_data=None, **kwargs
+        ):
             if image_data:
                 return openai_complete_if_cache(
-                    "gpt-4o", "", system_prompt=None, history_messages=[],
+                    "gpt-4o",
+                    "",
+                    system_prompt=None,
+                    history_messages=[],
                     messages=[
-                        {"role": "system", "content": system_prompt} if system_prompt else None,
-                        {"role": "user", "content": [
-                            {"type": "text", "text": prompt},
-                            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_data}"}}
-                        ]}
+                        (
+                            {"role": "system", "content": system_prompt}
+                            if system_prompt
+                            else None
+                        ),
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "text", "text": prompt},
+                                {
+                                    "type": "image_url",
+                                    "image_url": {
+                                        "url": f"data:image/jpeg;base64,{image_data}"
+                                    },
+                                },
+                            ],
+                        },
                     ],
-                    api_key=api_key, base_url=base_url, **kwargs
+                    api_key=api_key,
+                    base_url=base_url,
+                    **kwargs,
                 )
             return llm_model_func(prompt, system_prompt, history_messages, **kwargs)
 
         embedding_func = EmbeddingFunc(
-            embedding_dim=3072, max_token_size=8192,
+            embedding_dim=3072,
+            max_token_size=8192,
             func=lambda texts: openai_embed(
-                texts, model="text-embedding-3-large", api_key=api_key, base_url=base_url
+                texts,
+                model="text-embedding-3-large",
+                api_key=api_key,
+                base_url=base_url,
             ),
         )
 
@@ -55,7 +83,7 @@ async def run_image_query(query_text, api_key, base_url, working_dir, modes, out
             config=config,
             llm_model_func=llm_model_func,
             vision_model_func=vision_model_func,
-            embedding_func=embedding_func
+            embedding_func=embedding_func,
         )
 
         print("INFO: Initializing Multimodal Engine...")
@@ -69,7 +97,7 @@ async def run_image_query(query_text, api_key, base_url, working_dir, modes, out
             f.write(f"\n# Query Session: {timestamp}\n")
             f.write(f"**Query:** `{query_text}`\n")
             f.write(f"**Working Directory:** `{working_dir}`\n\n")
-            
+
             # Create a Markdown Table for Parameters
             f.write("### Session Parameters\n")
             f.write("| Parameter | Value |\n")
@@ -81,33 +109,31 @@ async def run_image_query(query_text, api_key, base_url, working_dir, modes, out
         # --- MULTI-MODE QUERY LOOP ---
         for current_mode in modes:
             print(f"\n>>> Executing [ {current_mode.upper()} ] mode...")
-            
+
             try:
                 # 1. Create a clean copy of your query parameters
                 run_params = query_params.copy()
-                
+
                 # 2. Remove 'mode' from the dictionary if it's there
                 # This prevents the "multiple values for keyword argument 'mode'" error
-                run_params.pop('mode', None)
+                run_params.pop("mode", None)
 
                 # 3. Call the method by unpacking the remaining parameters
                 # We pass the mode explicitly and then everything else via **run_params
                 result = await rag.aquery_with_multimodal(
-                    query_text, 
-                    mode=current_mode, 
-                    **run_params
+                    query_text, mode=current_mode, **run_params
                 )
-                
+
                 # Output to Console
                 print(f"\n[ {current_mode.upper()} ANSWER ]:")
                 print(f"{result}")
-                
+
                 # Output to Markdown File
                 with open(output_file, "a", encoding="utf-8") as f:
                     f.write(f"## Analysis Mode: {current_mode.upper()}\n")
                     f.write(f"{result}\n\n")
                     f.write("---\n")
-                
+
             except Exception as e:
                 error_msg = f"Error in {current_mode} mode: {e}"
                 print(error_msg)
@@ -116,19 +142,22 @@ async def run_image_query(query_text, api_key, base_url, working_dir, modes, out
                     f.write(f"**Error:** {error_msg}\n\n")
 
         # --- CLEANUP ---
-        if hasattr(rag, 'finalize_storages'):
+        if hasattr(rag, "finalize_storages"):
             res = rag.finalize_storages()
-            if asyncio.iscoroutine(res): 
+            if asyncio.iscoroutine(res):
                 await res
-        
-        if hasattr(rag, 'lightrag') and rag.lightrag:
-            if hasattr(rag.lightrag, 'storage') and hasattr(rag.lightrag.storage, 'close'):
+
+        if hasattr(rag, "lightrag") and rag.lightrag:
+            if hasattr(rag.lightrag, "storage") and hasattr(
+                rag.lightrag.storage, "close"
+            ):
                 await rag.lightrag.storage.close()
-        
+
         del rag
 
     except Exception as e:
         print(f"Query Error: {e}")
+
 
 def main():
     description = """
@@ -137,33 +166,67 @@ LightRAG Multimodal Query Tool
 This script performs advanced retrieval-augmented generation on indexed documents,
 focusing on multimodal content. It logs all results and parameters to a Markdown file.
 """
-    epilog = "For more detailed documentation, visit: file:///home/js/LightRAG/jrs/_notes"
+    epilog = (
+        "For more detailed documentation, visit: file:///home/js/LightRAG/jrs/_notes"
+    )
 
     parser = argparse.ArgumentParser(
         description=description,
         epilog=epilog,
-        formatter_class=argparse.RawDescriptionHelpFormatter
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
 
     parser.add_argument("query", help="Your question about the images/charts")
-    parser.add_argument("--modes", "-m", default="hybrid", help="Comma-separated list of modes: naive,local,global,hybrid,mix,bypass")
-    parser.add_argument("--output_file", "-o", default="/home/js/LightRAG/mm_query_output.md", help="Output MD file where LLM response is found")
-    parser.add_argument("--working_dir", "-w", default="/home/js/LightRAG/jrs/work/seheult/_ra/nir_through_fabrics/_ra_seheult_work_dir", help="Index path")
+    parser.add_argument(
+        "--modes",
+        "-m",
+        default="hybrid",
+        help="Comma-separated list of modes: naive,local,global,hybrid,mix,bypass",
+    )
+    parser.add_argument(
+        "--output_file",
+        "-o",
+        default="/home/js/LightRAG/mm_query_output.md",
+        help="Output MD file where LLM response is found",
+    )
+    parser.add_argument(
+        "--working_dir",
+        "-w",
+        default="/home/js/LightRAG/jrs/work/seheult/_ra/nir_through_fabrics/_ra_seheult_work_dir",
+        help="Index path",
+    )
 
     # LightRAG Parameters
-    parser.add_argument("--response_type", default="Multiple Paragraphs", help="Response format")
+    parser.add_argument(
+        "--response_type", default="Multiple Paragraphs", help="Response format"
+    )
     parser.add_argument("--top_k", type=int, default=60, help="Top items to retrieve")
-    parser.add_argument("--chunk_top_k", type=int, default=20, help="Initial text chunks")
-    parser.add_argument("--max_entity_tokens", type=int, default=6000, help="Max entity tokens")
-    parser.add_argument("--max_relation_tokens", type=int, default=8000, help="Max relation tokens")
-    parser.add_argument("--max_total_tokens", type=int, default=30000, help="Total token budget")
-    
+    parser.add_argument(
+        "--chunk_top_k", type=int, default=20, help="Initial text chunks"
+    )
+    parser.add_argument(
+        "--max_entity_tokens", type=int, default=6000, help="Max entity tokens"
+    )
+    parser.add_argument(
+        "--max_relation_tokens", type=int, default=8000, help="Max relation tokens"
+    )
+    parser.add_argument(
+        "--max_total_tokens", type=int, default=30000, help="Total token budget"
+    )
+
     # Flags
-    parser.add_argument("--only_context", action="store_true", help="Only return context")
+    parser.add_argument(
+        "--only_context", action="store_true", help="Only return context"
+    )
     parser.add_argument("--only_prompt", action="store_true", help="Only return prompt")
     parser.add_argument("--stream", action="store_true", help="Enable streaming")
-    parser.add_argument("--disable_rerank", action="store_false", dest="enable_rerank", help="Disable reranking")
-    
+    parser.add_argument(
+        "--disable_rerank",
+        action="store_false",
+        dest="enable_rerank",
+        help="Disable reranking",
+    )
+
     parser.add_argument("--user_prompt", help="Custom instructions for LLM")
 
     args = parser.parse_args()
@@ -182,18 +245,21 @@ focusing on multimodal content. It logs all results and parameters to a Markdown
         "max_relation_tokens": args.max_relation_tokens,
         "max_total_tokens": args.max_total_tokens,
         "user_prompt": args.user_prompt,
-        "enable_rerank": args.enable_rerank
+        "enable_rerank": args.enable_rerank,
     }
 
-    asyncio.run(run_image_query(
-        args.query, 
-        os.getenv("OPENAI_API_KEY"), 
-        os.getenv("OPENAI_BASE_URL"), 
-        args.working_dir,
-        mode_list,
-        args.output_file,
-        query_params
-    ))
+    asyncio.run(
+        run_image_query(
+            args.query,
+            os.getenv("OPENAI_API_KEY"),
+            os.getenv("OPENAI_BASE_URL"),
+            args.working_dir,
+            mode_list,
+            args.output_file,
+            query_params,
+        )
+    )
+
 
 if __name__ == "__main__":
     main()

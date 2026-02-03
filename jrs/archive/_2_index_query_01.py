@@ -38,7 +38,9 @@ def configure_logging():
             "disable_existing_loggers": False,
             "formatters": {
                 "default": {"format": "%(levelname)s: %(message)s"},
-                "detailed": {"format": "%(asctime)s - %(name)s - %(levelname)s - %(message)s"},
+                "detailed": {
+                    "format": "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+                },
             },
             "handlers": {
                 "console": {
@@ -67,84 +69,94 @@ def configure_logging():
     logger.setLevel(logging.INFO)
     set_verbose_debug(os.getenv("VERBOSE_DEBUG", "true").lower() == "true")
 
+
 async def initialize_rag():
     """Initialize LightRAG with custom embedding function."""
     print("Initializing LightRAG for querying...")
-    
+
     # Initialize embedding model
     embed_model = OpenAIEmbedding(
-        model=EMBEDDING_MODEL,
-        api_key=API_KEY,
-        dimensions=EMBEDDING_DIM
+        model=EMBEDDING_MODEL, api_key=API_KEY, dimensions=EMBEDDING_DIM
     )
-    
+
     # Define async embedding function
     async def async_embedding_func(texts):
         return embed_model.get_text_embedding_batch(texts)
-    
+
     # Define embedding function
     embedding_func = EmbeddingFunc(
         embedding_dim=EMBEDDING_DIM,
-        max_token_size=MAX_TOKEN_SIZE,               
-        func=async_embedding_func
+        max_token_size=MAX_TOKEN_SIZE,
+        func=async_embedding_func,
     )
-    
+
     # Initialize LightRAG
     rag = LightRAG(
         working_dir=WORKING_DIR,
         embedding_func=embedding_func,
-        llm_model_func=gpt_4o_mini_complete
+        llm_model_func=gpt_4o_mini_complete,
     )
-    
+
     await rag.initialize_storages()
     await initialize_pipeline_status()
     await rag.aclear_cache()
     return rag
+
 
 async def main():
     """Main function to query the LightRAG index."""
     rag = None
     try:
         if not os.getenv("OPENAI_API_KEY") and not API_KEY:
-            raise ValueError("OPENAI_API_KEY or EMBEDDING_BINDING_API_KEY environment variable not set")
+            raise ValueError(
+                "OPENAI_API_KEY or EMBEDDING_BINDING_API_KEY environment variable not set"
+            )
         rag = await initialize_rag()
-        
+
         # Check if index exists
         if not os.path.exists(os.path.join(WORKING_DIR, "kv_store_full_docs.json")):
-            raise FileNotFoundError(f"No index found in {WORKING_DIR}. Run the indexing script first.")
-        
+            raise FileNotFoundError(
+                f"No index found in {WORKING_DIR}. Run the indexing script first."
+            )
+
         # Perform query
 
-        query = (
-            "What does wire 130 do and what is each end of the wire connected to?"
-        )
-      
-         
-        for mode in ["naive", "local", "global", "hybrid", "mix"]:  # "naive", "local", "global", "hybrid", "mix"
+        query = "What does wire 130 do and what is each end of the wire connected to?"
+
+        for mode in [
+            "naive",
+            "local",
+            "global",
+            "hybrid",
+            "mix",
+        ]:  # "naive", "local", "global", "hybrid", "mix"
             print("\n=====================")
             print(f"Query mode: {mode}")
             print("=====================")
             response = await rag.aquery(
                 query,
-                param=QueryParam(mode=mode, top_k=70),  # top_k=70, only_need_context=True, only_need_prompt=True
+                param=QueryParam(
+                    mode=mode, top_k=70
+                ),  # top_k=70, only_need_context=True, only_need_prompt=True
             )
             print(response)
     except Exception as e:
         print(f"An error occurred: {e}")
         import traceback
+
         traceback.print_exc()
     finally:
         if rag:
             print("Finalizing storages...")
             await rag.finalize_storages()
 
+
 if __name__ == "__main__":
     configure_logging()
     asyncio.run(main())
     print("\nQuerying Done!")
 
-
-    '''
+    """
     print("--- All Loaded Environment Variables ---")
     # os.environ is a dictionary-like object
     # You can iterate over its items (key-value pairs)
@@ -152,7 +164,4 @@ if __name__ == "__main__":
         print(f"{key}={value}")
 
     print("--------------------------------------")
-    '''
-
-
-
+    """

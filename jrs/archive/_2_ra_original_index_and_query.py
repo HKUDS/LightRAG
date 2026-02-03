@@ -24,9 +24,9 @@ sys.path.append(str(Path(__file__).parent.parent))
 current_dir = Path(__file__).resolve().parent
 sys.path.append(str(current_dir.parent))
 
-from lightrag.llm.openai import openai_complete_if_cache, openai_embed # noqa: E402
-from lightrag.utils import EmbeddingFunc, logger, set_verbose_debug # noqa: E402
-from raganything import RAGAnything, RAGAnythingConfig # noqa: E402
+from lightrag.llm.openai import openai_complete_if_cache, openai_embed  # noqa: E402
+from lightrag.utils import EmbeddingFunc, logger, set_verbose_debug  # noqa: E402
+from raganything import RAGAnything, RAGAnythingConfig  # noqa: E402
 
 
 def configure_logging():
@@ -134,23 +134,27 @@ async def process_with_rag(
                     system_prompt=None,
                     history_messages=[],
                     messages=[
-                        {"role": "system", "content": system_prompt}
-                        if system_prompt
-                        else None,
-                        {
-                            "role": "user",
-                            "content": [
-                                {"type": "text", "text": prompt},
-                                {
-                                    "type": "image_url",
-                                    "image_url": {
-                                        "url": f"data:image/jpeg;base64,{image_data}"
+                        (
+                            {"role": "system", "content": system_prompt}
+                            if system_prompt
+                            else None
+                        ),
+                        (
+                            {
+                                "role": "user",
+                                "content": [
+                                    {"type": "text", "text": prompt},
+                                    {
+                                        "type": "image_url",
+                                        "image_url": {
+                                            "url": f"data:image/jpeg;base64,{image_data}"
+                                        },
                                     },
-                                },
-                            ],
-                        }
-                        if image_data
-                        else {"role": "user", "content": prompt},
+                                ],
+                            }
+                            if image_data
+                            else {"role": "user", "content": prompt}
+                        ),
                     ],
                     api_key=api_key,
                     base_url=base_url,
@@ -197,27 +201,22 @@ async def process_with_rag(
             result = await rag.aquery(query, mode="hybrid")
             logger.info(f"Answer: {result}")
 
-
-
-
-        # logger.info(  
-        #     "\n[Multimodal Query]: Analyzing fabric attenuation chart data"  
-        # )  
-        # multimodal_result = await rag.aquery_with_multimodal(  
-        #     "What fabric offers the least attenuation of near infrared light?",  
-        #     multimodal_content=[  
-        #         {  
-        #             "type": "image",  
-        #             "image_data": "base64_encoded_image_data_here",  # Base64 encoded image of Figure 7  
-        #             "image_caption": "Figure 7: Point measurements showing drop in NIR intensity across multiple fabric layers",  
-        #         }  
-        #     ],  
-        #     mode="hybrid",  
-        # )  
+        # logger.info(
+        #     "\n[Multimodal Query]: Analyzing fabric attenuation chart data"
+        # )
+        # multimodal_result = await rag.aquery_with_multimodal(
+        #     "What fabric offers the least attenuation of near infrared light?",
+        #     multimodal_content=[
+        #         {
+        #             "type": "image",
+        #             "image_data": "base64_encoded_image_data_here",  # Base64 encoded image of Figure 7
+        #             "image_caption": "Figure 7: Point measurements showing drop in NIR intensity across multiple fabric layers",
+        #         }
+        #     ],
+        #     mode="hybrid",
+        # )
         # logger.info(f"Answer: {multimodal_result}")
 
-
-        
         # 2. Multimodal query with specific multimodal content using aquery_with_multimodal()
         # logger.info(
         #     "\n[Multimodal Query]: Analyzing performance data in context of document"
@@ -237,9 +236,7 @@ async def process_with_rag(
         #     mode="hybrid",
         # )
         # logger.info(f"Answer: {multimodal_result}")
-        
 
-        
         # 3. Another multimodal query with equation content
         # logger.info("\n[Multimodal Query]: Mathematical formula analysis")
         # equation_result = await rag.aquery_with_multimodal(
@@ -254,17 +251,15 @@ async def process_with_rag(
         #     mode="hybrid",
         # )
         # logger.info(f"Answer: {equation_result}")
-        
 
         # Finalize RAGAnything storages.
-        if hasattr(rag, 'close'):
+        if hasattr(rag, "close"):
             # Try to call it normally; if it's a coroutine, it will be handled
             result = rag.close()
             if asyncio.iscoroutine(result):
                 await result
-        
-        logger.info("RAG processing and cleanup completed successfully.")
 
+        logger.info("RAG processing and cleanup completed successfully.")
 
     except Exception as e:
         logger.error(f"Error processing with RAG: {str(e)}")
@@ -276,88 +271,98 @@ async def process_with_rag(
 def main():
     """Main function to run the example with flexible arguments"""
     parser = argparse.ArgumentParser(description="MinerU RAG Example")
-    
+
     # 1. Input Argument (The file to be indexed)
     parser.add_argument(
-        "--file_path", "-f",
+        "--file_path",
+        "-f",
         default="/home/js/LightRAG_BACKUP/jrs/work/seheult/_ra/nir_through_fabrics/_ra_seheult_docs/nir_through_fabrics.pdf",
-        help="Path to the document to process"
+        help="Path to the document to process",
     )
-    
+
     # 2. Working Directory Arguments
-    parser.add_argument(                   
-        "--working_dir", "-w", 
-        default=os.getenv("RAG_WORKING_DIR", "/home/js/LightRAG_BACKUP/jrs/work/seheult/_ra/nir_through_fabrics/_ra_seheult_output_dir"), 
-        help="Working directory path"
+    parser.add_argument(
+        "--working_dir",
+        "-w",
+        default=os.getenv(
+            "RAG_WORKING_DIR",
+            "/home/js/LightRAG_BACKUP/jrs/work/seheult/_ra/nir_through_fabrics/_ra_seheult_output_dir",
+        ),
+        help="Working directory path",
     )
-    
+
     # 3. Output Files Directory Arguments
     parser.add_argument(
-        "--output", "-o", 
-        default=os.getenv("RAG_OUTPUT_DIR", "/home/js/LightRAG_BACKUP/jrs/work/seheult/_ra/nir_through_fabrics/_ra_seheult_output_dir"), 
-        help="Output directory path"
+        "--output",
+        "-o",
+        default=os.getenv(
+            "RAG_OUTPUT_DIR",
+            "/home/js/LightRAG_BACKUP/jrs/work/seheult/_ra/nir_through_fabrics/_ra_seheult_output_dir",
+        ),
+        help="Output directory path",
     )
-    
+
     # 4. API Key Argument
     parser.add_argument(
-        "--api-key", 
+        "--api-key",
         default=os.getenv("OPENAI_API_KEY"),
-        help="OpenAI API key (defaults to OPENAI_API_KEY env var)"
+        help="OpenAI API key (defaults to OPENAI_API_KEY env var)",
     )
 
     # 5. Base URL Argument (Optional, for proxy or local LLM endpoints)
     parser.add_argument(
-        "--base-url", "-b",
+        "--base-url",
+        "-b",
         default=os.getenv("OPENAI_BASE_URL"),
-        help="Optional base URL for API (e.g., https://api.openai.com/v1)"
-    )    
+        help="Optional base URL for API (e.g., https://api.openai.com/v1)",
+    )
 
     parser.add_argument(
-        "--dry-run", 
-        action="store_true", 
-        help="Print configuration and exit without processing"
-    )    
+        "--dry-run",
+        action="store_true",
+        help="Print configuration and exit without processing",
+    )
 
     args = parser.parse_args()
-
 
     # Check if the input file exists
     # We use .resolve() to handle relative paths like './my_input_file.pdf'
     input_path = Path(args.file_path).resolve()
     file_exists = input_path.exists()
 
-
     if args.dry_run:
-            print("\n=== DRY RUN MODE ===")
-            print(f"File to process: {args.file_path}")
-            print(f"Output Dir:      {args.output}")
-            print(f"Working Dir:     {args.working_dir}")
-            print(f"API Key:         {'LOADED' if args.api_key else 'MISSING'}")
-            print(f"Base URL:        {args.base_url}")
-            print("====================\n")
-            print("Configuration looks good. Remove --dry-run to start processing.")
-            file_exists = os.path.exists(args.file_path)
-            print(f"Input File Exists?:     {'YES, The input file exists.' if file_exists else 'NO (Check your file path!)'}")
-            return
-
+        print("\n=== DRY RUN MODE ===")
+        print(f"File to process: {args.file_path}")
+        print(f"Output Dir:      {args.output}")
+        print(f"Working Dir:     {args.working_dir}")
+        print(f"API Key:         {'LOADED' if args.api_key else 'MISSING'}")
+        print(f"Base URL:        {args.base_url}")
+        print("====================\n")
+        print("Configuration looks good. Remove --dry-run to start processing.")
+        file_exists = os.path.exists(args.file_path)
+        print(
+            f"Input File Exists?:     {'YES, The input file exists.' if file_exists else 'NO (Check your file path!)'}"
+        )
+        return
 
     # 3. Guard Clause: Stop the script if not a dry run and file is missing
     if not file_exists:
         print(f"\nFATAL ERROR: The file '{args.file_path}' does not exist.")
         print(f"Resolved path: {input_path}")
         print("Please provide a valid path using -f or --file_path.\n")
-        sys.exit(1) # Terminates the program immediately            
+        sys.exit(1)  # Terminates the program immediately
 
     # Create directories (only if not a dry run)
     os.makedirs(args.output, exist_ok=True)
     os.makedirs(args.working_dir, exist_ok=True)
 
-
     # Priority Logic for file_path: Command line > Env Var > Error
     file_to_process = args.file_path or os.getenv("RAG_FILE_PATH")
-    
+
     if not file_to_process:
-        logger.error("Error: No file path provided via argument or RAG_FILE_PATH env var.")
+        logger.error(
+            "Error: No file path provided via argument or RAG_FILE_PATH env var."
+        )
         return
 
     if not args.api_key:

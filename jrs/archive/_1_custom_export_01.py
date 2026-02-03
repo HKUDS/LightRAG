@@ -15,6 +15,7 @@ EMBEDDING_DIM = int(os.getenv("EMBEDDING_DIM", 3072))
 API_KEY = os.getenv("EMBEDDING_BINDING_API_KEY")
 MAX_TOKEN_SIZE = int(os.getenv("MAX_TOKEN_SIZE", 8192))
 
+
 def configure_logging():
     """Configure logging with console and rotating file handlers."""
     for logger_name in ["uvicorn", "uvicorn.access", "uvicorn.error", "lightrag"]:
@@ -33,7 +34,9 @@ def configure_logging():
             "disable_existing_loggers": False,
             "formatters": {
                 "default": {"format": "%(levelname)s: %(message)s"},
-                "detailed": {"format": "%(asctime)s - %(name)s - %(levelname)s - %(message)s"},
+                "detailed": {
+                    "format": "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+                },
             },
             "handlers": {
                 "console": {
@@ -62,48 +65,51 @@ def configure_logging():
     logger.setLevel(logging.INFO)
     set_verbose_debug(os.getenv("VERBOSE_DEBUG", "true").lower() == "true")
 
+
 if not os.path.exists(WORKING_DIR):
     os.makedirs(WORKING_DIR)
+
 
 async def initialize_rag():
     """Initialize LightRAG with custom embedding function."""
     print("Initializing LightRAG for indexing...")
-    
+
     # Initialize embedding model
     embed_model = OpenAIEmbedding(
-        model=EMBEDDING_MODEL,
-        api_key=API_KEY,
-        dimensions=EMBEDDING_DIM
+        model=EMBEDDING_MODEL, api_key=API_KEY, dimensions=EMBEDDING_DIM
     )
-    
+
     # Define async embedding function
     async def async_embedding_func(texts):
         return embed_model.get_text_embedding_batch(texts)
-    
+
     # Define embedding function
     embedding_func = EmbeddingFunc(
         embedding_dim=EMBEDDING_DIM,
         max_token_size=MAX_TOKEN_SIZE,
-        func=async_embedding_func
+        func=async_embedding_func,
     )
-    
+
     # Initialize LightRAG
     rag = LightRAG(
         working_dir=WORKING_DIR,
         embedding_func=embedding_func,
-        llm_model_func=gpt_4o_mini_complete
+        llm_model_func=gpt_4o_mini_complete,
     )
-    
+
     await rag.initialize_storages()
     await initialize_pipeline_status()
     return rag
+
 
 async def main():
     """Main function to index documents."""
     rag = None
     try:
         if not os.getenv("OPENAI_API_KEY") and not API_KEY:
-            raise ValueError("OPENAI_API_KEY or EMBEDDING_BINDING_API_KEY environment variable not set")
+            raise ValueError(
+                "OPENAI_API_KEY or EMBEDDING_BINDING_API_KEY environment variable not set"
+            )
         rag = await initialize_rag()
 
         # Delete By Relation
@@ -114,11 +120,13 @@ async def main():
     except Exception as e:
         print(f"An error occurred: {e}")
         import traceback
+
         traceback.print_exc()
     finally:
         if rag:
             print("Finalizing storages...")
             await rag.finalize_storages()
+
 
 if __name__ == "__main__":
     configure_logging()

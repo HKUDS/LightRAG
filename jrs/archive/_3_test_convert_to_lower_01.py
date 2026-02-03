@@ -12,4 +12,3 @@ with open("testout.txt", "w", encoding="utf-8") as outfile:
     outfile.write(lowercase_content)
 
 print("Conversion complete. Output written to testout.txt.")
-

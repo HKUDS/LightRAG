@@ -9,6 +9,7 @@ from lightrag.llm.openai import gpt_4o_mini_complete
 from lightrag.kg.shared_storage import initialize_pipeline_status
 from lightrag.utils import logger, set_verbose_debug, EmbeddingFunc
 from llama_index.embeddings.openai import OpenAIEmbedding
+
 # import textract
 
 # Configuration
@@ -20,9 +21,10 @@ MAX_TOKEN_SIZE = int(os.getenv("MAX_TOKEN_SIZE", 8192))
 
 # Files to be indexed
 files_2b_indexed = [
-"/home/js/LightRAG/jrs/work/seheult/seheult_metadata/_bNySyEobfY_metadata.json",
-"/home/js/LightRAG/jrs/work/seheult/seheult_metadata/0m1Qekrfs7w_metadata.json"
+    "/home/js/LightRAG/jrs/work/seheult/seheult_metadata/_bNySyEobfY_metadata.json",
+    "/home/js/LightRAG/jrs/work/seheult/seheult_metadata/0m1Qekrfs7w_metadata.json",
 ]
+
 
 def configure_logging():
     """Configure logging with console and rotating file handlers."""
@@ -42,7 +44,9 @@ def configure_logging():
             "disable_existing_loggers": False,
             "formatters": {
                 "default": {"format": "%(levelname)s: %(message)s"},
-                "detailed": {"format": "%(asctime)s - %(name)s - %(levelname)s - %(message)s"},
+                "detailed": {
+                    "format": "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+                },
             },
             "handlers": {
                 "console": {
@@ -71,6 +75,7 @@ def configure_logging():
     logger.setLevel(logging.INFO)
     set_verbose_debug(os.getenv("VERBOSE_DEBUG", "true").lower() == "true")
 
+
 if not os.path.exists(WORKING_DIR):
     os.makedirs(WORKING_DIR)
 
@@ -78,46 +83,47 @@ if not os.path.exists(WORKING_DIR):
 async def initialize_rag():
     """Initialize LightRAG with custom embedding function."""
     print("Initializing LightRAG for indexing...")
-    
+
     # Initialize embedding model
     embed_model = OpenAIEmbedding(
-        model=EMBEDDING_MODEL,
-        api_key=API_KEY,
-        dimensions=EMBEDDING_DIM
+        model=EMBEDDING_MODEL, api_key=API_KEY, dimensions=EMBEDDING_DIM
     )
-    
+
     # Define async embedding function
     async def async_embedding_func(texts):
         # llama-index returns a list; we convert it to a numpy array for LightRAG
         embeddings = await embed_model.aget_text_embedding_batch(texts)
         return np.array(embeddings)
-    
+
     # Define embedding function
     embedding_func = EmbeddingFunc(
         embedding_dim=EMBEDDING_DIM,
         max_token_size=MAX_TOKEN_SIZE,
-        func=async_embedding_func
+        func=async_embedding_func,
     )
-    
+
     # Initialize LightRAG
     rag = LightRAG(
         working_dir=WORKING_DIR,
         embedding_func=embedding_func,
-        llm_model_func=gpt_4o_mini_complete
+        llm_model_func=gpt_4o_mini_complete,
     )
-    
+
     await rag.initialize_storages()
     await initialize_pipeline_status()
     return rag
+
 
 async def main():
     """Main function to index documents."""
     rag = None
     try:
         if not os.getenv("OPENAI_API_KEY") and not API_KEY:
-            raise ValueError("OPENAI_API_KEY or EMBEDDING_BINDING_API_KEY environment variable not set")
+            raise ValueError(
+                "OPENAI_API_KEY or EMBEDDING_BINDING_API_KEY environment variable not set"
+            )
         rag = await initialize_rag()
-        
+
         # Check which files are already indexed
         indexed_files = set()
         doc_status_file = os.path.join(WORKING_DIR, "kv_store_doc_status.json")
@@ -150,11 +156,13 @@ async def main():
     except Exception as e:
         print(f"An error occurred: {e}")
         import traceback
+
         traceback.print_exc()
     finally:
         if rag:
             print("Finalizing storages...")
             await rag.finalize_storages()
+
 
 if __name__ == "__main__":
     configure_logging()

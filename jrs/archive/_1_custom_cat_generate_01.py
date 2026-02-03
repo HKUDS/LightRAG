@@ -7,6 +7,7 @@
 
 import json
 
+
 def generate_category_json(input_filepath, output_filepath):
     """
     Generates a JSON file containing chunks, entities, and relationships
@@ -19,20 +20,20 @@ def generate_category_json(input_filepath, output_filepath):
     chunks_content = []
     entities = []
     relationships = []
-    
+
     # Hardcode category_hub's correct entry as it's a special case
     category_hub_entity = {
         "entity_name": "category_hub",
         "entity_type": "category_hub",
         "description": "category_hub is the hub entity with an entity_type of category_hub and which shares a relationship with every entity that has the entity_type of category.",
-        "source_id": "category_data.json"
+        "source_id": "category_data.json",
     }
-    
+
     # Add category_hub's entity first
     entities.append(category_hub_entity)
     chunks_content.append(category_hub_entity["description"])
 
-    with open(input_filepath, 'r') as f:
+    with open(input_filepath, "r") as f:
         lines = f.readlines()
 
     for line in lines:
@@ -47,17 +48,17 @@ def generate_category_json(input_filepath, output_filepath):
         # Skip the original category_hub line, as we've hardcoded it
         if "category_hub (the entity_name is category_hub)" in line:
             continue
-        
+
         # Remove leading/trailing ".,", "," or "." and quotes if they exist on the raw line
-        line = line.strip().strip(',.').strip('"') 
+        line = line.strip().strip(",.").strip('"')
 
         # General parsing for other entities
         parts = line.split(" is an entity with an entity_type of ", 1)
         if len(parts) < 2:
             # This line doesn't conform to the expected "is an entity with an entity_type of" format, skip it
             continue
-        
-        entity_name = parts[0].strip().strip('"') # Strip quotes from entity_name
+
+        entity_name = parts[0].strip().strip('"')  # Strip quotes from entity_name
         type_and_desc_part = parts[1]
 
         # Determine the correct description split keyword
@@ -66,7 +67,7 @@ def generate_category_json(input_filepath, output_filepath):
             description_split_keyword = " which describes "
         elif " which describe " in type_and_desc_part:
             description_split_keyword = " which describe "
-        
+
         # Only proceed if a valid keyword was found
         if not description_split_keyword:
             # If neither keyword is found, this line doesn't fit the pattern for description extraction
@@ -80,8 +81,10 @@ def generate_category_json(input_filepath, output_filepath):
             continue
 
         entity_type = type_desc_split[0].strip().strip('"')
-        description_suffix = type_desc_split[1].strip().strip('",.') # Strip quotes and punctuation from suffix
-        
+        description_suffix = (
+            type_desc_split[1].strip().strip('",.')
+        )  # Strip quotes and punctuation from suffix
+
         # Reconstruct the description correctly without extra punctuation from source
         # Use the actual split keyword in the reconstructed description for accuracy
         description = f"{entity_name} is an entity with an entity_type of {entity_type}{description_split_keyword}{description_suffix}."
@@ -91,10 +94,10 @@ def generate_category_json(input_filepath, output_filepath):
             "entity_name": entity_name,
             "entity_type": entity_type,
             "description": description,
-            "source_id": "category_data.json"
+            "source_id": "category_data.json",
         }
         entities.append(entity_entry)
-        
+
         # Add to chunks content (only for included entities)
         chunks_content.append(description)
 
@@ -106,25 +109,23 @@ def generate_category_json(input_filepath, output_filepath):
                 "description": f"{entity_name} is an element of the set category_hub",
                 "keywords": f"{entity_name}, element of, category_hub",
                 "weight": 7.0,
-                "source_id": "category_data.json"
+                "source_id": "category_data.json",
             }
             relationships.append(relationship_entry)
 
     # Construct the final JSON structure
     output_data = {
         "chunks": [
-            {
-                "content": "\n".join(chunks_content),
-                "source_id": "category_data.json"
-            }
+            {"content": "\n".join(chunks_content), "source_id": "category_data.json"}
         ],
         "entities": entities,
-        "relationships": relationships
+        "relationships": relationships,
     }
 
     # Write the JSON to the output file
-    with open(output_filepath, 'w') as f:
+    with open(output_filepath, "w") as f:
         json.dump(output_data, f, indent=4)
+
 
 if __name__ == "__main__":
     input_file = "test_categories.txt"
