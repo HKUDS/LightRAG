@@ -88,6 +88,8 @@ export default function SanitizeData() {
     type.toLowerCase().includes(modalFilterText.toLowerCase())
   );
 
+  const filterInputRef = useRef<HTMLInputElement>(null);
+
   // Build entityTypeMap and entityOrphanMap with single fetch per entity
   const fetchEntityDetails = async (entityList: string[]) => {
     try {
@@ -292,6 +294,42 @@ export default function SanitizeData() {
       createNameRef.current?.focus();
     }
   }, [createEntityModalOpen]);  
+
+  // Global hotkey: Ctrl+K (or Cmd+K on Mac) → instantly focus the filter box
+  useEffect(() => {
+    const handleCtrlK = (e: KeyboardEvent) => {
+      if (
+        (e.ctrlKey || e.metaKey) &&           // Ctrl on Win/Linux, Cmd on Mac
+        e.key.toLowerCase() === 'k'
+      ) {
+        e.preventDefault();                   // Stops any rare browser behavior
+        filterInputRef.current?.focus();
+        filterInputRef.current?.select();     // Optional: also selects existing text (nice UX)
+      }
+    };
+
+    document.addEventListener('keydown', handleCtrlK);
+
+    return () => document.removeEventListener('keydown', handleCtrlK);
+  }, []);
+
+  // Global hotkey: Ctrl + ;  → instantly open the Select Type modal
+  useEffect(() => {
+    const handleCtrlSemicolon = (e: KeyboardEvent) => {
+      if (
+        (e.ctrlKey || e.metaKey) &&   // Ctrl on Windows/Linux, Cmd on Mac
+        e.key === ';'                 // The semicolon key
+      ) {
+        e.preventDefault();
+        setTypeSelectionContext('main');
+        setSelectTypeModalOpen(true);
+      }
+    };
+
+    document.addEventListener('keydown', handleCtrlSemicolon);
+
+    return () => document.removeEventListener('keydown', handleCtrlSemicolon);
+  }, []);
 
   // Pagination handlers
   const goToFirst = () => setCurrentPage(1);
@@ -981,6 +1019,7 @@ export default function SanitizeData() {
                 className="w-full px-3 py-1 border border-gray-300 rounded text-xs focus:outline-none focus:ring-1 focus:ring-blue-500"
                 value={filterText}
                 onChange={(e) => setFilterText(e.target.value)}
+                ref={filterInputRef}
               />
               <div className="flex flex-wrap gap-1">
                 <button 
