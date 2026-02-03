@@ -1191,7 +1191,7 @@ export default function SanitizeData() {
                 setCreateEntityName('');  // Reset fields
                 setCreateEntityDescription('');
                 setCreateEntityType('');
-                setCreateEntitySourceId('');
+                setCreateEntitySourceId('Manual Entry:');
               }}
               className="px-3.5 py-1.5 bg-purple-600 text-white rounded hover:bg-purple-700 text-sm"
             >
@@ -1718,6 +1718,7 @@ export default function SanitizeData() {
                       setEntityType(selectedModalType);
                     } else if (typeSelectionContext === 'create') {
                       setCreateEntityType(selectedModalType);
+                      createSourceRef.current?.focus();
                     } else if (typeSelectionContext === 'edit') {
                       setEditEntityType(selectedModalType);
                     }
@@ -1760,6 +1761,7 @@ export default function SanitizeData() {
                           setEntityType(type);
                         } else if (typeSelectionContext === 'create') {
                           setCreateEntityType(type);
+                          createSourceRef.current?.focus();
                         } else if (typeSelectionContext === 'edit') {
                           setEditEntityType(type);
                         }
