@@ -3,7 +3,7 @@
 
 
 # I happen to be using Ubuntu on WSL.
-# To install this fork of LightRAG run the following script: 
+# To install this fork of LightRAG run the following script:
 # jrs/_notes/setup.sh
 # Be sure to read and understand the script before using it.
 
@@ -11,8 +11,8 @@
 # After running the script, do the following to continue setting up the LightRAG library:
 
 # Add your API keys to the .env file."
-# Or for better security, add API keys to your .bashrc file instead."    
-# No matter where you decide to put your API keys, you will still need a .env file for other required settings" 
+# Or for better security, add API keys to your .bashrc file instead."
+# No matter where you decide to put your API keys, you will still need a .env file for other required settings"
 # If you prefer, you can use the .env file I have in the "LightRAG/jrs/_notes" directory which is working for me."
 # Just copy that file to the LightRAG folder."
 
@@ -29,12 +29,12 @@ To use LightRAG, run these commands:
   4. lightrag-server
   This starts the server.
 
-  5. Visit: http://localhost:9621/webui/ 
+  5. Visit: http://localhost:9621/webui/
   This WebUI is where you interact with the server.
 
   6. You can interact directly with LightRAG using the
      Python scripts in the jrs directory without the need
-     for the lightrag server or the WebUI 
+     for the lightrag server or the WebUI
 
 
 ############## The commands is this section are for running the scripts in this repository ####################
@@ -52,7 +52,7 @@ source .venv/bin/activate
 export PS1='(.venv) \w\$ '
 
 
-# To index the document of interest. 
+# To index the document of interest.
 # First index the metadata json file if any with the following script:
 jrs/_1_custom_index_01.py
 # Open the script in your text editor.
@@ -118,11 +118,11 @@ python3 jrs/_2_ra_query_image.py --help
 python3 jrs/_2_ra_query_image.py <your arguments here>
 
 
-# WSL Networking: 
-# In WSL, you may need to access the server from Windows. 
+# WSL Networking:
+# In WSL, you may need to access the server from Windows.
 # To do this, find the WSL IP address with the following bash command:
 ip addr show eth0 | grep inet
-# Look for an IP like 172.x.x.x. 
+# Look for an IP like 172.x.x.x.
 You can access the WebUI from a Windows browser at http://<WSL_IP>:9621 (replace <WSL_IP> with the actual IP).
 
 Have Fun!

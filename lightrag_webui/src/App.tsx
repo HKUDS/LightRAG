@@ -208,8 +208,8 @@ function App() {
                 <TabsContent value="documents" className="absolute top-0 right-0 bottom-0 left-0 overflow-auto">
                   <DocumentManager />
                 </TabsContent>
-                <TabsContent value="sanitize-data" className="absolute top-0 right-0 bottom-0 left-0 overflow-hidden">  
-                  <SanitizeData />  
+                <TabsContent value="sanitize-data" className="absolute top-0 right-0 bottom-0 left-0 overflow-hidden">
+                  <SanitizeData />
                 </TabsContent>
                 <TabsContent value="knowledge-graph" className="absolute top-0 right-0 bottom-0 left-0 overflow-hidden">
                   <GraphViewer />

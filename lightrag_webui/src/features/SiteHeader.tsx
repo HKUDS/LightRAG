@@ -40,8 +40,8 @@ function TabsNavigation() {
         <NavigationTab value="documents" currentTab={currentTab}>
           {t('header.documents')}
         </NavigationTab>
-        <NavigationTab value="sanitize-data" currentTab={currentTab}>  
-          {t('header.sanitizeData')}  
+        <NavigationTab value="sanitize-data" currentTab={currentTab}>
+          {t('header.sanitizeData')}
         </NavigationTab>
         <NavigationTab value="knowledge-graph" currentTab={currentTab}>
           {t('header.knowledgeGraph')}

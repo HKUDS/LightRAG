@@ -31,8 +31,8 @@
 # This will cause the LightRAG directory to be created in your home directory.
 
 # !!!!!!!!!!!!!!!!     Important!      !!!!!!!!!!!!!!!!!
-# If you already have a directory named LightRAG then change the 
-# REPO_DIR variable in this script to something other than LightRAG so that 
+# If you already have a directory named LightRAG then change the
+# REPO_DIR variable in this script to something other than LightRAG so that
 # your orgininal work will not be overwritten.
 
 # This script here that you are reading will not run if it is not marked by the OS as an executable file.
@@ -42,7 +42,7 @@
 # Then run the script with the following bash command in your terminal window:
 # ./setup.sh
 
-# LightRAG and RAGAnywhere require environment variables in order to run. (API keys, etc.) 
+# LightRAG and RAGAnywhere require environment variables in order to run. (API keys, etc.)
 # Ensure API keys are defined in a .env file in the LightRAG directory.
 # For better security, define API keys in the .bashrc file in you home directory rather than in your .env file.
 # The following line should be in your .env file, or for better security in your .bashrc file.
@@ -121,10 +121,10 @@ if [ ! -f ".env" ]; then
     echo "⚠️  WARNING: No .env file detected."
     echo "   Action: cp env.example .env"
     echo "   Then add your API keys to the .env file."
-    echo "   Or for better security, add API keys to your .bashrc file instead."    
-    echo "   No matter where you decide to put your API keys, you will still need a .env file for other required settings" 
+    echo "   Or for better security, add API keys to your .bashrc file instead."
+    echo "   No matter where you decide to put your API keys, you will still need a .env file for other required settings"
     echo "   If you prefer, you can use the .env file I have in the "LightRAG/jrs/_notes" directory which is working for me."
-    echo "   Just copy that file to the LightRAG folder."            
+    echo "   Just copy that file to the LightRAG folder."
 fi
 
 
@@ -144,11 +144,11 @@ To use LightRAG, run these commands:
   4. lightrag-server
   This starts the server.
 
-  5. Visit: http://localhost:9621/webui/ 
+  5. Visit: http://localhost:9621/webui/
   This WebUI is where you interact with the server.
 
   6. You can interact directly with LightRAG using the
      Python scripts in the jrs directory without the need
-     for the lightrag server or the WebUI 
+     for the lightrag server or the WebUI
 -----------------------------------------------
 EOF

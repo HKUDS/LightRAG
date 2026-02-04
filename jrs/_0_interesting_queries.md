@@ -4,12 +4,12 @@
 
 ### LightRAG server will produce links which will bring you to the exact spot in a video where the query is addressed.
 
-The magic which make this possible is in the way the data was prepared and indexed.  
-[This library](https://github.com/johnshearing/scrape_yt_mk_transcripts) was used to prepare the data for indexing.  
+The magic which make this possible is in the way the data was prepared and indexed.
+[This library](https://github.com/johnshearing/scrape_yt_mk_transcripts) was used to prepare the data for indexing.
 <br>
-How the query is written also matters. The following is an example. 
+How the query is written also matters. The following is an example.
 
-**Paste the following query into the LightRAG server prompt box.  
+**Paste the following query into the LightRAG server prompt box.
 Try Naive, Local, Global, Hybrid, and Mix mode for each query**
 
 
@@ -37,25 +37,25 @@ The discussion around topical sunscreen highlights a critical view of its use in
     * hybrid combines local and global methods.
     * mix combines hybrid with naive
     * The results vary significantly based on the method used.
-    * There is no telling which will give the best result so it is good to try them all. 
+    * There is no telling which will give the best result so it is good to try them all.
     * The python script _2_index_query_??.py does indeed try all the methods so it might be wise to run the query in the script first to see which method produces the best response and then run the query again in the LightRAG server to get the best formatting.
 
-* [Time stamps in the...] 
-  * Specify special instructions or formating instructions in brackets before the query. This greatly improves the quality of the response.  
+* [Time stamps in the...]
+  * Specify special instructions or formating instructions in brackets before the query. This greatly improves the quality of the response.
 
 
 ## Query 2
 
 ### Metadata: LightRAG server will list data about the source material and produce links to that source material.
 
-The magic which make this possible is in the way the data was prepared and indexed.  
-[This library](https://github.com/johnshearing/scrape_yt_mk_transcripts) was used to prepare the data for indexing.  
+The magic which make this possible is in the way the data was prepared and indexed.
+[This library](https://github.com/johnshearing/scrape_yt_mk_transcripts) was used to prepare the data for indexing.
 <br>
-How the query is written also matters. The following is an example. 
+How the query is written also matters. The following is an example.
 
 **Paste the following query into the LightRAG server prompt box.**
 
-/naive Please list the metadata for the source material.  
+/naive Please list the metadata for the source material.
 
 **The following is was the response produced**
 
@@ -74,11 +74,11 @@ How the query is written also matters. The following is an example.
 
 ### LightRAG server will produce diagrams.
 
-How the query is written matters. 
-The query type is specified first: /naive 
+How the query is written matters.
+The query type is specified first: /naive
 Special instructions about the output go in between brackets []
 Finally the query is written.
-The following is an example. 
+The following is an example.
 
 **Paste the following query into the LightRAG server prompt box.**
 
@@ -103,42 +103,42 @@ graph TD;
 
 ### LightRAG can find orphans in the knowledge graph.
 
-This only works in a local or mixed mode query.  
-And currently this will only work for 23 items in the list when using LR-Server.  
-When this same query is use in a python query script many more list items can be used in the query.  
-I am trying to discover what is making that difference.  
-The query type is specified first: /local  
-Special instructions about the output go in between brackets []  
-Finally the query is written.  
+This only works in a local or mixed mode query.
+And currently this will only work for 23 items in the list when using LR-Server.
+When this same query is use in a python query script many more list items can be used in the query.
+I am trying to discover what is making that difference.
+The query type is specified first: /local
+Special instructions about the output go in between brackets []
+Finally the query is written.
 
-The following is an example.   
+The following is an example.
 **Paste the following query into the LightRAG server prompt box.**
 
 >/local [Only provide the name of the entity in the response. Nothing else is required.] Please examine the Entity ID for all Entities in the following python list. Then please return only the Entities with a Rank of 0. [ "2023-04-02T06:06:17Z", "2023-04-22T23:01:27Z", "Alabama", "Albury", "Biological Compartments", "Cellular Health", "Circadian Biology", "Circadian Health", "Circadian Rhythm", "Cold Thermogenesis Protocol", "Cytochrome C Oxidase", "Delta Airlines", "Deuterium Depleted Water", "Dr Jack Kruse: Light, Melanin, POMC in Human Evolution & Disease", "Dr Jack Kruse: WATER, non-native EMFs & mitochondrial basis of disease | Regenerative Health Podcast", "Dr. Anthony Chafee", "Dr. Jack Kruse", "Dr. Max Gulhane", "Eureka Moment", "Farm Tour", "Health Optimization"]
 
 **The following is was the response produced**
 
->The only Entity from your provided list with a Rank of 0 is:  
+>The only Entity from your provided list with a Rank of 0 is:
 >
->Albury  
->This entity corresponds to the location in New South Wales where Dr. Max Gulhane is based.  
+>Albury
+>This entity corresponds to the location in New South Wales where Dr. Max Gulhane is based.
 
 ## Query 5
 
 ### LightRAG can find Type, Description, Rank, and File Path in the knowledge graph. In the previous example we searched from Entity to Entity ID to Rank in order to find orphans. In the following example we go through Entity to Entity ID to Type in order to return categories.
 
-This only works in a mixed mode query.  
-The query type is specified first: /mixed  
-Special instructions about the output go in between brackets []  
-Finally the query is written.  
+This only works in a mixed mode query.
+The query type is specified first: /mixed
+Special instructions about the output go in between brackets []
+Finally the query is written.
 
-The following is an example.   
+The following is an example.
 **Paste the following query into the LightRAG server prompt box.**
 
 >/mix [Only provide the name of the entity in the response. Nothing else is required.] Please examine the Entity ID for all Entities in the following python list. Then please return only the Entities with a Type of Person. [ "2023-04-02T06:06:17Z", "2023-04-22T23:01:27Z", "Alabama", "Albury", "Biological Compartments", "Cellular Health", "Circadian Biology", "Circadian Health", "Circadian Rhythm", "Cold Thermogenesis Protocol", "Cytochrome C Oxidase", "Delta Airlines", "Deuterium Depleted Water", "Dr Jack Kruse: Light, Melanin, POMC in Human Evolution & Disease", "Dr Jack Kruse: WATER, non-native EMFs & mitochondrial basis of disease | Regenerative Health Podcast", "Dr. Anthony Chafee", "Dr. Jack Kruse", "Dr. Max Gulhane", "Eureka Moment", "Farm Tour", "Health Optimization"]
 
 **The following is was the response produced**
 
->Dr. Anthony Chafee  
-Dr. Jack Kruse  
-Dr. Max Gulhane    
+>Dr. Anthony Chafee
+Dr. Jack Kruse
+Dr. Max Gulhane

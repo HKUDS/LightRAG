@@ -1377,13 +1377,17 @@ async def set_all_update_flags_for_all_namespaces():
             direct_log("No namespaces found to set update flags for.")
             return
 
-        for namespace in list(_update_flags.keys()): # Iterate over a copy of keys as _update_flags might change
+        for namespace in list(
+            _update_flags.keys()
+        ):  # Iterate over a copy of keys as _update_flags might change
             direct_log(f"Setting update flags for namespace: {namespace}")
             # Ensure the namespace exists before trying to iterate its flags
             if namespace in _update_flags:
                 for i in range(len(_update_flags[namespace])):
                     _update_flags[namespace][i].value = True
         direct_log("All namespaces' update flags set to True.")
+
+
 # End of: Added by JRS
 
 

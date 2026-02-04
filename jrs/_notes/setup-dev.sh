@@ -29,7 +29,7 @@
 # 5.  --- SYNC WITH UPSTREAM (HKUDS/LightRAG) ---
     #   git fetch upstream
     #   git merge upstream/main
-#     --> Note: If conflicts occur, prioritize keeping your new WebUI files 
+#     --> Note: If conflicts occur, prioritize keeping your new WebUI files
 #         but accept upstream fixes for the core RAG logic.
 
 # 6.  --- UPDATE DEPENDENCY LOCK FILES ---
@@ -70,7 +70,7 @@
 
 # ==============================================================================
 # INCASE OF DISASTER WITH THE ABOVE SYNC OPERATION, RECOVER WITH:
-# git checkout main 
+# git checkout main
 # git reset --hard backup/pre-migration-2026-02-02
 # ==============================================================================
 
@@ -81,8 +81,8 @@
 # This will cause the LightRAG-Dev directory to be created in your home directory.
 
 # !!!!!!!!!!!!!!!!     Important!      !!!!!!!!!!!!!!!!!
-# If you already have a directory named LightRAG-Dev then change the 
-# REPO_DIR variable in this script to something other than LightRAG-Dev so that 
+# If you already have a directory named LightRAG-Dev then change the
+# REPO_DIR variable in this script to something other than LightRAG-Dev so that
 # your orgininal work will not be overwritten.
 
 # This script here that you are reading will not run if it is not marked by the OS as an executable file.
@@ -92,7 +92,7 @@
 # Then run the script with the following bash command in your terminal window:
 # ./setup-dev.sh
 
-# LightRAG and RAGAnywhere require environment variables in order to run. (API keys, etc.) 
+# LightRAG and RAGAnywhere require environment variables in order to run. (API keys, etc.)
 # Ensure API keys are defined in a .env file in the LightRAG directory.
 # For better security, define API keys in the .bashrc file in you home directory rather than in your .env file.
 # The following line should be in your .env file, or for better security in your .bashrc file.
@@ -136,7 +136,7 @@ if [ ! -d "$REPO_DIR" ]; then
     echo "📂 Cloning your LightRAG fork for development..."
     git clone "$REPO_URL" "$REPO_DIR"
     cd "$REPO_DIR"
-    git remote add upstream https://github.com/HKUDS/LightRAG.git    
+    git remote add upstream https://github.com/HKUDS/LightRAG.git
 else
     echo "🏠 Directory $REPO_DIR already exists. Updating..."
     cd "$REPO_DIR"
@@ -157,7 +157,7 @@ if [ -d "lightrag_webui" ]; then
     cd lightrag_webui
     echo "Installing frontend dependencies with bun..."
     bun install --frozen-lockfile
-    
+
     echo "Performing initial frontend build..."
     # This places the initial assets into lightrag/api/webui/
     bun run build
@@ -174,10 +174,10 @@ echo "🎉 Setup Complete!"
 # 6. Check for .env file
 if [ ! -f ".env" ]; then
     echo "⚠️  WARNING: No .env file detected."
-    echo "   Please copy your working .env from your backup or jrs/_notes folder."    
+    echo "   Please copy your working .env from your backup or jrs/_notes folder."
     echo "   Then add your API keys to the .env file."
-    echo "   Or for better security, add API keys to your .bashrc file instead."    
-    echo "   No matter where you decide to put your API keys, you will still need a .env file for other required settings"             
+    echo "   Or for better security, add API keys to your .bashrc file instead."
+    echo "   No matter where you decide to put your API keys, you will still need a .env file for other required settings"
 fi
 
 
@@ -192,7 +192,7 @@ To DEVELOP and MODIFY the WebUI, follow these steps:
 
 2. CREATE A PROMPT THAT TAKES UP LESS SPACE.
    export PS1='(.venv) \w\$ '
-   
+
 2. START THE BACKEND:
    lightrag-server
 
@@ -200,7 +200,7 @@ To DEVELOP and MODIFY the WebUI, follow these steps:
    In a NEW terminal:
    cd $REPO_DIR/lightrag_webui
    bun run dev
-   # This will give you a link (usually http://localhost:5173) 
+   # This will give you a link (usually http://localhost:5173)
    # that updates instantly as you change code.
 
 4. FINALIZING UI CHANGES:

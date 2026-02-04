@@ -34,7 +34,7 @@ export default function SanitizeData() {
   const [editingEntityForRel, setEditingEntityForRel] = useState<string | null>(null);
 
   // Temporary edits for relationships while modal is open
-  const [relationshipEdits, setRelationshipEdits] = useState<Record<string, any>>({});  
+  const [relationshipEdits, setRelationshipEdits] = useState<Record<string, any>>({});
 
   // Unique entity types from selected entities
   const [uniqueEntityTypes, setUniqueEntityTypes] = useState<string[]>([]);
@@ -51,7 +51,7 @@ export default function SanitizeData() {
   const modalInputRef = useRef<HTMLInputElement>(null);
   const typeItemRefs = useRef<HTMLDivElement[]>([]);
 
-  const [typesLoading, setTypesLoading] = useState(true);  
+  const [typesLoading, setTypesLoading] = useState(true);
   const [filterMode, setFilterMode] = useState<'none' | 'selected' | 'type' | 'orphan'>('none');
   const [typeFilteredEntities, setTypeFilteredEntities] = useState<string[]>([]);
   const [entityTypeMap, setEntityTypeMap] = useState<Record<string, string>>({});
@@ -81,7 +81,7 @@ export default function SanitizeData() {
   const [createRelDescription, setCreateRelDescription] = useState('');
   const [createRelKeywords, setCreateRelKeywords] = useState('');
   const [createRelWeight, setCreateRelWeight] = useState(1.0);
-  const [createRelError, setCreateRelError] = useState<string | null>(null);  
+  const [createRelError, setCreateRelError] = useState<string | null>(null);
 
   const createNameRef = useRef<HTMLInputElement>(null);
   const createSourceRef = useRef<HTMLInputElement>(null);
@@ -134,11 +134,11 @@ export default function SanitizeData() {
       // 1. Get all entity names
       const listRes = await axios.get(`${API_BASE}/graph/label/list`);
       const entityNames = listRes.data as string[];
-      
+
       // 2. Fetch types for each name (in parallel)
       // Note: If you have thousands of entities, we may need to chunk this later.
       const typeSet = new Set<string>();
-      
+
       await Promise.all(
         entityNames.map(async (name) => {
           try {
@@ -234,9 +234,9 @@ export default function SanitizeData() {
       if (e.key === 'Escape') {
         if (editRelationshipsModalOpen) {
           setEditRelationshipsModalOpen(false);
-        } else if (selectTypeModalOpen) { 
+        } else if (selectTypeModalOpen) {
           setSelectTypeModalOpen(false);
-        } else if (createEntityModalOpen) { 
+        } else if (createEntityModalOpen) {
           setCreateEntityModalOpen(false);
         } else if (editEntityModalOpen) {
           setEditEntityModalOpen(false);
@@ -295,7 +295,7 @@ export default function SanitizeData() {
     if (createEntityModalOpen) {
       createNameRef.current?.focus();
     }
-  }, [createEntityModalOpen]);  
+  }, [createEntityModalOpen]);
 
   // Global hotkey: Ctrl+K (or Cmd+K on Mac) → instantly focus the filter box
   useEffect(() => {
@@ -353,7 +353,7 @@ export default function SanitizeData() {
       alert('Please select at least one entity first (check the boxes on the left).');
       return;
     }
-    
+
     setFilterMode('selected');
     setCurrentPage(1);
     setFilterText('');
@@ -368,14 +368,14 @@ export default function SanitizeData() {
       alert('Please select or enter an entity type first.');
       return;
     }
-    
+
     // console.log('Showing all of type:', entityType);
     const entitiesOfType = entities.filter((name) => entityTypeMap[name] === entityType).sort((a, b) =>
       a.toLowerCase().localeCompare(b.toLowerCase())
     );
     // console.log('Filtered count:', entitiesOfType.length);
     // console.log('entityTypeMap sample:', Object.entries(entityTypeMap).slice(0, 5));
-    
+
     setTypeFilteredEntities(entitiesOfType);
     setFilterMode('type');
     setCurrentPage(1);
@@ -387,13 +387,13 @@ export default function SanitizeData() {
       alert('Entity details are still loading. Please wait a moment and try again.');
       return;
     }
-    
+
     console.log('Showing orphans'); // Debug
     const orphans = entities.filter((name) => entityOrphanMap[name] === true).sort((a, b) =>
       a.toLowerCase().localeCompare(b.toLowerCase())
     );
     console.log('Orphan count:', orphans.length); // Debug
-    
+
     setOrphanFilteredEntities(orphans);
     setFilterMode('orphan');
     setCurrentPage(1);
@@ -765,9 +765,9 @@ export default function SanitizeData() {
       // Find main node by id (robust to order)
       const mainNode = detailRes.data.nodes?.find((node: any) => node.id === name);
       const type = mainNode?.properties?.entity_type || '';
-      
+
       const isOrphan = (detailRes.data.nodes?.length || 0) <= 1 && (detailRes.data.edges?.length || 0) === 0;
-      
+
       setEntityTypeMap(prev => ({ ...prev, [name]: type }));
       setEntityOrphanMap(prev => ({ ...prev, [name]: isOrphan }));
     } catch (err) {
@@ -852,7 +852,7 @@ export default function SanitizeData() {
         },
       }));
     } catch (err) {
-      console.error(`Error fetching "${entityName}":`, err);  
+      console.error(`Error fetching "${entityName}":`, err);
       // Optional: store error state
     } finally {
       setLoadingDetails((prev) => prev.filter((n) => n !== entityName));
@@ -942,7 +942,7 @@ export default function SanitizeData() {
         alert(`Saved ${successCount} relationship change(s) successfully!`);
       } else {
         alert("No changes detected.");
-      }      
+      }
 
       setEditRelationshipsModalOpen(false);
     } catch (err) {
@@ -987,7 +987,7 @@ export default function SanitizeData() {
       console.error("Failed to delete relationship:", err);
       alert("Error deleting relationship. Check console.");
     }
-  };  
+  };
 
   const displayEntities = filterMode === 'selected'
     ? [...selectedEntities].sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()))
@@ -995,12 +995,12 @@ export default function SanitizeData() {
     ? typeFilteredEntities
     : filterMode === 'orphan'
     ? orphanFilteredEntities
-    : paginatedEntities; 
+    : paginatedEntities;
 
   return (
     <div className="h-full flex flex-col">
       {/* Top row - minimum height to ensure controls are visible */}
-      <div className="h-auto flex border-b border-gray-300">  
+      <div className="h-auto flex border-b border-gray-300">
         {/* Upper Left */}
         <div className={`w-1/4 border-r border-gray-300 p-2.5 flex flex-col gap-2.5 ${filterMode !== 'none' ? 'bg-indigo-50' : ''}`}>
           {filterMode !== 'none' && (
@@ -1024,14 +1024,14 @@ export default function SanitizeData() {
                 ref={filterInputRef}
               />
               <div className="flex flex-wrap gap-1">
-                <button 
+                <button
                   onClick={handleShowAllOfType}
                   disabled={typesLoading}
                   className={`px-2 py-0.5 bg-gray-100 hover:bg-gray-200 border border-gray-300 rounded text-xs ${typesLoading ? 'opacity-50 cursor-not-allowed' : ''}`}
                 >
                   All Of Type
                 </button>
-                <button 
+                <button
                   onClick={handleShowOrphans}  // ← Added onClick and disabled
                   disabled={typesLoading}
                   className={`px-2 py-0.5 bg-gray-100 hover:bg-gray-200 border border-gray-300 rounded text-xs ${typesLoading ? 'opacity-50 cursor-not-allowed' : ''}`}
@@ -1160,7 +1160,7 @@ export default function SanitizeData() {
           <div className="flex flex-wrap items-end gap-2.5">
             {/* Moved: Select Type button + input */}
             <div className="min-w-[200px]">
-              <button 
+              <button
                 onClick={() => {
                   setTypeSelectionContext('main');
                   setSelectTypeModalOpen(true);
@@ -1225,7 +1225,7 @@ export default function SanitizeData() {
           </div>
 
           <div className="flex gap-2">
-            <button 
+            <button
               onClick={() => {
                 setCreateEntityModalOpen(true);
                 setCreateError(null);  // Clear any previous errors
@@ -1237,22 +1237,22 @@ export default function SanitizeData() {
               className="px-3.5 py-1.5 bg-purple-600 text-white rounded hover:bg-purple-700 text-sm"
             >
               Create Entity
-            </button>            
-            <button 
+            </button>
+            <button
               className="px-3.5 py-1.5 bg-blue-600 text-white rounded hover:bg-blue-700 text-sm disabled:opacity-50"
               disabled={selectedEntities.length < 1 || filterMode !== 'selected'}
               onClick={handleMergeEntities}  // ← Add this
               title={
-                filterMode !== 'selected' 
-                  ? "Enter 'Show Sel. Only' mode first\nto act on selected entities" 
-                  : selectedEntities.length < 1 
-                  ? "Select at least one entity first\n(check the boxes on the left)" 
+                filterMode !== 'selected'
+                  ? "Enter 'Show Sel. Only' mode first\nto act on selected entities"
+                  : selectedEntities.length < 1
+                  ? "Select at least one entity first\n(check the boxes on the left)"
                   : undefined
               }
             >
               Merge Entities
             </button>
-            <button 
+            <button
               className="px-3.5 py-1.5 bg-green-600 text-white rounded hover:bg-green-700 text-sm disabled:opacity-50"
               disabled={selectedEntities.length !== 2 || filterMode !== 'selected'}
               onClick={() => {
@@ -1267,24 +1267,24 @@ export default function SanitizeData() {
                 setCreateRelWeight(1.0);
               }}
               title={
-                filterMode !== 'selected' 
-                  ? "Enter 'Show Sel. Only' mode first\nto act on selected entities" 
-                  : selectedEntities.length !== 2 
-                  ? "Select exactly two entities first\n(check the boxes on the left)" 
+                filterMode !== 'selected'
+                  ? "Enter 'Show Sel. Only' mode first\nto act on selected entities"
+                  : selectedEntities.length !== 2
+                  ? "Select exactly two entities first\n(check the boxes on the left)"
                   : undefined
               }
             >
               Create Rel.
             </button>
-            <button 
+            <button
               className="px-3.5 py-1.5 bg-red-600 text-white rounded hover:bg-red-700 text-sm disabled:opacity-50"
               disabled={selectedEntities.length < 1 || filterMode !== 'selected'}
               onClick={handleDeleteEntities}
               title={
-                filterMode !== 'selected' 
-                  ? "Enter 'Show Sel. Only' mode first\nto act on selected entities" 
-                  : selectedEntities.length < 1 
-                  ? "Select at least one entity\nto enable this button" 
+                filterMode !== 'selected'
+                  ? "Enter 'Show Sel. Only' mode first\nto act on selected entities"
+                  : selectedEntities.length < 1
+                  ? "Select at least one entity\nto enable this button"
                   : undefined
               }
             >
@@ -1561,7 +1561,7 @@ export default function SanitizeData() {
                   Entity Type
                 </label>
                 <div className="flex items-stretch">
-                  <button 
+                  <button
                     onClick={() => {
                       setTypeSelectionContext('edit');
                       setSelectTypeModalOpen(true);
@@ -1735,7 +1735,7 @@ export default function SanitizeData() {
           </div>
         </div>
       )}
-      
+
       {/* Select Entity Type Modal */}
       {selectTypeModalOpen && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-60">
@@ -1913,7 +1913,7 @@ export default function SanitizeData() {
                   Entity Type
                 </label>
                 <div className="flex items-stretch">
-                  <button 
+                  <button
                     onClick={() => {
                       setTypeSelectionContext('create');
                       setSelectTypeModalOpen(true);

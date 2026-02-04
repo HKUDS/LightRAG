@@ -8,7 +8,9 @@ from typing import Optional, Dict, Any
 import traceback
 from fastapi import APIRouter, Depends, Query, HTTPException
 from pydantic import BaseModel, Field
-from lightrag.kg.shared_storage import set_all_update_flags_for_all_namespaces # Import the new function
+from lightrag.kg.shared_storage import (
+    set_all_update_flags_for_all_namespaces,
+)  # Import the new function
 
 from lightrag.utils import logger
 from ..utils_api import get_combined_auth_dependency
@@ -697,12 +699,15 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
         try:
             await set_all_update_flags_for_all_namespaces()
             logger.info("Triggered refresh of all graph data from disk.")
-            return {"status": "success", "message": "Graph data refresh triggered successfully."}
+            return {
+                "status": "success",
+                "message": "Graph data refresh triggered successfully.",
+            }
         except Exception as e:
             logger.error(f"Error triggering graph data refresh: {str(e)}")
             logger.error(traceback.format_exc())
             raise HTTPException(
                 status_code=500, detail=f"Error triggering graph data refresh: {str(e)}"
-            )            
+            )
 
     return router
