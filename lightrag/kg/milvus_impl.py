@@ -435,9 +435,14 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                 collection_name=self.final_namespace,
                 field_name="vector",
                 index_params={
-                    "index_type": "HNSW",
-                    "metric_type": "COSINE",
-                    "params": {"M": 16, "efConstruction": 256},
+                    "index_type": self.index_config.index_type
+                    if self.index_config.index_type != "AUTOINDEX"
+                    else "HNSW",
+                    "metric_type": self.index_config.metric_type,
+                    "params": {
+                        "M": self.index_config.hnsw_m,
+                        "efConstruction": self.index_config.hnsw_ef_construction,
+                    },
                 },
             )
             logger.debug(
@@ -1220,9 +1225,29 @@ class MilvusVectorDBStorage(BaseVectorStorage):
     def __post_init__(self):
         self._validate_embedding_func()
 
+        # Extract MilvusIndexConfig parameters from vector_db_storage_cls_kwargs
+        kwargs = self.global_config.get("vector_db_storage_cls_kwargs", {})
+        index_config_keys = {
+            "index_type",
+            "metric_type",
+            "hnsw_m",
+            "hnsw_ef_construction",
+            "hnsw_ef",
+            "sq_type",
+            "sq_refine",
+            "sq_refine_type",
+            "sq_refine_k",
+            "ivf_nlist",
+            "ivf_nprobe",
+        }
+        index_config_params = {
+            k: v for k, v in kwargs.items() if k in index_config_keys
+        }
+
         # Initialize index configuration (if not already set)
+        # Priority: init params from kwargs > environment variables > defaults
         if not hasattr(self, "index_config") or self.index_config is None:
-            self.index_config = MilvusIndexConfig()
+            self.index_config = MilvusIndexConfig(**index_config_params)
 
         # Check for MILVUS_WORKSPACE environment variable first (higher priority)
         # This allows administrators to force a specific workspace for all Milvus storage instances
@@ -1253,8 +1278,6 @@ class MilvusVectorDBStorage(BaseVectorStorage):
             self.final_namespace = self.namespace
             self.workspace = ""
             logger.debug(f"Final namespace (no workspace): '{self.final_namespace}'")
-
-        kwargs = self.global_config.get("vector_db_storage_cls_kwargs", {})
         cosine_threshold = kwargs.get("cosine_better_than_threshold")
         if cosine_threshold is None:
             raise ValueError(
