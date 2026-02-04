@@ -361,6 +361,49 @@ class TestMilvusIndexConfig:
             )
             assert config.sq_refine_type == refine_type
 
+    def test_get_config_field_names(self):
+        """Test get_config_field_names() returns all dataclass fields"""
+        field_names = MilvusIndexConfig.get_config_field_names()
+        
+        # Check that it's a set
+        assert isinstance(field_names, set)
+        
+        # Check that all expected fields are present
+        expected_fields = {
+            "index_type",
+            "metric_type",
+            "hnsw_m",
+            "hnsw_ef_construction",
+            "hnsw_ef",
+            "sq_type",
+            "sq_refine",
+            "sq_refine_type",
+            "sq_refine_k",
+            "ivf_nlist",
+            "ivf_nprobe",
+        }
+        assert field_names == expected_fields
+        
+    def test_get_config_field_names_single_source_of_truth(self):
+        """Test that get_config_field_names() provides single source of truth for configuration parameters"""
+        # This test ensures that when we add new fields to MilvusIndexConfig,
+        # they are automatically included in get_config_field_names()
+        # without needing to update hardcoded lists elsewhere
+        
+        from dataclasses import fields as dataclass_fields
+        
+        # Get fields directly from dataclass
+        direct_fields = {f.name for f in dataclass_fields(MilvusIndexConfig)}
+        
+        # Get fields via the method
+        method_fields = MilvusIndexConfig.get_config_field_names()
+        
+        # They should be identical
+        assert direct_fields == method_fields, (
+            f"Method should return same fields as dataclass. "
+            f"Difference: {direct_fields.symmetric_difference(method_fields)}"
+        )
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

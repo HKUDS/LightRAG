@@ -1,7 +1,7 @@
 import asyncio
 import os
 from typing import Any, final, Optional, Dict
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 import numpy as np
 from lightrag.utils import logger, compute_mdhash_id
 from ..base import BaseVectorStorage
@@ -273,6 +273,18 @@ class MilvusIndexConfig:
             search_params["nprobe"] = self.ivf_nprobe
 
         return {"params": search_params} if search_params else {}
+
+    @classmethod
+    def get_config_field_names(cls) -> set:
+        """Get all configuration field names from the dataclass.
+        
+        This method provides a single source of truth for configuration parameter names,
+        eliminating the need to maintain duplicate hardcoded lists elsewhere.
+        
+        Returns:
+            Set of field names that can be used to extract configuration from kwargs
+        """
+        return {f.name for f in fields(cls)}
 
     def to_dict(self) -> Dict[str, Any]:
         """Export configuration as dictionary (for logging/debugging)"""
@@ -1226,20 +1238,10 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         self._validate_embedding_func()
 
         # Extract MilvusIndexConfig parameters from vector_db_storage_cls_kwargs
+        # Use MilvusIndexConfig.get_config_field_names() to avoid hardcoding the parameter list
+        # This ensures we always stay in sync with the MilvusIndexConfig dataclass definition
         kwargs = self.global_config.get("vector_db_storage_cls_kwargs", {})
-        index_config_keys = {
-            "index_type",
-            "metric_type",
-            "hnsw_m",
-            "hnsw_ef_construction",
-            "hnsw_ef",
-            "sq_type",
-            "sq_refine",
-            "sq_refine_type",
-            "sq_refine_k",
-            "ivf_nlist",
-            "ivf_nprobe",
-        }
+        index_config_keys = MilvusIndexConfig.get_config_field_names()
         index_config_params = {
             k: v for k, v in kwargs.items() if k in index_config_keys
         }
