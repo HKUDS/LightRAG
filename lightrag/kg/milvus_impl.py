@@ -435,9 +435,14 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                 collection_name=self.final_namespace,
                 field_name="vector",
                 index_params={
-                    "index_type": self.index_config.index_type if self.index_config.index_type != "AUTOINDEX" else "HNSW",
+                    "index_type": self.index_config.index_type
+                    if self.index_config.index_type != "AUTOINDEX"
+                    else "HNSW",
                     "metric_type": self.index_config.metric_type,
-                    "params": {"M": self.index_config.hnsw_m, "efConstruction": self.index_config.hnsw_ef_construction},
+                    "params": {
+                        "M": self.index_config.hnsw_m,
+                        "efConstruction": self.index_config.hnsw_ef_construction,
+                    },
                 },
             )
             logger.debug(
@@ -1223,12 +1228,21 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         # Extract MilvusIndexConfig parameters from vector_db_storage_cls_kwargs
         kwargs = self.global_config.get("vector_db_storage_cls_kwargs", {})
         index_config_keys = {
-            "index_type", "metric_type",
-            "hnsw_m", "hnsw_ef_construction", "hnsw_ef",
-            "sq_type", "sq_refine", "sq_refine_type", "sq_refine_k",
-            "ivf_nlist", "ivf_nprobe",
+            "index_type",
+            "metric_type",
+            "hnsw_m",
+            "hnsw_ef_construction",
+            "hnsw_ef",
+            "sq_type",
+            "sq_refine",
+            "sq_refine_type",
+            "sq_refine_k",
+            "ivf_nlist",
+            "ivf_nprobe",
         }
-        index_config_params = {k: v for k, v in kwargs.items() if k in index_config_keys}
+        index_config_params = {
+            k: v for k, v in kwargs.items() if k in index_config_keys
+        }
 
         # Initialize index configuration (if not already set)
         # Priority: init params from kwargs > environment variables > defaults
