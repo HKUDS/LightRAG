@@ -44,7 +44,7 @@ SUPPORTED_REFINE_TYPES = {"SQ6", "SQ8", "BF16", "FP16", "FP32"}
 # Index type version requirements
 # Important: HNSW_SQ was first introduced in Milvus 2.6.8 (not 2.5)
 INDEX_VERSION_REQUIREMENTS = {
-    "HNSW_SQ": "2.6.8",  # HNSW_SQ requires Milvus 2.6.8+ (all sq_types: SQ4U, SQ6, SQ8, etc.)
+    "HNSW_SQ": "2.6.8",  # HNSW_SQ requires Milvus 2.6.8+ (supports sq_types such as SQ4U, SQ6, SQ8, BF16, FP16)
 }
 
 

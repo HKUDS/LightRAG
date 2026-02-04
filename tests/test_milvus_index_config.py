@@ -29,7 +29,7 @@ class TestMilvusIndexConfig:
         assert config.hnsw_ef_construction == 200
         assert config.hnsw_ef == 100
         assert config.sq_type == "SQ8"
-        assert config.sq_refine == False
+        assert not config.sq_refine
         assert config.sq_refine_type == "FP32"
         assert config.sq_refine_k == 10
         assert config.ivf_nlist == 1024
@@ -215,7 +215,7 @@ class TestMilvusIndexConfig:
         call_kwargs = mock_index_params.add_index.call_args[1]
         assert call_kwargs["index_type"] == "HNSW_SQ"
         assert call_kwargs["params"]["sq_type"] == "SQ8"
-        assert call_kwargs["params"]["refine"] == True
+        assert call_kwargs["params"]["refine"] is True
         assert call_kwargs["params"]["refine_type"] == "FP32"
 
     def test_build_index_params_hnsw_sq_no_refine(self):
@@ -315,19 +315,19 @@ class TestMilvusIndexConfig:
         """Test boolean environment variable parsing"""
         with patch.dict(os.environ, {"MILVUS_HNSW_SQ_REFINE": "true"}):
             config = MilvusIndexConfig(index_type="HNSW_SQ")
-            assert config.sq_refine == True
+            assert config.sq_refine is True
 
         with patch.dict(os.environ, {"MILVUS_HNSW_SQ_REFINE": "false"}):
             config = MilvusIndexConfig(index_type="HNSW_SQ")
-            assert config.sq_refine == False
+            assert not config.sq_refine
 
         with patch.dict(os.environ, {"MILVUS_HNSW_SQ_REFINE": "1"}):
             config = MilvusIndexConfig(index_type="HNSW_SQ")
-            assert config.sq_refine == True
+            assert config.sq_refine is True
 
         with patch.dict(os.environ, {"MILVUS_HNSW_SQ_REFINE": "0"}):
             config = MilvusIndexConfig(index_type="HNSW_SQ")
-            assert config.sq_refine == False
+            assert not config.sq_refine
 
     def test_env_int_parsing_invalid(self):
         """Test integer environment variable parsing with invalid value"""
