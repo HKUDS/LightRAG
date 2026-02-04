@@ -1,7 +1,7 @@
 import asyncio
 import os
 from typing import Any, final, Optional, Dict
-from dataclasses import dataclass, field as dataclass_field
+from dataclasses import dataclass
 import numpy as np
 from lightrag.utils import logger, compute_mdhash_id
 from ..base import BaseVectorStorage
@@ -115,9 +115,7 @@ class MilvusIndexConfig:
         if self.hnsw_m is None:
             self.hnsw_m = _get_env_int("MILVUS_HNSW_M", 30)
         if self.hnsw_ef_construction is None:
-            self.hnsw_ef_construction = _get_env_int(
-                "MILVUS_HNSW_EF_CONSTRUCTION", 200
-            )
+            self.hnsw_ef_construction = _get_env_int("MILVUS_HNSW_EF_CONSTRUCTION", 200)
         if self.hnsw_ef is None:
             self.hnsw_ef = _get_env_int("MILVUS_HNSW_EF", 100)
 
@@ -176,9 +174,7 @@ class MilvusIndexConfig:
                 f"hnsw_ef_construction must be >= 1, got {self.hnsw_ef_construction}"
             )
         if self.ivf_nlist < 1 or self.ivf_nlist > 65536:
-            raise ValueError(
-                f"ivf_nlist must be in [1, 65536], got {self.ivf_nlist}"
-            )
+            raise ValueError(f"ivf_nlist must be in [1, 65536], got {self.ivf_nlist}")
 
     def validate_milvus_version(self, server_version: str) -> None:
         """
@@ -206,11 +202,7 @@ class MilvusIndexConfig:
         logger.info(
             f"Milvus version {server_version} validated for index type "
             f"{self.index_type}"
-            + (
-                f" with sq_type {self.sq_type}"
-                if self.index_type == "HNSW_SQ"
-                else ""
-            )
+            + (f" with sq_type {self.sq_type}" if self.index_type == "HNSW_SQ" else "")
         )
 
     def build_index_params(self, client, field_name: str = "vector"):

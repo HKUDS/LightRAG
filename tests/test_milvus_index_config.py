@@ -220,9 +220,7 @@ class TestMilvusIndexConfig:
 
     def test_build_index_params_hnsw_sq_no_refine(self):
         """Test HNSW_SQ without refinement"""
-        config = MilvusIndexConfig(
-            index_type="HNSW_SQ", sq_type="SQ8", sq_refine=False
-        )
+        config = MilvusIndexConfig(index_type="HNSW_SQ", sq_type="SQ8", sq_refine=False)
 
         mock_client = MagicMock()
         mock_index_params = MagicMock()
@@ -267,9 +265,7 @@ class TestMilvusIndexConfig:
 
     def test_build_search_params_hnsw_sq_no_refine(self):
         """Test HNSW_SQ without refinement search parameters"""
-        config = MilvusIndexConfig(
-            index_type="HNSW_SQ", hnsw_ef=200, sq_refine=False
-        )
+        config = MilvusIndexConfig(index_type="HNSW_SQ", hnsw_ef=200, sq_refine=False)
         params = config.build_search_params()
         assert params["params"]["ef"] == 200
         assert "refine_k" not in params["params"]
