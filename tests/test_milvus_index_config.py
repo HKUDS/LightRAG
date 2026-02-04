@@ -188,7 +188,7 @@ class TestMilvusIndexConfig:
         mock_index_params = MagicMock()
         mock_client.prepare_index_params.return_value = mock_index_params
 
-        result = config.build_index_params(mock_client)
+        config.build_index_params(mock_client)
 
         mock_index_params.add_index.assert_called_once()
         call_kwargs = mock_index_params.add_index.call_args[1]
@@ -210,7 +210,7 @@ class TestMilvusIndexConfig:
         mock_index_params = MagicMock()
         mock_client.prepare_index_params.return_value = mock_index_params
 
-        result = config.build_index_params(mock_client)
+        config.build_index_params(mock_client)
 
         call_kwargs = mock_index_params.add_index.call_args[1]
         assert call_kwargs["index_type"] == "HNSW_SQ"
@@ -220,15 +220,13 @@ class TestMilvusIndexConfig:
 
     def test_build_index_params_hnsw_sq_no_refine(self):
         """Test HNSW_SQ without refinement"""
-        config = MilvusIndexConfig(
-            index_type="HNSW_SQ", sq_type="SQ8", sq_refine=False
-        )
+        config = MilvusIndexConfig(index_type="HNSW_SQ", sq_type="SQ8", sq_refine=False)
 
         mock_client = MagicMock()
         mock_index_params = MagicMock()
         mock_client.prepare_index_params.return_value = mock_index_params
 
-        result = config.build_index_params(mock_client)
+        config.build_index_params(mock_client)
 
         call_kwargs = mock_index_params.add_index.call_args[1]
         assert call_kwargs["index_type"] == "HNSW_SQ"
@@ -244,7 +242,7 @@ class TestMilvusIndexConfig:
         mock_index_params = MagicMock()
         mock_client.prepare_index_params.return_value = mock_index_params
 
-        result = config.build_index_params(mock_client)
+        config.build_index_params(mock_client)
 
         call_kwargs = mock_index_params.add_index.call_args[1]
         assert call_kwargs["index_type"] == "IVF_FLAT"
@@ -267,9 +265,7 @@ class TestMilvusIndexConfig:
 
     def test_build_search_params_hnsw_sq_no_refine(self):
         """Test HNSW_SQ without refinement search parameters"""
-        config = MilvusIndexConfig(
-            index_type="HNSW_SQ", hnsw_ef=200, sq_refine=False
-        )
+        config = MilvusIndexConfig(index_type="HNSW_SQ", hnsw_ef=200, sq_refine=False)
         params = config.build_search_params()
         assert params["params"]["ef"] == 200
         assert "refine_k" not in params["params"]

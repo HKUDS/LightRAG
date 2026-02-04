@@ -1151,7 +1151,7 @@ async def initialize_rag():
         embedding_func=openai_embed,
         vector_storage="MilvusVectorDBStorage",
     )
-    
+
     # Initialize storages (includes version validation for HNSW_SQ)
     await rag.initialize_storages()
     return rag
