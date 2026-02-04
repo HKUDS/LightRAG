@@ -1,7 +1,7 @@
 import asyncio
 import os
 from typing import Any, final, Optional, Dict
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 import numpy as np
 from lightrag.utils import logger, compute_mdhash_id
 from ..base import BaseVectorStorage
@@ -112,12 +112,13 @@ class MilvusIndexConfig:
         ).upper()
 
         # HNSW parameters
+        # Defaults aligned with Milvus 2.4+ official documentation
         if self.hnsw_m is None:
-            self.hnsw_m = _get_env_int("MILVUS_HNSW_M", 30)
+            self.hnsw_m = _get_env_int("MILVUS_HNSW_M", 16)
         if self.hnsw_ef_construction is None:
-            self.hnsw_ef_construction = _get_env_int("MILVUS_HNSW_EF_CONSTRUCTION", 200)
+            self.hnsw_ef_construction = _get_env_int("MILVUS_HNSW_EF_CONSTRUCTION", 360)
         if self.hnsw_ef is None:
-            self.hnsw_ef = _get_env_int("MILVUS_HNSW_EF", 100)
+            self.hnsw_ef = _get_env_int("MILVUS_HNSW_EF", 200)
 
         # HNSW_SQ parameters
         if self.sq_type is None:
@@ -273,6 +274,18 @@ class MilvusIndexConfig:
             search_params["nprobe"] = self.ivf_nprobe
 
         return {"params": search_params} if search_params else {}
+
+    @classmethod
+    def get_config_field_names(cls) -> set:
+        """Get all configuration field names from the dataclass.
+
+        This method provides a single source of truth for configuration parameter names,
+        eliminating the need to maintain duplicate hardcoded lists elsewhere.
+
+        Returns:
+            Set of field names that can be used to extract configuration from kwargs
+        """
+        return {f.name for f in fields(cls)}
 
     def to_dict(self) -> Dict[str, Any]:
         """Export configuration as dictionary (for logging/debugging)"""
@@ -1226,26 +1239,38 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         self._validate_embedding_func()
 
         # Extract MilvusIndexConfig parameters from vector_db_storage_cls_kwargs
+        #
+        # IMPORTANT: This approach allows Milvus index configuration via vector_db_storage_cls_kwargs,
+        # which is the RECOMMENDED method for framework integration (e.g., RAGAnything).
+        #
+        # All 11 index configuration parameters can be passed through vector_db_storage_cls_kwargs:
+        #   - index_type, metric_type
+        #   - hnsw_m, hnsw_ef_construction, hnsw_ef
+        #   - sq_type, sq_refine, sq_refine_type, sq_refine_k
+        #   - ivf_nlist, ivf_nprobe
+        #
+        # Example:
+        #   LightRAG(
+        #       vector_storage="MilvusVectorDBStorage",
+        #       vector_db_storage_cls_kwargs={
+        #           "cosine_better_than_threshold": 0.2,
+        #           "index_type": "HNSW",
+        #           "metric_type": "COSINE",
+        #           "hnsw_m": 32,
+        #           "hnsw_ef_construction": 256,
+        #       }
+        #   )
+        #
+        # Use MilvusIndexConfig.get_config_field_names() to dynamically extract valid parameters.
+        # This ensures we always stay in sync with the MilvusIndexConfig dataclass definition.
         kwargs = self.global_config.get("vector_db_storage_cls_kwargs", {})
-        index_config_keys = {
-            "index_type",
-            "metric_type",
-            "hnsw_m",
-            "hnsw_ef_construction",
-            "hnsw_ef",
-            "sq_type",
-            "sq_refine",
-            "sq_refine_type",
-            "sq_refine_k",
-            "ivf_nlist",
-            "ivf_nprobe",
-        }
+        index_config_keys = MilvusIndexConfig.get_config_field_names()
         index_config_params = {
             k: v for k, v in kwargs.items() if k in index_config_keys
         }
 
         # Initialize index configuration (if not already set)
-        # Priority: init params from kwargs > environment variables > defaults
+        # Configuration priority: init params from kwargs > environment variables > defaults
         if not hasattr(self, "index_config") or self.index_config is None:
             self.index_config = MilvusIndexConfig(**index_config_params)
 

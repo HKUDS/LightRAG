@@ -25,9 +25,9 @@ class TestMilvusIndexConfig:
         config = MilvusIndexConfig()
         assert config.index_type == "AUTOINDEX"
         assert config.metric_type == "COSINE"
-        assert config.hnsw_m == 30
-        assert config.hnsw_ef_construction == 200
-        assert config.hnsw_ef == 100
+        assert config.hnsw_m == 16
+        assert config.hnsw_ef_construction == 360
+        assert config.hnsw_ef == 200
         assert config.sq_type == "SQ8"
         assert not config.sq_refine
         assert config.sq_refine_type == "FP32"
@@ -287,7 +287,7 @@ class TestMilvusIndexConfig:
         config = MilvusIndexConfig(index_type="HNSW")
         d = config.to_dict()
         assert d["index_type"] == "HNSW"
-        assert d["hnsw_m"] == 30
+        assert d["hnsw_m"] == 16
         assert d["sq_type"] is None  # Not HNSW_SQ
         assert d["ivf_nlist"] is None  # Not IVF
 
@@ -329,7 +329,7 @@ class TestMilvusIndexConfig:
         """Test integer environment variable parsing with invalid value"""
         with patch.dict(os.environ, {"MILVUS_HNSW_M": "invalid"}):
             config = MilvusIndexConfig()
-            assert config.hnsw_m == 30  # Falls back to default
+            assert config.hnsw_m == 16  # Falls back to default (Milvus 2.4+)
 
     def test_all_index_types_supported(self):
         """Test all supported index types can be configured"""
@@ -360,6 +360,49 @@ class TestMilvusIndexConfig:
                 index_type="HNSW_SQ", sq_refine=True, sq_refine_type=refine_type
             )
             assert config.sq_refine_type == refine_type
+
+    def test_get_config_field_names(self):
+        """Test get_config_field_names() returns all dataclass fields"""
+        field_names = MilvusIndexConfig.get_config_field_names()
+
+        # Check that it's a set
+        assert isinstance(field_names, set)
+
+        # Check that all expected fields are present
+        expected_fields = {
+            "index_type",
+            "metric_type",
+            "hnsw_m",
+            "hnsw_ef_construction",
+            "hnsw_ef",
+            "sq_type",
+            "sq_refine",
+            "sq_refine_type",
+            "sq_refine_k",
+            "ivf_nlist",
+            "ivf_nprobe",
+        }
+        assert field_names == expected_fields
+
+    def test_get_config_field_names_single_source_of_truth(self):
+        """Test that get_config_field_names() provides single source of truth for configuration parameters"""
+        # This test ensures that when we add new fields to MilvusIndexConfig,
+        # they are automatically included in get_config_field_names()
+        # without needing to update hardcoded lists elsewhere
+
+        from dataclasses import fields as dataclass_fields
+
+        # Get fields directly from dataclass
+        direct_fields = {f.name for f in dataclass_fields(MilvusIndexConfig)}
+
+        # Get fields via the method
+        method_fields = MilvusIndexConfig.get_config_field_names()
+
+        # They should be identical
+        assert direct_fields == method_fields, (
+            f"Method should return same fields as dataclass. "
+            f"Difference: {direct_fields.symmetric_difference(method_fields)}"
+        )
 
 
 if __name__ == "__main__":
