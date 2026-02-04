@@ -25,9 +25,9 @@ class TestMilvusIndexConfig:
         config = MilvusIndexConfig()
         assert config.index_type == "AUTOINDEX"
         assert config.metric_type == "COSINE"
-        assert config.hnsw_m == 30
-        assert config.hnsw_ef_construction == 200
-        assert config.hnsw_ef == 100
+        assert config.hnsw_m == 16
+        assert config.hnsw_ef_construction == 360
+        assert config.hnsw_ef == 200
         assert config.sq_type == "SQ8"
         assert not config.sq_refine
         assert config.sq_refine_type == "FP32"
@@ -287,7 +287,7 @@ class TestMilvusIndexConfig:
         config = MilvusIndexConfig(index_type="HNSW")
         d = config.to_dict()
         assert d["index_type"] == "HNSW"
-        assert d["hnsw_m"] == 30
+        assert d["hnsw_m"] == 16
         assert d["sq_type"] is None  # Not HNSW_SQ
         assert d["ivf_nlist"] is None  # Not IVF
 
@@ -329,7 +329,7 @@ class TestMilvusIndexConfig:
         """Test integer environment variable parsing with invalid value"""
         with patch.dict(os.environ, {"MILVUS_HNSW_M": "invalid"}):
             config = MilvusIndexConfig()
-            assert config.hnsw_m == 30  # Falls back to default
+            assert config.hnsw_m == 16  # Falls back to default (Milvus 2.4+)
 
     def test_all_index_types_supported(self):
         """Test all supported index types can be configured"""

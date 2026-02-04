@@ -112,12 +112,13 @@ class MilvusIndexConfig:
         ).upper()
 
         # HNSW parameters
+        # Defaults aligned with Milvus 2.4+ official documentation
         if self.hnsw_m is None:
-            self.hnsw_m = _get_env_int("MILVUS_HNSW_M", 30)
+            self.hnsw_m = _get_env_int("MILVUS_HNSW_M", 16)
         if self.hnsw_ef_construction is None:
-            self.hnsw_ef_construction = _get_env_int("MILVUS_HNSW_EF_CONSTRUCTION", 200)
+            self.hnsw_ef_construction = _get_env_int("MILVUS_HNSW_EF_CONSTRUCTION", 360)
         if self.hnsw_ef is None:
-            self.hnsw_ef = _get_env_int("MILVUS_HNSW_EF", 100)
+            self.hnsw_ef = _get_env_int("MILVUS_HNSW_EF", 200)
 
         # HNSW_SQ parameters
         if self.sq_type is None:

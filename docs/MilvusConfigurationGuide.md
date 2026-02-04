@@ -20,9 +20,9 @@ All 11 MilvusIndexConfig parameters can be configured via `vector_db_storage_cls
 - `metric_type`: Distance metric (COSINE, L2, IP)
 
 ### HNSW Parameters
-- `hnsw_m`: Number of connections per layer (2-2048, default: 30)
-- `hnsw_ef_construction`: Size of dynamic candidate list during construction (default: 200)
-- `hnsw_ef`: Size of dynamic candidate list during search (default: 100)
+- `hnsw_m`: Number of connections per layer (2-2048, default: 16)
+- `hnsw_ef_construction`: Size of dynamic candidate list during construction (default: 360)
+- `hnsw_ef`: Size of dynamic candidate list during search (default: 200)
 
 ### HNSW_SQ Parameters (requires Milvus 2.6.8+)
 - `sq_type`: Quantization type (SQ4U, SQ6, SQ8, BF16, FP16, default: SQ8)

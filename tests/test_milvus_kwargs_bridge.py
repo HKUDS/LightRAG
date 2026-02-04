@@ -118,10 +118,11 @@ class TestMilvusKwargsParameterBridge:
         )
 
         # Verify that default values are used (from environment variables or defaults)
+        # Defaults aligned with Milvus 2.4+ official documentation
         assert storage.index_config.index_type == "AUTOINDEX"  # Default
         assert storage.index_config.metric_type == "COSINE"  # Default
-        assert storage.index_config.hnsw_m == 30  # Default
-        assert storage.index_config.hnsw_ef_construction == 200  # Default
+        assert storage.index_config.hnsw_m == 16  # Default (Milvus 2.4+)
+        assert storage.index_config.hnsw_ef_construction == 360  # Default (Milvus 2.4+)
 
     def test_kwargs_params_override_environment_variables(self):
         """Test that kwargs parameters take precedence over environment variables"""
