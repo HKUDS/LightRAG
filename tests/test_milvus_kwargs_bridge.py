@@ -260,13 +260,13 @@ class TestMilvusKwargsParameterBridge:
 
     def test_raganything_framework_integration_scenario(self):
         """Test configuration passing through frameworks like RAGAnything
-        
-        This test validates the use case where a framework (like RAGAnything) 
-        sits on top of LightRAG and needs to pass Milvus index configuration 
+
+        This test validates the use case where a framework (like RAGAnything)
+        sits on top of LightRAG and needs to pass Milvus index configuration
         through to LightRAG without modifying environment variables.
-        
-        The framework can pass all index config parameters via 
-        vector_db_storage_cls_kwargs, and they will be properly extracted 
+
+        The framework can pass all index config parameters via
+        vector_db_storage_cls_kwargs, and they will be properly extracted
         and applied to MilvusIndexConfig.
         """
         mock_embedding_func = MagicMock()
@@ -279,14 +279,12 @@ class TestMilvusKwargsParameterBridge:
             "vector_db_storage_cls_kwargs": {
                 # Required for vector storage
                 "cosine_better_than_threshold": 0.2,
-                
                 # Milvus index configuration - all parameters supported
                 "index_type": "HNSW",
                 "metric_type": "L2",
                 "hnsw_m": 48,
                 "hnsw_ef_construction": 400,
                 "hnsw_ef": 200,
-                
                 # Framework-specific parameters (should be ignored by Milvus)
                 "framework_version": "1.0.0",
                 "custom_setting": "value",
@@ -308,19 +306,19 @@ class TestMilvusKwargsParameterBridge:
         assert storage.index_config.hnsw_m == 48
         assert storage.index_config.hnsw_ef_construction == 400
         assert storage.index_config.hnsw_ef == 200
-        
+
         # Verify framework-specific parameters were ignored
         assert not hasattr(storage.index_config, "framework_version")
         assert not hasattr(storage.index_config, "custom_setting")
-        
+
         # Verify workspace isolation is maintained
         assert storage.workspace == "raganything_workspace"
 
     def test_all_milvus_parameters_supported_via_kwargs(self):
         """Test that all 11 MilvusIndexConfig parameters can be configured via kwargs
-        
-        This comprehensive test ensures that every single index configuration 
-        parameter defined in MilvusIndexConfig can be passed through 
+
+        This comprehensive test ensures that every single index configuration
+        parameter defined in MilvusIndexConfig can be passed through
         vector_db_storage_cls_kwargs, which is critical for framework integration.
         """
         mock_embedding_func = MagicMock()

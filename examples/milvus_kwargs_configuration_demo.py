@@ -35,25 +35,19 @@ async def main():
         vector_db_storage_cls_kwargs={
             # Required parameter for all vector storage backends
             "cosine_better_than_threshold": 0.2,
-            
             # Milvus index configuration parameters
             # All of these can be configured via vector_db_storage_cls_kwargs
-            
             # Index type (AUTOINDEX, HNSW, HNSW_SQ, IVF_FLAT, etc.)
             "index_type": "HNSW",
-            
             # Distance metric (COSINE, L2, IP)
             "metric_type": "COSINE",
-            
             # HNSW parameters
-            "hnsw_m": 32,                    # Number of connections per layer (2-2048)
-            "hnsw_ef_construction": 256,     # Size of dynamic candidate list during construction
-            "hnsw_ef": 150,                  # Size of dynamic candidate list during search
-            
+            "hnsw_m": 32,  # Number of connections per layer (2-2048)
+            "hnsw_ef_construction": 256,  # Size of dynamic candidate list during construction
+            "hnsw_ef": 150,  # Size of dynamic candidate list during search
             # IVF parameters (used when index_type is IVF_FLAT, IVF_SQ8, IVF_PQ)
             # "ivf_nlist": 2048,              # Number of cluster units
             # "ivf_nprobe": 32,               # Number of units to query
-            
             # HNSW_SQ parameters (requires Milvus 2.6.8+)
             # "sq_type": "SQ8",               # Quantization type (SQ4U, SQ6, SQ8, BF16, FP16)
             # "sq_refine": True,              # Enable refinement
@@ -65,11 +59,19 @@ async def main():
     # Initialize storage backends
     await rag.initialize_storages()
 
-    print("✅ LightRAG initialized with Milvus index configuration via vector_db_storage_cls_kwargs")
-    print(f"   Index Type: {rag.vector_db_storages['entities'].index_config.index_type}")
-    print(f"   Metric Type: {rag.vector_db_storages['entities'].index_config.metric_type}")
+    print(
+        "✅ LightRAG initialized with Milvus index configuration via vector_db_storage_cls_kwargs"
+    )
+    print(
+        f"   Index Type: {rag.vector_db_storages['entities'].index_config.index_type}"
+    )
+    print(
+        f"   Metric Type: {rag.vector_db_storages['entities'].index_config.metric_type}"
+    )
     print(f"   HNSW M: {rag.vector_db_storages['entities'].index_config.hnsw_m}")
-    print(f"   HNSW EF Construction: {rag.vector_db_storages['entities'].index_config.hnsw_ef_construction}")
+    print(
+        f"   HNSW EF Construction: {rag.vector_db_storages['entities'].index_config.hnsw_ef_construction}"
+    )
     print(f"   HNSW EF: {rag.vector_db_storages['entities'].index_config.hnsw_ef}")
 
     # Example: Insert some text
@@ -79,15 +81,12 @@ async def main():
     vector storage backends including Milvus, which offers advanced indexing options
     for optimal performance.
     """
-    
+
     await rag.ainsert(sample_text)
     print("\n✅ Sample text inserted")
 
     # Example: Query with different modes
-    result = await rag.aquery(
-        "What is LightRAG?",
-        param=QueryParam(mode="hybrid")
-    )
+    result = await rag.aquery("What is LightRAG?", param=QueryParam(mode="hybrid"))
     print(f"\n✅ Query result: {result[:200]}...")
 
     # Cleanup
@@ -110,5 +109,5 @@ if __name__ == "__main__":
     print()
     print("=" * 80)
     print()
-    
+
     asyncio.run(main())

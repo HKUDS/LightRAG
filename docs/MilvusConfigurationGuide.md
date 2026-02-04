@@ -6,10 +6,10 @@ Milvus index parameters can be configured through `vector_db_storage_cls_kwargs`
 
 ## Why Use vector_db_storage_cls_kwargs?
 
-✅ **Framework Integration**: Allows configuration to be passed through framework layers without environment variable changes  
-✅ **Programmatic Configuration**: Set parameters in code rather than relying on environment variables  
-✅ **Dynamic Configuration**: Different configurations for different RAG instances  
-✅ **Clean API**: All parameters passed in one place during initialization  
+✅ **Framework Integration**: Allows configuration to be passed through framework layers without environment variable changes
+✅ **Programmatic Configuration**: Set parameters in code rather than relying on environment variables
+✅ **Dynamic Configuration**: Different configurations for different RAG instances
+✅ **Clean API**: All parameters passed in one place during initialization
 
 ## Supported Parameters
 
@@ -68,7 +68,7 @@ rag = LightRAG(
 # In RAGAnything framework code:
 def create_lightrag_instance(user_config):
     """Create LightRAG instance with user-provided Milvus configuration"""
-    
+
     # User configuration from RAGAnything
     milvus_config = {
         "cosine_better_than_threshold": user_config.get("threshold", 0.2),
@@ -76,14 +76,14 @@ def create_lightrag_instance(user_config):
         "hnsw_m": user_config.get("hnsw_m", 32),
         # ... other parameters
     }
-    
+
     # Pass configuration to LightRAG
     rag = LightRAG(
         working_dir=user_config["working_dir"],
         vector_storage="MilvusVectorDBStorage",
         vector_db_storage_cls_kwargs=milvus_config,
     )
-    
+
     return rag
 ```
 
@@ -171,9 +171,9 @@ See `examples/milvus_kwargs_configuration_demo.py` for a complete working exampl
 
 ## Backward Compatibility
 
-✅ **100% backward compatible** with existing code  
-✅ Environment variable configuration still works  
-✅ All existing tests pass  
+✅ **100% backward compatible** with existing code
+✅ Environment variable configuration still works
+✅ All existing tests pass
 
 ## FAQ
 

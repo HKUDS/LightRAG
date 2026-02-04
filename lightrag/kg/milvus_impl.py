@@ -277,10 +277,10 @@ class MilvusIndexConfig:
     @classmethod
     def get_config_field_names(cls) -> set:
         """Get all configuration field names from the dataclass.
-        
+
         This method provides a single source of truth for configuration parameter names,
         eliminating the need to maintain duplicate hardcoded lists elsewhere.
-        
+
         Returns:
             Set of field names that can be used to extract configuration from kwargs
         """
@@ -1238,10 +1238,10 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         self._validate_embedding_func()
 
         # Extract MilvusIndexConfig parameters from vector_db_storage_cls_kwargs
-        # 
+        #
         # IMPORTANT: This approach allows Milvus index configuration via vector_db_storage_cls_kwargs,
         # which is the RECOMMENDED method for framework integration (e.g., RAGAnything).
-        # 
+        #
         # All 11 index configuration parameters can be passed through vector_db_storage_cls_kwargs:
         #   - index_type, metric_type
         #   - hnsw_m, hnsw_ef_construction, hnsw_ef
