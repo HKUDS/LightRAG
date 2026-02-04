@@ -1,7 +1,7 @@
 import asyncio
 import os
-from typing import Any, final
-from dataclasses import dataclass
+from typing import Any, final, Optional, Dict
+from dataclasses import dataclass, field as dataclass_field
 import numpy as np
 from lightrag.utils import logger, compute_mdhash_id
 from ..base import BaseVectorStorage
@@ -14,9 +14,301 @@ if not pm.is_installed("pymilvus"):
 
 import configparser
 from pymilvus import MilvusClient, DataType, CollectionSchema, FieldSchema  # type: ignore
+from packaging import version
 
 config = configparser.ConfigParser()
 config.read("config.ini", "utf-8")
+
+
+# Supported index types
+SUPPORTED_INDEX_TYPES = {
+    "AUTOINDEX",
+    "HNSW",
+    "HNSW_SQ",
+    "HNSW_PQ",
+    "HNSW_PRQ",
+    "IVF_FLAT",
+    "IVF_SQ8",
+    "IVF_PQ",
+    "DISKANN",
+    "SCANN",
+}
+
+# Supported metric types
+SUPPORTED_METRIC_TYPES = {"COSINE", "L2", "IP"}
+
+# HNSW_SQ quantization types
+SUPPORTED_SQ_TYPES = {"SQ4U", "SQ6", "SQ8", "BF16", "FP16"}
+SUPPORTED_REFINE_TYPES = {"SQ6", "SQ8", "BF16", "FP16", "FP32"}
+
+# Index type version requirements
+# Important: HNSW_SQ was first introduced in Milvus 2.6.8 (not 2.5)
+INDEX_VERSION_REQUIREMENTS = {
+    "HNSW_SQ": "2.6.8",  # HNSW_SQ requires Milvus 2.6.8+ (supports sq_types such as SQ4U, SQ6, SQ8, BF16, FP16)
+}
+
+
+def _get_env_bool(key: str, default: bool = False) -> bool:
+    """Parse environment variable as boolean"""
+    val = os.environ.get(key, "").lower()
+    if val in ("true", "1", "yes", "on"):
+        return True
+    elif val in ("false", "0", "no", "off"):
+        return False
+    return default
+
+
+def _get_env_int(key: str, default: int) -> int:
+    """Parse environment variable as integer"""
+    val = os.environ.get(key, "")
+    if val:
+        try:
+            return int(val)
+        except ValueError:
+            logger.warning(
+                f"Invalid integer value for {key}: {val}, using default {default}"
+            )
+    return default
+
+
+@dataclass
+class MilvusIndexConfig:
+    """
+    Milvus vector index configuration class
+
+    Supports configuration via environment variables or initialization parameters.
+    Initialization parameters take precedence over environment variables.
+    """
+
+    # Base configuration
+    index_type: Optional[str] = None
+    metric_type: Optional[str] = None
+
+    # HNSW series parameters
+    hnsw_m: Optional[int] = None
+    hnsw_ef_construction: Optional[int] = None
+    hnsw_ef: Optional[int] = None
+
+    # HNSW_SQ specific parameters
+    sq_type: Optional[str] = None
+    sq_refine: Optional[bool] = None
+    sq_refine_type: Optional[str] = None
+    sq_refine_k: Optional[int] = None
+
+    # IVF series parameters
+    ivf_nlist: Optional[int] = None
+    ivf_nprobe: Optional[int] = None
+
+    def __post_init__(self):
+        """Load configuration from environment variables (init parameters take precedence)"""
+        # Index type
+        self.index_type = (
+            self.index_type or os.environ.get("MILVUS_INDEX_TYPE", "AUTOINDEX")
+        ).upper()
+
+        # Metric type
+        self.metric_type = (
+            self.metric_type or os.environ.get("MILVUS_METRIC_TYPE", "COSINE")
+        ).upper()
+
+        # HNSW parameters
+        if self.hnsw_m is None:
+            self.hnsw_m = _get_env_int("MILVUS_HNSW_M", 30)
+        if self.hnsw_ef_construction is None:
+            self.hnsw_ef_construction = _get_env_int(
+                "MILVUS_HNSW_EF_CONSTRUCTION", 200
+            )
+        if self.hnsw_ef is None:
+            self.hnsw_ef = _get_env_int("MILVUS_HNSW_EF", 100)
+
+        # HNSW_SQ parameters
+        if self.sq_type is None:
+            self.sq_type = os.environ.get("MILVUS_HNSW_SQ_TYPE", "SQ8").upper()
+        if self.sq_refine is None:
+            self.sq_refine = _get_env_bool("MILVUS_HNSW_SQ_REFINE", False)
+        if self.sq_refine_type is None:
+            self.sq_refine_type = os.environ.get(
+                "MILVUS_HNSW_SQ_REFINE_TYPE", "FP32"
+            ).upper()
+        if self.sq_refine_k is None:
+            self.sq_refine_k = _get_env_int("MILVUS_HNSW_SQ_REFINE_K", 10)
+
+        # IVF parameters
+        if self.ivf_nlist is None:
+            self.ivf_nlist = _get_env_int("MILVUS_IVF_NLIST", 1024)
+        if self.ivf_nprobe is None:
+            self.ivf_nprobe = _get_env_int("MILVUS_IVF_NPROBE", 16)
+
+        # Validate configuration
+        self._validate()
+
+    def _validate(self):
+        """Validate configuration validity"""
+        if self.index_type not in SUPPORTED_INDEX_TYPES:
+            raise ValueError(
+                f"Unsupported index type: {self.index_type}. "
+                f"Supported: {SUPPORTED_INDEX_TYPES}"
+            )
+
+        if self.metric_type not in SUPPORTED_METRIC_TYPES:
+            raise ValueError(
+                f"Unsupported metric type: {self.metric_type}. "
+                f"Supported: {SUPPORTED_METRIC_TYPES}"
+            )
+
+        if self.index_type == "HNSW_SQ":
+            if self.sq_type not in SUPPORTED_SQ_TYPES:
+                raise ValueError(
+                    f"Unsupported sq_type: {self.sq_type}. "
+                    f"Supported: {SUPPORTED_SQ_TYPES}"
+                )
+            if self.sq_refine and self.sq_refine_type not in SUPPORTED_REFINE_TYPES:
+                raise ValueError(
+                    f"Unsupported refine_type: {self.sq_refine_type}. "
+                    f"Supported: {SUPPORTED_REFINE_TYPES}"
+                )
+
+        # Parameter range validation
+        if not (2 <= self.hnsw_m <= 2048):
+            raise ValueError(f"hnsw_m must be in [2, 2048], got {self.hnsw_m}")
+        if self.hnsw_ef_construction < 1:
+            raise ValueError(
+                f"hnsw_ef_construction must be >= 1, got {self.hnsw_ef_construction}"
+            )
+        if self.ivf_nlist < 1 or self.ivf_nlist > 65536:
+            raise ValueError(
+                f"ivf_nlist must be in [1, 65536], got {self.ivf_nlist}"
+            )
+
+    def validate_milvus_version(self, server_version: str) -> None:
+        """
+        Validate Milvus server version supports the configured index type
+
+        Args:
+            server_version: Milvus server version string (e.g., "2.6.9")
+
+        Raises:
+            ValueError: Version does not meet index type requirements
+        """
+        current_ver = version.parse(
+            server_version.split("-")[0]
+        )  # Handle "2.6.9-dev" format
+
+        # Check HNSW_SQ index type version requirements (requires 2.6.8+)
+        if self.index_type == "HNSW_SQ":
+            required = INDEX_VERSION_REQUIREMENTS["HNSW_SQ"]
+            if current_ver < version.parse(required):
+                raise ValueError(
+                    f"HNSW_SQ requires Milvus {required}+, "
+                    f"current version: {server_version}"
+                )
+
+        logger.info(
+            f"Milvus version {server_version} validated for index type "
+            f"{self.index_type}"
+            + (
+                f" with sq_type {self.sq_type}"
+                if self.index_type == "HNSW_SQ"
+                else ""
+            )
+        )
+
+    def build_index_params(self, client, field_name: str = "vector"):
+        """
+        Build pymilvus index parameters
+
+        Args:
+            client: MilvusClient instance (for prepare_index_params)
+            field_name: Vector field name
+
+        Returns:
+            IndexParams object, or None (for AUTOINDEX)
+        """
+        if self.index_type == "AUTOINDEX":
+            logger.info("Using AUTOINDEX (Milvus default), no custom index params")
+            return None
+
+        index_params = client.prepare_index_params()
+        params: Dict[str, Any] = {}
+
+        # HNSW series indexes
+        if self.index_type in ("HNSW", "HNSW_SQ", "HNSW_PQ", "HNSW_PRQ"):
+            params["M"] = self.hnsw_m
+            params["efConstruction"] = self.hnsw_ef_construction
+
+            # HNSW_SQ specific parameters
+            if self.index_type == "HNSW_SQ":
+                params["sq_type"] = self.sq_type
+                if self.sq_refine:
+                    params["refine"] = True
+                    params["refine_type"] = self.sq_refine_type
+
+        # IVF series indexes
+        elif self.index_type in ("IVF_FLAT", "IVF_SQ8", "IVF_PQ"):
+            params["nlist"] = self.ivf_nlist
+
+        # DISKANN / SCANN have no additional params
+
+        index_params.add_index(
+            field_name=field_name,
+            index_type=self.index_type,
+            metric_type=self.metric_type,
+            params=params,
+        )
+
+        logger.info(
+            f"Milvus index configured: type={self.index_type}, "
+            f"metric={self.metric_type}, params={params}"
+        )
+
+        return index_params
+
+    def build_search_params(self) -> Dict[str, Any]:
+        """
+        Build search parameters
+
+        Returns:
+            Search parameters dictionary
+        """
+        search_params: Dict[str, Any] = {}
+
+        if self.index_type in ("HNSW", "HNSW_SQ", "HNSW_PQ", "HNSW_PRQ"):
+            search_params["ef"] = self.hnsw_ef
+            if self.index_type == "HNSW_SQ" and self.sq_refine:
+                search_params["refine_k"] = self.sq_refine_k
+
+        elif self.index_type in ("IVF_FLAT", "IVF_SQ8", "IVF_PQ"):
+            search_params["nprobe"] = self.ivf_nprobe
+
+        return {"params": search_params} if search_params else {}
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Export configuration as dictionary (for logging/debugging)"""
+        return {
+            "index_type": self.index_type,
+            "metric_type": self.metric_type,
+            "hnsw_m": self.hnsw_m,
+            "hnsw_ef_construction": self.hnsw_ef_construction,
+            "hnsw_ef": self.hnsw_ef,
+            "sq_type": self.sq_type if self.index_type == "HNSW_SQ" else None,
+            "sq_refine": self.sq_refine if self.index_type == "HNSW_SQ" else None,
+            "sq_refine_type": (
+                self.sq_refine_type
+                if self.index_type == "HNSW_SQ" and self.sq_refine
+                else None
+            ),
+            "sq_refine_k": (
+                self.sq_refine_k
+                if self.index_type == "HNSW_SQ" and self.sq_refine
+                else None
+            ),
+            "ivf_nlist": (
+                self.ivf_nlist if self.index_type.startswith("IVF") else None
+            ),
+            "ivf_nprobe": (
+                self.ivf_nprobe if self.index_type.startswith("IVF") else None
+            ),
+        }
 
 
 @final
@@ -190,32 +482,37 @@ class MilvusVectorDBStorage(BaseVectorStorage):
     def _create_indexes_after_collection(self):
         """Create indexes after collection is created"""
         try:
+            # Build vector index using index configuration
+            vector_index_params = self.index_config.build_index_params(
+                self._client, field_name="vector"
+            )
+
+            if vector_index_params is not None:
+                # Custom index configuration provided
+                try:
+                    self._client.create_index(
+                        collection_name=self.final_namespace,
+                        index_params=vector_index_params,
+                    )
+                    logger.debug(
+                        f"[{self.workspace}] Created vector index with config: {self.index_config.to_dict()}"
+                    )
+                except Exception as e:
+                    logger.error(
+                        f"[{self.workspace}] Failed to create vector index with custom config: {e}"
+                    )
+                    raise
+            else:
+                # AUTOINDEX - no index params needed (Milvus default behavior)
+                logger.debug(
+                    f"[{self.workspace}] Using AUTOINDEX for vector field (Milvus default)"
+                )
+
+            # Create scalar indexes based on namespace (same as before)
             # Try to get IndexParams in a version-compatible way
             IndexParamsClass = self._get_index_params()
 
             if IndexParamsClass is not None:
-                # Use IndexParams approach if available
-                try:
-                    # Create vector index first (required for most operations)
-                    vector_index = IndexParamsClass
-                    vector_index.add_index(
-                        field_name="vector",
-                        index_type="HNSW",
-                        metric_type="COSINE",
-                        params={"M": 16, "efConstruction": 256},
-                    )
-                    self._client.create_index(
-                        collection_name=self.final_namespace, index_params=vector_index
-                    )
-                    logger.debug(
-                        f"[{self.workspace}] Created vector index using IndexParams"
-                    )
-                except Exception as e:
-                    logger.debug(
-                        f"[{self.workspace}] IndexParams method failed for vector index: {e}"
-                    )
-                    self._create_vector_index_fallback()
-
                 # Create scalar indexes based on namespace
                 if self.namespace.endswith("entities"):
                     # Create indexes for entity fields
@@ -283,16 +580,11 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                         )
                         self._create_scalar_index_fallback("full_doc_id", "INVERTED")
 
-                # No common indexes needed
-
             else:
                 # Fallback to direct API calls if IndexParams is not available
                 logger.info(
                     f"[{self.workspace}] IndexParams not available, using fallback methods for {self.namespace}"
                 )
-
-                # Create vector index using fallback
-                self._create_vector_index_fallback()
 
                 # Create scalar indexes using fallback
                 if self.namespace.endswith("entities"):
@@ -935,6 +1227,11 @@ class MilvusVectorDBStorage(BaseVectorStorage):
 
     def __post_init__(self):
         self._validate_embedding_func()
+
+        # Initialize index configuration (if not already set)
+        if not hasattr(self, "index_config") or self.index_config is None:
+            self.index_config = MilvusIndexConfig()
+
         # Check for MILVUS_WORKSPACE environment variable first (higher priority)
         # This allows administrators to force a specific workspace for all Milvus storage instances
         milvus_workspace = os.environ.get("MILVUS_WORKSPACE")
@@ -1021,6 +1318,16 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                         f"[{self.workspace}] MilvusClient created successfully"
                     )
 
+                # Validate Milvus version compatibility with configured index
+                try:
+                    server_version = self._client.get_server_version()
+                    self.index_config.validate_milvus_version(server_version)
+                except Exception as version_error:
+                    logger.error(
+                        f"[{self.workspace}] Milvus version validation failed: {version_error}"
+                    )
+                    raise
+
                 # Create collection and check compatibility
                 self._create_collection_if_not_exist()
                 self._initialized = True
@@ -1087,15 +1394,24 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         # Include all meta_fields (created_at is now always included)
         output_fields = list(self.meta_fields)
 
+        # Build search params from index config
+        search_params_base = self.index_config.build_search_params()
+
+        # Merge with metric type and radius threshold
+        search_params = {
+            "metric_type": self.index_config.metric_type,
+            "params": {
+                **search_params_base.get("params", {}),
+                "radius": self.cosine_better_than_threshold,
+            },
+        }
+
         results = self._client.search(
             collection_name=self.final_namespace,
             data=embedding,
             limit=top_k,
             output_fields=output_fields,
-            search_params={
-                "metric_type": "COSINE",
-                "params": {"radius": self.cosine_better_than_threshold},
-            },
+            search_params=search_params,
         )
         return [
             {
