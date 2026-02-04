@@ -19,6 +19,7 @@
     #   cd ..
 
 # 3.  --- COMMIT LOCAL CHANGES ---
+    #   pre-commit run --all-files
     #   git add .
     #   git commit -m "Checkpoint: Save WebUI modifications and built assets"
 

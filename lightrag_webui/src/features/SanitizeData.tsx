@@ -1133,7 +1133,8 @@ export default function SanitizeData() {
                 setFilterMode('none');
                 setFilterText('');
                 setCurrentPage(1);
-                setEntityType('');  // Optional: clears type as in previous guidance
+                setEntityType('');
+                setTargetEntity('');
               }}
               className="px-2 py-0.5 bg-gray-100 hover:bg-gray-200 border border-gray-300 rounded text-xs"
             >
@@ -1146,7 +1147,8 @@ export default function SanitizeData() {
                 setFirstEntity(null);
                 setFilterText('');
                 setCurrentPage(1);
-                setEntityType('');  // Optional: clears type as in previous guidance
+                setEntityType('');
+                setTargetEntity('');
               }}
               className="px-2 py-0.5 bg-red-50 hover:bg-red-100 border border-red-200 rounded text-xs text-red-700"
             >
