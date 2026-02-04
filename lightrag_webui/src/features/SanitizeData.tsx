@@ -1242,13 +1242,13 @@ export default function SanitizeData() {
             </button>
             <button
               className="px-3.5 py-1.5 bg-blue-600 text-white rounded hover:bg-blue-700 text-sm disabled:opacity-50"
-              disabled={selectedEntities.length < 1 || filterMode !== 'selected'}
-              onClick={handleMergeEntities}  // ← Add this
+              disabled={selectedEntities.length < 2 || filterMode !== 'selected'}
+              onClick={handleMergeEntities}
               title={
                 filterMode !== 'selected'
                   ? "Enter 'Show Sel. Only' mode first\nto act on selected entities"
-                  : selectedEntities.length < 1
-                  ? "Select at least one entity first\n(check the boxes on the left)"
+                  : selectedEntities.length < 2
+                  ? "Select at least two entities first\n(check the boxes on the left)"
                   : undefined
               }
             >
