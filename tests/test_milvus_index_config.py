@@ -188,7 +188,7 @@ class TestMilvusIndexConfig:
         mock_index_params = MagicMock()
         mock_client.prepare_index_params.return_value = mock_index_params
 
-        result = config.build_index_params(mock_client)
+        config.build_index_params(mock_client)
 
         mock_index_params.add_index.assert_called_once()
         call_kwargs = mock_index_params.add_index.call_args[1]
@@ -210,7 +210,7 @@ class TestMilvusIndexConfig:
         mock_index_params = MagicMock()
         mock_client.prepare_index_params.return_value = mock_index_params
 
-        result = config.build_index_params(mock_client)
+        config.build_index_params(mock_client)
 
         call_kwargs = mock_index_params.add_index.call_args[1]
         assert call_kwargs["index_type"] == "HNSW_SQ"
@@ -226,7 +226,7 @@ class TestMilvusIndexConfig:
         mock_index_params = MagicMock()
         mock_client.prepare_index_params.return_value = mock_index_params
 
-        result = config.build_index_params(mock_client)
+        config.build_index_params(mock_client)
 
         call_kwargs = mock_index_params.add_index.call_args[1]
         assert call_kwargs["index_type"] == "HNSW_SQ"
@@ -242,7 +242,7 @@ class TestMilvusIndexConfig:
         mock_index_params = MagicMock()
         mock_client.prepare_index_params.return_value = mock_index_params
 
-        result = config.build_index_params(mock_client)
+        config.build_index_params(mock_client)
 
         call_kwargs = mock_index_params.add_index.call_args[1]
         assert call_kwargs["index_type"] == "IVF_FLAT"
