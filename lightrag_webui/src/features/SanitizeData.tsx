@@ -1,4 +1,4 @@
-// src/pages/SanitizeData.tsx
+// lightrag_webui/src/features/SanitizeData.tsx
 import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
 
@@ -91,6 +91,14 @@ export default function SanitizeData() {
   );
 
   const filterInputRef = useRef<HTMLInputElement>(null);
+
+  const openVideoTutorial = () => {
+    window.open(
+      'https://youtu.be/70iZxleULYY?si=PTq8S6fYIQpnEX8d',
+      '_blank',
+      'noopener,noreferrer'
+    );
+  };
 
   // Build entityTypeMap and entityOrphanMap with single fetch per entity
   const fetchEntityDetails = async (entityList: string[]) => {
@@ -221,7 +229,7 @@ export default function SanitizeData() {
         fetchEntityDetail(entityName);
       });
     }
-  }, [selectedEntities]);  // ← only this dependency now
+  }, [selectedEntities]);
 
   // Reset page when filter changes
   useEffect(() => {
@@ -388,7 +396,7 @@ export default function SanitizeData() {
       return;
     }
 
-    console.log('Showing orphans'); // Debug
+    // console.log('Showing orphans'); // Debug
     const orphans = entities.filter((name) => entityOrphanMap[name] === true).sort((a, b) =>
       a.toLowerCase().localeCompare(b.toLowerCase())
     );
@@ -490,11 +498,11 @@ export default function SanitizeData() {
         allow_merge: allowMerge,
       };
 
-      console.log('Sending edit payload:', JSON.stringify(payload, null, 2));  // Debug
+      // console.log('Sending edit payload:', JSON.stringify(payload, null, 2));  // Debug
 
       const response = await axios.post(`${API_BASE}/graph/entity/edit`, payload);
 
-      console.log('Edit response:', response.data);  // Debug
+      // console.log('Edit response:', response.data);  // Debug
 
       if (response.status === 200) {
         setEditEntityModalOpen(false);
@@ -716,11 +724,11 @@ export default function SanitizeData() {
         entity_to_change_into: targetEntity,
       };
 
-      console.log('Merge payload:', JSON.stringify(payload, null, 2));  // Debug
+      // console.log('Merge payload:', JSON.stringify(payload, null, 2));  // Debug
 
       const response = await axios.post(`${API_BASE}/graph/entities/merge`, payload);
 
-      console.log('Merge response:', response.data);  // Debug
+      // console.log('Merge response:', response.data);  // Debug
 
       if (response.status === 200) {
         // Full refresh after merge
@@ -979,9 +987,6 @@ export default function SanitizeData() {
         await fetchEntityDetail(editingEntityForRel, true); // Force refresh
       }
 
-      // Trigger full graph refresh
-      // await triggerGraphRefresh(); // Commented out because it has no effect
-
       alert("Relationship deleted successfully!");
     } catch (err) {
       console.error("Failed to delete relationship:", err);
@@ -1226,71 +1231,86 @@ export default function SanitizeData() {
             {/* Source ID Strat. (unchanged, if still present) */}
           </div>
 
-          <div className="flex gap-2">
-            <button
-              onClick={() => {
-                setCreateEntityModalOpen(true);
-                setCreateError(null);  // Clear any previous errors
-                setCreateEntityName('');  // Reset fields
-                setCreateEntityDescription('');
-                setCreateEntityType('');
-                setCreateEntitySourceId('Manual Entry:');
-              }}
-              className="px-3.5 py-1.5 bg-purple-600 text-white rounded hover:bg-purple-700 text-sm"
-            >
-              Create Entity
-            </button>
-            <button
-              className="px-3.5 py-1.5 bg-blue-600 text-white rounded hover:bg-blue-700 text-sm disabled:opacity-50"
-              disabled={selectedEntities.length < 2 || filterMode !== 'selected'}
-              onClick={handleMergeEntities}
-              title={
-                filterMode !== 'selected'
-                  ? "Enter 'Show Sel. Only' mode first\nto act on selected entities"
-                  : selectedEntities.length < 2
-                  ? "Select at least two entities first\n(check the boxes on the left)"
-                  : undefined
-              }
-            >
-              Merge Entities
-            </button>
-            <button
-              className="px-3.5 py-1.5 bg-green-600 text-white rounded hover:bg-green-700 text-sm disabled:opacity-50"
-              disabled={selectedEntities.length !== 2 || filterMode !== 'selected'}
-              onClick={() => {
-                if (!targetEntity || !selectedEntities.includes(targetEntity)) {
-                  alert('Please select a target entity from the dropdown first.');
-                  return;
+          <div className="flex items-center gap-2">
+            {/* Left-side action buttons */}
+            <div className="flex gap-2">
+              <button
+                onClick={() => {
+                  setCreateEntityModalOpen(true);
+                  setCreateError(null);
+                  setCreateEntityName('');
+                  setCreateEntityDescription('');
+                  setCreateEntityType('');
+                  setCreateEntitySourceId('Manual Entry:');
+                }}
+                className="px-3.5 py-1.5 bg-purple-600 text-white rounded hover:bg-purple-700 text-sm"
+              >
+                Create Entity
+              </button>
+
+              <button
+                className="px-3.5 py-1.5 bg-blue-600 text-white rounded hover:bg-blue-700 text-sm disabled:opacity-50"
+                disabled={selectedEntities.length < 2 || filterMode !== 'selected'}
+                onClick={handleMergeEntities}
+                title={
+                  filterMode !== 'selected'
+                    ? "Enter 'Show Sel. Only' mode first\nto act on selected entities"
+                    : selectedEntities.length < 2
+                    ? "Select at least two entities first\n(check the boxes on the left)"
+                    : undefined
                 }
-                setCreateRelModalOpen(true);
-                setCreateRelError(null);
-                setCreateRelDescription('');
-                setCreateRelKeywords('');
-                setCreateRelWeight(1.0);
-              }}
-              title={
-                filterMode !== 'selected'
-                  ? "Enter 'Show Sel. Only' mode first\nto act on selected entities"
-                  : selectedEntities.length !== 2
-                  ? "Select exactly two entities first\n(check the boxes on the left)"
-                  : undefined
-              }
-            >
-              Create Rel.
-            </button>
+              >
+                Merge Entities
+              </button>
+
+              <button
+                className="px-3.5 py-1.5 bg-green-600 text-white rounded hover:bg-green-700 text-sm disabled:opacity-50"
+                disabled={selectedEntities.length !== 2 || filterMode !== 'selected'}
+                onClick={() => {
+                  if (!targetEntity || !selectedEntities.includes(targetEntity)) {
+                    alert('Please select a target entity from the dropdown first.');
+                    return;
+                  }
+                  setCreateRelModalOpen(true);
+                  setCreateRelError(null);
+                  setCreateRelDescription('');
+                  setCreateRelKeywords('');
+                  setCreateRelWeight(1.0);
+                }}
+                title={
+                  filterMode !== 'selected'
+                    ? "Enter 'Show Sel. Only' mode first\nto act on selected entities"
+                    : selectedEntities.length !== 2
+                    ? "Select exactly two entities first\n(check the boxes on the left)"
+                    : undefined
+                }
+              >
+                Create Rel.
+              </button>
+
+              <button
+                className="px-3.5 py-1.5 bg-red-600 text-white rounded hover:bg-red-700 text-sm disabled:opacity-50"
+                disabled={selectedEntities.length < 1 || filterMode !== 'selected'}
+                onClick={handleDeleteEntities}
+                title={
+                  filterMode !== 'selected'
+                    ? "Enter 'Show Sel. Only' mode first\nto act on selected entities"
+                    : selectedEntities.length < 1
+                    ? "Select at least one entity\nto enable this button"
+                    : undefined
+                }
+              >
+                Delete Entity
+              </button>
+            </div>
+
+            {/* Video Tutorial button – pushed all the way to the right */}
             <button
-              className="px-3.5 py-1.5 bg-red-600 text-white rounded hover:bg-red-700 text-sm disabled:opacity-50"
-              disabled={selectedEntities.length < 1 || filterMode !== 'selected'}
-              onClick={handleDeleteEntities}
-              title={
-                filterMode !== 'selected'
-                  ? "Enter 'Show Sel. Only' mode first\nto act on selected entities"
-                  : selectedEntities.length < 1
-                  ? "Select at least one entity\nto enable this button"
-                  : undefined
-              }
+              onClick={openVideoTutorial}
+              className="ml-auto px-3.5 py-1.5 bg-indigo-600 text-white rounded hover:bg-indigo-700 text-sm flex items-center gap-1.5 shadow-sm"
+              title="Watch the video tutorial (opens in new tab)"
             >
-              Delete Entity
+              🎥 Video Tutorial
             </button>
           </div>
         </div>
