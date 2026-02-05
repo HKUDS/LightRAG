@@ -24,19 +24,22 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
+    # [修改 1] 註解掉 deploy 區塊，防止強制檢查 GPU 導致啟動失敗
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+
     environment:
       - WORKERS=1
       - TIMEOUT=1800
       - LIGHTRAG_WORKER_TIMEOUT=1800
       - LIGHTRAG_FUNC_TIMEOUT=1800
-      - MINERU_DEVICE_MODE=cuda
+      # [修改 2] 將此變數留空，觸發 entrypoint.sh 的自動偵測邏輯 (有卡用卡，無卡用 CPU)
+      - MINERU_DEVICE_MODE=
       - MINERU_MODEL_DIR=/app/data/mineru_models
       - MAGIC_PDF_CONFIG_JSON=/app/magic-pdf.json
       - MAGIC_PDF_CONFIG=/app/magic-pdf.json
