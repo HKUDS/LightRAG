@@ -1786,6 +1786,7 @@ class LightRAG:
                     processing_start_time = int(time.time())
                     first_stage_tasks = []
                     entity_relation_task = None
+                    chunks: dict[str, Any] = {}
 
                     async with semaphore:
                         nonlocal processed_count
@@ -1983,6 +1984,8 @@ class LightRAG:
                                     doc_id: {
                                         "status": DocStatus.FAILED,
                                         "error_msg": str(e),
+                                        "chunks_count": len(chunks),
+                                        "chunks_list": list(chunks.keys()),
                                         "content_summary": status_doc.content_summary,
                                         "content_length": status_doc.content_length,
                                         "created_at": status_doc.created_at,
@@ -2110,6 +2113,8 @@ class LightRAG:
                                         doc_id: {
                                             "status": DocStatus.FAILED,
                                             "error_msg": str(e),
+                                            "chunks_count": len(chunks),
+                                            "chunks_list": list(chunks.keys()),
                                             "content_summary": status_doc.content_summary,
                                             "content_length": status_doc.content_length,
                                             "created_at": status_doc.created_at,
@@ -3428,8 +3433,9 @@ class LightRAG:
             # 5. Delete chunks from storage
             if chunk_ids:
                 try:
-                    await self.chunks_vdb.delete(chunk_ids)
-                    await self.text_chunks.delete(chunk_ids)
+                    chunk_id_list = list(chunk_ids)
+                    await self.chunks_vdb.delete(chunk_id_list)
+                    await self.text_chunks.delete(chunk_id_list)
 
                     async with pipeline_status_lock:
                         log_message = (
