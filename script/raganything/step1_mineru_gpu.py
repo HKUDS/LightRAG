@@ -187,8 +187,8 @@ def main():
     device_type = get_device_config()
     
     config = {
-        # 'vlm-transformers' 或 'doclayout_yolo' 是支援 GPU 加速的後端
-        "use_backend": "vlm-transformers", 
+        # 新版 Mineru 建議使用 'pipeline'，它會根據 -d cuda 自動調用 GPU
+        "use_backend": "pipeline", 
         "use_device": device_type
     }
     # ============

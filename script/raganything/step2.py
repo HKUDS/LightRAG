@@ -107,32 +107,60 @@ def call_vision_llm(img_path, mode="table", context_text=""):
 
 # 🔥 Safe Content Extractor (Handles Dolphin/Mineru differences)
 def get_safe_content(item):
-    """
-    Try to fetch content from different keys
-    """
-    # Priority: text (Mineru) -> content (Dolphin) -> table_body
     candidates = [
         item.get("text"),
         item.get("content"),
         item.get("table_body"),
     ]
-    
-    # Handle list captions
     caption = item.get("image_caption") or item.get("table_caption")
     if isinstance(caption, list):
         caption = "".join(caption)
     if caption:
         candidates.append(caption)
 
-    # Return first non-empty value
     for c in candidates:
         if c and str(c).strip():
             return str(c).strip()
-    
     return ""
+
+# === 🔥 [新增邏輯] 智能圖片路徑搜尋 ===
+def find_real_image_path(json_dir, mineru_raw_dir, file_stem, rel_path):
+    """
+    嘗試在不同位置尋找圖片，解決 Step 1 沒有搬運圖片的問題。
+    """
+    if not rel_path: return None
+    
+    img_filename = os.path.basename(rel_path) # e.g., "0.jpg"
+
+    # 1. 優先：檢查 JSON 旁邊 (標準流程)
+    path1 = os.path.join(json_dir, rel_path)
+    if os.path.exists(path1): return path1
+
+    # 2. 檢查 Mineru 原始輸出目錄 (救命流程 - auto/images)
+    # 路徑類似: ./data/output/step1_vlm_output/FileName/auto/images/0.jpg
+    path2 = os.path.join(mineru_raw_dir, file_stem, "auto", "images", img_filename)
+    if os.path.exists(path2): return path2
+
+    # 3. 檢查 Mineru 原始輸出目錄 (舊版結構 - images)
+    path3 = os.path.join(mineru_raw_dir, file_stem, "images", img_filename)
+    if os.path.exists(path3): return path3
+
+    # 4. 暴力搜尋 (最後手段)
+    # 在該檔案的原始輸出目錄下，遞歸尋找該檔名的圖片
+    search_root = os.path.join(mineru_raw_dir, file_stem)
+    if os.path.exists(search_root):
+        pattern = os.path.join(search_root, "**", img_filename)
+        found = glob.glob(pattern, recursive=True)
+        if found: return found[0]
+
+    return None
 
 def main():
     step1_base_dir = "./data/input/step1_output"
+    
+    # 這是 Mineru 原始生成圖片的地方 (如果 Step 1 沒搬走，圖就在這裡)
+    mineru_raw_output_dir = "./data/output/step1_vlm_output" 
+    
     output_base_dir = "./data/output/step2_output_granular"
 
     if not os.path.exists(step1_base_dir):
@@ -200,9 +228,9 @@ def main():
             # ==================
 
             rel_path = item.get('img_path', '')
-            abs_img_path = None
-            if rel_path:
-                abs_img_path = os.path.join(current_base_dir, rel_path)
+            
+            # 🔥 [關鍵修改] 使用智能搜尋去找圖片路徑
+            abs_img_path = find_real_image_path(current_base_dir, mineru_raw_output_dir, file_stem, rel_path)
 
             block_data = {
                 "type": item_type,
@@ -215,18 +243,38 @@ def main():
                 "label": item.get('label', '')
             }
 
-            # Prepare Context
+            # === Context Logic (Look Around) ===
             context_text = ""
-            if idx > 0:
-                prev_text = get_safe_content(content_list[idx-1])
-                if prev_text: context_text += f"Pre: {prev_text[-200:]}\n"
+            
+            # 1. Look Backward (Pre Context)
+            pre_idx = idx - 1
+            while pre_idx >= 0:
+                item_check = content_list[pre_idx]
+                if item_check.get("type") == "text":
+                    text = get_safe_content(item_check)
+                    if text:
+                        context_text += f"Pre Context: ...{text[-300:]}\n"
+                        break 
+                pre_idx -= 1
+
+            # 2. Look Forward (Post Context)
+            post_idx = idx + 1
+            while post_idx < len(content_list):
+                item_check = content_list[post_idx]
+                if item_check.get("type") == "text":
+                    text = get_safe_content(item_check)
+                    if text:
+                        context_text += f"Post Context: {text[:300]}...\n"
+                        break
+                post_idx += 1
+            # ===============================================
 
             # === Core Logic ===
             
             # 1. Table
             if item_type in ['table', 'tabular']:
                 content = get_safe_content(item)
-                if HAS_AI and abs_img_path and os.path.exists(abs_img_path):
+                if HAS_AI and abs_img_path:
                     logger.info(f"   🔍 Azure AI Table: P{page_idx+1}")
                     ai_content = call_vision_llm(abs_img_path, mode="table", context_text=context_text)
                     if ai_content:
@@ -240,7 +288,7 @@ def main():
             # 2. Image
             elif item_type in ['image', 'figure', 'fig']:
                 content = get_safe_content(item)
-                if HAS_AI and abs_img_path and os.path.exists(abs_img_path):
+                if HAS_AI and abs_img_path:
                     logger.info(f"   🖼️ Azure AI Caption: P{page_idx+1}")
                     ai_desc = call_vision_llm(abs_img_path, mode="caption", context_text=context_text)
                     if ai_desc:

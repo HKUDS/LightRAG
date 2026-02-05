@@ -48,7 +48,7 @@ neo4jWorkDir/
 inputs/
 output/
 rag_storage/
-data/
+*data*/
 
 # Evaluation results
 lightrag/evaluation/results/
