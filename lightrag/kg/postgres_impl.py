@@ -145,6 +145,9 @@ class PostgreSQLDB:
         self.ssl_crl = config.get("ssl_crl")
 
         # Vector configuration
+        self.enable_vector = config.get(
+            "enable_vector", True
+        )  # True for backward compatibility, can be set to False to disable vector features
         self.vector_index_type = config.get("vector_index_type")
         self.hnsw_m = config.get("hnsw_m")
         self.hnsw_ef = config.get("hnsw_ef")
@@ -332,7 +335,8 @@ class PostgreSQLDB:
             encode/decode vector columns, eliminating non-deterministic behavior
             where some connections have the codec and others don't.
             """
-            await register_vector(connection)
+            if self.enable_vector:
+                await register_vector(connection)
 
         async def _create_pool_once() -> None:
             # STEP 1: Bootstrap - ensure vector extension exists BEFORE pool creation.
@@ -340,24 +344,26 @@ class PostgreSQLDB:
             # if the vector extension doesn't exist yet, because the 'vector' type
             # won't be found in pg_catalog. We must create the extension first
             # using a standalone bootstrap connection.
-            bootstrap_conn = await asyncpg.connect(
-                user=self.user,
-                password=self.password,
-                database=self.database,
-                host=self.host,
-                port=self.port,
-                ssl=connection_params.get("ssl"),
-            )
-            try:
-                await self.configure_vector_extension(bootstrap_conn)
-            finally:
-                await bootstrap_conn.close()
+            # Skip this step if vector support is not enabled.
+            if self.enable_vector:
+                bootstrap_conn = await asyncpg.connect(
+                    user=self.user,
+                    password=self.password,
+                    database=self.database,
+                    host=self.host,
+                    port=self.port,
+                    ssl=connection_params.get("ssl"),
+                )
+                try:
+                    await self.configure_vector_extension(bootstrap_conn)
+                finally:
+                    await bootstrap_conn.close()
 
             # STEP 2: Now safe to create pool with register_vector callback.
-            # The vector extension is guaranteed to exist at this point.
+            # The vector extension is guaranteed to exist at this point (if enabled).
             pool = await asyncpg.create_pool(
                 **connection_params,
-                init=_init_connection,  # Register pgvector codec on every connection
+                init=_init_connection,  # Register pgvector codec on every connection (if enabled)
             )  # type: ignore
             self.pool = pool
 
@@ -1750,6 +1756,11 @@ class ClientManager:
                 "POSTGRES_SSL_CRL",
                 config.get("postgres", "ssl_crl", fallback=None),
             ),
+            # Vector configuration
+            "enable_vector": os.environ.get(
+                "POSTGRES_ENABLE_VECTOR",
+                config.get("postgres", "enable_vector", fallback="true"),
+            ).lower() in ("true", "1", "yes", "on"),
             "vector_index_type": os.environ.get(
                 "POSTGRES_VECTOR_INDEX_TYPE",
                 config.get("postgres", "vector_index_type", fallback="HNSW"),
@@ -2362,6 +2373,9 @@ class PGVectorStorage(BaseVectorStorage):
     db: PostgreSQLDB | None = field(default=None)
 
     def __post_init__(self):
+        if not self.db.enable_vector:
+            raise ValueError("Cannot use PGVectorStorage when POSTGRES_ENABLE_VECTOR=false. Configure an alternative vector backend.")
+
         self._validate_embedding_func()
         self._max_batch_size = self.global_config["embedding_batch_num"]
         config = self.global_config.get("vector_db_storage_cls_kwargs", {})
