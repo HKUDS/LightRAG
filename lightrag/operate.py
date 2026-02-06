@@ -2874,7 +2874,9 @@ async def extract_entities(
             tokenizer = global_config["tokenizer"]
             max_input_tokens = global_config["max_extract_input_tokens"]
 
-            # Estimate total tokens: System Prompt + History (Previous Round) + Current User Prompt
+            # Approximate total tokens: system prompt + history + user prompt.
+            # This slightly underestimates actual API usage (missing role/framing tokens)
+            # but is sufficient as a safety guard against context window overflow.
             history_str = json.dumps(history, ensure_ascii=False)
             full_context_str = (
                 entity_extraction_system_prompt
@@ -2927,22 +2929,22 @@ async def extract_entities(
                         # New entity from gleaning stage
                         maybe_nodes[entity_name] = list(glean_entities)
 
-                for edge_key, glean_edges in glean_edges.items():
+                for edge_key, glean_edge_list in glean_edges.items():
                     if edge_key in maybe_edges:
                         # Compare description lengths and keep the better one
                         original_desc_len = len(
                             maybe_edges[edge_key][0].get("description", "") or ""
                         )
                         glean_desc_len = len(
-                            glean_edges[0].get("description", "") or ""
+                            glean_edge_list[0].get("description", "") or ""
                         )
 
                         if glean_desc_len > original_desc_len:
-                            maybe_edges[edge_key] = list(glean_edges)
+                            maybe_edges[edge_key] = list(glean_edge_list)
                         # Otherwise keep original version
                     else:
                         # New edge from gleaning stage
-                        maybe_edges[edge_key] = list(glean_edges)
+                        maybe_edges[edge_key] = list(glean_edge_list)
 
         # Batch update chunk's llm_cache_list with all collected cache keys
         if cache_keys_collector and text_chunks_storage:
