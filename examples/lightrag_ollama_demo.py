@@ -106,6 +106,18 @@ async def initialize_rag():
                 host=os.getenv("EMBEDDING_BINDING_HOST", "http://localhost:11434"),
             ),
         ),
+        enable_deduplication=os.getenv("ENABLE_DEDUPLICATION", "true").lower()
+        == "true",
+        deduplication_config={
+            "strategy": "llm_based",
+            "llm_based": {
+                "batch_size": int(os.getenv("DEDUP_BATCH_SIZE", "30")),
+                "similarity_threshold": float(
+                    os.getenv("DEDUP_EMBEDDING_THRESHOLD", "0.75")
+                ),  # 放松的embedding阈值
+                "strictness_level": os.getenv("DEDUP_STRICTNESS_LEVEL", "strict"),
+            },
+        },
     )
 
     await rag.initialize_storages()  # Auto-initializes pipeline_status

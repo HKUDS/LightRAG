@@ -5,7 +5,7 @@ from pathlib import Path
 import asyncio
 import json
 import json_repair
-from typing import Any, AsyncIterator, overload, Literal
+from typing import Any, AsyncIterator, overload, Literal, Optional
 from collections import Counter, defaultdict
 
 from lightrag.exceptions import (
@@ -68,6 +68,10 @@ from lightrag.constants import (
 from lightrag.kg.shared_storage import get_storage_keyed_lock
 import time
 from dotenv import load_dotenv
+from .duplicate import (
+    DeduplicationService,
+    DeduplicationStrategyFactory,
+)
 
 # use the .env that is inside the current folder
 # allows to use different .env file for each lightrag instance
@@ -2410,6 +2414,7 @@ async def merge_nodes_and_edges(
     current_file_number: int = 0,
     total_files: int = 0,
     file_path: str = "unknown_source",
+    deduplication_service: Optional[DeduplicationService] = None,
 ) -> None:
     """Two-phase merge: process all entities first, then all relationships
 
@@ -2690,6 +2695,139 @@ async def merge_nodes_and_edges(
 
         if first_exception is not None:
             raise first_exception
+
+    # Wait for all entity tasks to complete
+    entity_results = await asyncio.gather(*entity_tasks, return_exceptions=True)
+
+    # Collect successful results
+    entities_data = []
+    for i, result in enumerate(entity_results):
+        if not isinstance(result, Exception) and result is not None:
+            entities_data.append(result)
+        elif isinstance(result, Exception):
+            logger.warning(f"Entity task {i} failed with exception: {result}")
+
+    # Entity tasks already completed, use entities_data as processed_entities
+    processed_entities = entities_data
+
+    # ===== Apply deduplication to ALL entities (original + added during edge processing) =====
+    # Combine all entities for comprehensive deduplication
+    all_entities_for_dedup = processed_entities + all_added_entities
+
+    logger.info(
+        f"Deduplication check: deduplication_service={deduplication_service is not None}, total_entities={len(all_entities_for_dedup)} (original: {len(processed_entities)}, added: {len(all_added_entities)})"
+    )
+    if deduplication_service and all_entities_for_dedup:
+        logger.info(
+            f"Starting comprehensive entity deduplication with {len(all_entities_for_dedup)} entities"
+        )
+        # Extract deduplication configuration from global_config
+        dedup_config_data = global_config.get("deduplication_config", {})
+        strategy_name = dedup_config_data.get("strategy", "llm_based")
+        strategy_config = dedup_config_data.get(strategy_name, {})
+
+        # Create strategy-specific configuration using ConfigFactory
+        try:
+            from .duplicate import ConfigFactory
+
+            dedup_config = ConfigFactory.create_config(
+                strategy_name,
+                {
+                    "target_batch_size": strategy_config.get("batch_size", 30),
+                    "similarity_threshold": strategy_config.get(
+                        "similarity_threshold", 0.85
+                    ),
+                    "system_prompt": strategy_config.get("system_prompt"),
+                    "strictness_level": strategy_config.get(
+                        "strictness_level", "strict"
+                    ),
+                },
+            )
+        except Exception as e:
+            logger.error(f"Failed to create deduplication configuration: {e}")
+            logger.info("Skipping deduplication due to configuration creation failure")
+        else:
+            # Create deduplication strategy using factory
+            try:
+                deduplication_strategy = DeduplicationStrategyFactory.create_strategy(
+                    strategy_name, deduplication_service, dedup_config
+                )
+            except ValueError as e:
+                logger.error(f"Failed to create deduplication strategy: {e}")
+                logger.info("Skipping deduplication due to strategy creation failure")
+            else:
+                # Classify nodes by similarity using the deduplication strategy
+                nodes_batches_clean = (
+                    await deduplication_strategy.classify_nodes_by_similarity(
+                        all_entities_for_dedup
+                    )
+                )
+
+                # Clean nodes using the deduplication strategy
+                await deduplication_strategy.clean_nodes(nodes_batches_clean)
+
+                logger.info(
+                    f"Completed comprehensive deduplication for {len(all_entities_for_dedup)} entity groups"
+                )
+
+                # After deduplication, filter entities to keep only existing ones
+                # Get the current entity names from storage to determine which entities still exist
+                if knowledge_graph_inst:
+                    try:
+                        # Get all current entity names from storage
+                        existing_entity_names = set()
+                        async for (
+                            entity_name,
+                            entity_data,
+                        ) in knowledge_graph_inst.get_all_nodes():
+                            if entity_name:
+                                existing_entity_names.add(entity_name)
+
+                        # Filter processed_entities to keep only existing entities
+                        original_processed_count = len(processed_entities)
+                        processed_entities = [
+                            entity_data
+                            for entity_data in processed_entities
+                            if entity_data
+                            and entity_data.get("entity_name") in existing_entity_names
+                        ]
+                        filtered_processed_count = len(processed_entities)
+
+                        # Filter all_added_entities to keep only existing entities
+                        original_added_count = len(all_added_entities)
+                        all_added_entities = [
+                            entity_data
+                            for entity_data in all_added_entities
+                            if entity_data
+                            and entity_data.get("entity_name") in existing_entity_names
+                        ]
+                        filtered_added_count = len(all_added_entities)
+
+                        logger.info(
+                            "Filtered entities after comprehensive deduplication:"
+                        )
+                        logger.info(
+                            f"  - Original entities: {original_processed_count} → {filtered_processed_count}"
+                        )
+                        logger.info(
+                            f"  - Added entities: {original_added_count} → {filtered_added_count}"
+                        )
+                        logger.info(
+                            f"  - Total entities: {original_processed_count + original_added_count} → {filtered_processed_count + filtered_added_count}"
+                        )
+
+                    except Exception as e:
+                        logger.warning(
+                            f"Failed to filter entities after comprehensive deduplication: {e}"
+                        )
+                        logger.info("Continuing with original entity lists")
+    else:
+        if not deduplication_service:
+            logger.info(
+                "Deduplication service not provided, skipping comprehensive entity deduplication"
+            )
+        if not all_entities_for_dedup:
+            logger.info("No entities available for comprehensive deduplication")
 
     # ===== Phase 3: Update full_entities and full_relations storage =====
     if full_entities_storage and full_relations_storage and doc_id:

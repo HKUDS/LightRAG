@@ -115,6 +115,7 @@ from lightrag.utils import (
 )
 from lightrag.types import KnowledgeGraph
 from dotenv import load_dotenv
+from .duplicate import LightRAGDeduplicationService
 
 # use the .env that is inside the current folder
 # allows to use different .env file for each lightrag instance
@@ -224,6 +225,41 @@ class LightRAG:
             "FORCE_LLM_SUMMARY_ON_MERGE", DEFAULT_FORCE_LLM_SUMMARY_ON_MERGE, int
         )
     )
+
+    # Entity deduplication configuration
+    # ---
+    enable_deduplication: bool = field(default=False)
+    """Enable entity deduplication during extraction."""
+
+    deduplication_config: dict[str, Any] = field(
+        default_factory=lambda: {
+            "strategy": "llm_based",  # Strategy name: currently only "llm_based" is implemented
+            "llm_based": {
+                "batch_size": get_env_value("DEDUP_BATCH_SIZE", 30, int),
+                "similarity_threshold": get_env_value(
+                    "DEDUP_SIMILARITY_THRESHOLD", 0.85, float
+                ),
+                "system_prompt": None,  # Use default if None
+                "strictness_level": get_env_value(
+                    "DEDUP_STRICTNESS_LEVEL", "strict", str
+                ),  # "strict", "medium", "loose"
+                # strict: merge nodes ONLY if they represent the exact same real-world concept (e.g., spelling variations, synonyms, or explicit duplicates). Never merge nodes that are merely topically related.
+                # medium: merge nodes if they represent the same core concept, including near-synonyms or semantically equivalent phrasing.
+                # loose: merge nodes if they represent the same thematic concept, including near-synonyms or semantically equivalent phrasing.
+            },
+            # Future strategies can be added here by extending the architecture
+            # Example: "new_strategy": { ... }
+        }
+    )
+    """Configuration for entity deduplication strategies.
+    Structure:
+    {
+        "strategy": "strategy_name",  # Active strategy
+        "strategy_name": {
+            # Strategy-specific configuration
+        }
+    }
+    """
 
     # Text chunking
     # ---
@@ -2019,6 +2055,14 @@ class LightRAG:
                                             "User cancelled"
                                         )
 
+                                # Get chunk_results from entity_relation_task
+                                chunk_results = await entity_relation_task
+
+                                # Create deduplication service if deduplication is enabled
+                                dedup_service = None
+                                if self.enable_deduplication:
+                                    dedup_service = LightRAGDeduplicationService(self)
+
                                 # Use chunk_results from entity_relation_task
                                 await merge_nodes_and_edges(
                                     chunk_results=chunk_results,  # result collected from entity_relation_task
@@ -2037,6 +2081,7 @@ class LightRAG:
                                     current_file_number=current_file_number,
                                     total_files=total_files,
                                     file_path=file_path,
+                                    deduplication_service=dedup_service,
                                 )
 
                                 # Record processing end time
