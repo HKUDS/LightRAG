@@ -1079,6 +1079,99 @@ async def initialize_rag():
 </details>
 
 <details>
+<summary> <b>Using Milvus for Vector Storage</b> </summary>
+
+Milvus is a high-performance, scalable vector database that can be used for production-level vector storage. LightRAG supports configurable index types for Milvus, allowing you to optimize performance and memory usage based on your specific needs.
+
+### Milvus Index Configuration
+
+LightRAG provides flexible index configuration for Milvus vector storage through environment variables:
+
+**Supported Index Types:**
+- `AUTOINDEX` (default): Milvus automatically selects the best index
+- `HNSW`: Hierarchical Navigable Small World index for high recall
+- `HNSW_SQ`: HNSW with scalar quantization (requires Milvus 2.6.8+)
+- `IVF_FLAT`: Inverted file index
+- `IVF_SQ8`: IVF with 8-bit scalar quantization
+- `DISKANN`: Disk-based approximate nearest neighbor
+- And more (see `env.example`)
+
+**Basic Configuration:**
+```bash
+# Set in your .env file or environment
+MILVUS_URI=http://localhost:19530
+MILVUS_DB_NAME=lightrag
+
+# Index configuration (all optional, with sensible defaults)
+MILVUS_INDEX_TYPE=HNSW         # Default: AUTOINDEX
+MILVUS_METRIC_TYPE=COSINE      # Default: COSINE (also supports L2, IP)
+MILVUS_HNSW_M=30               # Default: 30, range: [2-2048]
+MILVUS_HNSW_EF_CONSTRUCTION=200 # Default: 200
+MILVUS_HNSW_EF=100             # Default: 100
+```
+
+**Advanced HNSW_SQ Configuration (Milvus 2.6.8+):**
+
+HNSW_SQ provides significant memory savings through scalar quantization while maintaining good recall:
+
+```bash
+MILVUS_INDEX_TYPE=HNSW_SQ
+MILVUS_HNSW_SQ_TYPE=SQ8        # Options: SQ4U, SQ6, SQ8, BF16, FP16
+MILVUS_HNSW_SQ_REFINE=true     # Enable refinement for higher precision
+MILVUS_HNSW_SQ_REFINE_TYPE=FP32 # Refinement precision
+MILVUS_HNSW_SQ_REFINE_K=10     # Refinement expansion factor
+```
+
+**Memory-Performance Trade-offs:**
+- `SQ4U`: 8x compression, lower precision
+- `SQ6`: ~5.3x compression, balanced
+- `SQ8`: 4x compression, good precision (recommended)
+- `BF16/FP16`: 2x compression, high precision
+
+**Example: Production Configuration with HNSW_SQ**
+```python
+# In your .env file
+MILVUS_URI=http://localhost:19530
+MILVUS_DB_NAME=lightrag
+MILVUS_INDEX_TYPE=HNSW_SQ
+MILVUS_HNSW_M=64                # Higher M for better recall
+MILVUS_HNSW_EF_CONSTRUCTION=256 # Higher for better index quality
+MILVUS_HNSW_EF=150              # Higher for better search recall
+MILVUS_HNSW_SQ_TYPE=SQ8         # Balanced compression
+MILVUS_HNSW_SQ_REFINE=true      # Enable refinement
+MILVUS_METRIC_TYPE=COSINE
+
+# Then use in your code
+from lightrag import LightRAG, QueryParam
+from lightrag.llm import gpt_4o_mini_complete, openai_embed
+
+async def initialize_rag():
+    rag = LightRAG(
+        working_dir="./rag_storage",
+        llm_model_func=gpt_4o_mini_complete,
+        embedding_func=openai_embed,
+        vector_storage="MilvusVectorDBStorage",
+    )
+
+    # Initialize storages (includes version validation for HNSW_SQ)
+    await rag.initialize_storages()
+    return rag
+```
+
+**Version Requirements:**
+- HNSW_SQ index type requires **Milvus 2.6.8 or higher**
+- LightRAG will automatically validate the server version and raise an error if requirements are not met
+- Other index types work with Milvus 2.0+
+
+**Backward Compatibility:**
+- If no index configuration is provided, LightRAG uses AUTOINDEX (Milvus default behavior)
+- Existing collections are not affected; index configuration only applies to newly created collections
+
+For complete configuration options, see the `env.example` file in the repository.
+
+</details>
+
+<details>
 <summary> <b>Using MongoDB Storage</b> </summary>
 
 MongoDB provides a one-stop storage solution for LightRAG. MongoDB offers native KV storage and vector storage. LightRAG uses MongoDB collections to implement a simple graph storage. MongoDB's official vector search functionality (`$vectorSearch`) currently requires their official cloud service MongoDB Atlas. This functionality cannot be used on self-hosted MongoDB Community/Enterprise versions.
