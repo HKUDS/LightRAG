@@ -33,9 +33,12 @@ def get_clean_env(key, default=None):
     return val.strip() if val else val
 
 # === 🔥 Configuration ===
-SKIP_FILES = [ "0008_2024", "6823_2024", "Strategic Investment Partners" ]
-TRUSTED_KEYWORDS = [ "HSBC_Report_Source_A", "Final" ]
-LOW_QUALITY_KEYWORDS = [ "HSBC_Report_Source_B", "Draft", "Preliminary" ]
+# SKIP_FILES = [ "0008_2024", "6823_2024", "Strategic Investment Partners" ]
+# TRUSTED_KEYWORDS = [ "HSBC_Report_Source_A", "Final" ]
+# LOW_QUALITY_KEYWORDS = [ "HSBC_Report_Source_B", "Draft", "Preliminary" ]
+SKIP_FILES = []
+TRUSTED_KEYWORDS = []
+LOW_QUALITY_KEYWORDS = []
 
 # === ⚙️ Settings ===
 TARGET_RPM = 100 

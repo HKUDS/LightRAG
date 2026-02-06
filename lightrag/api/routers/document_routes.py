@@ -2,6 +2,14 @@
 This module contains all document-related routes for the LightRAG API.
 """
 
+try:
+    from lightrag.api.rag_adapter import RagAnythingPipeline 
+    HAS_RAG_ADAPTER = True
+except ImportError:
+    from lightrag.utils import logger
+    logger.warning("⚠️ RagAnythingPipeline not found. PDF advanced processing will be disabled.")
+    HAS_RAG_ADAPTER = False
+
 import asyncio
 from functools import lru_cache
 from lightrag.utils import logger, get_pinyin_sort_key
@@ -30,6 +38,15 @@ from lightrag.utils import (
 )
 from lightrag.api.utils_api import get_combined_auth_dependency
 from ..config import global_args
+
+# Initialize pipeline if adapter is available
+rag_pipeline = None
+if HAS_RAG_ADAPTER:
+    rag_pipeline = RagAnythingPipeline(
+        upload_dir="./inputs",
+        output_dir="./raganything_output",
+        sql_db_path="./financial_data.db"
+    )
 
 
 @lru_cache(maxsize=1)
@@ -80,6 +97,91 @@ router = APIRouter(
     tags=["documents"],
 )
 
+# === 新增：RagAnything 後台處理任務 ===
+async def bg_process_pdf_pipeline(
+    rag_instance: LightRAG, 
+    pipeline: Any, 
+    file_path: Path, 
+    track_id: str
+):
+    """
+    Background task to process PDF using RagAnything (MinerU + Vision + SQL)
+    and then ingest the result into LightRAG with PRIORITY support.
+    """
+    file_name = file_path.name
+    try:
+        logger.info(f"🚀 [RagAnything] Starting pipeline for: {file_name}")
+        
+        # 1. 執行耗時的 ETL 流程 (MinerU -> Vision -> SQL)
+        # 使用 asyncio.to_thread 避免阻塞 API 主線程
+        # 注意：這裡回傳的是 List[Dict] (Structured Chunks)
+        chunks = await asyncio.to_thread(
+            pipeline.process_document, 
+            str(file_path)
+        )
+        
+        if not chunks:
+            raise ValueError("RagAnything returned empty content.")
+
+        logger.info(f"✅ [RagAnything] ETL complete. Ingesting {len(chunks)} structured chunks into LightRAG...")
+
+        # 2. 準備 full_text (LightRAG 接口需要)
+        full_text = "\n\n".join([c.get("content", "") for c in chunks])
+
+        # 3. 將處理後的 Chunks 餵給 LightRAG 建立 Graph
+        # 優先使用 ainsert_structured_chunks (支援 priority)
+        if hasattr(rag_instance, "ainsert_structured_chunks"):
+            await rag_instance.ainsert_structured_chunks(
+                full_text=full_text,
+                text_chunks=chunks,
+                doc_id=file_name # 使用檔名作為 doc_id
+            )
+            logger.info("   ↳ Used 'ainsert_structured_chunks' to preserve metadata & priority.")
+        
+        # 兼容性回退：如果沒有新方法，使用舊的 custom chunks (會遺失 priority)
+        elif hasattr(rag_instance, "ainsert_custom_chunks"):
+            # 舊版接口通常是 (full_text, text_chunks: List[str])
+            str_chunks = [c.get("content", "") for c in chunks]
+            await rag_instance.ainsert_custom_chunks(
+                full_text=full_text,
+                text_chunks=str_chunks,
+                doc_id=file_name
+            )
+            logger.warning("⚠️ LightRAG instance missing 'ainsert_structured_chunks'. Falling back to 'ainsert_custom_chunks' (Priority LOST).")
+        
+        elif hasattr(rag_instance, "insert_custom_chunks"):
+            # 兼容同步方法的命名 (Legacy)
+            await asyncio.to_thread(rag_instance.insert_custom_chunks, chunks)
+            logger.info("   ↳ Used 'insert_custom_chunks' (Sync) to preserve metadata & priority.")
+            
+        else:
+            # === Fallback：如果 LightRAG 未修改，退回純文字模式 ===
+            logger.warning("⚠️ LightRAG instance missing 'ainsert_structured_chunks' or 'ainsert_custom_chunks'. Falling back to standard text ingestion.")
+            
+            await rag_instance.apipeline_enqueue_documents(
+                input=full_text,
+                file_paths=[str(file_name)], # 關聯回原始檔名
+                track_id=track_id
+            )
+            # 觸發標準索引構建
+            await rag_instance.apipeline_process_enqueue_documents()
+        
+        logger.success(f"🎉 [RagAnything] Fully processed: {file_name}")
+
+    except Exception as e:
+        logger.error(f"❌ [RagAnything] Failed for {file_name}: {str(e)}")
+        logger.error(traceback.format_exc())
+        
+        # 4. 錯誤回報 (讓 WebUI 知道這份文件失敗了)
+        file_size = file_path.stat().st_size if file_path.exists() else 0
+        error_files = [{
+            "file_path": str(file_name),
+            "error_description": "RagAnything Pipeline Failed",
+            "original_error": str(e),
+            "file_size": file_size
+        }]
+        await rag_instance.apipeline_enqueue_error_documents(error_files, track_id)
+        
 # Temporary file prefix
 temp_prefix = "__tmp__"
 
@@ -2220,13 +2322,33 @@ def create_document_routes(
                 )
 
             track_id = generate_track_id("upload")
-
-            # Add to background tasks and get track_id
-            background_tasks.add_task(pipeline_index_file, rag, file_path, track_id)
+            
+            # Conditional Routing for PDF if Adapter is available
+            if safe_filename.lower().endswith(".pdf") and HAS_RAG_ADAPTER and rag_pipeline:
+                logger.info(f"📄 Detected PDF upload: {safe_filename}. Routing to RagAnything Pipeline.")
+                # 如果是 PDF 且有 adapter，使用我們自定義的 RagAnything Pipeline
+                background_tasks.add_task(
+                    bg_process_pdf_pipeline, 
+                    rag, 
+                    rag_pipeline, 
+                    file_path, 
+                    track_id
+                )
+                message = f"PDF '{safe_filename}' uploaded. RagAnything (OCR & SQL Extraction) started in background."
+            else:
+                logger.info(f"📄 Detected standard file upload: {safe_filename}. Routing to Standard LightRAG.")
+                # 如果是其他檔案 (txt, md, docx) 或沒有 adapter，使用原生的 LightRAG 解析
+                background_tasks.add_task(
+                    pipeline_index_file, 
+                    rag, 
+                    file_path, 
+                    track_id
+                )
+                message = f"File '{safe_filename}' uploaded successfully. Processing will continue in background."
 
             return InsertResponse(
                 status="success",
-                message=f"File '{safe_filename}' uploaded successfully. Processing will continue in background.",
+                message=message,
                 track_id=track_id,
             )
 
