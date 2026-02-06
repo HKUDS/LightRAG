@@ -504,7 +504,7 @@ class MilvusVectorDBStorage(BaseVectorStorage):
 
         if vector_index_params is not None:
             # Custom index configuration provided
-            # Re-raise exceptions to surface vector index creation failures (P2 fix)
+            # Re-raise exceptions to surface vector index creation failures
             self._client.create_index(
                 collection_name=self.final_namespace,
                 index_params=vector_index_params,
@@ -522,9 +522,9 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         # Wrap scalar index creation in try-except to allow graceful degradation
         try:
             # Try to get IndexParams in a version-compatible way
-            IndexParamsClass = self._get_index_params()
+            scalar_index_params = self._get_index_params()
 
-            if IndexParamsClass is not None:
+            if scalar_index_params is not None:
                 # Create scalar indexes based on namespace
                 if self.namespace.endswith("entities"):
                     # Create indexes for entity fields
