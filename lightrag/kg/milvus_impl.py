@@ -206,22 +206,25 @@ class MilvusIndexConfig:
             + (f" with sq_type {self.sq_type}" if self.index_type == "HNSW_SQ" else "")
         )
 
-    def build_index_params(self, client, field_name: str = "vector"):
+    def build_index_params(self, index_params, field_name: str = "vector"):
         """
         Build pymilvus index parameters
 
         Args:
-            client: MilvusClient instance (for prepare_index_params)
+            index_params: IndexParams instance (from compatibility helper or client.prepare_index_params())
             field_name: Vector field name
 
         Returns:
-            IndexParams object, or None (for AUTOINDEX)
+            IndexParams object, or None (for AUTOINDEX or when index_params is None)
         """
         if self.index_type == "AUTOINDEX":
             logger.info("Using AUTOINDEX (Milvus default), no custom index params")
             return None
 
-        index_params = client.prepare_index_params()
+        if index_params is None:
+            logger.warning("IndexParams not available, cannot create custom index")
+            return None
+
         params: Dict[str, Any] = {}
 
         # HNSW series indexes
@@ -441,31 +444,6 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         # If all else fails, return None to use fallback method
         return None
 
-    def _create_vector_index_fallback(self):
-        """Fallback method to create vector index using direct API"""
-        try:
-            self._client.create_index(
-                collection_name=self.final_namespace,
-                field_name="vector",
-                index_params={
-                    "index_type": self.index_config.index_type
-                    if self.index_config.index_type != "AUTOINDEX"
-                    else "HNSW",
-                    "metric_type": self.index_config.metric_type,
-                    "params": {
-                        "M": self.index_config.hnsw_m,
-                        "efConstruction": self.index_config.hnsw_ef_construction,
-                    },
-                },
-            )
-            logger.debug(
-                f"[{self.workspace}] Created vector index using fallback method"
-            )
-        except Exception as e:
-            logger.warning(
-                f"[{self.workspace}] Failed to create vector index using fallback method: {e}"
-            )
-
     def _create_scalar_index_fallback(self, field_name: str, index_type: str):
         """Fallback method to create scalar index using direct API"""
         # Skip unsupported index types
@@ -491,38 +469,37 @@ class MilvusVectorDBStorage(BaseVectorStorage):
 
     def _create_indexes_after_collection(self):
         """Create indexes after collection is created"""
-        try:
-            # Build vector index using index configuration
-            vector_index_params = self.index_config.build_index_params(
-                self._client, field_name="vector"
+        # Build vector index using index configuration
+        # Use compatibility helper to get IndexParams
+        index_params_for_vector = self._get_index_params()
+
+        vector_index_params = self.index_config.build_index_params(
+            index_params_for_vector, field_name="vector"
+        )
+
+        if vector_index_params is not None:
+            # Custom index configuration provided
+            # Re-raise exceptions to surface vector index creation failures
+            self._client.create_index(
+                collection_name=self.final_namespace,
+                index_params=vector_index_params,
+            )
+            logger.debug(
+                f"[{self.workspace}] Created vector index with config: {self.index_config.to_dict()}"
+            )
+        else:
+            # AUTOINDEX - no index params needed (Milvus default behavior)
+            logger.debug(
+                f"[{self.workspace}] Using AUTOINDEX for vector field (Milvus default)"
             )
 
-            if vector_index_params is not None:
-                # Custom index configuration provided
-                try:
-                    self._client.create_index(
-                        collection_name=self.final_namespace,
-                        index_params=vector_index_params,
-                    )
-                    logger.debug(
-                        f"[{self.workspace}] Created vector index with config: {self.index_config.to_dict()}"
-                    )
-                except Exception as e:
-                    logger.error(
-                        f"[{self.workspace}] Failed to create vector index with custom config: {e}"
-                    )
-                    raise
-            else:
-                # AUTOINDEX - no index params needed (Milvus default behavior)
-                logger.debug(
-                    f"[{self.workspace}] Using AUTOINDEX for vector field (Milvus default)"
-                )
-
-            # Create scalar indexes based on namespace (same as before)
+        # Create scalar indexes based on namespace
+        # Wrap scalar index creation in try-except to allow graceful degradation
+        try:
             # Try to get IndexParams in a version-compatible way
-            IndexParamsClass = self._get_index_params()
+            scalar_index_params = self._get_index_params()
 
-            if IndexParamsClass is not None:
+            if scalar_index_params is not None:
                 # Create scalar indexes based on namespace
                 if self.namespace.endswith("entities"):
                     # Create indexes for entity fields
@@ -610,8 +587,9 @@ class MilvusVectorDBStorage(BaseVectorStorage):
             )
 
         except Exception as e:
+            # Scalar index failures are logged as warnings (not critical)
             logger.warning(
-                f"[{self.workspace}] Failed to create some indexes for {self.namespace}: {e}"
+                f"[{self.workspace}] Failed to create some scalar indexes for {self.namespace}: {e}"
             )
 
     def _get_required_fields_for_namespace(self) -> dict:

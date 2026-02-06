@@ -170,9 +170,9 @@ class TestMilvusIndexConfig:
     def test_build_index_params_autoindex(self):
         """Test AUTOINDEX does not generate parameters"""
         config = MilvusIndexConfig(index_type="AUTOINDEX")
-        mock_client = MagicMock()
+        mock_index_params = MagicMock()
 
-        result = config.build_index_params(mock_client)
+        result = config.build_index_params(mock_index_params)
         assert result is None
 
     def test_build_index_params_hnsw(self):
@@ -184,11 +184,9 @@ class TestMilvusIndexConfig:
             hnsw_ef_construction=256,
         )
 
-        mock_client = MagicMock()
         mock_index_params = MagicMock()
-        mock_client.prepare_index_params.return_value = mock_index_params
 
-        config.build_index_params(mock_client)
+        config.build_index_params(mock_index_params)
 
         mock_index_params.add_index.assert_called_once()
         call_kwargs = mock_index_params.add_index.call_args[1]
@@ -206,11 +204,9 @@ class TestMilvusIndexConfig:
             sq_refine_type="FP32",
         )
 
-        mock_client = MagicMock()
         mock_index_params = MagicMock()
-        mock_client.prepare_index_params.return_value = mock_index_params
 
-        config.build_index_params(mock_client)
+        config.build_index_params(mock_index_params)
 
         call_kwargs = mock_index_params.add_index.call_args[1]
         assert call_kwargs["index_type"] == "HNSW_SQ"
@@ -222,11 +218,9 @@ class TestMilvusIndexConfig:
         """Test HNSW_SQ without refinement"""
         config = MilvusIndexConfig(index_type="HNSW_SQ", sq_type="SQ8", sq_refine=False)
 
-        mock_client = MagicMock()
         mock_index_params = MagicMock()
-        mock_client.prepare_index_params.return_value = mock_index_params
 
-        config.build_index_params(mock_client)
+        config.build_index_params(mock_index_params)
 
         call_kwargs = mock_index_params.add_index.call_args[1]
         assert call_kwargs["index_type"] == "HNSW_SQ"
@@ -238,15 +232,23 @@ class TestMilvusIndexConfig:
         """Test IVF_FLAT index parameters construction"""
         config = MilvusIndexConfig(index_type="IVF_FLAT", ivf_nlist=2048)
 
-        mock_client = MagicMock()
         mock_index_params = MagicMock()
-        mock_client.prepare_index_params.return_value = mock_index_params
 
-        config.build_index_params(mock_client)
+        config.build_index_params(mock_index_params)
 
         call_kwargs = mock_index_params.add_index.call_args[1]
         assert call_kwargs["index_type"] == "IVF_FLAT"
         assert call_kwargs["params"]["nlist"] == 2048
+
+    def test_build_index_params_with_none(self):
+        """Test that None is returned when index_params is None (compatibility fallback)"""
+        config = MilvusIndexConfig(index_type="HNSW")
+
+        # Pass None to simulate when compatibility helper returns None
+        result = config.build_index_params(None)
+
+        # Should return None and log a warning
+        assert result is None
 
     def test_build_search_params_hnsw(self):
         """Test HNSW search parameters construction"""
