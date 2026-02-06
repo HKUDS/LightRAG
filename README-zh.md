@@ -135,12 +135,12 @@ bun run build
 cd ..
 
 # 配置 env 文件
+# 从 GitHub 仓库的根目录上下载 env.example 文件
+# 或从本地检出的源代码中获取 env.example 文件
 cp env.example .env  # 使用你的LLM和Embedding模型访问参数更新.env文件
 # 启动API-WebUI服务
 lightrag-server
 ```
-
-注意：运行 `lightrag-server` 时会从当前工作目录读取 `.env`。如果你是通过全局工具安装（例如 `uv tool install "lightrag-hku[api]"`），本地目录不会包含 `env.example`。此时请手动创建 `.env`，或从源码仓库中复制 `env.example`。
 
 * 从源代码安装
 

@@ -134,13 +134,13 @@ bun install --frozen-lockfile
 bun run build
 cd ..
 
-# setup env file
+# Setup env file
+# Obtain the env.example file by downloading it from the GitHub repository root
+# or by copying it from a local source checkout.
 cp env.example .env  # Update the .env with your LLM and embedding configurations
 # Launch the server
 lightrag-server
 ```
-
-Note: `.env` is read from the current working directory when you run `lightrag-server`. If you installed the CLI as a global tool (for example, `uv tool install "lightrag-hku[api]"`), `env.example` is not present locally. In that case, create `.env` manually or copy `env.example` from a source checkout.
 
 * Installation from Source
 
