@@ -116,7 +116,9 @@ async def test_failed_doc_preserves_chunks_list_on_extraction_error(
 async def test_failed_doc_preserves_chunks_list_on_merge_error(tmp_path, monkeypatch):
     rag = await _make_rag(str(tmp_path), workspace="ws_merge_fail")
     try:
-        monkeypatch.setattr(rag, "_process_extract_entities", AsyncMock(return_value=[]))
+        monkeypatch.setattr(
+            rag, "_process_extract_entities", AsyncMock(return_value=[])
+        )
         monkeypatch.setattr(
             lightrag_module,
             "merge_nodes_and_edges",
