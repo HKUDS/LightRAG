@@ -140,6 +140,8 @@ cp env.example .env  # 使用你的LLM和Embedding模型访问参数更新.env�
 lightrag-server
 ```
 
+注意：运行 `lightrag-server` 时会从当前工作目录读取 `.env`。如果你是通过全局工具安装（例如 `uv tool install "lightrag-hku[api]"`），本地目录不会包含 `env.example`。此时请手动创建 `.env`，或从源码仓库中复制 `env.example`。
+
 * 从源代码安装
 
 ```bash
@@ -955,7 +957,7 @@ PGDocStatusStorage          Postgres
 MongoDocStatusStorage       MongoDB
 ```
 
-各存储类型的示例连接配置可在 `env.example` 文件中找到。连接字符串中的数据库实例需要您预先在数据库服务器上创建。LightRAG 仅负责在数据库实例中创建表，不负责创建数据库实例本身。如果使用 Redis 作为存储，请记住配置 Redis 的自动数据持久化规则，否则 Redis 服务重启后数据将会丢失。如果使用 PostgreSQL，建议使用 16.6 或更高版本。
+各存储类型的示例连接配置可在仓库中的 `env.example` 文件里找到。连接字符串中的数据库实例需要您预先在数据库服务器上创建。LightRAG 仅负责在数据库实例中创建表，不负责创建数据库实例本身。如果使用 Redis 作为存储，请记住配置 Redis 的自动数据持久化规则，否则 Redis 服务重启后数据将会丢失。如果使用 PostgreSQL，建议使用 16.6 或更高版本。
 
 <details>
 <summary> <b>使用 Neo4J 存储</b> </summary>
@@ -2073,7 +2075,6 @@ def extract_queries(file_path):
 </div>
 
 ---
-
 
 ## 📖 引用
 
