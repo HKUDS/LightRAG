@@ -15,7 +15,7 @@ router = APIRouter(tags=["query"])
 
 class QueryRequest(BaseModel):
     query: str = Field(
-        min_length=3,
+        min_length=1,
         description="The query text",
     )
 
