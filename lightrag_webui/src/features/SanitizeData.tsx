@@ -1562,7 +1562,6 @@ export default function SanitizeData() {
                   className="w-full px-3 py-2 border border-gray-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                   value={editEntityName}
                   onChange={(e) => setEditEntityName(e.target.value)}
-                  placeholder="e.g., Tesla"
                 />
               </div>
               {/* Description */}
@@ -1574,7 +1573,6 @@ export default function SanitizeData() {
                   className="w-full h-32 p-3 border border-gray-300 rounded resize-y focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
                   value={editEntityDescription}
                   onChange={(e) => setEditEntityDescription(e.target.value)}
-                  placeholder="e.g., Electric vehicle manufacturer (use <SEP> for paragraphs)"
                 />
               </div>
               {/* Entity Type */}
@@ -1597,7 +1595,6 @@ export default function SanitizeData() {
                     className="flex-1 px-3 py-2 border border-gray-300 rounded-r-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                     value={editEntityType}
                     onChange={(e) => setEditEntityType(e.target.value)}
-                    placeholder="Type or select (e.g., ORGANIZATION)"
                   />
                 </div>
               </div>
@@ -1911,7 +1908,6 @@ export default function SanitizeData() {
                   className="w-full px-3 py-2 border border-gray-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                   value={createEntityName}
                   onChange={(e) => setCreateEntityName(e.target.value)}
-                  placeholder="e.g., Tesla"
                   ref={createNameRef}
                 />
               </div>
@@ -1925,7 +1921,6 @@ export default function SanitizeData() {
                   className="w-full h-32 p-3 border border-gray-300 rounded resize-y focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
                   value={createEntityDescription}
                   onChange={(e) => setCreateEntityDescription(e.target.value)}
-                  placeholder="e.g., Electric vehicle manufacturer (use <SEP> for paragraphs)"
                 />
               </div>
 
@@ -1949,7 +1944,6 @@ export default function SanitizeData() {
                     className="flex-1 px-3 py-2 border border-gray-300 rounded-r-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                     value={createEntityType}
                     onChange={(e) => setCreateEntityType(e.target.value)}
-                    placeholder="Type or select (e.g., ORGANIZATION)"
                   />
                 </div>
               </div>
@@ -1964,7 +1958,6 @@ export default function SanitizeData() {
                   className="w-full px-3 py-2 border border-gray-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                   value={createEntitySourceId}
                   onChange={(e) => setCreateEntitySourceId(e.target.value)}
-                  placeholder="e.g., chunk-123"
                   ref={createSourceRef}
                 />
               </div>
