@@ -444,31 +444,6 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         # If all else fails, return None to use fallback method
         return None
 
-    def _create_vector_index_fallback(self):
-        """Fallback method to create vector index using direct API"""
-        try:
-            self._client.create_index(
-                collection_name=self.final_namespace,
-                field_name="vector",
-                index_params={
-                    "index_type": self.index_config.index_type
-                    if self.index_config.index_type != "AUTOINDEX"
-                    else "HNSW",
-                    "metric_type": self.index_config.metric_type,
-                    "params": {
-                        "M": self.index_config.hnsw_m,
-                        "efConstruction": self.index_config.hnsw_ef_construction,
-                    },
-                },
-            )
-            logger.debug(
-                f"[{self.workspace}] Created vector index using fallback method"
-            )
-        except Exception as e:
-            logger.warning(
-                f"[{self.workspace}] Failed to create vector index using fallback method: {e}"
-            )
-
     def _create_scalar_index_fallback(self, field_name: str, index_type: str):
         """Fallback method to create scalar index using direct API"""
         # Skip unsupported index types
