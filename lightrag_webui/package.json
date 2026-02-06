@@ -54,7 +54,7 @@
     "i18next": "^25.8.0",
     "katex": "^0.16.28",
     "mermaid": "^11.12.1",
-    "lucide-react": "^0.562.0",
+    "lucide-react": "^0.563.0",
     "minisearch": "^7.2.0",
     "react": "^19.2.3",
     "react-dom": "^19.2.3",
