@@ -111,7 +111,10 @@
         "removeFile": "Supprimer le fichier",
         "uploadDescription": "Vous pouvez télécharger {{isMultiple ? 'plusieurs' : count}} fichiers (jusqu'à {{maxSize}} chacun)",
         "duplicateFile": "Le nom du fichier existe déjà dans le cache du serveur"
-      }
+      },
+      "startUpload": "Démarrer le téléchargement",
+      "uploading": "Téléchargement...",
+      "cancel": "Effacer"
     },
     "documentManager": {
       "title": "Gestion des documents",
@@ -153,7 +156,14 @@
       "showButton": "Afficher",
       "hideButton": "Masquer",
       "showFileNameTooltip": "Afficher le nom du fichier",
-      "hideFileNameTooltip": "Masquer le nom du fichier"
+      "hideFileNameTooltip": "Masquer le nom du fichier",
+      "scanConfig": {
+        "title": "Configurer les types d'entités",
+        "description": "Sélectionner la configuration des types d'entités pour l'analyse des documents",
+        "cancel": "Annuler",
+        "confirm": "Démarrer l'analyse",
+        "scanning": "Analyse..."
+      }
     },
     "pipelineStatus": {
       "title": "État du Pipeline",
@@ -178,6 +188,17 @@
       "errors": {
         "fetchFailed": "Échec de la récupération de l'état du pipeline\n{{error}}"
       }
+    },
+    "entityTypeConfig": {
+      "advancedSettings": "Paramètres avancés",
+      "useDefaultForUpload": "Utiliser les types d'entités par défaut",
+      "useDefaultForScan": "Utiliser les types d'entités d'origine",
+      "customTypes": "Types d'entités personnalisés",
+      "fillDefault": "Remplir les types par défaut",
+      "placeholder": "Entrez un type d'entité par ligne, ex :\nPersonne\nOrganisation\nLieu\nÉvénement",
+      "count": "{{count}} types",
+      "hint": "Un type par ligne",
+      "defaultLabel": "Types d'entités par défaut :"
     }
   },
   "graphPanel": {

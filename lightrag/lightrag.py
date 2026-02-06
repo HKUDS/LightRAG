@@ -1268,6 +1268,7 @@ class LightRAG:
         ids: list[str] | None = None,
         file_paths: str | list[str] | None = None,
         track_id: str | None = None,
+        entity_types: list[str] | None = None,
     ) -> str:
         """
         Pipeline for Processing Documents
@@ -1282,6 +1283,7 @@ class LightRAG:
             ids: list of unique document IDs, if not provided, MD5 hash IDs will be generated
             file_paths: list of file paths corresponding to each document, used for citation
             track_id: tracking ID for monitoring processing status, if not provided, will be generated with "enqueue" prefix
+            entity_types: custom entity types for extraction, if not provided, will use default configuration
 
         Returns:
             str: tracking ID for monitoring processing status
@@ -1359,6 +1361,7 @@ class LightRAG:
                     "file_path"
                 ],  # Store file path in document status
                 "track_id": track_id,  # Store track_id in document status
+                "entity_types": entity_types,  # Store custom entity types if provided
             }
             for id_, content_data in contents.items()
         }
@@ -1394,6 +1397,7 @@ class LightRAG:
                     "content_length": new_docs.get(doc_id, {}).get("content_length", 0),
                     "created_at": datetime.now(timezone.utc).isoformat(),
                     "updated_at": datetime.now(timezone.utc).isoformat(),
+                    "entity_types": entity_types,
                     "file_path": file_path,
                     "track_id": track_id,  # Use current track_id for tracking
                     "error_msg": f"Content already exists. Original doc_id: {doc_id}, Status: {existing_status}",
@@ -1616,6 +1620,7 @@ class LightRAG:
                         "content_length": status_doc.content_length,
                         "created_at": status_doc.created_at,
                         "updated_at": datetime.now(timezone.utc).isoformat(),
+                        "entity_types": getattr(status_doc, "entity_types", None),
                         "file_path": getattr(status_doc, "file_path", "unknown_source"),
                         "track_id": getattr(status_doc, "track_id", ""),
                         # Clear any error messages and processing metadata
@@ -1643,6 +1648,7 @@ class LightRAG:
         self,
         split_by_character: str | None = None,
         split_by_character_only: bool = False,
+        entity_types: list[str] = None
     ) -> None:
         """
         Process pending documents by splitting them into chunks, processing
@@ -1678,7 +1684,10 @@ class LightRAG:
                 to_process_docs.update(processing_docs)
                 to_process_docs.update(failed_docs)
                 to_process_docs.update(pending_docs)
-
+                if entity_types:
+                    for processing_key in to_process_docs.keys():
+                        if getattr(to_process_docs[processing_key], "entity_types", None) != entity_types:
+                            to_process_docs[processing_key].entity_types = entity_types
                 if not to_process_docs:
                     logger.info("No documents to process")
                     return
@@ -1904,6 +1913,7 @@ class LightRAG:
                                             "updated_at": datetime.now(
                                                 timezone.utc
                                             ).isoformat(),
+                                            "entity_types": status_doc.entity_types,
                                             "file_path": file_path,
                                             "track_id": status_doc.track_id,  # Preserve existing track_id
                                             "metadata": {
@@ -1932,9 +1942,11 @@ class LightRAG:
                             await asyncio.gather(*first_stage_tasks)
 
                             # Stage 2: Process entity relation graph (after text_chunks are saved)
+                            # Check if document has custom entity_types
+                            doc_entity_types = getattr(status_doc, 'entity_types', None)
                             entity_relation_task = asyncio.create_task(
                                 self._process_extract_entities(
-                                    chunks, pipeline_status, pipeline_status_lock
+                                    chunks, pipeline_status, pipeline_status_lock, doc_entity_types
                                 )
                             )
                             chunk_results = await entity_relation_task
@@ -1997,6 +2009,7 @@ class LightRAG:
                                         "updated_at": datetime.now(
                                             timezone.utc
                                         ).isoformat(),
+                                        "entity_types": status_doc.entity_types,
                                         "file_path": file_path,
                                         "track_id": status_doc.track_id,  # Preserve existing track_id
                                         "metadata": {
@@ -2054,6 +2067,7 @@ class LightRAG:
                                             "updated_at": datetime.now(
                                                 timezone.utc
                                             ).isoformat(),
+                                            "entity_types": status_doc.entity_types,
                                             "file_path": file_path,
                                             "track_id": status_doc.track_id,  # Preserve existing track_id
                                             "metadata": {
@@ -2122,6 +2136,7 @@ class LightRAG:
                                             "content_length": status_doc.content_length,
                                             "created_at": status_doc.created_at,
                                             "updated_at": datetime.now().isoformat(),
+                                            "entity_types": status_doc.entity_types,
                                             "file_path": file_path,
                                             "track_id": status_doc.track_id,  # Preserve existing track_id
                                             "metadata": {
@@ -2203,12 +2218,24 @@ class LightRAG:
                 pipeline_status["history_messages"].append(log_message)
 
     async def _process_extract_entities(
-        self, chunk: dict[str, Any], pipeline_status=None, pipeline_status_lock=None
+        self, chunk: dict[str, Any], pipeline_status=None, pipeline_status_lock=None, entity_types: list[str] = None
     ) -> list:
         try:
+            # Prepare global config
+            global_config = asdict(self)
+
+            # If custom entity_types are provided, override addon_params
+            if entity_types is not None:
+                if "addon_params" not in global_config:
+                    global_config["addon_params"] = {}
+                global_config["addon_params"]["entity_types"] = entity_types
+                logger.info(f"Using custom entity_types for extraction: {entity_types}")
+            else:
+                logger.debug(f"Using default entity_types from addon_params")
+
             chunk_results = await extract_entities(
                 chunk,
-                global_config=asdict(self),
+                global_config=global_config,
                 pipeline_status=pipeline_status,
                 pipeline_status_lock=pipeline_status_lock,
                 llm_response_cache=self.llm_response_cache,

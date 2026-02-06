@@ -146,8 +146,9 @@ function FileUploader(props: FileUploaderProps) {
     ...dropzoneProps
   } = props
 
-  const [files, setFiles] = useControllableState({
+  const [files, setFiles] = useControllableState<File[]>({
     prop: valueProp,
+    defaultProp: [],
     onChange: onValueChange
   })
 

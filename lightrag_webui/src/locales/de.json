@@ -111,7 +111,10 @@
         "removeFile": "Datei entfernen",
         "uploadDescription": "Sie können {{isMultiple ? 'mehrere' : count}} Dateien hochladen (bis zu {{maxSize}} pro Datei)",
         "duplicateFile": "Dateiname existiert bereits im Server-Cache"
-      }
+      },
+      "startUpload": "Upload starten",
+      "uploading": "Wird hochgeladen...",
+      "cancel": "Löschen"
     },
     "documentManager": {
       "title": "Dokumentenverwaltung",
@@ -153,7 +156,14 @@
       "showButton": "Anzeigen",
       "hideButton": "Ausblenden",
       "showFileNameTooltip": "Dateiname anzeigen",
-      "hideFileNameTooltip": "Dateiname ausblenden"
+      "hideFileNameTooltip": "Dateiname ausblenden",
+      "scanConfig": {
+        "title": "Entitätstypen konfigurieren",
+        "description": "Entitätstyp-Konfiguration für das Scannen von Dokumenten auswählen",
+        "cancel": "Abbrechen",
+        "confirm": "Scannen starten",
+        "scanning": "Wird gescannt..."
+      }
     },
     "pipelineStatus": {
       "title": "Pipeline-Status",
@@ -178,6 +188,17 @@
       "errors": {
         "fetchFailed": "Pipeline-Status konnte nicht abgerufen werden\n{{error}}"
       }
+    },
+    "entityTypeConfig": {
+      "advancedSettings": "Erweiterte Einstellungen",
+      "useDefaultForUpload": "Standard-Entitätstypen verwenden",
+      "useDefaultForScan": "Ursprüngliche Entitätstypen verwenden",
+      "customTypes": "Benutzerdefinierte Entitätstypen",
+      "fillDefault": "Standardtypen ausfüllen",
+      "placeholder": "Geben Sie einen Entitätstyp pro Zeile ein, z. B.:\nPerson\nOrganisation\nOrt\nEreignis",
+      "count": "{{count}} Typen",
+      "hint": "Ein Typ pro Zeile",
+      "defaultLabel": "Standard-Entitätstypen:"
     }
   },
   "graphPanel": {

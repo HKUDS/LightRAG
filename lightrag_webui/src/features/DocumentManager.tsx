@@ -17,6 +17,7 @@ import Checkbox from '@/components/ui/Checkbox'
 import UploadDocumentsDialog from '@/components/documents/UploadDocumentsDialog'
 import ClearDocumentsDialog from '@/components/documents/ClearDocumentsDialog'
 import DeleteDocumentsDialog from '@/components/documents/DeleteDocumentsDialog'
+import ScanConfigDialog from '@/components/documents/ScanConfigDialog'
 import PaginationControls from '@/components/ui/PaginationControls'
 
 import {
@@ -219,9 +220,13 @@ export default function DocumentManager() {
   }, []);
 
   const [showPipelineStatus, setShowPipelineStatus] = useState(false)
+  const [showScanConfig, setShowScanConfig] = useState(false)
   const { t, i18n } = useTranslation()
   const health = useBackendState.use.health()
   const pipelineBusy = useBackendState.use.pipelineBusy()
+
+  // Get default entity types from health configuration
+  const defaultEntityTypes = health.configuration?.entity_types || []
 
   // Legacy state for backward compatibility
   const [docs, setDocs] = useState<DocsStatusesResponse | null>(null)
@@ -832,12 +837,16 @@ export default function DocumentManager() {
     }, intervalMs);
   }, [fetchDocuments, t, clearPollingInterval, isCircuitBreakerOpen, recordSuccess, recordFailure, classifyError, retryState.count]);
 
-  const scanDocuments = useCallback(async () => {
+  const handleScanClick = useCallback(() => {
+    setShowScanConfig(true)
+  }, [])
+
+  const executeScan = useCallback(async (entityTypes?: string[]) => {
     try {
       // Check if component is still mounted before starting the request
       if (!isMountedRef.current) return;
 
-      const { status, message, track_id: _track_id } = await scanNewDocuments(); // eslint-disable-line @typescript-eslint/no-unused-vars
+      const { status, message, track_id: _track_id } = await scanNewDocuments(entityTypes); // eslint-disable-line @typescript-eslint/no-unused-vars
 
       // Check again if component is still mounted after the request completes
       if (!isMountedRef.current) return;
@@ -1126,7 +1135,7 @@ export default function DocumentManager() {
           <div className="flex gap-2">
             <Button
               variant="outline"
-              onClick={scanDocuments}
+              onClick={handleScanClick}
               side="bottom"
               tooltip={t('documentPanel.documentManager.scanTooltip')}
               size="sm"
@@ -1188,10 +1197,19 @@ export default function DocumentManager() {
             ) : !isSelectionMode ? (
               <ClearDocumentsDialog onDocumentsCleared={handleDocumentsCleared} />
             ) : null}
-            <UploadDocumentsDialog onDocumentsUploaded={() => handleIntelligentRefresh(undefined, false, 120000)} />
+            <UploadDocumentsDialog
+              onDocumentsUploaded={() => handleIntelligentRefresh(undefined, false, 120000)}
+              defaultEntityTypes={defaultEntityTypes}
+            />
             <PipelineStatusDialog
               open={showPipelineStatus}
               onOpenChange={setShowPipelineStatus}
+            />
+            <ScanConfigDialog
+              open={showScanConfig}
+              onOpenChange={setShowScanConfig}
+              onConfirm={executeScan}
+              defaultEntityTypes={defaultEntityTypes}
             />
           </div>
         </div>

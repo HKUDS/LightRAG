@@ -111,7 +111,10 @@
         "removeFile": "移除檔案",
         "uploadDescription": "您可以上傳{{isMultiple ? '多個' : count}}個檔案（每個檔案最大{{maxSize}}）",
         "duplicateFile": "檔案名稱與伺服器上的快取重複"
-      }
+      },
+      "startUpload": "開始上傳",
+      "uploading": "上傳中...",
+      "cancel": "清除"
     },
     "documentManager": {
       "title": "文件管理",
@@ -153,7 +156,14 @@
       "showButton": "顯示",
       "hideButton": "隱藏",
       "showFileNameTooltip": "顯示檔案名稱",
-      "hideFileNameTooltip": "隱藏檔案名稱"
+      "hideFileNameTooltip": "隱藏檔案名稱",
+      "scanConfig": {
+        "title": "配置實體類型",
+        "description": "選擇用於掃描文檔的實體類型配置",
+        "cancel": "取消",
+        "confirm": "開始掃描",
+        "scanning": "掃描中..."
+      }
     },
     "pipelineStatus": {
       "title": "流水線狀態",
@@ -178,6 +188,17 @@
       "errors": {
         "fetchFailed": "獲取流水線狀態失敗\n{{error}}"
       }
+    },
+    "entityTypeConfig": {
+      "advancedSettings": "高級設置",
+      "useDefaultForUpload": "使用預設實體類型",
+      "useDefaultForScan": "使用原實體類型",
+      "customTypes": "自訂實體類型",
+      "fillDefault": "填入預設類型",
+      "placeholder": "每行輸入一個實體類型，例如：\\n人物\\n組織\\n地點\\n事件",
+      "count": "{{count}} 個類型",
+      "hint": "每行一個類型",
+      "defaultLabel": "預設實體類型："
     }
   },
   "graphPanel": {

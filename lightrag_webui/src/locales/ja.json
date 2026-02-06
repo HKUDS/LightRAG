@@ -111,7 +111,10 @@
         "removeFile": "ファイルを削除",
         "uploadDescription": "{{isMultiple ? '複数' : count}}個のファイルをアップロードできます（それぞれ最大{{maxSize}}まで）",
         "duplicateFile": "ファイル名がサーバーキャッシュに既に存在します"
-      }
+      },
+      "startUpload": "アップロード開始",
+      "uploading": "アップロード中...",
+      "cancel": "クリア"
     },
     "documentManager": {
       "title": "ドキュメント管理",
@@ -153,7 +156,14 @@
       "showButton": "表示",
       "hideButton": "非表示",
       "showFileNameTooltip": "ファイル名を表示",
-      "hideFileNameTooltip": "ファイル名を非表示"
+      "hideFileNameTooltip": "ファイル名を非表示",
+      "scanConfig": {
+        "title": "エンティティタイプの設定",
+        "description": "ドキュメントスキャン用のエンティティタイプ設定を選択",
+        "cancel": "キャンセル",
+        "confirm": "スキャン開始",
+        "scanning": "スキャン中..."
+      }
     },
     "pipelineStatus": {
       "title": "パイプラインステータス",
@@ -178,6 +188,17 @@
       "errors": {
         "fetchFailed": "パイプラインステータスの取得に失敗しました\n{{error}}"
       }
+    },
+    "entityTypeConfig": {
+      "advancedSettings": "詳細設定",
+      "useDefaultForUpload": "デフォルトのエンティティタイプを使用",
+      "useDefaultForScan": "元のエンティティタイプを使用",
+      "customTypes": "カスタムエンティティタイプ",
+      "fillDefault": "デフォルトタイプを入力",
+      "placeholder": "1行に1つのエンティティタイプを入力してください（例）:\n人物\n組織\n場所\nイベント",
+      "count": "{{count}}タイプ",
+      "hint": "1行に1タイプ",
+      "defaultLabel": "デフォルトのエンティティタイプ："
     }
   },
   "graphPanel": {
