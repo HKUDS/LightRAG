@@ -246,7 +246,7 @@ class TestMilvusIndexConfig:
 
         # Pass None to simulate when compatibility helper returns None
         result = config.build_index_params(None)
-        
+
         # Should return None and log a warning
         assert result is None
 

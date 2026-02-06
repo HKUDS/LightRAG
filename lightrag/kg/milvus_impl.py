@@ -497,7 +497,7 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         # Build vector index using index configuration
         # Use compatibility helper to get IndexParams
         index_params_for_vector = self._get_index_params()
-        
+
         vector_index_params = self.index_config.build_index_params(
             index_params_for_vector, field_name="vector"
         )

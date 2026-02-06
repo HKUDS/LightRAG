@@ -38,17 +38,23 @@ class TestMilvusIndexCreation:
         # Mock the client and _get_index_params
         mock_client = MagicMock()
         mock_index_params = MagicMock()
-        
+
         storage._client = mock_client
         storage.final_namespace = "test_entities"
-        
+
         # Mock _get_index_params to return a valid IndexParams
-        with patch.object(storage, '_get_index_params', return_value=mock_index_params):
+        with patch.object(storage, "_get_index_params", return_value=mock_index_params):
             # Mock build_index_params to return the mock_index_params
-            with patch.object(storage.index_config, 'build_index_params', return_value=mock_index_params):
+            with patch.object(
+                storage.index_config,
+                "build_index_params",
+                return_value=mock_index_params,
+            ):
                 # Mock create_index to raise an exception (simulating index creation failure)
-                mock_client.create_index.side_effect = Exception("Index creation failed")
-                
+                mock_client.create_index.side_effect = Exception(
+                    "Index creation failed"
+                )
+
                 # Verify that the exception is raised (not caught and logged)
                 with pytest.raises(Exception, match="Index creation failed"):
                     storage._create_indexes_after_collection()
@@ -76,19 +82,21 @@ class TestMilvusIndexCreation:
         # Mock the client and _get_index_params
         mock_client = MagicMock()
         mock_index_params = MagicMock()
-        
+
         storage._client = mock_client
         storage.final_namespace = "test_entities"
-        
+
         # Mock _get_index_params to return a valid IndexParams for scalar indexes
-        with patch.object(storage, '_get_index_params', return_value=mock_index_params):
+        with patch.object(storage, "_get_index_params", return_value=mock_index_params):
             # Mock the scalar index creation to fail
-            mock_client.create_index.side_effect = Exception("Scalar index creation failed")
-            
+            mock_client.create_index.side_effect = Exception(
+                "Scalar index creation failed"
+            )
+
             # Verify that the function completes without raising (scalar index failures are logged)
             # This should not raise an exception
             storage._create_indexes_after_collection()
-            
+
             # The function should complete successfully even though scalar index creation failed
 
     def test_build_index_params_uses_passed_index_params(self):
@@ -145,15 +153,17 @@ class TestMilvusIndexCreation:
         # Mock the client
         mock_client = MagicMock()
         mock_index_params = MagicMock()
-        
+
         storage._client = mock_client
         storage.final_namespace = "test_entities"
-        
+
         # Spy on _get_index_params to verify it's called
-        with patch.object(storage, '_get_index_params', return_value=mock_index_params) as mock_get_index_params:
+        with patch.object(
+            storage, "_get_index_params", return_value=mock_index_params
+        ) as mock_get_index_params:
             # Call the method
             storage._create_indexes_after_collection()
-            
+
             # Verify that _get_index_params was called at least once
             assert mock_get_index_params.call_count >= 1
 
