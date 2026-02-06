@@ -1794,6 +1794,7 @@ class LightRAG:
                     processing_start_time = int(time.time())
                     first_stage_tasks = []
                     entity_relation_task = None
+                    chunks: dict[str, Any] = {}
 
                     async with semaphore:
                         nonlocal processed_count
@@ -1991,6 +1992,8 @@ class LightRAG:
                                     doc_id: {
                                         "status": DocStatus.FAILED,
                                         "error_msg": str(e),
+                                        "chunks_count": len(chunks),
+                                        "chunks_list": list(chunks.keys()),
                                         "content_summary": status_doc.content_summary,
                                         "content_length": status_doc.content_length,
                                         "created_at": status_doc.created_at,
@@ -2118,6 +2121,8 @@ class LightRAG:
                                         doc_id: {
                                             "status": DocStatus.FAILED,
                                             "error_msg": str(e),
+                                            "chunks_count": len(chunks),
+                                            "chunks_list": list(chunks.keys()),
                                             "content_summary": status_doc.content_summary,
                                             "content_length": status_doc.content_length,
                                             "created_at": status_doc.created_at,
@@ -3139,7 +3144,23 @@ class LightRAG:
                     pipeline_status["history_messages"].append(warning_msg)
 
             # 2. Get chunk IDs from document status
-            chunk_ids = set(doc_status_data.get("chunks_list", []))
+            chunk_ids = set(doc_status_data.get("chunks_list", []) or [])
+
+            if not chunk_ids:
+                try:
+                    chunk_ids = set(await self.text_chunks.get_ids_by_doc_id(doc_id))
+                except NotImplementedError:
+                    chunk_ids = set()
+                except Exception as e:
+                    logger.error(
+                        f"Failed to query chunks by doc_id from text_chunks for {doc_id}: {e}"
+                    )
+                    chunk_ids = set()
+
+                if chunk_ids:
+                    logger.info(
+                        f"Recovered {len(chunk_ids)} chunks for {doc_id} by querying text_chunks.full_doc_id"
+                    )
 
             if not chunk_ids:
                 logger.warning(f"No chunks found for document {doc_id}")
@@ -3436,8 +3457,9 @@ class LightRAG:
             # 5. Delete chunks from storage
             if chunk_ids:
                 try:
-                    await self.chunks_vdb.delete(chunk_ids)
-                    await self.text_chunks.delete(chunk_ids)
+                    chunk_id_list = list(chunk_ids)
+                    await self.chunks_vdb.delete(chunk_id_list)
+                    await self.text_chunks.delete(chunk_id_list)
 
                     async with pipeline_status_lock:
                         log_message = (

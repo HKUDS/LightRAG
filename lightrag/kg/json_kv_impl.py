@@ -134,6 +134,14 @@ class JsonKVStorage(BaseKVStorage):
                     results.append(None)
             return results
 
+    async def get_ids_by_doc_id(self, doc_id: str) -> list[str]:
+        async with self._storage_lock:
+            return [
+                record_id
+                for record_id, record in self._data.items()
+                if isinstance(record, dict) and record.get("full_doc_id") == doc_id
+            ]
+
     async def filter_keys(self, keys: set[str]) -> set[str]:
         async with self._storage_lock:
             return set(keys) - set(self._data.keys())

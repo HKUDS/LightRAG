@@ -2149,6 +2149,25 @@ class PGKVStorage(BaseKVStorage):
 
         return _order_results(results)
 
+    async def get_ids_by_doc_id(self, doc_id: str) -> list[str]:
+        if not is_namespace(self.namespace, NameSpace.KV_STORE_TEXT_CHUNKS):
+            return []
+
+        table_name = namespace_to_table_name(self.namespace)
+        sql = f"SELECT id FROM {table_name} WHERE workspace=$1 AND full_doc_id=$2"
+        params = {"workspace": self.workspace, "full_doc_id": doc_id}
+        try:
+            rows = await self.db.query(sql, list(params.values()), multirows=True)
+        except Exception as e:
+            logger.error(
+                f"[{self.workspace}] PostgreSQL database,\nsql:{sql},\nparams:{params},\nerror:{e}"
+            )
+            raise
+
+        if not rows:
+            return []
+        return [str(row.get("id")) for row in rows if row and row.get("id") is not None]
+
     async def filter_keys(self, keys: set[str]) -> set[str]:
         """Filter out duplicated content"""
         if not keys:
