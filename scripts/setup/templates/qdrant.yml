@@ -1,0 +1,7 @@
+  qdrant:
+    image: qdrant/qdrant:${QDRANT_IMAGE_TAG:-v1.16-gpu-nvidia}
+    ports:
+      - "6333:6333"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    restart: unless-stopped

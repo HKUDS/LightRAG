@@ -1,0 +1,43 @@
+  milvus:
+    image: milvusdb/milvus:${MILVUS_IMAGE_TAG:-2.6-20251227-44275071}
+    command: ["milvus", "run", "standalone"]
+    environment:
+      ETCD_ENDPOINTS: etcd:2379
+      MINIO_ADDRESS: minio:9000
+      MINIO_ACCESS_KEY_ID: ${MINIO_ACCESS_KEY_ID:-minioadmin}
+      MINIO_SECRET_ACCESS_KEY: ${MINIO_SECRET_ACCESS_KEY:-minioadmin}
+    ports:
+      - "19530:19530"
+      - "9091:9091"
+    volumes:
+      - milvus_data:/var/lib/milvus
+    depends_on:
+      - etcd
+      - minio
+    restart: unless-stopped
+
+  etcd:
+    image: quay.io/coreos/etcd:${ETCD_IMAGE_TAG:-v3.5.16}
+    environment:
+      ETCD_AUTO_COMPACTION_MODE: revision
+      ETCD_AUTO_COMPACTION_RETENTION: "1000"
+      ETCD_QUOTA_BACKEND_BYTES: "4294967296"
+      ETCD_SNAPSHOT_COUNT: "50000"
+    volumes:
+      - etcd_data:/etcd
+    command: >
+      etcd
+      -advertise-client-urls=http://0.0.0.0:2379
+      -listen-client-urls=http://0.0.0.0:2379
+      -data-dir /etcd
+    restart: unless-stopped
+
+  minio:
+    image: minio/minio:${MINIO_IMAGE_TAG:-RELEASE.2024-12-13T22-19-12Z}
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY_ID:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_ACCESS_KEY:-minioadmin}
+    volumes:
+      - minio_data:/minio_data
+    command: minio server /minio_data --console-address ":9001"
+    restart: unless-stopped

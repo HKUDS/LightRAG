@@ -1,0 +1,7 @@
+  mongodb:
+    image: mongo:${MONGODB_IMAGE_TAG:-8.2.3}
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+    restart: unless-stopped

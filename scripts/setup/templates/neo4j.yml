@@ -1,0 +1,11 @@
+  neo4j:
+    image: neo4j:${NEO4J_IMAGE_TAG:-5.26.19-community}
+    environment:
+      NEO4J_AUTH: "${NEO4J_USERNAME}/${NEO4J_PASSWORD}"
+      NEO4J_dbms_default__database: "${NEO4J_DATABASE:-neo4j}"
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    volumes:
+      - neo4j_data:/data
+    restart: unless-stopped
