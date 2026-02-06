@@ -70,7 +70,6 @@
   </table>
 </div>
 
-
 ---
 
 ## 🎉 News
@@ -140,6 +139,8 @@ cp env.example .env  # Update the .env with your LLM and embedding configuration
 # Launch the server
 lightrag-server
 ```
+
+Note: `.env` is read from the current working directory when you run `lightrag-server`. If you installed the CLI as a global tool (for example, `uv tool install "lightrag-hku[api]"`), `env.example` is not present locally. In that case, create `.env` manually or copy `env.example` from a source checkout.
 
 * Installation from Source
 
@@ -956,7 +957,7 @@ PGDocStatusStorage          Postgres
 MongoDocStatusStorage       MongoDB
 ```
 
-Example connection configurations for each storage type can be found in the `env.example` file. The database instance in the connection string needs to be created by you on the database server beforehand. LightRAG is only responsible for creating tables within the database instance, not for creating the database instance itself. If using Redis as storage, remember to configure automatic data persistence rules for Redis, otherwise data will be lost after the Redis service restarts. If using PostgreSQL, it is recommended to use version 16.6 or above.
+Example connection configurations for each storage type can be found in the repository's `env.example` file. The database instance in the connection string needs to be created by you on the database server beforehand. LightRAG is only responsible for creating tables within the database instance, not for creating the database instance itself. If using Redis as storage, remember to configure automatic data persistence rules for Redis, otherwise data will be lost after the Redis service restarts. If using PostgreSQL, it is recommended to use version 16.6 or above.
 
 <details>
 <summary> <b>Using Neo4J Storage</b> </summary>
@@ -2074,7 +2075,6 @@ def extract_queries(file_path):
 </div>
 
 ---
-
 
 ## 📖 Citation
 
