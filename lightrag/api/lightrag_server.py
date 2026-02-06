@@ -814,6 +814,23 @@ def create_app(args):
                     if model:
                         kwargs["model"] = model
                     return await actual_func(**kwargs)
+                elif binding == "sentence_transformers":
+                    from lightrag.llm.sentence_transformers import (
+                        sentence_transformers_embed,
+                    )
+
+                    actual_func = (
+                        sentence_transformers_embed.func
+                        if isinstance(sentence_transformers_embed, EmbeddingFunc)
+                        else sentence_transformers_embed
+                    )
+                    kwargs = {
+                        "texts": texts,
+                        "embedding_dim": embedding_dim,
+                    }
+                    if model:
+                        kwargs["model"] = model
+                    return await actual_func(**kwargs)
                 elif binding == "gemini":
                     from lightrag.llm.gemini import gemini_embed
 
@@ -976,13 +993,19 @@ def create_app(args):
     # Configure rerank function based on args.rerank_bindingparameter
     rerank_model_func = None
     if args.rerank_binding != "null":
-        from lightrag.rerank import cohere_rerank, jina_rerank, ali_rerank
+        from lightrag.rerank import (
+            cohere_rerank,
+            jina_rerank,
+            ali_rerank,
+            sentence_transformers_rerank,
+        )
 
         # Map rerank binding to corresponding function
         rerank_functions = {
             "cohere": cohere_rerank,
             "jina": jina_rerank,
             "aliyun": ali_rerank,
+            "sentence_transformers": sentence_transformers_rerank,
         }
 
         # Select the appropriate rerank function based on binding

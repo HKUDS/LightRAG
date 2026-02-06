@@ -489,17 +489,12 @@ async def initialize_rag():
 
 * 如果您想使用 Hugging Face 模型，只需要按如下方式设置 LightRAG：
 
-参见 `lightrag_hf_demo.py`
+参见`lightrag_hf_demo.py`, `lightrag_sentence_transformers_demo.py`等示例代码。
 
 ```python
-from functools import partial
-from transformers import AutoTokenizer, AutoModel
-
-# Pre-load tokenizer and model
-tokenizer = AutoTokenizer.from_pretrained("sentence-transformers/all-MiniLM-L6-v2")
-embed_model = AutoModel.from_pretrained("sentence-transformers/all-MiniLM-L6-v2")
-
 # 使用 Hugging Face 模型初始化 LightRAG
+from sentence_transformers import SentenceTransformer
+
 rag = LightRAG(
     working_dir=WORKING_DIR,
     llm_model_func=hf_model_complete,  # 使用 Hugging Face 模型进行文本生成
@@ -507,12 +502,9 @@ rag = LightRAG(
     # 使用 Hugging Face 嵌入函数
     embedding_func=EmbeddingFunc(
         embedding_dim=384,
-        max_token_size=2048,
-        model_name="sentence-transformers/all-MiniLM-L6-v2",
-        func=partial(
-            hf_embed.func,  # 使用 .func 访问底层未封装的函数
-            tokenizer=tokenizer,
-            embed_model=embed_model
+        func=lambda texts: sentence_transformers_embed(
+            texts,
+            model=SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
         )
     ),
 )
@@ -790,6 +782,7 @@ rag = LightRAG(
 * **Cohere / vLLM**: `cohere_rerank`
 * **Jina AI**: `jina_rerank`
 * **阿里云**: `ali_rerank`
+* **Sentence Transformers**: `sentence_transformers_rerank`
 
 您可以将其中一个函数注入到 LightRAG 对象的 `rerank_model_func` 属性中。这将使 LightRAG 的查询函数能够使用注入的函数对检索到的文本块进行重新排序。详细用法请参考 `examples/rerank_example.py` 文件。
 
