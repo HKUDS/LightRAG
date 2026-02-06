@@ -400,6 +400,19 @@ class BaseKVStorage(StorageNameSpace, ABC):
             bool: True if storage contains no data, False otherwise
         """
 
+    async def get_ids_by_doc_id(self, doc_id: str) -> list[str]:
+        """Get record IDs associated with a document.
+
+        This is an optional capability used by deletion cleanup to discover chunk
+        IDs when a document status record does not contain `chunks_list`.
+
+        Implementations are expected to return IDs where the stored record has
+        `full_doc_id == doc_id` (commonly for `text_chunks` storage).
+        """
+        raise NotImplementedError(
+            f"{self.__class__.__name__} does not support get_ids_by_doc_id"
+        )
+
 
 @dataclass
 class BaseGraphStorage(StorageNameSpace, ABC):

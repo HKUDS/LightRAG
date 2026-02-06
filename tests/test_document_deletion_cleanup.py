@@ -139,3 +139,53 @@ async def test_failed_doc_preserves_chunks_list_on_merge_error(tmp_path, monkeyp
         assert doc_status.get("chunks_count") == len(chunk_ids)
     finally:
         await rag.finalize_storages()
+
+
+@pytest.mark.offline
+async def test_delete_failed_doc_falls_back_to_text_chunks_lookup(
+    tmp_path, monkeypatch
+):
+    rag = await _make_rag(str(tmp_path), workspace="ws_delete_fallback")
+    try:
+        monkeypatch.setattr(
+            rag,
+            "_process_extract_entities",
+            AsyncMock(side_effect=RuntimeError("extract failed")),
+        )
+
+        content = "doc content that will fail and lose chunks_list in status record"
+        await rag.ainsert(content)
+
+        doc_id = compute_mdhash_id(content, prefix="doc-")
+        doc_status = await rag.doc_status.get_by_id(doc_id)
+        assert doc_status is not None
+        chunk_ids = doc_status.get("chunks_list")
+        assert isinstance(chunk_ids, list)
+        assert chunk_ids
+
+        first_chunk_id = chunk_ids[0]
+        assert await rag.text_chunks.get_by_id(first_chunk_id) is not None
+        assert await rag.chunks_vdb.get_by_id(first_chunk_id) is not None
+
+        # Simulate legacy behavior where FAILED upsert overwrote doc_status and lost chunks_list
+        await rag.doc_status.upsert(
+            {
+                doc_id: {
+                    "status": DocStatus.FAILED,
+                    "error_msg": "legacy failure overwrite",
+                }
+            }
+        )
+        doc_status = await rag.doc_status.get_by_id(doc_id)
+        assert doc_status is not None
+        assert not doc_status.get("chunks_list")
+
+        result = await rag.adelete_by_doc_id(doc_id)
+        assert result.status == "success"
+
+        assert await rag.text_chunks.get_by_id(first_chunk_id) is None
+        assert await rag.chunks_vdb.get_by_id(first_chunk_id) is None
+        assert await rag.doc_status.get_by_id(doc_id) is None
+        assert await rag.full_docs.get_by_id(doc_id) is None
+    finally:
+        await rag.finalize_storages()
