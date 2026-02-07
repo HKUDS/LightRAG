@@ -838,13 +838,19 @@ export default function SanitizeData() {
       // Process edges/relationships
       (data.edges || []).forEach((edge: any) => {
         const props = edge.properties || {};
-        edges.push({
-          from: edge.source,
-          to: edge.target,
-          relation: props.description || "",
-          weight: props.weight || 1.0,
-          keywords: props.keywords || "",
-        });
+        const from = edge.source;
+        const to = edge.target;
+
+        // Keep the relationship only if Bypass Switch (or whichever entity we queried) is one of the endpoints
+        if (from === entityName || to === entityName) {
+          edges.push({
+            from,
+            to,
+            relation: props.description || "",
+            weight: props.weight || 1.0,
+            keywords: props.keywords || "",
+          });
+        }
       });
 
       // Store the parsed data
@@ -1699,6 +1705,7 @@ export default function SanitizeData() {
                             },
                           }));
                         }}
+                        onFocus={(e) => e.target.select()}
                       />
                     </div>
 
