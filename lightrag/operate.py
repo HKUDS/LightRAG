@@ -2991,9 +2991,6 @@ async def extract_entities(
     # Check if JSON structured output mode is enabled
     use_json_extraction = global_config.get("entity_extraction_use_json", False)
 
-    # Get max output tokens for extraction LLM calls
-    extraction_max_tokens = global_config.get("extraction_max_tokens", 4096)
-
     ordered_chunks = list(chunks.items())
     # add language and example number params to prompt
     language = global_config["addon_params"].get("language", DEFAULT_SUMMARY_LANGUAGE)
@@ -3079,7 +3076,6 @@ async def extract_entities(
             use_llm_func,
             system_prompt=entity_extraction_system_prompt,
             llm_response_cache=llm_response_cache,
-            max_tokens=extraction_max_tokens,
             cache_type="extract",
             chunk_id=chunk_key,
             cache_keys_collector=cache_keys_collector,
@@ -3133,7 +3129,6 @@ async def extract_entities(
                     use_llm_func,
                     system_prompt=entity_extraction_system_prompt,
                     llm_response_cache=llm_response_cache,
-                    max_tokens=extraction_max_tokens,
                     history_messages=history,
                     cache_type="extract",
                     chunk_id=chunk_key,
