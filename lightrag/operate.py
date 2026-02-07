@@ -166,7 +166,7 @@ async def _handle_entity_relation_summary(
     description_type: str,
     entity_or_relation_name: str,
     description_list: list[str],
-    seperator: str,
+    separator: str,
     global_config: dict,
     llm_response_cache: BaseKVStorage | None = None,
 ) -> tuple[str, bool]:
@@ -217,12 +217,12 @@ async def _handle_entity_relation_summary(
                 and total_tokens < summary_max_tokens
             ):
                 # no LLM needed, just join the descriptions
-                final_description = seperator.join(current_list)
+                final_description = separator.join(current_list)
                 return final_description if final_description else "", llm_was_used
             else:
                 if total_tokens > summary_context_size and len(current_list) <= 2:
                     logger.warning(
-                        f"Summarizing {entity_or_relation_name}: Oversize descpriton found"
+                        f"Summarizing {entity_or_relation_name}: Oversize description found"
                     )
                 # Final summarization of remaining descriptions - LLM will be used
                 final_summary = await _summarize_descriptions(
@@ -252,7 +252,7 @@ async def _handle_entity_relation_summary(
                     current_chunk.append(desc)
                     chunks.append(current_chunk)
                     logger.warning(
-                        f"Summarizing {entity_or_relation_name}: Oversize descpriton found"
+                        f"Summarizing {entity_or_relation_name}: Oversize description found"
                     )
                     current_chunk = []  # next group is empty
                     current_tokens = 0
@@ -940,7 +940,7 @@ async def _process_extraction_result(
         ["\n", completion_delimiter, completion_delimiter.lower()],
     )
 
-    # Fix LLM output format error which use tuple_delimiter to seperate record instead of "\n"
+    # Fix LLM output format error which use tuple_delimiter to separate record instead of "\n"
     fixed_records = []
     for record in records:
         record = record.strip()
@@ -973,7 +973,7 @@ async def _process_extraction_result(
 
     if len(fixed_records) != len(records):
         logger.warning(
-            f"{chunk_key}: LLM output format error; find LLM use {tuple_delimiter} as record seperators instead new-line"
+            f"{chunk_key}: LLM output format error; find LLM use {tuple_delimiter} as record separators instead new-line"
         )
 
     for record in fixed_records:
