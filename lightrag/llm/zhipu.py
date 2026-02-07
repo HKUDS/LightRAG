@@ -87,7 +87,9 @@ async def zhipu_complete_if_cache(
 
     # Remove unsupported kwargs
     kwargs = {
-        k: v for k, v in kwargs.items() if k not in ["hashing_kv", "keyword_extraction", "entity_extraction"]
+        k: v
+        for k, v in kwargs.items()
+        if k not in ["hashing_kv", "keyword_extraction", "entity_extraction"]
     }
 
     response = client.chat.completions.create(model=model, messages=messages, **kwargs)

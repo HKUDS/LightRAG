@@ -337,7 +337,12 @@ async def bedrock_complete_if_cache(
 
 # Generic Bedrock completion function
 async def bedrock_complete(
-    prompt, system_prompt=None, history_messages=[], keyword_extraction=False, entity_extraction=False, **kwargs
+    prompt,
+    system_prompt=None,
+    history_messages=[],
+    keyword_extraction=False,
+    entity_extraction=False,
+    **kwargs,
 ) -> Union[str, AsyncIterator[str]]:
     kwargs.pop("keyword_extraction", None)
     kwargs.pop("entity_extraction", None)

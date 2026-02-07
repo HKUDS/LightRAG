@@ -15,9 +15,7 @@ class ExtractedEntity(BaseModel):
     entity_name: str = Field(
         description="Name of the entity. Use title case for case-insensitive names."
     )
-    entity_type: str = Field(
-        description="Type/category of the entity."
-    )
+    entity_type: str = Field(description="Type/category of the entity.")
     entity_description: str = Field(
         description="Concise yet comprehensive description of the entity based on the input text."
     )

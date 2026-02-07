@@ -132,7 +132,9 @@ def _build_generation_config(
         else:
             config_data["system_instruction"] = system_prompt
 
-    if (keyword_extraction or entity_extraction) and not config_data.get("response_mime_type"):
+    if (keyword_extraction or entity_extraction) and not config_data.get(
+        "response_mime_type"
+    ):
         config_data["response_mime_type"] = "application/json"
 
     # Remove entries that are explicitly set to None to avoid type errors
