@@ -5,8 +5,12 @@ from pathlib import Path
 import asyncio
 import json
 import json_repair
+import re
 from typing import Any, AsyncIterator, overload, Literal
 from collections import Counter, defaultdict
+
+from jinja2 import StrictUndefined
+from jinja2.sandbox import SandboxedEnvironment
 
 from lightrag.exceptions import (
     PipelineCancelledException,
@@ -48,8 +52,8 @@ from lightrag.base import (
     QueryParam,
     QueryResult,
     QueryContextResult,
+    PromptType,
 )
-from lightrag.prompt import PROMPTS
 from lightrag.constants import (
     GRAPH_FIELD_SEP,
     DEFAULT_MAX_ENTITY_TOKENS,
@@ -73,6 +77,58 @@ from dotenv import load_dotenv
 # allows to use different .env file for each lightrag instance
 # the OS environment variables take precedence over the .env file
 load_dotenv(dotenv_path=Path(__file__).resolve().parent / ".env", override=False)
+
+
+_PY_FORMAT_VAR_RE = re.compile(r"\{([a-zA-Z_][a-zA-Z0-9_]*)\}")
+_RAW_TEMPLATE_ENV = SandboxedEnvironment(
+    undefined=StrictUndefined,
+    autoescape=False,
+    keep_trailing_newline=True,
+)
+
+
+def _get_prompt_manager(global_config: dict[str, Any]):
+    pm = global_config.get("prompt_manager")
+    if pm is None:
+        raise ValueError(
+            "Missing prompt_manager in global_config. "
+            "Make sure LightRAG.initialize_storages() has been called."
+        )
+    return pm
+
+
+async def _render_prompt(
+    global_config: dict[str, Any],
+    prompt_type: PromptType,
+    template_name: str,
+    **variables: Any,
+) -> str:
+    pm = _get_prompt_manager(global_config)
+    return await pm.render(prompt_type, template_name, **variables)
+
+
+def _render_template_string_compat(template_str: str, **variables: Any) -> str:
+    """Render a caller-provided template string.
+
+    Backward-compatible behavior:
+    - If the string already looks like Jinja2 (contains '{{' or '{%'), render as-is.
+    - Otherwise, treat it as legacy python-format style and convert `{var}` -> `{{ var }}`.
+    """
+
+    content = template_str
+    if "{{" not in content and "{%" not in content:
+        content = _PY_FORMAT_VAR_RE.sub(r"{{ \1 }}", content)
+    compiled = _RAW_TEMPLATE_ENV.from_string(content)
+    return compiled.render(**variables)
+
+
+async def _render_fail_response(global_config: dict[str, Any]) -> str:
+    """Best-effort fail response prompt."""
+    try:
+        return await _render_prompt(global_config, PromptType.QUERY, "fail_response")
+    except Exception:
+        # Hard fallback to avoid cascading failures.
+        return "Sorry, I'm not able to provide an answer to that question.[no-context]"
 
 
 def _truncate_entity_identifier(
@@ -320,8 +376,6 @@ async def _summarize_descriptions(
 
     summary_length_recommended = global_config["summary_length_recommended"]
 
-    prompt_template = PROMPTS["summarize_entity_descriptions"]
-
     # Convert descriptions to JSONL format and apply token-based truncation
     tokenizer = global_config["tokenizer"]
     summary_context_size = global_config["summary_context_size"]
@@ -350,7 +404,12 @@ async def _summarize_descriptions(
         summary_length=summary_length_recommended,
         language=language,
     )
-    use_prompt = prompt_template.format(**context_base)
+    use_prompt = await _render_prompt(
+        global_config,
+        PromptType.KG,
+        "summarize_entity_descriptions",
+        **context_base,
+    )
 
     # Use LLM function with cache (higher priority for summary generation)
     summary, _ = await use_llm_func_with_cache(
@@ -615,6 +674,7 @@ async def rebuild_knowledge_from_chunks(
                     chunk_id=chunk_id,
                     extraction_result=result[0],
                     timestamp=result[1],
+                    global_config=global_config,
                 )
 
                 # Merge entities and relationships from this extraction result
@@ -1037,6 +1097,7 @@ async def _rebuild_from_extraction_result(
     extraction_result: str,
     chunk_id: str,
     timestamp: int,
+    global_config: dict[str, Any],
 ) -> tuple[dict, dict]:
     """Parse cached extraction result using the same logic as extract_entities
 
@@ -1057,14 +1118,21 @@ async def _rebuild_from_extraction_result(
         else "unknown_source"
     )
 
+    tuple_delimiter = await _render_prompt(
+        global_config, PromptType.KG, "default_tuple_delimiter"
+    )
+    completion_delimiter = await _render_prompt(
+        global_config, PromptType.KG, "default_completion_delimiter"
+    )
+
     # Call the shared processing function
     return await _process_extraction_result(
         extraction_result,
         chunk_id,
         timestamp,
         file_path,
-        tuple_delimiter=PROMPTS["DEFAULT_TUPLE_DELIMITER"],
-        completion_delimiter=PROMPTS["DEFAULT_COMPLETION_DELIMITER"],
+        tuple_delimiter=tuple_delimiter,
+        completion_delimiter=completion_delimiter,
     )
 
 
@@ -2789,20 +2857,27 @@ async def extract_entities(
         "entity_types", DEFAULT_ENTITY_TYPES
     )
 
-    examples = "\n".join(PROMPTS["entity_extraction_examples"])
+    tuple_delimiter = await _render_prompt(
+        global_config, PromptType.KG, "default_tuple_delimiter"
+    )
+    completion_delimiter = await _render_prompt(
+        global_config, PromptType.KG, "default_completion_delimiter"
+    )
 
-    example_context_base = dict(
-        tuple_delimiter=PROMPTS["DEFAULT_TUPLE_DELIMITER"],
-        completion_delimiter=PROMPTS["DEFAULT_COMPLETION_DELIMITER"],
+    # Examples are rendered once per extraction run to keep per-chunk prompts stable.
+    examples = await _render_prompt(
+        global_config,
+        PromptType.KG,
+        "entity_extraction_examples",
+        tuple_delimiter=tuple_delimiter,
+        completion_delimiter=completion_delimiter,
         entity_types=", ".join(entity_types),
         language=language,
     )
-    # add example's format
-    examples = examples.format(**example_context_base)
 
     context_base = dict(
-        tuple_delimiter=PROMPTS["DEFAULT_TUPLE_DELIMITER"],
-        completion_delimiter=PROMPTS["DEFAULT_COMPLETION_DELIMITER"],
+        tuple_delimiter=tuple_delimiter,
+        completion_delimiter=completion_delimiter,
         entity_types=",".join(entity_types),
         examples=examples,
         language=language,
@@ -2831,16 +2906,25 @@ async def extract_entities(
 
         # Get initial extraction
         # Format system prompt without input_text for each chunk (enables OpenAI prompt caching across chunks)
-        entity_extraction_system_prompt = PROMPTS[
-            "entity_extraction_system_prompt"
-        ].format(**context_base)
-        # Format user prompts with input_text for each chunk
-        entity_extraction_user_prompt = PROMPTS["entity_extraction_user_prompt"].format(
-            **{**context_base, "input_text": content}
+        entity_extraction_system_prompt = await _render_prompt(
+            global_config,
+            PromptType.KG,
+            "entity_extraction_system_prompt",
+            **context_base,
         )
-        entity_continue_extraction_user_prompt = PROMPTS[
-            "entity_continue_extraction_user_prompt"
-        ].format(**{**context_base, "input_text": content})
+        # Format user prompts with input_text for each chunk
+        entity_extraction_user_prompt = await _render_prompt(
+            global_config,
+            PromptType.KG,
+            "entity_extraction_user_prompt",
+            **{**context_base, "input_text": content},
+        )
+        entity_continue_extraction_user_prompt = await _render_prompt(
+            global_config,
+            PromptType.KG,
+            "entity_continue_extraction_user_prompt",
+            **{**context_base, "input_text": content},
+        )
 
         final_result, timestamp = await use_llm_func_with_cache(
             entity_extraction_user_prompt,
@@ -3074,10 +3158,10 @@ async def kg_query(
         - stream=True: response_iterator contains streaming response, raw_data contains complete data
         - default: content contains LLM response text, raw_data contains complete data
 
-        Returns None when no relevant context could be constructed for the query.
+    Returns None when no relevant context could be constructed for the query.
     """
     if not query:
-        return QueryResult(content=PROMPTS["fail_response"])
+        return QueryResult(content=await _render_fail_response(global_config))
 
     if query_param.model_func:
         use_model_func = query_param.model_func
@@ -3103,7 +3187,7 @@ async def kg_query(
             logger.warning(f"Forced low_level_keywords to origin query: {query}")
             ll_keywords = [query]
         else:
-            return QueryResult(content=PROMPTS["fail_response"])
+            return QueryResult(content=await _render_fail_response(global_config))
 
     ll_keywords_str = ", ".join(ll_keywords) if ll_keywords else ""
     hl_keywords_str = ", ".join(hl_keywords) if hl_keywords else ""
@@ -3139,12 +3223,22 @@ async def kg_query(
     )
 
     # Build system prompt
-    sys_prompt_temp = system_prompt if system_prompt else PROMPTS["rag_response"]
-    sys_prompt = sys_prompt_temp.format(
-        response_type=response_type,
-        user_prompt=user_prompt,
-        context_data=context_result.context,
-    )
+    if system_prompt:
+        sys_prompt = _render_template_string_compat(
+            system_prompt,
+            response_type=response_type,
+            user_prompt=user_prompt,
+            context_data=context_result.context,
+        )
+    else:
+        sys_prompt = await _render_prompt(
+            global_config,
+            PromptType.QUERY,
+            "rag_response",
+            response_type=response_type,
+            user_prompt=user_prompt,
+            context_data=context_result.context,
+        )
 
     user_query = query
 
@@ -3160,7 +3254,10 @@ async def kg_query(
     )
 
     # Handle cache
+    # Include prompt repo head to prevent stale cache hits after template updates.
+    prompt_repo_head = global_config.get("prompt_repo_head") or ""
     args_hash = compute_args_hash(
+        prompt_repo_head,
         query_param.mode,
         query,
         query_param.response_type,
@@ -3289,12 +3386,17 @@ async def extract_keywords_only(
     """
 
     # 1. Build the examples
-    examples = "\n".join(PROMPTS["keywords_extraction_examples"])
+    examples = await _render_prompt(
+        global_config, PromptType.KEYWORD, "keywords_extraction_examples"
+    )
 
     language = global_config["addon_params"].get("language", DEFAULT_SUMMARY_LANGUAGE)
 
     # 2. Handle cache if needed - add cache type for keywords
+    # Include prompt repo head to prevent stale cache hits after template updates.
+    prompt_repo_head = global_config.get("prompt_repo_head") or ""
     args_hash = compute_args_hash(
+        prompt_repo_head,
         param.mode,
         text,
         language,
@@ -3315,7 +3417,10 @@ async def extract_keywords_only(
             )
 
     # 3. Build the keyword-extraction prompt
-    kw_prompt = PROMPTS["keywords_extraction"].format(
+    kw_prompt = await _render_prompt(
+        global_config,
+        PromptType.KEYWORD,
+        "keywords_extraction",
         query=text,
         examples=examples,
         language=language,
@@ -3922,12 +4027,8 @@ async def _build_context_str(
         global_config.get("max_total_tokens", DEFAULT_MAX_TOTAL_TOKENS),
     )
 
-    # Get the system prompt template from PROMPTS or global_config
-    sys_prompt_template = global_config.get(
-        "system_prompt_template", PROMPTS["rag_response"]
-    )
-
-    kg_context_template = PROMPTS["kg_query_context"]
+    # Optional override: raw template string (legacy python-format or Jinja2).
+    system_prompt_template_override = global_config.get("system_prompt_template")
     user_prompt = query_param.user_prompt if query_param.user_prompt else ""
     response_type = (
         query_param.response_type
@@ -3943,7 +4044,10 @@ async def _build_context_str(
     )
 
     # Calculate preliminary kg context tokens
-    pre_kg_context = kg_context_template.format(
+    pre_kg_context = await _render_prompt(
+        global_config,
+        PromptType.QUERY,
+        "kg_query_context",
         entities_str=entities_str,
         relations_str=relations_str,
         text_chunks_str="",
@@ -3952,11 +4056,22 @@ async def _build_context_str(
     kg_context_tokens = len(tokenizer.encode(pre_kg_context))
 
     # Calculate preliminary system prompt tokens
-    pre_sys_prompt = sys_prompt_template.format(
-        context_data="",  # Empty for overhead calculation
-        response_type=response_type,
-        user_prompt=user_prompt,
-    )
+    if system_prompt_template_override:
+        pre_sys_prompt = _render_template_string_compat(
+            system_prompt_template_override,
+            context_data="",  # Empty for overhead calculation
+            response_type=response_type,
+            user_prompt=user_prompt,
+        )
+    else:
+        pre_sys_prompt = await _render_prompt(
+            global_config,
+            PromptType.QUERY,
+            "rag_response",
+            context_data="",  # Empty for overhead calculation
+            response_type=response_type,
+            user_prompt=user_prompt,
+        )
     sys_prompt_tokens = len(tokenizer.encode(pre_sys_prompt))
 
     # Calculate available tokens for text chunks
@@ -4041,7 +4156,10 @@ async def _build_context_str(
         if chunk_tracking_log:
             logger.info(f"Final chunks S+F/O: {' '.join(chunk_tracking_log)}")
 
-    result = kg_context_template.format(
+    result = await _render_prompt(
+        global_config,
+        PromptType.QUERY,
+        "kg_query_context",
         entities_str=entities_str,
         relations_str=relations_str,
         text_chunks_str=text_units_str,
@@ -4807,7 +4925,7 @@ async def naive_query(
     """
 
     if not query:
-        return QueryResult(content=PROMPTS["fail_response"])
+        return QueryResult(content=await _render_fail_response(global_config))
 
     if query_param.model_func:
         use_model_func = query_param.model_func
@@ -4819,7 +4937,7 @@ async def naive_query(
     tokenizer: Tokenizer = global_config["tokenizer"]
     if not tokenizer:
         logger.error("Tokenizer not found in global configuration.")
-        return QueryResult(content=PROMPTS["fail_response"])
+        return QueryResult(content=await _render_fail_response(global_config))
 
     chunks = await _get_vector_context(query, chunks_vdb, query_param, None)
 
@@ -4844,17 +4962,23 @@ async def naive_query(
         else "Multiple Paragraphs"
     )
 
-    # Use the provided system prompt or default
-    sys_prompt_template = (
-        system_prompt if system_prompt else PROMPTS["naive_rag_response"]
-    )
-
     # Create a preliminary system prompt with empty content_data to calculate overhead
-    pre_sys_prompt = sys_prompt_template.format(
-        response_type=response_type,
-        user_prompt=user_prompt,
-        content_data="",  # Empty for overhead calculation
-    )
+    if system_prompt:
+        pre_sys_prompt = _render_template_string_compat(
+            system_prompt,
+            response_type=response_type,
+            user_prompt=user_prompt,
+            content_data="",  # Empty for overhead calculation
+        )
+    else:
+        pre_sys_prompt = await _render_prompt(
+            global_config,
+            PromptType.QUERY,
+            "naive_rag_response",
+            response_type=response_type,
+            user_prompt=user_prompt,
+            content_data="",  # Empty for overhead calculation
+        )
 
     # Calculate available tokens for chunks
     sys_prompt_tokens = len(tokenizer.encode(pre_sys_prompt))
@@ -4925,8 +5049,10 @@ async def naive_query(
         if ref["reference_id"]
     )
 
-    naive_context_template = PROMPTS["naive_query_context"]
-    context_content = naive_context_template.format(
+    context_content = await _render_prompt(
+        global_config,
+        PromptType.QUERY,
+        "naive_query_context",
         text_chunks_str=text_units_str,
         reference_list_str=reference_list_str,
     )
@@ -4934,11 +5060,22 @@ async def naive_query(
     if query_param.only_need_context and not query_param.only_need_prompt:
         return QueryResult(content=context_content, raw_data=raw_data)
 
-    sys_prompt = sys_prompt_template.format(
-        response_type=query_param.response_type,
-        user_prompt=user_prompt,
-        content_data=context_content,
-    )
+    if system_prompt:
+        sys_prompt = _render_template_string_compat(
+            system_prompt,
+            response_type=response_type,
+            user_prompt=user_prompt,
+            content_data=context_content,
+        )
+    else:
+        sys_prompt = await _render_prompt(
+            global_config,
+            PromptType.QUERY,
+            "naive_rag_response",
+            response_type=response_type,
+            user_prompt=user_prompt,
+            content_data=context_content,
+        )
 
     user_query = query
 
@@ -4947,7 +5084,10 @@ async def naive_query(
         return QueryResult(content=prompt_content, raw_data=raw_data)
 
     # Handle cache
+    # Include prompt repo head to prevent stale cache hits after template updates.
+    prompt_repo_head = global_config.get("prompt_repo_head") or ""
     args_hash = compute_args_hash(
+        prompt_repo_head,
         query_param.mode,
         query,
         query_param.response_type,

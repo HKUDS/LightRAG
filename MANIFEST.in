@@ -2,3 +2,4 @@ include requirements.txt
 include lightrag/api/requirements.txt
 recursive-include lightrag/api/webui *
 recursive-include lightrag/api/static *
+recursive-include lightrag/prompts/system *.md.j2

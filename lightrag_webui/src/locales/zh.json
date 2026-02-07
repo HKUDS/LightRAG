@@ -10,6 +10,7 @@
     "documents": "文档",
     "knowledgeGraph": "知识图谱",
     "retrieval": "检索",
+    "prompts": "提示词",
     "api": "API",
     "projectRepository": "项目仓库",
     "logout": "退出登录",

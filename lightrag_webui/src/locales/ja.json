@@ -10,6 +10,7 @@
     "documents": "ドキュメント",
     "knowledgeGraph": "ナレッジグラフ",
     "retrieval": "検索",
+    "prompts": "プロンプト",
     "api": "API",
     "projectRepository": "プロジェクトリポジトリ",
     "logout": "ログアウト",

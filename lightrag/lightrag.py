@@ -24,7 +24,7 @@ from typing import (
     Dict,
     Union,
 )
-from lightrag.prompt import PROMPTS
+from lightrag.prompt_template import GitPromptManager
 from lightrag.exceptions import PipelineCancelledException
 from lightrag.constants import (
     DEFAULT_MAX_GLEANING,
@@ -78,6 +78,7 @@ from lightrag.base import (
     DocProcessingStatus,
     DocStatus,
     DocStatusStorage,
+    PromptType,
     QueryParam,
     StorageNameSpace,
     StoragesStatus,
@@ -449,6 +450,25 @@ class LightRAG:
 
     _storages_status: StoragesStatus = field(default=StoragesStatus.NOT_CREATED)
 
+    def _runtime_global_config(self) -> dict[str, Any]:
+        """Build a global_config dict with runtime-only objects injected.
+
+        Many pipeline functions receive `global_config` (either directly from LightRAG or
+        indirectly via storages). We keep prompt manager out of dataclass fields to avoid
+        dataclasses.asdict() serialization issues, and inject it explicitly here.
+        """
+        # Keep this consistent with the existing LightRAG config style: a dataclass snapshot.
+        # NOTE: `asdict()` deep-copies and will turn nested dataclasses into dicts (e.g. EmbeddingFunc),
+        # so callers may need to restore runtime objects after calling this helper.
+        global_config: dict[str, Any] = asdict(self)
+
+        if getattr(self, "prompt_manager", None) is not None:
+            global_config["prompt_manager"] = self.prompt_manager
+            # Used to invalidate LLM cache on prompt updates (if caller includes it in cache key).
+            global_config["prompt_repo_head"] = self.prompt_manager.get_user_repo_head()
+
+        return global_config
+
     def __post_init__(self):
         from lightrag.kg.shared_storage import (
             initialize_share_data,
@@ -479,6 +499,10 @@ class LightRAG:
         if not os.path.exists(self.working_dir):
             logger.info(f"Creating working directory {self.working_dir}")
             os.makedirs(self.working_dir)
+
+        # Prompt templates (git-backed user repo + packaged system templates).
+        # The repo is initialized later in initialize_storages() to avoid heavy side-effects on construction.
+        self.prompt_manager = GitPromptManager(working_dir=self.working_dir)
 
         # Verify storage implementation compatibility and environment variables
         storage_configs = [
@@ -538,9 +562,11 @@ class LightRAG:
         self.embedding_token_limit = embedding_max_token_size
 
         # Fix global_config now
-        global_config = asdict(self)
+        global_config = self._runtime_global_config()
         # Restore original EmbeddingFunc object (asdict converts it to dict)
         global_config["embedding_func"] = original_embedding_func
+        # Make prompt manager available to storages/operate via global_config.
+        global_config["prompt_manager"] = self.prompt_manager
 
         _print_config = ",\n  ".join([f"{k} = {v}" for k, v in global_config.items()])
         logger.debug(f"LightRAG init with param:\n  {_print_config}\n")
@@ -678,6 +704,10 @@ class LightRAG:
     async def initialize_storages(self):
         """Storage initialization must be called one by one to prevent deadlock"""
         if self._storages_status == StoragesStatus.CREATED:
+            # Initialize prompt templates repo before any pipeline runs.
+            if getattr(self, "prompt_manager", None) is not None:
+                await self.prompt_manager.initialize()
+
             # Set the first initialized workspace will set the default workspace
             # Allows namespace operation without specifying workspace for backward compatibility
             default_workspace = get_default_workspace()
@@ -760,6 +790,13 @@ class LightRAG:
                 )
             else:
                 logger.debug("All storages finalized successfully")
+
+            # Prompt manager finalize (best-effort).
+            if getattr(self, "prompt_manager", None) is not None:
+                try:
+                    await self.prompt_manager.finalize()
+                except Exception as e:
+                    logger.warning(f"Failed to finalize prompt manager: {e}")
 
             self._storages_status = StoragesStatus.FINALIZED
 
@@ -2025,7 +2062,7 @@ class LightRAG:
                                     knowledge_graph_inst=self.chunk_entity_relation_graph,
                                     entity_vdb=self.entities_vdb,
                                     relationships_vdb=self.relationships_vdb,
-                                    global_config=asdict(self),
+                                    global_config=self._runtime_global_config(),
                                     full_entities_storage=self.full_entities,
                                     full_relations_storage=self.full_relations,
                                     doc_id=doc_id,
@@ -2208,7 +2245,7 @@ class LightRAG:
         try:
             chunk_results = await extract_entities(
                 chunk,
-                global_config=asdict(self),
+                global_config=self._runtime_global_config(),
                 pipeline_status=pipeline_status,
                 pipeline_status_lock=pipeline_status_lock,
                 llm_response_cache=self.llm_response_cache,
@@ -2447,7 +2484,8 @@ class LightRAG:
         Args:
             query (str): The query to be executed.
             param (QueryParam): Configuration parameters for query execution.
-            prompt (Optional[str]): Custom prompts for fine-tuned control over the system's behavior. Defaults to None, which uses PROMPTS["rag_response"].
+            system_prompt (Optional[str]): Optional custom system prompt template (legacy python-format or Jinja2).
+                Defaults to None, which uses the built-in template `query-rag_response`.
 
         Returns:
             str: The result of the query execution.
@@ -2472,7 +2510,8 @@ class LightRAG:
             query (str): The query to be executed.
             param (QueryParam): Configuration parameters for query execution.
                 If param.model_func is provided, it will be used instead of the global model.
-            system_prompt (Optional[str]): Custom prompts for fine-tuned control over the system's behavior. Defaults to None, which uses PROMPTS["rag_response"].
+            system_prompt (Optional[str]): Optional custom system prompt template (legacy python-format or Jinja2).
+                Defaults to None, which uses the built-in template `query-rag_response`.
 
         Returns:
             str | AsyncIterator[str]: The LLM response content.
@@ -2622,7 +2661,7 @@ class LightRAG:
             actual data is nested under the 'data' field, with 'status' and 'message'
             fields at the top level.
         """
-        global_config = asdict(self)
+        global_config = self._runtime_global_config()
 
         # Create a copy of param to avoid modifying the original
         data_param = QueryParam(
@@ -2740,7 +2779,7 @@ class LightRAG:
         """
         logger.debug(f"[aquery_llm] Query param: {param}")
 
-        global_config = asdict(self)
+        global_config = self._runtime_global_config()
 
         try:
             query_result = None
@@ -2812,6 +2851,12 @@ class LightRAG:
 
             # Check if query_result is None
             if query_result is None:
+                try:
+                    fail_response = await self.prompt_manager.render(
+                        PromptType.QUERY, "fail_response"
+                    )
+                except Exception:
+                    fail_response = "Sorry, I'm not able to provide an answer to that question.[no-context]"
                 return {
                     "status": "failure",
                     "message": "Query returned no results",
@@ -2821,7 +2866,7 @@ class LightRAG:
                         "mode": param.mode,
                     },
                     "llm_response": {
-                        "content": PROMPTS["fail_response"],
+                        "content": fail_response,
                         "response_iterator": None,
                         "is_streaming": False,
                     },
@@ -3598,7 +3643,7 @@ class LightRAG:
                         relationships_vdb=self.relationships_vdb,
                         text_chunks_storage=self.text_chunks,
                         llm_response_cache=self.llm_response_cache,
-                        global_config=asdict(self),
+                        global_config=self._runtime_global_config(),
                         pipeline_status=pipeline_status,
                         pipeline_status_lock=pipeline_status_lock,
                         entity_chunks_storage=self.entity_chunks,
