@@ -2040,7 +2040,6 @@ export default function SanitizeData() {
                   className="w-full h-24 p-3 border border-gray-300 rounded resize-y focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
                   value={createRelDescription}
                   onChange={(e) => setCreateRelDescription(e.target.value)}
-                  placeholder="e.g., Elon Musk is the CEO of Tesla"
                 />
               </div>
               {/* Keywords */}
@@ -2053,7 +2052,6 @@ export default function SanitizeData() {
                   className="w-full px-3 py-2 border border-gray-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                   value={createRelKeywords}
                   onChange={(e) => setCreateRelKeywords(e.target.value)}
-                  placeholder="e.g., CEO, founder"
                 />
               </div>
               {/* Weight */}
@@ -2068,6 +2066,7 @@ export default function SanitizeData() {
                   className="w-24 px-3 py-2 border border-gray-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                   value={createRelWeight}
                   onChange={(e) => setCreateRelWeight(parseFloat(e.target.value) || 1.0)}
+                  onFocus={(e) => e.target.select()}
                 />
               </div>
             </div>
