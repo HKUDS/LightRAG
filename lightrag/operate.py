@@ -530,6 +530,193 @@ async def _handle_single_relationship_extraction(
         return None
 
 
+async def _process_json_extraction_result(
+    result: str,
+    chunk_key: str,
+    timestamp: int,
+    file_path: str = "unknown_source",
+) -> tuple[dict, dict]:
+    """Process a JSON-formatted extraction result from LLM.
+
+    This function parses the LLM response as JSON and extracts entities and relationships.
+    It uses json_repair to handle slightly malformed JSON from weaker models.
+
+    Args:
+        result: The JSON extraction result from LLM
+        chunk_key: The chunk key for source tracking
+        timestamp: The timestamp for the extraction
+        file_path: The file path for citation
+
+    Returns:
+        tuple: (nodes_dict, edges_dict) containing the extracted entities and relationships
+    """
+    maybe_nodes = defaultdict(list)
+    maybe_edges = defaultdict(list)
+
+    try:
+        # Parse the JSON response using json_repair for robustness
+        parsed = json_repair.loads(result)
+    except Exception as e:
+        logger.warning(f"{chunk_key}: Failed to parse JSON extraction result: {e}")
+        return dict(maybe_nodes), dict(maybe_edges)
+
+    if not isinstance(parsed, dict):
+        logger.warning(
+            f"{chunk_key}: JSON extraction result is not a dict, got {type(parsed).__name__}"
+        )
+        return dict(maybe_nodes), dict(maybe_edges)
+
+    # Process entities
+    entities_list = parsed.get("entities", [])
+    if not isinstance(entities_list, list):
+        logger.warning(
+            f"{chunk_key}: 'entities' field is not a list in JSON extraction result"
+        )
+        entities_list = []
+
+    for entity_data in entities_list:
+        if not isinstance(entity_data, dict):
+            continue
+
+        try:
+            entity_name = sanitize_and_normalize_extracted_text(
+                str(entity_data.get("entity_name", "")), remove_inner_quotes=True
+            )
+            if not entity_name or not entity_name.strip():
+                logger.info(
+                    f"{chunk_key}: Empty entity name found after sanitization in JSON result"
+                )
+                continue
+
+            entity_type = sanitize_and_normalize_extracted_text(
+                str(entity_data.get("entity_type", "")), remove_inner_quotes=True
+            )
+            if not entity_type.strip() or any(
+                char in entity_type
+                for char in ["'", "(", ")", "<", ">", "|", "/", "\\"]
+            ):
+                logger.warning(
+                    f"{chunk_key}: Invalid entity type '{entity_type}' for entity '{entity_name}'"
+                )
+                continue
+
+            entity_type = entity_type.replace(" ", "").lower()
+
+            entity_description = sanitize_and_normalize_extracted_text(
+                str(entity_data.get("entity_description", ""))
+            )
+            if not entity_description.strip():
+                logger.warning(
+                    f"{chunk_key}: Empty description for entity '{entity_name}'"
+                )
+                continue
+
+            truncated_name = _truncate_entity_identifier(
+                entity_name,
+                DEFAULT_ENTITY_NAME_MAX_LENGTH,
+                chunk_key,
+                "Entity name",
+            )
+
+            node_data = dict(
+                entity_name=truncated_name,
+                entity_type=entity_type,
+                description=entity_description,
+                source_id=chunk_key,
+                file_path=file_path,
+                timestamp=timestamp,
+            )
+            maybe_nodes[truncated_name].append(node_data)
+
+        except Exception as e:
+            logger.warning(
+                f"{chunk_key}: Failed to process entity from JSON result: {e}"
+            )
+            continue
+
+    # Process relationships
+    relationships_list = parsed.get("relationships", [])
+    if not isinstance(relationships_list, list):
+        logger.warning(
+            f"{chunk_key}: 'relationships' field is not a list in JSON extraction result"
+        )
+        relationships_list = []
+
+    for rel_data in relationships_list:
+        if not isinstance(rel_data, dict):
+            continue
+
+        try:
+            source = sanitize_and_normalize_extracted_text(
+                str(rel_data.get("source_entity", "")), remove_inner_quotes=True
+            )
+            target = sanitize_and_normalize_extracted_text(
+                str(rel_data.get("target_entity", "")), remove_inner_quotes=True
+            )
+
+            if not source:
+                logger.info(
+                    f"{chunk_key}: Empty source entity in JSON relationship result"
+                )
+                continue
+            if not target:
+                logger.info(
+                    f"{chunk_key}: Empty target entity in JSON relationship result"
+                )
+                continue
+            if source == target:
+                logger.debug(f"{chunk_key}: Source and target are the same: '{source}'")
+                continue
+
+            edge_keywords = sanitize_and_normalize_extracted_text(
+                str(rel_data.get("relationship_keywords", "")), remove_inner_quotes=True
+            )
+            edge_keywords = edge_keywords.replace("，", ",")
+
+            edge_description = sanitize_and_normalize_extracted_text(
+                str(rel_data.get("relationship_description", ""))
+            )
+
+            if not edge_description.strip():
+                logger.warning(
+                    f"{chunk_key}: Empty description for relationship '{source}' ~ '{target}', skipping"
+                )
+                continue
+
+            truncated_source = _truncate_entity_identifier(
+                source,
+                DEFAULT_ENTITY_NAME_MAX_LENGTH,
+                chunk_key,
+                "Relation entity",
+            )
+            truncated_target = _truncate_entity_identifier(
+                target,
+                DEFAULT_ENTITY_NAME_MAX_LENGTH,
+                chunk_key,
+                "Relation entity",
+            )
+
+            edge_data = dict(
+                src_id=truncated_source,
+                tgt_id=truncated_target,
+                weight=1.0,
+                description=edge_description,
+                keywords=edge_keywords,
+                source_id=chunk_key,
+                file_path=file_path,
+                timestamp=timestamp,
+            )
+            maybe_edges[(truncated_source, truncated_target)].append(edge_data)
+
+        except Exception as e:
+            logger.warning(
+                f"{chunk_key}: Failed to process relationship from JSON result: {e}"
+            )
+            continue
+
+    return dict(maybe_nodes), dict(maybe_edges)
+
+
 async def rebuild_knowledge_from_chunks(
     entities_to_rebuild: dict[str, list[str]],
     relationships_to_rebuild: dict[tuple[str, str], list[str]],
@@ -1038,7 +1225,11 @@ async def _rebuild_from_extraction_result(
     chunk_id: str,
     timestamp: int,
 ) -> tuple[dict, dict]:
-    """Parse cached extraction result using the same logic as extract_entities
+    """Parse cached extraction result using the same logic as extract_entities.
+
+    Supports both JSON and delimiter-based formats for backward compatibility.
+    Attempts JSON parsing first; if the cached result looks like JSON (starts with '{'),
+    uses the JSON parser. Otherwise, falls back to the traditional delimiter-based parser.
 
     Args:
         text_chunks_storage: Text chunks storage to get chunk data
@@ -1057,7 +1248,22 @@ async def _rebuild_from_extraction_result(
         else "unknown_source"
     )
 
-    # Call the shared processing function
+    # Auto-detect format: try JSON first if the result looks like JSON
+    stripped_result = extraction_result.strip()
+    if stripped_result.startswith("{") or stripped_result.startswith("["):
+        # Likely JSON format (from entity_extraction_use_json mode)
+        nodes, edges = await _process_json_extraction_result(
+            extraction_result,
+            chunk_id,
+            timestamp,
+            file_path,
+        )
+        # If JSON parsing yielded results, use them
+        if nodes or edges:
+            return nodes, edges
+        # Otherwise fall through to text-based parsing
+
+    # Fall back to traditional delimiter-based parsing
     return await _process_extraction_result(
         extraction_result,
         chunk_id,
@@ -2782,6 +2988,9 @@ async def extract_entities(
     use_llm_func: callable = global_config["llm_model_func"]
     entity_extract_max_gleaning = global_config["entity_extract_max_gleaning"]
 
+    # Check if JSON structured output mode is enabled
+    use_json_extraction = global_config.get("entity_extraction_use_json", False)
+
     ordered_chunks = list(chunks.items())
     # add language and example number params to prompt
     language = global_config["addon_params"].get("language", DEFAULT_SUMMARY_LANGUAGE)
@@ -2789,24 +2998,34 @@ async def extract_entities(
         "entity_types", DEFAULT_ENTITY_TYPES
     )
 
-    examples = "\n".join(PROMPTS["entity_extraction_examples"])
+    if use_json_extraction:
+        # JSON mode: use JSON-specific prompts without delimiters
+        examples = "\n".join(PROMPTS["entity_extraction_json_examples"])
+        context_base = dict(
+            entity_types=",".join(entity_types),
+            examples=examples,
+            language=language,
+        )
+        logger.info("Entity extraction using JSON structured output mode")
+    else:
+        # Text mode: use traditional delimiter-based prompts
+        examples = "\n".join(PROMPTS["entity_extraction_examples"])
+        example_context_base = dict(
+            tuple_delimiter=PROMPTS["DEFAULT_TUPLE_DELIMITER"],
+            completion_delimiter=PROMPTS["DEFAULT_COMPLETION_DELIMITER"],
+            entity_types=", ".join(entity_types),
+            language=language,
+        )
+        # add example's format
+        examples = examples.format(**example_context_base)
 
-    example_context_base = dict(
-        tuple_delimiter=PROMPTS["DEFAULT_TUPLE_DELIMITER"],
-        completion_delimiter=PROMPTS["DEFAULT_COMPLETION_DELIMITER"],
-        entity_types=", ".join(entity_types),
-        language=language,
-    )
-    # add example's format
-    examples = examples.format(**example_context_base)
-
-    context_base = dict(
-        tuple_delimiter=PROMPTS["DEFAULT_TUPLE_DELIMITER"],
-        completion_delimiter=PROMPTS["DEFAULT_COMPLETION_DELIMITER"],
-        entity_types=",".join(entity_types),
-        examples=examples,
-        language=language,
-    )
+        context_base = dict(
+            tuple_delimiter=PROMPTS["DEFAULT_TUPLE_DELIMITER"],
+            completion_delimiter=PROMPTS["DEFAULT_COMPLETION_DELIMITER"],
+            entity_types=",".join(entity_types),
+            examples=examples,
+            language=language,
+        )
 
     processed_chunks = 0
     total_chunks = len(ordered_chunks)
@@ -2829,18 +3048,28 @@ async def extract_entities(
         # Create cache keys collector for batch processing
         cache_keys_collector = []
 
-        # Get initial extraction
-        # Format system prompt without input_text for each chunk (enables OpenAI prompt caching across chunks)
-        entity_extraction_system_prompt = PROMPTS[
-            "entity_extraction_system_prompt"
-        ].format(**context_base)
-        # Format user prompts with input_text for each chunk
-        entity_extraction_user_prompt = PROMPTS["entity_extraction_user_prompt"].format(
-            **{**context_base, "input_text": content}
-        )
-        entity_continue_extraction_user_prompt = PROMPTS[
-            "entity_continue_extraction_user_prompt"
-        ].format(**{**context_base, "input_text": content})
+        if use_json_extraction:
+            # JSON mode: use JSON prompts and pass entity_extraction flag to LLM provider
+            entity_extraction_system_prompt = PROMPTS[
+                "entity_extraction_json_system_prompt"
+            ].format(**context_base)
+            entity_extraction_user_prompt = PROMPTS[
+                "entity_extraction_json_user_prompt"
+            ].format(**{**context_base, "input_text": content})
+            entity_continue_extraction_user_prompt = PROMPTS[
+                "entity_continue_extraction_json_user_prompt"
+            ].format(**context_base)
+        else:
+            # Text mode: use traditional delimiter-based prompts
+            entity_extraction_system_prompt = PROMPTS[
+                "entity_extraction_system_prompt"
+            ].format(**context_base)
+            entity_extraction_user_prompt = PROMPTS[
+                "entity_extraction_user_prompt"
+            ].format(**{**context_base, "input_text": content})
+            entity_continue_extraction_user_prompt = PROMPTS[
+                "entity_continue_extraction_user_prompt"
+            ].format(**{**context_base, "input_text": content})
 
         final_result, timestamp = await use_llm_func_with_cache(
             entity_extraction_user_prompt,
@@ -2850,21 +3079,30 @@ async def extract_entities(
             cache_type="extract",
             chunk_id=chunk_key,
             cache_keys_collector=cache_keys_collector,
+            entity_extraction=use_json_extraction,
         )
 
         history = pack_user_ass_to_openai_messages(
             entity_extraction_user_prompt, final_result
         )
 
-        # Process initial extraction with file path
-        maybe_nodes, maybe_edges = await _process_extraction_result(
-            final_result,
-            chunk_key,
-            timestamp,
-            file_path,
-            tuple_delimiter=context_base["tuple_delimiter"],
-            completion_delimiter=context_base["completion_delimiter"],
-        )
+        # Process initial extraction with appropriate parser
+        if use_json_extraction:
+            maybe_nodes, maybe_edges = await _process_json_extraction_result(
+                final_result,
+                chunk_key,
+                timestamp,
+                file_path,
+            )
+        else:
+            maybe_nodes, maybe_edges = await _process_extraction_result(
+                final_result,
+                chunk_key,
+                timestamp,
+                file_path,
+                tuple_delimiter=context_base["tuple_delimiter"],
+                completion_delimiter=context_base["completion_delimiter"],
+            )
 
         # Process additional gleaning results only 1 time when entity_extract_max_gleaning is greater than zero.
         if entity_extract_max_gleaning > 0:
@@ -2873,8 +3111,6 @@ async def extract_entities(
             max_input_tokens = global_config["max_extract_input_tokens"]
 
             # Approximate total tokens: system prompt + history + user prompt.
-            # This slightly underestimates actual API usage (missing role/framing tokens)
-            # but is sufficient as a safety guard against context window overflow.
             history_str = json.dumps(history, ensure_ascii=False)
             full_context_str = (
                 entity_extraction_system_prompt
@@ -2897,17 +3133,26 @@ async def extract_entities(
                     cache_type="extract",
                     chunk_id=chunk_key,
                     cache_keys_collector=cache_keys_collector,
+                    entity_extraction=use_json_extraction,
                 )
 
-                # Process gleaning result separately with file path
-                glean_nodes, glean_edges = await _process_extraction_result(
-                    glean_result,
-                    chunk_key,
-                    timestamp,
-                    file_path,
-                    tuple_delimiter=context_base["tuple_delimiter"],
-                    completion_delimiter=context_base["completion_delimiter"],
-                )
+                # Process gleaning result with appropriate parser
+                if use_json_extraction:
+                    glean_nodes, glean_edges = await _process_json_extraction_result(
+                        glean_result,
+                        chunk_key,
+                        timestamp,
+                        file_path,
+                    )
+                else:
+                    glean_nodes, glean_edges = await _process_extraction_result(
+                        glean_result,
+                        chunk_key,
+                        timestamp,
+                        file_path,
+                        tuple_delimiter=context_base["tuple_delimiter"],
+                        completion_delimiter=context_base["completion_delimiter"],
+                    )
 
                 # Merge results - compare description lengths to choose better version
                 for entity_name, glean_entities in glean_nodes.items():

@@ -145,6 +145,7 @@ async def llama_index_complete(
     history_messages=None,
     enable_cot: bool = False,
     keyword_extraction=False,
+    entity_extraction=False,
     settings: LlamaIndexSettings = None,
     **kwargs,
 ) -> str:
@@ -156,6 +157,7 @@ async def llama_index_complete(
         system_prompt: Optional system prompt
         history_messages: Optional chat history
         keyword_extraction: Whether to extract keywords from response
+        entity_extraction: Whether to use JSON structured output for entity extraction
         settings: Optional LlamaIndex settings
         **kwargs: Additional arguments
     """
@@ -163,6 +165,7 @@ async def llama_index_complete(
         history_messages = []
 
     kwargs.pop("keyword_extraction", None)
+    kwargs.pop("entity_extraction", None)
     result = await llama_index_complete_if_cache(
         kwargs.get("llm_instance"),
         prompt,
