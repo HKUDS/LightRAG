@@ -87,7 +87,7 @@ async def zhipu_complete_if_cache(
 
     # Remove unsupported kwargs
     kwargs = {
-        k: v for k, v in kwargs.items() if k not in ["hashing_kv", "keyword_extraction"]
+        k: v for k, v in kwargs.items() if k not in ["hashing_kv", "keyword_extraction", "entity_extraction"]
     }
 
     response = client.chat.completions.create(model=model, messages=messages, **kwargs)
@@ -100,11 +100,13 @@ async def zhipu_complete(
     system_prompt=None,
     history_messages=[],
     keyword_extraction=False,
+    entity_extraction=False,
     enable_cot: bool = False,
     **kwargs,
 ):
-    # Pop keyword_extraction from kwargs to avoid passing it to zhipu_complete_if_cache
+    # Pop keyword_extraction and entity_extraction from kwargs to avoid passing to zhipu_complete_if_cache
     keyword_extraction = kwargs.pop("keyword_extraction", None)
+    kwargs.pop("entity_extraction", None)
 
     if keyword_extraction:
         # Add a system prompt to guide the model to return JSON format
