@@ -557,9 +557,7 @@ async def _process_json_extraction_result(
         # Parse the JSON response using json_repair for robustness
         parsed = json_repair.loads(result)
     except Exception as e:
-        logger.warning(
-            f"{chunk_key}: Failed to parse JSON extraction result: {e}"
-        )
+        logger.warning(f"{chunk_key}: Failed to parse JSON extraction result: {e}")
         return dict(maybe_nodes), dict(maybe_edges)
 
     if not isinstance(parsed, dict):
@@ -594,7 +592,8 @@ async def _process_json_extraction_result(
                 str(entity_data.get("entity_type", "")), remove_inner_quotes=True
             )
             if not entity_type.strip() or any(
-                char in entity_type for char in ["'", "(", ")", "<", ">", "|", "/", "\\"]
+                char in entity_type
+                for char in ["'", "(", ")", "<", ">", "|", "/", "\\"]
             ):
                 logger.warning(
                     f"{chunk_key}: Invalid entity type '{entity_type}' for entity '{entity_name}'"
@@ -666,9 +665,7 @@ async def _process_json_extraction_result(
                 )
                 continue
             if source == target:
-                logger.debug(
-                    f"{chunk_key}: Source and target are the same: '{source}'"
-                )
+                logger.debug(f"{chunk_key}: Source and target are the same: '{source}'")
                 continue
 
             edge_keywords = sanitize_and_normalize_extracted_text(
@@ -2994,6 +2991,9 @@ async def extract_entities(
     # Check if JSON structured output mode is enabled
     use_json_extraction = global_config.get("entity_extraction_use_json", False)
 
+    # Get max output tokens for extraction LLM calls
+    extraction_max_tokens = global_config.get("extraction_max_tokens", 4096)
+
     ordered_chunks = list(chunks.items())
     # add language and example number params to prompt
     language = global_config["addon_params"].get("language", DEFAULT_SUMMARY_LANGUAGE)
@@ -3079,6 +3079,7 @@ async def extract_entities(
             use_llm_func,
             system_prompt=entity_extraction_system_prompt,
             llm_response_cache=llm_response_cache,
+            max_tokens=extraction_max_tokens,
             cache_type="extract",
             chunk_id=chunk_key,
             cache_keys_collector=cache_keys_collector,
@@ -3109,7 +3110,7 @@ async def extract_entities(
 
         # Process additional gleaning results only 1 time when entity_extract_max_gleaning is greater than zero.
         if entity_extract_max_gleaning > 0:
-# Calculate total tokens for the gleaning request to prevent context window overflow
+            # Calculate total tokens for the gleaning request to prevent context window overflow
             tokenizer = global_config["tokenizer"]
             max_input_tokens = global_config["max_extract_input_tokens"]
 
