@@ -3094,9 +3094,21 @@ async def kg_query(
     logger.debug(f"Low-level  keywords: {ll_keywords}")
 
     # Handle empty keywords
-    if ll_keywords == [] and query_param.mode in ["local", "hybrid", "mix"]:
+    if ll_keywords == [] and query_param.mode in [
+        "local",
+        "hybrid",
+        "mix",
+        "local_graph",
+        "hybrid_graph",
+    ]:
         logger.warning("low_level_keywords is empty")
-    if hl_keywords == [] and query_param.mode in ["global", "hybrid", "mix"]:
+    if hl_keywords == [] and query_param.mode in [
+        "global",
+        "hybrid",
+        "mix",
+        "global_graph",
+        "hybrid_graph",
+    ]:
         logger.warning("high_level_keywords is empty")
     if hl_keywords == [] and ll_keywords == []:
         if len(query) < 50:
@@ -4118,23 +4130,27 @@ async def _build_query_context(
     )
 
     # Stage 3: Merge chunks using filtered entities/relations
-    merged_chunks = await _merge_all_chunks(
-        filtered_entities=truncation_result["filtered_entities"],
-        filtered_relations=truncation_result["filtered_relations"],
-        vector_chunks=search_result["vector_chunks"],
-        query=query,
-        knowledge_graph_inst=knowledge_graph_inst,
-        text_chunks_db=text_chunks_db,
-        query_param=query_param,
-        chunks_vdb=chunks_vdb,
-        chunk_tracking=search_result["chunk_tracking"],
-        query_embedding=search_result["query_embedding"],
-    )
+    graph_modes = {"local_graph", "global_graph", "hybrid_graph"}
+    merged_chunks = []
+    if query_param.mode not in graph_modes:
+        merged_chunks = await _merge_all_chunks(
+            filtered_entities=truncation_result["filtered_entities"],
+            filtered_relations=truncation_result["filtered_relations"],
+            vector_chunks=search_result["vector_chunks"],
+            query=query,
+            knowledge_graph_inst=knowledge_graph_inst,
+            text_chunks_db=text_chunks_db,
+            query_param=query_param,
+            chunks_vdb=chunks_vdb,
+            chunk_tracking=search_result["chunk_tracking"],
+            query_embedding=search_result["query_embedding"],
+        )
 
     if (
         not merged_chunks
         and not truncation_result["entities_context"]
         and not truncation_result["relations_context"]
+        and query_param.mode not in graph_modes
     ):
         return None
 
