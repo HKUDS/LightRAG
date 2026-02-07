@@ -182,6 +182,205 @@ relation{tuple_delimiter}Noah Carter{tuple_delimiter}World Athletics Championshi
 """,
 ]
 
+###############################################################################
+# JSON Structured Output Prompts for Entity Extraction
+# Used when entity_extraction_use_json is enabled for higher extraction quality
+###############################################################################
+
+PROMPTS["entity_extraction_json_system_prompt"] = """---Role---
+You are a Knowledge Graph Specialist responsible for extracting entities and relationships from the input text.
+
+---Instructions---
+1.  **Entity Extraction:**
+    *   **Identification:** Identify clearly defined and meaningful entities in the input text.
+    *   **Entity Details:** For each identified entity, extract the following information:
+        *   `entity_name`: The name of the entity. If the entity name is case-insensitive, capitalize the first letter of each significant word (title case). Ensure **consistent naming** across the entire extraction process.
+        *   `entity_type`: Categorize the entity using one of the following types: `{entity_types}`. If none of the provided entity types apply, do not add new entity type and classify it as `Other`.
+        *   `entity_description`: Provide a concise yet comprehensive description of the entity's attributes and activities, based *solely* on the information present in the input text.
+
+2.  **Relationship Extraction:**
+    *   **Identification:** Identify direct, clearly stated, and meaningful relationships between previously extracted entities.
+    *   **N-ary Relationship Decomposition:** If a single statement describes a relationship involving more than two entities (an N-ary relationship), decompose it into multiple binary (two-entity) relationship pairs for separate description.
+        *   **Example:** For "Alice, Bob, and Carol collaborated on Project X," extract binary relationships such as "Alice collaborated with Project X," "Bob collaborated with Project X," and "Carol collaborated with Project X," or "Alice collaborated with Bob," based on the most reasonable binary interpretations.
+    *   **Relationship Details:** For each binary relationship, extract the following fields:
+        *   `source_entity`: The name of the source entity. Ensure **consistent naming** with entity extraction. Capitalize the first letter of each significant word (title case) if the name is case-insensitive.
+        *   `target_entity`: The name of the target entity. Ensure **consistent naming** with entity extraction. Capitalize the first letter of each significant word (title case) if the name is case-insensitive.
+        *   `relationship_keywords`: One or more high-level keywords summarizing the overarching nature, concepts, or themes of the relationship, separated by commas.
+        *   `relationship_description`: A concise explanation of the nature of the relationship between the source and target entities, providing a clear rationale for their connection.
+
+3.  **Relationship Direction & Duplication:**
+    *   Treat all relationships as **undirected** unless explicitly stated otherwise. Swapping the source and target entities for an undirected relationship does not constitute a new relationship.
+    *   Avoid outputting duplicate relationships.
+
+4.  **Prioritization:**
+    *   Within the list of relationships, prioritize and output those relationships that are **most significant** to the core meaning of the input text first.
+
+5.  **Context & Objectivity:**
+    *   Ensure all entity names and descriptions are written in the **third person**.
+    *   Explicitly name the subject or object; **avoid using pronouns** such as `this article`, `this paper`, `our company`, `I`, `you`, and `he/she`.
+
+6.  **Language & Proper Nouns:**
+    *   The entire output (entity names, keywords, and descriptions) must be written in `{language}`.
+    *   Proper nouns (e.g., personal names, place names, organization names) should be retained in their original language if a proper, widely accepted translation is not available or would cause ambiguity.
+
+7.  **Output Format:** Your output MUST be a valid JSON object with the following structure:
+
+```json
+{{
+  "entities": [
+    {{
+      "entity_name": "Entity Name",
+      "entity_type": "entity_type",
+      "entity_description": "Description of the entity."
+    }}
+  ],
+  "relationships": [
+    {{
+      "source_entity": "Source Entity Name",
+      "target_entity": "Target Entity Name",
+      "relationship_keywords": "keyword1, keyword2",
+      "relationship_description": "Description of the relationship."
+    }}
+  ]
+}}
+```
+
+---Examples---
+{examples}
+"""
+
+PROMPTS["entity_extraction_json_user_prompt"] = """---Task---
+Extract entities and relationships from the input text in Data to be Processed below.
+
+---Instructions---
+1.  **Strict Adherence to JSON Format:** Your output MUST be a valid JSON object with `entities` and `relationships` arrays. Do not include any introductory or concluding remarks, explanations, markdown code fences, or any other text before or after the JSON.
+2.  **Output Language:** Ensure the output language is {language}. Proper nouns (e.g., personal names, place names, organization names) must be kept in their original language and not translated.
+
+---Data to be Processed---
+<Entity_types>
+[{entity_types}]
+
+<Input Text>
+```
+{input_text}
+```
+
+<Output>
+"""
+
+PROMPTS["entity_continue_extraction_json_user_prompt"] = """---Task---
+Based on the last extraction task, identify and extract any **missed or incorrectly described** entities and relationships from the input text.
+
+---Instructions---
+1.  **Focus on Corrections/Additions:**
+    *   **Do NOT** re-output entities and relationships that were **correctly and fully** extracted in the last task.
+    *   If an entity or relationship was **missed** in the last task, extract and output it now.
+    *   If an entity or relationship was **incorrectly described** in the last task, re-output the *corrected and complete* version.
+2.  **Strict Adherence to JSON Format:** Your output MUST be a valid JSON object with `entities` and `relationships` arrays. Do not include any introductory or concluding remarks, explanations, markdown code fences, or any other text before or after the JSON.
+3.  **Output Language:** Ensure the output language is {language}. Proper nouns (e.g., personal names, place names, organization names) must be kept in their original language and not translated.
+4.  **If nothing was missed or needs correction**, output: `{{"entities": [], "relationships": []}}`
+
+<Output>
+"""
+
+PROMPTS["entity_extraction_json_examples"] = [
+    """<Entity_types>
+["Person","Creature","Organization","Location","Event","Concept","Method","Content","Data","Artifact","NaturalObject"]
+
+<Input Text>
+```
+while Alex clenched his jaw, the buzz of frustration dull against the backdrop of Taylor's authoritarian certainty. It was this competitive undercurrent that kept him alert, the sense that his and Jordan's shared commitment to discovery was an unspoken rebellion against Cruz's narrowing vision of control and order.
+
+Then Taylor did something unexpected. They paused beside Jordan and, for a moment, observed the device with something akin to reverence. "If this tech can be understood..." Taylor said, their voice quieter, "It could change the game for us. For all of us."
+
+The underlying dismissal earlier seemed to falter, replaced by a glimpse of reluctant respect for the gravity of what lay in their hands. Jordan looked up, and for a fleeting heartbeat, their eyes locked with Taylor's, a wordless clash of wills softening into an uneasy truce.
+
+It was a small transformation, barely perceptible, but one that Alex noted with an inward nod. They had all been brought here by different paths
+```
+
+<Output>
+{
+  "entities": [
+    {"entity_name": "Alex", "entity_type": "person", "entity_description": "Alex is a character who experiences frustration and is observant of the dynamics among other characters."},
+    {"entity_name": "Taylor", "entity_type": "person", "entity_description": "Taylor is portrayed with authoritarian certainty and shows a moment of reverence towards a device, indicating a change in perspective."},
+    {"entity_name": "Jordan", "entity_type": "person", "entity_description": "Jordan shares a commitment to discovery and has a significant interaction with Taylor regarding a device."},
+    {"entity_name": "Cruz", "entity_type": "person", "entity_description": "Cruz is associated with a vision of control and order, influencing the dynamics among other characters."},
+    {"entity_name": "The Device", "entity_type": "equipment", "entity_description": "The Device is central to the story, with potential game-changing implications, and is revered by Taylor."}
+  ],
+  "relationships": [
+    {"source_entity": "Alex", "target_entity": "Taylor", "relationship_keywords": "power dynamics, observation", "relationship_description": "Alex observes Taylor's authoritarian behavior and notes changes in Taylor's attitude toward the device."},
+    {"source_entity": "Alex", "target_entity": "Jordan", "relationship_keywords": "shared goals, rebellion", "relationship_description": "Alex and Jordan share a commitment to discovery, which contrasts with Cruz's vision."},
+    {"source_entity": "Taylor", "target_entity": "Jordan", "relationship_keywords": "conflict resolution, mutual respect", "relationship_description": "Taylor and Jordan interact directly regarding the device, leading to a moment of mutual respect and an uneasy truce."},
+    {"source_entity": "Jordan", "target_entity": "Cruz", "relationship_keywords": "ideological conflict, rebellion", "relationship_description": "Jordan's commitment to discovery is in rebellion against Cruz's vision of control and order."},
+    {"source_entity": "Taylor", "target_entity": "The Device", "relationship_keywords": "reverence, technological significance", "relationship_description": "Taylor shows reverence towards the device, indicating its importance and potential impact."}
+  ]
+}
+
+""",
+    """<Entity_types>
+["Person","Creature","Organization","Location","Event","Concept","Method","Content","Data","Artifact","NaturalObject"]
+
+<Input Text>
+```
+Stock markets faced a sharp downturn today as tech giants saw significant declines, with the global tech index dropping by 3.4% in midday trading. Analysts attribute the selloff to investor concerns over rising interest rates and regulatory uncertainty.
+
+Among the hardest hit, nexon technologies saw its stock plummet by 7.8% after reporting lower-than-expected quarterly earnings. In contrast, Omega Energy posted a modest 2.1% gain, driven by rising oil prices.
+
+Meanwhile, commodity markets reflected a mixed sentiment. Gold futures rose by 1.5%, reaching $2,080 per ounce, as investors sought safe-haven assets. Crude oil prices continued their rally, climbing to $87.60 per barrel, supported by supply constraints and strong demand.
+
+Financial experts are closely watching the Federal Reserve's next move, as speculation grows over potential rate hikes. The upcoming policy announcement is expected to influence investor confidence and overall market stability.
+```
+
+<Output>
+{
+  "entities": [
+    {"entity_name": "Global Tech Index", "entity_type": "category", "entity_description": "The Global Tech Index tracks the performance of major technology stocks and experienced a 3.4% decline today."},
+    {"entity_name": "Nexon Technologies", "entity_type": "organization", "entity_description": "Nexon Technologies is a tech company that saw its stock decline by 7.8% after disappointing earnings."},
+    {"entity_name": "Omega Energy", "entity_type": "organization", "entity_description": "Omega Energy is an energy company that gained 2.1% in stock value due to rising oil prices."},
+    {"entity_name": "Gold Futures", "entity_type": "product", "entity_description": "Gold futures rose by 1.5%, indicating increased investor interest in safe-haven assets."},
+    {"entity_name": "Crude Oil", "entity_type": "product", "entity_description": "Crude oil prices rose to $87.60 per barrel due to supply constraints and strong demand."},
+    {"entity_name": "Market Selloff", "entity_type": "category", "entity_description": "Market selloff refers to the significant decline in stock values due to investor concerns over interest rates and regulations."},
+    {"entity_name": "Federal Reserve Policy Announcement", "entity_type": "category", "entity_description": "The Federal Reserve's upcoming policy announcement is expected to impact investor confidence and market stability."},
+    {"entity_name": "3.4% Decline", "entity_type": "category", "entity_description": "The Global Tech Index experienced a 3.4% decline in midday trading."}
+  ],
+  "relationships": [
+    {"source_entity": "Global Tech Index", "target_entity": "Market Selloff", "relationship_keywords": "market performance, investor sentiment", "relationship_description": "The decline in the Global Tech Index is part of the broader market selloff driven by investor concerns."},
+    {"source_entity": "Nexon Technologies", "target_entity": "Global Tech Index", "relationship_keywords": "company impact, index movement", "relationship_description": "Nexon Technologies' stock decline contributed to the overall drop in the Global Tech Index."},
+    {"source_entity": "Gold Futures", "target_entity": "Market Selloff", "relationship_keywords": "market reaction, safe-haven investment", "relationship_description": "Gold prices rose as investors sought safe-haven assets during the market selloff."},
+    {"source_entity": "Federal Reserve Policy Announcement", "target_entity": "Market Selloff", "relationship_keywords": "interest rate impact, financial regulation", "relationship_description": "Speculation over Federal Reserve policy changes contributed to market volatility and investor selloff."}
+  ]
+}
+
+""",
+    """<Entity_types>
+["Person","Creature","Organization","Location","Event","Concept","Method","Content","Data","Artifact","NaturalObject"]
+
+<Input Text>
+```
+At the World Athletics Championship in Tokyo, Noah Carter broke the 100m sprint record using cutting-edge carbon-fiber spikes.
+```
+
+<Output>
+{
+  "entities": [
+    {"entity_name": "World Athletics Championship", "entity_type": "event", "entity_description": "The World Athletics Championship is a global sports competition featuring top athletes in track and field."},
+    {"entity_name": "Tokyo", "entity_type": "location", "entity_description": "Tokyo is the host city of the World Athletics Championship."},
+    {"entity_name": "Noah Carter", "entity_type": "person", "entity_description": "Noah Carter is a sprinter who set a new record in the 100m sprint at the World Athletics Championship."},
+    {"entity_name": "100m Sprint Record", "entity_type": "category", "entity_description": "The 100m sprint record is a benchmark in athletics, recently broken by Noah Carter."},
+    {"entity_name": "Carbon-Fiber Spikes", "entity_type": "equipment", "entity_description": "Carbon-fiber spikes are advanced sprinting shoes that provide enhanced speed and traction."},
+    {"entity_name": "World Athletics Federation", "entity_type": "organization", "entity_description": "The World Athletics Federation is the governing body overseeing the World Athletics Championship and record validations."}
+  ],
+  "relationships": [
+    {"source_entity": "World Athletics Championship", "target_entity": "Tokyo", "relationship_keywords": "event location, international competition", "relationship_description": "The World Athletics Championship is being hosted in Tokyo."},
+    {"source_entity": "Noah Carter", "target_entity": "100m Sprint Record", "relationship_keywords": "athlete achievement, record-breaking", "relationship_description": "Noah Carter set a new 100m sprint record at the championship."},
+    {"source_entity": "Noah Carter", "target_entity": "Carbon-Fiber Spikes", "relationship_keywords": "athletic equipment, performance boost", "relationship_description": "Noah Carter used carbon-fiber spikes to enhance performance during the race."},
+    {"source_entity": "Noah Carter", "target_entity": "World Athletics Championship", "relationship_keywords": "athlete participation, competition", "relationship_description": "Noah Carter is competing at the World Athletics Championship."}
+  ]
+}
+
+""",
+]
+
 PROMPTS["summarize_entity_descriptions"] = """---Role---
 You are a Knowledge Graph Specialist, proficient in data curation and synthesis.
 
