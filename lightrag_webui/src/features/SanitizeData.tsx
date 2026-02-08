@@ -135,6 +135,16 @@ export default function SanitizeData() {
     }
   };
 
+  // Helper: force-refresh every entity that is currently selected
+  // This keeps all detail panels + any open modals in sync
+  const refreshAllSelectedDetails = async () => {
+    if (selectedEntities.length === 0) return;
+
+    await Promise.all(
+      selectedEntities.map((name) => fetchEntityDetail(name, true))
+    );
+  };
+
   // For loading the Select Type modal window
   const fetchAllTypes = async () => {
     setLoadingTypes(true);
@@ -946,18 +956,13 @@ export default function SanitizeData() {
       }
 
       if (successCount > 0) {
-        // Refresh local cache (optional but nice)
-        await fetchEntityDetail(editingEntityForRel, true);
-
-        // Commented out because it isn't needed to see updates without refreshing the webpage.
-        // Trigger full graph refresh so other parts of UI see changes
-        // await triggerGraphRefresh();
+        // Refresh ALL selected entities instead of just the one
+        await refreshAllSelectedDetails();
 
         alert(`Saved ${successCount} relationship change(s) successfully!`);
       } else {
         alert("No changes detected.");
       }
-
       setEditRelationshipsModalOpen(false);
     } catch (err) {
       console.error("Failed to save relationship changes:", err);
@@ -988,15 +993,15 @@ export default function SanitizeData() {
         return newEdits;
       });
 
-      // Re-fetch entity details to update local cache
-      if (editingEntityForRel) {
-        await fetchEntityDetail(editingEntityForRel, true); // Force refresh
-      }
-
       alert("Relationship deleted successfully!");
     } catch (err) {
       console.error("Failed to delete relationship:", err);
       alert("Error deleting relationship. Check console.");
+    } finally {
+      // After successful delete, refresh BOTH sides (and any other selected entities)
+      await refreshAllSelectedDetails();
+
+      alert("Relationship deleted successfully!");
     }
   };
 
