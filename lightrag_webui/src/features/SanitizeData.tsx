@@ -541,7 +541,7 @@ export default function SanitizeData() {
           });
         }
 
-        // Full refresh
+        // Full refresh of the entity list + type/orphan maps (already there – keep it)
         const listRes = await axios.get(`${API_BASE}/graph/label/list`);
         const sorted = (listRes.data as string[]).sort((a, b) =>
           a.toLowerCase().localeCompare(b.toLowerCase())
@@ -549,24 +549,8 @@ export default function SanitizeData() {
         setEntities(sorted);
         fetchEntityDetails(sorted);
 
-        if (allowRename && editEntityOriginalName) {
-          // Update orphanFilteredEntities if in orphan mode
-          if (filterMode === 'orphan') {
-            setOrphanFilteredEntities((prev) =>
-              prev.map((n) => (n === editEntityOriginalName ? editEntityName : n))
-            );
-          }
-
-          // Re-fetch single details (already there, but ensure)
-          fetchSingleEntityDetails(editEntityName);
-        }
-
-        // Re-fetch details for the renamed entity (ensures panel sync)
-        fetchEntityDetail(editEntityName, true);  // Force refresh
-
-        // Re-fetch details for final entity
-        const finalName = response.data.operation_summary?.final_entity || editEntityName;
-        fetchEntityDetail(finalName, true);
+        // ← NEW: Refresh EVERY selected entity so all panels (and any related-entity lists) are up-to-date
+        await refreshAllSelectedDetails();
 
         alert('Entity updated successfully!');
       } else {
@@ -1000,8 +984,6 @@ export default function SanitizeData() {
     } finally {
       // After successful delete, refresh BOTH sides (and any other selected entities)
       await refreshAllSelectedDetails();
-
-      alert("Relationship deleted successfully!");
     }
   };
 
