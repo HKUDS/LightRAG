@@ -222,7 +222,7 @@ export const ChatMessage = ({
       {/* Main content display */}
       {finalDisplayContent && (
         <div className="relative">
-          <div
+          <ReactMarkdown
             className={`prose dark:prose-invert max-w-none text-sm break-words prose-headings:mt-4 prose-headings:mb-2 prose-p:my-2 prose-ul:my-2 prose-ol:my-2 prose-li:my-1 [&_.katex]:text-current [&_.katex-display]:my-4 [&_.katex-display]:max-w-full [&_.katex-display_>.base]:overflow-x-auto [&_sup]:text-[0.75em] [&_sup]:align-[0.1em] [&_sup]:leading-[0] [&_sub]:text-[0.75em] [&_sub]:align-[-0.2em] [&_sub]:leading-[0] [&_mark]:bg-yellow-200 [&_mark]:dark:bg-yellow-800 [&_u]:underline [&_del]:line-through [&_ins]:underline [&_ins]:decoration-green-500 [&_.footnotes]:mt-8 [&_.footnotes]:pt-4 [&_.footnotes]:border-t [&_.footnotes_ol]:text-sm [&_.footnotes_li]:my-1 ${
               message.role === 'user' ? 'text-primary-foreground' : 'text-foreground'
             } ${
@@ -230,34 +230,33 @@ export const ChatMessage = ({
                 ? '[&_.footnotes]:border-primary-foreground/30 [&_a[href^="#fn"]]:text-primary-foreground [&_a[href^="#fn"]]:no-underline [&_a[href^="#fn"]]:hover:underline [&_a[href^="#fnref"]]:text-primary-foreground [&_a[href^="#fnref"]]:no-underline [&_a[href^="#fnref"]]:hover:underline'
                 : '[&_.footnotes]:border-border [&_a[href^="#fn"]]:text-primary [&_a[href^="#fn"]]:no-underline [&_a[href^="#fn"]]:hover:underline [&_a[href^="#fnref"]]:text-primary [&_a[href^="#fnref"]]:no-underline [&_a[href^="#fnref"]]:hover:underline'
             }`}
-          >
-            <ReactMarkdown
-              remarkPlugins={[remarkGfm, remarkFootnotes, remarkMath]}
-              rehypePlugins={[
-                rehypeRaw,
-                ...((katexPlugin && (message.latexRendered ?? true)) ? [[
-                  katexPlugin,
-                  {
-                    errorColor: theme === 'dark' ? '#ef4444' : '#dc2626',
-                    throwOnError: false,
-                    displayMode: false,
-                    strict: false,
-                    trust: true,
-                    errorCallback: (error: string, latex: string) => {
-                      if (process.env.NODE_ENV === 'development') {
-                        console.warn('KaTeX rendering error in main content:', error, 'for LaTeX:', latex);
-                      }
+            remarkPlugins={[remarkGfm, remarkFootnotes, remarkMath]}
+            rehypePlugins={[
+              rehypeRaw,
+              ...((katexPlugin && (message.latexRendered ?? true)) ? [[
+                katexPlugin,
+                {
+                  errorColor: theme === 'dark' ? '#ef4444' : '#dc2626',
+                  throwOnError: false,
+                  displayMode: false,
+                  strict: false,
+                  trust: true,
+                  // Add silent error handling to avoid console noise
+                  errorCallback: (error: string, latex: string) => {
+                    // Only show detailed errors in development environment
+                    if (process.env.NODE_ENV === 'development') {
+                      console.warn('KaTeX rendering error in main content:', error, 'for LaTeX:', latex);
                     }
                   }
-                ] as any] : []),
-                rehypeReact
-              ]}
-              skipHtml={false}
-              components={mainMarkdownComponents}
-            >
-              {finalDisplayContent}
-            </ReactMarkdown>
-          </div>
+                }
+              ] as any] : []),
+              rehypeReact
+            ]}
+            skipHtml={false}
+            components={mainMarkdownComponents}
+          >
+            {finalDisplayContent}
+          </ReactMarkdown>
         </div>
       )}
       {/* Loading indicator - only show in active tab */}
