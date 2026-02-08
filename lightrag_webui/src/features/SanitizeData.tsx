@@ -2016,7 +2016,7 @@ export default function SanitizeData() {
                     type="text"
                     className="w-full px-3 py-2 border border-gray-300 rounded text-sm bg-gray-100 cursor-not-allowed"
                     value={selectedEntities.find((n) => n !== targetEntity) || ''}
-                    disabled
+                    readOnly
                   />
                 </div>
                 <div>
@@ -2027,7 +2027,7 @@ export default function SanitizeData() {
                     type="text"
                     className="w-full px-3 py-2 border border-gray-300 rounded text-sm bg-gray-100 cursor-not-allowed"
                     value={targetEntity}
-                    disabled
+                    readOnly
                   />
                 </div>
               </div>
