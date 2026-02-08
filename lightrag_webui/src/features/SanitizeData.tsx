@@ -759,6 +759,21 @@ export default function SanitizeData() {
     }
   };
 
+  // Toggle an entity in/out of the selection
+  // This is used both by the checkbox AND by clicking the whole row
+  const toggleEntitySelection = (entityName: string) => {
+    if (selectedEntities.includes(entityName)) {
+      // Deselect
+      setSelectedEntities(selectedEntities.filter((e) => e !== entityName));
+      if (firstEntity === entityName) {
+        setFirstEntity(null);
+      }
+    } else {
+      // Select
+      setSelectedEntities([...selectedEntities, entityName]);
+    }
+  };
+
   const fetchSingleEntityDetails = async (name: string) => {
     try {
       const detailRes = await axios.get(
@@ -1323,26 +1338,24 @@ export default function SanitizeData() {
               {displayEntities.map((entityName) => (
                 <div
                   key={entityName}
-                  className="grid grid-cols-[40px_1fr] items-center px-2 py-1.5 border-b border-gray-100 hover:bg-gray-50 text-sm"  // ← Changed to [40px_1fr]
+                  className="grid grid-cols-[40px_1fr] items-center px-2 py-1.5 border-b border-gray-100 hover:bg-gray-50 text-sm cursor-pointer select-none"
+                  onClick={() => toggleEntitySelection(entityName)}
                 >
                   <div className="flex justify-center">
                     <input
                       type="checkbox"
                       checked={selectedEntities.includes(entityName)}
                       onChange={(e) => {
-                        if (e.target.checked) {
-                          setSelectedEntities([...selectedEntities, entityName]);
-                        } else {
-                          setSelectedEntities(selectedEntities.filter((e) => e !== entityName));
-                          if (firstEntity === entityName) {
-                            setFirstEntity(null);
-                          }
-                        }
+                        // We still let the native checkbox work normally
+                        toggleEntitySelection(entityName);
                       }}
+                      onClick={(e) => e.stopPropagation()}   /* ← prevents row onClick from firing when clicking the box directly */
                       className="h-4 w-4 text-blue-600 rounded"
                     />
                   </div>
-                  <div className="truncate pl-2">{entityName}</div>
+                  <div className="truncate pl-2 font-medium text-blue-700 hover:underline">
+                    {entityName}
+                  </div>
                 </div>
               ))}
 
