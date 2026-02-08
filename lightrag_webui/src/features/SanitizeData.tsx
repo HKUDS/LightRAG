@@ -333,6 +333,19 @@ export default function SanitizeData() {
     return () => document.removeEventListener('keydown', handleCtrlK);
   }, []);
 
+  // Auto-focus the filter box when the app loads or page is refreshed (F5)
+  // This runs once after the component mounts
+  useEffect(() => {
+    // Tiny delay so the DOM has finished rendering the input
+    const timer = setTimeout(() => {
+      filterInputRef.current?.focus();
+      // Optional: also select any existing text (nice when you reload)
+      filterInputRef.current?.select();
+    }, 50);
+
+    return () => clearTimeout(timer);
+  }, []); // ← empty array = run only once on mount
+
   // Global hotkey: Ctrl + ;  → instantly open the Select Type modal
   useEffect(() => {
     const handleCtrlSemicolon = (e: KeyboardEvent) => {
@@ -774,6 +787,15 @@ export default function SanitizeData() {
     }
   };
 
+  // Focus the filter input and select any existing text
+  // Used after Clear Sel., Reset All, Show All, etc.
+  const focusFilterInput = () => {
+    setTimeout(() => {
+      filterInputRef.current?.focus();
+      filterInputRef.current?.select();
+    }, 10);
+  };
+
   const fetchSingleEntityDetails = async (name: string) => {
     try {
       const detailRes = await axios.get(
@@ -1104,7 +1126,10 @@ export default function SanitizeData() {
           <div className="flex flex-wrap gap-1">
             {filterMode === 'none' ? (
               <button
-                onClick={handleClearSelected}
+                onClick={() => {
+                  handleClearSelected();
+                  focusFilterInput();
+                }}
                 className="px-2 py-0.5 bg-gray-100 hover:bg-gray-200 border border-gray-300 rounded text-xs"
               >
                 Clear Sel.
@@ -1148,6 +1173,9 @@ export default function SanitizeData() {
                 setCurrentPage(1);
                 setEntityType('');
                 setTargetEntity('');
+
+                // Focus the filter box again when returning to normal view
+                setTimeout(() => filterInputRef.current?.focus(), 10);
               }}
               className="px-2 py-0.5 bg-gray-100 hover:bg-gray-200 border border-gray-300 rounded text-xs"
             >
@@ -1162,6 +1190,8 @@ export default function SanitizeData() {
                 setCurrentPage(1);
                 setEntityType('');
                 setTargetEntity('');
+
+                focusFilterInput();        // ← added
               }}
               className="px-2 py-0.5 bg-red-50 hover:bg-red-100 border border-red-200 rounded text-xs text-red-700"
             >
