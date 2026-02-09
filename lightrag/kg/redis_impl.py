@@ -304,6 +304,50 @@ class RedisKVStorage(BaseKVStorage):
                 logger.error(f"[{self.workspace}] JSON decode error in batch get: {e}")
                 return [None] * len(ids)
 
+    @redis_retry
+    async def get_ids_by_doc_id(self, doc_id: str) -> list[str]:
+        pattern = f"{self.final_namespace}:*"
+        matched_ids: list[str] = []
+
+        async with self._get_redis_connection() as redis:
+            batch_keys: list[str] = []
+            async for key in redis.scan_iter(match=pattern, count=1000):
+                batch_keys.append(key)
+                if len(batch_keys) < 200:
+                    continue
+
+                values = await redis.mget(batch_keys)
+                for raw_key, raw_value in zip(batch_keys, values):
+                    if not raw_value:
+                        continue
+                    try:
+                        payload = json.loads(raw_value)
+                    except json.JSONDecodeError:
+                        continue
+                    if (
+                        isinstance(payload, dict)
+                        and payload.get("full_doc_id") == doc_id
+                    ):
+                        matched_ids.append(raw_key[len(self.final_namespace) + 1 :])
+                batch_keys = []
+
+            if batch_keys:
+                values = await redis.mget(batch_keys)
+                for raw_key, raw_value in zip(batch_keys, values):
+                    if not raw_value:
+                        continue
+                    try:
+                        payload = json.loads(raw_value)
+                    except json.JSONDecodeError:
+                        continue
+                    if (
+                        isinstance(payload, dict)
+                        and payload.get("full_doc_id") == doc_id
+                    ):
+                        matched_ids.append(raw_key[len(self.final_namespace) + 1 :])
+
+        return matched_ids
+
     async def filter_keys(self, keys: set[str]) -> set[str]:
         async with self._get_redis_connection() as redis:
             pipe = redis.pipeline()

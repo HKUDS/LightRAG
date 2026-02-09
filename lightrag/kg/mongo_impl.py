@@ -169,6 +169,10 @@ class MongoKVStorage(BaseKVStorage):
             ordered_results.append(doc_map.get(str(id_value)))
         return ordered_results
 
+    async def get_ids_by_doc_id(self, doc_id: str) -> list[str]:
+        cursor = self._data.find({"full_doc_id": doc_id}, {"_id": 1})
+        return [str(item["_id"]) async for item in cursor]
+
     async def filter_keys(self, keys: set[str]) -> set[str]:
         cursor = self._data.find({"_id": {"$in": list(keys)}}, {"_id": 1})
         existing_ids = {str(x["_id"]) async for x in cursor}
