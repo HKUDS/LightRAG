@@ -66,7 +66,7 @@ async def test_postgres_halfvec_table_creation(
     """Test if table is created with HALFVEC type when HNSW_HALFVEC is selected"""
     # Set index type to HNSW_HALFVEC
     mock_pg_db.vector_index_type = "HNSW_HALFVEC"
-    
+
     config = {
         "embedding_batch_num": 10,
         "vector_db_storage_cls_kwargs": {"cosine_better_than_threshold": 0.8},
@@ -87,10 +87,11 @@ async def test_postgres_halfvec_table_creation(
 
     # Verify table creation SQL contains HALFVEC(768)
     create_table_calls = [
-        call for call in mock_pg_db.execute.call_args_list 
+        call
+        for call in mock_pg_db.execute.call_args_list
         if "CREATE TABLE" in call[0][0]
     ]
-    
+
     assert len(create_table_calls) > 0
     create_sql = create_table_calls[0][0][0]
     assert "HALFVEC(768)" in create_sql
@@ -104,7 +105,7 @@ async def test_postgres_vector_table_creation_default(
     """Test if table is created with default VECTOR type when other index type is selected"""
     # Set index type to HNSW (default)
     mock_pg_db.vector_index_type = "HNSW"
-    
+
     config = {
         "embedding_batch_num": 10,
         "vector_db_storage_cls_kwargs": {"cosine_better_than_threshold": 0.8},
@@ -125,10 +126,11 @@ async def test_postgres_vector_table_creation_default(
 
     # Verify table creation SQL contains VECTOR(768)
     create_table_calls = [
-        call for call in mock_pg_db.execute.call_args_list 
+        call
+        for call in mock_pg_db.execute.call_args_list
         if "CREATE TABLE" in call[0][0]
     ]
-    
+
     assert len(create_table_calls) > 0
     create_sql = create_table_calls[0][0][0]
     assert "VECTOR(768)" in create_sql
