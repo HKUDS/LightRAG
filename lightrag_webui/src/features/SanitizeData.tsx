@@ -333,6 +333,23 @@ export default function SanitizeData() {
     return () => document.removeEventListener('keydown', handleCtrlK);
   }, []);
 
+  // Ctrl + Enter → "Show Sel. Only" (perfect after keyboard selection)
+  useEffect(() => {
+    const handleCtrlEnter = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+        if (selectedEntities.length > 0 && filterMode === 'none') {
+          e.preventDefault();
+          handleShowSelectedOnly();
+          // Optional: put the cursor back in the filter so you can type again
+          focusFilterInput();
+        }
+      }
+    };
+
+    document.addEventListener('keydown', handleCtrlEnter);
+    return () => document.removeEventListener('keydown', handleCtrlEnter);
+  }, [selectedEntities.length, filterMode]);   // dependencies so it reacts to changes
+
   // Auto-focus the filter box when the app loads or page is refreshed (F5)
   // This runs once after the component mounts
   useEffect(() => {
@@ -1032,6 +1049,9 @@ export default function SanitizeData() {
     ? orphanFilteredEntities
     : paginatedEntities;
 
+  const buttonTabIndex = filterText.length > 0 ? -1 : 0;
+
+
   return (
     <div className="h-full flex flex-col">
       {/* Top row - minimum height to ensure controls are visible */}
@@ -1062,6 +1082,7 @@ export default function SanitizeData() {
                 <button
                   onClick={handleShowAllOfType}
                   disabled={typesLoading}
+                  tabIndex={buttonTabIndex}
                   className={`px-2 py-0.5 bg-gray-100 hover:bg-gray-200 border border-gray-300 rounded text-xs ${typesLoading ? 'opacity-50 cursor-not-allowed' : ''}`}
                 >
                   All Of Type
@@ -1069,6 +1090,7 @@ export default function SanitizeData() {
                 <button
                   onClick={handleShowOrphans}  // ← Added onClick and disabled
                   disabled={typesLoading}
+                  tabIndex={buttonTabIndex}
                   className={`px-2 py-0.5 bg-gray-100 hover:bg-gray-200 border border-gray-300 rounded text-xs ${typesLoading ? 'opacity-50 cursor-not-allowed' : ''}`}
                 >
                   Orphans
@@ -1079,6 +1101,7 @@ export default function SanitizeData() {
                   <button
                     onClick={goToFirst}
                     disabled={currentPage === 1}
+                    tabIndex={buttonTabIndex}
                     className="px-2 py-0.5 bg-gray-100 hover:bg-gray-200 border border-gray-300 rounded text-xs font-medium disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     First
@@ -1086,6 +1109,7 @@ export default function SanitizeData() {
                   <button
                     onClick={goToPrev}
                     disabled={currentPage === 1}
+                    tabIndex={buttonTabIndex}
                     className="px-2 py-0.5 bg-gray-100 hover:bg-gray-200 border border-gray-300 rounded text-xs font-medium disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     Prev
@@ -1099,6 +1123,7 @@ export default function SanitizeData() {
                       max={Math.ceil(filteredEntities.length / rowsPerPage) || 1}
                       value={currentPage}
                       onChange={handlePageInputChange}
+                      tabIndex={buttonTabIndex}
                       className="w-10 text-center border border-gray-400 rounded text-xs focus:outline-none focus:ring-1 focus:ring-blue-500 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
                     />
                     /{Math.ceil(filteredEntities.length / rowsPerPage) || 1}
@@ -1107,6 +1132,7 @@ export default function SanitizeData() {
                   <button
                     onClick={goToNext}
                     disabled={currentPage >= Math.ceil(filteredEntities.length / rowsPerPage)}
+                    tabIndex={buttonTabIndex}
                     className="px-2 py-0.5 bg-gray-100 hover:bg-gray-200 border border-gray-300 rounded text-xs font-medium disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     Next
@@ -1114,6 +1140,7 @@ export default function SanitizeData() {
                   <button
                     onClick={goToLast}
                     disabled={currentPage >= Math.ceil(filteredEntities.length / rowsPerPage)}
+                    tabIndex={buttonTabIndex}
                     className="px-2 py-0.5 bg-gray-100 hover:bg-gray-200 border border-gray-300 rounded text-xs font-medium disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     Last
@@ -1130,6 +1157,7 @@ export default function SanitizeData() {
                   handleClearSelected();
                   focusFilterInput();
                 }}
+                tabIndex={buttonTabIndex}
                 className="px-2 py-0.5 bg-gray-100 hover:bg-gray-200 border border-gray-300 rounded text-xs"
               >
                 Clear Sel.
@@ -1140,6 +1168,7 @@ export default function SanitizeData() {
 
             {filterMode === 'type' ? (
               <button
+                tabIndex={buttonTabIndex}
                 className="px-2 py-0.5 border rounded text-xs transition-colors bg-indigo-600 text-white border-indigo-700"
                 disabled
               >
@@ -1149,18 +1178,21 @@ export default function SanitizeData() {
               <button
                 className="px-2 py-0.5 border rounded text-xs transition-colors bg-indigo-600 text-white border-indigo-700"
                 disabled
+                tabIndex={buttonTabIndex}
               >
                 Orphans
               </button>
             ) : (
               <button
                 onClick={handleShowSelectedOnly}
+                tabIndex={buttonTabIndex}
                 className={`px-2 py-0.5 border rounded text-xs transition-colors ${
                   filterMode === 'selected'
                     ? 'bg-indigo-600 text-white border-indigo-700'
                     : 'bg-indigo-50 hover:bg-indigo-100 border-indigo-200 text-indigo-700'
                 }`}
                 disabled={filterMode === 'selected'}
+                title="Show only selected entities (Ctrl + Enter)"
               >
                 Show Sel. Only
               </button>
@@ -1177,6 +1209,7 @@ export default function SanitizeData() {
                 // Focus the filter box again when returning to normal view
                 setTimeout(() => filterInputRef.current?.focus(), 10);
               }}
+              tabIndex={buttonTabIndex}
               className="px-2 py-0.5 bg-gray-100 hover:bg-gray-200 border border-gray-300 rounded text-xs"
             >
               Show All
@@ -1191,8 +1224,9 @@ export default function SanitizeData() {
                 setEntityType('');
                 setTargetEntity('');
 
-                focusFilterInput();        // ← added
+                focusFilterInput();
               }}
+              tabIndex={buttonTabIndex}
               className="px-2 py-0.5 bg-red-50 hover:bg-red-100 border border-red-200 rounded text-xs text-red-700"
             >
               Reset All
@@ -1210,6 +1244,7 @@ export default function SanitizeData() {
                   setTypeSelectionContext('main');
                   setSelectTypeModalOpen(true);
                 }}
+                tabIndex={buttonTabIndex}
                 className="block w-full px-3 py-0.5 bg-gray-200 hover:bg-gray-300 border border-gray-300 border-b-0 rounded-t-md text-xs font-medium text-gray-800 text-left cursor-pointer shadow-sm"
               >
                 Select Type
@@ -1223,6 +1258,7 @@ export default function SanitizeData() {
                   onChange={(e) => setEntityType(e.target.value)}
                   placeholder="Type or filter..."
                   autoComplete="off"
+                  tabIndex={buttonTabIndex}
                 />
                 <div className="absolute inset-y-0 right-0 flex items-center px-2 pointer-events-none">
                   <svg className="w-3.5 h-3.5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -1251,6 +1287,7 @@ export default function SanitizeData() {
                   onChange={(e) => setTargetEntity(e.target.value)}
                   placeholder="Type or select target..."
                   autoComplete="off"
+                  tabIndex={buttonTabIndex}
                 />
                 <div className="absolute inset-y-0 right-0 flex items-center px-2 pointer-events-none">
                   <svg className="w-3.5 h-3.5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -1281,6 +1318,7 @@ export default function SanitizeData() {
                   setCreateEntityType('');
                   setCreateEntitySourceId('Manual Entry:');
                 }}
+                tabIndex={buttonTabIndex}
                 className="px-3.5 py-1.5 bg-purple-600 text-white rounded hover:bg-purple-700 text-sm"
               >
                 Create Entity
@@ -1290,6 +1328,7 @@ export default function SanitizeData() {
                 className="px-3.5 py-1.5 bg-blue-600 text-white rounded hover:bg-blue-700 text-sm disabled:opacity-50"
                 disabled={selectedEntities.length < 2 || filterMode !== 'selected'}
                 onClick={handleMergeEntities}
+                tabIndex={buttonTabIndex}
                 title={
                   filterMode !== 'selected'
                     ? "Enter 'Show Sel. Only' mode first\nto act on selected entities"
@@ -1315,6 +1354,7 @@ export default function SanitizeData() {
                   setCreateRelKeywords('');
                   setCreateRelWeight(1.0);
                 }}
+                tabIndex={buttonTabIndex}
                 title={
                   filterMode !== 'selected'
                     ? "Enter 'Show Sel. Only' mode first\nto act on selected entities"
@@ -1330,6 +1370,7 @@ export default function SanitizeData() {
                 className="px-3.5 py-1.5 bg-red-600 text-white rounded hover:bg-red-700 text-sm disabled:opacity-50"
                 disabled={selectedEntities.length < 1 || filterMode !== 'selected'}
                 onClick={handleDeleteEntities}
+                tabIndex={buttonTabIndex}
                 title={
                   filterMode !== 'selected'
                     ? "Enter 'Show Sel. Only' mode first\nto act on selected entities"
@@ -1345,6 +1386,7 @@ export default function SanitizeData() {
             {/* Video Tutorial button – pushed all the way to the right */}
             <button
               onClick={openVideoTutorial}
+              tabIndex={buttonTabIndex}
               className="ml-auto px-3.5 py-1.5 bg-indigo-600 text-white rounded hover:bg-indigo-700 text-sm flex items-center gap-1.5 shadow-sm"
               title="Watch the video tutorial (opens in new tab)"
             >
@@ -1368,12 +1410,23 @@ export default function SanitizeData() {
               {displayEntities.map((entityName) => (
                 <div
                   key={entityName}
-                  className="grid grid-cols-[40px_1fr] items-center px-2 py-1.5 border-b border-gray-100 hover:bg-gray-50 text-sm cursor-pointer select-none"
+                  className="grid grid-cols-[40px_1fr] items-center px-2 py-1.5 border-b border-gray-100 hover:bg-gray-50 text-sm cursor-pointer select-none focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-blue-50"
                   onClick={() => toggleEntitySelection(entityName)}
+                  tabIndex={0}
+                  onKeyDown={(e) => {
+                    // Allow global hotkeys (Ctrl+Enter, etc.) to work
+                    if (e.ctrlKey || e.metaKey) return;
+
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      toggleEntitySelection(entityName);
+                    }
+                  }}
                 >
                   <div className="flex justify-center">
                     <input
                       type="checkbox"
+                      tabIndex={-1}
                       checked={selectedEntities.includes(entityName)}
                       onChange={(e) => {
                         // We still let the native checkbox work normally
