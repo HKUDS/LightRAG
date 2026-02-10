@@ -315,23 +315,39 @@ export default function SanitizeData() {
     }
   }, [createEntityModalOpen]);
 
-  // Global hotkey: Ctrl+K (or Cmd+K on Mac) → instantly focus the filter box
+  // Ctrl+K → Focus filter (and Show All if we are in any filtered mode)
   useEffect(() => {
     const handleCtrlK = (e: KeyboardEvent) => {
-      if (
-        (e.ctrlKey || e.metaKey) &&           // Ctrl on Win/Linux, Cmd on Mac
-        e.key.toLowerCase() === 'k'
-      ) {
-        e.preventDefault();                   // Stops any rare browser behavior
-        filterInputRef.current?.focus();
-        filterInputRef.current?.select();     // Optional: also selects existing text (nice UX)
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+
+        // Escape from ANY filtered view (selected / type / orphan) back to full list
+        if (filterMode !== 'none') {
+          handleShowAllAndFocus();
+        } else {
+          // Already in normal mode → just focus the filter
+          focusFilterInput();
+        }
       }
     };
 
     document.addEventListener('keydown', handleCtrlK);
-
     return () => document.removeEventListener('keydown', handleCtrlK);
-  }, []);
+  }, [filterMode]);   // keep this dependency
+
+  // Alt + K → Full Reset All (clear selections + everything) + focus filter
+  // Works the same in EVERY mode (including normal mode)
+  useEffect(() => {
+    const handleAltK = (e: KeyboardEvent) => {
+      if (e.altKey && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        handleFullResetAndFocus();
+      }
+    };
+
+    document.addEventListener('keydown', handleAltK);
+    return () => document.removeEventListener('keydown', handleAltK);
+  }, []);   // no dependencies needed
 
   // Ctrl + Enter → "Show Sel. Only" (perfect after keyboard selection)
   useEffect(() => {
@@ -505,6 +521,20 @@ export default function SanitizeData() {
     }
   };
 
+  // Check if the Edit Entity modal has any actual changes
+  const hasEntityChanges = (): boolean => {
+    if (!editEntityOriginalName) return false;
+
+    const original = entityDetails[editEntityOriginalName];
+
+    const nameChanged   = editEntityName      !== editEntityOriginalName;
+    const descChanged   = editEntityDescription !== (original?.description || '');
+    const typeChanged   = editEntityType      !== (original?.type || '');
+    const sourceChanged = editEntitySourceId  !== (original?.sourceId || '');
+
+    return nameChanged || descChanged || typeChanged || sourceChanged;
+  };
+
   const handleSaveEntity = async () => {
     if (!editEntityName.trim()) {
       setEditError('Entity name is required.');
@@ -515,7 +545,26 @@ export default function SanitizeData() {
       setEditError(`Entity name "${editEntityName}" already exists.`);
       return;
     }
-    setEditError(null);
+
+    // Only save if the user actually changed something
+    if (!hasEntityChanges()) {
+      setEditError('No changes detected.');
+      return;
+    }
+
+    const original = entityDetails[editEntityOriginalName];
+
+    const nameChanged   = editEntityName      !== editEntityOriginalName;
+    const descChanged   = editEntityDescription !== (original?.description || '');
+    const typeChanged   = editEntityType      !== (original?.type || '');
+    const sourceChanged = editEntitySourceId  !== (original?.sourceId || '');
+
+    const hasAnyChange = nameChanged || descChanged || typeChanged || sourceChanged;
+
+    if (!hasAnyChange) {
+        setEditError('No changes detected.');
+        return;
+    }
 
     try {
       const updatedData: Record<string, any> = {
@@ -811,6 +860,31 @@ export default function SanitizeData() {
       filterInputRef.current?.focus();
       filterInputRef.current?.select();
     }, 10);
+  };
+
+  // Show All + reset everything + put cursor back in filter
+  const handleShowAllAndFocus = () => {
+    setFilterMode('none');
+    setFilterText('');
+    setCurrentPage(1);
+    setEntityType('');
+    setTargetEntity('');
+
+    focusFilterInput();           // reuse the helper you already have
+  };
+
+  // Full Reset All + focus filter
+  // Clears selections, filter text, mode, page, type, target – everything
+  const handleFullResetAndFocus = () => {
+    setFilterMode('none');
+    setSelectedEntities([]);
+    setFirstEntity(null);
+    setFilterText('');
+    setCurrentPage(1);
+    setEntityType('');
+    setTargetEntity('');
+
+    focusFilterInput();   // reuses your existing helper
   };
 
   const fetchSingleEntityDetails = async (name: string) => {
@@ -1199,33 +1273,16 @@ export default function SanitizeData() {
             )}
 
             <button
-              onClick={() => {
-                setFilterMode('none');
-                setFilterText('');
-                setCurrentPage(1);
-                setEntityType('');
-                setTargetEntity('');
-
-                // Focus the filter box again when returning to normal view
-                setTimeout(() => filterInputRef.current?.focus(), 10);
-              }}
+              onClick={handleShowAllAndFocus}
+              title="Hotkeys (Ctrl + K)"
               tabIndex={buttonTabIndex}
               className="px-2 py-0.5 bg-gray-100 hover:bg-gray-200 border border-gray-300 rounded text-xs"
             >
               Show All
             </button>
             <button
-              onClick={() => {
-                setFilterMode('none');
-                setSelectedEntities([]);
-                setFirstEntity(null);
-                setFilterText('');
-                setCurrentPage(1);
-                setEntityType('');
-                setTargetEntity('');
-
-                focusFilterInput();
-              }}
+              onClick={handleFullResetAndFocus}
+              title="Hotkeys (Alt + K)"
               tabIndex={buttonTabIndex}
               className="px-2 py-0.5 bg-red-50 hover:bg-red-100 border border-red-200 rounded text-xs text-red-700"
             >
@@ -1244,6 +1301,7 @@ export default function SanitizeData() {
                   setTypeSelectionContext('main');
                   setSelectTypeModalOpen(true);
                 }}
+                title="Hotkeys Ctrl + ;"
                 tabIndex={buttonTabIndex}
                 className="block w-full px-3 py-0.5 bg-gray-200 hover:bg-gray-300 border border-gray-300 border-b-0 rounded-t-md text-xs font-medium text-gray-800 text-left cursor-pointer shadow-sm"
               >
@@ -1710,9 +1768,9 @@ export default function SanitizeData() {
               </button>
               <button
                 onClick={handleSaveEntity}
-                disabled={!editEntityName.trim()}
+                disabled={!hasEntityChanges()}
                 className={`px-4 py-2 rounded text-sm ${
-                  editEntityName.trim()
+                  hasEntityChanges()
                     ? 'bg-blue-600 hover:bg-blue-700 text-white'
                     : 'bg-gray-300 text-gray-500 cursor-not-allowed'
                 }`}
