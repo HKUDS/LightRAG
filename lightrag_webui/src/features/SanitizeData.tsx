@@ -85,6 +85,7 @@ export default function SanitizeData() {
 
   const createNameRef = useRef<HTMLInputElement>(null);
   const createSourceRef = useRef<HTMLInputElement>(null);
+  const editSourceRef = useRef<HTMLInputElement>(null);
 
   const filteredModalTypes = allEntityTypes.filter((type) =>
     type.toLowerCase().includes(modalFilterText.toLowerCase())
@@ -379,23 +380,32 @@ export default function SanitizeData() {
     return () => clearTimeout(timer);
   }, []); // ← empty array = run only once on mount
 
-  // Global hotkey: Ctrl + ;  → instantly open the Select Type modal
+  // Global hotkey: Ctrl + ; → open Select Type modal
+  // Smart context detection so it works from inside Create/Edit Entity modals too
   useEffect(() => {
     const handleCtrlSemicolon = (e: KeyboardEvent) => {
-      if (
-        (e.ctrlKey || e.metaKey) &&   // Ctrl on Windows/Linux, Cmd on Mac
-        e.key === ';'                 // The semicolon key
-      ) {
+      if ((e.ctrlKey || e.metaKey) && e.key === ';') {
         e.preventDefault();
-        setTypeSelectionContext('main');
+
+        // Ignore hotkey if any other modal is open (e.g. relationship editor)
+        if (editRelationshipsModalOpen || createRelModalOpen) return;
+
+        // Decide which context to use based on which modal is currently open
+        if (createEntityModalOpen) {
+          setTypeSelectionContext('create');
+        } else if (editEntityModalOpen) {
+          setTypeSelectionContext('edit');
+        } else {
+          setTypeSelectionContext('main');
+        }
+
         setSelectTypeModalOpen(true);
       }
     };
 
-    document.addEventListener('keydown', handleCtrlSemicolon);
-
-    return () => document.removeEventListener('keydown', handleCtrlSemicolon);
-  }, []);
+  document.addEventListener('keydown', handleCtrlSemicolon);
+  return () => document.removeEventListener('keydown', handleCtrlSemicolon);
+}, [createEntityModalOpen, editEntityModalOpen]);   // ← important: re-run when modals change
 
   // Pagination handlers
   const goToFirst = () => setCurrentPage(1);
@@ -552,7 +562,7 @@ export default function SanitizeData() {
       return;
     }
 
-    const original = entityDetails[editEntityOriginalName];
+    const original = entityDetails[editEntityOriginalName!];
 
     const nameChanged   = editEntityName      !== editEntityOriginalName;
     const descChanged   = editEntityDescription !== (original?.description || '');
@@ -1752,6 +1762,7 @@ export default function SanitizeData() {
                 </label>
                 <input
                   type="text"
+                  ref={editSourceRef}
                   className="w-full px-3 py-2 border border-gray-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                   value={editEntitySourceId}
                   onChange={(e) => setEditEntitySourceId(e.target.value)}
@@ -1950,7 +1961,19 @@ export default function SanitizeData() {
                   <div
                     key={type}
                     ref={(el) => { typeItemRefs.current[index] = el!; }}
-                    onClick={() => setSelectedModalType(type)}
+                    onClick={() => {
+                      if (typeSelectionContext === 'main') {
+                        setEntityType(type);
+                      } else if (typeSelectionContext === 'create') {
+                        setCreateEntityType(type);
+                        createSourceRef.current?.focus();
+                      } else if (typeSelectionContext === 'edit') {
+                        setEditEntityType(type);
+                        // ← ADD THESE TWO LINES
+                        setTimeout(() => editSourceRef.current?.focus(), 10);
+                      }
+                      setSelectTypeModalOpen(false);
+                    }}
                     onDoubleClick={() => {
                       if (typeSelectionContext === 'main') {
                         setEntityType(type);
@@ -1959,6 +1982,7 @@ export default function SanitizeData() {
                         createSourceRef.current?.focus();
                       } else if (typeSelectionContext === 'edit') {
                         setEditEntityType(type);
+                        setTimeout(() => editSourceRef.current?.focus(), 10);   // ← ADD
                       }
                       setSelectTypeModalOpen(false);
                     }}
@@ -1972,6 +1996,7 @@ export default function SanitizeData() {
                           createSourceRef.current?.focus();
                         } else if (typeSelectionContext === 'edit') {
                           setEditEntityType(type);
+                          setTimeout(() => editSourceRef.current?.focus(), 10);   // ← ADD
                         }
                         setSelectTypeModalOpen(false);
                       }
@@ -2010,10 +2035,10 @@ export default function SanitizeData() {
                     setEntityType(selectedModalType);
                   } else if (typeSelectionContext === 'create') {
                     setCreateEntityType(selectedModalType);
-                    // Add focus here after setting type
                     createSourceRef.current?.focus();
                   } else if (typeSelectionContext === 'edit') {
                     setEditEntityType(selectedModalType);
+                    setTimeout(() => editSourceRef.current?.focus(), 10);   // ← ADD
                   }
                   setSelectTypeModalOpen(false);
                 }}
