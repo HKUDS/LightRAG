@@ -93,6 +93,14 @@ export default function SanitizeData() {
 
   const filterInputRef = useRef<HTMLInputElement>(null);
 
+    // Ref that always holds the current filterMode (fixes stale hotkey closures)
+  const filterModeRef = useRef(filterMode);
+  useEffect(() => {
+    filterModeRef.current = filterMode;
+  }, [filterMode]);
+
+
+
   const openVideoTutorial = () => {
     window.open(
       'https://youtu.be/70iZxleULYY?si=PTq8S6fYIQpnEX8d',
@@ -310,11 +318,10 @@ export default function SanitizeData() {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
         e.preventDefault();
 
-        // Escape from ANY filtered view (selected / type / orphan) back to full list
-        if (filterMode !== 'none') {
+        // Use the ref so we always see the latest filterMode
+        if (filterModeRef.current !== 'none') {
           handleShowAllAndFocus();
         } else {
-          // Already in normal mode → just focus the filter
           focusFilterInput();
         }
       }
@@ -322,7 +329,7 @@ export default function SanitizeData() {
 
     document.addEventListener('keydown', handleCtrlK);
     return () => document.removeEventListener('keydown', handleCtrlK);
-  }, [filterMode]);   // keep this dependency
+  }, []);   // ← empty deps now (the ref gives us the live value)
 
   // Alt + K → Full Reset All (clear selections + everything) + focus filter
   // Works the same in EVERY mode (including normal mode)
@@ -338,14 +345,14 @@ export default function SanitizeData() {
     return () => document.removeEventListener('keydown', handleAltK);
   }, []);   // no dependencies needed
 
-  // Ctrl + Enter → "Show Sel. Only" (perfect after keyboard selection)
+  // Ctrl + Enter → "Show Sel. Only" (works from normal, All Of Type, Orphans)
   useEffect(() => {
     const handleCtrlEnter = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
-        if (selectedEntities.length > 0 && filterMode === 'none') {
+        if (selectedEntities.length > 0 && filterMode !== 'selected') {
           e.preventDefault();
+          setTargetEntity('');                    // ← ADD THIS LINE
           handleShowSelectedOnly();
-          // Optional: put the cursor back in the filter so you can type again
           focusFilterInput();
         }
       }
@@ -353,7 +360,7 @@ export default function SanitizeData() {
 
     document.addEventListener('keydown', handleCtrlEnter);
     return () => document.removeEventListener('keydown', handleCtrlEnter);
-  }, [selectedEntities.length, filterMode]);   // dependencies so it reacts to changes
+  }, [selectedEntities.length, filterMode]);
 
   // Auto-focus the filter box when the app loads or page is refreshed (F5)
   // This runs once after the component mounts
@@ -368,17 +375,21 @@ export default function SanitizeData() {
     return () => clearTimeout(timer);
   }, []); // ← empty array = run only once on mount
 
-  // Global hotkey: Ctrl + ; → open Select Type modal
-  // Smart context detection so it works from inside Create/Edit Entity modals too
+  // Ctrl + ; → open Select Type modal + ALWAYS clear Target Entity on main screen
   useEffect(() => {
     const handleCtrlSemicolon = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key === ';') {
         e.preventDefault();
 
-        // Ignore hotkey if any other modal that doesn't need type selection is open
+        // Ignore inside relationship modals
         if (editRelationshipsModalOpen || createRelModalOpen) return;
 
-        // Decide which context to use based on which modal is currently open
+        // Force-clear Target Entity (setTimeout(0) guarantees the state update happens)
+        setTimeout(() => {
+          setTargetEntity('');
+        }, 0);
+
+        // Choose correct context
         if (createEntityModalOpen) {
           setTypeSelectionContext('create');
         } else if (editEntityModalOpen) {
@@ -396,8 +407,8 @@ export default function SanitizeData() {
   }, [
     createEntityModalOpen,
     editEntityModalOpen,
-    editRelationshipsModalOpen,   // ← ADD
-    createRelModalOpen            // ← ADD
+    editRelationshipsModalOpen,
+    createRelModalOpen
   ]);
 
   // Pagination handlers
@@ -878,7 +889,6 @@ export default function SanitizeData() {
     setCurrentPage(1);
     setEntityType('');
     setTargetEntity('');
-
     focusFilterInput();           // reuse the helper you already have
   };
 
@@ -892,7 +902,6 @@ export default function SanitizeData() {
     setCurrentPage(1);
     setEntityType('');
     setTargetEntity('');
-
     focusFilterInput();   // reuses your existing helper
   };
 
@@ -1142,12 +1151,30 @@ export default function SanitizeData() {
         {/* Upper Left */}
         <div className={`w-1/4 border-r border-gray-300 p-2.5 flex flex-col gap-2.5 ${filterMode !== 'none' ? 'bg-indigo-50' : ''}`}>
           {filterMode !== 'none' && (
-            <div className="text-xs text-indigo-700 bg-indigo-50 p-2 rounded mb-2">
-              {filterMode === 'type'
-                ? `Showing only entities of type: ${entityType} (${displayEntities.length})`
-                : filterMode === 'orphan'
-                ? `Showing only orphan entities (${displayEntities.length})`
-                : `Showing only selected entities (${displayEntities.length})`}
+            <div
+              className="text-sm text-indigo-800 bg-indigo-50 p-3 rounded-xl mb-3 cursor-pointer hover:bg-indigo-100 transition-all border border-indigo-100 shadow-sm"
+              onClick={() => {
+                if (filterMode === 'type') {
+                  setTypeSelectionContext('main');
+                  setSelectTypeModalOpen(true);
+                } else {
+                  handleShowAllAndFocus();
+                }
+              }}
+            >
+              {filterMode === 'type' ? (
+                <>
+                  Showing only entities of type:{' '}
+                  <span className="font-bold text-indigo-900 bg-indigo-100 px-2 py-0.5 rounded">
+                    {entityType}
+                  </span>{' '}
+                  <span className="text-indigo-600">({displayEntities.length})</span>
+                </>
+              ) : filterMode === 'orphan' ? (
+                `Showing only orphan entities (${displayEntities.length})`
+              ) : (
+                `Showing only selected entities (${displayEntities.length})`
+              )}
             </div>
           )}
 
@@ -1660,6 +1687,17 @@ export default function SanitizeData() {
             )}
           </div>
         </div>
+      </div>
+
+      {/* Status bar */}
+      <div className="h-8 border-t border-gray-200 bg-gray-50 flex items-center px-4 text-xs text-gray-600 shrink-0">
+        <div className="flex-1 flex gap-8">
+          <span>Total entities: <strong>{entities.length}</strong></span>
+          <span>Selected: <strong>{selectedEntities.length}</strong></span>
+          {filterMode !== 'none' && <span>Filtered: <strong>{displayEntities.length}</strong></span>}
+          <span>Orphans: <strong>{Object.values(entityOrphanMap).filter(Boolean).length}</strong></span>
+        </div>
+        <div className="text-gray-400">LightRAG Sanitizer</div>
       </div>
 
       {/* Edit Entity Modal */}
