@@ -387,7 +387,7 @@ export default function SanitizeData() {
       if ((e.ctrlKey || e.metaKey) && e.key === ';') {
         e.preventDefault();
 
-        // Ignore hotkey if any other modal is open (e.g. relationship editor)
+        // Ignore hotkey if any other modal that doesn't need type selection is open
         if (editRelationshipsModalOpen || createRelModalOpen) return;
 
         // Decide which context to use based on which modal is currently open
@@ -403,9 +403,14 @@ export default function SanitizeData() {
       }
     };
 
-  document.addEventListener('keydown', handleCtrlSemicolon);
-  return () => document.removeEventListener('keydown', handleCtrlSemicolon);
-}, [createEntityModalOpen, editEntityModalOpen]);   // ← important: re-run when modals change
+    document.addEventListener('keydown', handleCtrlSemicolon);
+    return () => document.removeEventListener('keydown', handleCtrlSemicolon);
+  }, [
+    createEntityModalOpen,
+    editEntityModalOpen,
+    editRelationshipsModalOpen,   // ← ADD
+    createRelModalOpen            // ← ADD
+  ]);
 
   // Pagination handlers
   const goToFirst = () => setCurrentPage(1);
@@ -2227,8 +2232,8 @@ export default function SanitizeData() {
                 </label>
                 <input
                   type="number"
-                  step="0.1"
-                  min="0.1"
+                  step="1"
+                  min="1"
                   className="w-24 px-3 py-2 border border-gray-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                   value={createRelWeight}
                   onChange={(e) => setCreateRelWeight(parseFloat(e.target.value) || 1.0)}
