@@ -13,6 +13,11 @@ export default function SanitizeData() {
   const [targetEntity, setTargetEntity] = useState('');
   const [entityType, setEntityType] = useState('');
 
+    // Select Target Modal state
+    const [selectTargetModalOpen, setSelectTargetModalOpen] = useState(false);
+    const [selectedAction, setSelectedAction] = useState<'merge' | 'createRel' | null>(null); // Tracks which button triggered the modal
+    const [tempTarget, setTempTarget] = useState(''); // Temporary target selected in the modal
+
   // For controls that exist but are not being used.
   // const [descriptionStrategy, setDescriptionStrategy] = useState('join_unique');
   // const [sourceIdStrategy, setSourceIdStrategy] = useState('join_unique');
@@ -87,11 +92,14 @@ export default function SanitizeData() {
   const createSourceRef = useRef<HTMLInputElement>(null);
   const editSourceRef = useRef<HTMLInputElement>(null);
 
+  const editNameRef = useRef<HTMLInputElement>(null);
+
   const filteredModalTypes = allEntityTypes.filter((type) =>
     type.toLowerCase().includes(modalFilterText.toLowerCase())
   );
 
   const filterInputRef = useRef<HTMLInputElement>(null);
+  const previousFilterModeRef = useRef<'none' | 'selected' | 'type' | 'orphan'>('none');
 
     // Ref that always holds the current filterMode (fixes stale hotkey closures)
   const filterModeRef = useRef(filterMode);
@@ -269,12 +277,16 @@ export default function SanitizeData() {
           setEditEntityModalOpen(false);
         } else if (createRelModalOpen) {
           setCreateRelModalOpen(false);
+        } else if (selectTargetModalOpen) {
+          setSelectTargetModalOpen(false);
+          setTempTarget('');
+          setSelectedAction(null);
         }
       }
     };
     document.addEventListener('keydown', handleEscKey);
     return () => document.removeEventListener('keydown', handleEscKey);
-  }, [createRelModalOpen, createEntityModalOpen, editEntityModalOpen, editRelationshipsModalOpen, selectTypeModalOpen]);
+  }, [createRelModalOpen, createEntityModalOpen, editEntityModalOpen, editRelationshipsModalOpen, selectTypeModalOpen, selectTargetModalOpen]);
 
   // Update unique entity types from selected entities' details
   useEffect(() => {
@@ -1021,6 +1033,9 @@ export default function SanitizeData() {
     setEditEntitySourceId(entityDetails[entityName]?.sourceId || '');
     setEditError(null);
     setEditEntityModalOpen(true);
+
+    // Focus the Entity Name field when modal opens
+    setTimeout(() => editNameRef.current?.focus(), 100);
   };
 
   const openEditRelationshipsModal = (entityName: string) => {
@@ -1142,6 +1157,26 @@ export default function SanitizeData() {
     : paginatedEntities;
 
   const buttonTabIndex = filterText.length > 0 ? -1 : 0;
+
+  // Auto-focus the first entity row when entering filtered modes
+  useEffect(() => {
+    // Only run when the mode has actually changed to a filtered one
+    if (
+      previousFilterModeRef.current !== filterMode &&
+      (filterMode === 'selected' || filterMode === 'type' || filterMode === 'orphan')
+    ) {
+      if (displayEntities.length > 0) {
+        setTimeout(() => {
+          const firstRow = listContainerRef.current?.querySelector('div[tabindex="0"]') as HTMLElement | null;
+          firstRow?.focus();
+        }, 50);
+      }
+      // Update the ref for next time
+      previousFilterModeRef.current = filterMode;
+    }
+  }, [filterMode, displayEntities]);
+
+
 
 
   return (
@@ -1330,43 +1365,6 @@ export default function SanitizeData() {
 
         {/* Upper Right - should now always be visible */}
         <div className="w-3/4 p-2.5 flex flex-col gap-2.5">
-          <div className="flex flex-wrap items-end gap-2.5">
-            {/* Moved: Select Type button + input */}
-
-
-            {/* Original position: Target Entity */}
-            <div className="flex-1 min-w-[220px]">
-              <label className="block text-xs font-medium text-gray-700 mb-0.5">
-                Target Entity
-              </label>
-              <div className="relative">
-                <input
-                  type="text"
-                  list="target-entity-options"
-                  className="w-full px-3 py-1.5 border border-gray-300 rounded text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
-                  value={targetEntity}
-                  onChange={(e) => setTargetEntity(e.target.value)}
-                  placeholder="Type or select target..."
-                  autoComplete="off"
-                  tabIndex={buttonTabIndex}
-                />
-                <div className="absolute inset-y-0 right-0 flex items-center px-2 pointer-events-none">
-                  <svg className="w-3.5 h-3.5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-                  </svg>
-                </div>
-                <datalist id="target-entity-options">
-                  {targetOptions.map((option) => (
-                    <option key={option} value={option} />
-                  ))}
-                </datalist>
-              </div>
-            </div>
-
-            {/* Desc Strategy (unchanged, if still present) */}
-            {/* Source ID Strat. (unchanged, if still present) */}
-          </div>
-
           <div className="flex items-center gap-2">
             {/* Left-side action buttons */}
             <div className="flex gap-2">
@@ -1388,7 +1386,12 @@ export default function SanitizeData() {
               <button
                 className="px-3.5 py-1.5 bg-blue-600 text-white rounded hover:bg-blue-700 text-sm disabled:opacity-50"
                 disabled={selectedEntities.length < 2 || filterMode !== 'selected'}
-                onClick={handleMergeEntities}
+                onClick={() => {
+                  if (selectedEntities.length < 2 || filterMode !== 'selected') return;
+                  setSelectedAction('merge');
+                  setTempTarget(''); // Reset temp target
+                  setSelectTargetModalOpen(true);
+                }}
                 tabIndex={buttonTabIndex}
                 title={
                   filterMode !== 'selected'
@@ -1405,15 +1408,10 @@ export default function SanitizeData() {
                 className="px-3.5 py-1.5 bg-green-600 text-white rounded hover:bg-green-700 text-sm disabled:opacity-50"
                 disabled={selectedEntities.length !== 2 || filterMode !== 'selected'}
                 onClick={() => {
-                  if (!targetEntity || !selectedEntities.includes(targetEntity)) {
-                    alert('Please select a target entity from the dropdown first.');
-                    return;
-                  }
-                  setCreateRelModalOpen(true);
-                  setCreateRelError(null);
-                  setCreateRelDescription('');
-                  setCreateRelKeywords('');
-                  setCreateRelWeight(1.0);
+                  if (selectedEntities.length !== 2 || filterMode !== 'selected') return;
+                  setSelectedAction('createRel');
+                  setTempTarget(''); // Reset temp target
+                  setSelectTargetModalOpen(true);
                 }}
                 tabIndex={buttonTabIndex}
                 title={
@@ -1471,8 +1469,14 @@ export default function SanitizeData() {
               {displayEntities.map((entityName) => (
                 <div
                   key={entityName}
-                  className="grid grid-cols-[40px_1fr] items-center px-2 py-1.5 border-b border-gray-100 hover:bg-gray-50 text-sm cursor-pointer select-none focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-blue-50"
-                  onClick={() => toggleEntitySelection(entityName)}
+                  className="grid grid-cols-[40px_1fr] items-center px-2 py-1.5 border-b border-gray-100 hover:bg-gray-50 text-sm cursor-pointer select-text focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-blue-50"
+                  onClick={() => {
+                    // Ignore the click if the user has selected text (for copying)
+                    if (window.getSelection()?.toString().trim()) {
+                      return;
+                    }
+                    toggleEntitySelection(entityName);
+                  }}
                   tabIndex={0}
                   onKeyDown={(e) => {
                     // Allow global hotkeys (Ctrl+Enter, etc.) to work
@@ -1720,6 +1724,7 @@ export default function SanitizeData() {
                 </label>
                 <input
                   type="text"
+                  ref={editNameRef}  // ← ADD THIS
                   className="w-full px-3 py-2 border border-gray-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                   value={editEntityName}
                   onChange={(e) => setEditEntityName(e.target.value)}
@@ -1762,14 +1767,16 @@ export default function SanitizeData() {
               {/* Source ID */}
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Source ID (optional)
+                  Source ID
                 </label>
                 <input
                   type="text"
                   ref={editSourceRef}
-                  className="w-full px-3 py-2 border border-gray-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  className="w-full px-3 py-2 border border-gray-300 rounded text-sm focus:outline-none bg-gray-100 cursor-text"
                   value={editEntitySourceId}
-                  onChange={(e) => setEditEntitySourceId(e.target.value)}
+                  // Set readOnly to true
+                  readOnly
+                  // You can remove or keep the onChange; readOnly prevents it from firing via typing
                   placeholder="e.g., chunk-123"
                 />
               </div>
@@ -2183,7 +2190,7 @@ export default function SanitizeData() {
                   </label>
                   <input
                     type="text"
-                    className="w-full px-3 py-2 border border-gray-300 rounded text-sm bg-gray-100 cursor-not-allowed"
+                    className="w-full px-3 py-2 border border-gray-300 rounded text-sm bg-gray-100 cursor-text"
                     value={selectedEntities.find((n) => n !== targetEntity) || ''}
                     readOnly
                   />
@@ -2194,7 +2201,7 @@ export default function SanitizeData() {
                   </label>
                   <input
                     type="text"
-                    className="w-full px-3 py-2 border border-gray-300 rounded text-sm bg-gray-100 cursor-not-allowed"
+                    className="w-full px-3 py-2 border border-gray-300 rounded text-sm bg-gray-100 cursor-text"
                     value={targetEntity}
                     readOnly
                   />
@@ -2262,6 +2269,75 @@ export default function SanitizeData() {
         </div>
       )}
 
+      {/* Select Target Entity Modal */}
+      {selectTargetModalOpen && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg shadow-xl w-full max-w-md mx-4 p-6">
+            <h2 className="text-xl font-semibold mb-4 text-gray-800">
+              Select Target Entity
+            </h2>
+            <div className="mb-4">
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Choose the target entity from selected ({selectedEntities.length} available)
+              </label>
+              <select
+                className="w-full px-3 py-2 border border-gray-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                value={tempTarget}
+                onChange={(e) => setTempTarget(e.target.value)}
+                autoFocus
+              >
+                <option value="">Select target...</option>
+                {selectedEntities.sort((a, b) => a.localeCompare(b)).map((name) => (
+                  <option key={name} value={name}>
+                    {name}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="flex justify-end gap-3">
+              <button
+                onClick={() => {
+                  setSelectTargetModalOpen(false);
+                  setTempTarget('');
+                  setSelectedAction(null);
+                }}
+                className="px-4 py-2 bg-gray-200 hover:bg-gray-300 rounded text-gray-800 text-sm"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => {
+                  if (!tempTarget || !selectedEntities.includes(tempTarget)) {
+                    alert('Please select a valid target entity.');
+                    return;
+                  }
+                  setTargetEntity(tempTarget);
+                  setSelectTargetModalOpen(false);
+                  setTempTarget('');
+                  if (selectedAction === 'merge') {
+                    handleMergeEntities();
+                  } else if (selectedAction === 'createRel') {
+                    setCreateRelModalOpen(true);
+                    setCreateRelError(null);
+                    setCreateRelDescription('');
+                    setCreateRelKeywords('');
+                    setCreateRelWeight(1.0);
+                  }
+                  setSelectedAction(null);
+                }}
+                disabled={!tempTarget}
+                className={`px-4 py-2 rounded text-sm ${
+                  tempTarget
+                    ? 'bg-blue-600 hover:bg-blue-700 text-white'
+                    : 'bg-gray-300 text-gray-500 cursor-not-allowed'
+                }`}
+              >
+                Confirm
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
 
 
