@@ -399,7 +399,7 @@ export default function SanitizeData() {
         // Force-clear Target Entity (setTimeout(0) guarantees the state update happens)
         setTimeout(() => {
           setTargetEntity('');
-        }, 0);
+        }, 50);
 
         // Choose correct context
         if (createEntityModalOpen) {
@@ -565,6 +565,85 @@ export default function SanitizeData() {
     const sourceChanged = editEntitySourceId  !== (original?.sourceId || '');
 
     return nameChanged || descChanged || typeChanged || sourceChanged;
+  };
+
+  const handleRemoveSepDelimiters = async () => {
+    if (!confirm('Are you sure? This will remove all <SEP> delimiters from entity and relationship descriptions across the entire index. This cannot be undone.')) {
+      return;
+    }
+
+    alert('Starting cleanup... This may take a moment depending on the number of entities.');
+
+    try {
+      // Fetch all entity names
+      const listRes = await axios.get(`${API_BASE}/graph/label/list`);
+      const entityNames = listRes.data as string[];
+
+      // Process each entity in parallel (up to browser limits)
+      await Promise.all(
+        entityNames.map(async (name) => {
+          try {
+            // Fetch full details (entity + relationships)
+            const detailRes = await axios.get(
+              `${API_BASE}/graphs?label=${encodeURIComponent(name)}&max_depth=1&max_nodes=20000`
+            );
+            const data = detailRes.data;
+
+            // Find main entity node
+            const mainNode = data.nodes?.find((node: any) => node.id === name);
+            if (!mainNode) return;
+
+            // Clean entity description
+            let cleanDesc = mainNode.properties?.description || '';
+            cleanDesc = cleanDesc.replace(/<SEP>/g, ' ');  // Replace <SEP> with space
+
+            // Update entity if description changed
+            if (cleanDesc !== mainNode.properties?.description) {
+              const updatePayload = {
+                entity_name: name,
+                updated_data: { description: cleanDesc },
+                allow_rename: false,
+                allow_merge: false,
+              };
+              await axios.post(`${API_BASE}/graph/entity/edit`, updatePayload);
+            }
+
+            // Clean relationships
+            await Promise.all(
+              (data.edges || []).map(async (edge: any) => {
+                let cleanRelDesc = edge.properties?.description || '';
+                cleanRelDesc = cleanRelDesc.replace(/<SEP>/g, ' ');
+
+                if (cleanRelDesc !== edge.properties?.description) {
+                  const relPayload = {
+                    source_id: edge.source,
+                    target_id: edge.target,
+                    updated_data: { description: cleanRelDesc },
+                  };
+                  await axios.post(`${API_BASE}/graph/relation/edit`, relPayload);
+                }
+              })
+            );
+          } catch (err) {
+            console.error(`Error cleaning ${name}:`, err);
+          }
+        })
+      );
+
+      // Refresh the entire app after cleanup
+      const refreshedList = await axios.get(`${API_BASE}/graph/label/list`);
+      const sorted = (refreshedList.data as string[]).sort((a, b) =>
+        a.toLowerCase().localeCompare(b.toLowerCase())
+      );
+      setEntities(sorted);
+      fetchEntityDetails(sorted);
+      await refreshAllSelectedDetails();
+
+      alert('Cleanup complete! All <SEP> delimiters removed from descriptions.');
+    } catch (err) {
+      console.error('Cleanup failed:', err);
+      alert('Cleanup failed. Check console for details.');
+    }
   };
 
   const handleSaveEntity = async () => {
@@ -740,52 +819,37 @@ export default function SanitizeData() {
     }
   };
 
-  const handleCreateRelationship = async () => {
+  const handleCreateRelationship = async (relTarget: string = targetEntity) => {
+
     if (!createRelDescription.trim()) {
       setCreateRelError('Relationship description is required.');
       return;
     }
     setCreateRelError(null);
-
     // Derive source and target
-    if (selectedEntities.length !== 2 || !targetEntity || !selectedEntities.includes(targetEntity)) {
+    if (selectedEntities.length !== 2 || !relTarget || !selectedEntities.includes(relTarget)) {
       setCreateRelError('Invalid selection or target.');
       return;
     }
-    const sourceEntity = selectedEntities.find((n) => n !== targetEntity) || '';
-
+    const sourceEntity = selectedEntities.find((n) => n !== relTarget) || '';
     try {
       const relationData: Record<string, any> = {
         description: createRelDescription,
         keywords: createRelKeywords,
         weight: createRelWeight,
       };
-
       const payload = {
         source_entity: sourceEntity,
-        target_entity: targetEntity,
+        target_entity: relTarget,
         relation_data: relationData,
       };
-
-      console.log('Create rel payload:', JSON.stringify(payload, null, 2));  // Debug
-
       const response = await axios.post(`${API_BASE}/graph/relation/create`, payload);
-
-      console.log('Create rel response:', response.data);  // Debug
 
       if (response.status === 200) {
         setCreateRelModalOpen(false);
-
         // Refresh details for affected entities
         fetchEntityDetail(sourceEntity, true);
-        fetchEntityDetail(targetEntity, true);
-
-        // Optional: Full refresh if needed (e.g., for orphans if relations change)
-        // const listRes = await axios.get(`${API_BASE}/graph/label/list`);
-        // const sorted = (listRes.data as string[]).sort(...);
-        // setEntities(sorted);
-        // fetchEntityDetails(sorted);
-
+        fetchEntityDetail(relTarget, true);
         alert('Relationship created successfully!');
       }
     } catch (err: any) {
@@ -804,37 +868,25 @@ export default function SanitizeData() {
     }
   };
 
-  const handleMergeEntities = async () => {
-    if (selectedEntities.length < 2 || filterMode !== 'selected') return;  // Need at least 2 for merge
-
-    if (!targetEntity || !selectedEntities.includes(targetEntity)) {
+  const handleMergeEntities = async (mergeTarget: string = targetEntity) => {  // ← changed: accept param, default to state
+    if (!mergeTarget || !selectedEntities.includes(mergeTarget)) {
       alert('Please select a target entity from the dropdown first.');
       return;
     }
-
-    const entitiesToChange = selectedEntities.filter((n) => n !== targetEntity);
-
+    const entitiesToChange = selectedEntities.filter((n) => n !== mergeTarget);  // ← use mergeTarget
     if (entitiesToChange.length === 0) {
       alert('No source entities to merge (select at least one besides the target).');
       return;
     }
-
-    if (!confirm(`Are you sure you want to merge ${entitiesToChange.length} entity/entities into "${targetEntity}"? Sources will be deleted. This cannot be undone.`)) {
+    if (!confirm(`Are you sure you want to merge ${entitiesToChange.length} entity/entities into "${mergeTarget}"? Sources will be deleted. This cannot be undone.`)) {  // ← use mergeTarget
       return;
     }
-
     try {
       const payload = {
         entities_to_change: entitiesToChange,
-        entity_to_change_into: targetEntity,
+        entity_to_change_into: mergeTarget,  // ← use mergeTarget
       };
-
-      // console.log('Merge payload:', JSON.stringify(payload, null, 2));  // Debug
-
       const response = await axios.post(`${API_BASE}/graph/entities/merge`, payload);
-
-      // console.log('Merge response:', response.data);  // Debug
-
       if (response.status === 200) {
         // Full refresh after merge
         const listRes = await axios.get(`${API_BASE}/graph/label/list`);
@@ -843,15 +895,12 @@ export default function SanitizeData() {
         );
         setEntities(sorted);
         fetchEntityDetails(sorted);
-
         // Refresh target details (shows transferred relations)
-        fetchEntityDetail(targetEntity, true);
-
+        fetchEntityDetail(mergeTarget, true);  // ← use mergeTarget
         // Clear selections and firstEntity
         setSelectedEntities([]);
         setFirstEntity(null);
-        setTargetEntity('');  // Optional: clear target
-
+        setTargetEntity(''); // Optional: clear target
         alert(response.data.message || 'Entities merged successfully!');
       }
     } catch (err: any) {
@@ -891,7 +940,7 @@ export default function SanitizeData() {
     setTimeout(() => {
       filterInputRef.current?.focus();
       filterInputRef.current?.select();
-    }, 10);
+    }, 50);
   };
 
   // Show All + reset everything + put cursor back in filter
@@ -1442,11 +1491,21 @@ export default function SanitizeData() {
               </button>
             </div>
 
+            {/* New Clean Descriptions button */}
+            <button
+              onClick={handleRemoveSepDelimiters}  // We'll add this handler in Step 2
+              tabIndex={buttonTabIndex}
+              className="ml-auto px-3.5 py-1.5 bg-yellow-600 text-white rounded hover:bg-yellow-700 text-sm flex items-center gap-1.5 shadow-sm"
+              title="Remove <SEP> delimiters from all entity and relationship descriptions"
+            >
+              Clean Descriptions
+            </button>
+
             {/* Video Tutorial button – pushed all the way to the right */}
             <button
               onClick={openVideoTutorial}
               tabIndex={buttonTabIndex}
-              className="ml-auto px-3.5 py-1.5 bg-indigo-600 text-white rounded hover:bg-indigo-700 text-sm flex items-center gap-1.5 shadow-sm"
+              className="px-3.5 py-1.5 bg-indigo-600 text-white rounded hover:bg-indigo-700 text-sm flex items-center gap-1.5 shadow-sm"
               title="Watch the video tutorial (opens in new tab)"
             >
               🎥 Video Tutorial
@@ -1770,15 +1829,13 @@ export default function SanitizeData() {
                   Source ID
                 </label>
                 <input
-                  type="text"
-                  ref={editSourceRef}
-                  className="w-full px-3 py-2 border border-gray-300 rounded text-sm focus:outline-none bg-gray-100 cursor-text"
-                  value={editEntitySourceId}
-                  // Set readOnly to true
-                  readOnly
-                  // You can remove or keep the onChange; readOnly prevents it from firing via typing
-                  placeholder="e.g., chunk-123"
-                />
+                type="text"
+                ref={editSourceRef}
+                className="w-full px-3 py-2 border border-gray-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                value={editEntitySourceId}
+                onChange={(e) => setEditEntitySourceId(e.target.value)}
+                placeholder="e.g., chunk-123"
+              />
               </div>
             </div>
             <div className="mt-6 flex justify-end gap-3">
@@ -1980,7 +2037,7 @@ export default function SanitizeData() {
                         createSourceRef.current?.focus();
                       } else if (typeSelectionContext === 'edit') {
                         setEditEntityType(type);
-                        setTimeout(() => editSourceRef.current?.focus(), 10);
+                        setTimeout(() => editSourceRef.current?.focus(), 50);
                       }
                       setSelectTypeModalOpen(false);
                     }}
@@ -1992,7 +2049,7 @@ export default function SanitizeData() {
                         createSourceRef.current?.focus();
                       } else if (typeSelectionContext === 'edit') {
                         setEditEntityType(type);
-                        setTimeout(() => editSourceRef.current?.focus(), 10);
+                        setTimeout(() => editSourceRef.current?.focus(), 50);
                       }
                       setSelectTypeModalOpen(false);
                     }}
@@ -2006,7 +2063,7 @@ export default function SanitizeData() {
                           createSourceRef.current?.focus();
                         } else if (typeSelectionContext === 'edit') {
                           setEditEntityType(type);
-                          setTimeout(() => editSourceRef.current?.focus(), 10);
+                          setTimeout(() => editSourceRef.current?.focus(), 50);
                         }
                         setSelectTypeModalOpen(false);
                       }
@@ -2048,7 +2105,7 @@ export default function SanitizeData() {
                     createSourceRef.current?.focus();
                   } else if (typeSelectionContext === 'edit') {
                     setEditEntityType(selectedModalType);
-                    setTimeout(() => editSourceRef.current?.focus(), 10);
+                    setTimeout(() => editSourceRef.current?.focus(), 50);
                   }
                   setSelectTypeModalOpen(false);
                 }}
@@ -2254,7 +2311,7 @@ export default function SanitizeData() {
                 Cancel
               </button>
               <button
-                onClick={handleCreateRelationship}
+                onClick={() => handleCreateRelationship()}
                 disabled={!createRelDescription.trim()}
                 className={`px-4 py-2 rounded text-sm ${
                   createRelDescription.trim()
@@ -2315,13 +2372,16 @@ export default function SanitizeData() {
                   setSelectTargetModalOpen(false);
                   setTempTarget('');
                   if (selectedAction === 'merge') {
-                    handleMergeEntities();
+                    handleMergeEntities(tempTarget);  // Keep this as-is (merge doesn't have a second modal)
                   } else if (selectedAction === 'createRel') {
-                    setCreateRelModalOpen(true);
                     setCreateRelError(null);
                     setCreateRelDescription('');
                     setCreateRelKeywords('');
                     setCreateRelWeight(1.0);
+                    // Open the modal after state update (no premature save call)
+                    setTimeout(() => {
+                      setCreateRelModalOpen(true);
+                    }, 50);
                   }
                   setSelectedAction(null);
                 }}
