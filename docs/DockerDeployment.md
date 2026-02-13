@@ -95,6 +95,8 @@ docker compose up
 
 Software packages requiring `transformers`, `torch`, or `cuda` will is not preinstalled in the dokcer images. Consequently, document extraction tools such as Docling, as well as local LLM models like Hugging Face and LMDeploy, can not be used in an off line enviroment. These high-compute-resource-demanding services should not be integrated into LightRAG. Docling will be decoupled and deployed as a standalone service.
 
+If you run a standalone `docling-serve` service, configure LightRAG with `DOCLING_SERVE_BASE_URL` (plus optional `DOCLING_SERVE_API_KEY`) so binary document extraction is delegated over HTTP. In Docker Desktop deployments, use a reachable host such as `http://host.docker.internal:<port>` when docling-serve runs on the host machine.
+
 ## 📦 Build Docker Images
 
 ### For local development and testing

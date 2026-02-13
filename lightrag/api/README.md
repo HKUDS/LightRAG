@@ -607,6 +607,14 @@ ENABLE_LLM_CACHE_FOR_EXTRACT=true
 SUMMARY_LANGUAGE=Chinese
 MAX_PARALLEL_INSERT=2
 
+### Optional external docling-serve parsing for binary files (.pdf/.docx/.pptx/.xlsx)
+# DOCLING_SERVE_PARSE_EXTENSIONS='[".pdf", ".docx", ".pptx", ".xlsx"]'
+# DOCLING_SERVE_BASE_URL=http://docling-serve:5001
+# DOCLING_SERVE_API_KEY=your-docling-serve-api-key
+# DOCLING_SERVE_TIMEOUT=30
+# DOCLING_SERVE_POLL_INTERVAL=2.0
+# DOCLING_SERVE_MAX_WAIT=120.0
+
 ### LLM Configuration (Use valid host. For local services installed with docker, you can use host.docker.internal)
 TIMEOUT=150
 MAX_ASYNC=4
@@ -632,6 +640,25 @@ EMBEDDING_BINDING_HOST=http://localhost:11434
 # WHITELIST_PATHS=/api/*
 # WHITELIST_PATHS=/health,/api/*
 ```
+
+### Optional External Docling-Serve Extraction
+
+When `DOCLING_SERVE_BASE_URL` is configured, LightRAG routes only configured binary extensions through external docling-serve async APIs.
+
+Expected docling-serve endpoints:
+
+- `POST {DOCLING_SERVE_BASE_URL}/v1/convert/file/async`
+- `GET {DOCLING_SERVE_BASE_URL}/v1/status/poll/{task_id}`
+- `GET {DOCLING_SERVE_BASE_URL}/v1/result/{task_id}`
+
+Operational details:
+
+- Optional auth header: `X-Api-Key: ${DOCLING_SERVE_API_KEY}` (sent only when configured).
+- `DOCLING_SERVE_PARSE_EXTENSIONS` is a JSON list (for example `[".pdf", ".docx"]`) that controls which extensions use external parsing.
+- `DOCLING_SERVE_TIMEOUT` applies per HTTP request.
+- `DOCLING_SERVE_POLL_INTERVAL` controls status polling cadence.
+- `DOCLING_SERVE_MAX_WAIT` is the total async task wait budget before timeout.
+- Strict-fail semantics: for extensions routed to external mode, any submit/poll/result failure marks the file as failed and does not fall back to local parsers.
 
 ## Document and Chunk Processing
 

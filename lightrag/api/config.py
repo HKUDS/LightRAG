@@ -386,6 +386,35 @@ def parse_args() -> argparse.Namespace:
     # PDF decryption password
     args.pdf_decrypt_password = get_env_value("PDF_DECRYPT_PASSWORD", None)
 
+    # Optional external docling-serve integration for binary document extraction
+    args.docling_serve_base_url = get_env_value("DOCLING_SERVE_BASE_URL", "").strip()
+    args.docling_serve_api_key = get_env_value("DOCLING_SERVE_API_KEY", None)
+    args.docling_serve_timeout = get_env_value("DOCLING_SERVE_TIMEOUT", 30, int)
+    args.docling_serve_poll_interval = get_env_value(
+        "DOCLING_SERVE_POLL_INTERVAL", 2.0, float
+    )
+    args.docling_serve_max_wait = get_env_value("DOCLING_SERVE_MAX_WAIT", 120.0, float)
+    docling_serve_default_parse_extensions = [".pdf", ".docx", ".pptx", ".xlsx"]
+    raw_docling_serve_parse_extensions = get_env_value(
+        "DOCLING_SERVE_PARSE_EXTENSIONS",
+        docling_serve_default_parse_extensions,
+        list,
+    )
+    normalized_docling_serve_parse_extensions: list[str] = []
+    for extension in raw_docling_serve_parse_extensions:
+        if not isinstance(extension, str):
+            continue
+        clean_extension = extension.strip().lower()
+        if not clean_extension:
+            continue
+        if not clean_extension.startswith("."):
+            clean_extension = f".{clean_extension}"
+        normalized_docling_serve_parse_extensions.append(clean_extension)
+    # Keep order stable while removing duplicates
+    args.docling_serve_parse_extensions = list(
+        dict.fromkeys(normalized_docling_serve_parse_extensions)
+    )
+
     # Add environment variables that were previously read directly
     args.cors_origins = get_env_value("CORS_ORIGINS", "*")
     args.summary_language = get_env_value("SUMMARY_LANGUAGE", DEFAULT_SUMMARY_LANGUAGE)

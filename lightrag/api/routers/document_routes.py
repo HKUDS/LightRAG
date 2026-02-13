@@ -5,7 +5,9 @@ This module contains all document-related routes for the LightRAG API.
 import asyncio
 from functools import lru_cache
 from lightrag.utils import logger, get_pinyin_sort_key
+import aiohttp
 import aiofiles
+import mimetypes
 import traceback
 from datetime import datetime, timezone
 from pathlib import Path
@@ -1191,6 +1193,189 @@ def _extract_xlsx(file_bytes: bytes) -> str:
     return "\n".join(content_parts)
 
 
+def _is_external_docling_serve_enabled() -> bool:
+    """Check whether external docling-serve integration is enabled."""
+    base_url = getattr(global_args, "docling_serve_base_url", "")
+    return isinstance(base_url, str) and bool(base_url.strip())
+
+
+def _normalize_extension(extension: str) -> str:
+    """Normalize extension for matching in docling-serve extension list."""
+    normalized = extension.strip().lower()
+    if normalized and not normalized.startswith("."):
+        normalized = f".{normalized}"
+    return normalized
+
+
+def _should_use_external_docling_serve_for_extension(extension: str) -> bool:
+    """Decide whether this file extension should be parsed by docling-serve."""
+    if not _is_external_docling_serve_enabled():
+        return False
+
+    configured_extensions = getattr(
+        global_args,
+        "docling_serve_parse_extensions",
+        [".pdf", ".docx", ".pptx", ".xlsx"],
+    )
+    if not isinstance(configured_extensions, list):
+        return False
+
+    normalized_configured_extensions = {
+        _normalize_extension(item)
+        for item in configured_extensions
+        if isinstance(item, str) and item.strip()
+    }
+    return _normalize_extension(extension) in normalized_configured_extensions
+
+
+def _extract_docling_serve_content(result_payload: Any) -> str:
+    """Extract normalized text/markdown content from docling-serve result payload."""
+
+    def pick_content(document_data: dict[str, Any]) -> str:
+        for key in ("md_content", "text_content", "html_content", "doctags_content"):
+            value = document_data.get(key)
+            if isinstance(value, str) and value.strip():
+                return value
+
+        json_content = document_data.get("json_content")
+        if json_content is not None:
+            return str(json_content)
+        return ""
+
+    if not isinstance(result_payload, dict):
+        raise ValueError("Docling-serve result payload must be a JSON object")
+
+    direct_doc = result_payload.get("document")
+    if isinstance(direct_doc, dict):
+        extracted = pick_content(direct_doc)
+        if extracted.strip():
+            return extracted
+
+    docs = result_payload.get("documents")
+    if isinstance(docs, list):
+        for item in docs:
+            if not isinstance(item, dict):
+                continue
+            nested_doc = item.get("document")
+            if isinstance(nested_doc, dict):
+                extracted = pick_content(nested_doc)
+                if extracted.strip():
+                    return extracted
+            extracted = pick_content(item)
+            if extracted.strip():
+                return extracted
+
+    extracted = pick_content(result_payload)
+    if extracted.strip():
+        return extracted
+
+    raise ValueError(
+        "Docling-serve result payload does not contain markdown/text content"
+    )
+
+
+async def _convert_with_docling_serve(file_name: str, file_bytes: bytes) -> str:
+    """Convert binary document content through external docling-serve async API."""
+    base_url = str(getattr(global_args, "docling_serve_base_url", "")).strip().rstrip("/")
+    if not base_url:
+        raise ValueError("DOCLING_SERVE_BASE_URL is not configured")
+
+    api_key = getattr(global_args, "docling_serve_api_key", None)
+    timeout = max(1, int(getattr(global_args, "docling_serve_timeout", 30)))
+    poll_interval = max(
+        0.1, float(getattr(global_args, "docling_serve_poll_interval", 2.0))
+    )
+    max_wait = max(
+        poll_interval, float(getattr(global_args, "docling_serve_max_wait", 120.0))
+    )
+
+    headers = {"accept": "application/json"}
+    if api_key:
+        headers["X-Api-Key"] = api_key
+
+    submit_url = f"{base_url}/v1/convert/file/async"
+    status_url_base = f"{base_url}/v1/status/poll"
+    result_url_base = f"{base_url}/v1/result"
+
+    content_type = mimetypes.guess_type(file_name)[0] or "application/octet-stream"
+    form = aiohttp.FormData()
+    form.add_field("files", file_bytes, filename=file_name, content_type=content_type)
+    form.add_field("to_formats", "md")
+
+    client_timeout = aiohttp.ClientTimeout(total=timeout)
+    async with aiohttp.ClientSession(timeout=client_timeout) as session:
+        async with session.post(submit_url, headers=headers, data=form) as response:
+            submit_body = await response.text()
+            if response.status >= 400:
+                raise RuntimeError(
+                    f"docling-serve async submit failed ({response.status}): {submit_body}"
+                )
+            try:
+                submit_payload = await response.json(content_type=None)
+            except Exception as e:
+                raise RuntimeError(
+                    f"docling-serve returned invalid submit response: {submit_body}"
+                ) from e
+
+        task_id = submit_payload.get("task_id")
+        if not task_id:
+            raise RuntimeError(
+                f"docling-serve submit response missing task_id: {submit_payload}"
+            )
+
+        loop = asyncio.get_running_loop()
+        start_time = loop.time()
+        task_status = ""
+        status_payload: dict[str, Any] = {}
+
+        while True:
+            if loop.time() - start_time > max_wait:
+                raise TimeoutError(
+                    f"docling-serve task {task_id} timed out after {max_wait:.1f}s"
+                )
+
+            status_url = f"{status_url_base}/{task_id}?wait=0"
+            async with session.get(status_url, headers=headers) as response:
+                status_body = await response.text()
+                if response.status >= 400:
+                    raise RuntimeError(
+                        f"docling-serve status poll failed ({response.status}): {status_body}"
+                    )
+                try:
+                    status_payload = await response.json(content_type=None)
+                except Exception as e:
+                    raise RuntimeError(
+                        f"docling-serve returned invalid status response: {status_body}"
+                    ) from e
+
+            task_status = str(status_payload.get("task_status", "")).lower()
+            if task_status in {"success", "failure"}:
+                break
+
+            await asyncio.sleep(poll_interval)
+
+        if task_status != "success":
+            raise RuntimeError(
+                f"docling-serve task {task_id} finished with status '{task_status}': {status_payload}"
+            )
+
+        result_url = f"{result_url_base}/{task_id}"
+        async with session.get(result_url, headers=headers) as response:
+            result_body = await response.text()
+            if response.status >= 400:
+                raise RuntimeError(
+                    f"docling-serve result fetch failed ({response.status}): {result_body}"
+                )
+            try:
+                result_payload = await response.json(content_type=None)
+            except Exception as e:
+                raise RuntimeError(
+                    f"docling-serve returned invalid result response: {result_body}"
+                ) from e
+
+    return _extract_docling_serve_content(result_payload)
+
+
 async def pipeline_enqueue_file(
     rag: LightRAG, file_path: Path, track_id: str = None
 ) -> tuple[bool, str]:
@@ -1212,6 +1397,9 @@ async def pipeline_enqueue_file(
         content = ""
         ext = file_path.suffix.lower()
         file_size = 0
+        use_external_docling_serve = _should_use_external_docling_serve_for_extension(
+            ext
+        )
 
         # Get file size for error reporting
         try:
@@ -1364,28 +1552,33 @@ async def pipeline_enqueue_file(
 
                 case ".pdf":
                     try:
-                        # Try DOCLING first if configured and available
-                        if (
-                            global_args.document_loading_engine == "DOCLING"
-                            and _is_docling_available()
-                        ):
-                            content = await asyncio.to_thread(
-                                _convert_with_docling, file_path
+                        if use_external_docling_serve:
+                            content = await _convert_with_docling_serve(
+                                file_path.name, file
                             )
                         else:
+                            # Try DOCLING first if configured and available
                             if (
                                 global_args.document_loading_engine == "DOCLING"
-                                and not _is_docling_available()
+                                and _is_docling_available()
                             ):
-                                logger.warning(
-                                    f"DOCLING engine configured but not available for {file_path.name}. Falling back to pypdf."
+                                content = await asyncio.to_thread(
+                                    _convert_with_docling, file_path
                                 )
-                            # Use pypdf (non-blocking via to_thread)
-                            content = await asyncio.to_thread(
-                                _extract_pdf_pypdf,
-                                file,
-                                global_args.pdf_decrypt_password,
-                            )
+                            else:
+                                if (
+                                    global_args.document_loading_engine == "DOCLING"
+                                    and not _is_docling_available()
+                                ):
+                                    logger.warning(
+                                        f"DOCLING engine configured but not available for {file_path.name}. Falling back to pypdf."
+                                    )
+                                # Use pypdf (non-blocking via to_thread)
+                                content = await asyncio.to_thread(
+                                    _extract_pdf_pypdf,
+                                    file,
+                                    global_args.pdf_decrypt_password,
+                                )
                     except Exception as e:
                         error_files = [
                             {
@@ -1405,24 +1598,29 @@ async def pipeline_enqueue_file(
 
                 case ".docx":
                     try:
-                        # Try DOCLING first if configured and available
-                        if (
-                            global_args.document_loading_engine == "DOCLING"
-                            and _is_docling_available()
-                        ):
-                            content = await asyncio.to_thread(
-                                _convert_with_docling, file_path
+                        if use_external_docling_serve:
+                            content = await _convert_with_docling_serve(
+                                file_path.name, file
                             )
                         else:
+                            # Try DOCLING first if configured and available
                             if (
                                 global_args.document_loading_engine == "DOCLING"
-                                and not _is_docling_available()
+                                and _is_docling_available()
                             ):
-                                logger.warning(
-                                    f"DOCLING engine configured but not available for {file_path.name}. Falling back to python-docx."
+                                content = await asyncio.to_thread(
+                                    _convert_with_docling, file_path
                                 )
-                            # Use python-docx (non-blocking via to_thread)
-                            content = await asyncio.to_thread(_extract_docx, file)
+                            else:
+                                if (
+                                    global_args.document_loading_engine == "DOCLING"
+                                    and not _is_docling_available()
+                                ):
+                                    logger.warning(
+                                        f"DOCLING engine configured but not available for {file_path.name}. Falling back to python-docx."
+                                    )
+                                # Use python-docx (non-blocking via to_thread)
+                                content = await asyncio.to_thread(_extract_docx, file)
                     except Exception as e:
                         error_files = [
                             {
@@ -1442,24 +1640,29 @@ async def pipeline_enqueue_file(
 
                 case ".pptx":
                     try:
-                        # Try DOCLING first if configured and available
-                        if (
-                            global_args.document_loading_engine == "DOCLING"
-                            and _is_docling_available()
-                        ):
-                            content = await asyncio.to_thread(
-                                _convert_with_docling, file_path
+                        if use_external_docling_serve:
+                            content = await _convert_with_docling_serve(
+                                file_path.name, file
                             )
                         else:
+                            # Try DOCLING first if configured and available
                             if (
                                 global_args.document_loading_engine == "DOCLING"
-                                and not _is_docling_available()
+                                and _is_docling_available()
                             ):
-                                logger.warning(
-                                    f"DOCLING engine configured but not available for {file_path.name}. Falling back to python-pptx."
+                                content = await asyncio.to_thread(
+                                    _convert_with_docling, file_path
                                 )
-                            # Use python-pptx (non-blocking via to_thread)
-                            content = await asyncio.to_thread(_extract_pptx, file)
+                            else:
+                                if (
+                                    global_args.document_loading_engine == "DOCLING"
+                                    and not _is_docling_available()
+                                ):
+                                    logger.warning(
+                                        f"DOCLING engine configured but not available for {file_path.name}. Falling back to python-pptx."
+                                    )
+                                # Use python-pptx (non-blocking via to_thread)
+                                content = await asyncio.to_thread(_extract_pptx, file)
                     except Exception as e:
                         error_files = [
                             {
@@ -1479,24 +1682,29 @@ async def pipeline_enqueue_file(
 
                 case ".xlsx":
                     try:
-                        # Try DOCLING first if configured and available
-                        if (
-                            global_args.document_loading_engine == "DOCLING"
-                            and _is_docling_available()
-                        ):
-                            content = await asyncio.to_thread(
-                                _convert_with_docling, file_path
+                        if use_external_docling_serve:
+                            content = await _convert_with_docling_serve(
+                                file_path.name, file
                             )
                         else:
+                            # Try DOCLING first if configured and available
                             if (
                                 global_args.document_loading_engine == "DOCLING"
-                                and not _is_docling_available()
+                                and _is_docling_available()
                             ):
-                                logger.warning(
-                                    f"DOCLING engine configured but not available for {file_path.name}. Falling back to openpyxl."
+                                content = await asyncio.to_thread(
+                                    _convert_with_docling, file_path
                                 )
-                            # Use openpyxl (non-blocking via to_thread)
-                            content = await asyncio.to_thread(_extract_xlsx, file)
+                            else:
+                                if (
+                                    global_args.document_loading_engine == "DOCLING"
+                                    and not _is_docling_available()
+                                ):
+                                    logger.warning(
+                                        f"DOCLING engine configured but not available for {file_path.name}. Falling back to openpyxl."
+                                    )
+                                # Use openpyxl (non-blocking via to_thread)
+                                content = await asyncio.to_thread(_extract_xlsx, file)
                     except Exception as e:
                         error_files = [
                             {
