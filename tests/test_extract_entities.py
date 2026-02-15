@@ -34,7 +34,9 @@ def _make_global_config(
 
 
 # Minimal valid extraction result that _process_extraction_result can parse
-_EXTRACTION_RESULT = "(entity<|#|>TEST_ENTITY<|#|>CONCEPT<|#|>A test entity)<|COMPLETE|>"
+_EXTRACTION_RESULT = (
+    "(entity<|#|>TEST_ENTITY<|#|>CONCEPT<|#|>A test entity)<|COMPLETE|>"
+)
 
 
 def _make_chunks(content: str = "Test content.") -> dict[str, dict]:
