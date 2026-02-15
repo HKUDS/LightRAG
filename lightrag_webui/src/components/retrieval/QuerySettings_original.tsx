@@ -213,23 +213,15 @@ export default function QuerySettings() {
                   value={querySettings.chunk_top_k ?? ''}
                   onChange={(e) => {
                     const value = e.target.value
-                    const numValue = value === '' ? '' : parseInt(value) || 0
-                    handleChange('chunk_top_k', numValue)
-
-                    // Auto-enable KG-only mode when chunk_top_k is 0
-                    if (numValue === 0) {
-                      handleChange('only_kg_context', true)
-                    } else {
-                      handleChange('only_kg_context', false)
-                    }
+                    handleChange('chunk_top_k', value === '' ? '' : parseInt(value) || 0)
                   }}
                   onBlur={(e) => {
                     const value = e.target.value
                     if (value === '' || isNaN(parseInt(value))) {
-                      handleChange('chunk_top_k', 0)
+                      handleChange('chunk_top_k', 20)
                     }
                   }}
-                  min={0}
+                  min={1}
                   placeholder={t('retrievePanel.querySettings.chunkTopKPlaceholder')}
                   className="h-9 flex-1 pr-2 [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none [-moz-appearance:textfield]"
                 />

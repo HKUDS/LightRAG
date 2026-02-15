@@ -125,6 +125,7 @@ const useSettingsStoreBase = create<SettingsState>()(
         mode: 'global',
         top_k: 40,
         chunk_top_k: 20,
+        only_kg_context: false,
         max_entity_tokens: 6000,
         max_relation_tokens: 8000,
         max_total_tokens: 30000,

@@ -389,6 +389,8 @@
       "thinkingInProgress": "Thinking in progress..."
     },
     "retrieval": {
+      "onlyKgContext": "KG Only Mode",
+      "onlyKgContextTooltip": "When enabled, uses only knowledge graph information without document chunks",
       "startPrompt": "Start a retrieval by typing your query below",
       "clear": "Clear",
       "send": "Send",

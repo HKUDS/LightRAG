@@ -3999,11 +3999,6 @@ async def _build_context_str(
     text_units_str = "\n".join(
         json.dumps(text_unit, ensure_ascii=False) for text_unit in chunks_context
     )
-
-    if query_param.only_kg_context:
-        text_units_str = ""
-        reference_list_str = ""
-
     reference_list_str = "\n".join(
         f"[{ref['reference_id']}] {ref['file_path']}"
         for ref in reference_list

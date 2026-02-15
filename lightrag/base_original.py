@@ -168,9 +168,6 @@ class QueryParam:
     containing citation information for the retrieved content.
     """
 
-    only_kg_context: bool = False
-    """If True, includes only knowledge graph (entities and relations) in context, excluding all chunks."""
-
 
 @dataclass
 class StorageNameSpace(ABC):
