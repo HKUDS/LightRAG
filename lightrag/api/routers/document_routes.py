@@ -1229,17 +1229,12 @@ def _should_use_external_docling_serve_for_extension(extension: str) -> bool:
 
 
 def _extract_docling_serve_content(result_payload: Any) -> str:
-    """Extract normalized text/markdown content from docling-serve result payload."""
+    """Extract markdown content from docling-serve result payload."""
 
-    def pick_content(document_data: dict[str, Any]) -> str:
-        for key in ("md_content", "text_content", "html_content", "doctags_content"):
-            value = document_data.get(key)
-            if isinstance(value, str) and value.strip():
-                return value
-
-        json_content = document_data.get("json_content")
-        if json_content is not None:
-            return str(json_content)
+    def pick_markdown(document_data: dict[str, Any]) -> str:
+        value = document_data.get("md_content")
+        if isinstance(value, str) and value.strip():
+            return value
         return ""
 
     if not isinstance(result_payload, dict):
@@ -1247,7 +1242,7 @@ def _extract_docling_serve_content(result_payload: Any) -> str:
 
     direct_doc = result_payload.get("document")
     if isinstance(direct_doc, dict):
-        extracted = pick_content(direct_doc)
+        extracted = pick_markdown(direct_doc)
         if extracted.strip():
             return extracted
 
@@ -1258,19 +1253,19 @@ def _extract_docling_serve_content(result_payload: Any) -> str:
                 continue
             nested_doc = item.get("document")
             if isinstance(nested_doc, dict):
-                extracted = pick_content(nested_doc)
+                extracted = pick_markdown(nested_doc)
                 if extracted.strip():
                     return extracted
-            extracted = pick_content(item)
+            extracted = pick_markdown(item)
             if extracted.strip():
                 return extracted
 
-    extracted = pick_content(result_payload)
+    extracted = pick_markdown(result_payload)
     if extracted.strip():
         return extracted
 
     raise ValueError(
-        "Docling-serve result payload does not contain markdown/text content"
+        "Docling-serve result payload does not contain md_content markdown output"
     )
 
 

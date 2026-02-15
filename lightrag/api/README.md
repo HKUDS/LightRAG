@@ -655,6 +655,7 @@ Operational details:
 
 - Optional auth header: `X-Api-Key: ${DOCLING_SERVE_API_KEY}` (sent only when configured).
 - `DOCLING_SERVE_PARSE_EXTENSIONS` is a JSON list (for example `[".pdf", ".docx"]`) that controls which extensions use external parsing.
+- LightRAG requests `to_formats=md` and accepts only `md_content` from docling-serve, so external conversion is enforced as Markdown.
 - `DOCLING_SERVE_TIMEOUT` applies per HTTP request.
 - `DOCLING_SERVE_POLL_INTERVAL` controls status polling cadence.
 - `DOCLING_SERVE_MAX_WAIT` is the total async task wait budget before timeout.
