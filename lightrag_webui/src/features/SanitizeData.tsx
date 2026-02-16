@@ -101,6 +101,16 @@ export default function SanitizeData() {
   const filterInputRef = useRef<HTMLInputElement>(null);
   const previousFilterModeRef = useRef<'none' | 'selected' | 'type' | 'orphan'>('none');
 
+    // Batch Relationships Modal state
+    const [batchModalOpen, setBatchModalOpen] = useState(false);
+    const [batchSource, setBatchSource] = useState<string | null>(null);
+    const [batchTargets, setBatchTargets] = useState<string[]>([]);
+    const [batchTemplate, setBatchTemplate] = useState<any | null>(null); // Will hold selected template object
+    const [batchTemplates, setBatchTemplates] = useState<any[]>([]); // All templates from entity
+    const [batchPreview, setBatchPreview] = useState<any[]>([]); // Generated previews
+    const [batchErrors, setBatchErrors] = useState<string[]>([]); // e.g., duplicates
+    const [loadingBatch, setLoadingBatch] = useState(false);
+
     // Ref that always holds the current filterMode (fixes stale hotkey closures)
   const filterModeRef = useRef(filterMode);
   useEffect(() => {
@@ -422,6 +432,38 @@ export default function SanitizeData() {
     editRelationshipsModalOpen,
     createRelModalOpen
   ]);
+
+  useEffect(() => {
+    if (batchModalOpen) {
+      const fetchTemplates = async () => {
+        setLoadingBatch(true);
+        try {
+          const res = await axios.get(`${API_BASE}/graphs?label=${encodeURIComponent('Relationship Templates')}&max_depth=1&max_nodes=1`);
+          const mainNode = res.data.nodes?.find((node: any) => node.id === 'Relationship Templates');
+          const jsonDesc = mainNode?.properties?.description || '{}';
+          const parsed = JSON.parse(jsonDesc);
+          setBatchTemplates(parsed.relationship_templates || []);
+        } catch (err) {
+          console.error('Failed to fetch templates:', err);
+          setBatchErrors(['Failed to load templates. Check if "Relationship Templates" entity exists.']);
+        } finally {
+          setLoadingBatch(false);
+        }
+      };
+      fetchTemplates();
+      // Pre-populate with current selections if in 'selected' mode
+      if (filterMode === 'selected' && selectedEntities.length >= 2) {
+        setBatchTargets(selectedEntities); // Start with all selected as potential targets/source
+      }
+    } else {
+      // Reset on close
+      setBatchSource(null);
+      setBatchTargets([]);
+      setBatchTemplate(null);
+      setBatchPreview([]);
+      setBatchErrors([]);
+    }
+  }, [batchModalOpen, filterMode, selectedEntities]);
 
   // Pagination handlers
   const goToFirst = () => setCurrentPage(1);
@@ -916,6 +958,82 @@ export default function SanitizeData() {
         errorMsg = err.message;
       }
       alert(errorMsg);
+    }
+  };
+
+  const handleGeneratePreview = async () => {
+    if (!batchSource || !batchTemplate || batchTargets.length <= 1) return;
+    setLoadingBatch(true);
+    setBatchPreview([]);
+    setBatchErrors([]);
+    const targets = batchTargets.filter((t) => t !== batchSource);
+    const previews = [];
+    const errors = [];
+    try {
+      // Fetch existing relationships for source
+      const res = await axios.get(`${API_BASE}/graphs?label=${encodeURIComponent(batchSource)}&max_depth=1&max_nodes=20000`);
+      const existingEdges = res.data.edges || [];
+      for (const target of targets) {
+        const desc = batchTemplate.description_template
+          .replace('{source}', batchSource)
+          .replace('{target}', target);
+        const keywords = batchTemplate.keywords_template
+          .replace('{source}', batchSource)
+          .replace('{target}', target);
+        const weight = batchTemplate.default_weight;
+        // Check for duplicate
+        const duplicate = existingEdges.some(
+          (edge: any) => edge.source === batchSource && edge.target === target
+        );
+        previews.push({
+          target,
+          description: desc,
+          keywords,
+          weight,
+          error: duplicate ? 'Duplicate relationship exists' : null,
+        });
+        if (duplicate) errors.push(`Duplicate for ${target}`);
+      }
+      setBatchPreview(previews);
+      setBatchErrors(errors);
+    } catch (err) {
+      console.error('Preview failed:', err);
+      setBatchErrors(['Failed to generate preview.']);
+    } finally {
+      setLoadingBatch(false);
+    }
+  };
+
+  const handleBatchCreate = async () => {
+    if (batchPreview.some((p) => p.error) && !confirm('Some duplicates found. Proceed anyway?')) return;
+    setLoadingBatch(true);
+    try {
+      let successCount = 0;
+      for (const prev of batchPreview) {
+        if (prev.error) continue; // Skip duplicates (or handle as needed)
+        const payload = {
+          source_entity: batchSource,
+          target_entity: prev.target,
+          relation_data: {
+            description: prev.description,
+            keywords: prev.keywords,
+            weight: prev.weight,
+          },
+        };
+        await axios.post(`${API_BASE}/graph/relation/create`, payload);
+        successCount++;
+      }
+      // Refresh affected entities
+      await refreshAllSelectedDetails();
+      fetchEntityDetail(batchSource!, true);
+      batchTargets.forEach((t) => fetchEntityDetail(t, true));
+      alert(`Created ${successCount} relationships successfully!`);
+      setBatchModalOpen(false);
+    } catch (err) {
+      console.error('Batch create failed:', err);
+      setBatchErrors(['Failed to create some relationships.']);
+    } finally {
+      setLoadingBatch(false);
     }
   };
 
@@ -1472,6 +1590,22 @@ export default function SanitizeData() {
                 }
               >
                 Create Rel.
+              </button>
+
+              <button
+                className="px-3.5 py-1.5 bg-purple-600 text-white rounded hover:bg-purple-700 text-sm disabled:opacity-50"
+                disabled={selectedEntities.length < 2 || filterMode !== 'selected'}
+                onClick={() => setBatchModalOpen(true)}
+                tabIndex={buttonTabIndex}
+                title={
+                  filterMode !== 'selected'
+                    ? "Enter 'Show Sel. Only' mode first\nto act on selected entities"
+                    : selectedEntities.length < 2
+                    ? "Select at least two entities first\n(check the boxes on the left)"
+                    : undefined
+                }
+              >
+                Batch Rel.
               </button>
 
               <button
@@ -2398,6 +2532,153 @@ export default function SanitizeData() {
           </div>
         </div>
       )}
+
+      {/* Batch Relationships Modal */}
+      {batchModalOpen && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 overflow-y-auto">
+          <div className="bg-white rounded-lg shadow-2xl w-full max-w-4xl mx-4 my-8 p-6">
+            <h2 className="text-xl font-semibold mb-4 text-gray-800">
+              Batch Create Relationships
+            </h2>
+            {batchErrors.length > 0 && (
+              <div className="mb-4 p-3 bg-red-100 text-red-700 rounded text-sm">
+                {batchErrors.join(' ')}
+              </div>
+            )}
+            {loadingBatch ? (
+              <div className="text-gray-500 py-6 text-center">Loading templates...</div>
+            ) : (
+              <div className="space-y-6">
+                {/* Section 1: Select Source */}
+                <div className="border border-gray-200 rounded p-4">
+                  <h3 className="font-medium mb-2">Step 1: Select Source Entity</h3>
+                  <select
+                    className="w-full px-3 py-2 border border-gray-300 rounded text-sm"
+                    value={batchSource || ''}
+                    onChange={(e) => setBatchSource(e.target.value)}
+                    disabled={batchTargets.length === 0}
+                  >
+                    <option value="">Choose source...</option>
+                    {batchTargets.sort().map((name) => (
+                      <option key={name} value={name}>
+                        {name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                {/* Section 2: Select Targets */}
+                <div className="border border-gray-200 rounded p-4">
+                  <h3 className="font-medium mb-2">Step 2: Select Target Entities</h3>
+                  <div className="max-h-40 overflow-y-auto">
+                    {batchTargets
+                      .filter((n) => n !== batchSource)
+                      .sort()
+                      .map((name) => (
+                        <div key={name} className="flex items-center mb-1">
+                          <input
+                            type="checkbox"
+                            checked={batchTargets.includes(name)}
+                            onChange={(e) => {
+                              if (e.target.checked) {
+                                setBatchTargets((prev) => [...prev, name]);
+                              } else {
+                                setBatchTargets((prev) => prev.filter((t) => t !== name));
+                              }
+                            }}
+                            className="mr-2"
+                            disabled={!batchSource || name === batchSource}
+                          />
+                          {name}
+                        </div>
+                      ))}
+                  </div>
+                </div>
+
+                {/* Section 3: Choose Template */}
+                <div className="border border-gray-200 rounded p-4">
+                  <h3 className="font-medium mb-2">Step 3: Choose Template</h3>
+                  <select
+                    className="w-full px-3 py-2 border border-gray-300 rounded text-sm"
+                    value={batchTemplate?.id || ''}
+                    onChange={(e) => {
+                      const selected = batchTemplates.find((t: any) => t.id === e.target.value);
+                      setBatchTemplate(selected || null);
+                    }}
+                    disabled={!batchSource || batchTargets.filter((n) => n !== batchSource).length === 0}
+                  >
+                    <option value="">Select template...</option>
+                    {batchTemplates.map((t: any) => (
+                      <option key={t.id} value={t.id}>
+                        {t.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                {/* Section 4: Preview & Create */}
+                <div className="border border-gray-200 rounded p-4">
+                  <h3 className="font-medium mb-2">Step 4: Preview & Create</h3>
+                  {batchPreview.length === 0 && batchTemplate && (
+                    <div className="mb-4 p-3 bg-blue-50 text-blue-700 rounded text-sm border border-blue-200">
+                      Generate a preview first to review the relationships and enable batch creation.
+                    </div>
+                  )}
+                  <button
+                    onClick={handleGeneratePreview}
+                    disabled={!batchTemplate}
+                    className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 text-sm mb-4"
+                  >
+                    Generate Preview
+                  </button>
+                  {batchPreview.length > 0 && (
+                    <div className="max-h-60 overflow-y-auto">
+                      <table className="w-full text-sm border-collapse">
+                        <thead>
+                          <tr className="bg-gray-100">
+                            <th className="p-2 text-left">Target</th>
+                            <th className="p-2 text-left">Description</th>
+                            <th className="p-2 text-left">Keywords</th>
+                            <th className="p-2 text-left">Weight</th>
+                            <th className="p-2 text-left">Status</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {batchPreview.map((prev, idx) => (
+                            <tr key={idx} className="border-b">
+                              <td className="p-2">{prev.target}</td>
+                              <td className="p-2">{prev.description}</td>
+                              <td className="p-2">{prev.keywords}</td>
+                              <td className="p-2">{prev.weight}</td>
+                              <td className="p-2 text-red-600">{prev.error || 'OK'}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                  <button
+                    onClick={handleBatchCreate}
+                    disabled={batchPreview.length === 0 || batchErrors.length > 0}
+                    className="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700 text-sm mt-4"
+                  >
+                    Create Batch
+                  </button>
+                </div>
+              </div>
+            )}
+            <div className="mt-6 flex justify-end">
+              <button
+                onClick={() => setBatchModalOpen(false)}
+                className="px-5 py-2 bg-gray-200 hover:bg-gray-300 rounded text-gray-800"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
 
 
 
