@@ -784,6 +784,16 @@ export default function SanitizeData() {
         // ← NEW: Refresh EVERY selected entity so all panels (and any related-entity lists) are up-to-date
         await refreshAllSelectedDetails();
 
+        // Conditional full page reload only if name changed AND at least one other field changed
+        if (allowRename && (descChanged || typeChanged || sourceChanged)) {
+          alert(`Reloading page to ensure all mixed name and property changes are fully reflected.
+
+            To avoid a full refresh in the future:
+            Change the entity name first and save the change.
+            Then edit the entity properties`);
+          window.location.reload();
+        }
+
         alert('Entity updated successfully!');
       } else {
         setEditError('Update failed with status: ' + response.status);
