@@ -291,12 +291,14 @@ export default function SanitizeData() {
           setSelectTargetModalOpen(false);
           setTempTarget('');
           setSelectedAction(null);
+        } else if (batchModalOpen) {
+        setBatchModalOpen(false);
         }
       }
     };
     document.addEventListener('keydown', handleEscKey);
     return () => document.removeEventListener('keydown', handleEscKey);
-  }, [createRelModalOpen, createEntityModalOpen, editEntityModalOpen, editRelationshipsModalOpen, selectTypeModalOpen, selectTargetModalOpen]);
+  }, [createRelModalOpen, createEntityModalOpen, editEntityModalOpen, editRelationshipsModalOpen, selectTypeModalOpen, selectTargetModalOpen, batchModalOpen]);
 
   // Update unique entity types from selected entities' details
   useEffect(() => {
