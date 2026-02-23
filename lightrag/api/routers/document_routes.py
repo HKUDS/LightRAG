@@ -3,14 +3,14 @@ This module contains all document-related routes for the LightRAG API.
 """
 
 import asyncio
-from functools import lru_cache
-from lightrag.utils import logger, get_pinyin_sort_key
-import aiofiles
 import traceback
 from datetime import datetime, timezone
-from pathlib import Path
-from typing import Dict, List, Optional, Any, Literal
+from functools import lru_cache
 from io import BytesIO
+from pathlib import Path
+from typing import Any, Dict, List, Literal, Optional
+
+import aiofiles
 from fastapi import (
     APIRouter,
     BackgroundTasks,
@@ -22,13 +22,16 @@ from fastapi import (
 from pydantic import BaseModel, Field, field_validator
 
 from lightrag import LightRAG
+from lightrag.api.utils_api import get_combined_auth_dependency
 from lightrag.base import DeletionResult, DocProcessingStatus, DocStatus
 from lightrag.utils import (
-    generate_track_id,
     compute_mdhash_id,
+    generate_track_id,
+    get_pinyin_sort_key,
+    logger,
     sanitize_text_for_encoding,
 )
-from lightrag.api.utils_api import get_combined_auth_dependency
+
 from ..config import global_args
 
 
@@ -48,6 +51,57 @@ def _is_docling_available() -> bool:
         return True
     except ImportError:
         return False
+
+
+def _detect_docling_document(file_bytes: bytes) -> bool:
+    """Detect whether file bytes represent a serialised DoclingDocument.
+
+    DoclingDocument JSON files contain a top-level ``schema_name`` field
+    set to ``"DoclingDocument"``.  We inspect only the first 4 KB so that
+    detection is cheap even for large files.
+
+    Args:
+        file_bytes: Raw bytes of the uploaded file.
+
+    Returns:
+        bool: True if the bytes look like a DoclingDocument JSON.
+    """
+    import json
+
+    try:
+        # Limit parsing to the first 4 KB for fast detection
+        data = json.loads(file_bytes[:4096])
+        return isinstance(data, dict) and data.get("schema_name") == "DoclingDocument"
+    except Exception:
+        return False
+
+
+def _load_docling_document_json(file_path: Path) -> str:
+    """Load a serialised DoclingDocument and export its content as markdown.
+
+    DoclingDocument is Docling's native structured format.  Exporting via
+    ``export_to_markdown()`` preserves tables, headings, lists and inline
+    formatting far better than a plain-text dump, and avoids the extra
+    round-trip of saving to ``.md`` first.
+
+    Args:
+        file_path: Path to the ``.json`` file containing the serialised
+            DoclingDocument.
+
+    Returns:
+        str: Markdown representation of the document.
+
+    Raises:
+        ImportError: If ``docling-core`` is not installed.
+        Exception: If the file cannot be parsed as a DoclingDocument.
+    """
+    from docling_core.types.doc import (
+        DoclingDocument as _DoclingDocument,  # type: ignore[import-not-found]
+    )
+
+    with open(file_path, "r", encoding="utf-8") as fh:
+        doc = _DoclingDocument.model_validate_json(fh.read())
+    return doc.export_to_markdown()
 
 
 # Function to format datetime to ISO format string with timezone information
@@ -1274,7 +1328,6 @@ async def pipeline_enqueue_file(
                     | ".html"
                     | ".htm"
                     | ".tex"
-                    | ".json"
                     | ".xml"
                     | ".yaml"
                     | ".yml"
@@ -1361,6 +1414,61 @@ async def pipeline_enqueue_file(
                             f"[File Extraction]File {file_path.name} is not valid UTF-8 encoded text. Please convert it to UTF-8 before processing."
                         )
                         return False, track_id
+
+                case ".json":
+                    # DoclingDocument native format detection.
+                    # DoclingDocument is Docling's rich internal representation.
+                    # When the file is identified as a DoclingDocument we use
+                    # Docling's own export to markdown, which faithfully preserves
+                    # tables, headings and inline structure.  All other .json files
+                    # fall back to plain UTF-8 text decoding.
+                    if _is_docling_available() and _detect_docling_document(file):
+                        try:
+                            content = await asyncio.to_thread(
+                                _load_docling_document_json, file_path
+                            )
+                            logger.info(
+                                f"[File Extraction]Loaded {file_path.name} as DoclingDocument"
+                            )
+                        except Exception as e:
+                            logger.warning(
+                                f"[File Extraction]DoclingDocument parsing failed for "
+                                f"{file_path.name}, falling back to plain text: {e}"
+                            )
+                            try:
+                                content = file.decode("utf-8")
+                            except UnicodeDecodeError:
+                                error_files = [
+                                    {
+                                        "file_path": str(file_path.name),
+                                        "error_description": "[File Extraction]UTF-8 encoding error",
+                                        "original_error": "File is not valid UTF-8 encoded text",
+                                        "file_size": file_size,
+                                    }
+                                ]
+                                await rag.apipeline_enqueue_error_documents(
+                                    error_files, track_id
+                                )
+                                return False, track_id
+                    else:
+                        try:
+                            content = file.decode("utf-8")
+                        except UnicodeDecodeError as e:
+                            error_files = [
+                                {
+                                    "file_path": str(file_path.name),
+                                    "error_description": "[File Extraction]UTF-8 encoding error, please convert it to UTF-8 before processing",
+                                    "original_error": f"File is not valid UTF-8 encoded text: {str(e)}",
+                                    "file_size": file_size,
+                                }
+                            ]
+                            await rag.apipeline_enqueue_error_documents(
+                                error_files, track_id
+                            )
+                            logger.error(
+                                f"[File Extraction]File {file_path.name} is not valid UTF-8 encoded text."
+                            )
+                            return False, track_id
 
                 case ".pdf":
                     try:
@@ -2624,9 +2732,9 @@ def create_document_routes(
         """
         try:
             from lightrag.kg.shared_storage import (
+                get_all_update_flags_status,
                 get_namespace_data,
                 get_namespace_lock,
-                get_all_update_flags_status,
             )
 
             pipeline_status = await get_namespace_data(
