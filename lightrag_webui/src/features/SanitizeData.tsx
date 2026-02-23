@@ -1933,7 +1933,7 @@ export default function SanitizeData() {
                 {editError}
               </div>
             )}
-            <div className="relative"> 
+            <div className="relative">
             {savingEntity && (
               <div className="absolute inset-0 bg-white bg-opacity-75 flex items-center justify-center z-10">
                 <div className="flex flex-col items-center">
