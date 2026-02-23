@@ -101,15 +101,19 @@ export default function SanitizeData() {
   const filterInputRef = useRef<HTMLInputElement>(null);
   const previousFilterModeRef = useRef<'none' | 'selected' | 'type' | 'orphan'>('none');
 
-    // Batch Relationships Modal state
-    const [batchModalOpen, setBatchModalOpen] = useState(false);
-    const [batchSource, setBatchSource] = useState<string | null>(null);
-    const [batchTargets, setBatchTargets] = useState<string[]>([]);
-    const [batchTemplate, setBatchTemplate] = useState<any | null>(null); // Will hold selected template object
-    const [batchTemplates, setBatchTemplates] = useState<any[]>([]); // All templates from entity
-    const [batchPreview, setBatchPreview] = useState<any[]>([]); // Generated previews
-    const [batchErrors, setBatchErrors] = useState<string[]>([]); // e.g., duplicates
-    const [loadingBatch, setLoadingBatch] = useState(false);
+  // Batch Relationships Modal state
+  const [batchModalOpen, setBatchModalOpen] = useState(false);
+  const [batchSource, setBatchSource] = useState<string | null>(null);
+  const [batchTargets, setBatchTargets] = useState<string[]>([]);
+  const [batchTemplate, setBatchTemplate] = useState<any | null>(null); // Will hold selected template object
+  const [batchTemplates, setBatchTemplates] = useState<any[]>([]); // All templates from entity
+  const [batchPreview, setBatchPreview] = useState<any[]>([]); // Generated previews
+  const [batchErrors, setBatchErrors] = useState<string[]>([]); // e.g., duplicates
+  const [loadingBatch, setLoadingBatch] = useState(false);
+
+  const [savingEntity, setSavingEntity] = useState(false);
+  const [savingRelationships, setSavingRelationships] = useState(false);
+
 
     // Ref that always holds the current filterMode (fixes stale hotkey closures)
   const filterModeRef = useRef(filterMode);
@@ -722,6 +726,9 @@ export default function SanitizeData() {
     }
 
     try {
+
+      setSavingEntity(true);
+
       const updatedData: Record<string, any> = {
         description: editEntityDescription,
         entity_type: editEntityType,
@@ -811,6 +818,8 @@ export default function SanitizeData() {
         errorMsg = err.message;
       }
       setEditError(errorMsg);
+    } finally {
+      setSavingEntity(false); // ← ADD THIS: Stop saving indicator, even on error
     }
   };
 
@@ -1249,6 +1258,7 @@ export default function SanitizeData() {
     if (!editingEntityForRel) return;
 
     try {
+      setSavingRelationships(true);
       let successCount = 0;
 
       for (const [key, editedRel] of Object.entries(relationshipEdits)) {
@@ -1291,6 +1301,8 @@ export default function SanitizeData() {
     } catch (err) {
       console.error("Failed to save relationship changes:", err);
       alert("Error saving relationships. Check console.");
+    } finally {
+      setSavingRelationships(false); // ← ADD THIS: Stop saving indicator, even on error
     }
   };
 
@@ -1921,67 +1933,77 @@ export default function SanitizeData() {
                 {editError}
               </div>
             )}
-            <div className="space-y-4">
-              {/* Entity Name */}
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Entity Name (required, unique)
-                </label>
-                <input
-                  type="text"
-                  ref={editNameRef}  // ← ADD THIS
-                  className="w-full px-3 py-2 border border-gray-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  value={editEntityName}
-                  onChange={(e) => setEditEntityName(e.target.value)}
-                />
-              </div>
-              {/* Description */}
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Description
-                </label>
-                <textarea
-                  className="w-full h-32 p-3 border border-gray-300 rounded resize-y focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
-                  value={editEntityDescription}
-                  onChange={(e) => setEditEntityDescription(e.target.value)}
-                />
-              </div>
-              {/* Entity Type */}
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Entity Type
-                </label>
-                <div className="flex items-stretch">
-                  <button
-                    onClick={() => {
-                      setTypeSelectionContext('edit');
-                      setSelectTypeModalOpen(true);
-                    }}
-                    className="px-3 py-2 bg-gray-200 hover:bg-gray-300 border border-gray-300 border-r-0 rounded-l-md text-sm font-medium text-gray-800 cursor-pointer shadow-sm"
-                  >
-                    Select Type
-                  </button>
-                  <input
-                    type="text"
-                    className="flex-1 px-3 py-2 border border-gray-300 rounded-r-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                    value={editEntityType}
-                    onChange={(e) => setEditEntityType(e.target.value)}
-                  />
+            <div className="relative"> 
+            {savingEntity && (
+              <div className="absolute inset-0 bg-white bg-opacity-75 flex items-center justify-center z-10">
+                <div className="flex flex-col items-center">
+                  <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mb-2"></div>
+                  <p className="text-sm text-gray-600">Saving changes... Please wait.</p>
                 </div>
               </div>
-              {/* Source ID */}
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Source ID
-                </label>
-                <input
-                type="text"
-                ref={editSourceRef}
-                className="w-full px-3 py-2 border border-gray-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                value={editEntitySourceId}
-                onChange={(e) => setEditEntitySourceId(e.target.value)}
-                placeholder="e.g., chunk-123"
-              />
+            )}
+              <div className="space-y-4">
+                {/* Entity Name */}
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Entity Name (required, unique)
+                  </label>
+                  <input
+                    type="text"
+                    ref={editNameRef}  // ← ADD THIS
+                    className="w-full px-3 py-2 border border-gray-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    value={editEntityName}
+                    onChange={(e) => setEditEntityName(e.target.value)}
+                  />
+                </div>
+                {/* Description */}
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Description
+                  </label>
+                  <textarea
+                    className="w-full h-32 p-3 border border-gray-300 rounded resize-y focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
+                    value={editEntityDescription}
+                    onChange={(e) => setEditEntityDescription(e.target.value)}
+                  />
+                </div>
+                {/* Entity Type */}
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Entity Type
+                  </label>
+                  <div className="flex items-stretch">
+                    <button
+                      onClick={() => {
+                        setTypeSelectionContext('edit');
+                        setSelectTypeModalOpen(true);
+                      }}
+                      className="px-3 py-2 bg-gray-200 hover:bg-gray-300 border border-gray-300 border-r-0 rounded-l-md text-sm font-medium text-gray-800 cursor-pointer shadow-sm"
+                    >
+                      Select Type
+                    </button>
+                    <input
+                      type="text"
+                      className="flex-1 px-3 py-2 border border-gray-300 rounded-r-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      value={editEntityType}
+                      onChange={(e) => setEditEntityType(e.target.value)}
+                    />
+                  </div>
+                </div>
+                {/* Source ID */}
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Source ID
+                  </label>
+                  <input
+                  type="text"
+                  ref={editSourceRef}
+                  className="w-full px-3 py-2 border border-gray-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  value={editEntitySourceId}
+                  onChange={(e) => setEditEntitySourceId(e.target.value)}
+                  placeholder="e.g., chunk-123"
+                />
+                </div>
               </div>
             </div>
             <div className="mt-6 flex justify-end gap-3">
@@ -2015,99 +2037,111 @@ export default function SanitizeData() {
               Edit/Delete Relationships for: {editingEntityForRel}
             </h2>
 
-            {entityDetails[editingEntityForRel].relationships?.length === 0 ? (
-              <div className="text-gray-500 py-6 text-center">
-                No relationships found for this entity.
-              </div>
-            ) : (
-              <div className="space-y-6 max-h-[60vh] overflow-y-auto pr-2">
-                {entityDetails[editingEntityForRel].relationships.map((rel: any, idx: number) => (
-                  <div key={idx} className="border border-gray-200 rounded p-4 bg-gray-50">
-                    <div className="font-medium mb-3">
-                      {rel.from} → {rel.to}
-                    </div>
 
-                    {/* Relation Description */}
-                    <div className="mb-3">
-                      <label className="block text-sm font-medium text-gray-700 mb-1">
-                        Relation Description
-                      </label>
-                      <textarea
-                        className="w-full p-2 border border-gray-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                        rows={3}
-                        value={relationshipEdits[`${rel.from}-${rel.to}`]?.relation || rel.relation || ''}
-                        onChange={(e) => {
-                          const key = `${rel.from}-${rel.to}`;
-                          setRelationshipEdits((prev) => ({
-                            ...prev,
-                            [key]: {
-                              ...prev[key],
-                              relation: e.target.value,
-                            },
-                          }));
-                        }}
-                      />
-                    </div>
 
-                    {/* Weight */}
-                    <div className="mb-3">
-                      <label className="block text-sm font-medium text-gray-700 mb-1">
-                        Weight
-                      </label>
-                      <input
-                        type="number"
-                        step="1"
-                        min="1"
-                        max="10000"
-                        className="w-24 p-2 border border-gray-300 rounded text-sm"
-                        value={relationshipEdits[`${rel.from}-${rel.to}`]?.weight ?? rel.weight ?? 1}
-                        onChange={(e) => {
-                          const key = `${rel.from}-${rel.to}`;
-                          setRelationshipEdits((prev) => ({
-                            ...prev,
-                            [key]: {
-                              ...prev[key],
-                              weight: parseFloat(e.target.value) || 1.0,
-                            },
-                          }));
-                        }}
-                        onFocus={(e) => e.target.select()}
-                      />
-                    </div>
-
-                    {/* Keywords */}
-                    <div className="mb-3">
-                      <label className="block text-sm font-medium text-gray-700 mb-1">
-                        Keywords (comma-separated)
-                      </label>
-                      <input
-                        type="text"
-                        className="w-full p-2 border border-gray-300 rounded text-sm"
-                        value={relationshipEdits[`${rel.from}-${rel.to}`]?.keywords || rel.keywords || ''}
-                        onChange={(e) => {
-                          const key = `${rel.from}-${rel.to}`;
-                          setRelationshipEdits((prev) => ({
-                            ...prev,
-                            [key]: {
-                              ...prev[key],
-                              keywords: e.target.value,
-                            },
-                          }));
-                        }}
-                      />
-                    </div>
-
-                    {/* Delete button */}
-                    <button
-                      onClick={() => deleteRelationship(rel.from, rel.to)}
-                      className="mt-2 px-3 py-1.5 bg-red-100 hover:bg-red-200 text-red-700 rounded text-sm"
-                    >
-                      Delete This Relationship
-                    </button>
+            <div className="relative"> {/* ← ADD THIS WRAPPER */}
+              {savingRelationships && (
+                <div className="absolute inset-0 bg-white bg-opacity-75 flex items-center justify-center z-10">
+                  <div className="flex flex-col items-center">
+                    <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mb-2"></div>
+                    <p className="text-sm text-gray-600">Saving changes... Please wait.</p>
                   </div>
-                ))}
-              </div>
-            )}
+                </div>
+              )}
+              {entityDetails[editingEntityForRel].relationships?.length === 0 ? (
+                <div className="text-gray-500 py-6 text-center">
+                  No relationships found for this entity.
+                </div>
+              ) : (
+                <div className="space-y-6 max-h-[60vh] overflow-y-auto pr-2">
+                  {entityDetails[editingEntityForRel].relationships.map((rel: any, idx: number) => (
+                    <div key={idx} className="border border-gray-200 rounded p-4 bg-gray-50">
+                      <div className="font-medium mb-3">
+                        {rel.from} → {rel.to}
+                      </div>
+
+                      {/* Relation Description */}
+                      <div className="mb-3">
+                        <label className="block text-sm font-medium text-gray-700 mb-1">
+                          Relation Description
+                        </label>
+                        <textarea
+                          className="w-full p-2 border border-gray-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                          rows={3}
+                          value={relationshipEdits[`${rel.from}-${rel.to}`]?.relation || rel.relation || ''}
+                          onChange={(e) => {
+                            const key = `${rel.from}-${rel.to}`;
+                            setRelationshipEdits((prev) => ({
+                              ...prev,
+                              [key]: {
+                                ...prev[key],
+                                relation: e.target.value,
+                              },
+                            }));
+                          }}
+                        />
+                      </div>
+
+                      {/* Weight */}
+                      <div className="mb-3">
+                        <label className="block text-sm font-medium text-gray-700 mb-1">
+                          Weight
+                        </label>
+                        <input
+                          type="number"
+                          step="1"
+                          min="1"
+                          max="10000"
+                          className="w-24 p-2 border border-gray-300 rounded text-sm"
+                          value={relationshipEdits[`${rel.from}-${rel.to}`]?.weight ?? rel.weight ?? 1}
+                          onChange={(e) => {
+                            const key = `${rel.from}-${rel.to}`;
+                            setRelationshipEdits((prev) => ({
+                              ...prev,
+                              [key]: {
+                                ...prev[key],
+                                weight: parseFloat(e.target.value) || 1.0,
+                              },
+                            }));
+                          }}
+                          onFocus={(e) => e.target.select()}
+                        />
+                      </div>
+
+                      {/* Keywords */}
+                      <div className="mb-3">
+                        <label className="block text-sm font-medium text-gray-700 mb-1">
+                          Keywords (comma-separated)
+                        </label>
+                        <input
+                          type="text"
+                          className="w-full p-2 border border-gray-300 rounded text-sm"
+                          value={relationshipEdits[`${rel.from}-${rel.to}`]?.keywords || rel.keywords || ''}
+                          onChange={(e) => {
+                            const key = `${rel.from}-${rel.to}`;
+                            setRelationshipEdits((prev) => ({
+                              ...prev,
+                              [key]: {
+                                ...prev[key],
+                                keywords: e.target.value,
+                              },
+                            }));
+                          }}
+                        />
+                      </div>
+
+                      {/* Delete button */}
+                      <button
+                        onClick={() => deleteRelationship(rel.from, rel.to)}
+                        className="mt-2 px-3 py-1.5 bg-red-100 hover:bg-red-200 text-red-700 rounded text-sm"
+                      >
+                        Delete This Relationship
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
 
             {/* Modal footer */}
             <div className="mt-6 flex justify-end gap-3">
@@ -2557,9 +2591,15 @@ export default function SanitizeData() {
                 {batchErrors.join(' ')}
               </div>
             )}
-            {loadingBatch ? (
-              <div className="text-gray-500 py-6 text-center">Loading templates...</div>
-            ) : (
+            <div className="relative">
+              {loadingBatch && (
+                <div className="absolute inset-0 bg-white bg-opacity-75 flex items-center justify-center z-10">
+                  <div className="flex flex-col items-center">
+                    <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mb-2"></div>
+                    <p className="text-sm text-gray-600">Processing... Please wait.</p>
+                  </div>
+                </div>
+              )}
               <div className="space-y-6">
                 {/* Section 1: Select Source */}
                 <div className="border border-gray-200 rounded p-4">
@@ -2678,7 +2718,7 @@ export default function SanitizeData() {
                   </button>
                 </div>
               </div>
-            )}
+            </div>
             <div className="mt-6 flex justify-end">
               <button
                 onClick={() => setBatchModalOpen(false)}
