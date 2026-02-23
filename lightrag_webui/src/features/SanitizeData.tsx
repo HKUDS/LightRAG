@@ -2,7 +2,8 @@
 import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
 
-const API_BASE = 'http://localhost:9621';
+// const API_BASE = 'http://localhost:9621';
+const API_BASE = `${window.location.protocol}//${window.location.hostname}:9621`;
 
 export default function SanitizeData() {
   const [entities, setEntities] = useState<string[]>([]);
