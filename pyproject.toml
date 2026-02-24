@@ -25,6 +25,7 @@ dependencies = [
     "configparser",
     "google-api-core>=2.0.0,<3.0.0",
     "google-genai>=1.0.0,<2.0.0",
+    "jinja2>=3.1.0",
     "json_repair",
     "nano-vectordb",
     "networkx",
@@ -173,7 +174,7 @@ include-package-data = true
 version = {attr = "lightrag.__version__"}
 
 [tool.setuptools.package-data]
-lightrag = ["api/webui/**/*", "api/static/**/*"]
+lightrag = ["api/webui/**/*", "api/static/**/*", "prompts/system/**/*.md.j2"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

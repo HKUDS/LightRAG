@@ -40,6 +40,42 @@ _TOKEN_RENEWAL_SKIP_PATHS = [
 ]
 
 
+# ========== Admin Helpers ==========
+
+# Standalone OAuth2 dependency for endpoints that must know the user identity.
+_oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login", auto_error=False)
+
+
+async def require_admin_user(token: str = Security(_oauth2_scheme)) -> dict:
+    """Require an authenticated admin user.
+
+    Admin rule (per spec):
+    - Only usernames listed in `auth_handler.accounts` are administrators.
+    - If `auth_handler.accounts` is empty (auth not configured), forbid all write operations.
+    """
+
+    if not auth_handler.accounts:
+        raise HTTPException(
+            status_code=HTTP_403_FORBIDDEN,
+            detail="Prompt modification is disabled because auth accounts are not configured.",
+        )
+
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="No credentials provided. Please login.",
+        )
+
+    token_info = auth_handler.validate_token(token)
+    username = token_info.get("username")
+    if not username or username not in auth_handler.accounts:
+        raise HTTPException(
+            status_code=HTTP_403_FORBIDDEN,
+            detail="Administrator privileges required.",
+        )
+    return token_info
+
+
 def check_env_file():
     """
     Check if .env file exists and handle user confirmation if needed.
