@@ -37,6 +37,9 @@ function TabsNavigation() {
   return (
     <div className="flex h-8 self-center">
       <TabsList className="h-full gap-2">
+        <NavigationTab value="chat" currentTab={currentTab}>
+          {t('header.chat', 'Chat')}
+        </NavigationTab>
         <NavigationTab value="documents" currentTab={currentTab}>
           {t('header.documents')}
         </NavigationTab>

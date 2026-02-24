@@ -138,6 +138,8 @@ export type QueryRequest = {
   user_prompt?: string
   /** Enable reranking for retrieved text chunks. If True but no rerank model is configured, a warning will be issued. Default is True. */
   enable_rerank?: boolean
+  /** Optional chat session ID for persistent chat history */
+  session_id?: string
 }
 
 export type QueryResponse = {
@@ -273,6 +275,49 @@ export type LoginResponse = {
   api_version?: string
   webui_title?: string
   webui_description?: string
+}
+
+export type RegisterRequest = {
+  username: string
+  password: string
+  org_id?: string
+}
+
+export type ChatSession = {
+  id: string
+  title: string
+  created_at: string
+  updated_at: string
+}
+
+export type ChatMessage = {
+  role: 'user' | 'assistant'
+  content: string
+  created_at: string
+}
+
+export const register = async (request: RegisterRequest): Promise<LoginResponse> => {
+  const response = await axiosInstance.post('/register', request)
+  return response.data
+}
+
+export const listChats = async (): Promise<ChatSession[]> => {
+  const response = await axiosInstance.get('/chats')
+  return response.data
+}
+
+export const createChat = async (title?: string): Promise<ChatSession> => {
+  const response = await axiosInstance.post('/chats', { title })
+  return response.data
+}
+
+export const deleteChat = async (id: string): Promise<void> => {
+  await axiosInstance.delete(`/chats/${id}`)
+}
+
+export const getChatMessages = async (id: string): Promise<ChatMessage[]> => {
+  const response = await axiosInstance.get(`/chats/${id}/messages`)
+  return response.data
 }
 
 export const InvalidApiKeyError = 'Invalid API Key'
@@ -720,27 +765,27 @@ export const queryTextStream = async (
       let userMessage = message;
 
       switch (statusCode) {
-      case 403:
-        userMessage = 'You do not have permission to access this resource (403 Forbidden)';
-        console.error('Permission denied for stream request:', message);
-        break;
-      case 404:
-        userMessage = 'The requested resource does not exist (404 Not Found)';
-        console.error('Resource not found for stream request:', message);
-        break;
-      case 429:
-        userMessage = 'Too many requests, please try again later (429 Too Many Requests)';
-        console.error('Rate limited for stream request:', message);
-        break;
-      case 500:
-      case 502:
-      case 503:
-      case 504:
-        userMessage = `Server error, please try again later (${statusCode})`;
-        console.error('Server error for stream request:', message);
-        break;
-      default:
-        console.error('Stream request failed with status code:', statusCode, message);
+        case 403:
+          userMessage = 'You do not have permission to access this resource (403 Forbidden)';
+          console.error('Permission denied for stream request:', message);
+          break;
+        case 404:
+          userMessage = 'The requested resource does not exist (404 Not Found)';
+          console.error('Resource not found for stream request:', message);
+          break;
+        case 429:
+          userMessage = 'Too many requests, please try again later (429 Too Many Requests)';
+          console.error('Rate limited for stream request:', message);
+          break;
+        case 500:
+        case 502:
+        case 503:
+        case 504:
+          userMessage = `Server error, please try again later (${statusCode})`;
+          console.error('Server error for stream request:', message);
+          break;
+        default:
+          console.error('Stream request failed with status code:', statusCode, message);
       }
 
       if (onError) {
@@ -751,8 +796,8 @@ export const queryTextStream = async (
 
     // Handle network errors (like connection refused, timeout, etc.)
     if (message.includes('NetworkError') ||
-        message.includes('Failed to fetch') ||
-        message.includes('Network request failed')) {
+      message.includes('Failed to fetch') ||
+      message.includes('Network request failed')) {
       console.error('Network error for stream request:', message);
       if (onError) {
         onError('Network connection error, please check your internet connection');
@@ -871,9 +916,9 @@ export const getAuthStatus = async (): Promise<AuthStatusResponse> => {
 
     // Strict validation of the response data
     if (response.data &&
-        typeof response.data === 'object' &&
-        'auth_configured' in response.data &&
-        typeof response.data.auth_configured === 'boolean') {
+      typeof response.data === 'object' &&
+      'auth_configured' in response.data &&
+      typeof response.data.auth_configured === 'boolean') {
 
       // For unconfigured auth, ensure we have an access token
       if (!response.data.auth_configured) {
@@ -919,15 +964,11 @@ export const cancelPipeline = async (): Promise<{
   return response.data
 }
 
-export const loginToServer = async (username: string, password: string): Promise<LoginResponse> => {
-  const formData = new FormData();
-  formData.append('username', username);
-  formData.append('password', password);
-
-  const response = await axiosInstance.post('/login', formData, {
-    headers: {
-      'Content-Type': 'multipart/form-data'
-    }
+export const loginToServer = async (username: string, password: string, org_id: string = 'org_default'): Promise<LoginResponse> => {
+  const response = await axiosInstance.post('/login', {
+    username,
+    password,
+    org_id
   });
 
   return response.data;
