@@ -3445,6 +3445,8 @@ async def _get_vector_context(
                     "file_path": result.get("file_path", "unknown_source"),
                     "source_type": "vector",  # Mark the source type
                     "chunk_id": result.get("id"),  # Add chunk_id for deduplication
+                    "score": result.get("score")
+                    or result.get("distance"),  # Support both score and distance keys
                 }
                 valid_chunks.append(chunk_with_metadata)
 
