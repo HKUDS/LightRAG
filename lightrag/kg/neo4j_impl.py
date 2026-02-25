@@ -91,8 +91,15 @@ class Neo4JStorage(BaseGraphStorage):
         self._driver = None
 
     def _get_workspace_label(self) -> str:
-        """Return workspace label (guaranteed non-empty during initialization)"""
-        return self.workspace
+        """Return sanitized workspace label safe for use in Cypher queries.
+
+        Strips all characters except alphanumeric and underscore to prevent
+        Cypher injection via the LIGHTRAG-WORKSPACE header.
+        """
+        safe_workspace = re.sub(r"[^a-zA-Z0-9_]", "_", self.workspace.strip())
+        if not safe_workspace:
+            safe_workspace = "base"
+        return safe_workspace
 
     def _normalize_index_suffix(self, workspace_label: str) -> str:
         """Normalize workspace label for safe use in index names."""

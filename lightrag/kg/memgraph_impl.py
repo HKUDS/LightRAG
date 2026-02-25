@@ -1,4 +1,5 @@
 import os
+import re
 import asyncio
 import random
 from dataclasses import dataclass
@@ -59,8 +60,15 @@ class MemgraphStorage(BaseGraphStorage):
         self._driver = None
 
     def _get_workspace_label(self) -> str:
-        """Return workspace label (guaranteed non-empty during initialization)"""
-        return self.workspace
+        """Return sanitized workspace label safe for use in Cypher queries.
+
+        Strips all characters except alphanumeric and underscore to prevent
+        Cypher injection via the LIGHTRAG-WORKSPACE header.
+        """
+        safe_workspace = re.sub(r"[^a-zA-Z0-9_]", "_", self.workspace.strip())
+        if not safe_workspace:
+            safe_workspace = "base"
+        return safe_workspace
 
     async def initialize(self):
         async with get_data_init_lock():
