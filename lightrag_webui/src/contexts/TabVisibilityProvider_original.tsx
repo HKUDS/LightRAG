@@ -18,7 +18,6 @@ export const TabVisibilityProvider: React.FC<TabVisibilityProviderProps> = ({ ch
   // Initialize visibility state with all tabs visible
   const [visibleTabs, setVisibleTabs] = useState<Record<string, boolean>>(() => ({
     'documents': true,
-    'sanitize-data': true,
     'knowledge-graph': true,
     'retrieval': true,
     'api': true
@@ -29,7 +28,6 @@ export const TabVisibilityProvider: React.FC<TabVisibilityProviderProps> = ({ ch
     setVisibleTabs((prev) => ({
       ...prev,
       'documents': true,
-      'sanitize-data': true,
       'knowledge-graph': true,
       'retrieval': true,
       'api': true

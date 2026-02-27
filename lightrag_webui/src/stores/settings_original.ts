@@ -5,8 +5,8 @@ import { defaultQueryLabel } from '@/lib/constants'
 import { Message, QueryRequest } from '@/api/lightrag'
 
 type Theme = 'dark' | 'light' | 'system'
-type Language = 'en' | 'zh' | 'fr' | 'ar' | 'zh_TW' | 'ru' | 'ja' | 'de' | 'uk' | 'ko'
-type Tab = 'documents' | 'sanitize-data' | 'knowledge-graph' | 'retrieval' | 'api'
+type Language = 'en' | 'zh' | 'fr' | 'ar' | 'zh_TW' | 'ru' | 'ja' | 'de' | 'uk'
+type Tab = 'documents' | 'knowledge-graph' | 'retrieval' | 'api'
 
 interface SettingsState {
   // Document manager settings
@@ -125,7 +125,6 @@ const useSettingsStoreBase = create<SettingsState>()(
         mode: 'global',
         top_k: 40,
         chunk_top_k: 20,
-        only_kg_context: false,
         max_entity_tokens: 6000,
         max_relation_tokens: 8000,
         max_total_tokens: 30000,

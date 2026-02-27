@@ -74,6 +74,30 @@ download_models_hf.py
 memory-bank
 .claude/CLAUDE.md
 .claude/
-
-# Claude Code
 CLAUDE.md
+
+
+# My changes to the gitignore file
+# 1. Ignore everything in the repository
+/*
+
+# 2. Allow the 'jrs' folder itself
+!/jrs/
+
+# 3. Ignore everything inside 'jrs' (including the 'work' folder)
+/jrs/*
+
+# 4. Allow specific files directly inside 'jrs'
+!/jrs/*.*
+
+# 5. Allow the _notes folder specifically
+!/jrs/_notes/
+
+# 6. Allow everything inside the _notes folder
+!/jrs/_notes/**
+
+# 7. Allow the archive folder specifically
+!/jrs/archive/
+
+# 7. Allow everything inside the _notes folder
+!/jrs/archive/**
