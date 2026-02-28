@@ -1701,6 +1701,28 @@ class PostgreSQLDB:
             logger.error(f"PostgreSQL database,\nsql:{sql},\ndata:{data},\nerror:{e}")
             raise
 
+    async def executemany(
+        self,
+        sql: str,
+        batch_data: list[dict[str, Any]],
+        with_age: bool = False,
+        graph_name: str | None = None,
+    ):
+        """Execute a SQL command for multiple data batches using executemany."""
+        # Convert list of dicts to list of tuples to maintain consistency with execute()
+        prepared_data = [tuple(d.values()) for d in batch_data] if batch_data else []
+
+        async def _operation(connection: asyncpg.Connection) -> Any:
+            return await connection.executemany(sql, prepared_data)
+
+        try:
+            await self._run_with_retry(
+                _operation, with_age=with_age, graph_name=graph_name
+            )
+        except Exception as e:
+            logger.error(f"PostgreSQL database (executemany),\nsql:{sql},\nerror:{e}")
+            raise
+
 
 class ClientManager:
     _instances: dict[str, Any] = {"db": None, "ref_count": 0}
@@ -2192,11 +2214,14 @@ class PGKVStorage(BaseKVStorage):
         if not data:
             return
 
+        batch_values = []
+        upsert_sql = ""
+
         if is_namespace(self.namespace, NameSpace.KV_STORE_TEXT_CHUNKS):
+            upsert_sql = SQL_TEMPLATES["upsert_text_chunk"]
             # Get current UTC time and convert to naive datetime for database storage
             current_time = datetime.datetime.now(timezone.utc).replace(tzinfo=None)
             for k, v in data.items():
-                upsert_sql = SQL_TEMPLATES["upsert_text_chunk"]
                 _data = {
                     "workspace": self.workspace,
                     "id": k,
@@ -2209,20 +2234,20 @@ class PGKVStorage(BaseKVStorage):
                     "create_time": current_time,
                     "update_time": current_time,
                 }
-                await self.db.execute(upsert_sql, _data)
+                batch_values.append(_data)
         elif is_namespace(self.namespace, NameSpace.KV_STORE_FULL_DOCS):
+            upsert_sql = SQL_TEMPLATES["upsert_doc_full"]
             for k, v in data.items():
-                upsert_sql = SQL_TEMPLATES["upsert_doc_full"]
                 _data = {
                     "id": k,
                     "content": v["content"],
                     "doc_name": v.get("file_path", ""),  # Map file_path to doc_name
                     "workspace": self.workspace,
                 }
-                await self.db.execute(upsert_sql, _data)
+                batch_values.append(_data)
         elif is_namespace(self.namespace, NameSpace.KV_STORE_LLM_RESPONSE_CACHE):
+            upsert_sql = SQL_TEMPLATES["upsert_llm_response_cache"]
             for k, v in data.items():
-                upsert_sql = SQL_TEMPLATES["upsert_llm_response_cache"]
                 _data = {
                     "workspace": self.workspace,
                     "id": k,  # Use flattened key as id
@@ -2236,13 +2261,12 @@ class PGKVStorage(BaseKVStorage):
                     if v.get("queryparam")
                     else None,
                 }
-
-                await self.db.execute(upsert_sql, _data)
+                batch_values.append(_data)
         elif is_namespace(self.namespace, NameSpace.KV_STORE_FULL_ENTITIES):
+            upsert_sql = SQL_TEMPLATES["upsert_full_entities"]
             # Get current UTC time and convert to naive datetime for database storage
             current_time = datetime.datetime.now(timezone.utc).replace(tzinfo=None)
             for k, v in data.items():
-                upsert_sql = SQL_TEMPLATES["upsert_full_entities"]
                 _data = {
                     "workspace": self.workspace,
                     "id": k,
@@ -2251,12 +2275,12 @@ class PGKVStorage(BaseKVStorage):
                     "create_time": current_time,
                     "update_time": current_time,
                 }
-                await self.db.execute(upsert_sql, _data)
+                batch_values.append(_data)
         elif is_namespace(self.namespace, NameSpace.KV_STORE_FULL_RELATIONS):
+            upsert_sql = SQL_TEMPLATES["upsert_full_relations"]
             # Get current UTC time and convert to naive datetime for database storage
             current_time = datetime.datetime.now(timezone.utc).replace(tzinfo=None)
             for k, v in data.items():
-                upsert_sql = SQL_TEMPLATES["upsert_full_relations"]
                 _data = {
                     "workspace": self.workspace,
                     "id": k,
@@ -2265,12 +2289,12 @@ class PGKVStorage(BaseKVStorage):
                     "create_time": current_time,
                     "update_time": current_time,
                 }
-                await self.db.execute(upsert_sql, _data)
+                batch_values.append(_data)
         elif is_namespace(self.namespace, NameSpace.KV_STORE_ENTITY_CHUNKS):
+            upsert_sql = SQL_TEMPLATES["upsert_entity_chunks"]
             # Get current UTC time and convert to naive datetime for database storage
             current_time = datetime.datetime.now(timezone.utc).replace(tzinfo=None)
             for k, v in data.items():
-                upsert_sql = SQL_TEMPLATES["upsert_entity_chunks"]
                 _data = {
                     "workspace": self.workspace,
                     "id": k,
@@ -2279,12 +2303,12 @@ class PGKVStorage(BaseKVStorage):
                     "create_time": current_time,
                     "update_time": current_time,
                 }
-                await self.db.execute(upsert_sql, _data)
+                batch_values.append(_data)
         elif is_namespace(self.namespace, NameSpace.KV_STORE_RELATION_CHUNKS):
+            upsert_sql = SQL_TEMPLATES["upsert_relation_chunks"]
             # Get current UTC time and convert to naive datetime for database storage
             current_time = datetime.datetime.now(timezone.utc).replace(tzinfo=None)
             for k, v in data.items():
-                upsert_sql = SQL_TEMPLATES["upsert_relation_chunks"]
                 _data = {
                     "workspace": self.workspace,
                     "id": k,
@@ -2293,7 +2317,17 @@ class PGKVStorage(BaseKVStorage):
                     "create_time": current_time,
                     "update_time": current_time,
                 }
-                await self.db.execute(upsert_sql, _data)
+                batch_values.append(_data)
+        else:
+            logger.error(f"Unknown namespace: {self.namespace}")
+            raise ValueError(f"Unknown namespace: {self.namespace}")
+
+        # upsert_sql is always set here; unknown namespace raises ValueError above
+        if batch_values:
+            await self.db.executemany(upsert_sql, batch_values)
+            logger.debug(
+                f"[{self.workspace}] Batch upserted {len(batch_values)} records to {self.namespace}"
+            )
 
     async def index_done_callback(self) -> None:
         # PG handles persistence automatically
