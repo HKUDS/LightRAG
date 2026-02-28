@@ -11,6 +11,15 @@ from .utils import compute_mdhash_id, logger
 from .base import StorageNameSpace
 
 
+def _require_non_empty_description(
+    description: Any, *, operation: str, object_type: str
+) -> None:
+    if description is None or not str(description).strip():
+        raise ValueError(
+            f"{object_type.capitalize()} description cannot be empty for {operation} operation"
+        )
+
+
 async def _persist_graph_updates(
     entities_vdb=None,
     relationships_vdb=None,
@@ -568,6 +577,11 @@ async def aedit_entity(
             - "failed": Merge operation failed
             - "not_attempted": No merge was attempted (normal update/rename)
     """
+    if "description" in updated_data:
+        _require_non_empty_description(
+            updated_data.get("description"), operation="edit", object_type="entity"
+        )
+
     new_entity_name = updated_data.get("entity_name", entity_name)
     is_renaming = new_entity_name != entity_name
 
@@ -737,6 +751,11 @@ async def aedit_relation(
     Returns:
         Dictionary containing updated relation information
     """
+    if "description" in updated_data:
+        _require_non_empty_description(
+            updated_data.get("description"), operation="edit", object_type="relation"
+        )
+
     # Normalize entity order for undirected graph (ensures consistent key generation)
     if source_entity > target_entity:
         source_entity, target_entity = target_entity, source_entity
@@ -921,6 +940,10 @@ async def acreate_entity(
     Returns:
         Dictionary containing created entity information
     """
+    _require_non_empty_description(
+        entity_data.get("description"), operation="create", object_type="entity"
+    )
+
     # Use keyed lock for entity to ensure atomic graph and vector db operations
     workspace = entities_vdb.global_config.get("workspace", "")
     namespace = f"{workspace}:GraphDB" if workspace else "GraphDB"
@@ -1035,6 +1058,10 @@ async def acreate_relation(
     Returns:
         Dictionary containing created relation information
     """
+    _require_non_empty_description(
+        relation_data.get("description"), operation="create", object_type="relation"
+    )
+
     # Use keyed lock for relation to ensure atomic graph and vector db operations
     workspace = relationships_vdb.global_config.get("workspace", "")
     namespace = f"{workspace}:GraphDB" if workspace else "GraphDB"
