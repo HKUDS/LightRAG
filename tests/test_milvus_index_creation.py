@@ -6,6 +6,7 @@ This test suite validates:
 2. P2: Vector index creation failures are surfaced to callers
 """
 
+import asyncio
 import pytest
 from unittest.mock import MagicMock, patch
 from lightrag.kg.milvus_impl import MilvusVectorDBStorage, MilvusIndexConfig
@@ -117,17 +118,29 @@ class TestMilvusIndexCreation:
         assert result == mock_index_params
         mock_index_params.add_index.assert_called_once()
 
-    def test_build_index_params_returns_none_when_index_params_is_none(self):
-        """Test that build_index_params returns None when index_params is None (compatibility)"""
+    def test_build_index_params_raises_when_index_params_is_none_for_custom_type(self):
+        """Test that build_index_params raises RuntimeError when index_params is None for custom types (P1 fix)"""
         config = MilvusIndexConfig(
             index_type="HNSW",
             metric_type="COSINE",
         )
 
         # Call with None (simulating compatibility helper returning None)
-        result = config.build_index_params(None)
+        # Should raise RuntimeError for non-AUTOINDEX types
+        with pytest.raises(RuntimeError, match="IndexParams not available"):
+            config.build_index_params(None)
 
-        # Should return None
+    def test_build_index_params_returns_none_for_autoindex_when_index_params_is_none(
+        self,
+    ):
+        """Test that build_index_params returns None for AUTOINDEX regardless of index_params"""
+        config = MilvusIndexConfig(
+            index_type="AUTOINDEX",
+            metric_type="COSINE",
+        )
+
+        # AUTOINDEX should return None regardless
+        result = config.build_index_params(None)
         assert result is None
 
     def test_create_indexes_uses_compatibility_helper(self):
@@ -166,6 +179,80 @@ class TestMilvusIndexCreation:
 
             # Verify that _get_index_params was called at least once
             assert mock_get_index_params.call_count >= 1
+
+    def test_version_probing_only_for_hnsw_sq(self):
+        """Test that get_server_version is only called when index type requires it (P2 fix)"""
+        from unittest.mock import AsyncMock
+
+        mock_embedding_func = MagicMock()
+        mock_embedding_func.embedding_dim = 128
+
+        # Test with HNSW (no version requirement) - should NOT call get_server_version
+        storage = MilvusVectorDBStorage(
+            namespace="test_entities",
+            workspace="test_workspace",
+            global_config={
+                "embedding_batch_num": 100,
+                "vector_db_storage_cls_kwargs": {
+                    "cosine_better_than_threshold": 0.3,
+                    "index_type": "HNSW",
+                },
+            },
+            embedding_func=mock_embedding_func,
+            meta_fields=set(),
+        )
+
+        mock_client = MagicMock()
+        storage._client = mock_client
+
+        # Mock the init lock as an async context manager
+        mock_lock = AsyncMock()
+
+        with patch(
+            "lightrag.kg.milvus_impl.get_data_init_lock", return_value=mock_lock
+        ):
+            with patch.object(storage, "_create_collection_if_not_exist"):
+                asyncio.run(storage.initialize())
+
+        # get_server_version should NOT be called for HNSW
+        mock_client.get_server_version.assert_not_called()
+
+    def test_version_probing_called_for_hnsw_sq(self):
+        """Test that get_server_version IS called when HNSW_SQ is configured (P2 fix)"""
+        from unittest.mock import AsyncMock
+
+        mock_embedding_func = MagicMock()
+        mock_embedding_func.embedding_dim = 128
+
+        storage = MilvusVectorDBStorage(
+            namespace="test_entities",
+            workspace="test_workspace",
+            global_config={
+                "embedding_batch_num": 100,
+                "vector_db_storage_cls_kwargs": {
+                    "cosine_better_than_threshold": 0.3,
+                    "index_type": "HNSW_SQ",
+                },
+            },
+            embedding_func=mock_embedding_func,
+            meta_fields=set(),
+        )
+
+        mock_client = MagicMock()
+        mock_client.get_server_version.return_value = "2.6.9"
+        storage._client = mock_client
+
+        # Mock the init lock as an async context manager
+        mock_lock = AsyncMock()
+
+        with patch(
+            "lightrag.kg.milvus_impl.get_data_init_lock", return_value=mock_lock
+        ):
+            with patch.object(storage, "_create_collection_if_not_exist"):
+                asyncio.run(storage.initialize())
+
+        # get_server_version SHOULD be called for HNSW_SQ
+        mock_client.get_server_version.assert_called_once()
 
 
 if __name__ == "__main__":

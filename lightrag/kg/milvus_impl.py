@@ -222,8 +222,10 @@ class MilvusIndexConfig:
             return None
 
         if index_params is None:
-            logger.warning("IndexParams not available, cannot create custom index")
-            return None
+            raise RuntimeError(
+                f"IndexParams not available but required for index type "
+                f"'{self.index_type}'. Ensure pymilvus is installed correctly."
+            )
 
         params: Dict[str, Any] = {}
 
@@ -1337,14 +1339,15 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                     )
 
                 # Validate Milvus version compatibility with configured index
-                try:
-                    server_version = self._client.get_server_version()
-                    self.index_config.validate_milvus_version(server_version)
-                except Exception as version_error:
-                    logger.error(
-                        f"[{self.workspace}] Milvus version validation failed: {version_error}"
-                    )
-                    raise
+                if self.index_config.index_type in INDEX_VERSION_REQUIREMENTS:
+                    try:
+                        server_version = self._client.get_server_version()
+                        self.index_config.validate_milvus_version(server_version)
+                    except Exception as version_error:
+                        logger.error(
+                            f"[{self.workspace}] Milvus version validation failed: {version_error}"
+                        )
+                        raise
 
                 # Create collection and check compatibility
                 self._create_collection_if_not_exist()

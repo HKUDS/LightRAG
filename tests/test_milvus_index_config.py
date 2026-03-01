@@ -241,14 +241,12 @@ class TestMilvusIndexConfig:
         assert call_kwargs["params"]["nlist"] == 2048
 
     def test_build_index_params_with_none(self):
-        """Test that None is returned when index_params is None (compatibility fallback)"""
+        """Test that RuntimeError is raised when index_params is None for custom types"""
         config = MilvusIndexConfig(index_type="HNSW")
 
         # Pass None to simulate when compatibility helper returns None
-        result = config.build_index_params(None)
-
-        # Should return None and log a warning
-        assert result is None
+        with pytest.raises(RuntimeError, match="IndexParams not available"):
+            config.build_index_params(None)
 
     def test_build_search_params_hnsw(self):
         """Test HNSW search parameters construction"""
