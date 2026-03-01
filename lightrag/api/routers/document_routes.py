@@ -2855,11 +2855,19 @@ def create_document_routes(
             # Check if pipeline is busy with proper lock
             async with pipeline_status_lock:
                 if pipeline_status.get("busy", False):
-                    return DeleteDocByIdResponse(
-                        status="busy",
-                        message="Cannot delete documents while pipeline is busy",
-                        doc_id=", ".join(doc_ids),
-                    )
+                    # Allow deletion of documents not currently being processed
+                    docs = await rag.doc_status.get_by_ids(doc_ids)
+                    processing_ids = [
+                        d["doc_id"]
+                        for d in docs
+                        if d and d.get("status") == DocStatus.PROCESSING
+                    ]
+                    if processing_ids:
+                        return DeleteDocByIdResponse(
+                            status="busy",
+                            message=f"Cannot delete documents currently being processed: {', '.join(processing_ids)}",
+                            doc_id=", ".join(processing_ids),
+                        )
 
             # Add deletion task to background tasks
             background_tasks.add_task(
