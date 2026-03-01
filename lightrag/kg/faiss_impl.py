@@ -338,12 +338,12 @@ class FaissVectorDBStorage(BaseVectorStorage):
         """
         faiss.write_index(self._index, self._faiss_index_file)
 
-        # Save metadata dict to JSON. Convert all keys to strings for JSON storage.
-        # _id_to_meta is { int: { '__id__': doc_id, '__vector__': [float,...], ... } }
-        # We'll keep the int -> dict, but JSON requires string keys.
+        # Save metadata dict to JSON, excluding __vector__ since vectors are
+        # already stored in the Faiss index file and can be reconstructed on load.
         serializable_dict = {}
         for fid, meta in self._id_to_meta.items():
-            serializable_dict[str(fid)] = meta
+            filtered_meta = {k: v for k, v in meta.items() if k != "__vector__"}
+            serializable_dict[str(fid)] = filtered_meta
 
         with open(self._meta_file, "w", encoding="utf-8") as f:
             json.dump(serializable_dict, f)
@@ -379,10 +379,12 @@ class FaissVectorDBStorage(BaseVectorStorage):
             with open(self._meta_file, "r", encoding="utf-8") as f:
                 stored_dict = json.load(f)
 
-            # Convert string keys back to int
+            # Convert string keys back to int and reconstruct vectors from index
             self._id_to_meta = {}
             for fid_str, meta in stored_dict.items():
                 fid = int(fid_str)
+                if "__vector__" not in meta and fid < self._index.ntotal:
+                    meta["__vector__"] = self._index.reconstruct(fid).tolist()
                 self._id_to_meta[fid] = meta
 
             logger.info(
