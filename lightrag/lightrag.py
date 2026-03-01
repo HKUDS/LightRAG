@@ -2328,6 +2328,17 @@ class LightRAG:
                     "file_path": file_path,
                     "created_at": int(time.time()),
                 }
+                # Pass through custom fields
+                _entity_reserved = {
+                    "entity_name",
+                    "entity_type",
+                    "description",
+                    "source_id",
+                    "file_path",
+                }
+                for key, value in entity_data.items():
+                    if key not in _entity_reserved:
+                        node_data[key] = value
                 # Insert node data into the knowledge graph
                 await self.chunk_entity_relation_graph.upsert_node(
                     entity_name, node_data=node_data
@@ -2372,17 +2383,31 @@ class LightRAG:
                         )
 
                 # Insert edge into the knowledge graph
+                edge_data_for_graph = {
+                    "weight": weight,
+                    "description": description,
+                    "keywords": keywords,
+                    "source_id": source_id,
+                    "file_path": file_path,
+                    "created_at": int(time.time()),
+                }
+                # Pass through custom fields
+                _rel_reserved = {
+                    "src_id",
+                    "tgt_id",
+                    "description",
+                    "keywords",
+                    "weight",
+                    "source_id",
+                    "file_path",
+                }
+                for key, value in relationship_data.items():
+                    if key not in _rel_reserved:
+                        edge_data_for_graph[key] = value
                 await self.chunk_entity_relation_graph.upsert_edge(
                     src_id,
                     tgt_id,
-                    edge_data={
-                        "weight": weight,
-                        "description": description,
-                        "keywords": keywords,
-                        "source_id": source_id,
-                        "file_path": file_path,
-                        "created_at": int(time.time()),
-                    },
+                    edge_data=edge_data_for_graph,
                 )
 
                 edge_data: dict[str, str] = {
@@ -2395,6 +2420,9 @@ class LightRAG:
                     "file_path": file_path,
                     "created_at": int(time.time()),
                 }
+                for key, value in relationship_data.items():
+                    if key not in _rel_reserved:
+                        edge_data[key] = value
                 all_relationships_data.append(edge_data)
                 update_storage = True
 
