@@ -376,6 +376,9 @@ class LightRAG:
     enable_llm_cache_for_entity_extract: bool = field(default=True)
     """If True, enables caching for entity extraction steps to reduce LLM costs."""
 
+    enable_citations: bool = field(default=True)
+    """If True, includes citation references in query responses."""
+
     # Extensions
     # ---
 
