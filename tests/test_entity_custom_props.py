@@ -110,3 +110,24 @@ async def test_reserved_keys_not_overwritten(storage):
         )
     node = graph._nodes["TestEntity3"]
     assert node["created_at"] != 999  # computed timestamp, not the input
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_entity_id_not_overwritten(storage):
+    """entity_id is reserved and cannot be overridden by custom payload."""
+    graph, entities_vdb, relationships_vdb = storage
+    entity_data = {
+        "entity_type": "PERSON",
+        "description": "Trying to override entity_id",
+        "entity_id": "MALICIOUS_ID",
+    }
+    with (
+        patch("lightrag.utils_graph.get_storage_keyed_lock", _noop_lock),
+        patch("lightrag.utils_graph.get_entity_info", new_callable=AsyncMock),
+    ):
+        await acreate_entity(
+            graph, entities_vdb, relationships_vdb, "TestEntity4", entity_data
+        )
+    node = graph._nodes["TestEntity4"]
+    assert node["entity_id"] == "TestEntity4"  # canonical ID, not the payload

@@ -970,6 +970,7 @@ async def acreate_entity(
             # GraphML compatibility (NetworkX write_graphml requires scalar attrs)
             _reserved_keys = {
                 "entity_name",
+                "entity_id",
                 "entity_type",
                 "description",
                 "source_id",
