@@ -320,7 +320,18 @@ class FaissVectorDBStorage(BaseVectorStorage):
         new_id_to_meta = {}
         for new_fid, old_fid in enumerate(keep_fids):
             vec_meta = self._id_to_meta[old_fid]
-            vectors_to_keep.append(vec_meta["__vector__"])  # stored as list
+            if "__vector__" in vec_meta:
+                vec = vec_meta["__vector__"]
+            elif old_fid < self._index.ntotal:
+                vec = self._index.reconstruct(old_fid).tolist()
+                vec_meta["__vector__"] = vec
+            else:
+                logger.warning(
+                    f"[{self.workspace}] Skipping fid={old_fid} during rebuild: "
+                    f"no vector and fid exceeds index size ({self._index.ntotal})"
+                )
+                continue
+            vectors_to_keep.append(vec)
             new_id_to_meta[new_fid] = vec_meta
 
         async with self._storage_lock:
@@ -345,8 +356,12 @@ class FaissVectorDBStorage(BaseVectorStorage):
             filtered_meta = {k: v for k, v in meta.items() if k != "__vector__"}
             serializable_dict[str(fid)] = filtered_meta
 
-        with open(self._meta_file, "w", encoding="utf-8") as f:
+        # Atomic write: write to temp file first, then rename to reduce
+        # mismatch risk between index and meta files on crash.
+        tmp_meta_file = self._meta_file + ".tmp"
+        with open(tmp_meta_file, "w", encoding="utf-8") as f:
             json.dump(serializable_dict, f)
+        os.replace(tmp_meta_file, self._meta_file)
 
     def _load_faiss_index(self):
         """
@@ -383,7 +398,13 @@ class FaissVectorDBStorage(BaseVectorStorage):
             self._id_to_meta = {}
             for fid_str, meta in stored_dict.items():
                 fid = int(fid_str)
-                if "__vector__" not in meta and fid < self._index.ntotal:
+                if fid >= self._index.ntotal:
+                    logger.warning(
+                        f"[{self.workspace}] Skipping metadata row fid={fid}: "
+                        f"exceeds index size ({self._index.ntotal})"
+                    )
+                    continue
+                if "__vector__" not in meta:
                     meta["__vector__"] = self._index.reconstruct(fid).tolist()
                 self._id_to_meta[fid] = meta
 
