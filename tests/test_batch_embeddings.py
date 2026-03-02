@@ -5,8 +5,7 @@ Verifies that kg_query batches all needed embeddings (query, ll_keywords,
 hl_keywords) into a single embedding API call instead of 3 sequential calls.
 """
 
-import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import numpy as np
 import pytest
