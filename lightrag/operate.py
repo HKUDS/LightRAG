@@ -3039,45 +3039,54 @@ async def extract_entities(
         task = asyncio.create_task(_process_with_semaphore(c))
         tasks.append(task)
 
-    # Wait for tasks to complete or for the first exception to occur
-    # This allows us to cancel remaining tasks if any task fails
-    done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_EXCEPTION)
+    # Wait for ALL tasks to complete, even if some fail.
+    # This ensures that a single chunk failure (e.g., content filter error)
+    # does not abort the entire document's entity extraction.
+    done, pending = await asyncio.wait(tasks, return_when=asyncio.ALL_COMPLETED)
 
-    # Check if any task raised an exception and ensure all exceptions are retrieved
-    first_exception = None
+    # Collect successful results and log failures
     chunk_results = []
+    failed_chunks = 0
 
     for task in done:
         try:
             exception = task.exception()
             if exception is not None:
-                if first_exception is None:
-                    first_exception = exception
+                failed_chunks += 1
+                # Check for user cancellation — propagate immediately
+                if isinstance(exception, PipelineCancelledException):
+                    raise exception
+                logger.warning(
+                    f"Skipping failed chunk during entity extraction: {exception}"
+                )
             else:
                 chunk_results.append(task.result())
+        except PipelineCancelledException:
+            # Cancel remaining tasks and re-raise
+            for t in done:
+                if not t.done():
+                    t.cancel()
+            raise
         except Exception as e:
-            if first_exception is None:
-                first_exception = e
+            failed_chunks += 1
+            logger.warning(
+                f"Skipping failed chunk during entity extraction: {e}"
+            )
 
-    # If any task failed, cancel all pending tasks and raise the first exception
-    if first_exception is not None:
-        # Cancel all pending tasks
-        for pending_task in pending:
-            pending_task.cancel()
+    if failed_chunks > 0:
+        logger.warning(
+            f"Entity extraction completed with {failed_chunks}/{total_chunks} "
+            f"chunk(s) failed. Successfully processed {len(chunk_results)}/{total_chunks} chunks."
+        )
 
-        # Wait for cancellation to complete
-        if pending:
-            await asyncio.wait(pending)
+    # If ALL chunks failed, raise an error so the document is marked as FAILED
+    if not chunk_results and total_chunks > 0:
+        raise RuntimeError(
+            f"All {total_chunks} chunks failed during entity extraction. "
+            f"The document cannot be processed."
+        )
 
-        # Add progress prefix to the exception message
-        progress_prefix = f"C[{processed_chunks + 1}/{total_chunks}]"
-
-        # Re-raise the original exception with a prefix
-        prefixed_exception = create_prefixed_exception(first_exception, progress_prefix)
-        raise prefixed_exception from first_exception
-
-    # If all tasks completed successfully, chunk_results already contains the results
-    # Return the chunk_results for later processing in merge_nodes_and_edges
+    # Return partial results from successful chunks
     return chunk_results
 
 
