@@ -1,4 +1,5 @@
 import os
+from collections import deque
 from dataclasses import dataclass
 from typing import final
 
@@ -352,7 +353,7 @@ class NetworkXStorage(BaseGraphStorage):
             bfs_nodes = []
             visited = set()
             # Store (node, depth, degree) in the queue
-            queue = [(node_label, 0, graph.degree(node_label))]
+            queue = deque([(node_label, 0, graph.degree(node_label))])
 
             # Flag to track if there are unexplored neighbors due to depth limit
             has_unexplored_neighbors = False
@@ -365,7 +366,7 @@ class NetworkXStorage(BaseGraphStorage):
                 # Collect all nodes at the current depth
                 current_level_nodes = []
                 while queue and queue[0][1] == current_depth:
-                    current_level_nodes.append(queue.pop(0))
+                    current_level_nodes.append(queue.popleft())
 
                 # Sort nodes at current depth by degree (highest first)
                 current_level_nodes.sort(key=lambda x: x[2], reverse=True)
