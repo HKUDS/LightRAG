@@ -3034,9 +3034,11 @@ async def extract_entities(
                 prefixed_exception = create_prefixed_exception(e, chunk_id)
                 raise prefixed_exception from e
 
+    task_to_chunk_key: dict = {}
     tasks = []
     for c in ordered_chunks:
         task = asyncio.create_task(_process_with_semaphore(c))
+        task_to_chunk_key[task] = c[0]
         tasks.append(task)
 
     # Wait for ALL tasks to complete, even if some fail.
@@ -3044,40 +3046,37 @@ async def extract_entities(
     # does not abort the entire document's entity extraction.
     done, pending = await asyncio.wait(tasks, return_when=asyncio.ALL_COMPLETED)
 
-    # Collect successful results and log failures
+    # Collect successful results and track failures
     chunk_results = []
-    failed_chunks = 0
+    failed_chunk_ids: list[str] = []
 
     for task in done:
+        chunk_key = task_to_chunk_key.get(task, "unknown")
         try:
             exception = task.exception()
             if exception is not None:
-                failed_chunks += 1
-                # Check for user cancellation — propagate immediately
                 if isinstance(exception, PipelineCancelledException):
                     raise exception
+                failed_chunk_ids.append(chunk_key)
                 logger.warning(
-                    f"Skipping failed chunk during entity extraction: {exception}"
+                    f"Skipping chunk {chunk_key}: {exception}"
                 )
             else:
                 chunk_results.append(task.result())
         except PipelineCancelledException:
-            # Cancel remaining tasks and re-raise
-            for t in done:
-                if not t.done():
-                    t.cancel()
             raise
         except Exception as e:
-            failed_chunks += 1
-            logger.warning(
-                f"Skipping failed chunk during entity extraction: {e}"
-            )
+            failed_chunk_ids.append(chunk_key)
+            logger.warning(f"Skipping chunk {chunk_key}: {e}")
 
-    if failed_chunks > 0:
+    if failed_chunk_ids:
         logger.warning(
-            f"Entity extraction completed with {failed_chunks}/{total_chunks} "
-            f"chunk(s) failed. Successfully processed {len(chunk_results)}/{total_chunks} chunks."
+            f"Entity extraction: {len(failed_chunk_ids)}/{total_chunks} chunk(s) failed, "
+            f"{len(chunk_results)} succeeded. Failed: {failed_chunk_ids}"
         )
+        if pipeline_status is not None and pipeline_status_lock is not None:
+            async with pipeline_status_lock:
+                pipeline_status.setdefault("failed_chunks", []).extend(failed_chunk_ids)
 
     # If ALL chunks failed, raise an error so the document is marked as FAILED
     if not chunk_results and total_chunks > 0:

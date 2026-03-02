@@ -2042,6 +2042,7 @@ class LightRAG:
                                 # Record processing end time
                                 processing_end_time = int(time.time())
 
+                                failed_chunks = pipeline_status.pop("failed_chunks", [])
                                 await self.doc_status.upsert(
                                     {
                                         doc_id: {
@@ -2059,6 +2060,7 @@ class LightRAG:
                                             "metadata": {
                                                 "processing_start_time": processing_start_time,
                                                 "processing_end_time": processing_end_time,
+                                                **({"failed_chunks": failed_chunks} if failed_chunks else {}),
                                             },
                                         }
                                     }
