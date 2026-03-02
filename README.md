@@ -326,10 +326,10 @@ A full list of LightRAG init parameters:
 | -------------- | ---------- | ----------------- | ------------- |
 | **working_dir** | `str` | Directory where the cache will be stored | `lightrag_cache+timestamp` |
 | **workspace** | str | Workspace name for data isolation between different LightRAG Instances | |
-| **kv_storage** | `str` | Storage type for documents and text chunks. Supported types: `JsonKVStorage`,`PGKVStorage`,`RedisKVStorage`,`MongoKVStorage` | `JsonKVStorage` |
-| **vector_storage** | `str` | Storage type for embedding vectors. Supported types: `NanoVectorDBStorage`,`PGVectorStorage`,`MilvusVectorDBStorage`,`ChromaVectorDBStorage`,`FaissVectorDBStorage`,`MongoVectorDBStorage`,`QdrantVectorDBStorage` | `NanoVectorDBStorage` |
-| **graph_storage** | `str` | Storage type for graph edges and nodes. Supported types: `NetworkXStorage`,`Neo4JStorage`,`PGGraphStorage`,`AGEStorage` | `NetworkXStorage` |
-| **doc_status_storage** | `str` | Storage type for documents process status. Supported types: `JsonDocStatusStorage`,`PGDocStatusStorage`,`MongoDocStatusStorage` | `JsonDocStatusStorage` |
+| **kv_storage** | `str` | Storage type for documents and text chunks. Supported types: `JsonKVStorage`,`PGKVStorage`,`RedisKVStorage`,`MongoKVStorage`,`OpenSearchKVStorage` | `JsonKVStorage` |
+| **vector_storage** | `str` | Storage type for embedding vectors. Supported types: `NanoVectorDBStorage`,`PGVectorStorage`,`MilvusVectorDBStorage`,`ChromaVectorDBStorage`,`FaissVectorDBStorage`,`MongoVectorDBStorage`,`QdrantVectorDBStorage`,`OpenSearchVectorDBStorage` | `NanoVectorDBStorage` |
+| **graph_storage** | `str` | Storage type for graph edges and nodes. Supported types: `NetworkXStorage`,`Neo4JStorage`,`PGGraphStorage`,`AGEStorage`,`OpenSearchGraphStorage` | `NetworkXStorage` |
+| **doc_status_storage** | `str` | Storage type for documents process status. Supported types: `JsonDocStatusStorage`,`PGDocStatusStorage`,`MongoDocStatusStorage`,`OpenSearchDocStatusStorage` | `JsonDocStatusStorage` |
 | **chunk_token_size** | `int` | Maximum token size per chunk when splitting documents | `1200` |
 | **chunk_overlap_token_size** | `int` | Overlap token size between two chunks when splitting documents | `100` |
 | **tokenizer** | `Tokenizer` | The function used to convert text into tokens (numbers) and back using .encode() and .decode() functions following `TokenizerInterface` protocol. If you don't specify one, it will use the default Tiktoken tokenizer. | `TiktokenTokenizer` |
@@ -921,19 +921,21 @@ Each storage type has several implementations:
 * KV_STORAGE supported implementations:
 
 ```
-JsonKVStorage    JsonFile (default)
-PGKVStorage      Postgres
-RedisKVStorage   Redis
-MongoKVStorage   MongoDB
+JsonKVStorage        JsonFile (default)
+PGKVStorage          Postgres
+RedisKVStorage       Redis
+MongoKVStorage       MongoDB
+OpenSearchKVStorage  OpenSearch
 ```
 
 * GRAPH_STORAGE supported implementations:
 
 ```
-NetworkXStorage      NetworkX (default)
-Neo4JStorage         Neo4J
-PGGraphStorage       PostgreSQL with AGE plugin
-MemgraphStorage.     Memgraph
+NetworkXStorage          NetworkX (default)
+Neo4JStorage             Neo4J
+PGGraphStorage           PostgreSQL with AGE plugin
+MemgraphStorage          Memgraph
+OpenSearchGraphStorage   OpenSearch
 ```
 
 > Testing has shown that Neo4J delivers superior performance in production environments compared to PostgreSQL with AGE plugin.
@@ -947,6 +949,7 @@ MilvusVectorDBStorage       Milvus
 FaissVectorDBStorage        Faiss
 QdrantVectorDBStorage       Qdrant
 MongoVectorDBStorage        MongoDB
+OpenSearchVectorDBStorage   OpenSearch
 ```
 
 * DOC_STATUS_STORAGE: supported implementations:
@@ -955,6 +958,7 @@ MongoVectorDBStorage        MongoDB
 JsonDocStatusStorage        JsonFile (default)
 PGDocStatusStorage          Postgres
 MongoDocStatusStorage       MongoDB
+OpenSearchDocStatusStorage  OpenSearch
 ```
 
 Example connection configurations for each storage type can be found in the repository's `env.example` file. The database instance in the connection string needs to be created by you on the database server beforehand. LightRAG is only responsible for creating tables within the database instance, not for creating the database instance itself. If using Redis as storage, remember to configure automatic data persistence rules for Redis, otherwise data will be lost after the Redis service restarts. If using PostgreSQL, it is recommended to use version 16.6 or above.
@@ -1102,6 +1106,78 @@ maxclients 500
 
 </details>
 
+<details>
+<summary> <b>Using OpenSearch Storage</b> </summary>
+
+OpenSearch provides a unified storage solution for all four LightRAG storage types (KV, Vector, Graph, DocStatus). It offers native k-NN vector search, full-text search, and horizontal scalability — all without cloud-only restrictions.
+
+* **Requirements**: OpenSearch 3.x or higher with k-NN plugin enabled. Install with Docker:
+
+```bash
+docker run -d -p 9200:9200 -e "discovery.type=single-node" \
+  -e "OPENSEARCH_INITIAL_ADMIN_PASSWORD=<custom-admin-password>" \
+  opensearchproject/opensearch:latest
+```
+
+* **Configuration**: Set environment variables (see `env.example` for full list):
+
+```bash
+export OPENSEARCH_HOSTS=localhost:9200
+export OPENSEARCH_INITIAL_ADMIN_PASSWORD=<custom-admin-password>
+export OPENSEARCH_USE_SSL=true
+export OPENSEARCH_VERIFY_CERTS=false
+```
+
+* **Usage**:
+
+```python
+rag = LightRAG(
+    working_dir=WORKING_DIR,
+    llm_model_func=your_llm_func,
+    embedding_func=your_embed_func,
+    kv_storage="OpenSearchKVStorage",
+    doc_status_storage="OpenSearchDocStatusStorage",
+    graph_storage="OpenSearchGraphStorage",
+    vector_storage="OpenSearchVectorDBStorage",
+)
+```
+
+* **Graph Traversal**: When the OpenSearch SQL plugin with PPL support is available, graph queries use server-side BFS via the `graphlookup` command for optimal performance. Otherwise, it falls back to client-side batched BFS. This is auto-detected at startup, or can be forced via `OPENSEARCH_USE_PPL_GRAPHLOOKUP=true|false`.
+
+* **Integration Testing**: To run integration tests against a live OpenSearch cluster:
+
+1. Start OpenSearch using Docker Compose (download [`docker-compose-3.x.yml`](https://github.com/opensearch-project/opensearch-build/blob/main/docker/release/dockercomposefiles/docker-compose-3.x.yml)):
+
+```bash
+OPENSEARCH_INITIAL_ADMIN_PASSWORD=<custom-admin-password> docker-compose -f docker-compose-3.x.yml up
+```
+
+2. Verify the cluster is running:
+
+```bash
+curl -sk -u admin:<custom-admin-password> https://localhost:9200
+curl -sk -u admin:<custom-admin-password> https://localhost:9200/_cat/plugins?v
+```
+
+3. Run the unit tests (no OpenSearch required — uses mocks):
+
+```bash
+python -m pytest tests/test_opensearch_storage.py -v
+```
+
+4. Run the POC example against the live cluster:
+
+```bash
+export OPENSEARCH_HOSTS=localhost:9200
+export OPENSEARCH_USER=admin
+export OPENSEARCH_PASSWORD=<custom-admin-password>
+export OPENSEARCH_USE_SSL=true
+export OPENSEARCH_VERIFY_CERTS=false
+python examples/opensearch_poc.py
+```
+
+</details>
+
 ### Data Isolation Between LightRAG Instances
 
 The `workspace` parameter ensures data isolation between different LightRAG instances. Once initialized, the `workspace` is immutable and cannot be changed. Here is how workspaces are implemented for different types of storage:
@@ -1111,8 +1187,9 @@ The `workspace` parameter ensures data isolation between different LightRAG inst
 - **For Qdrant vector database, data isolation is achieved through payload-based partitioning (Qdrant's recommended multitenancy approach):** `QdrantVectorDBStorage` uses shared collections with payload filtering for unlimited workspace scalability.
 - **For relational databases, data isolation is achieved by adding a `workspace` field to the tables for logical data separation:** `PGKVStorage`, `PGVectorStorage`, `PGDocStatusStorage`.
 - **For the Neo4j graph database, logical data isolation is achieved through labels:** `Neo4JStorage`
+- **For OpenSearch, data isolation is achieved through index name prefixes:** `OpenSearchKVStorage`, `OpenSearchDocStatusStorage`, `OpenSearchGraphStorage`, `OpenSearchVectorDBStorage`
 
-To maintain compatibility with legacy data, the default workspace for PostgreSQL non-graph storage is `default` and, for PostgreSQL AGE graph storage is null, for Neo4j graph storage is `base` when no workspace is configured. For all external storages, the system provides dedicated workspace environment variables to override the common `WORKSPACE` environment variable configuration. These storage-specific workspace environment variables are: `REDIS_WORKSPACE`, `MILVUS_WORKSPACE`, `QDRANT_WORKSPACE`, `MONGODB_WORKSPACE`, `POSTGRES_WORKSPACE`, `NEO4J_WORKSPACE`.
+To maintain compatibility with legacy data, the default workspace for PostgreSQL non-graph storage is `default` and, for PostgreSQL AGE graph storage is null, for Neo4j graph storage is `base` when no workspace is configured. For all external storages, the system provides dedicated workspace environment variables to override the common `WORKSPACE` environment variable configuration. These storage-specific workspace environment variables are: `REDIS_WORKSPACE`, `MILVUS_WORKSPACE`, `QDRANT_WORKSPACE`, `MONGODB_WORKSPACE`, `POSTGRES_WORKSPACE`, `NEO4J_WORKSPACE`, `OPENSEARCH_WORKSPACE`.
 
 **Usage Example:**
 For a practical demonstration of managing multiple isolated knowledge bases (e.g., separating "Book" content from "HR Policies") within a single application, refer to the [Workspace Demo](examples/lightrag_gemini_workspace_demo.py).

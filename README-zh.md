@@ -326,10 +326,10 @@ if __name__ == "__main__":
 | -------------- | ---------- | ----------------- | ------------- |
 | **working_dir** | `str` | 存储缓存的目录 | `lightrag_cache+timestamp` |
 | **workspace** | str | 用于不同 LightRAG 实例之间数据隔离的工作区名称 | |
-| **kv_storage** | `str` | Storage type for documents and text chunks. Supported types: `JsonKVStorage`,`PGKVStorage`,`RedisKVStorage`,`MongoKVStorage` | `JsonKVStorage` |
-| **vector_storage** | `str` | Storage type for embedding vectors. Supported types: `NanoVectorDBStorage`,`PGVectorStorage`,`MilvusVectorDBStorage`,`ChromaVectorDBStorage`,`FaissVectorDBStorage`,`MongoVectorDBStorage`,`QdrantVectorDBStorage` | `NanoVectorDBStorage` |
-| **graph_storage** | `str` | Storage type for graph edges and nodes. Supported types: `NetworkXStorage`,`Neo4JStorage`,`PGGraphStorage`,`AGEStorage` | `NetworkXStorage` |
-| **doc_status_storage** | `str` | Storage type for documents process status. Supported types: `JsonDocStatusStorage`,`PGDocStatusStorage`,`MongoDocStatusStorage` | `JsonDocStatusStorage` |
+| **kv_storage** | `str` | Storage type for documents and text chunks. Supported types: `JsonKVStorage`,`PGKVStorage`,`RedisKVStorage`,`MongoKVStorage`,`OpenSearchKVStorage` | `JsonKVStorage` |
+| **vector_storage** | `str` | Storage type for embedding vectors. Supported types: `NanoVectorDBStorage`,`PGVectorStorage`,`MilvusVectorDBStorage`,`ChromaVectorDBStorage`,`FaissVectorDBStorage`,`MongoVectorDBStorage`,`QdrantVectorDBStorage`,`OpenSearchVectorDBStorage` | `NanoVectorDBStorage` |
+| **graph_storage** | `str` | Storage type for graph edges and nodes. Supported types: `NetworkXStorage`,`Neo4JStorage`,`PGGraphStorage`,`AGEStorage`,`OpenSearchGraphStorage` | `NetworkXStorage` |
+| **doc_status_storage** | `str` | Storage type for documents process status. Supported types: `JsonDocStatusStorage`,`PGDocStatusStorage`,`MongoDocStatusStorage`,`OpenSearchDocStatusStorage` | `JsonDocStatusStorage` |
 | **chunk_token_size** | `int` | 拆分文档时每个块的最大令牌大小 | `1200` |
 | **chunk_overlap_token_size** | `int` | 拆分文档时两个块之间的重叠令牌大小 | `100` |
 | **tokenizer** | `Tokenizer` | 用于将文本转换为 tokens（数字）以及使用遵循 TokenizerInterface 协议的 .encode() 和 .decode() 函数将 tokens 转换回文本的函数。 如果您不指定，它将使用默认的 Tiktoken tokenizer。 | `TiktokenTokenizer` |
@@ -921,19 +921,21 @@ LightRAG 使用 4 种类型的存储来满足不同用途：
 * KV_STORAGE 支持的实现：
 
 ```
-JsonKVStorage    JsonFile（默认）
-PGKVStorage      Postgres
-RedisKVStorage   Redis
-MongoKVStorage   MongoDB
+JsonKVStorage        JsonFile（默认）
+PGKVStorage          Postgres
+RedisKVStorage       Redis
+MongoKVStorage       MongoDB
+OpenSearchKVStorage  OpenSearch
 ```
 
 * GRAPH_STORAGE 支持的实现：
 
 ```
-NetworkXStorage      NetworkX（默认）
-Neo4JStorage         Neo4J
-PGGraphStorage       PostgreSQL with AGE 插件
-MemgraphStorage      Memgraph
+NetworkXStorage          NetworkX（默认）
+Neo4JStorage             Neo4J
+PGGraphStorage           PostgreSQL with AGE 插件
+MemgraphStorage          Memgraph
+OpenSearchGraphStorage   OpenSearch
 ```
 
 > 测试表明，Neo4J 在生产环境中的性能优于带有 AGE 插件的 PostgreSQL。
@@ -947,6 +949,7 @@ MilvusVectorDBStorage       Milvus
 FaissVectorDBStorage        Faiss
 QdrantVectorDBStorage       Qdrant
 MongoVectorDBStorage        MongoDB
+OpenSearchVectorDBStorage   OpenSearch
 ```
 
 * DOC_STATUS_STORAGE 支持的实现：
@@ -955,6 +958,7 @@ MongoVectorDBStorage        MongoDB
 JsonDocStatusStorage        JsonFile（默认）
 PGDocStatusStorage          Postgres
 MongoDocStatusStorage       MongoDB
+OpenSearchDocStatusStorage  OpenSearch
 ```
 
 各存储类型的示例连接配置可在仓库中的 `env.example` 文件里找到。连接字符串中的数据库实例需要您预先在数据库服务器上创建。LightRAG 仅负责在数据库实例中创建表，不负责创建数据库实例本身。如果使用 Redis 作为存储，请记住配置 Redis 的自动数据持久化规则，否则 Redis 服务重启后数据将会丢失。如果使用 PostgreSQL，建议使用 16.6 或更高版本。
@@ -1102,6 +1106,79 @@ maxclients 500
 
 </details>
 
+<details>
+<summary> <b>使用 OpenSearch 存储</b> </summary>
+
+OpenSearch 为 LightRAG 的全部四种存储类型（KV、向量、图、文档状态）提供了统一的存储解决方案。它提供原生 k-NN 向量搜索、全文搜索和水平扩展能力，且无云服务限制。
+
+* **环境要求**：OpenSearch 3.x 或更高版本，需启用 k-NN 插件。使用 Docker 安装：
+
+```bash
+docker run -d -p 9200:9200 -e "discovery.type=single-node" \
+  -e "OPENSEARCH_INITIAL_ADMIN_PASSWORD=<custom-admin-password>" \
+  opensearchproject/opensearch:latest
+```
+
+* **配置**：设置环境变量（完整列表请参见 `env.example`）：
+
+```bash
+export OPENSEARCH_HOSTS=localhost:9200
+export OPENSEARCH_USER=admin
+export OPENSEARCH_PASSWORD=<custom-admin-password>
+export OPENSEARCH_USE_SSL=true
+export OPENSEARCH_VERIFY_CERTS=false
+```
+
+* **使用方式**：
+
+```python
+rag = LightRAG(
+    working_dir=WORKING_DIR,
+    llm_model_func=your_llm_func,
+    embedding_func=your_embed_func,
+    kv_storage="OpenSearchKVStorage",
+    doc_status_storage="OpenSearchDocStatusStorage",
+    graph_storage="OpenSearchGraphStorage",
+    vector_storage="OpenSearchVectorDBStorage",
+)
+```
+
+* **图遍历**：当 OpenSearch SQL 插件支持 PPL 时，图查询会使用 `graphlookup` 命令进行服务端 BFS 遍历以获得最佳性能。否则，将回退到客户端批量 BFS。此功能在启动时自动检测，也可通过 `OPENSEARCH_USE_PPL_GRAPHLOOKUP=true|false` 强制设置。
+
+* **集成测试**：针对实际运行的 OpenSearch 集群进行集成测试：
+
+1. 使用 Docker Compose 启动 OpenSearch（下载 [`docker-compose-3.x.yml`](https://github.com/opensearch-project/opensearch-build/blob/main/docker/release/dockercomposefiles/docker-compose-3.x.yml)）：
+
+```bash
+OPENSEARCH_INITIAL_ADMIN_PASSWORD=<custom-admin-password> docker-compose -f docker-compose-3.x.yml up
+```
+
+2. 验证集群是否正常运行：
+
+```bash
+curl -sk -u admin:<custom-admin-password> https://localhost:9200
+curl -sk -u admin:<custom-admin-password> https://localhost:9200/_cat/plugins?v
+```
+
+3. 运行单元测试（无需 OpenSearch 实例，使用 mock）：
+
+```bash
+python -m pytest tests/test_opensearch_storage.py -v
+```
+
+4. 针对实际集群运行 POC 示例：
+
+```bash
+export OPENSEARCH_HOSTS=localhost:9200
+export OPENSEARCH_USER=admin
+export OPENSEARCH_PASSWORD=<custom-admin-password>
+export OPENSEARCH_USE_SSL=true
+export OPENSEARCH_VERIFY_CERTS=false
+python examples/opensearch_poc.py
+```
+
+</details>
+
 ### LightRAG 实例之间的数据隔离
 
 `workspace` 参数确保不同 LightRAG 实例之间的数据隔离。一旦初始化，`workspace` 是不可变的，无法更改。以下是不同类型存储实现工作区的方式：
@@ -1111,8 +1188,9 @@ maxclients 500
 - **对于 Qdrant 向量数据库，通过基于 payload 的分区实现数据隔离（Qdrant 推荐的多租户方法）**：`QdrantVectorDBStorage` 使用带有 payload 过滤的共享集合，实现无限的工作区可扩展性。
 - **对于关系型数据库，通过在表中添加 `workspace` 字段实现逻辑数据分离**：`PGKVStorage`、`PGVectorStorage`、`PGDocStatusStorage`。
 - **对于 Neo4j 图数据库，通过标签实现逻辑数据隔离**：`Neo4JStorage`
+- **对于 OpenSearch，通过索引名称前缀实现数据隔离**：`OpenSearchKVStorage`、`OpenSearchDocStatusStorage`、`OpenSearchGraphStorage`、`OpenSearchVectorDBStorage`
 
-为了保持与旧数据的兼容性，当未配置工作区时，PostgreSQL 非图存储的默认工作区为 `default`，PostgreSQL AGE 图存储的默认工作区为 null，Neo4j 图存储的默认工作区为 `base`。对于所有外部存储，系统提供专用的工作区环境变量来覆盖通用的 `WORKSPACE` 环境变量配置。这些存储特定的工作区环境变量包括：`REDIS_WORKSPACE`、`MILVUS_WORKSPACE`、`QDRANT_WORKSPACE`、`MONGODB_WORKSPACE`、`POSTGRES_WORKSPACE`、`NEO4J_WORKSPACE`。
+为了保持与旧数据的兼容性，当未配置工作区时，PostgreSQL 非图存储的默认工作区为 `default`，PostgreSQL AGE 图存储的默认工作区为 null，Neo4j 图存储的默认工作区为 `base`。对于所有外部存储，系统提供专用的工作区环境变量来覆盖通用的 `WORKSPACE` 环境变量配置。这些存储特定的工作区环境变量包括：`REDIS_WORKSPACE`、`MILVUS_WORKSPACE`、`QDRANT_WORKSPACE`、`MONGODB_WORKSPACE`、`POSTGRES_WORKSPACE`、`NEO4J_WORKSPACE`、`OPENSEARCH_WORKSPACE`。
 
 **使用示例：**
 有关在单个应用程序中管理多个隔离知识库（例如，将"书籍"内容与"人力资源政策"分开）的实际演示，请参阅 [Workspace Demo](examples/lightrag_gemini_workspace_demo.py)。
