@@ -3519,11 +3519,11 @@ async def _perform_kg_search(
     # Track chunk sources and metadata for final logging
     chunk_tracking = {}  # chunk_id -> {source, frequency, order}
 
-    # Pre-compute all needed embeddings in a single batch call.
-    # In hybrid/mix mode, kg_query needs embeddings for up to 3 different texts:
+    # Pre-compute embeddings needed by the selected mode in a single batch call.
+    # Only embed texts that the active retrieval branches will actually use:
     #   - query        → used by _get_vector_context (chunks VDB)
-    #   - ll_keywords  → used by _get_node_data (entities VDB)
-    #   - hl_keywords  → used by _get_edge_data (relationships VDB)
+    #   - ll_keywords  → used by _get_node_data (entities VDB) in local/hybrid/mix
+    #   - hl_keywords  → used by _get_edge_data (relationships VDB) in global/hybrid/mix
     # Batching avoids 2-3 sequential API round-trips.
     kg_chunk_pick_method = text_chunks_db.global_config.get(
         "kg_chunk_pick_method", DEFAULT_KG_CHUNK_PICK_METHOD
@@ -3534,6 +3534,10 @@ async def _perform_kg_search(
     ll_embedding = None
     hl_embedding = None
 
+    mode = query_param.mode
+    need_ll = mode in ("local", "hybrid", "mix") and bool(ll_keywords)
+    need_hl = mode in ("global", "hybrid", "mix") and bool(hl_keywords)
+
     if actual_embedding_func:
         texts_to_embed: list[str] = []
         text_purposes: list[str] = []
@@ -3542,17 +3546,19 @@ async def _perform_kg_search(
             texts_to_embed.append(query)
             text_purposes.append("query")
 
-        if ll_keywords:
+        if need_ll:
             texts_to_embed.append(ll_keywords)
             text_purposes.append("ll")
 
-        if hl_keywords:
+        if need_hl:
             texts_to_embed.append(hl_keywords)
             text_purposes.append("hl")
 
         if texts_to_embed:
             try:
-                all_embeddings = await actual_embedding_func(texts_to_embed)
+                all_embeddings = await actual_embedding_func(
+                    texts_to_embed, _priority=5
+                )
                 for i, purpose in enumerate(text_purposes):
                     if purpose == "query":
                         query_embedding = all_embeddings[i]

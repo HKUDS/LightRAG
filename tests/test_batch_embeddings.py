@@ -17,7 +17,9 @@ def _make_mock_embedding_func(dim=1536):
     """Create a mock async embedding function that returns distinct vectors per input."""
 
     async def _embed(texts, **kwargs):
-        return np.array([np.full(dim, i + 1, dtype=np.float32) for i in range(len(texts))])
+        return np.array(
+            [np.full(dim, i + 1, dtype=np.float32) for i in range(len(texts))]
+        )
 
     mock = AsyncMock(side_effect=_embed)
     return mock
@@ -119,8 +121,8 @@ async def test_hybrid_mode_passes_embeddings_to_vdbs():
 
 @pytest.mark.offline
 @pytest.mark.asyncio
-async def test_local_mode_batches_query_and_ll():
-    """In local mode, should batch query + ll_keywords (2 texts, not 3)."""
+async def test_local_mode_skips_hl_keywords():
+    """In local mode, should only embed query + ll_keywords (skip hl_keywords)."""
     from lightrag.operate import _perform_kg_search
 
     embed_func = _make_mock_embedding_func()
@@ -134,7 +136,7 @@ async def test_local_mode_batches_query_and_ll():
     await _perform_kg_search(
         query="test query",
         ll_keywords="entity keywords",
-        hl_keywords="",
+        hl_keywords="theme keywords",
         knowledge_graph_inst=knowledge_graph,
         entities_vdb=entities_vdb,
         relationships_vdb=relationships_vdb,
@@ -145,6 +147,38 @@ async def test_local_mode_batches_query_and_ll():
     assert embed_func.call_count == 1
     call_args = embed_func.call_args[0][0]
     assert len(call_args) == 2, f"Expected 2 texts (query + ll), got {len(call_args)}"
+    assert "theme keywords" not in call_args
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_global_mode_skips_ll_keywords():
+    """In global mode, should only embed query + hl_keywords (skip ll_keywords)."""
+    from lightrag.operate import _perform_kg_search
+
+    embed_func = _make_mock_embedding_func()
+    text_chunks_db = _make_mock_kv_storage(embed_func)
+    entities_vdb = _make_mock_vdb()
+    relationships_vdb = _make_mock_vdb()
+    knowledge_graph = _make_mock_graph()
+
+    query_param = QueryParam(mode="global", top_k=5)
+
+    await _perform_kg_search(
+        query="test query",
+        ll_keywords="entity keywords",
+        hl_keywords="theme keywords",
+        knowledge_graph_inst=knowledge_graph,
+        entities_vdb=entities_vdb,
+        relationships_vdb=relationships_vdb,
+        text_chunks_db=text_chunks_db,
+        query_param=query_param,
+    )
+
+    assert embed_func.call_count == 1
+    call_args = embed_func.call_args[0][0]
+    assert len(call_args) == 2, f"Expected 2 texts (query + hl), got {len(call_args)}"
+    assert "entity keywords" not in call_args
 
 
 @pytest.mark.offline
