@@ -2324,9 +2324,14 @@ class PGKVStorage(BaseKVStorage):
 
         # upsert_sql is always set here; unknown namespace raises ValueError above
         if batch_values:
-            await self.db.executemany(upsert_sql, batch_values)
+            # Chunking batch_values into smaller sub-batches to prevent database overload
+            for i in range(0, len(batch_values), self._max_batch_size):
+                sub_batch = batch_values[i : i + self._max_batch_size]
+                await self.db.executemany(upsert_sql, sub_batch)
+
             logger.debug(
-                f"[{self.workspace}] Batch upserted {len(batch_values)} records to {self.namespace}"
+                f"[{self.workspace}] Batch upserted {len(batch_values)} records to {self.namespace} "
+                f"in {-(len(batch_values) // -self._max_batch_size)} sub-batches"
             )
 
     async def index_done_callback(self) -> None:
