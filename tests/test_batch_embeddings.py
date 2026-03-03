@@ -71,9 +71,9 @@ async def test_hybrid_mode_batches_embeddings():
     )
 
     # The embedding function should be called exactly once with all 3 texts batched
-    assert embed_func.call_count == 1, (
-        f"Expected 1 batched embedding call, got {embed_func.call_count}"
-    )
+    assert (
+        embed_func.call_count == 1
+    ), f"Expected 1 batched embedding call, got {embed_func.call_count}"
     call_args = embed_func.call_args[0][0]
     assert len(call_args) == 3, f"Expected 3 texts in batch, got {len(call_args)}"
     assert call_args == ["test query", "entity1, entity2", "theme1, theme2"]
@@ -109,14 +109,20 @@ async def test_hybrid_mode_passes_embeddings_to_vdbs():
     assert entities_call is not None, "entities_vdb.query was not called"
     ll_embedding = entities_call.kwargs.get("query_embedding")
     assert ll_embedding is not None, "ll_embedding was not passed to entities_vdb.query"
-    assert np.all(ll_embedding == 2.0), f"Expected ll_embedding=[2,2,...], got {ll_embedding[:3]}"
+    assert np.all(
+        ll_embedding == 2.0
+    ), f"Expected ll_embedding=[2,2,...], got {ll_embedding[:3]}"
 
     # relationships_vdb.query should receive hl_embedding (index 2 → all 3s)
     rel_call = relationships_vdb.query.call_args
     assert rel_call is not None, "relationships_vdb.query was not called"
     hl_embedding = rel_call.kwargs.get("query_embedding")
-    assert hl_embedding is not None, "hl_embedding was not passed to relationships_vdb.query"
-    assert np.all(hl_embedding == 3.0), f"Expected hl_embedding=[3,3,...], got {hl_embedding[:3]}"
+    assert (
+        hl_embedding is not None
+    ), "hl_embedding was not passed to relationships_vdb.query"
+    assert np.all(
+        hl_embedding == 3.0
+    ), f"Expected hl_embedding=[3,3,...], got {hl_embedding[:3]}"
 
 
 @pytest.mark.offline
