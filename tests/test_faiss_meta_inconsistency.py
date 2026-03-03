@@ -11,10 +11,12 @@ import os
 import tempfile
 
 import numpy as np
+import pytest
 
-import faiss
+faiss = pytest.importorskip("faiss")
 
 
+@pytest.mark.offline
 class TestFaissMetaInconsistency:
     """Test that stale metadata rows are handled gracefully."""
 
@@ -85,7 +87,9 @@ class TestFaissMetaInconsistency:
 
             # Verify reconstructed vectors match originals
             for fid in range(n_vectors):
-                reconstructed = np.array(id_to_meta[fid]["__vector__"], dtype=np.float32)
+                reconstructed = np.array(
+                    id_to_meta[fid]["__vector__"], dtype=np.float32
+                )
                 np.testing.assert_allclose(reconstructed, vectors[fid], atol=1e-6)
 
     def test_remove_with_missing_vector_uses_reconstruct(self):
