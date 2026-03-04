@@ -1,5 +1,4 @@
 <a id="top"></a>
-
 <!-- Source note: Derived from an open source RAG 16 problem map. -->
 
 # RAG Failure Modes and Debug Checklist
@@ -168,7 +167,7 @@ This is often a version or integration mismatch.
 Record LightRAG version and paste the exact QueryParam used.
 
 Case C. `hybrid` is slow or returns too much context
-Reduce `top_k` and any max_token_for_* limits you set.
+Reduce top_k or chunk_top_k, and confirm max_total_tokens is not exceeding your model context window.
 Confirm your LLM context window is not being exceeded.
 
 Back to top: [top](#top)
