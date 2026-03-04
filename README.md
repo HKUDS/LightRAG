@@ -206,6 +206,8 @@ uv pip install lightrag-hku
 
 ## Quick Start
 
+Quick troubleshooting reference: [RAG failure modes and debug checklist](docs/rag_failure_modes_and_debug_checklist.md)
+
 ### LLM and Technology Stack Requirements for LightRAG
 
 LightRAG's demands on the capabilities of Large Language Models (LLMs) are significantly higher than those of traditional RAG, as it requires the LLM to perform entity-relationship extraction tasks from documents. Configuring appropriate Embedding and Reranker models is also crucial for improving query performance.
