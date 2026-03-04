@@ -1079,6 +1079,147 @@ async def initialize_rag():
 </details>
 
 <details>
+<summary> <b>Using Milvus for Vector Storage</b> </summary>
+
+Milvus is a high-performance, scalable vector database for production-level vector storage. LightRAG provides three ways to configure Milvus, plus support for configurable index types to optimize performance and memory usage.
+
+### Supported Index Types
+
+- `AUTOINDEX` (default): Milvus automatically selects the best index
+- `HNSW`: Hierarchical Navigable Small World graph for high recall
+- `HNSW_SQ`: HNSW with scalar quantization for memory savings (requires Milvus 2.6.8+)
+- `HNSW_PQ`, `HNSW_PRQ`: HNSW with product / product-residual quantization
+- `IVF_FLAT`, `IVF_SQ8`, `IVF_PQ`: Inverted-file family indexes
+- `DISKANN`: Disk-based approximate nearest neighbor
+- `SCANN`: Scalable nearest neighbor
+
+### Supported Metric Types
+
+`COSINE` (default), `L2`, `IP`
+
+---
+
+### Approach 1 — Environment Variables (`.env` file)
+
+Best for: **LightRAG Server deployments and Docker/k8s setups**.
+
+```bash
+# Connection
+MILVUS_URI=http://localhost:19530
+MILVUS_DB_NAME=lightrag
+# MILVUS_USER=root
+# MILVUS_PASSWORD=your_password
+# MILVUS_TOKEN=your_token
+
+# Storage selection
+LIGHTRAG_VECTOR_STORAGE=MilvusVectorDBStorage
+
+# Index configuration (all optional — sensible defaults apply)
+MILVUS_INDEX_TYPE=HNSW              # Default: AUTOINDEX
+MILVUS_METRIC_TYPE=COSINE           # Default: COSINE
+MILVUS_HNSW_M=16                    # Default: 16, range [2-2048]
+MILVUS_HNSW_EF_CONSTRUCTION=360     # Default: 360
+MILVUS_HNSW_EF=200                  # Default: 200
+
+# HNSW_SQ options (requires Milvus 2.6.8+)
+# MILVUS_INDEX_TYPE=HNSW_SQ
+# MILVUS_HNSW_SQ_TYPE=SQ8           # SQ4U, SQ6, SQ8, BF16, FP16
+# MILVUS_HNSW_SQ_REFINE=false       # Enable refinement
+# MILVUS_HNSW_SQ_REFINE_TYPE=FP32   # Refinement precision
+# MILVUS_HNSW_SQ_REFINE_K=10        # Refinement expansion factor
+
+# IVF options
+# MILVUS_IVF_NLIST=1024
+# MILVUS_IVF_NPROBE=16
+```
+
+Then in Python code:
+
+```python
+from lightrag import LightRAG
+
+async def initialize_rag():
+    rag = LightRAG(
+        working_dir="./rag_storage",
+        llm_model_func=...,
+        embedding_func=...,
+        vector_storage="MilvusVectorDBStorage",
+    )
+    await rag.initialize_storages()
+    return rag
+```
+
+### Approach 2 — `vector_db_storage_cls_kwargs` (Python SDK)
+
+Best for: **Python SDK / framework integration** where you want all config in code.
+
+```python
+from lightrag import LightRAG
+
+async def initialize_rag():
+    rag = LightRAG(
+        working_dir="./rag_storage",
+        llm_model_func=...,
+        embedding_func=...,
+        vector_storage="MilvusVectorDBStorage",
+        vector_db_storage_cls_kwargs={
+            "milvus_uri": "http://localhost:19530",
+            "milvus_db_name": "lightrag",
+            "index_type": "HNSW",
+            "metric_type": "COSINE",
+            "hnsw_m": 16,
+            "hnsw_ef_construction": 360,
+            "hnsw_ef": 200,
+            "cosine_better_than_threshold": 0.2,
+        },
+    )
+    await rag.initialize_storages()
+    return rag
+```
+
+### Approach 3 — `config.ini` (legacy)
+
+Connection parameters only; index settings use env vars or kwargs.
+
+```ini
+[milvus]
+uri = http://localhost:19530
+db_name = lightrag
+# user = root
+# password = your_password
+# token = your_token
+```
+
+### Configuration Priority
+
+| Setting | 1st (highest) | 2nd | 3rd (lowest) |
+|---|---|---|---|
+| Connection (`uri`, …) | `vector_db_storage_cls_kwargs` | Environment variables | `config.ini` |
+| Index (`index_type`, …) | `vector_db_storage_cls_kwargs` | Environment variables | defaults |
+
+### HNSW_SQ Compression Trade-offs
+
+| SQ Type | Compression | Precision | Notes |
+|---|---|---|---|
+| `SQ4U` | ~8× | Lower | Best memory savings |
+| `SQ6` | ~5.3× | Balanced | Good trade-off |
+| `SQ8` | ~4× | Good | **Recommended** |
+| `BF16` / `FP16` | ~2× | High | Near-lossless |
+
+**Version Requirements:**
+- HNSW_SQ index type requires **Milvus 2.6.8 or higher**
+- LightRAG will automatically validate the server version and raise an error if requirements are not met
+- Other index types work with Milvus 2.0+
+
+**Backward Compatibility:**
+- If no index configuration is provided, LightRAG uses AUTOINDEX (Milvus default behavior)
+- Existing collections are not affected; index configuration only applies to newly created collections
+
+For complete configuration options, see `env.example` and `docs/MilvusConfigurationGuide.md`.
+
+</details>
+
+<details>
 <summary> <b>Using MongoDB Storage</b> </summary>
 
 MongoDB provides a one-stop storage solution for LightRAG. MongoDB offers native KV storage and vector storage. LightRAG uses MongoDB collections to implement a simple graph storage. MongoDB's official vector search functionality (`$vectorSearch`) currently requires their official cloud service MongoDB Atlas. This functionality cannot be used on self-hosted MongoDB Community/Enterprise versions.
