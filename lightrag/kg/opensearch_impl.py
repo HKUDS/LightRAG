@@ -1965,6 +1965,14 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
                     doc["id"] = hit["_id"]
                     doc["distance"] = score
                     results.append(doc)
+            logger.info(
+                f"[{self.workspace}] Vector query on {self._index_name}: "
+                f"top_k={top_k}, threshold={self.cosine_better_than_threshold}, "
+                f"total_hits={len(response['hits']['hits'])}, "
+                f"passed_filter={len(results)}, "
+                f"score_range=[{min((h['_score'] for h in response['hits']['hits']), default=0):.4f}, "
+                f"{max((h['_score'] for h in response['hits']['hits']), default=0):.4f}]"
+            )
             return results
         except OpenSearchException as e:
             logger.error(f"[{self.workspace}] Error querying vectors: {e}")

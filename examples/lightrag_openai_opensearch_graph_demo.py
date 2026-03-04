@@ -159,7 +159,7 @@ async def main():
         for mode in ["naive", "local", "global", "hybrid"]:
             print(f"\n[{mode.upper()} MODE]")
             result = await rag.aquery(query, param=QueryParam(mode=mode))
-            print(result[:400] + "..." if len(result) > 400 else result)
+            print(result)
 
         print("\nRAG system is ready for use!")
 
