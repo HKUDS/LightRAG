@@ -1146,10 +1146,10 @@ rag = LightRAG(
 
 * **Integration Testing**: To run integration tests against a live OpenSearch cluster:
 
-1. Start OpenSearch using Docker Compose (download [`docker-compose-3.x.yml`](https://github.com/opensearch-project/opensearch-build/blob/main/docker/release/dockercomposefiles/docker-compose-3.x.yml)):
+1. Start OpenSearch using Docker Compose (download [`docker-compose-3.x.yml`](https://raw.githubusercontent.com/opensearch-project/opensearch-build/main/docker/release/dockercomposefiles/docker-compose-3.x.yml)):
 
 ```bash
-OPENSEARCH_INITIAL_ADMIN_PASSWORD=<custom-admin-password> docker-compose -f docker-compose-3.x.yml up
+OPENSEARCH_INITIAL_ADMIN_PASSWORD=<custom-admin-password> docker-compose -f docker-compose-3.x.yml up -d
 ```
 
 2. Verify the cluster is running:
@@ -1165,7 +1165,7 @@ curl -sk -u admin:<custom-admin-password> https://localhost:9200/_cat/plugins?v
 python -m pytest tests/test_opensearch_storage.py -v
 ```
 
-4. Run the POC example against the live cluster:
+4. Run the OpenSearch storage demo against the live cluster:
 
 ```bash
 export OPENSEARCH_HOSTS=localhost:9200
@@ -1173,8 +1173,40 @@ export OPENSEARCH_USER=admin
 export OPENSEARCH_PASSWORD=<custom-admin-password>
 export OPENSEARCH_USE_SSL=true
 export OPENSEARCH_VERIFY_CERTS=false
-python examples/opensearch_poc.py
+python examples/opensearch_storage_demo.py
 ```
+
+5. Run the full OpenAI + OpenSearch demo (requires `OPENAI_API_KEY`):
+
+```bash
+export OPENAI_API_KEY=your-api-key
+python examples/lightrag_openai_opensearch_graph_demo.py
+```
+
+6. Visualize the knowledge graph via LightRAG WebUI or standalone HTML:
+
+Requires [building front-end artifacts](https://github.com/HKUDS/LightRAG/blob/main/lightrag/api/README.md) before starting LightRAG Server.
+```bash
+# Starting lightrag-server with OpenSearch Storage
+LIGHTRAG_KV_STORAGE=OpenSearchKVStorage \
+LIGHTRAG_DOC_STATUS_STORAGE=OpenSearchDocStatusStorage \
+LIGHTRAG_GRAPH_STORAGE=OpenSearchGraphStorage \
+LIGHTRAG_VECTOR_STORAGE=OpenSearchVectorDBStorage \
+LLM_BINDING=openai \
+EMBEDDING_BINDING=openai \
+EMBEDDING_MODEL=text-embedding-3-large \
+EMBEDDING_DIM=3072 \
+OPENAI_API_KEY=your-api-key \
+lightrag-server
+
+# Display the knowledge graph via LightRAG WebUI
+python examples/graph_visual_with_opensearch.py
+
+# Open http://localhost:9621/webui/ -> Knowledge Graph
+# Or generate standalone HTML file
+python examples/graph_visual_with_opensearch.py --html
+```
+
 
 </details>
 

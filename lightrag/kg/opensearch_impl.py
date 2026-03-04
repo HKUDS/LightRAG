@@ -82,11 +82,20 @@ class ClientManager:
                 timeout = int(_get_opensearch_env("OPENSEARCH_TIMEOUT", "30"))
                 max_retries = int(_get_opensearch_env("OPENSEARCH_MAX_RETRIES", "3"))
 
+                import ssl as ssl_module
+
+                ssl_context = None
+                if use_ssl and not verify_certs:
+                    ssl_context = ssl_module.create_default_context()
+                    ssl_context.check_hostname = False
+                    ssl_context.verify_mode = ssl_module.CERT_NONE
+
                 client = AsyncOpenSearch(
                     hosts=hosts,
                     http_auth=(username, password) if username else None,
                     use_ssl=use_ssl,
                     verify_certs=verify_certs,
+                    ssl_context=ssl_context,
                     ssl_show_warn=False,
                     timeout=timeout,
                     max_retries=max_retries,
@@ -257,7 +266,7 @@ class OpenSearchKVStorage(BaseKVStorage):
                     "_op_type": "index",
                     "_index": self._index_name,
                     "_id": doc_id,
-                    "_source": doc_data,
+                    "_source": {k: v for k, v in doc_data.items() if k != "_id"},
                 }
             )
         try:
@@ -453,7 +462,7 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
                     "_op_type": "index",
                     "_index": self._index_name,
                     "_id": k,
-                    "_source": v,
+                    "_source": {fk: fv for fk, fv in v.items() if fk != "_id"},
                 }
             )
         try:
@@ -811,16 +820,32 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                             {
                                 "bool": {
                                     "must": [
-                                        {"term": {"source_node_id": source_node_id}},
-                                        {"term": {"target_node_id": target_node_id}},
+                                        {
+                                            "term": {
+                                                "source_node_id.keyword": source_node_id
+                                            }
+                                        },
+                                        {
+                                            "term": {
+                                                "target_node_id.keyword": target_node_id
+                                            }
+                                        },
                                     ]
                                 }
                             },
                             {
                                 "bool": {
                                     "must": [
-                                        {"term": {"source_node_id": target_node_id}},
-                                        {"term": {"target_node_id": source_node_id}},
+                                        {
+                                            "term": {
+                                                "source_node_id.keyword": target_node_id
+                                            }
+                                        },
+                                        {
+                                            "term": {
+                                                "target_node_id.keyword": source_node_id
+                                            }
+                                        },
                                     ]
                                 }
                             },
@@ -843,8 +868,8 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                     "query": {
                         "bool": {
                             "should": [
-                                {"term": {"source_node_id": node_id}},
-                                {"term": {"target_node_id": node_id}},
+                                {"term": {"source_node_id.keyword": node_id}},
+                                {"term": {"target_node_id.keyword": node_id}},
                             ]
                         }
                     }
@@ -884,16 +909,32 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                             {
                                 "bool": {
                                     "must": [
-                                        {"term": {"source_node_id": source_node_id}},
-                                        {"term": {"target_node_id": target_node_id}},
+                                        {
+                                            "term": {
+                                                "source_node_id.keyword": source_node_id
+                                            }
+                                        },
+                                        {
+                                            "term": {
+                                                "target_node_id.keyword": target_node_id
+                                            }
+                                        },
                                     ]
                                 }
                             },
                             {
                                 "bool": {
                                     "must": [
-                                        {"term": {"source_node_id": target_node_id}},
-                                        {"term": {"target_node_id": source_node_id}},
+                                        {
+                                            "term": {
+                                                "source_node_id.keyword": target_node_id
+                                            }
+                                        },
+                                        {
+                                            "term": {
+                                                "target_node_id.keyword": source_node_id
+                                            }
+                                        },
                                     ]
                                 }
                             },
@@ -919,8 +960,8 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                 "query": {
                     "bool": {
                         "should": [
-                            {"term": {"source_node_id": source_node_id}},
-                            {"term": {"target_node_id": source_node_id}},
+                            {"term": {"source_node_id.keyword": source_node_id}},
+                            {"term": {"target_node_id.keyword": source_node_id}},
                         ]
                     }
                 },
@@ -964,17 +1005,23 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                 "query": {
                     "bool": {
                         "should": [
-                            {"terms": {"source_node_id": node_ids}},
-                            {"terms": {"target_node_id": node_ids}},
+                            {"terms": {"source_node_id.keyword": node_ids}},
+                            {"terms": {"target_node_id.keyword": node_ids}},
                         ]
                     }
                 },
                 "aggs": {
                     "source_degrees": {
-                        "terms": {"field": "source_node_id", "size": len(node_ids) * 2}
+                        "terms": {
+                            "field": "source_node_id.keyword",
+                            "size": len(node_ids) * 2,
+                        }
                     },
                     "target_degrees": {
-                        "terms": {"field": "target_node_id", "size": len(node_ids) * 2}
+                        "terms": {
+                            "field": "target_node_id.keyword",
+                            "size": len(node_ids) * 2,
+                        }
                     },
                 },
             }
@@ -1004,8 +1051,8 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                 "query": {
                     "bool": {
                         "should": [
-                            {"terms": {"source_node_id": node_ids}},
-                            {"terms": {"target_node_id": node_ids}},
+                            {"terms": {"source_node_id.keyword": node_ids}},
+                            {"terms": {"target_node_id.keyword": node_ids}},
                         ]
                     }
                 },
@@ -1029,7 +1076,8 @@ class OpenSearchGraphStorage(BaseGraphStorage):
     async def upsert_node(self, node_id: str, node_data: dict[str, str]) -> None:
         """Insert or update a node. Adds entity_id for PPL compatibility."""
         try:
-            doc = {**node_data, "entity_id": node_id}
+            doc = {k: v for k, v in node_data.items() if k != "_id"}
+            doc["entity_id"] = node_id
             if node_data.get("source_id", ""):
                 doc["source_ids"] = node_data["source_id"].split(GRAPH_FIELD_SEP)
             await self.client.index(
@@ -1047,11 +1095,9 @@ class OpenSearchGraphStorage(BaseGraphStorage):
             if not await self.has_node(source_node_id):
                 await self.upsert_node(source_node_id, {})
 
-            doc = {
-                **edge_data,
-                "source_node_id": source_node_id,
-                "target_node_id": target_node_id,
-            }
+            doc = {k: v for k, v in edge_data.items() if k != "_id"}
+            doc["source_node_id"] = source_node_id
+            doc["target_node_id"] = target_node_id
             if edge_data.get("source_id", ""):
                 doc["source_ids"] = edge_data["source_id"].split(GRAPH_FIELD_SEP)
 
@@ -1088,8 +1134,8 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                 "query": {
                     "bool": {
                         "should": [
-                            {"term": {"source_node_id": node_id}},
-                            {"term": {"target_node_id": node_id}},
+                            {"term": {"source_node_id.keyword": node_id}},
+                            {"term": {"target_node_id.keyword": node_id}},
                         ]
                     }
                 }
@@ -1118,8 +1164,8 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                 "query": {
                     "bool": {
                         "should": [
-                            {"terms": {"source_node_id": nodes}},
-                            {"terms": {"target_node_id": nodes}},
+                            {"terms": {"source_node_id.keyword": nodes}},
+                            {"terms": {"target_node_id.keyword": nodes}},
                         ]
                     }
                 }
@@ -1150,8 +1196,8 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                     {
                         "bool": {
                             "must": [
-                                {"term": {"source_node_id": src}},
-                                {"term": {"target_node_id": tgt}},
+                                {"term": {"source_node_id.keyword": src}},
+                                {"term": {"target_node_id.keyword": tgt}},
                             ]
                         }
                     }
@@ -1160,8 +1206,8 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                     {
                         "bool": {
                             "must": [
-                                {"term": {"source_node_id": tgt}},
-                                {"term": {"target_node_id": src}},
+                                {"term": {"source_node_id.keyword": tgt}},
+                                {"term": {"target_node_id.keyword": src}},
                             ]
                         }
                     }
@@ -1276,10 +1322,16 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                     "size": 0,
                     "aggs": {
                         "src": {
-                            "terms": {"field": "source_node_id", "size": max_nodes}
+                            "terms": {
+                                "field": "source_node_id.keyword",
+                                "size": max_nodes,
+                            }
                         },
                         "tgt": {
-                            "terms": {"field": "target_node_id", "size": max_nodes}
+                            "terms": {
+                                "field": "target_node_id.keyword",
+                                "size": max_nodes,
+                            }
                         },
                     },
                 }
@@ -1318,8 +1370,8 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                     "query": {
                         "bool": {
                             "must": [
-                                {"terms": {"source_node_id": top_ids}},
-                                {"terms": {"target_node_id": top_ids}},
+                                {"terms": {"source_node_id.keyword": top_ids}},
+                                {"terms": {"target_node_id.keyword": top_ids}},
                             ]
                         }
                     },
@@ -1458,8 +1510,8 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                 "query": {
                     "bool": {
                         "must": [
-                            {"terms": {"source_node_id": node_ids}},
-                            {"terms": {"target_node_id": node_ids}},
+                            {"terms": {"source_node_id.keyword": node_ids}},
+                            {"terms": {"target_node_id.keyword": node_ids}},
                         ]
                     }
                 },
@@ -1508,8 +1560,8 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                 "query": {
                     "bool": {
                         "should": [
-                            {"terms": {"source_node_id": current_level}},
-                            {"terms": {"target_node_id": current_level}},
+                            {"terms": {"source_node_id.keyword": current_level}},
+                            {"terms": {"target_node_id.keyword": current_level}},
                         ]
                     }
                 },
@@ -1558,8 +1610,8 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                 "query": {
                     "bool": {
                         "must": [
-                            {"terms": {"source_node_id": all_ids}},
-                            {"terms": {"target_node_id": all_ids}},
+                            {"terms": {"source_node_id.keyword": all_ids}},
+                            {"terms": {"target_node_id.keyword": all_ids}},
                         ]
                     }
                 },
@@ -1617,8 +1669,12 @@ class OpenSearchGraphStorage(BaseGraphStorage):
             body = {
                 "size": 0,
                 "aggs": {
-                    "src": {"terms": {"field": "source_node_id", "size": limit * 2}},
-                    "tgt": {"terms": {"field": "target_node_id", "size": limit * 2}},
+                    "src": {
+                        "terms": {"field": "source_node_id.keyword", "size": limit * 2}
+                    },
+                    "tgt": {
+                        "terms": {"field": "target_node_id.keyword", "size": limit * 2}
+                    },
                 },
             }
             response = await self.client.search(index=self._edges_index, body=body)

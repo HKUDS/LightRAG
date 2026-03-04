@@ -1147,10 +1147,10 @@ rag = LightRAG(
 
 * **集成测试**：针对实际运行的 OpenSearch 集群进行集成测试：
 
-1. 使用 Docker Compose 启动 OpenSearch（下载 [`docker-compose-3.x.yml`](https://github.com/opensearch-project/opensearch-build/blob/main/docker/release/dockercomposefiles/docker-compose-3.x.yml)）：
+1. 使用 Docker Compose 启动 OpenSearch（下载 [`docker-compose-3.x.yml`](https://raw.githubusercontent.com/opensearch-project/opensearch-build/main/docker/release/dockercomposefiles/docker-compose-3.x.yml)）：
 
 ```bash
-OPENSEARCH_INITIAL_ADMIN_PASSWORD=<custom-admin-password> docker-compose -f docker-compose-3.x.yml up
+OPENSEARCH_INITIAL_ADMIN_PASSWORD=<custom-admin-password> docker-compose -f docker-compose-3.x.yml up -d
 ```
 
 2. 验证集群是否正常运行：
@@ -1166,7 +1166,7 @@ curl -sk -u admin:<custom-admin-password> https://localhost:9200/_cat/plugins?v
 python -m pytest tests/test_opensearch_storage.py -v
 ```
 
-4. 针对实际集群运行 POC 示例：
+4. 使用实际集群以OpenSearch作为存储的演示：
 
 ```bash
 export OPENSEARCH_HOSTS=localhost:9200
@@ -1174,7 +1174,38 @@ export OPENSEARCH_USER=admin
 export OPENSEARCH_PASSWORD=<custom-admin-password>
 export OPENSEARCH_USE_SSL=true
 export OPENSEARCH_VERIFY_CERTS=false
-python examples/opensearch_poc.py
+python examples/opensearch_storage_demo.py
+```
+
+5. 运行完整的 OpenAI + OpenSearch 示例（需要 `OPENAI_API_KEY`）：
+
+```bash
+export OPENAI_API_KEY=your-api-key
+python examples/lightrag_openai_opensearch_graph_demo.py
+```
+
+6. 通过 LightRAG WebUI 或独立 HTML 文件可视化知识图谱：
+
+启动 LightRAG 服务器之前，需要[构建前端组建](https://github.com/HKUDS/LightRAG/blob/main/lightrag/api/README.md).
+```bash
+# 带上 OpenSearch 存储的配置，启动 LightRAG 服务器
+LIGHTRAG_KV_STORAGE=OpenSearchKVStorage \
+LIGHTRAG_DOC_STATUS_STORAGE=OpenSearchDocStatusStorage \
+LIGHTRAG_GRAPH_STORAGE=OpenSearchGraphStorage \
+LIGHTRAG_VECTOR_STORAGE=OpenSearchVectorDBStorage \
+LLM_BINDING=openai \
+EMBEDDING_BINDING=openai \
+EMBEDDING_MODEL=text-embedding-3-large \
+EMBEDDING_DIM=3072 \
+OPENAI_API_KEY=your-api-key \
+lightrag-server
+
+# 执行该脚本读取 OpenSearch 存储的数据，生成知识图谱
+python examples/graph_visual_with_opensearch.py
+
+# 打开 http://localhost:9621/webui/ -> 知识图谱标签
+# 或执行该脚本生成独立 HTML 文件
+python examples/graph_visual_with_opensearch.py --html
 ```
 
 </details>
