@@ -22,7 +22,7 @@ Prerequisites:
 
    OPENAI_API_KEY=your-api-key
 
-4. Prepare a text file to index (default: Data/book.txt)
+4. Prepare a text file to index (default: ./book.txt)
 
 Usage:
     python examples/lightrag_openai_opensearch_graph_demo.py
@@ -47,12 +47,14 @@ setup_logger("lightrag", level="INFO")
 # Config
 # --------------------------------------------------
 WORKING_DIR = "./opensearch_rag_storage"
-BOOK_FILE = "Data/book.txt"
+BOOK_FILE = "./book.txt"
 
 if not os.path.exists(WORKING_DIR):
     os.mkdir(WORKING_DIR)
 
-os.environ["OPENAI_API_KEY"] = "sk-"
+# Replace with your API key, or set via environment variable
+if not os.getenv("OPENAI_API_KEY"):
+    os.environ["OPENAI_API_KEY"] = "sk-"
 
 EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "text-embedding-3-large")
 EMBEDDING_MAX_TOKEN_SIZE = int(os.environ.get("EMBEDDING_MAX_TOKEN_SIZE", 8192))

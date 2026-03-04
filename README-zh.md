@@ -1111,12 +1111,20 @@ maxclients 500
 
 OpenSearch 为 LightRAG 的全部四种存储类型（KV、向量、图、文档状态）提供了统一的存储解决方案。它提供原生 k-NN 向量搜索、全文搜索和水平扩展能力，且无云服务限制。
 
-* **环境要求**：OpenSearch 3.x 或更高版本，需启用 k-NN 插件。使用 Docker 安装：
+* **环境要求**：OpenSearch 3.x 或更高版本，需启用 k-NN 插件。
 
+使用 Docker 安装 (不含插件)：
 ```bash
 docker run -d -p 9200:9200 -e "discovery.type=single-node" \
   -e "OPENSEARCH_INITIAL_ADMIN_PASSWORD=<custom-admin-password>" \
   opensearchproject/opensearch:latest
+```
+
+使用 Docker Compose 安装 (推荐，含插件)：
+```bash
+curl -O https://raw.githubusercontent.com/opensearch-project/opensearch-build/main/docker/release/dockercomposefiles/docker-compose-3.x.yml
+# 启动 OpenSearch 集群
+OPENSEARCH_INITIAL_ADMIN_PASSWORD=<custom-admin-password> docker-compose -f docker-compose-3.x.yml up -d
 ```
 
 * **配置**：设置环境变量（完整列表请参见 `env.example`）：

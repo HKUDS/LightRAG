@@ -1956,17 +1956,14 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
             )
             results = []
             for hit in response["hits"]["hits"]:
-                # OpenSearch k-NN with lucene engine and cosinesimil space type:
-                #   score = (1 + cosine_similarity) / 2
-                # So: cosine_similarity = 2 * score - 1
-                # Range: score in [0.5, 1.0] maps to cosine_sim in [0.0, 1.0]
-                raw_score = hit["_score"]
-                cosine_sim = max(0.0, min(1.0, 2.0 * raw_score - 1.0))
+                # OpenSearch k-NN with lucene engine and cosinesimil space type
+                # returns scores that can be used directly as similarity measure.
+                score = hit["_score"]
 
-                if cosine_sim >= self.cosine_better_than_threshold:
+                if score >= self.cosine_better_than_threshold:
                     doc = hit["_source"]
                     doc["id"] = hit["_id"]
-                    doc["distance"] = cosine_sim
+                    doc["distance"] = score
                     results.append(doc)
             return results
         except OpenSearchException as e:

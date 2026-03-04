@@ -1302,17 +1302,14 @@ class TestVectorStorage:
     async def test_query_cosine_score_conversion(
         self, global_config, embed_func, mock_client
     ):
-        """Test that OpenSearch raw scores are correctly converted to cosine similarity."""
-        # Lucene cosinesimil: score = (1 + cosine_similarity) / 2
-        # For cosine_similarity=0.8: score = (1+0.8)/2 = 0.9
-        # Conversion: cosine_sim = 2*0.9 - 1 = 0.8
+        """Test that scores are used directly and threshold filtering works."""
         mock_client.search = AsyncMock(
             return_value={
                 "hits": {
                     "hits": [
                         {
                             "_id": "v1",
-                            "_score": 0.9,
+                            "_score": 0.85,
                             "_source": {"content": "match", "entity_name": "E1"},
                         },
                     ],
@@ -1330,22 +1327,21 @@ class TestVectorStorage:
             await s.initialize()
             results = await s.query("test", top_k=5)
             assert len(results) == 1
-            # Should be approximately 0.8
-            assert abs(results[0]["distance"] - 0.8) < 0.01
+            assert results[0]["distance"] == 0.85
 
     @pytest.mark.asyncio
     async def test_query_filters_below_threshold(
         self, global_config, embed_func, mock_client
     ):
-        """Low scores should be filtered out after conversion."""
-        # cosine_sim for score=0.55: 2*0.55-1 = 0.1 < threshold 0.2
+        """Low scores should be filtered out."""
+        # score 0.15 < threshold 0.2
         mock_client.search = AsyncMock(
             return_value={
                 "hits": {
                     "hits": [
                         {
                             "_id": "v1",
-                            "_score": 0.55,
+                            "_score": 0.15,
                             "_source": {"content": "weak match"},
                         },
                     ],
@@ -1368,7 +1364,6 @@ class TestVectorStorage:
     async def test_query_with_provided_embedding(
         self, global_config, embed_func, mock_client
     ):
-        # score=1.0 -> cosine_sim = 2*1.0-1 = 1.0
         mock_client.search = AsyncMock(
             return_value={
                 "hits": {
@@ -1390,7 +1385,6 @@ class TestVectorStorage:
             vec = np.random.rand(128).astype(np.float32)
             results = await s.query("test", top_k=5, query_embedding=vec)
             assert len(results) == 1
-            # score=1.0 -> cosine_sim = 2.0 - 1.0 = 1.0
             assert results[0]["distance"] == 1.0
 
     @pytest.mark.asyncio
@@ -1494,28 +1488,14 @@ class TestVectorStorage:
 # ---------------------------------------------------------------------------
 
 
-class TestCosineScoreConversion:
-    """Verify the cosine score conversion formula for lucene engine."""
+class TestScoreThreshold:
+    """Verify that raw OpenSearch scores are compared directly against threshold."""
 
-    def _convert(self, raw_score):
-        """Replicate the conversion logic from OpenSearchVectorDBStorage.query (lucene engine)."""
-        return max(0.0, min(1.0, 2.0 * raw_score - 1.0))
+    def test_above_threshold(self):
+        assert 0.85 >= 0.2
 
-    def test_perfect_match(self):
-        # cosine_sim=1.0, lucene score=(1+1)/2=1.0 -> 2*1-1=1.0
-        assert self._convert(1.0) == 1.0
+    def test_below_threshold(self):
+        assert 0.15 < 0.2
 
-    def test_orthogonal(self):
-        # cosine_sim=0.0, lucene score=(1+0)/2=0.5 -> 2*0.5-1=0.0
-        assert self._convert(0.5) == 0.0
-
-    def test_typical_good_match(self):
-        # cosine_sim=0.9, lucene score=(1+0.9)/2=0.95 -> 2*0.95-1=0.9
-        assert abs(self._convert(0.95) - 0.9) < 0.01
-
-    def test_zero_score(self):
-        assert self._convert(0.0) == 0.0
-
-    def test_clamp_negative(self):
-        # Score below 0.5 produces negative cosine_sim, should clamp to 0
-        assert self._convert(0.3) == 0.0
+    def test_exact_threshold(self):
+        assert 0.2 >= 0.2

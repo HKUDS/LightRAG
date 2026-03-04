@@ -1111,19 +1111,28 @@ maxclients 500
 
 OpenSearch provides a unified storage solution for all four LightRAG storage types (KV, Vector, Graph, DocStatus). It offers native k-NN vector search, full-text search, and horizontal scalability — all without cloud-only restrictions.
 
-* **Requirements**: OpenSearch 3.x or higher with k-NN plugin enabled. Install with Docker:
+* **Requirements**: OpenSearch 3.x or higher with k-NN plugin enabled.
 
+Install with Docker (without plugins):
 ```bash
 docker run -d -p 9200:9200 -e "discovery.type=single-node" \
   -e "OPENSEARCH_INITIAL_ADMIN_PASSWORD=<custom-admin-password>" \
   opensearchproject/opensearch:latest
 ```
 
+Install with Docker Compose (Recommended, with plugins):
+```bash
+curl -O https://raw.githubusercontent.com/opensearch-project/opensearch-build/main/docker/release/dockercomposefiles/docker-compose-3.x.yml
+# Launch OpenSearch cluster
+OPENSEARCH_INITIAL_ADMIN_PASSWORD=<custom-admin-password> docker-compose -f docker-compose-3.x.yml up -d
+```
+
 * **Configuration**: Set environment variables (see `env.example` for full list):
 
 ```bash
 export OPENSEARCH_HOSTS=localhost:9200
-export OPENSEARCH_INITIAL_ADMIN_PASSWORD=<custom-admin-password>
+export OPENSEARCH_USER=admin
+export OPENSEARCH_PASSWORD=<custom-admin-password>
 export OPENSEARCH_USE_SSL=true
 export OPENSEARCH_VERIFY_CERTS=false
 ```
