@@ -1099,7 +1099,7 @@ Milvus is a high-performance, scalable vector database for production-level vect
 
 ---
 
-### Approach 1 — Environment Variables (`.env` file)
+### Config Approach 1 — Environment Variables (`.env` file)
 
 Best for: **LightRAG Server deployments and Docker/k8s setups**.
 
@@ -1149,7 +1149,7 @@ async def initialize_rag():
     return rag
 ```
 
-### Approach 2 — `vector_db_storage_cls_kwargs` (Python SDK)
+### Config Approach 2 — `vector_db_storage_cls_kwargs` (Python SDK)
 
 Best for: **Python SDK / framework integration** where you want all config in code.
 
@@ -1177,7 +1177,7 @@ async def initialize_rag():
     return rag
 ```
 
-### Approach 3 — `config.ini` (legacy)
+### Config Approach 3 — `config.ini` (legacy)
 
 Connection parameters only; index settings use env vars or kwargs.
 

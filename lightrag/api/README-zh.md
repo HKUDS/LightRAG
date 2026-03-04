@@ -470,6 +470,8 @@ LightRAG 使用 4 种类型的存储用于不同目的：
 
 每种存储类型都有多种存储实现方式。LightRAG Server默认的存储实现为内存数据库，数据通过文件持久化保存到WORKING_DIR目录。LightRAG还支持PostgreSQL、MongoDB、FAISS、Milvus、Qdrant、Neo4j、Memgraph和Redis等存储实现方式。详细的存储支持方式请参考根目录下的`README.md`文件中关于存储的相关内容。
 
+**Milvus 索引配置:** LightRAG 现在可通过环境变量支持对 Milvus 向量存储的可配置索引类型（AUTOINDEX、HNSW、HNSW_SQ、IVF_FLAT 等）。HNSW_SQ 需要 Milvus 2.6.8 或更高版本，并能显著节省内存。有关完整的配置选项，请参阅主 README.md 文件中的“使用 Milvus 进行向量存储”部分。
+
 您可以通过环境变量选择存储实现。例如，在首次启动 API 服务器之前，您可以将以下环境变量设置为特定的存储实现名称：
 
 ```
