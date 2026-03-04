@@ -423,21 +423,21 @@ class MilvusVectorDBStorage(BaseVectorStorage):
 
         try:
             # Try to import IndexParams from different possible locations
-            from pymilvus.client.prepare import IndexParams
+            from pymilvus.client.prepare import IndexParams  # type: ignore
 
             return IndexParams()
         except ImportError:
             pass
 
         try:
-            from pymilvus.client.types import IndexParams
+            from pymilvus.client.types import IndexParams  # type: ignore
 
             return IndexParams()
         except ImportError:
             pass
 
         try:
-            from pymilvus import IndexParams
+            from pymilvus import IndexParams  # type: ignore
 
             return IndexParams()
         except ImportError:
