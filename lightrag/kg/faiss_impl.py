@@ -318,7 +318,7 @@ class FaissVectorDBStorage(BaseVectorStorage):
         # Rebuild the index
         vectors_to_keep = []
         new_id_to_meta = {}
-        for new_fid, old_fid in enumerate(keep_fids):
+        for old_fid in keep_fids:
             vec_meta = self._id_to_meta[old_fid]
             if "__vector__" in vec_meta:
                 vec = vec_meta["__vector__"]
@@ -331,6 +331,7 @@ class FaissVectorDBStorage(BaseVectorStorage):
                     f"no vector and fid exceeds index size ({self._index.ntotal})"
                 )
                 continue
+            new_fid = len(vectors_to_keep)
             vectors_to_keep.append(vec)
             new_id_to_meta[new_fid] = vec_meta
 
