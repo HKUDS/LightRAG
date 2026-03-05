@@ -966,6 +966,10 @@ async def acreate_entity(
                 "created_at": int(time.time()),
             }
 
+            # Pass through optional label property for display name
+            if "label" in entity_data:
+                node_data["label"] = entity_data["label"]
+
             # Add entity to knowledge graph
             await chunk_entity_relation_graph.upsert_node(entity_name, node_data)
 

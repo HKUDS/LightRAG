@@ -333,7 +333,7 @@ class MemgraphStorage(BaseGraphStorage):
                 query = f"""
                 MATCH (n:`{workspace_label}`)
                 WHERE n.entity_id IS NOT NULL
-                RETURN DISTINCT n.entity_id AS label
+                RETURN DISTINCT COALESCE(n.label, n.entity_id) AS label
                 ORDER BY label
                 """
                 result = await session.run(query)
@@ -952,7 +952,7 @@ class MemgraphStorage(BaseGraphStorage):
                             result.nodes.append(
                                 KnowledgeGraphNode(
                                     id=f"{node_id}",
-                                    labels=[node.get("entity_id")],
+                                    labels=[node.get("label") or node.get("entity_id")],
                                     properties=dict(node),
                                 )
                             )
@@ -1066,7 +1066,7 @@ class MemgraphStorage(BaseGraphStorage):
                 MATCH (n:`{workspace_label}`)
                 WHERE n.entity_id IS NOT NULL
                 OPTIONAL MATCH (n)-[r]-()
-                WITH n.entity_id AS label, count(r) AS degree
+                WITH COALESCE(n.label, n.entity_id) AS label, count(r) AS degree
                 ORDER BY degree DESC, label ASC
                 LIMIT {limit}
                 RETURN label
@@ -1116,7 +1116,7 @@ class MemgraphStorage(BaseGraphStorage):
                 cypher_query = f"""
                 MATCH (n:`{workspace_label}`)
                 WHERE n.entity_id IS NOT NULL
-                WITH n.entity_id AS label, toLower(n.entity_id) AS label_lower
+                WITH COALESCE(n.label, n.entity_id) AS label, toLower(COALESCE(n.label, n.entity_id)) AS label_lower
                 WHERE label_lower CONTAINS $query_lower
                 WITH label, label_lower,
                      CASE

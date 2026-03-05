@@ -1118,11 +1118,14 @@ class MongoGraphStorage(BaseGraphStorage):
         """
 
         # Use aggregation with allowDiskUse for large datasets
-        pipeline = [{"$project": {"_id": 1}}, {"$sort": {"_id": 1}}]
+        pipeline = [
+            {"$project": {"label": {"$ifNull": ["$label", "$_id"]}}},
+            {"$sort": {"label": 1}},
+        ]
         cursor = await self.collection.aggregate(pipeline, allowDiskUse=True)
         labels = []
         async for doc in cursor:
-            labels.append(doc["_id"])
+            labels.append(doc["label"])
         return labels
 
     def _construct_graph_node(
@@ -1130,7 +1133,7 @@ class MongoGraphStorage(BaseGraphStorage):
     ) -> KnowledgeGraphNode:
         return KnowledgeGraphNode(
             id=node_id,
-            labels=[node_id],
+            labels=[node_data.get("label", node_id)],
             properties={
                 k: v
                 for k, v in node_data.items()
@@ -1655,13 +1658,33 @@ class MongoGraphStorage(BaseGraphStorage):
                 {"$limit": limit},
                 # Project only the label
                 {"$project": {"_id": 1}},
+                # Resolve display label from node collection
+                {
+                    "$lookup": {
+                        "from": self._collection_name,
+                        "localField": "_id",
+                        "foreignField": "_id",
+                        "pipeline": [{"$project": {"label": 1}}],
+                        "as": "node_info",
+                    }
+                },
+                {
+                    "$project": {
+                        "label": {
+                            "$ifNull": [
+                                {"$arrayElemAt": ["$node_info.label", 0]},
+                                "$_id",
+                            ]
+                        }
+                    }
+                },
             ]
 
             cursor = await self.edge_collection.aggregate(pipeline, allowDiskUse=True)
             labels = []
             async for doc in cursor:
-                if doc.get("_id"):
-                    labels.append(doc["_id"])
+                if doc.get("label"):
+                    labels.append(doc["label"])
 
             logger.debug(
                 f"[{self.workspace}] Retrieved {len(labels)} popular labels (limit: {limit})"
@@ -1681,11 +1704,13 @@ class MongoGraphStorage(BaseGraphStorage):
                         "text": {"query": query_strip, "path": "_id"},
                     }
                 },
-                {"$project": {"_id": 1, "score": {"$meta": "searchScore"}}},
+                {"$project": {"_id": 1, "label": 1, "score": {"$meta": "searchScore"}}},
                 {"$limit": limit},
             ]
             cursor = await self.collection.aggregate(pipeline)
-            labels = [doc["_id"] async for doc in cursor if doc.get("_id")]
+            labels = [
+                doc.get("label") or doc["_id"] async for doc in cursor if doc.get("_id")
+            ]
             if labels:
                 logger.debug(
                     f"[{self.workspace}] Atlas text search returned {len(labels)} results"
@@ -1712,11 +1737,13 @@ class MongoGraphStorage(BaseGraphStorage):
                         },
                     }
                 },
-                {"$project": {"_id": 1, "score": {"$meta": "searchScore"}}},
+                {"$project": {"_id": 1, "label": 1, "score": {"$meta": "searchScore"}}},
                 {"$limit": limit},
             ]
             cursor = await self.collection.aggregate(pipeline)
-            labels = [doc["_id"] async for doc in cursor if doc.get("_id")]
+            labels = [
+                doc.get("label") or doc["_id"] async for doc in cursor if doc.get("_id")
+            ]
             if labels:
                 logger.debug(
                     f"[{self.workspace}] Atlas autocomplete search returned {len(labels)} results"
@@ -1765,12 +1792,14 @@ class MongoGraphStorage(BaseGraphStorage):
                         },
                     }
                 },
-                {"$project": {"_id": 1, "score": {"$meta": "searchScore"}}},
+                {"$project": {"_id": 1, "label": 1, "score": {"$meta": "searchScore"}}},
                 {"$sort": {"score": {"$meta": "searchScore"}}},
                 {"$limit": limit},
             ]
             cursor = await self.collection.aggregate(pipeline)
-            labels = [doc["_id"] async for doc in cursor if doc.get("_id")]
+            labels = [
+                doc.get("label") or doc["_id"] async for doc in cursor if doc.get("_id")
+            ]
             if labels:
                 logger.debug(
                     f"[{self.workspace}] Atlas compound search returned {len(labels)} results"
@@ -1789,16 +1818,23 @@ class MongoGraphStorage(BaseGraphStorage):
             )
 
             escaped_query = re.escape(query_strip)
-            regex_condition = {"_id": {"$regex": escaped_query, "$options": "i"}}
-            cursor = self.collection.find(regex_condition, {"_id": 1}).limit(limit * 2)
+            regex_condition = {
+                "$or": [
+                    {"_id": {"$regex": escaped_query, "$options": "i"}},
+                    {"label": {"$regex": escaped_query, "$options": "i"}},
+                ]
+            }
+            cursor = self.collection.find(
+                regex_condition, {"_id": 1, "label": 1}
+            ).limit(limit * 2)
             docs = await cursor.to_list(length=limit * 2)
 
-            # Extract labels
+            # Extract labels, preferring display label over _id
             labels = []
             for doc in docs:
-                doc_id = doc.get("_id")
-                if doc_id:
-                    labels.append(doc_id)
+                display_label = doc.get("label") or doc.get("_id")
+                if display_label:
+                    labels.append(display_label)
 
             # Sort results to prioritize exact matches and starts-with matches
             def sort_key(label):
