@@ -557,5 +557,3 @@ This is the fastest path to a useful maintainer response.
 ### B. Footer navigation
 
 [Quick triage](#quick-triage) | [Bug report template](#bug-report-template) | [Failure map table](#failure-map-at-a-glance) | [Mode specific checks](#mode-specific-checks) | [Failure modes 1 to 16](#failure-modes-1-to-16) | [Top](#top)
-
-
