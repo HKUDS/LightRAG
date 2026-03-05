@@ -126,6 +126,28 @@ config = configparser.ConfigParser()
 config.read("config.ini", "utf-8")
 
 
+def _chunk_fields_from_status_doc(
+    status_doc: "DocProcessingStatus",
+) -> tuple[list[str], int]:
+    """Return (chunks_list, chunks_count) preserved from a status document.
+
+    Filters out any non-string or empty chunk IDs.  When chunks_count is
+    absent or invalid, it is inferred from the length of chunks_list.
+    """
+    chunks_list: list[str] = []
+    if isinstance(status_doc.chunks_list, list):
+        chunks_list = [
+            chunk_id
+            for chunk_id in status_doc.chunks_list
+            if isinstance(chunk_id, str) and chunk_id
+        ]
+
+    if isinstance(status_doc.chunks_count, int) and status_doc.chunks_count >= 0:
+        return chunks_list, status_doc.chunks_count
+
+    return chunks_list, len(chunks_list)
+
+
 @final
 @dataclass
 class LightRAG:
@@ -1603,22 +1625,6 @@ class LightRAG:
         docs_to_reset = {}
         reset_count = 0
 
-        def get_preserved_chunk_fields(
-            status_doc: DocProcessingStatus,
-        ) -> tuple[list[str], int]:
-            preserved_chunks_list: list[str] = []
-            if isinstance(status_doc.chunks_list, list):
-                preserved_chunks_list = [
-                    chunk_id
-                    for chunk_id in status_doc.chunks_list
-                    if isinstance(chunk_id, str) and chunk_id
-                ]
-
-            if isinstance(status_doc.chunks_count, int) and status_doc.chunks_count >= 0:
-                return preserved_chunks_list, status_doc.chunks_count
-
-            return preserved_chunks_list, len(preserved_chunks_list)
-
         for doc_id, status_doc in to_process_docs.items():
             # Check if document has corresponding content in full_docs (consistency check)
             content_data = await self.full_docs.get_by_id(doc_id)
@@ -1629,7 +1635,7 @@ class LightRAG:
                     DocStatus.FAILED,
                 ]:
                     preserved_chunks_list, preserved_chunks_count = (
-                        get_preserved_chunk_fields(status_doc)
+                        _chunk_fields_from_status_doc(status_doc)
                     )
                     # Prepare document for status reset to PENDING
                     docs_to_reset[doc_id] = {
@@ -1824,22 +1830,7 @@ class LightRAG:
                         if chunks:
                             chunk_ids = list(chunks.keys())
                             return chunk_ids, len(chunk_ids)
-
-                        preserved_chunk_ids: list[str] = []
-                        if isinstance(status_doc.chunks_list, list):
-                            preserved_chunk_ids = [
-                                chunk_id
-                                for chunk_id in status_doc.chunks_list
-                                if isinstance(chunk_id, str) and chunk_id
-                            ]
-
-                        if (
-                            isinstance(status_doc.chunks_count, int)
-                            and status_doc.chunks_count >= 0
-                        ):
-                            return preserved_chunk_ids, status_doc.chunks_count
-
-                        return preserved_chunk_ids, len(preserved_chunk_ids)
+                        return _chunk_fields_from_status_doc(status_doc)
 
                     async with semaphore:
                         nonlocal processed_count

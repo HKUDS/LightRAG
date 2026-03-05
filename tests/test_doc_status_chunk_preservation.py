@@ -133,7 +133,9 @@ async def test_extract_failure_preserves_chunks_and_allows_delete_with_cache_cle
 
         deleted_chunks = await rag.text_chunks.get_by_ids(chunk_ids)
         assert all(item is None for item in deleted_chunks)
-        deleted_cache = [await rag.llm_response_cache.get_by_id(cid) for cid in cache_ids]
+        deleted_cache = [
+            await rag.llm_response_cache.get_by_id(cid) for cid in cache_ids
+        ]
         assert all(item is None for item in deleted_cache)
         assert await rag.doc_status.get_by_id(doc_id) is None
     finally:
@@ -141,7 +143,9 @@ async def test_extract_failure_preserves_chunks_and_allows_delete_with_cache_cle
 
 
 @pytest.mark.asyncio
-async def test_extract_failure_before_chunking_preserves_previous_chunk_snapshot(tmp_path):
+async def test_extract_failure_before_chunking_preserves_previous_chunk_snapshot(
+    tmp_path,
+):
     rag = await _build_rag(tmp_path, "extract_failure_pre_chunking", _failing_chunking)
     try:
         content = "chunking failure document"
@@ -185,7 +189,9 @@ async def test_extract_failure_before_chunking_preserves_previous_chunk_snapshot
 async def test_merge_failure_preserves_chunks_and_skip_cache_cleanup_when_disabled(
     tmp_path, monkeypatch
 ):
-    rag = await _build_rag(tmp_path, "merge_failure_keep_cache", _deterministic_chunking)
+    rag = await _build_rag(
+        tmp_path, "merge_failure_keep_cache", _deterministic_chunking
+    )
     try:
         content = "merge failure document"
         file_path = "merge_failure.txt"
@@ -214,7 +220,9 @@ async def test_merge_failure_preserves_chunks_and_skip_cache_cleanup_when_disabl
         result = await rag.adelete_by_doc_id(doc_id, delete_llm_cache=False)
         assert result.status == "success"
 
-        remaining_cache = [await rag.llm_response_cache.get_by_id(cid) for cid in cache_ids]
+        remaining_cache = [
+            await rag.llm_response_cache.get_by_id(cid) for cid in cache_ids
+        ]
         assert all(item is not None for item in remaining_cache)
     finally:
         await rag.finalize_storages()
