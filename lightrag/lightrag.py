@@ -2043,28 +2043,35 @@ class LightRAG:
                                 processing_end_time = int(time.time())
 
                                 failed_chunks = pipeline_status.pop("failed_chunks", [])
-                                await self.doc_status.upsert(
-                                    {
-                                        doc_id: {
-                                            "status": DocStatus.PROCESSED,
-                                            "chunks_count": len(chunks),
-                                            "chunks_list": list(chunks.keys()),
-                                            "content_summary": status_doc.content_summary,
-                                            "content_length": status_doc.content_length,
-                                            "created_at": status_doc.created_at,
-                                            "updated_at": datetime.now(
-                                                timezone.utc
-                                            ).isoformat(),
-                                            "file_path": file_path,
-                                            "track_id": status_doc.track_id,  # Preserve existing track_id
-                                            "metadata": {
-                                                "processing_start_time": processing_start_time,
-                                                "processing_end_time": processing_end_time,
-                                                **({"failed_chunks": failed_chunks} if failed_chunks else {}),
-                                            },
-                                        }
-                                    }
-                                )
+                                warnings = []
+                                if failed_chunks:
+                                    warnings.append({
+                                        "type": "chunk_extraction_failed",
+                                        "chunk_ids": failed_chunks,
+                                        "message": f"{len(failed_chunks)} of {len(chunks)} chunks skipped due to extraction errors",
+                                    })
+
+                                doc_data = {
+                                    "status": DocStatus.PROCESSED,
+                                    "chunks_count": len(chunks),
+                                    "chunks_list": list(chunks.keys()),
+                                    "content_summary": status_doc.content_summary,
+                                    "content_length": status_doc.content_length,
+                                    "created_at": status_doc.created_at,
+                                    "updated_at": datetime.now(
+                                        timezone.utc
+                                    ).isoformat(),
+                                    "file_path": file_path,
+                                    "track_id": status_doc.track_id,
+                                    "metadata": {
+                                        "processing_start_time": processing_start_time,
+                                        "processing_end_time": processing_end_time,
+                                    },
+                                }
+                                if warnings:
+                                    doc_data["warnings"] = warnings
+
+                                await self.doc_status.upsert({doc_id: doc_data})
 
                                 # Call _insert_done after processing each file
                                 await self._insert_done()
