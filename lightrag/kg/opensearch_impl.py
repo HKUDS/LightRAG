@@ -488,47 +488,61 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
             logger.error(f"[{self.workspace}] Error getting status counts: {e}")
             return {}
 
+    async def _search_all_docs(self, query: dict) -> dict[str, DocProcessingStatus]:
+        """Fetch all documents matching a query using PIT + search_after."""
+        result = {}
+        batch_size = 1000
+        try:
+            pit = await self.client.create_pit(
+                index=self._index_name, params={"keep_alive": "1m"}
+            )
+            pit_id = pit["pit_id"]
+            try:
+                search_after = None
+                while True:
+                    body = {
+                        "query": query,
+                        "size": batch_size,
+                        "pit": {"id": pit_id, "keep_alive": "1m"},
+                        "sort": [{"_shard_doc": "asc"}],
+                    }
+                    if search_after:
+                        body["search_after"] = search_after
+                    response = await self.client.search(body=body)
+                    hits = response["hits"]["hits"]
+                    if not hits:
+                        break
+                    for hit in hits:
+                        try:
+                            data = self._prepare_doc_status_data(hit["_source"])
+                            result[hit["_id"]] = DocProcessingStatus(**data)
+                        except (KeyError, TypeError) as e:
+                            logger.error(
+                                f"[{self.workspace}] Error parsing doc {hit['_id']}: {e}"
+                            )
+                    search_after = hits[-1]["sort"]
+                    if len(hits) < batch_size:
+                        break
+            finally:
+                try:
+                    await self.client.delete_pit(body={"pit_id": [pit_id]})
+                except Exception:
+                    pass
+        except OpenSearchException as e:
+            logger.error(f"[{self.workspace}] Error fetching docs: {e}")
+        return result
+
     async def get_docs_by_status(
         self, status: DocStatus
     ) -> dict[str, DocProcessingStatus]:
         """Get all documents matching a specific processing status."""
-        try:
-            body = {"query": {"term": {"status": status.value}}, "size": 10000}
-            response = await self.client.search(index=self._index_name, body=body)
-            result = {}
-            for hit in response["hits"]["hits"]:
-                try:
-                    data = self._prepare_doc_status_data(hit["_source"])
-                    result[hit["_id"]] = DocProcessingStatus(**data)
-                except (KeyError, TypeError) as e:
-                    logger.error(
-                        f"[{self.workspace}] Error parsing doc {hit['_id']}: {e}"
-                    )
-            return result
-        except OpenSearchException as e:
-            logger.error(f"[{self.workspace}] Error getting docs by status: {e}")
-            return {}
+        return await self._search_all_docs({"term": {"status": status.value}})
 
     async def get_docs_by_track_id(
         self, track_id: str
     ) -> dict[str, DocProcessingStatus]:
         """Get all documents matching a specific track ID."""
-        try:
-            body = {"query": {"term": {"track_id": track_id}}, "size": 10000}
-            response = await self.client.search(index=self._index_name, body=body)
-            result = {}
-            for hit in response["hits"]["hits"]:
-                try:
-                    data = self._prepare_doc_status_data(hit["_source"])
-                    result[hit["_id"]] = DocProcessingStatus(**data)
-                except (KeyError, TypeError) as e:
-                    logger.error(
-                        f"[{self.workspace}] Error parsing doc {hit['_id']}: {e}"
-                    )
-            return result
-        except OpenSearchException as e:
-            logger.error(f"[{self.workspace}] Error getting docs by track_id: {e}")
-            return {}
+        return await self._search_all_docs({"term": {"track_id": track_id}})
 
     async def get_docs_paginated(
         self,
@@ -538,7 +552,7 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
         sort_field: str = "updated_at",
         sort_direction: str = "desc",
     ) -> tuple[list[tuple[str, DocProcessingStatus]], int]:
-        """Get documents with pagination, optional status filter, and sorting."""
+        """Get documents with pagination using PIT + search_after."""
         page = max(1, page)
         page_size = max(10, min(200, page_size))
         if sort_field not in ("created_at", "updated_at", "_id", "file_path"):
@@ -549,15 +563,57 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
         if status_filter is not None:
             query = {"term": {"status": status_filter.value}}
 
-        body = {
-            "query": query,
-            "sort": [{sort_field: {"order": sort_order}}],
-            "from": (page - 1) * page_size,
-            "size": page_size,
-        }
+        skip_count = (page - 1) * page_size
+
         try:
-            response = await self.client.search(index=self._index_name, body=body)
-            total_count = response["hits"]["total"]["value"]
+            count_resp = await self.client.count(
+                index=self._index_name, body={"query": query}
+            )
+            total_count = count_resp.get("count", 0)
+            if total_count == 0 or skip_count >= total_count:
+                return [], total_count
+
+            sort_clause = [{sort_field: {"order": sort_order}}, {"_shard_doc": "asc"}]
+
+            pit = await self.client.create_pit(
+                index=self._index_name, params={"keep_alive": "1m"}
+            )
+            pit_id = pit["pit_id"]
+            try:
+                search_after = None
+                skipped = 0
+                while skipped < skip_count:
+                    batch = min(page_size, skip_count - skipped)
+                    body = {
+                        "query": query,
+                        "sort": sort_clause,
+                        "size": batch,
+                        "pit": {"id": pit_id, "keep_alive": "1m"},
+                    }
+                    if search_after:
+                        body["search_after"] = search_after
+                    resp = await self.client.search(body=body)
+                    hits = resp["hits"]["hits"]
+                    if not hits:
+                        return [], total_count
+                    search_after = hits[-1]["sort"]
+                    skipped += len(hits)
+
+                body = {
+                    "query": query,
+                    "sort": sort_clause,
+                    "size": page_size,
+                    "pit": {"id": pit_id, "keep_alive": "1m"},
+                }
+                if search_after:
+                    body["search_after"] = search_after
+                response = await self.client.search(body=body)
+            finally:
+                try:
+                    await self.client.delete_pit(body={"pit_id": [pit_id]})
+                except Exception:
+                    pass
+
             documents = []
             for hit in response["hits"]["hits"]:
                 try:
@@ -820,32 +876,16 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                             {
                                 "bool": {
                                     "must": [
-                                        {
-                                            "term": {
-                                                "source_node_id.keyword": source_node_id
-                                            }
-                                        },
-                                        {
-                                            "term": {
-                                                "target_node_id.keyword": target_node_id
-                                            }
-                                        },
+                                        {"term": {"source_node_id": source_node_id}},
+                                        {"term": {"target_node_id": target_node_id}},
                                     ]
                                 }
                             },
                             {
                                 "bool": {
                                     "must": [
-                                        {
-                                            "term": {
-                                                "source_node_id.keyword": target_node_id
-                                            }
-                                        },
-                                        {
-                                            "term": {
-                                                "target_node_id.keyword": source_node_id
-                                            }
-                                        },
+                                        {"term": {"source_node_id": target_node_id}},
+                                        {"term": {"target_node_id": source_node_id}},
                                     ]
                                 }
                             },
@@ -868,8 +908,8 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                     "query": {
                         "bool": {
                             "should": [
-                                {"term": {"source_node_id.keyword": node_id}},
-                                {"term": {"target_node_id.keyword": node_id}},
+                                {"term": {"source_node_id": node_id}},
+                                {"term": {"target_node_id": node_id}},
                             ]
                         }
                     }
@@ -909,32 +949,16 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                             {
                                 "bool": {
                                     "must": [
-                                        {
-                                            "term": {
-                                                "source_node_id.keyword": source_node_id
-                                            }
-                                        },
-                                        {
-                                            "term": {
-                                                "target_node_id.keyword": target_node_id
-                                            }
-                                        },
+                                        {"term": {"source_node_id": source_node_id}},
+                                        {"term": {"target_node_id": target_node_id}},
                                     ]
                                 }
                             },
                             {
                                 "bool": {
                                     "must": [
-                                        {
-                                            "term": {
-                                                "source_node_id.keyword": target_node_id
-                                            }
-                                        },
-                                        {
-                                            "term": {
-                                                "target_node_id.keyword": source_node_id
-                                            }
-                                        },
+                                        {"term": {"source_node_id": target_node_id}},
+                                        {"term": {"target_node_id": source_node_id}},
                                     ]
                                 }
                             },
@@ -960,8 +984,8 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                 "query": {
                     "bool": {
                         "should": [
-                            {"term": {"source_node_id.keyword": source_node_id}},
-                            {"term": {"target_node_id.keyword": source_node_id}},
+                            {"term": {"source_node_id": source_node_id}},
+                            {"term": {"target_node_id": source_node_id}},
                         ]
                     }
                 },
@@ -1005,21 +1029,21 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                 "query": {
                     "bool": {
                         "should": [
-                            {"terms": {"source_node_id.keyword": node_ids}},
-                            {"terms": {"target_node_id.keyword": node_ids}},
+                            {"terms": {"source_node_id": node_ids}},
+                            {"terms": {"target_node_id": node_ids}},
                         ]
                     }
                 },
                 "aggs": {
                     "source_degrees": {
                         "terms": {
-                            "field": "source_node_id.keyword",
+                            "field": "source_node_id",
                             "size": len(node_ids) * 2,
                         }
                     },
                     "target_degrees": {
                         "terms": {
-                            "field": "target_node_id.keyword",
+                            "field": "target_node_id",
                             "size": len(node_ids) * 2,
                         }
                     },
@@ -1051,8 +1075,8 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                 "query": {
                     "bool": {
                         "should": [
-                            {"terms": {"source_node_id.keyword": node_ids}},
-                            {"terms": {"target_node_id.keyword": node_ids}},
+                            {"terms": {"source_node_id": node_ids}},
+                            {"terms": {"target_node_id": node_ids}},
                         ]
                     }
                 },
@@ -1134,8 +1158,8 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                 "query": {
                     "bool": {
                         "should": [
-                            {"term": {"source_node_id.keyword": node_id}},
-                            {"term": {"target_node_id.keyword": node_id}},
+                            {"term": {"source_node_id": node_id}},
+                            {"term": {"target_node_id": node_id}},
                         ]
                     }
                 }
@@ -1164,8 +1188,8 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                 "query": {
                     "bool": {
                         "should": [
-                            {"terms": {"source_node_id.keyword": nodes}},
-                            {"terms": {"target_node_id.keyword": nodes}},
+                            {"terms": {"source_node_id": nodes}},
+                            {"terms": {"target_node_id": nodes}},
                         ]
                     }
                 }
@@ -1196,8 +1220,8 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                     {
                         "bool": {
                             "must": [
-                                {"term": {"source_node_id.keyword": src}},
-                                {"term": {"target_node_id.keyword": tgt}},
+                                {"term": {"source_node_id": src}},
+                                {"term": {"target_node_id": tgt}},
                             ]
                         }
                     }
@@ -1206,8 +1230,8 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                     {
                         "bool": {
                             "must": [
-                                {"term": {"source_node_id.keyword": tgt}},
-                                {"term": {"target_node_id.keyword": src}},
+                                {"term": {"source_node_id": tgt}},
+                                {"term": {"target_node_id": src}},
                             ]
                         }
                     }
@@ -1225,15 +1249,37 @@ class OpenSearchGraphStorage(BaseGraphStorage):
         """Get all node IDs (entity names) sorted alphabetically."""
         try:
             labels = []
-            body = {
-                "query": {"match_all": {}},
-                "_source": False,
-                "size": 10000,
-                "sort": [{"_id": {"order": "asc"}}],
-            }
-            response = await self.client.search(index=self._nodes_index, body=body)
-            for hit in response["hits"]["hits"]:
-                labels.append(hit["_id"])
+            pit = await self.client.create_pit(
+                index=self._nodes_index, params={"keep_alive": "1m"}
+            )
+            pit_id = pit["pit_id"]
+            try:
+                search_after = None
+                while True:
+                    body = {
+                        "query": {"match_all": {}},
+                        "_source": False,
+                        "size": 10000,
+                        "pit": {"id": pit_id, "keep_alive": "1m"},
+                        "sort": [{"_shard_doc": "asc"}],
+                    }
+                    if search_after:
+                        body["search_after"] = search_after
+                    response = await self.client.search(body=body)
+                    hits = response["hits"]["hits"]
+                    if not hits:
+                        break
+                    for hit in hits:
+                        labels.append(hit["_id"])
+                    search_after = hits[-1]["sort"]
+                    if len(hits) < 10000:
+                        break
+            finally:
+                try:
+                    await self.client.delete_pit(body={"pit_id": [pit_id]})
+                except Exception:
+                    pass
+            labels.sort()
             return labels
         except OpenSearchException:
             return []
@@ -1323,13 +1369,13 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                     "aggs": {
                         "src": {
                             "terms": {
-                                "field": "source_node_id.keyword",
+                                "field": "source_node_id",
                                 "size": max_nodes,
                             }
                         },
                         "tgt": {
                             "terms": {
-                                "field": "target_node_id.keyword",
+                                "field": "target_node_id",
                                 "size": max_nodes,
                             }
                         },
@@ -1370,8 +1416,8 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                     "query": {
                         "bool": {
                             "must": [
-                                {"terms": {"source_node_id.keyword": top_ids}},
-                                {"terms": {"target_node_id.keyword": top_ids}},
+                                {"terms": {"source_node_id": top_ids}},
+                                {"terms": {"target_node_id": top_ids}},
                             ]
                         }
                     },
@@ -1510,8 +1556,8 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                 "query": {
                     "bool": {
                         "must": [
-                            {"terms": {"source_node_id.keyword": node_ids}},
-                            {"terms": {"target_node_id.keyword": node_ids}},
+                            {"terms": {"source_node_id": node_ids}},
+                            {"terms": {"target_node_id": node_ids}},
                         ]
                     }
                 },
@@ -1560,8 +1606,8 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                 "query": {
                     "bool": {
                         "should": [
-                            {"terms": {"source_node_id.keyword": current_level}},
-                            {"terms": {"target_node_id.keyword": current_level}},
+                            {"terms": {"source_node_id": current_level}},
+                            {"terms": {"target_node_id": current_level}},
                         ]
                     }
                 },
@@ -1610,8 +1656,8 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                 "query": {
                     "bool": {
                         "must": [
-                            {"terms": {"source_node_id.keyword": all_ids}},
-                            {"terms": {"target_node_id.keyword": all_ids}},
+                            {"terms": {"source_node_id": all_ids}},
+                            {"terms": {"target_node_id": all_ids}},
                         ]
                     }
                 },
@@ -1637,13 +1683,38 @@ class OpenSearchGraphStorage(BaseGraphStorage):
     async def get_all_nodes(self) -> list[dict]:
         """Get all nodes with their properties."""
         try:
-            body = {"query": {"match_all": {}}, "size": 10000}
-            response = await self.client.search(index=self._nodes_index, body=body)
             nodes = []
-            for hit in response["hits"]["hits"]:
-                node = hit["_source"]
-                node["id"] = hit["_id"]
-                nodes.append(node)
+            pit = await self.client.create_pit(
+                index=self._nodes_index, params={"keep_alive": "1m"}
+            )
+            pit_id = pit["pit_id"]
+            try:
+                search_after = None
+                while True:
+                    body = {
+                        "query": {"match_all": {}},
+                        "size": 10000,
+                        "pit": {"id": pit_id, "keep_alive": "1m"},
+                        "sort": [{"_shard_doc": "asc"}],
+                    }
+                    if search_after:
+                        body["search_after"] = search_after
+                    response = await self.client.search(body=body)
+                    hits = response["hits"]["hits"]
+                    if not hits:
+                        break
+                    for hit in hits:
+                        node = hit["_source"]
+                        node["id"] = hit["_id"]
+                        nodes.append(node)
+                    search_after = hits[-1]["sort"]
+                    if len(hits) < 10000:
+                        break
+            finally:
+                try:
+                    await self.client.delete_pit(body={"pit_id": [pit_id]})
+                except Exception:
+                    pass
             return nodes
         except OpenSearchException:
             return []
@@ -1651,14 +1722,39 @@ class OpenSearchGraphStorage(BaseGraphStorage):
     async def get_all_edges(self) -> list[dict]:
         """Get all edges with source/target fields added."""
         try:
-            body = {"query": {"match_all": {}}, "size": 10000}
-            response = await self.client.search(index=self._edges_index, body=body)
             edges = []
-            for hit in response["hits"]["hits"]:
-                edge = hit["_source"]
-                edge["source"] = edge.get("source_node_id")
-                edge["target"] = edge.get("target_node_id")
-                edges.append(edge)
+            pit = await self.client.create_pit(
+                index=self._edges_index, params={"keep_alive": "1m"}
+            )
+            pit_id = pit["pit_id"]
+            try:
+                search_after = None
+                while True:
+                    body = {
+                        "query": {"match_all": {}},
+                        "size": 10000,
+                        "pit": {"id": pit_id, "keep_alive": "1m"},
+                        "sort": [{"_shard_doc": "asc"}],
+                    }
+                    if search_after:
+                        body["search_after"] = search_after
+                    response = await self.client.search(body=body)
+                    hits = response["hits"]["hits"]
+                    if not hits:
+                        break
+                    for hit in hits:
+                        edge = hit["_source"]
+                        edge["source"] = edge.get("source_node_id")
+                        edge["target"] = edge.get("target_node_id")
+                        edges.append(edge)
+                    search_after = hits[-1]["sort"]
+                    if len(hits) < 10000:
+                        break
+            finally:
+                try:
+                    await self.client.delete_pit(body={"pit_id": [pit_id]})
+                except Exception:
+                    pass
             return edges
         except OpenSearchException:
             return []
@@ -1669,12 +1765,8 @@ class OpenSearchGraphStorage(BaseGraphStorage):
             body = {
                 "size": 0,
                 "aggs": {
-                    "src": {
-                        "terms": {"field": "source_node_id.keyword", "size": limit * 2}
-                    },
-                    "tgt": {
-                        "terms": {"field": "target_node_id.keyword", "size": limit * 2}
-                    },
+                    "src": {"terms": {"field": "source_node_id", "size": limit * 2}},
+                    "tgt": {"terms": {"field": "target_node_id", "size": limit * 2}},
                 },
             }
             response = await self.client.search(index=self._edges_index, body=body)

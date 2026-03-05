@@ -33,11 +33,15 @@ async def _mock_lock():
     yield
 
 
+def _mock_lock_factory():
+    return _mock_lock()
+
+
 @pytest.fixture(autouse=True)
 def patch_data_init_lock():
     """Patch get_data_init_lock globally so initialize() works without shared storage."""
     with patch(
-        "lightrag.kg.opensearch_impl.get_data_init_lock", return_value=_mock_lock()
+        "lightrag.kg.opensearch_impl.get_data_init_lock", side_effect=_mock_lock_factory
     ):
         yield
 
@@ -76,11 +80,23 @@ def embed_func():
 
 
 def _make_client():
-    """Create a fully-mocked AsyncOpenSearch client."""
-    client = AsyncMock()
+    """Create a fully-mocked AsyncOpenSearch client with spec validation."""
+    from opensearchpy import AsyncOpenSearch
+
+    client = AsyncMock(spec=AsyncOpenSearch)
+    # indices sub-client
+    client.indices = AsyncMock()
     client.indices.exists = AsyncMock(return_value=False)
     client.indices.create = AsyncMock()
     client.indices.delete = AsyncMock()
+    client.indices.refresh = AsyncMock()
+    client.indices.get_mapping = AsyncMock(return_value={})
+    # transport for PPL
+    client.transport = AsyncMock()
+    client.transport.perform_request = AsyncMock(
+        side_effect=Exception("PPL not available")
+    )
+    # document operations
     client.exists = AsyncMock(return_value=False)
     client.index = AsyncMock()
     client.delete = AsyncMock()
@@ -112,6 +128,9 @@ def _make_client():
             },
         }
     )
+    # PIT operations
+    client.create_pit = AsyncMock(return_value={"pit_id": "mock_pit_id_123"})
+    client.delete_pit = AsyncMock()
     return client
 
 
@@ -481,11 +500,11 @@ class TestDocStatusStorage:
                                 "created_at": 100,
                                 "updated_at": 200,
                             },
+                            "sort": ["d1"],
                         },
                     ],
                     "total": {"value": 1},
                 },
-                "aggregations": {"status_counts": {"buckets": []}},
             }
         )
         with patch.object(ClientManager, "get_client", return_value=mock_client):
@@ -497,6 +516,8 @@ class TestDocStatusStorage:
 
     @pytest.mark.asyncio
     async def test_get_docs_paginated(self, global_config, embed_func, mock_client):
+        """Page 1 returns results directly without search_after."""
+        mock_client.count = AsyncMock(return_value={"count": 50})
         mock_client.search = AsyncMock(
             return_value={
                 "hits": {
@@ -512,11 +533,11 @@ class TestDocStatusStorage:
                                 "created_at": 100,
                                 "updated_at": 200,
                             },
+                            "sort": [200, "d1"],
                         },
                     ],
                     "total": {"value": 50},
                 },
-                "aggregations": {"status_counts": {"buckets": []}},
             }
         )
         with patch.object(ClientManager, "get_client", return_value=mock_client):
@@ -526,6 +547,129 @@ class TestDocStatusStorage:
             assert total == 50
             assert len(docs) == 1
             assert docs[0][0] == "d1"
+            # Page 1: no search_after needed, single search call
+            assert mock_client.search.await_count == 1
+            body = mock_client.search.call_args.kwargs.get(
+                "body"
+            ) or mock_client.search.call_args[1].get("body", {})
+            assert "search_after" not in body
+
+    @pytest.mark.asyncio
+    async def test_get_docs_paginated_page2_uses_search_after(
+        self, global_config, embed_func, mock_client
+    ):
+        """Page 2 skips page 1 results via search_after."""
+        mock_client.count = AsyncMock(return_value={"count": 50})
+        call_count = {"n": 0}
+
+        async def search_side_effect(*args, **kwargs):
+            call_count["n"] += 1
+            body = kwargs.get("body", {})
+            if "search_after" not in body:
+                # First call: skip batch
+                return {
+                    "hits": {
+                        "hits": [
+                            {
+                                "_id": f"skip{i}",
+                                "_source": {
+                                    "status": "processed",
+                                    "file_path": f"/{i}.txt",
+                                    "content_summary": "s",
+                                    "content_length": 1,
+                                    "chunks_count": 1,
+                                    "created_at": 100,
+                                    "updated_at": 100 + i,
+                                },
+                                "sort": [100 + i, f"skip{i}"],
+                            }
+                            for i in range(10)
+                        ],
+                        "total": {"value": 50},
+                    }
+                }
+            else:
+                # Second call: actual page
+                return {
+                    "hits": {
+                        "hits": [
+                            {
+                                "_id": "page2_doc",
+                                "_source": {
+                                    "status": "pending",
+                                    "file_path": "/p2.txt",
+                                    "content_summary": "s",
+                                    "content_length": 1,
+                                    "chunks_count": 1,
+                                    "created_at": 200,
+                                    "updated_at": 300,
+                                },
+                                "sort": [300, "page2_doc"],
+                            }
+                        ],
+                        "total": {"value": 50},
+                    }
+                }
+
+        mock_client.search = AsyncMock(side_effect=search_side_effect)
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+            docs, total = await s.get_docs_paginated(page=2, page_size=10)
+            assert total == 50
+            assert len(docs) == 1
+            assert docs[0][0] == "page2_doc"
+            # 2 search calls: 1 skip + 1 fetch
+            assert mock_client.search.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_get_docs_paginated_empty_index(
+        self, global_config, embed_func, mock_client
+    ):
+        """Empty index returns empty list with total 0."""
+        mock_client.count = AsyncMock(return_value={"count": 0})
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+            docs, total = await s.get_docs_paginated(page=1, page_size=10)
+            assert total == 0
+            assert docs == []
+            mock_client.search.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_get_docs_paginated_page_beyond_total(
+        self, global_config, embed_func, mock_client
+    ):
+        """Requesting a page beyond total docs returns empty list."""
+        mock_client.count = AsyncMock(return_value={"count": 5})
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+            docs, total = await s.get_docs_paginated(page=100, page_size=10)
+            assert total == 5
+            assert docs == []
+
+    @pytest.mark.asyncio
+    async def test_get_docs_paginated_with_status_filter(
+        self, global_config, embed_func, mock_client
+    ):
+        """Status filter is passed as term query."""
+        mock_client.count = AsyncMock(return_value={"count": 3})
+        mock_client.search = AsyncMock(
+            return_value={
+                "hits": {"hits": [], "total": {"value": 3}},
+            }
+        )
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+            docs, total = await s.get_docs_paginated(
+                status_filter=DocStatus.PROCESSED, page=1, page_size=10
+            )
+            assert total == 3
+            # Verify count query used the status filter
+            count_body = mock_client.count.call_args.kwargs.get("body", {})
+            assert count_body["query"] == {"term": {"status": "processed"}}
 
     @pytest.mark.asyncio
     async def test_get_doc_by_file_path(self, global_config, embed_func, mock_client):
@@ -846,13 +990,11 @@ class TestGraphStorage:
         mock_client.search = AsyncMock(
             return_value={
                 "hits": {
-                    "hits": [{"_id": "Alice"}, {"_id": "Bob"}],
+                    "hits": [
+                        {"_id": "Alice", "sort": ["Alice"]},
+                        {"_id": "Bob", "sort": ["Bob"]},
+                    ],
                     "total": {"value": 2},
-                },
-                "aggregations": {
-                    "status_counts": {"buckets": []},
-                    "src": {"buckets": []},
-                    "tgt": {"buckets": []},
                 },
             }
         )
