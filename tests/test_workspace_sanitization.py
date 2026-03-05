@@ -1,13 +1,15 @@
 """
 Unit tests for workspace label sanitization in Memgraph and Neo4j implementations.
 
-This module tests that _get_workspace_label() properly sanitizes workspace names
+This module tests that `_get_workspace_label()` properly sanitizes workspace names
 to prevent Cypher injection via the LIGHTRAG-WORKSPACE HTTP header.
+
+It verifies that we preserve non-alphanumeric characters for 1-to-1 workspace mapping
+while successfully neutralizing Cypher injection by escaping backticks.
 
 References: GitHub Issue #2698
 """
 
-import re
 import pytest
 
 # Mark all tests as offline (no external dependencies)
@@ -20,10 +22,10 @@ def _sanitize_workspace(workspace: str) -> str:
     This mirrors the logic in _get_workspace_label() for both
     MemgraphStorage and Neo4JStorage.
     """
-    safe = re.sub(r"[^a-zA-Z0-9_]", "_", workspace.strip())
+    safe = workspace.strip()
     if not safe:
         safe = "base"
-    return safe
+    return safe.replace("`", "``")
 
 
 class TestWorkspaceLabelSanitization:
@@ -47,58 +49,53 @@ class TestWorkspaceLabelSanitization:
         """Numeric-only workspaces are valid."""
         assert _sanitize_workspace("12345") == "12345"
 
-    # --- Special characters replaced ---
+    # --- Special characters preserved (unlike PostgreSQL regex stripping) ---
 
-    def test_spaces_replaced(self):
-        """Spaces in workspace names should be replaced with underscores."""
-        assert _sanitize_workspace("my workspace") == "my_workspace"
+    def test_spaces_preserved(self):
+        """Spaces in workspace names should be preserved."""
+        assert _sanitize_workspace("my workspace") == "my workspace"
 
-    def test_hyphens_replaced(self):
-        """Hyphens should be replaced with underscores."""
-        assert _sanitize_workspace("my-workspace") == "my_workspace"
+    def test_hyphens_preserved(self):
+        """Hyphens should be preserved (solves collision issue)."""
+        assert _sanitize_workspace("my-workspace") == "my-workspace"
 
-    def test_dots_replaced(self):
-        """Dots should be replaced with underscores."""
-        assert _sanitize_workspace("my.workspace") == "my_workspace"
+    def test_dots_preserved(self):
+        """Dots should be preserved."""
+        assert _sanitize_workspace("my.workspace") == "my.workspace"
 
-    def test_mixed_special_chars(self):
-        """Multiple different special characters should all be replaced."""
-        result = _sanitize_workspace("a-b.c d@e!f")
-        assert result == "a_b_c_d_e_f"
+    def test_mixed_special_chars_preserved(self):
+        """Multiple different special characters should be preserved."""
+        assert _sanitize_workspace("a-b.c d@e!f") == "a-b.c d@e!f"
 
     # --- Cypher injection payloads ---
 
-    def test_cypher_injection_backtick(self):
-        """Backtick injection attempt should be neutralized."""
+    def test_cypher_injection_backtick_escaped(self):
+        """Backtick injection attempt should be neutralized by doubling backticks."""
         malicious = "test`}) MATCH (n) DETACH DELETE n //"
-        result = _sanitize_workspace(malicious)
-        assert "`" not in result
-        assert "DETACH" not in result or result == re.sub(r"[^a-zA-Z0-9_]", "_", malicious.strip())
-        # Most importantly, no backticks or special Cypher syntax
-        assert re.fullmatch(r"[a-zA-Z0-9_]+", result)
+        # The single backtick should become a double backtick
+        expected = "test``}) MATCH (n) DETACH DELETE n //"
+        assert _sanitize_workspace(malicious) == expected
 
-    def test_cypher_injection_curly_braces(self):
-        """Curly brace injection should be sanitized."""
+    def test_cypher_injection_multiple_backticks(self):
+        """Multiple backticks should all be escaped."""
+        malicious = "`DROP`DATABASE`"
+        expected = "``DROP``DATABASE``"
+        assert _sanitize_workspace(malicious) == expected
+
+    def test_cypher_injection_curly_braces_preserved(self):
+        """Curly brace injection is harmless when enclosed in backticks, so preserved."""
         malicious = "test}) RETURN 1 //"
-        result = _sanitize_workspace(malicious)
-        assert "{" not in result
-        assert "}" not in result
-        assert re.fullmatch(r"[a-zA-Z0-9_]+", result)
+        assert _sanitize_workspace(malicious) == malicious
 
-    def test_cypher_injection_semicolon(self):
-        """Semicolon injection (multi-statement) should be sanitized."""
+    def test_cypher_injection_semicolon_preserved(self):
+        """Semicolon injection is harmless when enclosed in backticks, so preserved."""
         malicious = "test; DROP DATABASE neo4j"
-        result = _sanitize_workspace(malicious)
-        assert ";" not in result
-        assert re.fullmatch(r"[a-zA-Z0-9_]+", result)
+        assert _sanitize_workspace(malicious) == malicious
 
-    def test_cypher_injection_quotes(self):
-        """Quote injection should be sanitized."""
+    def test_cypher_injection_quotes_preserved(self):
+        """Quote injection is harmless when enclosed in backticks, so preserved."""
         malicious = 'test" OR 1=1 //'
-        result = _sanitize_workspace(malicious)
-        assert '"' not in result
-        assert "'" not in result
-        assert re.fullmatch(r"[a-zA-Z0-9_]+", result)
+        assert _sanitize_workspace(malicious) == malicious
 
     # --- Empty / whitespace fallback ---
 
@@ -110,11 +107,9 @@ class TestWorkspaceLabelSanitization:
         """Whitespace-only workspace should fall back to 'base'."""
         assert _sanitize_workspace("   ") == "base"
 
-    def test_special_chars_only_fallback(self):
-        """Workspace with only special characters (all stripped) should fall back to 'base'."""
-        # After stripping, all chars become "_", which is allowed, so it should NOT be "base"
-        result = _sanitize_workspace("---")
-        assert result == "___"
+    def test_special_chars_only_preserved(self):
+        """Workspace with only special characters should be preserved."""
+        assert _sanitize_workspace("---") == "---"
 
     # --- Edge cases ---
 
@@ -122,26 +117,22 @@ class TestWorkspaceLabelSanitization:
         """Leading/trailing whitespace should be stripped before sanitization."""
         assert _sanitize_workspace("  myworkspace  ") == "myworkspace"
 
-    def test_unicode_characters_replaced(self):
-        """Non-ASCII characters should be replaced."""
-        result = _sanitize_workspace("工作区_test")
-        # Chinese characters should be replaced with underscores
-        assert re.fullmatch(r"[a-zA-Z0-9_]+", result)
-        assert "test" in result
+    def test_unicode_characters_preserved(self):
+        """Non-ASCII/Chinese characters should be preserved."""
+        assert _sanitize_workspace("工作区_test") == "工作区_test"
 
     def test_very_long_workspace(self):
         """Very long workspace names should still be sanitized correctly."""
-        long_name = "a" * 1000
-        result = _sanitize_workspace(long_name)
-        assert result == long_name
-        assert re.fullmatch(r"[a-zA-Z0-9_]+", result)
+        long_name = "a" * 1000 + "`"
+        expected = "a" * 1000 + "``"
+        assert _sanitize_workspace(long_name) == expected
 
     def test_single_underscore(self):
         """Single underscore should be valid."""
         assert _sanitize_workspace("_") == "_"
 
-    def test_result_always_safe_for_cypher(self):
-        """Parametric check: any output must match the safe pattern."""
+    def test_result_always_escapes_backticks(self):
+        """Parametric check: any output must not contain unescaped single backticks."""
         dangerous_inputs = [
             "normal",
             "with spaces",
@@ -155,6 +146,9 @@ class TestWorkspaceLabelSanitization:
         ]
         for inp in dangerous_inputs:
             result = _sanitize_workspace(inp)
-            assert re.fullmatch(
-                r"[a-zA-Z0-9_]+", result
-            ), f"Unsafe result '{result}' for input '{inp}'"
+            # Find all sequences of backticks
+            import re
+            backtick_sequences = re.findall(r"`+", result)
+            for seq in backtick_sequences:
+                # Any sequence of backticks should have an EVEN length because each ` becomes ``
+                assert len(seq) % 2 == 0, f"Unescaped backtick found in result '{result}' for input '{inp}'"

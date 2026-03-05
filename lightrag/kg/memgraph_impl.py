@@ -62,13 +62,14 @@ class MemgraphStorage(BaseGraphStorage):
     def _get_workspace_label(self) -> str:
         """Return sanitized workspace label safe for use in Cypher queries.
 
-        Strips all characters except alphanumeric and underscore to prevent
-        Cypher injection via the LIGHTRAG-WORKSPACE header.
+        Escapes backticks by doubling them to prevent Cypher injection
+        via the LIGHTRAG-WORKSPACE header, while preserving a 1-to-1 mapping
+        for non-alphanumeric characters.
         """
-        safe_workspace = re.sub(r"[^a-zA-Z0-9_]", "_", self.workspace.strip())
-        if not safe_workspace:
-            safe_workspace = "base"
-        return safe_workspace
+        workspace = self.workspace.strip()
+        if not workspace:
+            return "base"
+        return workspace.replace("`", "``")
 
     async def initialize(self):
         async with get_data_init_lock():
