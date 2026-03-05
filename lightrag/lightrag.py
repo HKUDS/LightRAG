@@ -126,6 +126,28 @@ config = configparser.ConfigParser()
 config.read("config.ini", "utf-8")
 
 
+def _chunk_fields_from_status_doc(
+    status_doc: "DocProcessingStatus",
+) -> tuple[list[str], int]:
+    """Return (chunks_list, chunks_count) preserved from a status document.
+
+    Filters out any non-string or empty chunk IDs.  When chunks_count is
+    absent or invalid, it is inferred from the length of chunks_list.
+    """
+    chunks_list: list[str] = []
+    if isinstance(status_doc.chunks_list, list):
+        chunks_list = [
+            chunk_id
+            for chunk_id in status_doc.chunks_list
+            if isinstance(chunk_id, str) and chunk_id
+        ]
+
+    if isinstance(status_doc.chunks_count, int) and status_doc.chunks_count >= 0:
+        return chunks_list, status_doc.chunks_count
+
+    return chunks_list, len(chunks_list)
+
+
 @final
 @dataclass
 class LightRAG:
@@ -1392,6 +1414,8 @@ class LightRAG:
                     "status": DocStatus.FAILED,
                     "content_summary": f"[DUPLICATE] Original document: {doc_id}",
                     "content_length": new_docs.get(doc_id, {}).get("content_length", 0),
+                    "chunks_count": 0,
+                    "chunks_list": [],
                     "created_at": datetime.now(timezone.utc).isoformat(),
                     "updated_at": datetime.now(timezone.utc).isoformat(),
                     "file_path": file_path,
@@ -1494,6 +1518,7 @@ class LightRAG:
                 "content_length": file_size,
                 "error_msg": original_error,
                 "chunks_count": 0,  # No chunks for failed files
+                "chunks_list": [],
                 "created_at": current_time,
                 "updated_at": current_time,
                 "file_path": file_path,
@@ -1609,11 +1634,16 @@ class LightRAG:
                     DocStatus.PROCESSING,
                     DocStatus.FAILED,
                 ]:
+                    preserved_chunks_list, preserved_chunks_count = (
+                        _chunk_fields_from_status_doc(status_doc)
+                    )
                     # Prepare document for status reset to PENDING
                     docs_to_reset[doc_id] = {
                         "status": DocStatus.PENDING,
                         "content_summary": status_doc.content_summary,
                         "content_length": status_doc.content_length,
+                        "chunks_count": preserved_chunks_count,
+                        "chunks_list": preserved_chunks_list,
                         "created_at": status_doc.created_at,
                         "updated_at": datetime.now(timezone.utc).isoformat(),
                         "file_path": getattr(status_doc, "file_path", "unknown_source"),
@@ -1794,6 +1824,13 @@ class LightRAG:
                     processing_start_time = int(time.time())
                     first_stage_tasks = []
                     entity_relation_task = None
+                    chunks: dict[str, Any] = {}
+
+                    def get_failed_chunk_snapshot() -> tuple[list[str], int]:
+                        if chunks:
+                            chunk_ids = list(chunks.keys())
+                            return chunk_ids, len(chunk_ids)
+                        return _chunk_fields_from_status_doc(status_doc)
 
                     async with semaphore:
                         nonlocal processed_count
@@ -1984,6 +2021,9 @@ class LightRAG:
 
                             # Record processing end time for failed case
                             processing_end_time = int(time.time())
+                            failed_chunks_list, failed_chunks_count = (
+                                get_failed_chunk_snapshot()
+                            )
 
                             # Update document status to failed
                             await self.doc_status.upsert(
@@ -1991,6 +2031,8 @@ class LightRAG:
                                     doc_id: {
                                         "status": DocStatus.FAILED,
                                         "error_msg": str(e),
+                                        "chunks_count": failed_chunks_count,
+                                        "chunks_list": failed_chunks_list,
                                         "content_summary": status_doc.content_summary,
                                         "content_length": status_doc.content_length,
                                         "created_at": status_doc.created_at,
@@ -2111,6 +2153,9 @@ class LightRAG:
 
                                 # Record processing end time for failed case
                                 processing_end_time = int(time.time())
+                                failed_chunks_list, failed_chunks_count = (
+                                    get_failed_chunk_snapshot()
+                                )
 
                                 # Update document status to failed
                                 await self.doc_status.upsert(
@@ -2118,6 +2163,8 @@ class LightRAG:
                                         doc_id: {
                                             "status": DocStatus.FAILED,
                                             "error_msg": str(e),
+                                            "chunks_count": failed_chunks_count,
+                                            "chunks_list": failed_chunks_list,
                                             "content_summary": status_doc.content_summary,
                                             "content_length": status_doc.content_length,
                                             "created_at": status_doc.created_at,
