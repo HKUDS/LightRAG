@@ -218,7 +218,7 @@ normalize_loopback_host_for_compose() {
 normalize_server_host_for_compose() {
   local host="$1"
 
-  if [[ "$host" == "localhost" || "$host" == "127.0.0.1" ]]; then
+  if [[ -n "$host" && "$host" != "0.0.0.0" ]]; then
     printf '0.0.0.0'
     return 0
   fi

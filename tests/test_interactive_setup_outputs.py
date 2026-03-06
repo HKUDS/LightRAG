@@ -923,6 +923,30 @@ printf 'PORT=%s\\n' "${{COMPOSE_ENV_OVERRIDES[PORT]}}"
     assert values["PORT"] == "9621"
 
 
+def test_prepare_compose_runtime_overrides_rewrites_non_loopback_server_host() -> None:
+    """Container runtime should not inherit a host-only LAN bind address."""
+
+    output = run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+reset_state
+
+ENV_VALUES[HOST]="192.168.1.10"
+ENV_VALUES[PORT]="8080"
+
+prepare_compose_runtime_overrides
+
+printf 'HOST=%s\\n' "${{COMPOSE_ENV_OVERRIDES[HOST]}}"
+printf 'PORT=%s\\n' "${{COMPOSE_ENV_OVERRIDES[PORT]}}"
+"""
+    )
+    values = parse_lines(output)
+
+    assert values["HOST"] == "0.0.0.0"
+    assert values["PORT"] == "9621"
+
+
 def test_generate_docker_compose_injects_server_host_and_port_overrides(
     tmp_path: Path,
 ) -> None:
@@ -1058,3 +1082,31 @@ generate_docker_compose "$REPO_ROOT/docker-compose.generated.yml"
     assert 'SSL_KEYFILE: "/app/data/certs/key-server.pem"' in generated_compose
     assert "./data/certs/cert-server.pem:/app/data/certs/cert-server.pem:ro" in generated_compose
     assert "./data/certs/key-server.pem:/app/data/certs/key-server.pem:ro" in generated_compose
+
+
+def test_ssl_staging_skips_copy_for_already_staged_relative_paths(
+    tmp_path: Path,
+) -> None:
+    """Re-running setup with already-staged certs should not fail on identical copies."""
+
+    staged_dir = tmp_path / "data" / "certs"
+    staged_dir.mkdir(parents=True)
+    cert_path = staged_dir / "server.pem"
+    key_path = staged_dir / "server.key"
+    cert_path.write_text("cert", encoding="utf-8")
+    key_path.write_text("key", encoding="utf-8")
+
+    run_bash(
+        f"""
+set -euo pipefail
+cd "{tmp_path}"
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+
+stage_ssl_assets "./data/certs/server.pem" "./data/certs/server.key"
+"""
+    )
+
+    assert cert_path.read_text(encoding="utf-8") == "cert"
+    assert key_path.read_text(encoding="utf-8") == "key"

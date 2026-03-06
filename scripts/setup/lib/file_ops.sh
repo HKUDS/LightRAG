@@ -42,14 +42,14 @@ stage_ssl_assets() {
 
   if [[ -n "$cert_source" ]]; then
     cert_target="${certs_dir}/$(resolve_staged_ssl_basename "cert" "$cert_source" "$key_source")"
-    if [[ "$cert_source" != "$cert_target" ]]; then
+    if [[ ! -e "$cert_target" || ! "$cert_source" -ef "$cert_target" ]]; then
       cp "$cert_source" "$cert_target"
     fi
   fi
 
   if [[ -n "$key_source" ]]; then
     key_target="${certs_dir}/$(resolve_staged_ssl_basename "key" "$key_source" "$cert_source")"
-    if [[ "$key_source" != "$key_target" ]]; then
+    if [[ ! -e "$key_target" || ! "$key_source" -ef "$key_target" ]]; then
       cp "$key_source" "$key_target"
     fi
   fi
