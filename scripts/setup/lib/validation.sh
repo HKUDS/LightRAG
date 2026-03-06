@@ -71,6 +71,12 @@ validate_existing_file() {
   [[ -n "$path" && -f "$path" ]]
 }
 
+validate_mongodb_atlas_uri() {
+  local uri="$1"
+
+  [[ "$uri" =~ ^mongodb\+srv://.+ ]]
+}
+
 check_storage_compatibility() {
   local kv_storage="$1"
   local vector_storage="$2"
@@ -141,6 +147,24 @@ validate_required_variables() {
 
   if ((${#missing[@]} > 0)); then
     format_error "Missing required variables: ${missing[*]}" "Fill them in .env or re-run setup."
+    return 1
+  fi
+
+  return 0
+}
+
+validate_mongo_vector_storage_config() {
+  local vector_storage="$1"
+  local mongo_uri="${2:-${ENV_VALUES[MONGO_URI]:-}}"
+
+  if [[ "$vector_storage" != "MongoVectorDBStorage" ]]; then
+    return 0
+  fi
+
+  if ! validate_mongodb_atlas_uri "$mongo_uri"; then
+    format_error \
+      "MongoVectorDBStorage requires a MongoDB Atlas URI." \
+      "Set MONGO_URI to a mongodb+srv:// Atlas connection string or choose another vector backend."
     return 1
   fi
 

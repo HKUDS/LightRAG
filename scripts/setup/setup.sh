@@ -453,25 +453,39 @@ collect_mongodb_config() {
   local default_docker="${1:-no}"
   local use_docker="no"
   local uri database
+  local atlas_required="no"
 
-  if [[ "$default_docker" == "yes" ]]; then
-    if confirm_default_yes "Add MongoDB service to docker-compose.yml?"; then
-      use_docker="yes"
-    fi
+  if [[ "${ENV_VALUES[LIGHTRAG_VECTOR_STORAGE]:-}" == "MongoVectorDBStorage" ]]; then
+    atlas_required="yes"
+  fi
+
+  if [[ "$atlas_required" == "yes" ]]; then
+    log_warn "MongoVectorDBStorage requires MongoDB Atlas. Skipping local Docker MongoDB."
+    uri="mongodb+srv://cluster.example.mongodb.net/"
   else
-    if confirm "Add MongoDB service to docker-compose.yml?"; then
-      use_docker="yes"
+    if [[ "$default_docker" == "yes" ]]; then
+      if confirm_default_yes "Add MongoDB service to docker-compose.yml?"; then
+        use_docker="yes"
+      fi
+    else
+      if confirm "Add MongoDB service to docker-compose.yml?"; then
+        use_docker="yes"
+      fi
+    fi
+
+    if [[ "$use_docker" == "yes" ]]; then
+      add_docker_service "mongodb"
+      uri="mongodb://mongodb:27017/"
+    else
+      uri="mongodb://localhost:27017/"
     fi
   fi
 
-  if [[ "$use_docker" == "yes" ]]; then
-    add_docker_service "mongodb"
-    uri="mongodb://mongodb:27017/"
+  if [[ "$atlas_required" == "yes" ]]; then
+    uri="$(prompt_until_valid "MongoDB Atlas URI" "${ENV_VALUES[MONGO_URI]:-$uri}" validate_mongodb_atlas_uri)"
   else
-    uri="mongodb://localhost:27017/"
+    uri="$(prompt_until_valid "MongoDB URI" "$uri" validate_uri mongodb)"
   fi
-
-  uri="$(prompt_until_valid "MongoDB URI" "$uri" validate_uri mongodb)"
   database="$(prompt_with_default "MongoDB database" "LightRAG")"
 
   ENV_VALUES["MONGO_URI"]="$uri"
@@ -761,7 +775,7 @@ collect_server_config() {
 }
 
 collect_ssl_config() {
-  local cert key cert_name key_name
+  local cert key
 
   if ! confirm_default_yes "Enable SSL/TLS for the API server?"; then
     return
@@ -769,12 +783,10 @@ collect_ssl_config() {
 
   cert="$(prompt_until_valid "SSL certificate file" "${ENV_VALUES[SSL_CERTFILE]:-}" validate_existing_file)"
   key="$(prompt_until_valid "SSL key file" "${ENV_VALUES[SSL_KEYFILE]:-}" validate_existing_file)"
-  cert_name="$(basename "$cert")"
-  key_name="$(basename "$key")"
 
   ENV_VALUES["SSL"]="true"
-  ENV_VALUES["SSL_CERTFILE"]="/app/data/certs/${cert_name}"
-  ENV_VALUES["SSL_KEYFILE"]="/app/data/certs/${key_name}"
+  ENV_VALUES["SSL_CERTFILE"]="$cert"
+  ENV_VALUES["SSL_KEYFILE"]="$key"
   SSL_CERT_SOURCE_PATH="$cert"
   SSL_KEY_SOURCE_PATH="$key"
 }
@@ -916,6 +928,8 @@ finalize_setup() {
   local compose_suffix
   local compose_file
   local generate_compose="no"
+  local cert_name=""
+  local key_name=""
 
   if [[ ! -f "${REPO_ROOT}/env.example" ]]; then
     format_error "env.example is missing in $REPO_ROOT" "Restore env.example before running setup."
@@ -937,6 +951,12 @@ finalize_setup() {
     fi
   fi
 
+  if ! validate_mongo_vector_storage_config \
+    "${ENV_VALUES[LIGHTRAG_VECTOR_STORAGE]:-}" \
+    "${ENV_VALUES[MONGO_URI]:-}"; then
+    return 1
+  fi
+
   show_summary
 
   if ! confirm "Generate .env and docker-compose.yml now?"; then
@@ -954,6 +974,14 @@ finalize_setup() {
 
   if [[ "$generate_compose" == "yes" ]]; then
     apply_compose_runtime_overrides
+    if [[ -n "$SSL_CERT_SOURCE_PATH" ]]; then
+      cert_name="$(basename "$SSL_CERT_SOURCE_PATH")"
+      ENV_VALUES["SSL_CERTFILE"]="/app/data/certs/${cert_name}"
+    fi
+    if [[ -n "$SSL_KEY_SOURCE_PATH" ]]; then
+      key_name="$(basename "$SSL_KEY_SOURCE_PATH")"
+      ENV_VALUES["SSL_KEYFILE"]="/app/data/certs/${key_name}"
+    fi
   fi
 
   backup_path="$(backup_env_file)"
@@ -1051,7 +1079,11 @@ interactive_flow() {
   else
     log_step "Step 8: Security configuration"
   fi
-  collect_security_config "no" "no"
+  if [[ "$deployment_type" == "production" ]]; then
+    collect_security_config "yes" "yes"
+  else
+    collect_security_config "no" "no"
+  fi
   if [[ "$deployment_type" == "production" ]]; then
     log_step "Step 10: Observability configuration"
   else
@@ -1166,6 +1198,10 @@ validate_env_file() {
   fi
 
   if ! validate_required_variables "$kv" "$vector" "$graph" "$doc_status"; then
+    errors=1
+  fi
+
+  if ! validate_mongo_vector_storage_config "$vector" "${ENV_VALUES[MONGO_URI]:-}"; then
     errors=1
   fi
 
