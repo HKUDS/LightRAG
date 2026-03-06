@@ -82,9 +82,9 @@ async def test_fulltext_index_creation(neo4j_storage):
 
         # Check if the workspace-specific index exists
         index_names = [idx["name"] for idx in indexes]
-        assert (
-            expected_index_name in index_names
-        ), f"Expected index '{expected_index_name}' not found. Found indexes: {index_names}"
+        assert expected_index_name in index_names, (
+            f"Expected index '{expected_index_name}' not found. Found indexes: {index_names}"
+        )
 
         # Check if the legacy index doesn't exist (should be migrated if it was there)
         legacy_index_name = "entity_id_fulltext_idx"
@@ -143,9 +143,9 @@ async def test_search_labels_with_workspace_index(neo4j_storage):
 
     # Should find nodes with "Learning" in them
     assert len(results) > 0, "search_labels should return results for 'Learning'"
-    assert any(
-        "Learning" in result for result in results
-    ), "Results should contain 'Learning'"
+    assert any("Learning" in result for result in results), (
+        "Results should contain 'Learning'"
+    )
 
     # Test case-insensitive search
     results_lower = await storage.search_labels("learning", limit=10)
@@ -153,12 +153,12 @@ async def test_search_labels_with_workspace_index(neo4j_storage):
 
     # Test partial match
     results_partial = await storage.search_labels("Intelli", limit=10)
-    assert (
-        len(results_partial) > 0
-    ), "search_labels should support partial matching with wildcard"
-    assert any(
-        "Intelligence" in result for result in results_partial
-    ), "Should find 'Artificial Intelligence'"
+    assert len(results_partial) > 0, (
+        "search_labels should support partial matching with wildcard"
+    )
+    assert any("Intelligence" in result for result in results_partial), (
+        "Should find 'Artificial Intelligence'"
+    )
 
 
 @pytest.mark.integration
@@ -202,9 +202,9 @@ async def test_search_labels_chinese_text(neo4j_storage):
 
     # Should find nodes with "学习" in them
     assert len(results) > 0, "search_labels should return results for Chinese text"
-    assert any(
-        "学习" in result for result in results
-    ), "Results should contain Chinese characters '学习'"
+    assert any("学习" in result for result in results), (
+        "Results should contain Chinese characters '学习'"
+    )
 
 
 @pytest.mark.integration
@@ -286,12 +286,12 @@ async def test_multiple_workspaces_have_separate_indexes(neo4j_storage):
                 f"entity_id_fulltext_idx_{storage2._get_workspace_label()}"
             )
 
-            assert (
-                workspace1_index in index_names
-            ), f"Workspace 1 index '{workspace1_index}' should exist"
-            assert (
-                workspace2_index in index_names
-            ), f"Workspace 2 index '{workspace2_index}' should exist"
+            assert workspace1_index in index_names, (
+                f"Workspace 1 index '{workspace1_index}' should exist"
+            )
+            assert workspace2_index in index_names, (
+                f"Workspace 2 index '{workspace2_index}' should exist"
+            )
 
     finally:
         # Clean up: drop the fulltext index created for workspace 2 to prevent accumulation

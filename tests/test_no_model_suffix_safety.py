@@ -121,9 +121,9 @@ class TestNoModelSuffixSafety:
             for call in db.execute.call_args_list
             if call[0][0] and "DROP TABLE" in call[0][0]
         ]
-        assert (
-            len(drop_calls) == 0
-        ), "Should not drop table when new and legacy are the same"
+        assert len(drop_calls) == 0, (
+            "Should not drop table when new and legacy are the same"
+        )
 
         # Note: COUNT queries for workspace data are expected behavior in Case 1
         # (for logging/warning purposes when workspace data is empty).

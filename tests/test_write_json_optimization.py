@@ -61,9 +61,9 @@ class TestWriteJsonOptimization:
             assert loaded_data is not None, "Data should be written"
             assert loaded_data["number"] == 123, "Clean fields should remain unchanged"
             # Surrogate character should be removed
-            assert (
-                "\ud800" not in loaded_data["text"]
-            ), "Surrogate character should be removed"
+            assert "\ud800" not in loaded_data["text"], (
+                "Surrogate character should be removed"
+            )
         finally:
             os.unlink(temp_file)
 
@@ -120,9 +120,9 @@ class TestWriteJsonOptimization:
 
             # Verify list items are sanitized
             list_items = loaded_data["level1"]["level2"]["list"]
-            assert (
-                "\ud801" not in list_items[1]
-            ), "List item surrogates should be removed"
+            assert "\ud801" not in list_items[1], (
+                "List item surrogates should be removed"
+            )
         finally:
             os.unlink(temp_file)
 
@@ -166,9 +166,9 @@ class TestWriteJsonOptimization:
 
         try:
             needs_reload = write_json(mixed_data, temp_file)
-            assert (
-                needs_reload
-            ), "Mixed data with dirty fields should trigger sanitization"
+            assert needs_reload, (
+                "Mixed data with dirty fields should trigger sanitization"
+            )
 
             loaded_data = load_json(temp_file)
 
@@ -201,9 +201,9 @@ class TestWriteJsonOptimization:
 
         try:
             needs_reload = write_json(data, temp_file)
-            assert (
-                not needs_reload
-            ), "Clean empty values should not trigger sanitization"
+            assert not needs_reload, (
+                "Clean empty values should not trigger sanitization"
+            )
 
             loaded_data = load_json(temp_file)
             assert loaded_data == data, "Empty/None values should be preserved"
@@ -232,9 +232,9 @@ class TestWriteJsonOptimization:
             loaded_data = load_json(temp_file)
             assert loaded_data is not None
             assert "\udc9a" not in loaded_data["text"], "\\udc9a should be removed"
-            assert (
-                loaded_data["clean_field"] == "Normal text"
-            ), "Clean fields should remain"
+            assert loaded_data["clean_field"] == "Normal text", (
+                "Clean fields should remain"
+            )
         finally:
             os.unlink(temp_file)
 
@@ -277,17 +277,17 @@ class TestWriteJsonOptimization:
             assert loaded_data is not None
 
             # The data should be sanitized
-            assert (
-                "\ud800" not in loaded_data["cache_entry_1"]["return"]
-            ), "Surrogate in return should be removed"
-            assert (
-                "\udc9a" not in loaded_data["cache_entry_1"]["original_prompt"]
-            ), "Surrogate in prompt should be removed"
+            assert "\ud800" not in loaded_data["cache_entry_1"]["return"], (
+                "Surrogate in return should be removed"
+            )
+            assert "\udc9a" not in loaded_data["cache_entry_1"]["original_prompt"], (
+                "Surrogate in prompt should be removed"
+            )
 
             # Clean data should remain unchanged
-            assert (
-                loaded_data["cache_entry_2"]["return"] == "Clean result"
-            ), "Clean data should remain"
+            assert loaded_data["cache_entry_2"]["return"] == "Clean result", (
+                "Clean data should remain"
+            )
 
         finally:
             os.unlink(temp_file)
@@ -334,9 +334,9 @@ class TestWriteJsonOptimization:
             reloaded_empty = load_json(temp_file)
             assert reloaded_empty is not None, "Empty dict should not be None"
             assert reloaded_empty == {}, "Empty dict should remain empty"
-            assert (
-                not reloaded_empty
-            ), "Empty dict evaluates to False (the critical check)"
+            assert not reloaded_empty, (
+                "Empty dict evaluates to False (the critical check)"
+            )
 
         finally:
             os.unlink(temp_file)
