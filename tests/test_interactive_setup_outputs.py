@@ -247,6 +247,48 @@ generate_docker_compose "$REPO_ROOT/docker-compose.generated.yml"
     assert "environment:" not in generated_compose
 
 
+def test_validate_env_file_rejects_missing_ssl_files(tmp_path: Path) -> None:
+    """Validation should fail when SSL is enabled with missing cert/key paths."""
+
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "\n".join(
+            [
+                "SSL=true",
+                "SSL_CERTFILE=/missing/cert.pem",
+                "SSL_KEYFILE=/missing/key.pem",
+                "LIGHTRAG_KV_STORAGE=JsonKVStorage",
+                "LIGHTRAG_VECTOR_STORAGE=NanoVectorDBStorage",
+                "LIGHTRAG_GRAPH_STORAGE=NetworkXStorage",
+                "LIGHTRAG_DOC_STATUS_STORAGE=JsonDocStatusStorage",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [
+            "bash",
+            "-lc",
+            f"""
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+validate_env_file
+""",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    assert "Invalid SSL_CERTFILE" in result.stderr
+    assert "Invalid SSL_KEYFILE" in result.stderr
+
+
 def test_generate_env_file_comments_out_later_duplicate_active_keys(
     tmp_path: Path,
 ) -> None:
@@ -283,6 +325,34 @@ generate_env_file "{REPO_ROOT}/env.example" "$REPO_ROOT/.env"
     assert active_model_lines == ["EMBEDDING_MODEL=bge-m3:latest"]
     assert active_host_lines == ["EMBEDDING_BINDING_HOST=http://localhost:11434"]
     assert "# EMBEDDING_BINDING=openai" in generated_env
+
+
+def test_collect_milvus_config_defaults_to_existing_database_name() -> None:
+    """Milvus database prompt should preserve the documented default database."""
+
+    output = run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+reset_state
+
+confirm() {{ return 1; }}
+confirm_default_yes() {{ return 1; }}
+prompt_with_default() {{
+  printf '%s' "$2"
+}}
+prompt_until_valid() {{
+  printf '%s' "$2"
+}}
+
+collect_milvus_config no
+
+printf 'MILVUS_DB_NAME=%s\\n' "${{ENV_VALUES[MILVUS_DB_NAME]}}"
+"""
+    )
+    values = parse_lines(output)
+
+    assert values["MILVUS_DB_NAME"] == "lightrag"
 
 
 def test_prepare_compose_runtime_overrides_rewrites_host_database_loopback() -> None:

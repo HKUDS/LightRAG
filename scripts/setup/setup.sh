@@ -635,7 +635,7 @@ collect_milvus_config() {
   fi
 
   uri="$(prompt_until_valid "Milvus URI" "$uri" validate_uri milvus)"
-  db_name="$(prompt_with_default "Milvus database name" "default")"
+  db_name="$(prompt_with_default "Milvus database name" "lightrag")"
 
   ENV_VALUES["MILVUS_URI"]="$uri"
   ENV_VALUES["MILVUS_DB_NAME"]="$db_name"
@@ -1351,6 +1351,17 @@ validate_env_file() {
 
   if ! validate_security_config "${ENV_VALUES[AUTH_ACCOUNTS]:-}" "${ENV_VALUES[TOKEN_SECRET]:-}"; then
     errors=1
+  fi
+
+  if [[ "${ENV_VALUES[SSL]:-false}" == "true" ]]; then
+    if ! validate_existing_file "${ENV_VALUES[SSL_CERTFILE]:-}"; then
+      format_error "Invalid SSL_CERTFILE" "Set it to an existing certificate file when SSL=true."
+      errors=1
+    fi
+    if ! validate_existing_file "${ENV_VALUES[SSL_KEYFILE]:-}"; then
+      format_error "Invalid SSL_KEYFILE" "Set it to an existing private key file when SSL=true."
+      errors=1
+    fi
   fi
 
   if [[ -n "${ENV_VALUES[NEO4J_URI]:-}" ]] && ! validate_uri "${ENV_VALUES[NEO4J_URI]}" neo4j; then
