@@ -141,6 +141,8 @@ generate_docker_compose() {
     printf 'services:\n' > "$tmp_file"
   fi
 
+  prepare_lightrag_service_for_generated_compose "$tmp_file"
+
   append_lightrag_ssl_mount lightrag_mounts "${COMPOSE_ENV_OVERRIDES[SSL_CERTFILE]:-}" || return 1
   append_lightrag_ssl_mount lightrag_mounts "${COMPOSE_ENV_OVERRIDES[SSL_KEYFILE]:-}" || return 1
   if ((${#lightrag_mounts[@]} > 0)); then
@@ -207,6 +209,45 @@ generate_docker_compose() {
   fi
 
   mv "$tmp_file" "$output_file"
+}
+
+prepare_lightrag_service_for_generated_compose() {
+  # Let the containerized app read the mounted .env itself. Keeping env_file
+  # here would make Docker Compose re-parse the same secrets and expand '$'.
+  local compose_file="$1"
+  local tmp_file="${compose_file}.strip-env-file"
+  local line
+  local in_lightrag="no"
+  local in_env_file="no"
+
+  : > "$tmp_file"
+
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    if [[ "$in_env_file" == "yes" ]]; then
+      if [[ "$line" =~ ^[[:space:]]{6}-[[:space:]] ]]; then
+        continue
+      fi
+      in_env_file="no"
+    fi
+
+    if [[ "$in_lightrag" == "yes" && "$line" =~ ^[[:space:]]{2}[^[:space:]] && "$line" != "  lightrag:" ]]; then
+      in_lightrag="no"
+    fi
+
+    if [[ "$in_lightrag" == "yes" && "$line" == "    env_file:" ]]; then
+      in_env_file="yes"
+      continue
+    fi
+
+    printf '%s\n' "$line" >> "$tmp_file"
+
+    if [[ "$line" == "  lightrag:" ]]; then
+      in_lightrag="yes"
+      in_env_file="no"
+    fi
+  done < "$compose_file"
+
+  mv "$tmp_file" "$compose_file"
 }
 
 append_lightrag_ssl_mount() {

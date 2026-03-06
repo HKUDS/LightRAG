@@ -209,6 +209,48 @@ generate_docker_compose "$REPO_ROOT/docker-compose.generated.yml"
     )
     assert './data/certs/cert.pem:/app/data/certs/cert.pem:ro' in generated_compose
     assert './data/certs/key.pem:/app/data/certs/key.pem:ro' in generated_compose
+    assert "env_file:" not in generated_compose
+
+
+def test_generate_docker_compose_removes_lightrag_env_file_to_preserve_dollar_values(
+    tmp_path: Path,
+) -> None:
+    """Generated compose should not re-parse `.env` values through Docker's env_file."""
+
+    compose_file = tmp_path / "docker-compose.yml"
+    compose_file.write_text(
+        "\n".join(
+            [
+                "services:",
+                "  lightrag:",
+                "    image: example/lightrag:test",
+                "    env_file:",
+                "      - .env",
+                "    volumes:",
+                "      - ./.env:/app/.env",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+
+generate_docker_compose "$REPO_ROOT/docker-compose.generated.yml"
+"""
+    )
+
+    generated_compose = (tmp_path / "docker-compose.generated.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "env_file:" not in generated_compose
+    assert "- ./.env:/app/.env" in generated_compose
 
 
 def test_existing_ssl_env_keeps_compose_mount_overrides(tmp_path: Path) -> None:
