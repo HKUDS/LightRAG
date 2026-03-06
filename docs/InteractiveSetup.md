@@ -26,6 +26,7 @@ The wizard writes a dedicated compose file to avoid overwriting `docker-compose.
 - `docker-compose.custom.yml`
 
 You can let the wizard start the services immediately after generation.
+The generated `.env` remains host-usable; any container-only hostnames or SSL paths are injected into `docker-compose.*.yml` under the `lightrag` service.
 
 ## Image Settings
 
@@ -47,9 +48,9 @@ You can also edit these in `.env`:
 - Use `SETUP_WAIT_TIMEOUT=120` to increase the startup wait for dependent services.
 - Set `NO_COLOR=1` to disable colored output.
 - Choose `vllm` in the rerank prompt to add a local vLLM reranker service to `docker-compose.yml`.
-- When you expose bundled PostgreSQL on a custom host port, the wizard keeps LightRAG pointed at the container's internal `5432` port and uses `POSTGRES_HOST_PORT` only for the published port.
+- When you expose bundled PostgreSQL on a custom host port, `.env` keeps `POSTGRES_HOST=localhost` and `POSTGRES_PORT=<host-port>` while the generated compose file overrides the container to `postgres:5432`.
 - For GPU setups, set `VLLM_RERANK_DEVICE=cuda` and `VLLM_RERANK_DTYPE=float16` (requires NVIDIA Container Toolkit).
 - CPU `vllm` rerank uses the official CPU image by default; GPU mode switches to the standard `vllm/vllm-openai` image.
-- Host-run local model endpoints are rewritten from `localhost`/`127.0.0.1` to `host.docker.internal` when you generate a Docker stack.
+- Host-run local model endpoints stay as `localhost` in `.env`; generated Docker stacks inject `host.docker.internal` for the `lightrag` container when needed.
 - PostgreSQL defaults to `gzdaniel/postgres-for-rag:16.6`, which bundles both Apache AGE and pgvector for LightRAG's PostgreSQL graph/vector storage modes.
-- If you enable SSL in the wizard, the selected certificate and key are copied into `./data/certs/` and mounted into the `lightrag` container from there.
+- If you enable SSL in the wizard, the selected certificate and key are copied into `./data/certs/` and mounted into the `lightrag` container from there, while `.env` keeps the original host paths.

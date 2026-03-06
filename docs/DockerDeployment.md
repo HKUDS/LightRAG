@@ -80,6 +80,8 @@ If you used the interactive setup, start the generated stack with:
 docker compose -f docker-compose.development.yml up -d
 ```
 
+The interactive setup keeps `.env` host-usable. Container-only hostnames such as `postgres` or `host.docker.internal`, along with staged SSL paths under `/app/data/certs/`, are injected into the generated `docker-compose.*.yml` for the `lightrag` service instead of being persisted back into `.env`.
+
 LightRAG Server uses the following paths for data storage:
 
 ```
@@ -128,13 +130,13 @@ Add the rerank config to `.env`:
 ```bash
 RERANK_BINDING=cohere
 RERANK_MODEL=BAAI/bge-reranker-v2-m3
-RERANK_BINDING_HOST=http://vllm-rerank:8000/v1/rerank
+RERANK_BINDING_HOST=http://localhost:8000/v1/rerank
 RERANK_BINDING_API_KEY=local-key
 VLLM_RERANK_DEVICE=cpu
 VLLM_RERANK_DTYPE=float32
 ```
 
-If you run vLLM on the host instead of Docker, use:
+If LightRAG runs in Docker while vLLM runs on the host, the generated compose file rewrites that endpoint to:
 
 ```bash
 RERANK_BINDING_HOST=http://host.docker.internal:8000/v1/rerank

@@ -9,6 +9,7 @@ TEMPLATES_DIR="$SCRIPT_DIR/templates"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 declare -A ENV_VALUES
+declare -A COMPOSE_ENV_OVERRIDES
 declare -A REQUIRED_DB_TYPES
 declare -A DOCKER_SERVICE_SET
 declare -a DOCKER_SERVICES
@@ -82,6 +83,7 @@ init_colors() {
 
 reset_state() {
   ENV_VALUES=()
+  COMPOSE_ENV_OVERRIDES=()
   REQUIRED_DB_TYPES=()
   DOCKER_SERVICE_SET=()
   DOCKER_SERVICES=()
@@ -189,32 +191,55 @@ normalize_loopback_url_for_compose() {
 default_loopback_url() {
   local port="$1"
   local path="${2:-}"
-  local host="localhost"
-
-  if ((${#DOCKER_SERVICES[@]} > 0)); then
-    host="host.docker.internal"
-  fi
-
-  printf 'http://%s:%s%s' "$host" "$port" "$path"
+  printf 'http://localhost:%s%s' "$port" "$path"
 }
 
-apply_compose_runtime_overrides() {
+set_compose_override() {
+  local key="$1"
+  local value="${2:-}"
+
+  if [[ -n "$value" ]]; then
+    COMPOSE_ENV_OVERRIDES["$key"]="$value"
+  else
+    unset "COMPOSE_ENV_OVERRIDES[$key]"
+  fi
+}
+
+prepare_compose_runtime_overrides() {
   local normalized_host
+  local key
 
-  if [[ -n "${ENV_VALUES[LLM_BINDING_HOST]:-}" ]]; then
-    normalized_host="$(normalize_loopback_url_for_compose "${ENV_VALUES[LLM_BINDING_HOST]}")"
-    ENV_VALUES["LLM_BINDING_HOST"]="$normalized_host"
+  for key in "LLM_BINDING_HOST" "EMBEDDING_BINDING_HOST" "RERANK_BINDING_HOST"; do
+    if [[ -n "${COMPOSE_ENV_OVERRIDES[$key]+set}" ]]; then
+      continue
+    fi
+    if [[ -n "${ENV_VALUES[$key]:-}" ]]; then
+      normalized_host="$(normalize_loopback_url_for_compose "${ENV_VALUES[$key]}")"
+      if [[ "$normalized_host" != "${ENV_VALUES[$key]}" ]]; then
+        set_compose_override "$key" "$normalized_host"
+      fi
+    fi
+  done
+}
+
+prepare_compose_ssl_overrides() {
+  local cert_name=""
+  local key_name=""
+
+  if [[ -n "$SSL_CERT_SOURCE_PATH" ]]; then
+    cert_name="$(basename "$SSL_CERT_SOURCE_PATH")"
+    set_compose_override "SSL_CERTFILE" "/app/data/certs/${cert_name}"
   fi
 
-  if [[ -n "${ENV_VALUES[EMBEDDING_BINDING_HOST]:-}" ]]; then
-    normalized_host="$(normalize_loopback_url_for_compose "${ENV_VALUES[EMBEDDING_BINDING_HOST]}")"
-    ENV_VALUES["EMBEDDING_BINDING_HOST"]="$normalized_host"
+  if [[ -n "$SSL_KEY_SOURCE_PATH" ]]; then
+    key_name="$(basename "$SSL_KEY_SOURCE_PATH")"
+    set_compose_override "SSL_KEYFILE" "/app/data/certs/${key_name}"
   fi
+}
 
-  if [[ -n "${ENV_VALUES[RERANK_BINDING_HOST]:-}" ]]; then
-    normalized_host="$(normalize_loopback_url_for_compose "${ENV_VALUES[RERANK_BINDING_HOST]}")"
-    ENV_VALUES["RERANK_BINDING_HOST"]="$normalized_host"
-  fi
+prepare_compose_env_overrides() {
+  prepare_compose_runtime_overrides
+  prepare_compose_ssl_overrides
 }
 
 add_docker_service() {
@@ -392,18 +417,25 @@ collect_postgres_config() {
 
   if [[ "$use_docker" == "yes" ]]; then
     add_docker_service "postgres"
-    host="postgres"
+    host="${ENV_VALUES[POSTGRES_HOST]:-localhost}"
+    if [[ "$host" == "postgres" ]]; then
+      host="localhost"
+    fi
   else
-    host="localhost"
+    host="${ENV_VALUES[POSTGRES_HOST]:-localhost}"
   fi
 
   host="$(prompt_with_default "PostgreSQL host" "$host")"
   if [[ "$use_docker" == "yes" ]]; then
     host_port="$(prompt_until_valid "PostgreSQL host port" "${ENV_VALUES[POSTGRES_HOST_PORT]:-${ENV_VALUES[POSTGRES_PORT]:-5432}}" validate_port)"
-    port="5432"
+    port="$host_port"
     ENV_VALUES["POSTGRES_HOST_PORT"]="$host_port"
+    set_compose_override "POSTGRES_HOST" "postgres"
+    set_compose_override "POSTGRES_PORT" "5432"
   else
     port="$(prompt_until_valid "PostgreSQL port" "${ENV_VALUES[POSTGRES_PORT]:-5432}" validate_port)"
+    set_compose_override "POSTGRES_HOST" ""
+    set_compose_override "POSTGRES_PORT" ""
   fi
   user="$(prompt_with_default "PostgreSQL user" "lightrag")"
   password="$(mask_sensitive_input "PostgreSQL password: ")"
@@ -433,9 +465,12 @@ collect_neo4j_config() {
 
   if [[ "$use_docker" == "yes" ]]; then
     add_docker_service "neo4j"
-    uri="neo4j://neo4j:7687"
+    uri="${ENV_VALUES[NEO4J_URI]:-neo4j://localhost:7687}"
+    if [[ "$uri" == "neo4j://neo4j:7687" ]]; then
+      uri="neo4j://localhost:7687"
+    fi
   else
-    uri="neo4j://localhost:7687"
+    uri="${ENV_VALUES[NEO4J_URI]:-neo4j://localhost:7687}"
   fi
 
   uri="$(prompt_until_valid "Neo4j URI" "$uri" validate_uri neo4j)"
@@ -447,6 +482,11 @@ collect_neo4j_config() {
   ENV_VALUES["NEO4J_USERNAME"]="$username"
   ENV_VALUES["NEO4J_PASSWORD"]="$password"
   ENV_VALUES["NEO4J_DATABASE"]="$database"
+  if [[ "$use_docker" == "yes" ]]; then
+    set_compose_override "NEO4J_URI" "neo4j://neo4j:7687"
+  else
+    set_compose_override "NEO4J_URI" ""
+  fi
 }
 
 collect_mongodb_config() {
@@ -475,9 +515,12 @@ collect_mongodb_config() {
 
     if [[ "$use_docker" == "yes" ]]; then
       add_docker_service "mongodb"
-      uri="mongodb://mongodb:27017/"
+      uri="${ENV_VALUES[MONGO_URI]:-mongodb://localhost:27017/}"
+      if [[ "$uri" == "mongodb://mongodb:27017/" ]]; then
+        uri="mongodb://localhost:27017/"
+      fi
     else
-      uri="mongodb://localhost:27017/"
+      uri="${ENV_VALUES[MONGO_URI]:-mongodb://localhost:27017/}"
     fi
   fi
 
@@ -490,6 +533,11 @@ collect_mongodb_config() {
 
   ENV_VALUES["MONGO_URI"]="$uri"
   ENV_VALUES["MONGO_DATABASE"]="$database"
+  if [[ "$use_docker" == "yes" ]]; then
+    set_compose_override "MONGO_URI" "mongodb://mongodb:27017/"
+  else
+    set_compose_override "MONGO_URI" ""
+  fi
 }
 
 collect_redis_config() {
@@ -509,13 +557,21 @@ collect_redis_config() {
 
   if [[ "$use_docker" == "yes" ]]; then
     add_docker_service "redis"
-    uri="redis://redis:6379"
+    uri="${ENV_VALUES[REDIS_URI]:-redis://localhost:6379}"
+    if [[ "$uri" == "redis://redis:6379" ]]; then
+      uri="redis://localhost:6379"
+    fi
   else
-    uri="redis://localhost:6379"
+    uri="${ENV_VALUES[REDIS_URI]:-redis://localhost:6379}"
   fi
 
   uri="$(prompt_until_valid "Redis URI" "$uri" validate_uri redis)"
   ENV_VALUES["REDIS_URI"]="$uri"
+  if [[ "$use_docker" == "yes" ]]; then
+    set_compose_override "REDIS_URI" "redis://redis:6379"
+  else
+    set_compose_override "REDIS_URI" ""
+  fi
 }
 
 collect_milvus_config() {
@@ -535,9 +591,12 @@ collect_milvus_config() {
 
   if [[ "$use_docker" == "yes" ]]; then
     add_docker_service "milvus"
-    uri="http://milvus:19530"
+    uri="${ENV_VALUES[MILVUS_URI]:-http://localhost:19530}"
+    if [[ "$uri" == "http://milvus:19530" ]]; then
+      uri="http://localhost:19530"
+    fi
   else
-    uri="http://localhost:19530"
+    uri="${ENV_VALUES[MILVUS_URI]:-http://localhost:19530}"
   fi
 
   uri="$(prompt_until_valid "Milvus URI" "$uri" validate_uri milvus)"
@@ -545,6 +604,11 @@ collect_milvus_config() {
 
   ENV_VALUES["MILVUS_URI"]="$uri"
   ENV_VALUES["MILVUS_DB_NAME"]="$db_name"
+  if [[ "$use_docker" == "yes" ]]; then
+    set_compose_override "MILVUS_URI" "http://milvus:19530"
+  else
+    set_compose_override "MILVUS_URI" ""
+  fi
 }
 
 collect_qdrant_config() {
@@ -564,13 +628,21 @@ collect_qdrant_config() {
 
   if [[ "$use_docker" == "yes" ]]; then
     add_docker_service "qdrant"
-    url="http://qdrant:6333"
+    url="${ENV_VALUES[QDRANT_URL]:-http://localhost:6333}"
+    if [[ "$url" == "http://qdrant:6333" ]]; then
+      url="http://localhost:6333"
+    fi
   else
-    url="http://localhost:6333"
+    url="${ENV_VALUES[QDRANT_URL]:-http://localhost:6333}"
   fi
 
   url="$(prompt_until_valid "Qdrant URL" "$url" validate_uri qdrant)"
   ENV_VALUES["QDRANT_URL"]="$url"
+  if [[ "$use_docker" == "yes" ]]; then
+    set_compose_override "QDRANT_URL" "http://qdrant:6333"
+  else
+    set_compose_override "QDRANT_URL" ""
+  fi
 }
 
 collect_memgraph_config() {
@@ -590,13 +662,21 @@ collect_memgraph_config() {
 
   if [[ "$use_docker" == "yes" ]]; then
     add_docker_service "memgraph"
-    uri="bolt://memgraph:7687"
+    uri="${ENV_VALUES[MEMGRAPH_URI]:-bolt://localhost:7687}"
+    if [[ "$uri" == "bolt://memgraph:7687" ]]; then
+      uri="bolt://localhost:7687"
+    fi
   else
-    uri="bolt://localhost:7687"
+    uri="${ENV_VALUES[MEMGRAPH_URI]:-bolt://localhost:7687}"
   fi
 
   uri="$(prompt_until_valid "Memgraph URI" "$uri" validate_uri memgraph)"
   ENV_VALUES["MEMGRAPH_URI"]="$uri"
+  if [[ "$use_docker" == "yes" ]]; then
+    set_compose_override "MEMGRAPH_URI" "bolt://memgraph:7687"
+  else
+    set_compose_override "MEMGRAPH_URI" ""
+  fi
 }
 
 collect_bedrock_credentials() {
@@ -759,9 +839,14 @@ collect_rerank_config() {
 
     default_model="$vllm_model"
     if [[ "$use_docker" == "yes" ]]; then
-      default_host="http://vllm-rerank:${vllm_port}/v1/rerank"
+      default_host="${ENV_VALUES[RERANK_BINDING_HOST]:-http://localhost:${vllm_port}/v1/rerank}"
+      if [[ "$default_host" == "http://vllm-rerank:${vllm_port}/v1/rerank" ]]; then
+        default_host="http://localhost:${vllm_port}/v1/rerank"
+      fi
+      set_compose_override "RERANK_BINDING_HOST" "http://vllm-rerank:${vllm_port}/v1/rerank"
     else
       default_host="$(default_loopback_url "$vllm_port" "/v1/rerank")"
+      set_compose_override "RERANK_BINDING_HOST" ""
     fi
     binding="cohere"
   else
@@ -956,8 +1041,6 @@ finalize_setup() {
   local compose_suffix
   local compose_file
   local generate_compose="no"
-  local cert_name=""
-  local key_name=""
 
   if [[ ! -f "${REPO_ROOT}/env.example" ]]; then
     format_error "env.example is missing in $REPO_ROOT" "Restore env.example before running setup."
@@ -1007,15 +1090,7 @@ finalize_setup() {
   fi
 
   if [[ "$generate_compose" == "yes" ]]; then
-    apply_compose_runtime_overrides
-    if [[ -n "$SSL_CERT_SOURCE_PATH" ]]; then
-      cert_name="$(basename "$SSL_CERT_SOURCE_PATH")"
-      ENV_VALUES["SSL_CERTFILE"]="/app/data/certs/${cert_name}"
-    fi
-    if [[ -n "$SSL_KEY_SOURCE_PATH" ]]; then
-      key_name="$(basename "$SSL_KEY_SOURCE_PATH")"
-      ENV_VALUES["SSL_KEYFILE"]="/app/data/certs/${key_name}"
-    fi
+    prepare_compose_env_overrides
   fi
 
   backup_path="$(backup_env_file)"
@@ -1363,4 +1438,6 @@ main() {
   esac
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
+fi

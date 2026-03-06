@@ -106,6 +106,8 @@ generate_docker_compose() {
   local template_file
   local volume_names=()
   local lightrag_mounts=()
+  local lightrag_env_entries=()
+  local key
 
   if [[ -f "$base_file" ]]; then
     cp "$base_file" "$tmp_file"
@@ -113,10 +115,17 @@ generate_docker_compose() {
     printf 'services:\n' > "$tmp_file"
   fi
 
-  append_lightrag_ssl_mount lightrag_mounts "SSL_CERTFILE" || return 1
-  append_lightrag_ssl_mount lightrag_mounts "SSL_KEYFILE" || return 1
+  append_lightrag_ssl_mount lightrag_mounts "${COMPOSE_ENV_OVERRIDES[SSL_CERTFILE]:-}" || return 1
+  append_lightrag_ssl_mount lightrag_mounts "${COMPOSE_ENV_OVERRIDES[SSL_KEYFILE]:-}" || return 1
   if ((${#lightrag_mounts[@]} > 0)); then
     inject_lightrag_bind_mounts "$tmp_file" "${lightrag_mounts[@]}"
+  fi
+
+  for key in "${!COMPOSE_ENV_OVERRIDES[@]}"; do
+    lightrag_env_entries+=("${key}=${COMPOSE_ENV_OVERRIDES[$key]}")
+  done
+  if ((${#lightrag_env_entries[@]} > 0)); then
+    inject_lightrag_environment_overrides "$tmp_file" "${lightrag_env_entries[@]}"
   fi
 
   for service in "${DOCKER_SERVICES[@]}"; do
@@ -176,8 +185,7 @@ generate_docker_compose() {
 
 append_lightrag_ssl_mount() {
   local array_name="$1"
-  local env_key="$2"
-  local container_path="${ENV_VALUES[$env_key]:-}"
+  local container_path="$2"
   local relative_host_path=""
   local mount_entry=""
 
@@ -186,13 +194,21 @@ append_lightrag_ssl_mount() {
   fi
 
   if [[ "$container_path" != /app/data/* ]]; then
-    format_error "Unsupported ${env_key} path: ${container_path}" "Use paths staged under /app/data."
+    format_error "Unsupported SSL path: ${container_path}" "Use paths staged under /app/data."
     return 1
   fi
 
   relative_host_path="./data/${container_path#/app/data/}"
   mount_entry="${relative_host_path}:${container_path}:ro"
   eval "$array_name+=(\"\$mount_entry\")"
+}
+
+format_yaml_value() {
+  local value="$1"
+  local escaped="${value//\\/\\\\}"
+
+  escaped="${escaped//\"/\\\"}"
+  printf '"%s"' "$escaped"
 }
 
 inject_lightrag_bind_mounts() {
@@ -249,6 +265,72 @@ inject_lightrag_bind_mounts() {
     fi
     for mount in "${mounts[@]}"; do
       printf '      - "%s"\n' "$mount" >> "$tmp_file"
+    done
+  fi
+
+  mv "$tmp_file" "$compose_file"
+}
+
+inject_lightrag_environment_overrides() {
+  local compose_file="$1"
+  shift
+  local entries=("$@")
+  local tmp_file="${compose_file}.env"
+  local line key value
+  local in_lightrag="no"
+  local in_environment="no"
+  local inserted="no"
+
+  if ((${#entries[@]} == 0)); then
+    return 0
+  fi
+
+  : > "$tmp_file"
+
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    if [[ "$in_lightrag" == "yes" && "$in_environment" == "yes" ]]; then
+      if [[ "$line" =~ ^[[:space:]]{4}[^[:space:]] || "$line" =~ ^[[:space:]]{2}[^[:space:]] || "$line" =~ ^(volumes|networks): ]]; then
+        if [[ "$inserted" == "no" ]]; then
+          for entry in "${entries[@]}"; do
+            key="${entry%%=*}"
+            value="${entry#*=}"
+            printf '      %s: %s\n' "$key" "$(format_yaml_value "$value")" >> "$tmp_file"
+          done
+          inserted="yes"
+        fi
+        in_environment="no"
+      fi
+    elif [[ "$in_lightrag" == "yes" && "$line" =~ ^[[:space:]]{2}[^[:space:]] && "$line" != "  lightrag:" ]]; then
+      if [[ "$inserted" == "no" ]]; then
+        printf '    environment:\n' >> "$tmp_file"
+        for entry in "${entries[@]}"; do
+          key="${entry%%=*}"
+          value="${entry#*=}"
+          printf '      %s: %s\n' "$key" "$(format_yaml_value "$value")" >> "$tmp_file"
+        done
+        inserted="yes"
+      fi
+      in_lightrag="no"
+    fi
+
+    printf '%s\n' "$line" >> "$tmp_file"
+
+    if [[ "$line" == "  lightrag:" ]]; then
+      in_lightrag="yes"
+      in_environment="no"
+    elif [[ "$in_lightrag" == "yes" && "$line" == "    environment:" ]]; then
+      in_environment="yes"
+    fi
+  done < "$compose_file"
+
+  if [[ "$in_lightrag" == "yes" && "$inserted" == "no" ]]; then
+    if [[ "$in_environment" != "yes" ]]; then
+      printf '    environment:\n' >> "$tmp_file"
+    fi
+    for entry in "${entries[@]}"; do
+      key="${entry%%=*}"
+      value="${entry#*=}"
+      printf '      %s: %s\n' "$key" "$(format_yaml_value "$value")" >> "$tmp_file"
     done
   fi
 
