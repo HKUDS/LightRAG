@@ -152,6 +152,6 @@ class TestWorkspaceLabelSanitization:
             backtick_sequences = re.findall(r"`+", result)
             for seq in backtick_sequences:
                 # Any sequence of backticks should have an EVEN length because each ` becomes ``
-                assert len(seq) % 2 == 0, (
-                    f"Unescaped backtick found in result '{result}' for input '{inp}'"
-                )
+                assert (
+                    len(seq) % 2 == 0
+                ), f"Unescaped backtick found in result '{result}' for input '{inp}'"

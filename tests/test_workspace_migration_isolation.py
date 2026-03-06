@@ -144,9 +144,9 @@ class TestWorkspaceMigrationIsolation:
         )
 
         # Verify the migration was triggered
-        assert len(migration_executed) > 0, (
-            "Migration should have been executed for workspace_a"
-        )
+        assert (
+            len(migration_executed) > 0
+        ), "Migration should have been executed for workspace_a"
 
     async def test_migration_without_workspace_raises_error(self):
         """

@@ -492,9 +492,9 @@ async def test_case1_empty_legacy_auto_cleanup(mock_qdrant_client, mock_embeddin
         if delete_calls[0][0]
         else delete_calls[0].kwargs.get("collection_name")
     )
-    assert deleted_collection == legacy_collection, (
-        f"Expected to delete '{legacy_collection}', but deleted '{deleted_collection}'"
-    )
+    assert (
+        deleted_collection == legacy_collection
+    ), f"Expected to delete '{legacy_collection}', but deleted '{deleted_collection}'"
 
     print(
         f"✅ Case 1a: Empty legacy collection '{legacy_collection}' auto-deleted successfully"

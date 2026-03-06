@@ -174,9 +174,9 @@ async def test_pipeline_status_isolation():
     data2 = await get_namespace_data("pipeline_status", workspace=workspace2)
 
     # Verify they are independent objects
-    assert data1 is not data2, (
-        "Pipeline status data objects are the same (should be different)"
-    )
+    assert (
+        data1 is not data2
+    ), "Pipeline status data objects are the same (should be different)"
 
     # Modify workspace1's data and verify workspace2 is not affected
     data1["test_key"] = "workspace1_value"
@@ -186,12 +186,12 @@ async def test_pipeline_status_isolation():
     data2_check = await get_namespace_data("pipeline_status", workspace=workspace2)
 
     assert "test_key" in data1_check, "test_key not found in workspace1"
-    assert data1_check["test_key"] == "workspace1_value", (
-        f"workspace1 test_key value incorrect: {data1_check.get('test_key')}"
-    )
-    assert "test_key" not in data2_check, (
-        f"test_key leaked to workspace2: {data2_check.get('test_key')}"
-    )
+    assert (
+        data1_check["test_key"] == "workspace1_value"
+    ), f"workspace1 test_key value incorrect: {data1_check.get('test_key')}"
+    assert (
+        "test_key" not in data2_check
+    ), f"test_key leaked to workspace2: {data2_check.get('test_key')}"
 
     print("✅ PASSED: Pipeline Status Isolation")
     print("   Different workspaces have isolated pipeline status")
@@ -313,9 +313,9 @@ async def test_backward_compatibility():
     final_ns_empty = get_final_namespace("pipeline_status", workspace=None)
     expected_empty = "pipeline_status"  # Should be just the namespace without ':'
 
-    assert final_ns_empty == expected_empty, (
-        f"Expected '{expected_empty}', got '{final_ns_empty}'"
-    )
+    assert (
+        final_ns_empty == expected_empty
+    ), f"Expected '{expected_empty}', got '{final_ns_empty}'"
 
     print("✅ PASSED: Backward Compatibility - empty workspace")
     print(f"   Empty workspace handled correctly: '{final_ns_empty}'")
@@ -331,9 +331,9 @@ async def test_backward_compatibility():
         "pipeline_status", workspace="compat_test_workspace"
     )
 
-    assert data is not None, (
-        "Failed to initialize pipeline status with default workspace"
-    )
+    assert (
+        data is not None
+    ), "Failed to initialize pipeline status with default workspace"
 
     print("✅ PASSED: Backward Compatibility - pipeline init with None")
     print("   Pipeline status initialized with default workspace")
@@ -410,12 +410,12 @@ async def test_multi_workspace_concurrency():
         expected_key = f"{ws}_key"
         expected_value = f"{ws}_value"
 
-        assert expected_key in data, (
-            f"Data not properly isolated for {ws}: missing {expected_key}"
-        )
-        assert data[expected_key] == expected_value, (
-            f"Data not properly isolated for {ws}: {expected_key}={data[expected_key]} (expected {expected_value})"
-        )
+        assert (
+            expected_key in data
+        ), f"Data not properly isolated for {ws}: missing {expected_key}"
+        assert (
+            data[expected_key] == expected_value
+        ), f"Data not properly isolated for {ws}: {expected_key}={data[expected_key]} (expected {expected_value})"
         print(f"   [{ws}] Data correctly isolated: {expected_key}={data[expected_key]}")
 
     print("✅ PASSED: Multi-Workspace Concurrency - Data Isolation")
@@ -485,9 +485,9 @@ async def test_namespace_lock_reentrance():
 
     # Both coroutines should have completed
     expected_entries = 4  # 2 starts + 2 ends
-    assert len(concurrent_results) == expected_entries, (
-        f"Expected {expected_entries} entries, got {len(concurrent_results)}"
-    )
+    assert (
+        len(concurrent_results) == expected_entries
+    ), f"Expected {expected_entries} entries, got {len(concurrent_results)}"
 
     print("✅ PASSED: NamespaceLock Concurrent Reuse")
     print(
@@ -626,12 +626,12 @@ async def test_update_flags_workspace_isolation():
     await set_all_update_flags(test_namespace, workspace=workspace1)
 
     # Check that only workspace1's flags are set
-    assert flag1_obj.value is True, (
-        f"Flag1 should be True after set_all_update_flags, got {flag1_obj.value}"
-    )
-    assert flag2_obj.value is False, (
-        f"Flag2 should still be False, got {flag2_obj.value}"
-    )
+    assert (
+        flag1_obj.value is True
+    ), f"Flag1 should be True after set_all_update_flags, got {flag1_obj.value}"
+    assert (
+        flag2_obj.value is False
+    ), f"Flag2 should still be False, got {flag2_obj.value}"
 
     print("✅ PASSED: Update Flags - set_all_update_flags Isolation")
     print(
@@ -653,9 +653,9 @@ async def test_update_flags_workspace_isolation():
     await clear_all_update_flags(test_namespace, workspace=workspace1)
 
     # Check that only workspace1's flags are cleared
-    assert flag1_obj.value is False, (
-        f"Flag1 should be False after clear, got {flag1_obj.value}"
-    )
+    assert (
+        flag1_obj.value is False
+    ), f"Flag1 should be False after clear, got {flag1_obj.value}"
     assert flag2_obj.value is True, f"Flag2 should still be True, got {flag2_obj.value}"
 
     print("✅ PASSED: Update Flags - clear_all_update_flags Isolation")
@@ -686,12 +686,12 @@ async def test_update_flags_workspace_isolation():
     workspace1_keys = [k for k in status1.keys() if workspace1 in k]
     workspace2_keys = [k for k in status1.keys() if workspace2 in k]
 
-    assert len(workspace1_keys) > 0, (
-        f"workspace1 keys should be present, got {len(workspace1_keys)}"
-    )
-    assert len(workspace2_keys) == 0, (
-        f"workspace2 keys should not be present, got {len(workspace2_keys)}"
-    )
+    assert (
+        len(workspace1_keys) > 0
+    ), f"workspace1 keys should be present, got {len(workspace1_keys)}"
+    assert (
+        len(workspace2_keys) == 0
+    ), f"workspace2 keys should not be present, got {len(workspace2_keys)}"
     for key, values in status1.items():
         assert all(values), f"All flags in {key} should be True, got {values}"
 
@@ -701,9 +701,9 @@ async def test_update_flags_workspace_isolation():
         f"{workspace2}:{test_namespace}",
         f"{workspace2}:ns_c",
     }
-    assert set(status2.keys()) == expected_ws2_keys, (
-        f"Unexpected namespaces for workspace2: {status2.keys()}"
-    )
+    assert (
+        set(status2.keys()) == expected_ws2_keys
+    ), f"Unexpected namespaces for workspace2: {status2.keys()}"
     for key, values in status2.items():
         assert all(values), f"All flags in {key} should be True, got {values}"
 
@@ -737,9 +737,9 @@ async def test_empty_workspace_standardization():
     final_ns = get_final_namespace("test_namespace", workspace=None)
 
     # Should be just "test_namespace" without colon prefix
-    assert final_ns == "test_namespace", (
-        f"Unexpected namespace format: '{final_ns}' (expected 'test_namespace')"
-    )
+    assert (
+        final_ns == "test_namespace"
+    ), f"Unexpected namespace format: '{final_ns}' (expected 'test_namespace')"
 
     print("✅ PASSED: Empty Workspace Standardization - Format")
     print(f"   Empty workspace creates correct namespace: '{final_ns}'")
@@ -758,9 +758,9 @@ async def test_empty_workspace_standardization():
     data_nonempty = await get_namespace_data("pipeline_status", workspace="test_ws")
 
     # They should be different objects
-    assert data_empty is not data_nonempty, (
-        "Empty and non-empty workspaces share data (should be independent)"
-    )
+    assert (
+        data_empty is not data_nonempty
+    ), "Empty and non-empty workspaces share data (should be independent)"
 
     print("✅ PASSED: Empty Workspace Standardization - Behavior")
     print("   Empty and non-empty workspaces have independent data")
@@ -895,9 +895,9 @@ async def test_json_kv_storage_workspace_isolation(keep_test_artifacts):
         assert result1_entity2 is not None, "Storage1 entity2 should not be None"
         assert result2_entity1 is not None, "Storage2 entity1 should not be None"
         assert result2_entity2 is not None, "Storage2 entity2 should not be None"
-        assert result1_entity1.get("content") == "Data from workspace1 - AI Research", (
-            "Storage1 entity1 content mismatch"
-        )
+        assert (
+            result1_entity1.get("content") == "Data from workspace1 - AI Research"
+        ), "Storage1 entity1 content mismatch"
         assert (
             result1_entity2.get("content") == "Data from workspace1 - Machine Learning"
         ), "Storage1 entity2 content mismatch"
@@ -907,12 +907,12 @@ async def test_json_kv_storage_workspace_isolation(keep_test_artifacts):
         assert (
             result2_entity2.get("content") == "Data from workspace2 - Neural Networks"
         ), "Storage2 entity2 content mismatch"
-        assert result1_entity1.get("content") != result2_entity1.get("content"), (
-            "Storage1 and Storage2 entity1 should have different content"
-        )
-        assert result1_entity2.get("content") != result2_entity2.get("content"), (
-            "Storage1 and Storage2 entity2 should have different content"
-        )
+        assert result1_entity1.get("content") != result2_entity1.get(
+            "content"
+        ), "Storage1 and Storage2 entity1 should have different content"
+        assert result1_entity2.get("content") != result2_entity2.get(
+            "content"
+        ), "Storage1 and Storage2 entity2 should have different content"
 
         print("✅ PASSED: JsonKVStorage - Data Isolation")
         print(
@@ -1128,38 +1128,38 @@ relation<|#|>Deep Learning<|#|>Neural Networks<|#|>uses, composed of<|#|>Deep Le
             print(f"   project_b doc count: {len(docs_b_content)}")
 
             # Verify they contain different data
-            assert docs_a_content != docs_b_content, (
-                "Document storage not properly isolated"
-            )
+            assert (
+                docs_a_content != docs_b_content
+            ), "Document storage not properly isolated"
 
             # Verify each workspace contains its own text content
             docs_a_str = json.dumps(docs_a_content)
             docs_b_str = json.dumps(docs_b_content)
 
             # Check project_a contains its text and NOT project_b's text
-            assert "Artificial Intelligence" in docs_a_str, (
-                "project_a should contain 'Artificial Intelligence'"
-            )
-            assert "Machine Learning" in docs_a_str, (
-                "project_a should contain 'Machine Learning'"
-            )
-            assert "Deep Learning" not in docs_a_str, (
-                "project_a should NOT contain 'Deep Learning' from project_b"
-            )
-            assert "Neural Networks" not in docs_a_str, (
-                "project_a should NOT contain 'Neural Networks' from project_b"
-            )
+            assert (
+                "Artificial Intelligence" in docs_a_str
+            ), "project_a should contain 'Artificial Intelligence'"
+            assert (
+                "Machine Learning" in docs_a_str
+            ), "project_a should contain 'Machine Learning'"
+            assert (
+                "Deep Learning" not in docs_a_str
+            ), "project_a should NOT contain 'Deep Learning' from project_b"
+            assert (
+                "Neural Networks" not in docs_a_str
+            ), "project_a should NOT contain 'Neural Networks' from project_b"
 
             # Check project_b contains its text and NOT project_a's text
-            assert "Deep Learning" in docs_b_str, (
-                "project_b should contain 'Deep Learning'"
-            )
-            assert "Neural Networks" in docs_b_str, (
-                "project_b should contain 'Neural Networks'"
-            )
-            assert "Artificial Intelligence" not in docs_b_str, (
-                "project_b should NOT contain 'Artificial Intelligence' from project_a"
-            )
+            assert (
+                "Deep Learning" in docs_b_str
+            ), "project_b should contain 'Deep Learning'"
+            assert (
+                "Neural Networks" in docs_b_str
+            ), "project_b should contain 'Neural Networks'"
+            assert (
+                "Artificial Intelligence" not in docs_b_str
+            ), "project_b should NOT contain 'Artificial Intelligence' from project_a"
             # Note: "Machine Learning" might appear in project_b's text, so we skip that check
 
             print("✅ PASSED: LightRAG E2E - Data Isolation")
