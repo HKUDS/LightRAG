@@ -74,3 +74,17 @@ prompt_secret_until_valid() {
     echo "Invalid value. Please try again."
   done
 }
+
+prompt_required_secret() {
+  local prompt="$1"
+  local value
+
+  while true; do
+    value="$(mask_sensitive_input "$prompt")"
+    if [[ -n "$value" ]]; then
+      printf '%s' "$value"
+      return 0
+    fi
+    echo "Value cannot be empty. Please try again."
+  done
+}

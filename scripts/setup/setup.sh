@@ -599,6 +599,32 @@ collect_memgraph_config() {
   ENV_VALUES["MEMGRAPH_URI"]="$uri"
 }
 
+collect_bedrock_credentials() {
+  local access_key secret_key session_token region
+
+  log_info "Bedrock uses the AWS credential chain instead of LLM_BINDING_API_KEY/EMBEDDING_BINDING_API_KEY."
+  if [[ -n "${ENV_VALUES[AWS_ACCESS_KEY_ID]:-}" && -n "${ENV_VALUES[AWS_SECRET_ACCESS_KEY]:-}" ]]; then
+    if confirm_default_yes "Reuse existing AWS Bedrock credentials?"; then
+      region="$(prompt_with_default "AWS region" "${ENV_VALUES[AWS_REGION]:-us-east-1}")"
+      ENV_VALUES["AWS_REGION"]="$region"
+      return 0
+    fi
+  fi
+  access_key="$(prompt_required_secret "AWS access key ID: ")"
+  secret_key="$(prompt_required_secret "AWS secret access key: ")"
+  session_token="$(mask_sensitive_input "AWS session token (optional): ")"
+  region="$(prompt_with_default "AWS region" "${ENV_VALUES[AWS_REGION]:-us-east-1}")"
+
+  ENV_VALUES["AWS_ACCESS_KEY_ID"]="$access_key"
+  ENV_VALUES["AWS_SECRET_ACCESS_KEY"]="$secret_key"
+  ENV_VALUES["AWS_REGION"]="$region"
+  if [[ -n "$session_token" ]]; then
+    ENV_VALUES["AWS_SESSION_TOKEN"]="$session_token"
+  else
+    unset 'ENV_VALUES[AWS_SESSION_TOKEN]'
+  fi
+}
+
 collect_llm_config() {
   local options=("openai" "azure_openai" "ollama" "gemini" "aws_bedrock")
   local binding model host api_key
@@ -620,8 +646,9 @@ collect_llm_config() {
       api_key="$(prompt_secret_until_valid "Gemini API key: " validate_api_key gemini)"
       ;;
     aws_bedrock)
-      host="$(prompt_with_default "Bedrock endpoint" "${ENV_VALUES[LLM_BINDING_HOST]:-https://bedrock.amazonaws.com}")"
-      api_key="$(prompt_secret_until_valid "Bedrock API key: " validate_api_key aws_bedrock)"
+      host="${ENV_VALUES[LLM_BINDING_HOST]:-https://bedrock.amazonaws.com}"
+      api_key=""
+      collect_bedrock_credentials
       ;;
     *)
       host="$(prompt_with_default "LLM endpoint" "${ENV_VALUES[LLM_BINDING_HOST]:-https://api.openai.com/v1}")"
@@ -659,8 +686,9 @@ collect_embedding_config() {
       api_key="$(prompt_secret_until_valid "Gemini API key: " validate_api_key gemini)"
       ;;
     aws_bedrock)
-      host="$(prompt_with_default "Bedrock endpoint" "${ENV_VALUES[EMBEDDING_BINDING_HOST]:-https://bedrock.amazonaws.com}")"
-      api_key="$(prompt_secret_until_valid "Bedrock API key: " validate_api_key aws_bedrock)"
+      host="${ENV_VALUES[EMBEDDING_BINDING_HOST]:-https://bedrock.amazonaws.com}"
+      api_key=""
+      collect_bedrock_credentials
       ;;
     jina)
       host="$(prompt_with_default "Jina endpoint" "${ENV_VALUES[EMBEDDING_BINDING_HOST]:-https://api.jina.ai/v1/embeddings}")"
@@ -815,7 +843,7 @@ collect_security_config() {
   fi
 
   auth_accounts="$(prompt_with_default "Auth accounts (user:pass,comma-separated)" "")"
-  token_secret="$(mask_sensitive_input "JWT token secret: ")"
+  token_secret="$(prompt_required_secret "JWT token secret: ")"
   token_expire="$(prompt_with_default "Token expire hours" "48")"
   api_key="$(mask_sensitive_input "LightRAG API key: ")"
   whitelist="$(prompt_with_default "Whitelist paths (comma-separated)" "/health,/api/*")"
