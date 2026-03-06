@@ -554,7 +554,11 @@ collect_neo4j_config() {
   fi
 
   uri="$(prompt_until_valid "Neo4j URI" "$uri" validate_uri neo4j)"
-  username="$(prompt_with_default "Neo4j username" "${ENV_VALUES[NEO4J_USERNAME]:-neo4j}")"
+  if [[ "$use_docker" == "yes" ]]; then
+    username="neo4j"
+  else
+    username="$(prompt_with_default "Neo4j username" "${ENV_VALUES[NEO4J_USERNAME]:-neo4j}")"
+  fi
   password="$(prompt_secret_with_default "Neo4j password: " "${ENV_VALUES[NEO4J_PASSWORD]:-neo4j_password}")"
   database="$(prompt_with_default "Neo4j database" "${ENV_VALUES[NEO4J_DATABASE]:-neo4j}")"
 
@@ -1054,6 +1058,10 @@ collect_observability_config() {
   local secret_key public_key host
 
   if ! confirm "Enable Langfuse observability?"; then
+    unset 'ENV_VALUES[LANGFUSE_ENABLE_TRACE]'
+    unset 'ENV_VALUES[LANGFUSE_SECRET_KEY]'
+    unset 'ENV_VALUES[LANGFUSE_PUBLIC_KEY]'
+    unset 'ENV_VALUES[LANGFUSE_HOST]'
     return
   fi
 

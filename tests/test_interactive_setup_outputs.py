@@ -1233,6 +1233,115 @@ printf 'WHITELIST_PATHS_SET=%s\\n' "${{ENV_VALUES[WHITELIST_PATHS]+set}}"
     assert "WHITELIST_PATHS=" in generated_lines
 
 
+def test_collect_observability_config_clears_existing_values_on_rerun(
+    tmp_path: Path,
+) -> None:
+    """Rerunning setup should remove saved Langfuse settings when observability is declined."""
+
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "\n".join(
+            [
+                "LANGFUSE_ENABLE_TRACE=true",
+                "LANGFUSE_SECRET_KEY=old-secret",
+                "LANGFUSE_PUBLIC_KEY=old-public",
+                "LANGFUSE_HOST=https://langfuse.example",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    output = run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+load_existing_env_if_present
+
+confirm() {{ return 1; }}
+
+collect_observability_config
+generate_env_file "{REPO_ROOT}/env.example" "$REPO_ROOT/.env.generated"
+
+printf 'LANGFUSE_ENABLE_TRACE_SET=%s\\n' "${{ENV_VALUES[LANGFUSE_ENABLE_TRACE]+set}}"
+printf 'LANGFUSE_SECRET_KEY_SET=%s\\n' "${{ENV_VALUES[LANGFUSE_SECRET_KEY]+set}}"
+printf 'LANGFUSE_PUBLIC_KEY_SET=%s\\n' "${{ENV_VALUES[LANGFUSE_PUBLIC_KEY]+set}}"
+printf 'LANGFUSE_HOST_SET=%s\\n' "${{ENV_VALUES[LANGFUSE_HOST]+set}}"
+"""
+    )
+    values = parse_lines(output)
+    generated_lines = (tmp_path / ".env.generated").read_text(encoding="utf-8").splitlines()
+
+    assert values["LANGFUSE_ENABLE_TRACE_SET"] == ""
+    assert values["LANGFUSE_SECRET_KEY_SET"] == ""
+    assert values["LANGFUSE_PUBLIC_KEY_SET"] == ""
+    assert values["LANGFUSE_HOST_SET"] == ""
+    assert not any(line.startswith("LANGFUSE_ENABLE_TRACE=") for line in generated_lines)
+    assert not any(line.startswith("LANGFUSE_SECRET_KEY=") for line in generated_lines)
+    assert not any(line.startswith("LANGFUSE_PUBLIC_KEY=") for line in generated_lines)
+    assert not any(line.startswith("LANGFUSE_HOST=") for line in generated_lines)
+
+
+def test_collect_neo4j_config_bundled_service_pins_username_to_default(
+    tmp_path: Path,
+) -> None:
+    """Bundled Neo4j should keep the bootstrap username aligned with the image defaults."""
+
+    compose_file = tmp_path / "docker-compose.yml"
+    compose_file.write_text(
+        "\n".join(
+            [
+                "services:",
+                "  lightrag:",
+                "    image: example/lightrag:test",
+                "    env_file:",
+                "      - .env",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    output = run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+
+ENV_VALUES[NEO4J_USERNAME]="custom-user"
+ENV_VALUES[NEO4J_PASSWORD]="existing-password"
+
+confirm_default_yes() {{ return 0; }}
+prompt_until_valid() {{ printf '%s' "$2"; }}
+prompt_with_default() {{
+  if [[ "$1" == "Neo4j database" ]]; then
+    printf 'neo4j'
+  else
+    printf 'custom-user'
+  fi
+}}
+prompt_secret_with_default() {{ printf 'test-password'; }}
+
+collect_neo4j_config yes
+generate_docker_compose "$REPO_ROOT/docker-compose.generated.yml"
+
+printf 'NEO4J_USERNAME=%s\\n' "${{ENV_VALUES[NEO4J_USERNAME]}}"
+printf 'DOCKER_SERVICE=%s\\n' "${{DOCKER_SERVICES[0]}}"
+"""
+    )
+    values = parse_lines(output)
+    generated_compose = (tmp_path / "docker-compose.generated.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert values["NEO4J_USERNAME"] == "neo4j"
+    assert values["DOCKER_SERVICE"] == "neo4j"
+    assert 'NEO4J_AUTH: "neo4j/${NEO4J_PASSWORD}"' in generated_compose
+
+
 def test_finalize_setup_rejects_production_config_without_auth_or_api_key() -> None:
     """Production setup should not generate an unauthenticated deployment."""
 
