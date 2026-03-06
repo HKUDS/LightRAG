@@ -857,9 +857,12 @@ def create_app(args):
                         else openai_embed
                     )
                     # Pass model only if provided, let function use its default (text-embedding-3-small)
+                    # Special handling: for local vLLM OpenAI-compatible endpoints, ensure base_url includes /v1
+                    # so the OpenAI client can construct the correct path (/v1/embeddings)
+                    base_url_for_openai = host + "/v1" if host and (host.startswith("http://") or host.startswith("https://")) and "/v1" not in host else (host or "")
                     kwargs = {
                         "texts": texts,
-                        "base_url": host,
+                        "base_url": base_url_for_openai,
                         "api_key": api_key,
                         "embedding_dim": embedding_dim,
                     }
@@ -982,11 +985,21 @@ def create_app(args):
     if args.rerank_binding != "null":
         from lightrag.rerank import cohere_rerank, jina_rerank, ali_rerank
 
+        # Import local vLLM rerank function
+        try:
+            from lightrag.local_vllm_rerank import local_llm_rerank
+            logger.info("Local vLLM reranker module loaded successfully")
+        except ImportError as e:
+            logger.warning(f"Could not import local_llm_rerank: {e}")
+            logger.warning("Reranking with vLLM will not be available")
+            local_llm_rerank = None
+
         # Map rerank binding to corresponding function
         rerank_functions = {
             "cohere": cohere_rerank,
             "jina": jina_rerank,
             "aliyun": ali_rerank,
+            "local": local_llm_rerank,
         }
 
         # Select the appropriate rerank function based on binding
