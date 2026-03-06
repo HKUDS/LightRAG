@@ -12,6 +12,8 @@ declare -A ENV_VALUES
 declare -A REQUIRED_DB_TYPES
 declare -A DOCKER_SERVICE_SET
 declare -a DOCKER_SERVICES
+SSL_CERT_SOURCE_PATH=""
+SSL_KEY_SOURCE_PATH=""
 declare -A DOCKER_IMAGE_TAG_DEFAULTS=(
   ["postgres"]="18"
   ["neo4j"]="5.26.19-community"
@@ -83,6 +85,8 @@ reset_state() {
   REQUIRED_DB_TYPES=()
   DOCKER_SERVICE_SET=()
   DOCKER_SERVICES=()
+  SSL_CERT_SOURCE_PATH=""
+  SSL_KEY_SOURCE_PATH=""
   DEPLOYMENT_TYPE=""
 }
 
@@ -709,7 +713,7 @@ collect_server_config() {
 }
 
 collect_ssl_config() {
-  local cert key
+  local cert key cert_name key_name
 
   if ! confirm_default_yes "Enable SSL/TLS for the API server?"; then
     return
@@ -717,10 +721,14 @@ collect_ssl_config() {
 
   cert="$(prompt_until_valid "SSL certificate file" "${ENV_VALUES[SSL_CERTFILE]:-}" validate_existing_file)"
   key="$(prompt_until_valid "SSL key file" "${ENV_VALUES[SSL_KEYFILE]:-}" validate_existing_file)"
+  cert_name="$(basename "$cert")"
+  key_name="$(basename "$key")"
 
   ENV_VALUES["SSL"]="true"
-  ENV_VALUES["SSL_CERTFILE"]="$cert"
-  ENV_VALUES["SSL_KEYFILE"]="$key"
+  ENV_VALUES["SSL_CERTFILE"]="/app/data/certs/${cert_name}"
+  ENV_VALUES["SSL_KEYFILE"]="/app/data/certs/${key_name}"
+  SSL_CERT_SOURCE_PATH="$cert"
+  SSL_KEY_SOURCE_PATH="$key"
 }
 
 collect_security_config() {
@@ -891,6 +899,10 @@ finalize_setup() {
   backup_path="$(backup_env_file)"
   if [[ -n "$backup_path" ]]; then
     log_success "Backed up existing .env to $backup_path"
+  fi
+
+  if [[ -n "$SSL_CERT_SOURCE_PATH" || -n "$SSL_KEY_SOURCE_PATH" ]]; then
+    stage_ssl_assets "$SSL_CERT_SOURCE_PATH" "$SSL_KEY_SOURCE_PATH"
   fi
 
   log_debug "Writing .env to ${REPO_ROOT}/.env"

@@ -150,6 +150,11 @@ VLLM_RERANK_DTYPE=float16
 Ensure the NVIDIA Container Toolkit is installed and the host has CUDA drivers available.
 The setup wizard uses the CPU image by default for `VLLM_RERANK_DEVICE=cpu` and the GPU image for `VLLM_RERANK_DEVICE=cuda`.
 
+### SSL certificates
+
+The setup wizard stages TLS certificate files under `./data/certs/` before generating the compose file.
+This keeps generated host mounts under the same `./data` root used by the default Docker deployment.
+
 ### Updates
 
 To update the Docker container:

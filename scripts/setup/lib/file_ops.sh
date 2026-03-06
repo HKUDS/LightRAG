@@ -30,6 +30,30 @@ backup_env_file() {
   fi
 }
 
+stage_ssl_assets() {
+  local cert_source="$1"
+  local key_source="$2"
+  local certs_dir="${REPO_ROOT:-.}/data/certs"
+  local cert_target=""
+  local key_target=""
+
+  mkdir -p "$certs_dir"
+
+  if [[ -n "$cert_source" ]]; then
+    cert_target="${certs_dir}/$(basename "$cert_source")"
+    if [[ "$cert_source" != "$cert_target" ]]; then
+      cp "$cert_source" "$cert_target"
+    fi
+  fi
+
+  if [[ -n "$key_source" ]]; then
+    key_target="${certs_dir}/$(basename "$key_source")"
+    if [[ "$key_source" != "$key_target" ]]; then
+      cp "$key_source" "$key_target"
+    fi
+  fi
+}
+
 generate_env_file() {
   local template_file="${1:-${REPO_ROOT:-.}/env.example}"
   local output_file="${2:-${REPO_ROOT:-.}/.env}"
@@ -89,12 +113,8 @@ generate_docker_compose() {
     printf 'services:\n' > "$tmp_file"
   fi
 
-  if [[ -n "${ENV_VALUES[SSL_CERTFILE]:-}" ]]; then
-    lightrag_mounts+=("${ENV_VALUES[SSL_CERTFILE]}:${ENV_VALUES[SSL_CERTFILE]}:ro")
-  fi
-  if [[ -n "${ENV_VALUES[SSL_KEYFILE]:-}" ]]; then
-    lightrag_mounts+=("${ENV_VALUES[SSL_KEYFILE]}:${ENV_VALUES[SSL_KEYFILE]}:ro")
-  fi
+  append_lightrag_ssl_mount lightrag_mounts "SSL_CERTFILE" || return 1
+  append_lightrag_ssl_mount lightrag_mounts "SSL_KEYFILE" || return 1
   if ((${#lightrag_mounts[@]} > 0)); then
     inject_lightrag_bind_mounts "$tmp_file" "${lightrag_mounts[@]}"
   fi
@@ -152,6 +172,27 @@ generate_docker_compose() {
   fi
 
   mv "$tmp_file" "$output_file"
+}
+
+append_lightrag_ssl_mount() {
+  local array_name="$1"
+  local env_key="$2"
+  local container_path="${ENV_VALUES[$env_key]:-}"
+  local relative_host_path=""
+  local mount_entry=""
+
+  if [[ -z "$container_path" ]]; then
+    return 0
+  fi
+
+  if [[ "$container_path" != /app/data/* ]]; then
+    format_error "Unsupported ${env_key} path: ${container_path}" "Use paths staged under /app/data."
+    return 1
+  fi
+
+  relative_host_path="./data/${container_path#/app/data/}"
+  mount_entry="${relative_host_path}:${container_path}:ro"
+  eval "$array_name+=(\"\$mount_entry\")"
 }
 
 inject_lightrag_bind_mounts() {

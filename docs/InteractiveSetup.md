@@ -50,4 +50,4 @@ You can also edit these in `.env`:
 - For GPU setups, set `VLLM_RERANK_DEVICE=cuda` and `VLLM_RERANK_DTYPE=float16` (requires NVIDIA Container Toolkit).
 - CPU `vllm` rerank uses the official CPU image by default; GPU mode switches to the standard `vllm/vllm-openai` image.
 - External host-run `vllm` rerank defaults to `host.docker.internal` so the generated Docker stack can reach it.
-- If you enable SSL in the wizard, the generated compose file bind-mounts the selected certificate and key into the `lightrag` container.
+- If you enable SSL in the wizard, the selected certificate and key are copied into `./data/certs/` and mounted into the `lightrag` container from there.
