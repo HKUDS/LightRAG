@@ -1017,27 +1017,31 @@ collect_security_config() {
     return
   fi
 
-  auth_accounts="$(prompt_with_default "Auth accounts (user:pass,comma-separated)" "${ENV_VALUES[AUTH_ACCOUNTS]:-}")"
-  token_secret="$(prompt_secret_with_default "JWT token secret: " "${ENV_VALUES[TOKEN_SECRET]:-}")"
-  token_expire="$(prompt_with_default "Token expire hours" "${ENV_VALUES[TOKEN_EXPIRE_HOURS]:-48}")"
-  api_key="$(prompt_secret_with_default "LightRAG API key: " "${ENV_VALUES[LIGHTRAG_API_KEY]:-}")"
-  whitelist="$(prompt_with_default "Whitelist paths (comma-separated)" "${ENV_VALUES[WHITELIST_PATHS]:-/health,/api/*}")"
+  echo "Press Enter to keep an existing value. Type 'clear' to remove it." >&2
 
-  if [[ -n "$auth_accounts" ]]; then
-    ENV_VALUES["AUTH_ACCOUNTS"]="$auth_accounts"
+  auth_accounts="$(prompt_clearable_with_default "Auth accounts (user:pass,comma-separated)" "${ENV_VALUES[AUTH_ACCOUNTS]:-}")"
+  token_secret="$(prompt_clearable_secret_with_default "JWT token secret: " "${ENV_VALUES[TOKEN_SECRET]:-}")"
+  token_expire="$(prompt_clearable_with_default "Token expire hours" "${ENV_VALUES[TOKEN_EXPIRE_HOURS]:-48}")"
+  api_key="$(prompt_clearable_secret_with_default "LightRAG API key: " "${ENV_VALUES[LIGHTRAG_API_KEY]:-}")"
+  whitelist="$(prompt_clearable_with_default "Whitelist paths (comma-separated)" "${ENV_VALUES[WHITELIST_PATHS]:-/health,/api/*}")"
+
+  apply_clearable_env_value "AUTH_ACCOUNTS" "$auth_accounts"
+  apply_clearable_env_value "TOKEN_SECRET" "$token_secret"
+  apply_clearable_env_value "TOKEN_EXPIRE_HOURS" "$token_expire"
+  apply_clearable_env_value "LIGHTRAG_API_KEY" "$api_key"
+  apply_clearable_env_value "WHITELIST_PATHS" "$whitelist"
+}
+
+apply_clearable_env_value() {
+  local key="$1"
+  local value="${2:-}"
+
+  if [[ "$value" == "$CLEAR_INPUT_SENTINEL" || -z "$value" ]]; then
+    unset "ENV_VALUES[$key]"
+    return 0
   fi
-  if [[ -n "$token_secret" ]]; then
-    ENV_VALUES["TOKEN_SECRET"]="$token_secret"
-  fi
-  if [[ -n "$token_expire" ]]; then
-    ENV_VALUES["TOKEN_EXPIRE_HOURS"]="$token_expire"
-  fi
-  if [[ -n "$api_key" ]]; then
-    ENV_VALUES["LIGHTRAG_API_KEY"]="$api_key"
-  fi
-  if [[ -n "$whitelist" ]]; then
-    ENV_VALUES["WHITELIST_PATHS"]="$whitelist"
-  fi
+
+  ENV_VALUES["$key"]="$value"
 }
 
 collect_observability_config() {

@@ -1110,3 +1110,124 @@ stage_ssl_assets "./data/certs/server.pem" "./data/certs/server.key"
 
     assert cert_path.read_text(encoding="utf-8") == "cert"
     assert key_path.read_text(encoding="utf-8") == "key"
+
+
+def test_generate_docker_compose_vllm_gpu_honors_documented_gpu_selector(
+    tmp_path: Path,
+) -> None:
+    """GPU vLLM compose should honor the documented CUDA selector variables."""
+
+    env_example = tmp_path / "env.example"
+    env_example.write_text(
+        "\n".join(
+            [
+                "# VLLM_RERANK_DEVICE=cuda",
+                "# CUDA_VISIBLE_DEVICES=-1",
+                "# NVIDIA_VISIBLE_DEVICES=all",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    compose_file = tmp_path / "docker-compose.yml"
+    compose_file.write_text(
+        "\n".join(
+            [
+                "services:",
+                "  lightrag:",
+                "    image: example/lightrag:test",
+                "    env_file:",
+                "      - .env",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+
+ENV_VALUES[VLLM_RERANK_DEVICE]="cuda"
+ENV_VALUES[CUDA_VISIBLE_DEVICES]="0"
+add_docker_service "vllm-rerank"
+
+generate_env_file "$REPO_ROOT/env.example" "$REPO_ROOT/.env"
+generate_docker_compose "$REPO_ROOT/docker-compose.generated.yml"
+"""
+    )
+
+    generated_env = (tmp_path / ".env").read_text(encoding="utf-8")
+    generated_compose = (tmp_path / "docker-compose.generated.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "CUDA_VISIBLE_DEVICES=0" in generated_env
+    assert (
+        "CUDA_VISIBLE_DEVICES: ${CUDA_VISIBLE_DEVICES:-${NVIDIA_VISIBLE_DEVICES:-all}}"
+        in generated_compose
+    )
+    assert (
+        "NVIDIA_VISIBLE_DEVICES: ${NVIDIA_VISIBLE_DEVICES:-${CUDA_VISIBLE_DEVICES:-all}}"
+        in generated_compose
+    )
+
+
+def test_collect_security_config_can_clear_existing_values_on_rerun(
+    tmp_path: Path,
+) -> None:
+    """Rerunning security setup should be able to remove previously saved values."""
+
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "\n".join(
+            [
+                "AUTH_ACCOUNTS=admin:secret",
+                "TOKEN_SECRET=jwt-secret",
+                "TOKEN_EXPIRE_HOURS=72",
+                "LIGHTRAG_API_KEY=api-key",
+                "WHITELIST_PATHS=/health,/api/*,/docs",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    output = run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+load_existing_env_if_present
+
+confirm() {{ return 0; }}
+prompt_clearable_with_default() {{ printf '%s' "$CLEAR_INPUT_SENTINEL"; }}
+prompt_clearable_secret_with_default() {{ printf '%s' "$CLEAR_INPUT_SENTINEL"; }}
+
+collect_security_config yes no
+generate_env_file "{REPO_ROOT}/env.example" "$REPO_ROOT/.env.generated"
+
+printf 'AUTH_ACCOUNTS_SET=%s\\n' "${{ENV_VALUES[AUTH_ACCOUNTS]+set}}"
+printf 'TOKEN_SECRET_SET=%s\\n' "${{ENV_VALUES[TOKEN_SECRET]+set}}"
+printf 'TOKEN_EXPIRE_HOURS_SET=%s\\n' "${{ENV_VALUES[TOKEN_EXPIRE_HOURS]+set}}"
+printf 'LIGHTRAG_API_KEY_SET=%s\\n' "${{ENV_VALUES[LIGHTRAG_API_KEY]+set}}"
+printf 'WHITELIST_PATHS_SET=%s\\n' "${{ENV_VALUES[WHITELIST_PATHS]+set}}"
+"""
+    )
+    values = parse_lines(output)
+    generated_lines = (tmp_path / ".env.generated").read_text(encoding="utf-8").splitlines()
+
+    assert values["AUTH_ACCOUNTS_SET"] == ""
+    assert values["TOKEN_SECRET_SET"] == ""
+    assert values["TOKEN_EXPIRE_HOURS_SET"] == ""
+    assert values["LIGHTRAG_API_KEY_SET"] == ""
+    assert values["WHITELIST_PATHS_SET"] == ""
+    assert not any(line.startswith("AUTH_ACCOUNTS=") for line in generated_lines)
+    assert not any(line.startswith("TOKEN_SECRET=") for line in generated_lines)
+    assert not any(line.startswith("TOKEN_EXPIRE_HOURS=") for line in generated_lines)
+    assert not any(line.startswith("LIGHTRAG_API_KEY=") for line in generated_lines)
+    assert not any(line.startswith("WHITELIST_PATHS=") for line in generated_lines)

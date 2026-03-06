@@ -1,5 +1,7 @@
 # Prompt helpers for interactive setup.
 
+CLEAR_INPUT_SENTINEL="__LIGHTRAG_CLEAR__"
+
 mask_sensitive_input() {
   local prompt="$1"
   local value
@@ -23,6 +25,48 @@ prompt_secret_with_default() {
 
   if [[ -z "$value" ]]; then
     value="$default"
+  fi
+
+  printf '%s' "$value"
+}
+
+prompt_clearable_with_default() {
+  local prompt="$1"
+  local default="${2:-}"
+  local value
+  local prompt_text="$prompt"
+
+  if [[ -n "$default" ]]; then
+    prompt_text="$prompt (Enter to keep, type 'clear' to remove)"
+  else
+    prompt_text="$prompt (type 'clear' to remove)"
+  fi
+
+  value="$(prompt_with_default "$prompt_text" "$default")"
+  if [[ "${value,,}" == "clear" ]]; then
+    printf '%s' "$CLEAR_INPUT_SENTINEL"
+    return 0
+  fi
+
+  printf '%s' "$value"
+}
+
+prompt_clearable_secret_with_default() {
+  local prompt="$1"
+  local default="${2:-}"
+  local value
+  local prompt_text="$prompt"
+
+  if [[ -n "$default" ]]; then
+    prompt_text="$prompt (Enter to keep, type 'clear' to remove)"
+  else
+    prompt_text="$prompt (type 'clear' to remove)"
+  fi
+
+  value="$(prompt_secret_with_default "$prompt_text" "$default")"
+  if [[ "${value,,}" == "clear" ]]; then
+    printf '%s' "$CLEAR_INPUT_SENTINEL"
+    return 0
   fi
 
   printf '%s' "$value"
