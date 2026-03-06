@@ -1225,9 +1225,64 @@ printf 'WHITELIST_PATHS_SET=%s\\n' "${{ENV_VALUES[WHITELIST_PATHS]+set}}"
     assert values["TOKEN_SECRET_SET"] == ""
     assert values["TOKEN_EXPIRE_HOURS_SET"] == ""
     assert values["LIGHTRAG_API_KEY_SET"] == ""
-    assert values["WHITELIST_PATHS_SET"] == ""
+    assert values["WHITELIST_PATHS_SET"] == "set"
     assert not any(line.startswith("AUTH_ACCOUNTS=") for line in generated_lines)
     assert not any(line.startswith("TOKEN_SECRET=") for line in generated_lines)
     assert not any(line.startswith("TOKEN_EXPIRE_HOURS=") for line in generated_lines)
     assert not any(line.startswith("LIGHTRAG_API_KEY=") for line in generated_lines)
-    assert not any(line.startswith("WHITELIST_PATHS=") for line in generated_lines)
+    assert "WHITELIST_PATHS=" in generated_lines
+
+
+def test_finalize_setup_rejects_production_config_without_auth_or_api_key() -> None:
+    """Production setup should not generate an unauthenticated deployment."""
+
+    output = run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+reset_state
+DEPLOYMENT_TYPE="production"
+
+ENV_VALUES[LIGHTRAG_KV_STORAGE]="JsonKVStorage"
+ENV_VALUES[LIGHTRAG_VECTOR_STORAGE]="NanoVectorDBStorage"
+ENV_VALUES[LIGHTRAG_GRAPH_STORAGE]="NetworkXStorage"
+ENV_VALUES[LIGHTRAG_DOC_STATUS_STORAGE]="JsonDocStatusStorage"
+
+if finalize_setup >/tmp/finalize.out 2>/tmp/finalize.err; then
+  printf 'RESULT=success\\n'
+else
+  printf 'RESULT=failure\\n'
+fi
+"""
+    )
+    values = parse_lines(output)
+
+    assert values["RESULT"] == "failure"
+
+
+def test_validate_security_config_requires_protection_for_production() -> None:
+    """Production validation should require either auth accounts or an API key."""
+
+    output = run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+reset_state
+
+if validate_security_config "" "" "" yes; then
+  printf 'VALID=yes\\n'
+else
+  printf 'VALID=no\\n'
+fi
+
+if validate_security_config "" "" "api-key" yes; then
+  printf 'WITH_API_KEY=yes\\n'
+else
+  printf 'WITH_API_KEY=no\\n'
+fi
+"""
+    )
+    values = parse_lines(output)
+
+    assert values["VALID"] == "no"
+    assert values["WITH_API_KEY"] == "yes"

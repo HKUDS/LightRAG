@@ -1029,12 +1029,18 @@ collect_security_config() {
   apply_clearable_env_value "TOKEN_SECRET" "$token_secret"
   apply_clearable_env_value "TOKEN_EXPIRE_HOURS" "$token_expire"
   apply_clearable_env_value "LIGHTRAG_API_KEY" "$api_key"
-  apply_clearable_env_value "WHITELIST_PATHS" "$whitelist"
+  apply_clearable_env_value "WHITELIST_PATHS" "$whitelist" "empty"
 }
 
 apply_clearable_env_value() {
   local key="$1"
   local value="${2:-}"
+  local clear_mode="${3:-unset}"
+
+  if [[ "$clear_mode" == "empty" && "$value" == "$CLEAR_INPUT_SENTINEL" ]]; then
+    ENV_VALUES["$key"]=""
+    return 0
+  fi
 
   if [[ "$value" == "$CLEAR_INPUT_SENTINEL" || -z "$value" ]]; then
     unset "ENV_VALUES[$key]"
@@ -1164,7 +1170,9 @@ finalize_setup() {
 
   if ! validate_security_config \
     "${ENV_VALUES[AUTH_ACCOUNTS]:-}" \
-    "${ENV_VALUES[TOKEN_SECRET]:-}"; then
+    "${ENV_VALUES[TOKEN_SECRET]:-}" \
+    "${ENV_VALUES[LIGHTRAG_API_KEY]:-}" \
+    "$([[ "$DEPLOYMENT_TYPE" == "production" ]] && printf 'yes' || printf 'no')"; then
     return 1
   fi
 

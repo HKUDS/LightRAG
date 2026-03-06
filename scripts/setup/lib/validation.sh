@@ -174,6 +174,15 @@ validate_mongo_vector_storage_config() {
 validate_security_config() {
   local auth_accounts="${1:-${ENV_VALUES[AUTH_ACCOUNTS]:-}}"
   local token_secret="${2:-${ENV_VALUES[TOKEN_SECRET]:-}}"
+  local api_key="${3:-${ENV_VALUES[LIGHTRAG_API_KEY]:-}}"
+  local require_protection="${4:-no}"
+
+  if [[ "$require_protection" == "yes" && -z "$auth_accounts" && -z "$api_key" ]]; then
+    format_error \
+      "Production setup requires either AUTH_ACCOUNTS or LIGHTRAG_API_KEY." \
+      "Set an API key, configure account-based auth, or switch to a non-production deployment."
+    return 1
+  fi
 
   if [[ -z "$auth_accounts" ]]; then
     return 0
