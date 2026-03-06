@@ -145,6 +145,12 @@ class PostgreSQLDB:
         self.ssl_crl = config.get("ssl_crl")
 
         # Vector configuration
+        _ev = config.get("enable_vector", True)
+        self.enable_vector = (
+            _ev
+            if isinstance(_ev, bool)
+            else str(_ev).lower() in ("true", "1", "yes", "on")
+        )  # True for backward compatibility, can be set to False to disable vector features
         self.vector_index_type = config.get("vector_index_type")
         self.hnsw_m = config.get("hnsw_m")
         self.hnsw_ef = config.get("hnsw_ef")
@@ -332,7 +338,8 @@ class PostgreSQLDB:
             encode/decode vector columns, eliminating non-deterministic behavior
             where some connections have the codec and others don't.
             """
-            await register_vector(connection)
+            if self.enable_vector:
+                await register_vector(connection)
 
         async def _create_pool_once() -> None:
             # STEP 1: Bootstrap - ensure vector extension exists BEFORE pool creation.
@@ -340,24 +347,26 @@ class PostgreSQLDB:
             # if the vector extension doesn't exist yet, because the 'vector' type
             # won't be found in pg_catalog. We must create the extension first
             # using a standalone bootstrap connection.
-            bootstrap_conn = await asyncpg.connect(
-                user=self.user,
-                password=self.password,
-                database=self.database,
-                host=self.host,
-                port=self.port,
-                ssl=connection_params.get("ssl"),
-            )
-            try:
-                await self.configure_vector_extension(bootstrap_conn)
-            finally:
-                await bootstrap_conn.close()
+            # Skip this step if vector support is not enabled.
+            if self.enable_vector:
+                bootstrap_conn = await asyncpg.connect(
+                    user=self.user,
+                    password=self.password,
+                    database=self.database,
+                    host=self.host,
+                    port=self.port,
+                    ssl=connection_params.get("ssl"),
+                )
+                try:
+                    await self.configure_vector_extension(bootstrap_conn)
+                finally:
+                    await bootstrap_conn.close()
 
             # STEP 2: Now safe to create pool with register_vector callback.
-            # The vector extension is guaranteed to exist at this point.
+            # The vector extension is guaranteed to exist at this point (if enabled).
             pool = await asyncpg.create_pool(
                 **connection_params,
-                init=_init_connection,  # Register pgvector codec on every connection
+                init=_init_connection,  # Register pgvector codec on every connection (if enabled)
             )  # type: ignore
             self.pool = pool
 
@@ -464,7 +473,7 @@ class PostgreSQLDB:
                         await self.configure_age(connection, graph_name)
                     elif with_age and not graph_name:
                         raise ValueError("Graph name is required when with_age is True")
-                    if self.vector_index_type == "VCHORDRQ":
+                    if self.enable_vector and self.vector_index_type == "VCHORDRQ":
                         await self.configure_vchordrq(connection)
                     return await operation(connection)
 
@@ -1750,6 +1759,12 @@ class ClientManager:
                 "POSTGRES_SSL_CRL",
                 config.get("postgres", "ssl_crl", fallback=None),
             ),
+            # Vector configuration
+            "enable_vector": os.environ.get(
+                "POSTGRES_ENABLE_VECTOR",
+                config.get("postgres", "enable_vector", fallback="true"),
+            ).lower()
+            in ("true", "1", "yes", "on"),
             "vector_index_type": os.environ.get(
                 "POSTGRES_VECTOR_INDEX_TYPE",
                 config.get("postgres", "vector_index_type", fallback="HNSW"),
@@ -1797,34 +1812,34 @@ class ClientManager:
             ),
             # Connection retry configuration
             "connection_retry_attempts": min(
-                10,
+                100,  # Increased from 10 to 100 for long-running operations
                 int(
                     os.environ.get(
                         "POSTGRES_CONNECTION_RETRIES",
-                        config.get("postgres", "connection_retries", fallback=3),
+                        config.get("postgres", "connection_retries", fallback=10),
                     )
                 ),
             ),
             "connection_retry_backoff": min(
-                5.0,
+                300.0,  # Increased from 5.0 to 300.0 (5 minutes) for PG switchover scenarios
                 float(
                     os.environ.get(
                         "POSTGRES_CONNECTION_RETRY_BACKOFF",
                         config.get(
-                            "postgres", "connection_retry_backoff", fallback=0.5
+                            "postgres", "connection_retry_backoff", fallback=3.0
                         ),
                     )
                 ),
             ),
             "connection_retry_backoff_max": min(
-                60.0,
+                600.0,  # Increased from 60.0 to 600.0 (10 minutes) for PG switchover scenarios
                 float(
                     os.environ.get(
                         "POSTGRES_CONNECTION_RETRY_BACKOFF_MAX",
                         config.get(
                             "postgres",
                             "connection_retry_backoff_max",
-                            fallback=5.0,
+                            fallback=30.0,
                         ),
                     )
                 ),
@@ -2427,13 +2442,17 @@ class PGVectorStorage(BaseVectorStorage):
         # Replace table name
         ddl = ddl.replace(base_table, table_name)
 
+        # Make creation idempotent to handle restarts and race conditions
+        ddl = ddl.replace("CREATE TABLE ", "CREATE TABLE IF NOT EXISTS ", 1)
         await db.execute(ddl)
 
         # Create indexes similar to check_tables() but with safe index names
         # Create index for id column
         id_index_name = _safe_index_name(table_name, "id")
         try:
-            create_id_index_sql = f"CREATE INDEX {id_index_name} ON {table_name}(id)"
+            create_id_index_sql = (
+                f"CREATE INDEX IF NOT EXISTS {id_index_name} ON {table_name}(id)"
+            )
             logger.info(
                 f"PostgreSQL, Creating index {id_index_name} on table {table_name}"
             )
@@ -2446,9 +2465,7 @@ class PGVectorStorage(BaseVectorStorage):
         # Create composite index for (workspace, id)
         workspace_id_index_name = _safe_index_name(table_name, "workspace_id")
         try:
-            create_composite_index_sql = (
-                f"CREATE INDEX {workspace_id_index_name} ON {table_name}(workspace, id)"
-            )
+            create_composite_index_sql = f"CREATE INDEX IF NOT EXISTS {workspace_id_index_name} ON {table_name}(workspace, id)"
             logger.info(
                 f"PostgreSQL, Creating composite index {workspace_id_index_name} on table {table_name}"
             )
@@ -2827,6 +2844,11 @@ class PGVectorStorage(BaseVectorStorage):
             else:
                 # Use "default" for compatibility (lowest priority)
                 self.workspace = "default"
+
+            if not self.db.enable_vector:
+                raise ValueError(
+                    "Cannot use PGVectorStorage when POSTGRES_ENABLE_VECTOR=false. Configure an alternative vector backend."
+                )
 
             # Setup table (create if not exists and handle migration)
             await PGVectorStorage.setup_table(
@@ -4649,7 +4671,7 @@ class PGGraphStorage(BaseGraphStorage):
     ) -> dict[tuple[str, str], dict]:
         """
         Retrieve edge properties for multiple (src, tgt) pairs in one query.
-        Get forward and backward edges seperately and merge them before return
+        Get forward and backward edges separately and merge them before return
 
         Args:
             pairs: List of dictionaries, e.g. [{"src": "node1", "tgt": "node2"}, ...]
@@ -4815,7 +4837,7 @@ class PGGraphStorage(BaseGraphStorage):
 
     async def get_all_labels(self) -> list[str]:
         """
-        Get all labels (node IDs) in the graph.
+        Get all labels(node IDs, entity names) in the graph.
 
         Returns:
             list[str]: A list of all labels in the graph.

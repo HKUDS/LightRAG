@@ -1,0 +1,465 @@
+{
+  "settings": {
+    "language": "Ngôn ngữ",
+    "theme": "Giao diện",
+    "light": "Sáng",
+    "dark": "Tối",
+    "system": "Hệ thống"
+  },
+  "header": {
+    "documents": "Tài liệu",
+    "knowledgeGraph": "Đồ thị tri thức",
+    "retrieval": "Truy xuất",
+    "api": "API",
+    "projectRepository": "Kho dự án",
+    "logout": "Đăng xuất",
+    "frontendNeedsRebuild": "Giao diện cần được xây dựng lại",
+    "themeToggle": {
+      "switchToLight": "Chuyển sang giao diện sáng",
+      "switchToDark": "Chuyển sang giao diện tối"
+    }
+  },
+  "login": {
+    "description": "Vui lòng nhập tài khoản và mật khẩu để đăng nhập vào hệ thống",
+    "username": "Tên người dùng",
+    "usernamePlaceholder": "Vui lòng nhập tên người dùng",
+    "password": "Mật khẩu",
+    "passwordPlaceholder": "Vui lòng nhập mật khẩu",
+    "loginButton": "Đăng nhập",
+    "loggingIn": "Đang đăng nhập...",
+    "successMessage": "Đăng nhập thành công",
+    "errorEmptyFields": "Vui lòng nhập tên người dùng và mật khẩu",
+    "errorInvalidCredentials": "Đăng nhập thất bại, vui lòng kiểm tra tên người dùng và mật khẩu",
+    "authDisabled": "Xác thực bị tắt. Đang sử dụng chế độ không cần đăng nhập.",
+    "guestMode": "Không cần đăng nhập"
+  },
+  "common": {
+    "cancel": "Hủy",
+    "save": "Lưu",
+    "saving": "Đang lưu...",
+    "saveFailed": "Lưu thất bại"
+  },
+  "documentPanel": {
+    "clearDocuments": {
+      "button": "Xóa tất cả",
+      "tooltip": "Xóa tài liệu",
+      "title": "Xóa Tài Liệu",
+      "description": "Thao tác này sẽ xóa tất cả tài liệu khỏi hệ thống",
+      "warning": "CẢNH BÁO: Hành động này sẽ xóa vĩnh viễn tất cả tài liệu và không thể hoàn tác!",
+      "confirm": "Bạn có thực sự muốn xóa tất cả tài liệu không?",
+      "confirmPrompt": "Nhập 'yes' để xác nhận hành động này",
+      "confirmPlaceholder": "Nhập yes để xác nhận",
+      "clearCache": "Xóa bộ nhớ cache LLM",
+      "confirmButton": "CÓ",
+      "clearing": "Đang xóa...",
+      "timeout": "Thao tác xóa hết thời gian, vui lòng thử lại",
+      "success": "Đã xóa tài liệu thành công",
+      "cacheCleared": "Đã xóa bộ nhớ cache thành công",
+      "cacheClearFailed": "Xóa bộ nhớ cache thất bại:\n{{error}}",
+      "failed": "Xóa Tài Liệu Thất Bại:\n{{message}}",
+      "error": "Xóa Tài Liệu Thất Bại:\n{{error}}"
+    },
+    "deleteDocuments": {
+      "button": "Xóa",
+      "tooltip": "Xóa tài liệu đã chọn",
+      "title": "Xóa Tài Liệu",
+      "description": "Thao tác này sẽ xóa vĩnh viễn các tài liệu đã chọn khỏi hệ thống",
+      "warning": "CẢNH BÁO: Hành động này sẽ xóa vĩnh viễn các tài liệu đã chọn và không thể hoàn tác!",
+      "confirm": "Bạn có thực sự muốn xóa {{count}} tài liệu đã chọn không?",
+      "confirmPrompt": "Nhập 'yes' để xác nhận hành động này",
+      "confirmPlaceholder": "Nhập yes để xác nhận",
+      "confirmButton": "CÓ",
+      "deleteFileOption": "Cũng xóa các tệp đã tải lên",
+      "deleteFileTooltip": "Chọn tùy chọn này để cũng xóa các tệp đã tải lên tương ứng trên máy chủ",
+      "deleteLLMCacheOption": "Cũng xóa cache LLM đã trích xuất",
+      "success": "Đã bắt đầu quy trình xóa tài liệu thành công",
+      "failed": "Xóa Tài Liệu Thất Bại:\n{{message}}",
+      "error": "Xóa Tài Liệu Thất Bại:\n{{error}}",
+      "busy": "Quy trình đang bận, vui lòng thử lại sau",
+      "notAllowed": "Không có quyền thực hiện thao tác này"
+    },
+    "selectDocuments": {
+      "selectCurrentPage": "Chọn Trang Hiện Tại ({{count}})",
+      "deselectAll": "Bỏ Chọn Tất Cả ({{count}})"
+    },
+    "uploadDocuments": {
+      "button": "Tải lên",
+      "tooltip": "Tải lên tài liệu",
+      "title": "Tải Lên Tài Liệu",
+      "description": "Kéo và thả tài liệu vào đây hoặc nhấp để duyệt.",
+      "single": {
+        "uploading": "Đang tải lên {{name}}: {{percent}}%",
+        "success": "Tải Lên Thành Công:\n{{name}} đã được tải lên thành công",
+        "failed": "Tải Lên Thất Bại:\n{{name}}\n{{message}}",
+        "error": "Tải Lên Thất Bại:\n{{name}}\n{{error}}"
+      },
+      "batch": {
+        "uploading": "Đang tải lên các tệp...",
+        "success": "Các tệp đã được tải lên thành công",
+        "error": "Một số tệp tải lên thất bại"
+      },
+      "generalError": "Tải Lên Thất Bại\n{{error}}",
+      "fileTypes": "Các loại được hỗ trợ: TXT, MD, MDX, DOCX, PDF, PPTX, XLSX, RTF, ODT, EPUB, HTML, HTM, TEX, JSON, XML, YAML, YML, CSV, LOG, CONF, INI, PROPERTIES, SQL, BAT, SH, C, H, CPP, HPP, PY, JAVA, JS, TS, SWIFT, GO, RB, PHP, CSS, SCSS, LESS",
+      "fileUploader": {
+        "singleFileLimit": "Không thể tải lên nhiều hơn 1 tệp một lần",
+        "maxFilesLimit": "Không thể tải lên nhiều hơn {{count}} tệp",
+        "fileRejected": "Tệp {{name}} đã bị từ chối",
+        "unsupportedType": "Loại tệp không được hỗ trợ",
+        "fileTooLarge": "Tệp quá lớn, kích thước tối đa là {{maxSize}}",
+        "dropHere": "Thả tệp vào đây",
+        "dragAndDrop": "Kéo và thả tệp vào đây, hoặc nhấp để chọn tệp",
+        "removeFile": "Xóa tệp",
+        "uploadDescription": "Bạn có thể tải lên {{isMultiple ? 'nhiều' : count}} tệp (tối đa {{maxSize}} mỗi tệp)",
+        "duplicateFile": "Tên tệp đã tồn tại trong bộ nhớ cache của máy chủ"
+      }
+    },
+    "documentManager": {
+      "title": "Quản Lý Tài Liệu",
+      "scanButton": "Quét/Thử lại",
+      "scanTooltip": "Quét và xử lý tài liệu trong thư mục đầu vào, đồng thời xử lý lại tất cả tài liệu thất bại",
+      "refreshTooltip": "Đặt lại danh sách tài liệu",
+      "pipelineStatusButton": "Quy trình",
+      "pipelineStatusTooltip": "Xem trạng thái quy trình xử lý tài liệu",
+      "uploadedTitle": "Tài Liệu Đã Tải Lên",
+      "uploadedDescription": "Danh sách các tài liệu đã tải lên và trạng thái của chúng.",
+      "emptyTitle": "Không Có Tài Liệu",
+      "emptyDescription": "Chưa có tài liệu nào được tải lên.",
+      "columns": {
+        "id": "ID",
+        "fileName": "Tên Tệp",
+        "summary": "Tóm Tắt",
+        "status": "Trạng Thái",
+        "length": "Độ Dài",
+        "chunks": "Đoạn",
+        "created": "Ngày Tạo",
+        "updated": "Ngày Cập Nhật",
+        "metadata": "Siêu Dữ Liệu",
+        "select": "Chọn"
+      },
+      "status": {
+        "all": "Tất cả",
+        "completed": "Hoàn thành",
+        "preprocessed": "Đã tiền xử lý",
+        "processing": "Đang xử lý",
+        "pending": "Đang chờ",
+        "failed": "Thất bại"
+      },
+      "errors": {
+        "loadFailed": "Tải tài liệu thất bại\n{{error}}",
+        "scanFailed": "Quét tài liệu thất bại\n{{error}}",
+        "scanProgressFailed": "Lấy tiến trình quét thất bại\n{{error}}"
+      },
+      "fileNameLabel": "Tên Tệp",
+      "showButton": "Hiện",
+      "hideButton": "Ẩn",
+      "showFileNameTooltip": "Hiện tên tệp",
+      "hideFileNameTooltip": "Ẩn tên tệp"
+    },
+    "pipelineStatus": {
+      "title": "Trạng Thái Quy Trình",
+      "busy": "Quy Trình Đang Bận",
+      "requestPending": "Yêu Cầu Đang Chờ",
+      "cancellationRequested": "Đã Yêu Cầu Hủy",
+      "jobName": "Tên Công Việc",
+      "startTime": "Thời Gian Bắt Đầu",
+      "progress": "Tiến Trình",
+      "unit": "Lô",
+      "pipelineMessages": "Thông Báo Quy Trình",
+      "cancelButton": "Hủy",
+      "cancelTooltip": "Hủy xử lý quy trình",
+      "cancelConfirmTitle": "Xác Nhận Hủy Quy Trình",
+      "cancelConfirmDescription": "Thao tác này sẽ ngắt quá trình xử lý đang diễn ra. Bạn có chắc chắn muốn tiếp tục không?",
+      "cancelConfirmButton": "Xác Nhận Hủy",
+      "cancelInProgress": "Đang hủy...",
+      "pipelineNotRunning": "Quy trình không đang chạy",
+      "cancelSuccess": "Đã yêu cầu hủy quy trình",
+      "cancelFailed": "Hủy quy trình thất bại\n{{error}}",
+      "cancelNotBusy": "Quy trình không đang chạy, không cần hủy",
+      "errors": {
+        "fetchFailed": "Lấy trạng thái quy trình thất bại\n{{error}}"
+      }
+    }
+  },
+  "graphPanel": {
+    "dataIsTruncated": "Dữ liệu đồ thị bị cắt bớt đến số Nút tối Đa",
+    "statusDialog": {
+      "title": "Cài Đặt Máy Chủ LightRAG",
+      "description": "Xem trạng thái hệ thống hiện tại và thông tin kết nối"
+    },
+    "legend": "Chú thích",
+    "nodeTypes": {
+      "person": "Người",
+      "category": "Danh Mục",
+      "geo": "Địa Lý",
+      "location": "Địa Điểm",
+      "organization": "Tổ Chức",
+      "event": "Sự Kiện",
+      "equipment": "Thiết Bị",
+      "weapon": "Vũ Khí",
+      "animal": "Động Vật",
+      "unknown": "Không Xác Định",
+      "object": "Đối Tượng",
+      "group": "Nhóm",
+      "technology": "Công Nghệ",
+      "product": "Sản Phẩm",
+      "document": "Tài Liệu",
+      "content": "Nội Dung",
+      "data": "Dữ Liệu",
+      "artifact": "Vật Phẩm",
+      "concept": "Khái Niệm",
+      "naturalobject": "Vật Thể Tự Nhiên",
+      "method": "Phương Pháp",
+      "creature": "Sinh Vật",
+      "plant": "Thực Vật",
+      "disease": "Bệnh",
+      "drug": "Thuốc",
+      "food": "Thực Phẩm",
+      "other": "Khác"
+    },
+    "sideBar": {
+      "settings": {
+        "settings": "Cài Đặt",
+        "healthCheck": "Kiểm Tra Kết Nối",
+        "showPropertyPanel": "Hiển Thị Bảng Thuộc Tính",
+        "showSearchBar": "Hiển Thị Thanh Tìm Kiếm",
+        "showNodeLabel": "Hiển Thị Nhãn Nút",
+        "nodeDraggable": "Cho Phép Kéo Nút",
+        "showEdgeLabel": "Hiển Thị Nhãn Cạnh",
+        "hideUnselectedEdges": "Ẩn Cạnh Không Được Chọn",
+        "edgeEvents": "Sự Kiện Cạnh",
+        "maxQueryDepth": "Độ Sâu Truy Vấn Tối Đa",
+        "maxNodes": "Số Nút Tối Đa",
+        "maxLayoutIterations": "Số Vòng Lặp Bố Cục Tối Đa",
+        "resetToDefault": "Đặt lại về mặc định",
+        "edgeSizeRange": "Phạm Vi Kích Thước Cạnh",
+        "depth": "Sâu",
+        "max": "Tối Đa",
+        "degree": "Bậc",
+        "apiKey": "Khóa API",
+        "enterYourAPIkey": "Nhập khóa API của bạn",
+        "save": "Lưu",
+        "refreshLayout": "Làm Mới Bố Cục"
+      },
+      "zoomControl": {
+        "zoomIn": "Phóng To",
+        "zoomOut": "Thu Nhỏ",
+        "resetZoom": "Đặt Lại Thu Phóng",
+        "rotateCamera": "Xoay Theo Chiều Kim Đồng Hồ",
+        "rotateCameraCounterClockwise": "Xoay Ngược Chiều Kim Đồng Hồ"
+      },
+      "layoutsControl": {
+        "startAnimation": "Tiếp tục hoạt ảnh bố cục",
+        "stopAnimation": "Dừng hoạt ảnh bố cục",
+        "layoutGraph": "Bố Cục Đồ Thị",
+        "layouts": {
+          "Circular": "Circular",
+          "Circlepack": "Circlepack",
+          "Random": "Random",
+          "Noverlaps": "Noverlaps",
+          "Force Directed": "Force Directed",
+          "Force Atlas": "Force Atlas"
+        }
+      },
+      "fullScreenControl": {
+        "fullScreen": "Toàn Màn Hình",
+        "windowed": "Chế Độ Cửa Sổ"
+      },
+      "legendControl": {
+        "toggleLegend": "Bật/Tắt Chú Thích"
+      }
+    },
+    "statusIndicator": {
+      "connected": "Đã kết nối",
+      "disconnected": "Mất kết nối"
+    },
+    "statusCard": {
+      "unavailable": "Thông tin trạng thái không khả dụng",
+      "serverInfo": "Thông Tin Máy Chủ",
+      "workingDirectory": "Thư Mục Làm Việc",
+      "inputDirectory": "Thư Mục Đầu Vào",
+      "maxParallelInsert": "Xử Lý Tài Liệu Đồng Thời",
+      "summarySettings": "Cài Đặt Tóm Tắt",
+      "llmConfig": "Cấu Hình LLM",
+      "llmBinding": "LLM Binding",
+      "llmBindingHost": "Điểm Cuối LLM",
+      "llmModel": "Mô Hình LLM",
+      "embeddingConfig": "Cấu Hình Embedding",
+      "embeddingBinding": "Embedding Binding",
+      "embeddingBindingHost": "Điểm Cuối Embedding",
+      "embeddingModel": "Mô Hình Embedding",
+      "storageConfig": "Cấu Hình Lưu Trữ",
+      "kvStorage": "KV Storage",
+      "docStatusStorage": "Lưu Trữ Trạng Thái Tài Liệu",
+      "graphStorage": "Graph Storage",
+      "vectorStorage": "Vector Storage",
+      "workspace": "Không Gian Làm Việc",
+      "maxGraphNodes": "Số Nút Đồ Thị Tối Đa",
+      "rerankerConfig": "Cấu Hình Reranker",
+      "rerankerBindingHost": "Điểm Cuối Reranker",
+      "rerankerModel": "Mô Hình Reranker",
+      "lockStatus": "Trạng Thái Khóa",
+      "threshold": "Ngưỡng"
+    },
+    "propertiesView": {
+      "editProperty": "Chỉnh Sửa {{property}}",
+      "editPropertyDescription": "Chỉnh sửa giá trị thuộc tính trong vùng văn bản bên dưới.",
+      "errors": {
+        "duplicateName": "Tên nút đã tồn tại",
+        "updateFailed": "Cập nhật nút thất bại",
+        "tryAgainLater": "Vui lòng thử lại sau",
+        "updateSuccessButMergeFailed": "Đã cập nhật thuộc tính, nhưng hợp nhất thất bại: {{error}}",
+        "mergeFailed": "Hợp nhất thất bại: {{error}}"
+      },
+      "success": {
+        "entityUpdated": "Nút đã được cập nhật thành công",
+        "relationUpdated": "Quan hệ đã được cập nhật thành công",
+        "entityMerged": "Các nút đã được hợp nhất thành công"
+      },
+      "mergeOptionLabel": "Tự động hợp nhất khi tìm thấy tên trùng lặp",
+      "mergeOptionDescription": "Nếu được bật, đổi tên thành một tên đã tồn tại sẽ hợp nhất nút này vào nút hiện có thay vì thất bại.",
+      "mergeDialog": {
+        "title": "Nút đã được hợp nhất",
+        "description": "\"{{source}}\" đã được hợp nhất vào \"{{target}}\".",
+        "refreshHint": "Làm mới đồ thị để tải cấu trúc mới nhất.",
+        "keepCurrentStart": "Làm mới và giữ nút bắt đầu hiện tại",
+        "useMergedStart": "Làm mới và sử dụng nút đã hợp nhất",
+        "refreshing": "Đang làm mới đồ thị..."
+      },
+      "node": {
+        "title": "Nút",
+        "id": "ID",
+        "labels": "Nhãn",
+        "degree": "Bậc",
+        "properties": "Thuộc Tính",
+        "relationships": "Quan Hệ (trong đồ thị con)",
+        "expandNode": "Mở Rộng Nút",
+        "pruneNode": "Thu Gọn Nút",
+        "deleteAllNodesError": "Từ chối xóa tất cả các nút trong đồ thị",
+        "nodesRemoved": "Đã xóa {{count}} nút, bao gồm các nút cô lập",
+        "noNewNodes": "Không tìm thấy nút có thể mở rộng",
+        "propertyNames": {
+          "description": "Mô Tả",
+          "entity_id": "Tên",
+          "entity_type": "Loại",
+          "source_id": "C-ID",
+          "Neighbour": "Láng Giềng",
+          "file_path": "Tệp",
+          "keywords": "Từ Khóa",
+          "weight": "Trọng Số"
+        }
+      },
+      "edge": {
+        "title": "Quan Hệ",
+        "id": "ID",
+        "type": "Loại",
+        "source": "Nguồn",
+        "target": "Đích",
+        "properties": "Thuộc Tính"
+      }
+    },
+    "search": {
+      "placeholder": "Tìm kiếm nút trong trang...",
+      "message": "Và {{count}} khác"
+    },
+    "graphLabels": {
+      "selectTooltip": "Lấy đồ thị con của một nút (nhãn)",
+      "noLabels": "Không tìm thấy nút phù hợp",
+      "label": "Tìm kiếm tên nút",
+      "placeholder": "Tìm kiếm tên nút...",
+      "andOthers": "Và {{count}} khác",
+      "refreshGlobalTooltip": "Làm mới dữ liệu đồ thị toàn cục và đặt lại lịch sử tìm kiếm",
+      "refreshCurrentLabelTooltip": "Làm mới dữ liệu đồ thị trang hiện tại",
+      "refreshingTooltip": "Đang làm mới dữ liệu..."
+    },
+    "emptyGraph": "Trống (Thử Tải Lại)"
+  },
+  "retrievePanel": {
+    "chatMessage": {
+      "copyTooltip": "Sao chép vào bộ nhớ tạm",
+      "copyError": "Sao chép văn bản vào bộ nhớ tạm thất bại",
+      "copyEmpty": "Không có nội dung để sao chép",
+      "copySuccess": "Đã sao chép nội dung vào bộ nhớ tạm",
+      "copySuccessLegacy": "Đã sao chép nội dung (phương pháp cũ)",
+      "copySuccessManual": "Đã sao chép nội dung (phương pháp thủ công)",
+      "copyFailed": "Sao chép nội dung thất bại",
+      "copyManualInstruction": "Vui lòng chọn và sao chép văn bản thủ công",
+      "thinking": "Đang suy nghĩ...",
+      "thinkingTime": "Thời gian suy nghĩ {{time}}s",
+      "thinkingInProgress": "Đang suy nghĩ..."
+    },
+    "retrieval": {
+      "startPrompt": "Bắt đầu truy xuất bằng cách nhập truy vấn của bạn bên dưới",
+      "clear": "Xóa",
+      "send": "Gửi",
+      "placeholder": "Nhập truy vấn của bạn (Hỗ trợ tiền tố: /<Chế Độ Truy Vấn>)",
+      "error": "Lỗi: Không thể nhận phản hồi",
+      "queryModeError": "Chỉ hỗ trợ các chế độ truy vấn sau: {{modes}}",
+      "queryModePrefixInvalid": "Tiền tố chế độ truy vấn không hợp lệ. Dùng: /<mode> [khoảng trắng] truy vấn của bạn"
+    },
+    "querySettings": {
+      "parametersTitle": "Tham Số",
+      "parametersDescription": "Cấu hình tham số truy vấn của bạn",
+      "queryMode": "Chế Độ Truy Vấn",
+      "queryModeTooltip": "Chọn chiến lược truy xuất:\n• Naive: Truy xuất vector đoạn văn bản truyền thống\n• Local: Tập trung vào truy xuất thực thể\n• Global: Tập trung vào truy xuất quan hệ\n• Hybrid: Local+Global\n• Mix: Local+Global+Naive\n• Bypass: Bỏ qua truy xuất, gửi lịch sử hội thoại và câu hỏi hiện tại đến LLM",
+      "queryModeOptions": {
+        "naive": "Naive",
+        "local": "Local",
+        "global": "Global",
+        "hybrid": "Hybrid",
+        "mix": "Mix",
+        "bypass": "Bypass"
+      },
+      "responseFormat": "Định Dạng Phản Hồi",
+      "responseFormatTooltip": "Xác định định dạng phản hồi. Ví dụ:\n• Nhiều Đoạn Văn\n• Một Đoạn Văn\n• Danh Sách Điểm",
+      "responseFormatOptions": {
+        "multipleParagraphs": "Nhiều Đoạn Văn",
+        "singleParagraph": "Một Đoạn Văn",
+        "bulletPoints": "Danh Sách Điểm"
+      },
+      "topK": "KG Top K",
+      "topKTooltip": "Số lượng thực thể và quan hệ cần truy xuất. Áp dụng cho các chế độ không phải naive.",
+      "topKPlaceholder": "Nhập giá trị top_k",
+      "chunkTopK": "Chunk Top K",
+      "chunkTopKTooltip": "Số lượng đoạn văn bản cần truy xuất, áp dụng cho tất cả các chế độ.",
+      "chunkTopKPlaceholder": "Nhập giá trị chunk_top_k",
+      "maxEntityTokens": "Token Thực Thể Tối Đa",
+      "maxEntityTokensTooltip": "Số lượng token tối đa được phân bổ cho ngữ cảnh thực thể trong hệ thống kiểm soát token thống nhất",
+      "maxRelationTokens": "Token Quan Hệ Tối Đa",
+      "maxRelationTokensTooltip": "Số lượng token tối đa được phân bổ cho ngữ cảnh quan hệ trong hệ thống kiểm soát token thống nhất",
+      "maxTotalTokens": "Tổng Token Tối Đa",
+      "maxTotalTokensTooltip": "Ngân sách token tổng tối đa cho toàn bộ ngữ cảnh truy vấn (thực thể + quan hệ + đoạn + lời nhắc hệ thống)",
+      "historyTurns": "Lượt Lịch Sử",
+      "historyTurnsTooltip": "Số lượt hội thoại hoàn chỉnh (cặp người dùng-trợ lý) cần xem xét trong ngữ cảnh phản hồi",
+      "historyTurnsPlaceholder": "Số lượt lịch sử",
+      "onlyNeedContext": "Chỉ Cần Ngữ Cảnh",
+      "onlyNeedContextTooltip": "Nếu True, chỉ trả về ngữ cảnh đã truy xuất mà không tạo phản hồi",
+      "onlyNeedPrompt": "Chỉ Cần Lời Nhắc",
+      "onlyNeedPromptTooltip": "Nếu True, chỉ trả về lời nhắc đã tạo mà không tạo phản hồi",
+      "streamResponse": "Phản Hồi Theo Luồng",
+      "streamResponseTooltip": "Nếu True, bật đầu ra theo luồng cho phản hồi thời gian thực",
+      "userPrompt": "Lời Nhắc Đầu Ra Bổ Sung",
+      "userPromptTooltip": "Cung cấp yêu cầu phản hồi bổ sung cho LLM (không liên quan đến nội dung truy vấn, chỉ để xử lý đầu ra).",
+      "userPromptPlaceholder": "Nhập lời nhắc tùy chỉnh (tùy chọn)",
+      "enableRerank": "Bật Xếp Hạng Lại",
+      "enableRerankTooltip": "Bật xếp hạng lại cho các đoạn văn bản đã truy xuất. Nếu True nhưng không có mô hình rerank nào được cấu hình, một cảnh báo sẽ được đưa ra. Mặc định là True."
+    }
+  },
+  "apiSite": {
+    "loading": "Đang tải tài liệu API..."
+  },
+  "apiKeyAlert": {
+    "title": "Cần Có Khóa API",
+    "description": "Vui lòng nhập khóa API để truy cập dịch vụ",
+    "placeholder": "Nhập khóa API của bạn",
+    "save": "Lưu"
+  },
+  "pagination": {
+    "showing": "Hiển thị {{start}} đến {{end}} của {{total}} mục",
+    "page": "Trang",
+    "pageSize": "Kích Thước Trang",
+    "firstPage": "Trang Đầu",
+    "prevPage": "Trang Trước",
+    "nextPage": "Trang Tiếp",
+    "lastPage": "Trang Cuối"
+  }
+}

@@ -51,6 +51,27 @@
 
 ---
 
+<div align="center">
+  <table>
+    <tr>
+      <td style="vertical-align: middle;">
+        <img src="./assets/LiteWrite.png"
+             width="56"
+             height="56"
+             alt="LiteWrite"
+             style="border-radius: 12px;" />
+      </td>
+      <td style="vertical-align: middle; padding-left: 12px;">
+        <a href="https://litewrite.ai">
+          <img src="https://img.shields.io/badge/🚀%20LiteWrite-AI%20原生%20LaTeX%20编辑器-ff6b6b?style=for-the-badge&logoColor=white&labelColor=1a1a2e">
+        </a>
+      </td>
+    </tr>
+  </table>
+</div>
+
+---
+
 ## 🎉 新闻
 - [2025.11]🎯[新功能]: 集成了 **RAGAS 评估**和 **Langfuse 追踪**。更新了 API 以在查询结果中返回召回上下文，支持上下文精度指标。
 - [2025.10]🎯[可扩展性增强]: 消除了处理瓶颈，以高效支持**大规模数据集**。
@@ -99,18 +120,23 @@ LightRAG服务器旨在提供Web UI和API支持。Web UI便于文档索引、知
 * 从PyPI安装
 
 ```bash
-# 使用 uv (推荐)
-uv pip install "lightrag-hku[api]"
-# 或使用 pip
+### 使用 uv 安装 LightRAG 服务器（作为工具，推荐)
+uv tool install "lightrag-hku[api]"
+
+### 或使用 pip
+# python -m venv .venv
+# source .venv/bin/activate  # Windows: .venv\Scripts\activate
 # pip install "lightrag-hku[api]"
 
-# 构建前端代码
+### 构建前端代码
 cd lightrag_webui
 bun install --frozen-lockfile
 bun run build
 cd ..
 
 # 配置 env 文件
+# 从 GitHub 仓库的根目录上下载 env.example 文件
+# 或从本地检出的源代码中获取 env.example 文件
 cp env.example .env  # 使用你的LLM和Embedding模型访问参数更新.env文件
 # 启动API-WebUI服务
 lightrag-server
@@ -130,7 +156,7 @@ source .venv/bin/activate  # 激活虚拟环境 (Linux/macOS)
 
 ### 或使用 pip 和虚拟环境
 # python -m venv .venv
-### source .venv/bin/activate  # Windows: .venv\Scripts\activate
+# source .venv/bin/activate  # Windows: .venv\Scripts\activate
 # pip install -e ".[api]"
 
 # 构建前端代码
@@ -380,6 +406,7 @@ class QueryParam:
     Format: [{"role": "user/assistant", "content": "message"}].
     """
 
+    # Deprecated (ids filter lead to potential hallucination effects)
     ids: list[str] | None = None
     """List of ids to filter the results."""
 
@@ -749,6 +776,7 @@ async def embedding_func(texts: list[str]) -> np.ndarray:
 rag = LightRAG(
     working_dir=WORKING_DIR,
     llm_model_func=llm_model_func,
+    llm_model_name="gemini-2.0-flash",
     embedding_func=embedding_func
 )
 ```
@@ -929,7 +957,7 @@ PGDocStatusStorage          Postgres
 MongoDocStatusStorage       MongoDB
 ```
 
-各存储类型的示例连接配置可在 `env.example` 文件中找到。连接字符串中的数据库实例需要您预先在数据库服务器上创建。LightRAG 仅负责在数据库实例中创建表，不负责创建数据库实例本身。如果使用 Redis 作为存储，请记住配置 Redis 的自动数据持久化规则，否则 Redis 服务重启后数据将会丢失。如果使用 PostgreSQL，建议使用 16.6 或更高版本。
+各存储类型的示例连接配置可在仓库中的 `env.example` 文件里找到。连接字符串中的数据库实例需要您预先在数据库服务器上创建。LightRAG 仅负责在数据库实例中创建表，不负责创建数据库实例本身。如果使用 Redis 作为存储，请记住配置 Redis 的自动数据持久化规则，否则 Redis 服务重启后数据将会丢失。如果使用 PostgreSQL，建议使用 16.6 或更高版本。
 
 <details>
 <summary> <b>使用 Neo4J 存储</b> </summary>
@@ -942,6 +970,7 @@ MongoDocStatusStorage       MongoDB
 export NEO4J_URI="neo4j://localhost:7687"
 export NEO4J_USERNAME="neo4j"
 export NEO4J_PASSWORD="password"
+export NEO4J_DATABASE="neo4j" #<----------- 使用 neo4j 社区版 docker 镜像时数据库实例必须为neo4j
 
 # 为 LightRAG 设置日志
 setup_logger("lightrag", level="INFO")
@@ -972,7 +1001,7 @@ async def initialize_rag():
 
 * PostgreSQL 很轻量，包含所有必要插件的完整二进制发行版可以压缩到 40MB：参考 [Windows Release](https://github.com/ShanGor/apache-age-windows/releases/tag/PG17%2Fv1.5.0-rc0)，Linux/Mac 也很容易安装。
 * 如果您喜欢 docker，建议初学者使用此镜像以避免出现问题（默认用户密码：rag/rag）：https://hub.docker.com/r/gzdaniel/postgres-for-rag
-* 如何开始？参考：[examples/lightrag_zhipu_postgres_demo.py](https://github.com/HKUDS/LightRAG/blob/main/examples/lightrag_zhipu_postgres_demo.py)
+* 如何开始？参考：[examples/lightrag_gemini_postgres_demo.py](https://github.com/HKUDS/LightRAG/blob/main/examples/lightrag_gemini_postgres_demo.py)
 * 对于高性能图数据库需求，推荐使用 Neo4j，因为 Apache AGE 的性能不够理想。
 
 </details>
@@ -1050,6 +1079,147 @@ async def initialize_rag():
 </details>
 
 <details>
+<summary> <b>使用 Milvus 作为向量存储</b> </summary>
+
+Milvus 是一个高性能、可扩展的向量数据库，适用于生产环境的向量存储。LightRAG 提供了三种配置 Milvus 的方式，并支持可配置的索引类型，以优化性能和内存使用。
+
+### 支持的索引类型
+
+- `AUTOINDEX`（默认）：Milvus 自动选择最佳索引
+- `HNSW`：层次可导航小世界图，适用于高召回率
+- `HNSW_SQ`：使用标量量化技术的 HNSW，可节省内存（需 Milvus 2.6.8+）
+- `HNSW_PQ`、`HNSW_PRQ`：使用乘积量化/残差乘积量化技术的 HNSW
+- `IVF_FLAT`、`IVF_SQ8`、`IVF_PQ`：倒排文件族索引
+- `DISKANN`：基于磁盘的近似最近邻索引
+- `SCANN`：可扩展的最近邻索引
+
+### 支持的度量类型
+
+`COSINE` (默认), `L2`, `IP`
+
+---
+
+### 配置方法1 — 环境变量 (`.env` file)
+
+适用于: **LightRAG Server 部署和 Docker/k8s 设置**.
+
+```bash
+# Connection
+MILVUS_URI=http://localhost:19530
+MILVUS_DB_NAME=lightrag
+# MILVUS_USER=root
+# MILVUS_PASSWORD=your_password
+# MILVUS_TOKEN=your_token
+
+# Storage selection
+LIGHTRAG_VECTOR_STORAGE=MilvusVectorDBStorage
+
+# Index configuration (all optional — sensible defaults apply)
+MILVUS_INDEX_TYPE=HNSW              # Default: AUTOINDEX
+MILVUS_METRIC_TYPE=COSINE           # Default: COSINE
+MILVUS_HNSW_M=16                    # Default: 16, range [2-2048]
+MILVUS_HNSW_EF_CONSTRUCTION=360     # Default: 360
+MILVUS_HNSW_EF=200                  # Default: 200
+
+# HNSW_SQ options (requires Milvus 2.6.8+)
+# MILVUS_INDEX_TYPE=HNSW_SQ
+# MILVUS_HNSW_SQ_TYPE=SQ8           # SQ4U, SQ6, SQ8, BF16, FP16
+# MILVUS_HNSW_SQ_REFINE=false       # Enable refinement
+# MILVUS_HNSW_SQ_REFINE_TYPE=FP32   # Refinement precision
+# MILVUS_HNSW_SQ_REFINE_K=10        # Refinement expansion factor
+
+# IVF options
+# MILVUS_IVF_NLIST=1024
+# MILVUS_IVF_NPROBE=16
+```
+
+然后再Python代码中:
+
+```python
+from lightrag import LightRAG
+
+async def initialize_rag():
+    rag = LightRAG(
+        working_dir="./rag_storage",
+        llm_model_func=...,
+        embedding_func=...,
+        vector_storage="MilvusVectorDBStorage",
+    )
+    await rag.initialize_storages()
+    return rag
+```
+
+### 配置方案2 — `vector_db_storage_cls_kwargs` (Python SDK)
+
+适用于: **Python SDK / framework integration** （使用代码进行配置）
+
+```python
+from lightrag import LightRAG
+
+async def initialize_rag():
+    rag = LightRAG(
+        working_dir="./rag_storage",
+        llm_model_func=...,
+        embedding_func=...,
+        vector_storage="MilvusVectorDBStorage",
+        vector_db_storage_cls_kwargs={
+            "milvus_uri": "http://localhost:19530",
+            "milvus_db_name": "lightrag",
+            "index_type": "HNSW",
+            "metric_type": "COSINE",
+            "hnsw_m": 16,
+            "hnsw_ef_construction": 360,
+            "hnsw_ef": 200,
+            "cosine_better_than_threshold": 0.2,
+        },
+    )
+    await rag.initialize_storages()
+    return rag
+```
+
+### 配置方案3 — `config.ini` (遗留方案)
+
+仅适用于连接参数配资；索引方式配资依然需要使用环境变量或kwargs.
+
+```ini
+[milvus]
+uri = http://localhost:19530
+db_name = lightrag
+# user = root
+# password = your_password
+# token = your_token
+```
+
+### 配置优先级
+
+| 配置 | 1st (highest) | 2nd | 3rd (lowest) |
+|---|---|---|---|
+| 连接方式 (`uri`, …) | `vector_db_storage_cls_kwargs` | Environment variables | `config.ini` |
+| 索引方法 (`index_type`, …) | `vector_db_storage_cls_kwargs` | Environment variables | defaults |
+
+### HNSW_SQ 压缩的权衡
+
+| SQ Type | Compression | Precision | Notes |
+|---|---|---|---|
+| `SQ4U` | ~8× | Lower | Best memory savings |
+| `SQ6` | ~5.3× | Balanced | Good trade-off |
+| `SQ8` | ~4× | Good | **Recommended** |
+| `BF16` / `FP16` | ~2× | High | Near-lossless |
+
+**版本要求:**
+- HNSW_SQ 缩影方式要求 **Milvus 2.6.8 或更高版本**
+- LightRAG 将自动检查服务的版本并在不符合要求的时候抛出错误
+- 其它缩影方式要求Milvus 2.0+
+
+**向后兼容性:**
+- 现有数据集合不受影响；索引配置仅适用于新创建的集合
+- 有关完整的配置选项，请参阅 env.example 和 docs/MilvusConfigurationGuide.md。
+
+完整的配资选项请参考 `env.example` 和 `docs/MilvusConfigurationGuide.md`.
+
+</details>
+
+<details>
 <summary> <b>使用 MongoDB 存储</b> </summary>
 
 MongoDB 为 LightRAG 提供了一站式存储解决方案。MongoDB 提供原生的 KV 存储和向量存储。LightRAG 使用 MongoDB 集合来实现简单的图存储。MongoDB 官方的向量搜索功能（`$vectorSearch`）目前需要其官方云服务 MongoDB Atlas。此功能无法在自托管的 MongoDB Community/Enterprise 版本上使用。
@@ -1084,6 +1254,9 @@ maxclients 500
 - **对于 Neo4j 图数据库，通过标签实现逻辑数据隔离**：`Neo4JStorage`
 
 为了保持与旧数据的兼容性，当未配置工作区时，PostgreSQL 非图存储的默认工作区为 `default`，PostgreSQL AGE 图存储的默认工作区为 null，Neo4j 图存储的默认工作区为 `base`。对于所有外部存储，系统提供专用的工作区环境变量来覆盖通用的 `WORKSPACE` 环境变量配置。这些存储特定的工作区环境变量包括：`REDIS_WORKSPACE`、`MILVUS_WORKSPACE`、`QDRANT_WORKSPACE`、`MONGODB_WORKSPACE`、`POSTGRES_WORKSPACE`、`NEO4J_WORKSPACE`。
+
+**使用示例：**
+有关在单个应用程序中管理多个隔离知识库（例如，将"书籍"内容与"人力资源政策"分开）的实际演示，请参阅 [Workspace Demo](examples/lightrag_gemini_workspace_demo.py)。
 
 ### AGENTS.md -- 指导编码代理
 
@@ -2043,7 +2216,6 @@ def extract_queries(file_path):
 </div>
 
 ---
-
 
 ## 📖 引用
 
