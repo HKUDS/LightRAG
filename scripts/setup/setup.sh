@@ -215,6 +215,17 @@ normalize_loopback_host_for_compose() {
   printf '%s' "$host"
 }
 
+normalize_server_host_for_compose() {
+  local host="$1"
+
+  if [[ "$host" == "localhost" || "$host" == "127.0.0.1" ]]; then
+    printf '0.0.0.0'
+    return 0
+  fi
+
+  printf '%s' "$host"
+}
+
 default_loopback_url() {
   local port="$1"
   local path="${2:-}"
@@ -268,6 +279,22 @@ prepare_compose_runtime_overrides() {
       fi
     fi
   done
+
+  for key in "HOST"; do
+    if [[ -n "${COMPOSE_ENV_OVERRIDES[$key]+set}" ]]; then
+      continue
+    fi
+    if [[ -n "${ENV_VALUES[$key]:-}" ]]; then
+      normalized_value="$(normalize_server_host_for_compose "${ENV_VALUES[$key]}")"
+      if [[ "$normalized_value" != "${ENV_VALUES[$key]}" ]]; then
+        set_compose_override "$key" "$normalized_value"
+      fi
+    fi
+  done
+
+  if [[ -z "${COMPOSE_ENV_OVERRIDES[PORT]+set}" && -n "${ENV_VALUES[PORT]:-}" && "${ENV_VALUES[PORT]}" != "9621" ]]; then
+    set_compose_override "PORT" "9621"
+  fi
 }
 
 prepare_compose_ssl_overrides() {

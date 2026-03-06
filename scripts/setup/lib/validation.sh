@@ -13,7 +13,7 @@ validate_uri() {
       [[ "$uri" =~ ^postgres(ql)?://.+ ]]
       return $?; ;;
     neo4j)
-      [[ "$uri" =~ ^(neo4j(\+s)?|bolt)://.+ ]]
+      [[ "$uri" =~ ^(neo4j(\+s|\+ssc)?|bolt)://.+ ]]
       return $?; ;;
     mongodb)
       [[ "$uri" =~ ^mongodb(\+srv)?://.+ ]]

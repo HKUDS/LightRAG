@@ -824,6 +824,96 @@ printf 'RERANK_BINDING_HOST=%s\\n' "${{COMPOSE_ENV_OVERRIDES[RERANK_BINDING_HOST
     assert values["RERANK_BINDING_HOST"] == "http://host.docker.internal:8000/v1/rerank"
 
 
+def test_prepare_compose_runtime_overrides_aligns_server_binding_for_container() -> None:
+    """Container runtime should bind the API to a reachable host/port combination."""
+
+    output = run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+reset_state
+
+ENV_VALUES[HOST]="127.0.0.1"
+ENV_VALUES[PORT]="8080"
+
+prepare_compose_runtime_overrides
+
+printf 'HOST=%s\\n' "${{COMPOSE_ENV_OVERRIDES[HOST]}}"
+printf 'PORT=%s\\n' "${{COMPOSE_ENV_OVERRIDES[PORT]}}"
+"""
+    )
+    values = parse_lines(output)
+
+    assert values["HOST"] == "0.0.0.0"
+    assert values["PORT"] == "9621"
+
+
+def test_generate_docker_compose_injects_server_host_and_port_overrides(
+    tmp_path: Path,
+) -> None:
+    """Generated compose should keep the published host port while fixing container bind values."""
+
+    compose_file = tmp_path / "docker-compose.yml"
+    compose_file.write_text(
+        "\n".join(
+            [
+                "services:",
+                "  lightrag:",
+                "    image: example/lightrag:test",
+                "    env_file:",
+                "      - .env",
+                "    ports:",
+                '      - "${PORT:-9621}:9621"',
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+
+ENV_VALUES[HOST]="localhost"
+ENV_VALUES[PORT]="8080"
+
+prepare_compose_runtime_overrides
+generate_docker_compose "$REPO_ROOT/docker-compose.generated.yml"
+"""
+    )
+
+    generated_compose = (tmp_path / "docker-compose.generated.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'HOST: "0.0.0.0"' in generated_compose
+    assert 'PORT: "9621"' in generated_compose
+    assert '${PORT:-9621}:9621' in generated_compose
+
+
+def test_validate_uri_accepts_neo4j_self_signed_tls_scheme() -> None:
+    """Neo4j self-signed TLS URIs should pass validation."""
+
+    output = run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+
+if validate_uri "neo4j+ssc://db.example.com:7687" neo4j; then
+  printf 'VALID=yes\\n'
+else
+  printf 'VALID=no\\n'
+fi
+"""
+    )
+    values = parse_lines(output)
+
+    assert values["VALID"] == "yes"
+
+
 def test_ssl_staging_uses_distinct_names_for_same_basename_inputs(
     tmp_path: Path,
 ) -> None:
