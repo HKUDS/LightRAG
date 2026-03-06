@@ -10,9 +10,11 @@ format_env_value() {
   fi
 
   if [[ "$value" =~ [[:space:]] || "$value" == *"\""* || "$value" == *"$"* ]]; then
+    # Double-quoted .env values only need escaping for backslash and double quote.
+    # Do not escape '$': python-dotenv preserves plain '$' literally, while '\$'
+    # changes the loaded value.
     escaped="${value//\\/\\\\}"
     escaped="${escaped//\"/\\\"}"
-    escaped="${escaped//\$/\\\$}"
     printf '"%s"' "$escaped"
     return
   fi

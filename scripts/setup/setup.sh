@@ -204,6 +204,19 @@ normalize_loopback_uri_for_compose() {
   printf '%s' "$uri"
 }
 
+normalize_mongodb_uri_for_local_service() {
+  local uri="$1"
+
+  if [[ "$uri" =~ ^mongodb://([^/?#]+@)?(mongodb|localhost|127\.0\.0\.1|0\.0\.0\.0)(:([0-9]+))?(/.*)?$ ]]; then
+    printf 'mongodb://localhost:%s%s' \
+      "${BASH_REMATCH[4]:-27017}" \
+      "${BASH_REMATCH[5]:-/}"
+    return 0
+  fi
+
+  printf '%s' "$uri"
+}
+
 normalize_loopback_host_for_compose() {
   local host="$1"
 
@@ -612,6 +625,9 @@ collect_mongodb_config() {
     uri="$(prompt_until_valid "MongoDB Atlas URI" "${ENV_VALUES[MONGO_URI]:-$uri}" validate_mongodb_atlas_uri)"
   else
     uri="$(prompt_until_valid "MongoDB URI" "$uri" validate_uri mongodb)"
+  fi
+  if [[ "$use_docker" == "yes" ]]; then
+    uri="$(normalize_mongodb_uri_for_local_service "$uri")"
   fi
   database="$(prompt_with_default "MongoDB database" "${ENV_VALUES[MONGO_DATABASE]:-LightRAG}")"
 
@@ -1184,6 +1200,10 @@ finalize_setup() {
     return 1
   fi
 
+  if ! validate_sensitive_env_literals; then
+    return 1
+  fi
+
   show_summary
 
   if ! confirm "Generate .env and docker-compose.yml now?"; then
@@ -1428,6 +1448,10 @@ validate_env_file() {
   fi
 
   if ! validate_security_config "${ENV_VALUES[AUTH_ACCOUNTS]:-}" "${ENV_VALUES[TOKEN_SECRET]:-}"; then
+    errors=1
+  fi
+
+  if ! validate_sensitive_env_literals; then
     errors=1
   fi
 

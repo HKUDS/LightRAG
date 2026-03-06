@@ -458,7 +458,7 @@ REPO_ROOT="{tmp_path}"
 reset_state
 
 ENV_VALUES[TOKEN_SECRET]='abc$HOME'
-ENV_VALUES[LIGHTRAG_API_KEY]='${{TOKEN}}'
+ENV_VALUES[LIGHTRAG_API_KEY]='plain$token'
 ENV_VALUES[WEBUI_DESCRIPTION]='value with "$PATH" and $HOME'
 
 generate_env_file "$REPO_ROOT/env.example" "$REPO_ROOT/.env"
@@ -473,12 +473,37 @@ printf 'WEBUI_DESCRIPTION=%s\\n' "${{ENV_VALUES[WEBUI_DESCRIPTION]}}"
     values = parse_lines(output)
     generated_env = (tmp_path / ".env").read_text(encoding="utf-8")
 
-    assert 'TOKEN_SECRET="abc\\$HOME"' in generated_env
-    assert 'LIGHTRAG_API_KEY="\\${TOKEN}"' in generated_env
-    assert 'WEBUI_DESCRIPTION="value with \\"\\$PATH\\" and \\$HOME"' in generated_env
+    assert 'TOKEN_SECRET="abc$HOME"' in generated_env
+    assert 'LIGHTRAG_API_KEY="plain$token"' in generated_env
+    assert 'WEBUI_DESCRIPTION="value with \\"$PATH\\" and $HOME"' in generated_env
     assert values["TOKEN_SECRET"] == "abc$HOME"
-    assert values["LIGHTRAG_API_KEY"] == "${TOKEN}"
+    assert values["LIGHTRAG_API_KEY"] == "plain$token"
     assert values["WEBUI_DESCRIPTION"] == 'value with "$PATH" and $HOME'
+
+
+def test_validate_sensitive_env_literals_rejects_interpolation_syntax() -> None:
+    """Sensitive values should reject `${...}` so default dotenv interpolation stays safe."""
+
+    output = run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+reset_state
+
+ENV_VALUES[TOKEN_SECRET]='${{JWT_SECRET}}'
+ENV_VALUES[LIGHTRAG_API_KEY]='plain$token'
+ENV_VALUES[WEBUI_DESCRIPTION]='${{ALLOWED_MACRO}}'
+
+if validate_sensitive_env_literals; then
+  printf 'VALID=yes\\n'
+else
+  printf 'VALID=no\\n'
+fi
+"""
+    )
+    values = parse_lines(output)
+
+    assert values["VALID"] == "no"
 
 
 def test_generate_docker_compose_escapes_dollar_signs_in_overrides(
@@ -870,6 +895,41 @@ printf 'MONGO_URI=%s\\n' "${{COMPOSE_ENV_OVERRIDES[MONGO_URI]}}"
     values = parse_lines(output)
 
     assert values["MONGO_URI"] == "mongodb://root:root@host.docker.internal:27017/"
+
+
+def test_collect_mongodb_config_local_service_strips_stale_credentials_on_rerun() -> None:
+    """Bundled MongoDB should keep host `.env` aligned with the unauthenticated template."""
+
+    output = run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+reset_state
+
+ENV_VALUES[MONGO_URI]="mongodb://root:secret@localhost:27017/"
+
+confirm_default_yes() {{ return 0; }}
+prompt_until_valid() {{ printf '%s' "$2"; }}
+prompt_with_default() {{
+  if [[ "$1" == "MongoDB database" ]]; then
+    printf 'LightRAG'
+  else
+    printf '%s' "$2"
+  fi
+}}
+
+collect_mongodb_config yes
+
+printf 'MONGO_URI=%s\\n' "${{ENV_VALUES[MONGO_URI]}}"
+printf 'COMPOSE_MONGO_URI=%s\\n' "${{COMPOSE_ENV_OVERRIDES[MONGO_URI]}}"
+printf 'DOCKER_SERVICE=%s\\n' "${{DOCKER_SERVICES[0]}}"
+"""
+    )
+    values = parse_lines(output)
+
+    assert values["MONGO_URI"] == "mongodb://localhost:27017/"
+    assert values["COMPOSE_MONGO_URI"] == "mongodb://mongodb:27017/"
+    assert values["DOCKER_SERVICE"] == "mongodb"
 
 
 def test_prepare_compose_runtime_overrides_rewrites_zero_host_loopback() -> None:

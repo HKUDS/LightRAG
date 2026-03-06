@@ -125,6 +125,50 @@ format_error() {
   fi
 }
 
+contains_env_interpolation_syntax() {
+  local value="$1"
+
+  [[ "$value" == *'${'* ]]
+}
+
+is_sensitive_env_key() {
+  local key="$1"
+
+  case "$key" in
+    AUTH_ACCOUNTS|*API_KEY*|*ACCESS_KEY*|*PUBLIC_KEY*|*SECRET*|*PASSWORD*|*TOKEN*)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+validate_sensitive_env_literals() {
+  local key value
+  local invalid_keys=()
+
+  for key in "${!ENV_VALUES[@]}"; do
+    if ! is_sensitive_env_key "$key"; then
+      continue
+    fi
+
+    value="${ENV_VALUES[$key]:-}"
+    if [[ -n "$value" ]] && contains_env_interpolation_syntax "$value"; then
+      invalid_keys+=("$key")
+    fi
+  done
+
+  if ((${#invalid_keys[@]} > 0)); then
+    format_error \
+      "Sensitive values must not contain \${...} interpolation syntax: ${invalid_keys[*]}" \
+      "Use literal values, plain \$ characters, or inject those secrets via runtime environment variables instead of .env."
+    return 1
+  fi
+
+  return 0
+}
+
 validate_required_variables() {
   local storages=("$@")
   local missing=()
