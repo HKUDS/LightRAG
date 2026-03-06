@@ -985,6 +985,12 @@ finalize_setup() {
     return 1
   fi
 
+  if ! validate_security_config \
+    "${ENV_VALUES[AUTH_ACCOUNTS]:-}" \
+    "${ENV_VALUES[TOKEN_SECRET]:-}"; then
+    return 1
+  fi
+
   show_summary
 
   if ! confirm "Generate .env and docker-compose.yml now?"; then
@@ -1230,6 +1236,10 @@ validate_env_file() {
   fi
 
   if ! validate_mongo_vector_storage_config "$vector" "${ENV_VALUES[MONGO_URI]:-}"; then
+    errors=1
+  fi
+
+  if ! validate_security_config "${ENV_VALUES[AUTH_ACCOUNTS]:-}" "${ENV_VALUES[TOKEN_SECRET]:-}"; then
     errors=1
   fi
 

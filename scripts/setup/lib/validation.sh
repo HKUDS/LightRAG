@@ -171,6 +171,31 @@ validate_mongo_vector_storage_config() {
   return 0
 }
 
+validate_security_config() {
+  local auth_accounts="${1:-${ENV_VALUES[AUTH_ACCOUNTS]:-}}"
+  local token_secret="${2:-${ENV_VALUES[TOKEN_SECRET]:-}}"
+
+  if [[ -z "$auth_accounts" ]]; then
+    return 0
+  fi
+
+  if [[ -z "$token_secret" ]]; then
+    format_error \
+      "AUTH_ACCOUNTS is set but TOKEN_SECRET is missing." \
+      "Set a non-empty JWT signing secret before enabling account-based authentication."
+    return 1
+  fi
+
+  if [[ "$token_secret" == "lightrag-jwt-default-secret" ]]; then
+    format_error \
+      "TOKEN_SECRET must not use the built-in default value when AUTH_ACCOUNTS is enabled." \
+      "Generate a unique JWT signing secret and update TOKEN_SECRET."
+    return 1
+  fi
+
+  return 0
+}
+
 check_docker_availability() {
   if ! command -v docker >/dev/null 2>&1; then
     format_error "Docker is not installed or not in PATH." "Install Docker or disable docker service generation."
