@@ -1,6 +1,7 @@
 import asyncio
 import configparser
 import hashlib
+import json
 import os
 import uuid
 from dataclasses import dataclass
@@ -24,6 +25,8 @@ WORKSPACE_ID_FIELD = "workspace_id"
 ENTITY_PREFIX = "ent-"
 CREATED_AT_FIELD = "created_at"
 ID_FIELD = "id"
+DEFAULT_QDRANT_UPSERT_MAX_PAYLOAD_BYTES = 16 * 1024 * 1024  # 16MB
+DEFAULT_QDRANT_UPSERT_MAX_POINTS_PER_BATCH = 128
 
 config = configparser.ConfigParser()
 config.read("config.ini", "utf-8")
@@ -460,7 +463,113 @@ class QdrantVectorDBStorage(BaseVectorStorage):
         # Initialize client as None - will be created in initialize() method
         self._client = None
         self._max_batch_size = self.global_config["embedding_batch_num"]
+        self._max_upsert_payload_bytes = int(
+            os.getenv(
+                "QDRANT_UPSERT_MAX_PAYLOAD_BYTES",
+                str(DEFAULT_QDRANT_UPSERT_MAX_PAYLOAD_BYTES),
+            )
+        )
+        self._max_upsert_points_per_batch = int(
+            os.getenv(
+                "QDRANT_UPSERT_MAX_POINTS_PER_BATCH",
+                str(DEFAULT_QDRANT_UPSERT_MAX_POINTS_PER_BATCH),
+            )
+        )
+        if self._max_upsert_payload_bytes <= 0:
+            logger.warning(
+                f"QDRANT_UPSERT_MAX_PAYLOAD_BYTES={self._max_upsert_payload_bytes} is non-positive, disable payload-size splitting"
+            )
+        if self._max_upsert_points_per_batch <= 0:
+            logger.warning(
+                f"QDRANT_UPSERT_MAX_POINTS_PER_BATCH={self._max_upsert_points_per_batch} is non-positive, disable point-count splitting"
+            )
         self._initialized = False
+
+    @staticmethod
+    def _to_json_serializable(value: Any) -> Any:
+        """Convert nested values to JSON-serializable types for payload size estimation."""
+        if isinstance(value, np.ndarray):
+            return value.tolist()
+        if isinstance(value, np.integer):
+            return int(value)
+        if isinstance(value, np.floating):
+            return float(value)
+        if isinstance(value, dict):
+            return {
+                str(k): QdrantVectorDBStorage._to_json_serializable(v)
+                for k, v in value.items()
+            }
+        if isinstance(value, (list, tuple)):
+            return [QdrantVectorDBStorage._to_json_serializable(v) for v in value]
+        return value
+
+    @staticmethod
+    def _estimate_point_payload_bytes(point: models.PointStruct) -> int:
+        """Estimate serialized JSON byte size of a single Qdrant point."""
+        point_obj = {
+            "id": point.id,
+            "vector": QdrantVectorDBStorage._to_json_serializable(point.vector),
+            "payload": QdrantVectorDBStorage._to_json_serializable(point.payload or {}),
+        }
+        return len(
+            json.dumps(
+                point_obj,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        )
+
+    @staticmethod
+    def _build_upsert_batches(
+        points: list[models.PointStruct],
+        max_payload_bytes: int,
+        max_points_per_batch: int,
+    ) -> list[tuple[list[models.PointStruct], int]]:
+        """Split points into batches using payload size and point count limits."""
+        if not points:
+            return []
+
+        payload_limit = max_payload_bytes if max_payload_bytes > 0 else float("inf")
+        points_limit = (
+            max_points_per_batch if max_points_per_batch > 0 else float("inf")
+        )
+
+        batches: list[tuple[list[models.PointStruct], int]] = []
+        current_batch: list[models.PointStruct] = []
+        # JSON array overhead ("[]")
+        current_estimated_bytes = 2
+
+        for point in points:
+            point_size = QdrantVectorDBStorage._estimate_point_payload_bytes(point)
+            point_with_array_overhead = point_size + 2
+            point_id = str(point.id)
+
+            if point_with_array_overhead > payload_limit:
+                raise ValueError(
+                    f"Single Qdrant point exceeds payload limit: id={point_id}, "
+                    f"estimated_bytes={point_with_array_overhead}, "
+                    f"limit={int(payload_limit)}"
+                )
+
+            # If current batch not empty, a comma is needed before next element.
+            separator_overhead = 1 if current_batch else 0
+            next_batch_size = current_estimated_bytes + separator_overhead + point_size
+
+            if current_batch and (
+                len(current_batch) >= points_limit or next_batch_size > payload_limit
+            ):
+                batches.append((current_batch, current_estimated_bytes))
+                current_batch = []
+                current_estimated_bytes = 2
+                next_batch_size = current_estimated_bytes + point_size
+
+            current_batch.append(point)
+            current_estimated_bytes = next_batch_size
+
+        if current_batch:
+            batches.append((current_batch, current_estimated_bytes))
+
+        return batches
 
     async def initialize(self):
         """Initialize Qdrant collection"""
@@ -555,9 +664,32 @@ class QdrantVectorDBStorage(BaseVectorStorage):
                 )
             )
 
-        results = self._client.upsert(
-            collection_name=self.final_namespace, points=list_points, wait=True
+        point_batches = self._build_upsert_batches(
+            list_points,
+            max_payload_bytes=self._max_upsert_payload_bytes,
+            max_points_per_batch=self._max_upsert_points_per_batch,
         )
+
+        if len(point_batches) > 1:
+            logger.info(
+                f"[{self.workspace}] Qdrant upsert split into {len(point_batches)} batches "
+                f"for {len(list_points)} points (max_payload_bytes={self._max_upsert_payload_bytes}, "
+                f"max_points_per_batch={self._max_upsert_points_per_batch})"
+            )
+
+        results = None
+        for batch_index, (points_batch, estimated_bytes) in enumerate(point_batches, 1):
+            logger.debug(
+                f"[{self.workspace}] Qdrant upsert batch {batch_index}/{len(point_batches)}: "
+                f"points={len(points_batch)}, estimated_payload_bytes={estimated_bytes}"
+            )
+            # Fail-fast: any batch failure raises immediately and stops subsequent batches.
+            results = self._client.upsert(
+                collection_name=self.final_namespace,
+                points=points_batch,
+                wait=True,
+            )
+
         return results
 
     async def query(
