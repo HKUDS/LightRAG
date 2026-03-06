@@ -857,12 +857,9 @@ def create_app(args):
                         else openai_embed
                     )
                     # Pass model only if provided, let function use its default (text-embedding-3-small)
-                    # Special handling: for local vLLM OpenAI-compatible endpoints, ensure base_url includes /v1
-                    # so the OpenAI client can construct the correct path (/v1/embeddings)
-                    base_url_for_openai = host + "/v1" if host and (host.startswith("http://") or host.startswith("https://")) and "/v1" not in host else (host or "")
                     kwargs = {
                         "texts": texts,
-                        "base_url": base_url_for_openai,
+                        "base_url": host,
                         "api_key": api_key,
                         "embedding_dim": embedding_dim,
                     }
