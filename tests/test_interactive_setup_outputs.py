@@ -1655,7 +1655,7 @@ else
   printf 'VALID=no\\n'
 fi
 
-if validate_security_config "" "" "api-key" yes; then
+if validate_security_config "" "" "api-key" yes "/health"; then
   printf 'WITH_API_KEY=yes\\n'
 else
   printf 'WITH_API_KEY=no\\n'
@@ -1666,6 +1666,76 @@ fi
 
     assert values["VALID"] == "no"
     assert values["WITH_API_KEY"] == "yes"
+
+
+def test_validate_security_config_rejects_default_whitelist_for_production() -> None:
+    """Production validation should reject the default `/api/*` whitelist."""
+
+    output = run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+reset_state
+
+if validate_security_config "" "" "api-key" yes ""; then
+  printf 'EMPTY_WHITELIST=yes\\n'
+else
+  printf 'EMPTY_WHITELIST=no\\n'
+fi
+
+if validate_security_config "" "" "api-key" yes "/health,/api/*"; then
+  printf 'API_WHITELIST=yes\\n'
+else
+  printf 'API_WHITELIST=no\\n'
+fi
+
+if validate_security_config "" "" "api-key" yes "/health,/docs"; then
+  printf 'SAFE_WHITELIST=yes\\n'
+else
+  printf 'SAFE_WHITELIST=no\\n'
+fi
+"""
+    )
+    values = parse_lines(output)
+
+    assert values["EMPTY_WHITELIST"] == "no"
+    assert values["API_WHITELIST"] == "no"
+    assert values["SAFE_WHITELIST"] == "yes"
+
+
+def test_validate_security_config_rejects_malformed_auth_accounts() -> None:
+    """Security validation should reject auth entries the API cannot parse."""
+
+    output = run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+reset_state
+
+if validate_security_config "admin" "token-secret" "" no "/health"; then
+  printf 'MISSING_COLON=yes\\n'
+else
+  printf 'MISSING_COLON=no\\n'
+fi
+
+if validate_security_config "admin:secret," "token-secret" "" no "/health"; then
+  printf 'TRAILING_COMMA=yes\\n'
+else
+  printf 'TRAILING_COMMA=no\\n'
+fi
+
+if validate_security_config "admin:secret,reader:hunter2" "token-secret" "" no "/health"; then
+  printf 'VALID_FORMAT=yes\\n'
+else
+  printf 'VALID_FORMAT=no\\n'
+fi
+"""
+    )
+    values = parse_lines(output)
+
+    assert values["MISSING_COLON"] == "no"
+    assert values["TRAILING_COMMA"] == "no"
+    assert values["VALID_FORMAT"] == "yes"
 
 
 def test_validate_env_file_requires_protection_for_production_storage_profile(

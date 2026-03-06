@@ -1227,7 +1227,8 @@ finalize_setup() {
     "${ENV_VALUES[AUTH_ACCOUNTS]:-}" \
     "${ENV_VALUES[TOKEN_SECRET]:-}" \
     "${ENV_VALUES[LIGHTRAG_API_KEY]:-}" \
-    "$([[ "$DEPLOYMENT_TYPE" == "production" ]] && printf 'yes' || printf 'no')"; then
+    "$([[ "$DEPLOYMENT_TYPE" == "production" ]] && printf 'yes' || printf 'no')" \
+    "${ENV_VALUES[WHITELIST_PATHS]:-}"; then
     return 1
   fi
 
@@ -1501,7 +1502,8 @@ validate_env_file() {
     "${ENV_VALUES[AUTH_ACCOUNTS]:-}" \
     "${ENV_VALUES[TOKEN_SECRET]:-}" \
     "${ENV_VALUES[LIGHTRAG_API_KEY]:-}" \
-    "$require_protection"; then
+    "$require_protection" \
+    "${ENV_VALUES[WHITELIST_PATHS]:-}"; then
     errors=1
   fi
 

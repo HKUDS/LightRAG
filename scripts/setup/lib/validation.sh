@@ -215,11 +215,62 @@ validate_mongo_vector_storage_config() {
   return 0
 }
 
+validate_auth_accounts_format() {
+  local auth_accounts="$1"
+  local entry username password
+
+  if [[ -z "$auth_accounts" ]]; then
+    return 0
+  fi
+
+  if [[ "$auth_accounts" == ,* || "$auth_accounts" == *, || "$auth_accounts" == *",,"* ]]; then
+    return 1
+  fi
+
+  IFS=',' read -r -a entries <<< "$auth_accounts"
+  for entry in "${entries[@]}"; do
+    if [[ -z "$entry" || "$entry" != *:* ]]; then
+      return 1
+    fi
+
+    username="${entry%%:*}"
+    password="${entry#*:}"
+    if [[ -z "$username" || -z "$password" ]]; then
+      return 1
+    fi
+  done
+
+  return 0
+}
+
+production_whitelist_exposes_api_routes() {
+  local whitelist_paths="$1"
+  local entry trimmed_entry
+
+  IFS=',' read -r -a entries <<< "$whitelist_paths"
+  for entry in "${entries[@]}"; do
+    trimmed_entry="${entry#"${entry%%[![:space:]]*}"}"
+    trimmed_entry="${trimmed_entry%"${trimmed_entry##*[![:space:]]}"}"
+    case "$trimmed_entry" in
+      "/api"|"/api/"|"/api/*")
+        return 0
+        ;;
+    esac
+  done
+
+  return 1
+}
+
 validate_security_config() {
   local auth_accounts="${1:-${ENV_VALUES[AUTH_ACCOUNTS]:-}}"
   local token_secret="${2:-${ENV_VALUES[TOKEN_SECRET]:-}}"
   local api_key="${3:-${ENV_VALUES[LIGHTRAG_API_KEY]:-}}"
   local require_protection="${4:-no}"
+  local whitelist_paths="${5:-${ENV_VALUES[WHITELIST_PATHS]:-}}"
+
+  if [[ "$require_protection" == "yes" && -z "$whitelist_paths" ]]; then
+    whitelist_paths="/health,/api/*"
+  fi
 
   if [[ "$require_protection" == "yes" && -z "$auth_accounts" && -z "$api_key" ]]; then
     format_error \
@@ -228,8 +279,22 @@ validate_security_config() {
     return 1
   fi
 
+  if [[ "$require_protection" == "yes" ]] && production_whitelist_exposes_api_routes "$whitelist_paths"; then
+    format_error \
+      "Production setup must not whitelist /api routes when authentication is enabled." \
+      "Set WHITELIST_PATHS to a minimal list such as /health before using AUTH_ACCOUNTS or LIGHTRAG_API_KEY."
+    return 1
+  fi
+
   if [[ -z "$auth_accounts" ]]; then
     return 0
+  fi
+
+  if ! validate_auth_accounts_format "$auth_accounts"; then
+    format_error \
+      "AUTH_ACCOUNTS must use comma-separated user:password pairs." \
+      "Use entries like admin:secret or admin:secret,reader:another-secret."
+    return 1
   fi
 
   if [[ -z "$token_secret" ]]; then
