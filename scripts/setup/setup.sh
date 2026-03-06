@@ -98,6 +98,10 @@ load_existing_env_if_present() {
   if [[ -f "$env_file" ]]; then
     log_debug "Loading existing .env defaults from $env_file"
     load_env_file "$env_file"
+    if [[ "${ENV_VALUES[SSL]:-false}" == "true" ]]; then
+      SSL_CERT_SOURCE_PATH="${ENV_VALUES[SSL_CERTFILE]:-}"
+      SSL_KEY_SOURCE_PATH="${ENV_VALUES[SSL_KEYFILE]:-}"
+    fi
   fi
 }
 

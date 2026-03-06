@@ -232,6 +232,7 @@ format_yaml_value() {
   local escaped="${value//\\/\\\\}"
 
   escaped="${escaped//\"/\\\"}"
+  escaped="${escaped//\$/\$\$}"
   printf '"%s"' "$escaped"
 }
 

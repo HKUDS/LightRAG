@@ -211,6 +211,63 @@ generate_docker_compose "$REPO_ROOT/docker-compose.generated.yml"
     assert './data/certs/key.pem:/app/data/certs/key.pem:ro' in generated_compose
 
 
+def test_existing_ssl_env_keeps_compose_mount_overrides(tmp_path: Path) -> None:
+    """Existing SSL-enabled `.env` files should keep compose cert mounts working."""
+
+    compose_file = tmp_path / "docker-compose.yml"
+    compose_file.write_text(
+        "\n".join(
+            [
+                "services:",
+                "  lightrag:",
+                "    image: example/lightrag:test",
+                "    env_file:",
+                "      - .env",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    cert_path = tmp_path / "cert.pem"
+    cert_path.write_text("cert", encoding="utf-8")
+    key_path = tmp_path / "key.pem"
+    key_path.write_text("key", encoding="utf-8")
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "\n".join(
+            [
+                "SSL=true",
+                f"SSL_CERTFILE={cert_path}",
+                f"SSL_KEYFILE={key_path}",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+load_existing_env_if_present
+prepare_compose_env_overrides
+stage_ssl_assets "$SSL_CERT_SOURCE_PATH" "$SSL_KEY_SOURCE_PATH"
+generate_docker_compose "$REPO_ROOT/docker-compose.generated.yml"
+"""
+    )
+
+    generated_compose = (tmp_path / "docker-compose.generated.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'SSL_CERTFILE: "/app/data/certs/cert.pem"' in generated_compose
+    assert 'SSL_KEYFILE: "/app/data/certs/key.pem"' in generated_compose
+    assert './data/certs/cert.pem:/app/data/certs/cert.pem:ro' in generated_compose
+    assert './data/certs/key.pem:/app/data/certs/key.pem:ro' in generated_compose
+
+
 def test_generate_docker_compose_skips_environment_block_without_overrides(
     tmp_path: Path,
 ) -> None:
@@ -374,6 +431,50 @@ printf 'WEBUI_DESCRIPTION=%s\\n' "${{ENV_VALUES[WEBUI_DESCRIPTION]}}"
     assert values["TOKEN_SECRET"] == "abc$HOME"
     assert values["LIGHTRAG_API_KEY"] == "${TOKEN}"
     assert values["WEBUI_DESCRIPTION"] == 'value with "$PATH" and $HOME'
+
+
+def test_generate_docker_compose_escapes_dollar_signs_in_overrides(
+    tmp_path: Path,
+) -> None:
+    """Compose overrides should escape `$` so Docker keeps literal credentials."""
+
+    compose_file = tmp_path / "docker-compose.yml"
+    compose_file.write_text(
+        "\n".join(
+            [
+                "services:",
+                "  lightrag:",
+                "    image: example/lightrag:test",
+                "    env_file:",
+                "      - .env",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+
+ENV_VALUES[MONGO_URI]='mongodb://user:p$HOME@localhost:27017/'
+
+prepare_compose_runtime_overrides
+generate_docker_compose "$REPO_ROOT/docker-compose.generated.yml"
+"""
+    )
+
+    generated_compose = (tmp_path / "docker-compose.generated.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert (
+        'MONGO_URI: "mongodb://user:p$$HOME@host.docker.internal:27017/"'
+        in generated_compose
+    )
 
 
 def test_load_preset_preserves_existing_env_values() -> None:
