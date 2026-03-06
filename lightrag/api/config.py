@@ -374,6 +374,7 @@ def parse_args() -> argparse.Namespace:
         "ENABLE_LLM_CACHE_FOR_EXTRACT", True, bool
     )
     args.enable_llm_cache = get_env_value("ENABLE_LLM_CACHE", True, bool)
+    args.enable_citations = get_env_value("ENABLE_CITATIONS", True, bool)
 
     # Set document_loading_engine from --docling flag
     if args.docling:
