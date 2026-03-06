@@ -327,6 +327,178 @@ generate_env_file "{REPO_ROOT}/env.example" "$REPO_ROOT/.env"
     assert "# EMBEDDING_BINDING=openai" in generated_env
 
 
+def test_generate_env_file_round_trips_dollar_signs_in_quoted_values(
+    tmp_path: Path,
+) -> None:
+    """Quoted values containing `$` should survive generate/load cycles unchanged."""
+
+    env_example = tmp_path / "env.example"
+    env_example.write_text(
+        "\n".join(
+            [
+                "TOKEN_SECRET=placeholder",
+                "LIGHTRAG_API_KEY=placeholder",
+                "WEBUI_DESCRIPTION=placeholder",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    output = run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+
+ENV_VALUES[TOKEN_SECRET]='abc$HOME'
+ENV_VALUES[LIGHTRAG_API_KEY]='${{TOKEN}}'
+ENV_VALUES[WEBUI_DESCRIPTION]='value with "$PATH" and $HOME'
+
+generate_env_file "$REPO_ROOT/env.example" "$REPO_ROOT/.env"
+reset_state
+load_env_file "$REPO_ROOT/.env"
+
+printf 'TOKEN_SECRET=%s\\n' "${{ENV_VALUES[TOKEN_SECRET]}}"
+printf 'LIGHTRAG_API_KEY=%s\\n' "${{ENV_VALUES[LIGHTRAG_API_KEY]}}"
+printf 'WEBUI_DESCRIPTION=%s\\n' "${{ENV_VALUES[WEBUI_DESCRIPTION]}}"
+"""
+    )
+    values = parse_lines(output)
+    generated_env = (tmp_path / ".env").read_text(encoding="utf-8")
+
+    assert 'TOKEN_SECRET="abc\\$HOME"' in generated_env
+    assert 'LIGHTRAG_API_KEY="\\${TOKEN}"' in generated_env
+    assert 'WEBUI_DESCRIPTION="value with \\"\\$PATH\\" and \\$HOME"' in generated_env
+    assert values["TOKEN_SECRET"] == "abc$HOME"
+    assert values["LIGHTRAG_API_KEY"] == "${TOKEN}"
+    assert values["WEBUI_DESCRIPTION"] == 'value with "$PATH" and $HOME'
+
+
+def test_load_preset_preserves_existing_env_values() -> None:
+    """Preset defaults should fill missing keys without clobbering current config."""
+
+    output = run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+reset_state
+
+ENV_VALUES[LIGHTRAG_KV_STORAGE]="RedisKVStorage"
+ENV_VALUES[LLM_BINDING]="ollama"
+ENV_VALUES[POSTGRES_IMAGE]="custom/postgres:17"
+
+load_preset development
+
+printf 'LIGHTRAG_KV_STORAGE=%s\\n' "${{ENV_VALUES[LIGHTRAG_KV_STORAGE]}}"
+printf 'LLM_BINDING=%s\\n' "${{ENV_VALUES[LLM_BINDING]}}"
+printf 'POSTGRES_IMAGE=%s\\n' "${{ENV_VALUES[POSTGRES_IMAGE]}}"
+printf 'EMBEDDING_MODEL=%s\\n' "${{ENV_VALUES[EMBEDDING_MODEL]}}"
+"""
+    )
+    values = parse_lines(output)
+
+    assert values["LIGHTRAG_KV_STORAGE"] == "RedisKVStorage"
+    assert values["LLM_BINDING"] == "ollama"
+    assert values["POSTGRES_IMAGE"] == "custom/postgres:17"
+    assert values["EMBEDDING_MODEL"] == "text-embedding-3-large"
+
+
+def test_select_storage_backends_prefers_existing_env_values() -> None:
+    """Storage selection defaults should reuse values loaded from an existing `.env`."""
+
+    output = run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+reset_state
+
+ENV_VALUES[LIGHTRAG_KV_STORAGE]="RedisKVStorage"
+ENV_VALUES[LIGHTRAG_VECTOR_STORAGE]="QdrantVectorDBStorage"
+ENV_VALUES[LIGHTRAG_GRAPH_STORAGE]="Neo4JStorage"
+ENV_VALUES[LIGHTRAG_DOC_STATUS_STORAGE]="RedisDocStatusStorage"
+
+prompt_choice() {{
+  printf '%s' "$2"
+}}
+
+select_storage_backends production
+
+printf 'LIGHTRAG_KV_STORAGE=%s\\n' "${{ENV_VALUES[LIGHTRAG_KV_STORAGE]}}"
+printf 'LIGHTRAG_VECTOR_STORAGE=%s\\n' "${{ENV_VALUES[LIGHTRAG_VECTOR_STORAGE]}}"
+printf 'LIGHTRAG_GRAPH_STORAGE=%s\\n' "${{ENV_VALUES[LIGHTRAG_GRAPH_STORAGE]}}"
+printf 'LIGHTRAG_DOC_STATUS_STORAGE=%s\\n' "${{ENV_VALUES[LIGHTRAG_DOC_STATUS_STORAGE]}}"
+"""
+    )
+    values = parse_lines(output)
+
+    assert values["LIGHTRAG_KV_STORAGE"] == "RedisKVStorage"
+    assert values["LIGHTRAG_VECTOR_STORAGE"] == "QdrantVectorDBStorage"
+    assert values["LIGHTRAG_GRAPH_STORAGE"] == "Neo4JStorage"
+    assert values["LIGHTRAG_DOC_STATUS_STORAGE"] == "RedisDocStatusStorage"
+
+
+def test_quick_start_flow_preserves_existing_non_preset_values(
+    tmp_path: Path,
+) -> None:
+    """Quick start should load `.env` defaults without overwriting unrelated settings."""
+
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "\n".join(
+            [
+                "HOST=127.0.0.1",
+                "PORT=9999",
+                "WEBUI_TITLE=Existing Title",
+                "WEBUI_DESCRIPTION=Existing Description",
+                "RERANK_BINDING=jina",
+                "LLM_BINDING_API_KEY=sk-existing",
+                "EMBEDDING_BINDING_API_KEY=sk-existing",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    output = run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+
+prompt_secret_until_valid_with_default() {{
+  printf '%s' "$2"
+}}
+
+finalize_setup() {{
+  printf 'HOST=%s\\n' "${{ENV_VALUES[HOST]}}"
+  printf 'PORT=%s\\n' "${{ENV_VALUES[PORT]}}"
+  printf 'WEBUI_TITLE=%s\\n' "${{ENV_VALUES[WEBUI_TITLE]}}"
+  printf 'WEBUI_DESCRIPTION=%s\\n' "${{ENV_VALUES[WEBUI_DESCRIPTION]}}"
+  printf 'RERANK_BINDING=%s\\n' "${{ENV_VALUES[RERANK_BINDING]}}"
+  printf 'LIGHTRAG_KV_STORAGE=%s\\n' "${{ENV_VALUES[LIGHTRAG_KV_STORAGE]}}"
+  printf 'LLM_BINDING=%s\\n' "${{ENV_VALUES[LLM_BINDING]}}"
+  printf 'LLM_BINDING_API_KEY=%s\\n' "${{ENV_VALUES[LLM_BINDING_API_KEY]}}"
+  printf 'EMBEDDING_BINDING_API_KEY=%s\\n' "${{ENV_VALUES[EMBEDDING_BINDING_API_KEY]}}"
+}}
+
+quick_start_flow
+"""
+    )
+    values = parse_lines(output)
+
+    assert values["HOST"] == "127.0.0.1"
+    assert values["PORT"] == "9999"
+    assert values["WEBUI_TITLE"] == "Existing Title"
+    assert values["WEBUI_DESCRIPTION"] == "Existing Description"
+    assert values["RERANK_BINDING"] == "jina"
+    assert values["LIGHTRAG_KV_STORAGE"] == "JsonKVStorage"
+    assert values["LLM_BINDING"] == "openai"
+    assert values["LLM_BINDING_API_KEY"] == "sk-existing"
+    assert values["EMBEDDING_BINDING_API_KEY"] == "sk-existing"
+
+
 def test_collect_milvus_config_defaults_to_existing_database_name() -> None:
     """Milvus database prompt should preserve the documented default database."""
 

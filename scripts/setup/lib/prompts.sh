@@ -9,6 +9,25 @@ mask_sensitive_input() {
   printf '%s' "$value"
 }
 
+prompt_secret_with_default() {
+  local prompt="$1"
+  local default="${2:-}"
+  local value
+
+  if [[ -n "$default" ]]; then
+    read -r -s -p "$prompt [hidden]: " value
+  else
+    read -r -s -p "$prompt" value
+  fi
+  echo >&2
+
+  if [[ -z "$value" ]]; then
+    value="$default"
+  fi
+
+  printf '%s' "$value"
+}
+
 prompt_with_default() {
   local prompt="$1"
   local default="$2"
@@ -67,6 +86,23 @@ prompt_secret_until_valid() {
 
   while true; do
     value="$(mask_sensitive_input "$prompt")"
+    if "$validator" "$value" "$@"; then
+      printf '%s' "$value"
+      return 0
+    fi
+    echo "Invalid value. Please try again."
+  done
+}
+
+prompt_secret_until_valid_with_default() {
+  local prompt="$1"
+  local default="$2"
+  local validator="$3"
+  shift 3
+  local value
+
+  while true; do
+    value="$(prompt_secret_with_default "$prompt" "$default")"
     if "$validator" "$value" "$@"; then
       printf '%s' "$value"
       return 0

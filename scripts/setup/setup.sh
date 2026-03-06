@@ -92,6 +92,15 @@ reset_state() {
   DEPLOYMENT_TYPE=""
 }
 
+load_existing_env_if_present() {
+  local env_file="${REPO_ROOT}/.env"
+
+  if [[ -f "$env_file" ]]; then
+    log_debug "Loading existing .env defaults from $env_file"
+    load_env_file "$env_file"
+  fi
+}
+
 log_debug() {
   if [[ "$DEBUG" == "true" ]]; then
     echo "${COLOR_YELLOW}[debug]${COLOR_RESET} $*"
@@ -375,6 +384,11 @@ select_storage_backends() {
     doc_default="PGDocStatusStorage"
   fi
 
+  kv_default="${ENV_VALUES[LIGHTRAG_KV_STORAGE]:-$kv_default}"
+  vector_default="${ENV_VALUES[LIGHTRAG_VECTOR_STORAGE]:-$vector_default}"
+  graph_default="${ENV_VALUES[LIGHTRAG_GRAPH_STORAGE]:-$graph_default}"
+  doc_default="${ENV_VALUES[LIGHTRAG_DOC_STATUS_STORAGE]:-$doc_default}"
+
   while true; do
     kv_storage="$(prompt_choice "KV storage" "$kv_default" "${KV_STORAGE_OPTIONS[@]}")"
     vector_storage="$(prompt_choice "Vector storage" "$vector_default" "${VECTOR_STORAGE_OPTIONS[@]}")"
@@ -472,9 +486,9 @@ collect_postgres_config() {
     set_compose_override "POSTGRES_HOST" ""
     set_compose_override "POSTGRES_PORT" ""
   fi
-  user="$(prompt_with_default "PostgreSQL user" "lightrag")"
-  password="$(mask_sensitive_input "PostgreSQL password: ")"
-  database="$(prompt_with_default "PostgreSQL database" "lightrag")"
+  user="$(prompt_with_default "PostgreSQL user" "${ENV_VALUES[POSTGRES_USER]:-lightrag}")"
+  password="$(prompt_secret_with_default "PostgreSQL password: " "${ENV_VALUES[POSTGRES_PASSWORD]:-}")"
+  database="$(prompt_with_default "PostgreSQL database" "${ENV_VALUES[POSTGRES_DATABASE]:-lightrag}")"
 
   ENV_VALUES["POSTGRES_HOST"]="$host"
   ENV_VALUES["POSTGRES_PORT"]="$port"
@@ -509,9 +523,9 @@ collect_neo4j_config() {
   fi
 
   uri="$(prompt_until_valid "Neo4j URI" "$uri" validate_uri neo4j)"
-  username="$(prompt_with_default "Neo4j username" "neo4j")"
-  password="$(prompt_with_default "Neo4j password" "neo4j_password")"
-  database="$(prompt_with_default "Neo4j database" "neo4j")"
+  username="$(prompt_with_default "Neo4j username" "${ENV_VALUES[NEO4J_USERNAME]:-neo4j}")"
+  password="$(prompt_secret_with_default "Neo4j password: " "${ENV_VALUES[NEO4J_PASSWORD]:-neo4j_password}")"
+  database="$(prompt_with_default "Neo4j database" "${ENV_VALUES[NEO4J_DATABASE]:-neo4j}")"
 
   ENV_VALUES["NEO4J_URI"]="$uri"
   ENV_VALUES["NEO4J_USERNAME"]="$username"
@@ -564,7 +578,7 @@ collect_mongodb_config() {
   else
     uri="$(prompt_until_valid "MongoDB URI" "$uri" validate_uri mongodb)"
   fi
-  database="$(prompt_with_default "MongoDB database" "LightRAG")"
+  database="$(prompt_with_default "MongoDB database" "${ENV_VALUES[MONGO_DATABASE]:-LightRAG}")"
 
   ENV_VALUES["MONGO_URI"]="$uri"
   ENV_VALUES["MONGO_DATABASE"]="$database"
@@ -635,7 +649,7 @@ collect_milvus_config() {
   fi
 
   uri="$(prompt_until_valid "Milvus URI" "$uri" validate_uri milvus)"
-  db_name="$(prompt_with_default "Milvus database name" "lightrag")"
+  db_name="$(prompt_with_default "Milvus database name" "${ENV_VALUES[MILVUS_DB_NAME]:-lightrag}")"
 
   ENV_VALUES["MILVUS_URI"]="$uri"
   ENV_VALUES["MILVUS_DB_NAME"]="$db_name"
@@ -754,11 +768,11 @@ collect_llm_config() {
       ;;
     azure_openai)
       host="$(prompt_with_default "Azure OpenAI endpoint" "${ENV_VALUES[LLM_BINDING_HOST]:-https://example.openai.azure.com/}")"
-      api_key="$(prompt_secret_until_valid "Azure OpenAI API key: " validate_api_key azure_openai)"
+      api_key="$(prompt_secret_until_valid_with_default "Azure OpenAI API key: " "${ENV_VALUES[LLM_BINDING_API_KEY]:-}" validate_api_key azure_openai)"
       ;;
     gemini)
       host="$(prompt_with_default "Gemini endpoint" "${ENV_VALUES[LLM_BINDING_HOST]:-https://generativelanguage.googleapis.com}")"
-      api_key="$(prompt_secret_until_valid "Gemini API key: " validate_api_key gemini)"
+      api_key="$(prompt_secret_until_valid_with_default "Gemini API key: " "${ENV_VALUES[LLM_BINDING_API_KEY]:-}" validate_api_key gemini)"
       ;;
     aws_bedrock)
       host="${ENV_VALUES[LLM_BINDING_HOST]:-https://bedrock.amazonaws.com}"
@@ -767,7 +781,7 @@ collect_llm_config() {
       ;;
     *)
       host="$(prompt_with_default "LLM endpoint" "${ENV_VALUES[LLM_BINDING_HOST]:-https://api.openai.com/v1}")"
-      api_key="$(prompt_secret_until_valid "LLM API key: " validate_api_key "$binding")"
+      api_key="$(prompt_secret_until_valid_with_default "LLM API key: " "${ENV_VALUES[LLM_BINDING_API_KEY]:-}" validate_api_key "$binding")"
       ;;
   esac
 
@@ -794,11 +808,11 @@ collect_embedding_config() {
       ;;
     azure_openai)
       host="$(prompt_with_default "Azure OpenAI endpoint" "${ENV_VALUES[EMBEDDING_BINDING_HOST]:-https://example.openai.azure.com/}")"
-      api_key="$(prompt_secret_until_valid "Azure OpenAI API key: " validate_api_key azure_openai)"
+      api_key="$(prompt_secret_until_valid_with_default "Azure OpenAI API key: " "${ENV_VALUES[EMBEDDING_BINDING_API_KEY]:-}" validate_api_key azure_openai)"
       ;;
     gemini)
       host="$(prompt_with_default "Gemini endpoint" "${ENV_VALUES[EMBEDDING_BINDING_HOST]:-https://generativelanguage.googleapis.com}")"
-      api_key="$(prompt_secret_until_valid "Gemini API key: " validate_api_key gemini)"
+      api_key="$(prompt_secret_until_valid_with_default "Gemini API key: " "${ENV_VALUES[EMBEDDING_BINDING_API_KEY]:-}" validate_api_key gemini)"
       ;;
     aws_bedrock)
       host="${ENV_VALUES[EMBEDDING_BINDING_HOST]:-https://bedrock.amazonaws.com}"
@@ -807,11 +821,11 @@ collect_embedding_config() {
       ;;
     jina)
       host="$(prompt_with_default "Jina endpoint" "${ENV_VALUES[EMBEDDING_BINDING_HOST]:-https://api.jina.ai/v1/embeddings}")"
-      api_key="$(prompt_secret_until_valid "Jina API key: " validate_api_key jina)"
+      api_key="$(prompt_secret_until_valid_with_default "Jina API key: " "${ENV_VALUES[EMBEDDING_BINDING_API_KEY]:-}" validate_api_key jina)"
       ;;
     *)
       host="$(prompt_with_default "Embedding endpoint" "${ENV_VALUES[EMBEDDING_BINDING_HOST]:-https://api.openai.com/v1}")"
-      api_key="$(prompt_secret_until_valid "Embedding API key: " validate_api_key "$binding")"
+      api_key="$(prompt_secret_until_valid_with_default "Embedding API key: " "${ENV_VALUES[EMBEDDING_BINDING_API_KEY]:-}" validate_api_key "$binding")"
       ;;
   esac
 
@@ -830,13 +844,18 @@ collect_rerank_config() {
   local vllm_model vllm_port vllm_device vllm_dtype vllm_extra
   local default_dtype=""
   local default_model="" default_host="" use_docker="no"
+  local rerank_default="${ENV_VALUES[RERANK_BINDING]:-cohere}"
 
   if ! confirm "Enable reranking?"; then
     ENV_VALUES["RERANK_BINDING"]="null"
     return
   fi
 
-  binding_choice="$(prompt_choice "Rerank provider" "cohere" "${options[@]}")"
+  if [[ "$rerank_default" == "null" ]]; then
+    rerank_default="cohere"
+  fi
+
+  binding_choice="$(prompt_choice "Rerank provider" "$rerank_default" "${options[@]}")"
 
   if [[ "$binding_choice" == "vllm" ]]; then
     log_info "vLLM uses the Cohere-compatible rerank API."
@@ -891,9 +910,9 @@ collect_rerank_config() {
   model="$(prompt_with_default "Rerank model" "${ENV_VALUES[RERANK_MODEL]:-$default_model}")"
   host="$(prompt_with_default "Rerank endpoint" "${ENV_VALUES[RERANK_BINDING_HOST]:-$default_host}")"
   if [[ "$binding_choice" == "vllm" ]]; then
-    api_key="$(prompt_with_default "Rerank API key (optional)" "${ENV_VALUES[RERANK_BINDING_API_KEY]:-}")"
+    api_key="$(prompt_secret_with_default "Rerank API key (optional): " "${ENV_VALUES[RERANK_BINDING_API_KEY]:-}")"
   else
-    api_key="$(prompt_secret_until_valid "Rerank API key: " validate_api_key "$binding")"
+    api_key="$(prompt_secret_until_valid_with_default "Rerank API key: " "${ENV_VALUES[RERANK_BINDING_API_KEY]:-}" validate_api_key "$binding")"
   fi
 
   ENV_VALUES["RERANK_BINDING"]="$binding"
@@ -962,11 +981,11 @@ collect_security_config() {
     return
   fi
 
-  auth_accounts="$(prompt_with_default "Auth accounts (user:pass,comma-separated)" "")"
-  token_secret="$(prompt_required_secret "JWT token secret: ")"
-  token_expire="$(prompt_with_default "Token expire hours" "48")"
-  api_key="$(mask_sensitive_input "LightRAG API key: ")"
-  whitelist="$(prompt_with_default "Whitelist paths (comma-separated)" "/health,/api/*")"
+  auth_accounts="$(prompt_with_default "Auth accounts (user:pass,comma-separated)" "${ENV_VALUES[AUTH_ACCOUNTS]:-}")"
+  token_secret="$(prompt_secret_with_default "JWT token secret: " "${ENV_VALUES[TOKEN_SECRET]:-}")"
+  token_expire="$(prompt_with_default "Token expire hours" "${ENV_VALUES[TOKEN_EXPIRE_HOURS]:-48}")"
+  api_key="$(prompt_secret_with_default "LightRAG API key: " "${ENV_VALUES[LIGHTRAG_API_KEY]:-}")"
+  whitelist="$(prompt_with_default "Whitelist paths (comma-separated)" "${ENV_VALUES[WHITELIST_PATHS]:-/health,/api/*}")"
 
   if [[ -n "$auth_accounts" ]]; then
     ENV_VALUES["AUTH_ACCOUNTS"]="$auth_accounts"
@@ -992,9 +1011,9 @@ collect_observability_config() {
     return
   fi
 
-  secret_key="$(prompt_secret_until_valid "Langfuse secret key: " validate_api_key langfuse)"
-  public_key="$(prompt_secret_until_valid "Langfuse public key: " validate_api_key langfuse)"
-  host="$(prompt_with_default "Langfuse host" "https://cloud.langfuse.com")"
+  secret_key="$(prompt_secret_until_valid_with_default "Langfuse secret key: " "${ENV_VALUES[LANGFUSE_SECRET_KEY]:-}" validate_api_key langfuse)"
+  public_key="$(prompt_secret_until_valid_with_default "Langfuse public key: " "${ENV_VALUES[LANGFUSE_PUBLIC_KEY]:-}" validate_api_key langfuse)"
+  host="$(prompt_with_default "Langfuse host" "${ENV_VALUES[LANGFUSE_HOST]:-https://cloud.langfuse.com}")"
 
   if [[ -n "$secret_key" ]]; then
     ENV_VALUES["LANGFUSE_SECRET_KEY"]="$secret_key"
@@ -1175,6 +1194,7 @@ interactive_flow() {
   local db_order=("postgresql" "neo4j" "mongodb" "redis" "milvus" "qdrant" "memgraph")
 
   reset_state
+  load_existing_env_if_present
 
   log_info "Interactive setup wizard"
   log_step "Step 1: Deployment type"
@@ -1242,19 +1262,14 @@ quick_start_flow() {
   local api_key
 
   reset_state
+  load_existing_env_if_present
   load_preset "development"
   DEPLOYMENT_TYPE="development"
 
   log_info "Quick start setup"
   echo "Using development preset. Only OpenAI API key is required."
 
-  ENV_VALUES["HOST"]="0.0.0.0"
-  ENV_VALUES["PORT"]="9621"
-  ENV_VALUES["WEBUI_TITLE"]="My Graph KB"
-  ENV_VALUES["WEBUI_DESCRIPTION"]="Simple and Fast Graph Based RAG System"
-  ENV_VALUES["RERANK_BINDING"]="null"
-
-  api_key="$(prompt_secret_until_valid "OpenAI API key: " validate_api_key openai)"
+  api_key="$(prompt_secret_until_valid_with_default "OpenAI API key: " "${ENV_VALUES[LLM_BINDING_API_KEY]:-}" validate_api_key openai)"
   ENV_VALUES["LLM_BINDING_API_KEY"]="$api_key"
   ENV_VALUES["EMBEDDING_BINDING_API_KEY"]="$api_key"
 
@@ -1266,6 +1281,7 @@ production_flow() {
   local db_order=("postgresql" "neo4j" "mongodb" "redis" "milvus" "qdrant" "memgraph")
 
   reset_state
+  load_existing_env_if_present
   load_preset "production"
   DEPLOYMENT_TYPE="production"
 
@@ -1312,6 +1328,9 @@ load_env_file() {
       value="${line#*=}"
       if [[ "$value" =~ ^\".*\"$ ]]; then
         value="${value:1:${#value}-2}"
+        value="${value//\\\$/\$}"
+        value="${value//\\\"/\"}"
+        value="${value//\\\\/\\}"
       elif [[ "$value" =~ ^\'.*\'$ ]]; then
         value="${value:1:${#value}-2}"
       fi

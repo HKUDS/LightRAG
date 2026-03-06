@@ -12,6 +12,7 @@ format_env_value() {
   if [[ "$value" =~ [[:space:]] || "$value" == *"\""* || "$value" == *"$"* ]]; then
     escaped="${value//\\/\\\\}"
     escaped="${escaped//\"/\\\"}"
+    escaped="${escaped//\$/\\\$}"
     printf '"%s"' "$escaped"
     return
   fi

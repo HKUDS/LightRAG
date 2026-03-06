@@ -7,7 +7,9 @@ apply_preset() {
   for entry in "$@"; do
     key="${entry%%=*}"
     value="${entry#*=}"
-    ENV_VALUES["$key"]="$value"
+    if [[ -z "${ENV_VALUES[$key]+set}" || -z "${ENV_VALUES[$key]}" ]]; then
+      ENV_VALUES["$key"]="$value"
+    fi
   done
 }
 
