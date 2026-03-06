@@ -180,8 +180,11 @@ wait_for_services() {
 normalize_loopback_uri_for_compose() {
   local uri="$1"
 
-  if [[ "$uri" =~ ^([a-zA-Z][a-zA-Z0-9+.-]*://)(localhost|127\.0\.0\.1)([/:?].*)?$ ]]; then
-    printf '%shost.docker.internal%s' "${BASH_REMATCH[1]}" "${BASH_REMATCH[3]}"
+  if [[ "$uri" =~ ^([a-zA-Z][a-zA-Z0-9+.-]*://)([^/?#]+@)?(localhost|127\.0\.0\.1|0\.0\.0\.0)([/:?].*)?$ ]]; then
+    printf '%s%shost.docker.internal%s' \
+      "${BASH_REMATCH[1]}" \
+      "${BASH_REMATCH[2]}" \
+      "${BASH_REMATCH[4]}"
     return 0
   fi
 
@@ -191,7 +194,7 @@ normalize_loopback_uri_for_compose() {
 normalize_loopback_host_for_compose() {
   local host="$1"
 
-  if [[ "$host" == "localhost" || "$host" == "127.0.0.1" ]]; then
+  if [[ "$host" == "localhost" || "$host" == "127.0.0.1" || "$host" == "0.0.0.0" ]]; then
     printf 'host.docker.internal'
     return 0
   fi

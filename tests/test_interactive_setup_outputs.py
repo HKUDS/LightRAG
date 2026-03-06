@@ -324,6 +324,54 @@ printf 'MEMGRAPH_URI=%s\\n' "${{COMPOSE_ENV_OVERRIDES[MEMGRAPH_URI]}}"
     assert values["MEMGRAPH_URI"] == "bolt://host.docker.internal:7687"
 
 
+def test_prepare_compose_runtime_overrides_rewrites_authenticated_loopback_uri() -> None:
+    """Loopback URIs with credentials should still be rewritten for the container."""
+
+    output = run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+reset_state
+
+ENV_VALUES[MONGO_URI]="mongodb://root:root@localhost:27017/"
+
+prepare_compose_runtime_overrides
+
+printf 'MONGO_URI=%s\\n' "${{COMPOSE_ENV_OVERRIDES[MONGO_URI]}}"
+"""
+    )
+    values = parse_lines(output)
+
+    assert values["MONGO_URI"] == "mongodb://root:root@host.docker.internal:27017/"
+
+
+def test_prepare_compose_runtime_overrides_rewrites_zero_host_loopback() -> None:
+    """Host-bound 0.0.0.0 endpoints should be rewritten for the container."""
+
+    output = run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+reset_state
+
+ENV_VALUES[POSTGRES_HOST]="0.0.0.0"
+ENV_VALUES[LLM_BINDING_HOST]="http://0.0.0.0:11434"
+ENV_VALUES[RERANK_BINDING_HOST]="http://0.0.0.0:8000/v1/rerank"
+
+prepare_compose_runtime_overrides
+
+printf 'POSTGRES_HOST=%s\\n' "${{COMPOSE_ENV_OVERRIDES[POSTGRES_HOST]}}"
+printf 'LLM_BINDING_HOST=%s\\n' "${{COMPOSE_ENV_OVERRIDES[LLM_BINDING_HOST]}}"
+printf 'RERANK_BINDING_HOST=%s\\n' "${{COMPOSE_ENV_OVERRIDES[RERANK_BINDING_HOST]}}"
+"""
+    )
+    values = parse_lines(output)
+
+    assert values["POSTGRES_HOST"] == "host.docker.internal"
+    assert values["LLM_BINDING_HOST"] == "http://host.docker.internal:11434"
+    assert values["RERANK_BINDING_HOST"] == "http://host.docker.internal:8000/v1/rerank"
+
+
 def test_ssl_staging_uses_distinct_names_for_same_basename_inputs(
     tmp_path: Path,
 ) -> None:
