@@ -592,6 +592,64 @@ generate_docker_compose "$REPO_ROOT/docker-compose.generated.yml"
     )
 
 
+def test_generate_docker_compose_escapes_bundled_service_secrets(
+    tmp_path: Path,
+) -> None:
+    """Bundled dependency services should keep `$`-bearing secrets literal in compose."""
+
+    compose_file = tmp_path / "docker-compose.yml"
+    compose_file.write_text(
+        "\n".join(
+            [
+                "services:",
+                "  lightrag:",
+                "    image: example/lightrag:test",
+                "    env_file:",
+                "      - .env",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+
+ENV_VALUES[POSTGRES_USER]='user$ID'
+ENV_VALUES[POSTGRES_PASSWORD]='pass$HOME'
+ENV_VALUES[POSTGRES_DATABASE]='db$NAME'
+ENV_VALUES[NEO4J_PASSWORD]='neo$PASS'
+ENV_VALUES[NEO4J_DATABASE]='graph$DB'
+ENV_VALUES[MINIO_ACCESS_KEY_ID]='minio$USER'
+ENV_VALUES[MINIO_SECRET_ACCESS_KEY]='minio$SECRET'
+
+add_docker_service postgres
+add_docker_service neo4j
+add_docker_service milvus
+
+generate_docker_compose "$REPO_ROOT/docker-compose.generated.yml"
+"""
+    )
+
+    generated_compose = (tmp_path / "docker-compose.generated.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'POSTGRES_USER: "user$$ID"' in generated_compose
+    assert 'POSTGRES_PASSWORD: "pass$$HOME"' in generated_compose
+    assert 'POSTGRES_DB: "db$$NAME"' in generated_compose
+    assert 'NEO4J_AUTH: "neo4j/neo$$PASS"' in generated_compose
+    assert 'NEO4J_dbms_default__database: "graph$$DB"' in generated_compose
+    assert 'MINIO_ACCESS_KEY_ID: "minio$$USER"' in generated_compose
+    assert 'MINIO_SECRET_ACCESS_KEY: "minio$$SECRET"' in generated_compose
+    assert 'MINIO_ROOT_USER: "minio$$USER"' in generated_compose
+    assert 'MINIO_ROOT_PASSWORD: "minio$$SECRET"' in generated_compose
+
+
 def test_load_preset_preserves_existing_env_values() -> None:
     """Preset defaults should fill missing keys without clobbering current config."""
 
@@ -1494,7 +1552,7 @@ printf 'DOCKER_SERVICE=%s\\n' "${{DOCKER_SERVICES[0]}}"
 
     assert values["NEO4J_USERNAME"] == "neo4j"
     assert values["DOCKER_SERVICE"] == "neo4j"
-    assert 'NEO4J_AUTH: "neo4j/${NEO4J_PASSWORD}"' in generated_compose
+    assert 'NEO4J_AUTH: "neo4j/test-password"' in generated_compose
 
 
 def test_finalize_setup_rejects_production_config_without_auth_or_api_key() -> None:
@@ -1608,3 +1666,48 @@ fi
 
     assert values["VALID"] == "no"
     assert values["WITH_API_KEY"] == "yes"
+
+
+def test_validate_env_file_requires_protection_for_production_storage_profile(
+    tmp_path: Path,
+) -> None:
+    """`setup-validate` should reject the production storage profile without auth."""
+
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "\n".join(
+            [
+                "LIGHTRAG_KV_STORAGE=PGKVStorage",
+                "LIGHTRAG_VECTOR_STORAGE=MilvusVectorDBStorage",
+                "LIGHTRAG_GRAPH_STORAGE=Neo4JStorage",
+                "LIGHTRAG_DOC_STATUS_STORAGE=PGDocStatusStorage",
+                "POSTGRES_USER=lightrag",
+                "POSTGRES_PASSWORD=secret",
+                "POSTGRES_DATABASE=lightrag",
+                "MILVUS_URI=http://localhost:19530",
+                "MILVUS_DB_NAME=lightrag",
+                "NEO4J_URI=neo4j://localhost:7687",
+                "NEO4J_USERNAME=neo4j",
+                "NEO4J_PASSWORD=secret",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    output = run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+
+if validate_env_file; then
+  printf 'VALID=yes\\n'
+else
+  printf 'VALID=no\\n'
+fi
+"""
+    )
+    values = parse_lines(output)
+
+    assert values["VALID"] == "no"

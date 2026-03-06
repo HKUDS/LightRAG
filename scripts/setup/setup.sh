@@ -1451,10 +1451,23 @@ load_env_file() {
   done < "$env_file"
 }
 
+is_production_storage_profile() {
+  local kv="$1"
+  local vector="$2"
+  local graph="$3"
+  local doc_status="$4"
+
+  [[ "$kv" == "PGKVStorage" &&
+    "$vector" == "MilvusVectorDBStorage" &&
+    "$graph" == "Neo4JStorage" &&
+    "$doc_status" == "PGDocStatusStorage" ]]
+}
+
 validate_env_file() {
   local env_file="${REPO_ROOT}/.env"
   local errors=0
   local kv vector graph doc_status
+  local require_protection="no"
 
   reset_state
 
@@ -1480,7 +1493,15 @@ validate_env_file() {
     errors=1
   fi
 
-  if ! validate_security_config "${ENV_VALUES[AUTH_ACCOUNTS]:-}" "${ENV_VALUES[TOKEN_SECRET]:-}"; then
+  if is_production_storage_profile "$kv" "$vector" "$graph" "$doc_status"; then
+    require_protection="yes"
+  fi
+
+  if ! validate_security_config \
+    "${ENV_VALUES[AUTH_ACCOUNTS]:-}" \
+    "${ENV_VALUES[TOKEN_SECRET]:-}" \
+    "${ENV_VALUES[LIGHTRAG_API_KEY]:-}" \
+    "$require_protection"; then
     errors=1
   fi
 

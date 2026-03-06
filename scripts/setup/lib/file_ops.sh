@@ -175,9 +175,16 @@ generate_docker_compose() {
 
     case "$service" in
       postgres)
+        inject_service_environment_overrides "$tmp_file" "postgres" \
+          "POSTGRES_USER=${ENV_VALUES[POSTGRES_USER]:-}" \
+          "POSTGRES_PASSWORD=${ENV_VALUES[POSTGRES_PASSWORD]:-}" \
+          "POSTGRES_DB=${ENV_VALUES[POSTGRES_DATABASE]:-}"
         volume_names+=("postgres_data")
         ;;
       neo4j)
+        inject_service_environment_overrides "$tmp_file" "neo4j" \
+          "NEO4J_AUTH=neo4j/${ENV_VALUES[NEO4J_PASSWORD]:-neo4j_password}" \
+          "NEO4J_dbms_default__database=${ENV_VALUES[NEO4J_DATABASE]:-neo4j}"
         volume_names+=("neo4j_data")
         ;;
       mongodb)
@@ -187,6 +194,12 @@ generate_docker_compose() {
         volume_names+=("redis_data")
         ;;
       milvus)
+        inject_service_environment_overrides "$tmp_file" "milvus" \
+          "MINIO_ACCESS_KEY_ID=${ENV_VALUES[MINIO_ACCESS_KEY_ID]:-minioadmin}" \
+          "MINIO_SECRET_ACCESS_KEY=${ENV_VALUES[MINIO_SECRET_ACCESS_KEY]:-minioadmin}"
+        inject_service_environment_overrides "$tmp_file" "minio" \
+          "MINIO_ROOT_USER=${ENV_VALUES[MINIO_ACCESS_KEY_ID]:-minioadmin}" \
+          "MINIO_ROOT_PASSWORD=${ENV_VALUES[MINIO_SECRET_ACCESS_KEY]:-minioadmin}"
         volume_names+=("milvus_data" "etcd_data" "minio_data")
         ;;
       qdrant)
@@ -279,6 +292,74 @@ format_yaml_value() {
   printf '"%s"' "$escaped"
 }
 
+inject_service_environment_overrides() {
+  local compose_file="$1"
+  local service_name="$2"
+  shift 2
+  local entries=("$@")
+  local tmp_file="${compose_file}.${service_name}.env"
+  local line key value
+  local in_service="no"
+  local in_environment="no"
+  local inserted="no"
+  local service_header="  ${service_name}:"
+
+  if ((${#entries[@]} == 0)); then
+    return 0
+  fi
+
+  : > "$tmp_file"
+
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    if [[ "$in_service" == "yes" && "$in_environment" == "yes" ]]; then
+      if [[ "$line" =~ ^[[:space:]]{4}[^[:space:]] || "$line" =~ ^[[:space:]]{2}[^[:space:]] || "$line" =~ ^(volumes|networks): ]]; then
+        if [[ "$inserted" == "no" ]]; then
+          for entry in "${entries[@]}"; do
+            key="${entry%%=*}"
+            value="${entry#*=}"
+            printf '      %s: %s\n' "$key" "$(format_yaml_value "$value")" >> "$tmp_file"
+          done
+          inserted="yes"
+        fi
+        in_environment="no"
+      fi
+    elif [[ "$in_service" == "yes" && "$line" =~ ^[[:space:]]{2}[^[:space:]] && "$line" != "$service_header" ]]; then
+      if [[ "$inserted" == "no" ]]; then
+        printf '    environment:\n' >> "$tmp_file"
+        for entry in "${entries[@]}"; do
+          key="${entry%%=*}"
+          value="${entry#*=}"
+          printf '      %s: %s\n' "$key" "$(format_yaml_value "$value")" >> "$tmp_file"
+        done
+        inserted="yes"
+      fi
+      in_service="no"
+    fi
+
+    printf '%s\n' "$line" >> "$tmp_file"
+
+    if [[ "$line" == "$service_header" ]]; then
+      in_service="yes"
+      in_environment="no"
+    elif [[ "$in_service" == "yes" && "$line" == "    environment:" ]]; then
+      in_environment="yes"
+    fi
+  done < "$compose_file"
+
+  if [[ "$in_service" == "yes" && "$inserted" == "no" ]]; then
+    if [[ "$in_environment" != "yes" ]]; then
+      printf '    environment:\n' >> "$tmp_file"
+    fi
+    for entry in "${entries[@]}"; do
+      key="${entry%%=*}"
+      value="${entry#*=}"
+      printf '      %s: %s\n' "$key" "$(format_yaml_value "$value")" >> "$tmp_file"
+    done
+  fi
+
+  mv "$tmp_file" "$compose_file"
+}
+
 inject_lightrag_bind_mounts() {
   local compose_file="$1"
   shift
@@ -342,65 +423,5 @@ inject_lightrag_bind_mounts() {
 inject_lightrag_environment_overrides() {
   local compose_file="$1"
   shift
-  local entries=("$@")
-  local tmp_file="${compose_file}.env"
-  local line key value
-  local in_lightrag="no"
-  local in_environment="no"
-  local inserted="no"
-
-  if ((${#entries[@]} == 0)); then
-    return 0
-  fi
-
-  : > "$tmp_file"
-
-  while IFS= read -r line || [[ -n "$line" ]]; do
-    if [[ "$in_lightrag" == "yes" && "$in_environment" == "yes" ]]; then
-      if [[ "$line" =~ ^[[:space:]]{4}[^[:space:]] || "$line" =~ ^[[:space:]]{2}[^[:space:]] || "$line" =~ ^(volumes|networks): ]]; then
-        if [[ "$inserted" == "no" ]]; then
-          for entry in "${entries[@]}"; do
-            key="${entry%%=*}"
-            value="${entry#*=}"
-            printf '      %s: %s\n' "$key" "$(format_yaml_value "$value")" >> "$tmp_file"
-          done
-          inserted="yes"
-        fi
-        in_environment="no"
-      fi
-    elif [[ "$in_lightrag" == "yes" && "$line" =~ ^[[:space:]]{2}[^[:space:]] && "$line" != "  lightrag:" ]]; then
-      if [[ "$inserted" == "no" ]]; then
-        printf '    environment:\n' >> "$tmp_file"
-        for entry in "${entries[@]}"; do
-          key="${entry%%=*}"
-          value="${entry#*=}"
-          printf '      %s: %s\n' "$key" "$(format_yaml_value "$value")" >> "$tmp_file"
-        done
-        inserted="yes"
-      fi
-      in_lightrag="no"
-    fi
-
-    printf '%s\n' "$line" >> "$tmp_file"
-
-    if [[ "$line" == "  lightrag:" ]]; then
-      in_lightrag="yes"
-      in_environment="no"
-    elif [[ "$in_lightrag" == "yes" && "$line" == "    environment:" ]]; then
-      in_environment="yes"
-    fi
-  done < "$compose_file"
-
-  if [[ "$in_lightrag" == "yes" && "$inserted" == "no" ]]; then
-    if [[ "$in_environment" != "yes" ]]; then
-      printf '    environment:\n' >> "$tmp_file"
-    fi
-    for entry in "${entries[@]}"; do
-      key="${entry%%=*}"
-      value="${entry#*=}"
-      printf '      %s: %s\n' "$key" "$(format_yaml_value "$value")" >> "$tmp_file"
-    done
-  fi
-
-  mv "$tmp_file" "$compose_file"
+  inject_service_environment_overrides "$compose_file" "lightrag" "$@"
 }
