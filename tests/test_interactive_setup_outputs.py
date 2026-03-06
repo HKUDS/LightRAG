@@ -245,3 +245,151 @@ generate_docker_compose "$REPO_ROOT/docker-compose.generated.yml"
         encoding="utf-8"
     )
     assert "environment:" not in generated_compose
+
+
+def test_generate_env_file_comments_out_later_duplicate_active_keys(
+    tmp_path: Path,
+) -> None:
+    """Commented example keys should not be overridden by later active defaults."""
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+
+ENV_VALUES[EMBEDDING_BINDING]="ollama"
+ENV_VALUES[EMBEDDING_MODEL]="bge-m3:latest"
+ENV_VALUES[EMBEDDING_DIM]="1024"
+ENV_VALUES[EMBEDDING_BINDING_HOST]="http://localhost:11434"
+
+generate_env_file "{REPO_ROOT}/env.example" "$REPO_ROOT/.env"
+"""
+    )
+
+    generated_env = (tmp_path / ".env").read_text(encoding="utf-8").splitlines()
+    active_embedding_lines = [
+        line for line in generated_env if line.startswith("EMBEDDING_BINDING=")
+    ]
+    active_model_lines = [
+        line for line in generated_env if line.startswith("EMBEDDING_MODEL=")
+    ]
+    active_host_lines = [
+        line for line in generated_env if line.startswith("EMBEDDING_BINDING_HOST=")
+    ]
+
+    assert active_embedding_lines == ["EMBEDDING_BINDING=ollama"]
+    assert active_model_lines == ["EMBEDDING_MODEL=bge-m3:latest"]
+    assert active_host_lines == ["EMBEDDING_BINDING_HOST=http://localhost:11434"]
+    assert "# EMBEDDING_BINDING=openai" in generated_env
+
+
+def test_prepare_compose_runtime_overrides_rewrites_host_database_loopback() -> None:
+    """Host-run databases on loopback should stay reachable from the container."""
+
+    output = run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+reset_state
+
+ENV_VALUES[POSTGRES_HOST]="127.0.0.1"
+ENV_VALUES[REDIS_URI]="redis://localhost:6379"
+ENV_VALUES[MONGO_URI]="mongodb://127.0.0.1:27017/"
+ENV_VALUES[NEO4J_URI]="neo4j://localhost:7687"
+ENV_VALUES[MILVUS_URI]="http://localhost:19530"
+ENV_VALUES[QDRANT_URL]="http://127.0.0.1:6333"
+ENV_VALUES[MEMGRAPH_URI]="bolt://localhost:7687"
+
+prepare_compose_runtime_overrides
+
+printf 'POSTGRES_HOST=%s\\n' "${{COMPOSE_ENV_OVERRIDES[POSTGRES_HOST]}}"
+printf 'REDIS_URI=%s\\n' "${{COMPOSE_ENV_OVERRIDES[REDIS_URI]}}"
+printf 'MONGO_URI=%s\\n' "${{COMPOSE_ENV_OVERRIDES[MONGO_URI]}}"
+printf 'NEO4J_URI=%s\\n' "${{COMPOSE_ENV_OVERRIDES[NEO4J_URI]}}"
+printf 'MILVUS_URI=%s\\n' "${{COMPOSE_ENV_OVERRIDES[MILVUS_URI]}}"
+printf 'QDRANT_URL=%s\\n' "${{COMPOSE_ENV_OVERRIDES[QDRANT_URL]}}"
+printf 'MEMGRAPH_URI=%s\\n' "${{COMPOSE_ENV_OVERRIDES[MEMGRAPH_URI]}}"
+"""
+    )
+    values = parse_lines(output)
+
+    assert values["POSTGRES_HOST"] == "host.docker.internal"
+    assert values["REDIS_URI"] == "redis://host.docker.internal:6379"
+    assert values["MONGO_URI"] == "mongodb://host.docker.internal:27017/"
+    assert values["NEO4J_URI"] == "neo4j://host.docker.internal:7687"
+    assert values["MILVUS_URI"] == "http://host.docker.internal:19530"
+    assert values["QDRANT_URL"] == "http://host.docker.internal:6333"
+    assert values["MEMGRAPH_URI"] == "bolt://host.docker.internal:7687"
+
+
+def test_ssl_staging_uses_distinct_names_for_same_basename_inputs(
+    tmp_path: Path,
+) -> None:
+    """Cert/key files with the same basename should stage to distinct paths."""
+
+    env_example = tmp_path / "env.example"
+    env_example.write_text(
+        "\n".join(
+            [
+                "SSL_CERTFILE=/placeholder/cert.pem",
+                "SSL_KEYFILE=/placeholder/key.pem",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    compose_file = tmp_path / "docker-compose.yml"
+    compose_file.write_text(
+        "\n".join(
+            [
+                "services:",
+                "  lightrag:",
+                "    image: example/lightrag:test",
+                "    env_file:",
+                "      - .env",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    cert_dir = tmp_path / "certs"
+    key_dir = tmp_path / "keys"
+    cert_dir.mkdir()
+    key_dir.mkdir()
+    cert_path = cert_dir / "server.pem"
+    cert_path.write_text("cert", encoding="utf-8")
+    key_path = key_dir / "server.pem"
+    key_path.write_text("key", encoding="utf-8")
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+
+ENV_VALUES[SSL_CERTFILE]="{cert_path}"
+ENV_VALUES[SSL_KEYFILE]="{key_path}"
+SSL_CERT_SOURCE_PATH="{cert_path}"
+SSL_KEY_SOURCE_PATH="{key_path}"
+
+prepare_compose_env_overrides
+stage_ssl_assets "$SSL_CERT_SOURCE_PATH" "$SSL_KEY_SOURCE_PATH"
+generate_docker_compose "$REPO_ROOT/docker-compose.generated.yml"
+"""
+    )
+
+    generated_compose = (tmp_path / "docker-compose.generated.yml").read_text(
+        encoding="utf-8"
+    )
+    staged_cert = tmp_path / "data" / "certs" / "cert-server.pem"
+    staged_key = tmp_path / "data" / "certs" / "key-server.pem"
+
+    assert staged_cert.read_text(encoding="utf-8") == "cert"
+    assert staged_key.read_text(encoding="utf-8") == "key"
+    assert 'SSL_CERTFILE: "/app/data/certs/cert-server.pem"' in generated_compose
+    assert 'SSL_KEYFILE: "/app/data/certs/key-server.pem"' in generated_compose
+    assert "./data/certs/cert-server.pem:/app/data/certs/cert-server.pem:ro" in generated_compose
+    assert "./data/certs/key-server.pem:/app/data/certs/key-server.pem:ro" in generated_compose

@@ -40,18 +40,37 @@ stage_ssl_assets() {
   mkdir -p "$certs_dir"
 
   if [[ -n "$cert_source" ]]; then
-    cert_target="${certs_dir}/$(basename "$cert_source")"
+    cert_target="${certs_dir}/$(resolve_staged_ssl_basename "cert" "$cert_source" "$key_source")"
     if [[ "$cert_source" != "$cert_target" ]]; then
       cp "$cert_source" "$cert_target"
     fi
   fi
 
   if [[ -n "$key_source" ]]; then
-    key_target="${certs_dir}/$(basename "$key_source")"
+    key_target="${certs_dir}/$(resolve_staged_ssl_basename "key" "$key_source" "$cert_source")"
     if [[ "$key_source" != "$key_target" ]]; then
       cp "$key_source" "$key_target"
     fi
   fi
+}
+
+resolve_staged_ssl_basename() {
+  local asset_type="$1"
+  local source_path="$2"
+  local peer_path="${3:-}"
+  local basename_value=""
+  local peer_basename=""
+
+  basename_value="$(basename "$source_path")"
+  if [[ -n "$peer_path" ]]; then
+    peer_basename="$(basename "$peer_path")"
+    if [[ "$basename_value" == "$peer_basename" ]]; then
+      printf '%s-%s' "$asset_type" "$basename_value"
+      return 0
+    fi
+  fi
+
+  printf '%s' "$basename_value"
 }
 
 generate_env_file() {
@@ -80,7 +99,11 @@ generate_env_file() {
         fi
         written_keys["$key"]=1
       else
-        printf '%s\n' "$line" >> "$tmp_file"
+        if [[ -n "${ENV_VALUES[$key]+set}" ]]; then
+          printf '# %s\n' "$line" >> "$tmp_file"
+        else
+          printf '%s\n' "$line" >> "$tmp_file"
+        fi
       fi
     elif [[ "$line" =~ ^#[[:space:]]*([A-Z0-9_]+)= ]]; then
       key="${BASH_REMATCH[1]}"

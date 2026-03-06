@@ -177,15 +177,26 @@ wait_for_services() {
   done
 }
 
-normalize_loopback_url_for_compose() {
-  local url="$1"
+normalize_loopback_uri_for_compose() {
+  local uri="$1"
 
-  if [[ "$url" =~ ^(https?://)(localhost|127\.0\.0\.1)([/:].*)?$ ]]; then
+  if [[ "$uri" =~ ^([a-zA-Z][a-zA-Z0-9+.-]*://)(localhost|127\.0\.0\.1)([/:?].*)?$ ]]; then
     printf '%shost.docker.internal%s' "${BASH_REMATCH[1]}" "${BASH_REMATCH[3]}"
     return 0
   fi
 
-  printf '%s' "$url"
+  printf '%s' "$uri"
+}
+
+normalize_loopback_host_for_compose() {
+  local host="$1"
+
+  if [[ "$host" == "localhost" || "$host" == "127.0.0.1" ]]; then
+    printf 'host.docker.internal'
+    return 0
+  fi
+
+  printf '%s' "$host"
 }
 
 default_loopback_url() {
@@ -206,17 +217,38 @@ set_compose_override() {
 }
 
 prepare_compose_runtime_overrides() {
-  local normalized_host
+  local normalized_value
   local key
 
-  for key in "LLM_BINDING_HOST" "EMBEDDING_BINDING_HOST" "RERANK_BINDING_HOST"; do
+  for key in \
+    "LLM_BINDING_HOST" \
+    "EMBEDDING_BINDING_HOST" \
+    "RERANK_BINDING_HOST" \
+    "REDIS_URI" \
+    "MONGO_URI" \
+    "NEO4J_URI" \
+    "MILVUS_URI" \
+    "QDRANT_URL" \
+    "MEMGRAPH_URI"; do
     if [[ -n "${COMPOSE_ENV_OVERRIDES[$key]+set}" ]]; then
       continue
     fi
     if [[ -n "${ENV_VALUES[$key]:-}" ]]; then
-      normalized_host="$(normalize_loopback_url_for_compose "${ENV_VALUES[$key]}")"
-      if [[ "$normalized_host" != "${ENV_VALUES[$key]}" ]]; then
-        set_compose_override "$key" "$normalized_host"
+      normalized_value="$(normalize_loopback_uri_for_compose "${ENV_VALUES[$key]}")"
+      if [[ "$normalized_value" != "${ENV_VALUES[$key]}" ]]; then
+        set_compose_override "$key" "$normalized_value"
+      fi
+    fi
+  done
+
+  for key in "POSTGRES_HOST"; do
+    if [[ -n "${COMPOSE_ENV_OVERRIDES[$key]+set}" ]]; then
+      continue
+    fi
+    if [[ -n "${ENV_VALUES[$key]:-}" ]]; then
+      normalized_value="$(normalize_loopback_host_for_compose "${ENV_VALUES[$key]}")"
+      if [[ "$normalized_value" != "${ENV_VALUES[$key]}" ]]; then
+        set_compose_override "$key" "$normalized_value"
       fi
     fi
   done
@@ -227,12 +259,12 @@ prepare_compose_ssl_overrides() {
   local key_name=""
 
   if [[ -n "$SSL_CERT_SOURCE_PATH" ]]; then
-    cert_name="$(basename "$SSL_CERT_SOURCE_PATH")"
+    cert_name="$(resolve_staged_ssl_basename "cert" "$SSL_CERT_SOURCE_PATH" "$SSL_KEY_SOURCE_PATH")"
     set_compose_override "SSL_CERTFILE" "/app/data/certs/${cert_name}"
   fi
 
   if [[ -n "$SSL_KEY_SOURCE_PATH" ]]; then
-    key_name="$(basename "$SSL_KEY_SOURCE_PATH")"
+    key_name="$(resolve_staged_ssl_basename "key" "$SSL_KEY_SOURCE_PATH" "$SSL_CERT_SOURCE_PATH")"
     set_compose_override "SSL_KEYFILE" "/app/data/certs/${key_name}"
   fi
 }
