@@ -152,6 +152,7 @@ wait_for_services() {
   local service
   local host="127.0.0.1"
   local port=""
+  local failures=()
 
   for service in "${DOCKER_SERVICES[@]}"; do
     case "$service" in
@@ -185,9 +186,18 @@ wait_for_services() {
     esac
 
     if [[ -n "$port" ]]; then
-      wait_for_port "$host" "$port" "$service" || true
+      if ! wait_for_port "$host" "$port" "$service"; then
+        failures+=("$service")
+      fi
     fi
   done
+
+  if ((${#failures[@]} > 0)); then
+    format_error \
+      "Some docker services did not become ready: ${failures[*]}" \
+      "Inspect 'docker compose ps' and service logs, then rerun setup after fixing the failing services."
+    return 1
+  fi
 }
 
 normalize_loopback_uri_for_compose() {
@@ -211,6 +221,17 @@ normalize_mongodb_uri_for_local_service() {
     printf 'mongodb://localhost:%s%s' \
       "${BASH_REMATCH[4]:-27017}" \
       "${BASH_REMATCH[5]:-/}"
+    return 0
+  fi
+
+  printf '%s' "$uri"
+}
+
+normalize_redis_uri_for_local_service() {
+  local uri="$1"
+
+  if [[ "$uri" =~ ^rediss?://([^/?#]+@)?(redis|localhost|127\.0\.0\.1|0\.0\.0\.0)(:([0-9]+))?(/.*)?$ ]]; then
+    printf 'redis://localhost:6379%s' "${BASH_REMATCH[5]:-/}"
     return 0
   fi
 
@@ -666,6 +687,9 @@ collect_redis_config() {
   fi
 
   uri="$(prompt_until_valid "Redis URI" "$uri" validate_uri redis)"
+  if [[ "$use_docker" == "yes" ]]; then
+    uri="$(normalize_redis_uri_for_local_service "$uri")"
+  fi
   ENV_VALUES["REDIS_URI"]="$uri"
   if [[ "$use_docker" == "yes" ]]; then
     set_compose_override "REDIS_URI" "redis://redis:6379"
@@ -1019,6 +1043,7 @@ collect_security_config() {
   local default_yes="${2:-no}"
   local auth_accounts token_secret token_expire api_key whitelist
   local confirm_result=1
+  local whitelist_default="${ENV_VALUES[WHITELIST_PATHS]:-}"
 
   if [[ "$default_yes" == "yes" ]]; then
     if confirm_default_yes "Configure authentication and API key settings?"; then
@@ -1039,11 +1064,17 @@ collect_security_config() {
 
   echo "Press Enter to keep an existing value. Type 'clear' to remove it." >&2
 
+  if [[ -z "$whitelist_default" ]]; then
+    whitelist_default="/health"
+  elif [[ "$required" == "yes" && "$whitelist_default" == "/health,/api/*" ]]; then
+    whitelist_default="/health"
+  fi
+
   auth_accounts="$(prompt_clearable_with_default "Auth accounts (user:pass,comma-separated)" "${ENV_VALUES[AUTH_ACCOUNTS]:-}")"
   token_secret="$(prompt_clearable_secret_with_default "JWT token secret: " "${ENV_VALUES[TOKEN_SECRET]:-}")"
   token_expire="$(prompt_clearable_with_default "Token expire hours" "${ENV_VALUES[TOKEN_EXPIRE_HOURS]:-48}")"
   api_key="$(prompt_clearable_secret_with_default "LightRAG API key: " "${ENV_VALUES[LIGHTRAG_API_KEY]:-}")"
-  whitelist="$(prompt_clearable_with_default "Whitelist paths (comma-separated)" "${ENV_VALUES[WHITELIST_PATHS]:-/health,/api/*}")"
+  whitelist="$(prompt_clearable_with_default "Whitelist paths (comma-separated)" "$whitelist_default")"
 
   apply_clearable_env_value "AUTH_ACCOUNTS" "$auth_accounts"
   apply_clearable_env_value "TOKEN_SECRET" "$token_secret"
@@ -1254,7 +1285,9 @@ finalize_setup() {
       log_step "Starting docker services with ${compose_file}"
       if ((${#DOCKER_SERVICES[@]} > 0)); then
         docker compose -f "$compose_file" up -d "${DOCKER_SERVICES[@]}"
-        wait_for_services
+        if ! wait_for_services; then
+          return 1
+        fi
       fi
       docker compose -f "$compose_file" up -d lightrag
       log_success "Docker services are up."

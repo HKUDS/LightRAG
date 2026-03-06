@@ -974,6 +974,34 @@ printf 'DOCKER_SERVICE=%s\\n' "${{DOCKER_SERVICES[0]}}"
     assert values["DOCKER_SERVICE"] == "mongodb"
 
 
+def test_collect_redis_config_local_service_normalizes_custom_host_port() -> None:
+    """Bundled Redis should keep host `.env` aligned with the published local port."""
+
+    output = run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+reset_state
+
+ENV_VALUES[REDIS_URI]="redis://localhost:6380/1"
+
+confirm_default_yes() {{ return 0; }}
+prompt_until_valid() {{ printf '%s' "$2"; }}
+
+collect_redis_config yes
+
+printf 'REDIS_URI=%s\\n' "${{ENV_VALUES[REDIS_URI]}}"
+printf 'COMPOSE_REDIS_URI=%s\\n' "${{COMPOSE_ENV_OVERRIDES[REDIS_URI]}}"
+printf 'DOCKER_SERVICE=%s\\n' "${{DOCKER_SERVICES[0]}}"
+"""
+    )
+    values = parse_lines(output)
+
+    assert values["REDIS_URI"] == "redis://localhost:6379/1"
+    assert values["COMPOSE_REDIS_URI"] == "redis://redis:6379"
+    assert values["DOCKER_SERVICE"] == "redis"
+
+
 def test_prepare_compose_runtime_overrides_rewrites_zero_host_loopback() -> None:
     """Host-bound 0.0.0.0 endpoints should be rewritten for the container."""
 
@@ -1335,6 +1363,31 @@ printf 'WHITELIST_PATHS_SET=%s\\n' "${{ENV_VALUES[WHITELIST_PATHS]+set}}"
     assert "WHITELIST_PATHS=" in generated_lines
 
 
+def test_collect_security_config_uses_safe_production_whitelist_default() -> None:
+    """Production security prompts should not default to exposing `/api/*`."""
+
+    output = run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+reset_state
+
+ENV_VALUES[WHITELIST_PATHS]="/health,/api/*"
+
+confirm_default_yes() {{ return 0; }}
+prompt_clearable_with_default() {{ printf '%s' "$2"; }}
+prompt_clearable_secret_with_default() {{ printf '%s' "$2"; }}
+
+collect_security_config yes yes
+
+printf 'WHITELIST_PATHS=%s\\n' "${{ENV_VALUES[WHITELIST_PATHS]}}"
+"""
+    )
+    values = parse_lines(output)
+
+    assert values["WHITELIST_PATHS"] == "/health"
+
+
 def test_collect_observability_config_clears_existing_values_on_rerun(
     tmp_path: Path,
 ) -> None:
@@ -1469,6 +1522,64 @@ fi
     values = parse_lines(output)
 
     assert values["RESULT"] == "failure"
+
+
+def test_finalize_setup_fails_when_selected_services_never_become_ready(
+    tmp_path: Path,
+) -> None:
+    """Setup should fail fast instead of reporting success on broken dependency startup."""
+
+    env_example = tmp_path / "env.example"
+    env_example.write_text(
+        "\n".join(
+            [
+                "LIGHTRAG_KV_STORAGE=JsonKVStorage",
+                "LIGHTRAG_VECTOR_STORAGE=NanoVectorDBStorage",
+                "LIGHTRAG_GRAPH_STORAGE=NetworkXStorage",
+                "LIGHTRAG_DOC_STATUS_STORAGE=JsonDocStatusStorage",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    output = run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+DEPLOYMENT_TYPE="development"
+DOCKER_SERVICES=("redis")
+
+ENV_VALUES[LIGHTRAG_KV_STORAGE]="JsonKVStorage"
+ENV_VALUES[LIGHTRAG_VECTOR_STORAGE]="NanoVectorDBStorage"
+ENV_VALUES[LIGHTRAG_GRAPH_STORAGE]="NetworkXStorage"
+ENV_VALUES[LIGHTRAG_DOC_STATUS_STORAGE]="JsonDocStatusStorage"
+
+confirm() {{ return 0; }}
+confirm_default_yes() {{ return 0; }}
+check_docker_availability() {{ return 0; }}
+backup_env_file() {{ return 0; }}
+generate_env_file() {{ :; }}
+generate_docker_compose() {{ :; }}
+wait_for_services() {{ return 1; }}
+docker() {{
+  printf '%s\\n' "$*" >> "$REPO_ROOT/docker_calls.log"
+}}
+
+if finalize_setup; then
+  printf 'RESULT=success\\n'
+else
+  printf 'RESULT=failure\\n'
+fi
+"""
+    )
+    values = parse_lines(output)
+    docker_calls = (tmp_path / "docker_calls.log").read_text(encoding="utf-8").splitlines()
+
+    assert values["RESULT"] == "failure"
+    assert docker_calls == [f"compose -f {tmp_path}/docker-compose.development.yml up -d redis"]
 
 
 def test_validate_security_config_requires_protection_for_production() -> None:
