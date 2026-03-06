@@ -1,5 +1,5 @@
   postgres:
-    image: postgres:${POSTGRES_IMAGE_TAG:-18}
+    image: ${POSTGRES_IMAGE:-gzdaniel/postgres-for-rag:16.6}
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}

@@ -155,6 +155,11 @@ The setup wizard uses the CPU image by default for `VLLM_RERANK_DEVICE=cpu` and 
 The setup wizard stages TLS certificate files under `./data/certs/` before generating the compose file.
 This keeps generated host mounts under the same `./data` root used by the default Docker deployment.
 
+### PostgreSQL image
+
+The interactive setup defaults PostgreSQL to `gzdaniel/postgres-for-rag:16.6`.
+That image bundles both Apache AGE and pgvector so the generated stack works with `PGGraphStorage` and `PGVectorStorage` without extra extension setup.
+
 ### Updates
 
 To update the Docker container:

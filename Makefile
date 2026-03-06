@@ -33,9 +33,9 @@ help:
 	@printf "  make setup\n"
 	@printf "  make setup-quick\n"
 	@printf "  make setup-production SETUP_OPTS=--debug\n\n"
-	@printf "$(COLOR_BOLD)Image tags$(COLOR_RESET)\n"
-	@printf "  Wizard will show image tags for selected services and let you override them.\n"
-	@printf "  You can also edit POSTGRES_IMAGE_TAG, NEO4J_IMAGE_TAG, etc. in .env.\n"
+	@printf "$(COLOR_BOLD)Image Settings$(COLOR_RESET)\n"
+	@printf "  Wizard will show image settings for selected services and let you override them.\n"
+	@printf "  You can also edit POSTGRES_IMAGE, NEO4J_IMAGE_TAG, etc. in .env.\n"
 	@printf "  Compose file output: docker-compose.<development|production|custom>.yml\n"
 
 setup:

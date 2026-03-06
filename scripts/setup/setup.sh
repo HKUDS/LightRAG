@@ -14,20 +14,20 @@ declare -A DOCKER_SERVICE_SET
 declare -a DOCKER_SERVICES
 SSL_CERT_SOURCE_PATH=""
 SSL_KEY_SOURCE_PATH=""
-declare -A DOCKER_IMAGE_TAG_DEFAULTS=(
-  ["postgres"]="18"
+declare -A DOCKER_IMAGE_DEFAULTS=(
+  ["postgres"]="gzdaniel/postgres-for-rag:16.6"
   ["neo4j"]="5.26.19-community"
   ["mongodb"]="8.2.3"
   ["redis"]="8.4"
   ["milvus"]="2.6-20251227-44275071"
   ["etcd"]="v3.5.16"
   ["minio"]="RELEASE.2024-12-13T22-19-12Z"
-  ["qdrant"]="v1.16-gpu-nvidia"
+  ["qdrant"]="v1.16.0"
   ["memgraph"]="3.7.2"
   ["vllm-rerank"]="latest"
 )
-declare -A DOCKER_IMAGE_TAG_ENV=(
-  ["postgres"]="POSTGRES_IMAGE_TAG"
+declare -A DOCKER_IMAGE_ENV=(
+  ["postgres"]="POSTGRES_IMAGE"
   ["neo4j"]="NEO4J_IMAGE_TAG"
   ["mongodb"]="MONGODB_IMAGE_TAG"
   ["redis"]="REDIS_IMAGE_TAG"
@@ -201,17 +201,17 @@ default_loopback_url() {
 apply_compose_runtime_overrides() {
   local normalized_host
 
-  if [[ "${ENV_VALUES[LLM_BINDING]:-}" == "ollama" && -n "${ENV_VALUES[LLM_BINDING_HOST]:-}" ]]; then
+  if [[ -n "${ENV_VALUES[LLM_BINDING_HOST]:-}" ]]; then
     normalized_host="$(normalize_loopback_url_for_compose "${ENV_VALUES[LLM_BINDING_HOST]}")"
     ENV_VALUES["LLM_BINDING_HOST"]="$normalized_host"
   fi
 
-  if [[ "${ENV_VALUES[EMBEDDING_BINDING]:-}" == "ollama" && -n "${ENV_VALUES[EMBEDDING_BINDING_HOST]:-}" ]]; then
+  if [[ -n "${ENV_VALUES[EMBEDDING_BINDING_HOST]:-}" ]]; then
     normalized_host="$(normalize_loopback_url_for_compose "${ENV_VALUES[EMBEDDING_BINDING_HOST]}")"
     ENV_VALUES["EMBEDDING_BINDING_HOST"]="$normalized_host"
   fi
 
-  if [[ -z "${DOCKER_SERVICE_SET[vllm-rerank]+set}" && -n "${ENV_VALUES[VLLM_RERANK_MODEL]:-}" && -n "${ENV_VALUES[RERANK_BINDING_HOST]:-}" ]]; then
+  if [[ -n "${ENV_VALUES[RERANK_BINDING_HOST]:-}" ]]; then
     normalized_host="$(normalize_loopback_url_for_compose "${ENV_VALUES[RERANK_BINDING_HOST]}")"
     ENV_VALUES["RERANK_BINDING_HOST"]="$normalized_host"
   fi
@@ -861,25 +861,25 @@ collect_docker_image_tags() {
     tag_services+=("etcd" "minio")
   fi
 
-  log_info "Docker image tags for selected services:"
+  log_info "Docker image settings for selected services:"
   for service in "${tag_services[@]}"; do
-    env_var="${DOCKER_IMAGE_TAG_ENV[$service]}"
-    default_tag="${DOCKER_IMAGE_TAG_DEFAULTS[$service]}"
+    env_var="${DOCKER_IMAGE_ENV[$service]}"
+    default_tag="${DOCKER_IMAGE_DEFAULTS[$service]}"
     if [[ -n "$env_var" && -n "$default_tag" ]]; then
       ENV_VALUES["$env_var"]="${ENV_VALUES[$env_var]:-$default_tag}"
       echo "  - $service: ${ENV_VALUES[$env_var]} ($env_var)"
     fi
   done
 
-  if confirm "Keep these image tags?"; then
+  if confirm "Keep these image settings?"; then
     return
   fi
 
   for service in "${tag_services[@]}"; do
-    env_var="${DOCKER_IMAGE_TAG_ENV[$service]}"
-    default_tag="${ENV_VALUES[$env_var]:-${DOCKER_IMAGE_TAG_DEFAULTS[$service]}}"
+    env_var="${DOCKER_IMAGE_ENV[$service]}"
+    default_tag="${ENV_VALUES[$env_var]:-${DOCKER_IMAGE_DEFAULTS[$service]}}"
     if [[ -n "$env_var" ]]; then
-      selected_tag="$(prompt_with_default "Tag for $service ($env_var)" "$default_tag")"
+      selected_tag="$(prompt_with_default "Image setting for $service ($env_var)" "$default_tag")"
       ENV_VALUES["$env_var"]="$selected_tag"
     fi
   done

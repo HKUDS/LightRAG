@@ -1,5 +1,5 @@
   qdrant:
-    image: qdrant/qdrant:${QDRANT_IMAGE_TAG:-v1.16-gpu-nvidia}
+    image: qdrant/qdrant:${QDRANT_IMAGE_TAG:-v1.16.0}
     ports:
       - "6333:6333"
     volumes:

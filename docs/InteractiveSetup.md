@@ -27,12 +27,12 @@ The wizard writes a dedicated compose file to avoid overwriting `docker-compose.
 
 You can let the wizard start the services immediately after generation.
 
-## Image Tags
+## Image Settings
 
-The wizard lists Docker image tags for selected services and lets you override them.
+The wizard lists Docker image settings for selected services and lets you override them.
 You can also edit these in `.env`:
 
-- `POSTGRES_IMAGE_TAG`
+- `POSTGRES_IMAGE`
 - `NEO4J_IMAGE_TAG`
 - `MONGODB_IMAGE_TAG`
 - `REDIS_IMAGE_TAG`
@@ -50,5 +50,6 @@ You can also edit these in `.env`:
 - When you expose bundled PostgreSQL on a custom host port, the wizard keeps LightRAG pointed at the container's internal `5432` port and uses `POSTGRES_HOST_PORT` only for the published port.
 - For GPU setups, set `VLLM_RERANK_DEVICE=cuda` and `VLLM_RERANK_DTYPE=float16` (requires NVIDIA Container Toolkit).
 - CPU `vllm` rerank uses the official CPU image by default; GPU mode switches to the standard `vllm/vllm-openai` image.
-- Host-run Ollama and external vLLM rerank default to `localhost`; if you generate a Docker stack, the wizard rewrites loopback endpoints to `host.docker.internal`.
+- Host-run local model endpoints are rewritten from `localhost`/`127.0.0.1` to `host.docker.internal` when you generate a Docker stack.
+- PostgreSQL defaults to `gzdaniel/postgres-for-rag:16.6`, which bundles both Apache AGE and pgvector for LightRAG's PostgreSQL graph/vector storage modes.
 - If you enable SSL in the wizard, the selected certificate and key are copied into `./data/certs/` and mounted into the `lightrag` container from there.
