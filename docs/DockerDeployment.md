@@ -94,7 +94,7 @@ To enable local reranking with vLLM, run a vLLM container exposing the Cohere-co
 You can select `vllm` in the interactive setup to add the `vllm-rerank` service automatically.
 vLLM provides a `v1/rerank` endpoint that works with the `cohere` binding.
 
-Example `docker-compose.override.yml`:
+Example `docker-compose.override.yml` for GPU hosts:
 
 ```yaml
 services:
@@ -109,6 +109,18 @@ services:
     volumes:
       - ./data/hf-cache:/root/.cache/huggingface
     runtime: nvidia
+```
+
+For CPU-only hosts, use the official CPU image instead:
+
+```yaml
+services:
+  vllm-rerank:
+    image: public.ecr.aws/q9t5s3a7/vllm-cpu-release-repo:latest
+    command: >
+      --model BAAI/bge-reranker-v2-m3
+      --port 8000
+      --dtype float32
 ```
 
 Add the rerank config to `.env`:
@@ -136,7 +148,7 @@ VLLM_RERANK_DTYPE=float16
 ```
 
 Ensure the NVIDIA Container Toolkit is installed and the host has CUDA drivers available.
-The default vLLM image is GPU-only; CPU setups require a CPU-compatible image tag.
+The setup wizard uses the CPU image by default for `VLLM_RERANK_DEVICE=cpu` and the GPU image for `VLLM_RERANK_DEVICE=cuda`.
 
 ### Updates
 

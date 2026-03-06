@@ -65,6 +65,12 @@ validate_port() {
   return 0
 }
 
+validate_existing_file() {
+  local path="$1"
+
+  [[ -n "$path" && -f "$path" ]]
+}
+
 check_storage_compatibility() {
   local kv_storage="$1"
   local vector_storage="$2"

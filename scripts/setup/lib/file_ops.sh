@@ -81,11 +81,22 @@ generate_docker_compose() {
   local tmp_file="${output_file}.tmp"
   local template_file
   local volume_names=()
+  local lightrag_mounts=()
 
   if [[ -f "$base_file" ]]; then
     cp "$base_file" "$tmp_file"
   else
     printf 'services:\n' > "$tmp_file"
+  fi
+
+  if [[ -n "${ENV_VALUES[SSL_CERTFILE]:-}" ]]; then
+    lightrag_mounts+=("${ENV_VALUES[SSL_CERTFILE]}:${ENV_VALUES[SSL_CERTFILE]}:ro")
+  fi
+  if [[ -n "${ENV_VALUES[SSL_KEYFILE]:-}" ]]; then
+    lightrag_mounts+=("${ENV_VALUES[SSL_KEYFILE]}:${ENV_VALUES[SSL_KEYFILE]}:ro")
+  fi
+  if ((${#lightrag_mounts[@]} > 0)); then
+    inject_lightrag_bind_mounts "$tmp_file" "${lightrag_mounts[@]}"
   fi
 
   for service in "${DOCKER_SERVICES[@]}"; do
@@ -141,4 +152,64 @@ generate_docker_compose() {
   fi
 
   mv "$tmp_file" "$output_file"
+}
+
+inject_lightrag_bind_mounts() {
+  local compose_file="$1"
+  shift
+  local mounts=("$@")
+  local tmp_file="${compose_file}.mounts"
+  local line
+  local in_lightrag="no"
+  local in_volumes="no"
+  local inserted="no"
+
+  if ((${#mounts[@]} == 0)); then
+    return 0
+  fi
+
+  : > "$tmp_file"
+
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    if [[ "$in_lightrag" == "yes" && "$in_volumes" == "yes" ]]; then
+      if [[ "$line" =~ ^[[:space:]]{4}[^[:space:]-] || "$line" =~ ^[[:space:]]{2}[^[:space:]] || "$line" =~ ^(volumes|networks): ]]; then
+        if [[ "$inserted" == "no" ]]; then
+          for mount in "${mounts[@]}"; do
+            printf '      - "%s"\n' "$mount" >> "$tmp_file"
+          done
+          inserted="yes"
+        fi
+        in_volumes="no"
+      fi
+    elif [[ "$in_lightrag" == "yes" && "$line" =~ ^[[:space:]]{2}[^[:space:]] && "$line" != "  lightrag:" ]]; then
+      if [[ "$inserted" == "no" ]]; then
+        printf '    volumes:\n' >> "$tmp_file"
+        for mount in "${mounts[@]}"; do
+          printf '      - "%s"\n' "$mount" >> "$tmp_file"
+        done
+        inserted="yes"
+      fi
+      in_lightrag="no"
+    fi
+
+    printf '%s\n' "$line" >> "$tmp_file"
+
+    if [[ "$line" == "  lightrag:" ]]; then
+      in_lightrag="yes"
+      in_volumes="no"
+    elif [[ "$in_lightrag" == "yes" && "$line" == "    volumes:" ]]; then
+      in_volumes="yes"
+    fi
+  done < "$compose_file"
+
+  if [[ "$in_lightrag" == "yes" && "$inserted" == "no" ]]; then
+    if [[ "$in_volumes" != "yes" ]]; then
+      printf '    volumes:\n' >> "$tmp_file"
+    fi
+    for mount in "${mounts[@]}"; do
+      printf '      - "%s"\n' "$mount" >> "$tmp_file"
+    done
+  fi
+
+  mv "$tmp_file" "$compose_file"
 }

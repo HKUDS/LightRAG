@@ -667,7 +667,7 @@ collect_rerank_config() {
     if [[ "$use_docker" == "yes" ]]; then
       default_host="http://vllm-rerank:${vllm_port}/v1/rerank"
     else
-      default_host="http://localhost:${vllm_port}/v1/rerank"
+      default_host="http://host.docker.internal:${vllm_port}/v1/rerank"
     fi
     binding="cohere"
   else
@@ -715,16 +715,12 @@ collect_ssl_config() {
     return
   fi
 
-  cert="$(prompt_with_default "SSL certificate file" "")"
-  key="$(prompt_with_default "SSL key file" "")"
+  cert="$(prompt_until_valid "SSL certificate file" "${ENV_VALUES[SSL_CERTFILE]:-}" validate_existing_file)"
+  key="$(prompt_until_valid "SSL key file" "${ENV_VALUES[SSL_KEYFILE]:-}" validate_existing_file)"
 
   ENV_VALUES["SSL"]="true"
-  if [[ -n "$cert" ]]; then
-    ENV_VALUES["SSL_CERTFILE"]="$cert"
-  fi
-  if [[ -n "$key" ]]; then
-    ENV_VALUES["SSL_KEYFILE"]="$key"
-  fi
+  ENV_VALUES["SSL_CERTFILE"]="$cert"
+  ENV_VALUES["SSL_KEYFILE"]="$key"
 }
 
 collect_security_config() {
