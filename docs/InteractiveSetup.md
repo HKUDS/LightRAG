@@ -47,7 +47,8 @@ You can also edit these in `.env`:
 - Use `SETUP_WAIT_TIMEOUT=120` to increase the startup wait for dependent services.
 - Set `NO_COLOR=1` to disable colored output.
 - Choose `vllm` in the rerank prompt to add a local vLLM reranker service to `docker-compose.yml`.
+- When you expose bundled PostgreSQL on a custom host port, the wizard keeps LightRAG pointed at the container's internal `5432` port and uses `POSTGRES_HOST_PORT` only for the published port.
 - For GPU setups, set `VLLM_RERANK_DEVICE=cuda` and `VLLM_RERANK_DTYPE=float16` (requires NVIDIA Container Toolkit).
 - CPU `vllm` rerank uses the official CPU image by default; GPU mode switches to the standard `vllm/vllm-openai` image.
-- External host-run `vllm` rerank defaults to `host.docker.internal` so the generated Docker stack can reach it.
+- Host-run Ollama and external vLLM rerank default to `localhost`; if you generate a Docker stack, the wizard rewrites loopback endpoints to `host.docker.internal`.
 - If you enable SSL in the wizard, the selected certificate and key are copied into `./data/certs/` and mounted into the `lightrag` container from there.

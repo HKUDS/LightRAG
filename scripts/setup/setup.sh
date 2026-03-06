@@ -141,7 +141,7 @@ wait_for_services() {
   for service in "${DOCKER_SERVICES[@]}"; do
     case "$service" in
       postgres)
-        port="${ENV_VALUES[POSTGRES_PORT]:-5432}"
+        port="${ENV_VALUES[POSTGRES_HOST_PORT]:-${ENV_VALUES[POSTGRES_PORT]:-5432}}"
         ;;
       neo4j)
         port="7687"
@@ -173,6 +173,48 @@ wait_for_services() {
       wait_for_port "$host" "$port" "$service" || true
     fi
   done
+}
+
+normalize_loopback_url_for_compose() {
+  local url="$1"
+
+  if [[ "$url" =~ ^(https?://)(localhost|127\.0\.0\.1)([/:].*)?$ ]]; then
+    printf '%shost.docker.internal%s' "${BASH_REMATCH[1]}" "${BASH_REMATCH[3]}"
+    return 0
+  fi
+
+  printf '%s' "$url"
+}
+
+default_loopback_url() {
+  local port="$1"
+  local path="${2:-}"
+  local host="localhost"
+
+  if ((${#DOCKER_SERVICES[@]} > 0)); then
+    host="host.docker.internal"
+  fi
+
+  printf 'http://%s:%s%s' "$host" "$port" "$path"
+}
+
+apply_compose_runtime_overrides() {
+  local normalized_host
+
+  if [[ "${ENV_VALUES[LLM_BINDING]:-}" == "ollama" && -n "${ENV_VALUES[LLM_BINDING_HOST]:-}" ]]; then
+    normalized_host="$(normalize_loopback_url_for_compose "${ENV_VALUES[LLM_BINDING_HOST]}")"
+    ENV_VALUES["LLM_BINDING_HOST"]="$normalized_host"
+  fi
+
+  if [[ "${ENV_VALUES[EMBEDDING_BINDING]:-}" == "ollama" && -n "${ENV_VALUES[EMBEDDING_BINDING_HOST]:-}" ]]; then
+    normalized_host="$(normalize_loopback_url_for_compose "${ENV_VALUES[EMBEDDING_BINDING_HOST]}")"
+    ENV_VALUES["EMBEDDING_BINDING_HOST"]="$normalized_host"
+  fi
+
+  if [[ -z "${DOCKER_SERVICE_SET[vllm-rerank]+set}" && -n "${ENV_VALUES[VLLM_RERANK_MODEL]:-}" && -n "${ENV_VALUES[RERANK_BINDING_HOST]:-}" ]]; then
+    normalized_host="$(normalize_loopback_url_for_compose "${ENV_VALUES[RERANK_BINDING_HOST]}")"
+    ENV_VALUES["RERANK_BINDING_HOST"]="$normalized_host"
+  fi
 }
 
 add_docker_service() {
@@ -336,7 +378,7 @@ collect_database_config() {
 collect_postgres_config() {
   local default_docker="${1:-no}"
   local use_docker="no"
-  local host port user password database
+  local host port user password database host_port=""
 
   if [[ "$default_docker" == "yes" ]]; then
     if confirm_default_yes "Add PostgreSQL service to docker-compose.yml?"; then
@@ -356,7 +398,13 @@ collect_postgres_config() {
   fi
 
   host="$(prompt_with_default "PostgreSQL host" "$host")"
-  port="$(prompt_until_valid "PostgreSQL port" "5432" validate_port)"
+  if [[ "$use_docker" == "yes" ]]; then
+    host_port="$(prompt_until_valid "PostgreSQL host port" "${ENV_VALUES[POSTGRES_HOST_PORT]:-${ENV_VALUES[POSTGRES_PORT]:-5432}}" validate_port)"
+    port="5432"
+    ENV_VALUES["POSTGRES_HOST_PORT"]="$host_port"
+  else
+    port="$(prompt_until_valid "PostgreSQL port" "${ENV_VALUES[POSTGRES_PORT]:-5432}" validate_port)"
+  fi
   user="$(prompt_with_default "PostgreSQL user" "lightrag")"
   password="$(mask_sensitive_input "PostgreSQL password: ")"
   database="$(prompt_with_default "PostgreSQL database" "lightrag")"
@@ -546,7 +594,7 @@ collect_llm_config() {
 
   case "$binding" in
     ollama)
-      host="$(prompt_with_default "Ollama host" "${ENV_VALUES[LLM_BINDING_HOST]:-http://localhost:11434}")"
+      host="$(prompt_with_default "Ollama host" "${ENV_VALUES[LLM_BINDING_HOST]:-$(default_loopback_url 11434)}")"
       api_key=""
       ;;
     azure_openai)
@@ -585,7 +633,7 @@ collect_embedding_config() {
 
   case "$binding" in
     ollama)
-      host="$(prompt_with_default "Ollama embedding host" "${ENV_VALUES[EMBEDDING_BINDING_HOST]:-http://localhost:11434}")"
+      host="$(prompt_with_default "Ollama embedding host" "${ENV_VALUES[EMBEDDING_BINDING_HOST]:-$(default_loopback_url 11434)}")"
       api_key=""
       ;;
     azure_openai)
@@ -671,7 +719,7 @@ collect_rerank_config() {
     if [[ "$use_docker" == "yes" ]]; then
       default_host="http://vllm-rerank:${vllm_port}/v1/rerank"
     else
-      default_host="http://host.docker.internal:${vllm_port}/v1/rerank"
+      default_host="$(default_loopback_url "$vllm_port" "/v1/rerank")"
     fi
     binding="cohere"
   else
@@ -896,6 +944,18 @@ finalize_setup() {
     return 1
   fi
 
+  if ((${#DOCKER_SERVICES[@]} > 0)); then
+    generate_compose="yes"
+  else
+    if confirm "Generate docker-compose for LightRAG only?"; then
+      generate_compose="yes"
+    fi
+  fi
+
+  if [[ "$generate_compose" == "yes" ]]; then
+    apply_compose_runtime_overrides
+  fi
+
   backup_path="$(backup_env_file)"
   if [[ -n "$backup_path" ]]; then
     log_success "Backed up existing .env to $backup_path"
@@ -908,14 +968,6 @@ finalize_setup() {
   log_debug "Writing .env to ${REPO_ROOT}/.env"
   generate_env_file "${REPO_ROOT}/env.example" "${REPO_ROOT}/.env"
   log_success "Wrote .env"
-
-  if ((${#DOCKER_SERVICES[@]} > 0)); then
-    generate_compose="yes"
-  else
-    if confirm "Generate docker-compose for LightRAG only?"; then
-      generate_compose="yes"
-    fi
-  fi
 
   if [[ "$generate_compose" == "yes" ]]; then
     compose_suffix="${DEPLOYMENT_TYPE:-custom}"
@@ -992,9 +1044,19 @@ interactive_flow() {
   collect_rerank_config
   log_step "Step 7: Server configuration"
   collect_server_config
-  log_step "Step 8: Security configuration"
+  if [[ "$deployment_type" == "production" ]]; then
+    log_step "Step 8: SSL configuration"
+    collect_ssl_config
+    log_step "Step 9: Security configuration"
+  else
+    log_step "Step 8: Security configuration"
+  fi
   collect_security_config "no" "no"
-  log_step "Step 9: Observability configuration"
+  if [[ "$deployment_type" == "production" ]]; then
+    log_step "Step 10: Observability configuration"
+  else
+    log_step "Step 9: Observability configuration"
+  fi
   collect_observability_config
 
   finalize_setup
@@ -1133,6 +1195,10 @@ validate_env_file() {
   fi
   if [[ -n "${ENV_VALUES[POSTGRES_PORT]:-}" ]] && ! validate_port "${ENV_VALUES[POSTGRES_PORT]}"; then
     format_error "Invalid POSTGRES_PORT" "Use a port between 1 and 65535."
+    errors=1
+  fi
+  if [[ -n "${ENV_VALUES[POSTGRES_HOST_PORT]:-}" ]] && ! validate_port "${ENV_VALUES[POSTGRES_HOST_PORT]}"; then
+    format_error "Invalid POSTGRES_HOST_PORT" "Use a port between 1 and 65535."
     errors=1
   fi
 
