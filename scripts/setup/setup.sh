@@ -1242,9 +1242,11 @@ interactive_flow() {
 
   case "$deployment_type" in
     development)
+      load_storage_preset_overwrite "development"
       load_preset "development"
       ;;
     production)
+      load_storage_preset_overwrite "production"
       load_preset "production"
       ;;
     custom)
@@ -1303,7 +1305,7 @@ quick_start_flow() {
   DEPLOYMENT_TYPE="development"
 
   log_info "Quick start setup"
-  echo "Using development preset. Only OpenAI API key is required."
+  echo "Using development preset. The wizard stores an OpenAI API key in .env for convenience, but you can override it with runtime environment variables later."
 
   api_key="$(prompt_secret_until_valid_with_default "OpenAI API key: " "${ENV_VALUES[LLM_BINDING_API_KEY]:-}" validate_api_key openai)"
   ENV_VALUES["LLM_BINDING_API_KEY"]="$api_key"
@@ -1318,6 +1320,7 @@ production_flow() {
 
   reset_state
   load_existing_env_if_present
+  load_storage_preset_overwrite "production"
   load_preset "production"
   DEPLOYMENT_TYPE="production"
 

@@ -709,6 +709,81 @@ quick_start_flow
     assert values["EMBEDDING_BINDING_API_KEY"] == "sk-existing"
 
 
+def test_production_flow_resets_existing_storage_settings_to_production_preset(
+    tmp_path: Path,
+) -> None:
+    """Production flow should preselect production storage backends on reruns."""
+
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "\n".join(
+            [
+                "LIGHTRAG_KV_STORAGE=JsonKVStorage",
+                "LIGHTRAG_VECTOR_STORAGE=NanoVectorDBStorage",
+                "LIGHTRAG_GRAPH_STORAGE=NetworkXStorage",
+                "LIGHTRAG_DOC_STATUS_STORAGE=JsonDocStatusStorage",
+                "LLM_BINDING=ollama",
+                "LLM_MODEL=llama3.2:latest",
+                "LLM_BINDING_HOST=http://localhost:11434",
+                "EMBEDDING_BINDING=ollama",
+                "EMBEDDING_MODEL=nomic-embed-text:latest",
+                "EMBEDDING_DIM=768",
+                "EMBEDDING_BINDING_HOST=http://localhost:11434",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    output = run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+
+prompt_choice() {{
+  printf '%s' "$2"
+}}
+confirm_default_yes() {{
+  return 1
+}}
+confirm() {{
+  return 1
+}}
+prompt_with_default() {{
+  printf '%s' "$2"
+}}
+prompt_until_valid() {{
+  printf '%s' "$2"
+}}
+prompt_secret_with_default() {{
+  printf '%s' "$2"
+}}
+prompt_secret_until_valid_with_default() {{
+  printf '%s' "$2"
+}}
+finalize_setup() {{
+  printf 'LIGHTRAG_KV_STORAGE=%s\\n' "${{ENV_VALUES[LIGHTRAG_KV_STORAGE]}}"
+  printf 'LIGHTRAG_VECTOR_STORAGE=%s\\n' "${{ENV_VALUES[LIGHTRAG_VECTOR_STORAGE]}}"
+  printf 'LIGHTRAG_GRAPH_STORAGE=%s\\n' "${{ENV_VALUES[LIGHTRAG_GRAPH_STORAGE]}}"
+  printf 'LIGHTRAG_DOC_STATUS_STORAGE=%s\\n' "${{ENV_VALUES[LIGHTRAG_DOC_STATUS_STORAGE]}}"
+  printf 'LLM_BINDING=%s\\n' "${{ENV_VALUES[LLM_BINDING]}}"
+  printf 'EMBEDDING_BINDING=%s\\n' "${{ENV_VALUES[EMBEDDING_BINDING]}}"
+}}
+
+production_flow
+"""
+    )
+    values = parse_lines(output)
+
+    assert values["LIGHTRAG_KV_STORAGE"] == "PGKVStorage"
+    assert values["LIGHTRAG_VECTOR_STORAGE"] == "MilvusVectorDBStorage"
+    assert values["LIGHTRAG_GRAPH_STORAGE"] == "Neo4JStorage"
+    assert values["LIGHTRAG_DOC_STATUS_STORAGE"] == "PGDocStatusStorage"
+    assert values["LLM_BINDING"] == "ollama"
+    assert values["EMBEDDING_BINDING"] == "ollama"
+
+
 def test_collect_milvus_config_defaults_to_existing_database_name() -> None:
     """Milvus database prompt should preserve the documented default database."""
 

@@ -42,3 +42,23 @@ load_preset() {
       ;;
   esac
 }
+
+load_storage_preset_overwrite() {
+  local preset_name="$1"
+
+  case "$preset_name" in
+    development)
+      apply_preset_overwrite "${PRESET_DEVELOPMENT[@]:0:4}"
+      ;;
+    production)
+      apply_preset_overwrite "${PRESET_PRODUCTION[@]:0:4}"
+      ;;
+    local)
+      apply_preset_overwrite "${PRESET_LOCAL[@]:0:4}"
+      ;;
+    *)
+      echo "Unknown preset: $preset_name" >&2
+      return 1
+      ;;
+  esac
+}
