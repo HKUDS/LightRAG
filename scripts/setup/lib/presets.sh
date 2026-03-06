@@ -13,6 +13,16 @@ apply_preset() {
   done
 }
 
+apply_preset_overwrite() {
+  local entry key value
+
+  for entry in "$@"; do
+    key="${entry%%=*}"
+    value="${entry#*=}"
+    ENV_VALUES["$key"]="$value"
+  done
+}
+
 load_preset() {
   local preset_name="$1"
 

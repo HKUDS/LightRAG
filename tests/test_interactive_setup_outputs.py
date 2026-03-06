@@ -268,6 +268,54 @@ generate_docker_compose "$REPO_ROOT/docker-compose.generated.yml"
     assert './data/certs/key.pem:/app/data/certs/key.pem:ro' in generated_compose
 
 
+def test_collect_ssl_config_can_disable_loaded_ssl_values(tmp_path: Path) -> None:
+    """Declining SSL should clear previously loaded cert paths and staged sources."""
+
+    cert_path = tmp_path / "cert.pem"
+    cert_path.write_text("cert", encoding="utf-8")
+    key_path = tmp_path / "key.pem"
+    key_path.write_text("key", encoding="utf-8")
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "\n".join(
+            [
+                "SSL=true",
+                f"SSL_CERTFILE={cert_path}",
+                f"SSL_KEYFILE={key_path}",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    output = run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+load_existing_env_if_present
+
+confirm_default_yes() {{ return 1; }}
+
+collect_ssl_config
+
+printf 'SSL_IS_SET=%s\\n' "${{ENV_VALUES[SSL]+set}}"
+printf 'SSL_CERTFILE_IS_SET=%s\\n' "${{ENV_VALUES[SSL_CERTFILE]+set}}"
+printf 'SSL_KEYFILE_IS_SET=%s\\n' "${{ENV_VALUES[SSL_KEYFILE]+set}}"
+printf 'SSL_CERT_SOURCE_PATH=%s\\n' "$SSL_CERT_SOURCE_PATH"
+printf 'SSL_KEY_SOURCE_PATH=%s\\n' "$SSL_KEY_SOURCE_PATH"
+"""
+    )
+    values = parse_lines(output)
+
+    assert values["SSL_IS_SET"] == ""
+    assert values["SSL_CERTFILE_IS_SET"] == ""
+    assert values["SSL_KEYFILE_IS_SET"] == ""
+    assert values["SSL_CERT_SOURCE_PATH"] == ""
+    assert values["SSL_KEY_SOURCE_PATH"] == ""
+
+
 def test_generate_docker_compose_skips_environment_block_without_overrides(
     tmp_path: Path,
 ) -> None:
@@ -596,6 +644,67 @@ quick_start_flow
     assert values["RERANK_BINDING"] == "jina"
     assert values["LIGHTRAG_KV_STORAGE"] == "JsonKVStorage"
     assert values["LLM_BINDING"] == "openai"
+    assert values["LLM_BINDING_API_KEY"] == "sk-existing"
+    assert values["EMBEDDING_BINDING_API_KEY"] == "sk-existing"
+
+
+def test_quick_start_flow_resets_existing_provider_settings_to_development_preset(
+    tmp_path: Path,
+) -> None:
+    """Quick start should replace prior provider bindings with the OpenAI preset."""
+
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "\n".join(
+            [
+                "LLM_BINDING=ollama",
+                "LLM_MODEL=llama3.2:latest",
+                "LLM_BINDING_HOST=http://localhost:11434",
+                "EMBEDDING_BINDING=ollama",
+                "EMBEDDING_MODEL=nomic-embed-text:latest",
+                "EMBEDDING_DIM=768",
+                "EMBEDDING_BINDING_HOST=http://localhost:11434",
+                "LLM_BINDING_API_KEY=sk-existing",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    output = run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+
+prompt_secret_until_valid_with_default() {{
+  printf '%s' "$2"
+}}
+
+finalize_setup() {{
+  printf 'LLM_BINDING=%s\\n' "${{ENV_VALUES[LLM_BINDING]}}"
+  printf 'LLM_MODEL=%s\\n' "${{ENV_VALUES[LLM_MODEL]}}"
+  printf 'LLM_BINDING_HOST=%s\\n' "${{ENV_VALUES[LLM_BINDING_HOST]}}"
+  printf 'EMBEDDING_BINDING=%s\\n' "${{ENV_VALUES[EMBEDDING_BINDING]}}"
+  printf 'EMBEDDING_MODEL=%s\\n' "${{ENV_VALUES[EMBEDDING_MODEL]}}"
+  printf 'EMBEDDING_DIM=%s\\n' "${{ENV_VALUES[EMBEDDING_DIM]}}"
+  printf 'EMBEDDING_BINDING_HOST=%s\\n' "${{ENV_VALUES[EMBEDDING_BINDING_HOST]}}"
+  printf 'LLM_BINDING_API_KEY=%s\\n' "${{ENV_VALUES[LLM_BINDING_API_KEY]}}"
+  printf 'EMBEDDING_BINDING_API_KEY=%s\\n' "${{ENV_VALUES[EMBEDDING_BINDING_API_KEY]}}"
+}}
+
+quick_start_flow
+"""
+    )
+    values = parse_lines(output)
+
+    assert values["LLM_BINDING"] == "openai"
+    assert values["LLM_MODEL"] == "gpt-4o"
+    assert values["LLM_BINDING_HOST"] == "https://api.openai.com/v1"
+    assert values["EMBEDDING_BINDING"] == "openai"
+    assert values["EMBEDDING_MODEL"] == "text-embedding-3-large"
+    assert values["EMBEDDING_DIM"] == "3072"
+    assert values["EMBEDDING_BINDING_HOST"] == "https://api.openai.com/v1"
     assert values["LLM_BINDING_API_KEY"] == "sk-existing"
     assert values["EMBEDDING_BINDING_API_KEY"] == "sk-existing"
 

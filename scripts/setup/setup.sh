@@ -949,6 +949,11 @@ collect_ssl_config() {
   local cert key
 
   if ! confirm_default_yes "Enable SSL/TLS for the API server?"; then
+    unset 'ENV_VALUES[SSL]'
+    unset 'ENV_VALUES[SSL_CERTFILE]'
+    unset 'ENV_VALUES[SSL_KEYFILE]'
+    SSL_CERT_SOURCE_PATH=""
+    SSL_KEY_SOURCE_PATH=""
     return
   fi
 
@@ -1267,7 +1272,7 @@ quick_start_flow() {
 
   reset_state
   load_existing_env_if_present
-  load_preset "development"
+  apply_preset_overwrite "${PRESET_DEVELOPMENT[@]}"
   DEPLOYMENT_TYPE="development"
 
   log_info "Quick start setup"
