@@ -1294,6 +1294,43 @@ printf 'VLLM_USE_CPU_SET=%s\\n' "${{ENV_VALUES[VLLM_USE_CPU]+set}}"
     assert values["VLLM_USE_CPU_SET"] == ""
 
 
+def test_collect_rerank_config_switching_to_cpu_resets_dtype_default() -> None:
+    """Switching vLLM from CUDA to CPU should default dtype back to float32."""
+
+    output = run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+reset_state
+
+ENV_VALUES[VLLM_RERANK_DEVICE]="cuda"
+ENV_VALUES[VLLM_RERANK_DTYPE]="float16"
+
+confirm() {{ return 0; }}
+confirm_default_yes() {{ return 0; }}
+prompt_choice() {{
+  case "$1" in
+    "Rerank provider") printf 'vllm' ;;
+    "vLLM device") printf 'cpu' ;;
+    *) printf '%s' "$2" ;;
+  esac
+}}
+prompt_with_default() {{ printf '%s' "$2"; }}
+prompt_until_valid() {{ printf '%s' "$2"; }}
+prompt_secret_with_default() {{ printf '%s' "$2"; }}
+
+collect_rerank_config
+
+printf 'VLLM_RERANK_DEVICE=%s\\n' "${{ENV_VALUES[VLLM_RERANK_DEVICE]}}"
+printf 'VLLM_RERANK_DTYPE=%s\\n' "${{ENV_VALUES[VLLM_RERANK_DTYPE]}}"
+"""
+    )
+    values = parse_lines(output)
+
+    assert values["VLLM_RERANK_DEVICE"] == "cpu"
+    assert values["VLLM_RERANK_DTYPE"] == "float32"
+
+
 def test_generate_docker_compose_escapes_dollar_signs_in_overrides(
     tmp_path: Path,
 ) -> None:
@@ -1745,6 +1782,48 @@ interactive_flow
     assert "LIGHTRAG_SETUP_PROFILE=development" in generated_lines
 
 
+def test_interactive_flow_collects_image_tags_after_rerank_service_selection(
+    tmp_path: Path,
+) -> None:
+    """Interactive flow should include rerank-selected services in image-tag prompts."""
+
+    output = run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+
+select_deployment_type() {{ printf 'development'; }}
+select_storage_backends() {{
+  ENV_VALUES[LIGHTRAG_KV_STORAGE]="JsonKVStorage"
+  ENV_VALUES[LIGHTRAG_VECTOR_STORAGE]="NanoVectorDBStorage"
+  ENV_VALUES[LIGHTRAG_GRAPH_STORAGE]="NetworkXStorage"
+  ENV_VALUES[LIGHTRAG_DOC_STATUS_STORAGE]="JsonDocStatusStorage"
+}}
+collect_llm_config() {{ :; }}
+collect_embedding_config() {{ :; }}
+collect_rerank_config() {{ add_docker_service "vllm-rerank"; }}
+collect_server_config() {{ :; }}
+collect_security_config() {{ :; }}
+collect_observability_config() {{ :; }}
+collect_docker_image_tags() {{
+  if [[ -n "${{DOCKER_SERVICE_SET[vllm-rerank]+set}}" ]]; then
+    printf 'HAS_VLLM_SERVICE=yes\\n'
+  else
+    printf 'HAS_VLLM_SERVICE=no\\n'
+  fi
+}}
+finalize_setup() {{ :; }}
+
+interactive_flow
+"""
+    )
+    values = parse_lines(output)
+
+    assert values["HAS_VLLM_SERVICE"] == "yes"
+
+
 def test_production_flow_resets_existing_storage_settings_to_production_preset(
     tmp_path: Path,
 ) -> None:
@@ -1818,6 +1897,44 @@ production_flow
     assert values["LIGHTRAG_DOC_STATUS_STORAGE"] == "PGDocStatusStorage"
     assert values["LLM_BINDING"] == "ollama"
     assert values["EMBEDDING_BINDING"] == "ollama"
+
+
+def test_production_flow_collects_image_tags_after_rerank_service_selection(
+    tmp_path: Path,
+) -> None:
+    """Production flow should include rerank-selected services in image-tag prompts."""
+
+    output = run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+
+select_storage_backends() {{ :; }}
+collect_database_config() {{ :; }}
+collect_llm_config() {{ :; }}
+collect_embedding_config() {{ :; }}
+collect_rerank_config() {{ add_docker_service "vllm-rerank"; }}
+collect_server_config() {{ :; }}
+collect_ssl_config() {{ :; }}
+collect_security_config() {{ :; }}
+collect_observability_config() {{ :; }}
+collect_docker_image_tags() {{
+  if [[ -n "${{DOCKER_SERVICE_SET[vllm-rerank]+set}}" ]]; then
+    printf 'HAS_VLLM_SERVICE=yes\\n'
+  else
+    printf 'HAS_VLLM_SERVICE=no\\n'
+  fi
+}}
+finalize_setup() {{ :; }}
+
+production_flow
+"""
+    )
+    values = parse_lines(output)
+
+    assert values["HAS_VLLM_SERVICE"] == "yes"
 
 
 def test_collect_milvus_config_defaults_to_existing_database_name() -> None:

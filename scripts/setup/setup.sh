@@ -1140,6 +1140,8 @@ collect_rerank_config() {
   local binding_choice binding model host api_key
   local vllm_model vllm_port vllm_device vllm_dtype vllm_extra
   local default_dtype=""
+  local existing_vllm_device=""
+  local existing_vllm_dtype=""
   local default_model="" default_host="" model_default="" host_default="" use_docker="no"
   local previous_provider="${ENV_VALUES[LIGHTRAG_SETUP_RERANK_PROVIDER]:-}"
   local reset_vllm_defaults="no"
@@ -1176,7 +1178,11 @@ collect_rerank_config() {
         vllm_device="cpu"
       fi
     fi
-    default_dtype="${ENV_VALUES[VLLM_RERANK_DTYPE]:-}"
+    existing_vllm_device="${ENV_VALUES[VLLM_RERANK_DEVICE]:-}"
+    existing_vllm_dtype="${ENV_VALUES[VLLM_RERANK_DTYPE]:-}"
+    if [[ -n "$existing_vllm_dtype" && "$existing_vllm_device" == "$vllm_device" ]]; then
+      default_dtype="$existing_vllm_dtype"
+    fi
     if [[ -z "$default_dtype" ]]; then
       if [[ "$vllm_device" == "cpu" ]]; then
         default_dtype="float32"
@@ -1639,14 +1645,13 @@ interactive_flow() {
     fi
   done
 
-  collect_docker_image_tags
-
   log_step "Step 4: LLM configuration"
   collect_llm_config
   log_step "Step 5: Embedding configuration"
   collect_embedding_config
   log_step "Step 6: Reranking configuration"
   collect_rerank_config
+  collect_docker_image_tags
   log_step "Step 7: Server configuration"
   collect_server_config
   if [[ "$deployment_type" == "production" ]]; then
@@ -1718,12 +1723,11 @@ production_flow() {
     fi
   done
 
-  collect_docker_image_tags
-
   log_step "Configuring LLM and embedding providers"
   collect_llm_config
   collect_embedding_config
   collect_rerank_config
+  collect_docker_image_tags
   log_step "Configuring server and security settings"
   collect_server_config
   collect_ssl_config
