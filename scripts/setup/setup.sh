@@ -867,6 +867,24 @@ collect_memgraph_config() {
   fi
 }
 
+clear_bedrock_credentials() {
+  unset 'ENV_VALUES[AWS_ACCESS_KEY_ID]'
+  unset 'ENV_VALUES[AWS_SECRET_ACCESS_KEY]'
+  unset 'ENV_VALUES[AWS_SESSION_TOKEN]'
+  unset 'ENV_VALUES[AWS_REGION]'
+}
+
+bedrock_binding_in_use() {
+  [[ "${ENV_VALUES[LLM_BINDING]:-}" == "aws_bedrock" ||
+    "${ENV_VALUES[EMBEDDING_BINDING]:-}" == "aws_bedrock" ]]
+}
+
+clear_bedrock_credentials_if_unused() {
+  if ! bedrock_binding_in_use; then
+    clear_bedrock_credentials
+  fi
+}
+
 collect_bedrock_credentials() {
   local access_key secret_key session_token region
 
@@ -878,19 +896,28 @@ collect_bedrock_credentials() {
       return 0
     fi
   fi
-  access_key="$(prompt_required_secret "AWS access key ID: ")"
-  secret_key="$(prompt_required_secret "AWS secret access key: ")"
-  session_token="$(mask_sensitive_input "AWS session token (optional): ")"
-  region="$(prompt_with_default "AWS region" "${ENV_VALUES[AWS_REGION]:-us-east-1}")"
 
-  ENV_VALUES["AWS_ACCESS_KEY_ID"]="$access_key"
-  ENV_VALUES["AWS_SECRET_ACCESS_KEY"]="$secret_key"
-  ENV_VALUES["AWS_REGION"]="$region"
-  if [[ -n "$session_token" ]]; then
-    ENV_VALUES["AWS_SESSION_TOKEN"]="$session_token"
-  else
-    unset 'ENV_VALUES[AWS_SESSION_TOKEN]'
+  if confirm "Store explicit AWS Bedrock credentials in .env?"; then
+    access_key="$(prompt_required_secret "AWS access key ID: ")"
+    secret_key="$(prompt_required_secret "AWS secret access key: ")"
+    session_token="$(mask_sensitive_input "AWS session token (optional): ")"
+    region="$(prompt_with_default "AWS region" "${ENV_VALUES[AWS_REGION]:-us-east-1}")"
+
+    ENV_VALUES["AWS_ACCESS_KEY_ID"]="$access_key"
+    ENV_VALUES["AWS_SECRET_ACCESS_KEY"]="$secret_key"
+    ENV_VALUES["AWS_REGION"]="$region"
+    if [[ -n "$session_token" ]]; then
+      ENV_VALUES["AWS_SESSION_TOKEN"]="$session_token"
+    else
+      unset 'ENV_VALUES[AWS_SESSION_TOKEN]'
+    fi
+    return 0
   fi
+
+  log_info "Using the ambient AWS credential chain (for example IAM roles, AWS profiles, or aws sso login)."
+  clear_bedrock_credentials
+  region="$(prompt_clearable_with_default "AWS region (optional)" "${ENV_VALUES[AWS_REGION]:-}")"
+  apply_clearable_env_value "AWS_REGION" "$region"
 }
 
 store_optional_env_value() {
@@ -1041,6 +1068,7 @@ collect_llm_config() {
   ENV_VALUES["LLM_MODEL"]="$model"
   ENV_VALUES["LLM_BINDING_HOST"]="$host"
   store_optional_env_value "LLM_BINDING_API_KEY" "$api_key"
+  clear_bedrock_credentials_if_unused
 }
 
 collect_embedding_config() {
@@ -1104,6 +1132,7 @@ collect_embedding_config() {
   ENV_VALUES["EMBEDDING_DIM"]="$dim"
   ENV_VALUES["EMBEDDING_BINDING_HOST"]="$host"
   store_optional_env_value "EMBEDDING_BINDING_API_KEY" "$api_key"
+  clear_bedrock_credentials_if_unused
 }
 
 collect_rerank_config() {
@@ -1629,6 +1658,7 @@ quick_start_flow() {
   reset_quick_start_inherited_state
   apply_preset_overwrite "${PRESET_DEVELOPMENT[@]}"
   DEPLOYMENT_TYPE="development"
+  clear_bedrock_credentials_if_unused
 
   log_info "Quick start setup"
   echo "Using development preset. The wizard stores an OpenAI API key in .env for convenience, but you can override it with runtime environment variables later."

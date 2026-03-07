@@ -666,6 +666,7 @@ prompt_choice() {{ printf 'aws_bedrock'; }}
 prompt_with_default() {{ printf '%s' "$2"; }}
 prompt_required_secret() {{ printf 'dummy-secret'; }}
 mask_sensitive_input() {{ printf ''; }}
+confirm() {{ return 0; }}
 confirm_default_yes() {{ return 0; }}
 
 collect_llm_config
@@ -842,6 +843,7 @@ prompt_choice() {{ printf 'aws_bedrock'; }}
 prompt_with_default() {{ printf '%s' "$2"; }}
 prompt_required_secret() {{ printf 'dummy-secret'; }}
 mask_sensitive_input() {{ printf ''; }}
+confirm() {{ return 0; }}
 confirm_default_yes() {{ return 0; }}
 
 collect_embedding_config
@@ -860,6 +862,40 @@ fi
     assert values["EMBEDDING_BINDING"] == "aws_bedrock"
     assert values["EMBEDDING_BINDING_API_KEY_SET"] == ""
     assert values["VALID"] == "yes"
+
+
+def test_collect_llm_config_allows_bedrock_ambient_credential_chain() -> None:
+    """Bedrock setup should allow IAM roles, AWS profiles, or SSO without saved keys."""
+
+    output = run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+reset_state
+
+prompt_choice() {{ printf 'aws_bedrock'; }}
+prompt_with_default() {{ printf '%s' "$2"; }}
+prompt_clearable_with_default() {{ printf ''; }}
+prompt_required_secret() {{ return 1; }}
+confirm() {{ return 1; }}
+confirm_default_yes() {{ return 1; }}
+
+collect_llm_config
+
+printf 'LLM_BINDING=%s\\n' "${{ENV_VALUES[LLM_BINDING]}}"
+printf 'AWS_ACCESS_KEY_ID_SET=%s\\n' "${{ENV_VALUES[AWS_ACCESS_KEY_ID]+set}}"
+printf 'AWS_SECRET_ACCESS_KEY_SET=%s\\n' "${{ENV_VALUES[AWS_SECRET_ACCESS_KEY]+set}}"
+printf 'AWS_SESSION_TOKEN_SET=%s\\n' "${{ENV_VALUES[AWS_SESSION_TOKEN]+set}}"
+printf 'AWS_REGION_SET=%s\\n' "${{ENV_VALUES[AWS_REGION]+set}}"
+"""
+    )
+    values = parse_lines(output)
+
+    assert values["LLM_BINDING"] == "aws_bedrock"
+    assert values["AWS_ACCESS_KEY_ID_SET"] == ""
+    assert values["AWS_SECRET_ACCESS_KEY_SET"] == ""
+    assert values["AWS_SESSION_TOKEN_SET"] == ""
+    assert values["AWS_REGION_SET"] == ""
 
 
 def test_collect_embedding_config_uses_provider_specific_defaults() -> None:
@@ -889,6 +925,89 @@ printf 'EMBEDDING_BINDING_HOST=%s\\n' "${{ENV_VALUES[EMBEDDING_BINDING_HOST]}}"
     assert values["EMBEDDING_MODEL"] == "jina-embeddings-v4"
     assert values["EMBEDDING_DIM"] == "2048"
     assert values["EMBEDDING_BINDING_HOST"] == "https://api.jina.ai/v1/embeddings"
+
+
+def test_switching_both_providers_off_bedrock_clears_saved_aws_credentials(
+    tmp_path: Path,
+) -> None:
+    """Reruns should not keep stale AWS Bedrock secrets in regenerated `.env` files."""
+
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "\n".join(
+            [
+                "LLM_BINDING=aws_bedrock",
+                "LLM_MODEL=anthropic.claude-3-5-sonnet-20241022-v2:0",
+                "LLM_BINDING_HOST=https://bedrock.amazonaws.com",
+                "EMBEDDING_BINDING=aws_bedrock",
+                "EMBEDDING_MODEL=amazon.titan-embed-text-v2:0",
+                "EMBEDDING_DIM=1024",
+                "EMBEDDING_BINDING_HOST=https://bedrock.amazonaws.com",
+                "AWS_ACCESS_KEY_ID=AKIAOLDKEY",
+                "AWS_SECRET_ACCESS_KEY=oldsecretvalue",
+                "AWS_SESSION_TOKEN=oldsess",
+                "AWS_REGION=us-east-1",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    env_example = tmp_path / "env.example"
+    env_example.write_text(
+        "\n".join(
+            [
+                "# AWS_ACCESS_KEY_ID=your_aws_access_key_id",
+                "# AWS_SECRET_ACCESS_KEY=your_aws_secret_access_key",
+                "# AWS_SESSION_TOKEN=your_optional_aws_session_token",
+                "# AWS_REGION=us-east-1",
+                "LLM_BINDING=openai",
+                "LLM_MODEL=gpt-4o",
+                "LLM_BINDING_HOST=https://api.openai.com/v1",
+                "LLM_BINDING_API_KEY=your_api_key",
+                "EMBEDDING_BINDING=openai",
+                "EMBEDDING_MODEL=text-embedding-3-large",
+                "EMBEDDING_DIM=3072",
+                "EMBEDDING_BINDING_HOST=https://api.openai.com/v1",
+                "EMBEDDING_BINDING_API_KEY=your_api_key",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    output = run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+load_existing_env_if_present
+
+prompt_choice() {{ printf 'openai'; }}
+prompt_with_default() {{ printf '%s' "$2"; }}
+prompt_secret_until_valid_with_default() {{ printf 'fresh-key'; }}
+
+collect_llm_config
+collect_embedding_config
+generate_env_file "$REPO_ROOT/env.example" "$REPO_ROOT/.env.generated"
+
+printf 'AWS_ACCESS_KEY_ID_SET=%s\\n' "${{ENV_VALUES[AWS_ACCESS_KEY_ID]+set}}"
+printf 'AWS_SECRET_ACCESS_KEY_SET=%s\\n' "${{ENV_VALUES[AWS_SECRET_ACCESS_KEY]+set}}"
+printf 'AWS_SESSION_TOKEN_SET=%s\\n' "${{ENV_VALUES[AWS_SESSION_TOKEN]+set}}"
+printf 'AWS_REGION_SET=%s\\n' "${{ENV_VALUES[AWS_REGION]+set}}"
+"""
+    )
+    values = parse_lines(output)
+    generated_lines = (tmp_path / ".env.generated").read_text(encoding="utf-8").splitlines()
+
+    assert values["AWS_ACCESS_KEY_ID_SET"] == ""
+    assert values["AWS_SECRET_ACCESS_KEY_SET"] == ""
+    assert values["AWS_SESSION_TOKEN_SET"] == ""
+    assert values["AWS_REGION_SET"] == ""
+    assert not any(line.startswith("AWS_ACCESS_KEY_ID=") for line in generated_lines)
+    assert not any(line.startswith("AWS_SECRET_ACCESS_KEY=") for line in generated_lines)
+    assert not any(line.startswith("AWS_SESSION_TOKEN=") for line in generated_lines)
+    assert not any(line.startswith("AWS_REGION=") for line in generated_lines)
 
 
 def test_collect_embedding_config_preserves_supported_lollms_binding_on_rerun(
