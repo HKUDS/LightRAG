@@ -43,6 +43,31 @@ def parse_lines(output: str) -> dict[str, str]:
     return values
 
 
+def test_setup_script_rejects_bash_3_with_clear_message() -> None:
+    """The setup entrypoint should fail cleanly on Bash versions without associative arrays."""
+
+    bash_major = subprocess.run(
+        ["/bin/bash", "-lc", 'printf "%s" "${BASH_VERSINFO[0]}"'],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if bash_major.returncode != 0 or int(bash_major.stdout or "0") >= 4:
+        pytest.skip("/bin/bash already provides Bash 4+ on this runner")
+
+    result = subprocess.run(
+        ["/bin/bash", str(REPO_ROOT / "scripts/setup/setup.sh"), "--help"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "requires Bash 4 or newer" in result.stderr
+
+
 def test_collect_postgres_config_keeps_host_reachable_env_values() -> None:
     """Bundled PostgreSQL should keep `.env` host-oriented and use compose overrides."""
 
@@ -546,6 +571,156 @@ fi
     values = parse_lines(output)
 
     assert values["VALID"] == "no"
+
+
+def test_collect_llm_config_clears_stale_api_key_for_bedrock(
+    tmp_path: Path,
+) -> None:
+    """Switching to Bedrock should remove stale OpenAI API key settings."""
+
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "\n".join(
+            [
+                "LLM_BINDING=openai",
+                "LLM_MODEL=gpt-4o",
+                "LLM_BINDING_HOST=https://api.openai.com/v1",
+                "LLM_BINDING_API_KEY=${OPENAI_API_KEY}",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    output = run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+load_existing_env_if_present
+
+prompt_choice() {{ printf 'aws_bedrock'; }}
+prompt_with_default() {{ printf '%s' "$2"; }}
+prompt_required_secret() {{ printf 'dummy-secret'; }}
+mask_sensitive_input() {{ printf ''; }}
+confirm_default_yes() {{ return 0; }}
+
+collect_llm_config
+
+printf 'LLM_BINDING=%s\\n' "${{ENV_VALUES[LLM_BINDING]}}"
+printf 'LLM_BINDING_API_KEY_SET=%s\\n' "${{ENV_VALUES[LLM_BINDING_API_KEY]+set}}"
+if validate_sensitive_env_literals; then
+  printf 'VALID=yes\\n'
+else
+  printf 'VALID=no\\n'
+fi
+"""
+    )
+    values = parse_lines(output)
+
+    assert values["LLM_BINDING"] == "aws_bedrock"
+    assert values["LLM_BINDING_API_KEY_SET"] == ""
+    assert values["VALID"] == "yes"
+
+
+def test_collect_embedding_config_clears_stale_api_key_for_bedrock(
+    tmp_path: Path,
+) -> None:
+    """Switching embedding to Bedrock should remove stale provider API keys."""
+
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "\n".join(
+            [
+                "EMBEDDING_BINDING=openai",
+                "EMBEDDING_MODEL=text-embedding-3-large",
+                "EMBEDDING_DIM=3072",
+                "EMBEDDING_BINDING_HOST=https://api.openai.com/v1",
+                "EMBEDDING_BINDING_API_KEY=${OPENAI_API_KEY}",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    output = run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+load_existing_env_if_present
+
+prompt_choice() {{ printf 'aws_bedrock'; }}
+prompt_with_default() {{ printf '%s' "$2"; }}
+prompt_required_secret() {{ printf 'dummy-secret'; }}
+mask_sensitive_input() {{ printf ''; }}
+confirm_default_yes() {{ return 0; }}
+
+collect_embedding_config
+
+printf 'EMBEDDING_BINDING=%s\\n' "${{ENV_VALUES[EMBEDDING_BINDING]}}"
+printf 'EMBEDDING_BINDING_API_KEY_SET=%s\\n' "${{ENV_VALUES[EMBEDDING_BINDING_API_KEY]+set}}"
+if validate_sensitive_env_literals; then
+  printf 'VALID=yes\\n'
+else
+  printf 'VALID=no\\n'
+fi
+"""
+    )
+    values = parse_lines(output)
+
+    assert values["EMBEDDING_BINDING"] == "aws_bedrock"
+    assert values["EMBEDDING_BINDING_API_KEY_SET"] == ""
+    assert values["VALID"] == "yes"
+
+
+def test_collect_rerank_config_clears_stale_api_key_when_disabled(
+    tmp_path: Path,
+) -> None:
+    """Disabling reranking should remove stale credentials from a prior config."""
+
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "\n".join(
+            [
+                "RERANK_BINDING=cohere",
+                "RERANK_MODEL=rerank-v3.5",
+                "RERANK_BINDING_HOST=https://api.cohere.com/v1/rerank",
+                "RERANK_BINDING_API_KEY=${COHERE_API_KEY}",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    output = run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+load_existing_env_if_present
+
+confirm() {{ return 1; }}
+
+collect_rerank_config
+
+printf 'RERANK_BINDING=%s\\n' "${{ENV_VALUES[RERANK_BINDING]}}"
+printf 'RERANK_BINDING_API_KEY_SET=%s\\n' "${{ENV_VALUES[RERANK_BINDING_API_KEY]+set}}"
+if validate_sensitive_env_literals; then
+  printf 'VALID=yes\\n'
+else
+  printf 'VALID=no\\n'
+fi
+"""
+    )
+    values = parse_lines(output)
+
+    assert values["RERANK_BINDING"] == "null"
+    assert values["RERANK_BINDING_API_KEY_SET"] == ""
+    assert values["VALID"] == "yes"
 
 
 def test_generate_docker_compose_escapes_dollar_signs_in_overrides(
@@ -1781,3 +1956,50 @@ fi
     values = parse_lines(output)
 
     assert values["VALID"] == "no"
+
+
+def test_finalize_setup_requires_protection_for_custom_production_storage_profile(
+    tmp_path: Path,
+) -> None:
+    """Custom mode should not allow the production storage profile without auth."""
+
+    (tmp_path / "env.example").write_text("LLM_BINDING=openai\n", encoding="utf-8")
+
+    output = run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+DEPLOYMENT_TYPE="custom"
+
+ENV_VALUES[LIGHTRAG_KV_STORAGE]="PGKVStorage"
+ENV_VALUES[LIGHTRAG_VECTOR_STORAGE]="MilvusVectorDBStorage"
+ENV_VALUES[LIGHTRAG_GRAPH_STORAGE]="Neo4JStorage"
+ENV_VALUES[LIGHTRAG_DOC_STATUS_STORAGE]="PGDocStatusStorage"
+ENV_VALUES[POSTGRES_USER]="lightrag"
+ENV_VALUES[POSTGRES_PASSWORD]="secret"
+ENV_VALUES[POSTGRES_DATABASE]="lightrag"
+ENV_VALUES[MILVUS_URI]="http://localhost:19530"
+ENV_VALUES[MILVUS_DB_NAME]="lightrag"
+ENV_VALUES[NEO4J_URI]="neo4j://localhost:7687"
+ENV_VALUES[NEO4J_USERNAME]="neo4j"
+ENV_VALUES[NEO4J_PASSWORD]="secret"
+
+confirm() {{ return 0; }}
+confirm_default_yes() {{ return 1; }}
+backup_env_file() {{ return 0; }}
+generate_env_file() {{ :; }}
+generate_docker_compose() {{ :; }}
+show_summary() {{ :; }}
+
+if finalize_setup >/dev/null 2>&1; then
+  printf 'RESULT=success\\n'
+else
+  printf 'RESULT=failure\\n'
+fi
+"""
+    )
+    values = parse_lines(output)
+
+    assert values["RESULT"] == "failure"

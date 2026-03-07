@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+if [[ -z "${BASH_VERSINFO+x}" || "${BASH_VERSINFO[0]}" -lt 4 ]]; then
+  echo "Error: scripts/setup/setup.sh requires Bash 4 or newer." >&2
+  echo "Hint: install a newer bash and run it via 'bash scripts/setup/setup.sh ...'." >&2
+  exit 1
+fi
+
 SCRIPT_DIR="$(CDPATH="" cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LIB_DIR="$SCRIPT_DIR/lib"
 PRESETS_DIR="$SCRIPT_DIR/presets"
@@ -843,6 +849,17 @@ collect_bedrock_credentials() {
   fi
 }
 
+store_optional_env_value() {
+  local key="$1"
+  local value="${2:-}"
+
+  if [[ -n "$value" ]]; then
+    ENV_VALUES["$key"]="$value"
+  else
+    unset "ENV_VALUES[$key]"
+  fi
+}
+
 collect_llm_config() {
   local options=("openai" "azure_openai" "ollama" "gemini" "aws_bedrock")
   local binding model host api_key
@@ -877,9 +894,7 @@ collect_llm_config() {
   ENV_VALUES["LLM_BINDING"]="$binding"
   ENV_VALUES["LLM_MODEL"]="$model"
   ENV_VALUES["LLM_BINDING_HOST"]="$host"
-  if [[ -n "$api_key" ]]; then
-    ENV_VALUES["LLM_BINDING_API_KEY"]="$api_key"
-  fi
+  store_optional_env_value "LLM_BINDING_API_KEY" "$api_key"
 }
 
 collect_embedding_config() {
@@ -922,9 +937,7 @@ collect_embedding_config() {
   ENV_VALUES["EMBEDDING_MODEL"]="$model"
   ENV_VALUES["EMBEDDING_DIM"]="$dim"
   ENV_VALUES["EMBEDDING_BINDING_HOST"]="$host"
-  if [[ -n "$api_key" ]]; then
-    ENV_VALUES["EMBEDDING_BINDING_API_KEY"]="$api_key"
-  fi
+  store_optional_env_value "EMBEDDING_BINDING_API_KEY" "$api_key"
 }
 
 collect_rerank_config() {
@@ -937,6 +950,7 @@ collect_rerank_config() {
 
   if ! confirm "Enable reranking?"; then
     ENV_VALUES["RERANK_BINDING"]="null"
+    unset 'ENV_VALUES[RERANK_BINDING_API_KEY]'
     return
   fi
 
@@ -1011,9 +1025,7 @@ collect_rerank_config() {
   if [[ -n "$host" ]]; then
     ENV_VALUES["RERANK_BINDING_HOST"]="$host"
   fi
-  if [[ -n "$api_key" ]]; then
-    ENV_VALUES["RERANK_BINDING_API_KEY"]="$api_key"
-  fi
+  store_optional_env_value "RERANK_BINDING_API_KEY" "$api_key"
 }
 
 collect_server_config() {
@@ -1205,11 +1217,24 @@ show_summary() {
   fi
 }
 
+require_production_security_profile() {
+  if [[ "$DEPLOYMENT_TYPE" == "production" ]]; then
+    return 0
+  fi
+
+  is_production_storage_profile \
+    "${ENV_VALUES[LIGHTRAG_KV_STORAGE]:-}" \
+    "${ENV_VALUES[LIGHTRAG_VECTOR_STORAGE]:-}" \
+    "${ENV_VALUES[LIGHTRAG_GRAPH_STORAGE]:-}" \
+    "${ENV_VALUES[LIGHTRAG_DOC_STATUS_STORAGE]:-}"
+}
+
 finalize_setup() {
   local backup_path
   local compose_suffix
   local compose_file
   local generate_compose="no"
+  local require_protection="no"
 
   if [[ ! -f "${REPO_ROOT}/env.example" ]]; then
     format_error "env.example is missing in $REPO_ROOT" "Restore env.example before running setup."
@@ -1237,11 +1262,15 @@ finalize_setup() {
     return 1
   fi
 
+  if require_production_security_profile; then
+    require_protection="yes"
+  fi
+
   if ! validate_security_config \
     "${ENV_VALUES[AUTH_ACCOUNTS]:-}" \
     "${ENV_VALUES[TOKEN_SECRET]:-}" \
     "${ENV_VALUES[LIGHTRAG_API_KEY]:-}" \
-    "$([[ "$DEPLOYMENT_TYPE" == "production" ]] && printf 'yes' || printf 'no')" \
+    "$require_protection" \
     "${ENV_VALUES[WHITELIST_PATHS]:-}"; then
     return 1
   fi
