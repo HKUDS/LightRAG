@@ -1143,6 +1143,35 @@ printf 'LIGHTRAG_DOC_STATUS_STORAGE=%s\\n' "${{ENV_VALUES[LIGHTRAG_DOC_STATUS_ST
     assert values["LIGHTRAG_DOC_STATUS_STORAGE"] == "RedisDocStatusStorage"
 
 
+def test_select_storage_backends_allows_development_defaults_with_warnings() -> None:
+    """Development defaults should be selectable even when they emit advisory warnings."""
+
+    output = run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+reset_state
+
+prompt_choice() {{
+  printf '%s' "$2"
+}}
+
+select_storage_backends development
+
+printf 'LIGHTRAG_KV_STORAGE=%s\\n' "${{ENV_VALUES[LIGHTRAG_KV_STORAGE]}}"
+printf 'LIGHTRAG_VECTOR_STORAGE=%s\\n' "${{ENV_VALUES[LIGHTRAG_VECTOR_STORAGE]}}"
+printf 'LIGHTRAG_GRAPH_STORAGE=%s\\n' "${{ENV_VALUES[LIGHTRAG_GRAPH_STORAGE]}}"
+printf 'LIGHTRAG_DOC_STATUS_STORAGE=%s\\n' "${{ENV_VALUES[LIGHTRAG_DOC_STATUS_STORAGE]}}"
+"""
+    )
+    values = parse_lines(output)
+
+    assert values["LIGHTRAG_KV_STORAGE"] == "JsonKVStorage"
+    assert values["LIGHTRAG_VECTOR_STORAGE"] == "NanoVectorDBStorage"
+    assert values["LIGHTRAG_GRAPH_STORAGE"] == "NetworkXStorage"
+    assert values["LIGHTRAG_DOC_STATUS_STORAGE"] == "JsonDocStatusStorage"
+
+
 def test_quick_start_flow_preserves_existing_non_preset_values(
     tmp_path: Path,
 ) -> None:
