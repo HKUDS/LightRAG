@@ -1141,6 +1141,8 @@ collect_rerank_config() {
   local vllm_model vllm_port vllm_device vllm_dtype vllm_extra
   local default_dtype=""
   local default_model="" default_host="" model_default="" host_default="" use_docker="no"
+  local previous_provider="${ENV_VALUES[LIGHTRAG_SETUP_RERANK_PROVIDER]:-}"
+  local reset_vllm_defaults="no"
   local rerank_default="${ENV_VALUES[LIGHTRAG_SETUP_RERANK_PROVIDER]:-${ENV_VALUES[RERANK_BINDING]:-cohere}}"
 
   if ! confirm "Enable reranking?"; then
@@ -1155,6 +1157,9 @@ collect_rerank_config() {
   fi
 
   binding_choice="$(prompt_choice "Rerank provider" "$rerank_default" "${options[@]}")"
+  if [[ "$binding_choice" != "vllm" && "$previous_provider" == "vllm" ]]; then
+    reset_vllm_defaults="yes"
+  fi
 
   if [[ "$binding_choice" == "vllm" ]]; then
     log_info "vLLM uses the Cohere-compatible rerank API."
@@ -1182,6 +1187,16 @@ collect_rerank_config() {
     vllm_dtype="$(prompt_with_default "vLLM dtype" "$default_dtype")"
     vllm_extra="$(prompt_with_default "vLLM extra args" "${ENV_VALUES[VLLM_RERANK_EXTRA_ARGS]:-}")"
 
+    if [[ "$vllm_device" == "cuda" ]]; then
+      if [[ "${ENV_VALUES[CUDA_VISIBLE_DEVICES]:-}" == "-1" ]]; then
+        unset 'ENV_VALUES[CUDA_VISIBLE_DEVICES]'
+      fi
+      if [[ "${ENV_VALUES[NVIDIA_VISIBLE_DEVICES]:-}" == "-1" ]]; then
+        unset 'ENV_VALUES[NVIDIA_VISIBLE_DEVICES]'
+      fi
+      unset 'ENV_VALUES[VLLM_USE_CPU]'
+    fi
+
     ENV_VALUES["VLLM_RERANK_MODEL"]="$vllm_model"
     ENV_VALUES["VLLM_RERANK_PORT"]="$vllm_port"
     ENV_VALUES["VLLM_RERANK_DEVICE"]="$vllm_device"
@@ -1205,6 +1220,9 @@ collect_rerank_config() {
   if [[ "$binding_choice" == "vllm" ]]; then
     model_default="$default_model"
     host_default="$default_host"
+  elif [[ "$reset_vllm_defaults" == "yes" ]]; then
+    model_default="$default_model"
+    host_default="$default_host"
   else
     model_default="${ENV_VALUES[RERANK_MODEL]:-$default_model}"
     host_default="${ENV_VALUES[RERANK_BINDING_HOST]:-$default_host}"
@@ -1222,9 +1240,13 @@ collect_rerank_config() {
   ENV_VALUES["LIGHTRAG_SETUP_RERANK_PROVIDER"]="$binding_choice"
   if [[ -n "$model" ]]; then
     ENV_VALUES["RERANK_MODEL"]="$model"
+  elif [[ "$reset_vllm_defaults" == "yes" ]]; then
+    unset 'ENV_VALUES[RERANK_MODEL]'
   fi
   if [[ -n "$host" ]]; then
     ENV_VALUES["RERANK_BINDING_HOST"]="$host"
+  elif [[ "$reset_vllm_defaults" == "yes" ]]; then
+    unset 'ENV_VALUES[RERANK_BINDING_HOST]'
   fi
   store_optional_env_value "RERANK_BINDING_API_KEY" "$api_key"
 }

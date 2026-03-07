@@ -1207,6 +1207,93 @@ printf 'COMPOSE_RERANK_BINDING_HOST=%s\\n' "${{COMPOSE_ENV_OVERRIDES[RERANK_BIND
     )
 
 
+def test_collect_rerank_config_switching_from_vllm_clears_local_defaults() -> None:
+    """Switching from local vLLM to hosted rerank should drop stale local endpoint defaults."""
+
+    output = run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+reset_state
+
+ENV_VALUES[LIGHTRAG_SETUP_RERANK_PROVIDER]="vllm"
+ENV_VALUES[RERANK_BINDING]="cohere"
+ENV_VALUES[RERANK_MODEL]="BAAI/bge-reranker-v2-m3"
+ENV_VALUES[RERANK_BINDING_HOST]="http://localhost:8000/v1/rerank"
+
+confirm() {{ return 0; }}
+prompt_choice() {{
+  case "$1" in
+    "Rerank provider") printf 'cohere' ;;
+    *) printf '%s' "$2" ;;
+  esac
+}}
+prompt_with_default() {{ printf '%s' "$2"; }}
+prompt_secret_until_valid_with_default() {{ printf 'cohere-secret-123'; }}
+
+collect_rerank_config
+
+printf 'RERANK_BINDING=%s\\n' "${{ENV_VALUES[RERANK_BINDING]}}"
+printf 'LIGHTRAG_SETUP_RERANK_PROVIDER=%s\\n' "${{ENV_VALUES[LIGHTRAG_SETUP_RERANK_PROVIDER]}}"
+printf 'RERANK_MODEL_SET=%s\\n' "${{ENV_VALUES[RERANK_MODEL]+set}}"
+printf 'RERANK_BINDING_HOST_SET=%s\\n' "${{ENV_VALUES[RERANK_BINDING_HOST]+set}}"
+"""
+    )
+    values = parse_lines(output)
+
+    assert values["RERANK_BINDING"] == "cohere"
+    assert values["LIGHTRAG_SETUP_RERANK_PROVIDER"] == "cohere"
+    assert values["RERANK_MODEL_SET"] == ""
+    assert values["RERANK_BINDING_HOST_SET"] == ""
+
+
+def test_collect_rerank_config_cuda_selection_clears_disabled_gpu_masks() -> None:
+    """Selecting CUDA should clear stale '-1' GPU mask values from prior CPU setups."""
+
+    output = run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+reset_state
+
+ENV_VALUES[CUDA_VISIBLE_DEVICES]="-1"
+ENV_VALUES[NVIDIA_VISIBLE_DEVICES]="-1"
+ENV_VALUES[VLLM_USE_CPU]="1"
+
+confirm() {{ return 0; }}
+confirm_default_yes() {{
+  if [[ "$1" == "Use CPU instead?" ]]; then
+    return 1
+  fi
+  return 0
+}}
+prompt_choice() {{
+  case "$1" in
+    "Rerank provider") printf 'vllm' ;;
+    "vLLM device") printf 'cuda' ;;
+    *) printf '%s' "$2" ;;
+  esac
+}}
+prompt_with_default() {{ printf '%s' "$2"; }}
+prompt_until_valid() {{ printf '%s' "$2"; }}
+prompt_secret_with_default() {{ printf '%s' "$2"; }}
+
+collect_rerank_config
+
+printf 'VLLM_RERANK_DEVICE=%s\\n' "${{ENV_VALUES[VLLM_RERANK_DEVICE]}}"
+printf 'CUDA_VISIBLE_DEVICES_SET=%s\\n' "${{ENV_VALUES[CUDA_VISIBLE_DEVICES]+set}}"
+printf 'NVIDIA_VISIBLE_DEVICES_SET=%s\\n' "${{ENV_VALUES[NVIDIA_VISIBLE_DEVICES]+set}}"
+printf 'VLLM_USE_CPU_SET=%s\\n' "${{ENV_VALUES[VLLM_USE_CPU]+set}}"
+"""
+    )
+    values = parse_lines(output)
+
+    assert values["VLLM_RERANK_DEVICE"] == "cuda"
+    assert values["CUDA_VISIBLE_DEVICES_SET"] == ""
+    assert values["NVIDIA_VISIBLE_DEVICES_SET"] == ""
+    assert values["VLLM_USE_CPU_SET"] == ""
+
+
 def test_generate_docker_compose_escapes_dollar_signs_in_overrides(
     tmp_path: Path,
 ) -> None:
