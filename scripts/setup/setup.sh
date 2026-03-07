@@ -131,7 +131,7 @@ wait_for_port() {
   local host="$1"
   local port="$2"
   local label="$3"
-  local timeout="${4:-$WAIT_TIMEOUT}"
+  local timeout="${10:-$WAIT_TIMEOUT}"
   local start_time=$SECONDS
 
   log_step "Waiting for ${label} on ${host}:${port} (timeout ${timeout}s)"
@@ -198,6 +198,20 @@ wait_for_services() {
       "Inspect 'docker compose ps' and service logs, then rerun setup after fixing the failing services."
     return 1
   fi
+}
+
+wait_for_lightrag_service() {
+  local compose_file="$1"
+  local port="${ENV_VALUES[PORT]:-9621}"
+
+  if wait_for_port "127.0.0.1" "$port" "lightrag"; then
+    return 0
+  fi
+
+  format_error \
+    "LightRAG did not become ready on 127.0.0.1:${port}." \
+    "Inspect 'docker compose -f ${compose_file} ps' and 'docker compose -f ${compose_file} logs lightrag' before retrying."
+  return 1
 }
 
 normalize_loopback_uri_for_compose() {
@@ -1291,6 +1305,9 @@ finalize_setup() {
         fi
       fi
       docker compose -f "$compose_file" up -d lightrag
+      if ! wait_for_lightrag_service "$compose_file"; then
+        return 1
+      fi
       log_success "Docker services are up."
     fi
   else

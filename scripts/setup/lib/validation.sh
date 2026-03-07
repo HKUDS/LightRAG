@@ -172,10 +172,15 @@ validate_sensitive_env_literals() {
 validate_required_variables() {
   local storages=("$@")
   local missing=()
+  local unknown=()
   local storage required var
 
   for storage in "${storages[@]}"; do
     if [[ -z "$storage" ]]; then
+      continue
+    fi
+    if [[ ! -v "STORAGE_ENV_REQUIREMENTS[$storage]" ]]; then
+      unknown+=("$storage")
       continue
     fi
     required="${STORAGE_ENV_REQUIREMENTS[$storage]}"
@@ -188,6 +193,13 @@ validate_required_variables() {
       fi
     done
   done
+
+  if ((${#unknown[@]} > 0)); then
+    format_error \
+      "Unsupported storage selections: ${unknown[*]}" \
+      "Use a supported LightRAG storage class name or rerun setup to pick a valid backend."
+    return 1
+  fi
 
   if ((${#missing[@]} > 0)); then
     format_error "Missing required variables: ${missing[*]}" "Fill them in .env or re-run setup."
