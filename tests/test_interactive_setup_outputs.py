@@ -1937,7 +1937,7 @@ printf 'WHITELIST_PATHS=%s\\n' "${{ENV_VALUES[WHITELIST_PATHS]}}"
     assert values["WHITELIST_PATHS"] == ""
 
 
-def test_validate_env_file_allows_empty_production_whitelist_with_api_key(
+def test_validate_env_file_allows_empty_production_whitelist_with_auth_accounts(
     tmp_path: Path,
 ) -> None:
     """Production validation should accept an explicitly empty whitelist."""
@@ -1958,7 +1958,8 @@ def test_validate_env_file_allows_empty_production_whitelist_with_api_key(
                 "NEO4J_URI=neo4j://localhost:7687",
                 "NEO4J_USERNAME=neo4j",
                 "NEO4J_PASSWORD=secret",
-                "LIGHTRAG_API_KEY=api-key",
+                "AUTH_ACCOUNTS=admin:secret",
+                "TOKEN_SECRET=jwt-secret",
                 "WHITELIST_PATHS=",
             ]
         )
@@ -2181,8 +2182,8 @@ fi
     assert docker_calls == [f"compose -f {tmp_path}/docker-compose.development.yml up -d redis"]
 
 
-def test_validate_security_config_requires_protection_for_production() -> None:
-    """Production validation should require either auth accounts or an API key."""
+def test_validate_security_config_requires_auth_accounts_for_production() -> None:
+    """Production validation should require account-based auth."""
 
     output = run_bash(
         f"""
@@ -2201,12 +2202,19 @@ if validate_security_config "" "" "api-key" yes "/health"; then
 else
   printf 'WITH_API_KEY=no\\n'
 fi
+
+if validate_security_config "admin:secret" "token-secret" "" yes "/health"; then
+  printf 'WITH_AUTH_ACCOUNTS=yes\\n'
+else
+  printf 'WITH_AUTH_ACCOUNTS=no\\n'
+fi
 """
     )
     values = parse_lines(output)
 
     assert values["VALID"] == "no"
-    assert values["WITH_API_KEY"] == "yes"
+    assert values["WITH_API_KEY"] == "no"
+    assert values["WITH_AUTH_ACCOUNTS"] == "yes"
 
 
 def test_validate_security_config_allows_empty_but_rejects_api_whitelist_for_production() -> None:
@@ -2218,25 +2226,25 @@ set -euo pipefail
 source "{REPO_ROOT}/scripts/setup/setup.sh"
 reset_state
 
-if validate_security_config "" "" "api-key" yes ""; then
+if validate_security_config "admin:secret" "token-secret" "" yes ""; then
   printf 'EMPTY_WHITELIST=yes\\n'
 else
   printf 'EMPTY_WHITELIST=no\\n'
 fi
 
-if validate_security_config "" "" "api-key" yes "/health,/api/*"; then
+if validate_security_config "admin:secret" "token-secret" "" yes "/health,/api/*"; then
   printf 'API_WHITELIST=yes\\n'
 else
   printf 'API_WHITELIST=no\\n'
 fi
 
-if validate_security_config "" "" "api-key" yes "/health,/api/v1/*"; then
+if validate_security_config "admin:secret" "token-secret" "" yes "/health,/api/v1/*"; then
   printf 'API_PREFIX_WHITELIST=yes\\n'
 else
   printf 'API_PREFIX_WHITELIST=no\\n'
 fi
 
-if validate_security_config "" "" "api-key" yes "/health,/docs"; then
+if validate_security_config "admin:secret" "token-secret" "" yes "/health,/docs"; then
   printf 'SAFE_WHITELIST=yes\\n'
 else
   printf 'SAFE_WHITELIST=no\\n'
@@ -2376,3 +2384,102 @@ fi
     values = parse_lines(output)
 
     assert values["RESULT"] == "failure"
+
+
+def test_finalize_setup_rejects_api_key_only_production_storage_profile(
+    tmp_path: Path,
+) -> None:
+    """Production-like storage profiles should not pass with API-key-only protection."""
+
+    (tmp_path / "env.example").write_text("LLM_BINDING=openai\n", encoding="utf-8")
+
+    output = run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+DEPLOYMENT_TYPE="custom"
+
+ENV_VALUES[LIGHTRAG_KV_STORAGE]="PGKVStorage"
+ENV_VALUES[LIGHTRAG_VECTOR_STORAGE]="MilvusVectorDBStorage"
+ENV_VALUES[LIGHTRAG_GRAPH_STORAGE]="Neo4JStorage"
+ENV_VALUES[LIGHTRAG_DOC_STATUS_STORAGE]="PGDocStatusStorage"
+ENV_VALUES[POSTGRES_USER]="lightrag"
+ENV_VALUES[POSTGRES_PASSWORD]="secret"
+ENV_VALUES[POSTGRES_DATABASE]="lightrag"
+ENV_VALUES[MILVUS_URI]="http://localhost:19530"
+ENV_VALUES[MILVUS_DB_NAME]="lightrag"
+ENV_VALUES[NEO4J_URI]="neo4j://localhost:7687"
+ENV_VALUES[NEO4J_USERNAME]="neo4j"
+ENV_VALUES[NEO4J_PASSWORD]="secret"
+ENV_VALUES[LIGHTRAG_API_KEY]="api-key"
+
+confirm() {{ return 0; }}
+confirm_default_yes() {{ return 1; }}
+backup_env_file() {{ return 0; }}
+generate_env_file() {{ :; }}
+generate_docker_compose() {{ :; }}
+show_summary() {{ :; }}
+
+if finalize_setup >/dev/null 2>&1; then
+  printf 'RESULT=success\\n'
+else
+  printf 'RESULT=failure\\n'
+fi
+"""
+    )
+    values = parse_lines(output)
+
+    assert values["RESULT"] == "failure"
+
+
+def test_finalize_setup_validates_inherited_ssl_assets_before_staging(
+    tmp_path: Path,
+) -> None:
+    """Finalize should fail with a clear validation error before copying missing SSL files."""
+
+    (tmp_path / "env.example").write_text(
+        "\n".join(
+            [
+                "LIGHTRAG_KV_STORAGE=JsonKVStorage",
+                "LIGHTRAG_VECTOR_STORAGE=NanoVectorDBStorage",
+                "LIGHTRAG_GRAPH_STORAGE=NetworkXStorage",
+                "LIGHTRAG_DOC_STATUS_STORAGE=JsonDocStatusStorage",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [
+            "bash",
+            "-lc",
+            f"""
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+
+ENV_VALUES[LIGHTRAG_KV_STORAGE]="JsonKVStorage"
+ENV_VALUES[LIGHTRAG_VECTOR_STORAGE]="NanoVectorDBStorage"
+ENV_VALUES[LIGHTRAG_GRAPH_STORAGE]="NetworkXStorage"
+ENV_VALUES[LIGHTRAG_DOC_STATUS_STORAGE]="JsonDocStatusStorage"
+SSL_CERT_SOURCE_PATH="/missing/cert.pem"
+SSL_KEY_SOURCE_PATH="/missing/key.pem"
+
+confirm() {{ return 0; }}
+
+finalize_setup
+""",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    assert "Invalid SSL_CERTFILE" in result.stderr
+    assert "Invalid SSL_KEYFILE" not in result.stderr
+    assert "No such file or directory" not in result.stderr

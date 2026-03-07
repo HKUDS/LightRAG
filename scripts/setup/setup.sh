@@ -1228,7 +1228,7 @@ collect_security_config() {
 
   if ((confirm_result != 0)); then
     if [[ "$required" == "yes" ]]; then
-      echo "Warning: production deployments should set authentication and API keys." >&2
+      echo "Warning: production deployments should configure AUTH_ACCOUNTS; API keys are optional on top." >&2
     fi
     return
   fi
@@ -1449,6 +1449,20 @@ finalize_setup() {
   backup_path="$(backup_env_file)"
   if [[ -n "$backup_path" ]]; then
     log_success "Backed up existing .env to $backup_path"
+  fi
+
+  if [[ -n "$SSL_CERT_SOURCE_PATH" ]] && ! validate_existing_file "$SSL_CERT_SOURCE_PATH"; then
+    format_error \
+      "Invalid SSL_CERTFILE" \
+      "Set it to an existing certificate file, disable SSL, or rerun the full setup to choose a new certificate."
+    return 1
+  fi
+
+  if [[ -n "$SSL_KEY_SOURCE_PATH" ]] && ! validate_existing_file "$SSL_KEY_SOURCE_PATH"; then
+    format_error \
+      "Invalid SSL_KEYFILE" \
+      "Set it to an existing private key file, disable SSL, or rerun the full setup to choose a new key."
+    return 1
   fi
 
   if [[ -n "$SSL_CERT_SOURCE_PATH" || -n "$SSL_KEY_SOURCE_PATH" ]]; then

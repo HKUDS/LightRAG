@@ -287,17 +287,17 @@ validate_security_config() {
   local require_protection="${4:-no}"
   local whitelist_paths="${5:-${ENV_VALUES[WHITELIST_PATHS]:-}}"
 
-  if [[ "$require_protection" == "yes" && -z "$auth_accounts" && -z "$api_key" ]]; then
+  if [[ "$require_protection" == "yes" && -z "$auth_accounts" ]]; then
     format_error \
-      "Production setup requires either AUTH_ACCOUNTS or LIGHTRAG_API_KEY." \
-      "Set an API key, configure account-based auth, or switch to a non-production deployment."
+      "Production setup requires AUTH_ACCOUNTS." \
+      "Configure account-based auth, optionally add LIGHTRAG_API_KEY on top, or switch to a non-production deployment."
     return 1
   fi
 
   if [[ "$require_protection" == "yes" ]] && production_whitelist_exposes_api_routes "$whitelist_paths"; then
     format_error \
       "Production setup must not whitelist /api routes when authentication is enabled." \
-      "Set WHITELIST_PATHS to a minimal list such as /health before using AUTH_ACCOUNTS or LIGHTRAG_API_KEY."
+      "Set WHITELIST_PATHS to a minimal list such as /health before using AUTH_ACCOUNTS."
     return 1
   fi
 
