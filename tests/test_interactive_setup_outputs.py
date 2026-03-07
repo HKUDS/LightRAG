@@ -2353,6 +2353,56 @@ validate_env_file
     assert "Validation passed." in result.stdout
 
 
+def test_validate_env_file_rejects_missing_production_whitelist_with_auth_accounts(
+    tmp_path: Path,
+) -> None:
+    """Production validation should reject auth configs that omit the whitelist key."""
+
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "\n".join(
+            [
+                "LIGHTRAG_KV_STORAGE=PGKVStorage",
+                "LIGHTRAG_VECTOR_STORAGE=MilvusVectorDBStorage",
+                "LIGHTRAG_GRAPH_STORAGE=Neo4JStorage",
+                "LIGHTRAG_DOC_STATUS_STORAGE=PGDocStatusStorage",
+                "POSTGRES_USER=lightrag",
+                "POSTGRES_PASSWORD=secret",
+                "POSTGRES_DATABASE=lightrag",
+                "MILVUS_URI=http://localhost:19530",
+                "MILVUS_DB_NAME=lightrag",
+                "NEO4J_URI=neo4j://localhost:7687",
+                "NEO4J_USERNAME=neo4j",
+                "NEO4J_PASSWORD=secret",
+                "AUTH_ACCOUNTS=admin:secret",
+                "TOKEN_SECRET=jwt-secret",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [
+            "bash",
+            "-lc",
+            f"""
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+validate_env_file
+""",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "must not whitelist /api routes" in result.stderr
+
+
 def test_collect_observability_config_clears_existing_values_on_rerun(
     tmp_path: Path,
 ) -> None:
@@ -2597,6 +2647,12 @@ else
   printf 'EMPTY_WHITELIST=no\\n'
 fi
 
+if validate_security_config "admin:secret" "token-secret" "" yes; then
+  printf 'OMITTED_WHITELIST=yes\\n'
+else
+  printf 'OMITTED_WHITELIST=no\\n'
+fi
+
 if validate_security_config "admin:secret" "token-secret" "" yes "/health,/api/*"; then
   printf 'API_WHITELIST=yes\\n'
 else
@@ -2619,6 +2675,7 @@ fi
     values = parse_lines(output)
 
     assert values["EMPTY_WHITELIST"] == "yes"
+    assert values["OMITTED_WHITELIST"] == "no"
     assert values["API_WHITELIST"] == "no"
     assert values["API_PREFIX_WHITELIST"] == "no"
     assert values["SAFE_WHITELIST"] == "yes"

@@ -1489,7 +1489,8 @@ finalize_setup() {
     "${ENV_VALUES[TOKEN_SECRET]:-}" \
     "${ENV_VALUES[LIGHTRAG_API_KEY]:-}" \
     "$require_protection" \
-    "${ENV_VALUES[WHITELIST_PATHS]:-}"; then
+    "${ENV_VALUES[WHITELIST_PATHS]:-}" \
+    "${ENV_VALUES[WHITELIST_PATHS]+set}"; then
     return 1
   fi
 
@@ -1787,7 +1788,8 @@ validate_env_file() {
     "${ENV_VALUES[TOKEN_SECRET]:-}" \
     "${ENV_VALUES[LIGHTRAG_API_KEY]:-}" \
     "$require_protection" \
-    "${ENV_VALUES[WHITELIST_PATHS]:-}"; then
+    "${ENV_VALUES[WHITELIST_PATHS]:-}" \
+    "${ENV_VALUES[WHITELIST_PATHS]+set}"; then
     errors=1
   fi
 

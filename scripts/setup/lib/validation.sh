@@ -285,6 +285,22 @@ validate_security_config() {
   local api_key="${3:-${ENV_VALUES[LIGHTRAG_API_KEY]:-}}"
   local require_protection="${4:-no}"
   local whitelist_paths="${5:-${ENV_VALUES[WHITELIST_PATHS]:-}}"
+  local whitelist_is_set="${6:-}"
+  local effective_whitelist="$whitelist_paths"
+
+  if [[ "${6+x}" == "x" ]]; then
+    if [[ -n "$whitelist_is_set" ]]; then
+      whitelist_is_set="yes"
+    else
+      whitelist_is_set="no"
+    fi
+  elif [[ -z "$whitelist_is_set" ]]; then
+    if [[ "${5+x}" == "x" || -v "ENV_VALUES[WHITELIST_PATHS]" ]]; then
+      whitelist_is_set="yes"
+    else
+      whitelist_is_set="no"
+    fi
+  fi
 
   if [[ "$require_protection" == "yes" && -z "$auth_accounts" ]]; then
     format_error \
@@ -293,7 +309,11 @@ validate_security_config() {
     return 1
   fi
 
-  if [[ "$require_protection" == "yes" ]] && production_whitelist_exposes_api_routes "$whitelist_paths"; then
+  if [[ -n "$auth_accounts" && "$whitelist_is_set" != "yes" ]]; then
+    effective_whitelist="/health,/api/*"
+  fi
+
+  if [[ "$require_protection" == "yes" ]] && production_whitelist_exposes_api_routes "$effective_whitelist"; then
     format_error \
       "Production setup must not whitelist /api routes when authentication is enabled." \
       "Set WHITELIST_PATHS to a minimal list such as /health before using AUTH_ACCOUNTS."
