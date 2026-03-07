@@ -760,6 +760,56 @@ printf 'LLM_BINDING_API_KEY=%s\\n' "${{ENV_VALUES[LLM_BINDING_API_KEY]}}"
     assert values["LLM_BINDING_API_KEY"] == "sk-local-test-key"
 
 
+def test_collect_embedding_config_forces_ollama_for_openai_ollama_llm(
+    tmp_path: Path,
+) -> None:
+    """`openai-ollama` should not preserve a conflicting embedding provider."""
+
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "\n".join(
+            [
+                "LLM_BINDING=openai-ollama",
+                "EMBEDDING_BINDING=openai",
+                "EMBEDDING_MODEL=text-embedding-3-large",
+                "EMBEDDING_DIM=3072",
+                "EMBEDDING_BINDING_HOST=https://api.openai.com/v1",
+                "EMBEDDING_BINDING_API_KEY=local-key",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    output = run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+load_existing_env_if_present
+
+prompt_with_default() {{ printf '%s' "$2"; }}
+prompt_secret_until_valid_with_default() {{ printf '%s' "$2"; }}
+
+collect_embedding_config
+
+printf 'EMBEDDING_BINDING=%s\\n' "${{ENV_VALUES[EMBEDDING_BINDING]}}"
+printf 'EMBEDDING_MODEL=%s\\n' "${{ENV_VALUES[EMBEDDING_MODEL]}}"
+printf 'EMBEDDING_DIM=%s\\n' "${{ENV_VALUES[EMBEDDING_DIM]}}"
+printf 'EMBEDDING_BINDING_HOST=%s\\n' "${{ENV_VALUES[EMBEDDING_BINDING_HOST]}}"
+printf 'EMBEDDING_BINDING_API_KEY_SET=%s\\n' "${{ENV_VALUES[EMBEDDING_BINDING_API_KEY]+set}}"
+"""
+    )
+    values = parse_lines(output)
+
+    assert values["EMBEDDING_BINDING"] == "ollama"
+    assert values["EMBEDDING_MODEL"] == "bge-m3:latest"
+    assert values["EMBEDDING_DIM"] == "1024"
+    assert values["EMBEDDING_BINDING_HOST"] == "http://localhost:11434"
+    assert values["EMBEDDING_BINDING_API_KEY_SET"] == ""
+
+
 def test_collect_embedding_config_clears_stale_api_key_for_bedrock(
     tmp_path: Path,
 ) -> None:
@@ -2294,6 +2344,40 @@ fi
     assert values["VALID_FORMAT"] == "yes"
 
 
+def test_validate_api_key_accepts_non_sk_keys_for_openai_compatible_providers() -> None:
+    """OpenAI-compatible endpoints should accept any non-empty API key."""
+
+    output = run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+
+if validate_api_key "local-key" openai; then
+  printf 'OPENAI_VALID=yes\\n'
+else
+  printf 'OPENAI_VALID=no\\n'
+fi
+
+if validate_api_key "gateway-token" openrouter; then
+  printf 'OPENROUTER_VALID=yes\\n'
+else
+  printf 'OPENROUTER_VALID=no\\n'
+fi
+
+if validate_api_key "" openai; then
+  printf 'EMPTY_VALID=yes\\n'
+else
+  printf 'EMPTY_VALID=no\\n'
+fi
+"""
+    )
+    values = parse_lines(output)
+
+    assert values["OPENAI_VALID"] == "yes"
+    assert values["OPENROUTER_VALID"] == "yes"
+    assert values["EMPTY_VALID"] == "no"
+
+
 def test_validate_env_file_requires_protection_for_production_storage_profile(
     tmp_path: Path,
 ) -> None:
@@ -2312,6 +2396,51 @@ def test_validate_env_file_requires_protection_for_production_storage_profile(
                 "POSTGRES_DATABASE=lightrag",
                 "MILVUS_URI=http://localhost:19530",
                 "MILVUS_DB_NAME=lightrag",
+                "NEO4J_URI=neo4j://localhost:7687",
+                "NEO4J_USERNAME=neo4j",
+                "NEO4J_PASSWORD=secret",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    output = run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+
+if validate_env_file; then
+  printf 'VALID=yes\\n'
+else
+  printf 'VALID=no\\n'
+fi
+"""
+    )
+    values = parse_lines(output)
+
+    assert values["VALID"] == "no"
+
+
+def test_validate_env_file_requires_protection_for_production_setup_profile(
+    tmp_path: Path,
+) -> None:
+    """`setup-validate` should honor persisted production setup metadata."""
+
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "\n".join(
+            [
+                "LIGHTRAG_SETUP_PROFILE=production",
+                "LIGHTRAG_KV_STORAGE=PGKVStorage",
+                "LIGHTRAG_VECTOR_STORAGE=QdrantVectorDBStorage",
+                "LIGHTRAG_GRAPH_STORAGE=Neo4JStorage",
+                "LIGHTRAG_DOC_STATUS_STORAGE=PGDocStatusStorage",
+                "POSTGRES_USER=lightrag",
+                "POSTGRES_PASSWORD=secret",
+                "POSTGRES_DATABASE=lightrag",
+                "QDRANT_URL=http://localhost:6333",
                 "NEO4J_URI=neo4j://localhost:7687",
                 "NEO4J_USERNAME=neo4j",
                 "NEO4J_PASSWORD=secret",
@@ -2384,6 +2513,29 @@ fi
     values = parse_lines(output)
 
     assert values["RESULT"] == "failure"
+
+
+def test_show_summary_masks_auth_accounts() -> None:
+    """Configuration summaries should not print auth account passwords."""
+
+    output = run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+reset_state
+
+ENV_VALUES[AUTH_ACCOUNTS]="admin:secret,reader:hunter2"
+ENV_VALUES[TOKEN_SECRET]="jwt-secret"
+ENV_VALUES[HOST]="0.0.0.0"
+
+show_summary
+"""
+    )
+
+    assert "AUTH_ACCOUNTS=***" in output
+    assert "TOKEN_SECRET=***" in output
+    assert "admin:secret" not in output
+    assert "reader:hunter2" not in output
 
 
 def test_finalize_setup_rejects_api_key_only_production_storage_profile(

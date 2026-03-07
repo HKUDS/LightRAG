@@ -1024,7 +1024,14 @@ collect_embedding_config() {
   local current_binding="${ENV_VALUES[EMBEDDING_BINDING]:-openai}"
   local binding model model_default host host_default api_key dim dim_default
 
-  binding="$(prompt_choice "Embedding provider" "$current_binding" "${options[@]}")"
+  if [[ "${ENV_VALUES[LLM_BINDING]:-}" == "openai-ollama" ]]; then
+    binding="ollama"
+    if [[ "$current_binding" != "ollama" ]]; then
+      log_info "openai-ollama uses Ollama embeddings. Forcing embedding provider to ollama."
+    fi
+  else
+    binding="$(prompt_choice "Embedding provider" "$current_binding" "${options[@]}")"
+  fi
   model_default="$(provider_default_or_existing "$binding" "$current_binding" "${ENV_VALUES[EMBEDDING_MODEL]:-}" "$(default_embedding_model_for_binding "$binding")")"
   dim_default="$(provider_default_or_existing "$binding" "$current_binding" "${ENV_VALUES[EMBEDDING_DIM]:-}" "$(default_embedding_dim_for_binding "$binding")")"
   model="$(prompt_with_default "Embedding model" "$model_default")"
@@ -1348,7 +1355,7 @@ show_summary() {
   log_info "Configuration summary:"
   for key in "${!ENV_VALUES[@]}"; do
     value="${ENV_VALUES[$key]}"
-    if [[ "$key" =~ (KEY|PASSWORD|SECRET|TOKEN) ]]; then
+    if is_sensitive_env_key "$key"; then
       value="***"
     fi
     printf '  %s=%s\n' "$key" "$value"
@@ -1366,7 +1373,9 @@ show_summary() {
 }
 
 require_production_security_profile() {
-  if [[ "$DEPLOYMENT_TYPE" == "production" ]]; then
+  local setup_profile="${ENV_VALUES[LIGHTRAG_SETUP_PROFILE]:-${DEPLOYMENT_TYPE:-}}"
+
+  if [[ "$setup_profile" == "production" ]]; then
     return 0
   fi
 
@@ -1392,6 +1401,12 @@ finalize_setup() {
   if [[ ! -w "$REPO_ROOT" ]]; then
     format_error "No write permission in $REPO_ROOT" "Run the setup from a writable directory."
     return 1
+  fi
+
+  if [[ -n "$DEPLOYMENT_TYPE" ]]; then
+    ENV_VALUES["LIGHTRAG_SETUP_PROFILE"]="$DEPLOYMENT_TYPE"
+  else
+    unset 'ENV_VALUES[LIGHTRAG_SETUP_PROFILE]'
   fi
 
   if [[ -n "${ENV_VALUES[LIGHTRAG_KV_STORAGE]:-}" ]]; then
@@ -1702,7 +1717,7 @@ validate_env_file() {
     errors=1
   fi
 
-  if is_production_storage_profile "$kv" "$vector" "$graph" "$doc_status"; then
+  if require_production_security_profile; then
     require_protection="yes"
   fi
 

@@ -43,8 +43,7 @@ validate_api_key() {
 
   case "$provider" in
     openai|openrouter)
-      [[ "$key" == sk-* ]]
-      return $?; ;;
+      return 0; ;;
     *)
       [[ ${#key} -ge 8 ]]
       return $?; ;;
