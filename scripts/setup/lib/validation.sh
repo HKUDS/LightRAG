@@ -257,17 +257,24 @@ validate_auth_accounts_format() {
 
 production_whitelist_exposes_api_routes() {
   local whitelist_paths="$1"
-  local entry trimmed_entry
+  local entry trimmed_entry normalized_entry
 
   IFS=',' read -r -a entries <<< "$whitelist_paths"
   for entry in "${entries[@]}"; do
     trimmed_entry="${entry#"${entry%%[![:space:]]*}"}"
     trimmed_entry="${trimmed_entry%"${trimmed_entry##*[![:space:]]}"}"
-    case "$trimmed_entry" in
-      "/api"|"/api/"|"/api/*")
-        return 0
-        ;;
-    esac
+    normalized_entry="$trimmed_entry"
+
+    if [[ "$normalized_entry" == *"/*" ]]; then
+      normalized_entry="${normalized_entry%/*}"
+    fi
+    if [[ "$normalized_entry" != "/" ]]; then
+      normalized_entry="${normalized_entry%/}"
+    fi
+
+    if [[ "$normalized_entry" == "/api" || "$normalized_entry" == /api/* ]]; then
+      return 0
+    fi
   done
 
   return 1

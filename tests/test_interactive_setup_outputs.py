@@ -1728,6 +1728,38 @@ printf 'WHITELIST_PATHS=%s\\n' "${{ENV_VALUES[WHITELIST_PATHS]}}"
     assert values["WHITELIST_PATHS"] == "/health"
 
 
+def test_collect_security_config_preserves_explicit_empty_whitelist_on_rerun(
+    tmp_path: Path,
+) -> None:
+    """Rerunning security setup should keep an explicitly empty whitelist unchanged."""
+
+    env_file = tmp_path / ".env"
+    env_file.write_text("WHITELIST_PATHS=\n", encoding="utf-8")
+
+    output = run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+load_existing_env_if_present
+
+confirm() {{ return 0; }}
+prompt_clearable_with_default() {{ printf '%s' "$2"; }}
+prompt_clearable_secret_with_default() {{ printf '%s' "$2"; }}
+
+collect_security_config no no
+
+printf 'WHITELIST_PATHS_SET=%s\\n' "${{ENV_VALUES[WHITELIST_PATHS]+set}}"
+printf 'WHITELIST_PATHS=%s\\n' "${{ENV_VALUES[WHITELIST_PATHS]}}"
+"""
+    )
+    values = parse_lines(output)
+
+    assert values["WHITELIST_PATHS_SET"] == "set"
+    assert values["WHITELIST_PATHS"] == ""
+
+
 def test_validate_env_file_allows_empty_production_whitelist_with_api_key(
     tmp_path: Path,
 ) -> None:
@@ -2021,6 +2053,12 @@ else
   printf 'API_WHITELIST=no\\n'
 fi
 
+if validate_security_config "" "" "api-key" yes "/health,/api/v1/*"; then
+  printf 'API_PREFIX_WHITELIST=yes\\n'
+else
+  printf 'API_PREFIX_WHITELIST=no\\n'
+fi
+
 if validate_security_config "" "" "api-key" yes "/health,/docs"; then
   printf 'SAFE_WHITELIST=yes\\n'
 else
@@ -2032,6 +2070,7 @@ fi
 
     assert values["EMPTY_WHITELIST"] == "yes"
     assert values["API_WHITELIST"] == "no"
+    assert values["API_PREFIX_WHITELIST"] == "no"
     assert values["SAFE_WHITELIST"] == "yes"
 
 

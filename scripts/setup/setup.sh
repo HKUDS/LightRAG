@@ -1093,7 +1093,13 @@ collect_security_config() {
   local default_yes="${2:-no}"
   local auth_accounts token_secret token_expire api_key whitelist
   local confirm_result=1
-  local whitelist_default="${ENV_VALUES[WHITELIST_PATHS]:-}"
+  local whitelist_default=""
+  local whitelist_is_set="no"
+
+  if [[ -n "${ENV_VALUES[WHITELIST_PATHS]+set}" ]]; then
+    whitelist_default="${ENV_VALUES[WHITELIST_PATHS]}"
+    whitelist_is_set="yes"
+  fi
 
   if [[ "$default_yes" == "yes" ]]; then
     if confirm_default_yes "Configure authentication and API key settings?"; then
@@ -1114,7 +1120,7 @@ collect_security_config() {
 
   echo "Press Enter to keep an existing value. Type 'clear' to remove it." >&2
 
-  if [[ -z "$whitelist_default" ]]; then
+  if [[ "$whitelist_is_set" == "no" ]]; then
     whitelist_default="/health"
   elif [[ "$required" == "yes" && "$whitelist_default" == "/health,/api/*" ]]; then
     whitelist_default="/health"
@@ -1125,6 +1131,9 @@ collect_security_config() {
   token_expire="$(prompt_clearable_with_default "Token expire hours" "${ENV_VALUES[TOKEN_EXPIRE_HOURS]:-48}")"
   api_key="$(prompt_clearable_secret_with_default "LightRAG API key: " "${ENV_VALUES[LIGHTRAG_API_KEY]:-}")"
   whitelist="$(prompt_clearable_with_default "Whitelist paths (comma-separated)" "$whitelist_default")"
+  if [[ "$whitelist_is_set" == "yes" && -z "$whitelist_default" && -z "$whitelist" ]]; then
+    whitelist="$CLEAR_INPUT_SENTINEL"
+  fi
 
   apply_clearable_env_value "AUTH_ACCOUNTS" "$auth_accounts"
   apply_clearable_env_value "TOKEN_SECRET" "$token_secret"
