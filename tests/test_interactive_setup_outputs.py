@@ -1222,10 +1222,10 @@ printf 'LIGHTRAG_DOC_STATUS_STORAGE=%s\\n' "${{ENV_VALUES[LIGHTRAG_DOC_STATUS_ST
     assert values["LIGHTRAG_DOC_STATUS_STORAGE"] == "JsonDocStatusStorage"
 
 
-def test_quick_start_flow_preserves_existing_non_preset_values(
+def test_quick_start_flow_preserves_safe_values_and_clears_inherited_state(
     tmp_path: Path,
 ) -> None:
-    """Quick start should load `.env` defaults without overwriting unrelated settings."""
+    """Quick start should keep safe UI values while clearing deployment-shaping state."""
 
     env_file = tmp_path / ".env"
     env_file.write_text(
@@ -1235,7 +1235,15 @@ def test_quick_start_flow_preserves_existing_non_preset_values(
                 "PORT=9999",
                 "WEBUI_TITLE=Existing Title",
                 "WEBUI_DESCRIPTION=Existing Description",
+                "SSL=true",
+                "SSL_CERTFILE=/missing/cert.pem",
+                "SSL_KEYFILE=/missing/key.pem",
                 "RERANK_BINDING=jina",
+                "AUTH_ACCOUNTS=admin:secret",
+                "TOKEN_SECRET=jwt-secret",
+                "LIGHTRAG_API_KEY=api-key",
+                "LANGFUSE_ENABLE_TRACE=true",
+                "LANGFUSE_SECRET_KEY=langfuse-secret",
                 "LLM_BINDING_API_KEY=sk-existing",
                 "EMBEDDING_BINDING_API_KEY=sk-existing",
             ]
@@ -1259,11 +1267,19 @@ finalize_setup() {{
   printf 'PORT=%s\\n' "${{ENV_VALUES[PORT]}}"
   printf 'WEBUI_TITLE=%s\\n' "${{ENV_VALUES[WEBUI_TITLE]}}"
   printf 'WEBUI_DESCRIPTION=%s\\n' "${{ENV_VALUES[WEBUI_DESCRIPTION]}}"
-  printf 'RERANK_BINDING=%s\\n' "${{ENV_VALUES[RERANK_BINDING]}}"
   printf 'LIGHTRAG_KV_STORAGE=%s\\n' "${{ENV_VALUES[LIGHTRAG_KV_STORAGE]}}"
   printf 'LLM_BINDING=%s\\n' "${{ENV_VALUES[LLM_BINDING]}}"
   printf 'LLM_BINDING_API_KEY=%s\\n' "${{ENV_VALUES[LLM_BINDING_API_KEY]}}"
   printf 'EMBEDDING_BINDING_API_KEY=%s\\n' "${{ENV_VALUES[EMBEDDING_BINDING_API_KEY]}}"
+  printf 'SSL_SET=%s\\n' "${{ENV_VALUES[SSL]+set}}"
+  printf 'SSL_CERTFILE_SET=%s\\n' "${{ENV_VALUES[SSL_CERTFILE]+set}}"
+  printf 'SSL_KEYFILE_SET=%s\\n' "${{ENV_VALUES[SSL_KEYFILE]+set}}"
+  printf 'RERANK_BINDING_SET=%s\\n' "${{ENV_VALUES[RERANK_BINDING]+set}}"
+  printf 'AUTH_ACCOUNTS_SET=%s\\n' "${{ENV_VALUES[AUTH_ACCOUNTS]+set}}"
+  printf 'TOKEN_SECRET_SET=%s\\n' "${{ENV_VALUES[TOKEN_SECRET]+set}}"
+  printf 'LIGHTRAG_API_KEY_SET=%s\\n' "${{ENV_VALUES[LIGHTRAG_API_KEY]+set}}"
+  printf 'LANGFUSE_ENABLE_TRACE_SET=%s\\n' "${{ENV_VALUES[LANGFUSE_ENABLE_TRACE]+set}}"
+  printf 'LANGFUSE_SECRET_KEY_SET=%s\\n' "${{ENV_VALUES[LANGFUSE_SECRET_KEY]+set}}"
 }}
 
 quick_start_flow
@@ -1275,11 +1291,19 @@ quick_start_flow
     assert values["PORT"] == "9999"
     assert values["WEBUI_TITLE"] == "Existing Title"
     assert values["WEBUI_DESCRIPTION"] == "Existing Description"
-    assert values["RERANK_BINDING"] == "jina"
     assert values["LIGHTRAG_KV_STORAGE"] == "JsonKVStorage"
     assert values["LLM_BINDING"] == "openai"
     assert values["LLM_BINDING_API_KEY"] == "sk-existing"
     assert values["EMBEDDING_BINDING_API_KEY"] == "sk-existing"
+    assert values["SSL_SET"] == ""
+    assert values["SSL_CERTFILE_SET"] == ""
+    assert values["SSL_KEYFILE_SET"] == ""
+    assert values["RERANK_BINDING_SET"] == ""
+    assert values["AUTH_ACCOUNTS_SET"] == ""
+    assert values["TOKEN_SECRET_SET"] == ""
+    assert values["LIGHTRAG_API_KEY_SET"] == ""
+    assert values["LANGFUSE_ENABLE_TRACE_SET"] == ""
+    assert values["LANGFUSE_SECRET_KEY_SET"] == ""
 
 
 def test_quick_start_flow_resets_existing_provider_settings_to_development_preset(
@@ -1341,6 +1365,118 @@ quick_start_flow
     assert values["EMBEDDING_BINDING_HOST"] == "https://api.openai.com/v1"
     assert values["LLM_BINDING_API_KEY"] == "sk-existing"
     assert values["EMBEDDING_BINDING_API_KEY"] == "sk-existing"
+
+
+def test_quick_start_flow_clears_inherited_ssl_state_before_writing_env(
+    tmp_path: Path,
+) -> None:
+    """Quick start should not fail on rerun because of stale SSL certificate paths."""
+
+    env_example = tmp_path / "env.example"
+    env_example.write_text((REPO_ROOT / "env.example").read_text(encoding="utf-8"))
+
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "\n".join(
+            [
+                "SSL=true",
+                "SSL_CERTFILE=/missing/cert.pem",
+                "SSL_KEYFILE=/missing/key.pem",
+                "LLM_BINDING_API_KEY=sk-existing",
+                "EMBEDDING_BINDING_API_KEY=sk-existing",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+
+confirm_count=0
+prompt_secret_until_valid_with_default() {{
+  printf '%s' "$2"
+}}
+confirm() {{
+  confirm_count=$((confirm_count + 1))
+  if [[ "$confirm_count" -eq 1 ]]; then
+    return 0
+  fi
+  return 1
+}}
+
+quick_start_flow
+"""
+    )
+
+    generated_lines = env_file.read_text(encoding="utf-8").splitlines()
+
+    assert not any(line == "SSL=true" for line in generated_lines)
+    assert not any(line.startswith("SSL_CERTFILE=") for line in generated_lines)
+    assert not any(line.startswith("SSL_KEYFILE=") for line in generated_lines)
+    assert "LIGHTRAG_SETUP_PROFILE=development" in generated_lines
+    assert "LLM_BINDING_API_KEY=sk-existing" in generated_lines
+    assert "EMBEDDING_BINDING_API_KEY=sk-existing" in generated_lines
+
+
+def test_interactive_flow_clears_inherited_ssl_state_for_non_production_reruns(
+    tmp_path: Path,
+) -> None:
+    """Development/custom reruns should not keep hidden SSL values from old `.env`."""
+
+    env_example = tmp_path / "env.example"
+    env_example.write_text((REPO_ROOT / "env.example").read_text(encoding="utf-8"))
+
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "\n".join(
+            [
+                "SSL=true",
+                "SSL_CERTFILE=/missing/cert.pem",
+                "SSL_KEYFILE=/missing/key.pem",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+
+confirm_count=0
+select_deployment_type() {{ printf 'development'; }}
+select_storage_backends() {{ :; }}
+collect_docker_image_tags() {{ :; }}
+collect_llm_config() {{ :; }}
+collect_embedding_config() {{ :; }}
+collect_rerank_config() {{ ENV_VALUES[RERANK_BINDING]="null"; }}
+collect_server_config() {{ :; }}
+collect_security_config() {{ :; }}
+collect_observability_config() {{ :; }}
+confirm() {{
+  confirm_count=$((confirm_count + 1))
+  if [[ "$confirm_count" -eq 1 ]]; then
+    return 0
+  fi
+  return 1
+}}
+
+interactive_flow
+"""
+    )
+
+    generated_lines = env_file.read_text(encoding="utf-8").splitlines()
+
+    assert not any(line == "SSL=true" for line in generated_lines)
+    assert not any(line.startswith("SSL_CERTFILE=") for line in generated_lines)
+    assert not any(line.startswith("SSL_KEYFILE=") for line in generated_lines)
+    assert "LIGHTRAG_SETUP_PROFILE=development" in generated_lines
 
 
 def test_production_flow_resets_existing_storage_settings_to_production_preset(

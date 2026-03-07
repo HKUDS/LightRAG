@@ -111,6 +111,30 @@ load_existing_env_if_present() {
   fi
 }
 
+clear_inherited_ssl_state() {
+  unset 'ENV_VALUES[SSL]'
+  unset 'ENV_VALUES[SSL_CERTFILE]'
+  unset 'ENV_VALUES[SSL_KEYFILE]'
+  SSL_CERT_SOURCE_PATH=""
+  SSL_KEY_SOURCE_PATH=""
+}
+
+reset_quick_start_inherited_state() {
+  local key
+
+  clear_inherited_ssl_state
+
+  for key in "${!ENV_VALUES[@]}"; do
+    case "$key" in
+      HOST|PORT|WEBUI_TITLE|WEBUI_DESCRIPTION|LLM_BINDING_API_KEY|EMBEDDING_BINDING_API_KEY)
+        ;;
+      AUTH_ACCOUNTS|TOKEN_SECRET|TOKEN_EXPIRE_HOURS|GUEST_TOKEN_EXPIRE_HOURS|JWT_ALGORITHM|TOKEN_AUTO_RENEW|TOKEN_RENEW_THRESHOLD|LIGHTRAG_API_KEY|WHITELIST_PATHS|LANGFUSE_*|RERANK_*|VLLM_*|CUDA_VISIBLE_DEVICES|NVIDIA_VISIBLE_DEVICES|NVIDIA_DRIVER_CAPABILITIES)
+        unset "ENV_VALUES[$key]"
+        ;;
+    esac
+  done
+}
+
 log_debug() {
   if [[ "$DEBUG" == "true" ]]; then
     echo "${COLOR_YELLOW}[debug]${COLOR_RESET} $*"
@@ -1590,6 +1614,10 @@ interactive_flow() {
   fi
   collect_observability_config
 
+  if [[ "$deployment_type" != "production" ]]; then
+    clear_inherited_ssl_state
+  fi
+
   finalize_setup
 }
 
@@ -1598,6 +1626,7 @@ quick_start_flow() {
 
   reset_state
   load_existing_env_if_present
+  reset_quick_start_inherited_state
   apply_preset_overwrite "${PRESET_DEVELOPMENT[@]}"
   DEPLOYMENT_TYPE="development"
 
