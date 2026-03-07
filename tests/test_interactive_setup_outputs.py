@@ -686,6 +686,80 @@ fi
     assert values["VALID"] == "yes"
 
 
+def test_collect_llm_config_uses_provider_specific_defaults() -> None:
+    """Fresh provider selection should not pin the OpenAI model for local backends."""
+
+    output = run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+reset_state
+
+prompt_choice() {{ printf 'ollama'; }}
+prompt_with_default() {{ printf '%s' "$2"; }}
+
+collect_llm_config
+
+printf 'LLM_BINDING=%s\\n' "${{ENV_VALUES[LLM_BINDING]}}"
+printf 'LLM_MODEL=%s\\n' "${{ENV_VALUES[LLM_MODEL]}}"
+printf 'LLM_BINDING_HOST=%s\\n' "${{ENV_VALUES[LLM_BINDING_HOST]}}"
+printf 'LLM_BINDING_API_KEY_SET=%s\\n' "${{ENV_VALUES[LLM_BINDING_API_KEY]+set}}"
+"""
+    )
+    values = parse_lines(output)
+
+    assert values["LLM_BINDING"] == "ollama"
+    assert values["LLM_MODEL"] == "mistral-nemo:latest"
+    assert values["LLM_BINDING_HOST"] == "http://localhost:11434"
+    assert values["LLM_BINDING_API_KEY_SET"] == ""
+
+
+def test_collect_llm_config_preserves_supported_openai_ollama_binding_on_rerun(
+    tmp_path: Path,
+) -> None:
+    """Rerunning setup should keep an existing openai-ollama selection valid."""
+
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "\n".join(
+            [
+                "LLM_BINDING=openai-ollama",
+                "LLM_MODEL=llama3.1:8b",
+                "LLM_BINDING_HOST=http://localhost:11434/v1",
+                "LLM_BINDING_API_KEY=sk-local-test-key",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    output = run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+load_existing_env_if_present
+
+prompt_with_default() {{ printf '%s' "$2"; }}
+prompt_secret_until_valid_with_default() {{ printf '%s' "$2"; }}
+
+collect_llm_config
+
+printf 'LLM_BINDING=%s\\n' "${{ENV_VALUES[LLM_BINDING]}}"
+printf 'LLM_MODEL=%s\\n' "${{ENV_VALUES[LLM_MODEL]}}"
+printf 'LLM_BINDING_HOST=%s\\n' "${{ENV_VALUES[LLM_BINDING_HOST]}}"
+printf 'LLM_BINDING_API_KEY=%s\\n' "${{ENV_VALUES[LLM_BINDING_API_KEY]}}"
+"""
+    )
+    values = parse_lines(output)
+
+    assert values["LLM_BINDING"] == "openai-ollama"
+    assert values["LLM_MODEL"] == "llama3.1:8b"
+    assert values["LLM_BINDING_HOST"] == "http://localhost:11434/v1"
+    assert values["LLM_BINDING_API_KEY"] == "sk-local-test-key"
+
+
 def test_collect_embedding_config_clears_stale_api_key_for_bedrock(
     tmp_path: Path,
 ) -> None:
@@ -736,6 +810,80 @@ fi
     assert values["EMBEDDING_BINDING"] == "aws_bedrock"
     assert values["EMBEDDING_BINDING_API_KEY_SET"] == ""
     assert values["VALID"] == "yes"
+
+
+def test_collect_embedding_config_uses_provider_specific_defaults() -> None:
+    """Fresh embedding provider selection should use that provider's model and dimension."""
+
+    output = run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+reset_state
+
+prompt_choice() {{ printf 'jina'; }}
+prompt_with_default() {{ printf '%s' "$2"; }}
+prompt_secret_until_valid_with_default() {{ printf 'jina-secret-key'; }}
+
+collect_embedding_config
+
+printf 'EMBEDDING_BINDING=%s\\n' "${{ENV_VALUES[EMBEDDING_BINDING]}}"
+printf 'EMBEDDING_MODEL=%s\\n' "${{ENV_VALUES[EMBEDDING_MODEL]}}"
+printf 'EMBEDDING_DIM=%s\\n' "${{ENV_VALUES[EMBEDDING_DIM]}}"
+printf 'EMBEDDING_BINDING_HOST=%s\\n' "${{ENV_VALUES[EMBEDDING_BINDING_HOST]}}"
+"""
+    )
+    values = parse_lines(output)
+
+    assert values["EMBEDDING_BINDING"] == "jina"
+    assert values["EMBEDDING_MODEL"] == "jina-embeddings-v4"
+    assert values["EMBEDDING_DIM"] == "2048"
+    assert values["EMBEDDING_BINDING_HOST"] == "https://api.jina.ai/v1/embeddings"
+
+
+def test_collect_embedding_config_preserves_supported_lollms_binding_on_rerun(
+    tmp_path: Path,
+) -> None:
+    """Rerunning setup should keep an existing lollms embedding binding valid."""
+
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "\n".join(
+            [
+                "EMBEDDING_BINDING=lollms",
+                "EMBEDDING_MODEL=lollms_embedding_model",
+                "EMBEDDING_DIM=1024",
+                "EMBEDDING_BINDING_HOST=http://localhost:9600",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    output = run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+load_existing_env_if_present
+
+prompt_with_default() {{ printf '%s' "$2"; }}
+
+collect_embedding_config
+
+printf 'EMBEDDING_BINDING=%s\\n' "${{ENV_VALUES[EMBEDDING_BINDING]}}"
+printf 'EMBEDDING_MODEL=%s\\n' "${{ENV_VALUES[EMBEDDING_MODEL]}}"
+printf 'EMBEDDING_DIM=%s\\n' "${{ENV_VALUES[EMBEDDING_DIM]}}"
+printf 'EMBEDDING_BINDING_HOST=%s\\n' "${{ENV_VALUES[EMBEDDING_BINDING_HOST]}}"
+"""
+    )
+    values = parse_lines(output)
+
+    assert values["EMBEDDING_BINDING"] == "lollms"
+    assert values["EMBEDDING_MODEL"] == "lollms_embedding_model"
+    assert values["EMBEDDING_DIM"] == "1024"
+    assert values["EMBEDDING_BINDING_HOST"] == "http://localhost:9600"
 
 
 def test_collect_rerank_config_clears_stale_api_key_when_disabled(

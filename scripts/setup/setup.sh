@@ -880,33 +880,135 @@ store_optional_env_value() {
   fi
 }
 
-collect_llm_config() {
-  local options=("openai" "azure_openai" "ollama" "gemini" "aws_bedrock")
-  local binding model host api_key
+provider_default_or_existing() {
+  local selected_binding="$1"
+  local existing_binding="${2:-}"
+  local existing_value="${3:-}"
+  local default_value="${4:-}"
 
-  binding="$(prompt_choice "LLM provider" "${ENV_VALUES[LLM_BINDING]:-openai}" "${options[@]}")"
-  model="$(prompt_with_default "LLM model" "${ENV_VALUES[LLM_MODEL]:-gpt-4o}")"
+  if [[ "$selected_binding" == "$existing_binding" && -n "$existing_value" ]]; then
+    printf '%s' "$existing_value"
+    return 0
+  fi
+
+  printf '%s' "$default_value"
+}
+
+default_llm_model_for_binding() {
+  local binding="$1"
+
+  case "$binding" in
+    openai|azure_openai)
+      printf 'gpt-4o'
+      ;;
+    ollama|lollms|openai-ollama)
+      printf 'mistral-nemo:latest'
+      ;;
+    gemini)
+      printf 'gemini-flash-latest'
+      ;;
+    aws_bedrock)
+      printf 'anthropic.claude-3-5-sonnet-20241022-v2:0'
+      ;;
+    *)
+      printf 'gpt-4o'
+      ;;
+  esac
+}
+
+default_embedding_model_for_binding() {
+  local binding="$1"
+
+  case "$binding" in
+    openai|azure_openai)
+      printf 'text-embedding-3-large'
+      ;;
+    ollama)
+      printf 'bge-m3:latest'
+      ;;
+    jina)
+      printf 'jina-embeddings-v4'
+      ;;
+    gemini)
+      printf 'gemini-embedding-001'
+      ;;
+    aws_bedrock)
+      printf 'amazon.titan-embed-text-v2:0'
+      ;;
+    lollms)
+      printf 'lollms_embedding_model'
+      ;;
+    *)
+      printf 'text-embedding-3-large'
+      ;;
+  esac
+}
+
+default_embedding_dim_for_binding() {
+  local binding="$1"
+
+  case "$binding" in
+    openai|azure_openai)
+      printf '3072'
+      ;;
+    ollama|aws_bedrock|lollms)
+      printf '1024'
+      ;;
+    jina)
+      printf '2048'
+      ;;
+    gemini)
+      printf '1536'
+      ;;
+    *)
+      printf '3072'
+      ;;
+  esac
+}
+
+collect_llm_config() {
+  local options=("openai" "azure_openai" "ollama" "openai-ollama" "lollms" "gemini" "aws_bedrock")
+  local current_binding="${ENV_VALUES[LLM_BINDING]:-openai}"
+  local binding model model_default host host_default api_key
+
+  binding="$(prompt_choice "LLM provider" "$current_binding" "${options[@]}")"
+  model_default="$(provider_default_or_existing "$binding" "$current_binding" "${ENV_VALUES[LLM_MODEL]:-}" "$(default_llm_model_for_binding "$binding")")"
+  model="$(prompt_with_default "LLM model" "$model_default")"
 
   case "$binding" in
     ollama)
-      host="$(prompt_with_default "Ollama host" "${ENV_VALUES[LLM_BINDING_HOST]:-$(default_loopback_url 11434)}")"
+      host_default="$(provider_default_or_existing "$binding" "$current_binding" "${ENV_VALUES[LLM_BINDING_HOST]:-}" "$(default_loopback_url 11434)")"
+      host="$(prompt_with_default "Ollama host" "$host_default")"
+      api_key=""
+      ;;
+    openai-ollama)
+      host_default="$(provider_default_or_existing "$binding" "$current_binding" "${ENV_VALUES[LLM_BINDING_HOST]:-}" "$(default_loopback_url 11434 "/v1")")"
+      host="$(prompt_with_default "OpenAI-compatible Ollama endpoint" "$host_default")"
+      api_key="$(prompt_secret_until_valid_with_default "LLM API key: " "${ENV_VALUES[LLM_BINDING_API_KEY]:-}" validate_api_key openai)"
+      ;;
+    lollms)
+      host_default="$(provider_default_or_existing "$binding" "$current_binding" "${ENV_VALUES[LLM_BINDING_HOST]:-}" "http://localhost:9600")"
+      host="$(prompt_with_default "LoLLMs host" "$host_default")"
       api_key=""
       ;;
     azure_openai)
-      host="$(prompt_with_default "Azure OpenAI endpoint" "${ENV_VALUES[LLM_BINDING_HOST]:-https://example.openai.azure.com/}")"
+      host_default="$(provider_default_or_existing "$binding" "$current_binding" "${ENV_VALUES[LLM_BINDING_HOST]:-}" "https://example.openai.azure.com/")"
+      host="$(prompt_with_default "Azure OpenAI endpoint" "$host_default")"
       api_key="$(prompt_secret_until_valid_with_default "Azure OpenAI API key: " "${ENV_VALUES[LLM_BINDING_API_KEY]:-}" validate_api_key azure_openai)"
       ;;
     gemini)
-      host="$(prompt_with_default "Gemini endpoint" "${ENV_VALUES[LLM_BINDING_HOST]:-https://generativelanguage.googleapis.com}")"
+      host_default="$(provider_default_or_existing "$binding" "$current_binding" "${ENV_VALUES[LLM_BINDING_HOST]:-}" "https://generativelanguage.googleapis.com")"
+      host="$(prompt_with_default "Gemini endpoint" "$host_default")"
       api_key="$(prompt_secret_until_valid_with_default "Gemini API key: " "${ENV_VALUES[LLM_BINDING_API_KEY]:-}" validate_api_key gemini)"
       ;;
     aws_bedrock)
-      host="${ENV_VALUES[LLM_BINDING_HOST]:-https://bedrock.amazonaws.com}"
+      host="$(provider_default_or_existing "$binding" "$current_binding" "${ENV_VALUES[LLM_BINDING_HOST]:-}" "https://bedrock.amazonaws.com")"
       api_key=""
       collect_bedrock_credentials
       ;;
     *)
-      host="$(prompt_with_default "LLM endpoint" "${ENV_VALUES[LLM_BINDING_HOST]:-https://api.openai.com/v1}")"
+      host_default="$(provider_default_or_existing "$binding" "$current_binding" "${ENV_VALUES[LLM_BINDING_HOST]:-}" "https://api.openai.com/v1")"
+      host="$(prompt_with_default "LLM endpoint" "$host_default")"
       api_key="$(prompt_secret_until_valid_with_default "LLM API key: " "${ENV_VALUES[LLM_BINDING_API_KEY]:-}" validate_api_key "$binding")"
       ;;
   esac
@@ -918,37 +1020,50 @@ collect_llm_config() {
 }
 
 collect_embedding_config() {
-  local options=("openai" "azure_openai" "ollama" "jina" "gemini" "aws_bedrock")
-  local binding model host api_key dim
+  local options=("openai" "azure_openai" "ollama" "jina" "lollms" "gemini" "aws_bedrock")
+  local current_binding="${ENV_VALUES[EMBEDDING_BINDING]:-openai}"
+  local binding model model_default host host_default api_key dim dim_default
 
-  binding="$(prompt_choice "Embedding provider" "${ENV_VALUES[EMBEDDING_BINDING]:-openai}" "${options[@]}")"
-  model="$(prompt_with_default "Embedding model" "${ENV_VALUES[EMBEDDING_MODEL]:-text-embedding-3-large}")"
-  dim="$(prompt_with_default "Embedding dimension" "${ENV_VALUES[EMBEDDING_DIM]:-3072}")"
+  binding="$(prompt_choice "Embedding provider" "$current_binding" "${options[@]}")"
+  model_default="$(provider_default_or_existing "$binding" "$current_binding" "${ENV_VALUES[EMBEDDING_MODEL]:-}" "$(default_embedding_model_for_binding "$binding")")"
+  dim_default="$(provider_default_or_existing "$binding" "$current_binding" "${ENV_VALUES[EMBEDDING_DIM]:-}" "$(default_embedding_dim_for_binding "$binding")")"
+  model="$(prompt_with_default "Embedding model" "$model_default")"
+  dim="$(prompt_with_default "Embedding dimension" "$dim_default")"
 
   case "$binding" in
     ollama)
-      host="$(prompt_with_default "Ollama embedding host" "${ENV_VALUES[EMBEDDING_BINDING_HOST]:-$(default_loopback_url 11434)}")"
+      host_default="$(provider_default_or_existing "$binding" "$current_binding" "${ENV_VALUES[EMBEDDING_BINDING_HOST]:-}" "$(default_loopback_url 11434)")"
+      host="$(prompt_with_default "Ollama embedding host" "$host_default")"
+      api_key=""
+      ;;
+    lollms)
+      host_default="$(provider_default_or_existing "$binding" "$current_binding" "${ENV_VALUES[EMBEDDING_BINDING_HOST]:-}" "http://localhost:9600")"
+      host="$(prompt_with_default "LoLLMs embedding host" "$host_default")"
       api_key=""
       ;;
     azure_openai)
-      host="$(prompt_with_default "Azure OpenAI endpoint" "${ENV_VALUES[EMBEDDING_BINDING_HOST]:-https://example.openai.azure.com/}")"
+      host_default="$(provider_default_or_existing "$binding" "$current_binding" "${ENV_VALUES[EMBEDDING_BINDING_HOST]:-}" "https://example.openai.azure.com/")"
+      host="$(prompt_with_default "Azure OpenAI endpoint" "$host_default")"
       api_key="$(prompt_secret_until_valid_with_default "Azure OpenAI API key: " "${ENV_VALUES[EMBEDDING_BINDING_API_KEY]:-}" validate_api_key azure_openai)"
       ;;
     gemini)
-      host="$(prompt_with_default "Gemini endpoint" "${ENV_VALUES[EMBEDDING_BINDING_HOST]:-https://generativelanguage.googleapis.com}")"
+      host_default="$(provider_default_or_existing "$binding" "$current_binding" "${ENV_VALUES[EMBEDDING_BINDING_HOST]:-}" "https://generativelanguage.googleapis.com")"
+      host="$(prompt_with_default "Gemini endpoint" "$host_default")"
       api_key="$(prompt_secret_until_valid_with_default "Gemini API key: " "${ENV_VALUES[EMBEDDING_BINDING_API_KEY]:-}" validate_api_key gemini)"
       ;;
     aws_bedrock)
-      host="${ENV_VALUES[EMBEDDING_BINDING_HOST]:-https://bedrock.amazonaws.com}"
+      host="$(provider_default_or_existing "$binding" "$current_binding" "${ENV_VALUES[EMBEDDING_BINDING_HOST]:-}" "https://bedrock.amazonaws.com")"
       api_key=""
       collect_bedrock_credentials
       ;;
     jina)
-      host="$(prompt_with_default "Jina endpoint" "${ENV_VALUES[EMBEDDING_BINDING_HOST]:-https://api.jina.ai/v1/embeddings}")"
+      host_default="$(provider_default_or_existing "$binding" "$current_binding" "${ENV_VALUES[EMBEDDING_BINDING_HOST]:-}" "https://api.jina.ai/v1/embeddings")"
+      host="$(prompt_with_default "Jina endpoint" "$host_default")"
       api_key="$(prompt_secret_until_valid_with_default "Jina API key: " "${ENV_VALUES[EMBEDDING_BINDING_API_KEY]:-}" validate_api_key jina)"
       ;;
     *)
-      host="$(prompt_with_default "Embedding endpoint" "${ENV_VALUES[EMBEDDING_BINDING_HOST]:-https://api.openai.com/v1}")"
+      host_default="$(provider_default_or_existing "$binding" "$current_binding" "${ENV_VALUES[EMBEDDING_BINDING_HOST]:-}" "https://api.openai.com/v1")"
+      host="$(prompt_with_default "Embedding endpoint" "$host_default")"
       api_key="$(prompt_secret_until_valid_with_default "Embedding API key: " "${ENV_VALUES[EMBEDDING_BINDING_API_KEY]:-}" validate_api_key "$binding")"
       ;;
   esac
