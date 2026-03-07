@@ -2025,6 +2025,32 @@ printf 'MONGO_URI=%s\\n' "${{COMPOSE_ENV_OVERRIDES[MONGO_URI]}}"
     assert values["MONGO_URI"] == "mongodb://root:root@host.docker.internal:27017/"
 
 
+def test_wait_for_port_uses_explicit_timeout_argument() -> None:
+    """`wait_for_port` should honor arg4 instead of always falling back to WAIT_TIMEOUT."""
+
+    output = run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+reset_state
+WAIT_TIMEOUT=1
+
+start=$SECONDS
+if wait_for_port 127.0.0.1 65535 probe 0 >/dev/null 2>&1; then
+  printf 'RESULT=success\\n'
+else
+  printf 'RESULT=failure\\n'
+fi
+elapsed=$((SECONDS - start))
+printf 'ELAPSED=%s\\n' "$elapsed"
+"""
+    )
+    values = parse_lines(output)
+
+    assert values["RESULT"] == "failure"
+    assert int(values["ELAPSED"]) < 2
+
+
 def test_collect_mongodb_config_local_service_strips_stale_credentials_on_rerun() -> None:
     """Bundled MongoDB should keep host `.env` aligned with the unauthenticated template."""
 
@@ -2034,7 +2060,7 @@ set -euo pipefail
 source "{REPO_ROOT}/scripts/setup/setup.sh"
 reset_state
 
-ENV_VALUES[MONGO_URI]="mongodb://root:secret@localhost:27017/"
+ENV_VALUES[MONGO_URI]="mongodb://root:secret@localhost:27018/"
 
 confirm_default_yes() {{ return 0; }}
 prompt_until_valid() {{ printf '%s' "$2"; }}
@@ -2058,6 +2084,50 @@ printf 'DOCKER_SERVICE=%s\\n' "${{DOCKER_SERVICES[0]}}"
     assert values["MONGO_URI"] == "mongodb://localhost:27017/"
     assert values["COMPOSE_MONGO_URI"] == "mongodb://mongodb:27017/"
     assert values["DOCKER_SERVICE"] == "mongodb"
+
+
+def test_collect_local_service_configs_normalize_stale_local_ports_on_rerun() -> None:
+    """Bundled services should reset stale localhost ports to their template defaults."""
+
+    output = run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+reset_state
+
+ENV_VALUES[NEO4J_URI]="neo4j://localhost:7777"
+ENV_VALUES[MILVUS_URI]="http://localhost:29530"
+ENV_VALUES[QDRANT_URL]="http://localhost:16333"
+ENV_VALUES[MEMGRAPH_URI]="bolt://localhost:17687"
+
+confirm_default_yes() {{ return 0; }}
+prompt_until_valid() {{ printf '%s' "$2"; }}
+prompt_with_default() {{
+  case "$1" in
+    "Neo4j database") printf 'neo4j' ;;
+    "Milvus database name") printf 'lightrag' ;;
+    *) printf '%s' "$2" ;;
+  esac
+}}
+prompt_secret_with_default() {{ printf '%s' "$2"; }}
+
+collect_neo4j_config yes
+collect_milvus_config yes
+collect_qdrant_config yes
+collect_memgraph_config yes
+
+printf 'NEO4J_URI=%s\\n' "${{ENV_VALUES[NEO4J_URI]}}"
+printf 'MILVUS_URI=%s\\n' "${{ENV_VALUES[MILVUS_URI]}}"
+printf 'QDRANT_URL=%s\\n' "${{ENV_VALUES[QDRANT_URL]}}"
+printf 'MEMGRAPH_URI=%s\\n' "${{ENV_VALUES[MEMGRAPH_URI]}}"
+"""
+    )
+    values = parse_lines(output)
+
+    assert values["NEO4J_URI"] == "neo4j://localhost:7687"
+    assert values["MILVUS_URI"] == "http://localhost:19530"
+    assert values["QDRANT_URL"] == "http://localhost:6333"
+    assert values["MEMGRAPH_URI"] == "bolt://localhost:7687"
 
 
 def test_collect_redis_config_local_service_normalizes_custom_host_port() -> None:

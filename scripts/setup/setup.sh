@@ -161,7 +161,7 @@ wait_for_port() {
   local host="$1"
   local port="$2"
   local label="$3"
-  local timeout="${10:-$WAIT_TIMEOUT}"
+  local timeout="${4:-$WAIT_TIMEOUT}"
   local start_time=$SECONDS
 
   log_step "Waiting for ${label} on ${host}:${port} (timeout ${timeout}s)"
@@ -261,10 +261,22 @@ normalize_loopback_uri_for_compose() {
 normalize_mongodb_uri_for_local_service() {
   local uri="$1"
 
-  if [[ "$uri" =~ ^mongodb://([^/?#]+@)?(mongodb|localhost|127\.0\.0\.1|0\.0\.0\.0)(:([0-9]+))?(/.*)?$ ]]; then
-    printf 'mongodb://localhost:%s%s' \
-      "${BASH_REMATCH[4]:-27017}" \
-      "${BASH_REMATCH[5]:-/}"
+  if [[ "$uri" =~ ^mongodb://([^/?#]+@)?(mongodb|localhost|127\.0\.0\.1|0\.0\.0\.0)(:[0-9]+)?([/?#].*)?$ ]]; then
+    printf 'mongodb://localhost:27017%s' "${BASH_REMATCH[4]:-/}"
+    return 0
+  fi
+
+  printf '%s' "$uri"
+}
+
+normalize_neo4j_uri_for_local_service() {
+  local uri="$1"
+
+  if [[ "$uri" =~ ^([a-zA-Z][a-zA-Z0-9+.-]*://)([^/?#]+@)?(neo4j|localhost|127\.0\.0\.1|0\.0\.0\.0)(:[0-9]+)?([/?#].*)?$ ]]; then
+    printf '%s%slocalhost:7687%s' \
+      "${BASH_REMATCH[1]}" \
+      "${BASH_REMATCH[2]}" \
+      "${BASH_REMATCH[5]}"
     return 0
   fi
 
@@ -276,6 +288,43 @@ normalize_redis_uri_for_local_service() {
 
   if [[ "$uri" =~ ^rediss?://([^/?#]+@)?(redis|localhost|127\.0\.0\.1|0\.0\.0\.0)(:([0-9]+))?(/.*)?$ ]]; then
     printf 'redis://localhost:6379%s' "${BASH_REMATCH[5]:-/}"
+    return 0
+  fi
+
+  printf '%s' "$uri"
+}
+
+normalize_milvus_uri_for_local_service() {
+  local uri="$1"
+
+  if [[ "$uri" =~ ^(https?://)([^/?#]+@)?(milvus|localhost|127\.0\.0\.1|0\.0\.0\.0)(:[0-9]+)?([/?#].*)?$ ]]; then
+    printf '%slocalhost:19530%s' \
+      "${BASH_REMATCH[1]}" \
+      "${BASH_REMATCH[5]}"
+    return 0
+  fi
+
+  printf '%s' "$uri"
+}
+
+normalize_qdrant_uri_for_local_service() {
+  local uri="$1"
+
+  if [[ "$uri" =~ ^(https?://)([^/?#]+@)?(qdrant|localhost|127\.0\.0\.1|0\.0\.0\.0)(:[0-9]+)?([/?#].*)?$ ]]; then
+    printf '%slocalhost:6333%s' \
+      "${BASH_REMATCH[1]}" \
+      "${BASH_REMATCH[5]}"
+    return 0
+  fi
+
+  printf '%s' "$uri"
+}
+
+normalize_memgraph_uri_for_local_service() {
+  local uri="$1"
+
+  if [[ "$uri" =~ ^(bolt://)([^/?#]+@)?(memgraph|localhost|127\.0\.0\.1|0\.0\.0\.0)(:[0-9]+)?([/?#].*)?$ ]]; then
+    printf 'bolt://localhost:7687%s' "${BASH_REMATCH[5]}"
     return 0
   fi
 
@@ -668,6 +717,9 @@ collect_neo4j_config() {
 
   uri="$(prompt_until_valid "Neo4j URI" "$uri" validate_uri neo4j)"
   if [[ "$use_docker" == "yes" ]]; then
+    uri="$(normalize_neo4j_uri_for_local_service "$uri")"
+  fi
+  if [[ "$use_docker" == "yes" ]]; then
     username="neo4j"
   else
     username="$(prompt_with_default "Neo4j username" "${ENV_VALUES[NEO4J_USERNAME]:-neo4j}")"
@@ -794,6 +846,9 @@ collect_milvus_config() {
   fi
 
   uri="$(prompt_until_valid "Milvus URI" "$uri" validate_uri milvus)"
+  if [[ "$use_docker" == "yes" ]]; then
+    uri="$(normalize_milvus_uri_for_local_service "$uri")"
+  fi
   db_name="$(prompt_with_default "Milvus database name" "${ENV_VALUES[MILVUS_DB_NAME]:-lightrag}")"
 
   ENV_VALUES["MILVUS_URI"]="$uri"
@@ -828,6 +883,9 @@ collect_qdrant_config() {
   fi
 
   url="$(prompt_until_valid "Qdrant URL" "$url" validate_uri qdrant)"
+  if [[ "$use_docker" == "yes" ]]; then
+    url="$(normalize_qdrant_uri_for_local_service "$url")"
+  fi
   ENV_VALUES["QDRANT_URL"]="$url"
   if [[ "$use_docker" == "yes" ]]; then
     set_compose_override "QDRANT_URL" "http://qdrant:6333"
@@ -859,6 +917,9 @@ collect_memgraph_config() {
   fi
 
   uri="$(prompt_until_valid "Memgraph URI" "$uri" validate_uri memgraph)"
+  if [[ "$use_docker" == "yes" ]]; then
+    uri="$(normalize_memgraph_uri_for_local_service "$uri")"
+  fi
   ENV_VALUES["MEMGRAPH_URI"]="$uri"
   if [[ "$use_docker" == "yes" ]]; then
     set_compose_override "MEMGRAPH_URI" "bolt://memgraph:7687"
