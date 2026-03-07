@@ -286,6 +286,42 @@ default_loopback_url() {
   printf 'http://localhost:%s%s' "$port" "$path"
 }
 
+uri_points_to_host() {
+  local uri="$1"
+  shift
+  local host=""
+  local allowed_host
+
+  if [[ "$uri" =~ ^[a-zA-Z][a-zA-Z0-9+.-]*://([^/?#]+@)?(\[[^]]+\]|[^/:?#]+) ]]; then
+    host="${BASH_REMATCH[2]}"
+    for allowed_host in "$@"; do
+      if [[ "$host" == "$allowed_host" ]]; then
+        return 0
+      fi
+    done
+  fi
+
+  return 1
+}
+
+prefer_local_service_uri() {
+  local current_uri="$1"
+  local default_uri="$2"
+  shift 2
+
+  if [[ -z "$current_uri" ]]; then
+    printf '%s' "$default_uri"
+    return 0
+  fi
+
+  if uri_points_to_host "$current_uri" "$@"; then
+    printf '%s' "$current_uri"
+    return 0
+  fi
+
+  printf '%s' "$default_uri"
+}
+
 set_compose_override() {
   local key="$1"
   local value="${2:-}"
@@ -552,7 +588,9 @@ collect_postgres_config() {
   if [[ "$use_docker" == "yes" ]]; then
     add_docker_service "postgres"
     host="${ENV_VALUES[POSTGRES_HOST]:-localhost}"
-    if [[ "$host" == "postgres" ]]; then
+    if [[ "$host" != "localhost" && "$host" != "127.0.0.1" && "$host" != "0.0.0.0" && "$host" != "postgres" ]]; then
+      host="localhost"
+    elif [[ "$host" == "postgres" ]]; then
       host="localhost"
     fi
   else
@@ -599,10 +637,7 @@ collect_neo4j_config() {
 
   if [[ "$use_docker" == "yes" ]]; then
     add_docker_service "neo4j"
-    uri="${ENV_VALUES[NEO4J_URI]:-neo4j://localhost:7687}"
-    if [[ "$uri" == "neo4j://neo4j:7687" ]]; then
-      uri="neo4j://localhost:7687"
-    fi
+    uri="$(prefer_local_service_uri "${ENV_VALUES[NEO4J_URI]:-}" "neo4j://localhost:7687" "neo4j" "localhost" "127.0.0.1" "0.0.0.0")"
   else
     uri="${ENV_VALUES[NEO4J_URI]:-neo4j://localhost:7687}"
   fi
@@ -653,10 +688,7 @@ collect_mongodb_config() {
 
     if [[ "$use_docker" == "yes" ]]; then
       add_docker_service "mongodb"
-      uri="${ENV_VALUES[MONGO_URI]:-mongodb://localhost:27017/}"
-      if [[ "$uri" == "mongodb://mongodb:27017/" ]]; then
-        uri="mongodb://localhost:27017/"
-      fi
+      uri="$(prefer_local_service_uri "${ENV_VALUES[MONGO_URI]:-}" "mongodb://localhost:27017/" "mongodb" "localhost" "127.0.0.1" "0.0.0.0")"
     else
       uri="${ENV_VALUES[MONGO_URI]:-mongodb://localhost:27017/}"
     fi
@@ -698,10 +730,7 @@ collect_redis_config() {
 
   if [[ "$use_docker" == "yes" ]]; then
     add_docker_service "redis"
-    uri="${ENV_VALUES[REDIS_URI]:-redis://localhost:6379}"
-    if [[ "$uri" == "redis://redis:6379" ]]; then
-      uri="redis://localhost:6379"
-    fi
+    uri="$(prefer_local_service_uri "${ENV_VALUES[REDIS_URI]:-}" "redis://localhost:6379" "redis" "localhost" "127.0.0.1" "0.0.0.0")"
   else
     uri="${ENV_VALUES[REDIS_URI]:-redis://localhost:6379}"
   fi
@@ -735,10 +764,7 @@ collect_milvus_config() {
 
   if [[ "$use_docker" == "yes" ]]; then
     add_docker_service "milvus"
-    uri="${ENV_VALUES[MILVUS_URI]:-http://localhost:19530}"
-    if [[ "$uri" == "http://milvus:19530" ]]; then
-      uri="http://localhost:19530"
-    fi
+    uri="$(prefer_local_service_uri "${ENV_VALUES[MILVUS_URI]:-}" "http://localhost:19530" "milvus" "localhost" "127.0.0.1" "0.0.0.0")"
   else
     uri="${ENV_VALUES[MILVUS_URI]:-http://localhost:19530}"
   fi
@@ -772,10 +798,7 @@ collect_qdrant_config() {
 
   if [[ "$use_docker" == "yes" ]]; then
     add_docker_service "qdrant"
-    url="${ENV_VALUES[QDRANT_URL]:-http://localhost:6333}"
-    if [[ "$url" == "http://qdrant:6333" ]]; then
-      url="http://localhost:6333"
-    fi
+    url="$(prefer_local_service_uri "${ENV_VALUES[QDRANT_URL]:-}" "http://localhost:6333" "qdrant" "localhost" "127.0.0.1" "0.0.0.0")"
   else
     url="${ENV_VALUES[QDRANT_URL]:-http://localhost:6333}"
   fi
@@ -806,10 +829,7 @@ collect_memgraph_config() {
 
   if [[ "$use_docker" == "yes" ]]; then
     add_docker_service "memgraph"
-    uri="${ENV_VALUES[MEMGRAPH_URI]:-bolt://localhost:7687}"
-    if [[ "$uri" == "bolt://memgraph:7687" ]]; then
-      uri="bolt://localhost:7687"
-    fi
+    uri="$(prefer_local_service_uri "${ENV_VALUES[MEMGRAPH_URI]:-}" "bolt://localhost:7687" "memgraph" "localhost" "127.0.0.1" "0.0.0.0")"
   else
     uri="${ENV_VALUES[MEMGRAPH_URI]:-bolt://localhost:7687}"
   fi
@@ -945,7 +965,7 @@ collect_rerank_config() {
   local binding_choice binding model host api_key
   local vllm_model vllm_port vllm_device vllm_dtype vllm_extra
   local default_dtype=""
-  local default_model="" default_host="" use_docker="no"
+  local default_model="" default_host="" model_default="" host_default="" use_docker="no"
   local rerank_default="${ENV_VALUES[RERANK_BINDING]:-cohere}"
 
   if ! confirm "Enable reranking?"; then
@@ -995,14 +1015,10 @@ collect_rerank_config() {
     fi
 
     default_model="$vllm_model"
+    default_host="$(default_loopback_url "$vllm_port" "/v1/rerank")"
     if [[ "$use_docker" == "yes" ]]; then
-      default_host="${ENV_VALUES[RERANK_BINDING_HOST]:-http://localhost:${vllm_port}/v1/rerank}"
-      if [[ "$default_host" == "http://vllm-rerank:${vllm_port}/v1/rerank" ]]; then
-        default_host="http://localhost:${vllm_port}/v1/rerank"
-      fi
       set_compose_override "RERANK_BINDING_HOST" "http://vllm-rerank:${vllm_port}/v1/rerank"
     else
-      default_host="$(default_loopback_url "$vllm_port" "/v1/rerank")"
       set_compose_override "RERANK_BINDING_HOST" ""
     fi
     binding="cohere"
@@ -1010,8 +1026,16 @@ collect_rerank_config() {
     binding="$binding_choice"
   fi
 
-  model="$(prompt_with_default "Rerank model" "${ENV_VALUES[RERANK_MODEL]:-$default_model}")"
-  host="$(prompt_with_default "Rerank endpoint" "${ENV_VALUES[RERANK_BINDING_HOST]:-$default_host}")"
+  if [[ "$binding_choice" == "vllm" ]]; then
+    model_default="$default_model"
+    host_default="$default_host"
+  else
+    model_default="${ENV_VALUES[RERANK_MODEL]:-$default_model}"
+    host_default="${ENV_VALUES[RERANK_BINDING_HOST]:-$default_host}"
+  fi
+
+  model="$(prompt_with_default "Rerank model" "$model_default")"
+  host="$(prompt_with_default "Rerank endpoint" "$host_default")"
   if [[ "$binding_choice" == "vllm" ]]; then
     api_key="$(prompt_secret_with_default "Rerank API key (optional): " "${ENV_VALUES[RERANK_BINDING_API_KEY]:-}")"
   else

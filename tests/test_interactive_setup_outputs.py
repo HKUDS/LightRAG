@@ -115,6 +115,68 @@ printf 'DOCKER_SERVICE=%s\\n' "${{DOCKER_SERVICES[0]}}"
     assert values["DOCKER_SERVICE"] == "postgres"
 
 
+def test_collect_local_service_configs_reset_remote_endpoints_on_rerun() -> None:
+    """Bundled services should default back to host-local endpoints on reruns."""
+
+    output = run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+reset_state
+
+ENV_VALUES[POSTGRES_HOST]="db.example.com"
+ENV_VALUES[POSTGRES_PORT]="6543"
+ENV_VALUES[NEO4J_URI]="neo4j+s://graph.example.com"
+ENV_VALUES[MONGO_URI]="mongodb://mongo.example.com:27018/"
+ENV_VALUES[REDIS_URI]="redis://cache.example.com:6380/1"
+ENV_VALUES[MILVUS_URI]="http://milvus.example.com:19530"
+ENV_VALUES[QDRANT_URL]="http://qdrant.example.com:6333"
+ENV_VALUES[MEMGRAPH_URI]="bolt://memgraph.example.com:7687"
+
+confirm_default_yes() {{ return 0; }}
+prompt_with_default() {{
+  case "$1" in
+    "PostgreSQL user") printf 'lightrag' ;;
+    "PostgreSQL database") printf 'lightrag' ;;
+    "Neo4j database") printf 'neo4j' ;;
+    "MongoDB database") printf 'LightRAG' ;;
+    "Milvus database name") printf 'lightrag' ;;
+    *) printf '%s' "$2" ;;
+  esac
+}}
+prompt_until_valid() {{ printf '%s' "$2"; }}
+prompt_secret_with_default() {{ printf '%s' "$2"; }}
+
+collect_postgres_config yes
+collect_neo4j_config yes
+collect_mongodb_config yes
+collect_redis_config yes
+collect_milvus_config yes
+collect_qdrant_config yes
+collect_memgraph_config yes
+
+printf 'POSTGRES_HOST=%s\\n' "${{ENV_VALUES[POSTGRES_HOST]}}"
+printf 'POSTGRES_PORT=%s\\n' "${{ENV_VALUES[POSTGRES_PORT]}}"
+printf 'NEO4J_URI=%s\\n' "${{ENV_VALUES[NEO4J_URI]}}"
+printf 'MONGO_URI=%s\\n' "${{ENV_VALUES[MONGO_URI]}}"
+printf 'REDIS_URI=%s\\n' "${{ENV_VALUES[REDIS_URI]}}"
+printf 'MILVUS_URI=%s\\n' "${{ENV_VALUES[MILVUS_URI]}}"
+printf 'QDRANT_URL=%s\\n' "${{ENV_VALUES[QDRANT_URL]}}"
+printf 'MEMGRAPH_URI=%s\\n' "${{ENV_VALUES[MEMGRAPH_URI]}}"
+"""
+    )
+    values = parse_lines(output)
+
+    assert values["POSTGRES_HOST"] == "localhost"
+    assert values["POSTGRES_PORT"] == "6543"
+    assert values["NEO4J_URI"] == "neo4j://localhost:7687"
+    assert values["MONGO_URI"] == "mongodb://localhost:27017/"
+    assert values["REDIS_URI"] == "redis://localhost:6379/"
+    assert values["MILVUS_URI"] == "http://localhost:19530"
+    assert values["QDRANT_URL"] == "http://localhost:6333"
+    assert values["MEMGRAPH_URI"] == "bolt://localhost:7687"
+
+
 def test_prepare_compose_runtime_overrides_keeps_env_unchanged() -> None:
     """Loopback endpoints should be rewritten only for compose overrides."""
 
@@ -721,6 +783,51 @@ fi
     assert values["RERANK_BINDING"] == "null"
     assert values["RERANK_BINDING_API_KEY_SET"] == ""
     assert values["VALID"] == "yes"
+
+
+def test_collect_rerank_config_vllm_resets_stale_hosted_defaults() -> None:
+    """Selecting local vLLM should not keep a previously hosted rerank endpoint."""
+
+    output = run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+reset_state
+
+ENV_VALUES[RERANK_BINDING]="cohere"
+ENV_VALUES[RERANK_MODEL]="rerank-v3.5"
+ENV_VALUES[RERANK_BINDING_HOST]="https://api.cohere.com/v1/rerank"
+
+confirm() {{ return 0; }}
+confirm_default_yes() {{ return 0; }}
+prompt_choice() {{
+  case "$1" in
+    "Rerank provider") printf 'vllm' ;;
+    "vLLM device") printf 'cpu' ;;
+    *) printf '%s' "$2" ;;
+  esac
+}}
+prompt_with_default() {{ printf '%s' "$2"; }}
+prompt_until_valid() {{ printf '%s' "$2"; }}
+prompt_secret_with_default() {{ printf '%s' "$2"; }}
+
+collect_rerank_config
+
+printf 'RERANK_BINDING=%s\\n' "${{ENV_VALUES[RERANK_BINDING]}}"
+printf 'RERANK_MODEL=%s\\n' "${{ENV_VALUES[RERANK_MODEL]}}"
+printf 'RERANK_BINDING_HOST=%s\\n' "${{ENV_VALUES[RERANK_BINDING_HOST]}}"
+printf 'COMPOSE_RERANK_BINDING_HOST=%s\\n' "${{COMPOSE_ENV_OVERRIDES[RERANK_BINDING_HOST]}}"
+"""
+    )
+    values = parse_lines(output)
+
+    assert values["RERANK_BINDING"] == "cohere"
+    assert values["RERANK_MODEL"] == "BAAI/bge-reranker-v2-m3"
+    assert values["RERANK_BINDING_HOST"] == "http://localhost:8000/v1/rerank"
+    assert (
+        values["COMPOSE_RERANK_BINDING_HOST"]
+        == "http://vllm-rerank:8000/v1/rerank"
+    )
 
 
 def test_generate_docker_compose_escapes_dollar_signs_in_overrides(
@@ -1621,6 +1728,56 @@ printf 'WHITELIST_PATHS=%s\\n' "${{ENV_VALUES[WHITELIST_PATHS]}}"
     assert values["WHITELIST_PATHS"] == "/health"
 
 
+def test_validate_env_file_allows_empty_production_whitelist_with_api_key(
+    tmp_path: Path,
+) -> None:
+    """Production validation should accept an explicitly empty whitelist."""
+
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "\n".join(
+            [
+                "LIGHTRAG_KV_STORAGE=PGKVStorage",
+                "LIGHTRAG_VECTOR_STORAGE=MilvusVectorDBStorage",
+                "LIGHTRAG_GRAPH_STORAGE=Neo4JStorage",
+                "LIGHTRAG_DOC_STATUS_STORAGE=PGDocStatusStorage",
+                "POSTGRES_USER=lightrag",
+                "POSTGRES_PASSWORD=secret",
+                "POSTGRES_DATABASE=lightrag",
+                "MILVUS_URI=http://localhost:19530",
+                "MILVUS_DB_NAME=lightrag",
+                "NEO4J_URI=neo4j://localhost:7687",
+                "NEO4J_USERNAME=neo4j",
+                "NEO4J_PASSWORD=secret",
+                "LIGHTRAG_API_KEY=api-key",
+                "WHITELIST_PATHS=",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [
+            "bash",
+            "-lc",
+            f"""
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+validate_env_file
+""",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0
+    assert "Validation passed." in result.stdout
+
+
 def test_collect_observability_config_clears_existing_values_on_rerun(
     tmp_path: Path,
 ) -> None:
@@ -1843,8 +2000,8 @@ fi
     assert values["WITH_API_KEY"] == "yes"
 
 
-def test_validate_security_config_rejects_default_whitelist_for_production() -> None:
-    """Production validation should reject the default `/api/*` whitelist."""
+def test_validate_security_config_allows_empty_but_rejects_api_whitelist_for_production() -> None:
+    """Production validation should allow an empty whitelist but still reject `/api/*`."""
 
     output = run_bash(
         f"""
@@ -1873,7 +2030,7 @@ fi
     )
     values = parse_lines(output)
 
-    assert values["EMPTY_WHITELIST"] == "no"
+    assert values["EMPTY_WHITELIST"] == "yes"
     assert values["API_WHITELIST"] == "no"
     assert values["SAFE_WHITELIST"] == "yes"
 

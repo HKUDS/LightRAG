@@ -280,10 +280,6 @@ validate_security_config() {
   local require_protection="${4:-no}"
   local whitelist_paths="${5:-${ENV_VALUES[WHITELIST_PATHS]:-}}"
 
-  if [[ "$require_protection" == "yes" && -z "$whitelist_paths" ]]; then
-    whitelist_paths="/health,/api/*"
-  fi
-
   if [[ "$require_protection" == "yes" && -z "$auth_accounts" && -z "$api_key" ]]; then
     format_error \
       "Production setup requires either AUTH_ACCOUNTS or LIGHTRAG_API_KEY." \
