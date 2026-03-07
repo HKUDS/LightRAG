@@ -1,5 +1,6 @@
 SHELL := /bin/bash
 SETUP_SCRIPT := scripts/setup/setup.sh
+SETUP_BASH ?= $(or $(firstword $(wildcard /opt/homebrew/bin/bash /usr/local/bin/bash /opt/local/bin/bash)),$(shell command -v bash 2>/dev/null),bash)
 SETUP_OPTS ?=
 COLOR_RESET := \033[0m
 COLOR_BOLD := \033[1m
@@ -39,22 +40,22 @@ help:
 	@printf "  Compose file output: docker-compose.<development|production|custom>.yml\n"
 
 setup:
-	@bash $(SETUP_SCRIPT) $(SETUP_OPTS)
+	@$(SETUP_BASH) $(SETUP_SCRIPT) $(SETUP_OPTS)
 
 configure:
-	@bash $(SETUP_SCRIPT) $(SETUP_OPTS)
+	@$(SETUP_BASH) $(SETUP_SCRIPT) $(SETUP_OPTS)
 
 setup-quick:
-	@bash $(SETUP_SCRIPT) --quick $(SETUP_OPTS)
+	@$(SETUP_BASH) $(SETUP_SCRIPT) --quick $(SETUP_OPTS)
 
 setup-production:
-	@bash $(SETUP_SCRIPT) --production $(SETUP_OPTS)
+	@$(SETUP_BASH) $(SETUP_SCRIPT) --production $(SETUP_OPTS)
 
 setup-validate:
-	@bash $(SETUP_SCRIPT) --validate $(SETUP_OPTS)
+	@$(SETUP_BASH) $(SETUP_SCRIPT) --validate $(SETUP_OPTS)
 
 setup-backup:
-	@bash $(SETUP_SCRIPT) --backup $(SETUP_OPTS)
+	@$(SETUP_BASH) $(SETUP_SCRIPT) --backup $(SETUP_OPTS)
 
 setup-help:
-	@bash $(SETUP_SCRIPT) --help $(SETUP_OPTS)
+	@$(SETUP_BASH) $(SETUP_SCRIPT) --help $(SETUP_OPTS)

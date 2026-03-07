@@ -68,6 +68,18 @@ def test_setup_script_rejects_bash_3_with_clear_message() -> None:
     assert "requires Bash 4 or newer" in result.stderr
 
 
+def test_makefile_setup_targets_prefer_common_bash4_locations() -> None:
+    """Setup targets should prefer a modern Bash even when PATH still resolves to Bash 3."""
+
+    makefile = (REPO_ROOT / "Makefile").read_text(encoding="utf-8")
+
+    assert "SETUP_BASH ?=" in makefile
+    assert "/opt/homebrew/bin/bash" in makefile
+    assert "/usr/local/bin/bash" in makefile
+    assert "@$(SETUP_BASH) $(SETUP_SCRIPT)" in makefile
+    assert "@bash $(SETUP_SCRIPT)" not in makefile
+
+
 def test_collect_postgres_config_keeps_host_reachable_env_values() -> None:
     """Bundled PostgreSQL should keep `.env` host-oriented and use compose overrides."""
 
@@ -1131,6 +1143,7 @@ prompt_secret_with_default() {{ printf '%s' "$2"; }}
 collect_rerank_config
 
 printf 'RERANK_BINDING=%s\\n' "${{ENV_VALUES[RERANK_BINDING]}}"
+printf 'LIGHTRAG_SETUP_RERANK_PROVIDER=%s\\n' "${{ENV_VALUES[LIGHTRAG_SETUP_RERANK_PROVIDER]}}"
 printf 'RERANK_MODEL=%s\\n' "${{ENV_VALUES[RERANK_MODEL]}}"
 printf 'RERANK_BINDING_HOST=%s\\n' "${{ENV_VALUES[RERANK_BINDING_HOST]}}"
 printf 'COMPOSE_RERANK_BINDING_HOST=%s\\n' "${{COMPOSE_ENV_OVERRIDES[RERANK_BINDING_HOST]}}"
@@ -1139,8 +1152,55 @@ printf 'COMPOSE_RERANK_BINDING_HOST=%s\\n' "${{COMPOSE_ENV_OVERRIDES[RERANK_BIND
     values = parse_lines(output)
 
     assert values["RERANK_BINDING"] == "cohere"
+    assert values["LIGHTRAG_SETUP_RERANK_PROVIDER"] == "vllm"
     assert values["RERANK_MODEL"] == "BAAI/bge-reranker-v2-m3"
     assert values["RERANK_BINDING_HOST"] == "http://localhost:8000/v1/rerank"
+    assert (
+        values["COMPOSE_RERANK_BINDING_HOST"]
+        == "http://vllm-rerank:8000/v1/rerank"
+    )
+
+
+def test_collect_rerank_config_preserves_vllm_default_on_rerun() -> None:
+    """A saved local vLLM choice should come back as the default provider on rerun."""
+
+    output = run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+reset_state
+
+ENV_VALUES[LIGHTRAG_SETUP_RERANK_PROVIDER]="vllm"
+ENV_VALUES[RERANK_BINDING]="cohere"
+ENV_VALUES[RERANK_MODEL]="BAAI/bge-reranker-v2-m3"
+ENV_VALUES[RERANK_BINDING_HOST]="http://localhost:8000/v1/rerank"
+ENV_VALUES[VLLM_RERANK_MODEL]="BAAI/bge-reranker-v2-m3"
+ENV_VALUES[VLLM_RERANK_PORT]="8000"
+ENV_VALUES[VLLM_RERANK_DEVICE]="cpu"
+ENV_VALUES[VLLM_RERANK_DTYPE]="float32"
+
+confirm() {{ return 0; }}
+confirm_default_yes() {{ return 0; }}
+prompt_choice() {{ printf '%s' "$2"; }}
+prompt_with_default() {{ printf '%s' "$2"; }}
+prompt_until_valid() {{ printf '%s' "$2"; }}
+prompt_secret_with_default() {{ printf '%s' "$2"; }}
+
+collect_rerank_config
+
+printf 'RERANK_BINDING=%s\\n' "${{ENV_VALUES[RERANK_BINDING]}}"
+printf 'LIGHTRAG_SETUP_RERANK_PROVIDER=%s\\n' "${{ENV_VALUES[LIGHTRAG_SETUP_RERANK_PROVIDER]}}"
+printf 'RERANK_BINDING_HOST=%s\\n' "${{ENV_VALUES[RERANK_BINDING_HOST]}}"
+printf 'DOCKER_SERVICE=%s\\n' "${{DOCKER_SERVICES[0]}}"
+printf 'COMPOSE_RERANK_BINDING_HOST=%s\\n' "${{COMPOSE_ENV_OVERRIDES[RERANK_BINDING_HOST]}}"
+"""
+    )
+    values = parse_lines(output)
+
+    assert values["RERANK_BINDING"] == "cohere"
+    assert values["LIGHTRAG_SETUP_RERANK_PROVIDER"] == "vllm"
+    assert values["RERANK_BINDING_HOST"] == "http://localhost:8000/v1/rerank"
+    assert values["DOCKER_SERVICE"] == "vllm-rerank"
     assert (
         values["COMPOSE_RERANK_BINDING_HOST"]
         == "http://vllm-rerank:8000/v1/rerank"

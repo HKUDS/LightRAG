@@ -128,7 +128,7 @@ reset_quick_start_inherited_state() {
     case "$key" in
       HOST|PORT|WEBUI_TITLE|WEBUI_DESCRIPTION|LLM_BINDING_API_KEY|EMBEDDING_BINDING_API_KEY)
         ;;
-      AUTH_ACCOUNTS|TOKEN_SECRET|TOKEN_EXPIRE_HOURS|GUEST_TOKEN_EXPIRE_HOURS|JWT_ALGORITHM|TOKEN_AUTO_RENEW|TOKEN_RENEW_THRESHOLD|LIGHTRAG_API_KEY|WHITELIST_PATHS|LANGFUSE_*|RERANK_*|VLLM_*|CUDA_VISIBLE_DEVICES|NVIDIA_VISIBLE_DEVICES|NVIDIA_DRIVER_CAPABILITIES)
+      AUTH_ACCOUNTS|TOKEN_SECRET|TOKEN_EXPIRE_HOURS|GUEST_TOKEN_EXPIRE_HOURS|JWT_ALGORITHM|TOKEN_AUTO_RENEW|TOKEN_RENEW_THRESHOLD|LIGHTRAG_API_KEY|WHITELIST_PATHS|LANGFUSE_*|LIGHTRAG_SETUP_RERANK_PROVIDER|RERANK_*|VLLM_*|CUDA_VISIBLE_DEVICES|NVIDIA_VISIBLE_DEVICES|NVIDIA_DRIVER_CAPABILITIES)
         unset "ENV_VALUES[$key]"
         ;;
     esac
@@ -1141,10 +1141,11 @@ collect_rerank_config() {
   local vllm_model vllm_port vllm_device vllm_dtype vllm_extra
   local default_dtype=""
   local default_model="" default_host="" model_default="" host_default="" use_docker="no"
-  local rerank_default="${ENV_VALUES[RERANK_BINDING]:-cohere}"
+  local rerank_default="${ENV_VALUES[LIGHTRAG_SETUP_RERANK_PROVIDER]:-${ENV_VALUES[RERANK_BINDING]:-cohere}}"
 
   if ! confirm "Enable reranking?"; then
     ENV_VALUES["RERANK_BINDING"]="null"
+    unset 'ENV_VALUES[LIGHTRAG_SETUP_RERANK_PROVIDER]'
     unset 'ENV_VALUES[RERANK_BINDING_API_KEY]'
     return
   fi
@@ -1218,6 +1219,7 @@ collect_rerank_config() {
   fi
 
   ENV_VALUES["RERANK_BINDING"]="$binding"
+  ENV_VALUES["LIGHTRAG_SETUP_RERANK_PROVIDER"]="$binding_choice"
   if [[ -n "$model" ]]; then
     ENV_VALUES["RERANK_MODEL"]="$model"
   fi
