@@ -1725,6 +1725,62 @@ quick_start_flow
     assert "EMBEDDING_BINDING_API_KEY=sk-existing" in generated_lines
 
 
+def test_quick_start_flow_generates_env_and_compose_files(tmp_path: Path) -> None:
+    """Quick mode should write a development `.env` and compose file via finalize_setup."""
+
+    (tmp_path / "env.example").write_text(
+        (REPO_ROOT / "env.example").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    (tmp_path / "docker-compose.yml").write_text(
+        (REPO_ROOT / "docker-compose.yml").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+
+prompt_secret_until_valid_with_default() {{
+  if [[ "$1" == "OpenAI API key: " ]]; then
+    printf 'sk-quick-test-key'
+  else
+    printf '%s' "$2"
+  fi
+}}
+confirm() {{
+  case "$1" in
+    "Generate .env and docker-compose.yml now?"|"Generate docker-compose for LightRAG only?")
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}}
+confirm_default_yes() {{ return 1; }}
+
+quick_start_flow
+"""
+    )
+
+    generated_env = (tmp_path / ".env").read_text(encoding="utf-8")
+    generated_compose = (tmp_path / "docker-compose.development.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "LIGHTRAG_SETUP_PROFILE=development" in generated_env
+    assert "LIGHTRAG_KV_STORAGE=JsonKVStorage" in generated_env
+    assert "LLM_BINDING=openai" in generated_env
+    assert "LLM_BINDING_API_KEY=sk-quick-test-key" in generated_env
+    assert "EMBEDDING_BINDING_API_KEY=sk-quick-test-key" in generated_env
+    assert "services:" in generated_compose
+    assert "  lightrag:" in generated_compose
+    assert "env_file:" not in generated_compose
+
+
 def test_interactive_flow_clears_inherited_ssl_state_for_non_production_reruns(
     tmp_path: Path,
 ) -> None:
@@ -1780,6 +1836,76 @@ interactive_flow
     assert not any(line.startswith("SSL_CERTFILE=") for line in generated_lines)
     assert not any(line.startswith("SSL_KEYFILE=") for line in generated_lines)
     assert "LIGHTRAG_SETUP_PROFILE=development" in generated_lines
+
+
+def test_interactive_flow_generates_env_and_compose_files_for_development(
+    tmp_path: Path,
+) -> None:
+    """Interactive mode should generate development config artifacts end to end."""
+
+    (tmp_path / "env.example").write_text(
+        (REPO_ROOT / "env.example").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    (tmp_path / "docker-compose.yml").write_text(
+        (REPO_ROOT / "docker-compose.yml").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+
+select_deployment_type() {{ printf 'development'; }}
+prompt_choice() {{
+  case "$1" in
+    "LLM provider")
+      printf 'ollama'
+      ;;
+    "Embedding provider")
+      printf 'ollama'
+      ;;
+    *)
+      printf '%s' "$2"
+      ;;
+  esac
+}}
+prompt_with_default() {{ printf '%s' "$2"; }}
+prompt_until_valid() {{ printf '%s' "$2"; }}
+prompt_secret_with_default() {{ printf '%s' "$2"; }}
+prompt_secret_until_valid_with_default() {{ printf '%s' "$2"; }}
+confirm_default_yes() {{ return 1; }}
+confirm() {{
+  case "$1" in
+    "Enable reranking?"|"Configure authentication and API key settings?"|"Enable Langfuse observability?")
+      return 1
+      ;;
+    "Generate .env and docker-compose.yml now?"|"Generate docker-compose for LightRAG only?")
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}}
+
+interactive_flow
+"""
+    )
+
+    generated_env = (tmp_path / ".env").read_text(encoding="utf-8")
+    generated_compose = (tmp_path / "docker-compose.development.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "LIGHTRAG_SETUP_PROFILE=development" in generated_env
+    assert "LLM_BINDING=ollama" in generated_env
+    assert "EMBEDDING_BINDING=ollama" in generated_env
+    assert "services:" in generated_compose
+    assert "  lightrag:" in generated_compose
+    assert "env_file:" not in generated_compose
 
 
 def test_interactive_flow_collects_image_tags_after_rerank_service_selection(
@@ -1935,6 +2061,121 @@ production_flow
     values = parse_lines(output)
 
     assert values["HAS_VLLM_SERVICE"] == "yes"
+
+
+def test_production_flow_generates_env_and_compose_files(tmp_path: Path) -> None:
+    """Production mode should generate a secured production `.env` and compose file."""
+
+    (tmp_path / "env.example").write_text(
+        (REPO_ROOT / "env.example").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    (tmp_path / "docker-compose.yml").write_text(
+        (REPO_ROOT / "docker-compose.yml").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+
+prompt_choice() {{
+  case "$1" in
+    "LLM provider")
+      printf 'ollama'
+      ;;
+    "Embedding provider")
+      printf 'ollama'
+      ;;
+    *)
+      printf '%s' "$2"
+      ;;
+  esac
+}}
+prompt_with_default() {{ printf '%s' "$2"; }}
+prompt_until_valid() {{ printf '%s' "$2"; }}
+prompt_secret_with_default() {{
+  case "$1" in
+    "PostgreSQL password: ")
+      printf 'pg-secret'
+      ;;
+    "Neo4j password: ")
+      printf 'neo4j-secret'
+      ;;
+    *)
+      printf '%s' "$2"
+      ;;
+  esac
+}}
+prompt_secret_until_valid_with_default() {{ printf '%s' "$2"; }}
+prompt_clearable_with_default() {{
+  case "$1" in
+    "Auth accounts (user:pass,comma-separated)")
+      printf 'admin:prod-pass'
+      ;;
+    "Whitelist paths (comma-separated)")
+      printf '/health'
+      ;;
+    *)
+      printf '%s' "$2"
+      ;;
+  esac
+}}
+prompt_clearable_secret_with_default() {{
+  case "$1" in
+    "JWT token secret: ")
+      printf 'prod-token-secret'
+      ;;
+    *)
+      printf '%s' "$2"
+      ;;
+  esac
+}}
+confirm_default_yes() {{
+  case "$1" in
+    "Configure authentication and API key settings?")
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}}
+confirm() {{
+  case "$1" in
+    "Enable reranking?"|"Enable Langfuse observability?")
+      return 1
+      ;;
+    "Generate .env and docker-compose.yml now?"|"Generate docker-compose for LightRAG only?")
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}}
+
+production_flow
+"""
+    )
+
+    generated_env = (tmp_path / ".env").read_text(encoding="utf-8")
+    generated_compose = (tmp_path / "docker-compose.production.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "LIGHTRAG_SETUP_PROFILE=production" in generated_env
+    assert "LIGHTRAG_KV_STORAGE=PGKVStorage" in generated_env
+    assert "LIGHTRAG_VECTOR_STORAGE=MilvusVectorDBStorage" in generated_env
+    assert "LIGHTRAG_GRAPH_STORAGE=Neo4JStorage" in generated_env
+    assert "LIGHTRAG_DOC_STATUS_STORAGE=PGDocStatusStorage" in generated_env
+    assert "AUTH_ACCOUNTS=admin:prod-pass" in generated_env
+    assert "TOKEN_SECRET=prod-token-secret" in generated_env
+    assert "services:" in generated_compose
+    assert "  lightrag:" in generated_compose
+    assert "env_file:" not in generated_compose
 
 
 def test_collect_milvus_config_defaults_to_existing_database_name() -> None:
