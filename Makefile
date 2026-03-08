@@ -16,12 +16,13 @@ COLOR_GREEN :=
 COLOR_YELLOW :=
 endif
 
-.PHONY: help setup configure setup-quick setup-production setup-validate setup-backup setup-help
+.PHONY: help setup configure setup-quick setup-quick-vllm setup-production setup-validate setup-backup setup-help
 
 help:
 	@printf "$(COLOR_BOLD)Interactive setup targets$(COLOR_RESET)\n"
 	@printf "  $(COLOR_GREEN)make setup$(COLOR_RESET)            Full wizard (development/production/custom)\n"
 	@printf "  $(COLOR_GREEN)make setup-quick$(COLOR_RESET)      Development preset, minimal prompts\n"
+	@printf "  $(COLOR_GREEN)make setup-quick-vllm$(COLOR_RESET) Development preset + local vLLM embedding + optional reranker\n"
 	@printf "  $(COLOR_GREEN)make setup-production$(COLOR_RESET) Production preset + SSL/security prompts\n"
 	@printf "  $(COLOR_GREEN)make setup-validate$(COLOR_RESET)   Validate existing .env\n"
 	@printf "  $(COLOR_GREEN)make setup-backup$(COLOR_RESET)     Backup current .env\n"
@@ -47,6 +48,9 @@ configure:
 
 setup-quick:
 	@$(SETUP_BASH) $(SETUP_SCRIPT) --quick $(SETUP_OPTS)
+
+setup-quick-vllm:
+	@$(SETUP_BASH) $(SETUP_SCRIPT) --quick-vllm $(SETUP_OPTS)
 
 setup-production:
 	@$(SETUP_BASH) $(SETUP_SCRIPT) --production $(SETUP_OPTS)

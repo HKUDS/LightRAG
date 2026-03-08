@@ -180,6 +180,13 @@ generate_docker_compose() {
         fi
       fi
     fi
+    if [[ "$service" == "vllm-embed" ]]; then
+      if [[ "${ENV_VALUES[VLLM_EMBED_DEVICE]:-cpu}" == "cuda" ]]; then
+        if [[ -f "$TEMPLATES_DIR/${service}-gpu.yml" ]]; then
+          template_file="$TEMPLATES_DIR/${service}-gpu.yml"
+        fi
+      fi
+    fi
     if [[ ! -f "$template_file" ]]; then
       format_error "Missing docker template: $template_file" "Reinstall the setup scripts."
       return 1
@@ -225,6 +232,9 @@ generate_docker_compose() {
         ;;
       vllm-rerank)
         volume_names+=("vllm_rerank_cache")
+        ;;
+      vllm-embed)
+        volume_names+=("vllm_embed_cache")
         ;;
     esac
   done
