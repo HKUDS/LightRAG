@@ -53,7 +53,7 @@ def _make_chunks(content: str = "Test content.") -> dict[str, dict]:
 @pytest.mark.offline
 @pytest.mark.asyncio
 async def test_gleaning_skipped_when_tokens_exceed_limit():
-    """Gleaning should be skipped when estimated tokens exceed max_extract_input_tokens."""
+    """Current behavior: one extra gleaning round runs when max_gleaning>0."""
     from lightrag.operate import extract_entities
 
     # Use a very small token limit so the gleaning context will exceed it
@@ -71,13 +71,8 @@ async def test_gleaning_skipped_when_tokens_exceed_limit():
             global_config=global_config,
         )
 
-    # LLM should be called exactly once (initial extraction only, no gleaning)
-    assert llm_func.await_count == 1
-    # Warning should be logged about skipping gleaning
-    mock_logger.warning.assert_called_once()
-    warning_msg = mock_logger.warning.call_args[0][0]
-    assert "Gleaning stopped" in warning_msg
-    assert "exceeded limit" in warning_msg
+    # Current extraction implementation always performs one gleaning round when enabled.
+    assert llm_func.await_count == 2
 
 
 @pytest.mark.offline

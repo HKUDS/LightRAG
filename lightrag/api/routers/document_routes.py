@@ -23,6 +23,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from lightrag import LightRAG
 from lightrag.base import DeletionResult, DocProcessingStatus, DocStatus
+from lightrag.constants import PARSED_DIR_NAME
 from lightrag.utils import (
     generate_track_id,
     compute_mdhash_id,
@@ -1419,10 +1420,30 @@ async def pipeline_enqueue_file(
                                 and not _is_docling_available()
                             ):
                                 logger.warning(
-                                    f"DOCLING engine configured but not available for {file_path.name}. Falling back to python-docx."
+                                    f"DOCLING engine configured but not available for {file_path.name}. Falling back to smart extraction."
                                 )
-                            # Use python-docx (non-blocking via to_thread)
-                            content = await asyncio.to_thread(_extract_docx, file)
+                            # Use smart docx extraction with structure awareness
+                            try:
+                                from lightrag.extraction.parse_document import (
+                                    parse_docx_to_interchange_jsonl,
+                                )
+
+                                content = await asyncio.to_thread(
+                                    parse_docx_to_interchange_jsonl,
+                                    file,
+                                    file_path.name,
+                                )
+                                logger.info(
+                                    f"[File Extraction]Smart extraction completed for {file_path.name}"
+                                )
+                            except Exception as smart_err:
+                                logger.warning(
+                                    f"[File Extraction]Smart extraction failed for {file_path.name}: {smart_err}. Falling back to basic extraction."
+                                )
+                                # Fallback to basic python-docx extraction
+                                content = await asyncio.to_thread(
+                                    _extract_docx, file
+                                )
                     except Exception as e:
                         error_files = [
                             {
@@ -1571,9 +1592,9 @@ async def pipeline_enqueue_file(
                     f"Successfully extracted and enqueued file: {file_path.name}"
                 )
 
-                # Move file to __enqueued__ directory after enqueuing
+                # Move file to __parsed__ directory after enqueuing (LR2-PRD: parsed output dir)
                 try:
-                    enqueued_dir = file_path.parent / "__enqueued__"
+                    enqueued_dir = file_path.parent / PARSED_DIR_NAME
                     enqueued_dir.mkdir(exist_ok=True)
 
                     # Generate unique filename to avoid conflicts
@@ -1590,7 +1611,7 @@ async def pipeline_enqueue_file(
 
                 except Exception as move_error:
                     logger.error(
-                        f"Failed to move file {file_path.name} to __enqueued__ directory: {move_error}"
+                        f"Failed to move file {file_path.name} to {PARSED_DIR_NAME} directory: {move_error}"
                     )
                     # Don't affect the main function's success status
 
@@ -1926,8 +1947,8 @@ async def background_delete_documents(
                                                 file_error_msg
                                             )
 
-                                # Also check and delete files from __enqueued__ directory
-                                enqueued_dir = doc_manager.input_dir / "__enqueued__"
+                                # Also check and delete files from __parsed__ directory
+                                enqueued_dir = doc_manager.input_dir / PARSED_DIR_NAME
                                 if enqueued_dir.exists():
                                     # SECURITY FIX: Validate that the file path is safe before processing
                                     # Only proceed if the original path validation passed
@@ -2718,6 +2739,8 @@ def create_document_routes(
         try:
             statuses = (
                 DocStatus.PENDING,
+                DocStatus.PARSING,
+                DocStatus.ANALYZING,
                 DocStatus.PROCESSING,
                 DocStatus.PREPROCESSED,
                 DocStatus.PROCESSED,

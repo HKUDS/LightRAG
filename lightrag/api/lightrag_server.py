@@ -645,6 +645,44 @@ def create_app(args):
                 raise Exception(f"Failed to import {binding} options: {e}")
         return {}
 
+    def create_role_llm_func(role: str):
+        """Create an independent LLM function for the given role.
+        Inherits from base config but allows per-role overrides.
+        Always creates a new function (never reuses base).
+        """
+        attr = role.lower()
+        role_binding = getattr(args, f"{attr}_llm_binding", None) or args.llm_binding
+        role_model = getattr(args, f"{attr}_llm_model", None) or args.llm_model
+        role_host = getattr(args, f"{attr}_llm_binding_host", None) or args.llm_binding_host
+        role_apikey = getattr(args, f"{attr}_llm_binding_api_key", None) or args.llm_binding_api_key
+        role_timeout = getattr(args, f"{attr}_llm_timeout", None) or llm_timeout
+
+        from types import SimpleNamespace
+        role_args = SimpleNamespace(
+            llm_binding=role_binding,
+            llm_model=role_model,
+            llm_binding_host=role_host,
+            llm_binding_api_key=role_apikey,
+        )
+
+        logger.info(
+            f"  Role '{role}': binding={role_binding}, model={role_model}, "
+            f"host={role_host}, timeout={role_timeout}"
+        )
+
+        try:
+            if role_binding == "ollama":
+                from lightrag.llm.ollama import ollama_model_complete
+                return ollama_model_complete
+            elif role_binding == "azure_openai":
+                return create_optimized_azure_openai_llm_func(config_cache, role_args, role_timeout)
+            elif role_binding == "gemini":
+                return create_optimized_gemini_llm_func(config_cache, role_args, role_timeout)
+            else:
+                return create_optimized_openai_llm_func(config_cache, role_args, role_timeout)
+        except ImportError as e:
+            raise Exception(f"Failed to create LLM for role '{role}': {e}")
+
     def create_optimized_embedding_function(
         config_cache: LLMConfigCache, binding, model, host, api_key, args
     ) -> EmbeddingFunc:
@@ -1051,6 +1089,17 @@ def create_app(args):
         name=args.simulated_model_name, tag=args.simulated_model_tag
     )
 
+    # Build addon params by merging LightRAG defaults with API-level overrides.
+    addon_params_defaults: dict = {}
+    addon_params_field = LightRAG.__dataclass_fields__.get("addon_params")
+    if addon_params_field and callable(addon_params_field.default_factory):
+        addon_params_defaults = addon_params_field.default_factory()
+    addon_params = {
+        **addon_params_defaults,
+        "language": args.summary_language,
+        "entity_types": args.entity_types,
+    }
+
     # Initialize RAG with unified configuration
     try:
         rag = LightRAG(
@@ -1081,15 +1130,29 @@ def create_app(args):
             rerank_model_func=rerank_model_func,
             max_parallel_insert=args.max_parallel_insert,
             max_graph_nodes=args.max_graph_nodes,
-            addon_params={
-                "language": args.summary_language,
-                "entity_types": args.entity_types,
-            },
+            addon_params=addon_params,
             ollama_server_infos=ollama_server_infos,
+            extract_llm_model_func=create_role_llm_func("extract"),
+            keyword_llm_model_func=create_role_llm_func("keyword"),
+            query_llm_model_func=create_role_llm_func("query"),
+            vlm_llm_model_func=create_role_llm_func("vlm"),
+            extract_llm_model_max_async=getattr(args, "extract_llm_max_async", None) or args.max_async,
+            keyword_llm_model_max_async=getattr(args, "keyword_llm_max_async", None) or args.max_async,
+            query_llm_model_max_async=getattr(args, "query_llm_max_async", None) or args.max_async,
+            vlm_llm_model_max_async=int(os.getenv("MAX_ASYNC_VLM_LLM", str(args.max_async))),
         )
     except Exception as e:
         logger.error(f"Failed to initialize LightRAG: {e}")
         raise
+
+    # Print role LLM configuration
+    logger.info(f"\n{'🎭 Role LLM Configuration:'}")
+    for role in ["extract", "keyword", "query", "vlm"]:
+        r_binding = getattr(args, f"{role}_llm_binding", None) or args.llm_binding
+        r_model = getattr(args, f"{role}_llm_model", None) or args.llm_model
+        r_host = getattr(args, f"{role}_llm_binding_host", None) or args.llm_binding_host
+        r_max_async = getattr(args, f"{role}_llm_max_async", None) or args.max_async
+        logger.info(f"    ├─ {role}: binding={r_binding}, model={r_model}, host={r_host}, max_async={r_max_async}")
 
     # Add routes
     app.include_router(
@@ -1291,6 +1354,15 @@ def create_app(args):
                     "max_async": args.max_async,
                     "embedding_func_max_async": args.embedding_func_max_async,
                     "embedding_batch_num": args.embedding_batch_num,
+                    "role_llm_config": {
+                        role: {
+                            "binding": getattr(args, f"{role}_llm_binding", None) or args.llm_binding,
+                            "model": getattr(args, f"{role}_llm_model", None) or args.llm_model,
+                            "host": getattr(args, f"{role}_llm_binding_host", None) or args.llm_binding_host,
+                            "max_async": getattr(args, f"{role}_llm_max_async", None) or args.max_async,
+                        }
+                        for role in ["extract", "keyword", "query", "vlm"]
+                    },
                 },
                 "auth_mode": auth_mode,
                 "pipeline_busy": pipeline_status.get("busy", False),
