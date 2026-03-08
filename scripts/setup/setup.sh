@@ -1012,7 +1012,7 @@ default_llm_model_for_binding() {
 
   case "$binding" in
     openai|azure_openai)
-      printf 'gpt-4o'
+      printf 'gpt-5-mini'
       ;;
     ollama|lollms|openai-ollama)
       printf 'mistral-nemo:latest'
@@ -1024,7 +1024,7 @@ default_llm_model_for_binding() {
       printf 'anthropic.claude-3-5-sonnet-20241022-v2:0'
       ;;
     *)
-      printf 'gpt-4o'
+      printf 'gpt-5-mini'
       ;;
   esac
 }
@@ -1612,7 +1612,7 @@ finalize_setup() {
 
   show_summary
 
-  if ! confirm "Generate .env and docker-compose.yml now?"; then
+  if ! confirm_default_yes "Generate .env and docker-compose.yml now?"; then
     log_warn "Setup cancelled."
     return 1
   fi

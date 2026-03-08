@@ -1665,7 +1665,7 @@ quick_start_flow
     values = parse_lines(output)
 
     assert values["LLM_BINDING"] == "openai"
-    assert values["LLM_MODEL"] == "gpt-4o"
+    assert values["LLM_MODEL"] == "gpt-5-mini"
     assert values["LLM_BINDING_HOST"] == "https://api.openai.com/v1"
     assert values["EMBEDDING_BINDING"] == "openai"
     assert values["EMBEDDING_MODEL"] == "text-embedding-3-large"
@@ -1704,17 +1704,16 @@ set -euo pipefail
 source "{REPO_ROOT}/scripts/setup/setup.sh"
 REPO_ROOT="{tmp_path}"
 
-confirm_count=0
 prompt_secret_until_valid_with_default() {{
   printf '%s' "$2"
 }}
-confirm() {{
-  confirm_count=$((confirm_count + 1))
-  if [[ "$confirm_count" -eq 1 ]]; then
-    return 0
-  fi
-  return 1
+confirm_default_yes() {{
+  case "$1" in
+    "Generate .env and docker-compose.yml now?") return 0 ;;
+    *) return 1 ;;
+  esac
 }}
+confirm() {{ return 1; }}
 
 quick_start_flow
 """
@@ -1757,7 +1756,7 @@ prompt_secret_until_valid_with_default() {{
 }}
 confirm() {{
   case "$1" in
-    "Generate .env and docker-compose.yml now?"|"Generate docker-compose for LightRAG only?")
+    "Generate docker-compose for LightRAG only?")
       return 0
       ;;
     *)
@@ -1765,7 +1764,16 @@ confirm() {{
       ;;
   esac
 }}
-confirm_default_yes() {{ return 1; }}
+confirm_default_yes() {{
+  case "$1" in
+    "Generate .env and docker-compose.yml now?")
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}}
 
 quick_start_flow
 """
@@ -1813,7 +1821,6 @@ set -euo pipefail
 source "{REPO_ROOT}/scripts/setup/setup.sh"
 REPO_ROOT="{tmp_path}"
 
-confirm_count=0
 select_deployment_type() {{ printf 'development'; }}
 select_storage_backends() {{ :; }}
 collect_docker_image_tags() {{ :; }}
@@ -1823,13 +1830,13 @@ collect_rerank_config() {{ ENV_VALUES[RERANK_BINDING]="null"; }}
 collect_server_config() {{ :; }}
 collect_security_config() {{ :; }}
 collect_observability_config() {{ :; }}
-confirm() {{
-  confirm_count=$((confirm_count + 1))
-  if [[ "$confirm_count" -eq 1 ]]; then
-    return 0
-  fi
-  return 1
+confirm_default_yes() {{
+  case "$1" in
+    "Generate .env and docker-compose.yml now?") return 0 ;;
+    *) return 1 ;;
+  esac
 }}
+confirm() {{ return 1; }}
 
 interactive_flow
 """
@@ -1881,13 +1888,22 @@ prompt_with_default() {{ printf '%s' "$2"; }}
 prompt_until_valid() {{ printf '%s' "$2"; }}
 prompt_secret_with_default() {{ printf '%s' "$2"; }}
 prompt_secret_until_valid_with_default() {{ printf '%s' "$2"; }}
-confirm_default_yes() {{ return 1; }}
+confirm_default_yes() {{
+  case "$1" in
+    "Generate .env and docker-compose.yml now?")
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}}
 confirm() {{
   case "$1" in
     "Enable reranking?"|"Configure authentication and API key settings?"|"Enable Langfuse observability?")
       return 1
       ;;
-    "Generate .env and docker-compose.yml now?"|"Generate docker-compose for LightRAG only?")
+    "Generate docker-compose for LightRAG only?")
       return 0
       ;;
     *)
@@ -2140,7 +2156,7 @@ prompt_clearable_secret_with_default() {{
 }}
 confirm_default_yes() {{
   case "$1" in
-    "Configure authentication and API key settings?")
+    "Configure authentication and API key settings?"|"Generate .env and docker-compose.yml now?")
       return 0
       ;;
     *)
@@ -2153,7 +2169,7 @@ confirm() {{
     "Enable reranking?"|"Enable Langfuse observability?")
       return 1
       ;;
-    "Generate .env and docker-compose.yml now?"|"Generate docker-compose for LightRAG only?")
+    "Generate docker-compose for LightRAG only?")
       return 0
       ;;
     *)
@@ -3739,13 +3755,14 @@ ENV_VALUES[LIGHTRAG_GRAPH_STORAGE]="NetworkXStorage"
 ENV_VALUES[LIGHTRAG_DOC_STATUS_STORAGE]="JsonDocStatusStorage"
 DEPLOYMENT_TYPE="development"
 
-# First confirm ("Generate .env...?") -> yes; subsequent -> no (skip docker-compose).
-_confirm_call=0
-confirm() {{
-  ((_confirm_call++, 1)) || true
-  [[ $_confirm_call -le 1 ]]
+# confirm_default_yes handles "Generate .env...?" -> yes; confirm handles docker-compose -> no.
+confirm_default_yes() {{
+  case "$1" in
+    "Generate .env and docker-compose.yml now?") return 0 ;;
+    *) return 1 ;;
+  esac
 }}
-confirm_default_yes() {{ return 1; }}
+confirm() {{ return 1; }}
 
 finalize_setup
 """
