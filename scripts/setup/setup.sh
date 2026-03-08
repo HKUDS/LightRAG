@@ -32,6 +32,7 @@ declare -A DOCKER_IMAGE_DEFAULTS=(
   ["qdrant"]="v1.16.0"
   ["memgraph"]="3.7.2"
   ["vllm-rerank"]="latest"
+  ["vllm-embed"]="latest"
 )
 declare -A DOCKER_IMAGE_ENV=(
   ["postgres"]="POSTGRES_IMAGE"
@@ -44,9 +45,32 @@ declare -A DOCKER_IMAGE_ENV=(
   ["qdrant"]="QDRANT_IMAGE_TAG"
   ["memgraph"]="MEMGRAPH_IMAGE_TAG"
   ["vllm-rerank"]="VLLM_RERANK_IMAGE_TAG"
+  ["vllm-embed"]="VLLM_EMBED_IMAGE_TAG"
 )
 DEPLOYMENT_TYPE=""
 DEBUG="${DEBUG:-false}"
+
+PRESET_VLLM_EMBEDDING=(
+  "EMBEDDING_BINDING=openai"
+  "EMBEDDING_BINDING_HOST=http://localhost:8001/v1"
+  "EMBEDDING_MODEL=BAAI/bge-m3"
+  "EMBEDDING_DIM=1024"
+  "VLLM_EMBED_MODEL=BAAI/bge-m3"
+  "VLLM_EMBED_PORT=8001"
+  "VLLM_EMBED_DEVICE=cpu"
+  "VLLM_EMBED_DTYPE=float32"
+)
+
+PRESET_VLLM_RERANKER=(
+  "RERANK_BINDING=cohere"
+  "LIGHTRAG_SETUP_RERANK_PROVIDER=vllm"
+  "RERANK_MODEL=BAAI/bge-reranker-v2-m3"
+  "RERANK_BINDING_HOST=http://localhost:8000/v1/rerank"
+  "VLLM_RERANK_MODEL=BAAI/bge-reranker-v2-m3"
+  "VLLM_RERANK_PORT=8000"
+  "VLLM_RERANK_DEVICE=cpu"
+  "VLLM_RERANK_DTYPE=float32"
+)
 WAIT_TIMEOUT="${SETUP_WAIT_TIMEOUT:-90}"
 # shellcheck disable=SC2034
 COLOR_RESET=""
@@ -210,6 +234,9 @@ wait_for_services() {
         ;;
       vllm-rerank)
         port="${ENV_VALUES[VLLM_RERANK_PORT]:-8000}"
+        ;;
+      vllm-embed)
+        port="${ENV_VALUES[VLLM_EMBED_PORT]:-8001}"
         ;;
       *)
         port=""
@@ -1830,6 +1857,89 @@ quick_start_flow() {
   finalize_setup
 }
 
+quick_start_vllm_flow() {
+  local env_file="${REPO_ROOT}/.env"
+  local has_existing_env=false
+  local vllm_device="cpu"
+  local vllm_dtype="float32"
+
+  reset_state
+  load_existing_env_if_present
+  reset_quick_start_inherited_state
+
+  if [[ -f "$env_file" ]]; then has_existing_env=true; fi
+
+  # Storage backends: force dev preset
+  apply_preset_overwrite "${PRESET_DEVELOPMENT[@]:0:4}"
+  # LLM: only fill defaults (preserve existing values)
+  apply_preset "${PRESET_DEVELOPMENT[@]:4:3}"
+  # Embedding: always overwrite with vLLM preset (cpu defaults; adjusted below)
+  apply_preset_overwrite "${PRESET_VLLM_EMBEDDING[@]}"
+  unset 'ENV_VALUES[EMBEDDING_BINDING_API_KEY]'
+
+  DEPLOYMENT_TYPE="development"
+  clear_bedrock_credentials_if_unused
+
+  # GPU detection: auto-select device for all vLLM services
+  if command -v nvidia-smi >/dev/null 2>&1; then
+    log_info "NVIDIA GPU detected."
+    if confirm_default_yes "Use GPU for local vLLM services?"; then
+      vllm_device="cuda"
+      vllm_dtype="float16"
+    fi
+  fi
+
+  ENV_VALUES["VLLM_EMBED_DEVICE"]="$vllm_device"
+  ENV_VALUES["VLLM_EMBED_DTYPE"]="$vllm_dtype"
+
+  log_info "Quick start setup (vLLM)"
+  echo ""
+  if [[ "$has_existing_env" == "true" ]]; then
+    echo "Existing .env detected. This wizard updates:"
+    echo "  - LLM               : provider, model, endpoint, API key (current values as defaults)"
+    echo "  - Embedding         : reset to local vLLM defaults (BAAI/bge-m3, port 8001, ${vllm_device})"
+    echo "  - Reranker          : configure below (existing config will be replaced)"
+    echo ""
+    echo "All other settings remain unchanged."
+  else
+    echo "This wizard configures:"
+    echo "  - Storage backends  : JSON + NetworkX (development defaults, fixed)"
+    echo "  - LLM               : provider, model, endpoint, API key"
+    echo "  - Embedding         : local vLLM, BAAI/bge-m3, port 8001, ${vllm_device} (fixed)"
+    echo "  - Reranker          : local vLLM, BAAI/bge-reranker-v2-m3, port 8000 (optional)"
+  fi
+  echo ""
+
+  collect_llm_config
+
+  # vllm-embed runs in Docker; add it as a compose service and rewrite the
+  # EMBEDDING_BINDING_HOST so the LightRAG container reaches it by service name.
+  add_docker_service "vllm-embed"
+  set_compose_override "EMBEDDING_BINDING_HOST" \
+    "http://vllm-embed:${ENV_VALUES[VLLM_EMBED_PORT]:-8001}/v1"
+
+  if confirm_default_yes "Enable reranker (BAAI/bge-reranker-v2-m3 via local vLLM, port 8000)?"; then
+    apply_preset_overwrite "${PRESET_VLLM_RERANKER[@]}"
+    ENV_VALUES["VLLM_RERANK_DEVICE"]="$vllm_device"
+    ENV_VALUES["VLLM_RERANK_DTYPE"]="$vllm_dtype"
+    add_docker_service "vllm-rerank"
+    set_compose_override "RERANK_BINDING_HOST" \
+      "http://vllm-rerank:${ENV_VALUES[VLLM_RERANK_PORT]:-8000}/v1/rerank"
+  else
+    local key
+    for key in "${!ENV_VALUES[@]}"; do
+      case "$key" in
+        RERANK_*|VLLM_RERANK_*|LIGHTRAG_SETUP_RERANK_PROVIDER)
+          unset "ENV_VALUES[$key]"
+          ;;
+      esac
+    done
+    ENV_VALUES["RERANK_BINDING"]="null"
+  fi
+
+  finalize_setup
+}
+
 production_flow() {
   local db_type
   local db_order=("postgresql" "neo4j" "mongodb" "redis" "milvus" "qdrant" "memgraph")
@@ -2021,6 +2131,7 @@ Usage: scripts/setup/setup.sh [--quick|--production|--validate|--backup]
 
 Options:
   --quick        Run the quick start flow (development preset, minimal prompts)
+  --quick-vllm   Run quick start with local vLLM embedding and optional reranker
   --production   Run the production preset flow (recommended defaults)
   --validate     Validate an existing .env file
   --backup       Backup the current .env file
@@ -2044,6 +2155,9 @@ main() {
     case "$1" in
       --quick)
         mode="quick"
+        ;;
+      --quick-vllm)
+        mode="quick-vllm"
         ;;
       --production)
         mode="production"
@@ -2072,6 +2186,9 @@ main() {
   case "$mode" in
     quick)
       quick_start_flow
+      ;;
+    quick-vllm)
+      quick_start_vllm_flow
       ;;
     production)
       production_flow

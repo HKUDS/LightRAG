@@ -90,10 +90,12 @@ data/
 └── inputs/         # Input documents
 ```
 
-### Optional: local vLLM reranker
+### Optional: local vLLM embedding and reranker
 
-To enable local reranking with vLLM, run a vLLM container exposing the Cohere-compatible rerank endpoint and point LightRAG to it.
-You can select `vllm` in the interactive setup to add the `vllm-rerank` service automatically.
+To run embedding and/or reranking locally with vLLM, use `make setup-quick-vllm`.
+It fixes the embedding to `BAAI/bge-m3` on port 8001 via a local vLLM server (no API key needed) and optionally adds a `vllm-rerank` reranker on port 8000.
+
+Alternatively, select `vllm` in the rerank prompt of any interactive setup mode to add the `vllm-rerank` service automatically.
 vLLM provides a `v1/rerank` endpoint that works with the `cohere` binding.
 
 Example `docker-compose.override.yml` for GPU hosts:
@@ -110,7 +112,14 @@ services:
       - "8000:8000"
     volumes:
       - ./data/hf-cache:/root/.cache/huggingface
-    runtime: nvidia
+    ipc: host
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
 ```
 
 For CPU-only hosts, use the official CPU image instead:
@@ -118,7 +127,7 @@ For CPU-only hosts, use the official CPU image instead:
 ```yaml
 services:
   vllm-rerank:
-    image: public.ecr.aws/q9t5s3a7/vllm-cpu-release-repo:latest
+    image: vllm/vllm-openai-cpu:latest
     command: >
       --model BAAI/bge-reranker-v2-m3
       --port 8000
