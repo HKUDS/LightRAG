@@ -1606,7 +1606,7 @@ finalize_setup() {
 
   show_summary
 
-  if ! confirm "Generate .env and docker-compose.yml now?"; then
+  if ! confirm "Generate .env and docker-compose.<type>.yml now?"; then
     log_warn "Setup cancelled."
     return 1
   fi

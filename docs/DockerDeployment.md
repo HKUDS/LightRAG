@@ -103,7 +103,7 @@ services:
   vllm-rerank:
     image: vllm/vllm-openai:latest
     command: >
-      BAAI/bge-reranker-v2-m3
+      --model BAAI/bge-reranker-v2-m3
       --port 8000
       --dtype float16
     ports:
@@ -120,7 +120,7 @@ services:
   vllm-rerank:
     image: public.ecr.aws/q9t5s3a7/vllm-cpu-release-repo:latest
     command: >
-      BAAI/bge-reranker-v2-m3
+      --model BAAI/bge-reranker-v2-m3
       --port 8000
       --dtype float32
 ```
