@@ -1781,7 +1781,9 @@ quick_start_flow() {
   reset_state
   load_existing_env_if_present
   reset_quick_start_inherited_state
-  apply_preset_overwrite "${PRESET_DEVELOPMENT[@]}"
+  # Force storage backends to development defaults, but preserve existing LLM/embedding config
+  apply_preset_overwrite "${PRESET_DEVELOPMENT[@]:0:4}"
+  apply_preset "${PRESET_DEVELOPMENT[@]:4}"
   DEPLOYMENT_TYPE="development"
   clear_bedrock_credentials_if_unused
 
@@ -1790,7 +1792,10 @@ quick_start_flow() {
 
   api_key="$(prompt_secret_until_valid_with_default "OpenAI API key: " "${ENV_VALUES[LLM_BINDING_API_KEY]:-}" validate_api_key openai)"
   ENV_VALUES["LLM_BINDING_API_KEY"]="$api_key"
-  ENV_VALUES["EMBEDDING_BINDING_API_KEY"]="$api_key"
+  # Only sync EMBEDDING_BINDING_API_KEY when not already separately configured
+  if [[ -z "${ENV_VALUES[EMBEDDING_BINDING_API_KEY]:-}" ]]; then
+    ENV_VALUES["EMBEDDING_BINDING_API_KEY"]="$api_key"
+  fi
 
   finalize_setup
 }
