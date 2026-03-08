@@ -1,5 +1,6 @@
   vllm-rerank:
     image: vllm/vllm-openai:${VLLM_RERANK_IMAGE_TAG:-latest}
+    runtime: nvidia
     command: >
       --model ${VLLM_RERANK_MODEL:-BAAI/bge-reranker-v2-m3}
       --port ${VLLM_RERANK_PORT:-8000}
