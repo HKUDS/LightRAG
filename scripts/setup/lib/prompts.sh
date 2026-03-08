@@ -102,7 +102,7 @@ prompt_with_default() {
   printf '%s' "$value"
 }
 
-confirm() {
+confirm_default_no() {
   local prompt="$1"
   local response
 
@@ -113,6 +113,21 @@ confirm() {
       ;;
     *)
       return 1
+      ;;
+  esac
+}
+
+confirm_default_yes() {
+  local prompt="$1"
+  local response
+
+  read -r -p "$prompt [Y/n]: " response
+  case "${response,,}" in
+    n|no)
+      return 1
+      ;;
+    *)
+      return 0
       ;;
   esac
 }
