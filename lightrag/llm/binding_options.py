@@ -342,6 +342,80 @@ class BindingOptions:
 
         return options
 
+    @classmethod
+    def options_dict_for_role(
+        cls, args: Namespace, role: str, is_cross_provider: bool = False
+    ) -> dict[str, Any]:
+        """
+        Extract role-specific provider options with proper inheritance.
+
+        Same provider: inherit base options from args, overlay role-specific env vars.
+        Cross provider: start from provider defaults, overlay role-specific env vars.
+
+        Role env vars follow the pattern: {ROLE}_{BINDING_PREFIX}_{FIELD}
+        e.g., EXTRACT_OPENAI_LLM_TEMPERATURE, KEYWORD_OLLAMA_LLM_NUM_CTX
+
+        Args:
+            args: Parsed command-line arguments containing base binding options
+            role: Role name ("extract", "keyword", or "query")
+            is_cross_provider: True when the role uses a different provider than base
+
+        Returns:
+            dict[str, Any]: Options dict with role-specific overrides applied
+        """
+        import dataclasses
+        import os
+
+        if is_cross_provider:
+            # Cross-provider: start from provider defaults
+            if dataclasses.is_dataclass(cls):
+                base = {}
+                for f in dataclasses.fields(cls):
+                    if f.name.startswith("_"):
+                        continue
+                    if f.default is not dataclasses.MISSING:
+                        base[f.name] = f.default
+                    elif f.default_factory is not dataclasses.MISSING:
+                        base[f.name] = f.default_factory()
+            else:
+                base = dict(cls._all_class_vars(cls))
+        else:
+            # Same provider: inherit base options
+            base = cls.options_dict(args)
+
+        # Overlay role-specific env var overrides
+        role_upper = role.upper()
+        env_prefix = cls._binding_name.upper() + "_"  # e.g., "OPENAI_LLM_"
+
+        for arg_item in cls.args_env_name_type_value():
+            original_env = arg_item["env_name"]  # e.g., "OPENAI_LLM_TEMPERATURE"
+            role_env = (
+                f"{role_upper}_{original_env}"  # e.g., "EXTRACT_OPENAI_LLM_TEMPERATURE"
+            )
+            field_name = original_env[len(env_prefix) :].lower()  # e.g., "temperature"
+
+            env_raw = os.getenv(role_env)
+            if env_raw is not None:
+                # Type-convert the value
+                field_type = _resolve_optional_type(arg_item["type"])
+                try:
+                    if field_type is bool:
+                        base[field_name] = env_raw.lower() in ("true", "1", "yes")
+                    elif field_type in (list, List[str]):
+                        base[field_name] = json.loads(env_raw)
+                    elif field_type is dict:
+                        base[field_name] = json.loads(env_raw)
+                    elif field_type is int:
+                        base[field_name] = int(env_raw)
+                    elif field_type is float:
+                        base[field_name] = float(env_raw)
+                    else:
+                        base[field_name] = env_raw
+                except (ValueError, json.JSONDecodeError):
+                    base[field_name] = env_raw
+
+        return base
+
     def asdict(self) -> dict[str, Any]:
         """
         Convert an instance of binding options to a dictionary.
