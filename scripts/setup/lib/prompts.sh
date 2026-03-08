@@ -2,11 +2,21 @@
 
 CLEAR_INPUT_SENTINEL="__LIGHTRAG_CLEAR__"
 
+_truncate_for_display() {
+  local value="$1"
+  local max=50
+  if [[ ${#value} -gt $max ]]; then
+    printf '%s' "${value:0:$max}..."
+  else
+    printf '%s' "$value"
+  fi
+}
+
 mask_sensitive_input() {
   local prompt="$1"
   local value
 
-  read -r -s -p "$prompt" value
+  read -r -p "$prompt" value
   echo >&2
   printf '%s' "$value"
 }
@@ -17,9 +27,11 @@ prompt_secret_with_default() {
   local value
 
   if [[ -n "$default" ]]; then
-    read -r -s -p "$prompt [hidden]: " value
+    local display_default
+    display_default="$(_truncate_for_display "$default")"
+    read -r -p "$prompt [${display_default}]: " value
   else
-    read -r -s -p "$prompt" value
+    read -r -p "$prompt" value
   fi
   echo >&2
 

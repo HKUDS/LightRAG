@@ -1151,41 +1151,47 @@ collect_embedding_config() {
   model="$(prompt_with_default "Embedding model" "$model_default")"
   dim="$(prompt_with_default "Embedding dimension" "$dim_default")"
 
+  local llm_host_fallback="" llm_api_key_default=""
+  if [[ "$binding" == "${ENV_VALUES[LLM_BINDING]:-}" ]]; then
+    llm_host_fallback="${ENV_VALUES[LLM_BINDING_HOST]:-}"
+    llm_api_key_default="${ENV_VALUES[LLM_BINDING_API_KEY]:-}"
+  fi
+
   case "$binding" in
     ollama)
-      host_default="$(provider_default_or_existing "$binding" "$current_binding" "${ENV_VALUES[EMBEDDING_BINDING_HOST]:-}" "$(default_loopback_url 11434)")"
+      host_default="$(provider_default_or_existing "$binding" "$current_binding" "${ENV_VALUES[EMBEDDING_BINDING_HOST]:-${llm_host_fallback:-}}" "$(default_loopback_url 11434)")"
       host="$(prompt_with_default "Ollama embedding host" "$host_default")"
       api_key=""
       ;;
     lollms)
-      host_default="$(provider_default_or_existing "$binding" "$current_binding" "${ENV_VALUES[EMBEDDING_BINDING_HOST]:-}" "http://localhost:9600")"
+      host_default="$(provider_default_or_existing "$binding" "$current_binding" "${ENV_VALUES[EMBEDDING_BINDING_HOST]:-${llm_host_fallback:-}}" "http://localhost:9600")"
       host="$(prompt_with_default "LoLLMs embedding host" "$host_default")"
       api_key=""
       ;;
     azure_openai)
-      host_default="$(provider_default_or_existing "$binding" "$current_binding" "${ENV_VALUES[EMBEDDING_BINDING_HOST]:-}" "https://example.openai.azure.com/")"
+      host_default="$(provider_default_or_existing "$binding" "$current_binding" "${ENV_VALUES[EMBEDDING_BINDING_HOST]:-${llm_host_fallback:-}}" "https://example.openai.azure.com/")"
       host="$(prompt_with_default "Azure OpenAI endpoint" "$host_default")"
-      api_key="$(prompt_secret_until_valid_with_default "Azure OpenAI API key: " "${ENV_VALUES[EMBEDDING_BINDING_API_KEY]:-}" validate_api_key azure_openai)"
+      api_key="$(prompt_secret_until_valid_with_default "Azure OpenAI API key: " "${ENV_VALUES[EMBEDDING_BINDING_API_KEY]:-$llm_api_key_default}" validate_api_key azure_openai)"
       ;;
     gemini)
-      host_default="$(provider_default_or_existing "$binding" "$current_binding" "${ENV_VALUES[EMBEDDING_BINDING_HOST]:-}" "https://generativelanguage.googleapis.com")"
+      host_default="$(provider_default_or_existing "$binding" "$current_binding" "${ENV_VALUES[EMBEDDING_BINDING_HOST]:-${llm_host_fallback:-}}" "https://generativelanguage.googleapis.com")"
       host="$(prompt_with_default "Gemini endpoint" "$host_default")"
-      api_key="$(prompt_secret_until_valid_with_default "Gemini API key: " "${ENV_VALUES[EMBEDDING_BINDING_API_KEY]:-}" validate_api_key gemini)"
+      api_key="$(prompt_secret_until_valid_with_default "Gemini API key: " "${ENV_VALUES[EMBEDDING_BINDING_API_KEY]:-$llm_api_key_default}" validate_api_key gemini)"
       ;;
     aws_bedrock)
-      host="$(provider_default_or_existing "$binding" "$current_binding" "${ENV_VALUES[EMBEDDING_BINDING_HOST]:-}" "https://bedrock.amazonaws.com")"
+      host="$(provider_default_or_existing "$binding" "$current_binding" "${ENV_VALUES[EMBEDDING_BINDING_HOST]:-${llm_host_fallback:-}}" "https://bedrock.amazonaws.com")"
       api_key=""
       collect_bedrock_credentials
       ;;
     jina)
-      host_default="$(provider_default_or_existing "$binding" "$current_binding" "${ENV_VALUES[EMBEDDING_BINDING_HOST]:-}" "https://api.jina.ai/v1/embeddings")"
+      host_default="$(provider_default_or_existing "$binding" "$current_binding" "${ENV_VALUES[EMBEDDING_BINDING_HOST]:-${llm_host_fallback:-}}" "https://api.jina.ai/v1/embeddings")"
       host="$(prompt_with_default "Jina endpoint" "$host_default")"
-      api_key="$(prompt_secret_until_valid_with_default "Jina API key: " "${ENV_VALUES[EMBEDDING_BINDING_API_KEY]:-}" validate_api_key jina)"
+      api_key="$(prompt_secret_until_valid_with_default "Jina API key: " "${ENV_VALUES[EMBEDDING_BINDING_API_KEY]:-$llm_api_key_default}" validate_api_key jina)"
       ;;
     *)
-      host_default="$(provider_default_or_existing "$binding" "$current_binding" "${ENV_VALUES[EMBEDDING_BINDING_HOST]:-}" "https://api.openai.com/v1")"
+      host_default="$(provider_default_or_existing "$binding" "$current_binding" "${ENV_VALUES[EMBEDDING_BINDING_HOST]:-${llm_host_fallback:-}}" "https://api.openai.com/v1")"
       host="$(prompt_with_default "Embedding endpoint" "$host_default")"
-      api_key="$(prompt_secret_until_valid_with_default "Embedding API key: " "${ENV_VALUES[EMBEDDING_BINDING_API_KEY]:-}" validate_api_key "$binding")"
+      api_key="$(prompt_secret_until_valid_with_default "Embedding API key: " "${ENV_VALUES[EMBEDDING_BINDING_API_KEY]:-$llm_api_key_default}" validate_api_key "$binding")"
       ;;
   esac
 
@@ -1606,7 +1612,7 @@ finalize_setup() {
 
   show_summary
 
-  if ! confirm "Generate .env and docker-compose.<type>.yml now?"; then
+  if ! confirm "Generate .env and docker-compose.yml now?"; then
     log_warn "Setup cancelled."
     return 1
   fi
@@ -1983,7 +1989,18 @@ Options:
 HELP
 }
 
+_sigint_handler() {
+  echo ""
+  local response
+  read -r -p "Interrupt setup? [y/N]: " response
+  case "${response,,}" in
+    y|yes) exit 130 ;;
+    *) echo "Continuing..." ;;
+  esac
+}
+
 main() {
+  trap '_sigint_handler' INT
   init_colors
   local mode="interactive"
 
