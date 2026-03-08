@@ -108,7 +108,7 @@ check_storage_compatibility() {
     for warning in "${warnings[@]}"; do
       echo "  - $warning" >&2
     done
-    return 0
+    return 1
   fi
 
   return 0

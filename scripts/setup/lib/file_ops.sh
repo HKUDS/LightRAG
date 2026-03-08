@@ -1,5 +1,15 @@
 # File operations for interactive setup.
 
+# Registry of temp files created during this session; cleaned up on exit.
+_FILE_OPS_CLEANUP_TMP=()
+_file_ops_cleanup() {
+  local f
+  for f in "${_FILE_OPS_CLEANUP_TMP[@]:-}"; do
+    rm -f "$f" 2>/dev/null || true
+  done
+}
+trap '_file_ops_cleanup' EXIT INT TERM
+
 format_env_value() {
   local value="$1"
   local escaped
@@ -28,7 +38,10 @@ backup_env_file() {
 
   if [[ -f "$env_file" ]]; then
     backup_file="${env_file}.backup.$(date +%Y%m%d_%H%M%S)"
-    cp "$env_file" "$backup_file"
+    if ! cp "$env_file" "$backup_file"; then
+      format_error "Failed to back up ${env_file} to ${backup_file}." "Check disk space and file permissions."
+      return 1
+    fi
     printf '%s' "$backup_file"
   fi
 }
@@ -80,6 +93,7 @@ generate_env_file() {
   local template_file="${1:-${REPO_ROOT:-.}/env.example}"
   local output_file="${2:-${REPO_ROOT:-.}/.env}"
   local tmp_file="${output_file}.tmp"
+  _FILE_OPS_CLEANUP_TMP+=("$tmp_file")
   local line key value
   local -A written_keys=()
 
@@ -129,6 +143,7 @@ generate_docker_compose() {
   local output_file="${1:-${REPO_ROOT:-.}/docker-compose.yml}"
   local base_file="${REPO_ROOT:-.}/docker-compose.yml"
   local tmp_file="${output_file}.tmp"
+  _FILE_OPS_CLEANUP_TMP+=("$tmp_file")
   local template_file
   local volume_names=()
   local lightrag_mounts=()
@@ -229,6 +244,7 @@ prepare_lightrag_service_for_generated_compose() {
   # here would make Docker Compose re-parse the same secrets and expand '$'.
   local compose_file="$1"
   local tmp_file="${compose_file}.strip-env-file"
+  _FILE_OPS_CLEANUP_TMP+=("$tmp_file")
   local line
   local in_lightrag="no"
   local in_env_file="no"
@@ -280,7 +296,8 @@ append_lightrag_ssl_mount() {
 
   relative_host_path="./data/${container_path#/app/data/}"
   mount_entry="${relative_host_path}:${container_path}:ro"
-  eval "$array_name+=(\"\$mount_entry\")"
+  local -n _arr_ref="$array_name"
+  _arr_ref+=("$mount_entry")
 }
 
 format_yaml_value() {
@@ -298,6 +315,7 @@ inject_service_environment_overrides() {
   shift 2
   local entries=("$@")
   local tmp_file="${compose_file}.${service_name}.env"
+  _FILE_OPS_CLEANUP_TMP+=("$tmp_file")
   local line key value
   local in_service="no"
   local in_environment="no"
@@ -365,6 +383,7 @@ inject_lightrag_bind_mounts() {
   shift
   local mounts=("$@")
   local tmp_file="${compose_file}.mounts"
+  _FILE_OPS_CLEANUP_TMP+=("$tmp_file")
   local line
   local in_lightrag="no"
   local in_volumes="no"

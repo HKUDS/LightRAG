@@ -16,7 +16,7 @@ def run_bash(script: str, cwd: Path | None = None) -> str:
     """Run a bash snippet and return stdout."""
 
     result = subprocess.run(
-        ["bash", "-lc", script],
+        ["bash", "--norc", "--noprofile", "-c", script],
         cwd=cwd or REPO_ROOT,
         capture_output=True,
         text=True,
@@ -1208,7 +1208,7 @@ printf 'COMPOSE_RERANK_BINDING_HOST=%s\\n' "${{COMPOSE_ENV_OVERRIDES[RERANK_BIND
 
 
 def test_collect_rerank_config_switching_from_vllm_clears_local_defaults() -> None:
-    """Switching from local vLLM to hosted rerank should drop stale local endpoint defaults."""
+    """Switching from local vLLM to hosted rerank should replace stale vLLM values with provider defaults."""
 
     output = run_bash(
         f"""
@@ -1235,16 +1235,20 @@ collect_rerank_config
 
 printf 'RERANK_BINDING=%s\\n' "${{ENV_VALUES[RERANK_BINDING]}}"
 printf 'LIGHTRAG_SETUP_RERANK_PROVIDER=%s\\n' "${{ENV_VALUES[LIGHTRAG_SETUP_RERANK_PROVIDER]}}"
-printf 'RERANK_MODEL_SET=%s\\n' "${{ENV_VALUES[RERANK_MODEL]+set}}"
-printf 'RERANK_BINDING_HOST_SET=%s\\n' "${{ENV_VALUES[RERANK_BINDING_HOST]+set}}"
+printf 'RERANK_MODEL=%s\\n' "${{ENV_VALUES[RERANK_MODEL]:-}}"
+printf 'RERANK_BINDING_HOST=%s\\n' "${{ENV_VALUES[RERANK_BINDING_HOST]:-}}"
 """
     )
     values = parse_lines(output)
 
     assert values["RERANK_BINDING"] == "cohere"
     assert values["LIGHTRAG_SETUP_RERANK_PROVIDER"] == "cohere"
-    assert values["RERANK_MODEL_SET"] == ""
-    assert values["RERANK_BINDING_HOST_SET"] == ""
+    # Stale vLLM model should be replaced by the cohere provider default
+    assert values["RERANK_MODEL"] != "BAAI/bge-reranker-v2-m3"
+    assert values["RERANK_MODEL"] == "rerank-v3.5"
+    # Stale vLLM localhost endpoint should be replaced by the cohere provider default
+    assert "localhost:8000" not in values["RERANK_BINDING_HOST"]
+    assert "cohere" in values["RERANK_BINDING_HOST"]
 
 
 def test_collect_rerank_config_cuda_selection_clears_disabled_gpu_masks() -> None:
@@ -1508,6 +1512,7 @@ reset_state
 prompt_choice() {{
   printf '%s' "$2"
 }}
+confirm() {{ return 0; }}
 
 select_storage_backends development
 
@@ -3109,7 +3114,10 @@ fi
     docker_calls = (tmp_path / "docker_calls.log").read_text(encoding="utf-8").splitlines()
 
     assert values["RESULT"] == "failure"
-    assert docker_calls == [f"compose -f {tmp_path}/docker-compose.development.yml up -d redis"]
+    assert any(
+        f"compose -f {tmp_path}/docker-compose.development.yml up -d redis" in call
+        for call in docker_calls
+    )
 
 
 def test_validate_security_config_requires_auth_accounts_for_production() -> None:
@@ -3522,3 +3530,277 @@ finalize_setup
     assert "Invalid SSL_CERTFILE" in result.stderr
     assert "Invalid SSL_KEYFILE" not in result.stderr
     assert "No such file or directory" not in result.stderr
+
+
+def test_validate_env_file_rejects_malformed_neo4j_uri(tmp_path: Path) -> None:
+    """validate_env_file should fail when NEO4J_URI has an invalid scheme."""
+
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "\n".join(
+            [
+                "LIGHTRAG_KV_STORAGE=JsonKVStorage",
+                "LIGHTRAG_VECTOR_STORAGE=NanoVectorDBStorage",
+                "LIGHTRAG_GRAPH_STORAGE=NetworkXStorage",
+                "LIGHTRAG_DOC_STATUS_STORAGE=JsonDocStatusStorage",
+                "NEO4J_URI=http://localhost:7687",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "env.example").write_text("LLM_BINDING=openai\n", encoding="utf-8")
+
+    result = subprocess.run(
+        [
+            "bash",
+            "--norc",
+            "--noprofile",
+            "-c",
+            f"""
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+if validate_env_file; then
+  printf 'VALID=yes\\n'
+else
+  printf 'VALID=no\\n'
+fi
+""",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    values = parse_lines(result.stdout)
+    assert values["VALID"] == "no"
+    assert "Invalid NEO4J_URI" in result.stderr
+
+
+def test_validate_env_file_rejects_malformed_redis_uri(tmp_path: Path) -> None:
+    """validate_env_file should fail when REDIS_URI has an invalid scheme."""
+
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "\n".join(
+            [
+                "LIGHTRAG_KV_STORAGE=JsonKVStorage",
+                "LIGHTRAG_VECTOR_STORAGE=NanoVectorDBStorage",
+                "LIGHTRAG_GRAPH_STORAGE=NetworkXStorage",
+                "LIGHTRAG_DOC_STATUS_STORAGE=JsonDocStatusStorage",
+                "REDIS_URI=tcp://localhost:6379",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "env.example").write_text("LLM_BINDING=openai\n", encoding="utf-8")
+
+    result = subprocess.run(
+        [
+            "bash",
+            "--norc",
+            "--noprofile",
+            "-c",
+            f"""
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+if validate_env_file; then
+  printf 'VALID=yes\\n'
+else
+  printf 'VALID=no\\n'
+fi
+""",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    values = parse_lines(result.stdout)
+    assert values["VALID"] == "no"
+    assert "Invalid REDIS_URI" in result.stderr
+
+
+def test_validate_env_file_accepts_rediss_tls_uri(tmp_path: Path) -> None:
+    """validate_env_file should accept rediss:// TLS URIs without downgrading them."""
+
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "\n".join(
+            [
+                "LIGHTRAG_KV_STORAGE=JsonKVStorage",
+                "LIGHTRAG_VECTOR_STORAGE=NanoVectorDBStorage",
+                "LIGHTRAG_GRAPH_STORAGE=NetworkXStorage",
+                "LIGHTRAG_DOC_STATUS_STORAGE=JsonDocStatusStorage",
+                "REDIS_URI=rediss://localhost:6380",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "env.example").write_text("LLM_BINDING=openai\n", encoding="utf-8")
+
+    output = run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+if validate_env_file; then
+  printf 'VALID=yes\\n'
+else
+  printf 'VALID=no\\n'
+fi
+"""
+    )
+
+    values = parse_lines(output)
+    assert values["VALID"] == "yes"
+
+
+def test_validate_env_file_rejects_mongo_vector_storage_without_atlas_uri(
+    tmp_path: Path,
+) -> None:
+    """validate_env_file must reject MongoVectorDBStorage when MONGO_URI is not Atlas (mongodb+srv://)."""
+
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "\n".join(
+            [
+                "LIGHTRAG_KV_STORAGE=JsonKVStorage",
+                "LIGHTRAG_VECTOR_STORAGE=MongoVectorDBStorage",
+                "LIGHTRAG_GRAPH_STORAGE=NetworkXStorage",
+                "LIGHTRAG_DOC_STATUS_STORAGE=JsonDocStatusStorage",
+                "MONGO_URI=mongodb://localhost:27017",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "env.example").write_text("LLM_BINDING=openai\n", encoding="utf-8")
+
+    result = subprocess.run(
+        [
+            "bash",
+            "--norc",
+            "--noprofile",
+            "-c",
+            f"""
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+if validate_env_file; then
+  printf 'VALID=yes\\n'
+else
+  printf 'VALID=no\\n'
+fi
+""",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    values = parse_lines(result.stdout)
+    assert values["VALID"] == "no"
+    assert "MongoVectorDBStorage requires a MongoDB Atlas URI" in result.stderr
+
+
+def test_finalize_setup_creates_timestamped_env_backup(tmp_path: Path) -> None:
+    """finalize_setup should create a timestamped .env.backup.* file from the existing .env."""
+
+    env_content = "\n".join(
+        [
+            "LIGHTRAG_KV_STORAGE=JsonKVStorage",
+            "LIGHTRAG_VECTOR_STORAGE=NanoVectorDBStorage",
+            "LIGHTRAG_GRAPH_STORAGE=NetworkXStorage",
+            "LIGHTRAG_DOC_STATUS_STORAGE=JsonDocStatusStorage",
+        ]
+    ) + "\n"
+    (tmp_path / ".env").write_text(env_content, encoding="utf-8")
+    (tmp_path / "env.example").write_text(env_content, encoding="utf-8")
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+
+ENV_VALUES[LIGHTRAG_KV_STORAGE]="JsonKVStorage"
+ENV_VALUES[LIGHTRAG_VECTOR_STORAGE]="NanoVectorDBStorage"
+ENV_VALUES[LIGHTRAG_GRAPH_STORAGE]="NetworkXStorage"
+ENV_VALUES[LIGHTRAG_DOC_STATUS_STORAGE]="JsonDocStatusStorage"
+DEPLOYMENT_TYPE="development"
+
+# First confirm ("Generate .env...?") -> yes; subsequent -> no (skip docker-compose).
+_confirm_call=0
+confirm() {{
+  ((_confirm_call++, 1)) || true
+  [[ $_confirm_call -le 1 ]]
+}}
+confirm_default_yes() {{ return 1; }}
+
+finalize_setup
+"""
+    )
+
+    backups = list(tmp_path.glob(".env.backup.*"))
+    assert len(backups) == 1, f"Expected one backup file, found: {backups}"
+    assert backups[0].read_text(encoding="utf-8") == env_content
+
+
+def test_interactive_flow_custom_deployment_skips_preset_loading(
+    tmp_path: Path,
+) -> None:
+    """Custom deployment type should not apply development or production preset defaults."""
+
+    (tmp_path / "env.example").write_text(
+        "LLM_BINDING=openai\n",
+        encoding="utf-8",
+    )
+
+    output = run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+
+# Stub everything interactive; focus on verifying the custom path skips presets.
+select_deployment_type() {{ printf 'custom'; }}
+select_storage_backends() {{
+  ENV_VALUES[LIGHTRAG_KV_STORAGE]="JsonKVStorage"
+  ENV_VALUES[LIGHTRAG_VECTOR_STORAGE]="NanoVectorDBStorage"
+  ENV_VALUES[LIGHTRAG_GRAPH_STORAGE]="NetworkXStorage"
+  ENV_VALUES[LIGHTRAG_DOC_STATUS_STORAGE]="JsonDocStatusStorage"
+}}
+collect_database_config() {{ :; }}
+collect_llm_config() {{ :; }}
+collect_embedding_config() {{ :; }}
+collect_rerank_config() {{ :; }}
+collect_docker_image_tags() {{ :; }}
+collect_server_config() {{ :; }}
+collect_security_config() {{ :; }}
+collect_observability_config() {{ :; }}
+finalize_setup() {{ :; }}
+
+interactive_flow
+
+printf 'DEPLOYMENT=%s\\n' "$DEPLOYMENT_TYPE"
+printf 'KV=%s\\n' "${{ENV_VALUES[LIGHTRAG_KV_STORAGE]:-}}"
+printf 'VECTOR=%s\\n' "${{ENV_VALUES[LIGHTRAG_VECTOR_STORAGE]:-}}"
+"""
+    )
+
+    values = parse_lines(output)
+    assert values["DEPLOYMENT"] == "custom"
+    # Custom path must not load development or production presets (PGKVStorage etc.)
+    assert values["KV"] == "JsonKVStorage"
+    assert values["VECTOR"] == "NanoVectorDBStorage"

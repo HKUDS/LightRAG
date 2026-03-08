@@ -166,7 +166,8 @@ wait_for_port() {
 
   log_step "Waiting for ${label} on ${host}:${port} (timeout ${timeout}s)"
   while true; do
-    if (echo > "/dev/tcp/${host}/${port}") >/dev/null 2>&1; then
+    if (echo > "/dev/tcp/${host}/${port}") >/dev/null 2>&1 ||
+        { command -v nc >/dev/null 2>&1 && nc -z "$host" "$port" >/dev/null 2>&1; }; then
       log_success "${label} is ready."
       return 0
     fi
@@ -1288,8 +1289,24 @@ collect_rerank_config() {
     model_default="$default_model"
     host_default="$default_host"
   elif [[ "$reset_vllm_defaults" == "yes" ]]; then
-    model_default="$default_model"
-    host_default="$default_host"
+    case "$binding_choice" in
+      cohere)
+        model_default="rerank-v3.5"
+        host_default="https://api.cohere.com/v2/rerank"
+        ;;
+      jina)
+        model_default="jina-reranker-v2-base-multilingual"
+        host_default="https://api.jina.ai/v1/rerank"
+        ;;
+      aliyun)
+        model_default="gte-rerank-v2"
+        host_default="https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank"
+        ;;
+      *)
+        model_default=""
+        host_default=""
+        ;;
+    esac
   else
     model_default="${ENV_VALUES[RERANK_MODEL]:-$default_model}"
     host_default="${ENV_VALUES[RERANK_BINDING_HOST]:-$default_host}"
@@ -1650,12 +1667,18 @@ finalize_setup() {
       fi
       log_step "Starting docker services with ${compose_file}"
       if ((${#DOCKER_SERVICES[@]} > 0)); then
-        docker compose -f "$compose_file" up -d "${DOCKER_SERVICES[@]}"
+        if ! docker compose -f "$compose_file" up -d "${DOCKER_SERVICES[@]}"; then
+          format_error "docker compose up failed." "Run 'docker compose -f ${compose_file} logs' to inspect."
+          return 1
+        fi
         if ! wait_for_services; then
           return 1
         fi
       fi
-      docker compose -f "$compose_file" up -d lightrag
+      if ! docker compose -f "$compose_file" up -d lightrag; then
+        format_error "docker compose up failed." "Run 'docker compose -f ${compose_file} logs' to inspect."
+        return 1
+      fi
       if ! wait_for_lightrag_service "$compose_file"; then
         return 1
       fi

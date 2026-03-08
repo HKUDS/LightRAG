@@ -13,5 +13,11 @@
       - "${VLLM_RERANK_PORT:-8000}:${VLLM_RERANK_PORT:-8000}"
     volumes:
       - vllm_rerank_cache:/root/.cache/huggingface
-    gpus: all
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
     restart: unless-stopped
