@@ -2701,10 +2701,7 @@ generate_docker_compose "$REPO_ROOT/docker-compose.generated.yml"
     )
 
     assert "CUDA_VISIBLE_DEVICES=0" in generated_env
-    assert (
-        "NVIDIA_VISIBLE_DEVICES: ${NVIDIA_VISIBLE_DEVICES:-all}"
-        in generated_compose
-    )
+    assert "NVIDIA_VISIBLE_DEVICES: ${NVIDIA_VISIBLE_DEVICES:-all}" in generated_compose
 
 
 def test_collect_security_config_can_clear_existing_values_on_rerun(
