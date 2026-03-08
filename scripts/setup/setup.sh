@@ -1991,12 +1991,8 @@ HELP
 
 _sigint_handler() {
   echo ""
-  local response
-  read -r -p "Interrupt setup? [y/N]: " response
-  case "${response,,}" in
-    y|yes) exit 130 ;;
-    *) echo "Continuing..." ;;
-  esac
+  echo "Setup interrupted."
+  exit 130
 }
 
 main() {
