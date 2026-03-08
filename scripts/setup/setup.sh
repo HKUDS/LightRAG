@@ -1424,6 +1424,11 @@ collect_security_config() {
     whitelist="$CLEAR_INPUT_SENTINEL"
   fi
 
+  if [[ -z "$token_secret" ]]; then
+    token_secret="$(openssl rand -hex 32 2>/dev/null || LC_ALL=C tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 64)"
+    log_info "Generated TOKEN_SECRET and saved to .env."
+  fi
+
   apply_clearable_env_value "AUTH_ACCOUNTS" "$auth_accounts"
   apply_clearable_env_value "TOKEN_SECRET" "$token_secret"
   apply_clearable_env_value "TOKEN_EXPIRE_HOURS" "$token_expire"
