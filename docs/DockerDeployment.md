@@ -74,6 +74,14 @@ The Dockerfile uses BuildKit cache mounts to significantly improve build perform
 docker compose up -d
 ```
 
+If you used the interactive setup, start the generated stack with:
+
+```bash
+docker compose -f docker-compose.development.yml up -d
+```
+
+The interactive setup keeps `.env` host-usable. Container-only hostnames such as `postgres` or `host.docker.internal`, along with staged SSL paths under `/app/data/certs/`, are injected into the generated `docker-compose.*.yml` for the `lightrag` service instead of being persisted back into `.env`.
+
 LightRAG Server uses the following paths for data storage:
 
 ```
@@ -81,6 +89,78 @@ data/
 ├── rag_storage/    # RAG data persistence
 └── inputs/         # Input documents
 ```
+
+### Optional: local vLLM reranker
+
+To enable local reranking with vLLM, run a vLLM container exposing the Cohere-compatible rerank endpoint and point LightRAG to it.
+You can select `vllm` in the interactive setup to add the `vllm-rerank` service automatically.
+vLLM provides a `v1/rerank` endpoint that works with the `cohere` binding.
+
+Example `docker-compose.override.yml` for GPU hosts:
+
+```yaml
+services:
+  vllm-rerank:
+    image: vllm/vllm-openai:latest
+    command: >
+      --model BAAI/bge-reranker-v2-m3
+      --port 8000
+      --dtype float16
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data/hf-cache:/root/.cache/huggingface
+    runtime: nvidia
+```
+
+For CPU-only hosts, use the official CPU image instead:
+
+```yaml
+services:
+  vllm-rerank:
+    image: public.ecr.aws/q9t5s3a7/vllm-cpu-release-repo:latest
+    command: >
+      --model BAAI/bge-reranker-v2-m3
+      --port 8000
+      --dtype float32
+```
+
+Add the rerank config to `.env`:
+
+```bash
+RERANK_BINDING=cohere
+RERANK_MODEL=BAAI/bge-reranker-v2-m3
+RERANK_BINDING_HOST=http://localhost:8000/v1/rerank
+RERANK_BINDING_API_KEY=local-key
+VLLM_RERANK_DEVICE=cpu
+VLLM_RERANK_DTYPE=float32
+```
+
+If LightRAG runs in Docker while vLLM runs on the host, the generated compose file rewrites that endpoint to:
+
+```bash
+RERANK_BINDING_HOST=http://host.docker.internal:8000/v1/rerank
+```
+
+For GPU, set:
+
+```bash
+VLLM_RERANK_DEVICE=cuda
+VLLM_RERANK_DTYPE=float16
+```
+
+Ensure the NVIDIA Container Toolkit is installed and the host has CUDA drivers available.
+The setup wizard uses the CPU image by default for `VLLM_RERANK_DEVICE=cpu` and the GPU image for `VLLM_RERANK_DEVICE=cuda`.
+
+### SSL certificates
+
+The setup wizard stages TLS certificate files under `./data/certs/` before generating the compose file.
+This keeps generated host mounts under the same `./data` root used by the default Docker deployment.
+
+### PostgreSQL image
+
+The interactive setup defaults PostgreSQL to `gzdaniel/postgres-for-rag:16.6`.
+That image bundles both Apache AGE and pgvector so the generated stack works with `PGGraphStorage` and `PGVectorStorage` without extra extension setup.
 
 ### Updates
 
