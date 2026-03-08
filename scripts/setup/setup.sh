@@ -65,7 +65,7 @@ PRESET_VLLM_RERANKER=(
   "RERANK_BINDING=cohere"
   "LIGHTRAG_SETUP_RERANK_PROVIDER=vllm"
   "RERANK_MODEL=BAAI/bge-reranker-v2-m3"
-  "RERANK_BINDING_HOST=http://localhost:8000/v1/rerank"
+  "RERANK_BINDING_HOST=http://localhost:8000/rerank"
   "VLLM_RERANK_MODEL=BAAI/bge-reranker-v2-m3"
   "VLLM_RERANK_PORT=8000"
   "VLLM_RERANK_DEVICE=cpu"
@@ -1293,9 +1293,9 @@ collect_rerank_config() {
     fi
 
     default_model="$vllm_model"
-    default_host="$(default_loopback_url "$vllm_port" "/v1/rerank")"
+    default_host="$(default_loopback_url "$vllm_port" "/rerank")"
     if [[ "$use_docker" == "yes" ]]; then
-      set_compose_override "RERANK_BINDING_HOST" "http://vllm-rerank:${vllm_port}/v1/rerank"
+      set_compose_override "RERANK_BINDING_HOST" "http://vllm-rerank:${vllm_port}/rerank"
     else
       set_compose_override "RERANK_BINDING_HOST" ""
     fi
@@ -1936,7 +1936,7 @@ quick_start_vllm_flow() {
     ENV_VALUES["RERANK_BINDING_API_KEY"]="$vllm_rerank_api_key"
     add_docker_service "vllm-rerank"
     set_compose_override "RERANK_BINDING_HOST" \
-      "http://vllm-rerank:${ENV_VALUES[VLLM_RERANK_PORT]:-8000}/v1/rerank"
+      "http://vllm-rerank:${ENV_VALUES[VLLM_RERANK_PORT]:-8000}/rerank"
   else
     local key
     for key in "${!ENV_VALUES[@]}"; do

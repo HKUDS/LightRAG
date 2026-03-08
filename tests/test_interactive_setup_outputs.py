@@ -200,7 +200,7 @@ reset_state
 
 ENV_VALUES[LLM_BINDING_HOST]="http://localhost:11434"
 ENV_VALUES[EMBEDDING_BINDING_HOST]="http://127.0.0.1:11434"
-ENV_VALUES[RERANK_BINDING_HOST]="http://localhost:8000/v1/rerank"
+ENV_VALUES[RERANK_BINDING_HOST]="http://localhost:8000/rerank"
 
 prepare_compose_runtime_overrides
 
@@ -216,10 +216,10 @@ printf 'COMPOSE_RERANK=%s\\n' "${{COMPOSE_ENV_OVERRIDES[RERANK_BINDING_HOST]}}"
 
     assert values["ENV_LLM"] == "http://localhost:11434"
     assert values["ENV_EMBEDDING"] == "http://127.0.0.1:11434"
-    assert values["ENV_RERANK"] == "http://localhost:8000/v1/rerank"
+    assert values["ENV_RERANK"] == "http://localhost:8000/rerank"
     assert values["COMPOSE_LLM"] == "http://host.docker.internal:11434"
     assert values["COMPOSE_EMBEDDING"] == "http://host.docker.internal:11434"
-    assert values["COMPOSE_RERANK"] == "http://host.docker.internal:8000/v1/rerank"
+    assert values["COMPOSE_RERANK"] == "http://host.docker.internal:8000/rerank"
 
 
 def test_generate_files_keep_host_env_values_and_inject_compose_overrides(
@@ -273,7 +273,7 @@ ENV_VALUES[SSL_CERTFILE]="{cert_path}"
 ENV_VALUES[SSL_KEYFILE]="{key_path}"
 ENV_VALUES[LLM_BINDING_HOST]="http://localhost:11434"
 ENV_VALUES[EMBEDDING_BINDING_HOST]="http://127.0.0.1:11434"
-ENV_VALUES[RERANK_BINDING_HOST]="http://localhost:8000/v1/rerank"
+ENV_VALUES[RERANK_BINDING_HOST]="http://localhost:8000/rerank"
 SSL_CERT_SOURCE_PATH="{cert_path}"
 SSL_KEY_SOURCE_PATH="{key_path}"
 
@@ -293,7 +293,7 @@ generate_docker_compose "$REPO_ROOT/docker-compose.generated.yml"
     assert f"SSL_KEYFILE={key_path}" in generated_env
     assert "LLM_BINDING_HOST=http://localhost:11434" in generated_env
     assert "EMBEDDING_BINDING_HOST=http://127.0.0.1:11434" in generated_env
-    assert "RERANK_BINDING_HOST=http://localhost:8000/v1/rerank" in generated_env
+    assert "RERANK_BINDING_HOST=http://localhost:8000/rerank" in generated_env
 
     assert 'SSL_CERTFILE: "/app/data/certs/cert.pem"' in generated_compose
     assert 'SSL_KEYFILE: "/app/data/certs/key.pem"' in generated_compose
@@ -303,7 +303,7 @@ generate_docker_compose "$REPO_ROOT/docker-compose.generated.yml"
         in generated_compose
     )
     assert (
-        'RERANK_BINDING_HOST: "http://host.docker.internal:8000/v1/rerank"'
+        'RERANK_BINDING_HOST: "http://host.docker.internal:8000/rerank"'
         in generated_compose
     )
     assert './data/certs/cert.pem:/app/data/certs/cert.pem:ro' in generated_compose
@@ -1154,10 +1154,10 @@ printf 'COMPOSE_RERANK_BINDING_HOST=%s\\n' "${{COMPOSE_ENV_OVERRIDES[RERANK_BIND
     assert values["RERANK_BINDING"] == "cohere"
     assert values["LIGHTRAG_SETUP_RERANK_PROVIDER"] == "vllm"
     assert values["RERANK_MODEL"] == "BAAI/bge-reranker-v2-m3"
-    assert values["RERANK_BINDING_HOST"] == "http://localhost:8000/v1/rerank"
+    assert values["RERANK_BINDING_HOST"] == "http://localhost:8000/rerank"
     assert (
         values["COMPOSE_RERANK_BINDING_HOST"]
-        == "http://vllm-rerank:8000/v1/rerank"
+        == "http://vllm-rerank:8000/rerank"
     )
 
 
@@ -1173,7 +1173,7 @@ reset_state
 ENV_VALUES[LIGHTRAG_SETUP_RERANK_PROVIDER]="vllm"
 ENV_VALUES[RERANK_BINDING]="cohere"
 ENV_VALUES[RERANK_MODEL]="BAAI/bge-reranker-v2-m3"
-ENV_VALUES[RERANK_BINDING_HOST]="http://localhost:8000/v1/rerank"
+ENV_VALUES[RERANK_BINDING_HOST]="http://localhost:8000/rerank"
 ENV_VALUES[VLLM_RERANK_MODEL]="BAAI/bge-reranker-v2-m3"
 ENV_VALUES[VLLM_RERANK_PORT]="8000"
 ENV_VALUES[VLLM_RERANK_DEVICE]="cpu"
@@ -1199,11 +1199,11 @@ printf 'COMPOSE_RERANK_BINDING_HOST=%s\\n' "${{COMPOSE_ENV_OVERRIDES[RERANK_BIND
 
     assert values["RERANK_BINDING"] == "cohere"
     assert values["LIGHTRAG_SETUP_RERANK_PROVIDER"] == "vllm"
-    assert values["RERANK_BINDING_HOST"] == "http://localhost:8000/v1/rerank"
+    assert values["RERANK_BINDING_HOST"] == "http://localhost:8000/rerank"
     assert values["DOCKER_SERVICE"] == "vllm-rerank"
     assert (
         values["COMPOSE_RERANK_BINDING_HOST"]
-        == "http://vllm-rerank:8000/v1/rerank"
+        == "http://vllm-rerank:8000/rerank"
     )
 
 
@@ -1219,7 +1219,7 @@ reset_state
 ENV_VALUES[LIGHTRAG_SETUP_RERANK_PROVIDER]="vllm"
 ENV_VALUES[RERANK_BINDING]="cohere"
 ENV_VALUES[RERANK_MODEL]="BAAI/bge-reranker-v2-m3"
-ENV_VALUES[RERANK_BINDING_HOST]="http://localhost:8000/v1/rerank"
+ENV_VALUES[RERANK_BINDING_HOST]="http://localhost:8000/rerank"
 
 confirm() {{ return 0; }}
 prompt_choice() {{
@@ -2431,7 +2431,7 @@ reset_state
 
 ENV_VALUES[POSTGRES_HOST]="0.0.0.0"
 ENV_VALUES[LLM_BINDING_HOST]="http://0.0.0.0:11434"
-ENV_VALUES[RERANK_BINDING_HOST]="http://0.0.0.0:8000/v1/rerank"
+ENV_VALUES[RERANK_BINDING_HOST]="http://0.0.0.0:8000/rerank"
 
 prepare_compose_runtime_overrides
 
@@ -2444,7 +2444,7 @@ printf 'RERANK_BINDING_HOST=%s\\n' "${{COMPOSE_ENV_OVERRIDES[RERANK_BINDING_HOST
 
     assert values["POSTGRES_HOST"] == "host.docker.internal"
     assert values["LLM_BINDING_HOST"] == "http://host.docker.internal:11434"
-    assert values["RERANK_BINDING_HOST"] == "http://host.docker.internal:8000/v1/rerank"
+    assert values["RERANK_BINDING_HOST"] == "http://host.docker.internal:8000/rerank"
 
 
 def test_prepare_compose_runtime_overrides_aligns_server_binding_for_container() -> None:
