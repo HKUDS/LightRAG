@@ -505,6 +505,21 @@ confirm_default_yes() {
   esac
 }
 
+confirm_default_no() {
+  local prompt="$1"
+  local response
+
+  read -r -p "$prompt [y/N]: " response
+  case "${response,,}" in
+    y|yes)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
 prompt_choice() {
   local prompt="$1"
   local default="$2"
@@ -1672,7 +1687,7 @@ finalize_setup() {
     fi
     generate_docker_compose "$compose_file"
     log_success "Wrote ${compose_file}"
-    if confirm_default_yes "Start docker services now?"; then
+    if confirm_default_no "Start docker services now?"; then
       if ! check_docker_availability; then
         return 1
       fi
@@ -1776,11 +1791,17 @@ interactive_flow() {
 }
 
 quick_start_flow() {
-  local api_key
+  local env_file="${REPO_ROOT}/.env"
+  local has_existing_env=false
 
   reset_state
   load_existing_env_if_present
   reset_quick_start_inherited_state
+
+  if [[ -f "$env_file" ]]; then
+    has_existing_env=true
+  fi
+
   # Force storage backends to development defaults, but preserve existing LLM/embedding config
   apply_preset_overwrite "${PRESET_DEVELOPMENT[@]:0:4}"
   apply_preset "${PRESET_DEVELOPMENT[@]:4}"
@@ -1788,14 +1809,23 @@ quick_start_flow() {
   clear_bedrock_credentials_if_unused
 
   log_info "Quick start setup"
-  echo "Using development preset. The wizard stores an OpenAI API key in .env for convenience, but you can override it with runtime environment variables later."
-
-  api_key="$(prompt_secret_until_valid_with_default "OpenAI API key: " "${ENV_VALUES[LLM_BINDING_API_KEY]:-}" validate_api_key openai)"
-  ENV_VALUES["LLM_BINDING_API_KEY"]="$api_key"
-  # Only sync EMBEDDING_BINDING_API_KEY when not already separately configured
-  if [[ -z "${ENV_VALUES[EMBEDDING_BINDING_API_KEY]:-}" ]]; then
-    ENV_VALUES["EMBEDDING_BINDING_API_KEY"]="$api_key"
+  echo ""
+  if [[ "$has_existing_env" == "true" ]]; then
+    echo "Existing .env detected. This wizard updates:"
+    echo "  - LLM               : provider, model, endpoint, API key"
+    echo "  - Embedding         : provider, model, dimension, endpoint, API key"
+    echo ""
+    echo "All other settings remain unchanged. Current values are shown as defaults — press Enter to keep them."
+  else
+    echo "This wizard configures:"
+    echo "  - Storage backends  : JSON + NetworkX (development defaults, fixed)"
+    echo "  - LLM               : provider, model, endpoint, API key"
+    echo "  - Embedding         : provider, model, dimension, endpoint, API key"
   fi
+  echo ""
+
+  collect_llm_config
+  collect_embedding_config
 
   finalize_setup
 }
