@@ -1714,6 +1714,7 @@ finalize_setup() {
     fi
     generate_docker_compose "$compose_file"
     log_success "Wrote ${compose_file}"
+    echo "  To start later: docker compose -f ${compose_file} up -d"
     if confirm_default_no "Start docker services now?"; then
       if ! check_docker_availability; then
         return 1
