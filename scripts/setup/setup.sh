@@ -1334,7 +1334,12 @@ collect_rerank_config() {
   model="$(prompt_with_default "Rerank model" "$model_default")"
   host="$(prompt_with_default "Rerank endpoint" "$host_default")"
   if [[ "$binding_choice" == "vllm" ]]; then
-    api_key="$(prompt_secret_with_default "Rerank API key (optional): " "${ENV_VALUES[RERANK_BINDING_API_KEY]:-}")"
+    # Ensure a consistent key exists before prompting, generating one if needed.
+    local vllm_rerank_api_key="${ENV_VALUES[VLLM_RERANK_API_KEY]:-${ENV_VALUES[RERANK_BINDING_API_KEY]:-}}"
+    if [[ -z "$vllm_rerank_api_key" ]]; then
+      vllm_rerank_api_key="$(openssl rand -hex 16 2>/dev/null || LC_ALL=C tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 32)"
+    fi
+    api_key="$(prompt_secret_with_default "Rerank API key (optional): " "$vllm_rerank_api_key")"
   else
     api_key="$(prompt_secret_until_valid_with_default "Rerank API key: " "${ENV_VALUES[RERANK_BINDING_API_KEY]:-}" validate_api_key "$binding")"
   fi
@@ -1351,7 +1356,13 @@ collect_rerank_config() {
   elif [[ "$reset_vllm_defaults" == "yes" ]]; then
     unset 'ENV_VALUES[RERANK_BINDING_HOST]'
   fi
-  store_optional_env_value "RERANK_BINDING_API_KEY" "$api_key"
+  if [[ "$binding_choice" == "vllm" ]]; then
+    # Keep VLLM_RERANK_API_KEY and RERANK_BINDING_API_KEY in sync.
+    ENV_VALUES["VLLM_RERANK_API_KEY"]="${api_key:-$vllm_rerank_api_key}"
+    store_optional_env_value "RERANK_BINDING_API_KEY" "${api_key:-$vllm_rerank_api_key}"
+  else
+    store_optional_env_value "RERANK_BINDING_API_KEY" "$api_key"
+  fi
 }
 
 collect_server_config() {
@@ -1861,7 +1872,14 @@ quick_start_vllm_flow() {
   apply_preset "${PRESET_DEVELOPMENT[@]:4:3}"
   # Embedding: always overwrite with vLLM preset (cpu defaults; adjusted below)
   apply_preset_overwrite "${PRESET_VLLM_EMBEDDING[@]}"
-  unset 'ENV_VALUES[EMBEDDING_BINDING_API_KEY]'
+  # Sync the vLLM API key to the client-side binding key so both sides use
+  # the same value.  Generate a random key when neither is already set.
+  local vllm_embed_api_key="${ENV_VALUES[VLLM_EMBED_API_KEY]:-${ENV_VALUES[EMBEDDING_BINDING_API_KEY]:-}}"
+  if [[ -z "$vllm_embed_api_key" ]]; then
+    vllm_embed_api_key="$(openssl rand -hex 16 2>/dev/null || LC_ALL=C tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 32)"
+  fi
+  ENV_VALUES["VLLM_EMBED_API_KEY"]="$vllm_embed_api_key"
+  ENV_VALUES["EMBEDDING_BINDING_API_KEY"]="$vllm_embed_api_key"
 
   DEPLOYMENT_TYPE="development"
   clear_bedrock_credentials_if_unused
@@ -1908,6 +1926,14 @@ quick_start_vllm_flow() {
     apply_preset_overwrite "${PRESET_VLLM_RERANKER[@]}"
     ENV_VALUES["VLLM_RERANK_DEVICE"]="$vllm_device"
     ENV_VALUES["VLLM_RERANK_DTYPE"]="$vllm_dtype"
+    # Sync the vLLM rerank API key to the client-side binding key.
+    # Generate a random key when neither is already set.
+    local vllm_rerank_api_key="${ENV_VALUES[VLLM_RERANK_API_KEY]:-${ENV_VALUES[RERANK_BINDING_API_KEY]:-}}"
+    if [[ -z "$vllm_rerank_api_key" ]]; then
+      vllm_rerank_api_key="$(openssl rand -hex 16 2>/dev/null || LC_ALL=C tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 32)"
+    fi
+    ENV_VALUES["VLLM_RERANK_API_KEY"]="$vllm_rerank_api_key"
+    ENV_VALUES["RERANK_BINDING_API_KEY"]="$vllm_rerank_api_key"
     add_docker_service "vllm-rerank"
     set_compose_override "RERANK_BINDING_HOST" \
       "http://vllm-rerank:${ENV_VALUES[VLLM_RERANK_PORT]:-8000}/v1/rerank"

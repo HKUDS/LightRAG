@@ -24,10 +24,12 @@ format_env_value() {
   fi
 
   if [[ -n "$key" && "$_ALWAYS_QUOTED_KEYS" == *"|${key}|"* ]] || \
-     [[ "$value" =~ [[:space:]] || "$value" == *"\""* || "$value" == *"$"* ]]; then
+     [[ "$value" =~ [[:space:]] || "$value" == *"\""* || "$value" == *"$"* || "$value" == *"#"* ]]; then
     # Double-quoted .env values only need escaping for backslash and double quote.
     # Do not escape '$': python-dotenv preserves plain '$' literally, while '\$'
     # changes the loaded value.
+    # '#' in unquoted values is treated as a comment by python-dotenv, so any
+    # value containing '#' must be quoted.
     escaped="${value//\\/\\\\}"
     escaped="${escaped//\"/\\\"}"
     printf '"%s"' "$escaped"

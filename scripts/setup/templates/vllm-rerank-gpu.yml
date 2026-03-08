@@ -5,6 +5,7 @@
       --model ${VLLM_RERANK_MODEL:-BAAI/bge-reranker-v2-m3}
       --port ${VLLM_RERANK_PORT:-8000}
       --dtype ${VLLM_RERANK_DTYPE:-float16}
+      --api-key ${VLLM_RERANK_API_KEY}
       ${VLLM_RERANK_EXTRA_ARGS:-}
     environment:
       NVIDIA_VISIBLE_DEVICES: ${NVIDIA_VISIBLE_DEVICES:-all}
