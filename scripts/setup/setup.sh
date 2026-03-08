@@ -517,35 +517,6 @@ add_docker_service() {
   fi
 }
 
-confirm_default_yes() {
-  local prompt="$1"
-  local response
-
-  read -r -p "$prompt [Y/n]: " response
-  case "${response,,}" in
-    n|no)
-      return 1
-      ;;
-    *)
-      return 0
-      ;;
-  esac
-}
-
-confirm_default_no() {
-  local prompt="$1"
-  local response
-
-  read -r -p "$prompt [y/N]: " response
-  case "${response,,}" in
-    y|yes)
-      return 0
-      ;;
-    *)
-      return 1
-      ;;
-  esac
-}
 
 prompt_choice() {
   local prompt="$1"
@@ -636,7 +607,7 @@ select_storage_backends() {
       break
     fi
 
-    if confirm "Proceed with these storage selections anyway?"; then
+    if confirm_default_no "Proceed with these storage selections anyway?"; then
       break
     fi
   done
@@ -696,7 +667,7 @@ collect_postgres_config() {
       use_docker="yes"
     fi
   else
-    if confirm "Add PostgreSQL service to docker-compose.yml?"; then
+    if confirm_default_no "Add PostgreSQL service to docker-compose.yml?"; then
       use_docker="yes"
     fi
   fi
@@ -746,7 +717,7 @@ collect_neo4j_config() {
       use_docker="yes"
     fi
   else
-    if confirm "Add Neo4j service to docker-compose.yml?"; then
+    if confirm_default_no "Add Neo4j service to docker-compose.yml?"; then
       use_docker="yes"
     fi
   fi
@@ -800,7 +771,7 @@ collect_mongodb_config() {
         use_docker="yes"
       fi
     else
-      if confirm "Add MongoDB service to docker-compose.yml?"; then
+      if confirm_default_no "Add MongoDB service to docker-compose.yml?"; then
         use_docker="yes"
       fi
     fi
@@ -842,7 +813,7 @@ collect_redis_config() {
       use_docker="yes"
     fi
   else
-    if confirm "Add Redis service to docker-compose.yml?"; then
+    if confirm_default_no "Add Redis service to docker-compose.yml?"; then
       use_docker="yes"
     fi
   fi
@@ -876,7 +847,7 @@ collect_milvus_config() {
       use_docker="yes"
     fi
   else
-    if confirm "Add Milvus service to docker-compose.yml?"; then
+    if confirm_default_no "Add Milvus service to docker-compose.yml?"; then
       use_docker="yes"
     fi
   fi
@@ -913,7 +884,7 @@ collect_qdrant_config() {
       use_docker="yes"
     fi
   else
-    if confirm "Add Qdrant service to docker-compose.yml?"; then
+    if confirm_default_no "Add Qdrant service to docker-compose.yml?"; then
       use_docker="yes"
     fi
   fi
@@ -947,7 +918,7 @@ collect_memgraph_config() {
       use_docker="yes"
     fi
   else
-    if confirm "Add Memgraph service to docker-compose.yml?"; then
+    if confirm_default_no "Add Memgraph service to docker-compose.yml?"; then
       use_docker="yes"
     fi
   fi
@@ -1001,7 +972,7 @@ collect_bedrock_credentials() {
     fi
   fi
 
-  if confirm "Store explicit AWS Bedrock credentials in .env?"; then
+  if confirm_default_no "Store explicit AWS Bedrock credentials in .env?"; then
     access_key="$(prompt_required_secret "AWS access key ID: ")"
     secret_key="$(prompt_required_secret "AWS secret access key: ")"
     session_token="$(mask_sensitive_input "AWS session token (optional): ")"
@@ -1257,7 +1228,7 @@ collect_rerank_config() {
   local reset_vllm_defaults="no"
   local rerank_default="${ENV_VALUES[LIGHTRAG_SETUP_RERANK_PROVIDER]:-${ENV_VALUES[RERANK_BINDING]:-cohere}}"
 
-  if ! confirm "Enable reranking?"; then
+  if ! confirm_default_no "Enable reranking?"; then
     ENV_VALUES["RERANK_BINDING"]="null"
     unset 'ENV_VALUES[LIGHTRAG_SETUP_RERANK_PROVIDER]'
     unset 'ENV_VALUES[RERANK_BINDING_API_KEY]'
@@ -1437,7 +1408,7 @@ collect_security_config() {
       confirm_result=0
     fi
   else
-    if confirm "Configure authentication and API key settings?"; then
+    if confirm_default_no "Configure authentication and API key settings?"; then
       confirm_result=0
     fi
   fi
@@ -1499,7 +1470,7 @@ apply_clearable_env_value() {
 collect_observability_config() {
   local secret_key public_key host
 
-  if ! confirm "Enable Langfuse observability?"; then
+  if ! confirm_default_no "Enable Langfuse observability?"; then
     unset 'ENV_VALUES[LANGFUSE_ENABLE_TRACE]'
     unset 'ENV_VALUES[LANGFUSE_SECRET_KEY]'
     unset 'ENV_VALUES[LANGFUSE_PUBLIC_KEY]'
@@ -1546,7 +1517,7 @@ collect_docker_image_tags() {
     fi
   done
 
-  if confirm "Keep these image settings?"; then
+  if confirm_default_no "Keep these image settings?"; then
     return
   fi
 
@@ -1667,7 +1638,7 @@ finalize_setup() {
   if ((${#DOCKER_SERVICES[@]} > 0)); then
     generate_compose="yes"
   else
-    if confirm "Generate docker-compose for LightRAG only?"; then
+    if confirm_default_no "Generate docker-compose for LightRAG only?"; then
       generate_compose="yes"
     fi
   fi
@@ -1707,7 +1678,7 @@ finalize_setup() {
     compose_suffix="${DEPLOYMENT_TYPE:-custom}"
     compose_file="${REPO_ROOT}/docker-compose.${compose_suffix}.yml"
     if [[ -f "$compose_file" ]]; then
-      if ! confirm "Overwrite existing ${compose_file}?"; then
+      if ! confirm_default_yes "Overwrite existing ${compose_file}?"; then
         compose_file="${REPO_ROOT}/docker-compose.${compose_suffix}.$(date +%Y%m%d_%H%M%S).yml"
         log_warn "Using new compose file: $compose_file"
       fi
