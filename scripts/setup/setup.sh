@@ -1647,6 +1647,20 @@ finalize_setup() {
     prepare_compose_env_overrides
   fi
 
+  # When deploying with Docker, also normalize loopback URLs in ENV_VALUES so
+  # the generated .env reflects the correct host.docker.internal addresses.
+  # (The compose environment section overrides these at runtime, but having the
+  # correct value in .env provides a reliable fallback and avoids confusion.)
+  if ((${#DOCKER_SERVICES[@]} > 0)); then
+    local _norm_key _norm_val
+    for _norm_key in "LLM_BINDING_HOST" "EMBEDDING_BINDING_HOST" "RERANK_BINDING_HOST"; do
+      if [[ -n "${ENV_VALUES[$_norm_key]:-}" ]]; then
+        _norm_val="$(normalize_loopback_uri_for_compose "${ENV_VALUES[$_norm_key]}")"
+        ENV_VALUES["$_norm_key"]="$_norm_val"
+      fi
+    done
+  fi
+
   backup_path="$(backup_env_file)"
   if [[ -n "$backup_path" ]]; then
     log_success "Backed up existing .env to $backup_path"
