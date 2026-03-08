@@ -412,7 +412,6 @@ def parse_args() -> argparse.Namespace:
         setattr(args, f"{attr_prefix}_llm_timeout", role_timeout)
 
         # Cross-provider validation
-        effective_binding = role_binding or args.llm_binding
         if role_binding and role_binding != args.llm_binding:
             missing = []
             if not role_model:

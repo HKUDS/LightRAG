@@ -369,7 +369,9 @@ async def _summarize_descriptions(
     Returns:
         Summarized description string
     """
-    use_llm_func: callable = global_config.get("extract_llm_model_func") or global_config["llm_model_func"]
+    use_llm_func: callable = (
+        global_config.get("extract_llm_model_func") or global_config["llm_model_func"]
+    )
     # Apply higher priority (8) to entity/relation summary tasks
     use_llm_func = partial(use_llm_func, _priority=8)
 
@@ -634,9 +636,7 @@ async def _process_json_extraction_result(
         # Parse the JSON response using json_repair for robustness
         parsed = json_repair.loads(result)
     except Exception as e:
-        logger.warning(
-            f"{chunk_key}: Failed to parse JSON extraction result: {e}"
-        )
+        logger.warning(f"{chunk_key}: Failed to parse JSON extraction result: {e}")
         return dict(maybe_nodes), dict(maybe_edges)
 
     if not isinstance(parsed, dict):
@@ -671,7 +671,8 @@ async def _process_json_extraction_result(
                 str(entity_data.get("entity_type", "")), remove_inner_quotes=True
             )
             if not entity_type.strip() or any(
-                char in entity_type for char in ["'", "(", ")", "<", ">", "|", "/", "\\"]
+                char in entity_type
+                for char in ["'", "(", ")", "<", ">", "|", "/", "\\"]
             ):
                 logger.warning(
                     f"{chunk_key}: Invalid entity type '{entity_type}' for entity '{entity_name}'"
@@ -743,9 +744,7 @@ async def _process_json_extraction_result(
                 )
                 continue
             if source == target:
-                logger.debug(
-                    f"{chunk_key}: Source and target are the same: '{source}'"
-                )
+                logger.debug(f"{chunk_key}: Source and target are the same: '{source}'")
                 continue
 
             edge_keywords = sanitize_and_normalize_extracted_text(
@@ -2543,7 +2542,9 @@ async def _merge_edges_then_upsert(
                     entity_name=f"{need_insert_id} [relation:{relation_key}]",
                     max_retries=3,
                     retry_delay=0.1,
-                    timeout_seconds=_get_relationship_vdb_timeout_seconds(global_config),
+                    timeout_seconds=_get_relationship_vdb_timeout_seconds(
+                        global_config
+                    ),
                     log_start=True,
                     success_log_threshold_seconds=5.0,
                 )
@@ -2654,7 +2655,9 @@ async def _merge_edges_then_upsert(
                         entity_name=f"{need_insert_id} [relation:{relation_key}]",
                         max_retries=3,
                         retry_delay=0.1,
-                        timeout_seconds=_get_relationship_vdb_timeout_seconds(global_config),
+                        timeout_seconds=_get_relationship_vdb_timeout_seconds(
+                            global_config
+                        ),
                         log_start=True,
                         success_log_threshold_seconds=5.0,
                     )
@@ -3014,9 +3017,7 @@ async def merge_nodes_and_edges(
                         )
 
                     # Re-raise the original exception with a prefix
-                    prefixed_exception = create_prefixed_exception(
-                        e, f"{edge_label}"
-                    )
+                    prefixed_exception = create_prefixed_exception(e, f"{edge_label}")
                     raise prefixed_exception from e
 
     # Create relationship processing tasks
@@ -3061,7 +3062,9 @@ async def merge_nodes_and_edges(
                 all_added_entities.extend(added_entities)
 
         if pending:
-            pending_labels = [edge_task_labels.get(task, "<unknown>") for task in pending]
+            pending_labels = [
+                edge_task_labels.get(task, "<unknown>") for task in pending
+            ]
             preview = ", ".join(pending_labels[:10])
             if len(pending_labels) > 10:
                 preview += f", ... (+{len(pending_labels) - 10} more)"
@@ -3171,6 +3174,7 @@ async def merge_nodes_and_edges(
         pipeline_status["latest_message"] = log_message
         pipeline_status["history_messages"].append(log_message)
 
+
 async def extract_entities(
     chunks: dict[str, TextChunkSchema],
     global_config: dict[str, str],
@@ -3187,7 +3191,9 @@ async def extract_entities(
                     "User cancelled during entity extraction"
                 )
 
-    use_llm_func: callable = global_config.get("extract_llm_model_func") or global_config["llm_model_func"]
+    use_llm_func: callable = (
+        global_config.get("extract_llm_model_func") or global_config["llm_model_func"]
+    )
     entity_extract_max_gleaning = global_config["entity_extract_max_gleaning"]
 
     # Check if JSON structured output mode is enabled
@@ -3507,7 +3513,9 @@ async def kg_query(
     if query_param.model_func:
         use_model_func = query_param.model_func
     else:
-        use_model_func = global_config.get("query_llm_model_func") or global_config["llm_model_func"]
+        use_model_func = (
+            global_config.get("query_llm_model_func") or global_config["llm_model_func"]
+        )
         # Apply higher priority (5) to query relation LLM function
         use_model_func = partial(use_model_func, _priority=5)
 
@@ -3756,7 +3764,10 @@ async def extract_keywords_only(
     if param.model_func:
         use_model_func = param.model_func
     else:
-        use_model_func = global_config.get("keyword_llm_model_func") or global_config["llm_model_func"]
+        use_model_func = (
+            global_config.get("keyword_llm_model_func")
+            or global_config["llm_model_func"]
+        )
         # Apply higher priority (5) to query relation LLM function
         use_model_func = partial(use_model_func, _priority=5)
 
@@ -5283,7 +5294,9 @@ async def naive_query(
     if query_param.model_func:
         use_model_func = query_param.model_func
     else:
-        use_model_func = global_config.get("query_llm_model_func") or global_config["llm_model_func"]
+        use_model_func = (
+            global_config.get("query_llm_model_func") or global_config["llm_model_func"]
+        )
         # Apply higher priority (5) to query relation LLM function
         use_model_func = partial(use_model_func, _priority=5)
 

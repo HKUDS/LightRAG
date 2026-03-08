@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, field
-from typing import Any, List, Optional
+from typing import Optional
 
 from .constants import (
     EXTRACTION_SAFE_MAX_BLOCK_TOKENS,
@@ -202,7 +202,7 @@ def _stage_b_table_slice(blocks: list[Block]) -> list[Block]:
 
         # Split: before-table parts, table slices, after-table parts
         before_parts = block.content_parts[:table_content_idx]
-        after_parts = block.content_parts[table_content_idx + 1:]
+        after_parts = block.content_parts[table_content_idx + 1 :]
         slices = _slice_table_rows(table_json, table_header)
 
         for si, (rows, role) in enumerate(slices):
@@ -290,7 +290,8 @@ def _stage_c_anchor_split(blocks: list[Block]) -> list[Block]:
                     # New block starts with anchor as heading
                     current = Block(
                         heading=anchor_part.strip(),
-                        parent_headings=list(block.parent_headings) + ([block.heading] if block.heading else []),
+                        parent_headings=list(block.parent_headings)
+                        + ([block.heading] if block.heading else []),
                         level=block.level + 1 if block.level < 9 else block.level,
                         content_parts=[anchor_part],
                         uuid=block.uuid,
@@ -616,7 +617,9 @@ def _stage_e_extraction_safety_split(blocks: list[Block]) -> list[Block]:
 
         # Keep table chunks as-is to avoid breaking table payload structure.
         if any(
-            isinstance(part, str) and part.startswith("<table>") and part.endswith("</table>")
+            isinstance(part, str)
+            and part.startswith("<table>")
+            and part.endswith("</table>")
             for part in block.content_parts
         ):
             result.append(block)

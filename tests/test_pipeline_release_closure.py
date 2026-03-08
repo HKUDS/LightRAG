@@ -48,7 +48,9 @@ def test_parse_engine_routing_by_filename_and_env(tmp_path, monkeypatch):
 
     monkeypatch.setenv("LIGHTRAG_PARSER", "pdf:mineru-iet,*:native")
     assert rag._resolve_parser_engine("paper.pdf", {}) == "mineru"
-    assert rag._resolve_parser_engine("paper.pdf", {"parsed_engine": "native"}) == "native"
+    assert (
+        rag._resolve_parser_engine("paper.pdf", {"parsed_engine": "native"}) == "native"
+    )
 
 
 @pytest.mark.offline
@@ -220,8 +222,14 @@ def test_safe_vdb_operation_times_out_with_context():
 @pytest.mark.offline
 def test_relationship_vdb_timeout_has_120s_floor():
     assert _get_relationship_vdb_timeout_seconds({}) == 120.0
-    assert _get_relationship_vdb_timeout_seconds({"default_embedding_timeout": 10}) == 120.0
-    assert _get_relationship_vdb_timeout_seconds({"default_embedding_timeout": 50}) == 150.0
+    assert (
+        _get_relationship_vdb_timeout_seconds({"default_embedding_timeout": 10})
+        == 120.0
+    )
+    assert (
+        _get_relationship_vdb_timeout_seconds({"default_embedding_timeout": 50})
+        == 150.0
+    )
 
 
 @pytest.mark.offline
@@ -368,7 +376,11 @@ def test_write_lightrag_document_preserves_headings_and_table_dimensions(tmp_pat
                     ],
                 },
             },
-            {"type": "image", "img_path": "/tmp/a.png", "image_caption": ["图1 架构图"]},
+            {
+                "type": "image",
+                "img_path": "/tmp/a.png",
+                "image_caption": ["图1 架构图"],
+            },
         ]
 
         parsed = await rag._write_lightrag_document_from_content_list(
@@ -379,11 +391,18 @@ def test_write_lightrag_document_preserves_headings_and_table_dimensions(tmp_pat
         )
 
         blocks_path = Path(parsed["blocks_path"])
-        blocks = [json.loads(line) for line in blocks_path.read_text(encoding="utf-8").splitlines()]
+        blocks = [
+            json.loads(line)
+            for line in blocks_path.read_text(encoding="utf-8").splitlines()
+        ]
         content_blocks = blocks[1:]
         body_block = next(x for x in content_blocks if x["content"] == "这是正文段落。")
-        table_block = next(x for x in content_blocks if 'refid="tb-doc-1-0001"' in x["content"])
-        image_block = next(x for x in content_blocks if 'id="dr-doc-1-0001"' in x["content"])
+        table_block = next(
+            x for x in content_blocks if 'refid="tb-doc-1-0001"' in x["content"]
+        )
+        image_block = next(
+            x for x in content_blocks if 'id="dr-doc-1-0001"' in x["content"]
+        )
 
         assert body_block["heading"] == "1.1 研究背景"
         assert body_block["parent_headings"] == ["第一章 绪论"]
@@ -396,7 +415,10 @@ def test_write_lightrag_document_preserves_headings_and_table_dimensions(tmp_pat
         assert table_entry["heading"] == "1.1 研究背景"
         assert table_entry["dimension"] == [2, 3]
         assert table_entry["format"] == "json"
-        assert json.loads(table_entry["content"]) == [["符号", "含义", "单位"], ["A", "面积", "m2"]]
+        assert json.loads(table_entry["content"]) == [
+            ["符号", "含义", "单位"],
+            ["A", "面积", "m2"],
+        ]
 
         drawings = json.loads(Path(base + ".drawings.json").read_text(encoding="utf-8"))
         assert drawings["drawings"]["dr-doc-1-0001"]["heading"] == "1.1 研究背景"
@@ -533,7 +555,9 @@ def test_parse_mineru_to_lightrag_document(tmp_path, monkeypatch):
         base = str(blocks_path)[: -len(".blocks.jsonl")]
         drawings = json.loads(Path(base + ".drawings.json").read_text(encoding="utf-8"))
         tables = json.loads(Path(base + ".tables.json").read_text(encoding="utf-8"))
-        equations = json.loads(Path(base + ".equations.json").read_text(encoding="utf-8"))
+        equations = json.loads(
+            Path(base + ".equations.json").read_text(encoding="utf-8")
+        )
         assert drawings["drawings"]
         assert tables["tables"]
         assert equations["equations"]
@@ -687,4 +711,3 @@ def test_parse_mineru_fallback_local_raganything_parser(tmp_path, monkeypatch):
         await rag.finalize_storages()
 
     asyncio.run(_run())
-

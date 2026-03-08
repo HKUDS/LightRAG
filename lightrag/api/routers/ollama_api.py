@@ -305,9 +305,7 @@ class OllamaAPI:
                 if request.stream:
                     response = await (
                         self.rag.query_llm_model_func or self.rag.llm_model_func
-                    )(
-                        query, stream=True, **self.rag.llm_model_kwargs
-                    )
+                    )(query, stream=True, **self.rag.llm_model_kwargs)
 
                     async def stream_generator():
                         first_chunk_time = None
@@ -432,9 +430,7 @@ class OllamaAPI:
                     first_chunk_time = time.time_ns()
                     response_text = await (
                         self.rag.query_llm_model_func or self.rag.llm_model_func
-                    )(
-                        query, stream=False, **self.rag.llm_model_kwargs
-                    )
+                    )(query, stream=False, **self.rag.llm_model_kwargs)
                     last_chunk_time = time.time_ns()
 
                     if not response_text:

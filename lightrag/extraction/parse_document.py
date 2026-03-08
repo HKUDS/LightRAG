@@ -110,16 +110,19 @@ def parse_docx_to_interchange_jsonl(
     blocks = smart_chunk(paragraphs)
 
     meta["total_chunks"] = len(blocks)
-    chunk_id_prefix = doc_id.strip() if isinstance(doc_id, str) and doc_id.strip() else f"doc-{source_hash[:12]}"
+    chunk_id_prefix = (
+        doc_id.strip()
+        if isinstance(doc_id, str) and doc_id.strip()
+        else f"doc-{source_hash[:12]}"
+    )
 
     lines: list[str] = [json.dumps(meta, ensure_ascii=False)]
     table_group_ids: dict[str, str] = {}
 
     for i, block in enumerate(blocks):
         content = block.content
-        is_table_block = (
-            block.table_chunk_role != "none"
-            or (content.startswith("<table>") and content.endswith("</table>"))
+        is_table_block = block.table_chunk_role != "none" or (
+            content.startswith("<table>") and content.endswith("</table>")
         )
 
         table_fragment_num = None
@@ -134,9 +137,7 @@ def parse_docx_to_interchange_jsonl(
             heading_base = re.sub(r"\s*\[表格片段\d+\]\s*$", "", block.heading or "")
             group_key = f"{block.uuid}|{heading_base}|{'/'.join(block.parent_headings)}"
             if group_key not in table_group_ids:
-                table_group_ids[group_key] = _make_table_id(
-                    group_key, source_hash, i
-                )
+                table_group_ids[group_key] = _make_table_id(group_key, source_hash, i)
             table_id = table_group_ids[group_key]
 
             if block.table_chunk_role in {"first", "middle", "last"}:
@@ -215,7 +216,9 @@ def _table_rows_to_markdown(rows: list[list[str]] | None) -> str | None:
 
 
 def _make_table_id(group_key: str, source_hash: str, idx: int) -> str:
-    digest = hashlib.sha256(f"{group_key}|{source_hash}|{idx}".encode("utf-8")).hexdigest()
+    digest = hashlib.sha256(
+        f"{group_key}|{source_hash}|{idx}".encode("utf-8")
+    ).hexdigest()
     return f"tb-{digest[:8].upper()}"
 
 

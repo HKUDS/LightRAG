@@ -143,4 +143,3 @@ def _normalize_validate_chunks(
             return None
 
     return normalized
-

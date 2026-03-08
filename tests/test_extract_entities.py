@@ -65,7 +65,7 @@ async def test_gleaning_skipped_when_tokens_exceed_limit():
     llm_func = global_config["llm_model_func"]
     llm_func.return_value = _EXTRACTION_RESULT
 
-    with patch("lightrag.operate.logger") as mock_logger:
+    with patch("lightrag.operate.logger"):
         await extract_entities(
             chunks=_make_chunks(),
             global_config=global_config,

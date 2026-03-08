@@ -1441,9 +1441,7 @@ async def pipeline_enqueue_file(
                                     f"[File Extraction]Smart extraction failed for {file_path.name}: {smart_err}. Falling back to basic extraction."
                                 )
                                 # Fallback to basic python-docx extraction
-                                content = await asyncio.to_thread(
-                                    _extract_docx, file
-                                )
+                                content = await asyncio.to_thread(_extract_docx, file)
                     except Exception as e:
                         error_files = [
                             {

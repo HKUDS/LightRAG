@@ -172,7 +172,9 @@ async def safe_vdb_operation_with_exception(
                     operation_name,
                     entity_name or "<unknown>",
                     attempt_label,
-                    f"{timeout_seconds:.1f}s" if timeout_seconds is not None else "none",
+                    f"{timeout_seconds:.1f}s"
+                    if timeout_seconds is not None
+                    else "none",
                 )
 
             if timeout_seconds is not None and timeout_seconds > 0:

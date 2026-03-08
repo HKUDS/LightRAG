@@ -14,6 +14,7 @@ import mimetypes
 import sys
 import time
 import warnings
+
 try:
     import httpx
 except Exception:  # pragma: no cover - optional dependency
@@ -256,7 +257,9 @@ def _enforce_chunk_token_limit_before_embedding(
         try:
             token_count = len(tokenizer.encode(content))
         except Exception:
-            token_count = dp.get("tokens", 0) if isinstance(dp.get("tokens"), int) else 0
+            token_count = (
+                dp.get("tokens", 0) if isinstance(dp.get("tokens"), int) else 0
+            )
 
         if token_count <= max_tokens:
             ndp = dict(dp)
@@ -1543,7 +1546,9 @@ class LightRAG:
         if isinstance(file_paths, str):
             file_paths = [file_paths]
         if isinstance(lightrag_document_paths, str):
-            lightrag_document_paths = [lightrag_document_paths] if lightrag_document_paths else None
+            lightrag_document_paths = (
+                [lightrag_document_paths] if lightrag_document_paths else None
+            )
 
         # If file_paths is provided, ensure it matches the number of documents
         if file_paths is not None:
@@ -1575,8 +1580,14 @@ class LightRAG:
             contents = {}
             for i in range(len(file_paths)):
                 path = file_paths[i]
-                doc_id = ids[i] if ids is not None else compute_mdhash_id(path, prefix="doc-")
-                lightrag_path = (lightrag_document_paths[i] if lightrag_document_paths else "") or path
+                doc_id = (
+                    ids[i]
+                    if ids is not None
+                    else compute_mdhash_id(path, prefix="doc-")
+                )
+                lightrag_path = (
+                    lightrag_document_paths[i] if lightrag_document_paths else ""
+                ) or path
                 content_str = (input[i] or "").strip() if i < len(input) else ""
                 contents[doc_id] = {
                     "content": content_str,
@@ -1703,7 +1714,9 @@ class LightRAG:
         }
         for doc_id in new_docs.keys():
             if contents[doc_id].get("lightrag_document_path"):
-                full_docs_data[doc_id]["lightrag_document_path"] = contents[doc_id]["lightrag_document_path"]
+                full_docs_data[doc_id]["lightrag_document_path"] = contents[doc_id][
+                    "lightrag_document_path"
+                ]
         await self.full_docs.upsert(full_docs_data)
         # Persist data to disk immediately
         await self.full_docs.index_done_callback()
@@ -2212,7 +2225,9 @@ class LightRAG:
                                 content, self.tokenizer
                             )
                             if parsed_interchange is not None:
-                                interchange_meta, interchange_chunks = parsed_interchange
+                                interchange_meta, interchange_chunks = (
+                                    parsed_interchange
+                                )
                                 logger.info(
                                     f"Detected interchange JSONL for d-id: {doc_id}, {len(interchange_chunks)} chunks"
                                 )
@@ -2258,27 +2273,35 @@ class LightRAG:
 
                             # Multimodal post-process hook entrypoint:
                             # runs after interchange parsing and before entity extraction.
-                            chunking_result = await self._run_multimodal_postprocess_hook(
-                                doc_id=doc_id,
-                                file_path=file_path,
-                                chunking_result=chunking_result,
-                                extraction_meta=extraction_meta,
+                            chunking_result = (
+                                await self._run_multimodal_postprocess_hook(
+                                    doc_id=doc_id,
+                                    file_path=file_path,
+                                    chunking_result=chunking_result,
+                                    extraction_meta=extraction_meta,
+                                )
                             )
 
                             mm_specs: list[dict[str, Any]] = []
-                            blocks_path = str(parsed_data.get("blocks_path") or "").strip()
+                            blocks_path = str(
+                                parsed_data.get("blocks_path") or ""
+                            ).strip()
                             if blocks_path:
                                 max_order = -1
                                 for ch in chunking_result:
                                     if isinstance(ch, dict) and isinstance(
                                         ch.get("chunk_order_index"), int
                                     ):
-                                        max_order = max(max_order, int(ch["chunk_order_index"]))
-                                mm_chunks, mm_specs = self._build_mm_chunks_from_sidecars(
-                                    doc_id=doc_id,
-                                    file_path=file_path,
-                                    blocks_path=blocks_path,
-                                    base_order_index=max_order + 1,
+                                        max_order = max(
+                                            max_order, int(ch["chunk_order_index"])
+                                        )
+                                mm_chunks, mm_specs = (
+                                    self._build_mm_chunks_from_sidecars(
+                                        doc_id=doc_id,
+                                        file_path=file_path,
+                                        blocks_path=blocks_path,
+                                        base_order_index=max_order + 1,
+                                    )
                                 )
                                 if mm_chunks:
                                     chunking_result = list(chunking_result) + mm_chunks
@@ -2291,10 +2314,12 @@ class LightRAG:
                                 and self.embedding_token_limit > 0
                             ):
                                 original_chunk_count = len(chunking_result)
-                                chunking_result = _enforce_chunk_token_limit_before_embedding(
-                                    chunking_result=chunking_result,
-                                    tokenizer=self.tokenizer,
-                                    max_tokens=self.embedding_token_limit,
+                                chunking_result = (
+                                    _enforce_chunk_token_limit_before_embedding(
+                                        chunking_result=chunking_result,
+                                        tokenizer=self.tokenizer,
+                                        max_tokens=self.embedding_token_limit,
+                                    )
                                 )
                                 if len(chunking_result) != original_chunk_count:
                                     logger.info(
@@ -2318,7 +2343,10 @@ class LightRAG:
                                     continue
                                 raw_chunk_id = dp.get("chunk_id", "")
                                 order = dp.get("chunk_order_index")
-                                if isinstance(raw_chunk_id, str) and raw_chunk_id.strip():
+                                if (
+                                    isinstance(raw_chunk_id, str)
+                                    and raw_chunk_id.strip()
+                                ):
                                     if raw_chunk_id.startswith(f"{doc_id}-"):
                                         chunk_key = raw_chunk_id
                                     else:
@@ -2406,10 +2434,12 @@ class LightRAG:
                                 )
                             )
                             chunk_results = await entity_relation_task
-                            chunk_results = self._augment_chunk_results_with_mm_entities(
-                                chunk_results=chunk_results,
-                                mm_specs=mm_specs,
-                                file_path=file_path,
+                            chunk_results = (
+                                self._augment_chunk_results_with_mm_entities(
+                                    chunk_results=chunk_results,
+                                    mm_specs=mm_specs,
+                                    file_path=file_path,
+                                )
                             )
                             file_extraction_stage_ok = True
 
@@ -2621,8 +2651,12 @@ class LightRAG:
                 # parse_native/mineru/docling -> analyze_multimodal -> process_document
                 q_native: asyncio.Queue = asyncio.Queue(maxsize=self.queue_size_default)
                 q_mineru: asyncio.Queue = asyncio.Queue(maxsize=self.queue_size_default)
-                q_docling: asyncio.Queue = asyncio.Queue(maxsize=self.queue_size_default)
-                q_analyze: asyncio.Queue = asyncio.Queue(maxsize=self.queue_size_default)
+                q_docling: asyncio.Queue = asyncio.Queue(
+                    maxsize=self.queue_size_default
+                )
+                q_analyze: asyncio.Queue = asyncio.Queue(
+                    maxsize=self.queue_size_default
+                )
                 q_process: asyncio.Queue = asyncio.Queue(maxsize=self.queue_size_insert)
 
                 workers: list[asyncio.Task] = []
@@ -2632,10 +2666,14 @@ class LightRAG:
                         item = await in_q.get()
                         try:
                             doc_id_w, status_doc_w = item
-                            file_path_w = getattr(status_doc_w, "file_path", "unknown_source")
+                            file_path_w = getattr(
+                                status_doc_w, "file_path", "unknown_source"
+                            )
                             content_data_w = await self.full_docs.get_by_id(doc_id_w)
                             if not content_data_w:
-                                raise Exception(f"Document content not found in full_docs for doc_id: {doc_id_w}")
+                                raise Exception(
+                                    f"Document content not found in full_docs for doc_id: {doc_id_w}"
+                                )
                             await self.doc_status.upsert(
                                 {
                                     doc_id_w: {
@@ -2643,18 +2681,26 @@ class LightRAG:
                                         "content_summary": status_doc_w.content_summary,
                                         "content_length": status_doc_w.content_length,
                                         "created_at": status_doc_w.created_at,
-                                        "updated_at": datetime.now(timezone.utc).isoformat(),
+                                        "updated_at": datetime.now(
+                                            timezone.utc
+                                        ).isoformat(),
                                         "file_path": file_path_w,
                                         "track_id": status_doc_w.track_id,
                                     }
                                 }
                             )
                             if engine == "mineru":
-                                parsed_data_w = await self.parse_mineru(doc_id_w, file_path_w, content_data_w)
+                                parsed_data_w = await self.parse_mineru(
+                                    doc_id_w, file_path_w, content_data_w
+                                )
                             elif engine == "docling":
-                                parsed_data_w = await self.parse_docling(doc_id_w, file_path_w, content_data_w)
+                                parsed_data_w = await self.parse_docling(
+                                    doc_id_w, file_path_w, content_data_w
+                                )
                             else:
-                                parsed_data_w = await self.parse_native(doc_id_w, file_path_w, content_data_w)
+                                parsed_data_w = await self.parse_native(
+                                    doc_id_w, file_path_w, content_data_w
+                                )
                             await q_analyze.put((doc_id_w, status_doc_w, parsed_data_w))
                         except Exception as e:
                             logger.error(f"Parse worker failed ({engine}): {e}")
@@ -2667,8 +2713,14 @@ class LightRAG:
                                             "content_summary": status_doc_w.content_summary,
                                             "content_length": status_doc_w.content_length,
                                             "created_at": status_doc_w.created_at,
-                                            "updated_at": datetime.now(timezone.utc).isoformat(),
-                                            "file_path": getattr(status_doc_w, "file_path", "unknown_source"),
+                                            "updated_at": datetime.now(
+                                                timezone.utc
+                                            ).isoformat(),
+                                            "file_path": getattr(
+                                                status_doc_w,
+                                                "file_path",
+                                                "unknown_source",
+                                            ),
                                             "track_id": status_doc_w.track_id,
                                         }
                                     }
@@ -2683,15 +2735,21 @@ class LightRAG:
                         item = await q_analyze.get()
                         try:
                             doc_id_w, status_doc_w, parsed_data_w = item
-                            file_path_w = getattr(status_doc_w, "file_path", "unknown_source")
+                            file_path_w = getattr(
+                                status_doc_w, "file_path", "unknown_source"
+                            )
                             await self.doc_status.upsert(
                                 {
                                     doc_id_w: {
                                         "status": DocStatus.ANALYZING,
                                         "content_summary": status_doc_w.content_summary,
-                                        "content_length": len(parsed_data_w.get("content", "")),
+                                        "content_length": len(
+                                            parsed_data_w.get("content", "")
+                                        ),
                                         "created_at": status_doc_w.created_at,
-                                        "updated_at": datetime.now(timezone.utc).isoformat(),
+                                        "updated_at": datetime.now(
+                                            timezone.utc
+                                        ).isoformat(),
                                         "file_path": file_path_w,
                                         "track_id": status_doc_w.track_id,
                                     }
@@ -2727,11 +2785,17 @@ class LightRAG:
                             q_process.task_done()
 
                 for _ in range(max(1, self.max_parallel_parse_native)):
-                    workers.append(asyncio.create_task(parse_worker("native", q_native)))
+                    workers.append(
+                        asyncio.create_task(parse_worker("native", q_native))
+                    )
                 for _ in range(max(1, self.max_parallel_parse_mineru)):
-                    workers.append(asyncio.create_task(parse_worker("mineru", q_mineru)))
+                    workers.append(
+                        asyncio.create_task(parse_worker("mineru", q_mineru))
+                    )
                 for _ in range(max(1, self.max_parallel_parse_docling)):
-                    workers.append(asyncio.create_task(parse_worker("docling", q_docling)))
+                    workers.append(
+                        asyncio.create_task(parse_worker("docling", q_docling))
+                    )
                 for _ in range(max(1, self.max_parallel_analyze)):
                     workers.append(asyncio.create_task(analyze_worker()))
                 for _ in range(max(1, self.max_parallel_insert)):
@@ -3049,9 +3113,12 @@ class LightRAG:
                         else:
                             result_text = await use_vlm_func(prompt, stream=False)
                     parsed = _extract_json_obj(str(result_text))
-                    if parsed and isinstance(parsed.get("name"), str) and isinstance(
-                        parsed.get("summary"), str
-                    ) and isinstance(parsed.get("detail_description"), str):
+                    if (
+                        parsed
+                        and isinstance(parsed.get("name"), str)
+                        and isinstance(parsed.get("summary"), str)
+                        and isinstance(parsed.get("detail_description"), str)
+                    ):
                         if "grounded" in parsed:
                             parsed["grounded"] = _normalize_grounded_value(
                                 parsed.get("grounded")
@@ -3121,7 +3188,9 @@ class LightRAG:
                         for item_id, item in items.items():
                             if isinstance(item, dict):
                                 valid_keys.append(item_id)
-                                analyze_tasks.append(_analyze_item(root_key, item_id, item))
+                                analyze_tasks.append(
+                                    _analyze_item(root_key, item_id, item)
+                                )
                         analyzed_results = await asyncio.gather(
                             *analyze_tasks, return_exceptions=True
                         )
@@ -3198,7 +3267,9 @@ class LightRAG:
 
         return "\n\n".join(merged_parts), str(blocks_path)
 
-    def _resolve_parser_engine(self, file_path: str, content_data: dict[str, Any]) -> str:
+    def _resolve_parser_engine(
+        self, file_path: str, content_data: dict[str, Any]
+    ) -> str:
         explicit_engine = str(content_data.get("parsed_engine") or "").strip().lower()
         if explicit_engine in {"native", "mineru", "docling"}:
             return explicit_engine
@@ -3352,7 +3423,9 @@ class LightRAG:
                     )
         raise TimeoutError(f"Parse service polling timeout for task: {task_id}")
 
-    def _extract_content_list_from_payload(self, payload: Any) -> list[dict[str, Any]] | None:
+    def _extract_content_list_from_payload(
+        self, payload: Any
+    ) -> list[dict[str, Any]] | None:
         """Try to find a MinerU/Docling-like content list from arbitrary JSON payload."""
         if isinstance(payload, list):
             if payload and all(isinstance(x, dict) for x in payload):
@@ -3443,8 +3516,13 @@ class LightRAG:
 
         parser = DoclingParser() if engine == "docling" else MineruParser()
         try:
-            if hasattr(parser, "check_installation") and not parser.check_installation():
-                logger.info(f"Local RAG-Anything {engine} parser not installed/configured")
+            if (
+                hasattr(parser, "check_installation")
+                and not parser.check_installation()
+            ):
+                logger.info(
+                    f"Local RAG-Anything {engine} parser not installed/configured"
+                )
                 return None
         except Exception:
             return None
@@ -3548,7 +3626,9 @@ class LightRAG:
                 normalized_rows.append(normalized_row)
             return normalized_rows
 
-        def _coerce_table_rows(value: Any) -> tuple[str, Any, list[list[str]], int, int]:
+        def _coerce_table_rows(
+            value: Any,
+        ) -> tuple[str, Any, list[list[str]], int, int]:
             raw_value = value
             if isinstance(raw_value, str):
                 stripped = raw_value.strip()
@@ -3610,7 +3690,9 @@ class LightRAG:
 
         heading_stack: list[str] = []
 
-        def _update_heading_context(heading_text: str, level: int) -> tuple[str, int, list[str]]:
+        def _update_heading_context(
+            heading_text: str, level: int
+        ) -> tuple[str, int, list[str]]:
             nonlocal heading_stack
             clean_heading = str(heading_text or "").strip()
             clean_level = max(_parse_int(level, 1), 1)
@@ -3666,7 +3748,11 @@ class LightRAG:
                 text = (
                     item.get("text")
                     or item.get("content")
-                    or "\n".join(item.get("list_items", []) if isinstance(item.get("list_items"), list) else [])
+                    or "\n".join(
+                        item.get("list_items", [])
+                        if isinstance(item.get("list_items"), list)
+                        else []
+                    )
                     or item.get("code_body")
                     or ""
                 )
@@ -3739,10 +3825,10 @@ class LightRAG:
                     inferred_num_rows,
                     inferred_num_cols,
                 ) = _coerce_table_rows(rows if rows is not None else table_body)
-                rows = normalized_rows or (
-                    rows if isinstance(rows, list) else []
+                rows = normalized_rows or (rows if isinstance(rows, list) else [])
+                cite_text = (
+                    f'<cite type="table" refid="{table_id}">表{table_idx}</cite>'
                 )
-                cite_text = f'<cite type="table" refid="{table_id}">表{table_idx}</cite>'
                 blockid = _append_block(
                     cite_text,
                     heading=current_heading,
@@ -3769,8 +3855,13 @@ class LightRAG:
             if item_type in {"image", "picture", "drawing"}:
                 drawing_idx += 1
                 drawing_id = str(item.get("id") or f"dr-{doc_id}-{drawing_idx:04d}")
-                image_caption = _to_list_str(item.get("image_caption") or item.get("captions"))
-                caption = str(item.get("caption") or (image_caption[0] if image_caption else f"图{drawing_idx}"))
+                image_caption = _to_list_str(
+                    item.get("image_caption") or item.get("captions")
+                )
+                caption = str(
+                    item.get("caption")
+                    or (image_caption[0] if image_caption else f"图{drawing_idx}")
+                )
                 footnotes = _to_list_str(
                     item.get("image_footnote") or item.get("footnotes")
                 )
@@ -3842,7 +3933,9 @@ class LightRAG:
 
         if tables:
             tables_path.write_text(
-                json.dumps({"version": "1.0", "tables": tables}, ensure_ascii=False, indent=2),
+                json.dumps(
+                    {"version": "1.0", "tables": tables}, ensure_ascii=False, indent=2
+                ),
                 encoding="utf-8",
             )
         if drawings:
@@ -3954,9 +4047,7 @@ class LightRAG:
                         "MINERU_SUCCESS_VALUES",
                         "done,success,succeeded,completed,finished",
                     ),
-                    "failed_values": os.getenv(
-                        "MINERU_FAILED_VALUES", "failed,error"
-                    ),
+                    "failed_values": os.getenv("MINERU_FAILED_VALUES", "failed,error"),
                     "poll_interval_seconds": float(
                         os.getenv("MINERU_POLL_INTERVAL_SECONDS", "2")
                     ),
@@ -3967,7 +4058,9 @@ class LightRAG:
                     protocol=protocol,
                     file_path=source_file_path,
                 )
-                content_list = self._normalize_parser_result_to_content_list(result_text)
+                content_list = self._normalize_parser_result_to_content_list(
+                    result_text
+                )
                 if content_list:
                     return await self._write_lightrag_document_from_content_list(
                         doc_id=doc_id,
@@ -4025,9 +4118,7 @@ class LightRAG:
                         "DOCLING_SUCCESS_VALUES",
                         "done,success,succeeded,completed,finished",
                     ),
-                    "failed_values": os.getenv(
-                        "DOCLING_FAILED_VALUES", "failed,error"
-                    ),
+                    "failed_values": os.getenv("DOCLING_FAILED_VALUES", "failed,error"),
                     "poll_interval_seconds": float(
                         os.getenv("DOCLING_POLL_INTERVAL_SECONDS", "2")
                     ),
@@ -4038,7 +4129,9 @@ class LightRAG:
                     protocol=protocol,
                     file_path=source_file_path,
                 )
-                content_list = self._normalize_parser_result_to_content_list(result_text)
+                content_list = self._normalize_parser_result_to_content_list(
+                    result_text
+                )
                 if content_list:
                     return await self._write_lightrag_document_from_content_list(
                         doc_id=doc_id,
@@ -4163,9 +4256,11 @@ class LightRAG:
                 if not isinstance(item, dict):
                     continue
 
-                analysis = item.get("llm_analyze_result") if isinstance(
-                    item.get("llm_analyze_result"), dict
-                ) else {}
+                analysis = (
+                    item.get("llm_analyze_result")
+                    if isinstance(item.get("llm_analyze_result"), dict)
+                    else {}
+                )
                 name = str(analysis.get("name") or item.get("caption") or item_id)
                 summary = str(analysis.get("summary") or "").strip()
                 detail = str(analysis.get("detail_description") or "").strip()
@@ -4303,7 +4398,9 @@ class LightRAG:
                     source_id = str(rec.get("source_id") or "")
                     if not source_id:
                         continue
-                    extracted_by_chunk.setdefault(source_id, set()).add(str(entity_name))
+                    extracted_by_chunk.setdefault(source_id, set()).add(
+                        str(entity_name)
+                    )
 
         now_ts = int(time.time())
         mm_nodes: dict[str, list[dict[str, Any]]] = {}

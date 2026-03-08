@@ -18,7 +18,6 @@ from typing import Any, List, Optional
 from xml.etree import ElementTree as ET
 
 from .constants import MAX_HEADING_LENGTH
-from .token_estimation import estimate_tokens
 
 # ── Word XML namespaces ──────────────────────────────────────────────
 _NS = {
@@ -76,25 +75,62 @@ class NumberingResolver:
 
         # Parse abstractNum definitions
         for abstract in tree.findall("w:abstractNum", _NS):
-            abstract_id = abstract.get("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}abstractNumId", "")
+            abstract_id = abstract.get(
+                "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}abstractNumId",
+                "",
+            )
             levels: dict[int, dict] = {}
             for lvl in abstract.findall("w:lvl", _NS):
-                ilvl = int(lvl.get("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}ilvl", "0"))
+                ilvl = int(
+                    lvl.get(
+                        "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}ilvl",
+                        "0",
+                    )
+                )
                 fmt_el = lvl.find("w:numFmt", _NS)
-                fmt = fmt_el.get("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}val", "decimal") if fmt_el is not None else "decimal"
+                fmt = (
+                    fmt_el.get(
+                        "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}val",
+                        "decimal",
+                    )
+                    if fmt_el is not None
+                    else "decimal"
+                )
                 txt_el = lvl.find("w:lvlText", _NS)
-                txt = txt_el.get("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}val", "") if txt_el is not None else ""
+                txt = (
+                    txt_el.get(
+                        "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}val",
+                        "",
+                    )
+                    if txt_el is not None
+                    else ""
+                )
                 start_el = lvl.find("w:start", _NS)
-                start = int(start_el.get("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}val", "1")) if start_el is not None else 1
+                start = (
+                    int(
+                        start_el.get(
+                            "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}val",
+                            "1",
+                        )
+                    )
+                    if start_el is not None
+                    else 1
+                )
                 levels[ilvl] = {"fmt": fmt, "text": txt, "start": start}
             self._abstract[abstract_id] = levels
 
         # Parse num → abstractNum mapping
         for num in tree.findall("w:num", _NS):
-            num_id = num.get("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}numId", "")
+            num_id = num.get(
+                "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}numId",
+                "",
+            )
             ref = num.find("w:abstractNumId", _NS)
             if ref is not None:
-                self._num_map[num_id] = ref.get("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}val", "")
+                self._num_map[num_id] = ref.get(
+                    "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}val",
+                    "",
+                )
 
     def resolve(self, num_id: str, ilvl: int) -> str:
         """Return rendered numbering prefix like '2.1' or '(a)'."""
@@ -124,7 +160,9 @@ class NumberingResolver:
         result = template
         for lvl_idx in range(ilvl + 1):
             val = counters.get(lvl_idx, levels.get(lvl_idx, {}).get("start", 1))
-            replacement = self._format_number(val, fmt if lvl_idx == ilvl else "decimal")
+            replacement = self._format_number(
+                val, fmt if lvl_idx == ilvl else "decimal"
+            )
             result = result.replace(f"%{lvl_idx + 1}", replacement)
         return result
 
@@ -155,7 +193,9 @@ def _get_outline_level(para_element: ET.Element, styles_map: dict[str, int]) -> 
     if pPr is not None:
         ol = pPr.find("w:outlineLvl", _NS)
         if ol is not None:
-            val = ol.get("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}val", "9")
+            val = ol.get(
+                "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}val", "9"
+            )
             lvl = int(val)
             if lvl <= 8:
                 return lvl
@@ -164,7 +204,9 @@ def _get_outline_level(para_element: ET.Element, styles_map: dict[str, int]) -> 
     if pPr is not None:
         style_el = pPr.find("w:pStyle", _NS)
         if style_el is not None:
-            style_id = style_el.get("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}val", "")
+            style_id = style_el.get(
+                "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}val", ""
+            )
             if style_id in styles_map:
                 return styles_map[style_id]
     return 9  # body text
@@ -183,18 +225,27 @@ def _build_styles_map(styles_part: Any | None) -> dict[str, int]:
     # First pass: direct outlineLvl
     based_on: dict[str, str] = {}
     for style in tree.findall("w:style", _NS):
-        sid = style.get("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}styleId", "")
+        sid = style.get(
+            "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}styleId", ""
+        )
         pPr = style.find("w:pPr", _NS)
         if pPr is not None:
             ol = pPr.find("w:outlineLvl", _NS)
             if ol is not None:
-                val = int(ol.get("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}val", "9"))
+                val = int(
+                    ol.get(
+                        "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}val",
+                        "9",
+                    )
+                )
                 if val <= 8:
                     result[sid] = val
 
         bo = style.find("w:basedOn", _NS)
         if bo is not None:
-            based_on[sid] = bo.get("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}val", "")
+            based_on[sid] = bo.get(
+                "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}val", ""
+            )
 
     # Second pass: inherit from basedOn
     for sid, parent_sid in based_on.items():
@@ -219,7 +270,6 @@ def _extract_paragraph_text(para_element: ET.Element) -> str:
 
         # Superscript / subscript
         elif tag == "vertAlign":
-            val = child.get("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}val", "")
             # Handled via run properties – text comes from <w:t>
             pass
 
@@ -248,7 +298,10 @@ def _extract_paragraph_text_with_formatting(para_element: ET.Element) -> str:
         if rPr is not None:
             va = rPr.find("w:vertAlign", _NS)
             if va is not None:
-                vert = va.get("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}val", "")
+                vert = va.get(
+                    "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}val",
+                    "",
+                )
 
         for t in run.findall("w:t", _NS):
             text = t.text or ""
@@ -339,7 +392,9 @@ def _infer_heading_level_by_text(text: str) -> int | None:
 
 
 # ── Table extraction ─────────────────────────────────────────────────
-def _extract_table(table_element: ET.Element) -> tuple[list[list[str]], list[list[str]]]:
+def _extract_table(
+    table_element: ET.Element,
+) -> tuple[list[list[str]], list[list[str]]]:
     """Extract table as JSON 2D array + cross-page header rows.
 
     Returns:
@@ -391,13 +446,21 @@ def extract_docx_paragraphs(file_bytes: bytes) -> list[Paragraph]:
     doc = DocxDocument(docx_file)
 
     # Build styles map for heading detection
-    styles_part = doc.part.part_related_by("http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles") if doc.part else None
+    styles_part = (
+        doc.part.part_related_by(
+            "http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles"
+        )
+        if doc.part
+        else None
+    )
     styles_map = _build_styles_map(styles_part)
 
     # Build numbering resolver
     numbering_part = None
     try:
-        numbering_part = doc.part.part_related_by("http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering")
+        numbering_part = doc.part.part_related_by(
+            "http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering"
+        )
     except Exception:
         pass
     numbering = NumberingResolver(numbering_part)
@@ -420,8 +483,16 @@ def extract_docx_paragraphs(file_bytes: bytes) -> list[Paragraph]:
                     num_id_el = numPr.find("w:numId", _NS)
                     ilvl_el = numPr.find("w:ilvl", _NS)
                     if num_id_el is not None and ilvl_el is not None:
-                        num_id = num_id_el.get("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}val", "0")
-                        ilvl = int(ilvl_el.get("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}val", "0"))
+                        num_id = num_id_el.get(
+                            "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}val",
+                            "0",
+                        )
+                        ilvl = int(
+                            ilvl_el.get(
+                                "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}val",
+                                "0",
+                            )
+                        )
                         if num_id != "0":
                             prefix = numbering.resolve(num_id, ilvl)
                             if prefix:
@@ -436,13 +507,15 @@ def extract_docx_paragraphs(file_bytes: bytes) -> list[Paragraph]:
             # Check for drawings
             has_drawing = len(element.findall(".//w:drawing", _NS)) > 0
 
-            paragraphs.append(Paragraph(
-                text=text,
-                para_id=para_id,
-                outline_level=outline_level,
-                is_table=False,
-                has_drawing=has_drawing,
-            ))
+            paragraphs.append(
+                Paragraph(
+                    text=text,
+                    para_id=para_id,
+                    outline_level=outline_level,
+                    is_table=False,
+                    has_drawing=has_drawing,
+                )
+            )
 
         elif tag == "tbl":
             rows, header_rows = _extract_table(element)
@@ -455,14 +528,16 @@ def extract_docx_paragraphs(file_bytes: bytes) -> list[Paragraph]:
             last_id = _get_para_id(all_paras[-1]) if all_paras else ""
 
             content = _table_to_content(rows)
-            paragraphs.append(Paragraph(
-                text=content,
-                para_id=first_id,
-                outline_level=9,
-                is_table=True,
-                table_json=rows,
-                table_header_rows=header_rows if header_rows else None,
-            ))
+            paragraphs.append(
+                Paragraph(
+                    text=content,
+                    para_id=first_id,
+                    outline_level=9,
+                    is_table=True,
+                    table_json=rows,
+                    table_header_rows=header_rows if header_rows else None,
+                )
+            )
             # Store last_id on same paragraph for uuid_end
             if last_id:
                 paragraphs[-1].drawing_id = last_id  # reuse field for table end id
