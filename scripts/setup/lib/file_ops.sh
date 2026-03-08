@@ -10,8 +10,12 @@ _file_ops_cleanup() {
 }
 trap '_file_ops_cleanup' EXIT INT TERM
 
+# Keys whose values are always written with double quotes (e.g. may contain spaces).
+_ALWAYS_QUOTED_KEYS="|WEBUI_TITLE|WEBUI_DESCRIPTION|"
+
 format_env_value() {
   local value="$1"
+  local key="${2:-}"
   local escaped
 
   if [[ -z "$value" ]]; then
@@ -19,7 +23,8 @@ format_env_value() {
     return
   fi
 
-  if [[ "$value" =~ [[:space:]] || "$value" == *"\""* || "$value" == *"$"* ]]; then
+  if [[ -n "$key" && "$_ALWAYS_QUOTED_KEYS" == *"|${key}|"* ]] || \
+     [[ "$value" =~ [[:space:]] || "$value" == *"\""* || "$value" == *"$"* ]]; then
     # Double-quoted .env values only need escaping for backslash and double quote.
     # Do not escape '$': python-dotenv preserves plain '$' literally, while '\$'
     # changes the loaded value.
@@ -110,7 +115,7 @@ generate_env_file() {
       if [[ -z "${written_keys[$key]+set}" ]]; then
         if [[ -n "${ENV_VALUES[$key]+set}" ]]; then
           value="${ENV_VALUES[$key]}"
-          printf '%s=%s\n' "$key" "$(format_env_value "$value")" >> "$tmp_file"
+          printf '%s=%s\n' "$key" "$(format_env_value "$value" "$key")" >> "$tmp_file"
         else
           printf '%s\n' "$line" >> "$tmp_file"
         fi
@@ -126,7 +131,7 @@ generate_env_file() {
       key="${BASH_REMATCH[1]}"
       if [[ -z "${written_keys[$key]+set}" && -n "${ENV_VALUES[$key]+set}" ]]; then
         value="${ENV_VALUES[$key]}"
-        printf '%s=%s\n' "$key" "$(format_env_value "$value")" >> "$tmp_file"
+        printf '%s=%s\n' "$key" "$(format_env_value "$value" "$key")" >> "$tmp_file"
         written_keys["$key"]=1
       else
         printf '%s\n' "$line" >> "$tmp_file"
