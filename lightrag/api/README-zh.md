@@ -104,6 +104,18 @@ EMBEDDING_DIM=1024
 
 > **重要提示**：在文档索引前必须确定使用的Embedding模型，且在文档查询阶段必须沿用与索引阶段相同的模型。有些存储（例如PostgreSQL）在首次建立数表的时候需要确定向量维度，因此更换Embedding模型后需要删除向量相关库表，以便让LightRAG重建新的库表。
 
+### 使用 Setup 工具创建 .env 文件
+
+除了手动编辑 `env.example` 之外，您还可以使用交互式向导一步生成配置好的 `.env`（以及可选的 Docker Compose 文件）：
+
+```bash
+make setup-quick          # 开发预设 —— 仅询问 LLM/Embedding API 密钥
+make setup                # 完整向导 —— 选择安装类型、存储后端、SSL 等
+make setup-production     # 生产预设 —— 附加安全与 SSL 配置提示
+```
+
+每个目标的详细说明请参阅 [docs/InteractiveSetup.md](../../docs/InteractiveSetup.md)。
+
 ### 启动 LightRAG 服务器
 
 LightRAG 服务器支持两种运行模式：
