@@ -11,6 +11,7 @@ Requirements:
 
 import os
 import re
+import ssl as ssl_module
 import time
 import asyncio
 from dataclasses import dataclass, field
@@ -81,8 +82,6 @@ class ClientManager:
                 ).lower() in ("true", "1", "yes")
                 timeout = int(_get_opensearch_env("OPENSEARCH_TIMEOUT", "30"))
                 max_retries = int(_get_opensearch_env("OPENSEARCH_MAX_RETRIES", "3"))
-
-                import ssl as ssl_module
 
                 ssl_context = None
                 if use_ssl and not verify_certs:
@@ -491,7 +490,7 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
     async def _search_all_docs(self, query: dict) -> dict[str, DocProcessingStatus]:
         """Fetch all documents matching a query using PIT + search_after."""
         result = {}
-        batch_size = 1000
+        batch_size = 10000
         try:
             pit = await self.client.create_pit(
                 index=self._index_name, params={"keep_alive": "1m"}
@@ -555,6 +554,8 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
         """Get documents with pagination using PIT + search_after."""
         page = max(1, page)
         page_size = max(10, min(200, page_size))
+        if sort_field == "id":
+            sort_field = "_id"
         if sort_field not in ("created_at", "updated_at", "_id", "file_path"):
             sort_field = "updated_at"
         sort_order = "asc" if sort_direction.lower() == "asc" else "desc"
@@ -980,23 +981,51 @@ class OpenSearchGraphStorage(BaseGraphStorage):
     async def get_node_edges(self, source_node_id: str) -> list[tuple[str, str]] | None:
         """Get all (source, target) edge tuples connected to a node."""
         try:
-            body = {
-                "query": {
-                    "bool": {
-                        "should": [
-                            {"term": {"source_node_id": source_node_id}},
-                            {"term": {"target_node_id": source_node_id}},
-                        ]
-                    }
-                },
-                "_source": ["source_node_id", "target_node_id"],
-                "size": 10000,
+            query = {
+                "bool": {
+                    "should": [
+                        {"term": {"source_node_id": source_node_id}},
+                        {"term": {"target_node_id": source_node_id}},
+                    ]
+                }
             }
-            response = await self.client.search(index=self._edges_index, body=body)
-            return [
-                (hit["_source"]["source_node_id"], hit["_source"]["target_node_id"])
-                for hit in response["hits"]["hits"]
-            ]
+            edges = []
+            pit = await self.client.create_pit(
+                index=self._edges_index, params={"keep_alive": "1m"}
+            )
+            pit_id = pit["pit_id"]
+            try:
+                search_after = None
+                while True:
+                    body = {
+                        "query": query,
+                        "_source": ["source_node_id", "target_node_id"],
+                        "size": 10000,
+                        "pit": {"id": pit_id, "keep_alive": "1m"},
+                        "sort": [{"_shard_doc": "asc"}],
+                    }
+                    if search_after:
+                        body["search_after"] = search_after
+                    response = await self.client.search(body=body)
+                    hits = response["hits"]["hits"]
+                    if not hits:
+                        break
+                    for hit in hits:
+                        edges.append(
+                            (
+                                hit["_source"]["source_node_id"],
+                                hit["_source"]["target_node_id"],
+                            )
+                        )
+                    search_after = hits[-1]["sort"]
+                    if len(hits) < 10000:
+                        break
+            finally:
+                try:
+                    await self.client.delete_pit(body={"pit_id": [pit_id]})
+                except Exception:
+                    pass
+            return edges
         except OpenSearchException:
             return None
 
@@ -1071,26 +1100,49 @@ class OpenSearchGraphStorage(BaseGraphStorage):
         """Batch-fetch edge tuples for multiple nodes."""
         result = {nid: [] for nid in node_ids}
         try:
-            body = {
-                "query": {
-                    "bool": {
-                        "should": [
-                            {"terms": {"source_node_id": node_ids}},
-                            {"terms": {"target_node_id": node_ids}},
-                        ]
-                    }
-                },
-                "_source": ["source_node_id", "target_node_id"],
-                "size": 10000,
+            query = {
+                "bool": {
+                    "should": [
+                        {"terms": {"source_node_id": node_ids}},
+                        {"terms": {"target_node_id": node_ids}},
+                    ]
+                }
             }
-            response = await self.client.search(index=self._edges_index, body=body)
-            for hit in response["hits"]["hits"]:
-                src = hit["_source"]["source_node_id"]
-                tgt = hit["_source"]["target_node_id"]
-                if src in result:
-                    result[src].append((src, tgt))
-                if tgt in result:
-                    result[tgt].append((src, tgt))
+            pit = await self.client.create_pit(
+                index=self._edges_index, params={"keep_alive": "1m"}
+            )
+            pit_id = pit["pit_id"]
+            try:
+                search_after = None
+                while True:
+                    body = {
+                        "query": query,
+                        "_source": ["source_node_id", "target_node_id"],
+                        "size": 10000,
+                        "pit": {"id": pit_id, "keep_alive": "1m"},
+                        "sort": [{"_shard_doc": "asc"}],
+                    }
+                    if search_after:
+                        body["search_after"] = search_after
+                    response = await self.client.search(body=body)
+                    hits = response["hits"]["hits"]
+                    if not hits:
+                        break
+                    for hit in hits:
+                        src = hit["_source"]["source_node_id"]
+                        tgt = hit["_source"]["target_node_id"]
+                        if src in result:
+                            result[src].append((src, tgt))
+                        if tgt in result:
+                            result[tgt].append((src, tgt))
+                    search_after = hits[-1]["sort"]
+                    if len(hits) < 10000:
+                        break
+            finally:
+                try:
+                    await self.client.delete_pit(body={"pit_id": [pit_id]})
+                except Exception:
+                    pass
         except OpenSearchException:
             pass
         return result
@@ -1517,16 +1569,11 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                     if tgt:
                         seen_nodes.add(tgt)
             else:
-                # Positional array — build index map from edge schema if available
-                # Edge schema fields are embedded in the connected_edges type
-                # We need source_node_id and target_node_id positions
-                for edge_row in all_edge_rows:
-                    if not isinstance(edge_row, (list, tuple)):
-                        continue
-                    # Try to find src/tgt by scanning for string values that look like node IDs
-                    for val in edge_row:
-                        if isinstance(val, str) and val:
-                            seen_nodes.add(val)
+                # Positional array — column positions are unknown, fall back to client BFS
+                logger.warning(
+                    f"[{self.workspace}] PPL returned positional arrays, falling back to client BFS"
+                )
+                return await self._bfs_subgraph(start_label, max_depth, max_nodes)
 
         except (KeyError, IndexError, TypeError, ValueError) as e:
             logger.warning(
@@ -1909,7 +1956,10 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
                             f"use an embedding model with matching dimensions."
                         )
                 except (KeyError, TypeError):
-                    pass
+                    logger.warning(
+                        f"[{self.workspace}] Could not read vector mapping for index "
+                        f"'{self._index_name}'; skipping dimension validation"
+                    )
                 return
 
             ef_construction = int(

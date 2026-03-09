@@ -863,20 +863,15 @@ class TestGraphStorage:
                         {
                             "_id": "e1",
                             "_source": {"source_node_id": "A", "target_node_id": "B"},
+                            "sort": [1],
                         },
                         {
                             "_id": "e2",
                             "_source": {"source_node_id": "C", "target_node_id": "A"},
+                            "sort": [2],
                         },
                     ],
                     "total": {"value": 2},
-                },
-                "aggregations": {
-                    "status_counts": {"buckets": []},
-                    "src": {"buckets": []},
-                    "tgt": {"buckets": []},
-                    "source_degrees": {"buckets": []},
-                    "target_degrees": {"buckets": []},
                 },
             }
         )
