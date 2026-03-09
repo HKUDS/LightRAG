@@ -16,50 +16,46 @@ COLOR_GREEN :=
 COLOR_YELLOW :=
 endif
 
-.PHONY: help setup configure setup-quick setup-quick-vllm setup-production setup-validate setup-backup setup-help
+.PHONY: help env configure env-quick env-quick-vllm env-production env-validate env-backup
 
 help:
 	@printf "$(COLOR_BOLD)Interactive setup targets$(COLOR_RESET)\n"
-	@printf "  $(COLOR_GREEN)make setup$(COLOR_RESET)            Full wizard (development/production/custom)\n"
-	@printf "  $(COLOR_GREEN)make setup-quick$(COLOR_RESET)      Development preset, minimal prompts\n"
-	@printf "  $(COLOR_GREEN)make setup-quick-vllm$(COLOR_RESET) Development preset + local vLLM embedding + optional reranker\n"
-	@printf "  $(COLOR_GREEN)make setup-production$(COLOR_RESET) Production preset + SSL/security prompts\n"
-	@printf "  $(COLOR_GREEN)make setup-validate$(COLOR_RESET)   Validate existing .env\n"
-	@printf "  $(COLOR_GREEN)make setup-backup$(COLOR_RESET)     Backup current .env\n"
-	@printf "  $(COLOR_GREEN)make setup-help$(COLOR_RESET)       Script help and options\n\n"
+	@printf "  $(COLOR_GREEN)make env$(COLOR_RESET)              Full wizard (development/production/custom)\n"
+	@printf "  $(COLOR_GREEN)make env-quick$(COLOR_RESET)        Development preset, minimal prompts\n"
+	@printf "  $(COLOR_GREEN)make env-quick-vllm$(COLOR_RESET)   Development preset + local vLLM embedding + optional reranker\n"
+	@printf "  $(COLOR_GREEN)make env-production$(COLOR_RESET)   Production preset + SSL/security prompts\n"
+	@printf "  $(COLOR_GREEN)make env-validate$(COLOR_RESET)     Validate existing .env\n"
+	@printf "  $(COLOR_GREEN)make env-backup$(COLOR_RESET)       Backup current .env\n\n"
 	@printf "$(COLOR_BOLD)Install types$(COLOR_RESET)\n"
 	@printf "  $(COLOR_BLUE)development$(COLOR_RESET): local JSON/NetworkX defaults, fastest to start\n"
 	@printf "  $(COLOR_BLUE)production$(COLOR_RESET): database-backed defaults, security prompts, docker services optional\n"
 	@printf "  $(COLOR_BLUE)custom$(COLOR_RESET): pick each storage backend manually\n\n"
 	@printf "$(COLOR_BOLD)Examples$(COLOR_RESET)\n"
-	@printf "  make setup\n"
-	@printf "  make setup-quick\n"
-	@printf "  make setup-production SETUP_OPTS=--debug\n\n"
+	@printf "  make env\n"
+	@printf "  make env-quick\n"
+	@printf "  make env-production SETUP_OPTS=--debug\n\n"
 	@printf "$(COLOR_BOLD)Image Settings$(COLOR_RESET)\n"
 	@printf "  Wizard will show image settings for selected services and let you override them.\n"
 	@printf "  You can also edit POSTGRES_IMAGE, NEO4J_IMAGE_TAG, etc. in .env.\n"
 	@printf "  Compose file output: docker-compose.<development|production|custom>.yml\n"
 
-setup:
+env:
 	@$(SETUP_BASH) $(SETUP_SCRIPT) $(SETUP_OPTS)
 
 configure:
 	@$(SETUP_BASH) $(SETUP_SCRIPT) $(SETUP_OPTS)
 
-setup-quick:
+env-quick:
 	@$(SETUP_BASH) $(SETUP_SCRIPT) --quick $(SETUP_OPTS)
 
-setup-quick-vllm:
+env-quick-vllm:
 	@$(SETUP_BASH) $(SETUP_SCRIPT) --quick-vllm $(SETUP_OPTS)
 
-setup-production:
+env-production:
 	@$(SETUP_BASH) $(SETUP_SCRIPT) --production $(SETUP_OPTS)
 
-setup-validate:
+env-validate:
 	@$(SETUP_BASH) $(SETUP_SCRIPT) --validate $(SETUP_OPTS)
 
-setup-backup:
+env-backup:
 	@$(SETUP_BASH) $(SETUP_SCRIPT) --backup $(SETUP_OPTS)
-
-setup-help:
-	@$(SETUP_BASH) $(SETUP_SCRIPT) --help $(SETUP_OPTS)
