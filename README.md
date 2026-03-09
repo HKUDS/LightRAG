@@ -188,9 +188,9 @@ docker compose up
 Instead of editing `env.example` by hand, you use the interactive setup wizard to generate a configured `.env` (and an optional Docker Compose file) in one step:
 
 ```bash
-make setup-quick          # Development preset — asks for LLM/embedding API keys only
-make setup                # Full wizard — choose install type, storage backends, SSL, etc.
-make setup-production     # Production preset — adds security and SSL prompts
+make env-quick          # Development preset — asks for LLM/embedding API keys only
+make env                # Full wizard — choose install type, storage backends, SSL, etc.
+make env-production     # Production preset — adds security and SSL prompts
 ```
 
 For a full description of every target and what each flow does, see

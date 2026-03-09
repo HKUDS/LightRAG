@@ -109,9 +109,9 @@ EMBEDDING_DIM=1024
 除了手动编辑 `env.example` 之外，您还可以使用交互式向导一步生成配置好的 `.env`（以及可选的 Docker Compose 文件）：
 
 ```bash
-make setup-quick          # 开发预设 —— 仅询问 LLM/Embedding API 密钥
-make setup                # 完整向导 —— 选择安装类型、存储后端、SSL 等
-make setup-production     # 生产预设 —— 附加安全与 SSL 配置提示
+make env-quick          # 开发预设 —— 仅询问 LLM/Embedding API 密钥
+make env                # 完整向导 —— 选择安装类型、存储后端、SSL 等
+make env-production     # 生产预设 —— 附加安全与 SSL 配置提示
 ```
 
 每个目标的详细说明请参阅 [docs/InteractiveSetup.md](../../docs/InteractiveSetup.md)。

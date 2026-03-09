@@ -8,13 +8,13 @@ All targets require Bash 4+ and auto-detect the correct interpreter (`/opt/homeb
 
 | Target | Script flag | Use case |
 |---|---|---|
-| `make setup` | _(none)_ | Full wizard — choose install type and all backends |
-| `make setup-quick` | `--quick` | Development preset, API keys only |
-| `make setup-quick-vllm` | `--quick-vllm` | Development preset + local vLLM embedding + optional reranker |
-| `make setup-production` | `--production` | Production preset with security and SSL prompts |
-| `make setup-validate` | `--validate` | Validate current `.env` |
-| `make setup-backup` | `--backup` | Backup current `.env` |
-| `make setup-help` | `--help` | Show script CLI help |
+| `make env` | _(none)_ | Full wizard — choose install type and all backends |
+| `make env-quick` | `--quick` | Development preset, API keys only |
+| `make env-quick-vllm` | `--quick-vllm` | Development preset + local vLLM embedding + optional reranker |
+| `make env-production` | `--production` | Production preset with security and SSL prompts |
+| `make env-validate` | `--validate` | Validate current `.env` |
+| `make env-backup` | `--backup` | Backup current `.env` |
+| `make help` | `--help` | Show script CLI help |
 
 ## Make Variable Overrides
 
@@ -26,14 +26,14 @@ All targets require Bash 4+ and auto-detect the correct interpreter (`/opt/homeb
 Examples:
 
 ```bash
-make setup-production SETUP_OPTS=--debug
-make setup-quick NO_COLOR=1
-SETUP_WAIT_TIMEOUT=120 make setup-quick-vllm   # Increase startup wait (seconds)
+make env-production SETUP_OPTS=--debug
+make env-quick NO_COLOR=1
+SETUP_WAIT_TIMEOUT=120 make env-quick-vllm   # Increase startup wait (seconds)
 ```
 
 ## Target Details
 
-### `make setup` — Full Interactive Wizard
+### `make env` — Full Interactive Wizard
 
 Launches the full wizard. The first prompt asks you to choose an install type:
 
@@ -61,7 +61,7 @@ After install type, the wizard walks through 9–10 steps:
 - `docker-compose.development.yml` / `docker-compose.production.yml` / `docker-compose.custom.yml`
   — compose file for the chosen install type; never overwrites `docker-compose.yml`
 
-### `make setup-quick` — Development Preset, Minimal Prompts
+### `make env-quick` — Development Preset, Minimal Prompts
 
 Applies a fixed development preset (JSON/NetworkX storage) and then only asks:
 
@@ -75,9 +75,9 @@ values are kept (fill-only). Storage backends are always reset to the developmen
 Security-specific keys (SSL, AUTH_ACCOUNTS, TOKEN_SECRET, LIGHTRAG_API_KEY, LANGFUSE_*) are
 cleared to prevent stale production credentials from leaking into a development environment.
 
-### `make setup-quick-vllm` — Development Preset + Local vLLM Embedding
+### `make env-quick-vllm` — Development Preset + Local vLLM Embedding
 
-Same as `setup-quick` but hard-codes the embedding backend to a local vLLM server:
+Same as `env-quick` but hard-codes the embedding backend to a local vLLM server:
 
 - Embedding: `BAAI/bge-m3` on `http://localhost:8001` (no API key required)
 - Reranker: prompted once with `confirm_default_yes` (defaults to enabling it)
@@ -90,7 +90,7 @@ A `vllm-embed` (and optionally `vllm-rerank`) service is added to the generated
 running, or answer the device prompt in the wizard. CPU mode uses `vllm/vllm-openai-cpu:latest`;
 GPU mode uses `vllm/vllm-openai:latest` (requires NVIDIA Container Toolkit).
 
-### `make setup-production` — Production Preset + Security
+### `make env-production` — Production Preset + Security
 
 Applies PostgreSQL + Neo4j storage defaults and then prompts for:
 
@@ -102,7 +102,7 @@ Applies PostgreSQL + Neo4j storage defaults and then prompts for:
 - SSL: certificate and key paths (copied into `./data/certs/` and mounted in the container)
 - Docker Compose generation and optional service startup
 
-### `make setup-validate` — Validate Existing `.env`
+### `make env-validate` — Validate Existing `.env`
 
 Reads the current `.env` and reports:
 
@@ -112,11 +112,11 @@ Reads the current `.env` and reports:
 
 Does not modify any files.
 
-### `make setup-backup` — Backup `.env`
+### `make env-backup` — Backup `.env`
 
 Copies `.env` to `.env.bak.<timestamp>`. Safe to run at any time before a re-run.
 
-### `make setup-help` — Script Help
+### `make help` — Script Help
 
 Prints the setup script's built-in `--help` output listing all supported flags and environment
 variables.
@@ -168,7 +168,7 @@ generating the compose file. You can also edit these directly in `.env`:
 ### First-time local development
 
 ```bash
-make setup-quick
+make env-quick
 # Answer: LLM provider, API key
 # Skip or configure reranker
 # docker-compose.development.yml is generated
@@ -179,7 +179,7 @@ lightrag-server
 ### Local development with local models (no API key)
 
 ```bash
-make setup-quick-vllm
+make env-quick-vllm
 # Embedding and reranker use local vLLM — no external API key needed
 docker compose -f docker-compose.development.yml up -d   # starts vllm-embed + vllm-rerank
 lightrag-server
@@ -188,7 +188,7 @@ lightrag-server
 ### Production deployment
 
 ```bash
-make setup-production
+make env-production
 # Answer: LLM API key, security tokens, optional SSL
 docker compose -f docker-compose.production.yml up -d
 ```
@@ -196,19 +196,19 @@ docker compose -f docker-compose.production.yml up -d
 ### Re-running setup after initial configuration
 
 ```bash
-make setup-backup          # save current .env
-make setup-quick           # re-run; existing LLM/embedding settings are preserved
+make env-backup          # save current .env
+make env-quick           # re-run; existing LLM/embedding settings are preserved
 ```
 
 ### Validating before deployment
 
 ```bash
-make setup-validate
+make env-validate
 ```
 
 ## Tips
 
-- Pass `SETUP_OPTS=--debug` to any target for verbose logging: `make setup SETUP_OPTS=--debug`
+- Pass `SETUP_OPTS=--debug` to any target for verbose logging: `make env SETUP_OPTS=--debug`
 - Set `SETUP_WAIT_TIMEOUT=120` to increase the service startup wait (default 60 s).
 - Set `NO_COLOR=1` to disable colored output in CI or terminals without color support.
 - When exposing PostgreSQL on a custom host port, `.env` keeps `POSTGRES_HOST=localhost` and
@@ -217,4 +217,4 @@ make setup-validate
   corresponding `DTYPE=float16`. Requires the NVIDIA Container Toolkit installed on the host.
 - SSL certificates are copied into `./data/certs/` and mounted into the container; `.env` keeps
   the original host paths for direct host usage.
-- The `configure` Make target is an alias for `make setup`.
+- The `configure` Make target is an alias for `make env`.
