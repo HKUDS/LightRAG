@@ -477,15 +477,46 @@ class PostgreSQLDB:
                         await self.configure_vchordrq(connection)
                     return await operation(connection)
 
-    @staticmethod
-    async def configure_vector_extension(connection: asyncpg.Connection) -> None:
-        """Create VECTOR extension if it doesn't exist for vector similarity operations."""
+    async def configure_vector_extension(self, connection: asyncpg.Connection) -> None:
+        """Create VECTOR extension if it doesn't exist for vector similarity operations.
+
+        When vector_index_type is HNSW_HALFVEC, validates that pgvector >= 0.7.0
+        (required for halfvec support) and raises RuntimeError if older.
+        """
         try:
             await connection.execute("CREATE EXTENSION IF NOT EXISTS vector")  # type: ignore
             logger.info("PostgreSQL, VECTOR extension enabled")
         except Exception as e:
             logger.warning(f"Could not create VECTOR extension: {e}")
             # Don't raise - let the system continue without vector extension
+            return
+
+        if getattr(self, "vector_index_type", None) == "HNSW_HALFVEC":
+            row = await connection.fetchrow(
+                "SELECT extversion FROM pg_extension WHERE extname = 'vector'"
+            )
+            if not row or not row["extversion"]:
+                raise RuntimeError(
+                    "POSTGRES_VECTOR_INDEX_TYPE=HNSW_HALFVEC requires the pgvector "
+                    "extension. Ensure it is installed and CREATE EXTENSION vector succeeded."
+                )
+            raw_version = row["extversion"]
+            try:
+                parts = [int(p) for p in str(raw_version).split(".")[:3]]
+                while len(parts) < 3:
+                    parts.append(0)
+                version_tuple = (parts[0], parts[1], parts[2])
+            except (ValueError, IndexError):
+                raise RuntimeError(
+                    f"Could not parse pgvector version {raw_version!r}. "
+                    "HNSW_HALFVEC requires pgvector >= 0.7.0."
+                ) from None
+            if version_tuple < (0, 7, 0):
+                raise RuntimeError(
+                    f"POSTGRES_VECTOR_INDEX_TYPE=HNSW_HALFVEC requires pgvector >= 0.7.0, "
+                    f"but installed version is {raw_version}. Upgrade the pgvector extension "
+                    "or use a different index type (e.g. HNSW with embeddings <= 2000 dimensions)."
+                )
 
     @staticmethod
     async def configure_age_extension(connection: asyncpg.Connection) -> None:
@@ -3043,8 +3074,15 @@ class PGVectorStorage(BaseVectorStorage):
 
         embedding_string = ",".join(map(str, embedding))
 
+        vector_cast = (
+            "halfvec"
+            if getattr(self.db, "vector_index_type", None) == "HNSW_HALFVEC"
+            else "vector"
+        )
         sql = SQL_TEMPLATES[self.namespace].format(
-            embedding_string=embedding_string, table_name=self.table_name
+            embedding_string=embedding_string,
+            table_name=self.table_name,
+            vector_cast=vector_cast,
         )
         params = {
             "workspace": self.workspace,
@@ -5764,8 +5802,8 @@ SQL_TEMPLATES = {
                             EXTRACT(EPOCH FROM r.create_time)::BIGINT AS created_at
                      FROM {table_name} r
                      WHERE r.workspace = $1
-                       AND r.content_vector <=> '[{embedding_string}]'::vector < $2
-                     ORDER BY r.content_vector <=> '[{embedding_string}]'::vector
+                       AND r.content_vector <=> '[{embedding_string}]'::{vector_cast} < $2
+                     ORDER BY r.content_vector <=> '[{embedding_string}]'::{vector_cast}
                      LIMIT $3;
                      """,
     "entities": """
@@ -5773,8 +5811,8 @@ SQL_TEMPLATES = {
                        EXTRACT(EPOCH FROM e.create_time)::BIGINT AS created_at
                 FROM {table_name} e
                 WHERE e.workspace = $1
-                  AND e.content_vector <=> '[{embedding_string}]'::vector < $2
-                ORDER BY e.content_vector <=> '[{embedding_string}]'::vector
+                  AND e.content_vector <=> '[{embedding_string}]'::{vector_cast} < $2
+                ORDER BY e.content_vector <=> '[{embedding_string}]'::{vector_cast}
                 LIMIT $3;
                 """,
     "chunks": """
@@ -5784,8 +5822,8 @@ SQL_TEMPLATES = {
                      EXTRACT(EPOCH FROM c.create_time)::BIGINT AS created_at
               FROM {table_name} c
               WHERE c.workspace = $1
-                AND c.content_vector <=> '[{embedding_string}]'::vector < $2
-              ORDER BY c.content_vector <=> '[{embedding_string}]'::vector
+                AND c.content_vector <=> '[{embedding_string}]'::{vector_cast} < $2
+              ORDER BY c.content_vector <=> '[{embedding_string}]'::{vector_cast}
               LIMIT $3;
               """,
     # DROP tables

@@ -16,8 +16,10 @@ def mock_pg_db():
     db.workspace = "test_workspace"
     db.vector_index_type = None
 
-    # Mock query responses with multirows support
+    # Mock query responses: list for search queries (multirows=True), dict for DDL checks
     async def mock_query(sql, params=None, multirows=False, **kwargs):
+        if multirows:
+            return []
         return {"exists": False, "count": 0}
 
     # Mock for execute that mimics PostgreSQLDB.execute() behavior
@@ -135,3 +137,73 @@ async def test_postgres_vector_table_creation_default(
     create_sql = create_table_calls[0][0][0]
     assert "VECTOR(768)" in create_sql
     assert "HALFVEC(768)" not in create_sql
+
+
+# Namespaces that use vector search SQL templates (query path)
+QUERY_NAMESPACES = [
+    NameSpace.VECTOR_STORE_CHUNKS,
+    NameSpace.VECTOR_STORE_ENTITIES,
+    NameSpace.VECTOR_STORE_RELATIONSHIPS,
+]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("namespace", QUERY_NAMESPACES)
+async def test_query_uses_halfvec_cast_when_hnsw_halfvec(
+    mock_client_manager, mock_pg_db, mock_embedding_func, namespace
+):
+    """When HNSW_HALFVEC is set, generated search SQL uses ::halfvec (not ::vector)."""
+    mock_pg_db.vector_index_type = "HNSW_HALFVEC"
+    mock_pg_db.check_table_exists = AsyncMock(return_value=True)
+
+    config = {
+        "embedding_batch_num": 10,
+        "vector_db_storage_cls_kwargs": {"cosine_better_than_threshold": 0.8},
+    }
+    storage = PGVectorStorage(
+        namespace=namespace,
+        global_config=config,
+        embedding_func=mock_embedding_func,
+        workspace="test_ws",
+    )
+    await storage.initialize()
+
+    query_embedding = [0.1] * 768
+    await storage.query("test query", top_k=5, query_embedding=query_embedding)
+
+    assert mock_pg_db.query.called
+    call_args = mock_pg_db.query.call_args
+    sql = call_args[0][0]
+    assert "::halfvec" in sql
+    assert "::vector" not in sql
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("namespace", QUERY_NAMESPACES)
+async def test_query_uses_vector_cast_when_hnsw_default(
+    mock_client_manager, mock_pg_db, mock_embedding_func, namespace
+):
+    """When HNSW (default) is set, generated search SQL uses ::vector (not ::halfvec)."""
+    mock_pg_db.vector_index_type = "HNSW"
+    mock_pg_db.check_table_exists = AsyncMock(return_value=True)
+
+    config = {
+        "embedding_batch_num": 10,
+        "vector_db_storage_cls_kwargs": {"cosine_better_than_threshold": 0.8},
+    }
+    storage = PGVectorStorage(
+        namespace=namespace,
+        global_config=config,
+        embedding_func=mock_embedding_func,
+        workspace="test_ws",
+    )
+    await storage.initialize()
+
+    query_embedding = [0.1] * 768
+    await storage.query("test query", top_k=5, query_embedding=query_embedding)
+
+    assert mock_pg_db.query.called
+    call_args = mock_pg_db.query.call_args
+    sql = call_args[0][0]
+    assert "::vector" in sql
+    assert "::halfvec" not in sql
