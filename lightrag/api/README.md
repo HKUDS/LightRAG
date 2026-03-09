@@ -104,6 +104,19 @@ EMBEDDING_DIM=1024
 
 > **Important Note**: The Embedding model must be determined before document indexing, and the same model must be used during the document query phase. For certain storage solutions (e.g., PostgreSQL), the vector dimension must be defined upon initial table creation. Therefore, when changing embedding models, it is necessary to delete the existing vector-related tables and allow LightRAG to recreate them with the new dimensions.
 
+### Create .env File With Setup Tool
+
+Instead of editing `env.example` by hand, you can use the interactive setup wizard to generate a configured `.env` (and an optional Docker Compose file) in one step:
+
+```bash
+make setup-quick          # Development preset — asks for LLM/embedding API keys only
+make setup                # Full wizard — choose install type, storage backends, SSL, etc.
+make setup-production     # Production preset — adds security and SSL prompts
+```
+
+For a full description of every target and what each flow does, see
+[docs/InteractiveSetup.md](../../docs/InteractiveSetup.md).
+
 ### Starting LightRAG Server
 
 The LightRAG Server supports two operational modes:
