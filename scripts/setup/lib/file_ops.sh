@@ -136,7 +136,13 @@ generate_env_file() {
       if [[ -z "${written_keys[$key]+set}" ]]; then
         if [[ -n "${ENV_VALUES[$key]+set}" ]]; then
           value="${ENV_VALUES[$key]}"
-          printf '%s=%s\n' "$key" "$(format_env_value "$value" "$key")" >> "$tmp_file"
+          local _fmt_active_val
+          _fmt_active_val="$(format_env_value "$value" "$key")"
+          printf '%s=%s\n' "$key" "$_fmt_active_val" >> "$tmp_file"
+          local _orig_tmpl_val="${line#*=}"
+          if [[ "$_orig_tmpl_val" != "$value" && "$_orig_tmpl_val" != "$_fmt_active_val" ]]; then
+            printf '# %s\n' "$line" >> "$tmp_file"
+          fi
         else
           printf '%s\n' "$line" >> "$tmp_file"
         fi
