@@ -183,6 +183,19 @@ docker compose up
 
 > Historical versions of LightRAG docker images can be found here: [LightRAG Docker Images]( https://github.com/HKUDS/LightRAG/pkgs/container/lightrag)
 
+### Create .env File With Setup Tool
+
+Instead of editing `env.example` by hand, you use the interactive setup wizard to generate a configured `.env` (and an optional Docker Compose file) in one step:
+
+```bash
+make env-quick          # Development preset — asks for LLM/embedding API keys only
+make env                # Full wizard — choose install type, storage backends, SSL, etc.
+make env-production     # Production preset — adds security and SSL prompts
+```
+
+For a full description of every target and what each flow does, see
+[docs/InteractiveSetup.md](./docs/InteractiveSetup.md).
+
 ### Install  LightRAG Core
 
 * Install from source (Recommended)

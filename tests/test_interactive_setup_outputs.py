@@ -200,7 +200,7 @@ reset_state
 
 ENV_VALUES[LLM_BINDING_HOST]="http://localhost:11434"
 ENV_VALUES[EMBEDDING_BINDING_HOST]="http://127.0.0.1:11434"
-ENV_VALUES[RERANK_BINDING_HOST]="http://localhost:8000/v1/rerank"
+ENV_VALUES[RERANK_BINDING_HOST]="http://localhost:8000/rerank"
 
 prepare_compose_runtime_overrides
 
@@ -216,10 +216,10 @@ printf 'COMPOSE_RERANK=%s\\n' "${{COMPOSE_ENV_OVERRIDES[RERANK_BINDING_HOST]}}"
 
     assert values["ENV_LLM"] == "http://localhost:11434"
     assert values["ENV_EMBEDDING"] == "http://127.0.0.1:11434"
-    assert values["ENV_RERANK"] == "http://localhost:8000/v1/rerank"
+    assert values["ENV_RERANK"] == "http://localhost:8000/rerank"
     assert values["COMPOSE_LLM"] == "http://host.docker.internal:11434"
     assert values["COMPOSE_EMBEDDING"] == "http://host.docker.internal:11434"
-    assert values["COMPOSE_RERANK"] == "http://host.docker.internal:8000/v1/rerank"
+    assert values["COMPOSE_RERANK"] == "http://host.docker.internal:8000/rerank"
 
 
 def test_generate_files_keep_host_env_values_and_inject_compose_overrides(
@@ -273,7 +273,7 @@ ENV_VALUES[SSL_CERTFILE]="{cert_path}"
 ENV_VALUES[SSL_KEYFILE]="{key_path}"
 ENV_VALUES[LLM_BINDING_HOST]="http://localhost:11434"
 ENV_VALUES[EMBEDDING_BINDING_HOST]="http://127.0.0.1:11434"
-ENV_VALUES[RERANK_BINDING_HOST]="http://localhost:8000/v1/rerank"
+ENV_VALUES[RERANK_BINDING_HOST]="http://localhost:8000/rerank"
 SSL_CERT_SOURCE_PATH="{cert_path}"
 SSL_KEY_SOURCE_PATH="{key_path}"
 
@@ -293,7 +293,7 @@ generate_docker_compose "$REPO_ROOT/docker-compose.generated.yml"
     assert f"SSL_KEYFILE={key_path}" in generated_env
     assert "LLM_BINDING_HOST=http://localhost:11434" in generated_env
     assert "EMBEDDING_BINDING_HOST=http://127.0.0.1:11434" in generated_env
-    assert "RERANK_BINDING_HOST=http://localhost:8000/v1/rerank" in generated_env
+    assert "RERANK_BINDING_HOST=http://localhost:8000/rerank" in generated_env
 
     assert 'SSL_CERTFILE: "/app/data/certs/cert.pem"' in generated_compose
     assert 'SSL_KEYFILE: "/app/data/certs/key.pem"' in generated_compose
@@ -303,11 +303,11 @@ generate_docker_compose "$REPO_ROOT/docker-compose.generated.yml"
         in generated_compose
     )
     assert (
-        'RERANK_BINDING_HOST: "http://host.docker.internal:8000/v1/rerank"'
+        'RERANK_BINDING_HOST: "http://host.docker.internal:8000/rerank"'
         in generated_compose
     )
-    assert './data/certs/cert.pem:/app/data/certs/cert.pem:ro' in generated_compose
-    assert './data/certs/key.pem:/app/data/certs/key.pem:ro' in generated_compose
+    assert "./data/certs/cert.pem:/app/data/certs/cert.pem:ro" in generated_compose
+    assert "./data/certs/key.pem:/app/data/certs/key.pem:ro" in generated_compose
     assert "env_file:" not in generated_compose
 
 
@@ -405,8 +405,8 @@ generate_docker_compose "$REPO_ROOT/docker-compose.generated.yml"
 
     assert 'SSL_CERTFILE: "/app/data/certs/cert.pem"' in generated_compose
     assert 'SSL_KEYFILE: "/app/data/certs/key.pem"' in generated_compose
-    assert './data/certs/cert.pem:/app/data/certs/cert.pem:ro' in generated_compose
-    assert './data/certs/key.pem:/app/data/certs/key.pem:ro' in generated_compose
+    assert "./data/certs/cert.pem:/app/data/certs/cert.pem:ro" in generated_compose
+    assert "./data/certs/key.pem:/app/data/certs/key.pem:ro" in generated_compose
 
 
 def test_collect_ssl_config_can_disable_loaded_ssl_values(tmp_path: Path) -> None:
@@ -678,7 +678,6 @@ prompt_choice() {{ printf 'aws_bedrock'; }}
 prompt_with_default() {{ printf '%s' "$2"; }}
 prompt_required_secret() {{ printf 'dummy-secret'; }}
 mask_sensitive_input() {{ printf ''; }}
-confirm() {{ return 0; }}
 confirm_default_yes() {{ return 0; }}
 
 collect_llm_config
@@ -855,7 +854,6 @@ prompt_choice() {{ printf 'aws_bedrock'; }}
 prompt_with_default() {{ printf '%s' "$2"; }}
 prompt_required_secret() {{ printf 'dummy-secret'; }}
 mask_sensitive_input() {{ printf ''; }}
-confirm() {{ return 0; }}
 confirm_default_yes() {{ return 0; }}
 
 collect_embedding_config
@@ -889,7 +887,6 @@ prompt_choice() {{ printf 'aws_bedrock'; }}
 prompt_with_default() {{ printf '%s' "$2"; }}
 prompt_clearable_with_default() {{ printf ''; }}
 prompt_required_secret() {{ return 1; }}
-confirm() {{ return 1; }}
 confirm_default_yes() {{ return 1; }}
 
 collect_llm_config
@@ -1010,14 +1007,18 @@ printf 'AWS_REGION_SET=%s\\n' "${{ENV_VALUES[AWS_REGION]+set}}"
 """
     )
     values = parse_lines(output)
-    generated_lines = (tmp_path / ".env.generated").read_text(encoding="utf-8").splitlines()
+    generated_lines = (
+        (tmp_path / ".env.generated").read_text(encoding="utf-8").splitlines()
+    )
 
     assert values["AWS_ACCESS_KEY_ID_SET"] == ""
     assert values["AWS_SECRET_ACCESS_KEY_SET"] == ""
     assert values["AWS_SESSION_TOKEN_SET"] == ""
     assert values["AWS_REGION_SET"] == ""
     assert not any(line.startswith("AWS_ACCESS_KEY_ID=") for line in generated_lines)
-    assert not any(line.startswith("AWS_SECRET_ACCESS_KEY=") for line in generated_lines)
+    assert not any(
+        line.startswith("AWS_SECRET_ACCESS_KEY=") for line in generated_lines
+    )
     assert not any(line.startswith("AWS_SESSION_TOKEN=") for line in generated_lines)
     assert not any(line.startswith("AWS_REGION=") for line in generated_lines)
 
@@ -1094,7 +1095,6 @@ REPO_ROOT="{tmp_path}"
 reset_state
 load_existing_env_if_present
 
-confirm() {{ return 1; }}
 
 collect_rerank_config
 
@@ -1127,7 +1127,7 @@ ENV_VALUES[RERANK_BINDING]="cohere"
 ENV_VALUES[RERANK_MODEL]="rerank-v3.5"
 ENV_VALUES[RERANK_BINDING_HOST]="https://api.cohere.com/v1/rerank"
 
-confirm() {{ return 0; }}
+confirm_default_no() {{ return 0; }}
 confirm_default_yes() {{ return 0; }}
 prompt_choice() {{
   case "$1" in
@@ -1154,11 +1154,8 @@ printf 'COMPOSE_RERANK_BINDING_HOST=%s\\n' "${{COMPOSE_ENV_OVERRIDES[RERANK_BIND
     assert values["RERANK_BINDING"] == "cohere"
     assert values["LIGHTRAG_SETUP_RERANK_PROVIDER"] == "vllm"
     assert values["RERANK_MODEL"] == "BAAI/bge-reranker-v2-m3"
-    assert values["RERANK_BINDING_HOST"] == "http://localhost:8000/v1/rerank"
-    assert (
-        values["COMPOSE_RERANK_BINDING_HOST"]
-        == "http://vllm-rerank:8000/v1/rerank"
-    )
+    assert values["RERANK_BINDING_HOST"] == "http://localhost:8000/rerank"
+    assert values["COMPOSE_RERANK_BINDING_HOST"] == "http://vllm-rerank:8000/rerank"
 
 
 def test_collect_rerank_config_preserves_vllm_default_on_rerun() -> None:
@@ -1173,13 +1170,13 @@ reset_state
 ENV_VALUES[LIGHTRAG_SETUP_RERANK_PROVIDER]="vllm"
 ENV_VALUES[RERANK_BINDING]="cohere"
 ENV_VALUES[RERANK_MODEL]="BAAI/bge-reranker-v2-m3"
-ENV_VALUES[RERANK_BINDING_HOST]="http://localhost:8000/v1/rerank"
+ENV_VALUES[RERANK_BINDING_HOST]="http://localhost:8000/rerank"
 ENV_VALUES[VLLM_RERANK_MODEL]="BAAI/bge-reranker-v2-m3"
 ENV_VALUES[VLLM_RERANK_PORT]="8000"
 ENV_VALUES[VLLM_RERANK_DEVICE]="cpu"
 ENV_VALUES[VLLM_RERANK_DTYPE]="float32"
 
-confirm() {{ return 0; }}
+confirm_default_no() {{ return 0; }}
 confirm_default_yes() {{ return 0; }}
 prompt_choice() {{ printf '%s' "$2"; }}
 prompt_with_default() {{ printf '%s' "$2"; }}
@@ -1199,12 +1196,9 @@ printf 'COMPOSE_RERANK_BINDING_HOST=%s\\n' "${{COMPOSE_ENV_OVERRIDES[RERANK_BIND
 
     assert values["RERANK_BINDING"] == "cohere"
     assert values["LIGHTRAG_SETUP_RERANK_PROVIDER"] == "vllm"
-    assert values["RERANK_BINDING_HOST"] == "http://localhost:8000/v1/rerank"
+    assert values["RERANK_BINDING_HOST"] == "http://localhost:8000/rerank"
     assert values["DOCKER_SERVICE"] == "vllm-rerank"
-    assert (
-        values["COMPOSE_RERANK_BINDING_HOST"]
-        == "http://vllm-rerank:8000/v1/rerank"
-    )
+    assert values["COMPOSE_RERANK_BINDING_HOST"] == "http://vllm-rerank:8000/rerank"
 
 
 def test_collect_rerank_config_switching_from_vllm_clears_local_defaults() -> None:
@@ -1219,9 +1213,9 @@ reset_state
 ENV_VALUES[LIGHTRAG_SETUP_RERANK_PROVIDER]="vllm"
 ENV_VALUES[RERANK_BINDING]="cohere"
 ENV_VALUES[RERANK_MODEL]="BAAI/bge-reranker-v2-m3"
-ENV_VALUES[RERANK_BINDING_HOST]="http://localhost:8000/v1/rerank"
+ENV_VALUES[RERANK_BINDING_HOST]="http://localhost:8000/rerank"
 
-confirm() {{ return 0; }}
+confirm_default_no() {{ return 0; }}
 prompt_choice() {{
   case "$1" in
     "Rerank provider") printf 'cohere' ;;
@@ -1264,7 +1258,7 @@ ENV_VALUES[CUDA_VISIBLE_DEVICES]="-1"
 ENV_VALUES[NVIDIA_VISIBLE_DEVICES]="-1"
 ENV_VALUES[VLLM_USE_CPU]="1"
 
-confirm() {{ return 0; }}
+confirm_default_no() {{ return 0; }}
 confirm_default_yes() {{
   if [[ "$1" == "Use CPU instead?" ]]; then
     return 1
@@ -1310,7 +1304,7 @@ reset_state
 ENV_VALUES[VLLM_RERANK_DEVICE]="cuda"
 ENV_VALUES[VLLM_RERANK_DTYPE]="float16"
 
-confirm() {{ return 0; }}
+confirm_default_no() {{ return 0; }}
 confirm_default_yes() {{ return 0; }}
 prompt_choice() {{
   case "$1" in
@@ -1512,7 +1506,6 @@ reset_state
 prompt_choice() {{
   printf '%s' "$2"
 }}
-confirm() {{ return 0; }}
 
 select_storage_backends development
 
@@ -1606,7 +1599,7 @@ quick_start_flow
     assert values["SSL_SET"] == ""
     assert values["SSL_CERTFILE_SET"] == ""
     assert values["SSL_KEYFILE_SET"] == ""
-    assert values["RERANK_BINDING_SET"] == ""
+    assert values["RERANK_BINDING_SET"] == "set"
     assert values["AUTH_ACCOUNTS_SET"] == ""
     assert values["TOKEN_SECRET_SET"] == ""
     assert values["LIGHTRAG_API_KEY_SET"] == ""
@@ -1617,7 +1610,7 @@ quick_start_flow
 def test_quick_start_flow_resets_existing_provider_settings_to_development_preset(
     tmp_path: Path,
 ) -> None:
-    """Quick start should replace prior provider bindings with the OpenAI preset."""
+    """Quick start should preserve prior provider bindings when they already exist."""
 
     env_file = tmp_path / ".env"
     env_file.write_text(
@@ -1630,7 +1623,6 @@ def test_quick_start_flow_resets_existing_provider_settings_to_development_prese
                 "EMBEDDING_MODEL=nomic-embed-text:latest",
                 "EMBEDDING_DIM=768",
                 "EMBEDDING_BINDING_HOST=http://localhost:11434",
-                "LLM_BINDING_API_KEY=sk-existing",
             ]
         )
         + "\n",
@@ -1643,10 +1635,6 @@ set -euo pipefail
 source "{REPO_ROOT}/scripts/setup/setup.sh"
 REPO_ROOT="{tmp_path}"
 
-prompt_secret_until_valid_with_default() {{
-  printf '%s' "$2"
-}}
-
 finalize_setup() {{
   printf 'LLM_BINDING=%s\\n' "${{ENV_VALUES[LLM_BINDING]}}"
   printf 'LLM_MODEL=%s\\n' "${{ENV_VALUES[LLM_MODEL]}}"
@@ -1655,8 +1643,6 @@ finalize_setup() {{
   printf 'EMBEDDING_MODEL=%s\\n' "${{ENV_VALUES[EMBEDDING_MODEL]}}"
   printf 'EMBEDDING_DIM=%s\\n' "${{ENV_VALUES[EMBEDDING_DIM]}}"
   printf 'EMBEDDING_BINDING_HOST=%s\\n' "${{ENV_VALUES[EMBEDDING_BINDING_HOST]}}"
-  printf 'LLM_BINDING_API_KEY=%s\\n' "${{ENV_VALUES[LLM_BINDING_API_KEY]}}"
-  printf 'EMBEDDING_BINDING_API_KEY=%s\\n' "${{ENV_VALUES[EMBEDDING_BINDING_API_KEY]}}"
 }}
 
 quick_start_flow
@@ -1664,15 +1650,13 @@ quick_start_flow
     )
     values = parse_lines(output)
 
-    assert values["LLM_BINDING"] == "openai"
-    assert values["LLM_MODEL"] == "gpt-5-mini"
-    assert values["LLM_BINDING_HOST"] == "https://api.openai.com/v1"
-    assert values["EMBEDDING_BINDING"] == "openai"
-    assert values["EMBEDDING_MODEL"] == "text-embedding-3-large"
-    assert values["EMBEDDING_DIM"] == "3072"
-    assert values["EMBEDDING_BINDING_HOST"] == "https://api.openai.com/v1"
-    assert values["LLM_BINDING_API_KEY"] == "sk-existing"
-    assert values["EMBEDDING_BINDING_API_KEY"] == "sk-existing"
+    assert values["LLM_BINDING"] == "ollama"
+    assert values["LLM_MODEL"] == "llama3.2:latest"
+    assert values["LLM_BINDING_HOST"] == "http://localhost:11434"
+    assert values["EMBEDDING_BINDING"] == "ollama"
+    assert values["EMBEDDING_MODEL"] == "nomic-embed-text:latest"
+    assert values["EMBEDDING_DIM"] == "768"
+    assert values["EMBEDDING_BINDING_HOST"] == "http://localhost:11434"
 
 
 def test_quick_start_flow_clears_inherited_ssl_state_before_writing_env(
@@ -1713,7 +1697,6 @@ confirm_default_yes() {{
     *) return 1 ;;
   esac
 }}
-confirm() {{ return 1; }}
 
 quick_start_flow
 """
@@ -1748,13 +1731,16 @@ source "{REPO_ROOT}/scripts/setup/setup.sh"
 REPO_ROOT="{tmp_path}"
 
 prompt_secret_until_valid_with_default() {{
-  if [[ "$1" == "OpenAI API key: " ]]; then
-    printf 'sk-quick-test-key'
-  else
-    printf '%s' "$2"
-  fi
+  case "$1" in
+    "LLM API key: "|"Embedding API key: ")
+      printf 'sk-quick-test-key'
+      ;;
+    *)
+      printf '%s' "$2"
+      ;;
+  esac
 }}
-confirm() {{
+confirm_default_no() {{
   case "$1" in
     "Generate docker-compose for LightRAG only?")
       return 0
@@ -1836,7 +1822,6 @@ confirm_default_yes() {{
     *) return 1 ;;
   esac
 }}
-confirm() {{ return 1; }}
 
 interactive_flow
 """
@@ -1898,11 +1883,8 @@ confirm_default_yes() {{
       ;;
   esac
 }}
-confirm() {{
+confirm_default_no() {{
   case "$1" in
-    "Enable reranking?"|"Configure authentication and API key settings?"|"Enable Langfuse observability?")
-      return 1
-      ;;
     "Generate docker-compose for LightRAG only?")
       return 0
       ;;
@@ -2007,9 +1989,6 @@ prompt_choice() {{
   printf '%s' "$2"
 }}
 confirm_default_yes() {{
-  return 1
-}}
-confirm() {{
   return 1
 }}
 prompt_with_default() {{
@@ -2164,11 +2143,8 @@ confirm_default_yes() {{
       ;;
   esac
 }}
-confirm() {{
+confirm_default_no() {{
   case "$1" in
-    "Enable reranking?"|"Enable Langfuse observability?")
-      return 1
-      ;;
     "Generate docker-compose for LightRAG only?")
       return 0
       ;;
@@ -2208,7 +2184,6 @@ set -euo pipefail
 source "{REPO_ROOT}/scripts/setup/setup.sh"
 reset_state
 
-confirm() {{ return 1; }}
 confirm_default_yes() {{ return 1; }}
 prompt_with_default() {{
   printf '%s' "$2"
@@ -2266,7 +2241,9 @@ printf 'MEMGRAPH_URI=%s\\n' "${{COMPOSE_ENV_OVERRIDES[MEMGRAPH_URI]}}"
     assert values["MEMGRAPH_URI"] == "bolt://host.docker.internal:7687"
 
 
-def test_prepare_compose_runtime_overrides_rewrites_authenticated_loopback_uri() -> None:
+def test_prepare_compose_runtime_overrides_rewrites_authenticated_loopback_uri() -> (
+    None
+):
     """Loopback URIs with credentials should still be rewritten for the container."""
 
     output = run_bash(
@@ -2313,7 +2290,9 @@ printf 'ELAPSED=%s\\n' "$elapsed"
     assert int(values["ELAPSED"]) < 2
 
 
-def test_collect_mongodb_config_local_service_strips_stale_credentials_on_rerun() -> None:
+def test_collect_mongodb_config_local_service_strips_stale_credentials_on_rerun() -> (
+    None
+):
     """Bundled MongoDB should keep host `.env` aligned with the unauthenticated template."""
 
     output = run_bash(
@@ -2431,7 +2410,7 @@ reset_state
 
 ENV_VALUES[POSTGRES_HOST]="0.0.0.0"
 ENV_VALUES[LLM_BINDING_HOST]="http://0.0.0.0:11434"
-ENV_VALUES[RERANK_BINDING_HOST]="http://0.0.0.0:8000/v1/rerank"
+ENV_VALUES[RERANK_BINDING_HOST]="http://0.0.0.0:8000/rerank"
 
 prepare_compose_runtime_overrides
 
@@ -2444,10 +2423,12 @@ printf 'RERANK_BINDING_HOST=%s\\n' "${{COMPOSE_ENV_OVERRIDES[RERANK_BINDING_HOST
 
     assert values["POSTGRES_HOST"] == "host.docker.internal"
     assert values["LLM_BINDING_HOST"] == "http://host.docker.internal:11434"
-    assert values["RERANK_BINDING_HOST"] == "http://host.docker.internal:8000/v1/rerank"
+    assert values["RERANK_BINDING_HOST"] == "http://host.docker.internal:8000/rerank"
 
 
-def test_prepare_compose_runtime_overrides_aligns_server_binding_for_container() -> None:
+def test_prepare_compose_runtime_overrides_aligns_server_binding_for_container() -> (
+    None
+):
     """Container runtime should bind the API to a reachable host/port combination."""
 
     output = run_bash(
@@ -2538,7 +2519,7 @@ generate_docker_compose "$REPO_ROOT/docker-compose.generated.yml"
 
     assert 'HOST: "0.0.0.0"' in generated_compose
     assert 'PORT: "9621"' in generated_compose
-    assert '${PORT:-9621}:9621' in generated_compose
+    assert "${PORT:-9621}:9621" in generated_compose
 
 
 def test_validate_uri_accepts_neo4j_self_signed_tls_scheme() -> None:
@@ -2628,8 +2609,14 @@ generate_docker_compose "$REPO_ROOT/docker-compose.generated.yml"
     assert staged_key.read_text(encoding="utf-8") == "key"
     assert 'SSL_CERTFILE: "/app/data/certs/cert-server.pem"' in generated_compose
     assert 'SSL_KEYFILE: "/app/data/certs/key-server.pem"' in generated_compose
-    assert "./data/certs/cert-server.pem:/app/data/certs/cert-server.pem:ro" in generated_compose
-    assert "./data/certs/key-server.pem:/app/data/certs/key-server.pem:ro" in generated_compose
+    assert (
+        "./data/certs/cert-server.pem:/app/data/certs/cert-server.pem:ro"
+        in generated_compose
+    )
+    assert (
+        "./data/certs/key-server.pem:/app/data/certs/key-server.pem:ro"
+        in generated_compose
+    )
 
 
 def test_ssl_staging_skips_copy_for_already_staged_relative_paths(
@@ -2714,14 +2701,7 @@ generate_docker_compose "$REPO_ROOT/docker-compose.generated.yml"
     )
 
     assert "CUDA_VISIBLE_DEVICES=0" in generated_env
-    assert (
-        "CUDA_VISIBLE_DEVICES: ${CUDA_VISIBLE_DEVICES:-${NVIDIA_VISIBLE_DEVICES:-all}}"
-        in generated_compose
-    )
-    assert (
-        "NVIDIA_VISIBLE_DEVICES: ${NVIDIA_VISIBLE_DEVICES:-${CUDA_VISIBLE_DEVICES:-all}}"
-        in generated_compose
-    )
+    assert "NVIDIA_VISIBLE_DEVICES: ${NVIDIA_VISIBLE_DEVICES:-all}" in generated_compose
 
 
 def test_collect_security_config_can_clear_existing_values_on_rerun(
@@ -2752,7 +2732,7 @@ REPO_ROOT="{tmp_path}"
 reset_state
 load_existing_env_if_present
 
-confirm() {{ return 0; }}
+confirm_default_no() {{ return 0; }}
 prompt_clearable_with_default() {{ printf '%s' "$CLEAR_INPUT_SENTINEL"; }}
 prompt_clearable_secret_with_default() {{ printf '%s' "$CLEAR_INPUT_SENTINEL"; }}
 
@@ -2767,7 +2747,9 @@ printf 'WHITELIST_PATHS_SET=%s\\n' "${{ENV_VALUES[WHITELIST_PATHS]+set}}"
 """
     )
     values = parse_lines(output)
-    generated_lines = (tmp_path / ".env.generated").read_text(encoding="utf-8").splitlines()
+    generated_lines = (
+        (tmp_path / ".env.generated").read_text(encoding="utf-8").splitlines()
+    )
 
     assert values["AUTH_ACCOUNTS_SET"] == ""
     assert values["TOKEN_SECRET_SET"] == ""
@@ -2822,7 +2804,6 @@ REPO_ROOT="{tmp_path}"
 reset_state
 load_existing_env_if_present
 
-confirm() {{ return 0; }}
 prompt_clearable_with_default() {{ printf '%s' "$2"; }}
 prompt_clearable_secret_with_default() {{ printf '%s' "$2"; }}
 
@@ -2966,7 +2947,6 @@ REPO_ROOT="{tmp_path}"
 reset_state
 load_existing_env_if_present
 
-confirm() {{ return 1; }}
 
 collect_observability_config
 generate_env_file "{REPO_ROOT}/env.example" "$REPO_ROOT/.env.generated"
@@ -2978,13 +2958,17 @@ printf 'LANGFUSE_HOST_SET=%s\\n' "${{ENV_VALUES[LANGFUSE_HOST]+set}}"
 """
     )
     values = parse_lines(output)
-    generated_lines = (tmp_path / ".env.generated").read_text(encoding="utf-8").splitlines()
+    generated_lines = (
+        (tmp_path / ".env.generated").read_text(encoding="utf-8").splitlines()
+    )
 
     assert values["LANGFUSE_ENABLE_TRACE_SET"] == ""
     assert values["LANGFUSE_SECRET_KEY_SET"] == ""
     assert values["LANGFUSE_PUBLIC_KEY_SET"] == ""
     assert values["LANGFUSE_HOST_SET"] == ""
-    assert not any(line.startswith("LANGFUSE_ENABLE_TRACE=") for line in generated_lines)
+    assert not any(
+        line.startswith("LANGFUSE_ENABLE_TRACE=") for line in generated_lines
+    )
     assert not any(line.startswith("LANGFUSE_SECRET_KEY=") for line in generated_lines)
     assert not any(line.startswith("LANGFUSE_PUBLIC_KEY=") for line in generated_lines)
     assert not any(line.startswith("LANGFUSE_HOST=") for line in generated_lines)
@@ -3108,7 +3092,7 @@ ENV_VALUES[LIGHTRAG_VECTOR_STORAGE]="NanoVectorDBStorage"
 ENV_VALUES[LIGHTRAG_GRAPH_STORAGE]="NetworkXStorage"
 ENV_VALUES[LIGHTRAG_DOC_STATUS_STORAGE]="JsonDocStatusStorage"
 
-confirm() {{ return 0; }}
+confirm_default_no() {{ return 0; }}
 confirm_default_yes() {{ return 0; }}
 check_docker_availability() {{ return 0; }}
 backup_env_file() {{ return 0; }}
@@ -3127,7 +3111,9 @@ fi
 """
     )
     values = parse_lines(output)
-    docker_calls = (tmp_path / "docker_calls.log").read_text(encoding="utf-8").splitlines()
+    docker_calls = (
+        (tmp_path / "docker_calls.log").read_text(encoding="utf-8").splitlines()
+    )
 
     assert values["RESULT"] == "failure"
     assert any(
@@ -3171,7 +3157,9 @@ fi
     assert values["WITH_AUTH_ACCOUNTS"] == "yes"
 
 
-def test_validate_security_config_allows_empty_but_rejects_api_whitelist_for_production() -> None:
+def test_validate_security_config_allows_empty_but_rejects_api_whitelist_for_production() -> (
+    None
+):
     """Production validation should allow an empty whitelist but still reject `/api/*`."""
 
     output = run_bash(
@@ -3407,7 +3395,6 @@ ENV_VALUES[NEO4J_URI]="neo4j://localhost:7687"
 ENV_VALUES[NEO4J_USERNAME]="neo4j"
 ENV_VALUES[NEO4J_PASSWORD]="secret"
 
-confirm() {{ return 0; }}
 confirm_default_yes() {{ return 1; }}
 backup_env_file() {{ return 0; }}
 generate_env_file() {{ :; }}
@@ -3478,7 +3465,6 @@ ENV_VALUES[NEO4J_USERNAME]="neo4j"
 ENV_VALUES[NEO4J_PASSWORD]="secret"
 ENV_VALUES[LIGHTRAG_API_KEY]="api-key"
 
-confirm() {{ return 0; }}
 confirm_default_yes() {{ return 1; }}
 backup_env_file() {{ return 0; }}
 generate_env_file() {{ :; }}
@@ -3531,7 +3517,6 @@ ENV_VALUES[LIGHTRAG_DOC_STATUS_STORAGE]="JsonDocStatusStorage"
 SSL_CERT_SOURCE_PATH="/missing/cert.pem"
 SSL_KEY_SOURCE_PATH="/missing/key.pem"
 
-confirm() {{ return 0; }}
 
 finalize_setup
 """,
@@ -3731,14 +3716,17 @@ fi
 def test_finalize_setup_creates_timestamped_env_backup(tmp_path: Path) -> None:
     """finalize_setup should create a timestamped .env.backup.* file from the existing .env."""
 
-    env_content = "\n".join(
-        [
-            "LIGHTRAG_KV_STORAGE=JsonKVStorage",
-            "LIGHTRAG_VECTOR_STORAGE=NanoVectorDBStorage",
-            "LIGHTRAG_GRAPH_STORAGE=NetworkXStorage",
-            "LIGHTRAG_DOC_STATUS_STORAGE=JsonDocStatusStorage",
-        ]
-    ) + "\n"
+    env_content = (
+        "\n".join(
+            [
+                "LIGHTRAG_KV_STORAGE=JsonKVStorage",
+                "LIGHTRAG_VECTOR_STORAGE=NanoVectorDBStorage",
+                "LIGHTRAG_GRAPH_STORAGE=NetworkXStorage",
+                "LIGHTRAG_DOC_STATUS_STORAGE=JsonDocStatusStorage",
+            ]
+        )
+        + "\n"
+    )
     (tmp_path / ".env").write_text(env_content, encoding="utf-8")
     (tmp_path / "env.example").write_text(env_content, encoding="utf-8")
 
@@ -3762,7 +3750,6 @@ confirm_default_yes() {{
     *) return 1 ;;
   esac
 }}
-confirm() {{ return 1; }}
 
 finalize_setup
 """

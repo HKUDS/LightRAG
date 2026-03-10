@@ -90,18 +90,41 @@ data/
 └── inputs/         # Input documents
 ```
 
-### Optional: local vLLM reranker
+### Optional: local vLLM embedding and reranker
 
-To enable local reranking with vLLM, run a vLLM container exposing the Cohere-compatible rerank endpoint and point LightRAG to it.
-You can select `vllm` in the interactive setup to add the `vllm-rerank` service automatically.
+To run embedding and/or reranking locally with vLLM, use `make env-quick-vllm`.
+It fixes the embedding to `BAAI/bge-m3` on port 8001 via a local vLLM server (no API key needed) and optionally adds a `vllm-rerank` reranker on port 8000.
+
+Alternatively, select `vllm` in the rerank prompt of any interactive setup mode to add the `vllm-rerank` service automatically.
 vLLM provides a `v1/rerank` endpoint that works with the `cohere` binding.
 
-Example `docker-compose.override.yml` for GPU hosts:
+Example `docker-compose.override.yml` for GPU hosts (embedding + reranker):
 
 ```yaml
 services:
+  vllm-embed:
+    image: vllm/vllm-openai:latest
+    runtime: nvidia
+    command: >
+      --model BAAI/bge-m3
+      --port 8001
+      --dtype float16
+    ports:
+      - "8001:8001"
+    volumes:
+      - ./data/hf-cache:/root/.cache/huggingface
+    ipc: host
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
   vllm-rerank:
     image: vllm/vllm-openai:latest
+    runtime: nvidia
     command: >
       --model BAAI/bge-reranker-v2-m3
       --port 8000
@@ -110,24 +133,54 @@ services:
       - "8000:8000"
     volumes:
       - ./data/hf-cache:/root/.cache/huggingface
-    runtime: nvidia
+    ipc: host
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
 ```
 
 For CPU-only hosts, use the official CPU image instead:
 
 ```yaml
 services:
+  vllm-embed:
+    image: vllm/vllm-openai-cpu:latest
+    command: >
+      --model BAAI/bge-m3
+      --port 8001
+      --dtype float32
+    ports:
+      - "8001:8001"
+    volumes:
+      - ./data/hf-cache:/root/.cache/huggingface
+
   vllm-rerank:
-    image: public.ecr.aws/q9t5s3a7/vllm-cpu-release-repo:latest
+    image: vllm/vllm-openai-cpu:latest
     command: >
       --model BAAI/bge-reranker-v2-m3
       --port 8000
       --dtype float32
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data/hf-cache:/root/.cache/huggingface
 ```
 
-Add the rerank config to `.env`:
+Add the embedding and rerank config to `.env`:
 
 ```bash
+EMBEDDING_BINDING=openai
+EMBEDDING_MODEL=BAAI/bge-m3
+EMBEDDING_DIM=1024
+EMBEDDING_BINDING_HOST=http://localhost:8001/v1
+EMBEDDING_BINDING_API_KEY=local-key
+VLLM_EMBED_DEVICE=cpu
+VLLM_EMBED_DTYPE=float32
+
 RERANK_BINDING=cohere
 RERANK_MODEL=BAAI/bge-reranker-v2-m3
 RERANK_BINDING_HOST=http://localhost:8000/v1/rerank
@@ -136,21 +189,24 @@ VLLM_RERANK_DEVICE=cpu
 VLLM_RERANK_DTYPE=float32
 ```
 
-If LightRAG runs in Docker while vLLM runs on the host, the generated compose file rewrites that endpoint to:
+If LightRAG runs in Docker while vLLM runs on the host, the generated compose file rewrites those endpoints to:
 
 ```bash
+EMBEDDING_BINDING_HOST=http://host.docker.internal:8001/v1
 RERANK_BINDING_HOST=http://host.docker.internal:8000/v1/rerank
 ```
 
 For GPU, set:
 
 ```bash
+VLLM_EMBED_DEVICE=cuda
+VLLM_EMBED_DTYPE=float16
 VLLM_RERANK_DEVICE=cuda
 VLLM_RERANK_DTYPE=float16
 ```
 
 Ensure the NVIDIA Container Toolkit is installed and the host has CUDA drivers available.
-The setup wizard uses the CPU image by default for `VLLM_RERANK_DEVICE=cpu` and the GPU image for `VLLM_RERANK_DEVICE=cuda`.
+The setup wizard uses the CPU image by default for `cpu` device and the GPU image for `cuda` device.
 
 ### SSL certificates
 

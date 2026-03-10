@@ -1,9 +1,10 @@
   vllm-rerank:
-    image: public.ecr.aws/q9t5s3a7/vllm-cpu-release-repo:${VLLM_RERANK_IMAGE_TAG:-latest}
+    image: vllm/vllm-openai-cpu:${VLLM_RERANK_IMAGE_TAG:-latest}
     command: >
       --model ${VLLM_RERANK_MODEL:-BAAI/bge-reranker-v2-m3}
       --port ${VLLM_RERANK_PORT:-8000}
       --dtype ${VLLM_RERANK_DTYPE:-float32}
+      --api-key ${VLLM_RERANK_API_KEY}
       ${VLLM_RERANK_EXTRA_ARGS:-}
     ports:
       - "${VLLM_RERANK_PORT:-8000}:${VLLM_RERANK_PORT:-8000}"

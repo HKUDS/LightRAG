@@ -10,8 +10,12 @@ _file_ops_cleanup() {
 }
 trap '_file_ops_cleanup' EXIT INT TERM
 
+# Keys whose values are always written with double quotes (e.g. may contain spaces).
+_ALWAYS_QUOTED_KEYS="|WEBUI_TITLE|WEBUI_DESCRIPTION|"
+
 format_env_value() {
   local value="$1"
+  local key="${2:-}"
   local escaped
 
   if [[ -z "$value" ]]; then
@@ -19,10 +23,13 @@ format_env_value() {
     return
   fi
 
-  if [[ "$value" =~ [[:space:]] || "$value" == *"\""* || "$value" == *"$"* ]]; then
+  if [[ -n "$key" && "$_ALWAYS_QUOTED_KEYS" == *"|${key}|"* ]] || \
+     [[ "$value" =~ [[:space:]] || "$value" == *"\""* || "$value" == *"$"* || "$value" == *"#"* ]]; then
     # Double-quoted .env values only need escaping for backslash and double quote.
     # Do not escape '$': python-dotenv preserves plain '$' literally, while '\$'
     # changes the loaded value.
+    # '#' in unquoted values is treated as a comment by python-dotenv, so any
+    # value containing '#' must be quoted.
     escaped="${value//\\/\\\\}"
     escaped="${escaped//\"/\\\"}"
     printf '"%s"' "$escaped"
@@ -96,11 +103,30 @@ generate_env_file() {
   _FILE_OPS_CLEANUP_TMP+=("$tmp_file")
   local line key value
   local -A written_keys=()
+  local -A match_write_keys=()
 
   if [[ ! -f "$template_file" ]]; then
     echo "env.example not found at $template_file" >&2
     return 1
   fi
+
+  # Pre-scan: identify commented keys whose value exactly matches the ENV_VALUE.
+  # When a match exists, the active value is written only at that matching line,
+  # leaving all other commented examples intact.
+  local _prescan_key _prescan_val _prescan_env_val _prescan_fmt
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    if [[ "$line" =~ ^#[[:space:]]*([A-Z0-9_]+)=(.*)$ ]]; then
+      _prescan_key="${BASH_REMATCH[1]}"
+      _prescan_val="${BASH_REMATCH[2]}"
+      if [[ -z "${match_write_keys[$_prescan_key]+set}" && -n "${ENV_VALUES[$_prescan_key]+set}" ]]; then
+        _prescan_env_val="${ENV_VALUES[$_prescan_key]}"
+        _prescan_fmt="$(format_env_value "$_prescan_env_val" "$_prescan_key")"
+        if [[ "$_prescan_val" == "$_prescan_env_val" || "$_prescan_val" == "$_prescan_fmt" ]]; then
+          match_write_keys["$_prescan_key"]=1
+        fi
+      fi
+    fi
+  done < "$template_file"
 
   : > "$tmp_file"
 
@@ -110,7 +136,13 @@ generate_env_file() {
       if [[ -z "${written_keys[$key]+set}" ]]; then
         if [[ -n "${ENV_VALUES[$key]+set}" ]]; then
           value="${ENV_VALUES[$key]}"
-          printf '%s=%s\n' "$key" "$(format_env_value "$value")" >> "$tmp_file"
+          local _fmt_active_val
+          _fmt_active_val="$(format_env_value "$value" "$key")"
+          printf '%s=%s\n' "$key" "$_fmt_active_val" >> "$tmp_file"
+          local _orig_tmpl_val="${line#*=}"
+          if [[ "$_orig_tmpl_val" != "$value" && "$_orig_tmpl_val" != "$_fmt_active_val" ]]; then
+            printf '# %s\n' "$line" >> "$tmp_file"
+          fi
         else
           printf '%s\n' "$line" >> "$tmp_file"
         fi
@@ -122,12 +154,26 @@ generate_env_file() {
           printf '%s\n' "$line" >> "$tmp_file"
         fi
       fi
-    elif [[ "$line" =~ ^#[[:space:]]*([A-Z0-9_]+)= ]]; then
+    elif [[ "$line" =~ ^#[[:space:]]*([A-Z0-9_]+)=(.*)$ ]]; then
       key="${BASH_REMATCH[1]}"
+      local _commented_val="${BASH_REMATCH[2]}"
       if [[ -z "${written_keys[$key]+set}" && -n "${ENV_VALUES[$key]+set}" ]]; then
         value="${ENV_VALUES[$key]}"
-        printf '%s=%s\n' "$key" "$(format_env_value "$value")" >> "$tmp_file"
-        written_keys["$key"]=1
+        if [[ -n "${match_write_keys[$key]+set}" ]]; then
+          # A commented line matching the ENV value exists; only activate at that line.
+          local _fmt_val
+          _fmt_val="$(format_env_value "$value" "$key")"
+          if [[ "$_commented_val" == "$value" || "$_commented_val" == "$_fmt_val" ]]; then
+            printf '%s=%s\n' "$key" "$_fmt_val" >> "$tmp_file"
+            written_keys["$key"]=1
+          else
+            printf '%s\n' "$line" >> "$tmp_file"
+          fi
+        else
+          # No matching commented line; fall back to activating at first occurrence.
+          printf '%s=%s\n' "$key" "$(format_env_value "$value" "$key")" >> "$tmp_file"
+          written_keys["$key"]=1
+        fi
       else
         printf '%s\n' "$line" >> "$tmp_file"
       fi
@@ -180,6 +226,13 @@ generate_docker_compose() {
         fi
       fi
     fi
+    if [[ "$service" == "vllm-embed" ]]; then
+      if [[ "${ENV_VALUES[VLLM_EMBED_DEVICE]:-cpu}" == "cuda" ]]; then
+        if [[ -f "$TEMPLATES_DIR/${service}-gpu.yml" ]]; then
+          template_file="$TEMPLATES_DIR/${service}-gpu.yml"
+        fi
+      fi
+    fi
     if [[ ! -f "$template_file" ]]; then
       format_error "Missing docker template: $template_file" "Reinstall the setup scripts."
       return 1
@@ -225,6 +278,9 @@ generate_docker_compose() {
         ;;
       vllm-rerank)
         volume_names+=("vllm_rerank_cache")
+        ;;
+      vllm-embed)
+        volume_names+=("vllm_embed_cache")
         ;;
     esac
   done
