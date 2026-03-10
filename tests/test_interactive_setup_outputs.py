@@ -144,13 +144,19 @@ printf 'DOCKER_SERVICE=%s\\n' "${{DOCKER_SERVICES[0]}}"
     ("setup_lines", "collector_call", "env_key", "expected_value"),
     [
         (
-            ['ENV_VALUES[POSTGRES_HOST]="db.example.com"', 'ENV_VALUES[POSTGRES_PORT]="6543"'],
+            [
+                'ENV_VALUES[POSTGRES_HOST]="db.example.com"',
+                'ENV_VALUES[POSTGRES_PORT]="6543"',
+            ],
             "collect_postgres_config yes",
             "POSTGRES_HOST",
             "localhost",
         ),
         (
-            ['ENV_VALUES[POSTGRES_HOST]="db.example.com"', 'ENV_VALUES[POSTGRES_PORT]="6543"'],
+            [
+                'ENV_VALUES[POSTGRES_HOST]="db.example.com"',
+                'ENV_VALUES[POSTGRES_PORT]="6543"',
+            ],
             "collect_postgres_config yes",
             "POSTGRES_PORT",
             "6543",
@@ -1217,8 +1223,6 @@ prompt_choice() {
     ],
     ids=["switch-to-vllm", "rerun-vllm"],
 )
-
-
 def test_collect_rerank_config_uses_vllm_defaults(
     setup_lines: list[str],
     prompt_choice_impl: str,
