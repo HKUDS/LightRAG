@@ -179,14 +179,12 @@ EMBEDDING_DIM=1024
 EMBEDDING_BINDING_HOST=http://localhost:8001/v1
 EMBEDDING_BINDING_API_KEY=local-key
 VLLM_EMBED_DEVICE=cpu
-VLLM_EMBED_DTYPE=float32
 
 RERANK_BINDING=cohere
 RERANK_MODEL=BAAI/bge-reranker-v2-m3
 RERANK_BINDING_HOST=http://localhost:8000/v1/rerank
 RERANK_BINDING_API_KEY=local-key
 VLLM_RERANK_DEVICE=cpu
-VLLM_RERANK_DTYPE=float32
 ```
 
 If LightRAG runs in Docker while vLLM runs on the host, the generated compose file rewrites those endpoints to:
@@ -200,13 +198,12 @@ For GPU, set:
 
 ```bash
 VLLM_EMBED_DEVICE=cuda
-VLLM_EMBED_DTYPE=float16
 VLLM_RERANK_DEVICE=cuda
-VLLM_RERANK_DTYPE=float16
 ```
 
 Ensure the NVIDIA Container Toolkit is installed and the host has CUDA drivers available.
 The setup wizard uses the CPU image by default for `cpu` device and the GPU image for `cuda` device.
+Those templates already pin the matching vLLM `--dtype` (`float32` on CPU, `float16` on CUDA), so no separate `VLLM_*_DTYPE` environment variables are needed.
 
 ### SSL certificates
 

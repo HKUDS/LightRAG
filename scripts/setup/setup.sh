@@ -109,12 +109,18 @@ reset_state() {
   DEPLOYMENT_TYPE=""
 }
 
+clear_deprecated_vllm_dtype_state() {
+  unset 'ENV_VALUES[VLLM_EMBED_DTYPE]'
+  unset 'ENV_VALUES[VLLM_RERANK_DTYPE]'
+}
+
 load_existing_env_if_present() {
   local env_file="${REPO_ROOT}/.env"
 
   if [[ -f "$env_file" ]]; then
     log_debug "Loading existing .env defaults from $env_file"
     load_env_file "$env_file"
+    clear_deprecated_vllm_dtype_state
     if [[ "${ENV_VALUES[SSL]:-false}" == "true" ]]; then
       SSL_CERT_SOURCE_PATH="${ENV_VALUES[SSL_CERTFILE]:-}"
       SSL_KEY_SOURCE_PATH="${ENV_VALUES[SSL_KEYFILE]:-}"
@@ -1200,14 +1206,13 @@ collect_rerank_config() {
   local skip_enable_check="${1:-no}"
   local options=("cohere" "jina" "aliyun" "vllm")
   local binding_choice binding model host api_key
-  local vllm_model vllm_port vllm_device vllm_dtype vllm_extra
-  local default_dtype=""
-  local existing_vllm_device=""
-  local existing_vllm_dtype=""
+  local vllm_model vllm_port vllm_device vllm_extra
   local default_model="" default_host="" model_default="" host_default="" use_docker="no"
   local previous_provider="${ENV_VALUES[LIGHTRAG_SETUP_RERANK_PROVIDER]:-}"
   local reset_vllm_defaults="no"
   local rerank_default="${ENV_VALUES[LIGHTRAG_SETUP_RERANK_PROVIDER]:-${ENV_VALUES[RERANK_BINDING]:-cohere}}"
+
+  unset 'ENV_VALUES[VLLM_RERANK_DTYPE]'
 
   if [[ "$skip_enable_check" != "yes" ]]; then
     local rerank_was_enabled="no"
@@ -1253,19 +1258,6 @@ collect_rerank_config() {
         vllm_device="cpu"
       fi
     fi
-    existing_vllm_device="${ENV_VALUES[VLLM_RERANK_DEVICE]:-}"
-    existing_vllm_dtype="${ENV_VALUES[VLLM_RERANK_DTYPE]:-}"
-    if [[ -n "$existing_vllm_dtype" && "$existing_vllm_device" == "$vllm_device" ]]; then
-      default_dtype="$existing_vllm_dtype"
-    fi
-    if [[ -z "$default_dtype" ]]; then
-      if [[ "$vllm_device" == "cpu" ]]; then
-        default_dtype="float32"
-      else
-        default_dtype="float16"
-      fi
-    fi
-    vllm_dtype="$(prompt_with_default "vLLM dtype" "$default_dtype")"
     vllm_extra="$(prompt_with_default "vLLM extra args" "${ENV_VALUES[VLLM_RERANK_EXTRA_ARGS]:-}")"
 
     if [[ "$vllm_device" == "cuda" ]]; then
@@ -1281,7 +1273,6 @@ collect_rerank_config() {
     ENV_VALUES["VLLM_RERANK_MODEL"]="$vllm_model"
     ENV_VALUES["VLLM_RERANK_PORT"]="$vllm_port"
     ENV_VALUES["VLLM_RERANK_DEVICE"]="$vllm_device"
-    ENV_VALUES["VLLM_RERANK_DTYPE"]="$vllm_dtype"
     if [[ -n "$vllm_extra" ]]; then
       ENV_VALUES["VLLM_RERANK_EXTRA_ARGS"]="$vllm_extra"
     fi
@@ -1644,6 +1635,7 @@ finalize_setup() {
   fi
 
   log_debug "Writing .env to ${REPO_ROOT}/.env"
+  clear_deprecated_vllm_dtype_state
   generate_env_file "${REPO_ROOT}/env.example" "${REPO_ROOT}/.env"
   log_success "Wrote .env"
 
@@ -1858,6 +1850,7 @@ finalize_base_setup() {
     log_success "Backed up existing .env to $backup_path"
   fi
 
+  clear_deprecated_vllm_dtype_state
   generate_env_file "${REPO_ROOT}/env.example" "${REPO_ROOT}/.env"
   log_success "Wrote .env"
 
@@ -1961,6 +1954,7 @@ finalize_storage_setup() {
     if [[ -n "$backup_path" ]]; then
       log_success "Backed up existing .env to $backup_path"
     fi
+    clear_deprecated_vllm_dtype_state
     generate_env_file "${REPO_ROOT}/env.example" "${REPO_ROOT}/.env"
     log_success "Wrote .env"
     return 0
@@ -1990,6 +1984,7 @@ finalize_storage_setup() {
     log_success "Backed up existing .env to $backup_path"
   fi
 
+  clear_deprecated_vllm_dtype_state
   generate_env_file "${REPO_ROOT}/env.example" "${REPO_ROOT}/.env"
   log_success "Wrote .env"
 
@@ -2096,6 +2091,7 @@ finalize_server_setup() {
     log_success "Backed up existing .env to $backup_path"
   fi
 
+  clear_deprecated_vllm_dtype_state
   generate_env_file "${REPO_ROOT}/env.example" "${REPO_ROOT}/.env"
   log_success "Wrote .env"
 
