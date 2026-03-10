@@ -10,5 +10,4 @@ PRESET_LOCAL=(
   "EMBEDDING_BINDING=openai"
   "EMBEDDING_MODEL=text-embedding-3-large"
   "EMBEDDING_DIM=3072"
-  "EMBEDDING_BINDING_HOST=https://api.openai.com/v1"
 )

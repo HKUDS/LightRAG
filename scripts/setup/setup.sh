@@ -517,58 +517,6 @@ add_docker_service() {
   fi
 }
 
-
-prompt_choice() {
-  local prompt="$1"
-  local default="$2"
-  shift 2
-  local options=("$@")
-  local choice
-  local index=1
-  local default_index=""
-  local count="${#options[@]}"
-
-  for option in "${options[@]}"; do
-    if [[ "$option" == "$default" ]]; then
-      default_index="$index"
-    fi
-    index=$((index + 1))
-  done
-
-  while true; do
-    printf '%s\n' "${COLOR_BLUE}${prompt}${COLOR_RESET} options:" >&2
-    index=1
-    for option in "${options[@]}"; do
-      printf '  %s) %s\n' "${COLOR_GREEN}${index}${COLOR_RESET}" "$option" >&2
-      index=$((index + 1))
-    done
-    if [[ -n "$default_index" ]]; then
-      printf 'Enter number (default: %s): ' "$default_index" >&2
-    else
-      printf 'Enter number: ' >&2
-    fi
-
-    if ((count <= 9)); then
-      read -r -n 1 choice
-      printf '\n' >&2
-    else
-      read -r choice
-    fi
-
-    if [[ -z "$choice" ]]; then
-      if [[ -n "$default_index" ]]; then
-        printf '%s' "${options[default_index-1]}"
-        return 0
-      fi
-    elif [[ "$choice" =~ ^[0-9]+$ ]] && ((choice >= 1 && choice <= count)); then
-      printf '%s' "${options[choice-1]}"
-      return 0
-    fi
-
-    printf '%s\n' "${COLOR_YELLOW}Invalid selection.${COLOR_RESET} Please enter a number between 1 and ${count}." >&2
-  done
-}
-
 select_deployment_type() {
   local options=("development" "production" "custom")
   prompt_choice "Deployment type" "development" "${options[@]}"
@@ -1169,37 +1117,37 @@ collect_embedding_config() {
 
   case "$binding" in
     ollama)
-      host_default="$(provider_default_or_existing "$binding" "$current_binding" "${ENV_VALUES[EMBEDDING_BINDING_HOST]:-${llm_host_fallback:-}}" "$(default_loopback_url 11434)")"
+      host_default="$(provider_default_or_existing "$binding" "$current_binding" "${ENV_VALUES[EMBEDDING_BINDING_HOST]:-}" "${llm_host_fallback:-$(default_loopback_url 11434)}")"
       host="$(prompt_with_default "Ollama embedding host" "$host_default")"
       api_key=""
       ;;
     lollms)
-      host_default="$(provider_default_or_existing "$binding" "$current_binding" "${ENV_VALUES[EMBEDDING_BINDING_HOST]:-${llm_host_fallback:-}}" "http://localhost:9600")"
+      host_default="$(provider_default_or_existing "$binding" "$current_binding" "${ENV_VALUES[EMBEDDING_BINDING_HOST]:-}" "${llm_host_fallback:-http://localhost:9600}")"
       host="$(prompt_with_default "LoLLMs embedding host" "$host_default")"
       api_key=""
       ;;
     azure_openai)
-      host_default="$(provider_default_or_existing "$binding" "$current_binding" "${ENV_VALUES[EMBEDDING_BINDING_HOST]:-${llm_host_fallback:-}}" "https://example.openai.azure.com/")"
+      host_default="$(provider_default_or_existing "$binding" "$current_binding" "${ENV_VALUES[EMBEDDING_BINDING_HOST]:-}" "${llm_host_fallback:-https://example.openai.azure.com/}")"
       host="$(prompt_with_default "Azure OpenAI endpoint" "$host_default")"
       api_key="$(prompt_secret_until_valid_with_default "Azure OpenAI API key: " "${ENV_VALUES[EMBEDDING_BINDING_API_KEY]:-$llm_api_key_default}" validate_api_key azure_openai)"
       ;;
     gemini)
-      host_default="$(provider_default_or_existing "$binding" "$current_binding" "${ENV_VALUES[EMBEDDING_BINDING_HOST]:-${llm_host_fallback:-}}" "https://generativelanguage.googleapis.com")"
+      host_default="$(provider_default_or_existing "$binding" "$current_binding" "${ENV_VALUES[EMBEDDING_BINDING_HOST]:-}" "${llm_host_fallback:-https://generativelanguage.googleapis.com}")"
       host="$(prompt_with_default "Gemini endpoint" "$host_default")"
       api_key="$(prompt_secret_until_valid_with_default "Gemini API key: " "${ENV_VALUES[EMBEDDING_BINDING_API_KEY]:-$llm_api_key_default}" validate_api_key gemini)"
       ;;
     aws_bedrock)
-      host="$(provider_default_or_existing "$binding" "$current_binding" "${ENV_VALUES[EMBEDDING_BINDING_HOST]:-${llm_host_fallback:-}}" "https://bedrock.amazonaws.com")"
+      host="$(provider_default_or_existing "$binding" "$current_binding" "${ENV_VALUES[EMBEDDING_BINDING_HOST]:-}" "${llm_host_fallback:-https://bedrock.amazonaws.com}")"
       api_key=""
       collect_bedrock_credentials
       ;;
     jina)
-      host_default="$(provider_default_or_existing "$binding" "$current_binding" "${ENV_VALUES[EMBEDDING_BINDING_HOST]:-${llm_host_fallback:-}}" "https://api.jina.ai/v1/embeddings")"
+      host_default="$(provider_default_or_existing "$binding" "$current_binding" "${ENV_VALUES[EMBEDDING_BINDING_HOST]:-}" "${llm_host_fallback:-https://api.jina.ai/v1/embeddings}")"
       host="$(prompt_with_default "Jina endpoint" "$host_default")"
       api_key="$(prompt_secret_until_valid_with_default "Jina API key: " "${ENV_VALUES[EMBEDDING_BINDING_API_KEY]:-$llm_api_key_default}" validate_api_key jina)"
       ;;
     *)
-      host_default="$(provider_default_or_existing "$binding" "$current_binding" "${ENV_VALUES[EMBEDDING_BINDING_HOST]:-${llm_host_fallback:-}}" "https://api.openai.com/v1")"
+      host_default="$(provider_default_or_existing "$binding" "$current_binding" "${ENV_VALUES[EMBEDDING_BINDING_HOST]:-}" "${llm_host_fallback:-https://api.openai.com/v1}")"
       host="$(prompt_with_default "Embedding endpoint" "$host_default")"
       api_key="$(prompt_secret_until_valid_with_default "Embedding API key: " "${ENV_VALUES[EMBEDDING_BINDING_API_KEY]:-$llm_api_key_default}" validate_api_key "$binding")"
       ;;
@@ -1225,7 +1173,19 @@ collect_rerank_config() {
   local reset_vllm_defaults="no"
   local rerank_default="${ENV_VALUES[LIGHTRAG_SETUP_RERANK_PROVIDER]:-${ENV_VALUES[RERANK_BINDING]:-cohere}}"
 
-  if ! confirm_default_no "Enable reranking?"; then
+  local rerank_was_enabled="no"
+  if [[ -n "${ENV_VALUES[RERANK_BINDING]:-}" && "${ENV_VALUES[RERANK_BINDING]}" != "null" ]]; then
+    rerank_was_enabled="yes"
+  fi
+
+  local rerank_enabled="no"
+  if [[ "$rerank_was_enabled" == "yes" ]]; then
+    confirm_default_yes "Enable reranking?" && rerank_enabled="yes"
+  else
+    confirm_default_no "Enable reranking?" && rerank_enabled="yes"
+  fi
+
+  if [[ "$rerank_enabled" != "yes" ]]; then
     ENV_VALUES["RERANK_BINDING"]="null"
     unset 'ENV_VALUES[LIGHTRAG_SETUP_RERANK_PROVIDER]'
     return
@@ -1637,7 +1597,7 @@ finalize_setup() {
 
   show_summary
 
-  if ! confirm_default_yes "Generate .env and docker-compose.yml now?"; then
+  if ! confirm_default_yes "Next step will generate the .env file. Ready to proceed or cancel?"; then
     log_warn "Setup cancelled."
     return 1
   fi
@@ -1654,20 +1614,10 @@ finalize_setup() {
     prepare_compose_env_overrides
   fi
 
-  # When deploying with Docker, also normalize loopback URLs in ENV_VALUES so
-  # the generated .env reflects the correct host.docker.internal addresses.
-  # (The compose environment section overrides these at runtime, but having the
-  # correct value in .env provides a reliable fallback and avoids confusion.)
-  if ((${#DOCKER_SERVICES[@]} > 0)); then
-    local _norm_key _norm_val
-    for _norm_key in "LLM_BINDING_HOST" "EMBEDDING_BINDING_HOST" "RERANK_BINDING_HOST"; do
-      if [[ -n "${ENV_VALUES[$_norm_key]:-}" ]]; then
-        _norm_val="$(normalize_loopback_uri_for_compose "${ENV_VALUES[$_norm_key]}")"
-        ENV_VALUES["$_norm_key"]="$_norm_val"
-      fi
-    done
-  fi
-
+  # When deploying with Docker, the BINDING_HOST in .env is overridden by the compose environment section
+  # to point to the appropriate hostname instead of localhost
+  # (e.g., host.docker.internal or the service name in the compose network)  
+  
   backup_path="$(backup_env_file)"
   if [[ -n "$backup_path" ]]; then
     log_success "Backed up existing .env to $backup_path"
@@ -1707,29 +1657,6 @@ finalize_setup() {
     generate_docker_compose "$compose_file"
     log_success "Wrote ${compose_file}"
     echo "  To start later: docker compose -f ${compose_file} up -d"
-    if confirm_default_no "Start docker services now?"; then
-      if ! check_docker_availability; then
-        return 1
-      fi
-      log_step "Starting docker services with ${compose_file}"
-      if ((${#DOCKER_SERVICES[@]} > 0)); then
-        if ! docker compose -f "$compose_file" up -d "${DOCKER_SERVICES[@]}"; then
-          format_error "docker compose up failed." "Run 'docker compose -f ${compose_file} logs' to inspect."
-          return 1
-        fi
-        if ! wait_for_services; then
-          return 1
-        fi
-      fi
-      if ! docker compose -f "$compose_file" up -d lightrag; then
-        format_error "docker compose up failed." "Run 'docker compose -f ${compose_file} logs' to inspect."
-        return 1
-      fi
-      if ! wait_for_lightrag_service "$compose_file"; then
-        return 1
-      fi
-      log_success "Docker services are up."
-    fi
   else
     log_warn "No docker services selected."
   fi

@@ -43,7 +43,7 @@ env:
 	@$(SETUP_BASH) $(SETUP_SCRIPT) $(SETUP_OPTS)
 
 configure:
-	@$(SETUP_BASH) $(SETUP_SCRIPT) $(SETUP_OPTS)
+	@$(SETUP_BASH) $(SETUP_SCRIPT) --quick $(SETUP_OPTS)
 
 env-quick:
 	@$(SETUP_BASH) $(SETUP_SCRIPT) --quick $(SETUP_OPTS)

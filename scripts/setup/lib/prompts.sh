@@ -191,3 +191,54 @@ prompt_required_secret() {
     echo "Value cannot be empty. Please try again."
   done
 }
+
+prompt_choice() {
+  local prompt="$1"
+  local default="$2"
+  shift 2
+  local options=("$@")
+  local choice
+  local index=1
+  local default_index=""
+  local count="${#options[@]}"
+
+  for option in "${options[@]}"; do
+    if [[ "$option" == "$default" ]]; then
+      default_index="$index"
+    fi
+    index=$((index + 1))
+  done
+
+  while true; do
+    printf '%s\n' "${COLOR_BLUE}${prompt}${COLOR_RESET} options:" >&2
+    index=1
+    for option in "${options[@]}"; do
+      printf '  %s) %s\n' "${COLOR_GREEN}${index}${COLOR_RESET}" "$option" >&2
+      index=$((index + 1))
+    done
+    if [[ -n "$default_index" ]]; then
+      printf 'Enter number (default: %s): ' "$default_index" >&2
+    else
+      printf 'Enter number: ' >&2
+    fi
+
+    if ((count <= 9)); then
+      read -r -n 1 choice
+      printf '\n' >&2
+    else
+      read -r choice
+    fi
+
+    if [[ -z "$choice" ]]; then
+      if [[ -n "$default_index" ]]; then
+        printf '%s' "${options[default_index-1]}"
+        return 0
+      fi
+    elif [[ "$choice" =~ ^[0-9]+$ ]] && ((choice >= 1 && choice <= count)); then
+      printf '%s' "${options[choice-1]}"
+      return 0
+    fi
+
+    printf '%s\n' "${COLOR_YELLOW}Invalid selection.${COLOR_RESET} Please enter a number between 1 and ${count}." >&2
+  done
+}

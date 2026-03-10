@@ -1068,10 +1068,10 @@ printf 'EMBEDDING_BINDING_HOST=%s\\n' "${{ENV_VALUES[EMBEDDING_BINDING_HOST]}}"
     assert values["EMBEDDING_BINDING_HOST"] == "http://localhost:9600"
 
 
-def test_collect_rerank_config_clears_stale_api_key_when_disabled(
+def test_collect_rerank_config_preserves_api_key_when_disabled(
     tmp_path: Path,
 ) -> None:
-    """Disabling reranking should remove stale credentials from a prior config."""
+    """Disabling reranking should preserve credentials so they survive re-enable."""
 
     env_file = tmp_path / ".env"
     env_file.write_text(
@@ -1080,7 +1080,7 @@ def test_collect_rerank_config_clears_stale_api_key_when_disabled(
                 "RERANK_BINDING=cohere",
                 "RERANK_MODEL=rerank-v3.5",
                 "RERANK_BINDING_HOST=https://api.cohere.com/v1/rerank",
-                "RERANK_BINDING_API_KEY=${COHERE_API_KEY}",
+                "RERANK_BINDING_API_KEY=test-api-key-literal",
             ]
         )
         + "\n",
@@ -1095,6 +1095,7 @@ REPO_ROOT="{tmp_path}"
 reset_state
 load_existing_env_if_present
 
+confirm_default_yes() {{ return 1; }}
 
 collect_rerank_config
 
@@ -1110,7 +1111,7 @@ fi
     values = parse_lines(output)
 
     assert values["RERANK_BINDING"] == "null"
-    assert values["RERANK_BINDING_API_KEY_SET"] == ""
+    assert values["RERANK_BINDING_API_KEY_SET"] == "set"
     assert values["VALID"] == "yes"
 
 
@@ -1693,7 +1694,7 @@ prompt_secret_until_valid_with_default() {{
 }}
 confirm_default_yes() {{
   case "$1" in
-    "Generate .env and docker-compose.yml now?") return 0 ;;
+    "Next step will generate the .env file. Ready to proceed or cancel?") return 0 ;;
     *) return 1 ;;
   esac
 }}
@@ -1752,7 +1753,7 @@ confirm_default_no() {{
 }}
 confirm_default_yes() {{
   case "$1" in
-    "Generate .env and docker-compose.yml now?")
+    "Next step will generate the .env file. Ready to proceed or cancel?")
       return 0
       ;;
     *)
@@ -1818,7 +1819,7 @@ collect_security_config() {{ :; }}
 collect_observability_config() {{ :; }}
 confirm_default_yes() {{
   case "$1" in
-    "Generate .env and docker-compose.yml now?") return 0 ;;
+    "Next step will generate the .env file. Ready to proceed or cancel?") return 0 ;;
     *) return 1 ;;
   esac
 }}
@@ -1875,7 +1876,7 @@ prompt_secret_with_default() {{ printf '%s' "$2"; }}
 prompt_secret_until_valid_with_default() {{ printf '%s' "$2"; }}
 confirm_default_yes() {{
   case "$1" in
-    "Generate .env and docker-compose.yml now?")
+    "Next step will generate the .env file. Ready to proceed or cancel?")
       return 0
       ;;
     *)
@@ -2135,7 +2136,7 @@ prompt_clearable_secret_with_default() {{
 }}
 confirm_default_yes() {{
   case "$1" in
-    "Configure authentication and API key settings?"|"Generate .env and docker-compose.yml now?")
+    "Configure authentication and API key settings?"|"Next step will generate the .env file. Ready to proceed or cancel?")
       return 0
       ;;
     *)
@@ -3746,7 +3747,7 @@ DEPLOYMENT_TYPE="development"
 # confirm_default_yes handles "Generate .env...?" -> yes; confirm handles docker-compose -> no.
 confirm_default_yes() {{
   case "$1" in
-    "Generate .env and docker-compose.yml now?") return 0 ;;
+    "Next step will generate the .env file. Ready to proceed or cancel?") return 0 ;;
     *) return 1 ;;
   esac
 }}
