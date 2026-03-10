@@ -1719,29 +1719,6 @@ finalize_setup() {
     generate_docker_compose "$compose_file"
     log_success "Wrote ${compose_file}"
     echo "  To start later: docker compose -f ${compose_file} up -d"
-    if confirm_default_no "Start docker services now?"; then
-      if ! check_docker_availability; then
-        return 1
-      fi
-      log_step "Starting docker services with ${compose_file}"
-      if ((${#DOCKER_SERVICES[@]} > 0)); then
-        if ! docker compose -f "$compose_file" up -d "${DOCKER_SERVICES[@]}"; then
-          format_error "docker compose up failed." "Run 'docker compose -f ${compose_file} logs' to inspect."
-          return 1
-        fi
-        if ! wait_for_services; then
-          return 1
-        fi
-      fi
-      if ! docker compose -f "$compose_file" up -d lightrag; then
-        format_error "docker compose up failed." "Run 'docker compose -f ${compose_file} logs' to inspect."
-        return 1
-      fi
-      if ! wait_for_lightrag_service "$compose_file"; then
-        return 1
-      fi
-      log_success "Docker services are up."
-    fi
   else
     log_warn "No docker services selected."
   fi
