@@ -146,6 +146,23 @@ reset_quick_start_inherited_state() {
   done
 }
 
+prepare_compose_output_from_existing() {
+  local output_file="$1"
+  local existing_file="$2"
+
+  if [[ -z "$existing_file" || "$existing_file" == "$output_file" || -f "$output_file" ]]; then
+    return 0
+  fi
+
+  if ! cp "$existing_file" "$output_file"; then
+    format_error "Failed to prepare compose output at ${output_file}" \
+      "Check file permissions and available disk space, then rerun setup."
+    return 1
+  fi
+
+  log_success "Using ${existing_file} as merge input for ${output_file}"
+}
+
 log_debug() {
   if [[ "$DEBUG" == "true" ]]; then
     echo "${COLOR_YELLOW}[debug]${COLOR_RESET} $*"
@@ -1803,9 +1820,9 @@ finalize_base_setup() {
   fi
 
   existing_compose="$(find_generated_compose_file)"
+  compose_file="${REPO_ROOT}/docker-compose.final.yml"
 
   if [[ -z "$existing_compose" ]]; then
-    compose_file="${REPO_ROOT}/docker-compose.final.yml"
     if ((${#DOCKER_SERVICES[@]} > 0)); then
       if confirm_default_yes "Generate ${compose_file}?"; then
         generate_compose="yes"
@@ -1816,7 +1833,6 @@ finalize_base_setup() {
       fi
     fi
   else
-    compose_file="$existing_compose"
     generate_compose="yes"
     # Detect and preserve existing storage services.
     while IFS= read -r svc; do
@@ -1846,6 +1862,7 @@ finalize_base_setup() {
   log_success "Wrote .env"
 
   if [[ "$generate_compose" == "yes" ]]; then
+    prepare_compose_output_from_existing "$compose_file" "$existing_compose" || return 1
     generate_docker_compose "$compose_file"
     log_success "Wrote ${compose_file}"
     if [[ -n "$existing_compose" ]]; then
@@ -1936,6 +1953,7 @@ finalize_storage_setup() {
   fi
 
   existing_compose="$(find_generated_compose_file)"
+  compose_file="${REPO_ROOT}/docker-compose.final.yml"
 
   if [[ "$has_docker_storage" == "no" && -z "$existing_compose" ]]; then
     # No docker services selected and no existing compose to clean up.
@@ -1949,7 +1967,6 @@ finalize_storage_setup() {
   fi
 
   if [[ -n "$existing_compose" ]]; then
-    compose_file="$existing_compose"
     # Detect and preserve existing vLLM services.
     while IFS= read -r svc; do
       local is_vllm="no"
@@ -1963,8 +1980,6 @@ finalize_storage_setup() {
         add_docker_service "$svc"
       fi
     done < <(detect_compose_services "$existing_compose")
-  else
-    compose_file="${REPO_ROOT}/docker-compose.final.yml"
   fi
   generate_compose="yes"
 
@@ -1978,6 +1993,7 @@ finalize_storage_setup() {
   generate_env_file "${REPO_ROOT}/env.example" "${REPO_ROOT}/.env"
   log_success "Wrote .env"
 
+  prepare_compose_output_from_existing "$compose_file" "$existing_compose" || return 1
   generate_docker_compose "$compose_file"
   log_success "Wrote ${compose_file}"
   if [[ -n "$existing_compose" ]]; then
@@ -2052,9 +2068,9 @@ finalize_server_setup() {
   fi
 
   existing_compose="$(find_generated_compose_file)"
+  compose_file="${REPO_ROOT}/docker-compose.final.yml"
 
   if [[ -n "$existing_compose" ]]; then
-    compose_file="$existing_compose"
     generate_compose="yes"
     # Detect and preserve all existing services (vLLM + storage).
     # Only re-add services that have a standalone template; sub-services
@@ -2084,6 +2100,7 @@ finalize_server_setup() {
   log_success "Wrote .env"
 
   if [[ "$generate_compose" == "yes" ]]; then
+    prepare_compose_output_from_existing "$compose_file" "$existing_compose" || return 1
     generate_docker_compose "$compose_file"
     log_success "Wrote ${compose_file}"
     log_success "Server port and security settings updated in compose."
