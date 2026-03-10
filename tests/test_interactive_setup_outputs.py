@@ -1524,10 +1524,10 @@ printf 'LIGHTRAG_DOC_STATUS_STORAGE=%s\\n' "${{ENV_VALUES[LIGHTRAG_DOC_STATUS_ST
     assert values["LIGHTRAG_DOC_STATUS_STORAGE"] == "JsonDocStatusStorage"
 
 
-def test_quick_start_flow_preserves_safe_values_and_clears_inherited_state(
+def test_env_base_flow_preserves_non_inference_env_values(
     tmp_path: Path,
 ) -> None:
-    """Quick start should keep safe UI values while clearing deployment-shaping state."""
+    """env-base wizard should leave server, security, and observability values untouched."""
 
     env_file = tmp_path / ".env"
     env_file.write_text(
@@ -1538,9 +1538,8 @@ def test_quick_start_flow_preserves_safe_values_and_clears_inherited_state(
                 "WEBUI_TITLE=Existing Title",
                 "WEBUI_DESCRIPTION=Existing Description",
                 "SSL=true",
-                "SSL_CERTFILE=/missing/cert.pem",
-                "SSL_KEYFILE=/missing/key.pem",
-                "RERANK_BINDING=jina",
+                "SSL_CERTFILE=/some/cert.pem",
+                "SSL_KEYFILE=/some/key.pem",
                 "AUTH_ACCOUNTS=admin:secret",
                 "TOKEN_SECRET=jwt-secret",
                 "LIGHTRAG_API_KEY=api-key",
@@ -1560,23 +1559,23 @@ set -euo pipefail
 source "{REPO_ROOT}/scripts/setup/setup.sh"
 REPO_ROOT="{tmp_path}"
 
-prompt_secret_until_valid_with_default() {{
-  printf '%s' "$2"
-}}
+prompt_choice() {{ printf '%s' "$2"; }}
+prompt_with_default() {{ printf '%s' "$2"; }}
+prompt_until_valid() {{ printf '%s' "$2"; }}
+prompt_secret_with_default() {{ printf '%s' "$2"; }}
+prompt_secret_until_valid_with_default() {{ printf '%s' "$2"; }}
+confirm_default_no() {{ return 1; }}
+confirm_default_yes() {{ return 1; }}
 
-finalize_setup() {{
+finalize_base_setup() {{
   printf 'HOST=%s\\n' "${{ENV_VALUES[HOST]}}"
   printf 'PORT=%s\\n' "${{ENV_VALUES[PORT]}}"
   printf 'WEBUI_TITLE=%s\\n' "${{ENV_VALUES[WEBUI_TITLE]}}"
   printf 'WEBUI_DESCRIPTION=%s\\n' "${{ENV_VALUES[WEBUI_DESCRIPTION]}}"
-  printf 'LIGHTRAG_KV_STORAGE=%s\\n' "${{ENV_VALUES[LIGHTRAG_KV_STORAGE]}}"
   printf 'LLM_BINDING=%s\\n' "${{ENV_VALUES[LLM_BINDING]}}"
   printf 'LLM_BINDING_API_KEY=%s\\n' "${{ENV_VALUES[LLM_BINDING_API_KEY]}}"
   printf 'EMBEDDING_BINDING_API_KEY=%s\\n' "${{ENV_VALUES[EMBEDDING_BINDING_API_KEY]}}"
   printf 'SSL_SET=%s\\n' "${{ENV_VALUES[SSL]+set}}"
-  printf 'SSL_CERTFILE_SET=%s\\n' "${{ENV_VALUES[SSL_CERTFILE]+set}}"
-  printf 'SSL_KEYFILE_SET=%s\\n' "${{ENV_VALUES[SSL_KEYFILE]+set}}"
-  printf 'RERANK_BINDING_SET=%s\\n' "${{ENV_VALUES[RERANK_BINDING]+set}}"
   printf 'AUTH_ACCOUNTS_SET=%s\\n' "${{ENV_VALUES[AUTH_ACCOUNTS]+set}}"
   printf 'TOKEN_SECRET_SET=%s\\n' "${{ENV_VALUES[TOKEN_SECRET]+set}}"
   printf 'LIGHTRAG_API_KEY_SET=%s\\n' "${{ENV_VALUES[LIGHTRAG_API_KEY]+set}}"
@@ -1584,7 +1583,7 @@ finalize_setup() {{
   printf 'LANGFUSE_SECRET_KEY_SET=%s\\n' "${{ENV_VALUES[LANGFUSE_SECRET_KEY]+set}}"
 }}
 
-quick_start_flow
+env_base_flow
 """
     )
     values = parse_lines(output)
@@ -1593,25 +1592,22 @@ quick_start_flow
     assert values["PORT"] == "9999"
     assert values["WEBUI_TITLE"] == "Existing Title"
     assert values["WEBUI_DESCRIPTION"] == "Existing Description"
-    assert values["LIGHTRAG_KV_STORAGE"] == "JsonKVStorage"
     assert values["LLM_BINDING"] == "openai"
     assert values["LLM_BINDING_API_KEY"] == "sk-existing"
     assert values["EMBEDDING_BINDING_API_KEY"] == "sk-existing"
-    assert values["SSL_SET"] == ""
-    assert values["SSL_CERTFILE_SET"] == ""
-    assert values["SSL_KEYFILE_SET"] == ""
-    assert values["RERANK_BINDING_SET"] == "set"
-    assert values["AUTH_ACCOUNTS_SET"] == ""
-    assert values["TOKEN_SECRET_SET"] == ""
-    assert values["LIGHTRAG_API_KEY_SET"] == ""
-    assert values["LANGFUSE_ENABLE_TRACE_SET"] == ""
-    assert values["LANGFUSE_SECRET_KEY_SET"] == ""
+    # env-base does not touch server / security / observability values
+    assert values["SSL_SET"] == "set"
+    assert values["AUTH_ACCOUNTS_SET"] == "set"
+    assert values["TOKEN_SECRET_SET"] == "set"
+    assert values["LIGHTRAG_API_KEY_SET"] == "set"
+    assert values["LANGFUSE_ENABLE_TRACE_SET"] == "set"
+    assert values["LANGFUSE_SECRET_KEY_SET"] == "set"
 
 
-def test_quick_start_flow_resets_existing_provider_settings_to_development_preset(
+def test_env_base_flow_preserves_existing_provider_bindings_on_rerun(
     tmp_path: Path,
 ) -> None:
-    """Quick start should preserve prior provider bindings when they already exist."""
+    """Rerunning env-base should keep prior LLM and embedding provider settings."""
 
     env_file = tmp_path / ".env"
     env_file.write_text(
@@ -1636,7 +1632,15 @@ set -euo pipefail
 source "{REPO_ROOT}/scripts/setup/setup.sh"
 REPO_ROOT="{tmp_path}"
 
-finalize_setup() {{
+prompt_choice() {{ printf '%s' "$2"; }}
+prompt_with_default() {{ printf '%s' "$2"; }}
+prompt_until_valid() {{ printf '%s' "$2"; }}
+prompt_secret_with_default() {{ printf '%s' "$2"; }}
+prompt_secret_until_valid_with_default() {{ printf '%s' "$2"; }}
+confirm_default_no() {{ return 1; }}
+confirm_default_yes() {{ return 1; }}
+
+finalize_base_setup() {{
   printf 'LLM_BINDING=%s\\n' "${{ENV_VALUES[LLM_BINDING]}}"
   printf 'LLM_MODEL=%s\\n' "${{ENV_VALUES[LLM_MODEL]}}"
   printf 'LLM_BINDING_HOST=%s\\n' "${{ENV_VALUES[LLM_BINDING_HOST]}}"
@@ -1646,7 +1650,7 @@ finalize_setup() {{
   printf 'EMBEDDING_BINDING_HOST=%s\\n' "${{ENV_VALUES[EMBEDDING_BINDING_HOST]}}"
 }}
 
-quick_start_flow
+env_base_flow
 """
     )
     values = parse_lines(output)
@@ -1660,10 +1664,10 @@ quick_start_flow
     assert values["EMBEDDING_BINDING_HOST"] == "http://localhost:11434"
 
 
-def test_quick_start_flow_clears_inherited_ssl_state_before_writing_env(
+def test_env_base_flow_does_not_fail_with_stale_ssl_paths(
     tmp_path: Path,
 ) -> None:
-    """Quick start should not fail on rerun because of stale SSL certificate paths."""
+    """env-base should not fail on rerun because of stale SSL certificate paths."""
 
     env_example = tmp_path / "env.example"
     env_example.write_text((REPO_ROOT / "env.example").read_text(encoding="utf-8"))
@@ -1689,32 +1693,35 @@ set -euo pipefail
 source "{REPO_ROOT}/scripts/setup/setup.sh"
 REPO_ROOT="{tmp_path}"
 
-prompt_secret_until_valid_with_default() {{
-  printf '%s' "$2"
-}}
+prompt_choice() {{ printf '%s' "$2"; }}
+prompt_with_default() {{ printf '%s' "$2"; }}
+prompt_until_valid() {{ printf '%s' "$2"; }}
+prompt_secret_with_default() {{ printf '%s' "$2"; }}
+prompt_secret_until_valid_with_default() {{ printf '%s' "$2"; }}
+confirm_default_no() {{ return 1; }}
 confirm_default_yes() {{
   case "$1" in
-    "Next step will generate the .env file. Ready to proceed or cancel?") return 0 ;;
+    "Ready to proceed and write .env?") return 0 ;;
     *) return 1 ;;
   esac
 }}
 
-quick_start_flow
+env_base_flow
 """
     )
 
     generated_lines = env_file.read_text(encoding="utf-8").splitlines()
 
-    assert not any(line == "SSL=true" for line in generated_lines)
-    assert not any(line.startswith("SSL_CERTFILE=") for line in generated_lines)
-    assert not any(line.startswith("SSL_KEYFILE=") for line in generated_lines)
-    assert "LIGHTRAG_SETUP_PROFILE=development" in generated_lines
+    # env-base preserves SSL values (does not validate or clear them)
+    assert "SSL=true" in generated_lines
+    assert any(line.startswith("SSL_CERTFILE=") for line in generated_lines)
+    assert any(line.startswith("SSL_KEYFILE=") for line in generated_lines)
     assert "LLM_BINDING_API_KEY=sk-existing" in generated_lines
     assert "EMBEDDING_BINDING_API_KEY=sk-existing" in generated_lines
 
 
-def test_quick_start_flow_generates_env_and_compose_files(tmp_path: Path) -> None:
-    """Quick mode should write a development `.env` and compose file via finalize_setup."""
+def test_env_base_flow_generates_env_and_compose_files(tmp_path: Path) -> None:
+    """env-base should write a .env and docker-compose.final.yml via finalize_base_setup."""
 
     (tmp_path / "env.example").write_text(
         (REPO_ROOT / "env.example").read_text(encoding="utf-8"),
@@ -1731,60 +1738,52 @@ set -euo pipefail
 source "{REPO_ROOT}/scripts/setup/setup.sh"
 REPO_ROOT="{tmp_path}"
 
+prompt_choice() {{ printf '%s' "$2"; }}
+prompt_with_default() {{ printf '%s' "$2"; }}
+prompt_until_valid() {{ printf '%s' "$2"; }}
+prompt_secret_with_default() {{ printf '%s' "$2"; }}
 prompt_secret_until_valid_with_default() {{
   case "$1" in
-    "LLM API key: "|"Embedding API key: ")
-      printf 'sk-quick-test-key'
-      ;;
-    *)
-      printf '%s' "$2"
-      ;;
+    "LLM API key: "|"Embedding API key: ") printf 'sk-test-key' ;;
+    *) printf '%s' "$2" ;;
   esac
 }}
 confirm_default_no() {{
   case "$1" in
-    "Generate docker-compose for LightRAG only?")
-      return 0
-      ;;
-    *)
-      return 1
-      ;;
+    "Run embedding model locally via Docker (vLLM)?") return 1 ;;
+    "Enable reranking?") return 1 ;;
+    *"for LightRAG only?"*) return 0 ;;
+    *) return 1 ;;
   esac
 }}
 confirm_default_yes() {{
   case "$1" in
-    "Next step will generate the .env file. Ready to proceed or cancel?")
-      return 0
-      ;;
-    *)
-      return 1
-      ;;
+    "Ready to proceed and write .env?") return 0 ;;
+    *) return 1 ;;
   esac
 }}
 
-quick_start_flow
+env_base_flow
 """
     )
 
     generated_env = (tmp_path / ".env").read_text(encoding="utf-8")
-    generated_compose = (tmp_path / "docker-compose.development.yml").read_text(
+    generated_compose = (tmp_path / "docker-compose.final.yml").read_text(
         encoding="utf-8"
     )
 
-    assert "LIGHTRAG_SETUP_PROFILE=development" in generated_env
-    assert "LIGHTRAG_KV_STORAGE=JsonKVStorage" in generated_env
     assert "LLM_BINDING=openai" in generated_env
-    assert "LLM_BINDING_API_KEY=sk-quick-test-key" in generated_env
-    assert "EMBEDDING_BINDING_API_KEY=sk-quick-test-key" in generated_env
+    assert "LLM_BINDING_API_KEY=sk-test-key" in generated_env
+    assert "EMBEDDING_BINDING_API_KEY=sk-test-key" in generated_env
     assert "services:" in generated_compose
     assert "  lightrag:" in generated_compose
     assert "env_file:" not in generated_compose
 
 
-def test_interactive_flow_clears_inherited_ssl_state_for_non_production_reruns(
+def test_env_base_flow_leaves_ssl_config_unchanged_on_rerun(
     tmp_path: Path,
 ) -> None:
-    """Development/custom reruns should not keep hidden SSL values from old `.env`."""
+    """env-base should not modify SSL settings that were configured by env-server."""
 
     env_example = tmp_path / "env.example"
     env_example.write_text((REPO_ROOT / "env.example").read_text(encoding="utf-8"))
@@ -1794,8 +1793,8 @@ def test_interactive_flow_clears_inherited_ssl_state_for_non_production_reruns(
         "\n".join(
             [
                 "SSL=true",
-                "SSL_CERTFILE=/missing/cert.pem",
-                "SSL_KEYFILE=/missing/key.pem",
+                "SSL_CERTFILE=/some/cert.pem",
+                "SSL_KEYFILE=/some/key.pem",
             ]
         )
         + "\n",
@@ -1808,38 +1807,35 @@ set -euo pipefail
 source "{REPO_ROOT}/scripts/setup/setup.sh"
 REPO_ROOT="{tmp_path}"
 
-select_deployment_type() {{ printf 'development'; }}
-select_storage_backends() {{ :; }}
-collect_docker_image_tags() {{ :; }}
-collect_llm_config() {{ :; }}
-collect_embedding_config() {{ :; }}
-collect_rerank_config() {{ ENV_VALUES[RERANK_BINDING]="null"; }}
-collect_server_config() {{ :; }}
-collect_security_config() {{ :; }}
-collect_observability_config() {{ :; }}
+prompt_choice() {{ printf '%s' "$2"; }}
+prompt_with_default() {{ printf '%s' "$2"; }}
+prompt_until_valid() {{ printf '%s' "$2"; }}
+prompt_secret_with_default() {{ printf '%s' "$2"; }}
+prompt_secret_until_valid_with_default() {{ printf '%s' "$2"; }}
+confirm_default_no() {{ return 1; }}
 confirm_default_yes() {{
   case "$1" in
-    "Next step will generate the .env file. Ready to proceed or cancel?") return 0 ;;
+    "Ready to proceed and write .env?") return 0 ;;
     *) return 1 ;;
   esac
 }}
 
-interactive_flow
+env_base_flow
 """
     )
 
     generated_lines = env_file.read_text(encoding="utf-8").splitlines()
 
-    assert not any(line == "SSL=true" for line in generated_lines)
-    assert not any(line.startswith("SSL_CERTFILE=") for line in generated_lines)
-    assert not any(line.startswith("SSL_KEYFILE=") for line in generated_lines)
-    assert "LIGHTRAG_SETUP_PROFILE=development" in generated_lines
+    # env-base must not clear SSL values — that is env-server's domain
+    assert "SSL=true" in generated_lines
+    assert any(line.startswith("SSL_CERTFILE=") for line in generated_lines)
+    assert any(line.startswith("SSL_KEYFILE=") for line in generated_lines)
 
 
-def test_interactive_flow_generates_env_and_compose_files_for_development(
+def test_env_base_flow_generates_env_and_compose_files_for_ollama(
     tmp_path: Path,
 ) -> None:
-    """Interactive mode should generate development config artifacts end to end."""
+    """env-base with ollama should generate .env and docker-compose.final.yml end to end."""
 
     (tmp_path / "env.example").write_text(
         (REPO_ROOT / "env.example").read_text(encoding="utf-8"),
@@ -1856,55 +1852,41 @@ set -euo pipefail
 source "{REPO_ROOT}/scripts/setup/setup.sh"
 REPO_ROOT="{tmp_path}"
 
-select_deployment_type() {{ printf 'development'; }}
 prompt_choice() {{
   case "$1" in
-    "LLM provider")
-      printf 'ollama'
-      ;;
-    "Embedding provider")
-      printf 'ollama'
-      ;;
-    *)
-      printf '%s' "$2"
-      ;;
+    "LLM provider") printf 'ollama' ;;
+    "Embedding provider") printf 'ollama' ;;
+    *) printf '%s' "$2" ;;
   esac
 }}
 prompt_with_default() {{ printf '%s' "$2"; }}
 prompt_until_valid() {{ printf '%s' "$2"; }}
 prompt_secret_with_default() {{ printf '%s' "$2"; }}
 prompt_secret_until_valid_with_default() {{ printf '%s' "$2"; }}
-confirm_default_yes() {{
-  case "$1" in
-    "Next step will generate the .env file. Ready to proceed or cancel?")
-      return 0
-      ;;
-    *)
-      return 1
-      ;;
-  esac
-}}
 confirm_default_no() {{
   case "$1" in
-    "Generate docker-compose for LightRAG only?")
-      return 0
-      ;;
-    *)
-      return 1
-      ;;
+    "Run embedding model locally via Docker (vLLM)?") return 1 ;;
+    "Enable reranking?") return 1 ;;
+    *"for LightRAG only?"*) return 0 ;;
+    *) return 1 ;;
+  esac
+}}
+confirm_default_yes() {{
+  case "$1" in
+    "Ready to proceed and write .env?") return 0 ;;
+    *) return 1 ;;
   esac
 }}
 
-interactive_flow
+env_base_flow
 """
     )
 
     generated_env = (tmp_path / ".env").read_text(encoding="utf-8")
-    generated_compose = (tmp_path / "docker-compose.development.yml").read_text(
+    generated_compose = (tmp_path / "docker-compose.final.yml").read_text(
         encoding="utf-8"
     )
 
-    assert "LIGHTRAG_SETUP_PROFILE=development" in generated_env
     assert "LLM_BINDING=ollama" in generated_env
     assert "EMBEDDING_BINDING=ollama" in generated_env
     assert "services:" in generated_compose
@@ -1912,10 +1894,10 @@ interactive_flow
     assert "env_file:" not in generated_compose
 
 
-def test_interactive_flow_collects_image_tags_after_rerank_service_selection(
+def test_env_base_flow_registers_vllm_rerank_service_for_docker_deployment(
     tmp_path: Path,
 ) -> None:
-    """Interactive flow should include rerank-selected services in image-tag prompts."""
+    """Choosing docker rerank in env-base should add vllm-rerank to DOCKER_SERVICE_SET."""
 
     output = run_bash(
         f"""
@@ -1924,29 +1906,28 @@ source "{REPO_ROOT}/scripts/setup/setup.sh"
 REPO_ROOT="{tmp_path}"
 reset_state
 
-select_deployment_type() {{ printf 'development'; }}
-select_storage_backends() {{
-  ENV_VALUES[LIGHTRAG_KV_STORAGE]="JsonKVStorage"
-  ENV_VALUES[LIGHTRAG_VECTOR_STORAGE]="NanoVectorDBStorage"
-  ENV_VALUES[LIGHTRAG_GRAPH_STORAGE]="NetworkXStorage"
-  ENV_VALUES[LIGHTRAG_DOC_STATUS_STORAGE]="JsonDocStatusStorage"
-}}
 collect_llm_config() {{ :; }}
 collect_embedding_config() {{ :; }}
-collect_rerank_config() {{ add_docker_service "vllm-rerank"; }}
-collect_server_config() {{ :; }}
-collect_security_config() {{ :; }}
-collect_observability_config() {{ :; }}
-collect_docker_image_tags() {{
+prompt_with_default() {{ printf '%s' "$2"; }}
+confirm_default_no() {{
+  case "$1" in
+    "Run embedding model locally via Docker (vLLM)?") return 1 ;;
+    "Enable reranking?") return 0 ;;
+    "Run rerank service locally via Docker?") return 0 ;;
+    *) return 1 ;;
+  esac
+}}
+confirm_default_yes() {{ return 1; }}
+
+finalize_base_setup() {{
   if [[ -n "${{DOCKER_SERVICE_SET[vllm-rerank]+set}}" ]]; then
     printf 'HAS_VLLM_SERVICE=yes\\n'
   else
     printf 'HAS_VLLM_SERVICE=no\\n'
   fi
 }}
-finalize_setup() {{ :; }}
 
-interactive_flow
+env_base_flow
 """
     )
     values = parse_lines(output)
@@ -1954,10 +1935,10 @@ interactive_flow
     assert values["HAS_VLLM_SERVICE"] == "yes"
 
 
-def test_production_flow_resets_existing_storage_settings_to_production_preset(
+def test_env_storage_flow_applies_selected_storage_backends(
     tmp_path: Path,
 ) -> None:
-    """Production flow should preselect production storage backends on reruns."""
+    """env-storage should apply selected backends while preserving LLM and embedding settings."""
 
     env_file = tmp_path / ".env"
     env_file.write_text(
@@ -1986,25 +1967,15 @@ set -euo pipefail
 source "{REPO_ROOT}/scripts/setup/setup.sh"
 REPO_ROOT="{tmp_path}"
 
-prompt_choice() {{
-  printf '%s' "$2"
+select_storage_backends() {{
+  ENV_VALUES[LIGHTRAG_KV_STORAGE]="PGKVStorage"
+  ENV_VALUES[LIGHTRAG_VECTOR_STORAGE]="MilvusVectorDBStorage"
+  ENV_VALUES[LIGHTRAG_GRAPH_STORAGE]="Neo4JStorage"
+  ENV_VALUES[LIGHTRAG_DOC_STATUS_STORAGE]="PGDocStatusStorage"
 }}
-confirm_default_yes() {{
-  return 1
-}}
-prompt_with_default() {{
-  printf '%s' "$2"
-}}
-prompt_until_valid() {{
-  printf '%s' "$2"
-}}
-prompt_secret_with_default() {{
-  printf '%s' "$2"
-}}
-prompt_secret_until_valid_with_default() {{
-  printf '%s' "$2"
-}}
-finalize_setup() {{
+collect_database_config() {{ :; }}
+collect_docker_image_tags() {{ :; }}
+finalize_storage_setup() {{
   printf 'LIGHTRAG_KV_STORAGE=%s\\n' "${{ENV_VALUES[LIGHTRAG_KV_STORAGE]}}"
   printf 'LIGHTRAG_VECTOR_STORAGE=%s\\n' "${{ENV_VALUES[LIGHTRAG_VECTOR_STORAGE]}}"
   printf 'LIGHTRAG_GRAPH_STORAGE=%s\\n' "${{ENV_VALUES[LIGHTRAG_GRAPH_STORAGE]}}"
@@ -2013,7 +1984,7 @@ finalize_setup() {{
   printf 'EMBEDDING_BINDING=%s\\n' "${{ENV_VALUES[EMBEDDING_BINDING]}}"
 }}
 
-production_flow
+env_storage_flow
 """
     )
     values = parse_lines(output)
@@ -2022,14 +1993,18 @@ production_flow
     assert values["LIGHTRAG_VECTOR_STORAGE"] == "MilvusVectorDBStorage"
     assert values["LIGHTRAG_GRAPH_STORAGE"] == "Neo4JStorage"
     assert values["LIGHTRAG_DOC_STATUS_STORAGE"] == "PGDocStatusStorage"
+    # LLM and embedding settings from existing .env are preserved
     assert values["LLM_BINDING"] == "ollama"
     assert values["EMBEDDING_BINDING"] == "ollama"
 
 
-def test_production_flow_collects_image_tags_after_rerank_service_selection(
+def test_env_storage_flow_includes_database_services_in_image_tags(
     tmp_path: Path,
 ) -> None:
-    """Production flow should include rerank-selected services in image-tag prompts."""
+    """env-storage should pass selected database services to collect_docker_image_tags."""
+
+    env_file = tmp_path / ".env"
+    env_file.write_text("LLM_BINDING=openai\n", encoding="utf-8")
 
     output = run_bash(
         f"""
@@ -2038,35 +2013,35 @@ source "{REPO_ROOT}/scripts/setup/setup.sh"
 REPO_ROOT="{tmp_path}"
 reset_state
 
-select_storage_backends() {{ :; }}
+select_storage_backends() {{
+  add_docker_service "postgres"
+}}
 collect_database_config() {{ :; }}
-collect_llm_config() {{ :; }}
-collect_embedding_config() {{ :; }}
-collect_rerank_config() {{ add_docker_service "vllm-rerank"; }}
-collect_server_config() {{ :; }}
-collect_ssl_config() {{ :; }}
-collect_security_config() {{ :; }}
-collect_observability_config() {{ :; }}
 collect_docker_image_tags() {{
-  if [[ -n "${{DOCKER_SERVICE_SET[vllm-rerank]+set}}" ]]; then
-    printf 'HAS_VLLM_SERVICE=yes\\n'
+  if [[ -n "${{DOCKER_SERVICE_SET[postgres]+set}}" ]]; then
+    printf 'HAS_POSTGRES=yes\\n'
   else
-    printf 'HAS_VLLM_SERVICE=no\\n'
+    printf 'HAS_POSTGRES=no\\n'
   fi
 }}
-finalize_setup() {{ :; }}
+finalize_storage_setup() {{ :; }}
 
-production_flow
+env_storage_flow
 """
     )
     values = parse_lines(output)
 
-    assert values["HAS_VLLM_SERVICE"] == "yes"
+    assert values["HAS_POSTGRES"] == "yes"
 
 
-def test_production_flow_generates_env_and_compose_files(tmp_path: Path) -> None:
-    """Production mode should generate a secured production `.env` and compose file."""
+def test_env_storage_flow_generates_env_and_compose_files(tmp_path: Path) -> None:
+    """env-storage should write updated .env and a docker-compose.final.yml."""
 
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "\n".join(["LLM_BINDING=ollama", "EMBEDDING_BINDING=ollama"]) + "\n",
+        encoding="utf-8",
+    )
     (tmp_path / "env.example").write_text(
         (REPO_ROOT / "env.example").read_text(encoding="utf-8"),
         encoding="utf-8",
@@ -2082,95 +2057,39 @@ set -euo pipefail
 source "{REPO_ROOT}/scripts/setup/setup.sh"
 REPO_ROOT="{tmp_path}"
 
-prompt_choice() {{
-  case "$1" in
-    "LLM provider")
-      printf 'ollama'
-      ;;
-    "Embedding provider")
-      printf 'ollama'
-      ;;
-    *)
-      printf '%s' "$2"
-      ;;
-  esac
+select_storage_backends() {{
+  ENV_VALUES[LIGHTRAG_KV_STORAGE]="PGKVStorage"
+  ENV_VALUES[LIGHTRAG_VECTOR_STORAGE]="MilvusVectorDBStorage"
+  ENV_VALUES[LIGHTRAG_GRAPH_STORAGE]="Neo4JStorage"
+  ENV_VALUES[LIGHTRAG_DOC_STATUS_STORAGE]="PGDocStatusStorage"
+  add_docker_service "postgres"
+  add_docker_service "neo4j"
 }}
-prompt_with_default() {{ printf '%s' "$2"; }}
-prompt_until_valid() {{ printf '%s' "$2"; }}
-prompt_secret_with_default() {{
-  case "$1" in
-    "PostgreSQL password: ")
-      printf 'pg-secret'
-      ;;
-    "Neo4j password: ")
-      printf 'neo4j-secret'
-      ;;
-    *)
-      printf '%s' "$2"
-      ;;
-  esac
-}}
+collect_database_config() {{ :; }}
+collect_docker_image_tags() {{ :; }}
+validate_required_variables() {{ return 0; }}
+prompt_secret_with_default() {{ printf '%s' "$2"; }}
 prompt_secret_until_valid_with_default() {{ printf '%s' "$2"; }}
-prompt_clearable_with_default() {{
-  case "$1" in
-    "Auth accounts (user:pass,comma-separated)")
-      printf 'admin:prod-pass'
-      ;;
-    "Whitelist paths (comma-separated)")
-      printf '/health'
-      ;;
-    *)
-      printf '%s' "$2"
-      ;;
-  esac
-}}
-prompt_clearable_secret_with_default() {{
-  case "$1" in
-    "JWT token secret: ")
-      printf 'prod-token-secret'
-      ;;
-    *)
-      printf '%s' "$2"
-      ;;
-  esac
-}}
 confirm_default_yes() {{
   case "$1" in
-    "Configure authentication and API key settings?"|"Next step will generate the .env file. Ready to proceed or cancel?")
-      return 0
-      ;;
-    *)
-      return 1
-      ;;
+    "Ready to proceed and write .env?") return 0 ;;
+    *) return 1 ;;
   esac
 }}
-confirm_default_no() {{
-  case "$1" in
-    "Generate docker-compose for LightRAG only?")
-      return 0
-      ;;
-    *)
-      return 1
-      ;;
-  esac
-}}
+confirm_default_no() {{ return 1; }}
 
-production_flow
+env_storage_flow
 """
     )
 
     generated_env = (tmp_path / ".env").read_text(encoding="utf-8")
-    generated_compose = (tmp_path / "docker-compose.production.yml").read_text(
+    generated_compose = (tmp_path / "docker-compose.final.yml").read_text(
         encoding="utf-8"
     )
 
-    assert "LIGHTRAG_SETUP_PROFILE=production" in generated_env
     assert "LIGHTRAG_KV_STORAGE=PGKVStorage" in generated_env
-    assert "LIGHTRAG_VECTOR_STORAGE=MilvusVectorDBStorage" in generated_env
     assert "LIGHTRAG_GRAPH_STORAGE=Neo4JStorage" in generated_env
-    assert "LIGHTRAG_DOC_STATUS_STORAGE=PGDocStatusStorage" in generated_env
-    assert "AUTH_ACCOUNTS=admin:prod-pass" in generated_env
-    assert "TOKEN_SECRET=prod-token-secret" in generated_env
+    assert "LLM_BINDING=ollama" in generated_env
     assert "services:" in generated_compose
     assert "  lightrag:" in generated_compose
     assert "env_file:" not in generated_compose
@@ -3060,10 +2979,10 @@ fi
     assert values["RESULT"] == "failure"
 
 
-def test_finalize_setup_fails_when_selected_services_never_become_ready(
+def test_finalize_setup_generates_compose_and_does_not_auto_start_services(
     tmp_path: Path,
 ) -> None:
-    """Setup should fail fast instead of reporting success on broken dependency startup."""
+    """finalize_setup should generate a compose file and return success without starting services."""
 
     env_example = tmp_path / "env.example"
     env_example.write_text(
@@ -3086,7 +3005,7 @@ source "{REPO_ROOT}/scripts/setup/setup.sh"
 REPO_ROOT="{tmp_path}"
 reset_state
 DEPLOYMENT_TYPE="development"
-DOCKER_SERVICES=("redis")
+add_docker_service "redis"
 
 ENV_VALUES[LIGHTRAG_KV_STORAGE]="JsonKVStorage"
 ENV_VALUES[LIGHTRAG_VECTOR_STORAGE]="NanoVectorDBStorage"
@@ -3095,11 +3014,11 @@ ENV_VALUES[LIGHTRAG_DOC_STATUS_STORAGE]="JsonDocStatusStorage"
 
 confirm_default_no() {{ return 0; }}
 confirm_default_yes() {{ return 0; }}
-check_docker_availability() {{ return 0; }}
 backup_env_file() {{ return 0; }}
 generate_env_file() {{ :; }}
-generate_docker_compose() {{ :; }}
-wait_for_services() {{ return 1; }}
+generate_docker_compose() {{
+  printf 'COMPOSE_GENERATED=yes\\n'
+}}
 docker() {{
   printf '%s\\n' "$*" >> "$REPO_ROOT/docker_calls.log"
 }}
@@ -3112,15 +3031,12 @@ fi
 """
     )
     values = parse_lines(output)
-    docker_calls = (
-        (tmp_path / "docker_calls.log").read_text(encoding="utf-8").splitlines()
-    )
 
-    assert values["RESULT"] == "failure"
-    assert any(
-        f"compose -f {tmp_path}/docker-compose.development.yml up -d redis" in call
-        for call in docker_calls
-    )
+    # finalize_setup generates the compose file and returns success;
+    # service startup is left to the user (no automatic docker compose up)
+    assert values["RESULT"] == "success"
+    assert values["COMPOSE_GENERATED"] == "yes"
+    assert not (tmp_path / "docker_calls.log").exists()
 
 
 def test_validate_security_config_requires_auth_accounts_for_production() -> None:
@@ -3761,13 +3677,17 @@ finalize_setup
     assert backups[0].read_text(encoding="utf-8") == env_content
 
 
-def test_interactive_flow_custom_deployment_skips_preset_loading(
+def test_env_storage_flow_uses_custom_storage_selection_without_preset(
     tmp_path: Path,
 ) -> None:
-    """Custom deployment type should not apply development or production preset defaults."""
+    """env-storage should use the stub's custom selection without applying any preset."""
 
     (tmp_path / "env.example").write_text(
         "LLM_BINDING=openai\n",
+        encoding="utf-8",
+    )
+    (tmp_path / ".env").write_text(
+        "LLM_BINDING=openai\nLLM_BINDING_API_KEY=sk-test\n",
         encoding="utf-8",
     )
 
@@ -3776,10 +3696,8 @@ def test_interactive_flow_custom_deployment_skips_preset_loading(
 set -euo pipefail
 source "{REPO_ROOT}/scripts/setup/setup.sh"
 REPO_ROOT="{tmp_path}"
-reset_state
 
-# Stub everything interactive; focus on verifying the custom path skips presets.
-select_deployment_type() {{ printf 'custom'; }}
+# Stub everything interactive; focus on verifying no preset is auto-applied.
 select_storage_backends() {{
   ENV_VALUES[LIGHTRAG_KV_STORAGE]="JsonKVStorage"
   ENV_VALUES[LIGHTRAG_VECTOR_STORAGE]="NanoVectorDBStorage"
@@ -3787,25 +3705,17 @@ select_storage_backends() {{
   ENV_VALUES[LIGHTRAG_DOC_STATUS_STORAGE]="JsonDocStatusStorage"
 }}
 collect_database_config() {{ :; }}
-collect_llm_config() {{ :; }}
-collect_embedding_config() {{ :; }}
-collect_rerank_config() {{ :; }}
 collect_docker_image_tags() {{ :; }}
-collect_server_config() {{ :; }}
-collect_security_config() {{ :; }}
-collect_observability_config() {{ :; }}
-finalize_setup() {{ :; }}
+finalize_storage_setup() {{
+  printf 'KV=%s\\n' "${{ENV_VALUES[LIGHTRAG_KV_STORAGE]:-}}"
+  printf 'VECTOR=%s\\n' "${{ENV_VALUES[LIGHTRAG_VECTOR_STORAGE]:-}}"
+}}
 
-interactive_flow
-
-printf 'DEPLOYMENT=%s\\n' "$DEPLOYMENT_TYPE"
-printf 'KV=%s\\n' "${{ENV_VALUES[LIGHTRAG_KV_STORAGE]:-}}"
-printf 'VECTOR=%s\\n' "${{ENV_VALUES[LIGHTRAG_VECTOR_STORAGE]:-}}"
+env_storage_flow
 """
     )
 
     values = parse_lines(output)
-    assert values["DEPLOYMENT"] == "custom"
-    # Custom path must not load development or production presets (PGKVStorage etc.)
+    # env-storage must not auto-apply development or production presets
     assert values["KV"] == "JsonKVStorage"
     assert values["VECTOR"] == "NanoVectorDBStorage"

@@ -38,6 +38,9 @@ help:
 	@printf "  You can also edit POSTGRES_IMAGE, NEO4J_IMAGE_TAG, etc. in .env.\n"
 	@printf "  Compose file output: docker-compose.final.yml\n"
 
+configure:
+	@$(SETUP_BASH) $(SETUP_SCRIPT) --base $(SETUP_OPTS)
+
 env-base:
 	@$(SETUP_BASH) $(SETUP_SCRIPT) --base $(SETUP_OPTS)
 
