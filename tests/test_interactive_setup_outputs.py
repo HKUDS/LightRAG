@@ -1998,41 +1998,6 @@ env_storage_flow
     assert values["EMBEDDING_BINDING"] == "ollama"
 
 
-def test_env_storage_flow_includes_database_services_in_image_tags(
-    tmp_path: Path,
-) -> None:
-    """env-storage should pass selected database services to collect_docker_image_tags."""
-
-    env_file = tmp_path / ".env"
-    env_file.write_text("LLM_BINDING=openai\n", encoding="utf-8")
-
-    output = run_bash(
-        f"""
-set -euo pipefail
-source "{REPO_ROOT}/scripts/setup/setup.sh"
-REPO_ROOT="{tmp_path}"
-reset_state
-
-select_storage_backends() {{
-  add_docker_service "postgres"
-}}
-collect_database_config() {{ :; }}
-collect_docker_image_tags() {{
-  if [[ -n "${{DOCKER_SERVICE_SET[postgres]+set}}" ]]; then
-    printf 'HAS_POSTGRES=yes\\n'
-  else
-    printf 'HAS_POSTGRES=no\\n'
-  fi
-}}
-finalize_storage_setup() {{ :; }}
-
-env_storage_flow
-"""
-    )
-    values = parse_lines(output)
-
-    assert values["HAS_POSTGRES"] == "yes"
-
 
 def test_env_storage_flow_generates_env_and_compose_files(tmp_path: Path) -> None:
     """env-storage should write updated .env and a docker-compose.final.yml."""

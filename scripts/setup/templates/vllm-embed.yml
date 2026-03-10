@@ -1,5 +1,5 @@
   vllm-embed:
-    image: vllm/vllm-openai-cpu:${VLLM_EMBED_IMAGE_TAG:-latest}
+    image: vllm/vllm-openai-cpu:latest
     command: >
       --model ${VLLM_EMBED_MODEL:-BAAI/bge-m3}
       --port ${VLLM_EMBED_PORT:-8001}

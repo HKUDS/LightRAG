@@ -1,5 +1,5 @@
   vllm-embed:
-    image: vllm/vllm-openai:${VLLM_EMBED_IMAGE_TAG:-latest}
+    image: vllm/vllm-openai:latest
     runtime: nvidia
     command: >
       --model ${VLLM_EMBED_MODEL:-BAAI/bge-m3}

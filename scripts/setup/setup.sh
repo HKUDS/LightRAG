@@ -21,28 +21,6 @@ declare -A DOCKER_SERVICE_SET
 declare -a DOCKER_SERVICES
 SSL_CERT_SOURCE_PATH=""
 SSL_KEY_SOURCE_PATH=""
-declare -A DOCKER_IMAGE_DEFAULTS=(
-  ["postgres"]="gzdaniel/postgres-for-rag:16.6"
-  ["neo4j"]="5.26.19-community"
-  ["mongodb"]="8.2.3"
-  ["redis"]="8.4"
-  ["milvus"]="2.6-20251227-44275071"
-  ["etcd"]="v3.5.16"
-  ["minio"]="RELEASE.2024-12-13T22-19-12Z"
-  ["qdrant"]="v1.16.0"
-  ["memgraph"]="3.7.2"
-)
-declare -A DOCKER_IMAGE_ENV=(
-  ["postgres"]="POSTGRES_IMAGE"
-  ["neo4j"]="NEO4J_IMAGE_TAG"
-  ["mongodb"]="MONGODB_IMAGE_TAG"
-  ["redis"]="REDIS_IMAGE_TAG"
-  ["milvus"]="MILVUS_IMAGE_TAG"
-  ["etcd"]="ETCD_IMAGE_TAG"
-  ["minio"]="MINIO_IMAGE_TAG"
-  ["qdrant"]="QDRANT_IMAGE_TAG"
-  ["memgraph"]="MEMGRAPH_IMAGE_TAG"
-)
 DEPLOYMENT_TYPE=""
 DEBUG="${DEBUG:-false}"
 
@@ -1504,42 +1482,6 @@ collect_observability_config() {
   ENV_VALUES["LANGFUSE_ENABLE_TRACE"]="true"
 }
 
-collect_docker_image_tags() {
-  local service env_var default_tag selected_tag
-  local -a tag_services=()
-
-  if ((${#DOCKER_SERVICES[@]} == 0)); then
-    return
-  fi
-
-  tag_services=("${DOCKER_SERVICES[@]}")
-  if [[ -n "${DOCKER_SERVICE_SET[milvus]+set}" ]]; then
-    tag_services+=("etcd" "minio")
-  fi
-
-  log_info "Docker image settings for selected services:"
-  for service in "${tag_services[@]}"; do
-    env_var="${DOCKER_IMAGE_ENV[$service]}"
-    default_tag="${DOCKER_IMAGE_DEFAULTS[$service]}"
-    if [[ -n "$env_var" && -n "$default_tag" ]]; then
-      ENV_VALUES["$env_var"]="${ENV_VALUES[$env_var]:-$default_tag}"
-      echo "  - $service: ${ENV_VALUES[$env_var]} ($env_var)"
-    fi
-  done
-
-  if confirm_default_no "Keep these image settings?"; then
-    return
-  fi
-
-  for service in "${tag_services[@]}"; do
-    env_var="${DOCKER_IMAGE_ENV[$service]}"
-    default_tag="${ENV_VALUES[$env_var]:-${DOCKER_IMAGE_DEFAULTS[$service]}}"
-    if [[ -n "$env_var" ]]; then
-      selected_tag="$(prompt_with_default "Image setting for $service ($env_var)" "$default_tag")"
-      ENV_VALUES["$env_var"]="$selected_tag"
-    fi
-  done
-}
 
 show_summary() {
   local key
@@ -1942,7 +1884,6 @@ env_storage_flow() {
     fi
   done
 
-  collect_docker_image_tags
   finalize_storage_setup
 }
 
