@@ -100,7 +100,7 @@ Applies PostgreSQL + Neo4j storage defaults and then prompts for:
 - Docker image versions
 - Security: AUTH_ACCOUNTS, TOKEN_SECRET, TOKEN_EXPIRE_HOURS, LIGHTRAG_API_KEY, WHITELIST_PATHS
 - SSL: certificate and key paths (copied into `./data/certs/` and mounted in the container)
-- Docker Compose generation and optional service startup
+- Docker Compose generation
 
 ### `make env-validate` — Validate Existing `.env`
 
@@ -217,4 +217,4 @@ make env-validate
   corresponding `DTYPE=float16`. Requires the NVIDIA Container Toolkit installed on the host.
 - SSL certificates are copied into `./data/certs/` and mounted into the container; `.env` keeps
   the original host paths for direct host usage.
-- The `configure` Make target is an alias for `make env`.
+- The `configure` Make target is an alias for `make env-quick`.
