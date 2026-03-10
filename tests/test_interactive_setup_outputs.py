@@ -1068,10 +1068,10 @@ printf 'EMBEDDING_BINDING_HOST=%s\\n' "${{ENV_VALUES[EMBEDDING_BINDING_HOST]}}"
     assert values["EMBEDDING_BINDING_HOST"] == "http://localhost:9600"
 
 
-def test_collect_rerank_config_clears_stale_api_key_when_disabled(
+def test_collect_rerank_config_preserves_api_key_when_disabled(
     tmp_path: Path,
 ) -> None:
-    """Disabling reranking should remove stale credentials from a prior config."""
+    """Disabling reranking should preserve credentials so they survive re-enable."""
 
     env_file = tmp_path / ".env"
     env_file.write_text(
@@ -1080,7 +1080,7 @@ def test_collect_rerank_config_clears_stale_api_key_when_disabled(
                 "RERANK_BINDING=cohere",
                 "RERANK_MODEL=rerank-v3.5",
                 "RERANK_BINDING_HOST=https://api.cohere.com/v1/rerank",
-                "RERANK_BINDING_API_KEY=${COHERE_API_KEY}",
+                "RERANK_BINDING_API_KEY=test-api-key-literal",
             ]
         )
         + "\n",
@@ -1095,6 +1095,7 @@ REPO_ROOT="{tmp_path}"
 reset_state
 load_existing_env_if_present
 
+confirm_default_yes() {{ return 1; }}
 
 collect_rerank_config
 
@@ -1110,7 +1111,7 @@ fi
     values = parse_lines(output)
 
     assert values["RERANK_BINDING"] == "null"
-    assert values["RERANK_BINDING_API_KEY_SET"] == ""
+    assert values["RERANK_BINDING_API_KEY_SET"] == "set"
     assert values["VALID"] == "yes"
 
 
