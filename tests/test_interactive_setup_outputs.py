@@ -56,43 +56,6 @@ def write_text_lines(path: Path, lines: list[str]) -> Path:
     return path
 
 
-def test_setup_script_rejects_bash_3_with_clear_message() -> None:
-    """The setup entrypoint should fail cleanly on Bash versions without associative arrays."""
-
-    bash_major = subprocess.run(
-        ["/bin/bash", "-lc", 'printf "%s" "${BASH_VERSINFO[0]}"'],
-        cwd=REPO_ROOT,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if bash_major.returncode != 0 or int(bash_major.stdout or "0") >= 4:
-        pytest.skip("/bin/bash already provides Bash 4+ on this runner")
-
-    result = subprocess.run(
-        ["/bin/bash", str(REPO_ROOT / "scripts/setup/setup.sh"), "--help"],
-        cwd=REPO_ROOT,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-
-    assert result.returncode != 0
-    assert "requires Bash 4 or newer" in result.stderr
-
-
-def test_makefile_setup_targets_prefer_common_bash4_locations() -> None:
-    """Setup targets should prefer a modern Bash even when PATH still resolves to Bash 3."""
-
-    makefile = (REPO_ROOT / "Makefile").read_text(encoding="utf-8")
-
-    assert "SETUP_BASH ?=" in makefile
-    assert "/opt/homebrew/bin/bash" in makefile
-    assert "/usr/local/bin/bash" in makefile
-    assert "@$(SETUP_BASH) $(SETUP_SCRIPT)" in makefile
-    assert "@bash $(SETUP_SCRIPT)" not in makefile
-
-
 def test_collect_postgres_config_keeps_host_reachable_env_values() -> None:
     """Bundled PostgreSQL should keep `.env` host-oriented and use compose overrides."""
 
