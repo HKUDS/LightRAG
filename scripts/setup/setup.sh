@@ -1616,8 +1616,8 @@ finalize_setup() {
 
   # When deploying with Docker, the BINDING_HOST in .env is overridden by the compose environment section
   # to point to the appropriate hostname instead of localhost
-  # (e.g., host.docker.internal or the service name in the compose network)  
-  
+  # (e.g., host.docker.internal or the service name in the compose network)
+
   backup_path="$(backup_env_file)"
   if [[ -n "$backup_path" ]]; then
     log_success "Backed up existing .env to $backup_path"
