@@ -2057,8 +2057,13 @@ finalize_server_setup() {
     compose_file="$existing_compose"
     generate_compose="yes"
     # Detect and preserve all existing services (vLLM + storage).
+    # Only re-add services that have a standalone template; sub-services
+    # embedded in another template (e.g. etcd/minio inside milvus.yml) are
+    # re-included automatically when their parent template is appended.
     while IFS= read -r svc; do
-      add_docker_service "$svc"
+      if [[ -f "$TEMPLATES_DIR/${svc}.yml" ]]; then
+        add_docker_service "$svc"
+      fi
     done < <(detect_compose_services "$existing_compose")
   fi
 

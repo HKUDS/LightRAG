@@ -2455,6 +2455,59 @@ generate_docker_compose "$REPO_ROOT/docker-compose.generated.yml"
     assert "${PORT:-9621}:9621" in generated_compose
 
 
+def test_finalize_server_setup_skips_embedded_milvus_sub_services(
+    tmp_path: Path,
+) -> None:
+    """finalize_server_setup must not abort when the existing compose has etcd/minio."""
+
+    compose_file = tmp_path / "docker-compose.final.yml"
+    compose_file.write_text(
+        "\n".join(
+            [
+                "services:",
+                "  lightrag:",
+                "    image: example/lightrag:test",
+                "  milvus:",
+                "    image: milvusdb/milvus:v2.6.11",
+                "  etcd:",
+                "    image: quay.io/coreos/etcd:v3.5.16",
+                "  minio:",
+                "    image: minio/minio:RELEASE.2024-12-13T22-19-12Z",
+                "volumes:",
+                "  milvus_data:",
+                "  etcd_data:",
+                "  minio_data:",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "env.example").write_text(
+        (REPO_ROOT / "env.example").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+
+    # Should complete without error; etcd/minio have no standalone templates.
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+collect_server_config() {{ :; }}
+collect_security_config() {{ :; }}
+collect_ssl_config() {{ :; }}
+finalize_server_setup
+"""
+    )
+
+    result = compose_file.read_text(encoding="utf-8")
+    # milvus template (which embeds etcd+minio) must be present.
+    assert "milvus" in result
+    assert "etcd" in result
+    assert "minio" in result
+
+
 def test_validate_uri_accepts_neo4j_self_signed_tls_scheme() -> None:
     """Neo4j self-signed TLS URIs should pass validation."""
 
