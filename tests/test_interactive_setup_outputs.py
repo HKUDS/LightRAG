@@ -43,6 +43,19 @@ def parse_lines(output: str) -> dict[str, str]:
     return values
 
 
+def run_bash_lines(script: str, cwd: Path | None = None) -> dict[str, str]:
+    """Run a bash snippet and parse KEY=value lines from stdout."""
+
+    return parse_lines(run_bash(script, cwd=cwd))
+
+
+def write_text_lines(path: Path, lines: list[str]) -> Path:
+    """Write lines to a fixture file with a trailing newline."""
+
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path
+
+
 def test_setup_script_rejects_bash_3_with_clear_message() -> None:
     """The setup entrypoint should fail cleanly on Bash versions without associative arrays."""
 
@@ -127,23 +140,113 @@ printf 'DOCKER_SERVICE=%s\\n' "${{DOCKER_SERVICES[0]}}"
     assert values["DOCKER_SERVICE"] == "postgres"
 
 
-def test_collect_local_service_configs_reset_remote_endpoints_on_rerun() -> None:
-    """Bundled services should default back to host-local endpoints on reruns."""
+@pytest.mark.parametrize(
+    ("setup_lines", "collector_call", "env_key", "expected_value"),
+    [
+        (
+            ['ENV_VALUES[POSTGRES_HOST]="db.example.com"', 'ENV_VALUES[POSTGRES_PORT]="6543"'],
+            "collect_postgres_config yes",
+            "POSTGRES_HOST",
+            "localhost",
+        ),
+        (
+            ['ENV_VALUES[POSTGRES_HOST]="db.example.com"', 'ENV_VALUES[POSTGRES_PORT]="6543"'],
+            "collect_postgres_config yes",
+            "POSTGRES_PORT",
+            "6543",
+        ),
+        (
+            ['ENV_VALUES[NEO4J_URI]="neo4j+s://graph.example.com"'],
+            "collect_neo4j_config yes",
+            "NEO4J_URI",
+            "neo4j://localhost:7687",
+        ),
+        (
+            ['ENV_VALUES[MONGO_URI]="mongodb://mongo.example.com:27018/"'],
+            "collect_mongodb_config yes",
+            "MONGO_URI",
+            "mongodb://localhost:27017/",
+        ),
+        (
+            ['ENV_VALUES[REDIS_URI]="redis://cache.example.com:6380/1"'],
+            "collect_redis_config yes",
+            "REDIS_URI",
+            "redis://localhost:6379/",
+        ),
+        (
+            ['ENV_VALUES[MILVUS_URI]="http://milvus.example.com:19530"'],
+            "collect_milvus_config yes",
+            "MILVUS_URI",
+            "http://localhost:19530",
+        ),
+        (
+            ['ENV_VALUES[QDRANT_URL]="http://qdrant.example.com:6333"'],
+            "collect_qdrant_config yes",
+            "QDRANT_URL",
+            "http://localhost:6333",
+        ),
+        (
+            ['ENV_VALUES[MEMGRAPH_URI]="bolt://memgraph.example.com:7687"'],
+            "collect_memgraph_config yes",
+            "MEMGRAPH_URI",
+            "bolt://localhost:7687",
+        ),
+        (
+            ['ENV_VALUES[NEO4J_URI]="neo4j://localhost:7777"'],
+            "collect_neo4j_config yes",
+            "NEO4J_URI",
+            "neo4j://localhost:7687",
+        ),
+        (
+            ['ENV_VALUES[MILVUS_URI]="http://localhost:29530"'],
+            "collect_milvus_config yes",
+            "MILVUS_URI",
+            "http://localhost:19530",
+        ),
+        (
+            ['ENV_VALUES[QDRANT_URL]="http://localhost:16333"'],
+            "collect_qdrant_config yes",
+            "QDRANT_URL",
+            "http://localhost:6333",
+        ),
+        (
+            ['ENV_VALUES[MEMGRAPH_URI]="bolt://localhost:17687"'],
+            "collect_memgraph_config yes",
+            "MEMGRAPH_URI",
+            "bolt://localhost:7687",
+        ),
+    ],
+    ids=[
+        "postgres-remote-host",
+        "postgres-port-preserved",
+        "neo4j-remote-uri",
+        "mongodb-remote-uri",
+        "redis-remote-uri",
+        "milvus-remote-uri",
+        "qdrant-remote-uri",
+        "memgraph-remote-uri",
+        "neo4j-local-port",
+        "milvus-local-port",
+        "qdrant-local-port",
+        "memgraph-local-port",
+    ],
+)
+def test_collect_local_service_configs_normalize_stale_values(
+    setup_lines: list[str],
+    collector_call: str,
+    env_key: str,
+    expected_value: str,
+) -> None:
+    """Bundled services should normalize stale remote or localhost endpoints on rerun."""
 
-    output = run_bash(
+    setup_block = "\n".join(setup_lines)
+    values = run_bash_lines(
         f"""
 set -euo pipefail
 source "{REPO_ROOT}/scripts/setup/setup.sh"
 reset_state
 
-ENV_VALUES[POSTGRES_HOST]="db.example.com"
-ENV_VALUES[POSTGRES_PORT]="6543"
-ENV_VALUES[NEO4J_URI]="neo4j+s://graph.example.com"
-ENV_VALUES[MONGO_URI]="mongodb://mongo.example.com:27018/"
-ENV_VALUES[REDIS_URI]="redis://cache.example.com:6380/1"
-ENV_VALUES[MILVUS_URI]="http://milvus.example.com:19530"
-ENV_VALUES[QDRANT_URL]="http://qdrant.example.com:6333"
-ENV_VALUES[MEMGRAPH_URI]="bolt://memgraph.example.com:7687"
+{setup_block}
 
 confirm_default_yes() {{ return 0; }}
 prompt_with_default() {{
@@ -159,34 +262,13 @@ prompt_with_default() {{
 prompt_until_valid() {{ printf '%s' "$2"; }}
 prompt_secret_with_default() {{ printf '%s' "$2"; }}
 
-collect_postgres_config yes
-collect_neo4j_config yes
-collect_mongodb_config yes
-collect_redis_config yes
-collect_milvus_config yes
-collect_qdrant_config yes
-collect_memgraph_config yes
+{collector_call}
 
-printf 'POSTGRES_HOST=%s\\n' "${{ENV_VALUES[POSTGRES_HOST]}}"
-printf 'POSTGRES_PORT=%s\\n' "${{ENV_VALUES[POSTGRES_PORT]}}"
-printf 'NEO4J_URI=%s\\n' "${{ENV_VALUES[NEO4J_URI]}}"
-printf 'MONGO_URI=%s\\n' "${{ENV_VALUES[MONGO_URI]}}"
-printf 'REDIS_URI=%s\\n' "${{ENV_VALUES[REDIS_URI]}}"
-printf 'MILVUS_URI=%s\\n' "${{ENV_VALUES[MILVUS_URI]}}"
-printf 'QDRANT_URL=%s\\n' "${{ENV_VALUES[QDRANT_URL]}}"
-printf 'MEMGRAPH_URI=%s\\n' "${{ENV_VALUES[MEMGRAPH_URI]}}"
+printf '{env_key}=%s\\n' "${{ENV_VALUES[{env_key}]}}"
 """
     )
-    values = parse_lines(output)
 
-    assert values["POSTGRES_HOST"] == "localhost"
-    assert values["POSTGRES_PORT"] == "6543"
-    assert values["NEO4J_URI"] == "neo4j://localhost:7687"
-    assert values["MONGO_URI"] == "mongodb://localhost:27017/"
-    assert values["REDIS_URI"] == "redis://localhost:6379/"
-    assert values["MILVUS_URI"] == "http://localhost:19530"
-    assert values["QDRANT_URL"] == "http://localhost:6333"
-    assert values["MEMGRAPH_URI"] == "bolt://localhost:7687"
+    assert values[env_key] == expected_value
 
 
 def test_prepare_compose_runtime_overrides_keeps_env_unchanged() -> None:
@@ -314,23 +396,19 @@ generate_docker_compose "$REPO_ROOT/docker-compose.generated.yml"
 def test_generate_docker_compose_removes_lightrag_env_file_to_preserve_dollar_values(
     tmp_path: Path,
 ) -> None:
-    """Generated compose should not re-parse `.env` values through Docker's env_file."""
+    """Generated compose should remove `env_file` and skip empty environment blocks."""
 
-    compose_file = tmp_path / "docker-compose.yml"
-    compose_file.write_text(
-        "\n".join(
-            [
-                "services:",
-                "  lightrag:",
-                "    image: example/lightrag:test",
-                "    env_file:",
-                "      - .env",
-                "    volumes:",
-                "      - ./.env:/app/.env",
-            ]
-        )
-        + "\n",
-        encoding="utf-8",
+    write_text_lines(
+        tmp_path / "docker-compose.yml",
+        [
+            "services:",
+            "  lightrag:",
+            "    image: example/lightrag:test",
+            "    env_file:",
+            "      - .env",
+            "    volumes:",
+            "      - ./.env:/app/.env",
+        ],
     )
 
     run_bash(
@@ -349,6 +427,7 @@ generate_docker_compose "$REPO_ROOT/docker-compose.generated.yml"
     )
 
     assert "env_file:" not in generated_compose
+    assert "environment:" not in generated_compose
     assert "- ./.env:/app/.env" in generated_compose
 
 
@@ -509,42 +588,6 @@ printf 'SSL_KEY_SOURCE_PATH=%s\\n' "$SSL_KEY_SOURCE_PATH"
     assert values["SSL_KEY_SOURCE_PATH"] == ""
 
 
-def test_generate_docker_compose_skips_environment_block_without_overrides(
-    tmp_path: Path,
-) -> None:
-    """Compose generation should not add a `lightrag.environment` block when unused."""
-
-    compose_file = tmp_path / "docker-compose.yml"
-    compose_file.write_text(
-        "\n".join(
-            [
-                "services:",
-                "  lightrag:",
-                "    image: example/lightrag:test",
-                "    env_file:",
-                "      - .env",
-            ]
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-
-    run_bash(
-        f"""
-set -euo pipefail
-source "{REPO_ROOT}/scripts/setup/setup.sh"
-REPO_ROOT="{tmp_path}"
-reset_state
-generate_docker_compose "$REPO_ROOT/docker-compose.generated.yml"
-"""
-    )
-
-    generated_compose = (tmp_path / "docker-compose.generated.yml").read_text(
-        encoding="utf-8"
-    )
-    assert "environment:" not in generated_compose
-
-
 def test_validate_env_file_rejects_missing_ssl_files(tmp_path: Path) -> None:
     """Validation should fail when SSL is enabled with missing cert/key paths."""
 
@@ -699,26 +742,44 @@ fi
     assert values["VALID"] == "no"
 
 
-def test_collect_llm_config_clears_stale_api_key_for_bedrock(
-    tmp_path: Path,
-) -> None:
-    """Switching to Bedrock should remove stale OpenAI API key settings."""
-
-    env_file = tmp_path / ".env"
-    env_file.write_text(
-        "\n".join(
+@pytest.mark.parametrize(
+    ("collector_name", "binding_prefix", "env_lines"),
+    [
+        (
+            "collect_llm_config",
+            "LLM",
             [
                 "LLM_BINDING=openai",
                 "LLM_MODEL=gpt-4o",
                 "LLM_BINDING_HOST=https://api.openai.com/v1",
                 "LLM_BINDING_API_KEY=${OPENAI_API_KEY}",
-            ]
-        )
-        + "\n",
-        encoding="utf-8",
-    )
+            ],
+        ),
+        (
+            "collect_embedding_config",
+            "EMBEDDING",
+            [
+                "EMBEDDING_BINDING=openai",
+                "EMBEDDING_MODEL=text-embedding-3-large",
+                "EMBEDDING_DIM=3072",
+                "EMBEDDING_BINDING_HOST=https://api.openai.com/v1",
+                "EMBEDDING_BINDING_API_KEY=${OPENAI_API_KEY}",
+            ],
+        ),
+    ],
+    ids=["llm-bedrock-clears-api-key", "embedding-bedrock-clears-api-key"],
+)
+def test_collect_provider_config_clears_stale_api_key_for_bedrock(
+    tmp_path: Path,
+    collector_name: str,
+    binding_prefix: str,
+    env_lines: list[str],
+) -> None:
+    """Switching a provider to Bedrock should remove stale API-key settings."""
 
-    output = run_bash(
+    write_text_lines(tmp_path / ".env", env_lines)
+
+    values = run_bash_lines(
         f"""
 set -euo pipefail
 source "{REPO_ROOT}/scripts/setup/setup.sh"
@@ -732,10 +793,10 @@ prompt_required_secret() {{ printf 'dummy-secret'; }}
 mask_sensitive_input() {{ printf ''; }}
 confirm_default_yes() {{ return 0; }}
 
-collect_llm_config
+{collector_name}
 
-printf 'LLM_BINDING=%s\\n' "${{ENV_VALUES[LLM_BINDING]}}"
-printf 'LLM_BINDING_API_KEY_SET=%s\\n' "${{ENV_VALUES[LLM_BINDING_API_KEY]+set}}"
+printf 'BINDING=%s\\n' "${{ENV_VALUES[{binding_prefix}_BINDING]}}"
+printf 'API_KEY_SET=%s\\n' "${{ENV_VALUES[{binding_prefix}_BINDING_API_KEY]+set}}"
 if validate_sensitive_env_literals; then
   printf 'VALID=yes\\n'
 else
@@ -743,61 +804,158 @@ else
 fi
 """
     )
-    values = parse_lines(output)
 
-    assert values["LLM_BINDING"] == "aws_bedrock"
-    assert values["LLM_BINDING_API_KEY_SET"] == ""
+    assert values["BINDING"] == "aws_bedrock"
+    assert values["API_KEY_SET"] == ""
     assert values["VALID"] == "yes"
 
 
-def test_collect_llm_config_uses_provider_specific_defaults() -> None:
-    """Fresh provider selection should not pin the OpenAI model for local backends."""
+@pytest.mark.parametrize(
+    (
+        "collector_name",
+        "binding_prefix",
+        "provider_choice",
+        "secret_stub",
+        "expected_binding",
+        "expected_model",
+        "expected_host",
+        "expected_dim",
+        "expected_api_key_set",
+    ),
+    [
+        (
+            "collect_llm_config",
+            "LLM",
+            "ollama",
+            "",
+            "ollama",
+            "mistral-nemo:latest",
+            "http://localhost:11434",
+            "",
+            "",
+        ),
+        (
+            "collect_embedding_config",
+            "EMBEDDING",
+            "jina",
+            "prompt_secret_until_valid_with_default() { printf 'jina-secret-key'; }",
+            "jina",
+            "jina-embeddings-v4",
+            "https://api.jina.ai/v1/embeddings",
+            "2048",
+            "set",
+        ),
+    ],
+    ids=["llm-provider-defaults", "embedding-provider-defaults"],
+)
+def test_collect_provider_config_uses_provider_specific_defaults(
+    collector_name: str,
+    binding_prefix: str,
+    provider_choice: str,
+    secret_stub: str,
+    expected_binding: str,
+    expected_model: str,
+    expected_host: str,
+    expected_dim: str,
+    expected_api_key_set: str,
+) -> None:
+    """Fresh provider selection should pick provider-specific defaults."""
 
-    output = run_bash(
+    values = run_bash_lines(
         f"""
 set -euo pipefail
 source "{REPO_ROOT}/scripts/setup/setup.sh"
 reset_state
 
-prompt_choice() {{ printf 'ollama'; }}
+prompt_choice() {{ printf '{provider_choice}'; }}
 prompt_with_default() {{ printf '%s' "$2"; }}
+{secret_stub}
 
-collect_llm_config
+{collector_name}
 
-printf 'LLM_BINDING=%s\\n' "${{ENV_VALUES[LLM_BINDING]}}"
-printf 'LLM_MODEL=%s\\n' "${{ENV_VALUES[LLM_MODEL]}}"
-printf 'LLM_BINDING_HOST=%s\\n' "${{ENV_VALUES[LLM_BINDING_HOST]}}"
-printf 'LLM_BINDING_API_KEY_SET=%s\\n' "${{ENV_VALUES[LLM_BINDING_API_KEY]+set}}"
+printf 'BINDING=%s\\n' "${{ENV_VALUES[{binding_prefix}_BINDING]}}"
+printf 'MODEL=%s\\n' "${{ENV_VALUES[{binding_prefix}_MODEL]}}"
+printf 'HOST=%s\\n' "${{ENV_VALUES[{binding_prefix}_BINDING_HOST]}}"
+printf 'DIM=%s\\n' "${{ENV_VALUES[{binding_prefix}_DIM]:-}}"
+printf 'API_KEY_SET=%s\\n' "${{ENV_VALUES[{binding_prefix}_BINDING_API_KEY]+set}}"
 """
     )
-    values = parse_lines(output)
 
-    assert values["LLM_BINDING"] == "ollama"
-    assert values["LLM_MODEL"] == "mistral-nemo:latest"
-    assert values["LLM_BINDING_HOST"] == "http://localhost:11434"
-    assert values["LLM_BINDING_API_KEY_SET"] == ""
+    assert values["BINDING"] == expected_binding
+    assert values["MODEL"] == expected_model
+    assert values["HOST"] == expected_host
+    assert values["DIM"] == expected_dim
+    assert values["API_KEY_SET"] == expected_api_key_set
 
 
-def test_collect_llm_config_preserves_supported_openai_ollama_binding_on_rerun(
-    tmp_path: Path,
-) -> None:
-    """Rerunning setup should keep an existing openai-ollama selection valid."""
-
-    env_file = tmp_path / ".env"
-    env_file.write_text(
-        "\n".join(
+@pytest.mark.parametrize(
+    (
+        "collector_name",
+        "binding_prefix",
+        "env_lines",
+        "prompt_stubs",
+        "expected_binding",
+        "expected_model",
+        "expected_host",
+        "expected_dim",
+        "expected_api_key",
+    ),
+    [
+        (
+            "collect_llm_config",
+            "LLM",
             [
                 "LLM_BINDING=openai-ollama",
                 "LLM_MODEL=llama3.1:8b",
                 "LLM_BINDING_HOST=http://localhost:11434/v1",
                 "LLM_BINDING_API_KEY=sk-local-test-key",
-            ]
-        )
-        + "\n",
-        encoding="utf-8",
-    )
+            ],
+            """
+prompt_with_default() { printf '%s' "$2"; }
+prompt_secret_until_valid_with_default() { printf '%s' "$2"; }
+""",
+            "openai-ollama",
+            "llama3.1:8b",
+            "http://localhost:11434/v1",
+            "",
+            "sk-local-test-key",
+        ),
+        (
+            "collect_embedding_config",
+            "EMBEDDING",
+            [
+                "EMBEDDING_BINDING=lollms",
+                "EMBEDDING_MODEL=lollms_embedding_model",
+                "EMBEDDING_DIM=1024",
+                "EMBEDDING_BINDING_HOST=http://localhost:9600",
+            ],
+            """prompt_with_default() { printf '%s' "$2"; }""",
+            "lollms",
+            "lollms_embedding_model",
+            "http://localhost:9600",
+            "1024",
+            "",
+        ),
+    ],
+    ids=["llm-rerun-preserves-openai-ollama", "embedding-rerun-preserves-lollms"],
+)
+def test_collect_provider_config_preserves_supported_binding_on_rerun(
+    tmp_path: Path,
+    collector_name: str,
+    binding_prefix: str,
+    env_lines: list[str],
+    prompt_stubs: str,
+    expected_binding: str,
+    expected_model: str,
+    expected_host: str,
+    expected_dim: str,
+    expected_api_key: str,
+) -> None:
+    """Reruns should preserve supported provider bindings and their saved settings."""
 
-    output = run_bash(
+    write_text_lines(tmp_path / ".env", env_lines)
+
+    values = run_bash_lines(
         f"""
 set -euo pipefail
 source "{REPO_ROOT}/scripts/setup/setup.sh"
@@ -805,23 +963,23 @@ REPO_ROOT="{tmp_path}"
 reset_state
 load_existing_env_if_present
 
-prompt_with_default() {{ printf '%s' "$2"; }}
-prompt_secret_until_valid_with_default() {{ printf '%s' "$2"; }}
+{prompt_stubs}
 
-collect_llm_config
+{collector_name}
 
-printf 'LLM_BINDING=%s\\n' "${{ENV_VALUES[LLM_BINDING]}}"
-printf 'LLM_MODEL=%s\\n' "${{ENV_VALUES[LLM_MODEL]}}"
-printf 'LLM_BINDING_HOST=%s\\n' "${{ENV_VALUES[LLM_BINDING_HOST]}}"
-printf 'LLM_BINDING_API_KEY=%s\\n' "${{ENV_VALUES[LLM_BINDING_API_KEY]}}"
+printf 'BINDING=%s\\n' "${{ENV_VALUES[{binding_prefix}_BINDING]}}"
+printf 'MODEL=%s\\n' "${{ENV_VALUES[{binding_prefix}_MODEL]}}"
+printf 'HOST=%s\\n' "${{ENV_VALUES[{binding_prefix}_BINDING_HOST]}}"
+printf 'DIM=%s\\n' "${{ENV_VALUES[{binding_prefix}_DIM]:-}}"
+printf 'API_KEY=%s\\n' "${{ENV_VALUES[{binding_prefix}_BINDING_API_KEY]:-}}"
 """
     )
-    values = parse_lines(output)
 
-    assert values["LLM_BINDING"] == "openai-ollama"
-    assert values["LLM_MODEL"] == "llama3.1:8b"
-    assert values["LLM_BINDING_HOST"] == "http://localhost:11434/v1"
-    assert values["LLM_BINDING_API_KEY"] == "sk-local-test-key"
+    assert values["BINDING"] == expected_binding
+    assert values["MODEL"] == expected_model
+    assert values["HOST"] == expected_host
+    assert values["DIM"] == expected_dim
+    assert values["API_KEY"] == expected_api_key
 
 
 def test_collect_embedding_config_forces_ollama_for_openai_ollama_llm(
@@ -829,23 +987,19 @@ def test_collect_embedding_config_forces_ollama_for_openai_ollama_llm(
 ) -> None:
     """`openai-ollama` should not preserve a conflicting embedding provider."""
 
-    env_file = tmp_path / ".env"
-    env_file.write_text(
-        "\n".join(
-            [
-                "LLM_BINDING=openai-ollama",
-                "EMBEDDING_BINDING=openai",
-                "EMBEDDING_MODEL=text-embedding-3-large",
-                "EMBEDDING_DIM=3072",
-                "EMBEDDING_BINDING_HOST=https://api.openai.com/v1",
-                "EMBEDDING_BINDING_API_KEY=local-key",
-            ]
-        )
-        + "\n",
-        encoding="utf-8",
+    write_text_lines(
+        tmp_path / ".env",
+        [
+            "LLM_BINDING=openai-ollama",
+            "EMBEDDING_BINDING=openai",
+            "EMBEDDING_MODEL=text-embedding-3-large",
+            "EMBEDDING_DIM=3072",
+            "EMBEDDING_BINDING_HOST=https://api.openai.com/v1",
+            "EMBEDDING_BINDING_API_KEY=local-key",
+        ],
     )
 
-    output = run_bash(
+    values = run_bash_lines(
         f"""
 set -euo pipefail
 source "{REPO_ROOT}/scripts/setup/setup.sh"
@@ -865,7 +1019,6 @@ printf 'EMBEDDING_BINDING_HOST=%s\\n' "${{ENV_VALUES[EMBEDDING_BINDING_HOST]}}"
 printf 'EMBEDDING_BINDING_API_KEY_SET=%s\\n' "${{ENV_VALUES[EMBEDDING_BINDING_API_KEY]+set}}"
 """
     )
-    values = parse_lines(output)
 
     assert values["EMBEDDING_BINDING"] == "ollama"
     assert values["EMBEDDING_MODEL"] == "bge-m3:latest"
@@ -874,62 +1027,10 @@ printf 'EMBEDDING_BINDING_API_KEY_SET=%s\\n' "${{ENV_VALUES[EMBEDDING_BINDING_AP
     assert values["EMBEDDING_BINDING_API_KEY_SET"] == ""
 
 
-def test_collect_embedding_config_clears_stale_api_key_for_bedrock(
-    tmp_path: Path,
-) -> None:
-    """Switching embedding to Bedrock should remove stale provider API keys."""
-
-    env_file = tmp_path / ".env"
-    env_file.write_text(
-        "\n".join(
-            [
-                "EMBEDDING_BINDING=openai",
-                "EMBEDDING_MODEL=text-embedding-3-large",
-                "EMBEDDING_DIM=3072",
-                "EMBEDDING_BINDING_HOST=https://api.openai.com/v1",
-                "EMBEDDING_BINDING_API_KEY=${OPENAI_API_KEY}",
-            ]
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-
-    output = run_bash(
-        f"""
-set -euo pipefail
-source "{REPO_ROOT}/scripts/setup/setup.sh"
-REPO_ROOT="{tmp_path}"
-reset_state
-load_existing_env_if_present
-
-prompt_choice() {{ printf 'aws_bedrock'; }}
-prompt_with_default() {{ printf '%s' "$2"; }}
-prompt_required_secret() {{ printf 'dummy-secret'; }}
-mask_sensitive_input() {{ printf ''; }}
-confirm_default_yes() {{ return 0; }}
-
-collect_embedding_config
-
-printf 'EMBEDDING_BINDING=%s\\n' "${{ENV_VALUES[EMBEDDING_BINDING]}}"
-printf 'EMBEDDING_BINDING_API_KEY_SET=%s\\n' "${{ENV_VALUES[EMBEDDING_BINDING_API_KEY]+set}}"
-if validate_sensitive_env_literals; then
-  printf 'VALID=yes\\n'
-else
-  printf 'VALID=no\\n'
-fi
-"""
-    )
-    values = parse_lines(output)
-
-    assert values["EMBEDDING_BINDING"] == "aws_bedrock"
-    assert values["EMBEDDING_BINDING_API_KEY_SET"] == ""
-    assert values["VALID"] == "yes"
-
-
 def test_collect_llm_config_allows_bedrock_ambient_credential_chain() -> None:
     """Bedrock setup should allow IAM roles, AWS profiles, or SSO without saved keys."""
 
-    output = run_bash(
+    values = run_bash_lines(
         f"""
 set -euo pipefail
 source "{REPO_ROOT}/scripts/setup/setup.sh"
@@ -950,7 +1051,6 @@ printf 'AWS_SESSION_TOKEN_SET=%s\\n' "${{ENV_VALUES[AWS_SESSION_TOKEN]+set}}"
 printf 'AWS_REGION_SET=%s\\n' "${{ENV_VALUES[AWS_REGION]+set}}"
 """
     )
-    values = parse_lines(output)
 
     assert values["LLM_BINDING"] == "aws_bedrock"
     assert values["AWS_ACCESS_KEY_ID_SET"] == ""
@@ -959,84 +1059,47 @@ printf 'AWS_REGION_SET=%s\\n' "${{ENV_VALUES[AWS_REGION]+set}}"
     assert values["AWS_REGION_SET"] == ""
 
 
-def test_collect_embedding_config_uses_provider_specific_defaults() -> None:
-    """Fresh embedding provider selection should use that provider's model and dimension."""
-
-    output = run_bash(
-        f"""
-set -euo pipefail
-source "{REPO_ROOT}/scripts/setup/setup.sh"
-reset_state
-
-prompt_choice() {{ printf 'jina'; }}
-prompt_with_default() {{ printf '%s' "$2"; }}
-prompt_secret_until_valid_with_default() {{ printf 'jina-secret-key'; }}
-
-collect_embedding_config
-
-printf 'EMBEDDING_BINDING=%s\\n' "${{ENV_VALUES[EMBEDDING_BINDING]}}"
-printf 'EMBEDDING_MODEL=%s\\n' "${{ENV_VALUES[EMBEDDING_MODEL]}}"
-printf 'EMBEDDING_DIM=%s\\n' "${{ENV_VALUES[EMBEDDING_DIM]}}"
-printf 'EMBEDDING_BINDING_HOST=%s\\n' "${{ENV_VALUES[EMBEDDING_BINDING_HOST]}}"
-"""
-    )
-    values = parse_lines(output)
-
-    assert values["EMBEDDING_BINDING"] == "jina"
-    assert values["EMBEDDING_MODEL"] == "jina-embeddings-v4"
-    assert values["EMBEDDING_DIM"] == "2048"
-    assert values["EMBEDDING_BINDING_HOST"] == "https://api.jina.ai/v1/embeddings"
-
-
 def test_switching_both_providers_off_bedrock_clears_saved_aws_credentials(
     tmp_path: Path,
 ) -> None:
     """Reruns should not keep stale AWS Bedrock secrets in regenerated `.env` files."""
 
-    env_file = tmp_path / ".env"
-    env_file.write_text(
-        "\n".join(
-            [
-                "LLM_BINDING=aws_bedrock",
-                "LLM_MODEL=anthropic.claude-3-5-sonnet-20241022-v2:0",
-                "LLM_BINDING_HOST=https://bedrock.amazonaws.com",
-                "EMBEDDING_BINDING=aws_bedrock",
-                "EMBEDDING_MODEL=amazon.titan-embed-text-v2:0",
-                "EMBEDDING_DIM=1024",
-                "EMBEDDING_BINDING_HOST=https://bedrock.amazonaws.com",
-                "AWS_ACCESS_KEY_ID=AKIAOLDKEY",
-                "AWS_SECRET_ACCESS_KEY=oldsecretvalue",
-                "AWS_SESSION_TOKEN=oldsess",
-                "AWS_REGION=us-east-1",
-            ]
-        )
-        + "\n",
-        encoding="utf-8",
+    write_text_lines(
+        tmp_path / ".env",
+        [
+            "LLM_BINDING=aws_bedrock",
+            "LLM_MODEL=anthropic.claude-3-5-sonnet-20241022-v2:0",
+            "LLM_BINDING_HOST=https://bedrock.amazonaws.com",
+            "EMBEDDING_BINDING=aws_bedrock",
+            "EMBEDDING_MODEL=amazon.titan-embed-text-v2:0",
+            "EMBEDDING_DIM=1024",
+            "EMBEDDING_BINDING_HOST=https://bedrock.amazonaws.com",
+            "AWS_ACCESS_KEY_ID=AKIAOLDKEY",
+            "AWS_SECRET_ACCESS_KEY=oldsecretvalue",
+            "AWS_SESSION_TOKEN=oldsess",
+            "AWS_REGION=us-east-1",
+        ],
     )
-    env_example = tmp_path / "env.example"
-    env_example.write_text(
-        "\n".join(
-            [
-                "# AWS_ACCESS_KEY_ID=your_aws_access_key_id",
-                "# AWS_SECRET_ACCESS_KEY=your_aws_secret_access_key",
-                "# AWS_SESSION_TOKEN=your_optional_aws_session_token",
-                "# AWS_REGION=us-east-1",
-                "LLM_BINDING=openai",
-                "LLM_MODEL=gpt-4o",
-                "LLM_BINDING_HOST=https://api.openai.com/v1",
-                "LLM_BINDING_API_KEY=your_api_key",
-                "EMBEDDING_BINDING=openai",
-                "EMBEDDING_MODEL=text-embedding-3-large",
-                "EMBEDDING_DIM=3072",
-                "EMBEDDING_BINDING_HOST=https://api.openai.com/v1",
-                "EMBEDDING_BINDING_API_KEY=your_api_key",
-            ]
-        )
-        + "\n",
-        encoding="utf-8",
+    write_text_lines(
+        tmp_path / "env.example",
+        [
+            "# AWS_ACCESS_KEY_ID=your_aws_access_key_id",
+            "# AWS_SECRET_ACCESS_KEY=your_aws_secret_access_key",
+            "# AWS_SESSION_TOKEN=your_optional_aws_session_token",
+            "# AWS_REGION=us-east-1",
+            "LLM_BINDING=openai",
+            "LLM_MODEL=gpt-4o",
+            "LLM_BINDING_HOST=https://api.openai.com/v1",
+            "LLM_BINDING_API_KEY=your_api_key",
+            "EMBEDDING_BINDING=openai",
+            "EMBEDDING_MODEL=text-embedding-3-large",
+            "EMBEDDING_DIM=3072",
+            "EMBEDDING_BINDING_HOST=https://api.openai.com/v1",
+            "EMBEDDING_BINDING_API_KEY=your_api_key",
+        ],
     )
 
-    output = run_bash(
+    values = run_bash_lines(
         f"""
 set -euo pipefail
 source "{REPO_ROOT}/scripts/setup/setup.sh"
@@ -1058,7 +1121,6 @@ printf 'AWS_SESSION_TOKEN_SET=%s\\n' "${{ENV_VALUES[AWS_SESSION_TOKEN]+set}}"
 printf 'AWS_REGION_SET=%s\\n' "${{ENV_VALUES[AWS_REGION]+set}}"
 """
     )
-    values = parse_lines(output)
     generated_lines = (
         (tmp_path / ".env.generated").read_text(encoding="utf-8").splitlines()
     )
@@ -1075,71 +1137,22 @@ printf 'AWS_REGION_SET=%s\\n' "${{ENV_VALUES[AWS_REGION]+set}}"
     assert not any(line.startswith("AWS_REGION=") for line in generated_lines)
 
 
-def test_collect_embedding_config_preserves_supported_lollms_binding_on_rerun(
-    tmp_path: Path,
-) -> None:
-    """Rerunning setup should keep an existing lollms embedding binding valid."""
-
-    env_file = tmp_path / ".env"
-    env_file.write_text(
-        "\n".join(
-            [
-                "EMBEDDING_BINDING=lollms",
-                "EMBEDDING_MODEL=lollms_embedding_model",
-                "EMBEDDING_DIM=1024",
-                "EMBEDDING_BINDING_HOST=http://localhost:9600",
-            ]
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-
-    output = run_bash(
-        f"""
-set -euo pipefail
-source "{REPO_ROOT}/scripts/setup/setup.sh"
-REPO_ROOT="{tmp_path}"
-reset_state
-load_existing_env_if_present
-
-prompt_with_default() {{ printf '%s' "$2"; }}
-
-collect_embedding_config
-
-printf 'EMBEDDING_BINDING=%s\\n' "${{ENV_VALUES[EMBEDDING_BINDING]}}"
-printf 'EMBEDDING_MODEL=%s\\n' "${{ENV_VALUES[EMBEDDING_MODEL]}}"
-printf 'EMBEDDING_DIM=%s\\n' "${{ENV_VALUES[EMBEDDING_DIM]}}"
-printf 'EMBEDDING_BINDING_HOST=%s\\n' "${{ENV_VALUES[EMBEDDING_BINDING_HOST]}}"
-"""
-    )
-    values = parse_lines(output)
-
-    assert values["EMBEDDING_BINDING"] == "lollms"
-    assert values["EMBEDDING_MODEL"] == "lollms_embedding_model"
-    assert values["EMBEDDING_DIM"] == "1024"
-    assert values["EMBEDDING_BINDING_HOST"] == "http://localhost:9600"
-
-
 def test_collect_rerank_config_preserves_api_key_when_disabled(
     tmp_path: Path,
 ) -> None:
     """Disabling reranking should preserve credentials so they survive re-enable."""
 
-    env_file = tmp_path / ".env"
-    env_file.write_text(
-        "\n".join(
-            [
-                "RERANK_BINDING=cohere",
-                "RERANK_MODEL=rerank-v3.5",
-                "RERANK_BINDING_HOST=https://api.cohere.com/v1/rerank",
-                "RERANK_BINDING_API_KEY=test-api-key-literal",
-            ]
-        )
-        + "\n",
-        encoding="utf-8",
+    write_text_lines(
+        tmp_path / ".env",
+        [
+            "RERANK_BINDING=cohere",
+            "RERANK_MODEL=rerank-v3.5",
+            "RERANK_BINDING_HOST=https://api.cohere.com/v1/rerank",
+            "RERANK_BINDING_API_KEY=test-api-key-literal",
+        ],
     )
 
-    output = run_bash(
+    values = run_bash_lines(
         f"""
 set -euo pipefail
 source "{REPO_ROOT}/scripts/setup/setup.sh"
@@ -1160,35 +1173,71 @@ else
 fi
 """
     )
-    values = parse_lines(output)
 
     assert values["RERANK_BINDING"] == "null"
     assert values["RERANK_BINDING_API_KEY_SET"] == "set"
     assert values["VALID"] == "yes"
 
 
-def test_collect_rerank_config_vllm_resets_stale_hosted_defaults() -> None:
-    """Selecting local vLLM should not keep a previously hosted rerank endpoint."""
-
-    output = run_bash(
-        f"""
-set -euo pipefail
-source "{REPO_ROOT}/scripts/setup/setup.sh"
-reset_state
-
-ENV_VALUES[RERANK_BINDING]="cohere"
-ENV_VALUES[RERANK_MODEL]="rerank-v3.5"
-ENV_VALUES[RERANK_BINDING_HOST]="https://api.cohere.com/v1/rerank"
-
-confirm_default_no() {{ return 0; }}
-confirm_default_yes() {{ return 0; }}
-prompt_choice() {{
+@pytest.mark.parametrize(
+    ("setup_lines", "prompt_choice_impl", "expected_model", "expected_docker_service"),
+    [
+        (
+            [
+                'ENV_VALUES[RERANK_BINDING]="cohere"',
+                'ENV_VALUES[RERANK_MODEL]="rerank-v3.5"',
+                'ENV_VALUES[RERANK_BINDING_HOST]="https://api.cohere.com/v1/rerank"',
+            ],
+            """
+prompt_choice() {
   case "$1" in
     "Rerank provider") printf 'vllm' ;;
     "vLLM device") printf 'cpu' ;;
     *) printf '%s' "$2" ;;
   esac
-}}
+}
+""",
+            "BAAI/bge-reranker-v2-m3",
+            "vllm-rerank",
+        ),
+        (
+            [
+                'ENV_VALUES[LIGHTRAG_SETUP_RERANK_PROVIDER]="vllm"',
+                'ENV_VALUES[RERANK_BINDING]="cohere"',
+                'ENV_VALUES[RERANK_MODEL]="BAAI/bge-reranker-v2-m3"',
+                'ENV_VALUES[RERANK_BINDING_HOST]="http://localhost:8000/rerank"',
+                'ENV_VALUES[VLLM_RERANK_MODEL]="BAAI/bge-reranker-v2-m3"',
+                'ENV_VALUES[VLLM_RERANK_PORT]="8000"',
+                'ENV_VALUES[VLLM_RERANK_DEVICE]="cpu"',
+                'ENV_VALUES[VLLM_RERANK_DTYPE]="float32"',
+            ],
+            """prompt_choice() { printf '%s' "$2"; }""",
+            "BAAI/bge-reranker-v2-m3",
+            "vllm-rerank",
+        ),
+    ],
+    ids=["switch-to-vllm", "rerun-vllm"],
+)
+def test_collect_rerank_config_uses_vllm_defaults(
+    setup_lines: list[str],
+    prompt_choice_impl: str,
+    expected_model: str,
+    expected_docker_service: str,
+) -> None:
+    """Selecting or reusing local vLLM should converge on the vLLM rerank defaults."""
+
+    setup_block = "\n".join(setup_lines)
+    values = run_bash_lines(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+reset_state
+
+{setup_block}
+
+confirm_default_no() {{ return 0; }}
+confirm_default_yes() {{ return 0; }}
+{prompt_choice_impl}
 prompt_with_default() {{ printf '%s' "$2"; }}
 prompt_until_valid() {{ printf '%s' "$2"; }}
 prompt_secret_with_default() {{ printf '%s' "$2"; }}
@@ -1199,58 +1248,16 @@ printf 'RERANK_BINDING=%s\\n' "${{ENV_VALUES[RERANK_BINDING]}}"
 printf 'LIGHTRAG_SETUP_RERANK_PROVIDER=%s\\n' "${{ENV_VALUES[LIGHTRAG_SETUP_RERANK_PROVIDER]}}"
 printf 'RERANK_MODEL=%s\\n' "${{ENV_VALUES[RERANK_MODEL]}}"
 printf 'RERANK_BINDING_HOST=%s\\n' "${{ENV_VALUES[RERANK_BINDING_HOST]}}"
+printf 'DOCKER_SERVICE=%s\\n' "${{DOCKER_SERVICES[0]:-}}"
 printf 'COMPOSE_RERANK_BINDING_HOST=%s\\n' "${{COMPOSE_ENV_OVERRIDES[RERANK_BINDING_HOST]}}"
 """
     )
-    values = parse_lines(output)
 
     assert values["RERANK_BINDING"] == "cohere"
     assert values["LIGHTRAG_SETUP_RERANK_PROVIDER"] == "vllm"
-    assert values["RERANK_MODEL"] == "BAAI/bge-reranker-v2-m3"
+    assert values["RERANK_MODEL"] == expected_model
     assert values["RERANK_BINDING_HOST"] == "http://localhost:8000/rerank"
-    assert values["COMPOSE_RERANK_BINDING_HOST"] == "http://vllm-rerank:8000/rerank"
-
-
-def test_collect_rerank_config_preserves_vllm_default_on_rerun() -> None:
-    """A saved local vLLM choice should come back as the default provider on rerun."""
-
-    output = run_bash(
-        f"""
-set -euo pipefail
-source "{REPO_ROOT}/scripts/setup/setup.sh"
-reset_state
-
-ENV_VALUES[LIGHTRAG_SETUP_RERANK_PROVIDER]="vllm"
-ENV_VALUES[RERANK_BINDING]="cohere"
-ENV_VALUES[RERANK_MODEL]="BAAI/bge-reranker-v2-m3"
-ENV_VALUES[RERANK_BINDING_HOST]="http://localhost:8000/rerank"
-ENV_VALUES[VLLM_RERANK_MODEL]="BAAI/bge-reranker-v2-m3"
-ENV_VALUES[VLLM_RERANK_PORT]="8000"
-ENV_VALUES[VLLM_RERANK_DEVICE]="cpu"
-ENV_VALUES[VLLM_RERANK_DTYPE]="float32"
-
-confirm_default_no() {{ return 0; }}
-confirm_default_yes() {{ return 0; }}
-prompt_choice() {{ printf '%s' "$2"; }}
-prompt_with_default() {{ printf '%s' "$2"; }}
-prompt_until_valid() {{ printf '%s' "$2"; }}
-prompt_secret_with_default() {{ printf '%s' "$2"; }}
-
-collect_rerank_config
-
-printf 'RERANK_BINDING=%s\\n' "${{ENV_VALUES[RERANK_BINDING]}}"
-printf 'LIGHTRAG_SETUP_RERANK_PROVIDER=%s\\n' "${{ENV_VALUES[LIGHTRAG_SETUP_RERANK_PROVIDER]}}"
-printf 'RERANK_BINDING_HOST=%s\\n' "${{ENV_VALUES[RERANK_BINDING_HOST]}}"
-printf 'DOCKER_SERVICE=%s\\n' "${{DOCKER_SERVICES[0]}}"
-printf 'COMPOSE_RERANK_BINDING_HOST=%s\\n' "${{COMPOSE_ENV_OVERRIDES[RERANK_BINDING_HOST]}}"
-"""
-    )
-    values = parse_lines(output)
-
-    assert values["RERANK_BINDING"] == "cohere"
-    assert values["LIGHTRAG_SETUP_RERANK_PROVIDER"] == "vllm"
-    assert values["RERANK_BINDING_HOST"] == "http://localhost:8000/rerank"
-    assert values["DOCKER_SERVICE"] == "vllm-rerank"
+    assert values["DOCKER_SERVICE"] == expected_docker_service
     assert values["COMPOSE_RERANK_BINDING_HOST"] == "http://vllm-rerank:8000/rerank"
 
 
@@ -1298,74 +1305,95 @@ printf 'RERANK_BINDING_HOST=%s\\n' "${{ENV_VALUES[RERANK_BINDING_HOST]:-}}"
     assert "cohere" in values["RERANK_BINDING_HOST"]
 
 
-def test_collect_rerank_config_cuda_selection_clears_disabled_gpu_masks() -> None:
-    """Selecting CUDA should clear stale '-1' GPU mask values from prior CPU setups."""
-
-    output = run_bash(
-        f"""
-set -euo pipefail
-source "{REPO_ROOT}/scripts/setup/setup.sh"
-reset_state
-
-ENV_VALUES[CUDA_VISIBLE_DEVICES]="-1"
-ENV_VALUES[NVIDIA_VISIBLE_DEVICES]="-1"
-ENV_VALUES[VLLM_USE_CPU]="1"
-
-confirm_default_no() {{ return 0; }}
-confirm_default_yes() {{
+@pytest.mark.parametrize(
+    (
+        "setup_lines",
+        "confirm_default_yes_impl",
+        "prompt_choice_impl",
+        "expected_device",
+        "expected_dtype",
+        "expected_cuda_set",
+        "expected_nvidia_set",
+        "expected_cpu_set",
+    ),
+    [
+        (
+            [
+                'ENV_VALUES[CUDA_VISIBLE_DEVICES]="-1"',
+                'ENV_VALUES[NVIDIA_VISIBLE_DEVICES]="-1"',
+                'ENV_VALUES[VLLM_USE_CPU]="1"',
+            ],
+            """
+confirm_default_yes() {
   if [[ "$1" == "Use CPU instead?" ]]; then
     return 1
   fi
   return 0
-}}
-prompt_choice() {{
+}
+""",
+            """
+prompt_choice() {
   case "$1" in
     "Rerank provider") printf 'vllm' ;;
     "vLLM device") printf 'cuda' ;;
     *) printf '%s' "$2" ;;
   esac
-}}
-prompt_with_default() {{ printf '%s' "$2"; }}
-prompt_until_valid() {{ printf '%s' "$2"; }}
-prompt_secret_with_default() {{ printf '%s' "$2"; }}
-
-collect_rerank_config
-
-printf 'VLLM_RERANK_DEVICE=%s\\n' "${{ENV_VALUES[VLLM_RERANK_DEVICE]}}"
-printf 'CUDA_VISIBLE_DEVICES_SET=%s\\n' "${{ENV_VALUES[CUDA_VISIBLE_DEVICES]+set}}"
-printf 'NVIDIA_VISIBLE_DEVICES_SET=%s\\n' "${{ENV_VALUES[NVIDIA_VISIBLE_DEVICES]+set}}"
-printf 'VLLM_USE_CPU_SET=%s\\n' "${{ENV_VALUES[VLLM_USE_CPU]+set}}"
-"""
-    )
-    values = parse_lines(output)
-
-    assert values["VLLM_RERANK_DEVICE"] == "cuda"
-    assert values["CUDA_VISIBLE_DEVICES_SET"] == ""
-    assert values["NVIDIA_VISIBLE_DEVICES_SET"] == ""
-    assert values["VLLM_USE_CPU_SET"] == ""
-
-
-def test_collect_rerank_config_switching_to_cpu_resets_dtype_default() -> None:
-    """Switching vLLM from CUDA to CPU should default dtype back to float32."""
-
-    output = run_bash(
-        f"""
-set -euo pipefail
-source "{REPO_ROOT}/scripts/setup/setup.sh"
-reset_state
-
-ENV_VALUES[VLLM_RERANK_DEVICE]="cuda"
-ENV_VALUES[VLLM_RERANK_DTYPE]="float16"
-
-confirm_default_no() {{ return 0; }}
-confirm_default_yes() {{ return 0; }}
-prompt_choice() {{
+}
+""",
+            "cuda",
+            None,
+            "",
+            "",
+            "",
+        ),
+        (
+            [
+                'ENV_VALUES[VLLM_RERANK_DEVICE]="cuda"',
+                'ENV_VALUES[VLLM_RERANK_DTYPE]="float16"',
+            ],
+            "confirm_default_yes() { return 0; }",
+            """
+prompt_choice() {
   case "$1" in
     "Rerank provider") printf 'vllm' ;;
     "vLLM device") printf 'cpu' ;;
     *) printf '%s' "$2" ;;
   esac
-}}
+}
+""",
+            "cpu",
+            "float32",
+            "",
+            "",
+            "",
+        ),
+    ],
+    ids=["cuda-clears-disabled-masks", "cpu-resets-dtype-default"],
+)
+def test_collect_rerank_config_normalizes_vllm_device_state(
+    setup_lines: list[str],
+    confirm_default_yes_impl: str,
+    prompt_choice_impl: str,
+    expected_device: str,
+    expected_dtype: str | None,
+    expected_cuda_set: str,
+    expected_nvidia_set: str,
+    expected_cpu_set: str,
+) -> None:
+    """Changing vLLM device modes should normalize the related environment state."""
+
+    setup_block = "\n".join(setup_lines)
+    values = run_bash_lines(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+reset_state
+
+{setup_block}
+
+confirm_default_no() {{ return 0; }}
+{confirm_default_yes_impl}
+{prompt_choice_impl}
 prompt_with_default() {{ printf '%s' "$2"; }}
 prompt_until_valid() {{ printf '%s' "$2"; }}
 prompt_secret_with_default() {{ printf '%s' "$2"; }}
@@ -1373,33 +1401,35 @@ prompt_secret_with_default() {{ printf '%s' "$2"; }}
 collect_rerank_config
 
 printf 'VLLM_RERANK_DEVICE=%s\\n' "${{ENV_VALUES[VLLM_RERANK_DEVICE]}}"
-printf 'VLLM_RERANK_DTYPE=%s\\n' "${{ENV_VALUES[VLLM_RERANK_DTYPE]}}"
+printf 'VLLM_RERANK_DTYPE=%s\\n' "${{ENV_VALUES[VLLM_RERANK_DTYPE]:-}}"
+printf 'CUDA_VISIBLE_DEVICES_SET=%s\\n' "${{ENV_VALUES[CUDA_VISIBLE_DEVICES]+set}}"
+printf 'NVIDIA_VISIBLE_DEVICES_SET=%s\\n' "${{ENV_VALUES[NVIDIA_VISIBLE_DEVICES]+set}}"
+printf 'VLLM_USE_CPU_SET=%s\\n' "${{ENV_VALUES[VLLM_USE_CPU]+set}}"
 """
     )
-    values = parse_lines(output)
 
-    assert values["VLLM_RERANK_DEVICE"] == "cpu"
-    assert values["VLLM_RERANK_DTYPE"] == "float32"
+    assert values["VLLM_RERANK_DEVICE"] == expected_device
+    if expected_dtype is not None:
+        assert values["VLLM_RERANK_DTYPE"] == expected_dtype
+    assert values["CUDA_VISIBLE_DEVICES_SET"] == expected_cuda_set
+    assert values["NVIDIA_VISIBLE_DEVICES_SET"] == expected_nvidia_set
+    assert values["VLLM_USE_CPU_SET"] == expected_cpu_set
 
 
-def test_generate_docker_compose_escapes_dollar_signs_in_overrides(
+def test_generate_docker_compose_escapes_dollar_signs_in_overrides_and_service_secrets(
     tmp_path: Path,
 ) -> None:
-    """Compose overrides should escape `$` so Docker keeps literal credentials."""
+    """Compose generation should keep `$` literals in runtime overrides and bundled secrets."""
 
-    compose_file = tmp_path / "docker-compose.yml"
-    compose_file.write_text(
-        "\n".join(
-            [
-                "services:",
-                "  lightrag:",
-                "    image: example/lightrag:test",
-                "    env_file:",
-                "      - .env",
-            ]
-        )
-        + "\n",
-        encoding="utf-8",
+    write_text_lines(
+        tmp_path / "docker-compose.yml",
+        [
+            "services:",
+            "  lightrag:",
+            "    image: example/lightrag:test",
+            "    env_file:",
+            "      - .env",
+        ],
     )
 
     run_bash(
@@ -1410,49 +1440,6 @@ REPO_ROOT="{tmp_path}"
 reset_state
 
 ENV_VALUES[MONGO_URI]='mongodb://user:p$HOME@localhost:27017/'
-
-prepare_compose_runtime_overrides
-generate_docker_compose "$REPO_ROOT/docker-compose.generated.yml"
-"""
-    )
-
-    generated_compose = (tmp_path / "docker-compose.generated.yml").read_text(
-        encoding="utf-8"
-    )
-
-    assert (
-        'MONGO_URI: "mongodb://user:p$$HOME@host.docker.internal:27017/"'
-        in generated_compose
-    )
-
-
-def test_generate_docker_compose_escapes_bundled_service_secrets(
-    tmp_path: Path,
-) -> None:
-    """Bundled dependency services should keep `$`-bearing secrets literal in compose."""
-
-    compose_file = tmp_path / "docker-compose.yml"
-    compose_file.write_text(
-        "\n".join(
-            [
-                "services:",
-                "  lightrag:",
-                "    image: example/lightrag:test",
-                "    env_file:",
-                "      - .env",
-            ]
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-
-    run_bash(
-        f"""
-set -euo pipefail
-source "{REPO_ROOT}/scripts/setup/setup.sh"
-REPO_ROOT="{tmp_path}"
-reset_state
-
 ENV_VALUES[POSTGRES_USER]='user$ID'
 ENV_VALUES[POSTGRES_PASSWORD]='pass$HOME'
 ENV_VALUES[POSTGRES_DATABASE]='db$NAME'
@@ -1461,6 +1448,7 @@ ENV_VALUES[NEO4J_DATABASE]='graph$DB'
 ENV_VALUES[MINIO_ACCESS_KEY_ID]='minio$USER'
 ENV_VALUES[MINIO_SECRET_ACCESS_KEY]='minio$SECRET'
 
+prepare_compose_runtime_overrides
 add_docker_service postgres
 add_docker_service neo4j
 add_docker_service milvus
@@ -1473,6 +1461,10 @@ generate_docker_compose "$REPO_ROOT/docker-compose.generated.yml"
         encoding="utf-8"
     )
 
+    assert (
+        'MONGO_URI: "mongodb://user:p$$HOME@host.docker.internal:27017/"'
+        in generated_compose
+    )
     assert 'POSTGRES_USER: "user$$ID"' in generated_compose
     assert 'POSTGRES_PASSWORD: "pass$$HOME"' in generated_compose
     assert 'POSTGRES_DB: "db$$NAME"' in generated_compose
@@ -1716,34 +1708,38 @@ env_base_flow
     assert values["EMBEDDING_BINDING_HOST"] == "http://localhost:11434"
 
 
-def test_env_base_flow_does_not_fail_with_stale_ssl_paths(
-    tmp_path: Path,
-) -> None:
-    """env-base should not fail on rerun because of stale SSL certificate paths."""
+def test_env_base_flow_preserves_ssl_config_on_rerun(tmp_path: Path) -> None:
+    """env-base should preserve SSL config on rerun, even when old paths are stale."""
 
-    env_example = tmp_path / "env.example"
-    env_example.write_text((REPO_ROOT / "env.example").read_text(encoding="utf-8"))
+    cases = {
+        "stale-paths": [
+            "SSL=true",
+            "SSL_CERTFILE=/missing/cert.pem",
+            "SSL_KEYFILE=/missing/key.pem",
+            "LLM_BINDING_API_KEY=sk-existing",
+            "EMBEDDING_BINDING_API_KEY=sk-existing",
+        ],
+        "existing-paths": [
+            "SSL=true",
+            "SSL_CERTFILE=/some/cert.pem",
+            "SSL_KEYFILE=/some/key.pem",
+        ],
+    }
 
-    env_file = tmp_path / ".env"
-    env_file.write_text(
-        "\n".join(
-            [
-                "SSL=true",
-                "SSL_CERTFILE=/missing/cert.pem",
-                "SSL_KEYFILE=/missing/key.pem",
-                "LLM_BINDING_API_KEY=sk-existing",
-                "EMBEDDING_BINDING_API_KEY=sk-existing",
-            ]
+    for case_name, env_lines in cases.items():
+        case_dir = tmp_path / case_name
+        case_dir.mkdir()
+        write_text_lines(
+            case_dir / "env.example",
+            (REPO_ROOT / "env.example").read_text(encoding="utf-8").splitlines(),
         )
-        + "\n",
-        encoding="utf-8",
-    )
+        write_text_lines(case_dir / ".env", env_lines)
 
-    run_bash(
-        f"""
+        run_bash(
+            f"""
 set -euo pipefail
 source "{REPO_ROOT}/scripts/setup/setup.sh"
-REPO_ROOT="{tmp_path}"
+REPO_ROOT="{case_dir}"
 
 prompt_choice() {{ printf '%s' "$2"; }}
 prompt_with_default() {{ printf '%s' "$2"; }}
@@ -1760,161 +1756,74 @@ confirm_default_yes() {{
 
 env_base_flow
 """
-    )
+        )
 
-    generated_lines = env_file.read_text(encoding="utf-8").splitlines()
-
-    # env-base preserves SSL values (does not validate or clear them)
-    assert "SSL=true" in generated_lines
-    assert any(line.startswith("SSL_CERTFILE=") for line in generated_lines)
-    assert any(line.startswith("SSL_KEYFILE=") for line in generated_lines)
-    assert "LLM_BINDING_API_KEY=sk-existing" in generated_lines
-    assert "EMBEDDING_BINDING_API_KEY=sk-existing" in generated_lines
+        generated_lines = (case_dir / ".env").read_text(encoding="utf-8").splitlines()
+        for line in env_lines:
+            assert line in generated_lines
 
 
 def test_env_base_flow_generates_env_and_compose_files(tmp_path: Path) -> None:
-    """env-base should write a .env and docker-compose.final.yml via finalize_base_setup."""
+    """env-base should generate `.env` and docker-compose output for hosted and local providers."""
 
-    (tmp_path / "env.example").write_text(
-        (REPO_ROOT / "env.example").read_text(encoding="utf-8"),
-        encoding="utf-8",
-    )
-    (tmp_path / "docker-compose.yml").write_text(
-        (REPO_ROOT / "docker-compose.yml").read_text(encoding="utf-8"),
-        encoding="utf-8",
-    )
-
-    run_bash(
-        f"""
-set -euo pipefail
-source "{REPO_ROOT}/scripts/setup/setup.sh"
-REPO_ROOT="{tmp_path}"
-
-prompt_choice() {{ printf '%s' "$2"; }}
-prompt_with_default() {{ printf '%s' "$2"; }}
-prompt_until_valid() {{ printf '%s' "$2"; }}
-prompt_secret_with_default() {{ printf '%s' "$2"; }}
-prompt_secret_until_valid_with_default() {{
+    cases = {
+        "openai": {
+            "prompt_choice": "prompt_choice() { printf '%s' \"$2\"; }",
+            "prompt_secret": """
+prompt_secret_until_valid_with_default() {
   case "$1" in
     "LLM API key: "|"Embedding API key: ") printf 'sk-test-key' ;;
     *) printf '%s' "$2" ;;
   esac
-}}
-confirm_default_no() {{
-  case "$1" in
-    "Run embedding model locally via Docker (vLLM)?") return 1 ;;
-    "Enable reranking?") return 1 ;;
-    *"for LightRAG only?"*) return 0 ;;
-    *) return 1 ;;
-  esac
-}}
-confirm_default_yes() {{
-  case "$1" in
-    "Ready to proceed and write .env?") return 0 ;;
-    *) return 1 ;;
-  esac
-}}
-
-env_base_flow
-"""
-    )
-
-    generated_env = (tmp_path / ".env").read_text(encoding="utf-8")
-    generated_compose = (tmp_path / "docker-compose.final.yml").read_text(
-        encoding="utf-8"
-    )
-
-    assert "LLM_BINDING=openai" in generated_env
-    assert "LLM_BINDING_API_KEY=sk-test-key" in generated_env
-    assert "EMBEDDING_BINDING_API_KEY=sk-test-key" in generated_env
-    assert "services:" in generated_compose
-    assert "  lightrag:" in generated_compose
-    assert "env_file:" not in generated_compose
-
-
-def test_env_base_flow_leaves_ssl_config_unchanged_on_rerun(
-    tmp_path: Path,
-) -> None:
-    """env-base should not modify SSL settings that were configured by env-server."""
-
-    env_example = tmp_path / "env.example"
-    env_example.write_text((REPO_ROOT / "env.example").read_text(encoding="utf-8"))
-
-    env_file = tmp_path / ".env"
-    env_file.write_text(
-        "\n".join(
-            [
-                "SSL=true",
-                "SSL_CERTFILE=/some/cert.pem",
-                "SSL_KEYFILE=/some/key.pem",
-            ]
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-
-    run_bash(
-        f"""
-set -euo pipefail
-source "{REPO_ROOT}/scripts/setup/setup.sh"
-REPO_ROOT="{tmp_path}"
-
-prompt_choice() {{ printf '%s' "$2"; }}
-prompt_with_default() {{ printf '%s' "$2"; }}
-prompt_until_valid() {{ printf '%s' "$2"; }}
-prompt_secret_with_default() {{ printf '%s' "$2"; }}
-prompt_secret_until_valid_with_default() {{ printf '%s' "$2"; }}
-confirm_default_no() {{ return 1; }}
-confirm_default_yes() {{
-  case "$1" in
-    "Ready to proceed and write .env?") return 0 ;;
-    *) return 1 ;;
-  esac
-}}
-
-env_base_flow
-"""
-    )
-
-    generated_lines = env_file.read_text(encoding="utf-8").splitlines()
-
-    # env-base must not clear SSL values — that is env-server's domain
-    assert "SSL=true" in generated_lines
-    assert any(line.startswith("SSL_CERTFILE=") for line in generated_lines)
-    assert any(line.startswith("SSL_KEYFILE=") for line in generated_lines)
-
-
-def test_env_base_flow_generates_env_and_compose_files_for_ollama(
-    tmp_path: Path,
-) -> None:
-    """env-base with ollama should generate .env and docker-compose.final.yml end to end."""
-
-    (tmp_path / "env.example").write_text(
-        (REPO_ROOT / "env.example").read_text(encoding="utf-8"),
-        encoding="utf-8",
-    )
-    (tmp_path / "docker-compose.yml").write_text(
-        (REPO_ROOT / "docker-compose.yml").read_text(encoding="utf-8"),
-        encoding="utf-8",
-    )
-
-    run_bash(
-        f"""
-set -euo pipefail
-source "{REPO_ROOT}/scripts/setup/setup.sh"
-REPO_ROOT="{tmp_path}"
-
-prompt_choice() {{
+}
+""",
+            "env_assertions": [
+                "LLM_BINDING=openai",
+                "LLM_BINDING_API_KEY=sk-test-key",
+                "EMBEDDING_BINDING_API_KEY=sk-test-key",
+            ],
+        },
+        "ollama": {
+            "prompt_choice": """
+prompt_choice() {
   case "$1" in
     "LLM provider") printf 'ollama' ;;
     "Embedding provider") printf 'ollama' ;;
     *) printf '%s' "$2" ;;
   esac
-}}
+}
+""",
+            "prompt_secret": "prompt_secret_until_valid_with_default() { printf '%s' \"$2\"; }",
+            "env_assertions": [
+                "LLM_BINDING=ollama",
+                "EMBEDDING_BINDING=ollama",
+            ],
+        },
+    }
+
+    for case_name, case in cases.items():
+        case_dir = tmp_path / case_name
+        case_dir.mkdir()
+        write_text_lines(
+            case_dir / "env.example",
+            (REPO_ROOT / "env.example").read_text(encoding="utf-8").splitlines(),
+        )
+        write_text_lines(
+            case_dir / "docker-compose.yml",
+            (REPO_ROOT / "docker-compose.yml").read_text(encoding="utf-8").splitlines(),
+        )
+
+        run_bash(
+            f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{case_dir}"
+
+{case["prompt_choice"]}
 prompt_with_default() {{ printf '%s' "$2"; }}
 prompt_until_valid() {{ printf '%s' "$2"; }}
 prompt_secret_with_default() {{ printf '%s' "$2"; }}
-prompt_secret_until_valid_with_default() {{ printf '%s' "$2"; }}
+{case["prompt_secret"]}
 confirm_default_no() {{
   case "$1" in
     "Run embedding model locally via Docker (vLLM)?") return 1 ;;
@@ -1932,18 +1841,18 @@ confirm_default_yes() {{
 
 env_base_flow
 """
-    )
+        )
 
-    generated_env = (tmp_path / ".env").read_text(encoding="utf-8")
-    generated_compose = (tmp_path / "docker-compose.final.yml").read_text(
-        encoding="utf-8"
-    )
+        generated_env = (case_dir / ".env").read_text(encoding="utf-8")
+        generated_compose = (case_dir / "docker-compose.final.yml").read_text(
+            encoding="utf-8"
+        )
 
-    assert "LLM_BINDING=ollama" in generated_env
-    assert "EMBEDDING_BINDING=ollama" in generated_env
-    assert "services:" in generated_compose
-    assert "  lightrag:" in generated_compose
-    assert "env_file:" not in generated_compose
+        for expected_line in case["env_assertions"]:
+            assert expected_line in generated_env
+        assert "services:" in generated_compose
+        assert "  lightrag:" in generated_compose
+        assert "env_file:" not in generated_compose
 
 
 def test_env_base_flow_registers_vllm_rerank_service_for_docker_deployment(
@@ -1990,40 +1899,36 @@ env_base_flow
 def test_env_storage_flow_applies_selected_storage_backends(
     tmp_path: Path,
 ) -> None:
-    """env-storage should apply selected backends while preserving LLM and embedding settings."""
+    """env-storage should honor the selected backends without auto-applying a preset."""
 
-    env_file = tmp_path / ".env"
-    env_file.write_text(
-        "\n".join(
-            [
-                "LIGHTRAG_KV_STORAGE=JsonKVStorage",
-                "LIGHTRAG_VECTOR_STORAGE=NanoVectorDBStorage",
-                "LIGHTRAG_GRAPH_STORAGE=NetworkXStorage",
-                "LIGHTRAG_DOC_STATUS_STORAGE=JsonDocStatusStorage",
-                "LLM_BINDING=ollama",
-                "LLM_MODEL=llama3.2:latest",
-                "LLM_BINDING_HOST=http://localhost:11434",
-                "EMBEDDING_BINDING=ollama",
-                "EMBEDDING_MODEL=nomic-embed-text:latest",
-                "EMBEDDING_DIM=768",
-                "EMBEDDING_BINDING_HOST=http://localhost:11434",
-            ]
-        )
-        + "\n",
-        encoding="utf-8",
+    write_text_lines(
+        tmp_path / ".env",
+        [
+            "LIGHTRAG_KV_STORAGE=JsonKVStorage",
+            "LIGHTRAG_VECTOR_STORAGE=NanoVectorDBStorage",
+            "LIGHTRAG_GRAPH_STORAGE=NetworkXStorage",
+            "LIGHTRAG_DOC_STATUS_STORAGE=JsonDocStatusStorage",
+            "LLM_BINDING=ollama",
+            "LLM_MODEL=llama3.2:latest",
+            "LLM_BINDING_HOST=http://localhost:11434",
+            "EMBEDDING_BINDING=ollama",
+            "EMBEDDING_MODEL=nomic-embed-text:latest",
+            "EMBEDDING_DIM=768",
+            "EMBEDDING_BINDING_HOST=http://localhost:11434",
+        ],
     )
 
-    output = run_bash(
+    values = run_bash_lines(
         f"""
 set -euo pipefail
 source "{REPO_ROOT}/scripts/setup/setup.sh"
 REPO_ROOT="{tmp_path}"
 
 select_storage_backends() {{
-  ENV_VALUES[LIGHTRAG_KV_STORAGE]="PGKVStorage"
+  ENV_VALUES[LIGHTRAG_KV_STORAGE]="RedisKVStorage"
   ENV_VALUES[LIGHTRAG_VECTOR_STORAGE]="MilvusVectorDBStorage"
   ENV_VALUES[LIGHTRAG_GRAPH_STORAGE]="Neo4JStorage"
-  ENV_VALUES[LIGHTRAG_DOC_STATUS_STORAGE]="PGDocStatusStorage"
+  ENV_VALUES[LIGHTRAG_DOC_STATUS_STORAGE]="RedisDocStatusStorage"
 }}
 collect_database_config() {{ :; }}
 collect_docker_image_tags() {{ :; }}
@@ -2039,12 +1944,11 @@ finalize_storage_setup() {{
 env_storage_flow
 """
     )
-    values = parse_lines(output)
 
-    assert values["LIGHTRAG_KV_STORAGE"] == "PGKVStorage"
+    assert values["LIGHTRAG_KV_STORAGE"] == "RedisKVStorage"
     assert values["LIGHTRAG_VECTOR_STORAGE"] == "MilvusVectorDBStorage"
     assert values["LIGHTRAG_GRAPH_STORAGE"] == "Neo4JStorage"
-    assert values["LIGHTRAG_DOC_STATUS_STORAGE"] == "PGDocStatusStorage"
+    assert values["LIGHTRAG_DOC_STATUS_STORAGE"] == "RedisDocStatusStorage"
     # LLM and embedding settings from existing .env are preserved
     assert values["LLM_BINDING"] == "ollama"
     assert values["EMBEDDING_BINDING"] == "ollama"
@@ -2184,7 +2088,7 @@ env_storage_flow
 def test_collect_milvus_config_defaults_to_existing_database_name() -> None:
     """Milvus database prompt should preserve the documented default database."""
 
-    output = run_bash(
+    values = run_bash_lines(
         f"""
 set -euo pipefail
 source "{REPO_ROOT}/scripts/setup/setup.sh"
@@ -2203,77 +2107,81 @@ collect_milvus_config no
 printf 'MILVUS_DB_NAME=%s\\n' "${{ENV_VALUES[MILVUS_DB_NAME]}}"
 """
     )
-    values = parse_lines(output)
 
     assert values["MILVUS_DB_NAME"] == "lightrag"
 
 
-def test_prepare_compose_runtime_overrides_rewrites_host_database_loopback() -> None:
-    """Host-run databases on loopback should stay reachable from the container."""
+@pytest.mark.parametrize(
+    ("env_key", "env_value", "expected_value"),
+    [
+        ("POSTGRES_HOST", "127.0.0.1", "host.docker.internal"),
+        ("REDIS_URI", "redis://localhost:6379", "redis://host.docker.internal:6379"),
+        (
+            "MONGO_URI",
+            "mongodb://127.0.0.1:27017/",
+            "mongodb://host.docker.internal:27017/",
+        ),
+        (
+            "MONGO_URI",
+            "mongodb://root:root@localhost:27017/",
+            "mongodb://root:root@host.docker.internal:27017/",
+        ),
+        ("NEO4J_URI", "neo4j://localhost:7687", "neo4j://host.docker.internal:7687"),
+        ("MILVUS_URI", "http://localhost:19530", "http://host.docker.internal:19530"),
+        ("QDRANT_URL", "http://127.0.0.1:6333", "http://host.docker.internal:6333"),
+        ("MEMGRAPH_URI", "bolt://localhost:7687", "bolt://host.docker.internal:7687"),
+        ("POSTGRES_HOST", "0.0.0.0", "host.docker.internal"),
+        (
+            "LLM_BINDING_HOST",
+            "http://0.0.0.0:11434",
+            "http://host.docker.internal:11434",
+        ),
+        (
+            "RERANK_BINDING_HOST",
+            "http://0.0.0.0:8000/rerank",
+            "http://host.docker.internal:8000/rerank",
+        ),
+    ],
+    ids=[
+        "postgres-loopback-host",
+        "redis-loopback-uri",
+        "mongo-loopback-uri",
+        "mongo-authenticated-loopback-uri",
+        "neo4j-loopback-uri",
+        "milvus-loopback-uri",
+        "qdrant-loopback-uri",
+        "memgraph-loopback-uri",
+        "postgres-zero-host",
+        "llm-zero-host",
+        "rerank-zero-host",
+    ],
+)
+def test_prepare_compose_runtime_overrides_rewrites_container_endpoints(
+    env_key: str, env_value: str, expected_value: str
+) -> None:
+    """Loopback and 0.0.0.0 endpoints should be rewritten for container reachability."""
 
-    output = run_bash(
+    values = run_bash_lines(
         f"""
 set -euo pipefail
 source "{REPO_ROOT}/scripts/setup/setup.sh"
 reset_state
 
-ENV_VALUES[POSTGRES_HOST]="127.0.0.1"
-ENV_VALUES[REDIS_URI]="redis://localhost:6379"
-ENV_VALUES[MONGO_URI]="mongodb://127.0.0.1:27017/"
-ENV_VALUES[NEO4J_URI]="neo4j://localhost:7687"
-ENV_VALUES[MILVUS_URI]="http://localhost:19530"
-ENV_VALUES[QDRANT_URL]="http://127.0.0.1:6333"
-ENV_VALUES[MEMGRAPH_URI]="bolt://localhost:7687"
+ENV_VALUES[{env_key}]="{env_value}"
 
 prepare_compose_runtime_overrides
 
-printf 'POSTGRES_HOST=%s\\n' "${{COMPOSE_ENV_OVERRIDES[POSTGRES_HOST]}}"
-printf 'REDIS_URI=%s\\n' "${{COMPOSE_ENV_OVERRIDES[REDIS_URI]}}"
-printf 'MONGO_URI=%s\\n' "${{COMPOSE_ENV_OVERRIDES[MONGO_URI]}}"
-printf 'NEO4J_URI=%s\\n' "${{COMPOSE_ENV_OVERRIDES[NEO4J_URI]}}"
-printf 'MILVUS_URI=%s\\n' "${{COMPOSE_ENV_OVERRIDES[MILVUS_URI]}}"
-printf 'QDRANT_URL=%s\\n' "${{COMPOSE_ENV_OVERRIDES[QDRANT_URL]}}"
-printf 'MEMGRAPH_URI=%s\\n' "${{COMPOSE_ENV_OVERRIDES[MEMGRAPH_URI]}}"
+printf '{env_key}=%s\\n' "${{COMPOSE_ENV_OVERRIDES[{env_key}]}}"
 """
     )
-    values = parse_lines(output)
 
-    assert values["POSTGRES_HOST"] == "host.docker.internal"
-    assert values["REDIS_URI"] == "redis://host.docker.internal:6379"
-    assert values["MONGO_URI"] == "mongodb://host.docker.internal:27017/"
-    assert values["NEO4J_URI"] == "neo4j://host.docker.internal:7687"
-    assert values["MILVUS_URI"] == "http://host.docker.internal:19530"
-    assert values["QDRANT_URL"] == "http://host.docker.internal:6333"
-    assert values["MEMGRAPH_URI"] == "bolt://host.docker.internal:7687"
-
-
-def test_prepare_compose_runtime_overrides_rewrites_authenticated_loopback_uri() -> (
-    None
-):
-    """Loopback URIs with credentials should still be rewritten for the container."""
-
-    output = run_bash(
-        f"""
-set -euo pipefail
-source "{REPO_ROOT}/scripts/setup/setup.sh"
-reset_state
-
-ENV_VALUES[MONGO_URI]="mongodb://root:root@localhost:27017/"
-
-prepare_compose_runtime_overrides
-
-printf 'MONGO_URI=%s\\n' "${{COMPOSE_ENV_OVERRIDES[MONGO_URI]}}"
-"""
-    )
-    values = parse_lines(output)
-
-    assert values["MONGO_URI"] == "mongodb://root:root@host.docker.internal:27017/"
+    assert values[env_key] == expected_value
 
 
 def test_wait_for_port_uses_explicit_timeout_argument() -> None:
     """`wait_for_port` should honor arg4 instead of always falling back to WAIT_TIMEOUT."""
 
-    output = run_bash(
+    values = run_bash_lines(
         f"""
 set -euo pipefail
 source "{REPO_ROOT}/scripts/setup/setup.sh"
@@ -2290,7 +2198,6 @@ elapsed=$((SECONDS - start))
 printf 'ELAPSED=%s\\n' "$elapsed"
 """
     )
-    values = parse_lines(output)
 
     assert values["RESULT"] == "failure"
     assert int(values["ELAPSED"]) < 2
@@ -2301,7 +2208,7 @@ def test_collect_mongodb_config_local_service_strips_stale_credentials_on_rerun(
 ):
     """Bundled MongoDB should keep host `.env` aligned with the unauthenticated template."""
 
-    output = run_bash(
+    values = run_bash_lines(
         f"""
 set -euo pipefail
 source "{REPO_ROOT}/scripts/setup/setup.sh"
@@ -2326,61 +2233,16 @@ printf 'COMPOSE_MONGO_URI=%s\\n' "${{COMPOSE_ENV_OVERRIDES[MONGO_URI]}}"
 printf 'DOCKER_SERVICE=%s\\n' "${{DOCKER_SERVICES[0]}}"
 """
     )
-    values = parse_lines(output)
 
     assert values["MONGO_URI"] == "mongodb://localhost:27017/"
     assert values["COMPOSE_MONGO_URI"] == "mongodb://mongodb:27017/"
     assert values["DOCKER_SERVICE"] == "mongodb"
 
 
-def test_collect_local_service_configs_normalize_stale_local_ports_on_rerun() -> None:
-    """Bundled services should reset stale localhost ports to their template defaults."""
-
-    output = run_bash(
-        f"""
-set -euo pipefail
-source "{REPO_ROOT}/scripts/setup/setup.sh"
-reset_state
-
-ENV_VALUES[NEO4J_URI]="neo4j://localhost:7777"
-ENV_VALUES[MILVUS_URI]="http://localhost:29530"
-ENV_VALUES[QDRANT_URL]="http://localhost:16333"
-ENV_VALUES[MEMGRAPH_URI]="bolt://localhost:17687"
-
-confirm_default_yes() {{ return 0; }}
-prompt_until_valid() {{ printf '%s' "$2"; }}
-prompt_with_default() {{
-  case "$1" in
-    "Neo4j database") printf 'neo4j' ;;
-    "Milvus database name") printf 'lightrag' ;;
-    *) printf '%s' "$2" ;;
-  esac
-}}
-prompt_secret_with_default() {{ printf '%s' "$2"; }}
-
-collect_neo4j_config yes
-collect_milvus_config yes
-collect_qdrant_config yes
-collect_memgraph_config yes
-
-printf 'NEO4J_URI=%s\\n' "${{ENV_VALUES[NEO4J_URI]}}"
-printf 'MILVUS_URI=%s\\n' "${{ENV_VALUES[MILVUS_URI]}}"
-printf 'QDRANT_URL=%s\\n' "${{ENV_VALUES[QDRANT_URL]}}"
-printf 'MEMGRAPH_URI=%s\\n' "${{ENV_VALUES[MEMGRAPH_URI]}}"
-"""
-    )
-    values = parse_lines(output)
-
-    assert values["NEO4J_URI"] == "neo4j://localhost:7687"
-    assert values["MILVUS_URI"] == "http://localhost:19530"
-    assert values["QDRANT_URL"] == "http://localhost:6333"
-    assert values["MEMGRAPH_URI"] == "bolt://localhost:7687"
-
-
 def test_collect_redis_config_local_service_normalizes_custom_host_port() -> None:
     """Bundled Redis should keep host `.env` aligned with the published local port."""
 
-    output = run_bash(
+    values = run_bash_lines(
         f"""
 set -euo pipefail
 source "{REPO_ROOT}/scripts/setup/setup.sh"
@@ -2398,52 +2260,29 @@ printf 'COMPOSE_REDIS_URI=%s\\n' "${{COMPOSE_ENV_OVERRIDES[REDIS_URI]}}"
 printf 'DOCKER_SERVICE=%s\\n' "${{DOCKER_SERVICES[0]}}"
 """
     )
-    values = parse_lines(output)
 
     assert values["REDIS_URI"] == "redis://localhost:6379/1"
     assert values["COMPOSE_REDIS_URI"] == "redis://redis:6379"
     assert values["DOCKER_SERVICE"] == "redis"
 
 
-def test_prepare_compose_runtime_overrides_rewrites_zero_host_loopback() -> None:
-    """Host-bound 0.0.0.0 endpoints should be rewritten for the container."""
+@pytest.mark.parametrize(
+    "host_value",
+    ["127.0.0.1", "192.168.1.10"],
+    ids=["loopback-bind", "lan-bind"],
+)
+def test_prepare_compose_runtime_overrides_normalizes_server_binding(
+    host_value: str,
+) -> None:
+    """Compose runtime should always bind the API to the container-facing host/port."""
 
-    output = run_bash(
+    values = run_bash_lines(
         f"""
 set -euo pipefail
 source "{REPO_ROOT}/scripts/setup/setup.sh"
 reset_state
 
-ENV_VALUES[POSTGRES_HOST]="0.0.0.0"
-ENV_VALUES[LLM_BINDING_HOST]="http://0.0.0.0:11434"
-ENV_VALUES[RERANK_BINDING_HOST]="http://0.0.0.0:8000/rerank"
-
-prepare_compose_runtime_overrides
-
-printf 'POSTGRES_HOST=%s\\n' "${{COMPOSE_ENV_OVERRIDES[POSTGRES_HOST]}}"
-printf 'LLM_BINDING_HOST=%s\\n' "${{COMPOSE_ENV_OVERRIDES[LLM_BINDING_HOST]}}"
-printf 'RERANK_BINDING_HOST=%s\\n' "${{COMPOSE_ENV_OVERRIDES[RERANK_BINDING_HOST]}}"
-"""
-    )
-    values = parse_lines(output)
-
-    assert values["POSTGRES_HOST"] == "host.docker.internal"
-    assert values["LLM_BINDING_HOST"] == "http://host.docker.internal:11434"
-    assert values["RERANK_BINDING_HOST"] == "http://host.docker.internal:8000/rerank"
-
-
-def test_prepare_compose_runtime_overrides_aligns_server_binding_for_container() -> (
-    None
-):
-    """Container runtime should bind the API to a reachable host/port combination."""
-
-    output = run_bash(
-        f"""
-set -euo pipefail
-source "{REPO_ROOT}/scripts/setup/setup.sh"
-reset_state
-
-ENV_VALUES[HOST]="127.0.0.1"
+ENV_VALUES[HOST]="{host_value}"
 ENV_VALUES[PORT]="8080"
 
 prepare_compose_runtime_overrides
@@ -2452,31 +2291,6 @@ printf 'HOST=%s\\n' "${{COMPOSE_ENV_OVERRIDES[HOST]}}"
 printf 'PORT=%s\\n' "${{COMPOSE_ENV_OVERRIDES[PORT]}}"
 """
     )
-    values = parse_lines(output)
-
-    assert values["HOST"] == "0.0.0.0"
-    assert values["PORT"] == "9621"
-
-
-def test_prepare_compose_runtime_overrides_rewrites_non_loopback_server_host() -> None:
-    """Container runtime should not inherit a host-only LAN bind address."""
-
-    output = run_bash(
-        f"""
-set -euo pipefail
-source "{REPO_ROOT}/scripts/setup/setup.sh"
-reset_state
-
-ENV_VALUES[HOST]="192.168.1.10"
-ENV_VALUES[PORT]="8080"
-
-prepare_compose_runtime_overrides
-
-printf 'HOST=%s\\n' "${{COMPOSE_ENV_OVERRIDES[HOST]}}"
-printf 'PORT=%s\\n' "${{COMPOSE_ENV_OVERRIDES[PORT]}}"
-"""
-    )
-    values = parse_lines(output)
 
     assert values["HOST"] == "0.0.0.0"
     assert values["PORT"] == "9621"
@@ -2878,105 +2692,55 @@ printf 'WHITELIST_PATHS=%s\\n' "${{ENV_VALUES[WHITELIST_PATHS]}}"
     assert values["WHITELIST_PATHS"] == ""
 
 
-def test_validate_env_file_allows_empty_production_whitelist_with_auth_accounts(
-    tmp_path: Path,
-) -> None:
-    """Production validation should accept an explicitly empty whitelist."""
+def test_validate_env_file_handles_production_whitelist_presence(tmp_path: Path) -> None:
+    """Production validation should distinguish empty and omitted whitelist keys."""
 
-    env_file = tmp_path / ".env"
-    env_file.write_text(
-        "\n".join(
+    base_lines = [
+        "LIGHTRAG_KV_STORAGE=PGKVStorage",
+        "LIGHTRAG_VECTOR_STORAGE=MilvusVectorDBStorage",
+        "LIGHTRAG_GRAPH_STORAGE=Neo4JStorage",
+        "LIGHTRAG_DOC_STATUS_STORAGE=PGDocStatusStorage",
+        "POSTGRES_USER=lightrag",
+        "POSTGRES_PASSWORD=secret",
+        "POSTGRES_DATABASE=lightrag",
+        "MILVUS_URI=http://localhost:19530",
+        "MILVUS_DB_NAME=lightrag",
+        "NEO4J_URI=neo4j://localhost:7687",
+        "NEO4J_USERNAME=neo4j",
+        "NEO4J_PASSWORD=secret",
+        "AUTH_ACCOUNTS=admin:secret",
+        "TOKEN_SECRET=jwt-secret",
+    ]
+    cases = {
+        "empty-whitelist": (base_lines + ["WHITELIST_PATHS="], 0, "Validation passed."),
+        "missing-whitelist": (base_lines, 1, "must not whitelist /api routes"),
+    }
+
+    for case_name, (env_lines, expected_code, expected_text) in cases.items():
+        case_dir = tmp_path / case_name
+        case_dir.mkdir()
+        write_text_lines(case_dir / ".env", env_lines)
+
+        result = subprocess.run(
             [
-                "LIGHTRAG_KV_STORAGE=PGKVStorage",
-                "LIGHTRAG_VECTOR_STORAGE=MilvusVectorDBStorage",
-                "LIGHTRAG_GRAPH_STORAGE=Neo4JStorage",
-                "LIGHTRAG_DOC_STATUS_STORAGE=PGDocStatusStorage",
-                "POSTGRES_USER=lightrag",
-                "POSTGRES_PASSWORD=secret",
-                "POSTGRES_DATABASE=lightrag",
-                "MILVUS_URI=http://localhost:19530",
-                "MILVUS_DB_NAME=lightrag",
-                "NEO4J_URI=neo4j://localhost:7687",
-                "NEO4J_USERNAME=neo4j",
-                "NEO4J_PASSWORD=secret",
-                "AUTH_ACCOUNTS=admin:secret",
-                "TOKEN_SECRET=jwt-secret",
-                "WHITELIST_PATHS=",
-            ]
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-
-    result = subprocess.run(
-        [
-            "bash",
-            "-lc",
-            f"""
+                "bash",
+                "-lc",
+                f"""
 source "{REPO_ROOT}/scripts/setup/setup.sh"
-REPO_ROOT="{tmp_path}"
+REPO_ROOT="{case_dir}"
 reset_state
 validate_env_file
 """,
-        ],
-        cwd=REPO_ROOT,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-
-    assert result.returncode == 0
-    assert "Validation passed." in result.stdout
-
-
-def test_validate_env_file_rejects_missing_production_whitelist_with_auth_accounts(
-    tmp_path: Path,
-) -> None:
-    """Production validation should reject auth configs that omit the whitelist key."""
-
-    env_file = tmp_path / ".env"
-    env_file.write_text(
-        "\n".join(
-            [
-                "LIGHTRAG_KV_STORAGE=PGKVStorage",
-                "LIGHTRAG_VECTOR_STORAGE=MilvusVectorDBStorage",
-                "LIGHTRAG_GRAPH_STORAGE=Neo4JStorage",
-                "LIGHTRAG_DOC_STATUS_STORAGE=PGDocStatusStorage",
-                "POSTGRES_USER=lightrag",
-                "POSTGRES_PASSWORD=secret",
-                "POSTGRES_DATABASE=lightrag",
-                "MILVUS_URI=http://localhost:19530",
-                "MILVUS_DB_NAME=lightrag",
-                "NEO4J_URI=neo4j://localhost:7687",
-                "NEO4J_USERNAME=neo4j",
-                "NEO4J_PASSWORD=secret",
-                "AUTH_ACCOUNTS=admin:secret",
-                "TOKEN_SECRET=jwt-secret",
-            ]
+            ],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
         )
-        + "\n",
-        encoding="utf-8",
-    )
 
-    result = subprocess.run(
-        [
-            "bash",
-            "-lc",
-            f"""
-source "{REPO_ROOT}/scripts/setup/setup.sh"
-REPO_ROOT="{tmp_path}"
-reset_state
-validate_env_file
-""",
-        ],
-        cwd=REPO_ROOT,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-
-    assert result.returncode != 0
-    assert "must not whitelist /api routes" in result.stderr
+        assert result.returncode == expected_code
+        combined_output = result.stdout + result.stderr
+        assert expected_text in combined_output
 
 
 def test_collect_observability_config_clears_existing_values_on_rerun(
@@ -3178,51 +2942,26 @@ fi
     assert not (tmp_path / "docker_calls.log").exists()
 
 
-def test_validate_security_config_requires_auth_accounts_for_production() -> None:
-    """Production validation should require account-based auth."""
+def test_validate_security_config_enforces_production_auth_and_whitelist_rules() -> None:
+    """Production validation should require auth accounts and reject `/api/*` whitelists."""
 
-    output = run_bash(
+    values = run_bash_lines(
         f"""
 set -euo pipefail
 source "{REPO_ROOT}/scripts/setup/setup.sh"
 reset_state
 
 if validate_security_config "" "" "" yes; then
-  printf 'VALID=yes\\n'
+  printf 'NO_AUTH=yes\\n'
 else
-  printf 'VALID=no\\n'
+  printf 'NO_AUTH=no\\n'
 fi
 
 if validate_security_config "" "" "api-key" yes "/health"; then
-  printf 'WITH_API_KEY=yes\\n'
+  printf 'API_KEY_ONLY=yes\\n'
 else
-  printf 'WITH_API_KEY=no\\n'
+  printf 'API_KEY_ONLY=no\\n'
 fi
-
-if validate_security_config "admin:secret" "token-secret" "" yes "/health"; then
-  printf 'WITH_AUTH_ACCOUNTS=yes\\n'
-else
-  printf 'WITH_AUTH_ACCOUNTS=no\\n'
-fi
-"""
-    )
-    values = parse_lines(output)
-
-    assert values["VALID"] == "no"
-    assert values["WITH_API_KEY"] == "no"
-    assert values["WITH_AUTH_ACCOUNTS"] == "yes"
-
-
-def test_validate_security_config_allows_empty_but_rejects_api_whitelist_for_production() -> (
-    None
-):
-    """Production validation should allow an empty whitelist but still reject `/api/*`."""
-
-    output = run_bash(
-        f"""
-set -euo pipefail
-source "{REPO_ROOT}/scripts/setup/setup.sh"
-reset_state
 
 if validate_security_config "admin:secret" "token-secret" "" yes ""; then
   printf 'EMPTY_WHITELIST=yes\\n'
@@ -3255,8 +2994,9 @@ else
 fi
 """
     )
-    values = parse_lines(output)
 
+    assert values["NO_AUTH"] == "no"
+    assert values["API_KEY_ONLY"] == "no"
     assert values["EMPTY_WHITELIST"] == "yes"
     assert values["OMITTED_WHITELIST"] == "no"
     assert values["API_WHITELIST"] == "no"
@@ -3333,38 +3073,51 @@ fi
     assert values["EMPTY_VALID"] == "no"
 
 
-def test_validate_env_file_requires_protection_for_production_storage_profile(
+def test_validate_env_file_requires_protection_for_production_profiles(
     tmp_path: Path,
 ) -> None:
-    """`setup-validate` should reject the production storage profile without auth."""
+    """`setup-validate` should reject production-class profiles without auth."""
 
-    env_file = tmp_path / ".env"
-    env_file.write_text(
-        "\n".join(
-            [
-                "LIGHTRAG_KV_STORAGE=PGKVStorage",
-                "LIGHTRAG_VECTOR_STORAGE=MilvusVectorDBStorage",
-                "LIGHTRAG_GRAPH_STORAGE=Neo4JStorage",
-                "LIGHTRAG_DOC_STATUS_STORAGE=PGDocStatusStorage",
-                "POSTGRES_USER=lightrag",
-                "POSTGRES_PASSWORD=secret",
-                "POSTGRES_DATABASE=lightrag",
-                "MILVUS_URI=http://localhost:19530",
-                "MILVUS_DB_NAME=lightrag",
-                "NEO4J_URI=neo4j://localhost:7687",
-                "NEO4J_USERNAME=neo4j",
-                "NEO4J_PASSWORD=secret",
-            ]
-        )
-        + "\n",
-        encoding="utf-8",
-    )
+    cases = {
+        "storage-profile": [
+            "LIGHTRAG_KV_STORAGE=PGKVStorage",
+            "LIGHTRAG_VECTOR_STORAGE=MilvusVectorDBStorage",
+            "LIGHTRAG_GRAPH_STORAGE=Neo4JStorage",
+            "LIGHTRAG_DOC_STATUS_STORAGE=PGDocStatusStorage",
+            "POSTGRES_USER=lightrag",
+            "POSTGRES_PASSWORD=secret",
+            "POSTGRES_DATABASE=lightrag",
+            "MILVUS_URI=http://localhost:19530",
+            "MILVUS_DB_NAME=lightrag",
+            "NEO4J_URI=neo4j://localhost:7687",
+            "NEO4J_USERNAME=neo4j",
+            "NEO4J_PASSWORD=secret",
+        ],
+        "setup-profile": [
+            "LIGHTRAG_SETUP_PROFILE=production",
+            "LIGHTRAG_KV_STORAGE=PGKVStorage",
+            "LIGHTRAG_VECTOR_STORAGE=QdrantVectorDBStorage",
+            "LIGHTRAG_GRAPH_STORAGE=Neo4JStorage",
+            "LIGHTRAG_DOC_STATUS_STORAGE=PGDocStatusStorage",
+            "POSTGRES_USER=lightrag",
+            "POSTGRES_PASSWORD=secret",
+            "POSTGRES_DATABASE=lightrag",
+            "QDRANT_URL=http://localhost:6333",
+            "NEO4J_URI=neo4j://localhost:7687",
+            "NEO4J_USERNAME=neo4j",
+            "NEO4J_PASSWORD=secret",
+        ],
+    }
 
-    output = run_bash(
-        f"""
+    for case_name, env_lines in cases.items():
+        case_dir = tmp_path / case_name
+        case_dir.mkdir()
+        write_text_lines(case_dir / ".env", env_lines)
+        values = run_bash_lines(
+            f"""
 set -euo pipefail
 source "{REPO_ROOT}/scripts/setup/setup.sh"
-REPO_ROOT="{tmp_path}"
+REPO_ROOT="{case_dir}"
 
 if validate_env_file; then
   printf 'VALID=yes\\n'
@@ -3372,69 +3125,31 @@ else
   printf 'VALID=no\\n'
 fi
 """
-    )
-    values = parse_lines(output)
-
-    assert values["VALID"] == "no"
-
-
-def test_validate_env_file_requires_protection_for_production_setup_profile(
-    tmp_path: Path,
-) -> None:
-    """`setup-validate` should honor persisted production setup metadata."""
-
-    env_file = tmp_path / ".env"
-    env_file.write_text(
-        "\n".join(
-            [
-                "LIGHTRAG_SETUP_PROFILE=production",
-                "LIGHTRAG_KV_STORAGE=PGKVStorage",
-                "LIGHTRAG_VECTOR_STORAGE=QdrantVectorDBStorage",
-                "LIGHTRAG_GRAPH_STORAGE=Neo4JStorage",
-                "LIGHTRAG_DOC_STATUS_STORAGE=PGDocStatusStorage",
-                "POSTGRES_USER=lightrag",
-                "POSTGRES_PASSWORD=secret",
-                "POSTGRES_DATABASE=lightrag",
-                "QDRANT_URL=http://localhost:6333",
-                "NEO4J_URI=neo4j://localhost:7687",
-                "NEO4J_USERNAME=neo4j",
-                "NEO4J_PASSWORD=secret",
-            ]
         )
-        + "\n",
-        encoding="utf-8",
-    )
-
-    output = run_bash(
-        f"""
-set -euo pipefail
-source "{REPO_ROOT}/scripts/setup/setup.sh"
-REPO_ROOT="{tmp_path}"
-
-if validate_env_file; then
-  printf 'VALID=yes\\n'
-else
-  printf 'VALID=no\\n'
-fi
-"""
-    )
-    values = parse_lines(output)
-
-    assert values["VALID"] == "no"
+        assert values["VALID"] == "no"
 
 
 def test_finalize_setup_requires_protection_for_custom_production_storage_profile(
     tmp_path: Path,
 ) -> None:
-    """Custom mode should not allow the production storage profile without auth."""
+    """Custom mode should reject production-class storage profiles without account auth."""
 
-    (tmp_path / "env.example").write_text("LLM_BINDING=openai\n", encoding="utf-8")
+    cases = {
+        "no-protection": [],
+        "api-key-only": ['ENV_VALUES[LIGHTRAG_API_KEY]="api-key"'],
+    }
 
-    output = run_bash(
-        f"""
+    for case_name, extra_lines in cases.items():
+        case_dir = tmp_path / case_name
+        case_dir.mkdir()
+        write_text_lines(case_dir / "env.example", ["LLM_BINDING=openai"])
+
+        extra_block = "\n".join(extra_lines)
+        values = run_bash_lines(
+            f"""
 set -euo pipefail
 source "{REPO_ROOT}/scripts/setup/setup.sh"
-REPO_ROOT="{tmp_path}"
+REPO_ROOT="{case_dir}"
 reset_state
 DEPLOYMENT_TYPE="custom"
 
@@ -3450,6 +3165,7 @@ ENV_VALUES[MILVUS_DB_NAME]="lightrag"
 ENV_VALUES[NEO4J_URI]="neo4j://localhost:7687"
 ENV_VALUES[NEO4J_USERNAME]="neo4j"
 ENV_VALUES[NEO4J_PASSWORD]="secret"
+{extra_block}
 
 confirm_default_yes() {{ return 1; }}
 backup_env_file() {{ return 0; }}
@@ -3463,10 +3179,9 @@ else
   printf 'RESULT=failure\\n'
 fi
 """
-    )
-    values = parse_lines(output)
+        )
 
-    assert values["RESULT"] == "failure"
+        assert values["RESULT"] == "failure"
 
 
 def test_show_summary_masks_auth_accounts() -> None:
@@ -3490,53 +3205,6 @@ show_summary
     assert "TOKEN_SECRET=***" in output
     assert "admin:secret" not in output
     assert "reader:hunter2" not in output
-
-
-def test_finalize_setup_rejects_api_key_only_production_storage_profile(
-    tmp_path: Path,
-) -> None:
-    """Production-like storage profiles should not pass with API-key-only protection."""
-
-    (tmp_path / "env.example").write_text("LLM_BINDING=openai\n", encoding="utf-8")
-
-    output = run_bash(
-        f"""
-set -euo pipefail
-source "{REPO_ROOT}/scripts/setup/setup.sh"
-REPO_ROOT="{tmp_path}"
-reset_state
-DEPLOYMENT_TYPE="custom"
-
-ENV_VALUES[LIGHTRAG_KV_STORAGE]="PGKVStorage"
-ENV_VALUES[LIGHTRAG_VECTOR_STORAGE]="MilvusVectorDBStorage"
-ENV_VALUES[LIGHTRAG_GRAPH_STORAGE]="Neo4JStorage"
-ENV_VALUES[LIGHTRAG_DOC_STATUS_STORAGE]="PGDocStatusStorage"
-ENV_VALUES[POSTGRES_USER]="lightrag"
-ENV_VALUES[POSTGRES_PASSWORD]="secret"
-ENV_VALUES[POSTGRES_DATABASE]="lightrag"
-ENV_VALUES[MILVUS_URI]="http://localhost:19530"
-ENV_VALUES[MILVUS_DB_NAME]="lightrag"
-ENV_VALUES[NEO4J_URI]="neo4j://localhost:7687"
-ENV_VALUES[NEO4J_USERNAME]="neo4j"
-ENV_VALUES[NEO4J_PASSWORD]="secret"
-ENV_VALUES[LIGHTRAG_API_KEY]="api-key"
-
-confirm_default_yes() {{ return 1; }}
-backup_env_file() {{ return 0; }}
-generate_env_file() {{ :; }}
-generate_docker_compose() {{ :; }}
-show_summary() {{ :; }}
-
-if finalize_setup >/dev/null 2>&1; then
-  printf 'RESULT=success\\n'
-else
-  printf 'RESULT=failure\\n'
-fi
-"""
-    )
-    values = parse_lines(output)
-
-    assert values["RESULT"] == "failure"
 
 
 def test_finalize_setup_validates_inherited_ssl_assets_before_staging(
@@ -3589,34 +3257,53 @@ finalize_setup
     assert "No such file or directory" not in result.stderr
 
 
-def test_validate_env_file_rejects_malformed_neo4j_uri(tmp_path: Path) -> None:
-    """validate_env_file should fail when NEO4J_URI has an invalid scheme."""
+def test_validate_env_file_handles_supported_and_unsupported_uri_schemes(
+    tmp_path: Path,
+) -> None:
+    """validate_env_file should reject malformed schemes and allow supported TLS variants."""
 
-    env_file = tmp_path / ".env"
-    env_file.write_text(
-        "\n".join(
+    cases = {
+        "invalid-neo4j-scheme": (
+            ["NEO4J_URI=http://localhost:7687"],
+            "no",
+            "Invalid NEO4J_URI",
+        ),
+        "invalid-redis-scheme": (
+            ["REDIS_URI=tcp://localhost:6379"],
+            "no",
+            "Invalid REDIS_URI",
+        ),
+        "valid-rediss-scheme": (
+            ["REDIS_URI=rediss://localhost:6380"],
+            "yes",
+            "",
+        ),
+    }
+
+    for case_name, (extra_lines, expected_valid, expected_stderr) in cases.items():
+        case_dir = tmp_path / case_name
+        case_dir.mkdir()
+        write_text_lines(
+            case_dir / ".env",
             [
                 "LIGHTRAG_KV_STORAGE=JsonKVStorage",
                 "LIGHTRAG_VECTOR_STORAGE=NanoVectorDBStorage",
                 "LIGHTRAG_GRAPH_STORAGE=NetworkXStorage",
                 "LIGHTRAG_DOC_STATUS_STORAGE=JsonDocStatusStorage",
-                "NEO4J_URI=http://localhost:7687",
-            ]
+                *extra_lines,
+            ],
         )
-        + "\n",
-        encoding="utf-8",
-    )
-    (tmp_path / "env.example").write_text("LLM_BINDING=openai\n", encoding="utf-8")
+        write_text_lines(case_dir / "env.example", ["LLM_BINDING=openai"])
 
-    result = subprocess.run(
-        [
-            "bash",
-            "--norc",
-            "--noprofile",
-            "-c",
-            f"""
+        result = subprocess.run(
+            [
+                "bash",
+                "--norc",
+                "--noprofile",
+                "-c",
+                f"""
 source "{REPO_ROOT}/scripts/setup/setup.sh"
-REPO_ROOT="{tmp_path}"
+REPO_ROOT="{case_dir}"
 reset_state
 if validate_env_file; then
   printf 'VALID=yes\\n'
@@ -3624,100 +3311,17 @@ else
   printf 'VALID=no\\n'
 fi
 """,
-        ],
-        cwd=REPO_ROOT,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-
-    values = parse_lines(result.stdout)
-    assert values["VALID"] == "no"
-    assert "Invalid NEO4J_URI" in result.stderr
-
-
-def test_validate_env_file_rejects_malformed_redis_uri(tmp_path: Path) -> None:
-    """validate_env_file should fail when REDIS_URI has an invalid scheme."""
-
-    env_file = tmp_path / ".env"
-    env_file.write_text(
-        "\n".join(
-            [
-                "LIGHTRAG_KV_STORAGE=JsonKVStorage",
-                "LIGHTRAG_VECTOR_STORAGE=NanoVectorDBStorage",
-                "LIGHTRAG_GRAPH_STORAGE=NetworkXStorage",
-                "LIGHTRAG_DOC_STATUS_STORAGE=JsonDocStatusStorage",
-                "REDIS_URI=tcp://localhost:6379",
-            ]
+            ],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
         )
-        + "\n",
-        encoding="utf-8",
-    )
-    (tmp_path / "env.example").write_text("LLM_BINDING=openai\n", encoding="utf-8")
 
-    result = subprocess.run(
-        [
-            "bash",
-            "--norc",
-            "--noprofile",
-            "-c",
-            f"""
-source "{REPO_ROOT}/scripts/setup/setup.sh"
-REPO_ROOT="{tmp_path}"
-reset_state
-if validate_env_file; then
-  printf 'VALID=yes\\n'
-else
-  printf 'VALID=no\\n'
-fi
-""",
-        ],
-        cwd=REPO_ROOT,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-
-    values = parse_lines(result.stdout)
-    assert values["VALID"] == "no"
-    assert "Invalid REDIS_URI" in result.stderr
-
-
-def test_validate_env_file_accepts_rediss_tls_uri(tmp_path: Path) -> None:
-    """validate_env_file should accept rediss:// TLS URIs without downgrading them."""
-
-    env_file = tmp_path / ".env"
-    env_file.write_text(
-        "\n".join(
-            [
-                "LIGHTRAG_KV_STORAGE=JsonKVStorage",
-                "LIGHTRAG_VECTOR_STORAGE=NanoVectorDBStorage",
-                "LIGHTRAG_GRAPH_STORAGE=NetworkXStorage",
-                "LIGHTRAG_DOC_STATUS_STORAGE=JsonDocStatusStorage",
-                "REDIS_URI=rediss://localhost:6380",
-            ]
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-    (tmp_path / "env.example").write_text("LLM_BINDING=openai\n", encoding="utf-8")
-
-    output = run_bash(
-        f"""
-set -euo pipefail
-source "{REPO_ROOT}/scripts/setup/setup.sh"
-REPO_ROOT="{tmp_path}"
-reset_state
-if validate_env_file; then
-  printf 'VALID=yes\\n'
-else
-  printf 'VALID=no\\n'
-fi
-"""
-    )
-
-    values = parse_lines(output)
-    assert values["VALID"] == "yes"
+        values = parse_lines(result.stdout)
+        assert values["VALID"] == expected_valid
+        if expected_stderr:
+            assert expected_stderr in result.stderr
 
 
 def test_validate_env_file_rejects_mongo_vector_storage_without_atlas_uri(
@@ -3814,47 +3418,3 @@ finalize_setup
     backups = list(tmp_path.glob(".env.backup.*"))
     assert len(backups) == 1, f"Expected one backup file, found: {backups}"
     assert backups[0].read_text(encoding="utf-8") == env_content
-
-
-def test_env_storage_flow_uses_custom_storage_selection_without_preset(
-    tmp_path: Path,
-) -> None:
-    """env-storage should use the stub's custom selection without applying any preset."""
-
-    (tmp_path / "env.example").write_text(
-        "LLM_BINDING=openai\n",
-        encoding="utf-8",
-    )
-    (tmp_path / ".env").write_text(
-        "LLM_BINDING=openai\nLLM_BINDING_API_KEY=sk-test\n",
-        encoding="utf-8",
-    )
-
-    output = run_bash(
-        f"""
-set -euo pipefail
-source "{REPO_ROOT}/scripts/setup/setup.sh"
-REPO_ROOT="{tmp_path}"
-
-# Stub everything interactive; focus on verifying no preset is auto-applied.
-select_storage_backends() {{
-  ENV_VALUES[LIGHTRAG_KV_STORAGE]="JsonKVStorage"
-  ENV_VALUES[LIGHTRAG_VECTOR_STORAGE]="NanoVectorDBStorage"
-  ENV_VALUES[LIGHTRAG_GRAPH_STORAGE]="NetworkXStorage"
-  ENV_VALUES[LIGHTRAG_DOC_STATUS_STORAGE]="JsonDocStatusStorage"
-}}
-collect_database_config() {{ :; }}
-collect_docker_image_tags() {{ :; }}
-finalize_storage_setup() {{
-  printf 'KV=%s\\n' "${{ENV_VALUES[LIGHTRAG_KV_STORAGE]:-}}"
-  printf 'VECTOR=%s\\n' "${{ENV_VALUES[LIGHTRAG_VECTOR_STORAGE]:-}}"
-}}
-
-env_storage_flow
-"""
-    )
-
-    values = parse_lines(output)
-    # env-storage must not auto-apply development or production presets
-    assert values["KV"] == "JsonKVStorage"
-    assert values["VECTOR"] == "NanoVectorDBStorage"
