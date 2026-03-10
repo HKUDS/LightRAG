@@ -1693,7 +1693,7 @@ prompt_secret_until_valid_with_default() {{
 }}
 confirm_default_yes() {{
   case "$1" in
-    "Generate .env and docker-compose.yml now?") return 0 ;;
+    "Next step will generate the .env file. Ready to proceed or cancel?") return 0 ;;
     *) return 1 ;;
   esac
 }}
@@ -1752,7 +1752,7 @@ confirm_default_no() {{
 }}
 confirm_default_yes() {{
   case "$1" in
-    "Generate .env and docker-compose.yml now?")
+    "Next step will generate the .env file. Ready to proceed or cancel?")
       return 0
       ;;
     *)
@@ -1818,7 +1818,7 @@ collect_security_config() {{ :; }}
 collect_observability_config() {{ :; }}
 confirm_default_yes() {{
   case "$1" in
-    "Generate .env and docker-compose.yml now?") return 0 ;;
+    "Next step will generate the .env file. Ready to proceed or cancel?") return 0 ;;
     *) return 1 ;;
   esac
 }}
@@ -1875,7 +1875,7 @@ prompt_secret_with_default() {{ printf '%s' "$2"; }}
 prompt_secret_until_valid_with_default() {{ printf '%s' "$2"; }}
 confirm_default_yes() {{
   case "$1" in
-    "Generate .env and docker-compose.yml now?")
+    "Next step will generate the .env file. Ready to proceed or cancel?")
       return 0
       ;;
     *)
@@ -2135,7 +2135,7 @@ prompt_clearable_secret_with_default() {{
 }}
 confirm_default_yes() {{
   case "$1" in
-    "Configure authentication and API key settings?"|"Generate .env and docker-compose.yml now?")
+    "Configure authentication and API key settings?"|"Next step will generate the .env file. Ready to proceed or cancel?")
       return 0
       ;;
     *)
@@ -3746,7 +3746,7 @@ DEPLOYMENT_TYPE="development"
 # confirm_default_yes handles "Generate .env...?" -> yes; confirm handles docker-compose -> no.
 confirm_default_yes() {{
   case "$1" in
-    "Generate .env and docker-compose.yml now?") return 0 ;;
+    "Next step will generate the .env file. Ready to proceed or cancel?") return 0 ;;
     *) return 1 ;;
   esac
 }}
