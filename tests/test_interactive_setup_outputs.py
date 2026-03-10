@@ -410,7 +410,7 @@ generate_docker_compose "$REPO_ROOT/docker-compose.generated.yml"
 
 
 def test_removing_ssl_strips_wizard_bind_mounts_from_compose(tmp_path: Path) -> None:
-    """Re-running setup without SSL must remove stale /app/data/ bind mounts."""
+    """Re-running setup without SSL must remove only wizard-managed SSL mounts."""
 
     # A previously generated compose file that has SSL mounts.
     compose_file = tmp_path / "docker-compose.final.yml"
@@ -423,7 +423,9 @@ def test_removing_ssl_strips_wizard_bind_mounts_from_compose(tmp_path: Path) -> 
                 "    volumes:",
                 '      - "./data/certs/cert.pem:/app/data/certs/cert.pem:ro"',
                 '      - "./data/certs/key.pem:/app/data/certs/key.pem:ro"',
-                '      - "./data:/app/data"',
+                '      - "./data/rag_storage:/app/data/rag_storage"',
+                '      - "./data/inputs:/app/data/inputs"',
+                '      - "./custom-data:/app/data/custom"',
                 "    environment:",
                 '      SSL_CERTFILE: "/app/data/certs/cert.pem"',
                 '      SSL_KEYFILE: "/app/data/certs/key.pem"',
@@ -453,8 +455,10 @@ generate_docker_compose "{tmp_path}/docker-compose.final.yml"
     # SSL bind mounts must be gone.
     assert "/app/data/certs/cert.pem" not in result
     assert "/app/data/certs/key.pem" not in result
-    # User-added non-wizard mount must be preserved.
-    assert "./data:/app/data" in result
+    # Default persistent mounts and user-added non-wizard mounts must be preserved.
+    assert "./data/rag_storage:/app/data/rag_storage" in result
+    assert "./data/inputs:/app/data/inputs" in result
+    assert "./custom-data:/app/data/custom" in result
 
 
 def test_collect_ssl_config_can_disable_loaded_ssl_values(tmp_path: Path) -> None:

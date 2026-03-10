@@ -560,13 +560,57 @@ inject_service_environment_overrides() {
   mv "$tmp_file" "$compose_file"
 }
 
-# Remove wizard-managed bind mounts (paths under /app/data/) from the
-# lightrag service's volumes block, leaving any user-added mounts intact.
+# Return success when a volume mount entry is a wizard-managed SSL cert/key
+# bind mount (./data/certs/* -> /app/data/certs/*, optional :ro suffix).
+_is_wizard_ssl_bind_mount() {
+  local mount_spec="$1"
+  local host_path=""
+  local remainder=""
+  local container_path=""
+  local mode=""
+  local host_suffix=""
+  local container_suffix=""
+
+  host_path="${mount_spec%%:*}"
+  remainder="${mount_spec#*:}"
+  if [[ "$remainder" == "$mount_spec" ]]; then
+    return 1
+  fi
+
+  container_path="${remainder%%:*}"
+  if [[ "$container_path" == "$remainder" ]]; then
+    mode=""
+  else
+    mode="${remainder#${container_path}:}"
+  fi
+
+  if [[ "$host_path" != ./data/certs/* ]]; then
+    return 1
+  fi
+
+  if [[ "$container_path" != /app/data/certs/* ]]; then
+    return 1
+  fi
+
+  # Wizard-generated SSL mounts are read-only. Keep non-read-only mounts so
+  # user-defined overrides under /app/data/certs are not stripped.
+  if [[ -n "$mode" && "$mode" != "ro" ]]; then
+    return 1
+  fi
+
+  host_suffix="${host_path#./data/certs/}"
+  container_suffix="${container_path#/app/data/certs/}"
+  [[ "$host_suffix" == "$container_suffix" ]]
+}
+
+# Remove wizard-managed SSL bind mounts from the lightrag service's volumes
+# block, leaving persistent and user-added /app/data/* mounts intact.
 _strip_lightrag_wizard_bind_mounts() {
   local compose_file="$1"
   local tmp_file="${compose_file}.strip-mounts"
   _FILE_OPS_CLEANUP_TMP+=("$tmp_file")
   local line
+  local mount_spec
   local in_lightrag="no"
   local in_volumes="no"
 
@@ -582,8 +626,15 @@ _strip_lightrag_wizard_bind_mounts() {
       elif [[ "$in_volumes" == "yes" ]]; then
         if [[ "$line" =~ ^[[:space:]]{4}[^[:space:]] ]]; then
           in_volumes="no"
-        elif [[ "$line" =~ /app/data/ ]]; then
-          continue
+        elif [[ "$line" =~ ^[[:space:]]{6}-[[:space:]] ]]; then
+          mount_spec="${line#      - }"
+          mount_spec="${mount_spec%\"}"
+          mount_spec="${mount_spec#\"}"
+          mount_spec="${mount_spec%\'}"
+          mount_spec="${mount_spec#\'}"
+          if _is_wizard_ssl_bind_mount "$mount_spec"; then
+            continue
+          fi
         fi
       fi
     fi
