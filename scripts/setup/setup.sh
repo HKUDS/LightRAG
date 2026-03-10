@@ -1935,7 +1935,10 @@ finalize_storage_setup() {
     return 1
   fi
 
-  if [[ "$has_docker_storage" == "no" ]]; then
+  existing_compose="$(find_generated_compose_file)"
+
+  if [[ "$has_docker_storage" == "no" && -z "$existing_compose" ]]; then
+    # No docker services selected and no existing compose to clean up.
     backup_path="$(backup_env_file)"
     if [[ -n "$backup_path" ]]; then
       log_success "Backed up existing .env to $backup_path"
@@ -1945,14 +1948,8 @@ finalize_storage_setup() {
     return 0
   fi
 
-  existing_compose="$(find_generated_compose_file)"
-
-  if [[ -z "$existing_compose" ]]; then
-    compose_file="${REPO_ROOT}/docker-compose.final.yml"
-    generate_compose="yes"
-  else
+  if [[ -n "$existing_compose" ]]; then
     compose_file="$existing_compose"
-    generate_compose="yes"
     # Detect and preserve existing vLLM services.
     while IFS= read -r svc; do
       local is_vllm="no"
@@ -1966,7 +1963,10 @@ finalize_storage_setup() {
         add_docker_service "$svc"
       fi
     done < <(detect_compose_services "$existing_compose")
+  else
+    compose_file="${REPO_ROOT}/docker-compose.final.yml"
   fi
+  generate_compose="yes"
 
   prepare_compose_env_overrides
 
@@ -1980,7 +1980,7 @@ finalize_storage_setup() {
 
   generate_docker_compose "$compose_file"
   log_success "Wrote ${compose_file}"
-  if [[ -n "$existing_compose" && "$compose_file" == "$existing_compose" ]]; then
+  if [[ -n "$existing_compose" ]]; then
     log_success "vLLM services preserved; storage services updated."
   fi
   echo "  To start: docker compose -f ${compose_file} up -d"

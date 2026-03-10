@@ -2108,6 +2108,76 @@ env_storage_flow
     assert "env_file:" not in generated_compose
 
 
+def test_switching_to_non_docker_storage_removes_stale_services_from_compose(
+    tmp_path: Path,
+) -> None:
+    """env-storage must strip old storage services from compose when switching to non-Docker backends."""
+
+    # Existing compose with postgres and neo4j Docker services.
+    compose_file = tmp_path / "docker-compose.final.yml"
+    compose_file.write_text(
+        "\n".join(
+            [
+                "services:",
+                "  lightrag:",
+                "    image: example/lightrag:test",
+                "  postgres:",
+                "    image: gzdaniel/postgres-for-rag:16.6",
+                "  neo4j:",
+                "    image: neo4j:5.26.21-community",
+                "volumes:",
+                "  postgres_data:",
+                "  neo4j_data:",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    env_file = tmp_path / ".env"
+    env_file.write_text("LLM_BINDING=openai\n", encoding="utf-8")
+    (tmp_path / "env.example").write_text(
+        (REPO_ROOT / "env.example").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    (tmp_path / "docker-compose.yml").write_text(
+        (REPO_ROOT / "docker-compose.yml").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+
+    # User switches to non-Docker backends: DOCKER_SERVICES stays empty.
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+
+select_storage_backends() {{
+  ENV_VALUES[LIGHTRAG_KV_STORAGE]="JsonKVStorage"
+  ENV_VALUES[LIGHTRAG_VECTOR_STORAGE]="NanoVectorDBStorage"
+  ENV_VALUES[LIGHTRAG_GRAPH_STORAGE]="NetworkXStorage"
+  ENV_VALUES[LIGHTRAG_DOC_STATUS_STORAGE]="JsonDocStatusStorage"
+}}
+collect_database_config() {{ :; }}
+collect_docker_image_tags() {{ :; }}
+validate_required_variables() {{ return 0; }}
+confirm_default_yes() {{ return 0; }}
+confirm_default_no() {{ return 1; }}
+
+env_storage_flow
+"""
+    )
+
+    result = compose_file.read_text(encoding="utf-8")
+    # Stale storage services must be gone.
+    assert "postgres:" not in result
+    assert "neo4j:" not in result
+    assert "postgres_data:" not in result
+    assert "neo4j_data:" not in result
+    # lightrag service must be preserved.
+    assert "  lightrag:" in result
+
+
 def test_collect_milvus_config_defaults_to_existing_database_name() -> None:
     """Milvus database prompt should preserve the documented default database."""
 
