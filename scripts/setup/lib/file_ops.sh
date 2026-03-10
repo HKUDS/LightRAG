@@ -326,6 +326,10 @@ generate_docker_compose() {
   # keys no longer in COMPOSE_ENV_OVERRIDES are not left behind.
   _strip_lightrag_wizard_environment_keys "$tmp_file"
 
+  # Remove stale wizard-managed bind mounts from lightrag's volumes so that
+  # mounts no longer needed (e.g. after SSL removal) are not left behind.
+  _strip_lightrag_wizard_bind_mounts "$tmp_file"
+
   append_lightrag_ssl_mount lightrag_mounts "${COMPOSE_ENV_OVERRIDES[SSL_CERTFILE]:-}" || return 1
   append_lightrag_ssl_mount lightrag_mounts "${COMPOSE_ENV_OVERRIDES[SSL_KEYFILE]:-}" || return 1
   if ((${#lightrag_mounts[@]} > 0)); then
@@ -552,6 +556,45 @@ inject_service_environment_overrides() {
       printf '      %s: %s\n' "$key" "$(format_yaml_value "$value")" >> "$tmp_file"
     done
   fi
+
+  mv "$tmp_file" "$compose_file"
+}
+
+# Remove wizard-managed bind mounts (paths under /app/data/) from the
+# lightrag service's volumes block, leaving any user-added mounts intact.
+_strip_lightrag_wizard_bind_mounts() {
+  local compose_file="$1"
+  local tmp_file="${compose_file}.strip-mounts"
+  _FILE_OPS_CLEANUP_TMP+=("$tmp_file")
+  local line
+  local in_lightrag="no"
+  local in_volumes="no"
+
+  : > "$tmp_file"
+
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    if [[ "$in_lightrag" == "yes" ]]; then
+      if [[ "$line" =~ ^[[:space:]]{2}[^[:space:]] && "$line" != "  lightrag:" ]]; then
+        in_lightrag="no"
+        in_volumes="no"
+      elif [[ "$line" == "    volumes:" ]]; then
+        in_volumes="yes"
+      elif [[ "$in_volumes" == "yes" ]]; then
+        if [[ "$line" =~ ^[[:space:]]{4}[^[:space:]] ]]; then
+          in_volumes="no"
+        elif [[ "$line" =~ /app/data/ ]]; then
+          continue
+        fi
+      fi
+    fi
+
+    printf '%s\n' "$line" >> "$tmp_file"
+
+    if [[ "$line" == "  lightrag:" ]]; then
+      in_lightrag="yes"
+      in_volumes="no"
+    fi
+  done < "$compose_file"
 
   mv "$tmp_file" "$compose_file"
 }

@@ -409,6 +409,54 @@ generate_docker_compose "$REPO_ROOT/docker-compose.generated.yml"
     assert "./data/certs/key.pem:/app/data/certs/key.pem:ro" in generated_compose
 
 
+def test_removing_ssl_strips_wizard_bind_mounts_from_compose(tmp_path: Path) -> None:
+    """Re-running setup without SSL must remove stale /app/data/ bind mounts."""
+
+    # A previously generated compose file that has SSL mounts.
+    compose_file = tmp_path / "docker-compose.final.yml"
+    compose_file.write_text(
+        "\n".join(
+            [
+                "services:",
+                "  lightrag:",
+                "    image: example/lightrag:test",
+                "    volumes:",
+                '      - "./data/certs/cert.pem:/app/data/certs/cert.pem:ro"',
+                '      - "./data/certs/key.pem:/app/data/certs/key.pem:ro"',
+                '      - "./data:/app/data"',
+                "    environment:",
+                '      SSL_CERTFILE: "/app/data/certs/cert.pem"',
+                '      SSL_KEYFILE: "/app/data/certs/key.pem"',
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "env.example").write_text(
+        (REPO_ROOT / "env.example").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+
+    # Re-run without SSL: COMPOSE_ENV_OVERRIDES has no SSL_CERTFILE/SSL_KEYFILE.
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+generate_docker_compose "{tmp_path}/docker-compose.final.yml"
+"""
+    )
+
+    result = compose_file.read_text(encoding="utf-8")
+
+    # SSL bind mounts must be gone.
+    assert "/app/data/certs/cert.pem" not in result
+    assert "/app/data/certs/key.pem" not in result
+    # User-added non-wizard mount must be preserved.
+    assert "./data:/app/data" in result
+
+
 def test_collect_ssl_config_can_disable_loaded_ssl_values(tmp_path: Path) -> None:
     """Declining SSL should clear previously loaded cert paths and staged sources."""
 
