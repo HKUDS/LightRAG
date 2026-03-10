@@ -50,9 +50,9 @@ for backwards compatibility.
 Examples:
 
 ```bash
-make env-production SETUP_OPTS=--debug
-make env-quick NO_COLOR=1
-SETUP_WAIT_TIMEOUT=120 make env-quick-vllm   # Increase startup wait (seconds)
+make env-base SETUP_OPTS=--debug
+make env-storage NO_COLOR=1
+SETUP_WAIT_TIMEOUT=120 make env-server SETUP_OPTS=--debug
 ```
 
 ## Target Details

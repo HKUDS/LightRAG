@@ -77,10 +77,10 @@ docker compose up -d
 If you used the interactive setup, start the generated stack with:
 
 ```bash
-docker compose -f docker-compose.development.yml up -d
+docker compose -f docker-compose.final.yml up -d
 ```
 
-The interactive setup keeps `.env` host-usable. Container-only hostnames such as `postgres` or `host.docker.internal`, along with staged SSL paths under `/app/data/certs/`, are injected into the generated `docker-compose.*.yml` for the `lightrag` service instead of being persisted back into `.env`.
+The interactive setup keeps `.env` host-usable. Container-only hostnames such as `postgres` or `host.docker.internal`, along with staged SSL paths under `/app/data/certs/`, are injected into the generated `docker-compose.final.yml` for the `lightrag` service instead of being persisted back into `.env`.
 
 LightRAG Server uses the following paths for data storage:
 
@@ -92,10 +92,10 @@ data/
 
 ### Optional: local vLLM embedding and reranker
 
-To run embedding and/or reranking locally with vLLM, use `make env-quick-vllm`.
-It fixes the embedding to `BAAI/bge-m3` on port 8001 via a local vLLM server (no API key needed) and optionally adds a `vllm-rerank` reranker on port 8000.
+To run embedding and/or reranking locally with vLLM, run `make env-base` and answer `yes` when prompted to run the embedding model and rerank service locally via Docker.
+That configures the embedding service to use `BAAI/bge-m3` on port 8001 with a local vLLM server, and can also add a `vllm-rerank` service on port 8000.
 
-Alternatively, select `vllm` in the rerank prompt of any interactive setup mode to add the `vllm-rerank` service automatically.
+Alternatively, rerun `make env-base` later and enable only the rerank Docker prompt to add the `vllm-rerank` service automatically.
 vLLM provides a `v1/rerank` endpoint that works with the `cohere` binding.
 
 Example `docker-compose.override.yml` for GPU hosts (embedding + reranker):

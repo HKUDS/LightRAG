@@ -106,12 +106,12 @@ EMBEDDING_DIM=1024
 
 ### Create .env File With Setup Tool
 
-Instead of editing `env.example` by hand, you can use the interactive setup wizard to generate a configured `.env` (and an optional Docker Compose file) in one step:
+Instead of editing `env.example` by hand, you can use the interactive setup wizard to generate a configured `.env` and, when needed, `docker-compose.final.yml`:
 
 ```bash
-make env-quick          # Development preset — asks for LLM/embedding API keys only
-make env                # Full wizard — choose install type, storage backends, SSL, etc.
-make env-production     # Production preset — adds security and SSL prompts
+make env-base           # Required first step: LLM, embedding, reranker
+make env-storage        # Optional: storage backends and database services
+make env-server         # Optional: server port, auth, and SSL
 ```
 
 For a full description of every target and what each flow does, see

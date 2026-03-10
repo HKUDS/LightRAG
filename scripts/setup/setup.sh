@@ -9,7 +9,6 @@ fi
 
 SCRIPT_DIR="$(CDPATH="" cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LIB_DIR="$SCRIPT_DIR/lib"
-PRESETS_DIR="$SCRIPT_DIR/presets"
 # shellcheck disable=SC2034
 TEMPLATES_DIR="$SCRIPT_DIR/templates"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
@@ -78,13 +77,6 @@ source "$LIB_DIR/prompts.sh"
 source "$LIB_DIR/file_ops.sh"
 # shellcheck disable=SC1091
 source "$LIB_DIR/presets.sh"
-
-# shellcheck disable=SC1091
-source "$PRESETS_DIR/development.sh"
-# shellcheck disable=SC1091
-source "$PRESETS_DIR/production.sh"
-# shellcheck disable=SC1091
-source "$PRESETS_DIR/local.sh"
 
 init_colors() {
   if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
