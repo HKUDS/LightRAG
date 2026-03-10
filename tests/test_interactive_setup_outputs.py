@@ -1848,11 +1848,61 @@ env_base_flow
             encoding="utf-8"
         )
 
+        assert "LIGHTRAG_KV_STORAGE=JsonKVStorage" in generated_env
+        assert "LIGHTRAG_VECTOR_STORAGE=NanoVectorDBStorage" in generated_env
+        assert "LIGHTRAG_GRAPH_STORAGE=NetworkXStorage" in generated_env
+        assert "LIGHTRAG_DOC_STATUS_STORAGE=JsonDocStatusStorage" in generated_env
         for expected_line in case["env_assertions"]:
             assert expected_line in generated_env
         assert "services:" in generated_compose
         assert "  lightrag:" in generated_compose
         assert "env_file:" not in generated_compose
+
+
+def test_env_base_flow_generates_validatable_env_on_clean_checkout(
+    tmp_path: Path,
+) -> None:
+    """Fresh env-base output should include default storage selections and pass validation."""
+
+    write_text_lines(
+        tmp_path / "env.example",
+        (REPO_ROOT / "env.example").read_text(encoding="utf-8").splitlines(),
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+
+prompt_choice() {{ printf '%s' "$2"; }}
+prompt_with_default() {{ printf '%s' "$2"; }}
+prompt_until_valid() {{ printf '%s' "$2"; }}
+prompt_secret_with_default() {{ printf '%s' "$2"; }}
+prompt_secret_until_valid_with_default() {{
+  case "$1" in
+    "LLM API key: "|"Embedding API key: ") printf 'sk-test-key' ;;
+    *) printf '%s' "$2" ;;
+  esac
+}}
+confirm_default_no() {{ return 1; }}
+confirm_default_yes() {{
+  case "$1" in
+    "Ready to proceed and write .env?") return 0 ;;
+    *) return 1 ;;
+  esac
+}}
+
+env_base_flow
+validate_env_file
+"""
+    )
+
+    generated_env = (tmp_path / ".env").read_text(encoding="utf-8")
+    assert "LIGHTRAG_KV_STORAGE=JsonKVStorage" in generated_env
+    assert "LIGHTRAG_VECTOR_STORAGE=NanoVectorDBStorage" in generated_env
+    assert "LIGHTRAG_GRAPH_STORAGE=NetworkXStorage" in generated_env
+    assert "LIGHTRAG_DOC_STATUS_STORAGE=JsonDocStatusStorage" in generated_env
 
 
 def test_env_base_flow_registers_vllm_rerank_service_for_docker_deployment(

@@ -607,6 +607,15 @@ select_storage_backends() {
   done
 }
 
+initialize_default_storage_backends() {
+  # env-base does not prompt for storage, but its generated .env must remain
+  # self-consistent for first-run users who have not run env-storage yet.
+  ENV_VALUES["LIGHTRAG_KV_STORAGE"]="${ENV_VALUES[LIGHTRAG_KV_STORAGE]:-JsonKVStorage}"
+  ENV_VALUES["LIGHTRAG_VECTOR_STORAGE"]="${ENV_VALUES[LIGHTRAG_VECTOR_STORAGE]:-NanoVectorDBStorage}"
+  ENV_VALUES["LIGHTRAG_GRAPH_STORAGE"]="${ENV_VALUES[LIGHTRAG_GRAPH_STORAGE]:-NetworkXStorage}"
+  ENV_VALUES["LIGHTRAG_DOC_STATUS_STORAGE"]="${ENV_VALUES[LIGHTRAG_DOC_STATUS_STORAGE]:-JsonDocStatusStorage}"
+}
+
 collect_database_config() {
   local db_type="$1"
   local default_docker="${2:-no}"
@@ -1670,6 +1679,7 @@ env_base_flow() {
 
   reset_state
   load_existing_env_if_present
+  initialize_default_storage_backends
 
   log_info "Base configuration wizard (LLM / Embedding / Reranker)"
   echo "This wizard only modifies LLM, embedding, and reranker settings."
