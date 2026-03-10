@@ -105,31 +105,27 @@ prompt_with_default() {
 confirm_default_no() {
   local prompt="$1"
   local response
-
-  read -r -p "$prompt [y/N]: " response
-  case "${response,,}" in
-    y|yes)
-      return 0
-      ;;
-    *)
-      return 1
-      ;;
-  esac
+  while true; do
+    read -r -n 1 -p "$prompt [y/N]: " response
+    echo
+    case "$response" in
+      y|Y) return 0 ;;
+      n|N|"") return 1 ;;
+    esac
+  done
 }
 
 confirm_default_yes() {
   local prompt="$1"
   local response
-
-  read -r -p "$prompt [Y/n]: " response
-  case "${response,,}" in
-    n|no)
-      return 1
-      ;;
-    *)
-      return 0
-      ;;
-  esac
+  while true; do
+    read -r -n 1 -p "$prompt [Y/n]: " response
+    echo
+    case "$response" in
+      y|Y|"") return 0 ;;
+      n|N) return 1 ;;
+    esac
+  done
 }
 
 prompt_until_valid() {

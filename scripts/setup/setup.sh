@@ -524,51 +524,48 @@ prompt_choice() {
   shift 2
   local options=("$@")
   local choice
-  local found
   local index=1
   local default_index=""
-  local prompt_default="$default"
+  local count="${#options[@]}"
+
+  for option in "${options[@]}"; do
+    if [[ "$option" == "$default" ]]; then
+      default_index="$index"
+    fi
+    index=$((index + 1))
+  done
 
   while true; do
     printf '%s\n' "${COLOR_BLUE}${prompt}${COLOR_RESET} options:" >&2
     index=1
-    default_index=""
     for option in "${options[@]}"; do
-      if [[ "$option" == "$default" ]]; then
-        default_index="$index"
-      fi
       printf '  %s) %s\n' "${COLOR_GREEN}${index}${COLOR_RESET}" "$option" >&2
       index=$((index + 1))
     done
     if [[ -n "$default_index" ]]; then
-      prompt_default="$default_index"
+      printf 'Enter number (default: %s): ' "$default_index" >&2
     else
-      prompt_default="$default"
+      printf 'Enter number: ' >&2
     fi
-    printf '%s\n' "Enter a number or name (default: $prompt_default)." >&2
 
-    choice="$(prompt_with_default "$prompt" "$prompt_default")"
-    found=""
-    if [[ "$choice" =~ ^[0-9]+$ ]]; then
-      if ((choice >= 1 && choice <= ${#options[@]})); then
-        choice="${options[choice-1]}"
-        found="yes"
+    if ((count <= 9)); then
+      read -r -n 1 choice
+      printf '\n' >&2
+    else
+      read -r choice
+    fi
+
+    if [[ -z "$choice" ]]; then
+      if [[ -n "$default_index" ]]; then
+        printf '%s' "${options[default_index-1]}"
+        return 0
       fi
-    else
-      for option in "${options[@]}"; do
-        if [[ "$choice" == "$option" ]]; then
-          found="yes"
-          break
-        fi
-      done
-    fi
-
-    if [[ -n "$found" ]]; then
-      printf '%s' "$choice"
+    elif [[ "$choice" =~ ^[0-9]+$ ]] && ((choice >= 1 && choice <= count)); then
+      printf '%s' "${options[choice-1]}"
       return 0
     fi
 
-    echo "${COLOR_YELLOW}Invalid selection.${COLOR_RESET} Please choose one of the listed options." >&2
+    printf '%s\n' "${COLOR_YELLOW}Invalid selection.${COLOR_RESET} Please enter a number between 1 and ${count}." >&2
   done
 }
 
@@ -1231,7 +1228,6 @@ collect_rerank_config() {
   if ! confirm_default_no "Enable reranking?"; then
     ENV_VALUES["RERANK_BINDING"]="null"
     unset 'ENV_VALUES[LIGHTRAG_SETUP_RERANK_PROVIDER]'
-    unset 'ENV_VALUES[RERANK_BINDING_API_KEY]'
     return
   fi
 
