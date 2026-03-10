@@ -2513,7 +2513,7 @@ stage_ssl_assets "./data/certs/server.pem" "./data/certs/server.key"
                     'ENV_VALUES[VLLM_EMBED_PORT]="8001"',
                     'ENV_VALUES[VLLM_EMBED_API_KEY]="local-key"',
                     'add_docker_service "vllm-embed"',
-                    'confirm_default_no() { return 1; }',
+                    "confirm_default_no() { return 1; }",
                 ]
             ),
             "finalize_base_setup",
@@ -2592,8 +2592,14 @@ confirm_default_yes() {{ return 0; }}
 
     assert staged_cert.read_text(encoding="utf-8") == "cert"
     assert staged_key.read_text(encoding="utf-8") == "key"
-    assert f"./data/certs/{name}-source-cert.pem:/app/data/certs/{name}-source-cert.pem:ro" in generated_compose
-    assert f"./data/certs/{name}-source-key.pem:/app/data/certs/{name}-source-key.pem:ro" in generated_compose
+    assert (
+        f"./data/certs/{name}-source-cert.pem:/app/data/certs/{name}-source-cert.pem:ro"
+        in generated_compose
+    )
+    assert (
+        f"./data/certs/{name}-source-key.pem:/app/data/certs/{name}-source-key.pem:ro"
+        in generated_compose
+    )
 
 
 def test_generate_docker_compose_vllm_gpu_honors_documented_gpu_selector(
