@@ -150,20 +150,9 @@ so the `lightrag` container can reach the vLLM endpoint running on the Docker ho
 
 ## Image Settings
 
-The wizard lists Docker image tags for selected services and lets you override them before
-generating the compose file. You can also edit these directly in `.env`:
-
-| Variable | Default |
-|---|---|
-| `POSTGRES_IMAGE` | `gzdaniel/postgres-for-rag:16.6` (bundles Apache AGE + pgvector) |
-| `NEO4J_IMAGE_TAG` | latest Neo4j tag at release time |
-| `MONGODB_IMAGE_TAG` | — |
-| `REDIS_IMAGE_TAG` | — |
-| `MILVUS_IMAGE_TAG` | — |
-| `QDRANT_IMAGE_TAG` | — |
-| `MEMGRAPH_IMAGE_TAG` | — |
-| `VLLM_EMBED_IMAGE_TAG` | `vllm/vllm-openai-cpu:latest` (CPU) / `vllm/vllm-openai:latest` (GPU) |
-| `VLLM_RERANK_IMAGE_TAG` | same as embed |
+Bundled service images are defined by the Docker Compose templates in
+`scripts/setup/templates/*.yml`. The modular setup wizards do not prompt for image overrides and
+do not manage image-selection environment variables in `.env`.
 
 ## Common Workflows
 

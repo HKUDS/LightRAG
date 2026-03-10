@@ -33,9 +33,8 @@ help:
 	@printf "  make env-base\n"
 	@printf "  make env-storage SETUP_OPTS=--debug\n"
 	@printf "  make env-server\n\n"
-	@printf "$(COLOR_BOLD)Image Settings$(COLOR_RESET)\n"
-	@printf "  Wizard will show image settings for selected services and let you override them.\n"
-	@printf "  You can also edit POSTGRES_IMAGE, NEO4J_IMAGE_TAG, etc. in .env.\n"
+	@printf "$(COLOR_BOLD)Compose Output$(COLOR_RESET)\n"
+	@printf "  Bundled service images are defined in scripts/setup/templates/*.yml.\n"
 	@printf "  Compose file output: docker-compose.final.yml\n"
 
 configure:
