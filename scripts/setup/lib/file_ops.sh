@@ -185,6 +185,117 @@ generate_env_file() {
   mv "$tmp_file" "$output_file"
 }
 
+# All environment keys the wizard may inject into the lightrag service via
+# COMPOSE_ENV_OVERRIDES.  Used to remove stale entries before re-injection so
+# keys no longer needed are not left behind in the compose file.
+_WIZARD_COMPOSE_LIGHTRAG_KEYS=(
+  "EMBEDDING_BINDING_HOST" "RERANK_BINDING_HOST" "LLM_BINDING_HOST"
+  "REDIS_URI" "MONGO_URI" "NEO4J_URI" "MILVUS_URI" "QDRANT_URL" "MEMGRAPH_URI"
+  "POSTGRES_HOST" "POSTGRES_PORT" "PORT" "HOST" "SSL_CERTFILE" "SSL_KEYFILE"
+)
+
+# Remove wizard-managed keys from the lightrag service's environment block,
+# leaving any user-added keys intact.
+_strip_lightrag_wizard_environment_keys() {
+  local compose_file="$1"
+  local tmp_file="${compose_file}.strip-wizard-keys"
+  _FILE_OPS_CLEANUP_TMP+=("$tmp_file")
+  local line key wk
+  local in_lightrag="no"
+  local in_environment="no"
+
+  : > "$tmp_file"
+
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    if [[ "$line" == "  lightrag:" ]]; then
+      in_lightrag="yes"
+      in_environment="no"
+    elif [[ "$in_lightrag" == "yes" && "$line" =~ ^[[:space:]]{2}[^[:space:]] && "$line" != "  lightrag:" ]]; then
+      in_lightrag="no"
+      in_environment="no"
+    fi
+
+    if [[ "$in_lightrag" == "yes" && "$line" == "    environment:" ]]; then
+      in_environment="yes"
+      printf '%s\n' "$line" >> "$tmp_file"
+      continue
+    fi
+
+    if [[ "$in_lightrag" == "yes" && "$in_environment" == "yes" ]]; then
+      if [[ "$line" =~ ^[[:space:]]{6}([A-Z0-9_]+): ]]; then
+        key="${BASH_REMATCH[1]}"
+        for wk in "${_WIZARD_COMPOSE_LIGHTRAG_KEYS[@]}"; do
+          if [[ "$key" == "$wk" ]]; then
+            continue 2  # skip this wizard-managed key
+          fi
+        done
+      elif [[ -z "$line" ]]; then
+        continue  # skip blank lines inside the environment block
+      elif [[ ! "$line" =~ ^[[:space:]]{6} ]]; then
+        in_environment="no"
+      fi
+    fi
+
+    printf '%s\n' "$line" >> "$tmp_file"
+  done < "$compose_file"
+
+  mv "$tmp_file" "$compose_file"
+}
+
+# Remove all services except lightrag and the top-level volumes: block from a
+# compose file.  Both are rebuilt from templates by generate_docker_compose, so
+# removing them avoids duplicates when the existing file is used as a base.
+_strip_non_lightrag_services_and_volumes() {
+  local compose_file="$1"
+  local tmp_file="${compose_file}.strip-svc"
+  _FILE_OPS_CLEANUP_TMP+=("$tmp_file")
+  local line current_service=""
+  local in_services="no"
+  local in_top_volumes="no"
+
+  : > "$tmp_file"
+
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    # Detect top-level (non-indented) keys.
+    if [[ "$line" =~ ^[A-Za-z] ]]; then
+      in_top_volumes="no"
+      if [[ "$line" == "services:" ]]; then
+        in_services="yes"
+        current_service=""
+      elif [[ "$line" =~ ^volumes:[[:space:]]*$ ]]; then
+        in_top_volumes="yes"
+        in_services="no"
+        current_service=""
+        continue  # skip volumes: header; regenerated at end of generate_docker_compose
+      else
+        in_services="no"
+        current_service=""
+      fi
+      printf '%s\n' "$line" >> "$tmp_file"
+      continue
+    fi
+
+    # Skip top-level volumes block content.
+    if [[ "$in_top_volumes" == "yes" ]]; then
+      continue
+    fi
+
+    # Track current service inside the services: block.
+    if [[ "$in_services" == "yes" && "$line" =~ ^[[:space:]]{2}([A-Za-z0-9_-]+):[[:space:]]*$ ]]; then
+      current_service="${BASH_REMATCH[1]}"
+    fi
+
+    # Skip all lines belonging to non-lightrag services.
+    if [[ "$in_services" == "yes" && -n "$current_service" && "$current_service" != "lightrag" ]]; then
+      continue
+    fi
+
+    printf '%s\n' "$line" >> "$tmp_file"
+  done < "$compose_file"
+
+  mv "$tmp_file" "$compose_file"
+}
+
 generate_docker_compose() {
   local output_file="${1:-${REPO_ROOT:-.}/docker-compose.yml}"
   local base_file="${REPO_ROOT:-.}/docker-compose.yml"
@@ -196,13 +307,24 @@ generate_docker_compose() {
   local lightrag_env_entries=()
   local key
 
-  if [[ -f "$base_file" ]]; then
+  # Prefer the existing generated compose as the starting point to preserve
+  # any user customisations to the lightrag service.  Fall back to the base
+  # docker-compose.yml when the output file doesn't exist yet.
+  if [[ -f "$output_file" && "$output_file" != "$base_file" ]]; then
+    cp "$output_file" "$tmp_file"
+    # Strip non-lightrag services and top-level volumes — both are rebuilt from
+    # templates below, so removing them avoids duplicates.
+    _strip_non_lightrag_services_and_volumes "$tmp_file"
+  elif [[ -f "$base_file" ]]; then
     cp "$base_file" "$tmp_file"
   else
     printf 'services:\n' > "$tmp_file"
   fi
 
   prepare_lightrag_service_for_generated_compose "$tmp_file"
+  # Remove stale wizard-managed keys from lightrag's environment so that
+  # keys no longer in COMPOSE_ENV_OVERRIDES are not left behind.
+  _strip_lightrag_wizard_environment_keys "$tmp_file"
 
   append_lightrag_ssl_mount lightrag_mounts "${COMPOSE_ENV_OVERRIDES[SSL_CERTFILE]:-}" || return 1
   append_lightrag_ssl_mount lightrag_mounts "${COMPOSE_ENV_OVERRIDES[SSL_KEYFILE]:-}" || return 1
@@ -499,4 +621,56 @@ inject_lightrag_environment_overrides() {
   local compose_file="$1"
   shift
   inject_service_environment_overrides "$compose_file" "lightrag" "$@"
+}
+
+# Find the first generated compose file in priority order.
+# Prints the path if found, empty string if not.
+find_generated_compose_file() {
+  local repo_root="${REPO_ROOT:-.}"
+  local candidates=(
+    "$repo_root/docker-compose.final.yml"
+    "$repo_root/docker-compose.development.yml"
+    "$repo_root/docker-compose.production.yml"
+    "$repo_root/docker-compose.custom.yml"
+    "$repo_root/docker-compose.local.yml"
+  )
+  local f
+  for f in "${candidates[@]}"; do
+    if [[ -f "$f" ]]; then
+      printf '%s' "$f"
+      return 0
+    fi
+  done
+  printf ''
+}
+
+# Detect service names in a compose file's services: block (excluding lightrag).
+# Prints one service name per line.
+detect_compose_services() {
+  local compose_file="$1"
+  local in_services="no"
+  local line
+
+  if [[ ! -f "$compose_file" ]]; then
+    return 0
+  fi
+
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    if [[ "$line" == "services:" ]]; then
+      in_services="yes"
+      continue
+    fi
+    if [[ "$in_services" == "yes" ]]; then
+      if [[ "$line" =~ ^[^[:space:]] && "$line" != "services:" ]]; then
+        in_services="no"
+        continue
+      fi
+      if [[ "$line" =~ ^[[:space:]]{2}([A-Za-z0-9_-]+):[[:space:]]*$ ]]; then
+        local svc_name="${BASH_REMATCH[1]}"
+        if [[ "$svc_name" != "lightrag" ]]; then
+          printf '%s\n' "$svc_name"
+        fi
+      fi
+    fi
+  done < "$compose_file"
 }

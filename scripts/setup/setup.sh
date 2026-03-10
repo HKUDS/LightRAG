@@ -31,8 +31,6 @@ declare -A DOCKER_IMAGE_DEFAULTS=(
   ["minio"]="RELEASE.2024-12-13T22-19-12Z"
   ["qdrant"]="v1.16.0"
   ["memgraph"]="3.7.2"
-  ["vllm-rerank"]="latest"
-  ["vllm-embed"]="latest"
 )
 declare -A DOCKER_IMAGE_ENV=(
   ["postgres"]="POSTGRES_IMAGE"
@@ -44,8 +42,6 @@ declare -A DOCKER_IMAGE_ENV=(
   ["minio"]="MINIO_IMAGE_TAG"
   ["qdrant"]="QDRANT_IMAGE_TAG"
   ["memgraph"]="MEMGRAPH_IMAGE_TAG"
-  ["vllm-rerank"]="VLLM_RERANK_IMAGE_TAG"
-  ["vllm-embed"]="VLLM_EMBED_IMAGE_TAG"
 )
 DEPLOYMENT_TYPE=""
 DEBUG="${DEBUG:-false}"
@@ -58,7 +54,6 @@ PRESET_VLLM_EMBEDDING=(
   "VLLM_EMBED_MODEL=BAAI/bge-m3"
   "VLLM_EMBED_PORT=8001"
   "VLLM_EMBED_DEVICE=cpu"
-  "VLLM_EMBED_DTYPE=float32"
 )
 
 PRESET_VLLM_RERANKER=(
@@ -69,8 +64,22 @@ PRESET_VLLM_RERANKER=(
   "VLLM_RERANK_MODEL=BAAI/bge-reranker-v2-m3"
   "VLLM_RERANK_PORT=8000"
   "VLLM_RERANK_DEVICE=cpu"
-  "VLLM_RERANK_DTYPE=float32"
 )
+VLLM_SERVICES=(
+  "vllm-embed"
+  "vllm-rerank"
+)
+
+STORAGE_SERVICES=(
+  "postgres"
+  "neo4j"
+  "mongodb"
+  "redis"
+  "milvus"
+  "qdrant"
+  "memgraph"
+)
+
 WAIT_TIMEOUT="${SETUP_WAIT_TIMEOUT:-90}"
 # shellcheck disable=SC2034
 COLOR_RESET=""
@@ -438,10 +447,38 @@ prepare_compose_runtime_overrides() {
   local normalized_value
   local key
 
+  # EMBEDDING_BINDING_HOST: when vllm-embed is part of this compose, the LightRAG
+  # container must reach it by Docker service name, not by a loopback address.
+  # This applies even when the wizard did not visit the embedding step (e.g.
+  # env_server_flow), because vllm-embed is detected and added to DOCKER_SERVICE_SET
+  # before prepare_compose_env_overrides is called.
+  if [[ -z "${COMPOSE_ENV_OVERRIDES[EMBEDDING_BINDING_HOST]+set}" ]]; then
+    if [[ -n "${DOCKER_SERVICE_SET[vllm-embed]+set}" ]]; then
+      set_compose_override "EMBEDDING_BINDING_HOST" \
+        "http://vllm-embed:${ENV_VALUES[VLLM_EMBED_PORT]:-8001}/v1"
+    elif [[ -n "${ENV_VALUES[EMBEDDING_BINDING_HOST]:-}" ]]; then
+      normalized_value="$(normalize_loopback_uri_for_compose "${ENV_VALUES[EMBEDDING_BINDING_HOST]}")"
+      if [[ "$normalized_value" != "${ENV_VALUES[EMBEDDING_BINDING_HOST]}" ]]; then
+        set_compose_override "EMBEDDING_BINDING_HOST" "$normalized_value"
+      fi
+    fi
+  fi
+
+  # RERANK_BINDING_HOST: same pattern for vllm-rerank.
+  if [[ -z "${COMPOSE_ENV_OVERRIDES[RERANK_BINDING_HOST]+set}" ]]; then
+    if [[ -n "${DOCKER_SERVICE_SET[vllm-rerank]+set}" ]]; then
+      set_compose_override "RERANK_BINDING_HOST" \
+        "http://vllm-rerank:${ENV_VALUES[VLLM_RERANK_PORT]:-8000}/rerank"
+    elif [[ -n "${ENV_VALUES[RERANK_BINDING_HOST]:-}" ]]; then
+      normalized_value="$(normalize_loopback_uri_for_compose "${ENV_VALUES[RERANK_BINDING_HOST]}")"
+      if [[ "$normalized_value" != "${ENV_VALUES[RERANK_BINDING_HOST]}" ]]; then
+        set_compose_override "RERANK_BINDING_HOST" "$normalized_value"
+      fi
+    fi
+  fi
+
   for key in \
     "LLM_BINDING_HOST" \
-    "EMBEDDING_BINDING_HOST" \
-    "RERANK_BINDING_HOST" \
     "REDIS_URI" \
     "MONGO_URI" \
     "NEO4J_URI" \
@@ -1159,9 +1196,13 @@ collect_embedding_config() {
   ENV_VALUES["EMBEDDING_BINDING_HOST"]="$host"
   store_optional_env_value "EMBEDDING_BINDING_API_KEY" "$api_key"
   clear_bedrock_credentials_if_unused
+  # User chose a remote provider — clear the Docker deployment marker.
+  unset 'ENV_VALUES[LIGHTRAG_SETUP_EMBEDDING_PROVIDER]'
 }
 
 collect_rerank_config() {
+  # Pass "yes" to skip the "Enable reranking?" prompt (caller already asked it).
+  local skip_enable_check="${1:-no}"
   local options=("cohere" "jina" "aliyun" "vllm")
   local binding_choice binding model host api_key
   local vllm_model vllm_port vllm_device vllm_dtype vllm_extra
@@ -1173,22 +1214,24 @@ collect_rerank_config() {
   local reset_vllm_defaults="no"
   local rerank_default="${ENV_VALUES[LIGHTRAG_SETUP_RERANK_PROVIDER]:-${ENV_VALUES[RERANK_BINDING]:-cohere}}"
 
-  local rerank_was_enabled="no"
-  if [[ -n "${ENV_VALUES[RERANK_BINDING]:-}" && "${ENV_VALUES[RERANK_BINDING]}" != "null" ]]; then
-    rerank_was_enabled="yes"
-  fi
+  if [[ "$skip_enable_check" != "yes" ]]; then
+    local rerank_was_enabled="no"
+    if [[ -n "${ENV_VALUES[RERANK_BINDING]:-}" && "${ENV_VALUES[RERANK_BINDING]}" != "null" ]]; then
+      rerank_was_enabled="yes"
+    fi
 
-  local rerank_enabled="no"
-  if [[ "$rerank_was_enabled" == "yes" ]]; then
-    confirm_default_yes "Enable reranking?" && rerank_enabled="yes"
-  else
-    confirm_default_no "Enable reranking?" && rerank_enabled="yes"
-  fi
+    local rerank_enabled="no"
+    if [[ "$rerank_was_enabled" == "yes" ]]; then
+      confirm_default_yes "Enable reranking?" && rerank_enabled="yes"
+    else
+      confirm_default_no "Enable reranking?" && rerank_enabled="yes"
+    fi
 
-  if [[ "$rerank_enabled" != "yes" ]]; then
-    ENV_VALUES["RERANK_BINDING"]="null"
-    unset 'ENV_VALUES[LIGHTRAG_SETUP_RERANK_PROVIDER]'
-    return
+    if [[ "$rerank_enabled" != "yes" ]]; then
+      ENV_VALUES["RERANK_BINDING"]="null"
+      unset 'ENV_VALUES[LIGHTRAG_SETUP_RERANK_PROVIDER]'
+      return
+    fi
   fi
 
   if [[ "$rerank_default" == "null" ]]; then
@@ -1202,7 +1245,7 @@ collect_rerank_config() {
 
   if [[ "$binding_choice" == "vllm" ]]; then
     log_info "vLLM uses the Cohere-compatible rerank API."
-    if confirm_default_yes "Add local vLLM rerank service to docker-compose.yml?"; then
+    if confirm_default_yes "Run rerank service locally via Docker?"; then
       add_docker_service "vllm-rerank"
       use_docker="yes"
     fi
@@ -1662,254 +1705,444 @@ finalize_setup() {
   fi
 }
 
-interactive_flow() {
-  local deployment_type
-  local db_type
-  local db_order=("postgresql" "neo4j" "mongodb" "redis" "milvus" "qdrant" "memgraph")
+env_base_flow() {
+  local vllm_embed_api_key=""
+  local vllm_rerank_api_key=""
+  # Auto-detect CUDA once; used for both embed and rerank
+  local has_gpu="no"
+  if command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi >/dev/null 2>&1; then
+    has_gpu="yes"
+    log_info "GPU detected: NVIDIA GPU found — vLLM services will use CUDA (GPU image + float16)."
+  else
+    log_info "GPU detection: no NVIDIA GPU found — vLLM services will use CPU image + float32."
+  fi
 
   reset_state
   load_existing_env_if_present
 
-  log_info "Interactive setup wizard"
-  log_step "Step 1: Deployment type"
-  echo "  - development: local JSON/NetworkX defaults"
-  echo "  - production: database-backed defaults with security prompts"
-  echo "  - custom: pick each backend manually"
-  deployment_type="$(select_deployment_type)"
-  DEPLOYMENT_TYPE="$deployment_type"
+  log_info "Base configuration wizard (LLM / Embedding / Reranker)"
+  echo "This wizard only modifies LLM, embedding, and reranker settings."
+  echo "Storage, server, and security settings are preserved."
+  echo ""
 
-  case "$deployment_type" in
-    development)
-      load_storage_preset_overwrite "development"
-      load_preset "development"
-      ;;
-    production)
-      load_storage_preset_overwrite "production"
-      load_preset "production"
-      ;;
-    custom)
-      ;;
-  esac
+  log_step "LLM configuration"
+  collect_llm_config
 
-  log_step "Step 2: Storage backends"
-  select_storage_backends "$deployment_type"
+  # ── Embedding ────────────────────────────────────────────────────────────────
+  log_step "Embedding configuration"
+  local docker_embed_default="no"
+  if [[ "${ENV_VALUES[LIGHTRAG_SETUP_EMBEDDING_PROVIDER]:-}" == "vllm" ]]; then
+    docker_embed_default="yes"
+  fi
+
+  local use_docker_embed="no"
+  if [[ "$docker_embed_default" == "yes" ]]; then
+    confirm_default_yes "Run embedding model locally via Docker (vLLM)?" && use_docker_embed="yes" || use_docker_embed="no"
+  else
+    confirm_default_no "Run embedding model locally via Docker (vLLM)?" && use_docker_embed="yes" || use_docker_embed="no"
+  fi
+
+  if [[ "$use_docker_embed" == "yes" ]]; then
+    apply_preset_overwrite "${PRESET_VLLM_EMBEDDING[@]}"
+    local embed_model
+    embed_model="$(prompt_with_default "Embedding model" "${ENV_VALUES[VLLM_EMBED_MODEL]:-BAAI/bge-m3}")"
+    ENV_VALUES["VLLM_EMBED_MODEL"]="$embed_model"
+    ENV_VALUES["EMBEDDING_MODEL"]="$embed_model"
+
+    local vllm_embed_device="cpu"
+    if [[ "$has_gpu" == "yes" ]]; then
+      vllm_embed_device="cuda"
+    fi
+    ENV_VALUES["VLLM_EMBED_DEVICE"]="$vllm_embed_device"
+    ENV_VALUES["LIGHTRAG_SETUP_EMBEDDING_PROVIDER"]="vllm"
+
+    vllm_embed_api_key="${ENV_VALUES[VLLM_EMBED_API_KEY]:-${ENV_VALUES[EMBEDDING_BINDING_API_KEY]:-}}"
+    if [[ -z "$vllm_embed_api_key" ]]; then
+      vllm_embed_api_key="$(openssl rand -hex 16 2>/dev/null || LC_ALL=C tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 32)"
+    fi
+    ENV_VALUES["VLLM_EMBED_API_KEY"]="$vllm_embed_api_key"
+    ENV_VALUES["EMBEDDING_BINDING_API_KEY"]="$vllm_embed_api_key"
+    add_docker_service "vllm-embed"
+    set_compose_override "EMBEDDING_BINDING_HOST" \
+      "http://vllm-embed:${ENV_VALUES[VLLM_EMBED_PORT]:-8001}/v1"
+  else
+    collect_embedding_config
+  fi
+
+  # ── Reranker ─────────────────────────────────────────────────────────────────
+  log_step "Reranker configuration"
+  local rerank_enabled_default="no"
+  if [[ -n "${ENV_VALUES[RERANK_BINDING]:-}" && "${ENV_VALUES[RERANK_BINDING]}" != "null" ]]; then
+    rerank_enabled_default="yes"
+  fi
+
+  local enable_reranking="no"
+  if [[ "$rerank_enabled_default" == "yes" ]]; then
+    confirm_default_yes "Enable reranking?" && enable_reranking="yes" || enable_reranking="no"
+  else
+    confirm_default_no "Enable reranking?" && enable_reranking="yes" || enable_reranking="no"
+  fi
+
+  if [[ "$enable_reranking" == "yes" ]]; then
+    local docker_rerank_default="no"
+    if [[ "${ENV_VALUES[LIGHTRAG_SETUP_RERANK_PROVIDER]:-}" == "vllm" ]]; then
+      docker_rerank_default="yes"
+    fi
+
+    local use_docker_rerank="no"
+    if [[ "$docker_rerank_default" == "yes" ]]; then
+      confirm_default_yes "Run rerank service locally via Docker?" && use_docker_rerank="yes" || use_docker_rerank="no"
+    else
+      confirm_default_no "Run rerank service locally via Docker?" && use_docker_rerank="yes" || use_docker_rerank="no"
+    fi
+
+    if [[ "$use_docker_rerank" == "yes" ]]; then
+      apply_preset_overwrite "${PRESET_VLLM_RERANKER[@]}"
+      local rerank_model rerank_port
+      rerank_model="$(prompt_with_default "Rerank model" "${ENV_VALUES[VLLM_RERANK_MODEL]:-BAAI/bge-reranker-v2-m3}")"
+      rerank_port="${ENV_VALUES[VLLM_RERANK_PORT]:-8000}"
+      ENV_VALUES["VLLM_RERANK_MODEL"]="$rerank_model"
+      ENV_VALUES["RERANK_MODEL"]="$rerank_model"
+      ENV_VALUES["VLLM_RERANK_PORT"]="$rerank_port"
+
+      local vllm_rerank_device="cpu"
+      if [[ "$has_gpu" == "yes" ]]; then
+        vllm_rerank_device="cuda"
+      fi
+      ENV_VALUES["VLLM_RERANK_DEVICE"]="$vllm_rerank_device"
+      ENV_VALUES["LIGHTRAG_SETUP_RERANK_PROVIDER"]="vllm"
+
+      vllm_rerank_api_key="${ENV_VALUES[VLLM_RERANK_API_KEY]:-${ENV_VALUES[RERANK_BINDING_API_KEY]:-}}"
+      if [[ -z "$vllm_rerank_api_key" ]]; then
+        vllm_rerank_api_key="$(openssl rand -hex 16 2>/dev/null || LC_ALL=C tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 32)"
+      fi
+      ENV_VALUES["VLLM_RERANK_API_KEY"]="$vllm_rerank_api_key"
+      ENV_VALUES["RERANK_BINDING_API_KEY"]="$vllm_rerank_api_key"
+      add_docker_service "vllm-rerank"
+      set_compose_override "RERANK_BINDING_HOST" \
+        "http://vllm-rerank:${rerank_port}/rerank"
+    else
+      # Reranking enabled but not via Docker — ask provider/host/model/api_key
+      collect_rerank_config "yes"
+    fi
+  else
+    ENV_VALUES["RERANK_BINDING"]="null"
+    unset 'ENV_VALUES[LIGHTRAG_SETUP_RERANK_PROVIDER]'
+  fi
+
+  finalize_base_setup
+}
+
+finalize_base_setup() {
+  local backup_path
+  local compose_file
+  local existing_compose
+  local generate_compose="no"
+  local svc
+
+  if [[ ! -f "${REPO_ROOT}/env.example" ]]; then
+    format_error "env.example is missing in $REPO_ROOT" "Restore env.example before running setup."
+    return 1
+  fi
+  if [[ ! -w "$REPO_ROOT" ]]; then
+    format_error "No write permission in $REPO_ROOT" "Run the setup from a writable directory."
+    return 1
+  fi
+
+  if ! validate_sensitive_env_literals; then
+    return 1
+  fi
+
+  show_summary
+
+  if ! confirm_default_yes "Ready to proceed and write .env?"; then
+    log_warn "Setup cancelled."
+    return 1
+  fi
+
+  existing_compose="$(find_generated_compose_file)"
+
+  if [[ -z "$existing_compose" ]]; then
+    compose_file="${REPO_ROOT}/docker-compose.final.yml"
+    if ((${#DOCKER_SERVICES[@]} > 0)); then
+      if confirm_default_yes "Generate ${compose_file}?"; then
+        generate_compose="yes"
+      fi
+    else
+      if confirm_default_no "Generate ${compose_file} for LightRAG only?"; then
+        generate_compose="yes"
+      fi
+    fi
+  else
+    compose_file="$existing_compose"
+    generate_compose="yes"
+    # Detect and preserve existing storage services.
+    while IFS= read -r svc; do
+      local is_storage="no"
+      for storage_svc in "${STORAGE_SERVICES[@]}"; do
+        if [[ "$svc" == "$storage_svc" ]]; then
+          is_storage="yes"
+          break
+        fi
+      done
+      if [[ "$is_storage" == "yes" ]]; then
+        add_docker_service "$svc"
+      fi
+    done < <(detect_compose_services "$existing_compose")
+  fi
+
+  if [[ "$generate_compose" == "yes" ]]; then
+    prepare_compose_env_overrides
+  fi
+
+  backup_path="$(backup_env_file)"
+  if [[ -n "$backup_path" ]]; then
+    log_success "Backed up existing .env to $backup_path"
+  fi
+
+  generate_env_file "${REPO_ROOT}/env.example" "${REPO_ROOT}/.env"
+  log_success "Wrote .env"
+
+  if [[ "$generate_compose" == "yes" ]]; then
+    generate_docker_compose "$compose_file"
+    log_success "Wrote ${compose_file}"
+    if [[ -n "$existing_compose" ]]; then
+      log_success "Storage services preserved; vLLM services updated."
+    fi
+    echo "  To start: docker compose -f ${compose_file} up -d"
+  fi
+}
+
+env_storage_flow() {
+  local env_file="${REPO_ROOT}/.env"
+  local db_type
+  local db_order=("postgresql" "neo4j" "mongodb" "redis" "milvus" "qdrant" "memgraph")
+
+  if [[ ! -f "$env_file" ]]; then
+    format_error "No .env file found." "Run 'make env-base' first to configure LLM and embedding."
+    return 1
+  fi
+
+  reset_state
+  load_existing_env_if_present
+
+  log_info "Storage configuration wizard"
+  echo "This wizard only modifies storage backend settings."
+  echo "LLM, embedding, reranker, server, and security settings are preserved."
+  echo ""
+
+  log_step "Storage backend selection"
+  select_storage_backends "custom"
   log_debug "Storage selections: kv=${ENV_VALUES[LIGHTRAG_KV_STORAGE]:-} vector=${ENV_VALUES[LIGHTRAG_VECTOR_STORAGE]:-} graph=${ENV_VALUES[LIGHTRAG_GRAPH_STORAGE]:-} doc=${ENV_VALUES[LIGHTRAG_DOC_STATUS_STORAGE]:-}"
 
-  log_step "Step 3: Database configuration"
+  log_step "Database configuration"
   for db_type in "${db_order[@]}"; do
     if [[ -n "${REQUIRED_DB_TYPES[$db_type]+set}" ]]; then
       collect_database_config "$db_type" "no"
     fi
   done
 
-  log_step "Step 4: LLM configuration"
-  collect_llm_config
-  log_step "Step 5: Embedding configuration"
-  collect_embedding_config
-  log_step "Step 6: Reranking configuration"
-  collect_rerank_config
   collect_docker_image_tags
-  log_step "Step 7: Server configuration"
-  collect_server_config
-  if [[ "$deployment_type" == "production" ]]; then
-    log_step "Step 8: SSL configuration"
-    collect_ssl_config
-    log_step "Step 9: Security configuration"
-  else
-    log_step "Step 8: Security configuration"
-  fi
-  if [[ "$deployment_type" == "production" ]]; then
-    collect_security_config "yes" "yes"
-  else
-    collect_security_config "no" "no"
-  fi
-  if [[ "$deployment_type" == "production" ]]; then
-    log_step "Step 10: Observability configuration"
-  else
-    log_step "Step 9: Observability configuration"
-  fi
-  collect_observability_config
-
-  if [[ "$deployment_type" != "production" ]]; then
-    clear_inherited_ssl_state
-  fi
-
-  finalize_setup
+  finalize_storage_setup
 }
 
-quick_start_flow() {
+finalize_storage_setup() {
+  local backup_path
+  local compose_file
+  local existing_compose
+  local generate_compose="no"
+  local has_docker_storage="no"
+  local svc
+
+  if [[ ! -f "${REPO_ROOT}/env.example" ]]; then
+    format_error "env.example is missing in $REPO_ROOT" "Restore env.example before running setup."
+    return 1
+  fi
+  if [[ ! -w "$REPO_ROOT" ]]; then
+    format_error "No write permission in $REPO_ROOT" "Run the setup from a writable directory."
+    return 1
+  fi
+
+  if [[ -n "${ENV_VALUES[LIGHTRAG_KV_STORAGE]:-}" ]]; then
+    if ! validate_required_variables \
+      "${ENV_VALUES[LIGHTRAG_KV_STORAGE]}" \
+      "${ENV_VALUES[LIGHTRAG_VECTOR_STORAGE]}" \
+      "${ENV_VALUES[LIGHTRAG_GRAPH_STORAGE]}" \
+      "${ENV_VALUES[LIGHTRAG_DOC_STATUS_STORAGE]}"; then
+      return 1
+    fi
+  fi
+
+  if ! validate_mongo_vector_storage_config \
+    "${ENV_VALUES[LIGHTRAG_VECTOR_STORAGE]:-}" \
+    "${ENV_VALUES[MONGO_URI]:-}"; then
+    return 1
+  fi
+
+  if ! validate_sensitive_env_literals; then
+    return 1
+  fi
+
+  if ((${#DOCKER_SERVICES[@]} > 0)); then
+    has_docker_storage="yes"
+  fi
+
+  show_summary
+
+  if ! confirm_default_yes "Ready to proceed and write .env?"; then
+    log_warn "Setup cancelled."
+    return 1
+  fi
+
+  if [[ "$has_docker_storage" == "no" ]]; then
+    backup_path="$(backup_env_file)"
+    if [[ -n "$backup_path" ]]; then
+      log_success "Backed up existing .env to $backup_path"
+    fi
+    generate_env_file "${REPO_ROOT}/env.example" "${REPO_ROOT}/.env"
+    log_success "Wrote .env"
+    return 0
+  fi
+
+  existing_compose="$(find_generated_compose_file)"
+
+  if [[ -z "$existing_compose" ]]; then
+    compose_file="${REPO_ROOT}/docker-compose.final.yml"
+    generate_compose="yes"
+  else
+    compose_file="$existing_compose"
+    generate_compose="yes"
+    # Detect and preserve existing vLLM services.
+    while IFS= read -r svc; do
+      local is_vllm="no"
+      for vllm_svc in "${VLLM_SERVICES[@]}"; do
+        if [[ "$svc" == "$vllm_svc" ]]; then
+          is_vllm="yes"
+          break
+        fi
+      done
+      if [[ "$is_vllm" == "yes" ]]; then
+        add_docker_service "$svc"
+      fi
+    done < <(detect_compose_services "$existing_compose")
+  fi
+
+  prepare_compose_env_overrides
+
+  backup_path="$(backup_env_file)"
+  if [[ -n "$backup_path" ]]; then
+    log_success "Backed up existing .env to $backup_path"
+  fi
+
+  generate_env_file "${REPO_ROOT}/env.example" "${REPO_ROOT}/.env"
+  log_success "Wrote .env"
+
+  generate_docker_compose "$compose_file"
+  log_success "Wrote ${compose_file}"
+  if [[ -n "$existing_compose" && "$compose_file" == "$existing_compose" ]]; then
+    log_success "vLLM services preserved; storage services updated."
+  fi
+  echo "  To start: docker compose -f ${compose_file} up -d"
+}
+
+env_server_flow() {
   local env_file="${REPO_ROOT}/.env"
-  local has_existing_env=false
+
+  if [[ ! -f "$env_file" ]]; then
+    format_error "No .env file found." "Run 'make env-base' first to configure LLM and embedding."
+    return 1
+  fi
 
   reset_state
   load_existing_env_if_present
-  reset_quick_start_inherited_state
 
-  if [[ -f "$env_file" ]]; then
-    has_existing_env=true
-  fi
-
-  # Force storage backends to development defaults, but preserve existing LLM/embedding config
-  apply_preset_overwrite "${PRESET_DEVELOPMENT[@]:0:4}"
-  apply_preset "${PRESET_DEVELOPMENT[@]:4}"
-  DEPLOYMENT_TYPE="development"
-  clear_bedrock_credentials_if_unused
-
-  log_info "Quick start setup"
-  echo ""
-  if [[ "$has_existing_env" == "true" ]]; then
-    echo "Existing .env detected. This wizard updates:"
-    echo "  - LLM               : provider, model, endpoint, API key"
-    echo "  - Embedding         : provider, model, dimension, endpoint, API key"
-    echo ""
-    echo "All other settings remain unchanged. Current values are shown as defaults — press Enter to keep them."
-  else
-    echo "This wizard configures:"
-    echo "  - Storage backends  : JSON + NetworkX (development defaults, fixed)"
-    echo "  - LLM               : provider, model, endpoint, API key"
-    echo "  - Embedding         : provider, model, dimension, endpoint, API key"
-  fi
+  log_info "Server configuration wizard"
+  echo "This wizard only modifies server, security, and SSL settings."
+  echo "LLM, embedding, reranker, and storage settings are preserved."
   echo ""
 
-  collect_llm_config
-  collect_embedding_config
-
-  finalize_setup
-}
-
-quick_start_vllm_flow() {
-  local env_file="${REPO_ROOT}/.env"
-  local has_existing_env=false
-  local vllm_device="cpu"
-  local vllm_dtype="float32"
-
-  reset_state
-  load_existing_env_if_present
-  reset_quick_start_inherited_state
-
-  if [[ -f "$env_file" ]]; then has_existing_env=true; fi
-
-  # Storage backends: force dev preset
-  apply_preset_overwrite "${PRESET_DEVELOPMENT[@]:0:4}"
-  # LLM: only fill defaults (preserve existing values)
-  apply_preset "${PRESET_DEVELOPMENT[@]:4:3}"
-  # Embedding: always overwrite with vLLM preset (cpu defaults; adjusted below)
-  apply_preset_overwrite "${PRESET_VLLM_EMBEDDING[@]}"
-  # Sync the vLLM API key to the client-side binding key so both sides use
-  # the same value.  Generate a random key when neither is already set.
-  local vllm_embed_api_key="${ENV_VALUES[VLLM_EMBED_API_KEY]:-${ENV_VALUES[EMBEDDING_BINDING_API_KEY]:-}}"
-  if [[ -z "$vllm_embed_api_key" ]]; then
-    vllm_embed_api_key="$(openssl rand -hex 16 2>/dev/null || LC_ALL=C tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 32)"
-  fi
-  ENV_VALUES["VLLM_EMBED_API_KEY"]="$vllm_embed_api_key"
-  ENV_VALUES["EMBEDDING_BINDING_API_KEY"]="$vllm_embed_api_key"
-
-  DEPLOYMENT_TYPE="development"
-  clear_bedrock_credentials_if_unused
-
-  # GPU detection: auto-select device for all vLLM services
-  if command -v nvidia-smi >/dev/null 2>&1; then
-    log_info "NVIDIA GPU detected."
-    if confirm_default_yes "Use GPU for local vLLM services?"; then
-      vllm_device="cuda"
-      vllm_dtype="float16"
-    fi
-  fi
-
-  ENV_VALUES["VLLM_EMBED_DEVICE"]="$vllm_device"
-  ENV_VALUES["VLLM_EMBED_DTYPE"]="$vllm_dtype"
-
-  log_info "Quick start setup (vLLM)"
-  echo ""
-  if [[ "$has_existing_env" == "true" ]]; then
-    echo "Existing .env detected. This wizard updates:"
-    echo "  - LLM               : provider, model, endpoint, API key (current values as defaults)"
-    echo "  - Embedding         : reset to local vLLM defaults (BAAI/bge-m3, port 8001, ${vllm_device})"
-    echo "  - Reranker          : configure below (existing config will be replaced)"
-    echo ""
-    echo "All other settings remain unchanged."
-  else
-    echo "This wizard configures:"
-    echo "  - Storage backends  : JSON + NetworkX (development defaults, fixed)"
-    echo "  - LLM               : provider, model, endpoint, API key"
-    echo "  - Embedding         : local vLLM, BAAI/bge-m3, port 8001, ${vllm_device} (fixed)"
-    echo "  - Reranker          : local vLLM, BAAI/bge-reranker-v2-m3, port 8000 (optional)"
-  fi
-  echo ""
-
-  collect_llm_config
-
-  # vllm-embed runs in Docker; add it as a compose service and rewrite the
-  # EMBEDDING_BINDING_HOST so the LightRAG container reaches it by service name.
-  add_docker_service "vllm-embed"
-  set_compose_override "EMBEDDING_BINDING_HOST" \
-    "http://vllm-embed:${ENV_VALUES[VLLM_EMBED_PORT]:-8001}/v1"
-
-  if confirm_default_yes "Enable reranker (BAAI/bge-reranker-v2-m3 via local vLLM, port 8000)?"; then
-    apply_preset_overwrite "${PRESET_VLLM_RERANKER[@]}"
-    ENV_VALUES["VLLM_RERANK_DEVICE"]="$vllm_device"
-    ENV_VALUES["VLLM_RERANK_DTYPE"]="$vllm_dtype"
-    # Sync the vLLM rerank API key to the client-side binding key.
-    # Generate a random key when neither is already set.
-    local vllm_rerank_api_key="${ENV_VALUES[VLLM_RERANK_API_KEY]:-${ENV_VALUES[RERANK_BINDING_API_KEY]:-}}"
-    if [[ -z "$vllm_rerank_api_key" ]]; then
-      vllm_rerank_api_key="$(openssl rand -hex 16 2>/dev/null || LC_ALL=C tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 32)"
-    fi
-    ENV_VALUES["VLLM_RERANK_API_KEY"]="$vllm_rerank_api_key"
-    ENV_VALUES["RERANK_BINDING_API_KEY"]="$vllm_rerank_api_key"
-    add_docker_service "vllm-rerank"
-    set_compose_override "RERANK_BINDING_HOST" \
-      "http://vllm-rerank:${ENV_VALUES[VLLM_RERANK_PORT]:-8000}/rerank"
-  else
-    local key
-    for key in "${!ENV_VALUES[@]}"; do
-      case "$key" in
-        RERANK_*|VLLM_RERANK_*|LIGHTRAG_SETUP_RERANK_PROVIDER)
-          unset "ENV_VALUES[$key]"
-          ;;
-      esac
-    done
-    ENV_VALUES["RERANK_BINDING"]="null"
-  fi
-
-  finalize_setup
-}
-
-production_flow() {
-  local db_type
-  local db_order=("postgresql" "neo4j" "mongodb" "redis" "milvus" "qdrant" "memgraph")
-
-  reset_state
-  load_existing_env_if_present
-  load_storage_preset_overwrite "production"
-  load_preset "production"
-  DEPLOYMENT_TYPE="production"
-
-  log_info "Production setup wizard"
-  echo "Recommended defaults are preselected. Customize as needed."
-
-  select_storage_backends "production"
-  log_debug "Storage selections: kv=${ENV_VALUES[LIGHTRAG_KV_STORAGE]:-} vector=${ENV_VALUES[LIGHTRAG_VECTOR_STORAGE]:-} graph=${ENV_VALUES[LIGHTRAG_GRAPH_STORAGE]:-} doc=${ENV_VALUES[LIGHTRAG_DOC_STATUS_STORAGE]:-}"
-
-  log_step "Configuring database services"
-  for db_type in "${db_order[@]}"; do
-    if [[ -n "${REQUIRED_DB_TYPES[$db_type]+set}" ]]; then
-      collect_database_config "$db_type" "yes"
-    fi
-  done
-
-  log_step "Configuring LLM and embedding providers"
-  collect_llm_config
-  collect_embedding_config
-  collect_rerank_config
-  collect_docker_image_tags
-  log_step "Configuring server and security settings"
+  log_step "Server configuration"
   collect_server_config
+  log_step "Security configuration"
+  collect_security_config "no" "no"
+  log_step "SSL configuration"
   collect_ssl_config
-  collect_security_config "yes" "yes"
-  collect_observability_config
 
-  finalize_setup
+  finalize_server_setup
+}
+
+finalize_server_setup() {
+  local backup_path
+  local compose_file
+  local existing_compose
+  local generate_compose="no"
+  local svc
+
+  if [[ ! -f "${REPO_ROOT}/env.example" ]]; then
+    format_error "env.example is missing in $REPO_ROOT" "Restore env.example before running setup."
+    return 1
+  fi
+  if [[ ! -w "$REPO_ROOT" ]]; then
+    format_error "No write permission in $REPO_ROOT" "Run the setup from a writable directory."
+    return 1
+  fi
+
+  if [[ -n "$SSL_CERT_SOURCE_PATH" ]] && ! validate_existing_file "$SSL_CERT_SOURCE_PATH"; then
+    format_error "Invalid SSL_CERTFILE" \
+      "Set it to an existing certificate file, disable SSL, or rerun the wizard to choose a new certificate."
+    return 1
+  fi
+
+  if [[ -n "$SSL_KEY_SOURCE_PATH" ]] && ! validate_existing_file "$SSL_KEY_SOURCE_PATH"; then
+    format_error "Invalid SSL_KEYFILE" \
+      "Set it to an existing private key file, disable SSL, or rerun the wizard to choose a new key."
+    return 1
+  fi
+
+  if ! validate_sensitive_env_literals; then
+    return 1
+  fi
+
+  show_summary
+
+  if ! confirm_default_yes "Ready to proceed and write .env?"; then
+    log_warn "Setup cancelled."
+    return 1
+  fi
+
+  existing_compose="$(find_generated_compose_file)"
+
+  if [[ -n "$existing_compose" ]]; then
+    compose_file="$existing_compose"
+    generate_compose="yes"
+    # Detect and preserve all existing services (vLLM + storage).
+    while IFS= read -r svc; do
+      add_docker_service "$svc"
+    done < <(detect_compose_services "$existing_compose")
+  fi
+
+  if [[ -n "$SSL_CERT_SOURCE_PATH" || -n "$SSL_KEY_SOURCE_PATH" ]]; then
+    stage_ssl_assets "$SSL_CERT_SOURCE_PATH" "$SSL_KEY_SOURCE_PATH"
+  fi
+
+  if [[ "$generate_compose" == "yes" ]]; then
+    prepare_compose_env_overrides
+  fi
+
+  backup_path="$(backup_env_file)"
+  if [[ -n "$backup_path" ]]; then
+    log_success "Backed up existing .env to $backup_path"
+  fi
+
+  generate_env_file "${REPO_ROOT}/env.example" "${REPO_ROOT}/.env"
+  log_success "Wrote .env"
+
+  if [[ "$generate_compose" == "yes" ]]; then
+    generate_docker_compose "$compose_file"
+    log_success "Wrote ${compose_file}"
+    log_success "Server port and security settings updated in compose."
+    echo "  To restart: docker compose -f ${compose_file} up -d --force-recreate lightrag"
+  fi
 }
 
 load_env_file() {
@@ -2062,12 +2295,12 @@ backup_only() {
 
 print_help() {
   cat <<'HELP'
-Usage: scripts/setup/setup.sh [--quick|--production|--validate|--backup]
+Usage: scripts/setup/setup.sh [--base|--storage|--server|--validate|--backup]
 
 Options:
-  --quick        Run the quick start flow (development preset, minimal prompts)
-  --quick-vllm   Run quick start with local vLLM embedding and optional reranker
-  --production   Run the production preset flow (recommended defaults)
+  --base         Configure LLM, embedding, and reranker (run first)
+  --storage      Configure storage backends and databases (requires .env)
+  --server       Configure server, security, and SSL (requires .env)
   --validate     Validate an existing .env file
   --backup       Backup the current .env file
   --debug        Enable debug logging
@@ -2084,18 +2317,18 @@ _sigint_handler() {
 main() {
   trap '_sigint_handler' INT
   init_colors
-  local mode="interactive"
+  local mode="help"
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --quick)
-        mode="quick"
+      --base)
+        mode="base"
         ;;
-      --quick-vllm)
-        mode="quick-vllm"
+      --storage)
+        mode="storage"
         ;;
-      --production)
-        mode="production"
+      --server)
+        mode="server"
         ;;
       --validate)
         mode="validate"
@@ -2119,14 +2352,14 @@ main() {
   done
 
   case "$mode" in
-    quick)
-      quick_start_flow
+    base)
+      env_base_flow
       ;;
-    quick-vllm)
-      quick_start_vllm_flow
+    storage)
+      env_storage_flow
       ;;
-    production)
-      production_flow
+    server)
+      env_server_flow
       ;;
     validate)
       validate_env_file
@@ -2134,11 +2367,8 @@ main() {
     backup)
       backup_only
       ;;
-    help)
-      print_help
-      ;;
     *)
-      interactive_flow
+      print_help
       ;;
   esac
 }

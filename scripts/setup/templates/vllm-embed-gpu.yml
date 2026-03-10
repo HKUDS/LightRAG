@@ -4,7 +4,7 @@
     command: >
       --model ${VLLM_EMBED_MODEL:-BAAI/bge-m3}
       --port ${VLLM_EMBED_PORT:-8001}
-      --dtype ${VLLM_EMBED_DTYPE:-float16}
+      --dtype float16
       --api-key ${VLLM_EMBED_API_KEY}
       ${VLLM_EMBED_EXTRA_ARGS:-}
     environment:
