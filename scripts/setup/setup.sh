@@ -1225,7 +1225,19 @@ collect_rerank_config() {
   local reset_vllm_defaults="no"
   local rerank_default="${ENV_VALUES[LIGHTRAG_SETUP_RERANK_PROVIDER]:-${ENV_VALUES[RERANK_BINDING]:-cohere}}"
 
-  if ! confirm_default_no "Enable reranking?"; then
+  local rerank_was_enabled="no"
+  if [[ -n "${ENV_VALUES[RERANK_BINDING]:-}" && "${ENV_VALUES[RERANK_BINDING]}" != "null" ]]; then
+    rerank_was_enabled="yes"
+  fi
+
+  local rerank_enabled="no"
+  if [[ "$rerank_was_enabled" == "yes" ]]; then
+    confirm_default_yes "Enable reranking?" && rerank_enabled="yes"
+  else
+    confirm_default_no "Enable reranking?" && rerank_enabled="yes"
+  fi
+
+  if [[ "$rerank_enabled" != "yes" ]]; then
     ENV_VALUES["RERANK_BINDING"]="null"
     unset 'ENV_VALUES[LIGHTRAG_SETUP_RERANK_PROVIDER]'
     return
