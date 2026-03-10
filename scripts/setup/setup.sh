@@ -1540,6 +1540,40 @@ require_production_security_profile() {
     "${ENV_VALUES[LIGHTRAG_DOC_STATUS_STORAGE]:-}"
 }
 
+validate_current_security_config() {
+  local require_protection="no"
+
+  if require_production_security_profile; then
+    require_protection="yes"
+  fi
+
+  validate_security_config \
+    "${ENV_VALUES[AUTH_ACCOUNTS]:-}" \
+    "${ENV_VALUES[TOKEN_SECRET]:-}" \
+    "${ENV_VALUES[LIGHTRAG_API_KEY]:-}" \
+    "$require_protection" \
+    "${ENV_VALUES[WHITELIST_PATHS]:-}" \
+    "${ENV_VALUES[WHITELIST_PATHS]+set}"
+}
+
+prepare_inherited_ssl_assets_for_compose() {
+  if [[ -n "$SSL_CERT_SOURCE_PATH" ]] && ! validate_existing_file "$SSL_CERT_SOURCE_PATH"; then
+    format_error "Invalid SSL_CERTFILE" \
+      "Set it to an existing certificate file, disable SSL, or rerun the wizard to choose a new certificate."
+    return 1
+  fi
+
+  if [[ -n "$SSL_KEY_SOURCE_PATH" ]] && ! validate_existing_file "$SSL_KEY_SOURCE_PATH"; then
+    format_error "Invalid SSL_KEYFILE" \
+      "Set it to an existing private key file, disable SSL, or rerun the wizard to choose a new key."
+    return 1
+  fi
+
+  if [[ -n "$SSL_CERT_SOURCE_PATH" || -n "$SSL_KEY_SOURCE_PATH" ]]; then
+    stage_ssl_assets "$SSL_CERT_SOURCE_PATH" "$SSL_KEY_SOURCE_PATH"
+  fi
+}
+
 finalize_setup() {
   local backup_path
   local compose_suffix
@@ -1597,6 +1631,10 @@ finalize_setup() {
     return 1
   fi
 
+  if ! validate_current_security_config; then
+    return 1
+  fi
+
   show_summary
 
   if ! confirm_default_yes "Next step will generate the .env file. Ready to proceed or cancel?"; then
@@ -1613,6 +1651,9 @@ finalize_setup() {
   fi
 
   if [[ "$generate_compose" == "yes" ]]; then
+    if ! prepare_inherited_ssl_assets_for_compose; then
+      return 1
+    fi
     prepare_compose_env_overrides
   fi
 
@@ -1814,6 +1855,10 @@ finalize_base_setup() {
     return 1
   fi
 
+  if ! validate_current_security_config; then
+    return 1
+  fi
+
   show_summary
 
   if ! confirm_default_yes "Ready to proceed and write .env?"; then
@@ -1852,6 +1897,9 @@ finalize_base_setup() {
   fi
 
   if [[ "$generate_compose" == "yes" ]]; then
+    if ! prepare_inherited_ssl_assets_for_compose; then
+      return 1
+    fi
     prepare_compose_env_overrides
   fi
 
@@ -1944,6 +1992,10 @@ finalize_storage_setup() {
     return 1
   fi
 
+  if ! validate_current_security_config; then
+    return 1
+  fi
+
   if ((${#DOCKER_SERVICES[@]} > 0)); then
     has_docker_storage="yes"
   fi
@@ -1987,6 +2039,9 @@ finalize_storage_setup() {
   fi
   generate_compose="yes"
 
+  if ! prepare_inherited_ssl_assets_for_compose; then
+    return 1
+  fi
   prepare_compose_env_overrides
 
   backup_path="$(backup_env_file)"
@@ -2062,6 +2117,10 @@ finalize_server_setup() {
   fi
 
   if ! validate_sensitive_env_literals; then
+    return 1
+  fi
+
+  if ! validate_current_security_config; then
     return 1
   fi
 

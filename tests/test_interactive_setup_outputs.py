@@ -1877,7 +1877,16 @@ def test_env_storage_flow_generates_env_and_compose_files(tmp_path: Path) -> Non
 
     env_file = tmp_path / ".env"
     env_file.write_text(
-        "\n".join(["LLM_BINDING=ollama", "EMBEDDING_BINDING=ollama"]) + "\n",
+        "\n".join(
+            [
+                "LLM_BINDING=ollama",
+                "EMBEDDING_BINDING=ollama",
+                "AUTH_ACCOUNTS=admin:secret",
+                "TOKEN_SECRET=jwt-secret",
+                "WHITELIST_PATHS=/health",
+            ]
+        )
+        + "\n",
         encoding="utf-8",
     )
     (tmp_path / "env.example").write_text(
@@ -2313,6 +2322,59 @@ finalize_server_setup
     assert "minio" in result
 
 
+def test_finalize_server_setup_rejects_invalid_production_security_profile(
+    tmp_path: Path,
+) -> None:
+    """env-server should fail before writing an invalid production security profile."""
+
+    write_text_lines(
+        tmp_path / ".env",
+        [
+            "LIGHTRAG_SETUP_PROFILE=production",
+            "LIGHTRAG_KV_STORAGE=PGKVStorage",
+            "LIGHTRAG_VECTOR_STORAGE=QdrantVectorDBStorage",
+            "LIGHTRAG_GRAPH_STORAGE=Neo4JStorage",
+            "LIGHTRAG_DOC_STATUS_STORAGE=PGDocStatusStorage",
+            "POSTGRES_USER=lightrag",
+            "POSTGRES_PASSWORD=secret",
+            "POSTGRES_DATABASE=lightrag",
+            "QDRANT_URL=http://localhost:6333",
+            "NEO4J_URI=neo4j://localhost:7687",
+            "NEO4J_USERNAME=neo4j",
+            "NEO4J_PASSWORD=secret",
+            "AUTH_ACCOUNTS=admin:secret",
+            "TOKEN_SECRET=jwt-secret",
+            "WHITELIST_PATHS=/health,/api/*",
+        ],
+    )
+    write_text_lines(
+        tmp_path / "env.example",
+        (REPO_ROOT / "env.example").read_text(encoding="utf-8").splitlines(),
+    )
+
+    output = run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+load_existing_env_if_present
+
+show_summary() {{ :; }}
+confirm_default_yes() {{ return 0; }}
+
+if finalize_server_setup; then
+  printf 'RESULT=success\\n'
+else
+  printf 'RESULT=failure\\n'
+fi
+"""
+    )
+    values = parse_lines(output)
+
+    assert values["RESULT"] == "failure"
+
+
 def test_validate_uri_accepts_neo4j_self_signed_tls_scheme() -> None:
     """Neo4j self-signed TLS URIs should pass validation."""
 
@@ -2436,6 +2498,102 @@ stage_ssl_assets "./data/certs/server.pem" "./data/certs/server.key"
 
     assert cert_path.read_text(encoding="utf-8") == "cert"
     assert key_path.read_text(encoding="utf-8") == "key"
+
+
+@pytest.mark.parametrize(
+    ("name", "env_lines", "setup_snippet", "finalize_call"),
+    [
+        (
+            "base",
+            [],
+            "\n".join(
+                [
+                    'ENV_VALUES[VLLM_EMBED_DEVICE]="cpu"',
+                    'ENV_VALUES[VLLM_EMBED_MODEL]="BAAI/bge-m3"',
+                    'ENV_VALUES[VLLM_EMBED_PORT]="8001"',
+                    'ENV_VALUES[VLLM_EMBED_API_KEY]="local-key"',
+                    'add_docker_service "vllm-embed"',
+                    'confirm_default_no() { return 1; }',
+                ]
+            ),
+            "finalize_base_setup",
+        ),
+        (
+            "storage",
+            [
+                "LIGHTRAG_KV_STORAGE=PGKVStorage",
+                "LIGHTRAG_VECTOR_STORAGE=NanoVectorDBStorage",
+                "LIGHTRAG_GRAPH_STORAGE=NetworkXStorage",
+                "LIGHTRAG_DOC_STATUS_STORAGE=PGDocStatusStorage",
+                "POSTGRES_USER=lightrag",
+                "POSTGRES_PASSWORD=secret",
+                "POSTGRES_DATABASE=lightrag",
+            ],
+            'add_docker_service "postgres"',
+            "finalize_storage_setup",
+        ),
+    ],
+    ids=["base", "storage"],
+)
+def test_finalize_flows_stage_inherited_ssl_assets_for_compose(
+    tmp_path: Path,
+    name: str,
+    env_lines: list[str],
+    setup_snippet: str,
+    finalize_call: str,
+) -> None:
+    """Compose-writing finalize flows should stage inherited SSL assets before mounting them."""
+
+    cert_path = tmp_path / f"{name}-source-cert.pem"
+    key_path = tmp_path / f"{name}-source-key.pem"
+    cert_path.write_text("cert", encoding="utf-8")
+    key_path.write_text("key", encoding="utf-8")
+    write_text_lines(
+        tmp_path / ".env",
+        [
+            *env_lines,
+            "SSL=true",
+            f"SSL_CERTFILE={cert_path}",
+            f"SSL_KEYFILE={key_path}",
+        ],
+    )
+    write_text_lines(
+        tmp_path / "env.example",
+        (REPO_ROOT / "env.example").read_text(encoding="utf-8").splitlines(),
+    )
+    (tmp_path / "docker-compose.yml").write_text(
+        (REPO_ROOT / "docker-compose.yml").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+load_existing_env_if_present
+
+{setup_snippet}
+
+show_summary() {{ :; }}
+confirm_default_yes() {{ return 0; }}
+
+{finalize_call}
+"""
+    )
+
+    generated_compose = (tmp_path / "docker-compose.final.yml").read_text(
+        encoding="utf-8"
+    )
+
+    staged_cert = tmp_path / "data" / "certs" / f"{name}-source-cert.pem"
+    staged_key = tmp_path / "data" / "certs" / f"{name}-source-key.pem"
+
+    assert staged_cert.read_text(encoding="utf-8") == "cert"
+    assert staged_key.read_text(encoding="utf-8") == "key"
+    assert f"./data/certs/{name}-source-cert.pem:/app/data/certs/{name}-source-cert.pem:ro" in generated_compose
+    assert f"./data/certs/{name}-source-key.pem:/app/data/certs/{name}-source-key.pem:ro" in generated_compose
 
 
 def test_generate_docker_compose_vllm_gpu_honors_documented_gpu_selector(
