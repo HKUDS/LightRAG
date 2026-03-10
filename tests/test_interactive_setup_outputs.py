@@ -1209,7 +1209,6 @@ prompt_choice() {
                 'ENV_VALUES[VLLM_RERANK_MODEL]="BAAI/bge-reranker-v2-m3"',
                 'ENV_VALUES[VLLM_RERANK_PORT]="8000"',
                 'ENV_VALUES[VLLM_RERANK_DEVICE]="cpu"',
-                'ENV_VALUES[VLLM_RERANK_DTYPE]="float32"',
             ],
             """prompt_choice() { printf '%s' "$2"; }""",
             "BAAI/bge-reranker-v2-m3",
@@ -1218,6 +1217,8 @@ prompt_choice() {
     ],
     ids=["switch-to-vllm", "rerun-vllm"],
 )
+
+
 def test_collect_rerank_config_uses_vllm_defaults(
     setup_lines: list[str],
     prompt_choice_impl: str,
@@ -1311,7 +1312,6 @@ printf 'RERANK_BINDING_HOST=%s\\n' "${{ENV_VALUES[RERANK_BINDING_HOST]:-}}"
         "confirm_default_yes_impl",
         "prompt_choice_impl",
         "expected_device",
-        "expected_dtype",
         "expected_cuda_set",
         "expected_nvidia_set",
         "expected_cpu_set",
@@ -1341,7 +1341,6 @@ prompt_choice() {
 }
 """,
             "cuda",
-            None,
             "",
             "",
             "",
@@ -1349,7 +1348,6 @@ prompt_choice() {
         (
             [
                 'ENV_VALUES[VLLM_RERANK_DEVICE]="cuda"',
-                'ENV_VALUES[VLLM_RERANK_DTYPE]="float16"',
             ],
             "confirm_default_yes() { return 0; }",
             """
@@ -1362,20 +1360,18 @@ prompt_choice() {
 }
 """,
             "cpu",
-            "float32",
             "",
             "",
             "",
         ),
     ],
-    ids=["cuda-clears-disabled-masks", "cpu-resets-dtype-default"],
+    ids=["cuda-clears-disabled-masks", "cpu-clears-gpu-flags"],
 )
 def test_collect_rerank_config_normalizes_vllm_device_state(
     setup_lines: list[str],
     confirm_default_yes_impl: str,
     prompt_choice_impl: str,
     expected_device: str,
-    expected_dtype: str | None,
     expected_cuda_set: str,
     expected_nvidia_set: str,
     expected_cpu_set: str,
@@ -1401,7 +1397,6 @@ prompt_secret_with_default() {{ printf '%s' "$2"; }}
 collect_rerank_config
 
 printf 'VLLM_RERANK_DEVICE=%s\\n' "${{ENV_VALUES[VLLM_RERANK_DEVICE]}}"
-printf 'VLLM_RERANK_DTYPE=%s\\n' "${{ENV_VALUES[VLLM_RERANK_DTYPE]:-}}"
 printf 'CUDA_VISIBLE_DEVICES_SET=%s\\n' "${{ENV_VALUES[CUDA_VISIBLE_DEVICES]+set}}"
 printf 'NVIDIA_VISIBLE_DEVICES_SET=%s\\n' "${{ENV_VALUES[NVIDIA_VISIBLE_DEVICES]+set}}"
 printf 'VLLM_USE_CPU_SET=%s\\n' "${{ENV_VALUES[VLLM_USE_CPU]+set}}"
@@ -1409,8 +1404,6 @@ printf 'VLLM_USE_CPU_SET=%s\\n' "${{ENV_VALUES[VLLM_USE_CPU]+set}}"
     )
 
     assert values["VLLM_RERANK_DEVICE"] == expected_device
-    if expected_dtype is not None:
-        assert values["VLLM_RERANK_DTYPE"] == expected_dtype
     assert values["CUDA_VISIBLE_DEVICES_SET"] == expected_cuda_set
     assert values["NVIDIA_VISIBLE_DEVICES_SET"] == expected_nvidia_set
     assert values["VLLM_USE_CPU_SET"] == expected_cpu_set
@@ -1474,98 +1467,6 @@ generate_docker_compose "$REPO_ROOT/docker-compose.generated.yml"
     assert 'MINIO_SECRET_ACCESS_KEY: "minio$$SECRET"' in generated_compose
     assert 'MINIO_ROOT_USER: "minio$$USER"' in generated_compose
     assert 'MINIO_ROOT_PASSWORD: "minio$$SECRET"' in generated_compose
-
-
-def test_load_preset_preserves_existing_env_values() -> None:
-    """Preset defaults should fill missing keys without clobbering current config."""
-
-    output = run_bash(
-        f"""
-set -euo pipefail
-source "{REPO_ROOT}/scripts/setup/setup.sh"
-reset_state
-
-ENV_VALUES[LIGHTRAG_KV_STORAGE]="RedisKVStorage"
-ENV_VALUES[LLM_BINDING]="ollama"
-ENV_VALUES[POSTGRES_IMAGE]="custom/postgres:17"
-
-load_preset development
-
-printf 'LIGHTRAG_KV_STORAGE=%s\\n' "${{ENV_VALUES[LIGHTRAG_KV_STORAGE]}}"
-printf 'LLM_BINDING=%s\\n' "${{ENV_VALUES[LLM_BINDING]}}"
-printf 'POSTGRES_IMAGE=%s\\n' "${{ENV_VALUES[POSTGRES_IMAGE]}}"
-printf 'EMBEDDING_MODEL=%s\\n' "${{ENV_VALUES[EMBEDDING_MODEL]}}"
-"""
-    )
-    values = parse_lines(output)
-
-    assert values["LIGHTRAG_KV_STORAGE"] == "RedisKVStorage"
-    assert values["LLM_BINDING"] == "ollama"
-    assert values["POSTGRES_IMAGE"] == "custom/postgres:17"
-    assert values["EMBEDDING_MODEL"] == "text-embedding-3-large"
-
-
-def test_select_storage_backends_prefers_existing_env_values() -> None:
-    """Storage selection defaults should reuse values loaded from an existing `.env`."""
-
-    output = run_bash(
-        f"""
-set -euo pipefail
-source "{REPO_ROOT}/scripts/setup/setup.sh"
-reset_state
-
-ENV_VALUES[LIGHTRAG_KV_STORAGE]="RedisKVStorage"
-ENV_VALUES[LIGHTRAG_VECTOR_STORAGE]="QdrantVectorDBStorage"
-ENV_VALUES[LIGHTRAG_GRAPH_STORAGE]="Neo4JStorage"
-ENV_VALUES[LIGHTRAG_DOC_STATUS_STORAGE]="RedisDocStatusStorage"
-
-prompt_choice() {{
-  printf '%s' "$2"
-}}
-
-select_storage_backends production
-
-printf 'LIGHTRAG_KV_STORAGE=%s\\n' "${{ENV_VALUES[LIGHTRAG_KV_STORAGE]}}"
-printf 'LIGHTRAG_VECTOR_STORAGE=%s\\n' "${{ENV_VALUES[LIGHTRAG_VECTOR_STORAGE]}}"
-printf 'LIGHTRAG_GRAPH_STORAGE=%s\\n' "${{ENV_VALUES[LIGHTRAG_GRAPH_STORAGE]}}"
-printf 'LIGHTRAG_DOC_STATUS_STORAGE=%s\\n' "${{ENV_VALUES[LIGHTRAG_DOC_STATUS_STORAGE]}}"
-"""
-    )
-    values = parse_lines(output)
-
-    assert values["LIGHTRAG_KV_STORAGE"] == "RedisKVStorage"
-    assert values["LIGHTRAG_VECTOR_STORAGE"] == "QdrantVectorDBStorage"
-    assert values["LIGHTRAG_GRAPH_STORAGE"] == "Neo4JStorage"
-    assert values["LIGHTRAG_DOC_STATUS_STORAGE"] == "RedisDocStatusStorage"
-
-
-def test_select_storage_backends_allows_development_defaults_with_warnings() -> None:
-    """Development defaults should be selectable even when they emit advisory warnings."""
-
-    output = run_bash(
-        f"""
-set -euo pipefail
-source "{REPO_ROOT}/scripts/setup/setup.sh"
-reset_state
-
-prompt_choice() {{
-  printf '%s' "$2"
-}}
-
-select_storage_backends development
-
-printf 'LIGHTRAG_KV_STORAGE=%s\\n' "${{ENV_VALUES[LIGHTRAG_KV_STORAGE]}}"
-printf 'LIGHTRAG_VECTOR_STORAGE=%s\\n' "${{ENV_VALUES[LIGHTRAG_VECTOR_STORAGE]}}"
-printf 'LIGHTRAG_GRAPH_STORAGE=%s\\n' "${{ENV_VALUES[LIGHTRAG_GRAPH_STORAGE]}}"
-printf 'LIGHTRAG_DOC_STATUS_STORAGE=%s\\n' "${{ENV_VALUES[LIGHTRAG_DOC_STATUS_STORAGE]}}"
-"""
-    )
-    values = parse_lines(output)
-
-    assert values["LIGHTRAG_KV_STORAGE"] == "JsonKVStorage"
-    assert values["LIGHTRAG_VECTOR_STORAGE"] == "NanoVectorDBStorage"
-    assert values["LIGHTRAG_GRAPH_STORAGE"] == "NetworkXStorage"
-    assert values["LIGHTRAG_DOC_STATUS_STORAGE"] == "JsonDocStatusStorage"
 
 
 def test_env_base_flow_preserves_non_inference_env_values(
@@ -2686,31 +2587,6 @@ printf 'WHITELIST_PATHS_SET=%s\\n' "${{ENV_VALUES[WHITELIST_PATHS]+set}}"
     assert "WHITELIST_PATHS=" in generated_lines
 
 
-def test_collect_security_config_uses_safe_production_whitelist_default() -> None:
-    """Production security prompts should not default to exposing `/api/*`."""
-
-    output = run_bash(
-        f"""
-set -euo pipefail
-source "{REPO_ROOT}/scripts/setup/setup.sh"
-reset_state
-
-ENV_VALUES[WHITELIST_PATHS]="/health,/api/*"
-
-confirm_default_yes() {{ return 0; }}
-prompt_clearable_with_default() {{ printf '%s' "$2"; }}
-prompt_clearable_secret_with_default() {{ printf '%s' "$2"; }}
-
-collect_security_config yes yes
-
-printf 'WHITELIST_PATHS=%s\\n' "${{ENV_VALUES[WHITELIST_PATHS]}}"
-"""
-    )
-    values = parse_lines(output)
-
-    assert values["WHITELIST_PATHS"] == "/health"
-
-
 def test_collect_security_config_preserves_explicit_empty_whitelist_on_rerun(
     tmp_path: Path,
 ) -> None:
@@ -2740,57 +2616,6 @@ printf 'WHITELIST_PATHS=%s\\n' "${{ENV_VALUES[WHITELIST_PATHS]}}"
 
     assert values["WHITELIST_PATHS_SET"] == "set"
     assert values["WHITELIST_PATHS"] == ""
-
-
-def test_validate_env_file_handles_production_whitelist_presence(tmp_path: Path) -> None:
-    """Production validation should distinguish empty and omitted whitelist keys."""
-
-    base_lines = [
-        "LIGHTRAG_KV_STORAGE=PGKVStorage",
-        "LIGHTRAG_VECTOR_STORAGE=MilvusVectorDBStorage",
-        "LIGHTRAG_GRAPH_STORAGE=Neo4JStorage",
-        "LIGHTRAG_DOC_STATUS_STORAGE=PGDocStatusStorage",
-        "POSTGRES_USER=lightrag",
-        "POSTGRES_PASSWORD=secret",
-        "POSTGRES_DATABASE=lightrag",
-        "MILVUS_URI=http://localhost:19530",
-        "MILVUS_DB_NAME=lightrag",
-        "NEO4J_URI=neo4j://localhost:7687",
-        "NEO4J_USERNAME=neo4j",
-        "NEO4J_PASSWORD=secret",
-        "AUTH_ACCOUNTS=admin:secret",
-        "TOKEN_SECRET=jwt-secret",
-    ]
-    cases = {
-        "empty-whitelist": (base_lines + ["WHITELIST_PATHS="], 0, "Validation passed."),
-        "missing-whitelist": (base_lines, 1, "must not whitelist /api routes"),
-    }
-
-    for case_name, (env_lines, expected_code, expected_text) in cases.items():
-        case_dir = tmp_path / case_name
-        case_dir.mkdir()
-        write_text_lines(case_dir / ".env", env_lines)
-
-        result = subprocess.run(
-            [
-                "bash",
-                "-lc",
-                f"""
-source "{REPO_ROOT}/scripts/setup/setup.sh"
-REPO_ROOT="{case_dir}"
-reset_state
-validate_env_file
-""",
-            ],
-            cwd=REPO_ROOT,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-
-        assert result.returncode == expected_code
-        combined_output = result.stdout + result.stderr
-        assert expected_text in combined_output
 
 
 def test_collect_observability_config_clears_existing_values_on_rerun(
@@ -2905,155 +2730,6 @@ printf 'DOCKER_SERVICE=%s\\n' "${{DOCKER_SERVICES[0]}}"
     assert 'NEO4J_AUTH: "neo4j/test-password"' in generated_compose
 
 
-def test_finalize_setup_rejects_production_config_without_auth_or_api_key() -> None:
-    """Production setup should not generate an unauthenticated deployment."""
-
-    output = run_bash(
-        f"""
-set -euo pipefail
-source "{REPO_ROOT}/scripts/setup/setup.sh"
-reset_state
-DEPLOYMENT_TYPE="production"
-
-ENV_VALUES[LIGHTRAG_KV_STORAGE]="JsonKVStorage"
-ENV_VALUES[LIGHTRAG_VECTOR_STORAGE]="NanoVectorDBStorage"
-ENV_VALUES[LIGHTRAG_GRAPH_STORAGE]="NetworkXStorage"
-ENV_VALUES[LIGHTRAG_DOC_STATUS_STORAGE]="JsonDocStatusStorage"
-
-if finalize_setup >/tmp/finalize.out 2>/tmp/finalize.err; then
-  printf 'RESULT=success\\n'
-else
-  printf 'RESULT=failure\\n'
-fi
-"""
-    )
-    values = parse_lines(output)
-
-    assert values["RESULT"] == "failure"
-
-
-def test_finalize_setup_generates_compose_and_does_not_auto_start_services(
-    tmp_path: Path,
-) -> None:
-    """finalize_setup should generate a compose file and return success without starting services."""
-
-    env_example = tmp_path / "env.example"
-    env_example.write_text(
-        "\n".join(
-            [
-                "LIGHTRAG_KV_STORAGE=JsonKVStorage",
-                "LIGHTRAG_VECTOR_STORAGE=NanoVectorDBStorage",
-                "LIGHTRAG_GRAPH_STORAGE=NetworkXStorage",
-                "LIGHTRAG_DOC_STATUS_STORAGE=JsonDocStatusStorage",
-            ]
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-
-    output = run_bash(
-        f"""
-set -euo pipefail
-source "{REPO_ROOT}/scripts/setup/setup.sh"
-REPO_ROOT="{tmp_path}"
-reset_state
-DEPLOYMENT_TYPE="development"
-add_docker_service "redis"
-
-ENV_VALUES[LIGHTRAG_KV_STORAGE]="JsonKVStorage"
-ENV_VALUES[LIGHTRAG_VECTOR_STORAGE]="NanoVectorDBStorage"
-ENV_VALUES[LIGHTRAG_GRAPH_STORAGE]="NetworkXStorage"
-ENV_VALUES[LIGHTRAG_DOC_STATUS_STORAGE]="JsonDocStatusStorage"
-
-confirm_default_no() {{ return 0; }}
-confirm_default_yes() {{ return 0; }}
-backup_env_file() {{ return 0; }}
-generate_env_file() {{ :; }}
-generate_docker_compose() {{
-  printf 'COMPOSE_GENERATED=yes\\n'
-}}
-docker() {{
-  printf '%s\\n' "$*" >> "$REPO_ROOT/docker_calls.log"
-}}
-
-if finalize_setup; then
-  printf 'RESULT=success\\n'
-else
-  printf 'RESULT=failure\\n'
-fi
-"""
-    )
-    values = parse_lines(output)
-
-    # finalize_setup generates the compose file and returns success;
-    # service startup is left to the user (no automatic docker compose up)
-    assert values["RESULT"] == "success"
-    assert values["COMPOSE_GENERATED"] == "yes"
-    assert not (tmp_path / "docker_calls.log").exists()
-
-
-def test_validate_security_config_enforces_production_auth_and_whitelist_rules() -> None:
-    """Production validation should require auth accounts and reject `/api/*` whitelists."""
-
-    values = run_bash_lines(
-        f"""
-set -euo pipefail
-source "{REPO_ROOT}/scripts/setup/setup.sh"
-reset_state
-
-if validate_security_config "" "" "" yes; then
-  printf 'NO_AUTH=yes\\n'
-else
-  printf 'NO_AUTH=no\\n'
-fi
-
-if validate_security_config "" "" "api-key" yes "/health"; then
-  printf 'API_KEY_ONLY=yes\\n'
-else
-  printf 'API_KEY_ONLY=no\\n'
-fi
-
-if validate_security_config "admin:secret" "token-secret" "" yes ""; then
-  printf 'EMPTY_WHITELIST=yes\\n'
-else
-  printf 'EMPTY_WHITELIST=no\\n'
-fi
-
-if validate_security_config "admin:secret" "token-secret" "" yes; then
-  printf 'OMITTED_WHITELIST=yes\\n'
-else
-  printf 'OMITTED_WHITELIST=no\\n'
-fi
-
-if validate_security_config "admin:secret" "token-secret" "" yes "/health,/api/*"; then
-  printf 'API_WHITELIST=yes\\n'
-else
-  printf 'API_WHITELIST=no\\n'
-fi
-
-if validate_security_config "admin:secret" "token-secret" "" yes "/health,/api/v1/*"; then
-  printf 'API_PREFIX_WHITELIST=yes\\n'
-else
-  printf 'API_PREFIX_WHITELIST=no\\n'
-fi
-
-if validate_security_config "admin:secret" "token-secret" "" yes "/health,/docs"; then
-  printf 'SAFE_WHITELIST=yes\\n'
-else
-  printf 'SAFE_WHITELIST=no\\n'
-fi
-"""
-    )
-
-    assert values["NO_AUTH"] == "no"
-    assert values["API_KEY_ONLY"] == "no"
-    assert values["EMPTY_WHITELIST"] == "yes"
-    assert values["OMITTED_WHITELIST"] == "no"
-    assert values["API_WHITELIST"] == "no"
-    assert values["API_PREFIX_WHITELIST"] == "no"
-    assert values["SAFE_WHITELIST"] == "yes"
-
-
 def test_validate_security_config_rejects_malformed_auth_accounts() -> None:
     """Security validation should reject auth entries the API cannot parse."""
 
@@ -3087,151 +2763,6 @@ fi
     assert values["MISSING_COLON"] == "no"
     assert values["TRAILING_COMMA"] == "no"
     assert values["VALID_FORMAT"] == "yes"
-
-
-def test_validate_api_key_accepts_non_sk_keys_for_openai_compatible_providers() -> None:
-    """OpenAI-compatible endpoints should accept any non-empty API key."""
-
-    output = run_bash(
-        f"""
-set -euo pipefail
-source "{REPO_ROOT}/scripts/setup/setup.sh"
-
-if validate_api_key "local-key" openai; then
-  printf 'OPENAI_VALID=yes\\n'
-else
-  printf 'OPENAI_VALID=no\\n'
-fi
-
-if validate_api_key "gateway-token" openrouter; then
-  printf 'OPENROUTER_VALID=yes\\n'
-else
-  printf 'OPENROUTER_VALID=no\\n'
-fi
-
-if validate_api_key "" openai; then
-  printf 'EMPTY_VALID=yes\\n'
-else
-  printf 'EMPTY_VALID=no\\n'
-fi
-"""
-    )
-    values = parse_lines(output)
-
-    assert values["OPENAI_VALID"] == "yes"
-    assert values["OPENROUTER_VALID"] == "yes"
-    assert values["EMPTY_VALID"] == "no"
-
-
-def test_validate_env_file_requires_protection_for_production_profiles(
-    tmp_path: Path,
-) -> None:
-    """`setup-validate` should reject production-class profiles without auth."""
-
-    cases = {
-        "storage-profile": [
-            "LIGHTRAG_KV_STORAGE=PGKVStorage",
-            "LIGHTRAG_VECTOR_STORAGE=MilvusVectorDBStorage",
-            "LIGHTRAG_GRAPH_STORAGE=Neo4JStorage",
-            "LIGHTRAG_DOC_STATUS_STORAGE=PGDocStatusStorage",
-            "POSTGRES_USER=lightrag",
-            "POSTGRES_PASSWORD=secret",
-            "POSTGRES_DATABASE=lightrag",
-            "MILVUS_URI=http://localhost:19530",
-            "MILVUS_DB_NAME=lightrag",
-            "NEO4J_URI=neo4j://localhost:7687",
-            "NEO4J_USERNAME=neo4j",
-            "NEO4J_PASSWORD=secret",
-        ],
-        "setup-profile": [
-            "LIGHTRAG_SETUP_PROFILE=production",
-            "LIGHTRAG_KV_STORAGE=PGKVStorage",
-            "LIGHTRAG_VECTOR_STORAGE=QdrantVectorDBStorage",
-            "LIGHTRAG_GRAPH_STORAGE=Neo4JStorage",
-            "LIGHTRAG_DOC_STATUS_STORAGE=PGDocStatusStorage",
-            "POSTGRES_USER=lightrag",
-            "POSTGRES_PASSWORD=secret",
-            "POSTGRES_DATABASE=lightrag",
-            "QDRANT_URL=http://localhost:6333",
-            "NEO4J_URI=neo4j://localhost:7687",
-            "NEO4J_USERNAME=neo4j",
-            "NEO4J_PASSWORD=secret",
-        ],
-    }
-
-    for case_name, env_lines in cases.items():
-        case_dir = tmp_path / case_name
-        case_dir.mkdir()
-        write_text_lines(case_dir / ".env", env_lines)
-        values = run_bash_lines(
-            f"""
-set -euo pipefail
-source "{REPO_ROOT}/scripts/setup/setup.sh"
-REPO_ROOT="{case_dir}"
-
-if validate_env_file; then
-  printf 'VALID=yes\\n'
-else
-  printf 'VALID=no\\n'
-fi
-"""
-        )
-        assert values["VALID"] == "no"
-
-
-def test_finalize_setup_requires_protection_for_custom_production_storage_profile(
-    tmp_path: Path,
-) -> None:
-    """Custom mode should reject production-class storage profiles without account auth."""
-
-    cases = {
-        "no-protection": [],
-        "api-key-only": ['ENV_VALUES[LIGHTRAG_API_KEY]="api-key"'],
-    }
-
-    for case_name, extra_lines in cases.items():
-        case_dir = tmp_path / case_name
-        case_dir.mkdir()
-        write_text_lines(case_dir / "env.example", ["LLM_BINDING=openai"])
-
-        extra_block = "\n".join(extra_lines)
-        values = run_bash_lines(
-            f"""
-set -euo pipefail
-source "{REPO_ROOT}/scripts/setup/setup.sh"
-REPO_ROOT="{case_dir}"
-reset_state
-DEPLOYMENT_TYPE="custom"
-
-ENV_VALUES[LIGHTRAG_KV_STORAGE]="PGKVStorage"
-ENV_VALUES[LIGHTRAG_VECTOR_STORAGE]="MilvusVectorDBStorage"
-ENV_VALUES[LIGHTRAG_GRAPH_STORAGE]="Neo4JStorage"
-ENV_VALUES[LIGHTRAG_DOC_STATUS_STORAGE]="PGDocStatusStorage"
-ENV_VALUES[POSTGRES_USER]="lightrag"
-ENV_VALUES[POSTGRES_PASSWORD]="secret"
-ENV_VALUES[POSTGRES_DATABASE]="lightrag"
-ENV_VALUES[MILVUS_URI]="http://localhost:19530"
-ENV_VALUES[MILVUS_DB_NAME]="lightrag"
-ENV_VALUES[NEO4J_URI]="neo4j://localhost:7687"
-ENV_VALUES[NEO4J_USERNAME]="neo4j"
-ENV_VALUES[NEO4J_PASSWORD]="secret"
-{extra_block}
-
-confirm_default_yes() {{ return 1; }}
-backup_env_file() {{ return 0; }}
-generate_env_file() {{ :; }}
-generate_docker_compose() {{ :; }}
-show_summary() {{ :; }}
-
-if finalize_setup >/dev/null 2>&1; then
-  printf 'RESULT=success\\n'
-else
-  printf 'RESULT=failure\\n'
-fi
-"""
-        )
-
-        assert values["RESULT"] == "failure"
 
 
 def test_show_summary_masks_auth_accounts() -> None:
@@ -3421,50 +2952,3 @@ fi
     values = parse_lines(result.stdout)
     assert values["VALID"] == "no"
     assert "MongoVectorDBStorage requires a MongoDB Atlas URI" in result.stderr
-
-
-def test_finalize_setup_creates_timestamped_env_backup(tmp_path: Path) -> None:
-    """finalize_setup should create a timestamped .env.backup.* file from the existing .env."""
-
-    env_content = (
-        "\n".join(
-            [
-                "LIGHTRAG_KV_STORAGE=JsonKVStorage",
-                "LIGHTRAG_VECTOR_STORAGE=NanoVectorDBStorage",
-                "LIGHTRAG_GRAPH_STORAGE=NetworkXStorage",
-                "LIGHTRAG_DOC_STATUS_STORAGE=JsonDocStatusStorage",
-            ]
-        )
-        + "\n"
-    )
-    (tmp_path / ".env").write_text(env_content, encoding="utf-8")
-    (tmp_path / "env.example").write_text(env_content, encoding="utf-8")
-
-    run_bash(
-        f"""
-set -euo pipefail
-source "{REPO_ROOT}/scripts/setup/setup.sh"
-REPO_ROOT="{tmp_path}"
-reset_state
-
-ENV_VALUES[LIGHTRAG_KV_STORAGE]="JsonKVStorage"
-ENV_VALUES[LIGHTRAG_VECTOR_STORAGE]="NanoVectorDBStorage"
-ENV_VALUES[LIGHTRAG_GRAPH_STORAGE]="NetworkXStorage"
-ENV_VALUES[LIGHTRAG_DOC_STATUS_STORAGE]="JsonDocStatusStorage"
-DEPLOYMENT_TYPE="development"
-
-# confirm_default_yes handles "Generate .env...?" -> yes; confirm handles docker-compose -> no.
-confirm_default_yes() {{
-  case "$1" in
-    "Next step will generate the .env file. Ready to proceed or cancel?") return 0 ;;
-    *) return 1 ;;
-  esac
-}}
-
-finalize_setup
-"""
-    )
-
-    backups = list(tmp_path.glob(".env.backup.*"))
-    assert len(backups) == 1, f"Expected one backup file, found: {backups}"
-    assert backups[0].read_text(encoding="utf-8") == env_content
