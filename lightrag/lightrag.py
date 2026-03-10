@@ -753,11 +753,25 @@ class LightRAG:
             self._raw_role_llm_funcs[role] = role_raw_func
 
             # Determine max_async and timeout (fall back to base values)
+            # Use `is not None` to allow explicit 0/{} overrides
+            role_max_async_value = getattr(self, role_max_async_attr)
             role_max_async = (
-                getattr(self, role_max_async_attr) or self.llm_model_max_async
+                role_max_async_value
+                if role_max_async_value is not None
+                else self.llm_model_max_async
             )
-            role_timeout = getattr(self, role_timeout_attr) or self.default_llm_timeout
-            role_kwargs = getattr(self, role_kwargs_attr) or self.llm_model_kwargs
+            role_timeout_value = getattr(self, role_timeout_attr)
+            role_timeout = (
+                role_timeout_value
+                if role_timeout_value is not None
+                else self.default_llm_timeout
+            )
+            role_kwargs_value = getattr(self, role_kwargs_attr)
+            role_kwargs = (
+                role_kwargs_value
+                if role_kwargs_value is not None
+                else self.llm_model_kwargs
+            )
 
             # Create independently wrapped function with its own queue
             wrapped_role_func = priority_limit_async_func_call(
@@ -871,6 +885,7 @@ class LightRAG:
         # Save previous state for rollback
         prev_func = getattr(self, func_attr)
         prev_metadata = self._role_llm_metadata.get(role, {}).copy()
+        prev_raw_func = self._raw_role_llm_funcs.get(role)
 
         try:
             # Determine effective values - use stored raw function to avoid double-wrapping
@@ -880,17 +895,24 @@ class LightRAG:
             # Update stored raw function if a new one is provided
             if model_func is not None:
                 self._raw_role_llm_funcs[role] = model_func
-            effective_max_async = (
-                max_async or getattr(self, max_async_attr) or self.llm_model_max_async
-            )
-            effective_timeout = (
-                timeout or getattr(self, timeout_attr) or self.default_llm_timeout
-            )
-            effective_kwargs = (
-                model_kwargs
-                if model_kwargs is not None
-                else (getattr(self, kwargs_attr) or self.llm_model_kwargs)
-            )
+            # Use `is not None` to allow explicit 0/{} overrides
+            if max_async is not None:
+                effective_max_async = max_async
+            else:
+                stored = getattr(self, max_async_attr)
+                effective_max_async = stored if stored is not None else self.llm_model_max_async
+
+            if timeout is not None:
+                effective_timeout = timeout
+            else:
+                stored = getattr(self, timeout_attr)
+                effective_timeout = stored if stored is not None else self.default_llm_timeout
+
+            if model_kwargs is not None:
+                effective_kwargs = model_kwargs
+            else:
+                stored = getattr(self, kwargs_attr)
+                effective_kwargs = stored if stored is not None else self.llm_model_kwargs
 
             # Rebuild the wrapped function with independent queue
             hashing_kv = self.llm_response_cache
@@ -936,8 +958,10 @@ class LightRAG:
                 + (f", model={model}" if model else "")
             )
         except Exception as e:
-            # Rollback on failure
+            # Rollback on failure (including raw function)
             setattr(self, func_attr, prev_func)
+            if prev_raw_func is not None:
+                self._raw_role_llm_funcs[role] = prev_raw_func
             self._role_llm_metadata[role] = prev_metadata
             logger.error(f"Failed to update LLM role config for '{role}': {e}")
             raise

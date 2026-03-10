@@ -713,9 +713,34 @@ def create_app(args):
 
                 return lollms_model_complete
             elif effective_binding == "ollama":
-                from lightrag.llm.ollama import ollama_model_complete
+                from lightrag.llm.ollama import _ollama_model_if_cache
 
-                return ollama_model_complete
+                _role_ollama_opts = role_provider_options
+
+                async def role_ollama_complete(
+                    prompt,
+                    system_prompt=None,
+                    history_messages=None,
+                    keyword_extraction=False,
+                    **kwargs,
+                ):
+                    keyword_extraction = kwargs.pop("keyword_extraction", None)
+                    if keyword_extraction:
+                        kwargs["format"] = "json"
+                    if _role_ollama_opts:
+                        kwargs.update(_role_ollama_opts)
+                    if history_messages is None:
+                        history_messages = []
+                    return await _ollama_model_if_cache(
+                        effective_model,
+                        prompt,
+                        system_prompt=system_prompt,
+                        history_messages=history_messages,
+                        host=effective_host,
+                        **kwargs,
+                    )
+
+                return role_ollama_complete
             elif effective_binding == "aws_bedrock":
                 return bedrock_model_complete
             elif effective_binding == "azure_openai":
