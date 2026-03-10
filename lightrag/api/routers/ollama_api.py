@@ -303,8 +303,9 @@ class OllamaAPI:
                     self.rag.llm_model_kwargs["system_prompt"] = request.system
 
                 if request.stream:
+                    role_kwargs = self.rag.query_llm_model_kwargs if self.rag.query_llm_model_kwargs is not None else self.rag.llm_model_kwargs
                     response = await self.rag.query_llm_model_func(
-                        query, stream=True, **self.rag.llm_model_kwargs
+                        query, stream=True, **role_kwargs
                     )
 
                     async def stream_generator():
@@ -428,8 +429,9 @@ class OllamaAPI:
                     )
                 else:
                     first_chunk_time = time.time_ns()
+                    role_kwargs = self.rag.query_llm_model_kwargs if self.rag.query_llm_model_kwargs is not None else self.rag.llm_model_kwargs
                     response_text = await self.rag.query_llm_model_func(
-                        query, stream=False, **self.rag.llm_model_kwargs
+                        query, stream=False, **role_kwargs
                     )
                     last_chunk_time = time.time_ns()
 

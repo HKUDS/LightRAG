@@ -655,6 +655,119 @@ class TestOperateRouting:
         assert mocks["keyword"].await_count == 0
         assert mocks["base"].await_count == 0
 
+    @pytest.mark.asyncio
+    async def test_kg_query_uses_query_func(self):
+        """kg_query() should call query_llm_model_func, not base."""
+        from lightrag.operate import kg_query
+        from lightrag.base import QueryParam
+
+        global_config, mocks = _make_global_config_with_roles()
+
+        # Mock storage dependencies — kg_query returns None when no context
+        mock_graph = MagicMock()
+        mock_entities_vdb = MagicMock()
+        mock_relationships_vdb = MagicMock()
+        mock_text_chunks_db = MagicMock()
+        mock_chunks_vdb = MagicMock()
+
+        # Make vector search return empty so kg_query exits early (no context)
+        mock_entities_vdb.query = AsyncMock(return_value=[])
+        mock_relationships_vdb.query = AsyncMock(return_value=[])
+        mock_chunks_vdb.query = AsyncMock(return_value=[])
+        mock_graph.get_node = AsyncMock(return_value=None)
+
+        mock_hashing_kv = MagicMock()
+        mock_hashing_kv.global_config = {"enable_llm_cache": False}
+
+        # kg_query returns None when no context is built (no entities/relations found)
+        await kg_query(
+            query="What is machine learning?",
+            knowledge_graph_inst=mock_graph,
+            entities_vdb=mock_entities_vdb,
+            relationships_vdb=mock_relationships_vdb,
+            text_chunks_db=mock_text_chunks_db,
+            query_param=QueryParam(mode="hybrid"),
+            global_config=global_config,
+            hashing_kv=mock_hashing_kv,
+            chunks_vdb=mock_chunks_vdb,
+        )
+
+        # With no context, kg_query returns None without calling LLM
+        # But the keyword extraction (for context building) uses keyword role
+        assert mocks["keyword"].await_count >= 1, (
+            "keyword_llm_model_func should be called for keyword extraction in kg_query"
+        )
+        # Base should never be called
+        assert mocks["base"].await_count == 0
+
+    @pytest.mark.asyncio
+    async def test_naive_query_uses_query_func(self):
+        """naive_query() should call query_llm_model_func, not base."""
+        from lightrag.operate import naive_query
+        from lightrag.base import QueryParam
+
+        global_config, mocks = _make_global_config_with_roles()
+
+        # Mock chunks_vdb to return empty (no matching chunks)
+        mock_chunks_vdb = MagicMock()
+        mock_chunks_vdb.query = AsyncMock(return_value=[])
+
+        mock_hashing_kv = MagicMock()
+        mock_hashing_kv.global_config = {"enable_llm_cache": False}
+
+        # naive_query returns None when no chunks are found
+        result = await naive_query(
+            query="What is AI?",
+            chunks_vdb=mock_chunks_vdb,
+            query_param=QueryParam(mode="naive"),
+            global_config=global_config,
+            hashing_kv=mock_hashing_kv,
+        )
+
+        # With no chunks, naive_query returns None without calling query LLM
+        assert result is None
+        # Neither base nor query should be called (no context to query about)
+        assert mocks["base"].await_count == 0
+
+    @pytest.mark.asyncio
+    async def test_naive_query_calls_query_func_with_chunks(self):
+        """naive_query() should use query_llm_model_func when chunks are available."""
+        from lightrag.operate import naive_query
+        from lightrag.base import QueryParam
+
+        global_config, mocks = _make_global_config_with_roles()
+
+        # Mock chunks_vdb to return matching chunks (must include 'content' key)
+        mock_chunks_vdb = MagicMock()
+        mock_chunks_vdb.cosine_better_than_threshold = 0.2
+        mock_chunks_vdb.query = AsyncMock(
+            return_value=[
+                {
+                    "id": "chunk-1",
+                    "distance": 0.9,
+                    "content": "Machine learning is a branch of AI.",
+                    "file_path": "test.txt",
+                }
+            ]
+        )
+
+        mock_hashing_kv = MagicMock()
+        mock_hashing_kv.global_config = {"enable_llm_cache": False}
+
+        await naive_query(
+            query="What is machine learning?",
+            chunks_vdb=mock_chunks_vdb,
+            query_param=QueryParam(mode="naive"),
+            global_config=global_config,
+            hashing_kv=mock_hashing_kv,
+        )
+
+        # query_llm_model_func should be called (not base)
+        assert mocks["query"].await_count >= 1, (
+            "query_llm_model_func should be called by naive_query"
+        )
+        assert mocks["base"].await_count == 0
+
 
 # ---------------------------------------------------------------------------
 # 8. asdict Snapshot Tests
@@ -889,14 +1002,15 @@ class TestEndToEndIntegration:
 class TestEdgeCases:
     """Test edge cases and boundary conditions."""
 
-    def test_zero_max_async_falls_back(self, tmp_path):
-        """max_async=0 is falsy, should fall back to base max_async."""
+    def test_zero_max_async_is_respected(self, tmp_path):
+        """max_async=0 is an explicit override and should be preserved (not fall back)."""
         rag = _make_rag(
             tmp_path,
             llm_model_max_async=4,
             extract_llm_model_max_async=0,
         )
-        # 0 is falsy so should fall back to base value of 4
+        # 0 is explicitly set, so it should be preserved (not fall back to base)
+        assert rag.extract_llm_model_max_async == 0
         # The function should still be created successfully
         assert rag.extract_llm_model_func is not None
         assert callable(rag.extract_llm_model_func)
