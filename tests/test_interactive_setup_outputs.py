@@ -2046,7 +2046,6 @@ env_storage_flow
     assert values["EMBEDDING_BINDING"] == "ollama"
 
 
-
 def test_env_storage_flow_generates_env_and_compose_files(tmp_path: Path) -> None:
     """env-storage should write updated .env and a docker-compose.final.yml."""
 
