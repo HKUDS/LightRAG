@@ -1815,6 +1815,60 @@ env_base_flow
     assert values["VLLM_EMBED_PORT"] == "9101"
 
 
+def test_env_base_flow_resets_remote_embedding_host_when_switching_to_vllm(
+    tmp_path: Path,
+) -> None:
+    """Switching a remote embedding provider to local vLLM should restore localhost."""
+
+    write_text_lines(
+        tmp_path / ".env",
+        [
+            "LLM_BINDING=openai",
+            "LLM_MODEL=gpt-4o-mini",
+            "LLM_BINDING_HOST=https://api.openai.com/v1",
+            "LLM_BINDING_API_KEY=sk-existing",
+            "EMBEDDING_BINDING=jina",
+            "EMBEDDING_MODEL=jina-embeddings-v4",
+            "EMBEDDING_DIM=2048",
+            "EMBEDDING_BINDING_HOST=https://api.jina.ai/v1/embeddings",
+            "EMBEDDING_BINDING_API_KEY=jina-key",
+            "VLLM_EMBED_PORT=9101",
+        ],
+    )
+
+    values = run_bash_lines(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+
+prompt_choice() {{ printf '%s' "$2"; }}
+prompt_with_default() {{ printf '%s' "$2"; }}
+prompt_until_valid() {{ printf '%s' "$2"; }}
+prompt_secret_with_default() {{ printf '%s' "$2"; }}
+prompt_secret_until_valid_with_default() {{ printf '%s' "$2"; }}
+confirm_default_no() {{
+  case "$1" in
+    "Run embedding model locally via Docker (vLLM)?") return 0 ;;
+    "Enable reranking?") return 1 ;;
+    *) return 1 ;;
+  esac
+}}
+confirm_default_yes() {{ return 1; }}
+
+finalize_base_setup() {{
+  printf 'EMBEDDING_BINDING_HOST=%s\\n' "${{ENV_VALUES[EMBEDDING_BINDING_HOST]}}"
+  printf 'LIGHTRAG_SETUP_EMBEDDING_PROVIDER=%s\\n' "${{ENV_VALUES[LIGHTRAG_SETUP_EMBEDDING_PROVIDER]}}"
+}}
+
+env_base_flow
+"""
+    )
+
+    assert values["EMBEDDING_BINDING_HOST"] == "http://localhost:9101/v1"
+    assert values["LIGHTRAG_SETUP_EMBEDDING_PROVIDER"] == "vllm"
+
+
 def test_env_base_flow_preserves_existing_vllm_embedding_device_on_gpu_host(
     tmp_path: Path,
 ) -> None:
@@ -2211,6 +2265,64 @@ env_base_flow
     assert values["RERANK_BINDING_HOST"] == "http://localhost:9200/rerank"
     assert values["VLLM_RERANK_MODEL"] == "BAAI/custom-rerank"
     assert values["VLLM_RERANK_PORT"] == "9200"
+
+
+def test_env_base_flow_resets_remote_rerank_host_when_switching_to_vllm(
+    tmp_path: Path,
+) -> None:
+    """Switching a remote reranker to local vLLM should restore localhost."""
+
+    write_text_lines(
+        tmp_path / ".env",
+        [
+            "LLM_BINDING=openai",
+            "LLM_MODEL=gpt-4o-mini",
+            "LLM_BINDING_HOST=https://api.openai.com/v1",
+            "LLM_BINDING_API_KEY=sk-existing",
+            "RERANK_BINDING=jina",
+            "RERANK_MODEL=jina-reranker-v2-base-multilingual",
+            "RERANK_BINDING_HOST=https://api.jina.ai/v1/rerank",
+            "RERANK_BINDING_API_KEY=jina-key",
+            "VLLM_RERANK_PORT=9200",
+        ],
+    )
+
+    values = run_bash_lines(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+
+prompt_choice() {{ printf '%s' "$2"; }}
+prompt_with_default() {{ printf '%s' "$2"; }}
+prompt_until_valid() {{ printf '%s' "$2"; }}
+prompt_secret_with_default() {{ printf '%s' "$2"; }}
+prompt_secret_until_valid_with_default() {{ printf '%s' "$2"; }}
+confirm_default_no() {{
+  case "$1" in
+    "Run rerank service locally via Docker?") return 0 ;;
+    *) return 1 ;;
+  esac
+}}
+confirm_default_yes() {{
+  case "$1" in
+    "Enable reranking?") return 0 ;;
+    *) return 1 ;;
+  esac
+}}
+collect_embedding_config() {{ :; }}
+
+finalize_base_setup() {{
+  printf 'RERANK_BINDING_HOST=%s\\n' "${{ENV_VALUES[RERANK_BINDING_HOST]}}"
+  printf 'LIGHTRAG_SETUP_RERANK_PROVIDER=%s\\n' "${{ENV_VALUES[LIGHTRAG_SETUP_RERANK_PROVIDER]}}"
+}}
+
+env_base_flow
+"""
+    )
+
+    assert values["RERANK_BINDING_HOST"] == "http://localhost:9200/rerank"
+    assert values["LIGHTRAG_SETUP_RERANK_PROVIDER"] == "vllm"
 
 
 def test_env_base_flow_preserves_existing_vllm_rerank_device_on_gpu_host(

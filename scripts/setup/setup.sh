@@ -1655,9 +1655,11 @@ env_base_flow() {
   local existing_vllm_embed_model=""
   local existing_vllm_embed_port=""
   local existing_vllm_embed_host=""
+  local previous_embedding_provider=""
   local existing_vllm_rerank_model=""
   local existing_vllm_rerank_port=""
   local existing_vllm_rerank_host=""
+  local previous_rerank_provider=""
   # Auto-detect CUDA once; used for both embed and rerank
   local has_gpu="no"
   if command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi >/dev/null 2>&1; then
@@ -1682,7 +1684,8 @@ env_base_flow() {
   # ── Embedding ────────────────────────────────────────────────────────────────
   log_step "Embedding configuration"
   local docker_embed_default="no"
-  if [[ "${ENV_VALUES[LIGHTRAG_SETUP_EMBEDDING_PROVIDER]:-}" == "vllm" ]]; then
+  previous_embedding_provider="${ENV_VALUES[LIGHTRAG_SETUP_EMBEDDING_PROVIDER]:-}"
+  if [[ "$previous_embedding_provider" == "vllm" ]]; then
     docker_embed_default="yes"
   fi
 
@@ -1701,10 +1704,10 @@ env_base_flow() {
     if [[ -n "$existing_vllm_embed_port" ]]; then
       ENV_VALUES["VLLM_EMBED_PORT"]="$existing_vllm_embed_port"
     fi
-    if [[ -n "$existing_vllm_embed_host" ]]; then
+    if [[ "$previous_embedding_provider" == "vllm" && -n "$existing_vllm_embed_host" ]]; then
       ENV_VALUES["EMBEDDING_BINDING_HOST"]="$existing_vllm_embed_host"
-    elif [[ -n "$existing_vllm_embed_port" ]]; then
-      ENV_VALUES["EMBEDDING_BINDING_HOST"]="http://localhost:${existing_vllm_embed_port}/v1"
+    else
+      ENV_VALUES["EMBEDDING_BINDING_HOST"]="http://localhost:${ENV_VALUES[VLLM_EMBED_PORT]:-8001}/v1"
     fi
     local embed_model
     embed_model="$(prompt_with_default "Embedding model" "${existing_vllm_embed_model:-${ENV_VALUES[VLLM_EMBED_MODEL]:-BAAI/bge-m3}}")"
@@ -1740,6 +1743,7 @@ env_base_flow() {
   if [[ -n "${ENV_VALUES[RERANK_BINDING]:-}" && "${ENV_VALUES[RERANK_BINDING]}" != "null" ]]; then
     rerank_enabled_default="yes"
   fi
+  previous_rerank_provider="${ENV_VALUES[LIGHTRAG_SETUP_RERANK_PROVIDER]:-}"
 
   local enable_reranking="no"
   if [[ "$rerank_enabled_default" == "yes" ]]; then
@@ -1750,7 +1754,7 @@ env_base_flow() {
 
   if [[ "$enable_reranking" == "yes" ]]; then
     local docker_rerank_default="no"
-    if [[ "${ENV_VALUES[LIGHTRAG_SETUP_RERANK_PROVIDER]:-}" == "vllm" ]]; then
+    if [[ "$previous_rerank_provider" == "vllm" ]]; then
       docker_rerank_default="yes"
     fi
 
@@ -1770,10 +1774,10 @@ env_base_flow() {
       if [[ -n "$existing_vllm_rerank_port" ]]; then
         ENV_VALUES["VLLM_RERANK_PORT"]="$existing_vllm_rerank_port"
       fi
-      if [[ -n "$existing_vllm_rerank_host" ]]; then
+      if [[ "$previous_rerank_provider" == "vllm" && -n "$existing_vllm_rerank_host" ]]; then
         ENV_VALUES["RERANK_BINDING_HOST"]="$existing_vllm_rerank_host"
-      elif [[ -n "$existing_vllm_rerank_port" ]]; then
-        ENV_VALUES["RERANK_BINDING_HOST"]="http://localhost:${existing_vllm_rerank_port}/rerank"
+      else
+        ENV_VALUES["RERANK_BINDING_HOST"]="http://localhost:${ENV_VALUES[VLLM_RERANK_PORT]:-8000}/rerank"
       fi
       rerank_model="$(prompt_with_default "Rerank model" "${existing_vllm_rerank_model:-${ENV_VALUES[VLLM_RERANK_MODEL]:-BAAI/bge-reranker-v2-m3}}")"
       rerank_port="${ENV_VALUES[VLLM_RERANK_PORT]:-8000}"
