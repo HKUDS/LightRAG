@@ -579,9 +579,97 @@ initialize_default_storage_backends() {
   ENV_VALUES["LIGHTRAG_DOC_STATUS_STORAGE"]="${ENV_VALUES[LIGHTRAG_DOC_STATUS_STORAGE]:-JsonDocStatusStorage}"
 }
 
+storage_service_name_for_db_type() {
+  local db_type="$1"
+
+  case "$db_type" in
+    postgresql)
+      printf 'postgres'
+      ;;
+    neo4j|mongodb|redis|milvus|qdrant|memgraph)
+      printf '%s' "$db_type"
+      ;;
+    *)
+      printf ''
+      ;;
+  esac
+}
+
+storage_deployment_marker_key() {
+  local db_type="$1"
+
+  case "$db_type" in
+    postgresql)
+      printf 'LIGHTRAG_SETUP_POSTGRES_DEPLOYMENT'
+      ;;
+    neo4j)
+      printf 'LIGHTRAG_SETUP_NEO4J_DEPLOYMENT'
+      ;;
+    mongodb)
+      printf 'LIGHTRAG_SETUP_MONGODB_DEPLOYMENT'
+      ;;
+    redis)
+      printf 'LIGHTRAG_SETUP_REDIS_DEPLOYMENT'
+      ;;
+    milvus)
+      printf 'LIGHTRAG_SETUP_MILVUS_DEPLOYMENT'
+      ;;
+    qdrant)
+      printf 'LIGHTRAG_SETUP_QDRANT_DEPLOYMENT'
+      ;;
+    memgraph)
+      printf 'LIGHTRAG_SETUP_MEMGRAPH_DEPLOYMENT'
+      ;;
+    *)
+      printf ''
+      ;;
+  esac
+}
+
+storage_default_docker_for_db_type() {
+  local db_type="$1"
+  local marker_key
+
+  marker_key="$(storage_deployment_marker_key "$db_type")"
+  if [[ -n "$marker_key" && "${ENV_VALUES[$marker_key]:-}" == "docker" ]]; then
+    printf 'yes'
+  else
+    printf 'no'
+  fi
+}
+
+persist_storage_deployment_choice() {
+  local db_type="$1"
+  local use_docker="${2:-no}"
+  local marker_key
+
+  marker_key="$(storage_deployment_marker_key "$db_type")"
+  if [[ -z "$marker_key" ]]; then
+    return 0
+  fi
+
+  if [[ "$use_docker" == "yes" ]]; then
+    ENV_VALUES["$marker_key"]="docker"
+  else
+    unset "ENV_VALUES[$marker_key]"
+  fi
+}
+
+clear_unused_storage_deployment_markers() {
+  local db_type
+
+  for db_type in postgresql neo4j mongodb redis milvus qdrant memgraph; do
+    if [[ -z "${REQUIRED_DB_TYPES[$db_type]+set}" ]]; then
+      persist_storage_deployment_choice "$db_type" "no"
+    fi
+  done
+}
+
 collect_database_config() {
   local db_type="$1"
   local default_docker="${2:-no}"
+  local service_name=""
+  local use_docker="no"
 
   case "$db_type" in
     postgresql)
@@ -610,6 +698,12 @@ collect_database_config() {
       return 1
       ;;
   esac
+
+  service_name="$(storage_service_name_for_db_type "$db_type")"
+  if [[ -n "$service_name" && -n "${DOCKER_SERVICE_SET[$service_name]+set}" ]]; then
+    use_docker="yes"
+  fi
+  persist_storage_deployment_choice "$db_type" "$use_docker"
 }
 
 collect_postgres_config() {
@@ -618,11 +712,11 @@ collect_postgres_config() {
   local host port user password database host_port=""
 
   if [[ "$default_docker" == "yes" ]]; then
-    if confirm_default_yes "Add PostgreSQL service to docker-compose.yml?"; then
+    if confirm_default_yes "Run PostgreSQL locally via Docker?"; then
       use_docker="yes"
     fi
   else
-    if confirm_default_no "Add PostgreSQL service to docker-compose.yml?"; then
+    if confirm_default_no "Run PostgreSQL locally via Docker?"; then
       use_docker="yes"
     fi
   fi
@@ -668,11 +762,11 @@ collect_neo4j_config() {
   local uri username password database
 
   if [[ "$default_docker" == "yes" ]]; then
-    if confirm_default_yes "Add Neo4j service to docker-compose.yml?"; then
+    if confirm_default_yes "Run Neo4j locally via Docker?"; then
       use_docker="yes"
     fi
   else
-    if confirm_default_no "Add Neo4j service to docker-compose.yml?"; then
+    if confirm_default_no "Run Neo4j locally via Docker?"; then
       use_docker="yes"
     fi
   fi
@@ -722,11 +816,11 @@ collect_mongodb_config() {
     uri="mongodb+srv://cluster.example.mongodb.net/"
   else
     if [[ "$default_docker" == "yes" ]]; then
-      if confirm_default_yes "Add MongoDB service to docker-compose.yml?"; then
+      if confirm_default_yes "Run MongoDB locally via Docker?"; then
         use_docker="yes"
       fi
     else
-      if confirm_default_no "Add MongoDB service to docker-compose.yml?"; then
+      if confirm_default_no "Run MongoDB locally via Docker?"; then
         use_docker="yes"
       fi
     fi
@@ -764,11 +858,11 @@ collect_redis_config() {
   local uri
 
   if [[ "$default_docker" == "yes" ]]; then
-    if confirm_default_yes "Add Redis service to docker-compose.yml?"; then
+    if confirm_default_yes "Run Redis locally via Docker?"; then
       use_docker="yes"
     fi
   else
-    if confirm_default_no "Add Redis service to docker-compose.yml?"; then
+    if confirm_default_no "Run Redis locally via Docker?"; then
       use_docker="yes"
     fi
   fi
@@ -798,11 +892,11 @@ collect_milvus_config() {
   local uri db_name
 
   if [[ "$default_docker" == "yes" ]]; then
-    if confirm_default_yes "Add Milvus service to docker-compose.yml?"; then
+    if confirm_default_yes "Run Milvus locally via Docker?"; then
       use_docker="yes"
     fi
   else
-    if confirm_default_no "Add Milvus service to docker-compose.yml?"; then
+    if confirm_default_no "Run Milvus locally via Docker?"; then
       use_docker="yes"
     fi
   fi
@@ -835,11 +929,11 @@ collect_qdrant_config() {
   local url
 
   if [[ "$default_docker" == "yes" ]]; then
-    if confirm_default_yes "Add Qdrant service to docker-compose.yml?"; then
+    if confirm_default_yes "Run Qdrant locally via Docker?"; then
       use_docker="yes"
     fi
   else
-    if confirm_default_no "Add Qdrant service to docker-compose.yml?"; then
+    if confirm_default_no "Run Qdrant locally via Docker?"; then
       use_docker="yes"
     fi
   fi
@@ -869,11 +963,11 @@ collect_memgraph_config() {
   local uri
 
   if [[ "$default_docker" == "yes" ]]; then
-    if confirm_default_yes "Add Memgraph service to docker-compose.yml?"; then
+    if confirm_default_yes "Run Memgraph locally via Docker?"; then
       use_docker="yes"
     fi
   else
-    if confirm_default_no "Add Memgraph service to docker-compose.yml?"; then
+    if confirm_default_no "Run Memgraph locally via Docker?"; then
       use_docker="yes"
     fi
   fi
@@ -1343,17 +1437,19 @@ collect_rerank_config() {
 }
 
 collect_server_config() {
-  local host port title description
+  local host port title description summary_language
 
   host="$(prompt_with_default "Server host" "${ENV_VALUES[HOST]:-0.0.0.0}")"
   port="$(prompt_until_valid "Server port" "${ENV_VALUES[PORT]:-9621}" validate_port)"
   title="$(prompt_with_default "WebUI title" "${ENV_VALUES[WEBUI_TITLE]:-My Graph KB}")"
   description="$(prompt_with_default "WebUI description" "${ENV_VALUES[WEBUI_DESCRIPTION]:-Simple and Fast Graph Based RAG System}")"
+  summary_language="$(prompt_with_default "Summary language" "${ENV_VALUES[SUMMARY_LANGUAGE]:-English}")"
 
   ENV_VALUES["HOST"]="$host"
   ENV_VALUES["PORT"]="$port"
   ENV_VALUES["WEBUI_TITLE"]="$title"
   ENV_VALUES["WEBUI_DESCRIPTION"]="$description"
+  ENV_VALUES["SUMMARY_LANGUAGE"]="$summary_language"
 }
 
 collect_ssl_config() {
@@ -1575,6 +1671,18 @@ prepare_inherited_ssl_assets_for_compose() {
 
   if [[ -n "$SSL_CERT_SOURCE_PATH" || -n "$SSL_KEY_SOURCE_PATH" ]]; then
     stage_ssl_assets "$SSL_CERT_SOURCE_PATH" "$SSL_KEY_SOURCE_PATH"
+  fi
+}
+
+prepare_managed_service_assets_for_compose() {
+  local existing_compose="${1:-}"
+
+  if ! prepare_inherited_ssl_assets_for_compose "$existing_compose"; then
+    return 1
+  fi
+
+  if [[ -n "${DOCKER_SERVICE_SET[redis]:-}" ]]; then
+    stage_redis_config_asset || return 1
   fi
 }
 
@@ -1847,7 +1955,7 @@ finalize_base_setup() {
   fi
 
   if [[ "$generate_compose" == "yes" ]]; then
-    if ! prepare_inherited_ssl_assets_for_compose "$existing_compose"; then
+    if ! prepare_managed_service_assets_for_compose "$existing_compose"; then
       return 1
     fi
     prepare_compose_env_overrides
@@ -1897,11 +2005,12 @@ env_storage_flow() {
   log_step "Storage backend selection"
   select_storage_backends "custom"
   log_debug "Storage selections: kv=${ENV_VALUES[LIGHTRAG_KV_STORAGE]:-} vector=${ENV_VALUES[LIGHTRAG_VECTOR_STORAGE]:-} graph=${ENV_VALUES[LIGHTRAG_GRAPH_STORAGE]:-} doc=${ENV_VALUES[LIGHTRAG_DOC_STATUS_STORAGE]:-}"
+  clear_unused_storage_deployment_markers
 
   log_step "Database configuration"
   for db_type in "${db_order[@]}"; do
     if [[ -n "${REQUIRED_DB_TYPES[$db_type]+set}" ]]; then
-      collect_database_config "$db_type" "no"
+      collect_database_config "$db_type" "$(storage_default_docker_for_db_type "$db_type")"
     fi
   done
 
@@ -1991,7 +2100,7 @@ finalize_storage_setup() {
   generate_compose="yes"
   runtime_target="compose"
 
-  if ! prepare_inherited_ssl_assets_for_compose "$existing_compose"; then
+  if ! prepare_managed_service_assets_for_compose "$existing_compose"; then
     return 1
   fi
   prepare_compose_env_overrides
@@ -2092,7 +2201,7 @@ finalize_server_setup() {
   fi
 
   if [[ "$generate_compose" == "yes" ]]; then
-    if ! prepare_inherited_ssl_assets_for_compose "$existing_compose"; then
+    if ! prepare_managed_service_assets_for_compose "$existing_compose"; then
       return 1
     fi
     prepare_compose_env_overrides

@@ -194,8 +194,7 @@ make env-server         # Optional: server port, auth, and SSL
 make env-security-check # Optional: audit the current .env for security risks
 ```
 
-For a full description of every target and what each flow does, see
-[docs/InteractiveSetup.md](./docs/InteractiveSetup.md).
+For full description of every target see [docs/InteractiveSetup.md](./docs/InteractiveSetup.md).
 The setup wizards update configuration only; run `make env-security-check` separately to audit the
 current `.env` for security risks before deployment.
 
@@ -1256,6 +1255,8 @@ maxmemory 4gb
 maxmemory-policy noeviction
 maxclients 500
 ```
+
+When the interactive setup manages a local Redis container, it stages a user-editable config at `./data/config/redis.conf` and mounts it into the container. Setup preserves that file on reruns so local Redis tuning can be adjusted without losing manual edits.
 
 </details>
 
