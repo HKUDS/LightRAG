@@ -8,7 +8,7 @@ The LightRAG project includes a React-based WebUI frontend. This guide explains 
 
 - **Git Repository**: Frontend build results are **NOT** included (kept clean)
 - **PyPI Package**: Frontend build results **ARE** included (ready to use)
-- **Build Tool**: Uses **Bun** (not npm/yarn)
+- **Build Tool**: **Bun** is recommended, but **Node.js/npm** is fully supported as a fallback
 
 ## Installation Scenarios
 
@@ -193,7 +193,16 @@ cd lightrag_webui && bun run build
 
 ### Q: Can I use npm or yarn instead of Bun?
 
-**A:** The project is configured for Bun. While npm/yarn might work, Bun is recommended per project standards.
+**A:** Yes. The build scripts (`dev`, `build`, `preview`, `lint`) are runtime-agnostic and work with both Bun and Node.js/npm:
+```bash
+npm install
+npm run build
+```
+Bun is recommended for speed, but npm is fully supported. Tests (`bun test`) still require Bun.
+
+### Q: Build fails with `Cannot find package '@/lib'`
+
+**A:** This was caused by `vite.config.ts` using a TypeScript path alias (`@/`) that only Bun could resolve at config load time. Update to the latest version where this is fixed with a relative import.
 
 ---
 

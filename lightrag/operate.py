@@ -415,6 +415,21 @@ async def _handle_single_entity_extraction(
             )
             return None
 
+        # Handle comma-separated entity types by finding the first non-empty token
+        if "," in entity_type:
+            original = entity_type
+            tokens = [t.strip() for t in entity_type.split(",")]
+            non_empty = [t for t in tokens if t]
+            if not non_empty:
+                logger.warning(
+                    f"Entity extraction error: all tokens empty after comma-split: '{original}'"
+                )
+                return None
+            entity_type = non_empty[0]
+            logger.warning(
+                f"Entity type contains comma, taking first non-empty token: '{original}' -> '{entity_type}'"
+            )
+
         # Remove spaces and convert to lowercase
         entity_type = entity_type.replace(" ", "").lower()
 
@@ -1615,7 +1630,24 @@ async def _merge_nodes_then_upsert(
     # 1. Get existing node data from knowledge graph
     already_node = await knowledge_graph_inst.get_node(entity_name)
     if already_node:
-        already_entity_types.append(already_node.get("entity_type") or "UNKNOWN")
+        existing_entity_type = already_node.get("entity_type")
+        # Coerce to str before any string operations: non-string values from
+        # API/custom graph paths would otherwise raise TypeError on the comma check.
+        if (
+            not isinstance(existing_entity_type, str)
+            or not existing_entity_type.strip()
+        ):
+            existing_entity_type = "UNKNOWN"
+        # Sanitize entity_type read back from DB to prevent dirty data from propagating
+        if "," in existing_entity_type:
+            original = existing_entity_type
+            tokens = [t.strip() for t in existing_entity_type.split(",")]
+            non_empty = [t for t in tokens if t]
+            existing_entity_type = non_empty[0] if non_empty else "UNKNOWN"
+            logger.warning(
+                f"Entity type read from DB contains comma, taking first non-empty token: '{original}' -> '{existing_entity_type}'"
+            )
+        already_entity_types.append(existing_entity_type)
 
         existing_source_id = already_node.get("source_id") or ""
         already_source_ids.extend(existing_source_id.split(GRAPH_FIELD_SEP))
@@ -3487,23 +3519,60 @@ async def _perform_kg_search(
     # Track chunk sources and metadata for final logging
     chunk_tracking = {}  # chunk_id -> {source, frequency, order}
 
-    # Pre-compute query embedding once for all vector operations
+    # Pre-compute embeddings needed by the selected mode in a single batch call.
+    # Only embed texts that the active retrieval branches will actually use:
+    #   - query        → used by _get_vector_context (chunks VDB)
+    #   - ll_keywords  → used by _get_node_data (entities VDB) in local/hybrid/mix
+    #   - hl_keywords  → used by _get_edge_data (relationships VDB) in global/hybrid/mix
+    # Batching avoids 2-3 sequential API round-trips.
     kg_chunk_pick_method = text_chunks_db.global_config.get(
         "kg_chunk_pick_method", DEFAULT_KG_CHUNK_PICK_METHOD
     )
+
+    actual_embedding_func = text_chunks_db.embedding_func
     query_embedding = None
-    if query and (kg_chunk_pick_method == "VECTOR" or chunks_vdb):
-        actual_embedding_func = text_chunks_db.embedding_func
-        if actual_embedding_func:
+    ll_embedding = None
+    hl_embedding = None
+
+    mode = query_param.mode
+    need_ll = mode in ("local", "hybrid", "mix") and bool(ll_keywords)
+    need_hl = mode in ("global", "hybrid", "mix") and bool(hl_keywords)
+
+    if actual_embedding_func:
+        texts_to_embed: list[str] = []
+        text_purposes: list[str] = []
+
+        if query and (kg_chunk_pick_method == "VECTOR" or chunks_vdb):
+            texts_to_embed.append(query)
+            text_purposes.append("query")
+
+        if need_ll:
+            texts_to_embed.append(ll_keywords)
+            text_purposes.append("ll")
+
+        if need_hl:
+            texts_to_embed.append(hl_keywords)
+            text_purposes.append("hl")
+
+        if texts_to_embed:
             try:
-                query_embedding = await actual_embedding_func([query])
-                query_embedding = query_embedding[
-                    0
-                ]  # Extract first embedding from batch result
-                logger.debug("Pre-computed query embedding for all vector operations")
+                all_embeddings = await actual_embedding_func(
+                    texts_to_embed, _priority=5
+                )
+                for i, purpose in enumerate(text_purposes):
+                    if purpose == "query":
+                        query_embedding = all_embeddings[i]
+                    elif purpose == "ll":
+                        ll_embedding = all_embeddings[i]
+                    elif purpose == "hl":
+                        hl_embedding = all_embeddings[i]
+                logger.debug(
+                    "Pre-computed %d embeddings in single batch (purposes: %s)",
+                    len(texts_to_embed),
+                    ", ".join(text_purposes),
+                )
             except Exception as e:
-                logger.warning(f"Failed to pre-compute query embedding: {e}")
-                query_embedding = None
+                logger.warning(f"Failed to batch pre-compute embeddings: {e}")
 
     # Handle local and global modes
     if query_param.mode == "local" and len(ll_keywords) > 0:
@@ -3512,6 +3581,7 @@ async def _perform_kg_search(
             knowledge_graph_inst,
             entities_vdb,
             query_param,
+            query_embedding=ll_embedding,
         )
 
     elif query_param.mode == "global" and len(hl_keywords) > 0:
@@ -3520,6 +3590,7 @@ async def _perform_kg_search(
             knowledge_graph_inst,
             relationships_vdb,
             query_param,
+            query_embedding=hl_embedding,
         )
 
     else:  # hybrid or mix mode
@@ -3529,6 +3600,7 @@ async def _perform_kg_search(
                 knowledge_graph_inst,
                 entities_vdb,
                 query_param,
+                query_embedding=ll_embedding,
             )
         if len(hl_keywords) > 0:
             global_relations, global_entities = await _get_edge_data(
@@ -3536,6 +3608,7 @@ async def _perform_kg_search(
                 knowledge_graph_inst,
                 relationships_vdb,
                 query_param,
+                query_embedding=hl_embedding,
             )
 
         # Get vector chunks for mix mode
@@ -4208,13 +4281,15 @@ async def _get_node_data(
     knowledge_graph_inst: BaseGraphStorage,
     entities_vdb: BaseVectorStorage,
     query_param: QueryParam,
+    query_embedding=None,
 ):
-    # get similar entities
     logger.info(
         f"Query nodes: {query} (top_k:{query_param.top_k}, cosine:{entities_vdb.cosine_better_than_threshold})"
     )
 
-    results = await entities_vdb.query(query, top_k=query_param.top_k)
+    results = await entities_vdb.query(
+        query, top_k=query_param.top_k, query_embedding=query_embedding
+    )
 
     if not len(results):
         return [], []
@@ -4481,12 +4556,15 @@ async def _get_edge_data(
     knowledge_graph_inst: BaseGraphStorage,
     relationships_vdb: BaseVectorStorage,
     query_param: QueryParam,
+    query_embedding=None,
 ):
     logger.info(
         f"Query edges: {keywords} (top_k:{query_param.top_k}, cosine:{relationships_vdb.cosine_better_than_threshold})"
     )
 
-    results = await relationships_vdb.query(keywords, top_k=query_param.top_k)
+    results = await relationships_vdb.query(
+        keywords, top_k=query_param.top_k, query_embedding=query_embedding
+    )
 
     if not len(results):
         return [], []

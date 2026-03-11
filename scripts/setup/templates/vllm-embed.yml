@@ -1,0 +1,13 @@
+  vllm-embed:
+    image: vllm/vllm-openai-cpu:latest
+    command: >
+      --model ${VLLM_EMBED_MODEL:-BAAI/bge-m3}
+      --port ${VLLM_EMBED_PORT:-8001}
+      --dtype float32
+      --api-key ${VLLM_EMBED_API_KEY}
+      ${VLLM_EMBED_EXTRA_ARGS:-}
+    ports:
+      - "${VLLM_EMBED_PORT:-8001}:${VLLM_EMBED_PORT:-8001}"
+    volumes:
+      - vllm_embed_cache:/root/.cache/huggingface
+    restart: unless-stopped

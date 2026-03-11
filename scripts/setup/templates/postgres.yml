@@ -1,0 +1,7 @@
+  postgres:
+    image: gzdaniel/postgres-for-rag:16.6
+    ports:
+      - "${POSTGRES_HOST_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped

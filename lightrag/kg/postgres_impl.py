@@ -2442,13 +2442,17 @@ class PGVectorStorage(BaseVectorStorage):
         # Replace table name
         ddl = ddl.replace(base_table, table_name)
 
+        # Make creation idempotent to handle restarts and race conditions
+        ddl = ddl.replace("CREATE TABLE ", "CREATE TABLE IF NOT EXISTS ", 1)
         await db.execute(ddl)
 
         # Create indexes similar to check_tables() but with safe index names
         # Create index for id column
         id_index_name = _safe_index_name(table_name, "id")
         try:
-            create_id_index_sql = f"CREATE INDEX {id_index_name} ON {table_name}(id)"
+            create_id_index_sql = (
+                f"CREATE INDEX IF NOT EXISTS {id_index_name} ON {table_name}(id)"
+            )
             logger.info(
                 f"PostgreSQL, Creating index {id_index_name} on table {table_name}"
             )
@@ -2461,9 +2465,7 @@ class PGVectorStorage(BaseVectorStorage):
         # Create composite index for (workspace, id)
         workspace_id_index_name = _safe_index_name(table_name, "workspace_id")
         try:
-            create_composite_index_sql = (
-                f"CREATE INDEX {workspace_id_index_name} ON {table_name}(workspace, id)"
-            )
+            create_composite_index_sql = f"CREATE INDEX IF NOT EXISTS {workspace_id_index_name} ON {table_name}(workspace, id)"
             logger.info(
                 f"PostgreSQL, Creating composite index {workspace_id_index_name} on table {table_name}"
             )

@@ -74,6 +74,23 @@ The Dockerfile uses BuildKit cache mounts to significantly improve build perform
 docker compose up -d
 ```
 
+If you used the interactive setup, start the generated stack with:
+
+```bash
+docker compose -f docker-compose.final.yml up -d
+```
+
+The interactive setup keeps `.env` host-usable. Container-only hostnames such as `postgres` or `host.docker.internal`, along with staged SSL paths under `/app/data/certs/`, are injected into the generated `docker-compose.final.yml` for the `lightrag` service instead of being persisted back into `.env`.
+
+Before exposing the generated stack beyond localhost, run:
+
+```bash
+make env-security-check
+```
+
+That command audits the current `.env` for missing authentication, unsafe whitelist settings, weak
+JWT secrets, and other setup-level security risks without rewriting any files.
+
 LightRAG Server uses the following paths for data storage:
 
 ```
@@ -81,6 +98,133 @@ data/
 ├── rag_storage/    # RAG data persistence
 └── inputs/         # Input documents
 ```
+
+### Optional: local vLLM embedding and reranker
+
+To run embedding and/or reranking locally with vLLM, run `make env-base` and answer `yes` when prompted to run the embedding model and rerank service locally via Docker.
+That configures the embedding service to use `BAAI/bge-m3` on port 8001 with a local vLLM server, and can also add a `vllm-rerank` service on port 8000.
+
+Alternatively, rerun `make env-base` later and enable only the rerank Docker prompt to add the `vllm-rerank` service automatically.
+vLLM provides a `v1/rerank` endpoint that works with the `cohere` binding.
+
+Example `docker-compose.override.yml` for GPU hosts (embedding + reranker):
+
+```yaml
+services:
+  vllm-embed:
+    image: vllm/vllm-openai:latest
+    runtime: nvidia
+    command: >
+      --model BAAI/bge-m3
+      --port 8001
+      --dtype float16
+    ports:
+      - "8001:8001"
+    volumes:
+      - ./data/hf-cache:/root/.cache/huggingface
+    ipc: host
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  vllm-rerank:
+    image: vllm/vllm-openai:latest
+    runtime: nvidia
+    command: >
+      --model BAAI/bge-reranker-v2-m3
+      --port 8000
+      --dtype float16
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data/hf-cache:/root/.cache/huggingface
+    ipc: host
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+```
+
+For CPU-only hosts, use the official CPU image instead:
+
+```yaml
+services:
+  vllm-embed:
+    image: vllm/vllm-openai-cpu:latest
+    command: >
+      --model BAAI/bge-m3
+      --port 8001
+      --dtype float32
+    ports:
+      - "8001:8001"
+    volumes:
+      - ./data/hf-cache:/root/.cache/huggingface
+
+  vllm-rerank:
+    image: vllm/vllm-openai-cpu:latest
+    command: >
+      --model BAAI/bge-reranker-v2-m3
+      --port 8000
+      --dtype float32
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data/hf-cache:/root/.cache/huggingface
+```
+
+Add the embedding and rerank config to `.env`:
+
+```bash
+EMBEDDING_BINDING=openai
+EMBEDDING_MODEL=BAAI/bge-m3
+EMBEDDING_DIM=1024
+EMBEDDING_BINDING_HOST=http://localhost:8001/v1
+EMBEDDING_BINDING_API_KEY=local-key
+VLLM_EMBED_DEVICE=cpu
+
+RERANK_BINDING=cohere
+RERANK_MODEL=BAAI/bge-reranker-v2-m3
+RERANK_BINDING_HOST=http://localhost:8000/rerank
+RERANK_BINDING_API_KEY=local-key
+VLLM_RERANK_DEVICE=cpu
+```
+
+If LightRAG runs in Docker while vLLM runs on the host, the generated compose file rewrites those endpoints to:
+
+```bash
+EMBEDDING_BINDING_HOST=http://host.docker.internal:8001/v1
+RERANK_BINDING_HOST=http://host.docker.internal:8000/rerank
+```
+
+For GPU, set:
+
+```bash
+VLLM_EMBED_DEVICE=cuda
+VLLM_RERANK_DEVICE=cuda
+```
+
+Ensure the NVIDIA Container Toolkit is installed and the host has CUDA drivers available.
+The setup wizard uses the CPU image by default for `cpu` device and the GPU image for `cuda` device.
+When rerunning `make env-base`, an existing `VLLM_EMBED_DEVICE` / `VLLM_RERANK_DEVICE` value is
+preserved instead of being overwritten by a fresh GPU auto-detection result.
+Those templates already pin the matching vLLM `--dtype` (`float32` on CPU, `float16` on CUDA), so no separate `VLLM_*_DTYPE` environment variables are needed.
+
+### SSL certificates
+
+The setup wizard stages TLS certificate files under `./data/certs/` before generating the compose file.
+This keeps generated host mounts under the same `./data` root used by the default Docker deployment.
+
+### PostgreSQL image
+
+The interactive setup defaults PostgreSQL to `gzdaniel/postgres-for-rag:16.6`.
+That image bundles both Apache AGE and pgvector so the generated stack works with `PGGraphStorage` and `PGVectorStorage` without extra extension setup.
 
 ### Updates
 

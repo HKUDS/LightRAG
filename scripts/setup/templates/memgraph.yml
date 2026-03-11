@@ -1,0 +1,7 @@
+  memgraph:
+    image: memgraph/memgraph:3.7.2
+    ports:
+      - "${MEMGRAPH_BOLT_PORT:-7687}:7687"
+    volumes:
+      - memgraph_data:/var/lib/memgraph
+    restart: unless-stopped
