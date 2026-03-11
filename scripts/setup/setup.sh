@@ -1701,6 +1701,12 @@ finalize_setup() {
 env_base_flow() {
   local vllm_embed_api_key=""
   local vllm_rerank_api_key=""
+  local existing_vllm_embed_model=""
+  local existing_vllm_embed_port=""
+  local existing_vllm_embed_host=""
+  local existing_vllm_rerank_model=""
+  local existing_vllm_rerank_port=""
+  local existing_vllm_rerank_host=""
   # Auto-detect CUDA once; used for both embed and rerank
   local has_gpu="no"
   if command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi >/dev/null 2>&1; then
@@ -1737,9 +1743,20 @@ env_base_flow() {
   fi
 
   if [[ "$use_docker_embed" == "yes" ]]; then
+    existing_vllm_embed_model="${ENV_VALUES[VLLM_EMBED_MODEL]:-}"
+    existing_vllm_embed_port="${ENV_VALUES[VLLM_EMBED_PORT]:-}"
+    existing_vllm_embed_host="${ENV_VALUES[EMBEDDING_BINDING_HOST]:-}"
     apply_preset_overwrite "${PRESET_VLLM_EMBEDDING[@]}"
+    if [[ -n "$existing_vllm_embed_port" ]]; then
+      ENV_VALUES["VLLM_EMBED_PORT"]="$existing_vllm_embed_port"
+    fi
+    if [[ -n "$existing_vllm_embed_host" ]]; then
+      ENV_VALUES["EMBEDDING_BINDING_HOST"]="$existing_vllm_embed_host"
+    elif [[ -n "$existing_vllm_embed_port" ]]; then
+      ENV_VALUES["EMBEDDING_BINDING_HOST"]="http://localhost:${existing_vllm_embed_port}/v1"
+    fi
     local embed_model
-    embed_model="$(prompt_with_default "Embedding model" "${ENV_VALUES[VLLM_EMBED_MODEL]:-BAAI/bge-m3}")"
+    embed_model="$(prompt_with_default "Embedding model" "${existing_vllm_embed_model:-${ENV_VALUES[VLLM_EMBED_MODEL]:-BAAI/bge-m3}}")"
     ENV_VALUES["VLLM_EMBED_MODEL"]="$embed_model"
     ENV_VALUES["EMBEDDING_MODEL"]="$embed_model"
 
@@ -1791,9 +1808,20 @@ env_base_flow() {
     fi
 
     if [[ "$use_docker_rerank" == "yes" ]]; then
+      existing_vllm_rerank_model="${ENV_VALUES[VLLM_RERANK_MODEL]:-}"
+      existing_vllm_rerank_port="${ENV_VALUES[VLLM_RERANK_PORT]:-}"
+      existing_vllm_rerank_host="${ENV_VALUES[RERANK_BINDING_HOST]:-}"
       apply_preset_overwrite "${PRESET_VLLM_RERANKER[@]}"
       local rerank_model rerank_port
-      rerank_model="$(prompt_with_default "Rerank model" "${ENV_VALUES[VLLM_RERANK_MODEL]:-BAAI/bge-reranker-v2-m3}")"
+      if [[ -n "$existing_vllm_rerank_port" ]]; then
+        ENV_VALUES["VLLM_RERANK_PORT"]="$existing_vllm_rerank_port"
+      fi
+      if [[ -n "$existing_vllm_rerank_host" ]]; then
+        ENV_VALUES["RERANK_BINDING_HOST"]="$existing_vllm_rerank_host"
+      elif [[ -n "$existing_vllm_rerank_port" ]]; then
+        ENV_VALUES["RERANK_BINDING_HOST"]="http://localhost:${existing_vllm_rerank_port}/rerank"
+      fi
+      rerank_model="$(prompt_with_default "Rerank model" "${existing_vllm_rerank_model:-${ENV_VALUES[VLLM_RERANK_MODEL]:-BAAI/bge-reranker-v2-m3}}")"
       rerank_port="${ENV_VALUES[VLLM_RERANK_PORT]:-8000}"
       ENV_VALUES["VLLM_RERANK_MODEL"]="$rerank_model"
       ENV_VALUES["RERANK_MODEL"]="$rerank_model"

@@ -241,7 +241,7 @@ _strip_lightrag_wizard_environment_keys() {
   local compose_file="$1"
   local tmp_file="${compose_file}.strip-wizard-keys"
   _FILE_OPS_CLEANUP_TMP+=("$tmp_file")
-  local line key wk
+  local line key wk list_entry
   local in_lightrag="no"
   local in_environment="no"
 
@@ -270,6 +270,16 @@ _strip_lightrag_wizard_environment_keys() {
             continue 2  # skip this wizard-managed key
           fi
         done
+      elif [[ "$line" =~ ^[[:space:]]{6}-[[:space:]](.+)$ ]]; then
+        list_entry="$(_strip_wrapping_quotes "${BASH_REMATCH[1]}")"
+        key="${list_entry%%=*}"
+        if [[ "$key" =~ ^[A-Z0-9_]+$ ]]; then
+          for wk in "${_WIZARD_COMPOSE_LIGHTRAG_KEYS[@]}"; do
+            if [[ "$key" == "$wk" ]]; then
+              continue 2  # skip this wizard-managed key
+            fi
+          done
+        fi
       elif [[ -z "$line" ]]; then
         continue  # skip blank lines inside the environment block
       elif [[ ! "$line" =~ ^[[:space:]]{6} ]]; then
@@ -281,6 +291,24 @@ _strip_lightrag_wizard_environment_keys() {
   done < "$compose_file"
 
   mv "$tmp_file" "$compose_file"
+}
+
+_write_service_environment_entries() {
+  local tmp_file="$1"
+  local style="$2"
+  shift 2
+  local entries=("$@")
+  local key value
+
+  for entry in "${entries[@]}"; do
+    key="${entry%%=*}"
+    value="${entry#*=}"
+    if [[ "$style" == "list" ]]; then
+      printf '      - %s\n' "$(format_yaml_value "${key}=${value}")" >> "$tmp_file"
+    else
+      printf '      %s: %s\n' "$key" "$(format_yaml_value "$value")" >> "$tmp_file"
+    fi
+  done
 }
 
 # Capture top-level named volume blocks so user-managed definitions can be
@@ -759,6 +787,7 @@ inject_service_environment_overrides() {
   local line key value
   local in_service="no"
   local in_environment="no"
+  local environment_style="mapping"
   local inserted="no"
   local service_header="  ${service_name}:"
 
@@ -770,13 +799,15 @@ inject_service_environment_overrides() {
 
   while IFS= read -r line || [[ -n "$line" ]]; do
     if [[ "$in_service" == "yes" && "$in_environment" == "yes" ]]; then
+      if [[ "$line" =~ ^[[:space:]]{6}-[[:space:]] ]]; then
+        environment_style="list"
+      elif [[ "$line" =~ ^[[:space:]]{6}[A-Z0-9_]+: ]]; then
+        environment_style="mapping"
+      fi
+
       if [[ "$line" =~ ^[[:space:]]{4}[^[:space:]] || "$line" =~ ^[[:space:]]{2}[^[:space:]] || "$line" =~ ^(volumes|networks): ]]; then
         if [[ "$inserted" == "no" ]]; then
-          for entry in "${entries[@]}"; do
-            key="${entry%%=*}"
-            value="${entry#*=}"
-            printf '      %s: %s\n' "$key" "$(format_yaml_value "$value")" >> "$tmp_file"
-          done
+          _write_service_environment_entries "$tmp_file" "$environment_style" "${entries[@]}"
           inserted="yes"
         fi
         in_environment="no"
@@ -784,11 +815,7 @@ inject_service_environment_overrides() {
     elif [[ "$in_service" == "yes" && "$line" =~ ^[[:space:]]{2}[^[:space:]] && "$line" != "$service_header" ]]; then
       if [[ "$inserted" == "no" ]]; then
         printf '    environment:\n' >> "$tmp_file"
-        for entry in "${entries[@]}"; do
-          key="${entry%%=*}"
-          value="${entry#*=}"
-          printf '      %s: %s\n' "$key" "$(format_yaml_value "$value")" >> "$tmp_file"
-        done
+        _write_service_environment_entries "$tmp_file" "mapping" "${entries[@]}"
         inserted="yes"
       fi
       in_service="no"
@@ -799,8 +826,10 @@ inject_service_environment_overrides() {
     if [[ "$line" == "$service_header" ]]; then
       in_service="yes"
       in_environment="no"
+      environment_style="mapping"
     elif [[ "$in_service" == "yes" && "$line" == "    environment:" ]]; then
       in_environment="yes"
+      environment_style="mapping"
     fi
   done < "$compose_file"
 
@@ -808,11 +837,7 @@ inject_service_environment_overrides() {
     if [[ "$in_environment" != "yes" ]]; then
       printf '    environment:\n' >> "$tmp_file"
     fi
-    for entry in "${entries[@]}"; do
-      key="${entry%%=*}"
-      value="${entry#*=}"
-      printf '      %s: %s\n' "$key" "$(format_yaml_value "$value")" >> "$tmp_file"
-    done
+    _write_service_environment_entries "$tmp_file" "$environment_style" "${entries[@]}"
   fi
 
   mv "$tmp_file" "$compose_file"

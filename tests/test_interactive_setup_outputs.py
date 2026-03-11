@@ -400,6 +400,47 @@ generate_docker_compose "$REPO_ROOT/docker-compose.generated.yml"
     assert "- ./.env:/app/.env" in generated_compose
 
 
+def test_generate_docker_compose_preserves_list_style_lightrag_environment(
+    tmp_path: Path,
+) -> None:
+    """Compose regeneration should not mix mapping entries into list-style environments."""
+
+    write_text_lines(
+        tmp_path / "docker-compose.final.yml",
+        [
+            "services:",
+            "  lightrag:",
+            "    image: example/lightrag:test",
+            "    environment:",
+            "      - PORT=9621",
+            "      - FOO=bar",
+        ],
+    )
+    write_text_lines(
+        tmp_path / "env.example",
+        (REPO_ROOT / "env.example").read_text(encoding="utf-8").splitlines(),
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+set_compose_override "PORT" "1234"
+generate_docker_compose "$REPO_ROOT/docker-compose.final.yml"
+"""
+    )
+
+    generated_compose = (tmp_path / "docker-compose.final.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert '      - "PORT=1234"' in generated_compose
+    assert "      - FOO=bar" in generated_compose
+    assert "      PORT:" not in generated_compose
+
+
 def test_existing_ssl_env_keeps_compose_mount_overrides(tmp_path: Path) -> None:
     """Existing SSL-enabled `.env` files should keep compose cert mounts working."""
 
@@ -1634,6 +1675,66 @@ env_base_flow
     assert values["EMBEDDING_BINDING_HOST"] == "http://localhost:11434"
 
 
+def test_env_base_flow_preserves_existing_vllm_embedding_settings_on_rerun(
+    tmp_path: Path,
+) -> None:
+    """Rerunning env-base should keep saved local vLLM embedding model and port."""
+
+    write_text_lines(
+        tmp_path / ".env",
+        [
+            "LLM_BINDING=openai",
+            "LLM_MODEL=gpt-4o-mini",
+            "LLM_BINDING_HOST=https://api.openai.com/v1",
+            "LLM_BINDING_API_KEY=sk-existing",
+            "EMBEDDING_BINDING=openai",
+            "EMBEDDING_MODEL=BAAI/custom-embed",
+            "EMBEDDING_DIM=1024",
+            "EMBEDDING_BINDING_HOST=http://localhost:9101/v1",
+            "EMBEDDING_BINDING_API_KEY=embed-key",
+            "LIGHTRAG_SETUP_EMBEDDING_PROVIDER=vllm",
+            "VLLM_EMBED_MODEL=BAAI/custom-embed",
+            "VLLM_EMBED_PORT=9101",
+            "VLLM_EMBED_DEVICE=cpu",
+        ],
+    )
+
+    values = run_bash_lines(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+
+prompt_choice() {{ printf '%s' "$2"; }}
+prompt_with_default() {{ printf '%s' "$2"; }}
+prompt_until_valid() {{ printf '%s' "$2"; }}
+prompt_secret_with_default() {{ printf '%s' "$2"; }}
+prompt_secret_until_valid_with_default() {{ printf '%s' "$2"; }}
+confirm_default_no() {{ return 1; }}
+confirm_default_yes() {{
+  case "$1" in
+    "Run embedding model locally via Docker (vLLM)?") return 0 ;;
+    *) return 1 ;;
+  esac
+}}
+
+finalize_base_setup() {{
+  printf 'EMBEDDING_MODEL=%s\\n' "${{ENV_VALUES[EMBEDDING_MODEL]}}"
+  printf 'EMBEDDING_BINDING_HOST=%s\\n' "${{ENV_VALUES[EMBEDDING_BINDING_HOST]}}"
+  printf 'VLLM_EMBED_MODEL=%s\\n' "${{ENV_VALUES[VLLM_EMBED_MODEL]}}"
+  printf 'VLLM_EMBED_PORT=%s\\n' "${{ENV_VALUES[VLLM_EMBED_PORT]}}"
+}}
+
+env_base_flow
+"""
+    )
+
+    assert values["EMBEDDING_MODEL"] == "BAAI/custom-embed"
+    assert values["EMBEDDING_BINDING_HOST"] == "http://localhost:9101/v1"
+    assert values["VLLM_EMBED_MODEL"] == "BAAI/custom-embed"
+    assert values["VLLM_EMBED_PORT"] == "9101"
+
+
 def test_env_base_flow_preserves_ssl_config_on_rerun(tmp_path: Path) -> None:
     """env-base should preserve SSL config on rerun, even when old paths are stale."""
 
@@ -1870,6 +1971,67 @@ env_base_flow
     values = parse_lines(output)
 
     assert values["HAS_VLLM_SERVICE"] == "yes"
+
+
+def test_env_base_flow_preserves_existing_vllm_rerank_settings_on_rerun(
+    tmp_path: Path,
+) -> None:
+    """Rerunning env-base should keep saved local vLLM rerank model and port."""
+
+    write_text_lines(
+        tmp_path / ".env",
+        [
+            "LLM_BINDING=openai",
+            "LLM_MODEL=gpt-4o-mini",
+            "LLM_BINDING_HOST=https://api.openai.com/v1",
+            "LLM_BINDING_API_KEY=sk-existing",
+            "RERANK_BINDING=cohere",
+            "RERANK_MODEL=BAAI/custom-rerank",
+            "RERANK_BINDING_HOST=http://localhost:9200/rerank",
+            "RERANK_BINDING_API_KEY=rerank-key",
+            "LIGHTRAG_SETUP_RERANK_PROVIDER=vllm",
+            "VLLM_RERANK_MODEL=BAAI/custom-rerank",
+            "VLLM_RERANK_PORT=9200",
+            "VLLM_RERANK_DEVICE=cpu",
+        ],
+    )
+
+    values = run_bash_lines(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+
+prompt_choice() {{ printf '%s' "$2"; }}
+prompt_with_default() {{ printf '%s' "$2"; }}
+prompt_until_valid() {{ printf '%s' "$2"; }}
+prompt_secret_with_default() {{ printf '%s' "$2"; }}
+prompt_secret_until_valid_with_default() {{ printf '%s' "$2"; }}
+confirm_default_no() {{
+  case "$1" in
+    "Enable reranking?") return 0 ;;
+    "Run rerank service locally via Docker?") return 0 ;;
+    *) return 1 ;;
+  esac
+}}
+confirm_default_yes() {{ return 1; }}
+collect_embedding_config() {{ :; }}
+
+finalize_base_setup() {{
+  printf 'RERANK_MODEL=%s\\n' "${{ENV_VALUES[RERANK_MODEL]}}"
+  printf 'RERANK_BINDING_HOST=%s\\n' "${{ENV_VALUES[RERANK_BINDING_HOST]}}"
+  printf 'VLLM_RERANK_MODEL=%s\\n' "${{ENV_VALUES[VLLM_RERANK_MODEL]}}"
+  printf 'VLLM_RERANK_PORT=%s\\n' "${{ENV_VALUES[VLLM_RERANK_PORT]}}"
+}}
+
+env_base_flow
+"""
+    )
+
+    assert values["RERANK_MODEL"] == "BAAI/custom-rerank"
+    assert values["RERANK_BINDING_HOST"] == "http://localhost:9200/rerank"
+    assert values["VLLM_RERANK_MODEL"] == "BAAI/custom-rerank"
+    assert values["VLLM_RERANK_PORT"] == "9200"
 
 
 def test_env_storage_flow_applies_selected_storage_backends(
