@@ -59,7 +59,7 @@ def write_text_lines(path: Path, lines: list[str]) -> Path:
 def test_collect_postgres_config_keeps_host_reachable_env_values() -> None:
     """Bundled PostgreSQL should keep `.env` host-oriented and use compose overrides."""
 
-    output = run_bash(
+    values = run_bash_lines(
         f"""
 set -euo pipefail
 source "{REPO_ROOT}/scripts/setup/setup.sh"
@@ -93,7 +93,6 @@ printf 'COMPOSE_POSTGRES_PORT=%s\\n' "${{COMPOSE_ENV_OVERRIDES[POSTGRES_PORT]}}"
 printf 'DOCKER_SERVICE=%s\\n' "${{DOCKER_SERVICES[0]}}"
 """
     )
-    values = parse_lines(output)
 
     assert values["POSTGRES_HOST"] == "localhost"
     assert values["POSTGRES_PORT"] == "15432"
@@ -209,7 +208,7 @@ def test_collect_local_service_configs_normalize_stale_values(
     """Bundled services should normalize stale remote or localhost endpoints on rerun."""
 
     setup_block = "\n".join(setup_lines)
-    output = run_bash(
+    values = run_bash_lines(
         f"""
 set -euo pipefail
 source "{REPO_ROOT}/scripts/setup/setup.sh"
@@ -1453,6 +1452,7 @@ else
 fi
 """
     )
+    values = parse_lines(output)
 
     assert values["BINDING"] == "aws_bedrock"
     assert values["API_KEY_SET"] == ""
@@ -1529,6 +1529,7 @@ printf 'DIM=%s\\n' "${{ENV_VALUES[{binding_prefix}_DIM]:-}}"
 printf 'API_KEY_SET=%s\\n' "${{ENV_VALUES[{binding_prefix}_BINDING_API_KEY]+set}}"
 """
     )
+    values = parse_lines(output)
 
     assert values["BINDING"] == expected_binding
     assert values["MODEL"] == expected_model
@@ -1623,6 +1624,7 @@ printf 'DIM=%s\\n' "${{ENV_VALUES[{binding_prefix}_DIM]:-}}"
 printf 'API_KEY=%s\\n' "${{ENV_VALUES[{binding_prefix}_BINDING_API_KEY]:-}}"
 """
     )
+    values = parse_lines(output)
 
     assert values["BINDING"] == expected_binding
     assert values["MODEL"] == expected_model
@@ -1668,6 +1670,7 @@ printf 'EMBEDDING_BINDING_HOST=%s\\n' "${{ENV_VALUES[EMBEDDING_BINDING_HOST]}}"
 printf 'EMBEDDING_BINDING_API_KEY_SET=%s\\n' "${{ENV_VALUES[EMBEDDING_BINDING_API_KEY]+set}}"
 """
     )
+    values = parse_lines(output)
 
     assert values["EMBEDDING_BINDING"] == "ollama"
     assert values["EMBEDDING_MODEL"] == "bge-m3:latest"
@@ -1700,6 +1703,7 @@ printf 'AWS_SESSION_TOKEN_SET=%s\\n' "${{ENV_VALUES[AWS_SESSION_TOKEN]+set}}"
 printf 'AWS_REGION_SET=%s\\n' "${{ENV_VALUES[AWS_REGION]+set}}"
 """
     )
+    values = parse_lines(output)
 
     assert values["LLM_BINDING"] == "aws_bedrock"
     assert values["AWS_ACCESS_KEY_ID_SET"] == ""
@@ -1770,6 +1774,7 @@ printf 'AWS_SESSION_TOKEN_SET=%s\\n' "${{ENV_VALUES[AWS_SESSION_TOKEN]+set}}"
 printf 'AWS_REGION_SET=%s\\n' "${{ENV_VALUES[AWS_REGION]+set}}"
 """
     )
+    values = parse_lines(output)
     generated_lines = (
         (tmp_path / ".env.generated").read_text(encoding="utf-8").splitlines()
     )
