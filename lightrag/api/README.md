@@ -534,7 +534,7 @@ The rerank provider is configured via the `.env` file. Below is an example confi
 ```
 RERANK_BINDING=cohere
 RERANK_MODEL=BAAI/bge-reranker-v2-m3
-RERANK_BINDING_HOST=http://localhost:8000/v1/rerank
+RERANK_BINDING_HOST=http://localhost:8000/rerank
 RERANK_BINDING_API_KEY=your_rerank_api_key_here
 ```
 

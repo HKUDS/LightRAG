@@ -191,7 +191,7 @@ VLLM_EMBED_DEVICE=cpu
 
 RERANK_BINDING=cohere
 RERANK_MODEL=BAAI/bge-reranker-v2-m3
-RERANK_BINDING_HOST=http://localhost:8000/v1/rerank
+RERANK_BINDING_HOST=http://localhost:8000/rerank
 RERANK_BINDING_API_KEY=local-key
 VLLM_RERANK_DEVICE=cpu
 ```
@@ -200,7 +200,7 @@ If LightRAG runs in Docker while vLLM runs on the host, the generated compose fi
 
 ```bash
 EMBEDDING_BINDING_HOST=http://host.docker.internal:8001/v1
-RERANK_BINDING_HOST=http://host.docker.internal:8000/v1/rerank
+RERANK_BINDING_HOST=http://host.docker.internal:8000/rerank
 ```
 
 For GPU, set:
