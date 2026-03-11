@@ -1892,7 +1892,7 @@ finalize_base_setup() {
 
   show_summary
 
-  if ! confirm_default_yes "Ready to proceed and write .env?"; then
+  if ! confirm_required_yes_no "${COLOR_YELLOW}Ready to proceed and write .env${COLOR_RESET}"; then
     log_warn "Setup cancelled."
     return 1
   fi
@@ -2064,7 +2064,7 @@ finalize_storage_setup() {
 
   show_summary
 
-  if ! confirm_default_yes "Ready to proceed and write .env?"; then
+  if ! confirm_required_yes_no "${COLOR_YELLOW}Ready to proceed and write .env${COLOR_RESET}"; then
     log_warn "Setup cancelled."
     return 1
   fi
@@ -2186,7 +2186,7 @@ finalize_server_setup() {
 
   show_summary
 
-  if ! confirm_default_yes "Ready to proceed and write .env?"; then
+  if ! confirm_required_yes_no "${COLOR_YELLOW}Ready to proceed and write .env${COLOR_RESET}"; then
     log_warn "Setup cancelled."
     return 1
   fi

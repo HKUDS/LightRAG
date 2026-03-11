@@ -126,6 +126,23 @@ confirm_default_yes() {
   done
 }
 
+confirm_required_yes_no() {
+  local prompt="$1"
+  local response
+
+  while true; do
+    printf '%b' "$prompt [yes/no]: " >&2
+    read -r response
+    case "${response,,}" in
+      yes) return 0 ;;
+      no) return 1 ;;
+      *)
+        echo "Please type 'yes' or 'no'." >&2
+        ;;
+    esac
+  done
+}
+
 prompt_until_valid() {
   local prompt="$1"
   local default="$2"
