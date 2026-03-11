@@ -1,5 +1,5 @@
   neo4j:
-    image: neo4j:${NEO4J_IMAGE_TAG:-5.26.19-community}
+    image: neo4j:5.26.21-community
     ports:
       - "7474:7474"
       - "${NEO4J_BOLT_PORT:-7687}:7687"

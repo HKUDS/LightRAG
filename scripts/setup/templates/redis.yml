@@ -1,5 +1,5 @@
   redis:
-    image: redis:${REDIS_IMAGE_TAG:-8.4}
+    image: redis:8.4
     ports:
       - "6379:6379"
     volumes:
