@@ -1779,6 +1779,7 @@ finalize_base_setup() {
   local existing_compose
   local generate_compose="no"
   local runtime_target="$DEFAULT_RUNTIME_TARGET"
+  local show_host_start_hint="no"
   local svc
 
   if [[ ! -f "${REPO_ROOT}/env.example" ]]; then
@@ -1804,19 +1805,8 @@ finalize_base_setup() {
   existing_compose="$(find_generated_compose_file)"
   compose_file="${REPO_ROOT}/docker-compose.final.yml"
 
-  if [[ -z "$existing_compose" ]]; then
-    if ((${#DOCKER_SERVICES[@]} > 0)); then
-      if confirm_default_yes "Generate ${compose_file}?"; then
-        generate_compose="yes"
-      fi
-    else
-      if confirm_default_no "Generate ${compose_file} for LightRAG only?"; then
-        generate_compose="yes"
-      fi
-    fi
-  else
-    generate_compose="yes"
-    # Detect and preserve existing storage services.
+  # Preserve storage services from any existing compose file.
+  if [[ -n "$existing_compose" ]]; then
     while IFS= read -r svc; do
       local is_storage="no"
       for storage_svc in "${STORAGE_SERVICES[@]}"; do
@@ -1831,8 +1821,47 @@ finalize_base_setup() {
     done < <(detect_managed_root_services "$existing_compose")
   fi
 
-  if [[ "$generate_compose" == "yes" ]]; then
+  if ((${#DOCKER_SERVICES[@]} > 0)); then
+    # LightRAG depends on managed Docker services; it must run via Docker.
+    local svc_names
+    svc_names="$(printf '%s ' "${DOCKER_SERVICES[@]}")"
+    svc_names="${svc_names% }"
+    if ! confirm_default_yes "LightRAG requires Docker services (${svc_names}). The compose file will be created/updated. Continue?"; then
+      log_warn "Setup cancelled."
+      return 1
+    fi
+    generate_compose="yes"
     runtime_target="compose"
+  else
+    # No managed service dependencies — ask whether to run LightRAG via Docker.
+    local current_target="${ENV_VALUES[LIGHTRAG_RUNTIME_TARGET]:-$DEFAULT_RUNTIME_TARGET}"
+    # If an existing compose file is present, default to keeping Docker mode.
+    local effective_default="$current_target"
+    if [[ -n "$existing_compose" ]]; then
+      effective_default="compose"
+    fi
+
+    if [[ "$effective_default" == "compose" ]]; then
+      if ! confirm_default_yes "Run LightRAG Server via Docker?"; then
+        # User opts out: switch to host mode and remove the stale compose file.
+        if [[ -n "$existing_compose" ]]; then
+          rm "$existing_compose"
+          log_success "Removed ${existing_compose}"
+        fi
+        show_host_start_hint="yes"
+      else
+        generate_compose="yes"
+        runtime_target="compose"
+      fi
+    else
+      if confirm_default_no "Run LightRAG Server via Docker?"; then
+        generate_compose="yes"
+        runtime_target="compose"
+      fi
+    fi
+  fi
+
+  if [[ "$generate_compose" == "yes" ]]; then
     if ! prepare_inherited_ssl_assets_for_compose "$existing_compose"; then
       return 1
     fi
@@ -1857,6 +1886,8 @@ finalize_base_setup() {
       log_success "Storage services preserved; vLLM services updated."
     fi
     echo "  To start: docker compose -f ${compose_file} up -d"
+  elif [[ "$show_host_start_hint" == "yes" ]]; then
+    echo "  To start: lightrag-server"
   fi
 }
 

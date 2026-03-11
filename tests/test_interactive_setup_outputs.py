@@ -2397,6 +2397,7 @@ confirm_default_no() {{ return 1; }}
 confirm_default_yes() {{
   case "$1" in
     "Ready to proceed and write .env?") return 0 ;;
+    "Run LightRAG Server via Docker?") return 0 ;;
     *) return 1 ;;
   esac
 }}
@@ -2480,7 +2481,7 @@ confirm_default_no() {{
   case "$1" in
     "Run embedding model locally via Docker (vLLM)?") return 1 ;;
     "Enable reranking?") return 1 ;;
-    *"for LightRAG only?"*) return 0 ;;
+    "Run LightRAG Server via Docker?") return 0 ;;
     *) return 1 ;;
   esac
 }}
