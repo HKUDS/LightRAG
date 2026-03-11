@@ -1630,6 +1630,7 @@ env_base_flow() {
 
   log_step "LLM configuration"
   collect_llm_config
+  echo ""
 
   # ── Embedding ────────────────────────────────────────────────────────────────
   log_step "Embedding configuration"
@@ -1691,9 +1692,9 @@ env_base_flow() {
   else
     collect_embedding_config
   fi
+  echo ""
 
   # ── Reranker ─────────────────────────────────────────────────────────────────
-  echo ""
   log_step "Reranker configuration"
   local rerank_enabled_default="no"
   if [[ -n "${ENV_VALUES[RERANK_BINDING]:-}" && "${ENV_VALUES[RERANK_BINDING]}" != "null" ]]; then
@@ -1769,6 +1770,7 @@ env_base_flow() {
     ENV_VALUES["RERANK_BINDING"]="null"
     unset 'ENV_VALUES[LIGHTRAG_SETUP_RERANK_PROVIDER]'
   fi
+  echo ""
 
   finalize_base_setup
 }
@@ -1826,7 +1828,7 @@ finalize_base_setup() {
     local svc_names
     svc_names="$(printf '%s ' "${DOCKER_SERVICES[@]}")"
     svc_names="${svc_names% }"
-    if ! confirm_default_yes "LightRAG requires Docker services (${svc_names}). The compose file will be created/updated. Continue?"; then
+    if ! confirm_default_yes "LightRAG requires Docker services (${svc_names}).\nThe compose file will be created/updated. Continue?"; then
       log_warn "Setup cancelled."
       return 1
     fi
@@ -2048,10 +2050,13 @@ env_server_flow() {
 
   log_step "Server configuration"
   collect_server_config
+  echo ""
   log_step "Security configuration"
   collect_security_config "no" "no"
+  echo ""
   log_step "SSL configuration"
   collect_ssl_config
+  echo ""
 
   finalize_server_setup
 }

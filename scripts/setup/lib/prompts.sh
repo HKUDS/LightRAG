@@ -17,7 +17,6 @@ mask_sensitive_input() {
   local value
 
   read -r -p "$prompt" value
-  echo >&2
   printf '%s' "$value"
 }
 
@@ -33,7 +32,6 @@ prompt_secret_with_default() {
   else
     read -r -p "$prompt" value
   fi
-  echo >&2
 
   if [[ -z "$value" ]]; then
     value="$default"
