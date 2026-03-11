@@ -1885,7 +1885,7 @@ finalize_base_setup() {
       if [[ "$is_storage" == "yes" ]]; then
         add_docker_service "$svc"
       fi
-    done < <(detect_compose_services "$existing_compose")
+    done < <(detect_managed_root_services "$existing_compose")
   fi
 
   if [[ "$generate_compose" == "yes" ]]; then
@@ -2027,7 +2027,7 @@ finalize_storage_setup() {
       if [[ "$is_vllm" == "yes" ]]; then
         add_docker_service "$svc"
       fi
-    done < <(detect_compose_services "$existing_compose")
+    done < <(detect_managed_root_services "$existing_compose")
   fi
   generate_compose="yes"
 
@@ -2128,15 +2128,10 @@ finalize_server_setup() {
 
   if [[ -n "$existing_compose" ]]; then
     generate_compose="yes"
-    # Detect and preserve all existing services (vLLM + storage).
-    # Only re-add services that have a standalone template; sub-services
-    # embedded in another template (e.g. etcd/minio inside milvus.yml) are
-    # re-included automatically when their parent template is appended.
+    # Detect and preserve all existing wizard-managed root services.
     while IFS= read -r svc; do
-      if [[ -f "$TEMPLATES_DIR/${svc}.yml" ]]; then
-        add_docker_service "$svc"
-      fi
-    done < <(detect_compose_services "$existing_compose")
+      add_docker_service "$svc"
+    done < <(detect_managed_root_services "$existing_compose")
   fi
 
   if [[ -n "$SSL_CERT_SOURCE_PATH" || -n "$SSL_KEY_SOURCE_PATH" ]]; then

@@ -2,6 +2,8 @@
 
 # Registry of temp files created during this session; cleaned up on exit.
 _FILE_OPS_CLEANUP_TMP=()
+declare -A _FILE_OPS_VOLUME_BLOCKS=()
+declare -a _FILE_OPS_VOLUME_ORDER=()
 _file_ops_cleanup() {
   local f
   for f in "${_FILE_OPS_CLEANUP_TMP[@]:-}"; do
@@ -194,6 +196,45 @@ _WIZARD_COMPOSE_LIGHTRAG_KEYS=(
   "POSTGRES_HOST" "POSTGRES_PORT" "PORT" "HOST" "SSL_CERTFILE" "SSL_KEYFILE"
 )
 
+_is_wizard_managed_root_service_name() {
+  local service_name="$1"
+
+  case "$service_name" in
+    postgres|neo4j|mongodb|redis|milvus|qdrant|memgraph|vllm-embed|vllm-rerank)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+_is_wizard_managed_service_name() {
+  local service_name="$1"
+
+  case "$service_name" in
+    postgres|neo4j|mongodb|redis|milvus|milvus-etcd|milvus-minio|qdrant|memgraph|vllm-embed|vllm-rerank)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+_is_wizard_managed_volume_name() {
+  local volume_name="$1"
+
+  case "$volume_name" in
+    postgres_data|neo4j_data|mongo_data|redis_data|milvus_data|milvus-etcd_data|milvus-minio_data|qdrant_data|memgraph_data|vllm_rerank_cache|vllm_embed_cache)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
 # Remove wizard-managed keys from the lightrag service's environment block,
 # leaving any user-added keys intact.
 _strip_lightrag_wizard_environment_keys() {
@@ -242,10 +283,68 @@ _strip_lightrag_wizard_environment_keys() {
   mv "$tmp_file" "$compose_file"
 }
 
-# Remove all services except lightrag and the top-level volumes: block from a
-# compose file.  Both are rebuilt from templates by generate_docker_compose, so
-# removing them avoids duplicates when the existing file is used as a base.
-_strip_non_lightrag_services_and_volumes() {
+# Capture top-level named volume blocks so user-managed definitions can be
+# re-emitted when still referenced by preserved services.
+_collect_top_level_volume_blocks() {
+  local compose_file="$1"
+  local line
+  local in_top_volumes="no"
+  local current_volume=""
+  local current_block=""
+
+  _FILE_OPS_VOLUME_BLOCKS=()
+  _FILE_OPS_VOLUME_ORDER=()
+
+  if [[ ! -f "$compose_file" ]]; then
+    return 0
+  fi
+
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    if [[ "$line" =~ ^[A-Za-z] ]]; then
+      if [[ "$in_top_volumes" == "yes" && -n "$current_volume" ]]; then
+        _FILE_OPS_VOLUME_BLOCKS["$current_volume"]="$current_block"
+        _FILE_OPS_VOLUME_ORDER+=("$current_volume")
+      fi
+
+      current_volume=""
+      current_block=""
+      if [[ "$line" == "volumes:" ]]; then
+        in_top_volumes="yes"
+      else
+        in_top_volumes="no"
+      fi
+      continue
+    fi
+
+    if [[ "$in_top_volumes" != "yes" ]]; then
+      continue
+    fi
+
+    if [[ "$line" =~ ^[[:space:]]{2}([A-Za-z0-9_.-]+):[[:space:]]*$ ]]; then
+      if [[ -n "$current_volume" ]]; then
+        _FILE_OPS_VOLUME_BLOCKS["$current_volume"]="$current_block"
+        _FILE_OPS_VOLUME_ORDER+=("$current_volume")
+      fi
+
+      current_volume="${BASH_REMATCH[1]}"
+      current_block="${line}"$'\n'
+      continue
+    fi
+
+    if [[ -n "$current_volume" ]]; then
+      current_block+="${line}"$'\n'
+    fi
+  done < "$compose_file"
+
+  if [[ "$in_top_volumes" == "yes" && -n "$current_volume" ]]; then
+    _FILE_OPS_VOLUME_BLOCKS["$current_volume"]="$current_block"
+    _FILE_OPS_VOLUME_ORDER+=("$current_volume")
+  fi
+}
+
+# Remove wizard-managed services and the top-level volumes block from a compose
+# file. Non-managed services are preserved verbatim.
+_strip_wizard_managed_services_and_top_level_volumes() {
   local compose_file="$1"
   local tmp_file="${compose_file}.strip-svc"
   _FILE_OPS_CLEANUP_TMP+=("$tmp_file")
@@ -285,8 +384,10 @@ _strip_non_lightrag_services_and_volumes() {
       current_service="${BASH_REMATCH[1]}"
     fi
 
-    # Skip all lines belonging to non-lightrag services.
-    if [[ "$in_services" == "yes" && -n "$current_service" && "$current_service" != "lightrag" ]]; then
+    # Skip wizard-managed services; preserve lightrag and all user-added services.
+    if [[ "$in_services" == "yes" && -n "$current_service" ]] && \
+      [[ "$current_service" != "lightrag" ]] && \
+      _is_wizard_managed_service_name "$current_service"; then
       continue
     fi
 
@@ -296,13 +397,178 @@ _strip_non_lightrag_services_and_volumes() {
   mv "$tmp_file" "$compose_file"
 }
 
+_strip_wrapping_quotes() {
+  local value="$1"
+
+  if [[ "$value" == \"*\" && "$value" == *\" ]]; then
+    value="${value#\"}"
+    value="${value%\"}"
+  elif [[ "$value" == \'*\' ]]; then
+    value="${value#\'}"
+    value="${value%\'}"
+  fi
+
+  printf '%s' "$value"
+}
+
+_extract_named_volume_name() {
+  local mount_spec="$1"
+  local source=""
+
+  mount_spec="$(_strip_wrapping_quotes "$mount_spec")"
+  source="${mount_spec%%:*}"
+
+  if [[ "$source" == "$mount_spec" || -z "$source" ]]; then
+    return 1
+  fi
+
+  if [[ "$source" == .* || "$source" == /* || "$source" == "~"* ]]; then
+    return 1
+  fi
+
+  if [[ "$source" == *"/"* || "$source" == *'$'* ]]; then
+    return 1
+  fi
+
+  printf '%s' "$source"
+}
+
+_collect_referenced_named_volumes() {
+  local compose_file="$1"
+  local line
+  local in_services="no"
+  local current_service=""
+  local in_volumes="no"
+  local in_long_volume_entry="no"
+  local long_volume_type=""
+  local volume_name=""
+  local -A seen=()
+
+  if [[ ! -f "$compose_file" ]]; then
+    return 0
+  fi
+
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    if [[ "$line" == "services:" ]]; then
+      in_services="yes"
+      current_service=""
+      in_volumes="no"
+      in_long_volume_entry="no"
+      long_volume_type=""
+      continue
+    fi
+
+    if [[ "$in_services" == "yes" && "$line" =~ ^[A-Za-z] && "$line" != "services:" ]]; then
+      in_services="no"
+      in_volumes="no"
+      in_long_volume_entry="no"
+      continue
+    fi
+
+    if [[ "$in_services" != "yes" ]]; then
+      continue
+    fi
+
+    if [[ "$line" =~ ^[[:space:]]{2}([A-Za-z0-9_-]+):[[:space:]]*$ ]]; then
+      current_service="${BASH_REMATCH[1]}"
+      in_volumes="no"
+      in_long_volume_entry="no"
+      long_volume_type=""
+      continue
+    fi
+
+    if [[ -z "$current_service" ]]; then
+      continue
+    fi
+
+    if [[ "$line" == "    volumes:" ]]; then
+      in_volumes="yes"
+      in_long_volume_entry="no"
+      long_volume_type=""
+      continue
+    fi
+
+    if [[ "$in_volumes" != "yes" ]]; then
+      continue
+    fi
+
+    if [[ "$line" =~ ^[[:space:]]{4}[^[:space:]-] || "$line" =~ ^[[:space:]]{2}[^[:space:]] ]]; then
+      in_volumes="no"
+      in_long_volume_entry="no"
+      long_volume_type=""
+      continue
+    fi
+
+    if [[ "$line" =~ ^[[:space:]]{6}-[[:space:]](.+)$ ]]; then
+      local volume_entry="${BASH_REMATCH[1]}"
+      volume_entry="$(_strip_wrapping_quotes "$volume_entry")"
+      in_long_volume_entry="no"
+      long_volume_type=""
+
+      if [[ "$volume_entry" == "type: volume" ]]; then
+        in_long_volume_entry="yes"
+        long_volume_type="volume"
+        continue
+      fi
+
+      if [[ "$volume_entry" == "type: bind" || "$volume_entry" == "type: tmpfs" ]]; then
+        in_long_volume_entry="yes"
+        long_volume_type="other"
+        continue
+      fi
+
+      volume_name="$(_extract_named_volume_name "$volume_entry")" || continue
+      if [[ -z "${seen[$volume_name]+set}" ]]; then
+        seen["$volume_name"]=1
+        printf '%s\n' "$volume_name"
+      fi
+      continue
+    fi
+
+    if [[ "$in_long_volume_entry" == "yes" && "$long_volume_type" == "volume" ]] && \
+      [[ "$line" =~ ^[[:space:]]{8}source:[[:space:]]*(.+)$ ]]; then
+      volume_name="$(_strip_wrapping_quotes "${BASH_REMATCH[1]}")"
+      if [[ -n "$volume_name" && -z "${seen[$volume_name]+set}" ]]; then
+        seen["$volume_name"]=1
+        printf '%s\n' "$volume_name"
+      fi
+    fi
+  done < "$compose_file"
+}
+
+_append_referenced_volume_blocks() {
+  local compose_file="$1"
+  local -a referenced_volumes=()
+  local volume_name
+
+  while IFS= read -r volume_name; do
+    if [[ -n "$volume_name" ]]; then
+      referenced_volumes+=("$volume_name")
+    fi
+  done < <(_collect_referenced_named_volumes "$compose_file")
+
+  if ((${#referenced_volumes[@]} == 0)); then
+    return 0
+  fi
+
+  printf '\nvolumes:\n' >> "$compose_file"
+  for volume_name in "${referenced_volumes[@]}"; do
+    if _is_wizard_managed_volume_name "$volume_name"; then
+      printf '  %s:\n' "$volume_name" >> "$compose_file"
+    elif [[ -n "${_FILE_OPS_VOLUME_BLOCKS[$volume_name]+set}" ]]; then
+      printf '%s' "${_FILE_OPS_VOLUME_BLOCKS[$volume_name]}" >> "$compose_file"
+    else
+      printf '  %s:\n' "$volume_name" >> "$compose_file"
+    fi
+  done
+}
+
 generate_docker_compose() {
   local output_file="${1:-${REPO_ROOT:-.}/docker-compose.yml}"
   local base_file="${REPO_ROOT:-.}/docker-compose.yml"
   local tmp_file="${output_file}.tmp"
   _FILE_OPS_CLEANUP_TMP+=("$tmp_file")
   local template_file
-  local volume_names=()
   local lightrag_mounts=()
   local lightrag_env_entries=()
   local key
@@ -311,13 +577,19 @@ generate_docker_compose() {
   # any user customisations to the lightrag service.  Fall back to the base
   # docker-compose.yml when the output file doesn't exist yet.
   if [[ -f "$output_file" && "$output_file" != "$base_file" ]]; then
+    _collect_top_level_volume_blocks "$output_file"
     cp "$output_file" "$tmp_file"
-    # Strip non-lightrag services and top-level volumes — both are rebuilt from
-    # templates below, so removing them avoids duplicates.
-    _strip_non_lightrag_services_and_volumes "$tmp_file"
+    # Strip wizard-managed services and top-level volumes. User-managed
+    # services are preserved, while volumes are rebuilt from final service
+    # references after managed templates are appended.
+    _strip_wizard_managed_services_and_top_level_volumes "$tmp_file"
   elif [[ -f "$base_file" ]]; then
+    _collect_top_level_volume_blocks "$base_file"
     cp "$base_file" "$tmp_file"
+    _strip_wizard_managed_services_and_top_level_volumes "$tmp_file"
   else
+    _FILE_OPS_VOLUME_BLOCKS=()
+    _FILE_OPS_VOLUME_ORDER=()
     printf 'services:\n' > "$tmp_file"
   fi
 
@@ -373,50 +645,36 @@ generate_docker_compose() {
           "POSTGRES_USER=${ENV_VALUES[POSTGRES_USER]:-}" \
           "POSTGRES_PASSWORD=${ENV_VALUES[POSTGRES_PASSWORD]:-}" \
           "POSTGRES_DB=${ENV_VALUES[POSTGRES_DATABASE]:-}"
-        volume_names+=("postgres_data")
         ;;
       neo4j)
         inject_service_environment_overrides "$tmp_file" "neo4j" \
           "NEO4J_AUTH=neo4j/${ENV_VALUES[NEO4J_PASSWORD]:-neo4j_password}" \
           "NEO4J_dbms_default__database=${ENV_VALUES[NEO4J_DATABASE]:-neo4j}"
-        volume_names+=("neo4j_data")
         ;;
       mongodb)
-        volume_names+=("mongo_data")
         ;;
       redis)
-        volume_names+=("redis_data")
         ;;
       milvus)
         inject_service_environment_overrides "$tmp_file" "milvus" \
           "MINIO_ACCESS_KEY_ID=${ENV_VALUES[MINIO_ACCESS_KEY_ID]:-minioadmin}" \
           "MINIO_SECRET_ACCESS_KEY=${ENV_VALUES[MINIO_SECRET_ACCESS_KEY]:-minioadmin}"
-        inject_service_environment_overrides "$tmp_file" "minio" \
+        inject_service_environment_overrides "$tmp_file" "milvus-minio" \
           "MINIO_ROOT_USER=${ENV_VALUES[MINIO_ACCESS_KEY_ID]:-minioadmin}" \
           "MINIO_ROOT_PASSWORD=${ENV_VALUES[MINIO_SECRET_ACCESS_KEY]:-minioadmin}"
-        volume_names+=("milvus_data" "etcd_data" "minio_data")
         ;;
       qdrant)
-        volume_names+=("qdrant_data")
         ;;
       memgraph)
-        volume_names+=("memgraph_data")
         ;;
       vllm-rerank)
-        volume_names+=("vllm_rerank_cache")
         ;;
       vllm-embed)
-        volume_names+=("vllm_embed_cache")
         ;;
     esac
   done
 
-  if ((${#volume_names[@]} > 0)); then
-    printf '\nvolumes:\n' >> "$tmp_file"
-    for volume in "${volume_names[@]}"; do
-      printf '  %s:\n' "$volume" >> "$tmp_file"
-    done
-  fi
+  _append_referenced_volume_blocks "$tmp_file"
 
   mv "$tmp_file" "$output_file"
 }
@@ -767,4 +1025,15 @@ detect_compose_services() {
       fi
     fi
   done < "$compose_file"
+}
+
+detect_managed_root_services() {
+  local compose_file="$1"
+  local service_name
+
+  while IFS= read -r service_name; do
+    if _is_wizard_managed_root_service_name "$service_name"; then
+      printf '%s\n' "$service_name"
+    fi
+  done < <(detect_compose_services "$compose_file")
 }

@@ -509,6 +509,62 @@ generate_docker_compose "{tmp_path}/docker-compose.final.yml"
     assert "./custom-data:/app/data/custom" in result
 
 
+def test_generate_docker_compose_preserves_non_managed_named_volumes(
+    tmp_path: Path,
+) -> None:
+    """Retained services should keep their referenced top-level named volumes."""
+
+    write_text_lines(
+        tmp_path / "docker-compose.final.yml",
+        [
+            "services:",
+            "  lightrag:",
+            "    image: example/lightrag:test",
+            "    volumes:",
+            "      - my_cache:/app/cache",
+            "  sidecar:",
+            "    image: busybox",
+            '    command: ["sleep", "infinity"]',
+            "    volumes:",
+            "      - sidecar_data:/data",
+            "  postgres:",
+            "    image: old/postgres:image",
+            "    volumes:",
+            "      - postgres_data:/var/lib/postgresql/data",
+            "volumes:",
+            "  my_cache:",
+            "    driver: local",
+            "  sidecar_data:",
+            "    driver: local",
+            "  postgres_data:",
+        ],
+    )
+    write_text_lines(
+        tmp_path / "env.example",
+        (REPO_ROOT / "env.example").read_text(encoding="utf-8").splitlines(),
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+generate_docker_compose "$REPO_ROOT/docker-compose.final.yml"
+"""
+    )
+
+    result = (tmp_path / "docker-compose.final.yml").read_text(encoding="utf-8")
+
+    assert "  sidecar:" in result
+    assert "my_cache:/app/cache" in result
+    assert "sidecar_data:/data" in result
+    assert "  my_cache:" in result
+    assert "    driver: local" in result
+    assert "  sidecar_data:" in result
+    assert "postgres_data:" not in result
+
+
 def test_collect_ssl_config_can_disable_loaded_ssl_values(tmp_path: Path) -> None:
     """Declining SSL should clear previously loaded cert paths and staged sources."""
 
@@ -1434,6 +1490,8 @@ generate_docker_compose "$REPO_ROOT/docker-compose.generated.yml"
     assert 'MINIO_SECRET_ACCESS_KEY: "minio$$SECRET"' in generated_compose
     assert 'MINIO_ROOT_USER: "minio$$USER"' in generated_compose
     assert 'MINIO_ROOT_PASSWORD: "minio$$SECRET"' in generated_compose
+    assert "milvus-etcd" in generated_compose
+    assert "milvus-minio" in generated_compose
 
 
 def test_env_base_flow_preserves_non_inference_env_values(
@@ -1945,7 +2003,7 @@ env_storage_flow
 def test_switching_to_non_docker_storage_removes_stale_services_from_compose(
     tmp_path: Path,
 ) -> None:
-    """env-storage must strip old storage services from compose when switching to non-Docker backends."""
+    """env-storage must strip managed storage services while preserving user sidecars."""
 
     # Existing compose with postgres and neo4j Docker services.
     compose_file = tmp_path / "docker-compose.final.yml"
@@ -1959,9 +2017,15 @@ def test_switching_to_non_docker_storage_removes_stale_services_from_compose(
                 "    image: gzdaniel/postgres-for-rag:16.6",
                 "  neo4j:",
                 "    image: neo4j:5.26.21-community",
+                "  sidecar:",
+                "    image: busybox",
+                '    command: ["sleep", "infinity"]',
+                "    volumes:",
+                "      - sidecar_data:/data",
                 "volumes:",
                 "  postgres_data:",
                 "  neo4j_data:",
+                "  sidecar_data:",
             ]
         )
         + "\n",
@@ -2008,8 +2072,48 @@ env_storage_flow
     assert "neo4j:" not in result
     assert "postgres_data:" not in result
     assert "neo4j_data:" not in result
-    # lightrag service must be preserved.
+    # lightrag and user services must be preserved.
     assert "  lightrag:" in result
+    assert "  sidecar:" in result
+    assert "sidecar_data:" in result
+
+
+def test_generate_docker_compose_uses_template_images_even_with_old_env_overrides(
+    tmp_path: Path,
+) -> None:
+    """Managed services should be regenerated from templates instead of legacy image overrides."""
+
+    write_text_lines(
+        tmp_path / ".env",
+        [
+            "POSTGRES_IMAGE=registry.example.com/postgres-for-rag:patched",
+            "VLLM_EMBED_IMAGE_TAG=patched",
+        ],
+    )
+    write_text_lines(
+        tmp_path / "env.example",
+        (REPO_ROOT / "env.example").read_text(encoding="utf-8").splitlines(),
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+load_existing_env_if_present
+add_docker_service postgres
+add_docker_service vllm-embed
+generate_docker_compose "$REPO_ROOT/docker-compose.final.yml"
+"""
+    )
+
+    result = (tmp_path / "docker-compose.final.yml").read_text(encoding="utf-8")
+
+    assert "image: gzdaniel/postgres-for-rag:16.6" in result
+    assert "image: vllm/vllm-openai-cpu:latest" in result
+    assert "registry.example.com/postgres-for-rag:patched" not in result
+    assert "vllm/vllm-openai-cpu:patched" not in result
 
 
 def test_collect_milvus_config_defaults_to_existing_database_name() -> None:
@@ -2272,7 +2376,7 @@ generate_docker_compose "$REPO_ROOT/docker-compose.generated.yml"
 def test_finalize_server_setup_skips_embedded_milvus_sub_services(
     tmp_path: Path,
 ) -> None:
-    """finalize_server_setup must not abort when the existing compose has etcd/minio."""
+    """finalize_server_setup must keep prefixed Milvus child services on rerun."""
 
     compose_file = tmp_path / "docker-compose.final.yml"
     compose_file.write_text(
@@ -2283,14 +2387,14 @@ def test_finalize_server_setup_skips_embedded_milvus_sub_services(
                 "    image: example/lightrag:test",
                 "  milvus:",
                 "    image: milvusdb/milvus:v2.6.11",
-                "  etcd:",
+                "  milvus-etcd:",
                 "    image: quay.io/coreos/etcd:v3.5.16",
-                "  minio:",
+                "  milvus-minio:",
                 "    image: minio/minio:RELEASE.2024-12-13T22-19-12Z",
                 "volumes:",
                 "  milvus_data:",
-                "  etcd_data:",
-                "  minio_data:",
+                "  milvus-etcd_data:",
+                "  milvus-minio_data:",
             ]
         )
         + "\n",
@@ -2301,7 +2405,8 @@ def test_finalize_server_setup_skips_embedded_milvus_sub_services(
         encoding="utf-8",
     )
 
-    # Should complete without error; etcd/minio have no standalone templates.
+    # Should complete without error; Milvus child services are managed via the
+    # Milvus template, not as independent root services.
     run_bash(
         f"""
 set -euo pipefail
@@ -2316,10 +2421,10 @@ finalize_server_setup
     )
 
     result = compose_file.read_text(encoding="utf-8")
-    # milvus template (which embeds etcd+minio) must be present.
+    # The Milvus template and its prefixed child services must still be present.
     assert "milvus" in result
-    assert "etcd" in result
-    assert "minio" in result
+    assert "milvus-etcd" in result
+    assert "milvus-minio" in result
 
 
 def test_finalize_server_setup_rejects_invalid_production_security_profile(
