@@ -1175,10 +1175,13 @@ collect_embedding_config() {
 
 collect_rerank_config() {
   # Pass "yes" to skip the "Enable reranking?" prompt (caller already asked it).
+  # The optional second argument can force the Docker choice to "yes" or "no".
   local skip_enable_check="${1:-no}"
+  local docker_choice_override="${2:-prompt}"
   local options=("cohere" "jina" "aliyun" "vllm")
   local binding_choice binding model host api_key
   local vllm_model vllm_port vllm_device vllm_extra
+  local vllm_host_default=""
   local default_model="" default_host="" model_default="" host_default="" use_docker="no"
   local previous_provider="${ENV_VALUES[LIGHTRAG_SETUP_RERANK_PROVIDER]:-}"
   local reset_vllm_defaults="no"
@@ -1217,22 +1220,28 @@ collect_rerank_config() {
 
   if [[ "$binding_choice" == "vllm" ]]; then
     log_info "vLLM uses the Cohere-compatible rerank API."
-    if confirm_default_yes "Run rerank service locally via Docker?"; then
-      add_docker_service "vllm-rerank"
+    if [[ "$docker_choice_override" == "yes" || "$docker_choice_override" == "no" ]]; then
+      use_docker="$docker_choice_override"
+    elif confirm_default_yes "Run rerank service locally via Docker?"; then
       use_docker="yes"
     fi
-    vllm_model="$(prompt_with_default "vLLM rerank model" "${ENV_VALUES[VLLM_RERANK_MODEL]:-BAAI/bge-reranker-v2-m3}")"
-    vllm_port="$(prompt_until_valid "vLLM rerank port" "${ENV_VALUES[VLLM_RERANK_PORT]:-8000}" validate_port)"
-    vllm_device="$(prompt_choice "vLLM device" "${ENV_VALUES[VLLM_RERANK_DEVICE]:-cpu}" "cpu" "cuda")"
-    if [[ "$vllm_device" == "cuda" ]] && ! command -v nvidia-smi >/dev/null 2>&1; then
-      log_warn "CUDA device selected but no NVIDIA driver detected on host."
-      if confirm_default_yes "Use CPU instead?"; then
-        vllm_device="cpu"
-      fi
+    if [[ "$use_docker" == "yes" ]]; then
+      add_docker_service "vllm-rerank"
     fi
-    vllm_extra="$(prompt_with_default "vLLM extra args" "${ENV_VALUES[VLLM_RERANK_EXTRA_ARGS]:-}")"
+    vllm_model="$(prompt_with_default "vLLM rerank model" "${ENV_VALUES[VLLM_RERANK_MODEL]:-BAAI/bge-reranker-v2-m3}")"
+    if [[ "$use_docker" == "yes" ]]; then
+      vllm_port="$(prompt_until_valid "vLLM rerank port" "${ENV_VALUES[VLLM_RERANK_PORT]:-8000}" validate_port)"
+      vllm_device="$(prompt_choice "vLLM device" "${ENV_VALUES[VLLM_RERANK_DEVICE]:-cpu}" "cpu" "cuda")"
+      if [[ "$vllm_device" == "cuda" ]] && ! command -v nvidia-smi >/dev/null 2>&1; then
+        log_warn "CUDA device selected but no NVIDIA driver detected on host."
+        if confirm_default_yes "Use CPU instead?"; then
+          vllm_device="cpu"
+        fi
+      fi
+      vllm_extra="$(prompt_with_default "vLLM extra args" "${ENV_VALUES[VLLM_RERANK_EXTRA_ARGS]:-}")"
+    fi
 
-    if [[ "$vllm_device" == "cuda" ]]; then
+    if [[ "$use_docker" == "yes" && "$vllm_device" == "cuda" ]]; then
       if [[ "${ENV_VALUES[CUDA_VISIBLE_DEVICES]:-}" == "-1" ]]; then
         unset 'ENV_VALUES[CUDA_VISIBLE_DEVICES]'
       fi
@@ -1243,17 +1252,21 @@ collect_rerank_config() {
     fi
 
     ENV_VALUES["VLLM_RERANK_MODEL"]="$vllm_model"
-    ENV_VALUES["VLLM_RERANK_PORT"]="$vllm_port"
-    ENV_VALUES["VLLM_RERANK_DEVICE"]="$vllm_device"
-    if [[ -n "$vllm_extra" ]]; then
+    if [[ "$use_docker" == "yes" ]]; then
+      ENV_VALUES["VLLM_RERANK_PORT"]="$vllm_port"
+      ENV_VALUES["VLLM_RERANK_DEVICE"]="$vllm_device"
+    fi
+    if [[ "$use_docker" == "yes" && -n "$vllm_extra" ]]; then
       ENV_VALUES["VLLM_RERANK_EXTRA_ARGS"]="$vllm_extra"
     fi
 
     default_model="$vllm_model"
-    default_host="$(default_loopback_url "$vllm_port" "/rerank")"
     if [[ "$use_docker" == "yes" ]]; then
+      default_host="$(default_loopback_url "$vllm_port" "/rerank")"
       set_compose_override "RERANK_BINDING_HOST" "http://vllm-rerank:${vllm_port}/rerank"
     else
+      vllm_host_default="$(default_loopback_url "${ENV_VALUES[VLLM_RERANK_PORT]:-8000}" "/rerank")"
+      default_host="${ENV_VALUES[RERANK_BINDING_HOST]:-$vllm_host_default}"
       set_compose_override "RERANK_BINDING_HOST" ""
     fi
     binding="cohere"
@@ -1267,22 +1280,25 @@ collect_rerank_config() {
   elif [[ "$reset_vllm_defaults" == "yes" ]]; then
     case "$binding_choice" in
       cohere)
-        model_default="rerank-v3.5"
-        host_default="https://api.cohere.com/v2/rerank"
+        default_model="rerank-v3.5"
+        default_host="https://api.cohere.com/v2/rerank"
         ;;
       jina)
-        model_default="jina-reranker-v2-base-multilingual"
-        host_default="https://api.jina.ai/v1/rerank"
+        default_model="jina-reranker-v2-base-multilingual"
+        default_host="https://api.jina.ai/v1/rerank"
         ;;
       aliyun)
-        model_default="gte-rerank-v2"
-        host_default="https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank"
+        default_model="gte-rerank-v2"
+        default_host="https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank"
         ;;
       *)
-        model_default=""
-        host_default=""
+        default_model=""
+        default_host=""
         ;;
     esac
+    # Preserve existing .env values when present; only fall back to provider defaults when absent.
+    model_default="${ENV_VALUES[RERANK_MODEL]:-$default_model}"
+    host_default="${ENV_VALUES[RERANK_BINDING_HOST]:-$default_host}"
   else
     model_default="${ENV_VALUES[RERANK_MODEL]:-$default_model}"
     host_default="${ENV_VALUES[RERANK_BINDING_HOST]:-$default_host}"
@@ -1726,7 +1742,7 @@ env_base_flow() {
         "http://vllm-rerank:${rerank_port}/rerank"
     else
       # Reranking enabled but not via Docker — ask provider/host/model/api_key
-      collect_rerank_config "yes"
+      collect_rerank_config "yes" "no"
     fi
   else
     ENV_VALUES["RERANK_BINDING"]="null"

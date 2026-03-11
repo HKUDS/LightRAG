@@ -2888,6 +2888,94 @@ env_base_flow
     assert values["VLLM_RERANK_PORT"] == "9200"
 
 
+def test_env_base_flow_does_not_repeat_rerank_docker_prompt_when_declined(
+    tmp_path: Path,
+) -> None:
+    """Declining rerank Docker at the outer prompt should switch to endpoint-based config."""
+
+    write_text_lines(
+        tmp_path / ".env",
+        [
+            "LLM_BINDING=openai",
+            "LLM_MODEL=gpt-4o-mini",
+            "LLM_BINDING_HOST=https://api.openai.com/v1",
+            "LLM_BINDING_API_KEY=sk-existing",
+            "RERANK_BINDING=cohere",
+            "RERANK_MODEL=BAAI/custom-rerank",
+            "RERANK_BINDING_HOST=http://localhost:9200/rerank",
+            "RERANK_BINDING_API_KEY=rerank-key",
+            "LIGHTRAG_SETUP_RERANK_PROVIDER=vllm",
+            "VLLM_RERANK_MODEL=BAAI/custom-rerank",
+            "VLLM_RERANK_PORT=9200",
+            "VLLM_RERANK_DEVICE=cpu",
+        ],
+    )
+
+    values = run_bash_lines(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+
+DOCKER_PROMPT_COUNT=0
+
+prompt_choice() {{
+  case "$1" in
+    "vLLM device")
+      echo "unexpected vLLM device prompt" >&2
+      return 91
+      ;;
+    *)
+      printf '%s' "$2"
+      ;;
+  esac
+}}
+prompt_with_default() {{
+  case "$1" in
+    "Rerank endpoint")
+      printf '%s' "https://rerank.example.internal/rerank"
+      return 0
+      ;;
+  esac
+  printf '%s' "$2"
+}}
+prompt_until_valid() {{
+  case "$1" in
+    "vLLM rerank port")
+      echo "unexpected vLLM rerank port prompt" >&2
+      return 92
+      ;;
+  esac
+  printf '%s' "$2"
+}}
+prompt_secret_with_default() {{ printf '%s' "$2"; }}
+prompt_secret_until_valid_with_default() {{ printf '%s' "$2"; }}
+confirm_default_no() {{ return 1; }}
+confirm_default_yes() {{
+  case "$1" in
+    "Enable reranking?") return 0 ;;
+    "Run rerank service locally via Docker?")
+      DOCKER_PROMPT_COUNT=$((DOCKER_PROMPT_COUNT + 1))
+      return 1
+      ;;
+    *) return 1 ;;
+  esac
+}}
+collect_embedding_config() {{ :; }}
+
+finalize_base_setup() {{
+  printf 'DOCKER_PROMPT_COUNT=%s\\n' "$DOCKER_PROMPT_COUNT"
+  printf 'RERANK_BINDING_HOST=%s\\n' "${{ENV_VALUES[RERANK_BINDING_HOST]}}"
+}}
+
+env_base_flow
+"""
+    )
+
+    assert values["DOCKER_PROMPT_COUNT"] == "1"
+    assert values["RERANK_BINDING_HOST"] == "https://rerank.example.internal/rerank"
+
+
 def test_env_base_flow_resets_remote_rerank_host_when_switching_to_vllm(
     tmp_path: Path,
 ) -> None:
