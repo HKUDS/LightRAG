@@ -2656,6 +2656,69 @@ env_storage_flow
     assert "./data/certs/key.pem:/app/data/certs/key.pem:ro" in generated_compose
 
 
+def test_env_server_flow_preserves_existing_compose_ssl_when_env_paths_are_stale(
+    tmp_path: Path,
+) -> None:
+    """env-server should keep compose SSL wiring when inherited source paths no longer exist."""
+
+    write_text_lines(
+        tmp_path / ".env",
+        [
+            "SSL=true",
+            "SSL_CERTFILE=/missing/cert.pem",
+            "SSL_KEYFILE=/missing/key.pem",
+            "HOST=0.0.0.0",
+            "PORT=9621",
+        ],
+    )
+    write_text_lines(
+        tmp_path / "env.example",
+        (REPO_ROOT / "env.example").read_text(encoding="utf-8").splitlines(),
+    )
+    write_text_lines(
+        tmp_path / "docker-compose.final.yml",
+        [
+            "services:",
+            "  lightrag:",
+            "    image: example/lightrag:test",
+            "    environment:",
+            '      SSL_CERTFILE: "/app/data/certs/cert.pem"',
+            '      SSL_KEYFILE: "/app/data/certs/key.pem"',
+            "    volumes:",
+            '      - "./data/certs/cert.pem:/app/data/certs/cert.pem:ro"',
+            '      - "./data/certs/key.pem:/app/data/certs/key.pem:ro"',
+        ],
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+
+collect_server_config() {{
+  ENV_VALUES[HOST]="0.0.0.0"
+  ENV_VALUES[PORT]="8080"
+}}
+collect_security_config() {{ :; }}
+collect_ssl_config() {{ :; }}
+confirm_default_yes() {{ return 0; }}
+
+env_server_flow
+"""
+    )
+
+    generated_compose = (tmp_path / "docker-compose.final.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'SSL_CERTFILE: "/app/data/certs/cert.pem"' in generated_compose
+    assert 'SSL_KEYFILE: "/app/data/certs/key.pem"' in generated_compose
+    assert "./data/certs/cert.pem:/app/data/certs/cert.pem:ro" in generated_compose
+    assert "./data/certs/key.pem:/app/data/certs/key.pem:ro" in generated_compose
+    assert 'PORT: "9621"' in generated_compose
+
+
 def test_switching_to_non_docker_storage_removes_stale_services_from_compose(
     tmp_path: Path,
 ) -> None:

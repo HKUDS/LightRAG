@@ -2104,18 +2104,6 @@ finalize_server_setup() {
     return 1
   fi
 
-  if [[ -n "$SSL_CERT_SOURCE_PATH" ]] && ! validate_existing_file "$SSL_CERT_SOURCE_PATH"; then
-    format_error "Invalid SSL_CERTFILE" \
-      "Set it to an existing certificate file, disable SSL, or rerun the wizard to choose a new certificate."
-    return 1
-  fi
-
-  if [[ -n "$SSL_KEY_SOURCE_PATH" ]] && ! validate_existing_file "$SSL_KEY_SOURCE_PATH"; then
-    format_error "Invalid SSL_KEYFILE" \
-      "Set it to an existing private key file, disable SSL, or rerun the wizard to choose a new key."
-    return 1
-  fi
-
   if ! validate_sensitive_env_literals; then
     return 1
   fi
@@ -2138,12 +2126,23 @@ finalize_server_setup() {
     done < <(detect_managed_root_services "$existing_compose")
   fi
 
-  if [[ -n "$SSL_CERT_SOURCE_PATH" || -n "$SSL_KEY_SOURCE_PATH" ]]; then
-    stage_ssl_assets "$SSL_CERT_SOURCE_PATH" "$SSL_KEY_SOURCE_PATH"
-  fi
-
   if [[ "$generate_compose" == "yes" ]]; then
+    if ! prepare_inherited_ssl_assets_for_compose "$existing_compose"; then
+      return 1
+    fi
     prepare_compose_env_overrides
+  else
+    if [[ -n "$SSL_CERT_SOURCE_PATH" ]] && ! validate_existing_file "$SSL_CERT_SOURCE_PATH"; then
+      format_error "Invalid SSL_CERTFILE" \
+        "Set it to an existing certificate file, disable SSL, or rerun the wizard to choose a new certificate."
+      return 1
+    fi
+
+    if [[ -n "$SSL_KEY_SOURCE_PATH" ]] && ! validate_existing_file "$SSL_KEY_SOURCE_PATH"; then
+      format_error "Invalid SSL_KEYFILE" \
+        "Set it to an existing private key file, disable SSL, or rerun the wizard to choose a new key."
+      return 1
+    fi
   fi
 
   backup_path="$(backup_env_file)"
