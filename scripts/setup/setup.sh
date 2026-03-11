@@ -21,6 +21,8 @@ declare -a DOCKER_SERVICES
 SSL_CERT_SOURCE_PATH=""
 SSL_KEY_SOURCE_PATH=""
 DEPLOYMENT_TYPE=""
+LIGHTRAG_COMPOSE_SERVER_PORT_MAPPING=""
+NORMALIZED_SERVER_HOST_FOR_COMPOSE=""
 DEBUG="${DEBUG:-false}"
 
 PRESET_VLLM_EMBEDDING=(
@@ -100,6 +102,8 @@ reset_state() {
   SSL_CERT_SOURCE_PATH=""
   SSL_KEY_SOURCE_PATH=""
   DEPLOYMENT_TYPE=""
+  LIGHTRAG_COMPOSE_SERVER_PORT_MAPPING=""
+  NORMALIZED_SERVER_HOST_FOR_COMPOSE=""
 }
 
 validate_runtime_target() {
@@ -331,14 +335,31 @@ normalize_loopback_host_for_compose() {
 }
 
 normalize_server_host_for_compose() {
-  local host="$1"
+  local host="${1:-}"
+  local published_host="$host"
+  local published_port="${ENV_VALUES[PORT]:-9621}"
 
-  if [[ -n "$host" && "$host" != "0.0.0.0" ]]; then
-    printf '0.0.0.0'
-    return 0
+  if [[ -z "$published_host" ]]; then
+    published_host="0.0.0.0"
+  elif [[ "$published_host" == "localhost" ]]; then
+    published_host="127.0.0.1"
   fi
 
-  printf '%s' "$host"
+  if [[ -z "$published_port" ]]; then
+    published_port="9621"
+  fi
+
+  LIGHTRAG_COMPOSE_SERVER_PORT_MAPPING="${published_host}:${published_port}:9621"
+
+  if [[ -z "${COMPOSE_ENV_OVERRIDES[PORT]+set}" ]]; then
+    if [[ "$published_port" != "9621" ]]; then
+      set_compose_override "PORT" "9621"
+    else
+      set_compose_override "PORT" ""
+    fi
+  fi
+
+  NORMALIZED_SERVER_HOST_FOR_COMPOSE="0.0.0.0"
 }
 
 default_loopback_url() {
@@ -459,20 +480,12 @@ prepare_compose_runtime_overrides() {
     fi
   done
 
-  for key in "HOST"; do
-    if [[ -n "${COMPOSE_ENV_OVERRIDES[$key]+set}" ]]; then
-      continue
+  if [[ -n "${ENV_VALUES[HOST]:-}" || -n "${ENV_VALUES[PORT]:-}" ]]; then
+    normalize_server_host_for_compose "${ENV_VALUES[HOST]:-0.0.0.0}"
+    normalized_value="$NORMALIZED_SERVER_HOST_FOR_COMPOSE"
+    if [[ -z "${COMPOSE_ENV_OVERRIDES[HOST]+set}" && "$normalized_value" != "${ENV_VALUES[HOST]:-0.0.0.0}" ]]; then
+      set_compose_override "HOST" "$normalized_value"
     fi
-    if [[ -n "${ENV_VALUES[$key]:-}" ]]; then
-      normalized_value="$(normalize_server_host_for_compose "${ENV_VALUES[$key]}")"
-      if [[ "$normalized_value" != "${ENV_VALUES[$key]}" ]]; then
-        set_compose_override "$key" "$normalized_value"
-      fi
-    fi
-  done
-
-  if [[ -z "${COMPOSE_ENV_OVERRIDES[PORT]+set}" && -n "${ENV_VALUES[PORT]:-}" && "${ENV_VALUES[PORT]}" != "9621" ]]; then
-    set_compose_override "PORT" "9621"
   fi
 }
 
@@ -1162,10 +1175,13 @@ collect_embedding_config() {
 
 collect_rerank_config() {
   # Pass "yes" to skip the "Enable reranking?" prompt (caller already asked it).
+  # The optional second argument can force the Docker choice to "yes" or "no".
   local skip_enable_check="${1:-no}"
+  local docker_choice_override="${2:-prompt}"
   local options=("cohere" "jina" "aliyun" "vllm")
   local binding_choice binding model host api_key
   local vllm_model vllm_port vllm_device vllm_extra
+  local vllm_host_default=""
   local default_model="" default_host="" model_default="" host_default="" use_docker="no"
   local previous_provider="${ENV_VALUES[LIGHTRAG_SETUP_RERANK_PROVIDER]:-}"
   local reset_vllm_defaults="no"
@@ -1203,23 +1219,26 @@ collect_rerank_config() {
   fi
 
   if [[ "$binding_choice" == "vllm" ]]; then
-    log_info "vLLM uses the Cohere-compatible rerank API."
-    if confirm_default_yes "Run rerank service locally via Docker?"; then
-      add_docker_service "vllm-rerank"
+    if [[ "$docker_choice_override" == "yes" || "$docker_choice_override" == "no" ]]; then
+      use_docker="$docker_choice_override"
+    elif confirm_default_yes "Run rerank service locally via Docker?"; then
       use_docker="yes"
     fi
-    vllm_model="$(prompt_with_default "vLLM rerank model" "${ENV_VALUES[VLLM_RERANK_MODEL]:-BAAI/bge-reranker-v2-m3}")"
-    vllm_port="$(prompt_until_valid "vLLM rerank port" "${ENV_VALUES[VLLM_RERANK_PORT]:-8000}" validate_port)"
-    vllm_device="$(prompt_choice "vLLM device" "${ENV_VALUES[VLLM_RERANK_DEVICE]:-cpu}" "cpu" "cuda")"
-    if [[ "$vllm_device" == "cuda" ]] && ! command -v nvidia-smi >/dev/null 2>&1; then
-      log_warn "CUDA device selected but no NVIDIA driver detected on host."
-      if confirm_default_yes "Use CPU instead?"; then
-        vllm_device="cpu"
+    if [[ "$use_docker" == "yes" ]]; then
+      add_docker_service "vllm-rerank"
+      vllm_model="$(prompt_with_default "vLLM rerank model" "${ENV_VALUES[VLLM_RERANK_MODEL]:-BAAI/bge-reranker-v2-m3}")"
+      vllm_port="$(prompt_until_valid "vLLM rerank port" "${ENV_VALUES[VLLM_RERANK_PORT]:-8000}" validate_port)"
+      vllm_device="$(prompt_choice "vLLM device" "${ENV_VALUES[VLLM_RERANK_DEVICE]:-cpu}" "cpu" "cuda")"
+      if [[ "$vllm_device" == "cuda" ]] && ! command -v nvidia-smi >/dev/null 2>&1; then
+        log_warn "CUDA device selected but no NVIDIA driver detected on host."
+        if confirm_default_yes "Use CPU instead?"; then
+          vllm_device="cpu"
+        fi
       fi
+      vllm_extra="$(prompt_with_default "vLLM extra args" "${ENV_VALUES[VLLM_RERANK_EXTRA_ARGS]:-}")"
     fi
-    vllm_extra="$(prompt_with_default "vLLM extra args" "${ENV_VALUES[VLLM_RERANK_EXTRA_ARGS]:-}")"
 
-    if [[ "$vllm_device" == "cuda" ]]; then
+    if [[ "$use_docker" == "yes" && "$vllm_device" == "cuda" ]]; then
       if [[ "${ENV_VALUES[CUDA_VISIBLE_DEVICES]:-}" == "-1" ]]; then
         unset 'ENV_VALUES[CUDA_VISIBLE_DEVICES]'
       fi
@@ -1229,18 +1248,23 @@ collect_rerank_config() {
       unset 'ENV_VALUES[VLLM_USE_CPU]'
     fi
 
-    ENV_VALUES["VLLM_RERANK_MODEL"]="$vllm_model"
-    ENV_VALUES["VLLM_RERANK_PORT"]="$vllm_port"
-    ENV_VALUES["VLLM_RERANK_DEVICE"]="$vllm_device"
-    if [[ -n "$vllm_extra" ]]; then
-      ENV_VALUES["VLLM_RERANK_EXTRA_ARGS"]="$vllm_extra"
+    if [[ "$use_docker" == "yes" ]]; then
+      ENV_VALUES["VLLM_RERANK_MODEL"]="$vllm_model"
+      ENV_VALUES["VLLM_RERANK_PORT"]="$vllm_port"
+      ENV_VALUES["VLLM_RERANK_DEVICE"]="$vllm_device"
+      if [[ -n "$vllm_extra" ]]; then
+        ENV_VALUES["VLLM_RERANK_EXTRA_ARGS"]="$vllm_extra"
+      fi
     fi
 
-    default_model="$vllm_model"
-    default_host="$(default_loopback_url "$vllm_port" "/rerank")"
     if [[ "$use_docker" == "yes" ]]; then
+      default_model="$vllm_model"
+      default_host="$(default_loopback_url "$vllm_port" "/rerank")"
       set_compose_override "RERANK_BINDING_HOST" "http://vllm-rerank:${vllm_port}/rerank"
     else
+      default_model="${ENV_VALUES[RERANK_MODEL]:-${ENV_VALUES[VLLM_RERANK_MODEL]:-BAAI/bge-reranker-v2-m3}}"
+      vllm_host_default="$(default_loopback_url "${ENV_VALUES[VLLM_RERANK_PORT]:-8000}" "/rerank")"
+      default_host="${ENV_VALUES[RERANK_BINDING_HOST]:-$vllm_host_default}"
       set_compose_override "RERANK_BINDING_HOST" ""
     fi
     binding="cohere"
@@ -1254,22 +1278,25 @@ collect_rerank_config() {
   elif [[ "$reset_vllm_defaults" == "yes" ]]; then
     case "$binding_choice" in
       cohere)
-        model_default="rerank-v3.5"
-        host_default="https://api.cohere.com/v2/rerank"
+        default_model="rerank-v3.5"
+        default_host="https://api.cohere.com/v2/rerank"
         ;;
       jina)
-        model_default="jina-reranker-v2-base-multilingual"
-        host_default="https://api.jina.ai/v1/rerank"
+        default_model="jina-reranker-v2-base-multilingual"
+        default_host="https://api.jina.ai/v1/rerank"
         ;;
       aliyun)
-        model_default="gte-rerank-v2"
-        host_default="https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank"
+        default_model="gte-rerank-v2"
+        default_host="https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank"
         ;;
       *)
-        model_default=""
-        host_default=""
+        default_model=""
+        default_host=""
         ;;
     esac
+    # Switching away from local vLLM should replace stale localhost/model values.
+    model_default="$default_model"
+    host_default="$default_host"
   else
     model_default="${ENV_VALUES[RERANK_MODEL]:-$default_model}"
     host_default="${ENV_VALUES[RERANK_BINDING_HOST]:-$default_host}"
@@ -1289,7 +1316,13 @@ collect_rerank_config() {
   fi
 
   ENV_VALUES["RERANK_BINDING"]="$binding"
-  ENV_VALUES["LIGHTRAG_SETUP_RERANK_PROVIDER"]="$binding_choice"
+  # Only keep the setup marker for wizard-managed local Docker vLLM rerank.
+  # Host-managed or remote rerank endpoints should rely on RERANK_BINDING alone.
+  if [[ "$binding_choice" == "vllm" && "$use_docker" == "yes" ]]; then
+    ENV_VALUES["LIGHTRAG_SETUP_RERANK_PROVIDER"]="vllm"
+  else
+    unset 'ENV_VALUES[LIGHTRAG_SETUP_RERANK_PROVIDER]'
+  fi
   if [[ -n "$model" ]]; then
     ENV_VALUES["RERANK_MODEL"]="$model"
   elif [[ "$reset_vllm_defaults" == "yes" ]]; then
@@ -1325,14 +1358,32 @@ collect_server_config() {
 
 collect_ssl_config() {
   local cert key
+  local ssl_enabled_default="no"
 
-  if ! confirm_default_yes "Enable SSL/TLS for the API server?"; then
-    unset 'ENV_VALUES[SSL]'
-    unset 'ENV_VALUES[SSL_CERTFILE]'
-    unset 'ENV_VALUES[SSL_KEYFILE]'
-    SSL_CERT_SOURCE_PATH=""
-    SSL_KEY_SOURCE_PATH=""
-    return
+  case "${ENV_VALUES[SSL]:-}" in
+    true|TRUE|True|1|yes|YES|Yes|y|Y|on|ON|On|t|T)
+      ssl_enabled_default="yes"
+      ;;
+  esac
+
+  if [[ "$ssl_enabled_default" == "yes" ]]; then
+    if ! confirm_default_yes "Enable SSL/TLS for the API server?"; then
+      unset 'ENV_VALUES[SSL]'
+      unset 'ENV_VALUES[SSL_CERTFILE]'
+      unset 'ENV_VALUES[SSL_KEYFILE]'
+      SSL_CERT_SOURCE_PATH=""
+      SSL_KEY_SOURCE_PATH=""
+      return
+    fi
+  else
+    if ! confirm_default_no "Enable SSL/TLS for the API server?"; then
+      unset 'ENV_VALUES[SSL]'
+      unset 'ENV_VALUES[SSL_CERTFILE]'
+      unset 'ENV_VALUES[SSL_KEYFILE]'
+      SSL_CERT_SOURCE_PATH=""
+      SSL_KEY_SOURCE_PATH=""
+      return
+    fi
   fi
 
   cert="$(prompt_until_valid "SSL certificate file" "${ENV_VALUES[SSL_CERTFILE]:-}" validate_existing_file)"
@@ -1695,7 +1746,7 @@ env_base_flow() {
         "http://vllm-rerank:${rerank_port}/rerank"
     else
       # Reranking enabled but not via Docker — ask provider/host/model/api_key
-      collect_rerank_config "yes"
+      collect_rerank_config "yes" "no"
     fi
   else
     ENV_VALUES["RERANK_BINDING"]="null"
