@@ -2159,6 +2159,13 @@ finalize_server_setup() {
     return 1
   fi
 
+  if ! validate_security_config \
+    "${ENV_VALUES[AUTH_ACCOUNTS]:-}" \
+    "${ENV_VALUES[TOKEN_SECRET]:-}" \
+    "${ENV_VALUES[LIGHTRAG_API_KEY]:-}"; then
+    return 1
+  fi
+
   show_summary
 
   if ! confirm_default_yes "Ready to proceed and write .env?"; then

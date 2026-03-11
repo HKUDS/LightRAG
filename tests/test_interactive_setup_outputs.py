@@ -3541,6 +3541,45 @@ security_check_env_file
     assert "WHITELIST_PATHS exposes /api routes" in result.stdout
 
 
+def test_finalize_server_setup_rejects_malformed_auth_accounts(tmp_path: Path) -> None:
+    """Server setup should fail fast instead of persisting invalid AUTH_ACCOUNTS syntax."""
+
+    write_text_lines(tmp_path / ".env", ["HOST=0.0.0.0"])
+    write_text_lines(
+        tmp_path / "env.example",
+        (REPO_ROOT / "env.example").read_text(encoding="utf-8").splitlines(),
+    )
+
+    output = run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+load_existing_env_if_present
+
+collect_server_config() {{ :; }}
+collect_ssl_config() {{ :; }}
+ENV_VALUES[AUTH_ACCOUNTS]="admin"
+ENV_VALUES[TOKEN_SECRET]="jwt-secret"
+show_summary() {{ :; }}
+confirm_default_yes() {{ return 0; }}
+
+if finalize_server_setup; then
+  printf 'RESULT=success\\n'
+else
+  printf 'RESULT=failure\\n'
+fi
+printf 'ENV=%s\\n' "$(cat "$REPO_ROOT/.env")"
+""",
+        cwd=tmp_path,
+    )
+    values = parse_lines(output)
+
+    assert values["RESULT"] == "failure"
+    assert values["ENV"] == "HOST=0.0.0.0"
+
+
 def test_validate_uri_accepts_neo4j_self_signed_tls_scheme() -> None:
     """Neo4j self-signed TLS URIs should pass validation."""
 
