@@ -80,6 +80,33 @@ stage_ssl_assets() {
   fi
 }
 
+stage_redis_config_asset() {
+  local template_path="${TEMPLATES_DIR:-}/redis.conf.template"
+  local config_dir="${REPO_ROOT:-.}/data/config"
+  local config_target="${config_dir}/redis.conf"
+
+  if [[ -z "$template_path" || ! -f "$template_path" ]]; then
+    format_error "Missing Redis config template: ${template_path}" \
+      "Restore scripts/setup/templates/redis.conf.template before rerunning setup."
+    return 1
+  fi
+
+  mkdir -p "$config_dir"
+
+  if [[ -e "$config_target" ]]; then
+    log_info "Preserving existing Redis config at ${config_target}"
+    return 0
+  fi
+
+  if ! cp "$template_path" "$config_target"; then
+    format_error "Failed to stage Redis config at ${config_target}" \
+      "Check file permissions and available disk space, then rerun setup."
+    return 1
+  fi
+
+  log_success "Staged Redis config at ${config_target}"
+}
+
 resolve_staged_ssl_basename() {
   local asset_type="$1"
   local source_path="$2"

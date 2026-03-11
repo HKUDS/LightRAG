@@ -1578,6 +1578,18 @@ prepare_inherited_ssl_assets_for_compose() {
   fi
 }
 
+prepare_managed_service_assets_for_compose() {
+  local existing_compose="${1:-}"
+
+  if ! prepare_inherited_ssl_assets_for_compose "$existing_compose"; then
+    return 1
+  fi
+
+  if [[ -n "${DOCKER_SERVICE_SET[redis]:-}" ]]; then
+    stage_redis_config_asset || return 1
+  fi
+}
+
 env_base_flow() {
   local vllm_embed_api_key=""
   local vllm_rerank_api_key=""
@@ -1847,7 +1859,7 @@ finalize_base_setup() {
   fi
 
   if [[ "$generate_compose" == "yes" ]]; then
-    if ! prepare_inherited_ssl_assets_for_compose "$existing_compose"; then
+    if ! prepare_managed_service_assets_for_compose "$existing_compose"; then
       return 1
     fi
     prepare_compose_env_overrides
@@ -1991,7 +2003,7 @@ finalize_storage_setup() {
   generate_compose="yes"
   runtime_target="compose"
 
-  if ! prepare_inherited_ssl_assets_for_compose "$existing_compose"; then
+  if ! prepare_managed_service_assets_for_compose "$existing_compose"; then
     return 1
   fi
   prepare_compose_env_overrides
@@ -2092,7 +2104,7 @@ finalize_server_setup() {
   fi
 
   if [[ "$generate_compose" == "yes" ]]; then
-    if ! prepare_inherited_ssl_assets_for_compose "$existing_compose"; then
+    if ! prepare_managed_service_assets_for_compose "$existing_compose"; then
       return 1
     fi
     prepare_compose_env_overrides

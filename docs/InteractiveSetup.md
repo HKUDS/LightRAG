@@ -191,6 +191,10 @@ Bundled service images are defined by the Docker Compose templates in
 `scripts/setup/templates/*.yml`. The modular setup wizards do not prompt for image overrides and
 do not manage image-selection environment variables in `.env`.
 
+When the wizard includes the bundled Redis service, it stages `./data/config/redis.conf` and mounts
+that file into the container. The file is created only if missing, so local edits are preserved on
+later setup reruns.
+
 ## Common Workflows
 
 ### First-time local development

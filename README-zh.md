@@ -1256,6 +1256,8 @@ maxmemory-policy noeviction
 maxclients 500
 ```
 
+当交互式 setup 管理本地 Redis 容器时，它会在 `./data/config/redis.conf` 生成一个可直接修改的配置文件，并将其挂载到容器内。后续重新运行 setup 时会保留该文件，避免覆盖用户的手工调整。
+
 </details>
 
 ### LightRAG 实例之间的数据隔离

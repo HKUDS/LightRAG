@@ -1,9 +1,11 @@
   redis:
-    image: redis:8.4
+    image: redis:latest
+    command: ["redis-server", "/usr/local/etc/redis/redis.conf"]
     ports:
       - "6379:6379"
     volumes:
       - redis_data:/data
+      - ./data/config/redis.conf:/usr/local/etc/redis/redis.conf:ro
     healthcheck:
       test:
         - CMD-SHELL
