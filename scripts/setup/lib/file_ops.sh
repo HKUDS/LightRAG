@@ -753,6 +753,11 @@ generate_docker_compose() {
   # mounts no longer needed (e.g. after SSL removal) are not left behind.
   _strip_lightrag_wizard_bind_mounts "$tmp_file"
 
+  if [[ -n "${LIGHTRAG_COMPOSE_SERVER_PORT_MAPPING:-}" ]]; then
+    _strip_lightrag_wizard_ports "$tmp_file"
+    inject_lightrag_port_mapping "$tmp_file" "$LIGHTRAG_COMPOSE_SERVER_PORT_MAPPING"
+  fi
+
   append_lightrag_ssl_mount lightrag_mounts "${COMPOSE_ENV_OVERRIDES[SSL_CERTFILE]:-}" || return 1
   append_lightrag_ssl_mount lightrag_mounts "${COMPOSE_ENV_OVERRIDES[SSL_KEYFILE]:-}" || return 1
   if ((${#lightrag_mounts[@]} > 0)); then
@@ -1062,6 +1067,56 @@ _strip_lightrag_wizard_bind_mounts() {
   mv "$tmp_file" "$compose_file"
 }
 
+_is_wizard_lightrag_port_mapping() {
+  local port_spec="$(_strip_wrapping_quotes "$1")"
+
+  case "$port_spec" in
+    9621|9621/tcp|*:9621|*:9621/tcp)
+      return 0
+      ;;
+  esac
+
+  return 1
+}
+
+_strip_lightrag_wizard_ports() {
+  local compose_file="$1"
+  local tmp_file="${compose_file}.strip-lightrag-ports"
+  _FILE_OPS_CLEANUP_TMP+=("$tmp_file")
+  local line
+  local port_spec=""
+  local in_lightrag="no"
+  local in_ports="no"
+
+  : > "$tmp_file"
+
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    if [[ "$in_lightrag" == "yes" && "$in_ports" == "yes" ]]; then
+      if [[ "$line" =~ ^[[:space:]]{6}-[[:space:]](.+)$ ]]; then
+        port_spec="${BASH_REMATCH[1]}"
+        if _is_wizard_lightrag_port_mapping "$port_spec"; then
+          continue
+        fi
+      elif [[ ! "$line" =~ ^[[:space:]]{6} ]]; then
+        in_ports="no"
+      fi
+    elif [[ "$in_lightrag" == "yes" && "$line" =~ ^[[:space:]]{2}[^[:space:]] && "$line" != "  lightrag:" ]]; then
+      in_lightrag="no"
+    fi
+
+    printf '%s\n' "$line" >> "$tmp_file"
+
+    if [[ "$line" == "  lightrag:" ]]; then
+      in_lightrag="yes"
+      in_ports="no"
+    elif [[ "$in_lightrag" == "yes" && "$line" == "    ports:" ]]; then
+      in_ports="yes"
+    fi
+  done < "$compose_file"
+
+  mv "$tmp_file" "$compose_file"
+}
+
 inject_lightrag_bind_mounts() {
   local compose_file="$1"
   shift
@@ -1118,6 +1173,60 @@ inject_lightrag_bind_mounts() {
     for mount in "${mounts[@]}"; do
       printf '      - "%s"\n' "$mount" >> "$tmp_file"
     done
+  fi
+
+  mv "$tmp_file" "$compose_file"
+}
+
+inject_lightrag_port_mapping() {
+  local compose_file="$1"
+  local port_mapping="$2"
+  local tmp_file="${compose_file}.ports"
+  _FILE_OPS_CLEANUP_TMP+=("$tmp_file")
+  local line
+  local in_lightrag="no"
+  local in_ports="no"
+  local inserted="no"
+
+  if [[ -z "$port_mapping" ]]; then
+    return 0
+  fi
+
+  : > "$tmp_file"
+
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    if [[ "$in_lightrag" == "yes" && "$in_ports" == "yes" ]]; then
+      if [[ "$line" =~ ^[[:space:]]{4}[^[:space:]-] || "$line" =~ ^[[:space:]]{2}[^[:space:]] || "$line" =~ ^(volumes|networks): ]]; then
+        if [[ "$inserted" == "no" ]]; then
+          printf '      - "%s"\n' "$port_mapping" >> "$tmp_file"
+          inserted="yes"
+        fi
+        in_ports="no"
+      fi
+    elif [[ "$in_lightrag" == "yes" && "$line" =~ ^[[:space:]]{2}[^[:space:]] && "$line" != "  lightrag:" ]]; then
+      if [[ "$inserted" == "no" ]]; then
+        printf '    ports:\n' >> "$tmp_file"
+        printf '      - "%s"\n' "$port_mapping" >> "$tmp_file"
+        inserted="yes"
+      fi
+      in_lightrag="no"
+    fi
+
+    printf '%s\n' "$line" >> "$tmp_file"
+
+    if [[ "$line" == "  lightrag:" ]]; then
+      in_lightrag="yes"
+      in_ports="no"
+    elif [[ "$in_lightrag" == "yes" && "$line" == "    ports:" ]]; then
+      in_ports="yes"
+    fi
+  done < "$compose_file"
+
+  if [[ "$in_lightrag" == "yes" && "$inserted" == "no" ]]; then
+    if [[ "$in_ports" != "yes" ]]; then
+      printf '    ports:\n' >> "$tmp_file"
+    fi
+    printf '      - "%s"\n' "$port_mapping" >> "$tmp_file"
   fi
 
   mv "$tmp_file" "$compose_file"

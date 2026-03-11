@@ -21,6 +21,8 @@ declare -a DOCKER_SERVICES
 SSL_CERT_SOURCE_PATH=""
 SSL_KEY_SOURCE_PATH=""
 DEPLOYMENT_TYPE=""
+LIGHTRAG_COMPOSE_SERVER_PORT_MAPPING=""
+NORMALIZED_SERVER_HOST_FOR_COMPOSE=""
 DEBUG="${DEBUG:-false}"
 
 PRESET_VLLM_EMBEDDING=(
@@ -100,6 +102,8 @@ reset_state() {
   SSL_CERT_SOURCE_PATH=""
   SSL_KEY_SOURCE_PATH=""
   DEPLOYMENT_TYPE=""
+  LIGHTRAG_COMPOSE_SERVER_PORT_MAPPING=""
+  NORMALIZED_SERVER_HOST_FOR_COMPOSE=""
 }
 
 validate_runtime_target() {
@@ -331,14 +335,31 @@ normalize_loopback_host_for_compose() {
 }
 
 normalize_server_host_for_compose() {
-  local host="$1"
+  local host="${1:-}"
+  local published_host="$host"
+  local published_port="${ENV_VALUES[PORT]:-9621}"
 
-  if [[ -n "$host" && "$host" != "0.0.0.0" ]]; then
-    printf '0.0.0.0'
-    return 0
+  if [[ -z "$published_host" ]]; then
+    published_host="0.0.0.0"
+  elif [[ "$published_host" == "localhost" ]]; then
+    published_host="127.0.0.1"
   fi
 
-  printf '%s' "$host"
+  if [[ -z "$published_port" ]]; then
+    published_port="9621"
+  fi
+
+  LIGHTRAG_COMPOSE_SERVER_PORT_MAPPING="${published_host}:${published_port}:9621"
+
+  if [[ -z "${COMPOSE_ENV_OVERRIDES[PORT]+set}" ]]; then
+    if [[ "$published_port" != "9621" ]]; then
+      set_compose_override "PORT" "9621"
+    else
+      set_compose_override "PORT" ""
+    fi
+  fi
+
+  NORMALIZED_SERVER_HOST_FOR_COMPOSE="0.0.0.0"
 }
 
 default_loopback_url() {
@@ -459,20 +480,12 @@ prepare_compose_runtime_overrides() {
     fi
   done
 
-  for key in "HOST"; do
-    if [[ -n "${COMPOSE_ENV_OVERRIDES[$key]+set}" ]]; then
-      continue
+  if [[ -n "${ENV_VALUES[HOST]:-}" || -n "${ENV_VALUES[PORT]:-}" ]]; then
+    normalize_server_host_for_compose "${ENV_VALUES[HOST]:-0.0.0.0}"
+    normalized_value="$NORMALIZED_SERVER_HOST_FOR_COMPOSE"
+    if [[ -z "${COMPOSE_ENV_OVERRIDES[HOST]+set}" && "$normalized_value" != "${ENV_VALUES[HOST]:-0.0.0.0}" ]]; then
+      set_compose_override "HOST" "$normalized_value"
     fi
-    if [[ -n "${ENV_VALUES[$key]:-}" ]]; then
-      normalized_value="$(normalize_server_host_for_compose "${ENV_VALUES[$key]}")"
-      if [[ "$normalized_value" != "${ENV_VALUES[$key]}" ]]; then
-        set_compose_override "$key" "$normalized_value"
-      fi
-    fi
-  done
-
-  if [[ -z "${COMPOSE_ENV_OVERRIDES[PORT]+set}" && -n "${ENV_VALUES[PORT]:-}" && "${ENV_VALUES[PORT]}" != "9621" ]]; then
-    set_compose_override "PORT" "9621"
   fi
 }
 

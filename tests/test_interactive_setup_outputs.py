@@ -3324,6 +3324,7 @@ env_server_flow
     assert "./data/certs/cert.pem:/app/data/certs/cert.pem:ro" in generated_compose
     assert "./data/certs/key.pem:/app/data/certs/key.pem:ro" in generated_compose
     assert 'PORT: "9621"' in generated_compose
+    assert '      - "0.0.0.0:8080:9621"' in generated_compose
 
 
 def test_switching_to_non_docker_storage_removes_stale_services_from_compose(
@@ -3676,12 +3677,15 @@ printf 'DOCKER_SERVICE=%s\\n' "${{DOCKER_SERVICES[0]}}"
 
 
 @pytest.mark.parametrize(
-    "host_value",
-    ["127.0.0.1", "192.168.1.10"],
+    ("host_value", "expected_port_mapping"),
+    [
+        ("127.0.0.1", "127.0.0.1:8080:9621"),
+        ("192.168.1.10", "192.168.1.10:8080:9621"),
+    ],
     ids=["loopback-bind", "lan-bind"],
 )
 def test_prepare_compose_runtime_overrides_normalizes_server_binding(
-    host_value: str,
+    host_value: str, expected_port_mapping: str
 ) -> None:
     """Compose runtime should always bind the API to the container-facing host/port."""
 
@@ -3698,17 +3702,19 @@ prepare_compose_runtime_overrides
 
 printf 'HOST=%s\\n' "${{COMPOSE_ENV_OVERRIDES[HOST]}}"
 printf 'PORT=%s\\n' "${{COMPOSE_ENV_OVERRIDES[PORT]}}"
+printf 'PORT_MAPPING=%s\\n' "${{LIGHTRAG_COMPOSE_SERVER_PORT_MAPPING}}"
 """
     )
 
     assert values["HOST"] == "0.0.0.0"
     assert values["PORT"] == "9621"
+    assert values["PORT_MAPPING"] == expected_port_mapping
 
 
 def test_generate_docker_compose_injects_server_host_and_port_overrides(
     tmp_path: Path,
 ) -> None:
-    """Generated compose should keep the published host port while fixing container bind values."""
+    """Generated compose should publish the requested host/IP while keeping container bind values fixed."""
 
     compose_file = tmp_path / "docker-compose.yml"
     compose_file.write_text(
@@ -3748,7 +3754,7 @@ generate_docker_compose "$REPO_ROOT/docker-compose.generated.yml"
 
     assert 'HOST: "0.0.0.0"' in generated_compose
     assert 'PORT: "9621"' in generated_compose
-    assert "${PORT:-9621}:9621" in generated_compose
+    assert '      - "127.0.0.1:8080:9621"' in generated_compose
 
 
 def test_generate_docker_compose_injects_env_overrides_into_lightrag_not_after_managed_services(
