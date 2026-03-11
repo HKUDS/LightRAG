@@ -16,7 +16,7 @@ COLOR_GREEN :=
 COLOR_YELLOW :=
 endif
 
-.PHONY: help env-base env-storage env-server env-validate env-security-check env-backup
+.PHONY: help configure env-base env-storage env-server env-validate env-security-check env-backup
 
 help:
 	@printf "$(COLOR_BOLD)Interactive setup targets$(COLOR_RESET)\n"
