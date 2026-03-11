@@ -2251,13 +2251,14 @@ load_env_file() {
 
 validate_ssl_runtime_path() {
   local path="$1"
+  local runtime_target="${ENV_VALUES[LIGHTRAG_RUNTIME_TARGET]:-$DEFAULT_RUNTIME_TARGET}"
   local staged_path=""
 
   if validate_existing_file "$path"; then
     return 0
   fi
 
-  if [[ "$path" == /app/data/certs/* ]]; then
+  if [[ "$runtime_target" == "compose" && "$path" == /app/data/certs/* ]]; then
     staged_path="${REPO_ROOT}/data/certs/${path#/app/data/certs/}"
     validate_existing_file "$staged_path"
     return $?

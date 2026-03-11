@@ -898,6 +898,150 @@ validate_env_file
     assert "Invalid SSL_KEYFILE" in result.stderr
 
 
+def test_validate_env_file_rejects_container_ssl_paths_for_host_target(
+    tmp_path: Path,
+) -> None:
+    """host-target .env must not accept /app/data/certs/* even when the staged file exists."""
+
+    (tmp_path / "data" / "certs").mkdir(parents=True)
+    (tmp_path / "data" / "certs" / "cert.pem").write_text("cert", encoding="utf-8")
+    (tmp_path / "data" / "certs" / "key.pem").write_text("key", encoding="utf-8")
+
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "\n".join(
+            [
+                "SSL=true",
+                "SSL_CERTFILE=/app/data/certs/cert.pem",
+                "SSL_KEYFILE=/app/data/certs/key.pem",
+                "LIGHTRAG_RUNTIME_TARGET=host",
+                "LIGHTRAG_KV_STORAGE=JsonKVStorage",
+                "LIGHTRAG_VECTOR_STORAGE=NanoVectorDBStorage",
+                "LIGHTRAG_GRAPH_STORAGE=NetworkXStorage",
+                "LIGHTRAG_DOC_STATUS_STORAGE=JsonDocStatusStorage",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [
+            "bash",
+            "-lc",
+            f"""
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+validate_env_file
+""",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    assert "Invalid SSL_CERTFILE" in result.stderr
+    assert "Invalid SSL_KEYFILE" in result.stderr
+
+
+def test_validate_env_file_rejects_container_ssl_paths_for_default_host_target(
+    tmp_path: Path,
+) -> None:
+    """Omitting LIGHTRAG_RUNTIME_TARGET defaults to host; container paths must still be rejected."""
+
+    (tmp_path / "data" / "certs").mkdir(parents=True)
+    (tmp_path / "data" / "certs" / "cert.pem").write_text("cert", encoding="utf-8")
+    (tmp_path / "data" / "certs" / "key.pem").write_text("key", encoding="utf-8")
+
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "\n".join(
+            [
+                "SSL=true",
+                "SSL_CERTFILE=/app/data/certs/cert.pem",
+                "SSL_KEYFILE=/app/data/certs/key.pem",
+                "LIGHTRAG_KV_STORAGE=JsonKVStorage",
+                "LIGHTRAG_VECTOR_STORAGE=NanoVectorDBStorage",
+                "LIGHTRAG_GRAPH_STORAGE=NetworkXStorage",
+                "LIGHTRAG_DOC_STATUS_STORAGE=JsonDocStatusStorage",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [
+            "bash",
+            "-lc",
+            f"""
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+validate_env_file
+""",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    assert "Invalid SSL_CERTFILE" in result.stderr
+    assert "Invalid SSL_KEYFILE" in result.stderr
+
+
+def test_validate_env_file_accepts_container_ssl_paths_for_compose_target(
+    tmp_path: Path,
+) -> None:
+    """compose-target .env may use /app/data/certs/* when the staged files exist."""
+
+    (tmp_path / "data" / "certs").mkdir(parents=True)
+    (tmp_path / "data" / "certs" / "cert.pem").write_text("cert", encoding="utf-8")
+    (tmp_path / "data" / "certs" / "key.pem").write_text("key", encoding="utf-8")
+
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "\n".join(
+            [
+                "SSL=true",
+                "SSL_CERTFILE=/app/data/certs/cert.pem",
+                "SSL_KEYFILE=/app/data/certs/key.pem",
+                "LIGHTRAG_RUNTIME_TARGET=compose",
+                "LIGHTRAG_KV_STORAGE=JsonKVStorage",
+                "LIGHTRAG_VECTOR_STORAGE=NanoVectorDBStorage",
+                "LIGHTRAG_GRAPH_STORAGE=NetworkXStorage",
+                "LIGHTRAG_DOC_STATUS_STORAGE=JsonDocStatusStorage",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [
+            "bash",
+            "-lc",
+            f"""
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+validate_env_file
+""",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0
+
+
 def test_generate_env_file_comments_out_later_duplicate_active_keys(
     tmp_path: Path,
 ) -> None:
