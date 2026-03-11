@@ -1600,17 +1600,20 @@ collect_observability_config() {
 show_summary() {
   local key
   local value
-  local compose_suffix=""
 
   echo
   log_info "Configuration summary:"
-  for key in "${!ENV_VALUES[@]}"; do
-    value="${ENV_VALUES[$key]}"
-    if is_sensitive_env_key "$key"; then
-      value="***"
-    fi
-    printf '  %s=%s\n' "$key" "$value"
-  done
+  if ((${#ENV_VALUES[@]} > 0)); then
+    local -a sorted_keys
+    mapfile -t sorted_keys < <(printf '%s\n' "${!ENV_VALUES[@]}" | sort)
+    for key in "${sorted_keys[@]}"; do
+      value="${ENV_VALUES[$key]}"
+      if is_sensitive_env_key "$key"; then
+        value="***"
+      fi
+      printf '  %s=%s\n' "$key" "$value"
+    done
+  fi
 
   if ((${#DOCKER_SERVICES[@]} > 0)); then
     echo
