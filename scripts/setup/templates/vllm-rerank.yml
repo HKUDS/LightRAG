@@ -1,13 +1,21 @@
   vllm-rerank:
-    image: vllm/vllm-openai-cpu:${VLLM_RERANK_IMAGE_TAG:-latest}
+    image: vllm/vllm-openai-cpu:latest
     command: >
       --model ${VLLM_RERANK_MODEL:-BAAI/bge-reranker-v2-m3}
       --port ${VLLM_RERANK_PORT:-8000}
-      --dtype ${VLLM_RERANK_DTYPE:-float32}
+      --dtype float32
       --api-key ${VLLM_RERANK_API_KEY}
       ${VLLM_RERANK_EXTRA_ARGS:-}
     ports:
       - "${VLLM_RERANK_PORT:-8000}:${VLLM_RERANK_PORT:-8000}"
     volumes:
       - vllm_rerank_cache:/root/.cache/huggingface
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - 'PORT_HEX="$(printf ''%04X'' ${VLLM_RERANK_PORT:-8000})"; cat /proc/net/tcp /proc/net/tcp6 2>/dev/null | grep -q ":$${PORT_HEX} "'
+      interval: 5s
+      timeout: 3s
+      retries: 120
+      start_period: 10s
     restart: unless-stopped

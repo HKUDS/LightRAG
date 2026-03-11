@@ -8,109 +8,138 @@ All targets require Bash 4+ and auto-detect the correct interpreter (`/opt/homeb
 
 | Target | Script flag | Use case |
 |---|---|---|
-| `make env` | _(none)_ | Full wizard — choose install type and all backends |
-| `make env-quick` | `--quick` | Development preset, API keys only |
-| `make env-quick-vllm` | `--quick-vllm` | Development preset + local vLLM embedding + optional reranker |
-| `make env-production` | `--production` | Production preset with security and SSL prompts |
+| `make env-base` | `--base` | Configure LLM, embedding, and reranker (run first) |
+| `make env-storage` | `--storage` | Configure storage backends and databases |
+| `make env-server` | `--server` | Configure server, security, and SSL |
 | `make env-validate` | `--validate` | Validate current `.env` |
+| `make env-security-check` | `--security-check` | Audit current `.env` for security risks |
 | `make env-backup` | `--backup` | Backup current `.env` |
 | `make help` | `--help` | Show script CLI help |
+
+## Modular Configuration
+
+The three wizards are designed to be run independently and in any order, allowing you to update
+one configuration domain without touching the others:
+
+```bash
+make env-base     # Step 1: always required — sets up LLM / embedding / reranker
+make env-storage  # Step 2: optional — configures storage backends; requires .env from env-base
+make env-server   # Step 3: optional — configures port, auth, SSL; requires .env from env-base
+make env-security-check  # Optional audit: report risky auth / whitelist / secret settings
+```
+
+The modular wizards focus on collecting and updating configuration. They do **not** block writes
+based on deployment profile or security posture. Use `make env-security-check` to audit the
+current `.env` after editing or before exposing the service.
+
+**Compose file merging:** When a `docker-compose.final.yml` (or a previously-generated compose
+file) already exists, each wizard preserves the services belonging to the *other* wizards:
+
+- `env-base` detects and keeps any storage services (postgres, neo4j, …) in the compose file
+  while updating vLLM services.
+- `env-storage` detects and keeps any vLLM services (vllm-embed, vllm-rerank) while updating
+  storage services.
+- `env-server` keeps all existing services unchanged and only rebuilds the `lightrag` service's
+  environment overrides (port, SSL paths, etc.).
+
+The generated compose file is always written as `docker-compose.final.yml`. Older files named
+`docker-compose.development.yml`, `docker-compose.production.yml`, etc. are detected automatically
+for backwards compatibility. If a legacy `.env` still contains `LIGHTRAG_SETUP_PROFILE`, that
+value is used only to pick the matching legacy compose file during migration; new `.env` files do
+not persist this variable.
+
+**`.env` ownership principle:** The setup wizard does not promise that one `.env` file will be
+simultaneously correct for both host startup and Docker Compose startup. Instead, each wizard run
+updates `.env` for the runtime you are configuring at that moment, and rerunning the wizard later
+may rewrite `.env` again when you switch between host-oriented and compose-oriented settings.
 
 ## Make Variable Overrides
 
 | Variable | Default | Description |
 |---|---|---|
-| `SETUP_OPTS` | _(empty)_ | Extra flags passed directly to the setup script |
-| `NO_COLOR` | _(unset)_ | Set to `1` to disable colored output |
+| `SETUP_OPTS` | (empty) | Extra flags passed directly to the setup script |
+| `NO_COLOR` | (unset) | Set to `1` to disable colored output |
 
 Examples:
 
 ```bash
-make env-production SETUP_OPTS=--debug
-make env-quick NO_COLOR=1
-SETUP_WAIT_TIMEOUT=120 make env-quick-vllm   # Increase startup wait (seconds)
+make env-base SETUP_OPTS=--debug
+make env-storage NO_COLOR=1
+SETUP_WAIT_TIMEOUT=120 make env-server SETUP_OPTS=--debug
+make env-security-check NO_COLOR=1
 ```
 
 ## Target Details
 
-### `make env` — Full Interactive Wizard
+### `make env-base` — LLM / Embedding / Reranker
 
-Launches the full wizard. The first prompt asks you to choose an install type:
+Configures the three inference providers:
 
-- **development** — Local file-based storage (JSON/NetworkX). Zero external dependencies. Fastest
-  path from clone to running.
-- **production** — Database-backed storage (PostgreSQL + Neo4j by default). Includes security
-  prompts for AUTH_ACCOUNTS, TOKEN_SECRET, LIGHTRAG_API_KEY, and optional SSL.
-- **custom** — Manual selection of every storage backend (KV, vector, graph, doc-status).
+1. **LLM** — provider, model, endpoint, API key
+2. **Embedding** — choice between a remote provider (OpenAI, Ollama, Jina, …) or a local Docker
+   vLLM service (`BAAI/bge-m3` by default). When Docker is chosen, a `vllm-embed` service is added
+   to the compose file and `EMBEDDING_BINDING_HOST` is wired to the container hostname.
+3. **Reranker** — same choice: remote provider or local Docker vLLM reranker.
 
-After install type, the wizard walks through 9–10 steps:
+**First run:** creates `.env` (and optionally `docker-compose.final.yml`) from scratch.
 
-1. LLM provider and API key
-2. Embedding provider and model (dimension auto-set where possible)
-3. Reranker (none / Jina / vLLM)
-4. Storage backends (varies by install type)
-5. Docker image versions for selected services
-6. Docker Compose generation
-7. Security configuration (production only)
-8. SSL configuration (production only)
-9. Service startup (optional)
+**Re-run:** loads the existing `.env` as defaults. If a compose file already exists, its storage
+services are detected and preserved when the compose file is regenerated.
 
-**Output files:**
+### `make env-storage` — Storage Backends
 
-- `.env` — written on host; usable directly for `lightrag-server`
-- `docker-compose.development.yml` / `docker-compose.production.yml` / `docker-compose.custom.yml`
-  — compose file for the chosen install type; never overwrites `docker-compose.yml`
+Configures which storage backends LightRAG uses and how to reach them. Requires `.env` to exist
+(run `make env-base` first).
 
-### `make env-quick` — Development Preset, Minimal Prompts
+Prompts for:
 
-Applies a fixed development preset (JSON/NetworkX storage) and then only asks:
+- KV, vector, graph, and doc-status storage backend selection
+- Connection settings for each required database
+- Whether to run each database as a Docker service
 
-- LLM provider / API key
-- Embedding provider / API key
-- Reranker choice (optional)
-- Whether to generate a Docker Compose file
+When Docker storage services are selected, `docker-compose.final.yml` is generated (or updated).
+Any existing vLLM services are detected and preserved in the compose file.
 
-**What is preserved on re-run:** If `.env` already exists with LLM/embedding settings, those
-values are kept (fill-only). Storage backends are always reset to the development preset.
-Security-specific keys (SSL, AUTH_ACCOUNTS, TOKEN_SECRET, LIGHTRAG_API_KEY, LANGFUSE_*) are
-cleared to prevent stale production credentials from leaking into a development environment.
+### `make env-server` — Server / Security / SSL
 
-### `make env-quick-vllm` — Development Preset + Local vLLM Embedding
+Configures server-level settings. Requires `.env` to exist (run `make env-base` first).
 
-Same as `env-quick` but hard-codes the embedding backend to a local vLLM server:
+Prompts for:
 
-- Embedding: `BAAI/bge-m3` on `http://localhost:8001` (no API key required)
-- Reranker: prompted once with `confirm_default_yes` (defaults to enabling it)
-  - Reranker model: `BAAI/bge-reranker-v2-m3` on `http://localhost:8002`
-
-A `vllm-embed` (and optionally `vllm-rerank`) service is added to the generated
-`docker-compose.development.yml`.
-
-**GPU support:** Set `VLLM_EMBED_DEVICE=cuda` and `VLLM_EMBED_DTYPE=float16` in `.env` before
-running, or answer the device prompt in the wizard. CPU mode uses `vllm/vllm-openai-cpu:latest`;
-GPU mode uses `vllm/vllm-openai:latest` (requires NVIDIA Container Toolkit).
-
-### `make env-production` — Production Preset + Security
-
-Applies PostgreSQL + Neo4j storage defaults and then prompts for:
-
-- LLM provider / API key
-- Embedding provider / API key
-- Reranker
-- Docker image versions
-- Security: AUTH_ACCOUNTS, TOKEN_SECRET, TOKEN_EXPIRE_HOURS, LIGHTRAG_API_KEY, WHITELIST_PATHS
+- Server host and port
+- WebUI title and description
+- Authentication: AUTH_ACCOUNTS, TOKEN_SECRET, TOKEN_EXPIRE_HOURS, LIGHTRAG_API_KEY, WHITELIST_PATHS
 - SSL: certificate and key paths (copied into `./data/certs/` and mounted in the container)
-- Docker Compose generation
+
+If a compose file already exists, all services are preserved and the `lightrag` container's
+environment overrides are updated to reflect the new port and SSL settings.
 
 ### `make env-validate` — Validate Existing `.env`
 
 Reads the current `.env` and reports:
 
 - Missing required keys
-- Keys present in `.env` that are absent from `env.example`
-- Type or format issues (ports, boolean values, etc.)
+- Invalid runtime combinations such as malformed `AUTH_ACCOUNTS`, missing `TOKEN_SECRET` when
+  auth is enabled, bad URIs, or invalid ports
+- File/path problems such as missing SSL assets
 
 Does not modify any files.
+
+`env-validate` checks whether the configuration is internally consistent and loadable. It does not
+enforce a deployment profile or judge whether the resulting setup is sufficiently hardened for
+internet exposure.
+
+### `make env-security-check` — Audit Existing `.env`
+
+Reads the current `.env` and reports security risks such as:
+
+- No API protection configured (`AUTH_ACCOUNTS` and `LIGHTRAG_API_KEY` both unset)
+- `AUTH_ACCOUNTS` enabled with a missing or default `TOKEN_SECRET`
+- `WHITELIST_PATHS` exposing `/api` routes while account-based auth is enabled
+- Sensitive values that still contain `${...}` interpolation syntax
+
+The command does not modify any files. It exits with a non-zero status when any security issues are
+found, which makes it suitable for CI or pre-deploy checks.
 
 ### `make env-backup` — Backup `.env`
 
@@ -133,88 +162,102 @@ Docker services. The wizard uses `env.example` as a template:
 - Commented keys in `env.example` are activated only when the wizard has a value to write,
   positioned at the template line whose commented value best matches what is being written.
 
-The `.env` file can be used directly on the host (`lightrag-server`) without Docker. When a
-Docker Compose file is generated, any container-internal hostnames or SSL paths are injected into
-the compose file's `lightrag` service `environment:` block instead of overwriting `.env`.
+The wizard does not guarantee that a single `.env` stays valid for both host startup and Docker
+Compose startup forever. Treat `.env` as the runtime configuration produced by the most recent
+wizard run. If you later switch from host execution to Docker Compose, or back again, rerun the
+relevant setup target so `.env` is rewritten for that target runtime.
 
-### `docker-compose.<type>.yml`
+The generated `.env` includes `LIGHTRAG_RUNTIME_TARGET=host|compose` near the top as wizard
+metadata describing which runtime the current file is meant for.
 
-Generated alongside `.env`. The suffix matches the install type (`development`, `production`,
-`custom`). The base `docker-compose.yml` is never touched.
+### `docker-compose.final.yml`
 
-When a local vLLM service is selected, the compose file includes `host.docker.internal` overrides
-so the `lightrag` container can reach the vLLM endpoint running on the Docker host — `.env` keeps
-`localhost` for direct host access.
+Generated by `env-base` or `env-storage` when Docker services are selected. The base
+`docker-compose.yml` is never touched.
+
+Previously generated files named `docker-compose.development.yml`, `docker-compose.production.yml`,
+or `docker-compose.custom.yml` are automatically detected for backwards compatibility; new runs
+write to `docker-compose.final.yml`. If a legacy `.env` still carries `LIGHTRAG_SETUP_PROFILE`,
+the migration step prefers the matching legacy compose file before falling back to the default
+search order.
+
+When a local vLLM service is selected, the compose file includes the overrides needed for the
+containerized `lightrag` service to reach that endpoint from inside Docker. If you later switch
+back to host startup, rerun the relevant setup target so `.env` is rewritten for host execution.
 
 ## Image Settings
 
-The wizard lists Docker image tags for selected services and lets you override them before
-generating the compose file. You can also edit these directly in `.env`:
-
-| Variable | Default |
-|---|---|
-| `POSTGRES_IMAGE` | `gzdaniel/postgres-for-rag:16.6` (bundles Apache AGE + pgvector) |
-| `NEO4J_IMAGE_TAG` | latest Neo4j tag at release time |
-| `MONGODB_IMAGE_TAG` | — |
-| `REDIS_IMAGE_TAG` | — |
-| `MILVUS_IMAGE_TAG` | — |
-| `QDRANT_IMAGE_TAG` | — |
-| `MEMGRAPH_IMAGE_TAG` | — |
-| `VLLM_EMBED_IMAGE_TAG` | `vllm/vllm-openai-cpu:latest` (CPU) / `vllm/vllm-openai:latest` (GPU) |
-| `VLLM_RERANK_IMAGE_TAG` | same as embed |
+Bundled service images are defined by the Docker Compose templates in
+`scripts/setup/templates/*.yml`. The modular setup wizards do not prompt for image overrides and
+do not manage image-selection environment variables in `.env`.
 
 ## Common Workflows
 
 ### First-time local development
 
 ```bash
-make env-quick
-# Answer: LLM provider, API key
-# Skip or configure reranker
-# docker-compose.development.yml is generated
-docker compose -f docker-compose.development.yml up -d
+make env-base
+# Answer: LLM provider, API key, embedding provider
+# docker-compose.final.yml is generated if Docker services are selected
+docker compose -f docker-compose.final.yml up -d
 lightrag-server
 ```
 
 ### Local development with local models (no API key)
 
 ```bash
-make env-quick-vllm
-# Embedding and reranker use local vLLM — no external API key needed
-docker compose -f docker-compose.development.yml up -d   # starts vllm-embed + vllm-rerank
+make env-base
+# When prompted "Run embedding model locally via Docker (vLLM)?", answer yes
+# When prompted "Run reranker locally via Docker (vLLM)?", answer yes
+docker compose -f docker-compose.final.yml up -d   # starts vllm-embed + vllm-rerank
 lightrag-server
 ```
 
-### Production deployment
+### Adding a database backend after initial setup
 
 ```bash
-make env-production
-# Answer: LLM API key, security tokens, optional SSL
-docker compose -f docker-compose.production.yml up -d
+make env-storage
+# Select PostgreSQL, answer the connection prompts
+# docker-compose.final.yml is updated; existing vLLM services are preserved
+docker compose -f docker-compose.final.yml up -d
+```
+
+### Production-style deployment with security and SSL
+
+```bash
+make env-base
+make env-storage   # configure PostgreSQL + Neo4j
+make env-server    # set auth tokens, SSL certificate paths
+make env-security-check
+docker compose -f docker-compose.final.yml up -d
 ```
 
 ### Re-running setup after initial configuration
 
 ```bash
-make env-backup          # save current .env
-make env-quick           # re-run; existing LLM/embedding settings are preserved
+make env-backup    # save current .env
+make env-base      # re-run; existing .env values are shown as defaults
 ```
 
 ### Validating before deployment
 
 ```bash
 make env-validate
+make env-security-check
 ```
 
 ## Tips
 
-- Pass `SETUP_OPTS=--debug` to any target for verbose logging: `make env SETUP_OPTS=--debug`
+- Pass `SETUP_OPTS=--debug` to any target for verbose logging: `make env-base SETUP_OPTS=--debug`
 - Set `SETUP_WAIT_TIMEOUT=120` to increase the service startup wait (default 60 s).
 - Set `NO_COLOR=1` to disable colored output in CI or terminals without color support.
 - When exposing PostgreSQL on a custom host port, `.env` keeps `POSTGRES_HOST=localhost` and
   `POSTGRES_PORT=<host-port>` while the compose file overrides the container to `postgres:5432`.
-- For GPU vLLM services, set `VLLM_EMBED_DEVICE=cuda` / `VLLM_RERANK_DEVICE=cuda` and the
-  corresponding `DTYPE=float16`. Requires the NVIDIA Container Toolkit installed on the host.
-- SSL certificates are copied into `./data/certs/` and mounted into the container; `.env` keeps
-  the original host paths for direct host usage.
-- The `configure` Make target is an alias for `make env-quick`.
+- For GPU vLLM services, set `VLLM_EMBED_DEVICE=cuda` / `VLLM_RERANK_DEVICE=cuda`. On reruns, the
+  saved `VLLM_*_DEVICE` value takes precedence over auto-detection so an existing CPU deployment is
+  not silently switched to GPU mode.
+- SSL certificates are copied into `./data/certs/` for Docker use, but `.env` should still be
+  treated as mode-specific output from the latest wizard run rather than a permanent host/compose
+  hybrid configuration.
+- Each wizard can be re-run independently; current `.env` values are loaded as defaults so you
+  only need to change what has actually changed.

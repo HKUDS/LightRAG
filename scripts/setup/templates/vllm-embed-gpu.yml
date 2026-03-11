@@ -1,10 +1,10 @@
   vllm-embed:
-    image: vllm/vllm-openai:${VLLM_EMBED_IMAGE_TAG:-latest}
+    image: vllm/vllm-openai:latest
     runtime: nvidia
     command: >
       --model ${VLLM_EMBED_MODEL:-BAAI/bge-m3}
       --port ${VLLM_EMBED_PORT:-8001}
-      --dtype ${VLLM_EMBED_DTYPE:-float16}
+      --dtype float16
       --api-key ${VLLM_EMBED_API_KEY}
       ${VLLM_EMBED_EXTRA_ARGS:-}
     environment:
@@ -15,6 +15,14 @@
     volumes:
       - vllm_embed_cache:/root/.cache/huggingface
     ipc: host
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - 'PORT_HEX="$(printf ''%04X'' ${VLLM_EMBED_PORT:-8001})"; cat /proc/net/tcp /proc/net/tcp6 2>/dev/null | grep -q ":$${PORT_HEX} "'
+      interval: 5s
+      timeout: 3s
+      retries: 120
+      start_period: 10s
     deploy:
       resources:
         reservations:

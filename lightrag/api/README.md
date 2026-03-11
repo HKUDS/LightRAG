@@ -106,16 +106,19 @@ EMBEDDING_DIM=1024
 
 ### Create .env File With Setup Tool
 
-Instead of editing `env.example` by hand, you can use the interactive setup wizard to generate a configured `.env` (and an optional Docker Compose file) in one step:
+Instead of editing `env.example` by hand, you can use the interactive setup wizard to generate a configured `.env` and, when needed, `docker-compose.final.yml`:
 
 ```bash
-make env-quick          # Development preset — asks for LLM/embedding API keys only
-make env                # Full wizard — choose install type, storage backends, SSL, etc.
-make env-production     # Production preset — adds security and SSL prompts
+make env-base           # Required first step: LLM, embedding, reranker
+make env-storage        # Optional: storage backends and database services
+make env-server         # Optional: server port, auth, and SSL
+make env-security-check # Optional: audit the current .env for security risks
 ```
 
 For a full description of every target and what each flow does, see
 [docs/InteractiveSetup.md](../../docs/InteractiveSetup.md).
+The setup wizards update configuration only; run `make env-security-check` separately to audit the
+current `.env` for security risks before deployment.
 
 ### Starting LightRAG Server
 
@@ -531,7 +534,7 @@ The rerank provider is configured via the `.env` file. Below is an example confi
 ```
 RERANK_BINDING=cohere
 RERANK_MODEL=BAAI/bge-reranker-v2-m3
-RERANK_BINDING_HOST=http://localhost:8000/v1/rerank
+RERANK_BINDING_HOST=http://localhost:8000/rerank
 RERANK_BINDING_API_KEY=your_rerank_api_key_here
 ```
 

@@ -77,10 +77,19 @@ docker compose up -d
 If you used the interactive setup, start the generated stack with:
 
 ```bash
-docker compose -f docker-compose.development.yml up -d
+docker compose -f docker-compose.final.yml up -d
 ```
 
-The interactive setup keeps `.env` host-usable. Container-only hostnames such as `postgres` or `host.docker.internal`, along with staged SSL paths under `/app/data/certs/`, are injected into the generated `docker-compose.*.yml` for the `lightrag` service instead of being persisted back into `.env`.
+The interactive setup keeps `.env` host-usable. Container-only hostnames such as `postgres` or `host.docker.internal`, along with staged SSL paths under `/app/data/certs/`, are injected into the generated `docker-compose.final.yml` for the `lightrag` service instead of being persisted back into `.env`.
+
+Before exposing the generated stack beyond localhost, run:
+
+```bash
+make env-security-check
+```
+
+That command audits the current `.env` for missing authentication, unsafe whitelist settings, weak
+JWT secrets, and other setup-level security risks without rewriting any files.
 
 LightRAG Server uses the following paths for data storage:
 
@@ -92,10 +101,10 @@ data/
 
 ### Optional: local vLLM embedding and reranker
 
-To run embedding and/or reranking locally with vLLM, use `make env-quick-vllm`.
-It fixes the embedding to `BAAI/bge-m3` on port 8001 via a local vLLM server (no API key needed) and optionally adds a `vllm-rerank` reranker on port 8000.
+To run embedding and/or reranking locally with vLLM, run `make env-base` and answer `yes` when prompted to run the embedding model and rerank service locally via Docker.
+That configures the embedding service to use `BAAI/bge-m3` on port 8001 with a local vLLM server, and can also add a `vllm-rerank` service on port 8000.
 
-Alternatively, select `vllm` in the rerank prompt of any interactive setup mode to add the `vllm-rerank` service automatically.
+Alternatively, rerun `make env-base` later and enable only the rerank Docker prompt to add the `vllm-rerank` service automatically.
 vLLM provides a `v1/rerank` endpoint that works with the `cohere` binding.
 
 Example `docker-compose.override.yml` for GPU hosts (embedding + reranker):
@@ -179,34 +188,33 @@ EMBEDDING_DIM=1024
 EMBEDDING_BINDING_HOST=http://localhost:8001/v1
 EMBEDDING_BINDING_API_KEY=local-key
 VLLM_EMBED_DEVICE=cpu
-VLLM_EMBED_DTYPE=float32
 
 RERANK_BINDING=cohere
 RERANK_MODEL=BAAI/bge-reranker-v2-m3
-RERANK_BINDING_HOST=http://localhost:8000/v1/rerank
+RERANK_BINDING_HOST=http://localhost:8000/rerank
 RERANK_BINDING_API_KEY=local-key
 VLLM_RERANK_DEVICE=cpu
-VLLM_RERANK_DTYPE=float32
 ```
 
 If LightRAG runs in Docker while vLLM runs on the host, the generated compose file rewrites those endpoints to:
 
 ```bash
 EMBEDDING_BINDING_HOST=http://host.docker.internal:8001/v1
-RERANK_BINDING_HOST=http://host.docker.internal:8000/v1/rerank
+RERANK_BINDING_HOST=http://host.docker.internal:8000/rerank
 ```
 
 For GPU, set:
 
 ```bash
 VLLM_EMBED_DEVICE=cuda
-VLLM_EMBED_DTYPE=float16
 VLLM_RERANK_DEVICE=cuda
-VLLM_RERANK_DTYPE=float16
 ```
 
 Ensure the NVIDIA Container Toolkit is installed and the host has CUDA drivers available.
 The setup wizard uses the CPU image by default for `cpu` device and the GPU image for `cuda` device.
+When rerunning `make env-base`, an existing `VLLM_EMBED_DEVICE` / `VLLM_RERANK_DEVICE` value is
+preserved instead of being overwritten by a fresh GPU auto-detection result.
+Those templates already pin the matching vLLM `--dtype` (`float32` on CPU, `float16` on CUDA), so no separate `VLLM_*_DTYPE` environment variables are needed.
 
 ### SSL certificates
 
