@@ -1325,14 +1325,32 @@ collect_server_config() {
 
 collect_ssl_config() {
   local cert key
+  local ssl_enabled_default="no"
 
-  if ! confirm_default_yes "Enable SSL/TLS for the API server?"; then
-    unset 'ENV_VALUES[SSL]'
-    unset 'ENV_VALUES[SSL_CERTFILE]'
-    unset 'ENV_VALUES[SSL_KEYFILE]'
-    SSL_CERT_SOURCE_PATH=""
-    SSL_KEY_SOURCE_PATH=""
-    return
+  case "${ENV_VALUES[SSL]:-}" in
+    true|TRUE|True|1|yes|YES|Yes|y|Y|on|ON|On|t|T)
+      ssl_enabled_default="yes"
+      ;;
+  esac
+
+  if [[ "$ssl_enabled_default" == "yes" ]]; then
+    if ! confirm_default_yes "Enable SSL/TLS for the API server?"; then
+      unset 'ENV_VALUES[SSL]'
+      unset 'ENV_VALUES[SSL_CERTFILE]'
+      unset 'ENV_VALUES[SSL_KEYFILE]'
+      SSL_CERT_SOURCE_PATH=""
+      SSL_KEY_SOURCE_PATH=""
+      return
+    fi
+  else
+    if ! confirm_default_no "Enable SSL/TLS for the API server?"; then
+      unset 'ENV_VALUES[SSL]'
+      unset 'ENV_VALUES[SSL_CERTFILE]'
+      unset 'ENV_VALUES[SSL_KEYFILE]'
+      SSL_CERT_SOURCE_PATH=""
+      SSL_KEY_SOURCE_PATH=""
+      return
+    fi
   fi
 
   cert="$(prompt_until_valid "SSL certificate file" "${ENV_VALUES[SSL_CERTFILE]:-}" validate_existing_file)"
