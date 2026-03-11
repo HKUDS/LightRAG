@@ -1714,12 +1714,15 @@ env_base_flow() {
   local vllm_embed_api_key=""
   local vllm_rerank_api_key=""
   local existing_vllm_embed_model=""
+  local existing_embedding_dim=""
   local existing_vllm_embed_port=""
   local existing_vllm_embed_host=""
+  local existing_vllm_embed_device=""
   local previous_embedding_provider=""
   local existing_vllm_rerank_model=""
   local existing_vllm_rerank_port=""
   local existing_vllm_rerank_host=""
+  local existing_vllm_rerank_device=""
   local previous_rerank_provider=""
   # Auto-detect CUDA once; used for both embed and rerank
   local has_gpu="no"
@@ -1759,11 +1762,16 @@ env_base_flow() {
 
   if [[ "$use_docker_embed" == "yes" ]]; then
     existing_vllm_embed_model="${ENV_VALUES[VLLM_EMBED_MODEL]:-}"
+    existing_embedding_dim="${ENV_VALUES[EMBEDDING_DIM]:-}"
     existing_vllm_embed_port="${ENV_VALUES[VLLM_EMBED_PORT]:-}"
     existing_vllm_embed_host="${ENV_VALUES[EMBEDDING_BINDING_HOST]:-}"
+    existing_vllm_embed_device="${ENV_VALUES[VLLM_EMBED_DEVICE]:-}"
     apply_preset_overwrite "${PRESET_VLLM_EMBEDDING[@]}"
     if [[ -n "$existing_vllm_embed_port" ]]; then
       ENV_VALUES["VLLM_EMBED_PORT"]="$existing_vllm_embed_port"
+    fi
+    if [[ -n "$existing_embedding_dim" ]]; then
+      ENV_VALUES["EMBEDDING_DIM"]="$existing_embedding_dim"
     fi
     if [[ "$previous_embedding_provider" == "vllm" && -n "$existing_vllm_embed_host" ]]; then
       ENV_VALUES["EMBEDDING_BINDING_HOST"]="$existing_vllm_embed_host"
@@ -1775,7 +1783,7 @@ env_base_flow() {
     ENV_VALUES["VLLM_EMBED_MODEL"]="$embed_model"
     ENV_VALUES["EMBEDDING_MODEL"]="$embed_model"
 
-    local vllm_embed_device="${ENV_VALUES[VLLM_EMBED_DEVICE]:-}"
+    local vllm_embed_device="$existing_vllm_embed_device"
     if [[ "$vllm_embed_device" != "cpu" && "$vllm_embed_device" != "cuda" ]]; then
       vllm_embed_device="cpu"
       if [[ "$has_gpu" == "yes" ]]; then
@@ -1830,6 +1838,7 @@ env_base_flow() {
       existing_vllm_rerank_model="${ENV_VALUES[VLLM_RERANK_MODEL]:-}"
       existing_vllm_rerank_port="${ENV_VALUES[VLLM_RERANK_PORT]:-}"
       existing_vllm_rerank_host="${ENV_VALUES[RERANK_BINDING_HOST]:-}"
+      existing_vllm_rerank_device="${ENV_VALUES[VLLM_RERANK_DEVICE]:-}"
       apply_preset_overwrite "${PRESET_VLLM_RERANKER[@]}"
       local rerank_model rerank_port
       if [[ -n "$existing_vllm_rerank_port" ]]; then
@@ -1846,7 +1855,7 @@ env_base_flow() {
       ENV_VALUES["RERANK_MODEL"]="$rerank_model"
       ENV_VALUES["VLLM_RERANK_PORT"]="$rerank_port"
 
-      local vllm_rerank_device="${ENV_VALUES[VLLM_RERANK_DEVICE]:-}"
+      local vllm_rerank_device="$existing_vllm_rerank_device"
       if [[ "$vllm_rerank_device" != "cpu" && "$vllm_rerank_device" != "cuda" ]]; then
         vllm_rerank_device="cpu"
         if [[ "$has_gpu" == "yes" ]]; then

@@ -1880,7 +1880,7 @@ env_base_flow
 def test_env_base_flow_preserves_existing_vllm_embedding_settings_on_rerun(
     tmp_path: Path,
 ) -> None:
-    """Rerunning env-base should keep saved local vLLM embedding model and port."""
+    """Rerunning env-base should keep saved local vLLM embedding settings."""
 
     write_text_lines(
         tmp_path / ".env",
@@ -1891,7 +1891,7 @@ def test_env_base_flow_preserves_existing_vllm_embedding_settings_on_rerun(
             "LLM_BINDING_API_KEY=sk-existing",
             "EMBEDDING_BINDING=openai",
             "EMBEDDING_MODEL=BAAI/custom-embed",
-            "EMBEDDING_DIM=1024",
+            "EMBEDDING_DIM=768",
             "EMBEDDING_BINDING_HOST=http://localhost:9101/v1",
             "EMBEDDING_BINDING_API_KEY=embed-key",
             "LIGHTRAG_SETUP_EMBEDDING_PROVIDER=vllm",
@@ -1922,6 +1922,7 @@ confirm_default_yes() {{
 
 finalize_base_setup() {{
   printf 'EMBEDDING_MODEL=%s\\n' "${{ENV_VALUES[EMBEDDING_MODEL]}}"
+  printf 'EMBEDDING_DIM=%s\\n' "${{ENV_VALUES[EMBEDDING_DIM]}}"
   printf 'EMBEDDING_BINDING_HOST=%s\\n' "${{ENV_VALUES[EMBEDDING_BINDING_HOST]}}"
   printf 'VLLM_EMBED_MODEL=%s\\n' "${{ENV_VALUES[VLLM_EMBED_MODEL]}}"
   printf 'VLLM_EMBED_PORT=%s\\n' "${{ENV_VALUES[VLLM_EMBED_PORT]}}"
@@ -1932,6 +1933,7 @@ env_base_flow
     )
 
     assert values["EMBEDDING_MODEL"] == "BAAI/custom-embed"
+    assert values["EMBEDDING_DIM"] == "768"
     assert values["EMBEDDING_BINDING_HOST"] == "http://localhost:9101/v1"
     assert values["VLLM_EMBED_MODEL"] == "BAAI/custom-embed"
     assert values["VLLM_EMBED_PORT"] == "9101"
@@ -2044,6 +2046,100 @@ env_base_flow
     )
 
     assert values["VLLM_EMBED_DEVICE"] == "cpu"
+
+
+def test_env_base_flow_preserves_existing_vllm_embedding_cuda_device_on_rerun(
+    tmp_path: Path,
+) -> None:
+    """Saved vLLM embedding CUDA mode should survive env-base reruns."""
+
+    write_text_lines(
+        tmp_path / ".env",
+        [
+            "LLM_BINDING=openai",
+            "LLM_MODEL=gpt-4o-mini",
+            "LLM_BINDING_HOST=https://api.openai.com/v1",
+            "LLM_BINDING_API_KEY=sk-existing",
+            "EMBEDDING_BINDING=openai",
+            "EMBEDDING_MODEL=BAAI/custom-embed",
+            "EMBEDDING_DIM=1024",
+            "EMBEDDING_BINDING_HOST=http://localhost:9101/v1",
+            "EMBEDDING_BINDING_API_KEY=embed-key",
+            "LIGHTRAG_SETUP_EMBEDDING_PROVIDER=vllm",
+            "VLLM_EMBED_MODEL=BAAI/custom-embed",
+            "VLLM_EMBED_PORT=9101",
+            "VLLM_EMBED_DEVICE=cuda",
+        ],
+    )
+
+    values = run_bash_lines(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+
+nvidia-smi() {{ return 0; }}
+prompt_choice() {{ printf '%s' "$2"; }}
+prompt_with_default() {{ printf '%s' "$2"; }}
+prompt_until_valid() {{ printf '%s' "$2"; }}
+prompt_secret_with_default() {{ printf '%s' "$2"; }}
+prompt_secret_until_valid_with_default() {{ printf '%s' "$2"; }}
+confirm_default_no() {{ return 1; }}
+confirm_default_yes() {{
+  case "$1" in
+    "Run embedding model locally via Docker (vLLM)?") return 0 ;;
+    *) return 1 ;;
+  esac
+}}
+
+finalize_base_setup() {{
+  printf 'VLLM_EMBED_DEVICE=%s\\n' "${{ENV_VALUES[VLLM_EMBED_DEVICE]}}"
+}}
+
+env_base_flow
+"""
+    )
+
+    assert values["VLLM_EMBED_DEVICE"] == "cuda"
+
+
+def test_env_base_flow_defaults_new_vllm_embedding_to_cuda_on_gpu_host(
+    tmp_path: Path,
+) -> None:
+    """Fresh local vLLM embedding setup should honor GPU auto-detection."""
+
+    values = run_bash_lines(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+
+nvidia-smi() {{ return 0; }}
+prompt_choice() {{ printf '%s' "$2"; }}
+prompt_with_default() {{ printf '%s' "$2"; }}
+prompt_until_valid() {{ printf '%s' "$2"; }}
+prompt_secret_with_default() {{ printf '%s' "$2"; }}
+prompt_secret_until_valid_with_default() {{ printf '%s' "$2"; }}
+confirm_default_no() {{
+  case "$1" in
+    "Run embedding model locally via Docker (vLLM)?") return 0 ;;
+    "Enable reranking?") return 1 ;;
+    *) return 1 ;;
+  esac
+}}
+confirm_default_yes() {{
+  return 1
+}}
+
+finalize_base_setup() {{
+  printf 'VLLM_EMBED_DEVICE=%s\\n' "${{ENV_VALUES[VLLM_EMBED_DEVICE]}}"
+}}
+
+env_base_flow
+"""
+    )
+
+    assert values["VLLM_EMBED_DEVICE"] == "cuda"
 
 
 def test_env_base_flow_preserves_ssl_config_on_rerun(tmp_path: Path) -> None:
@@ -2582,6 +2678,66 @@ env_base_flow
     )
 
     assert values["VLLM_RERANK_DEVICE"] == "cpu"
+
+
+def test_env_base_flow_preserves_existing_vllm_rerank_cuda_device_on_rerun(
+    tmp_path: Path,
+) -> None:
+    """Saved vLLM rerank CUDA mode should survive env-base reruns."""
+
+    write_text_lines(
+        tmp_path / ".env",
+        [
+            "LLM_BINDING=openai",
+            "LLM_MODEL=gpt-4o-mini",
+            "LLM_BINDING_HOST=https://api.openai.com/v1",
+            "LLM_BINDING_API_KEY=sk-existing",
+            "RERANK_BINDING=cohere",
+            "RERANK_MODEL=BAAI/custom-rerank",
+            "RERANK_BINDING_HOST=http://localhost:9200/rerank",
+            "RERANK_BINDING_API_KEY=rerank-key",
+            "LIGHTRAG_SETUP_RERANK_PROVIDER=vllm",
+            "VLLM_RERANK_MODEL=BAAI/custom-rerank",
+            "VLLM_RERANK_PORT=9200",
+            "VLLM_RERANK_DEVICE=cuda",
+        ],
+    )
+
+    values = run_bash_lines(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+
+nvidia-smi() {{ return 0; }}
+prompt_choice() {{ printf '%s' "$2"; }}
+prompt_with_default() {{ printf '%s' "$2"; }}
+prompt_until_valid() {{ printf '%s' "$2"; }}
+prompt_secret_with_default() {{ printf '%s' "$2"; }}
+prompt_secret_until_valid_with_default() {{ printf '%s' "$2"; }}
+confirm_default_no() {{
+  case "$1" in
+    "Enable reranking?") return 0 ;;
+    *) return 1 ;;
+  esac
+}}
+confirm_default_yes() {{
+  case "$1" in
+    "Run rerank service locally via Docker?") return 0 ;;
+    *) return 1 ;;
+  esac
+}}
+collect_embedding_config() {{ :; }}
+
+finalize_base_setup() {{
+  printf 'VLLM_RERANK_DEVICE=%s\\n' "${{ENV_VALUES[VLLM_RERANK_DEVICE]}}"
+}}
+
+env_base_flow
+"""
+    )
+
+    assert values["VLLM_RERANK_DEVICE"] == "cuda"
 
 
 def test_env_storage_flow_applies_selected_storage_backends(
