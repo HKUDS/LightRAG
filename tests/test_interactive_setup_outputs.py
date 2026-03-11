@@ -3424,6 +3424,216 @@ env_storage_flow
     assert values["EMBEDDING_BINDING"] == "ollama"
 
 
+def test_env_storage_flow_reuses_saved_storage_docker_default(
+    tmp_path: Path,
+) -> None:
+    """Saved storage deployment metadata should drive the next Docker prompt default."""
+
+    write_text_lines(
+        tmp_path / ".env",
+        [
+            "LIGHTRAG_SETUP_POSTGRES_DEPLOYMENT=docker",
+            "LIGHTRAG_KV_STORAGE=PGKVStorage",
+            "LIGHTRAG_VECTOR_STORAGE=PGVectorStorage",
+            "LIGHTRAG_GRAPH_STORAGE=PGGraphStorage",
+            "LIGHTRAG_DOC_STATUS_STORAGE=PGDocStatusStorage",
+        ],
+    )
+
+    values = run_bash_lines(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+
+select_storage_backends() {{
+  ENV_VALUES[LIGHTRAG_KV_STORAGE]="PGKVStorage"
+  ENV_VALUES[LIGHTRAG_VECTOR_STORAGE]="PGVectorStorage"
+  ENV_VALUES[LIGHTRAG_GRAPH_STORAGE]="PGGraphStorage"
+  ENV_VALUES[LIGHTRAG_DOC_STATUS_STORAGE]="PGDocStatusStorage"
+  REQUIRED_DB_TYPES[postgresql]=1
+}}
+collect_postgres_config() {{
+  printf 'POSTGRES_DEFAULT_DOCKER=%s\\n' "$1"
+}}
+finalize_storage_setup() {{ :; }}
+
+env_storage_flow
+"""
+    )
+
+    assert values["POSTGRES_DEFAULT_DOCKER"] == "yes"
+
+
+def test_env_storage_flow_writes_storage_docker_marker_for_selected_service(
+    tmp_path: Path,
+) -> None:
+    """Choosing a bundled storage service should persist its deployment marker in `.env`."""
+
+    write_text_lines(
+        tmp_path / ".env",
+        [
+            "LLM_BINDING=ollama",
+            "EMBEDDING_BINDING=ollama",
+        ],
+    )
+    write_text_lines(
+        tmp_path / "env.example",
+        (REPO_ROOT / "env.example").read_text(encoding="utf-8").splitlines(),
+    )
+    (tmp_path / "docker-compose.yml").write_text(
+        (REPO_ROOT / "docker-compose.yml").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+
+select_storage_backends() {{
+  ENV_VALUES[LIGHTRAG_KV_STORAGE]="PGKVStorage"
+  ENV_VALUES[LIGHTRAG_VECTOR_STORAGE]="PGVectorStorage"
+  ENV_VALUES[LIGHTRAG_GRAPH_STORAGE]="PGGraphStorage"
+  ENV_VALUES[LIGHTRAG_DOC_STATUS_STORAGE]="PGDocStatusStorage"
+  REQUIRED_DB_TYPES[postgresql]=1
+}}
+collect_postgres_config() {{
+  add_docker_service "postgres"
+  ENV_VALUES[POSTGRES_HOST]="localhost"
+  ENV_VALUES[POSTGRES_PORT]="5432"
+  ENV_VALUES[POSTGRES_USER]="lightrag"
+  ENV_VALUES[POSTGRES_PASSWORD]="secret"
+  ENV_VALUES[POSTGRES_DATABASE]="lightrag"
+}}
+validate_required_variables() {{ return 0; }}
+validate_mongo_vector_storage_config() {{ return 0; }}
+validate_sensitive_env_literals() {{ return 0; }}
+confirm_default_yes() {{ return 0; }}
+confirm_default_no() {{ return 1; }}
+
+env_storage_flow
+"""
+    )
+
+    generated_env = (tmp_path / ".env").read_text(encoding="utf-8")
+    assert any(
+        line == "LIGHTRAG_SETUP_POSTGRES_DEPLOYMENT=docker"
+        for line in generated_env.splitlines()
+    )
+    assert "LIGHTRAG_RUNTIME_TARGET=compose" in generated_env
+
+
+def test_env_storage_flow_removes_storage_docker_marker_when_switching_to_host(
+    tmp_path: Path,
+) -> None:
+    """Choosing a host-managed storage backend should clear a previously saved Docker marker."""
+
+    write_text_lines(
+        tmp_path / ".env",
+        [
+            "LIGHTRAG_SETUP_POSTGRES_DEPLOYMENT=docker",
+            "LIGHTRAG_KV_STORAGE=PGKVStorage",
+            "LIGHTRAG_VECTOR_STORAGE=PGVectorStorage",
+            "LIGHTRAG_GRAPH_STORAGE=PGGraphStorage",
+            "LIGHTRAG_DOC_STATUS_STORAGE=PGDocStatusStorage",
+        ],
+    )
+    write_text_lines(
+        tmp_path / "env.example",
+        (REPO_ROOT / "env.example").read_text(encoding="utf-8").splitlines(),
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+
+select_storage_backends() {{
+  ENV_VALUES[LIGHTRAG_KV_STORAGE]="PGKVStorage"
+  ENV_VALUES[LIGHTRAG_VECTOR_STORAGE]="PGVectorStorage"
+  ENV_VALUES[LIGHTRAG_GRAPH_STORAGE]="PGGraphStorage"
+  ENV_VALUES[LIGHTRAG_DOC_STATUS_STORAGE]="PGDocStatusStorage"
+  REQUIRED_DB_TYPES[postgresql]=1
+}}
+collect_postgres_config() {{
+  ENV_VALUES[POSTGRES_HOST]="localhost"
+  ENV_VALUES[POSTGRES_PORT]="5432"
+  ENV_VALUES[POSTGRES_USER]="lightrag"
+  ENV_VALUES[POSTGRES_PASSWORD]="secret"
+  ENV_VALUES[POSTGRES_DATABASE]="lightrag"
+}}
+validate_required_variables() {{ return 0; }}
+validate_mongo_vector_storage_config() {{ return 0; }}
+validate_sensitive_env_literals() {{ return 0; }}
+confirm_default_yes() {{ return 0; }}
+confirm_default_no() {{ return 1; }}
+
+env_storage_flow
+"""
+    )
+
+    generated_env = (tmp_path / ".env").read_text(encoding="utf-8")
+    assert not any(
+        line.startswith("LIGHTRAG_SETUP_POSTGRES_DEPLOYMENT=")
+        for line in generated_env.splitlines()
+    )
+    assert "LIGHTRAG_RUNTIME_TARGET=host" in generated_env
+
+
+def test_env_storage_flow_clears_unused_storage_docker_markers(
+    tmp_path: Path,
+) -> None:
+    """Markers for databases no longer required by the selected backends should be removed."""
+
+    write_text_lines(
+        tmp_path / ".env",
+        [
+            "LIGHTRAG_SETUP_POSTGRES_DEPLOYMENT=docker",
+            "LIGHTRAG_KV_STORAGE=PGKVStorage",
+            "LIGHTRAG_VECTOR_STORAGE=PGVectorStorage",
+            "LIGHTRAG_GRAPH_STORAGE=PGGraphStorage",
+            "LIGHTRAG_DOC_STATUS_STORAGE=PGDocStatusStorage",
+        ],
+    )
+    write_text_lines(
+        tmp_path / "env.example",
+        (REPO_ROOT / "env.example").read_text(encoding="utf-8").splitlines(),
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+
+select_storage_backends() {{
+  ENV_VALUES[LIGHTRAG_KV_STORAGE]="JsonKVStorage"
+  ENV_VALUES[LIGHTRAG_VECTOR_STORAGE]="NanoVectorDBStorage"
+  ENV_VALUES[LIGHTRAG_GRAPH_STORAGE]="NetworkXStorage"
+  ENV_VALUES[LIGHTRAG_DOC_STATUS_STORAGE]="JsonDocStatusStorage"
+}}
+collect_database_config() {{ :; }}
+validate_required_variables() {{ return 0; }}
+validate_mongo_vector_storage_config() {{ return 0; }}
+validate_sensitive_env_literals() {{ return 0; }}
+confirm_default_yes() {{ return 0; }}
+confirm_default_no() {{ return 1; }}
+
+env_storage_flow
+"""
+    )
+
+    generated_env = (tmp_path / ".env").read_text(encoding="utf-8")
+    assert not any(
+        line.startswith("LIGHTRAG_SETUP_POSTGRES_DEPLOYMENT=")
+        for line in generated_env.splitlines()
+    )
+    assert "LIGHTRAG_KV_STORAGE=JsonKVStorage" in generated_env
+
+
 def test_env_storage_flow_generates_env_and_compose_files(tmp_path: Path) -> None:
     """env-storage should write updated .env and a docker-compose.final.yml."""
 
@@ -3492,6 +3702,59 @@ env_storage_flow
     assert "services:" in generated_compose
     assert "  lightrag:" in generated_compose
     assert "env_file:" not in generated_compose
+
+
+def test_env_storage_flow_clears_mongodb_docker_marker_for_atlas_vector_storage(
+    tmp_path: Path,
+) -> None:
+    """MongoDB Atlas-only vector storage should not preserve a local Docker deployment marker."""
+
+    write_text_lines(
+        tmp_path / ".env",
+        [
+            "LIGHTRAG_SETUP_MONGODB_DEPLOYMENT=docker",
+            "LIGHTRAG_KV_STORAGE=MongoKVStorage",
+            "LIGHTRAG_VECTOR_STORAGE=MongoVectorDBStorage",
+            "LIGHTRAG_GRAPH_STORAGE=MongoGraphStorage",
+            "LIGHTRAG_DOC_STATUS_STORAGE=MongoDocStatusStorage",
+        ],
+    )
+    write_text_lines(
+        tmp_path / "env.example",
+        (REPO_ROOT / "env.example").read_text(encoding="utf-8").splitlines(),
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+
+select_storage_backends() {{
+  ENV_VALUES[LIGHTRAG_KV_STORAGE]="MongoKVStorage"
+  ENV_VALUES[LIGHTRAG_VECTOR_STORAGE]="MongoVectorDBStorage"
+  ENV_VALUES[LIGHTRAG_GRAPH_STORAGE]="MongoGraphStorage"
+  ENV_VALUES[LIGHTRAG_DOC_STATUS_STORAGE]="MongoDocStatusStorage"
+  REQUIRED_DB_TYPES[mongodb]=1
+}}
+prompt_until_valid() {{ printf '%s' "$2"; }}
+prompt_with_default() {{ printf '%s' "$2"; }}
+validate_required_variables() {{ return 0; }}
+validate_mongo_vector_storage_config() {{ return 0; }}
+validate_sensitive_env_literals() {{ return 0; }}
+confirm_default_yes() {{ return 0; }}
+confirm_default_no() {{ return 1; }}
+
+env_storage_flow
+"""
+    )
+
+    generated_env = (tmp_path / ".env").read_text(encoding="utf-8")
+    assert not any(
+        line.startswith("LIGHTRAG_SETUP_MONGODB_DEPLOYMENT=")
+        for line in generated_env.splitlines()
+    )
+    assert "MONGO_URI=mongodb+srv://cluster.example.mongodb.net/" in generated_env
 
 
 def test_env_storage_flow_preserves_existing_compose_ssl_when_env_paths_are_stale(

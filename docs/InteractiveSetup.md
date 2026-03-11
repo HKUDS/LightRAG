@@ -97,6 +97,10 @@ Prompts for:
 - Connection settings for each required database
 - Whether to run each database as a Docker service
 
+On reruns, `env-storage` reloads wizard-only `LIGHTRAG_SETUP_*_DEPLOYMENT=docker`
+metadata from `.env` so each database's Docker prompt defaults to the previously
+selected deployment mode.
+
 When Docker storage services are selected, `docker-compose.final.yml` is generated (or updated).
 Any existing vLLM services are detected and preserved in the compose file.
 
