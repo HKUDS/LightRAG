@@ -4422,56 +4422,6 @@ show_summary
     assert "reader:hunter2" not in output
 
 
-def test_finalize_setup_validates_inherited_ssl_assets_before_staging(
-    tmp_path: Path,
-) -> None:
-    """Finalize should fail with a clear validation error before copying missing SSL files."""
-
-    (tmp_path / "env.example").write_text(
-        "\n".join(
-            [
-                "LIGHTRAG_KV_STORAGE=JsonKVStorage",
-                "LIGHTRAG_VECTOR_STORAGE=NanoVectorDBStorage",
-                "LIGHTRAG_GRAPH_STORAGE=NetworkXStorage",
-                "LIGHTRAG_DOC_STATUS_STORAGE=JsonDocStatusStorage",
-            ]
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-
-    result = subprocess.run(
-        [
-            "bash",
-            "-lc",
-            f"""
-source "{REPO_ROOT}/scripts/setup/setup.sh"
-REPO_ROOT="{tmp_path}"
-reset_state
-
-ENV_VALUES[LIGHTRAG_KV_STORAGE]="JsonKVStorage"
-ENV_VALUES[LIGHTRAG_VECTOR_STORAGE]="NanoVectorDBStorage"
-ENV_VALUES[LIGHTRAG_GRAPH_STORAGE]="NetworkXStorage"
-ENV_VALUES[LIGHTRAG_DOC_STATUS_STORAGE]="JsonDocStatusStorage"
-SSL_CERT_SOURCE_PATH="/missing/cert.pem"
-SSL_KEY_SOURCE_PATH="/missing/key.pem"
-
-
-finalize_setup
-""",
-        ],
-        cwd=REPO_ROOT,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-
-    assert result.returncode == 1
-    assert "Invalid SSL_CERTFILE" in result.stderr
-    assert "Invalid SSL_KEYFILE" not in result.stderr
-    assert "No such file or directory" not in result.stderr
-
-
 def test_validate_env_file_handles_supported_and_unsupported_uri_schemes(
     tmp_path: Path,
 ) -> None:

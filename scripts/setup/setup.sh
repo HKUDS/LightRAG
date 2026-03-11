@@ -1596,120 +1596,6 @@ prepare_inherited_ssl_assets_for_compose() {
   fi
 }
 
-finalize_setup() {
-  local backup_path
-  local compose_suffix
-  local compose_file
-  local generate_compose="no"
-
-  if [[ ! -f "${REPO_ROOT}/env.example" ]]; then
-    format_error "env.example is missing in $REPO_ROOT" "Restore env.example before running setup."
-    return 1
-  fi
-
-  if [[ ! -w "$REPO_ROOT" ]]; then
-    format_error "No write permission in $REPO_ROOT" "Run the setup from a writable directory."
-    return 1
-  fi
-
-  if [[ -n "${ENV_VALUES[LIGHTRAG_KV_STORAGE]:-}" ]]; then
-    if ! validate_required_variables \
-      "${ENV_VALUES[LIGHTRAG_KV_STORAGE]}" \
-      "${ENV_VALUES[LIGHTRAG_VECTOR_STORAGE]}" \
-      "${ENV_VALUES[LIGHTRAG_GRAPH_STORAGE]}" \
-      "${ENV_VALUES[LIGHTRAG_DOC_STATUS_STORAGE]}"; then
-      return 1
-    fi
-  fi
-
-  if ! validate_mongo_vector_storage_config \
-    "${ENV_VALUES[LIGHTRAG_VECTOR_STORAGE]:-}" \
-    "${ENV_VALUES[MONGO_URI]:-}"; then
-    return 1
-  fi
-
-  if ! validate_security_config \
-    "${ENV_VALUES[AUTH_ACCOUNTS]:-}" \
-    "${ENV_VALUES[TOKEN_SECRET]:-}" \
-    "${ENV_VALUES[LIGHTRAG_API_KEY]:-}"; then
-    return 1
-  fi
-
-  if ! validate_sensitive_env_literals; then
-    return 1
-  fi
-
-  show_summary
-
-  if ! confirm_default_yes "Next step will generate the .env file. Ready to proceed or cancel?"; then
-    log_warn "Setup cancelled."
-    return 1
-  fi
-
-  if ((${#DOCKER_SERVICES[@]} > 0)); then
-    generate_compose="yes"
-  else
-    if confirm_default_no "Generate docker-compose for LightRAG only?"; then
-      generate_compose="yes"
-    fi
-  fi
-
-  if [[ "$generate_compose" == "yes" ]]; then
-    if ! prepare_inherited_ssl_assets_for_compose "$existing_compose"; then
-      return 1
-    fi
-    prepare_compose_env_overrides
-  fi
-
-  # When deploying with Docker, the BINDING_HOST in .env is overridden by the compose environment section
-  # to point to the appropriate hostname instead of localhost
-  # (e.g., host.docker.internal or the service name in the compose network)
-
-  backup_path="$(backup_env_file)"
-  if [[ -n "$backup_path" ]]; then
-    log_success "Backed up existing .env to $backup_path"
-  fi
-
-  if [[ -n "$SSL_CERT_SOURCE_PATH" ]] && ! validate_existing_file "$SSL_CERT_SOURCE_PATH"; then
-    format_error \
-      "Invalid SSL_CERTFILE" \
-      "Set it to an existing certificate file, disable SSL, or rerun the full setup to choose a new certificate."
-    return 1
-  fi
-
-  if [[ -n "$SSL_KEY_SOURCE_PATH" ]] && ! validate_existing_file "$SSL_KEY_SOURCE_PATH"; then
-    format_error \
-      "Invalid SSL_KEYFILE" \
-      "Set it to an existing private key file, disable SSL, or rerun the full setup to choose a new key."
-    return 1
-  fi
-
-  if [[ -n "$SSL_CERT_SOURCE_PATH" || -n "$SSL_KEY_SOURCE_PATH" ]]; then
-    stage_ssl_assets "$SSL_CERT_SOURCE_PATH" "$SSL_KEY_SOURCE_PATH"
-  fi
-
-  log_debug "Writing .env to ${REPO_ROOT}/.env"
-  clear_deprecated_vllm_dtype_state
-  generate_env_file "${REPO_ROOT}/env.example" "${REPO_ROOT}/.env"
-  log_success "Wrote .env"
-
-  if [[ "$generate_compose" == "yes" ]]; then
-    compose_suffix="${DEPLOYMENT_TYPE:-custom}"
-    compose_file="${REPO_ROOT}/docker-compose.${compose_suffix}.yml"
-    if [[ -f "$compose_file" ]]; then
-      if ! confirm_default_yes "Overwrite existing ${compose_file}?"; then
-        compose_file="${REPO_ROOT}/docker-compose.${compose_suffix}.$(date +%Y%m%d_%H%M%S).yml"
-        log_warn "Using new compose file: $compose_file"
-      fi
-    fi
-    generate_docker_compose "$compose_file"
-    log_success "Wrote ${compose_file}"
-    echo "  To start later: docker compose -f ${compose_file} up -d"
-  else
-    log_warn "No docker services selected."
-  fi
-}
-
 env_base_flow() {
   local vllm_embed_api_key=""
   local vllm_rerank_api_key=""
@@ -1807,6 +1693,7 @@ env_base_flow() {
   fi
 
   # ── Reranker ─────────────────────────────────────────────────────────────────
+  echo ""
   log_step "Reranker configuration"
   local rerank_enabled_default="no"
   if [[ -n "${ENV_VALUES[RERANK_BINDING]:-}" && "${ENV_VALUES[RERANK_BINDING]}" != "null" ]]; then
