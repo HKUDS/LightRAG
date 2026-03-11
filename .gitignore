@@ -16,10 +16,7 @@ venv/
 .env.backup.*
 
 # Generated Docker Compose files (output of setup wizard)
-docker-compose.final.yml
-docker-compose.development.yml
-docker-compose.production.yml
-docker-compose.custom.yml
+docker-compose.*.yml
 
 # Build / Distribution
 dist/
