@@ -1604,7 +1604,9 @@ show_summary() {
 
   echo
   log_info "Configuration summary:"
-  for key in "${!ENV_VALUES[@]}"; do
+  local -a sorted_keys
+  mapfile -t sorted_keys < <(printf '%s\n' "${!ENV_VALUES[@]}" | sort)
+  for key in "${sorted_keys[@]}"; do
     value="${ENV_VALUES[$key]}"
     if is_sensitive_env_key "$key"; then
       value="***"
