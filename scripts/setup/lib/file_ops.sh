@@ -4,6 +4,7 @@
 _FILE_OPS_CLEANUP_TMP=()
 declare -A _FILE_OPS_VOLUME_BLOCKS=()
 declare -a _FILE_OPS_VOLUME_ORDER=()
+_WIZARD_MANAGED_SERVICES_MARKER="# __WIZARD_MANAGED_SERVICES__"
 _file_ops_cleanup() {
   local f
   for f in "${_FILE_OPS_CLEANUP_TMP[@]:-}"; do
@@ -379,12 +380,17 @@ _strip_wizard_managed_services_and_top_level_volumes() {
   local line current_service=""
   local in_services="no"
   local in_top_volumes="no"
+  local inserted_marker="no"
 
   : > "$tmp_file"
 
   while IFS= read -r line || [[ -n "$line" ]]; do
     # Detect top-level (non-indented) keys.
     if [[ "$line" =~ ^[A-Za-z] ]]; then
+      if [[ "$in_services" == "yes" && "$line" != "services:" && "$inserted_marker" != "yes" ]]; then
+        printf '%s\n' "$_WIZARD_MANAGED_SERVICES_MARKER" >> "$tmp_file"
+        inserted_marker="yes"
+      fi
       in_top_volumes="no"
       if [[ "$line" == "services:" ]]; then
         in_services="yes"
@@ -421,6 +427,37 @@ _strip_wizard_managed_services_and_top_level_volumes() {
 
     printf '%s\n' "$line" >> "$tmp_file"
   done < "$compose_file"
+
+  mv "$tmp_file" "$compose_file"
+}
+
+_merge_managed_service_blocks() {
+  local compose_file="$1"
+  local service_blocks_file="$2"
+  local tmp_file="${compose_file}.merge-services"
+  _FILE_OPS_CLEANUP_TMP+=("$tmp_file")
+  local line
+  local inserted="no"
+
+  if [[ ! -s "$service_blocks_file" ]]; then
+    return 0
+  fi
+
+  : > "$tmp_file"
+
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    if [[ "$line" == "$_WIZARD_MANAGED_SERVICES_MARKER" ]]; then
+      cat "$service_blocks_file" >> "$tmp_file"
+      inserted="yes"
+      continue
+    fi
+
+    printf '%s\n' "$line" >> "$tmp_file"
+  done < "$compose_file"
+
+  if [[ "$inserted" != "yes" ]]; then
+    cat "$service_blocks_file" >> "$tmp_file"
+  fi
 
   mv "$tmp_file" "$compose_file"
 }
@@ -679,7 +716,9 @@ generate_docker_compose() {
   local output_file="${1:-${REPO_ROOT:-.}/docker-compose.yml}"
   local base_file="${REPO_ROOT:-.}/docker-compose.yml"
   local tmp_file="${output_file}.tmp"
+  local service_blocks_file="${output_file}.services"
   _FILE_OPS_CLEANUP_TMP+=("$tmp_file")
+  _FILE_OPS_CLEANUP_TMP+=("$service_blocks_file")
   local template_file
   local lightrag_mounts=()
   local lightrag_env_entries=()
@@ -727,6 +766,7 @@ generate_docker_compose() {
     inject_lightrag_environment_overrides "$tmp_file" "${lightrag_env_entries[@]}"
   fi
 
+  : > "$service_blocks_file"
   for service in "${DOCKER_SERVICES[@]}"; do
     template_file="$TEMPLATES_DIR/${service}.yml"
     if [[ "$service" == "vllm-rerank" ]]; then
@@ -748,18 +788,18 @@ generate_docker_compose() {
       return 1
     fi
 
-    printf '\n' >> "$tmp_file"
-    cat "$template_file" >> "$tmp_file"
+    printf '\n' >> "$service_blocks_file"
+    cat "$template_file" >> "$service_blocks_file"
 
     case "$service" in
       postgres)
-        inject_service_environment_overrides "$tmp_file" "postgres" \
+        inject_service_environment_overrides "$service_blocks_file" "postgres" \
           "POSTGRES_USER=${ENV_VALUES[POSTGRES_USER]:-}" \
           "POSTGRES_PASSWORD=${ENV_VALUES[POSTGRES_PASSWORD]:-}" \
           "POSTGRES_DB=${ENV_VALUES[POSTGRES_DATABASE]:-}"
         ;;
       neo4j)
-        inject_service_environment_overrides "$tmp_file" "neo4j" \
+        inject_service_environment_overrides "$service_blocks_file" "neo4j" \
           "NEO4J_AUTH=neo4j/${ENV_VALUES[NEO4J_PASSWORD]:-neo4j_password}" \
           "NEO4J_dbms_default__database=${ENV_VALUES[NEO4J_DATABASE]:-neo4j}"
         ;;
@@ -768,10 +808,10 @@ generate_docker_compose() {
       redis)
         ;;
       milvus)
-        inject_service_environment_overrides "$tmp_file" "milvus" \
+        inject_service_environment_overrides "$service_blocks_file" "milvus" \
           "MINIO_ACCESS_KEY_ID=${ENV_VALUES[MINIO_ACCESS_KEY_ID]:-minioadmin}" \
           "MINIO_SECRET_ACCESS_KEY=${ENV_VALUES[MINIO_SECRET_ACCESS_KEY]:-minioadmin}"
-        inject_service_environment_overrides "$tmp_file" "milvus-minio" \
+        inject_service_environment_overrides "$service_blocks_file" "milvus-minio" \
           "MINIO_ROOT_USER=${ENV_VALUES[MINIO_ACCESS_KEY_ID]:-minioadmin}" \
           "MINIO_ROOT_PASSWORD=${ENV_VALUES[MINIO_SECRET_ACCESS_KEY]:-minioadmin}"
         ;;
@@ -786,6 +826,7 @@ generate_docker_compose() {
     esac
   done
 
+  _merge_managed_service_blocks "$tmp_file" "$service_blocks_file"
   _append_referenced_volume_blocks "$tmp_file"
 
   mv "$tmp_file" "$output_file"

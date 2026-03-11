@@ -48,6 +48,11 @@ for backwards compatibility. If a legacy `.env` still contains `LIGHTRAG_SETUP_P
 value is used only to pick the matching legacy compose file during migration; new `.env` files do
 not persist this variable.
 
+**`.env` ownership principle:** The setup wizard does not promise that one `.env` file will be
+simultaneously correct for both host startup and Docker Compose startup. Instead, each wizard run
+updates `.env` for the runtime you are configuring at that moment, and rerunning the wizard later
+may rewrite `.env` again when you switch between host-oriented and compose-oriented settings.
+
 ## Make Variable Overrides
 
 | Variable | Default | Description |
@@ -157,9 +162,13 @@ Docker services. The wizard uses `env.example` as a template:
 - Commented keys in `env.example` are activated only when the wizard has a value to write,
   positioned at the template line whose commented value best matches what is being written.
 
-The `.env` file can be used directly on the host (`lightrag-server`) without Docker. When a
-Docker Compose file is generated, any container-internal hostnames or SSL paths are injected into
-the compose file's `lightrag` service `environment:` block instead of overwriting `.env`.
+The wizard does not guarantee that a single `.env` stays valid for both host startup and Docker
+Compose startup forever. Treat `.env` as the runtime configuration produced by the most recent
+wizard run. If you later switch from host execution to Docker Compose, or back again, rerun the
+relevant setup target so `.env` is rewritten for that target runtime.
+
+The generated `.env` includes `LIGHTRAG_RUNTIME_TARGET=host|compose` near the top as wizard
+metadata describing which runtime the current file is meant for.
 
 ### `docker-compose.final.yml`
 
@@ -172,9 +181,9 @@ write to `docker-compose.final.yml`. If a legacy `.env` still carries `LIGHTRAG_
 the migration step prefers the matching legacy compose file before falling back to the default
 search order.
 
-When a local vLLM service is selected, the compose file includes `host.docker.internal` overrides
-so the `lightrag` container can reach the vLLM endpoint running on the Docker host — `.env` keeps
-`localhost` for direct host access.
+When a local vLLM service is selected, the compose file includes the overrides needed for the
+containerized `lightrag` service to reach that endpoint from inside Docker. If you later switch
+back to host startup, rerun the relevant setup target so `.env` is rewritten for host execution.
 
 ## Image Settings
 
@@ -247,7 +256,8 @@ make env-security-check
 - For GPU vLLM services, set `VLLM_EMBED_DEVICE=cuda` / `VLLM_RERANK_DEVICE=cuda`. On reruns, the
   saved `VLLM_*_DEVICE` value takes precedence over auto-detection so an existing CPU deployment is
   not silently switched to GPU mode.
-- SSL certificates are copied into `./data/certs/` and mounted into the container; `.env` keeps
-  the original host paths for direct host usage.
+- SSL certificates are copied into `./data/certs/` for Docker use, but `.env` should still be
+  treated as mode-specific output from the latest wizard run rather than a permanent host/compose
+  hybrid configuration.
 - Each wizard can be re-run independently; current `.env` values are loaded as defaults so you
   only need to change what has actually changed.

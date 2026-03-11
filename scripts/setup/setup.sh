@@ -56,6 +56,7 @@ STORAGE_SERVICES=(
   "qdrant"
   "memgraph"
 )
+DEFAULT_RUNTIME_TARGET="host"
 
 WAIT_TIMEOUT="${SETUP_WAIT_TIMEOUT:-90}"
 # shellcheck disable=SC2034
@@ -99,6 +100,32 @@ reset_state() {
   SSL_CERT_SOURCE_PATH=""
   SSL_KEY_SOURCE_PATH=""
   DEPLOYMENT_TYPE=""
+}
+
+validate_runtime_target() {
+  local runtime_target="${1:-$DEFAULT_RUNTIME_TARGET}"
+
+  case "$runtime_target" in
+    host|compose)
+      return 0
+      ;;
+    *)
+      format_error \
+        "Invalid LIGHTRAG_RUNTIME_TARGET: ${runtime_target}" \
+        "Use 'host' or 'compose', or rerun the setup wizard to regenerate .env."
+      return 1
+      ;;
+  esac
+}
+
+set_runtime_target() {
+  local runtime_target="${1:-$DEFAULT_RUNTIME_TARGET}"
+
+  if ! validate_runtime_target "$runtime_target"; then
+    return 1
+  fi
+
+  ENV_VALUES["LIGHTRAG_RUNTIME_TARGET"]="$runtime_target"
 }
 
 clear_deprecated_vllm_dtype_state() {
@@ -1517,6 +1544,11 @@ show_summary() {
   fi
 }
 
+# Preserve already-staged SSL mounts when regenerating compose output. The
+# setup wizards treat .env as the configuration for the current target runtime,
+# not as a single file guaranteed to work for both host and Docker Compose at
+# the same time. A later wizard run may rewrite .env again when the operator
+# switches between host and compose workflows.
 prepare_inherited_ssl_assets_for_compose() {
   local existing_compose="${1:-}"
   local staged_cert_source="$SSL_CERT_SOURCE_PATH"
@@ -1531,6 +1563,7 @@ prepare_inherited_ssl_assets_for_compose() {
     if [[ "$preserved_cert_path" == /app/data/certs/* ]]; then
       log_warn "SSL_CERTFILE source is missing; preserving the existing compose SSL certificate mount."
       staged_cert_source=""
+      ENV_VALUES["SSL_CERTFILE"]="$preserved_cert_path"
       set_compose_override "SSL_CERTFILE" "$preserved_cert_path"
     else
       format_error "Invalid SSL_CERTFILE" \
@@ -1546,6 +1579,7 @@ prepare_inherited_ssl_assets_for_compose() {
     if [[ "$preserved_key_path" == /app/data/certs/* ]]; then
       log_warn "SSL_KEYFILE source is missing; preserving the existing compose SSL key mount."
       staged_key_source=""
+      ENV_VALUES["SSL_KEYFILE"]="$preserved_key_path"
       set_compose_override "SSL_KEYFILE" "$preserved_key_path"
     else
       format_error "Invalid SSL_KEYFILE" \
@@ -1848,6 +1882,7 @@ finalize_base_setup() {
   local compose_file
   local existing_compose
   local generate_compose="no"
+  local runtime_target="$DEFAULT_RUNTIME_TARGET"
   local svc
 
   if [[ ! -f "${REPO_ROOT}/env.example" ]]; then
@@ -1901,6 +1936,7 @@ finalize_base_setup() {
   fi
 
   if [[ "$generate_compose" == "yes" ]]; then
+    runtime_target="compose"
     if ! prepare_inherited_ssl_assets_for_compose "$existing_compose"; then
       return 1
     fi
@@ -1913,6 +1949,7 @@ finalize_base_setup() {
   fi
 
   clear_deprecated_vllm_dtype_state
+  set_runtime_target "$runtime_target" || return 1
   generate_env_file "${REPO_ROOT}/env.example" "${REPO_ROOT}/.env"
   log_success "Wrote .env"
 
@@ -1965,6 +2002,7 @@ finalize_storage_setup() {
   local existing_compose
   local generate_compose="no"
   local has_docker_storage="no"
+  local runtime_target="$DEFAULT_RUNTIME_TARGET"
   local svc
 
   if [[ ! -f "${REPO_ROOT}/env.example" ]]; then
@@ -2017,6 +2055,7 @@ finalize_storage_setup() {
       log_success "Backed up existing .env to $backup_path"
     fi
     clear_deprecated_vllm_dtype_state
+    set_runtime_target "$runtime_target" || return 1
     generate_env_file "${REPO_ROOT}/env.example" "${REPO_ROOT}/.env"
     log_success "Wrote .env"
     return 0
@@ -2038,6 +2077,7 @@ finalize_storage_setup() {
     done < <(detect_managed_root_services "$existing_compose")
   fi
   generate_compose="yes"
+  runtime_target="compose"
 
   if ! prepare_inherited_ssl_assets_for_compose "$existing_compose"; then
     return 1
@@ -2050,6 +2090,7 @@ finalize_storage_setup() {
   fi
 
   clear_deprecated_vllm_dtype_state
+  set_runtime_target "$runtime_target" || return 1
   generate_env_file "${REPO_ROOT}/env.example" "${REPO_ROOT}/.env"
   log_success "Wrote .env"
 
@@ -2093,6 +2134,7 @@ finalize_server_setup() {
   local compose_file
   local existing_compose
   local generate_compose="no"
+  local runtime_target="$DEFAULT_RUNTIME_TARGET"
   local svc
 
   if [[ ! -f "${REPO_ROOT}/env.example" ]]; then
@@ -2120,6 +2162,7 @@ finalize_server_setup() {
 
   if [[ -n "$existing_compose" ]]; then
     generate_compose="yes"
+    runtime_target="compose"
     # Detect and preserve all existing wizard-managed root services.
     while IFS= read -r svc; do
       add_docker_service "$svc"
@@ -2151,6 +2194,7 @@ finalize_server_setup() {
   fi
 
   clear_deprecated_vllm_dtype_state
+  set_runtime_target "$runtime_target" || return 1
   generate_env_file "${REPO_ROOT}/env.example" "${REPO_ROOT}/.env"
   log_success "Wrote .env"
 
@@ -2189,10 +2233,28 @@ load_env_file() {
   done < "$env_file"
 }
 
+validate_ssl_runtime_path() {
+  local path="$1"
+  local staged_path=""
+
+  if validate_existing_file "$path"; then
+    return 0
+  fi
+
+  if [[ "$path" == /app/data/certs/* ]]; then
+    staged_path="${REPO_ROOT}/data/certs/${path#/app/data/certs/}"
+    validate_existing_file "$staged_path"
+    return $?
+  fi
+
+  return 1
+}
+
 validate_env_file() {
   local env_file="${REPO_ROOT}/.env"
   local errors=0
   local kv vector graph doc_status
+  local runtime_target
 
   reset_state
 
@@ -2204,6 +2266,11 @@ validate_env_file() {
   vector="${ENV_VALUES[LIGHTRAG_VECTOR_STORAGE]:-}"
   graph="${ENV_VALUES[LIGHTRAG_GRAPH_STORAGE]:-}"
   doc_status="${ENV_VALUES[LIGHTRAG_DOC_STATUS_STORAGE]:-}"
+  runtime_target="${ENV_VALUES[LIGHTRAG_RUNTIME_TARGET]:-$DEFAULT_RUNTIME_TARGET}"
+
+  if ! validate_runtime_target "$runtime_target"; then
+    errors=1
+  fi
 
   if [[ -z "$kv" || -z "$vector" || -z "$graph" || -z "$doc_status" ]]; then
     format_error "Storage selections are missing in .env" "Set LIGHTRAG_*_STORAGE variables."
@@ -2230,11 +2297,11 @@ validate_env_file() {
   fi
 
   if [[ "${ENV_VALUES[SSL]:-false}" == "true" ]]; then
-    if ! validate_existing_file "${ENV_VALUES[SSL_CERTFILE]:-}"; then
+    if ! validate_ssl_runtime_path "${ENV_VALUES[SSL_CERTFILE]:-}"; then
       format_error "Invalid SSL_CERTFILE" "Set it to an existing certificate file when SSL=true."
       errors=1
     fi
-    if ! validate_existing_file "${ENV_VALUES[SSL_KEYFILE]:-}"; then
+    if ! validate_ssl_runtime_path "${ENV_VALUES[SSL_KEYFILE]:-}"; then
       format_error "Invalid SSL_KEYFILE" "Set it to an existing private key file when SSL=true."
       errors=1
     fi

@@ -276,7 +276,7 @@ printf 'COMPOSE_RERANK=%s\\n' "${{COMPOSE_ENV_OVERRIDES[RERANK_BINDING_HOST]}}"
 def test_generate_files_keep_host_env_values_and_inject_compose_overrides(
     tmp_path: Path,
 ) -> None:
-    """Generated `.env` should keep host paths while compose gets container overrides."""
+    """This generation path keeps host-style values in `.env` and injects compose-only overrides separately."""
 
     env_example = tmp_path / "env.example"
     env_example.write_text(
@@ -442,7 +442,7 @@ generate_docker_compose "$REPO_ROOT/docker-compose.final.yml"
 
 
 def test_existing_ssl_env_keeps_compose_mount_overrides(tmp_path: Path) -> None:
-    """Existing SSL-enabled `.env` files should keep compose cert mounts working."""
+    """Compose regeneration should preserve working SSL mounts without implying `.env` is permanently dual-purpose."""
 
     compose_file = tmp_path / "docker-compose.yml"
     compose_file.write_text(
@@ -496,6 +496,77 @@ generate_docker_compose "$REPO_ROOT/docker-compose.generated.yml"
     assert 'SSL_KEYFILE: "/app/data/certs/key.pem"' in generated_compose
     assert "./data/certs/cert.pem:/app/data/certs/cert.pem:ro" in generated_compose
     assert "./data/certs/key.pem:/app/data/certs/key.pem:ro" in generated_compose
+
+
+def test_finalize_base_setup_rewrites_ssl_env_to_preserved_compose_paths(
+    tmp_path: Path,
+) -> None:
+    """Compose-target reruns should rewrite broken SSL source paths to preserved staged compose paths."""
+
+    staged_dir = tmp_path / "data" / "certs"
+    staged_dir.mkdir(parents=True)
+    (staged_dir / "server.pem").write_text("cert", encoding="utf-8")
+    (staged_dir / "server.key").write_text("key", encoding="utf-8")
+
+    write_text_lines(
+        tmp_path / ".env",
+        [
+            "SSL=true",
+            "SSL_CERTFILE=/missing/original-cert.pem",
+            "SSL_KEYFILE=/missing/original-key.pem",
+            "LIGHTRAG_KV_STORAGE=JsonKVStorage",
+            "LIGHTRAG_VECTOR_STORAGE=NanoVectorDBStorage",
+            "LIGHTRAG_GRAPH_STORAGE=NetworkXStorage",
+            "LIGHTRAG_DOC_STATUS_STORAGE=JsonDocStatusStorage",
+        ],
+    )
+    write_text_lines(
+        tmp_path / "env.example",
+        (REPO_ROOT / "env.example").read_text(encoding="utf-8").splitlines(),
+    )
+    write_text_lines(
+        tmp_path / "docker-compose.final.yml",
+        [
+            "services:",
+            "  lightrag:",
+            "    image: example/lightrag:test",
+            "    volumes:",
+            "      - ./.env:/app/.env",
+            "      - ./data/certs/server.pem:/app/data/certs/server.pem:ro",
+            "      - ./data/certs/server.key:/app/data/certs/server.key:ro",
+            "    environment:",
+            "      SSL_CERTFILE: /app/data/certs/server.pem",
+            "      SSL_KEYFILE: /app/data/certs/server.key",
+        ],
+    )
+
+    output = run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+load_existing_env_if_present
+initialize_default_storage_backends
+
+show_summary() {{ :; }}
+confirm_default_yes() {{ return 0; }}
+
+finalize_base_setup
+
+if validate_env_file; then
+  printf 'VALID=yes\\n'
+else
+  printf 'VALID=no\\n'
+fi
+"""
+    )
+    values = parse_lines(output)
+    generated_env = (tmp_path / ".env").read_text(encoding="utf-8")
+
+    assert "SSL_CERTFILE=/app/data/certs/server.pem" in generated_env
+    assert "SSL_KEYFILE=/app/data/certs/server.key" in generated_env
+    assert values["VALID"] == "yes"
 
 
 def test_removing_ssl_strips_wizard_bind_mounts_from_compose(tmp_path: Path) -> None:
@@ -604,6 +675,57 @@ generate_docker_compose "$REPO_ROOT/docker-compose.final.yml"
     assert "    driver: local" in result
     assert "  sidecar_data:" in result
     assert "postgres_data:" not in result
+
+
+def test_generate_docker_compose_inserts_managed_services_before_top_level_sections(
+    tmp_path: Path,
+) -> None:
+    """Managed services should stay inside services: even when custom top-level sections exist."""
+
+    write_text_lines(
+        tmp_path / "docker-compose.final.yml",
+        [
+            "services:",
+            "  lightrag:",
+            "    image: example/lightrag:test",
+            "    volumes:",
+            "      - ./.env:/app/.env",
+            "  worker:",
+            "    image: example/worker:test",
+            "    networks:",
+            "      - appnet",
+            "networks:",
+            "  appnet:",
+            "    driver: bridge",
+        ],
+    )
+    write_text_lines(
+        tmp_path / "env.example",
+        (REPO_ROOT / "env.example").read_text(encoding="utf-8").splitlines(),
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+
+ENV_VALUES[POSTGRES_USER]="lightrag"
+ENV_VALUES[POSTGRES_PASSWORD]="secret"
+ENV_VALUES[POSTGRES_DATABASE]="lightrag"
+add_docker_service "postgres"
+
+generate_docker_compose "$REPO_ROOT/docker-compose.final.yml"
+"""
+    )
+
+    result = (tmp_path / "docker-compose.final.yml").read_text(encoding="utf-8")
+
+    assert "  postgres:" in result
+    assert "\nnetworks:\n" in result
+    assert result.index("\n  postgres:") < result.index("\nnetworks:\n")
+    assert "  appnet:" in result
 
 
 def test_find_generated_compose_file_prefers_legacy_profile_match(
@@ -2138,6 +2260,7 @@ env_base_flow
             encoding="utf-8"
         )
 
+        assert "LIGHTRAG_RUNTIME_TARGET=compose" in generated_env
         assert "LIGHTRAG_KV_STORAGE=JsonKVStorage" in generated_env
         assert "LIGHTRAG_VECTOR_STORAGE=NanoVectorDBStorage" in generated_env
         assert "LIGHTRAG_GRAPH_STORAGE=NetworkXStorage" in generated_env
@@ -2193,6 +2316,7 @@ validate_env_file
     assert "LIGHTRAG_VECTOR_STORAGE=NanoVectorDBStorage" in generated_env
     assert "LIGHTRAG_GRAPH_STORAGE=NetworkXStorage" in generated_env
     assert "LIGHTRAG_DOC_STATUS_STORAGE=JsonDocStatusStorage" in generated_env
+    assert "LIGHTRAG_RUNTIME_TARGET=host" in generated_env
     assert "LIGHTRAG_SETUP_PROFILE=" not in generated_env
 
 
@@ -2236,6 +2360,7 @@ env_storage_flow
     )
 
     generated_env = (tmp_path / ".env").read_text(encoding="utf-8")
+    assert "LIGHTRAG_RUNTIME_TARGET=host" in generated_env
     assert "LIGHTRAG_SETUP_PROFILE=" not in generated_env
 
 
@@ -3980,6 +4105,48 @@ fi
         assert values["VALID"] == expected_valid
         if expected_stderr:
             assert expected_stderr in result.stderr
+
+
+def test_validate_env_file_rejects_invalid_runtime_target(tmp_path: Path) -> None:
+    """validate_env_file should reject unsupported LIGHTRAG_RUNTIME_TARGET values."""
+
+    write_text_lines(
+        tmp_path / ".env",
+        [
+            "LIGHTRAG_RUNTIME_TARGET=laptop",
+            "LIGHTRAG_KV_STORAGE=JsonKVStorage",
+            "LIGHTRAG_VECTOR_STORAGE=NanoVectorDBStorage",
+            "LIGHTRAG_GRAPH_STORAGE=NetworkXStorage",
+            "LIGHTRAG_DOC_STATUS_STORAGE=JsonDocStatusStorage",
+        ],
+    )
+    write_text_lines(tmp_path / "env.example", ["LLM_BINDING=openai"])
+
+    result = subprocess.run(
+        [
+            "bash",
+            "--norc",
+            "--noprofile",
+            "-c",
+            f"""
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+if validate_env_file; then
+  printf 'VALID=yes\\n'
+else
+  printf 'VALID=no\\n'
+fi
+""",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    values = parse_lines(result.stdout)
+    assert values["VALID"] == "no"
+    assert "Invalid LIGHTRAG_RUNTIME_TARGET" in result.stderr
 
 
 def test_validate_env_file_rejects_mongo_vector_storage_without_atlas_uri(
