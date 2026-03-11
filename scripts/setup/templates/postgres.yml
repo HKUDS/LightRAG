@@ -4,4 +4,12 @@
       - "${POSTGRES_HOST_PORT:-5432}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - 'PORT_HEX="$(printf ''%04X'' 5432)"; cat /proc/net/tcp /proc/net/tcp6 2>/dev/null | grep -q ":$${PORT_HEX} "'
+      interval: 5s
+      timeout: 3s
+      retries: 120
+      start_period: 10s
     restart: unless-stopped

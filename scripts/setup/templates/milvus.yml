@@ -9,9 +9,19 @@
       - "9091:9091"
     volumes:
       - milvus_data:/var/lib/milvus
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - 'PORT_HEX="$(printf ''%04X'' 19530)"; cat /proc/net/tcp /proc/net/tcp6 2>/dev/null | grep -q ":$${PORT_HEX} "'
+      interval: 5s
+      timeout: 3s
+      retries: 120
+      start_period: 10s
     depends_on:
-      - milvus-etcd
-      - milvus-minio
+      milvus-etcd:
+        condition: service_healthy
+      milvus-minio:
+        condition: service_healthy
     restart: unless-stopped
 
   milvus-etcd:
@@ -28,6 +38,14 @@
       -advertise-client-urls=http://0.0.0.0:2379
       -listen-client-urls=http://0.0.0.0:2379
       -data-dir /etcd
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - 'PORT_HEX="$(printf ''%04X'' 2379)"; cat /proc/net/tcp /proc/net/tcp6 2>/dev/null | grep -q ":$${PORT_HEX} "'
+      interval: 5s
+      timeout: 3s
+      retries: 120
+      start_period: 10s
     restart: unless-stopped
 
   milvus-minio:
@@ -35,4 +53,12 @@
     volumes:
       - milvus-minio_data:/minio_data
     command: minio server /minio_data --console-address ":9001"
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - 'PORT_HEX="$(printf ''%04X'' 9000)"; cat /proc/net/tcp /proc/net/tcp6 2>/dev/null | grep -q ":$${PORT_HEX} "'
+      interval: 5s
+      timeout: 3s
+      retries: 120
+      start_period: 10s
     restart: unless-stopped

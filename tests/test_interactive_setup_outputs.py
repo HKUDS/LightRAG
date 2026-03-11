@@ -441,6 +441,128 @@ generate_docker_compose "$REPO_ROOT/docker-compose.final.yml"
     assert "      PORT:" not in generated_compose
 
 
+def test_generate_docker_compose_injects_healthchecks_and_lightrag_depends_on(
+    tmp_path: Path,
+) -> None:
+    """Generated compose should gate LightRAG on all managed dependencies becoming healthy."""
+
+    write_text_lines(
+        tmp_path / "docker-compose.yml",
+        [
+            "services:",
+            "  lightrag:",
+            "    image: example/lightrag:test",
+        ],
+    )
+    write_text_lines(
+        tmp_path / "env.example",
+        (REPO_ROOT / "env.example").read_text(encoding="utf-8").splitlines(),
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+
+add_docker_service postgres
+add_docker_service neo4j
+add_docker_service mongodb
+add_docker_service redis
+add_docker_service milvus
+add_docker_service qdrant
+add_docker_service memgraph
+add_docker_service vllm-embed
+add_docker_service vllm-rerank
+
+generate_docker_compose "$REPO_ROOT/docker-compose.final.yml"
+"""
+    )
+
+    generated_compose = (tmp_path / "docker-compose.final.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "    depends_on:" in generated_compose
+    for service_name in (
+        "postgres",
+        "neo4j",
+        "mongodb",
+        "redis",
+        "milvus",
+        "qdrant",
+        "memgraph",
+        "vllm-embed",
+        "vllm-rerank",
+    ):
+        assert (
+            f"      {service_name}:\n        condition: service_healthy"
+            in generated_compose
+        )
+
+    assert generated_compose.count("    healthcheck:") == 11
+    assert "  milvus-etcd:" in generated_compose
+    assert "  milvus-minio:" in generated_compose
+    assert "      milvus-etcd:\n        condition: service_healthy" in generated_compose
+    assert (
+        "      milvus-minio:\n        condition: service_healthy" in generated_compose
+    )
+
+
+def test_generate_docker_compose_preserves_user_depends_on_and_removes_stale_managed_entries(
+    tmp_path: Path,
+) -> None:
+    """Compose regeneration should preserve user dependencies while refreshing wizard-managed ones."""
+
+    write_text_lines(
+        tmp_path / "docker-compose.final.yml",
+        [
+            "services:",
+            "  lightrag:",
+            "    image: example/lightrag:test",
+            "    depends_on:",
+            "      sidecar:",
+            "        condition: service_started",
+            "      postgres:",
+            "        condition: service_started",
+            "      vllm-embed:",
+            "        condition: service_healthy",
+            "  sidecar:",
+            "    image: busybox",
+        ],
+    )
+    write_text_lines(
+        tmp_path / "env.example",
+        (REPO_ROOT / "env.example").read_text(encoding="utf-8").splitlines(),
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+
+add_docker_service postgres
+add_docker_service redis
+
+generate_docker_compose "$REPO_ROOT/docker-compose.final.yml"
+"""
+    )
+
+    generated_compose = (tmp_path / "docker-compose.final.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "      sidecar:\n        condition: service_started" in generated_compose
+    assert "      postgres:\n        condition: service_healthy" in generated_compose
+    assert "      redis:\n        condition: service_healthy" in generated_compose
+    assert (
+        "      vllm-embed:\n        condition: service_healthy" not in generated_compose
+    )
+
+
 def test_existing_ssl_env_keeps_compose_mount_overrides(tmp_path: Path) -> None:
     """Compose regeneration should preserve working SSL mounts without implying `.env` is permanently dual-purpose."""
 
@@ -4065,6 +4187,10 @@ generate_docker_compose "$REPO_ROOT/docker-compose.generated.yml"
 
     assert "CUDA_VISIBLE_DEVICES=0" in generated_env
     assert "NVIDIA_VISIBLE_DEVICES: ${NVIDIA_VISIBLE_DEVICES:-all}" in generated_compose
+    assert "      vllm-rerank:\n        condition: service_healthy" in generated_compose
+    assert "    healthcheck:" in generated_compose
+    assert "VLLM_RERANK_PORT:-8000" in generated_compose
+    assert 'grep -q ":$${PORT_HEX} "' in generated_compose
 
 
 def test_collect_security_config_can_clear_existing_values_on_rerun(

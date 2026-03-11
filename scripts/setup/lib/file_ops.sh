@@ -766,6 +766,8 @@ generate_docker_compose() {
     inject_lightrag_environment_overrides "$tmp_file" "${lightrag_env_entries[@]}"
   fi
 
+  inject_lightrag_depends_on "$tmp_file" "${DOCKER_SERVICES[@]}"
+
   : > "$service_blocks_file"
   for service in "${DOCKER_SERVICES[@]}"; do
     template_file="$TEMPLATES_DIR/${service}.yml"
@@ -1125,6 +1127,158 @@ inject_lightrag_environment_overrides() {
   local compose_file="$1"
   shift
   inject_service_environment_overrides "$compose_file" "lightrag" "$@"
+}
+
+inject_lightrag_depends_on() {
+  local compose_file="$1"
+  shift
+  local candidate_service
+  local managed_services=()
+  local tmp_file="${compose_file}.depends-on"
+  _FILE_OPS_CLEANUP_TMP+=("$tmp_file")
+  local line
+  local in_lightrag="no"
+  local in_depends_on="no"
+  local inserted="no"
+  local current_dep_name=""
+  local current_dep_block=""
+  local dep_name=""
+  local dep_tail=""
+  local dep_service=""
+  declare -A preserved_dep_blocks=()
+  declare -A preserved_dep_seen=()
+  local -a preserved_dep_order=()
+
+  for candidate_service in "$@"; do
+    if _is_wizard_managed_root_service_name "$candidate_service"; then
+      managed_services+=("$candidate_service")
+    fi
+  done
+
+  _record_preserved_depends_on_entry() {
+    local service_name="$1"
+    local block="$2"
+
+    if [[ -z "$service_name" ]] || _is_wizard_managed_root_service_name "$service_name"; then
+      return 0
+    fi
+
+    if [[ -n "${preserved_dep_seen[$service_name]+set}" ]]; then
+      return 0
+    fi
+
+    preserved_dep_seen["$service_name"]=1
+    preserved_dep_order+=("$service_name")
+    preserved_dep_blocks["$service_name"]="$block"
+  }
+
+  _flush_current_depends_on_entry() {
+    if [[ -z "$current_dep_name" ]]; then
+      return 0
+    fi
+
+    _record_preserved_depends_on_entry "$current_dep_name" "$current_dep_block"
+    current_dep_name=""
+    current_dep_block=""
+  }
+
+  _write_lightrag_depends_on_block() {
+    local managed_service
+    local preserved_service
+
+    if ((${#preserved_dep_order[@]} == 0 && ${#managed_services[@]} == 0)); then
+      inserted="yes"
+      return 0
+    fi
+
+    printf '    depends_on:\n' >> "$tmp_file"
+
+    for preserved_service in "${preserved_dep_order[@]}"; do
+      printf '%s' "${preserved_dep_blocks[$preserved_service]}" >> "$tmp_file"
+    done
+
+    for managed_service in "${managed_services[@]}"; do
+      printf '      %s:\n' "$managed_service" >> "$tmp_file"
+      printf '        condition: service_healthy\n' >> "$tmp_file"
+    done
+
+    inserted="yes"
+  }
+
+  : > "$tmp_file"
+
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    if [[ "$in_depends_on" == "yes" ]]; then
+      if [[ -n "$current_dep_name" && "$line" =~ ^[[:space:]]{8} ]]; then
+        current_dep_block+="${line}"$'\n'
+        continue
+      fi
+
+      if [[ "$line" =~ ^[[:space:]]{6}-[[:space:]](.+)$ ]]; then
+        _flush_current_depends_on_entry
+        dep_service="$(_strip_wrapping_quotes "${BASH_REMATCH[1]}")"
+        _record_preserved_depends_on_entry \
+          "$dep_service" \
+          "$(printf '      %s:\n        condition: service_started\n' "$dep_service")"
+        continue
+      fi
+
+      if [[ "$line" =~ ^[[:space:]]{6}([A-Za-z0-9_.-]+):[[:space:]]*(.*)$ ]]; then
+        _flush_current_depends_on_entry
+        dep_name="${BASH_REMATCH[1]}"
+        dep_tail="${BASH_REMATCH[2]}"
+        current_dep_name="$(_strip_wrapping_quotes "$dep_name")"
+        if [[ -n "$dep_tail" ]]; then
+          current_dep_block="      ${current_dep_name}: ${dep_tail}"$'\n'
+        else
+          current_dep_block="      ${current_dep_name}:"$'\n'
+        fi
+        continue
+      fi
+
+      _flush_current_depends_on_entry
+      if [[ "$inserted" == "no" ]]; then
+        _write_lightrag_depends_on_block
+      fi
+      in_depends_on="no"
+    fi
+
+    if [[ "$in_lightrag" == "yes" && "$line" == "    depends_on:" ]]; then
+      in_depends_on="yes"
+      continue
+    fi
+
+    if [[ "$in_lightrag" == "yes" && "$line" =~ ^[[:space:]]{2}[^[:space:]] && "$line" != "  lightrag:" ]]; then
+      if [[ "$inserted" == "no" ]]; then
+        _write_lightrag_depends_on_block
+      fi
+      in_lightrag="no"
+    fi
+
+    printf '%s\n' "$line" >> "$tmp_file"
+
+    if [[ "$line" == "  lightrag:" ]]; then
+      in_lightrag="yes"
+      inserted="no"
+      in_depends_on="no"
+      current_dep_name=""
+      current_dep_block=""
+      preserved_dep_blocks=()
+      preserved_dep_seen=()
+      preserved_dep_order=()
+    fi
+  done < "$compose_file"
+
+  if [[ "$in_depends_on" == "yes" ]]; then
+    _flush_current_depends_on_entry
+    if [[ "$inserted" == "no" ]]; then
+      _write_lightrag_depends_on_block
+    fi
+  elif [[ "$in_lightrag" == "yes" && "$inserted" == "no" ]]; then
+    _write_lightrag_depends_on_block
+  fi
+
+  mv "$tmp_file" "$compose_file"
 }
 
 # Find the first generated compose file in priority order.
