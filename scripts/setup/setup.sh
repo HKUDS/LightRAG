@@ -2455,6 +2455,19 @@ security_check_env_file() {
     fi
   fi
 
+  if [[ -z "$auth_accounts" && -n "$api_key" ]]; then
+    effective_whitelist="$whitelist_paths"
+    if [[ "$whitelist_is_set" != "yes" ]]; then
+      effective_whitelist="/health,/api/*"
+    fi
+    if whitelist_exposes_api_routes "$effective_whitelist"; then
+      report_security_issue \
+        "WHITELIST_PATHS exposes /api routes while LIGHTRAG_API_KEY is the only active auth mechanism." \
+        "Use a minimal whitelist such as /health,/docs and keep /api routes protected by the API key."
+      findings=$((findings + 1))
+    fi
+  fi
+
   if ((findings == 0)); then
     log_success "No obvious security issues found in ${env_file}."
     return 0
