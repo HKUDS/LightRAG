@@ -1219,7 +1219,6 @@ collect_rerank_config() {
   fi
 
   if [[ "$binding_choice" == "vllm" ]]; then
-    log_info "vLLM uses the Cohere-compatible rerank API."
     if [[ "$docker_choice_override" == "yes" || "$docker_choice_override" == "no" ]]; then
       use_docker="$docker_choice_override"
     elif confirm_default_yes "Run rerank service locally via Docker?"; then
@@ -1227,9 +1226,7 @@ collect_rerank_config() {
     fi
     if [[ "$use_docker" == "yes" ]]; then
       add_docker_service "vllm-rerank"
-    fi
-    vllm_model="$(prompt_with_default "vLLM rerank model" "${ENV_VALUES[VLLM_RERANK_MODEL]:-BAAI/bge-reranker-v2-m3}")"
-    if [[ "$use_docker" == "yes" ]]; then
+      vllm_model="$(prompt_with_default "vLLM rerank model" "${ENV_VALUES[VLLM_RERANK_MODEL]:-BAAI/bge-reranker-v2-m3}")"
       vllm_port="$(prompt_until_valid "vLLM rerank port" "${ENV_VALUES[VLLM_RERANK_PORT]:-8000}" validate_port)"
       vllm_device="$(prompt_choice "vLLM device" "${ENV_VALUES[VLLM_RERANK_DEVICE]:-cpu}" "cpu" "cuda")"
       if [[ "$vllm_device" == "cuda" ]] && ! command -v nvidia-smi >/dev/null 2>&1; then
@@ -1251,20 +1248,21 @@ collect_rerank_config() {
       unset 'ENV_VALUES[VLLM_USE_CPU]'
     fi
 
-    ENV_VALUES["VLLM_RERANK_MODEL"]="$vllm_model"
     if [[ "$use_docker" == "yes" ]]; then
+      ENV_VALUES["VLLM_RERANK_MODEL"]="$vllm_model"
       ENV_VALUES["VLLM_RERANK_PORT"]="$vllm_port"
       ENV_VALUES["VLLM_RERANK_DEVICE"]="$vllm_device"
-    fi
-    if [[ "$use_docker" == "yes" && -n "$vllm_extra" ]]; then
-      ENV_VALUES["VLLM_RERANK_EXTRA_ARGS"]="$vllm_extra"
+      if [[ -n "$vllm_extra" ]]; then
+        ENV_VALUES["VLLM_RERANK_EXTRA_ARGS"]="$vllm_extra"
+      fi
     fi
 
-    default_model="$vllm_model"
     if [[ "$use_docker" == "yes" ]]; then
+      default_model="$vllm_model"
       default_host="$(default_loopback_url "$vllm_port" "/rerank")"
       set_compose_override "RERANK_BINDING_HOST" "http://vllm-rerank:${vllm_port}/rerank"
     else
+      default_model="${ENV_VALUES[RERANK_MODEL]:-${ENV_VALUES[VLLM_RERANK_MODEL]:-BAAI/bge-reranker-v2-m3}}"
       vllm_host_default="$(default_loopback_url "${ENV_VALUES[VLLM_RERANK_PORT]:-8000}" "/rerank")"
       default_host="${ENV_VALUES[RERANK_BINDING_HOST]:-$vllm_host_default}"
       set_compose_override "RERANK_BINDING_HOST" ""
@@ -1296,9 +1294,9 @@ collect_rerank_config() {
         default_host=""
         ;;
     esac
-    # Preserve existing .env values when present; only fall back to provider defaults when absent.
-    model_default="${ENV_VALUES[RERANK_MODEL]:-$default_model}"
-    host_default="${ENV_VALUES[RERANK_BINDING_HOST]:-$default_host}"
+    # Switching away from local vLLM should replace stale localhost/model values.
+    model_default="$default_model"
+    host_default="$default_host"
   else
     model_default="${ENV_VALUES[RERANK_MODEL]:-$default_model}"
     host_default="${ENV_VALUES[RERANK_BINDING_HOST]:-$default_host}"
@@ -1318,7 +1316,13 @@ collect_rerank_config() {
   fi
 
   ENV_VALUES["RERANK_BINDING"]="$binding"
-  ENV_VALUES["LIGHTRAG_SETUP_RERANK_PROVIDER"]="$binding_choice"
+  # Only keep the setup marker for wizard-managed local Docker vLLM rerank.
+  # Host-managed or remote rerank endpoints should rely on RERANK_BINDING alone.
+  if [[ "$binding_choice" == "vllm" && "$use_docker" == "yes" ]]; then
+    ENV_VALUES["LIGHTRAG_SETUP_RERANK_PROVIDER"]="vllm"
+  else
+    unset 'ENV_VALUES[LIGHTRAG_SETUP_RERANK_PROVIDER]'
+  fi
   if [[ -n "$model" ]]; then
     ENV_VALUES["RERANK_MODEL"]="$model"
   elif [[ "$reset_vllm_defaults" == "yes" ]]; then

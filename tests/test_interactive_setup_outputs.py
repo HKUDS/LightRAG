@@ -209,7 +209,7 @@ def test_collect_local_service_configs_normalize_stale_values(
     """Bundled services should normalize stale remote or localhost endpoints on rerun."""
 
     setup_block = "\n".join(setup_lines)
-    values = run_bash_lines(
+    output = run_bash(
         f"""
 set -euo pipefail
 source "{REPO_ROOT}/scripts/setup/setup.sh"
@@ -909,6 +909,62 @@ generate_docker_compose "$REPO_ROOT/docker-compose.final.yml"
     assert "  appnet:" in result
 
 
+def test_generate_docker_compose_cleans_marker_and_blank_lines_when_only_lightrag_remains(
+    tmp_path: Path,
+) -> None:
+    """Regeneration should not leave a managed-services marker or stacked blank lines behind."""
+
+    write_text_lines(
+        tmp_path / "docker-compose.final.yml",
+        [
+            "services:",
+            "  lightrag:",
+            "    image: example/lightrag:test",
+            "    depends_on:",
+            "      vllm-embed:",
+            "        condition: service_healthy",
+            "      vllm-rerank:",
+            "        condition: service_healthy",
+            "",
+            "  vllm-embed:",
+            "    image: example/vllm:embed",
+            "",
+            "  vllm-rerank:",
+            "    image: example/vllm:rerank",
+            "",
+            "",
+            "",
+            "# __WIZARD_MANAGED_SERVICES__",
+            "networks:",
+            "  appnet:",
+            "    driver: bridge",
+        ],
+    )
+    write_text_lines(
+        tmp_path / "env.example",
+        (REPO_ROOT / "env.example").read_text(encoding="utf-8").splitlines(),
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+
+generate_docker_compose "$REPO_ROOT/docker-compose.final.yml"
+"""
+    )
+
+    result = (tmp_path / "docker-compose.final.yml").read_text(encoding="utf-8")
+
+    assert "  vllm-embed:" not in result
+    assert "  vllm-rerank:" not in result
+    assert "__WIZARD_MANAGED_SERVICES__" not in result
+    assert "depends_on:" not in result
+    assert "    image: example/lightrag:test\nnetworks:\n" in result
+
+
 def test_find_generated_compose_file_prefers_legacy_profile_match(
     tmp_path: Path,
 ) -> None:
@@ -1372,7 +1428,7 @@ def test_collect_provider_config_clears_stale_api_key_for_bedrock(
 
     write_text_lines(tmp_path / ".env", env_lines)
 
-    values = run_bash_lines(
+    output = run_bash(
         f"""
 set -euo pipefail
 source "{REPO_ROOT}/scripts/setup/setup.sh"
@@ -1454,7 +1510,7 @@ def test_collect_provider_config_uses_provider_specific_defaults(
 ) -> None:
     """Fresh provider selection should pick provider-specific defaults."""
 
-    values = run_bash_lines(
+    output = run_bash(
         f"""
 set -euo pipefail
 source "{REPO_ROOT}/scripts/setup/setup.sh"
@@ -1548,7 +1604,7 @@ def test_collect_provider_config_preserves_supported_binding_on_rerun(
 
     write_text_lines(tmp_path / ".env", env_lines)
 
-    values = run_bash_lines(
+    output = run_bash(
         f"""
 set -euo pipefail
 source "{REPO_ROOT}/scripts/setup/setup.sh"
@@ -1592,7 +1648,7 @@ def test_collect_embedding_config_forces_ollama_for_openai_ollama_llm(
         ],
     )
 
-    values = run_bash_lines(
+    output = run_bash(
         f"""
 set -euo pipefail
 source "{REPO_ROOT}/scripts/setup/setup.sh"
@@ -1623,7 +1679,7 @@ printf 'EMBEDDING_BINDING_API_KEY_SET=%s\\n' "${{ENV_VALUES[EMBEDDING_BINDING_AP
 def test_collect_llm_config_allows_bedrock_ambient_credential_chain() -> None:
     """Bedrock setup should allow IAM roles, AWS profiles, or SSO without saved keys."""
 
-    values = run_bash_lines(
+    output = run_bash(
         f"""
 set -euo pipefail
 source "{REPO_ROOT}/scripts/setup/setup.sh"
@@ -1692,7 +1748,7 @@ def test_switching_both_providers_off_bedrock_clears_saved_aws_credentials(
         ],
     )
 
-    values = run_bash_lines(
+    output = run_bash(
         f"""
 set -euo pipefail
 source "{REPO_ROOT}/scripts/setup/setup.sh"
@@ -1880,7 +1936,7 @@ prompt_secret_until_valid_with_default() {{ printf 'cohere-secret-123'; }}
 collect_rerank_config
 
 printf 'RERANK_BINDING=%s\\n' "${{ENV_VALUES[RERANK_BINDING]}}"
-printf 'LIGHTRAG_SETUP_RERANK_PROVIDER=%s\\n' "${{ENV_VALUES[LIGHTRAG_SETUP_RERANK_PROVIDER]}}"
+printf 'LIGHTRAG_SETUP_RERANK_PROVIDER=%s\\n' "${{ENV_VALUES[LIGHTRAG_SETUP_RERANK_PROVIDER]:-}}"
 printf 'RERANK_MODEL=%s\\n' "${{ENV_VALUES[RERANK_MODEL]:-}}"
 printf 'RERANK_BINDING_HOST=%s\\n' "${{ENV_VALUES[RERANK_BINDING_HOST]:-}}"
 """
@@ -1888,7 +1944,7 @@ printf 'RERANK_BINDING_HOST=%s\\n' "${{ENV_VALUES[RERANK_BINDING_HOST]:-}}"
     values = parse_lines(output)
 
     assert values["RERANK_BINDING"] == "cohere"
-    assert values["LIGHTRAG_SETUP_RERANK_PROVIDER"] == "cohere"
+    assert values["LIGHTRAG_SETUP_RERANK_PROVIDER"] == ""
     # Stale vLLM model should be replaced by the cohere provider default
     assert values["RERANK_MODEL"] != "BAAI/bge-reranker-v2-m3"
     assert values["RERANK_MODEL"] == "rerank-v3.5"
@@ -2911,13 +2967,15 @@ def test_env_base_flow_does_not_repeat_rerank_docker_prompt_when_declined(
         ],
     )
 
-    values = run_bash_lines(
+    output = run_bash(
         f"""
 set -euo pipefail
 source "{REPO_ROOT}/scripts/setup/setup.sh"
 REPO_ROOT="{tmp_path}"
 
 DOCKER_PROMPT_COUNT=0
+RERANK_MODEL_PROMPT_LOG="$REPO_ROOT/rerank-model-prompts.log"
+: > "$RERANK_MODEL_PROMPT_LOG"
 
 prompt_choice() {{
   case "$1" in
@@ -2932,6 +2990,15 @@ prompt_choice() {{
 }}
 prompt_with_default() {{
   case "$1" in
+    "vLLM rerank model")
+      echo "unexpected vLLM rerank model prompt" >&2
+      return 93
+      ;;
+    "Rerank model")
+      printf 'hit\n' >> "$RERANK_MODEL_PROMPT_LOG"
+      printf '%s' "$2"
+      return 0
+      ;;
     "Rerank endpoint")
       printf '%s' "https://rerank.example.internal/rerank"
       return 0
@@ -2964,16 +3031,103 @@ confirm_default_yes() {{
 collect_embedding_config() {{ :; }}
 
 finalize_base_setup() {{
+  local rerank_model_prompt_count
+  rerank_model_prompt_count="$(wc -l < "$RERANK_MODEL_PROMPT_LOG" | tr -d '[:space:]')"
   printf 'DOCKER_PROMPT_COUNT=%s\\n' "$DOCKER_PROMPT_COUNT"
+  printf 'RERANK_MODEL_PROMPT_COUNT=%s\\n' "$rerank_model_prompt_count"
   printf 'RERANK_BINDING_HOST=%s\\n' "${{ENV_VALUES[RERANK_BINDING_HOST]}}"
+  printf 'LIGHTRAG_SETUP_RERANK_PROVIDER=%s\\n' "${{ENV_VALUES[LIGHTRAG_SETUP_RERANK_PROVIDER]:-}}"
+}}
+
+env_base_flow
+"""
+    )
+    values = parse_lines(output)
+
+    assert values["DOCKER_PROMPT_COUNT"] == "1"
+    assert values["RERANK_MODEL_PROMPT_COUNT"] == "1"
+    assert values["RERANK_BINDING_HOST"] == "https://rerank.example.internal/rerank"
+    assert values["LIGHTRAG_SETUP_RERANK_PROVIDER"] == ""
+    assert "vLLM uses the Cohere-compatible rerank API." not in output
+
+
+def test_env_base_flow_comments_rerank_setup_marker_when_switching_off_docker(
+    tmp_path: Path,
+) -> None:
+    """Switching rerank from Docker to a non-Docker provider should drop the setup marker."""
+
+    write_text_lines(
+        tmp_path / "env.example",
+        (REPO_ROOT / "env.example").read_text(encoding="utf-8").splitlines(),
+    )
+    write_text_lines(
+        tmp_path / ".env",
+        [
+            "LLM_BINDING=openai",
+            "LLM_MODEL=gpt-4o-mini",
+            "LLM_BINDING_HOST=https://api.openai.com/v1",
+            "LLM_BINDING_API_KEY=sk-existing",
+            "RERANK_BINDING=cohere",
+            "RERANK_MODEL=BAAI/custom-rerank",
+            "RERANK_BINDING_HOST=http://localhost:9200/rerank",
+            "RERANK_BINDING_API_KEY=rerank-key",
+            "LIGHTRAG_SETUP_RERANK_PROVIDER=vllm",
+            "VLLM_RERANK_MODEL=BAAI/custom-rerank",
+            "VLLM_RERANK_PORT=9200",
+            "VLLM_RERANK_DEVICE=cpu",
+        ],
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+
+prompt_choice() {{
+  case "$1" in
+    "Rerank provider") printf 'cohere' ;;
+    *) printf '%s' "$2" ;;
+  esac
+}}
+prompt_with_default() {{
+  case "$1" in
+    "Rerank endpoint") printf '%s' "https://api.cohere.com/v2/rerank" ;;
+    *) printf '%s' "$2" ;;
+  esac
+}}
+prompt_until_valid() {{ printf '%s' "$2"; }}
+prompt_secret_with_default() {{ printf '%s' "$2"; }}
+prompt_secret_until_valid_with_default() {{ printf '%s' "$2"; }}
+confirm_default_no() {{
+  case "$1" in
+    "Run embedding model locally via Docker (vLLM)?") return 1 ;;
+    "Run rerank service locally via Docker?") return 1 ;;
+    "Run LightRAG Server via Docker?") return 1 ;;
+    *) return 1 ;;
+  esac
+}}
+confirm_default_yes() {{
+  case "$1" in
+    "Enable reranking?") return 0 ;;
+    "Ready to proceed and write .env?") return 0 ;;
+    *) return 1 ;;
+  esac
 }}
 
 env_base_flow
 """
     )
 
-    assert values["DOCKER_PROMPT_COUNT"] == "1"
-    assert values["RERANK_BINDING_HOST"] == "https://rerank.example.internal/rerank"
+    generated_env = (tmp_path / ".env").read_text(encoding="utf-8")
+    active_marker_lines = [
+        line
+        for line in generated_env.splitlines()
+        if line.startswith("LIGHTRAG_SETUP_RERANK_PROVIDER=")
+    ]
+
+    assert "RERANK_BINDING=cohere" in generated_env
+    assert active_marker_lines == []
 
 
 def test_env_base_flow_resets_remote_rerank_host_when_switching_to_vllm(

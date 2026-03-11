@@ -385,6 +385,10 @@ _strip_wizard_managed_services_and_top_level_volumes() {
   : > "$tmp_file"
 
   while IFS= read -r line || [[ -n "$line" ]]; do
+    if [[ "$line" == "$_WIZARD_MANAGED_SERVICES_MARKER" ]]; then
+      continue
+    fi
+
     # Detect top-level (non-indented) keys.
     if [[ "$line" =~ ^[A-Za-z] ]]; then
       if [[ "$in_services" == "yes" && "$line" != "services:" && "$inserted_marker" != "yes" ]]; then
@@ -439,25 +443,74 @@ _merge_managed_service_blocks() {
   local line
   local inserted="no"
 
-  if [[ ! -s "$service_blocks_file" ]]; then
-    return 0
-  fi
-
   : > "$tmp_file"
 
   while IFS= read -r line || [[ -n "$line" ]]; do
     if [[ "$line" == "$_WIZARD_MANAGED_SERVICES_MARKER" ]]; then
-      cat "$service_blocks_file" >> "$tmp_file"
-      inserted="yes"
+      if [[ -s "$service_blocks_file" ]]; then
+        cat "$service_blocks_file" >> "$tmp_file"
+        inserted="yes"
+      fi
       continue
     fi
 
     printf '%s\n' "$line" >> "$tmp_file"
   done < "$compose_file"
 
-  if [[ "$inserted" != "yes" ]]; then
+  if [[ -s "$service_blocks_file" && "$inserted" != "yes" ]]; then
     cat "$service_blocks_file" >> "$tmp_file"
   fi
+
+  mv "$tmp_file" "$compose_file"
+}
+
+_normalize_services_section_spacing() {
+  local compose_file="$1"
+  local tmp_file="${compose_file}.normalize-services"
+  _FILE_OPS_CLEANUP_TMP+=("$tmp_file")
+  local line
+  local in_services="no"
+  local pending_blank="no"
+  local saw_service_content="no"
+
+  : > "$tmp_file"
+
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    if [[ "$in_services" == "yes" ]]; then
+      if [[ "$line" == "$_WIZARD_MANAGED_SERVICES_MARKER" ]]; then
+        continue
+      fi
+
+      if [[ -z "$line" ]]; then
+        pending_blank="yes"
+        continue
+      fi
+
+      if [[ ! "$line" =~ ^[[:space:]] ]]; then
+        pending_blank="no"
+        printf '%s\n' "$line" >> "$tmp_file"
+        in_services="no"
+        continue
+      fi
+
+      if [[ "$pending_blank" == "yes" && "$saw_service_content" == "yes" ]]; then
+        printf '\n' >> "$tmp_file"
+      fi
+
+      printf '%s\n' "$line" >> "$tmp_file"
+      pending_blank="no"
+      saw_service_content="yes"
+      continue
+    fi
+
+    printf '%s\n' "$line" >> "$tmp_file"
+
+    if [[ "$line" == "services:" ]]; then
+      in_services="yes"
+      pending_blank="no"
+      saw_service_content="no"
+    fi
+  done < "$compose_file"
 
   mv "$tmp_file" "$compose_file"
 }
@@ -834,6 +887,7 @@ generate_docker_compose() {
   done
 
   _merge_managed_service_blocks "$tmp_file" "$service_blocks_file"
+  _normalize_services_section_spacing "$tmp_file"
   _append_referenced_volume_blocks "$tmp_file"
 
   mv "$tmp_file" "$output_file"
