@@ -211,7 +211,15 @@ prompt_choice() {
     printf '%s\n' "${COLOR_BLUE}${prompt}${COLOR_RESET} options:" >&2
     index=1
     for option in "${options[@]}"; do
-      printf '  %s) %s\n' "${COLOR_GREEN}${index}${COLOR_RESET}" "$option" >&2
+      if [[ "$index" == "$default_index" ]]; then
+        printf '  %s) %s%s%s\n' \
+          "${COLOR_GREEN}${index}${COLOR_RESET}" \
+          "${COLOR_YELLOW}" \
+          "$option" \
+          "${COLOR_RESET}" >&2
+      else
+        printf '  %s) %s\n' "${COLOR_GREEN}${index}${COLOR_RESET}" "$option" >&2
+      fi
       index=$((index + 1))
     done
     if [[ -n "$default_index" ]]; then
