@@ -439,6 +439,54 @@ _strip_wrapping_quotes() {
   printf '%s' "$value"
 }
 
+read_service_environment_value() {
+  local compose_file="$1"
+  local service_name="$2"
+  local wanted_key="$3"
+  local line
+  local entry_key=""
+  local entry_value=""
+  local service_header="  ${service_name}:"
+  local in_service="no"
+  local in_environment="no"
+
+  if [[ ! -f "$compose_file" ]]; then
+    return 1
+  fi
+
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    if [[ "$in_service" == "yes" && "$in_environment" == "yes" ]]; then
+      if [[ "$line" =~ ^[[:space:]]{6}([A-Z0-9_]+):[[:space:]]*(.+)$ ]]; then
+        entry_key="${BASH_REMATCH[1]}"
+        if [[ "$entry_key" == "$wanted_key" ]]; then
+          printf '%s' "$(_strip_wrapping_quotes "${BASH_REMATCH[2]}")"
+          return 0
+        fi
+      elif [[ "$line" =~ ^[[:space:]]{6}-[[:space:]](.+)$ ]]; then
+        entry_value="$(_strip_wrapping_quotes "${BASH_REMATCH[1]}")"
+        entry_key="${entry_value%%=*}"
+        if [[ "$entry_key" == "$wanted_key" && "$entry_value" == *=* ]]; then
+          printf '%s' "${entry_value#*=}"
+          return 0
+        fi
+      elif [[ ! "$line" =~ ^[[:space:]]{6} ]]; then
+        in_environment="no"
+      fi
+    elif [[ "$in_service" == "yes" && "$line" =~ ^[[:space:]]{2}[^[:space:]] && "$line" != "$service_header" ]]; then
+      in_service="no"
+    fi
+
+    if [[ "$line" == "$service_header" ]]; then
+      in_service="yes"
+      in_environment="no"
+    elif [[ "$in_service" == "yes" && "$line" == "    environment:" ]]; then
+      in_environment="yes"
+    fi
+  done < "$compose_file"
+
+  return 1
+}
+
 _extract_named_volume_name() {
   local mount_spec="$1"
   local source=""
@@ -469,7 +517,10 @@ _collect_referenced_named_volumes() {
   local in_volumes="no"
   local in_long_volume_entry="no"
   local long_volume_type=""
+  local long_volume_source=""
   local volume_name=""
+  local long_entry_key=""
+  local long_entry_value=""
   local -A seen=()
 
   if [[ ! -f "$compose_file" ]]; then
@@ -502,6 +553,7 @@ _collect_referenced_named_volumes() {
       in_volumes="no"
       in_long_volume_entry="no"
       long_volume_type=""
+      long_volume_source=""
       continue
     fi
 
@@ -513,6 +565,7 @@ _collect_referenced_named_volumes() {
       in_volumes="yes"
       in_long_volume_entry="no"
       long_volume_type=""
+      long_volume_source=""
       continue
     fi
 
@@ -524,6 +577,7 @@ _collect_referenced_named_volumes() {
       in_volumes="no"
       in_long_volume_entry="no"
       long_volume_type=""
+      long_volume_source=""
       continue
     fi
 
@@ -532,17 +586,33 @@ _collect_referenced_named_volumes() {
       volume_entry="$(_strip_wrapping_quotes "$volume_entry")"
       in_long_volume_entry="no"
       long_volume_type=""
+      long_volume_source=""
 
-      if [[ "$volume_entry" == "type: volume" ]]; then
-        in_long_volume_entry="yes"
-        long_volume_type="volume"
-        continue
-      fi
-
-      if [[ "$volume_entry" == "type: bind" || "$volume_entry" == "type: tmpfs" ]]; then
-        in_long_volume_entry="yes"
-        long_volume_type="other"
-        continue
+      if [[ "$volume_entry" =~ ^([A-Za-z_][A-Za-z0-9_-]*):[[:space:]]*(.*)$ ]]; then
+        long_entry_key="${BASH_REMATCH[1]}"
+        long_entry_value="$(_strip_wrapping_quotes "${BASH_REMATCH[2]}")"
+        case "$long_entry_key" in
+          type|source|target|read_only|bind|volume|tmpfs|consistency|nocopy|subpath)
+            in_long_volume_entry="yes"
+            case "$long_entry_key" in
+              type)
+                if [[ "$long_entry_value" == "volume" ]]; then
+                  long_volume_type="volume"
+                else
+                  long_volume_type="other"
+                fi
+                ;;
+              source)
+                long_volume_source="$long_entry_value"
+                ;;
+            esac
+            if [[ "$long_volume_type" == "volume" && -n "$long_volume_source" && -z "${seen[$long_volume_source]+set}" ]]; then
+              seen["$long_volume_source"]=1
+              printf '%s\n' "$long_volume_source"
+            fi
+            continue
+            ;;
+        esac
       fi
 
       volume_name="$(_extract_named_volume_name "$volume_entry")" || continue
@@ -553,12 +623,26 @@ _collect_referenced_named_volumes() {
       continue
     fi
 
-    if [[ "$in_long_volume_entry" == "yes" && "$long_volume_type" == "volume" ]] && \
-      [[ "$line" =~ ^[[:space:]]{8}source:[[:space:]]*(.+)$ ]]; then
-      volume_name="$(_strip_wrapping_quotes "${BASH_REMATCH[1]}")"
-      if [[ -n "$volume_name" && -z "${seen[$volume_name]+set}" ]]; then
-        seen["$volume_name"]=1
-        printf '%s\n' "$volume_name"
+    if [[ "$in_long_volume_entry" == "yes" ]] && \
+      [[ "$line" =~ ^[[:space:]]{8}([A-Za-z_][A-Za-z0-9_-]*):[[:space:]]*(.+)$ ]]; then
+      long_entry_key="${BASH_REMATCH[1]}"
+      long_entry_value="$(_strip_wrapping_quotes "${BASH_REMATCH[2]}")"
+      case "$long_entry_key" in
+        type)
+          if [[ "$long_entry_value" == "volume" ]]; then
+            long_volume_type="volume"
+          else
+            long_volume_type="other"
+          fi
+          ;;
+        source)
+          long_volume_source="$long_entry_value"
+          ;;
+      esac
+
+      if [[ "$long_volume_type" == "volume" && -n "$long_volume_source" && -z "${seen[$long_volume_source]+set}" ]]; then
+        seen["$long_volume_source"]=1
+        printf '%s\n' "$long_volume_source"
       fi
     fi
   done < "$compose_file"

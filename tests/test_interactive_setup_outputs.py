@@ -1979,6 +1979,80 @@ env_base_flow
             assert line in generated_lines
 
 
+def test_env_base_flow_preserves_existing_compose_ssl_when_env_paths_are_stale(
+    tmp_path: Path,
+) -> None:
+    """env-base should keep compose SSL wiring when inherited source paths no longer exist."""
+
+    write_text_lines(
+        tmp_path / "env.example",
+        (REPO_ROOT / "env.example").read_text(encoding="utf-8").splitlines(),
+    )
+    write_text_lines(
+        tmp_path / ".env",
+        [
+            "SSL=true",
+            "SSL_CERTFILE=/missing/cert.pem",
+            "SSL_KEYFILE=/missing/key.pem",
+            "LLM_BINDING=openai",
+            "LLM_MODEL=gpt-4o-mini",
+            "LLM_BINDING_HOST=https://api.openai.com/v1",
+            "LLM_BINDING_API_KEY=sk-existing",
+            "EMBEDDING_BINDING=openai",
+            "EMBEDDING_MODEL=text-embedding-3-small",
+            "EMBEDDING_DIM=1536",
+            "EMBEDDING_BINDING_HOST=https://api.openai.com/v1",
+            "EMBEDDING_BINDING_API_KEY=sk-existing",
+        ],
+    )
+    write_text_lines(
+        tmp_path / "docker-compose.final.yml",
+        [
+            "services:",
+            "  lightrag:",
+            "    image: example/lightrag:test",
+            "    environment:",
+            '      SSL_CERTFILE: "/app/data/certs/cert.pem"',
+            '      SSL_KEYFILE: "/app/data/certs/key.pem"',
+            "    volumes:",
+            '      - "./data/certs/cert.pem:/app/data/certs/cert.pem:ro"',
+            '      - "./data/certs/key.pem:/app/data/certs/key.pem:ro"',
+        ],
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+
+prompt_choice() {{ printf '%s' "$2"; }}
+prompt_with_default() {{ printf '%s' "$2"; }}
+prompt_until_valid() {{ printf '%s' "$2"; }}
+prompt_secret_with_default() {{ printf '%s' "$2"; }}
+prompt_secret_until_valid_with_default() {{ printf '%s' "$2"; }}
+confirm_default_no() {{ return 1; }}
+confirm_default_yes() {{
+  case "$1" in
+    "Ready to proceed and write .env?") return 0 ;;
+    *) return 1 ;;
+  esac
+}}
+
+env_base_flow
+"""
+    )
+
+    generated_compose = (tmp_path / "docker-compose.final.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'SSL_CERTFILE: "/app/data/certs/cert.pem"' in generated_compose
+    assert 'SSL_KEYFILE: "/app/data/certs/key.pem"' in generated_compose
+    assert "./data/certs/cert.pem:/app/data/certs/cert.pem:ro" in generated_compose
+    assert "./data/certs/key.pem:/app/data/certs/key.pem:ro" in generated_compose
+
+
 def test_env_base_flow_generates_env_and_compose_files(tmp_path: Path) -> None:
     """env-base should generate `.env` and docker-compose output for hosted and local providers."""
 
@@ -2513,6 +2587,75 @@ env_storage_flow
     assert "env_file:" not in generated_compose
 
 
+def test_env_storage_flow_preserves_existing_compose_ssl_when_env_paths_are_stale(
+    tmp_path: Path,
+) -> None:
+    """env-storage should keep compose SSL wiring when inherited source paths no longer exist."""
+
+    write_text_lines(
+        tmp_path / ".env",
+        [
+            "SSL=true",
+            "SSL_CERTFILE=/missing/cert.pem",
+            "SSL_KEYFILE=/missing/key.pem",
+            "LLM_BINDING=openai",
+            "EMBEDDING_BINDING=openai",
+            "LIGHTRAG_KV_STORAGE=JsonKVStorage",
+            "LIGHTRAG_VECTOR_STORAGE=NanoVectorDBStorage",
+            "LIGHTRAG_GRAPH_STORAGE=NetworkXStorage",
+            "LIGHTRAG_DOC_STATUS_STORAGE=JsonDocStatusStorage",
+        ],
+    )
+    write_text_lines(
+        tmp_path / "env.example",
+        (REPO_ROOT / "env.example").read_text(encoding="utf-8").splitlines(),
+    )
+    write_text_lines(
+        tmp_path / "docker-compose.final.yml",
+        [
+            "services:",
+            "  lightrag:",
+            "    image: example/lightrag:test",
+            "    environment:",
+            '      SSL_CERTFILE: "/app/data/certs/cert.pem"',
+            '      SSL_KEYFILE: "/app/data/certs/key.pem"',
+            "    volumes:",
+            '      - "./data/certs/cert.pem:/app/data/certs/cert.pem:ro"',
+            '      - "./data/certs/key.pem:/app/data/certs/key.pem:ro"',
+        ],
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+
+select_storage_backends() {{
+  ENV_VALUES[LIGHTRAG_KV_STORAGE]="JsonKVStorage"
+  ENV_VALUES[LIGHTRAG_VECTOR_STORAGE]="NanoVectorDBStorage"
+  ENV_VALUES[LIGHTRAG_GRAPH_STORAGE]="NetworkXStorage"
+  ENV_VALUES[LIGHTRAG_DOC_STATUS_STORAGE]="JsonDocStatusStorage"
+}}
+collect_database_config() {{ :; }}
+validate_required_variables() {{ return 0; }}
+confirm_default_yes() {{ return 0; }}
+confirm_default_no() {{ return 1; }}
+
+env_storage_flow
+"""
+    )
+
+    generated_compose = (tmp_path / "docker-compose.final.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'SSL_CERTFILE: "/app/data/certs/cert.pem"' in generated_compose
+    assert 'SSL_KEYFILE: "/app/data/certs/key.pem"' in generated_compose
+    assert "./data/certs/cert.pem:/app/data/certs/cert.pem:ro" in generated_compose
+    assert "./data/certs/key.pem:/app/data/certs/key.pem:ro" in generated_compose
+
+
 def test_switching_to_non_docker_storage_removes_stale_services_from_compose(
     tmp_path: Path,
 ) -> None:
@@ -2627,6 +2770,58 @@ generate_docker_compose "$REPO_ROOT/docker-compose.final.yml"
     assert "image: vllm/vllm-openai-cpu:latest" in result
     assert "registry.example.com/postgres-for-rag:patched" not in result
     assert "vllm/vllm-openai-cpu:patched" not in result
+
+
+def test_generate_docker_compose_preserves_long_form_named_sidecar_volumes(
+    tmp_path: Path,
+) -> None:
+    """Managed-service regeneration must not misparse preserved long-form named volumes."""
+
+    write_text_lines(
+        tmp_path / "env.example",
+        (REPO_ROOT / "env.example").read_text(encoding="utf-8").splitlines(),
+    )
+    write_text_lines(
+        tmp_path / ".env",
+        [
+            "LLM_BINDING=openai",
+            "EMBEDDING_BINDING=openai",
+        ],
+    )
+    write_text_lines(
+        tmp_path / "docker-compose.final.yml",
+        [
+            "services:",
+            "  lightrag:",
+            "    image: example/lightrag:test",
+            "  sidecar:",
+            "    image: busybox",
+            '    command: ["sleep", "infinity"]',
+            "    volumes:",
+            "      - source: sidecar_data",
+            "        target: /data",
+            "        type: volume",
+            "volumes:",
+            "  sidecar_data:",
+        ],
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+load_existing_env_if_present
+add_docker_service postgres
+generate_docker_compose "$REPO_ROOT/docker-compose.final.yml"
+"""
+    )
+
+    result = (tmp_path / "docker-compose.final.yml").read_text(encoding="utf-8")
+
+    assert "  sidecar_data:" in result
+    assert "\n  source:\n" not in result
 
 
 def test_collect_milvus_config_defaults_to_existing_database_name() -> None:

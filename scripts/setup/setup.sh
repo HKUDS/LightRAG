@@ -1518,17 +1518,44 @@ show_summary() {
 }
 
 prepare_inherited_ssl_assets_for_compose() {
+  local existing_compose="${1:-}"
+  local staged_cert_source="$SSL_CERT_SOURCE_PATH"
+  local staged_key_source="$SSL_KEY_SOURCE_PATH"
+  local preserved_cert_path=""
+  local preserved_key_path=""
+
   if [[ -n "$SSL_CERT_SOURCE_PATH" ]] && ! validate_existing_file "$SSL_CERT_SOURCE_PATH"; then
-    format_error "Invalid SSL_CERTFILE" \
-      "Set it to an existing certificate file, disable SSL, or rerun the wizard to choose a new certificate."
-    return 1
+    if [[ -n "$existing_compose" ]]; then
+      preserved_cert_path="$(read_service_environment_value "$existing_compose" "lightrag" "SSL_CERTFILE" || true)"
+    fi
+    if [[ "$preserved_cert_path" == /app/data/certs/* ]]; then
+      log_warn "SSL_CERTFILE source is missing; preserving the existing compose SSL certificate mount."
+      staged_cert_source=""
+      set_compose_override "SSL_CERTFILE" "$preserved_cert_path"
+    else
+      format_error "Invalid SSL_CERTFILE" \
+        "Set it to an existing certificate file, disable SSL, or rerun the wizard to choose a new certificate."
+      return 1
+    fi
   fi
 
   if [[ -n "$SSL_KEY_SOURCE_PATH" ]] && ! validate_existing_file "$SSL_KEY_SOURCE_PATH"; then
-    format_error "Invalid SSL_KEYFILE" \
-      "Set it to an existing private key file, disable SSL, or rerun the wizard to choose a new key."
-    return 1
+    if [[ -n "$existing_compose" ]]; then
+      preserved_key_path="$(read_service_environment_value "$existing_compose" "lightrag" "SSL_KEYFILE" || true)"
+    fi
+    if [[ "$preserved_key_path" == /app/data/certs/* ]]; then
+      log_warn "SSL_KEYFILE source is missing; preserving the existing compose SSL key mount."
+      staged_key_source=""
+      set_compose_override "SSL_KEYFILE" "$preserved_key_path"
+    else
+      format_error "Invalid SSL_KEYFILE" \
+        "Set it to an existing private key file, disable SSL, or rerun the wizard to choose a new key."
+      return 1
+    fi
   fi
+
+  SSL_CERT_SOURCE_PATH="$staged_cert_source"
+  SSL_KEY_SOURCE_PATH="$staged_key_source"
 
   if [[ -n "$SSL_CERT_SOURCE_PATH" || -n "$SSL_KEY_SOURCE_PATH" ]]; then
     stage_ssl_assets "$SSL_CERT_SOURCE_PATH" "$SSL_KEY_SOURCE_PATH"
@@ -1594,7 +1621,7 @@ finalize_setup() {
   fi
 
   if [[ "$generate_compose" == "yes" ]]; then
-    if ! prepare_inherited_ssl_assets_for_compose; then
+    if ! prepare_inherited_ssl_assets_for_compose "$existing_compose"; then
       return 1
     fi
     prepare_compose_env_overrides
@@ -1874,7 +1901,7 @@ finalize_base_setup() {
   fi
 
   if [[ "$generate_compose" == "yes" ]]; then
-    if ! prepare_inherited_ssl_assets_for_compose; then
+    if ! prepare_inherited_ssl_assets_for_compose "$existing_compose"; then
       return 1
     fi
     prepare_compose_env_overrides
@@ -2012,7 +2039,7 @@ finalize_storage_setup() {
   fi
   generate_compose="yes"
 
-  if ! prepare_inherited_ssl_assets_for_compose; then
+  if ! prepare_inherited_ssl_assets_for_compose "$existing_compose"; then
     return 1
   fi
   prepare_compose_env_overrides
