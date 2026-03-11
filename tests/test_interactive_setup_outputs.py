@@ -102,6 +102,59 @@ printf 'DOCKER_SERVICE=%s\\n' "${{DOCKER_SERVICES[0]}}"
     assert values["DOCKER_SERVICE"] == "postgres"
 
 
+def test_collect_server_config_includes_summary_language_last() -> None:
+    """Server config should prompt for summary language after the WebUI fields."""
+
+    values = run_bash_lines(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+reset_state
+
+PROMPT_LOG_FILE="$(mktemp)"
+: > "$PROMPT_LOG_FILE"
+
+prompt_with_default() {{
+  printf '%s\\n' "$1" >> "$PROMPT_LOG_FILE"
+  case "$1" in
+    "Server host") printf '127.0.0.1' ;;
+    "WebUI title") printf 'Custom KB' ;;
+    "WebUI description") printf 'Custom description' ;;
+    "Summary language") printf 'Chinese' ;;
+    *) printf '%s' "$2" ;;
+  esac
+}}
+prompt_until_valid() {{
+  printf '%s\\n' "$1" >> "$PROMPT_LOG_FILE"
+  if [[ "$1" == "Server port" ]]; then
+    printf '9630'
+  else
+    printf '%s' "$2"
+  fi
+}}
+
+collect_server_config
+
+printf 'HOST=%s\\n' "${{ENV_VALUES[HOST]}}"
+printf 'PORT=%s\\n' "${{ENV_VALUES[PORT]}}"
+printf 'WEBUI_TITLE=%s\\n' "${{ENV_VALUES[WEBUI_TITLE]}}"
+printf 'WEBUI_DESCRIPTION=%s\\n' "${{ENV_VALUES[WEBUI_DESCRIPTION]}}"
+printf 'SUMMARY_LANGUAGE=%s\\n' "${{ENV_VALUES[SUMMARY_LANGUAGE]}}"
+printf 'PROMPT_LOG=%s\\n' "$(paste -sd '|' "$PROMPT_LOG_FILE")"
+"""
+    )
+
+    assert values["HOST"] == "127.0.0.1"
+    assert values["PORT"] == "9630"
+    assert values["WEBUI_TITLE"] == "Custom KB"
+    assert values["WEBUI_DESCRIPTION"] == "Custom description"
+    assert values["SUMMARY_LANGUAGE"] == "Chinese"
+    assert (
+        values["PROMPT_LOG"]
+        == "Server host|Server port|WebUI title|WebUI description|Summary language"
+    )
+
+
 @pytest.mark.parametrize(
     ("setup_lines", "collector_call", "env_key", "expected_value"),
     [

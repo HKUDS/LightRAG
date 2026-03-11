@@ -1343,17 +1343,19 @@ collect_rerank_config() {
 }
 
 collect_server_config() {
-  local host port title description
+  local host port title description summary_language
 
   host="$(prompt_with_default "Server host" "${ENV_VALUES[HOST]:-0.0.0.0}")"
   port="$(prompt_until_valid "Server port" "${ENV_VALUES[PORT]:-9621}" validate_port)"
   title="$(prompt_with_default "WebUI title" "${ENV_VALUES[WEBUI_TITLE]:-My Graph KB}")"
   description="$(prompt_with_default "WebUI description" "${ENV_VALUES[WEBUI_DESCRIPTION]:-Simple and Fast Graph Based RAG System}")"
+  summary_language="$(prompt_with_default "Summary language" "${ENV_VALUES[SUMMARY_LANGUAGE]:-English}")"
 
   ENV_VALUES["HOST"]="$host"
   ENV_VALUES["PORT"]="$port"
   ENV_VALUES["WEBUI_TITLE"]="$title"
   ENV_VALUES["WEBUI_DESCRIPTION"]="$description"
+  ENV_VALUES["SUMMARY_LANGUAGE"]="$summary_language"
 }
 
 collect_ssl_config() {
