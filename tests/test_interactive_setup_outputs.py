@@ -4306,7 +4306,9 @@ security_check_env_file
     assert "No obvious security issues found" in result.stdout
 
 
-def test_security_check_reports_api_key_only_with_default_whitelist(tmp_path: Path) -> None:
+def test_security_check_reports_api_key_only_with_default_whitelist(
+    tmp_path: Path,
+) -> None:
     """API-key-only deployment with unset WHITELIST_PATHS inherits /api/* and must be flagged."""
 
     write_text_lines(tmp_path / ".env", ["LIGHTRAG_API_KEY=my-secret-key"])
@@ -4365,7 +4367,9 @@ security_check_env_file
     assert "WHITELIST_PATHS exposes /api routes" in result.stdout
 
 
-def test_security_check_passes_for_api_key_only_with_safe_whitelist(tmp_path: Path) -> None:
+def test_security_check_passes_for_api_key_only_with_safe_whitelist(
+    tmp_path: Path,
+) -> None:
     """API-key-only deployment with a safe WHITELIST_PATHS should pass the security check."""
 
     write_text_lines(
