@@ -82,6 +82,15 @@ docker compose -f docker-compose.final.yml up -d
 
 The interactive setup keeps `.env` host-usable. Container-only hostnames such as `postgres` or `host.docker.internal`, along with staged SSL paths under `/app/data/certs/`, are injected into the generated `docker-compose.final.yml` for the `lightrag` service instead of being persisted back into `.env`.
 
+Before exposing the generated stack beyond localhost, run:
+
+```bash
+make env-security-check
+```
+
+That command audits the current `.env` for missing authentication, unsafe whitelist settings, weak
+JWT secrets, and other setup-level security risks without rewriting any files.
+
 LightRAG Server uses the following paths for data storage:
 
 ```
@@ -203,6 +212,8 @@ VLLM_RERANK_DEVICE=cuda
 
 Ensure the NVIDIA Container Toolkit is installed and the host has CUDA drivers available.
 The setup wizard uses the CPU image by default for `cpu` device and the GPU image for `cuda` device.
+When rerunning `make env-base`, an existing `VLLM_EMBED_DEVICE` / `VLLM_RERANK_DEVICE` value is
+preserved instead of being overwritten by a fresh GPU auto-detection result.
 Those templates already pin the matching vLLM `--dtype` (`float32` on CPU, `float16` on CUDA), so no separate `VLLM_*_DTYPE` environment variables are needed.
 
 ### SSL certificates

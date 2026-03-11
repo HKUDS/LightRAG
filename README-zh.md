@@ -191,9 +191,12 @@ docker compose up
 make env-base           # 必跑第一步：配置 LLM、Embedding、Reranker
 make env-storage        # 可选：配置存储后端和数据库服务
 make env-server         # 可选：配置服务端口、鉴权和 SSL
+make env-security-check # 可选：审计当前 .env 中的安全风险
 ```
 
 每个目标的详细说明请参阅 [docs/InteractiveSetup.md](./docs/InteractiveSetup.md)。
+这些 setup 向导只负责更新配置；如需在部署前审计当前 `.env` 的安全风险，请额外运行
+`make env-security-check`。
 
 ### 安装LightRAG Core
 

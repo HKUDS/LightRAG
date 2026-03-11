@@ -606,6 +606,86 @@ generate_docker_compose "$REPO_ROOT/docker-compose.final.yml"
     assert "postgres_data:" not in result
 
 
+def test_find_generated_compose_file_prefers_legacy_profile_match(
+    tmp_path: Path,
+) -> None:
+    """Legacy setup profile metadata should steer compose migration when available."""
+
+    write_text_lines(
+        tmp_path / ".env",
+        [
+            "LIGHTRAG_SETUP_PROFILE=production",
+            "HOST=0.0.0.0",
+        ],
+    )
+    write_text_lines(
+        tmp_path / "docker-compose.development.yml",
+        [
+            "services:",
+            "  lightrag:",
+            "    image: dev/lightrag",
+        ],
+    )
+    write_text_lines(
+        tmp_path / "docker-compose.production.yml",
+        [
+            "services:",
+            "  lightrag:",
+            "    image: prod/lightrag",
+        ],
+    )
+
+    output = run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+
+printf 'COMPOSE=%s\\n' "$(find_generated_compose_file)"
+"""
+    )
+    values = parse_lines(output)
+
+    assert values["COMPOSE"] == str(tmp_path / "docker-compose.production.yml")
+
+
+def test_find_generated_compose_file_falls_back_to_order_without_profile(
+    tmp_path: Path,
+) -> None:
+    """Without legacy profile metadata, compose migration should use the default order."""
+
+    write_text_lines(tmp_path / ".env", ["HOST=0.0.0.0"])
+    write_text_lines(
+        tmp_path / "docker-compose.development.yml",
+        [
+            "services:",
+            "  lightrag:",
+            "    image: dev/lightrag",
+        ],
+    )
+    write_text_lines(
+        tmp_path / "docker-compose.production.yml",
+        [
+            "services:",
+            "  lightrag:",
+            "    image: prod/lightrag",
+        ],
+    )
+
+    output = run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+
+printf 'COMPOSE=%s\\n' "$(find_generated_compose_file)"
+"""
+    )
+    values = parse_lines(output)
+
+    assert values["COMPOSE"] == str(tmp_path / "docker-compose.development.yml")
+
+
 def test_collect_ssl_config_can_disable_loaded_ssl_values(tmp_path: Path) -> None:
     """Declining SSL should clear previously loaded cert paths and staged sources."""
 
@@ -1735,6 +1815,61 @@ env_base_flow
     assert values["VLLM_EMBED_PORT"] == "9101"
 
 
+def test_env_base_flow_preserves_existing_vllm_embedding_device_on_gpu_host(
+    tmp_path: Path,
+) -> None:
+    """Saved vLLM embedding CPU/GPU mode should win over auto-detected GPU defaults."""
+
+    write_text_lines(
+        tmp_path / ".env",
+        [
+            "LLM_BINDING=openai",
+            "LLM_MODEL=gpt-4o-mini",
+            "LLM_BINDING_HOST=https://api.openai.com/v1",
+            "LLM_BINDING_API_KEY=sk-existing",
+            "EMBEDDING_BINDING=openai",
+            "EMBEDDING_MODEL=BAAI/custom-embed",
+            "EMBEDDING_DIM=1024",
+            "EMBEDDING_BINDING_HOST=http://localhost:9101/v1",
+            "EMBEDDING_BINDING_API_KEY=embed-key",
+            "LIGHTRAG_SETUP_EMBEDDING_PROVIDER=vllm",
+            "VLLM_EMBED_MODEL=BAAI/custom-embed",
+            "VLLM_EMBED_PORT=9101",
+            "VLLM_EMBED_DEVICE=cpu",
+        ],
+    )
+
+    values = run_bash_lines(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+
+nvidia-smi() {{ return 0; }}
+prompt_choice() {{ printf '%s' "$2"; }}
+prompt_with_default() {{ printf '%s' "$2"; }}
+prompt_until_valid() {{ printf '%s' "$2"; }}
+prompt_secret_with_default() {{ printf '%s' "$2"; }}
+prompt_secret_until_valid_with_default() {{ printf '%s' "$2"; }}
+confirm_default_no() {{ return 1; }}
+confirm_default_yes() {{
+  case "$1" in
+    "Run embedding model locally via Docker (vLLM)?") return 0 ;;
+    *) return 1 ;;
+  esac
+}}
+
+finalize_base_setup() {{
+  printf 'VLLM_EMBED_DEVICE=%s\\n' "${{ENV_VALUES[VLLM_EMBED_DEVICE]}}"
+}}
+
+env_base_flow
+"""
+    )
+
+    assert values["VLLM_EMBED_DEVICE"] == "cpu"
+
+
 def test_env_base_flow_preserves_ssl_config_on_rerun(tmp_path: Path) -> None:
     """env-base should preserve SSL config on rerun, even when old paths are stale."""
 
@@ -1930,6 +2065,50 @@ validate_env_file
     assert "LIGHTRAG_VECTOR_STORAGE=NanoVectorDBStorage" in generated_env
     assert "LIGHTRAG_GRAPH_STORAGE=NetworkXStorage" in generated_env
     assert "LIGHTRAG_DOC_STATUS_STORAGE=JsonDocStatusStorage" in generated_env
+    assert "LIGHTRAG_SETUP_PROFILE=" not in generated_env
+
+
+def test_env_storage_flow_drops_legacy_setup_profile_on_write(tmp_path: Path) -> None:
+    """Modular flows should not persist LIGHTRAG_SETUP_PROFILE into regenerated .env files."""
+
+    write_text_lines(
+        tmp_path / ".env",
+        [
+            "LIGHTRAG_SETUP_PROFILE=production",
+            "LIGHTRAG_KV_STORAGE=JsonKVStorage",
+            "LIGHTRAG_VECTOR_STORAGE=NanoVectorDBStorage",
+            "LIGHTRAG_GRAPH_STORAGE=NetworkXStorage",
+            "LIGHTRAG_DOC_STATUS_STORAGE=JsonDocStatusStorage",
+        ],
+    )
+    write_text_lines(
+        tmp_path / "env.example",
+        (REPO_ROOT / "env.example").read_text(encoding="utf-8").splitlines(),
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+
+select_storage_backends() {{
+  ENV_VALUES[LIGHTRAG_KV_STORAGE]="JsonKVStorage"
+  ENV_VALUES[LIGHTRAG_VECTOR_STORAGE]="NanoVectorDBStorage"
+  ENV_VALUES[LIGHTRAG_GRAPH_STORAGE]="NetworkXStorage"
+  ENV_VALUES[LIGHTRAG_DOC_STATUS_STORAGE]="JsonDocStatusStorage"
+}}
+collect_database_config() {{ :; }}
+validate_required_variables() {{ return 0; }}
+confirm_default_yes() {{ return 0; }}
+confirm_default_no() {{ return 1; }}
+
+env_storage_flow
+"""
+    )
+
+    generated_env = (tmp_path / ".env").read_text(encoding="utf-8")
+    assert "LIGHTRAG_SETUP_PROFILE=" not in generated_env
 
 
 def test_env_base_flow_registers_vllm_rerank_service_for_docker_deployment(
@@ -2032,6 +2211,66 @@ env_base_flow
     assert values["RERANK_BINDING_HOST"] == "http://localhost:9200/rerank"
     assert values["VLLM_RERANK_MODEL"] == "BAAI/custom-rerank"
     assert values["VLLM_RERANK_PORT"] == "9200"
+
+
+def test_env_base_flow_preserves_existing_vllm_rerank_device_on_gpu_host(
+    tmp_path: Path,
+) -> None:
+    """Saved vLLM rerank CPU/GPU mode should win over auto-detected GPU defaults."""
+
+    write_text_lines(
+        tmp_path / ".env",
+        [
+            "LLM_BINDING=openai",
+            "LLM_MODEL=gpt-4o-mini",
+            "LLM_BINDING_HOST=https://api.openai.com/v1",
+            "LLM_BINDING_API_KEY=sk-existing",
+            "RERANK_BINDING=cohere",
+            "RERANK_MODEL=BAAI/custom-rerank",
+            "RERANK_BINDING_HOST=http://localhost:9200/rerank",
+            "RERANK_BINDING_API_KEY=rerank-key",
+            "LIGHTRAG_SETUP_RERANK_PROVIDER=vllm",
+            "VLLM_RERANK_MODEL=BAAI/custom-rerank",
+            "VLLM_RERANK_PORT=9200",
+            "VLLM_RERANK_DEVICE=cpu",
+        ],
+    )
+
+    values = run_bash_lines(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+
+nvidia-smi() {{ return 0; }}
+prompt_choice() {{ printf '%s' "$2"; }}
+prompt_with_default() {{ printf '%s' "$2"; }}
+prompt_until_valid() {{ printf '%s' "$2"; }}
+prompt_secret_with_default() {{ printf '%s' "$2"; }}
+prompt_secret_until_valid_with_default() {{ printf '%s' "$2"; }}
+confirm_default_no() {{
+  case "$1" in
+    "Enable reranking?") return 0 ;;
+    *) return 1 ;;
+  esac
+}}
+confirm_default_yes() {{
+  case "$1" in
+    "Run rerank service locally via Docker?") return 0 ;;
+    *) return 1 ;;
+  esac
+}}
+collect_embedding_config() {{ :; }}
+
+finalize_base_setup() {{
+  printf 'VLLM_RERANK_DEVICE=%s\\n' "${{ENV_VALUES[VLLM_RERANK_DEVICE]}}"
+}}
+
+env_base_flow
+"""
+    )
+
+    assert values["VLLM_RERANK_DEVICE"] == "cpu"
 
 
 def test_env_storage_flow_applies_selected_storage_backends(
@@ -2589,26 +2828,14 @@ finalize_server_setup
     assert "milvus-minio" in result
 
 
-def test_finalize_server_setup_rejects_invalid_production_security_profile(
+def test_finalize_server_setup_allows_risky_security_config_and_security_check_reports_it(
     tmp_path: Path,
 ) -> None:
-    """env-server should fail before writing an invalid production security profile."""
+    """Wizard writes `.env` without blocking, while security-check reports risky settings."""
 
     write_text_lines(
         tmp_path / ".env",
         [
-            "LIGHTRAG_SETUP_PROFILE=production",
-            "LIGHTRAG_KV_STORAGE=PGKVStorage",
-            "LIGHTRAG_VECTOR_STORAGE=QdrantVectorDBStorage",
-            "LIGHTRAG_GRAPH_STORAGE=Neo4JStorage",
-            "LIGHTRAG_DOC_STATUS_STORAGE=PGDocStatusStorage",
-            "POSTGRES_USER=lightrag",
-            "POSTGRES_PASSWORD=secret",
-            "POSTGRES_DATABASE=lightrag",
-            "QDRANT_URL=http://localhost:6333",
-            "NEO4J_URI=neo4j://localhost:7687",
-            "NEO4J_USERNAME=neo4j",
-            "NEO4J_PASSWORD=secret",
             "AUTH_ACCOUNTS=admin:secret",
             "TOKEN_SECRET=jwt-secret",
             "WHITELIST_PATHS=/health,/api/*",
@@ -2639,7 +2866,28 @@ fi
     )
     values = parse_lines(output)
 
-    assert values["RESULT"] == "failure"
+    assert values["RESULT"] == "success"
+
+    result = subprocess.run(
+        [
+            "bash",
+            "--norc",
+            "--noprofile",
+            "-c",
+            f"""
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+security_check_env_file
+""",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    assert "WHITELIST_PATHS exposes /api routes" in result.stdout
 
 
 def test_validate_uri_accepts_neo4j_self_signed_tls_scheme() -> None:
@@ -3161,6 +3409,67 @@ fi
     assert values["MISSING_COLON"] == "no"
     assert values["TRAILING_COMMA"] == "no"
     assert values["VALID_FORMAT"] == "yes"
+
+
+def test_security_check_reports_missing_authentication(tmp_path: Path) -> None:
+    """Security audit should flag unauthenticated API exposure."""
+
+    write_text_lines(tmp_path / ".env", ["HOST=0.0.0.0"])
+
+    result = subprocess.run(
+        [
+            "bash",
+            "--norc",
+            "--noprofile",
+            "-c",
+            f"""
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+security_check_env_file
+""",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    assert "No API protection is configured." in result.stdout
+
+
+def test_security_check_passes_for_authenticated_minimal_config(tmp_path: Path) -> None:
+    """Security audit should pass for a minimally hardened config."""
+
+    write_text_lines(
+        tmp_path / ".env",
+        [
+            "AUTH_ACCOUNTS=admin:secret",
+            "TOKEN_SECRET=jwt-secret",
+            "WHITELIST_PATHS=/health",
+        ],
+    )
+
+    result = subprocess.run(
+        [
+            "bash",
+            "--norc",
+            "--noprofile",
+            "-c",
+            f"""
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+security_check_env_file
+""",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0
+    assert "No obvious security issues found" in result.stdout
 
 
 def test_show_summary_masks_auth_accounts() -> None:

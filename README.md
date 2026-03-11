@@ -191,10 +191,13 @@ Instead of editing `env.example` by hand, use the interactive setup wizard to ge
 make env-base           # Required first step: LLM, embedding, reranker
 make env-storage        # Optional: storage backends and database services
 make env-server         # Optional: server port, auth, and SSL
+make env-security-check # Optional: audit the current .env for security risks
 ```
 
 For a full description of every target and what each flow does, see
 [docs/InteractiveSetup.md](./docs/InteractiveSetup.md).
+The setup wizards update configuration only; run `make env-security-check` separately to audit the
+current `.env` for security risks before deployment.
 
 ### Install  LightRAG Core
 

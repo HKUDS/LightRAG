@@ -16,7 +16,7 @@ COLOR_GREEN :=
 COLOR_YELLOW :=
 endif
 
-.PHONY: help env-base env-storage env-server env-validate env-backup
+.PHONY: help env-base env-storage env-server env-validate env-security-check env-backup
 
 help:
 	@printf "$(COLOR_BOLD)Interactive setup targets$(COLOR_RESET)\n"
@@ -24,6 +24,7 @@ help:
 	@printf "  $(COLOR_GREEN)make env-storage$(COLOR_RESET)      Configure storage backends and databases\n"
 	@printf "  $(COLOR_GREEN)make env-server$(COLOR_RESET)       Configure server, security, and SSL\n"
 	@printf "  $(COLOR_GREEN)make env-validate$(COLOR_RESET)     Validate existing .env\n"
+	@printf "  $(COLOR_GREEN)make env-security-check$(COLOR_RESET) Audit existing .env for security risks\n"
 	@printf "  $(COLOR_GREEN)make env-backup$(COLOR_RESET)       Backup current .env\n\n"
 	@printf "$(COLOR_BOLD)Typical workflow$(COLOR_RESET)\n"
 	@printf "  1. make env-base       # set LLM/embedding/reranker\n"
@@ -33,6 +34,7 @@ help:
 	@printf "  make env-base\n"
 	@printf "  make env-storage SETUP_OPTS=--debug\n"
 	@printf "  make env-server\n\n"
+	@printf "  make env-security-check\n\n"
 	@printf "$(COLOR_BOLD)Compose Output$(COLOR_RESET)\n"
 	@printf "  Bundled service images are defined in scripts/setup/templates/*.yml.\n"
 	@printf "  Compose file output: docker-compose.final.yml\n"
@@ -51,6 +53,9 @@ env-server:
 
 env-validate:
 	@$(SETUP_BASH) $(SETUP_SCRIPT) --validate $(SETUP_OPTS)
+
+env-security-check:
+	@$(SETUP_BASH) $(SETUP_SCRIPT) --security-check $(SETUP_OPTS)
 
 env-backup:
 	@$(SETUP_BASH) $(SETUP_SCRIPT) --backup $(SETUP_OPTS)

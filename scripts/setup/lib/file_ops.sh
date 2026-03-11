@@ -1004,21 +1004,65 @@ inject_lightrag_environment_overrides() {
 # Prints the path if found, empty string if not.
 find_generated_compose_file() {
   local repo_root="${REPO_ROOT:-.}"
+  local preferred_profile=""
+  local preferred_candidate=""
   local candidates=(
-    "$repo_root/docker-compose.final.yml"
-    "$repo_root/docker-compose.development.yml"
-    "$repo_root/docker-compose.production.yml"
-    "$repo_root/docker-compose.custom.yml"
-    "$repo_root/docker-compose.local.yml"
+    "final:$repo_root/docker-compose.final.yml"
+    "development:$repo_root/docker-compose.development.yml"
+    "production:$repo_root/docker-compose.production.yml"
+    "custom:$repo_root/docker-compose.custom.yml"
+    "local:$repo_root/docker-compose.local.yml"
   )
-  local f
-  for f in "${candidates[@]}"; do
+  local candidate profile f
+
+  preferred_profile="$(_read_legacy_setup_profile_from_env "$repo_root/.env")"
+  if [[ -n "$preferred_profile" ]]; then
+    for candidate in "${candidates[@]}"; do
+      profile="${candidate%%:*}"
+      f="${candidate#*:}"
+      if [[ "$profile" == "$preferred_profile" && -f "$f" ]]; then
+        printf '%s' "$f"
+        return 0
+      fi
+    done
+  fi
+
+  for candidate in "${candidates[@]}"; do
+    f="${candidate#*:}"
     if [[ -f "$f" ]]; then
       printf '%s' "$f"
       return 0
     fi
   done
   printf ''
+}
+
+_read_legacy_setup_profile_from_env() {
+  local env_file="$1"
+  local line value
+
+  if [[ ! -f "$env_file" ]]; then
+    return 0
+  fi
+
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    if [[ "$line" =~ ^LIGHTRAG_SETUP_PROFILE=(.*)$ ]]; then
+      value="${BASH_REMATCH[1]}"
+      if [[ "$value" =~ ^\".*\"$ ]]; then
+        value="${value:1:${#value}-2}"
+      elif [[ "$value" =~ ^\'.*\'$ ]]; then
+        value="${value:1:${#value}-2}"
+      fi
+      case "$value" in
+        development|production|custom|local)
+          printf '%s' "$value"
+          ;;
+      esac
+      return 0
+    fi
+  done < "$env_file"
+
+  return 0
 }
 
 # Detect service names in a compose file's services: block (excluding lightrag).

@@ -1513,39 +1513,8 @@ show_summary() {
     for service in "${DOCKER_SERVICES[@]}"; do
       echo "  - $service"
     done
-    compose_suffix="${DEPLOYMENT_TYPE:-custom}"
-    echo "  Compose file: docker-compose.${compose_suffix}.yml"
+    echo "  Compose file: docker-compose.final.yml"
   fi
-}
-
-require_production_security_profile() {
-  local setup_profile="${ENV_VALUES[LIGHTRAG_SETUP_PROFILE]:-${DEPLOYMENT_TYPE:-}}"
-
-  if [[ "$setup_profile" == "production" ]]; then
-    return 0
-  fi
-
-  is_production_storage_profile \
-    "${ENV_VALUES[LIGHTRAG_KV_STORAGE]:-}" \
-    "${ENV_VALUES[LIGHTRAG_VECTOR_STORAGE]:-}" \
-    "${ENV_VALUES[LIGHTRAG_GRAPH_STORAGE]:-}" \
-    "${ENV_VALUES[LIGHTRAG_DOC_STATUS_STORAGE]:-}"
-}
-
-validate_current_security_config() {
-  local require_protection="no"
-
-  if require_production_security_profile; then
-    require_protection="yes"
-  fi
-
-  validate_security_config \
-    "${ENV_VALUES[AUTH_ACCOUNTS]:-}" \
-    "${ENV_VALUES[TOKEN_SECRET]:-}" \
-    "${ENV_VALUES[LIGHTRAG_API_KEY]:-}" \
-    "$require_protection" \
-    "${ENV_VALUES[WHITELIST_PATHS]:-}" \
-    "${ENV_VALUES[WHITELIST_PATHS]+set}"
 }
 
 prepare_inherited_ssl_assets_for_compose() {
@@ -1571,7 +1540,6 @@ finalize_setup() {
   local compose_suffix
   local compose_file
   local generate_compose="no"
-  local require_protection="no"
 
   if [[ ! -f "${REPO_ROOT}/env.example" ]]; then
     format_error "env.example is missing in $REPO_ROOT" "Restore env.example before running setup."
@@ -1581,12 +1549,6 @@ finalize_setup() {
   if [[ ! -w "$REPO_ROOT" ]]; then
     format_error "No write permission in $REPO_ROOT" "Run the setup from a writable directory."
     return 1
-  fi
-
-  if [[ -n "$DEPLOYMENT_TYPE" ]]; then
-    ENV_VALUES["LIGHTRAG_SETUP_PROFILE"]="$DEPLOYMENT_TYPE"
-  else
-    unset 'ENV_VALUES[LIGHTRAG_SETUP_PROFILE]'
   fi
 
   if [[ -n "${ENV_VALUES[LIGHTRAG_KV_STORAGE]:-}" ]]; then
@@ -1605,25 +1567,14 @@ finalize_setup() {
     return 1
   fi
 
-  if require_production_security_profile; then
-    require_protection="yes"
-  fi
-
   if ! validate_security_config \
     "${ENV_VALUES[AUTH_ACCOUNTS]:-}" \
     "${ENV_VALUES[TOKEN_SECRET]:-}" \
-    "${ENV_VALUES[LIGHTRAG_API_KEY]:-}" \
-    "$require_protection" \
-    "${ENV_VALUES[WHITELIST_PATHS]:-}" \
-    "${ENV_VALUES[WHITELIST_PATHS]+set}"; then
+    "${ENV_VALUES[LIGHTRAG_API_KEY]:-}"; then
     return 1
   fi
 
   if ! validate_sensitive_env_literals; then
-    return 1
-  fi
-
-  if ! validate_current_security_config; then
     return 1
   fi
 
@@ -1711,9 +1662,9 @@ env_base_flow() {
   local has_gpu="no"
   if command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi >/dev/null 2>&1; then
     has_gpu="yes"
-    log_info "GPU detected: NVIDIA GPU found — vLLM services will use CUDA (GPU image + float16)."
+    log_info "GPU detected: NVIDIA GPU found. New local vLLM services default to CUDA (GPU image + float16)."
   else
-    log_info "GPU detection: no NVIDIA GPU found — vLLM services will use CPU image + float32."
+    log_info "GPU detection: no NVIDIA GPU found. New local vLLM services default to CPU image + float32."
   fi
 
   reset_state
@@ -1760,9 +1711,12 @@ env_base_flow() {
     ENV_VALUES["VLLM_EMBED_MODEL"]="$embed_model"
     ENV_VALUES["EMBEDDING_MODEL"]="$embed_model"
 
-    local vllm_embed_device="cpu"
-    if [[ "$has_gpu" == "yes" ]]; then
-      vllm_embed_device="cuda"
+    local vllm_embed_device="${ENV_VALUES[VLLM_EMBED_DEVICE]:-}"
+    if [[ "$vllm_embed_device" != "cpu" && "$vllm_embed_device" != "cuda" ]]; then
+      vllm_embed_device="cpu"
+      if [[ "$has_gpu" == "yes" ]]; then
+        vllm_embed_device="cuda"
+      fi
     fi
     ENV_VALUES["VLLM_EMBED_DEVICE"]="$vllm_embed_device"
     ENV_VALUES["LIGHTRAG_SETUP_EMBEDDING_PROVIDER"]="vllm"
@@ -1827,9 +1781,12 @@ env_base_flow() {
       ENV_VALUES["RERANK_MODEL"]="$rerank_model"
       ENV_VALUES["VLLM_RERANK_PORT"]="$rerank_port"
 
-      local vllm_rerank_device="cpu"
-      if [[ "$has_gpu" == "yes" ]]; then
-        vllm_rerank_device="cuda"
+      local vllm_rerank_device="${ENV_VALUES[VLLM_RERANK_DEVICE]:-}"
+      if [[ "$vllm_rerank_device" != "cpu" && "$vllm_rerank_device" != "cuda" ]]; then
+        vllm_rerank_device="cpu"
+        if [[ "$has_gpu" == "yes" ]]; then
+          vllm_rerank_device="cuda"
+        fi
       fi
       ENV_VALUES["VLLM_RERANK_DEVICE"]="$vllm_rerank_device"
       ENV_VALUES["LIGHTRAG_SETUP_RERANK_PROVIDER"]="vllm"
@@ -1872,10 +1829,6 @@ finalize_base_setup() {
   fi
 
   if ! validate_sensitive_env_literals; then
-    return 1
-  fi
-
-  if ! validate_current_security_config; then
     return 1
   fi
 
@@ -2012,10 +1965,6 @@ finalize_storage_setup() {
     return 1
   fi
 
-  if ! validate_current_security_config; then
-    return 1
-  fi
-
   if ((${#DOCKER_SERVICES[@]} > 0)); then
     has_docker_storage="yes"
   fi
@@ -2140,10 +2089,6 @@ finalize_server_setup() {
     return 1
   fi
 
-  if ! validate_current_security_config; then
-    return 1
-  fi
-
   show_summary
 
   if ! confirm_default_yes "Ready to proceed and write .env?"; then
@@ -2193,7 +2138,7 @@ load_env_file() {
   local line key value
 
   if [[ ! -f "$env_file" ]]; then
-    format_error ".env file not found at $env_file" "Run make setup to generate it."
+    format_error ".env file not found at $env_file" "Run make env-base to generate it."
     return 1
   fi
 
@@ -2214,23 +2159,10 @@ load_env_file() {
   done < "$env_file"
 }
 
-is_production_storage_profile() {
-  local kv="$1"
-  local vector="$2"
-  local graph="$3"
-  local doc_status="$4"
-
-  [[ "$kv" == "PGKVStorage" &&
-    "$vector" == "MilvusVectorDBStorage" &&
-    "$graph" == "Neo4JStorage" &&
-    "$doc_status" == "PGDocStatusStorage" ]]
-}
-
 validate_env_file() {
   local env_file="${REPO_ROOT}/.env"
   local errors=0
   local kv vector graph doc_status
-  local require_protection="no"
 
   reset_state
 
@@ -2256,17 +2188,10 @@ validate_env_file() {
     errors=1
   fi
 
-  if require_production_security_profile; then
-    require_protection="yes"
-  fi
-
   if ! validate_security_config \
     "${ENV_VALUES[AUTH_ACCOUNTS]:-}" \
     "${ENV_VALUES[TOKEN_SECRET]:-}" \
-    "${ENV_VALUES[LIGHTRAG_API_KEY]:-}" \
-    "$require_protection" \
-    "${ENV_VALUES[WHITELIST_PATHS]:-}" \
-    "${ENV_VALUES[WHITELIST_PATHS]+set}"; then
+    "${ENV_VALUES[LIGHTRAG_API_KEY]:-}"; then
     errors=1
   fi
 
@@ -2325,12 +2250,113 @@ validate_env_file() {
   log_success "Validation passed."
 }
 
+report_security_issue() {
+  local message="$1"
+  local suggestion="${2:-}"
+
+  echo "${COLOR_YELLOW:-}Security issue:${COLOR_RESET:-} $message"
+  if [[ -n "$suggestion" ]]; then
+    echo "  Suggestion: $suggestion"
+  fi
+}
+
+security_check_env_file() {
+  local env_file="${REPO_ROOT}/.env"
+  local findings=0
+  local auth_accounts=""
+  local token_secret=""
+  local api_key=""
+  local whitelist_paths=""
+  local whitelist_is_set="no"
+  local effective_whitelist=""
+  local key value
+  local invalid_sensitive_keys=()
+
+  reset_state
+
+  if ! load_env_file "$env_file"; then
+    return 1
+  fi
+
+  auth_accounts="${ENV_VALUES[AUTH_ACCOUNTS]:-}"
+  token_secret="${ENV_VALUES[TOKEN_SECRET]:-}"
+  api_key="${ENV_VALUES[LIGHTRAG_API_KEY]:-}"
+  if [[ -n "${ENV_VALUES[WHITELIST_PATHS]+set}" ]]; then
+    whitelist_paths="${ENV_VALUES[WHITELIST_PATHS]}"
+    whitelist_is_set="yes"
+  fi
+
+  for key in "${!ENV_VALUES[@]}"; do
+    if ! is_sensitive_env_key "$key"; then
+      continue
+    fi
+    value="${ENV_VALUES[$key]:-}"
+    if [[ -n "$value" ]] && contains_env_interpolation_syntax "$value"; then
+      invalid_sensitive_keys+=("$key")
+    fi
+  done
+
+  if ((${#invalid_sensitive_keys[@]} > 0)); then
+    report_security_issue \
+      "Sensitive values still contain \${...} interpolation syntax: ${invalid_sensitive_keys[*]}" \
+      "Replace them with literal values or inject those secrets at runtime."
+    findings=$((findings + 1))
+  fi
+
+  if [[ -z "$auth_accounts" && -z "$api_key" ]]; then
+    report_security_issue \
+      "No API protection is configured." \
+      "Set AUTH_ACCOUNTS and TOKEN_SECRET, add LIGHTRAG_API_KEY, or put the service behind a trusted reverse proxy."
+    findings=$((findings + 1))
+  fi
+
+  if [[ -n "$auth_accounts" ]]; then
+    if ! validate_auth_accounts_format "$auth_accounts"; then
+      report_security_issue \
+        "AUTH_ACCOUNTS is malformed." \
+        "Use comma-separated user:password pairs such as admin:secret or admin:secret,reader:another-secret."
+      findings=$((findings + 1))
+    fi
+
+    if [[ -z "$token_secret" ]]; then
+      report_security_issue \
+        "AUTH_ACCOUNTS is set but TOKEN_SECRET is missing." \
+        "Set a non-empty JWT signing secret before enabling account-based authentication."
+      findings=$((findings + 1))
+    elif [[ "$token_secret" == "lightrag-jwt-default-secret" ]]; then
+      report_security_issue \
+        "TOKEN_SECRET still uses the built-in default value." \
+        "Generate a unique JWT signing secret and update TOKEN_SECRET."
+      findings=$((findings + 1))
+    fi
+
+    effective_whitelist="$whitelist_paths"
+    if [[ "$whitelist_is_set" != "yes" ]]; then
+      effective_whitelist="/health,/api/*"
+    fi
+    if whitelist_exposes_api_routes "$effective_whitelist"; then
+      report_security_issue \
+        "WHITELIST_PATHS exposes /api routes while AUTH_ACCOUNTS is enabled." \
+        "Use a minimal whitelist such as /health,/docs and keep /api routes authenticated."
+      findings=$((findings + 1))
+    fi
+  fi
+
+  if ((findings == 0)); then
+    log_success "No obvious security issues found in ${env_file}."
+    return 0
+  fi
+
+  log_warn "Security check found ${findings} issue(s) in ${env_file}."
+  return 1
+}
+
 backup_only() {
   local backup_path
 
   backup_path="$(backup_env_file)"
   if [[ -z "$backup_path" ]]; then
-    format_error "No .env file found to back up." "Create one with make setup first."
+    format_error "No .env file found to back up." "Create one with make env-base first."
     return 1
   fi
   echo "Backed up .env to $backup_path"
@@ -2338,13 +2364,14 @@ backup_only() {
 
 print_help() {
   cat <<'HELP'
-Usage: scripts/setup/setup.sh [--base|--storage|--server|--validate|--backup]
+Usage: scripts/setup/setup.sh [--base|--storage|--server|--validate|--security-check|--backup]
 
 Options:
   --base         Configure LLM, embedding, and reranker (run first)
   --storage      Configure storage backends and databases (requires .env)
   --server       Configure server, security, and SSL (requires .env)
   --validate     Validate an existing .env file
+  --security-check  Audit an existing .env for security risks
   --backup       Backup the current .env file
   --debug        Enable debug logging
   --help         Show this help message
@@ -2376,6 +2403,9 @@ main() {
       --validate)
         mode="validate"
         ;;
+      --security-check)
+        mode="security-check"
+        ;;
       --backup)
         mode="backup"
         ;;
@@ -2406,6 +2436,9 @@ main() {
       ;;
     validate)
       validate_env_file
+      ;;
+    security-check)
+      security_check_env_file
       ;;
     backup)
       backup_only
