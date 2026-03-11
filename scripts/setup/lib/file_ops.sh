@@ -1248,7 +1248,9 @@ inject_lightrag_depends_on() {
       continue
     fi
 
-    if [[ "$in_lightrag" == "yes" && "$line" =~ ^[[:space:]]{2}[^[:space:]] && "$line" != "  lightrag:" ]]; then
+    if [[ "$in_lightrag" == "yes" && \
+          ( "$line" =~ ^[[:space:]]{2}[^[:space:]] || "$line" =~ ^[^[:space:]] ) && \
+          "$line" != "  lightrag:" ]]; then
       if [[ "$inserted" == "no" ]]; then
         _write_lightrag_depends_on_block
       fi

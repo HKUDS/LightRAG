@@ -484,7 +484,12 @@ generate_docker_compose "$REPO_ROOT/docker-compose.final.yml"
         encoding="utf-8"
     )
 
+    lightrag_start = generated_compose.index("  lightrag:\n")
+    embed_start = generated_compose.index("\n  vllm-embed:\n")
+    lightrag_block = generated_compose[lightrag_start:embed_start]
+
     assert "    depends_on:" in generated_compose
+    assert "    depends_on:" in lightrag_block
     for service_name in (
         "postgres",
         "neo4j",
@@ -498,7 +503,7 @@ generate_docker_compose "$REPO_ROOT/docker-compose.final.yml"
     ):
         assert (
             f"      {service_name}:\n        condition: service_healthy"
-            in generated_compose
+            in lightrag_block
         )
 
     assert generated_compose.count("    healthcheck:") == 11
@@ -561,6 +566,60 @@ generate_docker_compose "$REPO_ROOT/docker-compose.final.yml"
     assert (
         "      vllm-embed:\n        condition: service_healthy" not in generated_compose
     )
+
+
+def test_generate_docker_compose_repairs_misplaced_lightrag_depends_on_from_existing_output(
+    tmp_path: Path,
+) -> None:
+    """Regeneration should move stale lightrag depends_on content back onto the lightrag service."""
+
+    write_text_lines(
+        tmp_path / "docker-compose.final.yml",
+        [
+            "services:",
+            "  lightrag:",
+            "    image: example/lightrag:test",
+            "    environment:",
+            "  vllm-rerank:",
+            "    image: example/vllm:test",
+            "    restart: unless-stopped",
+            "    depends_on:",
+            "      my-service:",
+            "        condition: service_healthy",
+            "volumes:",
+            "  vllm_rerank_cache:",
+        ],
+    )
+    write_text_lines(
+        tmp_path / "env.example",
+        (REPO_ROOT / "env.example").read_text(encoding="utf-8").splitlines(),
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+
+add_docker_service vllm-rerank
+
+generate_docker_compose "$REPO_ROOT/docker-compose.final.yml"
+"""
+    )
+
+    generated_compose = (tmp_path / "docker-compose.final.yml").read_text(
+        encoding="utf-8"
+    )
+
+    lightrag_start = generated_compose.index("  lightrag:\n")
+    rerank_start = generated_compose.index("\n  vllm-rerank:\n")
+    lightrag_block = generated_compose[lightrag_start:rerank_start]
+    rerank_block = generated_compose[rerank_start:]
+
+    assert "    depends_on:" in lightrag_block
+    assert "      vllm-rerank:\n        condition: service_healthy" in lightrag_block
+    assert "    depends_on:" not in rerank_block
 
 
 def test_existing_ssl_env_keeps_compose_mount_overrides(tmp_path: Path) -> None:
