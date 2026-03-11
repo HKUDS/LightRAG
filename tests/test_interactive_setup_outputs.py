@@ -12,16 +12,25 @@ pytestmark = pytest.mark.offline
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
-def run_bash(script: str, cwd: Path | None = None) -> str:
-    """Run a bash snippet and return stdout."""
+def run_bash_process(
+    script: str, cwd: Path | None = None, stdin: str | None = ""
+) -> subprocess.CompletedProcess[str]:
+    """Run a bash snippet and return the completed process."""
 
-    result = subprocess.run(
+    return subprocess.run(
         ["bash", "--norc", "--noprofile", "-c", script],
         cwd=cwd or REPO_ROOT,
+        input=stdin,
         capture_output=True,
         text=True,
         check=False,
     )
+
+
+def run_bash(script: str, cwd: Path | None = None) -> str:
+    """Run a bash snippet and return stdout."""
+
+    result = run_bash_process(script, cwd=cwd)
     if result.returncode != 0:
         raise AssertionError(
             f"bash script failed with code {result.returncode}\n"
@@ -784,6 +793,7 @@ initialize_default_storage_backends
 
 show_summary() {{ :; }}
 confirm_default_yes() {{ return 0; }}
+confirm_required_yes_no() {{ return 0; }}
 
 finalize_base_setup
 
@@ -2622,10 +2632,10 @@ prompt_secret_until_valid_with_default() {{ printf '%s' "$2"; }}
 confirm_default_no() {{ return 1; }}
 confirm_default_yes() {{
   case "$1" in
-    "Ready to proceed and write .env?") return 0 ;;
     *) return 1 ;;
   esac
 }}
+confirm_required_yes_no() {{ return 0; }}
 
 env_base_flow
 """
@@ -2691,11 +2701,11 @@ prompt_secret_until_valid_with_default() {{ printf '%s' "$2"; }}
 confirm_default_no() {{ return 1; }}
 confirm_default_yes() {{
   case "$1" in
-    "Ready to proceed and write .env?") return 0 ;;
     "Run LightRAG Server via Docker?") return 0 ;;
     *) return 1 ;;
   esac
 }}
+confirm_required_yes_no() {{ return 0; }}
 
 env_base_flow
 """
@@ -2782,10 +2792,10 @@ confirm_default_no() {{
 }}
 confirm_default_yes() {{
   case "$1" in
-    "Ready to proceed and write .env?") return 0 ;;
     *) return 1 ;;
   esac
 }}
+confirm_required_yes_no() {{ return 0; }}
 
 env_base_flow
 """
@@ -2837,10 +2847,10 @@ prompt_secret_until_valid_with_default() {{
 confirm_default_no() {{ return 1; }}
 confirm_default_yes() {{
   case "$1" in
-    "Ready to proceed and write .env?") return 0 ;;
     *) return 1 ;;
   esac
 }}
+confirm_required_yes_no() {{ return 0; }}
 
 env_base_flow
 validate_env_file
@@ -2890,6 +2900,7 @@ collect_database_config() {{ :; }}
 validate_required_variables() {{ return 0; }}
 confirm_default_yes() {{ return 0; }}
 confirm_default_no() {{ return 1; }}
+confirm_required_yes_no() {{ return 0; }}
 
 env_storage_flow
 """
@@ -3168,10 +3179,10 @@ confirm_default_no() {{
 confirm_default_yes() {{
   case "$1" in
     "Enable reranking?") return 0 ;;
-    "Ready to proceed and write .env?") return 0 ;;
     *) return 1 ;;
   esac
 }}
+confirm_required_yes_no() {{ return 0; }}
 
 env_base_flow
 """
@@ -3512,6 +3523,7 @@ validate_mongo_vector_storage_config() {{ return 0; }}
 validate_sensitive_env_literals() {{ return 0; }}
 confirm_default_yes() {{ return 0; }}
 confirm_default_no() {{ return 1; }}
+confirm_required_yes_no() {{ return 0; }}
 
 env_storage_flow
 """
@@ -3570,6 +3582,7 @@ validate_mongo_vector_storage_config() {{ return 0; }}
 validate_sensitive_env_literals() {{ return 0; }}
 confirm_default_yes() {{ return 0; }}
 confirm_default_no() {{ return 1; }}
+confirm_required_yes_no() {{ return 0; }}
 
 env_storage_flow
 """
@@ -3621,6 +3634,7 @@ validate_mongo_vector_storage_config() {{ return 0; }}
 validate_sensitive_env_literals() {{ return 0; }}
 confirm_default_yes() {{ return 0; }}
 confirm_default_no() {{ return 1; }}
+confirm_required_yes_no() {{ return 0; }}
 
 env_storage_flow
 """
@@ -3681,11 +3695,11 @@ prompt_secret_with_default() {{ printf '%s' "$2"; }}
 prompt_secret_until_valid_with_default() {{ printf '%s' "$2"; }}
 confirm_default_yes() {{
   case "$1" in
-    "Ready to proceed and write .env?") return 0 ;;
     *) return 1 ;;
   esac
 }}
 confirm_default_no() {{ return 1; }}
+confirm_required_yes_no() {{ return 0; }}
 
 env_storage_flow
 """
@@ -3744,6 +3758,7 @@ validate_mongo_vector_storage_config() {{ return 0; }}
 validate_sensitive_env_literals() {{ return 0; }}
 confirm_default_yes() {{ return 0; }}
 confirm_default_no() {{ return 1; }}
+confirm_required_yes_no() {{ return 0; }}
 
 env_storage_flow
 """
@@ -3811,6 +3826,7 @@ collect_database_config() {{ :; }}
 validate_required_variables() {{ return 0; }}
 confirm_default_yes() {{ return 0; }}
 confirm_default_no() {{ return 1; }}
+confirm_required_yes_no() {{ return 0; }}
 
 env_storage_flow
 """
@@ -3873,6 +3889,7 @@ collect_server_config() {{
 collect_security_config() {{ :; }}
 collect_ssl_config() {{ :; }}
 confirm_default_yes() {{ return 0; }}
+confirm_required_yes_no() {{ return 0; }}
 
 env_server_flow
 """
@@ -3951,6 +3968,7 @@ collect_docker_image_tags() {{ :; }}
 validate_required_variables() {{ return 0; }}
 confirm_default_yes() {{ return 0; }}
 confirm_default_no() {{ return 1; }}
+confirm_required_yes_no() {{ return 0; }}
 
 env_storage_flow
 """
@@ -4421,6 +4439,7 @@ reset_state
 collect_server_config() {{ :; }}
 collect_security_config() {{ :; }}
 collect_ssl_config() {{ :; }}
+confirm_required_yes_no() {{ return 0; }}
 finalize_server_setup
 """
     )
@@ -4460,6 +4479,7 @@ load_existing_env_if_present
 
 show_summary() {{ :; }}
 confirm_default_yes() {{ return 0; }}
+confirm_required_yes_no() {{ return 0; }}
 
 if finalize_server_setup; then
   printf 'RESULT=success\\n'
@@ -4517,6 +4537,7 @@ ENV_VALUES[AUTH_ACCOUNTS]="admin"
 ENV_VALUES[TOKEN_SECRET]="jwt-secret"
 show_summary() {{ :; }}
 confirm_default_yes() {{ return 0; }}
+confirm_required_yes_no() {{ return 0; }}
 
 if finalize_server_setup; then
   printf 'RESULT=success\\n'
@@ -4736,6 +4757,7 @@ load_existing_env_if_present
 
 show_summary() {{ :; }}
 confirm_default_yes() {{ return 0; }}
+confirm_required_yes_no() {{ return 0; }}
 
 {finalize_call}
 """
