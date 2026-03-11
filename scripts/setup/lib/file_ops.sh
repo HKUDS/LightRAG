@@ -930,14 +930,16 @@ inject_service_environment_overrides() {
         environment_style="mapping"
       fi
 
-      if [[ "$line" =~ ^[[:space:]]{4}[^[:space:]] || "$line" =~ ^[[:space:]]{2}[^[:space:]] || "$line" =~ ^(volumes|networks): ]]; then
+      if [[ "$line" =~ ^[[:space:]]{4}[^[:space:]] || "$line" =~ ^[[:space:]]{2}[^[:space:]] || "$line" =~ ^[^[:space:]] ]]; then
         if [[ "$inserted" == "no" ]]; then
           _write_service_environment_entries "$tmp_file" "$environment_style" "${entries[@]}"
           inserted="yes"
         fi
         in_environment="no"
       fi
-    elif [[ "$in_service" == "yes" && "$line" =~ ^[[:space:]]{2}[^[:space:]] && "$line" != "$service_header" ]]; then
+    elif [[ "$in_service" == "yes" && \
+            ( "$line" =~ ^[[:space:]]{2}[^[:space:]] || "$line" =~ ^[^[:space:]] ) && \
+            "$line" != "$service_header" ]]; then
       if [[ "$inserted" == "no" ]]; then
         printf '    environment:\n' >> "$tmp_file"
         _write_service_environment_entries "$tmp_file" "mapping" "${entries[@]}"

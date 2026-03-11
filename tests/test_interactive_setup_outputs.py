@@ -3570,6 +3570,64 @@ generate_docker_compose "$REPO_ROOT/docker-compose.generated.yml"
     assert "${PORT:-9621}:9621" in generated_compose
 
 
+def test_generate_docker_compose_injects_env_overrides_into_lightrag_not_after_managed_services(
+    tmp_path: Path,
+) -> None:
+    """Env overrides must appear inside the lightrag environment block, not after managed services.
+
+    When the base compose has a top-level volumes: section, the strip pass inserts a
+    __WIZARD_MANAGED_SERVICES__ marker at the point where volumes: begins.  Before the
+    fix the environment injector would miss that marker (column-0 comment) as an
+    end-of-environment boundary and append overrides after it — which placed them outside
+    the lightrag service once postgres/neo4j were merged in.
+    """
+
+    compose_file = tmp_path / "docker-compose.yml"
+    compose_file.write_text(
+        "\n".join(
+            [
+                "services:",
+                "  lightrag:",
+                "    image: example/lightrag:test",
+                "    environment:",
+                "      EXISTING_KEY: existing_value",
+                "    volumes:",
+                "      - ./.env:/app/.env",
+                "volumes:",
+                "  some_volume:",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+
+ENV_VALUES[POSTGRES_USER]="lightrag"
+ENV_VALUES[POSTGRES_PASSWORD]="secret"
+ENV_VALUES[POSTGRES_DATABASE]="lightrag"
+add_docker_service "postgres"
+set_compose_override "LLM_BINDING_HOST" "http://host.docker.internal:11434"
+
+generate_docker_compose "$REPO_ROOT/docker-compose.generated.yml"
+"""
+    )
+
+    result = (tmp_path / "docker-compose.generated.yml").read_text(encoding="utf-8")
+
+    lightrag_pos = result.index("  lightrag:")
+    postgres_pos = result.index("  postgres:")
+    override_pos = result.index('LLM_BINDING_HOST: "http://host.docker.internal:11434"')
+
+    # Override must appear inside lightrag's block, before the postgres service.
+    assert lightrag_pos < override_pos < postgres_pos
+
+
 def test_finalize_server_setup_skips_embedded_milvus_sub_services(
     tmp_path: Path,
 ) -> None:
