@@ -1828,7 +1828,7 @@ finalize_base_setup() {
     local svc_names
     svc_names="$(printf '%s ' "${DOCKER_SERVICES[@]}")"
     svc_names="${svc_names% }"
-    echo "LightRAG requires Docker services (${svc_names})."
+    echo "LightRAG requires Docker services: ${svc_names}"
     if ! confirm_default_yes "The compose file will be created/updated. Continue?"; then
       log_warn "Setup cancelled."
       return 1

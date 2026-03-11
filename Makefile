@@ -16,7 +16,7 @@ COLOR_GREEN :=
 COLOR_YELLOW :=
 endif
 
-.PHONY: help configure env-base env-storage env-server env-validate env-security-check env-backup
+.PHONY: help configure env env-base env-storage env-server env-validate env-security-check env-backup
 
 help:
 	@printf "$(COLOR_BOLD)Interactive setup targets$(COLOR_RESET)\n"
@@ -39,10 +39,7 @@ help:
 	@printf "  Bundled service images are defined in scripts/setup/templates/*.yml.\n"
 	@printf "  Compose file output: docker-compose.final.yml\n"
 
-configure:
-	@$(SETUP_BASH) $(SETUP_SCRIPT) --base $(SETUP_OPTS)
-
-env-base:
+env env-base configure:
 	@$(SETUP_BASH) $(SETUP_SCRIPT) --base $(SETUP_OPTS)
 
 env-storage:
