@@ -1858,6 +1858,7 @@ env_base_flow() {
 
 finalize_base_setup() {
   local backup_path
+  local compose_backup_path
   local compose_file
   local existing_compose
   local generate_compose="no"
@@ -1946,6 +1947,10 @@ finalize_base_setup() {
   fi
 
   if [[ "$generate_compose" == "yes" ]]; then
+    compose_backup_path="$(backup_compose_file "$existing_compose")" || return 1
+    if [[ -n "$compose_backup_path" ]]; then
+      log_success "Backed up existing compose file to $compose_backup_path"
+    fi
     if ! prepare_managed_service_assets_for_compose "$existing_compose"; then
       return 1
     fi
@@ -2010,6 +2015,7 @@ env_storage_flow() {
 
 finalize_storage_setup() {
   local backup_path
+  local compose_backup_path
   local compose_file
   local existing_compose
   local generate_compose="no"
@@ -2092,6 +2098,11 @@ finalize_storage_setup() {
   generate_compose="yes"
   runtime_target="compose"
 
+  compose_backup_path="$(backup_compose_file "$existing_compose")" || return 1
+  if [[ -n "$compose_backup_path" ]]; then
+    log_success "Backed up existing compose file to $compose_backup_path"
+  fi
+
   if ! prepare_managed_service_assets_for_compose "$existing_compose"; then
     return 1
   fi
@@ -2147,6 +2158,7 @@ env_server_flow() {
 
 finalize_server_setup() {
   local backup_path
+  local compose_backup_path
   local compose_file
   local existing_compose
   local generate_compose="no"
@@ -2193,6 +2205,10 @@ finalize_server_setup() {
   fi
 
   if [[ "$generate_compose" == "yes" ]]; then
+    compose_backup_path="$(backup_compose_file "$existing_compose")" || return 1
+    if [[ -n "$compose_backup_path" ]]; then
+      log_success "Backed up existing compose file to $compose_backup_path"
+    fi
     if ! prepare_managed_service_assets_for_compose "$existing_compose"; then
       return 1
     fi
@@ -2490,6 +2506,7 @@ security_check_env_file() {
 
 backup_only() {
   local backup_path
+  local compose_backup_path
 
   backup_path="$(backup_env_file)"
   if [[ -z "$backup_path" ]]; then
@@ -2497,6 +2514,11 @@ backup_only() {
     return 1
   fi
   echo "Backed up .env to $backup_path"
+
+  compose_backup_path="$(backup_compose_file)" || return 1
+  if [[ -n "$compose_backup_path" ]]; then
+    echo "Backed up compose file to $compose_backup_path"
+  fi
 }
 
 print_help() {
@@ -2509,7 +2531,7 @@ Options:
   --server       Configure server, security, and SSL (requires .env)
   --validate     Validate an existing .env file
   --security-check  Audit an existing .env for security risks
-  --backup       Backup the current .env file
+  --backup       Backup the current .env and generated compose file when present
   --debug        Enable debug logging
   --help         Show this help message
 HELP
