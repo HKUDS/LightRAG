@@ -214,28 +214,6 @@ log_step() {
   echo "${COLOR_BLUE}${COLOR_BOLD}$*${COLOR_RESET}"
 }
 
-wait_for_port() {
-  local host="$1"
-  local port="$2"
-  local label="$3"
-  local timeout="${4:-$WAIT_TIMEOUT}"
-  local start_time=$SECONDS
-
-  log_step "Waiting for ${label} on ${host}:${port} (timeout ${timeout}s)"
-  while true; do
-    if (echo > "/dev/tcp/${host}/${port}") >/dev/null 2>&1 ||
-        { command -v nc >/dev/null 2>&1 && nc -z "$host" "$port" >/dev/null 2>&1; }; then
-      log_success "${label} is ready."
-      return 0
-    fi
-    if (( SECONDS - start_time >= timeout )); then
-      log_warn "Timed out waiting for ${label} (${host}:${port})."
-      return 1
-    fi
-    sleep 2
-  done
-}
-
 normalize_loopback_uri_for_compose() {
   local uri="$1"
 

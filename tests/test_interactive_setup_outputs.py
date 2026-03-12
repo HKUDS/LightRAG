@@ -4169,31 +4169,6 @@ printf '{env_key}=%s\\n' "${{COMPOSE_ENV_OVERRIDES[{env_key}]}}"
     assert values[env_key] == expected_value
 
 
-def test_wait_for_port_uses_explicit_timeout_argument() -> None:
-    """`wait_for_port` should honor arg4 instead of always falling back to WAIT_TIMEOUT."""
-
-    values = run_bash_lines(
-        f"""
-set -euo pipefail
-source "{REPO_ROOT}/scripts/setup/setup.sh"
-reset_state
-WAIT_TIMEOUT=1
-
-start=$SECONDS
-if wait_for_port 127.0.0.1 65535 probe 0 >/dev/null 2>&1; then
-  printf 'RESULT=success\\n'
-else
-  printf 'RESULT=failure\\n'
-fi
-elapsed=$((SECONDS - start))
-printf 'ELAPSED=%s\\n' "$elapsed"
-"""
-    )
-
-    assert values["RESULT"] == "failure"
-    assert int(values["ELAPSED"]) < 2
-
-
 def test_collect_mongodb_config_local_service_strips_stale_credentials_on_rerun() -> (
     None
 ):
