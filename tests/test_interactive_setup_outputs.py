@@ -5463,13 +5463,14 @@ prompt_with_default() {{
     printf '%s' "$2"
   fi
 }}
-prompt_secret_with_default() {{ printf 'test-password'; }}
-prompt_secret_until_valid_with_default() {{ printf 'test-password'; }}
+prompt_secret_with_default() {{ printf '%s' "$2"; }}
+prompt_secret_until_valid_with_default() {{ printf '%s' "$2"; }}
 
 collect_neo4j_config yes
 generate_docker_compose "$REPO_ROOT/docker-compose.generated.yml"
 
 printf 'NEO4J_USERNAME=%s\\n' "${{ENV_VALUES[NEO4J_USERNAME]}}"
+printf 'NEO4J_PASSWORD=%s\\n' "${{ENV_VALUES[NEO4J_PASSWORD]}}"
 printf 'NEO4J_DATABASE=%s\\n' "${{ENV_VALUES[NEO4J_DATABASE]}}"
 printf 'DOCKER_SERVICE=%s\\n' "${{DOCKER_SERVICES[0]}}"
 printf 'DATABASE_PROMPTS=%s\\n' "$(grep -c '^Neo4j database$' "$prompt_log_file" || true)"
@@ -5481,6 +5482,7 @@ printf 'DATABASE_PROMPTS=%s\\n' "$(grep -c '^Neo4j database$' "$prompt_log_file"
     )
 
     assert values["NEO4J_USERNAME"] == "custom-user"
+    assert values["NEO4J_PASSWORD"] == "existing-password"
     assert values["NEO4J_DATABASE"] == "custom-db-2"
     assert values["DOCKER_SERVICE"] == "neo4j"
     assert values["DATABASE_PROMPTS"] == "1"
@@ -5521,6 +5523,62 @@ printf 'DATABASE_PROMPTS=%s\\n' "$(grep -c '^Neo4j database$' "$prompt_log_file"
 
     assert values["DATABASE"] == "neo4j"
     assert values["DATABASE_PROMPTS"] == "0"
+
+
+def test_collect_neo4j_config_uses_existing_password_as_default_in_docker_mode() -> (
+    None
+):
+    """Bundled Neo4j should preserve the existing password when the default is accepted."""
+
+    output = run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+reset_state
+
+ENV_VALUES[NEO4J_PASSWORD]="from-env-password"
+
+confirm_default_yes() {{ return 0; }}
+prompt_until_valid() {{ printf '%s' "$2"; }}
+prompt_with_default() {{ printf '%s' "$2"; }}
+prompt_secret_until_valid_with_default() {{ printf '%s' "$2"; }}
+
+collect_neo4j_config yes
+
+printf 'PASSWORD=%s\\n' "${{ENV_VALUES[NEO4J_PASSWORD]}}"
+"""
+    )
+    values = parse_lines(output)
+
+    assert values["PASSWORD"] == "from-env-password"
+
+
+def test_collect_neo4j_config_uses_existing_password_as_default_in_external_mode() -> (
+    None
+):
+    """External Neo4j should preserve the existing password when the default is accepted."""
+
+    output = run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+reset_state
+
+ENV_VALUES[NEO4J_PASSWORD]="from-env-password"
+
+confirm_default_no() {{ return 1; }}
+prompt_until_valid() {{ printf '%s' "$2"; }}
+prompt_with_default() {{ printf '%s' "$2"; }}
+prompt_secret_with_default() {{ printf '%s' "$2"; }}
+
+collect_neo4j_config no
+
+printf 'PASSWORD=%s\\n' "${{ENV_VALUES[NEO4J_PASSWORD]}}"
+"""
+    )
+    values = parse_lines(output)
+
+    assert values["PASSWORD"] == "from-env-password"
 
 
 def test_collect_neo4j_config_bundled_service_reprompts_for_empty_credentials() -> None:
