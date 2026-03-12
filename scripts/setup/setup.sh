@@ -14,15 +14,19 @@ TEMPLATES_DIR="$SCRIPT_DIR/templates"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 declare -A ENV_VALUES
+declare -A ORIGINAL_ENV_VALUES
 declare -A COMPOSE_ENV_OVERRIDES
+declare -A COMPOSE_REWRITE_SERVICE_SET
 declare -A REQUIRED_DB_TYPES
 declare -A DOCKER_SERVICE_SET
+declare -A EXISTING_MANAGED_ROOT_SERVICE_SET
 declare -a DOCKER_SERVICES
 SSL_CERT_SOURCE_PATH=""
 SSL_KEY_SOURCE_PATH=""
 DEPLOYMENT_TYPE=""
 LIGHTRAG_COMPOSE_SERVER_PORT_MAPPING=""
 NORMALIZED_SERVER_HOST_FOR_COMPOSE=""
+FORCE_REWRITE_COMPOSE="no"
 DEBUG="${DEBUG:-false}"
 
 PRESET_VLLM_EMBEDDING=(
@@ -95,9 +99,12 @@ init_colors() {
 
 reset_state() {
   ENV_VALUES=()
+  ORIGINAL_ENV_VALUES=()
   COMPOSE_ENV_OVERRIDES=()
+  COMPOSE_REWRITE_SERVICE_SET=()
   REQUIRED_DB_TYPES=()
   DOCKER_SERVICE_SET=()
+  EXISTING_MANAGED_ROOT_SERVICE_SET=()
   DOCKER_SERVICES=()
   SSL_CERT_SOURCE_PATH=""
   SSL_KEY_SOURCE_PATH=""
@@ -148,7 +155,18 @@ load_existing_env_if_present() {
       SSL_CERT_SOURCE_PATH="${ENV_VALUES[SSL_CERTFILE]:-}"
       SSL_KEY_SOURCE_PATH="${ENV_VALUES[SSL_KEYFILE]:-}"
     fi
+
+    snapshot_original_env_values
   fi
+}
+
+snapshot_original_env_values() {
+  local key
+
+  ORIGINAL_ENV_VALUES=()
+  for key in "${!ENV_VALUES[@]}"; do
+    ORIGINAL_ENV_VALUES["$key"]="${ENV_VALUES[$key]}"
+  done
 }
 
 clear_inherited_ssl_state() {
@@ -512,6 +530,147 @@ add_docker_service() {
   if [[ -z "${DOCKER_SERVICE_SET[$service]+set}" ]]; then
     DOCKER_SERVICE_SET["$service"]=1
     DOCKER_SERVICES+=("$service")
+  fi
+}
+
+mark_compose_service_for_rewrite() {
+  local service="$1"
+  local root_service=""
+
+  root_service="$(_managed_service_root_name "$service")"
+  if [[ -n "$root_service" ]]; then
+    COMPOSE_REWRITE_SERVICE_SET["$root_service"]=1
+  fi
+}
+
+record_existing_managed_root_services() {
+  local compose_file="$1"
+  local service_name
+  local root_service
+
+  EXISTING_MANAGED_ROOT_SERVICE_SET=()
+
+  if [[ -z "$compose_file" || ! -f "$compose_file" ]]; then
+    return 0
+  fi
+
+  while IFS= read -r service_name; do
+    root_service="$(_managed_service_root_name "$service_name")"
+    if [[ -n "$root_service" ]]; then
+      EXISTING_MANAGED_ROOT_SERVICE_SET["$root_service"]=1
+    fi
+  done < <(detect_managed_root_services "$compose_file")
+}
+
+existing_managed_root_service_present() {
+  local root_service="$1"
+
+  [[ -n "${EXISTING_MANAGED_ROOT_SERVICE_SET[$root_service]+set}" ]]
+}
+
+env_value_changed_from_original() {
+  local key="$1"
+  local missing_marker="__LIGHTRAG_MISSING__"
+  local current_value="${ENV_VALUES[$key]-$missing_marker}"
+  local original_value="${ORIGINAL_ENV_VALUES[$key]-$missing_marker}"
+
+  [[ "$current_value" != "$original_value" ]]
+}
+
+any_env_value_changed_from_original() {
+  local key
+
+  for key in "$@"; do
+    if env_value_changed_from_original "$key"; then
+      return 0
+    fi
+  done
+
+  return 1
+}
+
+compose_template_variant_for_service() {
+  local service="$1"
+  local snapshot="${2:-current}"
+  local device=""
+
+  case "$service" in
+    milvus)
+      if [[ "$snapshot" == "original" ]]; then
+        device="${ORIGINAL_ENV_VALUES[MILVUS_DEVICE]:-cpu}"
+      else
+        device="${ENV_VALUES[MILVUS_DEVICE]:-cpu}"
+      fi
+      ;;
+    vllm-embed)
+      if [[ "$snapshot" == "original" ]]; then
+        device="${ORIGINAL_ENV_VALUES[VLLM_EMBED_DEVICE]:-cpu}"
+      else
+        device="${ENV_VALUES[VLLM_EMBED_DEVICE]:-cpu}"
+      fi
+      ;;
+    vllm-rerank)
+      if [[ "$snapshot" == "original" ]]; then
+        device="${ORIGINAL_ENV_VALUES[VLLM_RERANK_DEVICE]:-cpu}"
+      else
+        device="${ENV_VALUES[VLLM_RERANK_DEVICE]:-cpu}"
+      fi
+      ;;
+    *)
+      printf 'default'
+      return 0
+      ;;
+  esac
+
+  if [[ "$device" == "cuda" ]]; then
+    printf 'gpu'
+  else
+    printf 'cpu'
+  fi
+}
+
+configure_base_compose_rewrites() {
+  if [[ "$FORCE_REWRITE_COMPOSE" == "yes" ]]; then
+    return 0
+  fi
+
+  if existing_managed_root_service_present "vllm-embed" && \
+    [[ -n "${DOCKER_SERVICE_SET[vllm-embed]+set}" ]] && \
+    [[ "$(compose_template_variant_for_service "vllm-embed" "current")" != \
+      "$(compose_template_variant_for_service "vllm-embed" "original")" ]]; then
+    mark_compose_service_for_rewrite "vllm-embed"
+  fi
+
+  if existing_managed_root_service_present "vllm-rerank" && \
+    [[ -n "${DOCKER_SERVICE_SET[vllm-rerank]+set}" ]] && \
+    [[ "$(compose_template_variant_for_service "vllm-rerank" "current")" != \
+      "$(compose_template_variant_for_service "vllm-rerank" "original")" ]]; then
+    mark_compose_service_for_rewrite "vllm-rerank"
+  fi
+}
+
+configure_storage_compose_rewrites() {
+  if [[ "$FORCE_REWRITE_COMPOSE" == "yes" ]]; then
+    return 0
+  fi
+
+  if existing_managed_root_service_present "postgres" && \
+    [[ -n "${DOCKER_SERVICE_SET[postgres]+set}" ]] && \
+    any_env_value_changed_from_original "POSTGRES_USER" "POSTGRES_PASSWORD" "POSTGRES_DATABASE"; then
+    mark_compose_service_for_rewrite "postgres"
+  fi
+
+  if existing_managed_root_service_present "neo4j" && \
+    [[ -n "${DOCKER_SERVICE_SET[neo4j]+set}" ]] && \
+    any_env_value_changed_from_original "NEO4J_PASSWORD" "NEO4J_DATABASE"; then
+    mark_compose_service_for_rewrite "neo4j"
+  fi
+
+  if existing_managed_root_service_present "milvus" && \
+    [[ -n "${DOCKER_SERVICE_SET[milvus]+set}" ]] && \
+    [[ "$(compose_template_variant_for_service "milvus" "current")" != \
+      "$(compose_template_variant_for_service "milvus" "original")" ]]; then
+    mark_compose_service_for_rewrite "milvus"
   fi
 }
 
@@ -1907,6 +2066,7 @@ finalize_base_setup() {
 
   existing_compose="$(find_generated_compose_file)"
   compose_file="${REPO_ROOT}/docker-compose.final.yml"
+  record_existing_managed_root_services "$existing_compose"
 
   # Preserve storage services from any existing compose file.
   if [[ -n "$existing_compose" ]]; then
@@ -1923,6 +2083,8 @@ finalize_base_setup() {
       fi
     done < <(detect_managed_root_services "$existing_compose")
   fi
+
+  configure_base_compose_rewrites
 
   if ((${#DOCKER_SERVICES[@]} > 0)); then
     # LightRAG depends on managed Docker services; it must run via Docker.
@@ -2086,6 +2248,7 @@ finalize_storage_setup() {
 
   existing_compose="$(find_generated_compose_file)"
   compose_file="${REPO_ROOT}/docker-compose.final.yml"
+  record_existing_managed_root_services "$existing_compose"
 
   if [[ "$has_docker_storage" == "no" && -z "$existing_compose" ]]; then
     # No docker services selected and no existing compose to clean up.
@@ -2115,6 +2278,7 @@ finalize_storage_setup() {
       fi
     done < <(detect_managed_root_services "$existing_compose")
   fi
+  configure_storage_compose_rewrites
   generate_compose="yes"
   runtime_target="compose"
 
@@ -2214,6 +2378,7 @@ finalize_server_setup() {
 
   existing_compose="$(find_generated_compose_file)"
   compose_file="${REPO_ROOT}/docker-compose.final.yml"
+  record_existing_managed_root_services "$existing_compose"
 
   if [[ -n "$existing_compose" ]]; then
     generate_compose="yes"
@@ -2543,7 +2708,7 @@ backup_only() {
 
 print_help() {
   cat <<'HELP'
-Usage: scripts/setup/setup.sh [--base|--storage|--server|--validate|--security-check|--backup]
+Usage: scripts/setup/setup.sh [--base|--storage|--server|--validate|--security-check|--backup] [--rewrite-compose]
 
 Options:
   --base         Configure LLM, embedding, and reranker (run first)
@@ -2552,6 +2717,7 @@ Options:
   --validate     Validate an existing .env file
   --security-check  Audit an existing .env for security risks
   --backup       Backup the current .env and generated compose file when present
+  --rewrite-compose  Force regeneration of all wizard-managed compose services
   --debug        Enable debug logging
   --help         Show this help message
 HELP
@@ -2590,6 +2756,9 @@ main() {
         ;;
       --debug)
         DEBUG="true"
+        ;;
+      --rewrite-compose)
+        FORCE_REWRITE_COMPOSE="yes"
         ;;
       --help|-h)
         mode="help"

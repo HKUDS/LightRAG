@@ -11,6 +11,8 @@ All targets require Bash 4+ and auto-detect the correct interpreter (`/opt/homeb
 | `make env-base` | `--base` | Configure LLM, embedding, and reranker (run first) |
 | `make env-storage` | `--storage` | Configure storage backends and databases |
 | `make env-server` | `--server` | Configure server, security, and SSL |
+| `make env-base-rewrite` | `--base --rewrite-compose` | Run base setup and force-regenerate all wizard-managed compose services |
+| `make env-storage-rewrite` | `--storage --rewrite-compose` | Run storage setup and force-regenerate all wizard-managed compose services |
 | `make env-validate` | `--validate` | Validate current `.env` |
 | `make env-security-check` | `--security-check` | Audit current `.env` for security risks |
 | `make env-backup` | `--backup` | Backup current `.env` |
@@ -25,6 +27,7 @@ one configuration domain without touching the others:
 make env-base     # Step 1: always required — sets up LLM / embedding / reranker
 make env-storage  # Step 2: optional — configures storage backends; requires .env from env-base
 make env-server   # Step 3: optional — configures port, auth, SSL; requires .env from env-base
+make env-storage-rewrite  # Optional repair path: force-regenerate wizard-managed compose services
 make env-security-check  # Optional audit: report risky auth / whitelist / secret settings
 ```
 
@@ -33,14 +36,19 @@ based on deployment profile or security posture. Use `make env-security-check` t
 current `.env` after editing or before exposing the service.
 
 **Compose file merging:** When a `docker-compose.final.yml` (or a previously-generated compose
-file) already exists, each wizard preserves the services belonging to the *other* wizards:
+file) already exists, reruns now preserve unchanged wizard-managed compose service blocks by
+default and only rewrite the groups that changed for the current wizard:
 
-- `env-base` detects and keeps any storage services (postgres, neo4j, …) in the compose file
-  while updating vLLM services.
-- `env-storage` detects and keeps any vLLM services (vllm-embed, vllm-rerank) while updating
-  storage services.
+- `env-base` detects and keeps storage services (postgres, neo4j, …) in the compose file while
+  updating vLLM services. Existing `vllm-embed` / `vllm-rerank` blocks are rewritten only when
+  added, removed, or switched between CPU and GPU templates.
+- `env-storage` detects and keeps existing vLLM services while updating storage services. Static
+  managed services such as MongoDB, Redis, Qdrant, and Memgraph are preserved when still selected;
+  PostgreSQL, Neo4j, and Milvus are rewritten only when their template-relevant settings change.
 - `env-server` keeps all existing services unchanged and only rebuilds the `lightrag` service's
   environment overrides (port, SSL paths, etc.).
+- Use `make env-base-rewrite` or `make env-storage-rewrite` to force a full rebuild of
+  wizard-managed compose service blocks when repairing a damaged generated compose file.
 
 The generated compose file is always written as `docker-compose.final.yml`. Older files named
 `docker-compose.development.yml`, `docker-compose.production.yml`, etc. are detected automatically
@@ -65,6 +73,7 @@ Examples:
 ```bash
 make env-base SETUP_OPTS=--debug
 make env-storage NO_COLOR=1
+make env-base SETUP_OPTS=--rewrite-compose
 SETUP_WAIT_TIMEOUT=120 make env-server SETUP_OPTS=--debug
 make env-security-check NO_COLOR=1
 ```
@@ -84,7 +93,9 @@ Configures the three inference providers:
 **First run:** creates `.env` (and optionally `docker-compose.final.yml`) from scratch.
 
 **Re-run:** loads the existing `.env` as defaults. If a compose file already exists, its storage
-services are detected and preserved when the compose file is regenerated.
+services are detected and preserved when the compose file is regenerated. Existing `vllm-*`
+service blocks are preserved unless the service is newly added or removed, or its CPU/GPU template
+selection changes.
 
 ### `make env-storage` — Storage Backends
 
@@ -112,7 +123,10 @@ is MongoDB Community Edition, which is suitable for KV / graph / doc-status
 storage but not for `MongoVectorDBStorage`.
 
 When Docker storage services are selected, `docker-compose.final.yml` is generated (or updated).
-Any existing vLLM services are detected and preserved in the compose file.
+Any existing vLLM services are detected and preserved in the compose file. Existing managed storage
+service blocks are also preserved unless the selected service set changes or a template-relevant
+setting changes (`POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DATABASE`,
+`NEO4J_PASSWORD` / `NEO4J_DATABASE`, or `MILVUS_DEVICE`).
 
 ### `make env-server` — Server / Security / SSL
 
@@ -214,6 +228,10 @@ When a local vLLM service is selected, the compose file includes the overrides n
 containerized `lightrag` service to reach that endpoint from inside Docker. If you later switch
 back to host startup, rerun the relevant setup target so `.env` is rewritten for host execution.
 
+On reruns, unchanged wizard-managed service blocks and their referenced top-level named volume
+definitions are preserved verbatim. Use a `*-rewrite` target, or pass `SETUP_OPTS=--rewrite-compose`,
+when you need to force the generated compose file back to the current bundled templates.
+
 ## Image Settings
 
 Bundled service images are defined by the Docker Compose templates in
@@ -251,7 +269,7 @@ lightrag-server
 ```bash
 make env-storage
 # Select PostgreSQL, answer the connection prompts
-# docker-compose.final.yml is updated; existing vLLM services are preserved
+# docker-compose.final.yml is updated; unchanged managed service blocks are preserved
 docker compose -f docker-compose.final.yml up -d
 ```
 
@@ -275,6 +293,7 @@ docker compose -f docker-compose.final.yml up -d
 ```bash
 make env-backup    # save current .env
 make env-base      # re-run; existing .env values are shown as defaults
+make env-base-rewrite  # optional: force-regenerate wizard-managed compose blocks
 ```
 
 ### Validating before deployment
@@ -287,7 +306,9 @@ make env-security-check
 ## Tips
 
 - Pass `SETUP_OPTS=--debug` to any target for verbose logging: `make env-base SETUP_OPTS=--debug`
-- Set `SETUP_WAIT_TIMEOUT=120` to increase the service startup wait (default 60 s).
+- Use `make env-base-rewrite` / `make env-storage-rewrite` when you need to repair or fully
+  re-template wizard-managed services in `docker-compose.final.yml`.
+- Set `SETUP_WAIT_TIMEOUT=120` to increase the service startup wait (default 90 s).
 - Set `NO_COLOR=1` to disable colored output in CI or terminals without color support.
 - When exposing PostgreSQL on a custom host port, `.env` keeps `POSTGRES_HOST=localhost` and
   `POSTGRES_PORT=<host-port>` while the compose file overrides the container to `postgres:5432`.

@@ -191,12 +191,16 @@ docker compose up
 make env-base           # 必跑第一步：配置 LLM、Embedding、Reranker
 make env-storage        # 可选：配置存储后端和数据库服务
 make env-server         # 可选：配置服务端口、鉴权和 SSL
+make env-base-rewrite   # 可选：强制重建向导托管的 compose 服务块
+make env-storage-rewrite # 可选：强制重建向导托管的 compose 服务块
 make env-security-check # 可选：审计当前 .env 中的安全风险
 ```
 
 每个目标的详细说明请参阅 [docs/InteractiveSetup.md](./docs/InteractiveSetup.md)。
 这些 setup 向导只负责更新配置；如需在部署前审计当前 `.env` 的安全风险，请额外运行
 `make env-security-check`。
+默认情况下，重新运行 setup 会保留未变化的向导托管 compose 服务块；只有在需要按模板强制重建这些托管块时，才使用
+`*-rewrite` 目标。
 
 ### 安装LightRAG Core
 

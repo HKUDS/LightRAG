@@ -81,6 +81,9 @@ docker compose -f docker-compose.final.yml up -d
 ```
 
 The interactive setup keeps `.env` host-usable. Container-only hostnames such as `postgres` or `host.docker.internal`, along with staged SSL paths under `/app/data/certs/`, are injected into the generated `docker-compose.final.yml` for the `lightrag` service instead of being persisted back into `.env`.
+On reruns, unchanged wizard-managed service blocks in `docker-compose.final.yml` are preserved by
+default. To repair or fully regenerate those managed blocks from the bundled templates, rerun the
+matching setup target with `make env-base-rewrite` or `make env-storage-rewrite`.
 
 If the generated stack includes local Milvus, compose resolves `MINIO_ACCESS_KEY_ID` and
 `MINIO_SECRET_ACCESS_KEY` at startup from the repo `.env` or exported shell environment. The

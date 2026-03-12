@@ -247,43 +247,121 @@ _WIZARD_COMPOSE_LIGHTRAG_KEYS=(
   "POSTGRES_HOST" "POSTGRES_PORT" "PORT" "HOST" "SSL_CERTFILE" "SSL_KEYFILE"
 )
 
-_is_wizard_managed_root_service_name() {
+_managed_service_root_name() {
   local service_name="$1"
 
   case "$service_name" in
-    postgres|neo4j|mongodb|redis|milvus|qdrant|memgraph|vllm-embed|vllm-rerank)
-      return 0
+    postgres|neo4j|mongodb|redis|qdrant|memgraph|vllm-embed|vllm-rerank)
+      printf '%s' "$service_name"
+      ;;
+    milvus|milvus-etcd|milvus-minio)
+      printf 'milvus'
       ;;
     *)
-      return 1
+      printf ''
       ;;
   esac
+}
+
+_managed_volume_root_name() {
+  local volume_name="$1"
+
+  case "$volume_name" in
+    postgres_data)
+      printf 'postgres'
+      ;;
+    neo4j_data)
+      printf 'neo4j'
+      ;;
+    mongo_data)
+      printf 'mongodb'
+      ;;
+    redis_data)
+      printf 'redis'
+      ;;
+    milvus_data|milvus-etcd_data|milvus-minio_data)
+      printf 'milvus'
+      ;;
+    qdrant_data)
+      printf 'qdrant'
+      ;;
+    memgraph_data)
+      printf 'memgraph'
+      ;;
+    vllm_rerank_cache)
+      printf 'vllm-rerank'
+      ;;
+    vllm_embed_cache)
+      printf 'vllm-embed'
+      ;;
+    *)
+      printf ''
+      ;;
+  esac
+}
+
+_should_rewrite_wizard_managed_root_service() {
+  local root_service="$1"
+
+  if [[ -z "$root_service" ]]; then
+    return 1
+  fi
+
+  if [[ "${FORCE_REWRITE_COMPOSE:-no}" == "yes" ]]; then
+    return 0
+  fi
+
+  if [[ -z "${DOCKER_SERVICE_SET[$root_service]+set}" ]]; then
+    return 0
+  fi
+
+  if [[ -n "${COMPOSE_REWRITE_SERVICE_SET[$root_service]+set}" ]]; then
+    return 0
+  fi
+
+  return 1
+}
+
+_should_preserve_wizard_managed_root_service() {
+  local root_service="$1"
+
+  if [[ -z "$root_service" || "${FORCE_REWRITE_COMPOSE:-no}" == "yes" ]]; then
+    return 1
+  fi
+
+  if [[ -z "${DOCKER_SERVICE_SET[$root_service]+set}" ]]; then
+    return 1
+  fi
+
+  if [[ -n "${COMPOSE_REWRITE_SERVICE_SET[$root_service]+set}" ]]; then
+    return 1
+  fi
+
+  return 0
+}
+
+_existing_managed_root_service_present() {
+  local root_service="$1"
+
+  [[ -n "$root_service" && -n "${EXISTING_MANAGED_ROOT_SERVICE_SET[$root_service]+set}" ]]
+}
+
+_is_wizard_managed_root_service_name() {
+  local service_name="$1"
+
+  [[ -n "$(_managed_service_root_name "$service_name")" ]]
 }
 
 _is_wizard_managed_service_name() {
   local service_name="$1"
 
-  case "$service_name" in
-    postgres|neo4j|mongodb|redis|milvus|milvus-etcd|milvus-minio|qdrant|memgraph|vllm-embed|vllm-rerank)
-      return 0
-      ;;
-    *)
-      return 1
-      ;;
-  esac
+  [[ -n "$(_managed_service_root_name "$service_name")" ]]
 }
 
 _is_wizard_managed_volume_name() {
   local volume_name="$1"
 
-  case "$volume_name" in
-    postgres_data|neo4j_data|mongo_data|redis_data|milvus_data|milvus-etcd_data|milvus-minio_data|qdrant_data|memgraph_data|vllm_rerank_cache|vllm_embed_cache)
-      return 0
-      ;;
-    *)
-      return 1
-      ;;
-  esac
+  [[ -n "$(_managed_volume_root_name "$volume_name")" ]]
 }
 
 # Remove wizard-managed keys from the lightrag service's environment block,
@@ -427,7 +505,7 @@ _strip_wizard_managed_services_and_top_level_volumes() {
   local compose_file="$1"
   local tmp_file="${compose_file}.strip-svc"
   _FILE_OPS_CLEANUP_TMP+=("$tmp_file")
-  local line current_service=""
+  local line current_service="" current_root_service=""
   local in_services="no"
   local in_top_volumes="no"
   local inserted_marker="no"
@@ -470,17 +548,24 @@ _strip_wizard_managed_services_and_top_level_volumes() {
     # Track current service inside the services: block.
     if [[ "$in_services" == "yes" && "$line" =~ ^[[:space:]]{2}([A-Za-z0-9_-]+):[[:space:]]*$ ]]; then
       current_service="${BASH_REMATCH[1]}"
+      current_root_service="$(_managed_service_root_name "$current_service")"
     fi
 
-    # Skip wizard-managed services; preserve lightrag and all user-added services.
+    # Skip managed services that are being removed or regenerated. Preserve
+    # lightrag, user-added services, and unchanged managed service groups.
     if [[ "$in_services" == "yes" && -n "$current_service" ]] && \
       [[ "$current_service" != "lightrag" ]] && \
-      _is_wizard_managed_service_name "$current_service"; then
+      [[ -n "$current_root_service" ]] && \
+      _should_rewrite_wizard_managed_root_service "$current_root_service"; then
       continue
     fi
 
     printf '%s\n' "$line" >> "$tmp_file"
   done < "$compose_file"
+
+  if [[ "$in_services" == "yes" && "$inserted_marker" != "yes" ]]; then
+    printf '%s\n' "$_WIZARD_MANAGED_SERVICES_MARKER" >> "$tmp_file"
+  fi
 
   mv "$tmp_file" "$compose_file"
 }
@@ -792,6 +877,7 @@ _append_referenced_volume_blocks() {
   local compose_file="$1"
   local -a referenced_volumes=()
   local volume_name
+  local root_service
 
   while IFS= read -r volume_name; do
     if [[ -n "$volume_name" ]]; then
@@ -806,7 +892,13 @@ _append_referenced_volume_blocks() {
   printf '\nvolumes:\n' >> "$compose_file"
   for volume_name in "${referenced_volumes[@]}"; do
     if _is_wizard_managed_volume_name "$volume_name"; then
-      printf '  %s:\n' "$volume_name" >> "$compose_file"
+      root_service="$(_managed_volume_root_name "$volume_name")"
+      if [[ -n "${_FILE_OPS_VOLUME_BLOCKS[$volume_name]+set}" ]] && \
+        _should_preserve_wizard_managed_root_service "$root_service"; then
+        printf '%s' "${_FILE_OPS_VOLUME_BLOCKS[$volume_name]}" >> "$compose_file"
+      else
+        printf '  %s:\n' "$volume_name" >> "$compose_file"
+      fi
     elif [[ -n "${_FILE_OPS_VOLUME_BLOCKS[$volume_name]+set}" ]]; then
       printf '%s' "${_FILE_OPS_VOLUME_BLOCKS[$volume_name]}" >> "$compose_file"
     else
@@ -826,6 +918,7 @@ generate_docker_compose() {
   local lightrag_mounts=()
   local lightrag_env_entries=()
   local key
+  local root_service
 
   # Prefer the existing generated compose as the starting point to preserve
   # any user customisations to the lightrag service.  Fall back to the base
@@ -878,6 +971,12 @@ generate_docker_compose() {
 
   : > "$service_blocks_file"
   for service in "${DOCKER_SERVICES[@]}"; do
+    root_service="$(_managed_service_root_name "$service")"
+    if _should_preserve_wizard_managed_root_service "$root_service" && \
+      _existing_managed_root_service_present "$root_service"; then
+      continue
+    fi
+
     template_file="$TEMPLATES_DIR/${service}.yml"
     if [[ "$service" == "milvus" ]]; then
       if [[ "${ENV_VALUES[MILVUS_DEVICE]:-cpu}" == "cuda" ]]; then
