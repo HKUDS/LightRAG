@@ -23,7 +23,6 @@ declare -A EXISTING_MANAGED_ROOT_SERVICE_SET
 declare -a DOCKER_SERVICES
 SSL_CERT_SOURCE_PATH=""
 SSL_KEY_SOURCE_PATH=""
-DEPLOYMENT_TYPE=""
 LIGHTRAG_COMPOSE_SERVER_PORT_MAPPING=""
 NORMALIZED_SERVER_HOST_FOR_COMPOSE=""
 FORCE_REWRITE_COMPOSE="no"
@@ -63,8 +62,6 @@ STORAGE_SERVICES=(
   "memgraph"
 )
 DEFAULT_RUNTIME_TARGET="host"
-
-WAIT_TIMEOUT="${SETUP_WAIT_TIMEOUT:-90}"
 # shellcheck disable=SC2034
 COLOR_RESET=""
 COLOR_BOLD=""
@@ -108,7 +105,6 @@ reset_state() {
   DOCKER_SERVICES=()
   SSL_CERT_SOURCE_PATH=""
   SSL_KEY_SOURCE_PATH=""
-  DEPLOYMENT_TYPE=""
   LIGHTRAG_COMPOSE_SERVER_PORT_MAPPING=""
   NORMALIZED_SERVER_HOST_FOR_COMPOSE=""
 }
@@ -166,30 +162,6 @@ snapshot_original_env_values() {
   ORIGINAL_ENV_VALUES=()
   for key in "${!ENV_VALUES[@]}"; do
     ORIGINAL_ENV_VALUES["$key"]="${ENV_VALUES[$key]}"
-  done
-}
-
-clear_inherited_ssl_state() {
-  unset 'ENV_VALUES[SSL]'
-  unset 'ENV_VALUES[SSL_CERTFILE]'
-  unset 'ENV_VALUES[SSL_KEYFILE]'
-  SSL_CERT_SOURCE_PATH=""
-  SSL_KEY_SOURCE_PATH=""
-}
-
-reset_quick_start_inherited_state() {
-  local key
-
-  clear_inherited_ssl_state
-
-  for key in "${!ENV_VALUES[@]}"; do
-    case "$key" in
-      HOST|PORT|WEBUI_TITLE|WEBUI_DESCRIPTION|LLM_BINDING_API_KEY|EMBEDDING_BINDING_API_KEY)
-        ;;
-      AUTH_ACCOUNTS|TOKEN_SECRET|TOKEN_EXPIRE_HOURS|GUEST_TOKEN_EXPIRE_HOURS|JWT_ALGORITHM|TOKEN_AUTO_RENEW|TOKEN_RENEW_THRESHOLD|LIGHTRAG_API_KEY|WHITELIST_PATHS|LANGFUSE_*|CUDA_VISIBLE_DEVICES|NVIDIA_VISIBLE_DEVICES|NVIDIA_DRIVER_CAPABILITIES)
-        unset "ENV_VALUES[$key]"
-        ;;
-    esac
   done
 }
 
@@ -739,11 +711,6 @@ configure_storage_compose_rewrites() {
       "$(compose_template_variant_for_service "qdrant" "original")" ]]; then
     mark_compose_service_for_rewrite "qdrant"
   fi
-}
-
-select_deployment_type() {
-  local options=("development" "production" "custom")
-  prompt_choice "Deployment type" "development" "${options[@]}"
 }
 
 select_storage_backends() {
