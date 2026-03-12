@@ -726,8 +726,10 @@ generate_docker_compose "$REPO_ROOT/docker-compose.final.yml"
     rerank_block = generated_compose[rerank_start:]
 
     assert "    depends_on:" in lightrag_block
+    assert "      my-service:\n        condition: service_healthy" in lightrag_block
     assert "      vllm-rerank:\n        condition: service_healthy" in lightrag_block
     assert "    depends_on:" not in rerank_block
+    assert generated_compose.count("\n  vllm-rerank:\n") == 1
 
 
 def test_existing_ssl_env_keeps_compose_mount_overrides(tmp_path: Path) -> None:

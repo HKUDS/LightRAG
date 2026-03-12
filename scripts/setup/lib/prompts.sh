@@ -100,11 +100,24 @@ prompt_with_default() {
   printf '%s' "$value"
 }
 
+style_prompt_text() {
+  local prompt="$1"
+
+  if [[ -n "${COLOR_YELLOW:-}" && "$prompt" == *Docker* ]]; then
+    prompt="${prompt//Docker/${COLOR_YELLOW}Docker${COLOR_RESET}}"
+  fi
+
+  printf '%s' "$prompt"
+}
+
 confirm_default_no() {
   local prompt="$1"
   local response
+  local styled_prompt
+
+  styled_prompt="$(style_prompt_text "$prompt")"
   while true; do
-    read -r -n 1 -p "$prompt [y/N]: " response
+    read -r -n 1 -p "$styled_prompt [y/N]: " response
     echo
     case "$response" in
       y|Y) return 0 ;;
@@ -116,8 +129,11 @@ confirm_default_no() {
 confirm_default_yes() {
   local prompt="$1"
   local response
+  local styled_prompt
+
+  styled_prompt="$(style_prompt_text "$prompt")"
   while true; do
-    read -r -n 1 -p "$prompt [Y/n]: " response
+    read -r -n 1 -p "$styled_prompt [Y/n]: " response
     echo
     case "$response" in
       y|Y|"") return 0 ;;
@@ -129,9 +145,12 @@ confirm_default_yes() {
 confirm_required_yes_no() {
   local prompt="$1"
   local response
+  local styled_prompt
+
+  styled_prompt="$(style_prompt_text "$prompt")"
 
   while true; do
-    printf '%b' "$prompt [yes/no]: " >&2
+    printf '%b' "$styled_prompt [yes/no]: " >&2
     read -r response
     case "${response,,}" in
       yes) return 0 ;;

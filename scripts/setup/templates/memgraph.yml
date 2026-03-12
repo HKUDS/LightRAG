@@ -1,5 +1,5 @@
   memgraph:
-    image: memgraph/memgraph:3.7.2
+    image: memgraph/memgraph:latest
     ports:
       - "${MEMGRAPH_BOLT_PORT:-7687}:7687"
     volumes:

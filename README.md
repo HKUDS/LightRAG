@@ -191,12 +191,16 @@ Instead of editing `env.example` by hand, use the interactive setup wizard to ge
 make env-base           # Required first step: LLM, embedding, reranker
 make env-storage        # Optional: storage backends and database services
 make env-server         # Optional: server port, auth, and SSL
+make env-base-rewrite   # Optional: force-regenerate wizard-managed compose services
+make env-storage-rewrite # Optional: force-regenerate wizard-managed compose services
 make env-security-check # Optional: audit the current .env for security risks
 ```
 
 For full description of every target see [docs/InteractiveSetup.md](./docs/InteractiveSetup.md).
 The setup wizards update configuration only; run `make env-security-check` separately to audit the
 current `.env` for security risks before deployment.
+By default, rerunning the setup preserves unchanged wizard-managed compose service blocks; use a
+`*-rewrite` target only when you need to rebuild those managed blocks from the bundled templates.
 
 ### Install  LightRAG Core
 

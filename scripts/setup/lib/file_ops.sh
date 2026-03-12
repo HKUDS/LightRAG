@@ -247,43 +247,140 @@ _WIZARD_COMPOSE_LIGHTRAG_KEYS=(
   "POSTGRES_HOST" "POSTGRES_PORT" "PORT" "HOST" "SSL_CERTFILE" "SSL_KEYFILE"
 )
 
-_is_wizard_managed_root_service_name() {
+_managed_service_root_name() {
   local service_name="$1"
 
   case "$service_name" in
-    postgres|neo4j|mongodb|redis|milvus|qdrant|memgraph|vllm-embed|vllm-rerank)
-      return 0
+    postgres|neo4j|mongodb|redis|qdrant|memgraph|vllm-embed|vllm-rerank)
+      printf '%s' "$service_name"
+      ;;
+    milvus|milvus-etcd|milvus-minio)
+      printf 'milvus'
       ;;
     *)
-      return 1
+      printf ''
       ;;
   esac
+}
+
+_managed_volume_root_name() {
+  local volume_name="$1"
+
+  case "$volume_name" in
+    postgres_data)
+      printf 'postgres'
+      ;;
+    neo4j_data)
+      printf 'neo4j'
+      ;;
+    mongo_data)
+      printf 'mongodb'
+      ;;
+    redis_data)
+      printf 'redis'
+      ;;
+    milvus_data|milvus-etcd_data|milvus-minio_data)
+      printf 'milvus'
+      ;;
+    qdrant_data)
+      printf 'qdrant'
+      ;;
+    memgraph_data)
+      printf 'memgraph'
+      ;;
+    vllm_rerank_cache)
+      printf 'vllm-rerank'
+      ;;
+    vllm_embed_cache)
+      printf 'vllm-embed'
+      ;;
+    *)
+      printf ''
+      ;;
+  esac
+}
+
+_should_rewrite_wizard_managed_root_service() {
+  local root_service="$1"
+
+  if [[ -z "$root_service" ]]; then
+    return 1
+  fi
+
+  if [[ "${FORCE_REWRITE_COMPOSE:-no}" == "yes" ]]; then
+    return 0
+  fi
+
+  if [[ -z "${DOCKER_SERVICE_SET[$root_service]+set}" ]]; then
+    return 0
+  fi
+
+  if [[ -n "${COMPOSE_REWRITE_SERVICE_SET[$root_service]+set}" ]]; then
+    return 0
+  fi
+
+  return 1
+}
+
+_should_preserve_wizard_managed_root_service() {
+  local root_service="$1"
+
+  if [[ -z "$root_service" || "${FORCE_REWRITE_COMPOSE:-no}" == "yes" ]]; then
+    return 1
+  fi
+
+  if [[ -z "${DOCKER_SERVICE_SET[$root_service]+set}" ]]; then
+    return 1
+  fi
+
+  if [[ -n "${COMPOSE_REWRITE_SERVICE_SET[$root_service]+set}" ]]; then
+    return 1
+  fi
+
+  return 0
+}
+
+_existing_managed_root_service_present() {
+  local root_service="$1"
+
+  [[ -n "$root_service" && -n "${EXISTING_MANAGED_ROOT_SERVICE_SET[$root_service]+set}" ]]
+}
+
+_refresh_existing_managed_root_service_set_from_compose() {
+  local compose_file="$1"
+  local service_name
+  local root_service
+
+  EXISTING_MANAGED_ROOT_SERVICE_SET=()
+
+  if [[ -z "$compose_file" || ! -f "$compose_file" ]]; then
+    return 0
+  fi
+
+  while IFS= read -r service_name; do
+    root_service="$(_managed_service_root_name "$service_name")"
+    if [[ -n "$root_service" ]]; then
+      EXISTING_MANAGED_ROOT_SERVICE_SET["$root_service"]=1
+    fi
+  done < <(detect_managed_root_services "$compose_file")
+}
+
+_is_wizard_managed_root_service_name() {
+  local service_name="$1"
+
+  [[ -n "$(_managed_service_root_name "$service_name")" ]]
 }
 
 _is_wizard_managed_service_name() {
   local service_name="$1"
 
-  case "$service_name" in
-    postgres|neo4j|mongodb|redis|milvus|milvus-etcd|milvus-minio|qdrant|memgraph|vllm-embed|vllm-rerank)
-      return 0
-      ;;
-    *)
-      return 1
-      ;;
-  esac
+  [[ -n "$(_managed_service_root_name "$service_name")" ]]
 }
 
 _is_wizard_managed_volume_name() {
   local volume_name="$1"
 
-  case "$volume_name" in
-    postgres_data|neo4j_data|mongo_data|redis_data|milvus_data|milvus-etcd_data|milvus-minio_data|qdrant_data|memgraph_data|vllm_rerank_cache|vllm_embed_cache)
-      return 0
-      ;;
-    *)
-      return 1
-      ;;
-  esac
+  [[ -n "$(_managed_volume_root_name "$volume_name")" ]]
 }
 
 # Remove wizard-managed keys from the lightrag service's environment block,
@@ -427,7 +524,7 @@ _strip_wizard_managed_services_and_top_level_volumes() {
   local compose_file="$1"
   local tmp_file="${compose_file}.strip-svc"
   _FILE_OPS_CLEANUP_TMP+=("$tmp_file")
-  local line current_service=""
+  local line current_service="" current_root_service=""
   local in_services="no"
   local in_top_volumes="no"
   local inserted_marker="no"
@@ -470,17 +567,24 @@ _strip_wizard_managed_services_and_top_level_volumes() {
     # Track current service inside the services: block.
     if [[ "$in_services" == "yes" && "$line" =~ ^[[:space:]]{2}([A-Za-z0-9_-]+):[[:space:]]*$ ]]; then
       current_service="${BASH_REMATCH[1]}"
+      current_root_service="$(_managed_service_root_name "$current_service")"
     fi
 
-    # Skip wizard-managed services; preserve lightrag and all user-added services.
+    # Skip managed services that are being removed or regenerated. Preserve
+    # lightrag, user-added services, and unchanged managed service groups.
     if [[ "$in_services" == "yes" && -n "$current_service" ]] && \
       [[ "$current_service" != "lightrag" ]] && \
-      _is_wizard_managed_service_name "$current_service"; then
+      [[ -n "$current_root_service" ]] && \
+      _should_rewrite_wizard_managed_root_service "$current_root_service"; then
       continue
     fi
 
     printf '%s\n' "$line" >> "$tmp_file"
   done < "$compose_file"
+
+  if [[ "$in_services" == "yes" && "$inserted_marker" != "yes" ]]; then
+    printf '%s\n' "$_WIZARD_MANAGED_SERVICES_MARKER" >> "$tmp_file"
+  fi
 
   mv "$tmp_file" "$compose_file"
 }
@@ -792,6 +896,7 @@ _append_referenced_volume_blocks() {
   local compose_file="$1"
   local -a referenced_volumes=()
   local volume_name
+  local root_service
 
   while IFS= read -r volume_name; do
     if [[ -n "$volume_name" ]]; then
@@ -806,7 +911,13 @@ _append_referenced_volume_blocks() {
   printf '\nvolumes:\n' >> "$compose_file"
   for volume_name in "${referenced_volumes[@]}"; do
     if _is_wizard_managed_volume_name "$volume_name"; then
-      printf '  %s:\n' "$volume_name" >> "$compose_file"
+      root_service="$(_managed_volume_root_name "$volume_name")"
+      if [[ -n "${_FILE_OPS_VOLUME_BLOCKS[$volume_name]+set}" ]] && \
+        _should_preserve_wizard_managed_root_service "$root_service"; then
+        printf '%s' "${_FILE_OPS_VOLUME_BLOCKS[$volume_name]}" >> "$compose_file"
+      else
+        printf '  %s:\n' "$volume_name" >> "$compose_file"
+      fi
     elif [[ -n "${_FILE_OPS_VOLUME_BLOCKS[$volume_name]+set}" ]]; then
       printf '%s' "${_FILE_OPS_VOLUME_BLOCKS[$volume_name]}" >> "$compose_file"
     else
@@ -826,11 +937,13 @@ generate_docker_compose() {
   local lightrag_mounts=()
   local lightrag_env_entries=()
   local key
+  local root_service
 
   # Prefer the existing generated compose as the starting point to preserve
   # any user customisations to the lightrag service.  Fall back to the base
   # docker-compose.yml when the output file doesn't exist yet.
   if [[ -f "$output_file" && "$output_file" != "$base_file" ]]; then
+    _refresh_existing_managed_root_service_set_from_compose "$output_file"
     _collect_top_level_volume_blocks "$output_file"
     cp "$output_file" "$tmp_file"
     # Strip wizard-managed services and top-level volumes. User-managed
@@ -838,10 +951,12 @@ generate_docker_compose() {
     # references after managed templates are appended.
     _strip_wizard_managed_services_and_top_level_volumes "$tmp_file"
   elif [[ -f "$base_file" ]]; then
+    _refresh_existing_managed_root_service_set_from_compose "$base_file"
     _collect_top_level_volume_blocks "$base_file"
     cp "$base_file" "$tmp_file"
     _strip_wizard_managed_services_and_top_level_volumes "$tmp_file"
   else
+    EXISTING_MANAGED_ROOT_SERVICE_SET=()
     _FILE_OPS_VOLUME_BLOCKS=()
     _FILE_OPS_VOLUME_ORDER=()
     printf 'services:\n' > "$tmp_file"
@@ -874,13 +989,27 @@ generate_docker_compose() {
     inject_lightrag_environment_overrides "$tmp_file" "${lightrag_env_entries[@]}"
   fi
 
+  repair_misplaced_lightrag_depends_on "$tmp_file"
   inject_lightrag_depends_on "$tmp_file" "${DOCKER_SERVICES[@]}"
 
   : > "$service_blocks_file"
   for service in "${DOCKER_SERVICES[@]}"; do
+    root_service="$(_managed_service_root_name "$service")"
+    if _should_preserve_wizard_managed_root_service "$root_service" && \
+      _existing_managed_root_service_present "$root_service"; then
+      continue
+    fi
+
     template_file="$TEMPLATES_DIR/${service}.yml"
     if [[ "$service" == "milvus" ]]; then
       if [[ "${ENV_VALUES[MILVUS_DEVICE]:-cpu}" == "cuda" ]]; then
+        if [[ -f "$TEMPLATES_DIR/${service}-gpu.yml" ]]; then
+          template_file="$TEMPLATES_DIR/${service}-gpu.yml"
+        fi
+      fi
+    fi
+    if [[ "$service" == "qdrant" ]]; then
+      if [[ "${ENV_VALUES[QDRANT_DEVICE]:-cpu}" == "cuda" ]]; then
         if [[ -f "$TEMPLATES_DIR/${service}-gpu.yml" ]]; then
           template_file="$TEMPLATES_DIR/${service}-gpu.yml"
         fi
@@ -1336,6 +1465,132 @@ inject_lightrag_port_mapping() {
       printf '    ports:\n' >> "$tmp_file"
     fi
     printf '      - "%s"\n' "$port_mapping" >> "$tmp_file"
+  fi
+
+  mv "$tmp_file" "$compose_file"
+}
+
+repair_misplaced_lightrag_depends_on() {
+  local compose_file="$1"
+  local tmp_file="${compose_file}.repair-lightrag-depends-on"
+  _FILE_OPS_CLEANUP_TMP+=("$tmp_file")
+  local line
+  local in_services="no"
+  local in_lightrag="no"
+  local lightrag_has_depends_on="no"
+  local candidate_service=""
+  local candidate_root_service=""
+  local captured_block=""
+  local candidate_header=""
+  local inserted="no"
+  local in_candidate_service="no"
+  local skipping_candidate_depends_on="no"
+
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    if [[ "$line" == "services:" ]]; then
+      in_services="yes"
+      continue
+    fi
+
+    if [[ "$in_services" == "yes" && "$line" =~ ^[^[:space:]] && "$line" != "services:" ]]; then
+      break
+    fi
+
+    if [[ "$in_services" != "yes" ]]; then
+      continue
+    fi
+
+    if [[ "$in_lightrag" == "yes" ]]; then
+      if [[ "$line" == "    depends_on:" ]]; then
+        lightrag_has_depends_on="yes"
+        break
+      fi
+
+      if [[ "$line" =~ ^[[:space:]]{2}([A-Za-z0-9_-]+):[[:space:]]*$ ]] && \
+        [[ "${BASH_REMATCH[1]}" != "lightrag" ]]; then
+        candidate_service="${BASH_REMATCH[1]}"
+        candidate_root_service="$(_managed_service_root_name "$candidate_service")"
+        if [[ -z "$candidate_root_service" || "$candidate_root_service" == "milvus" ]]; then
+          break
+        fi
+        in_lightrag="no"
+      fi
+      continue
+    fi
+
+    if [[ "$line" == "  lightrag:" ]]; then
+      in_lightrag="yes"
+      continue
+    fi
+
+    if [[ -n "$candidate_service" ]]; then
+      if [[ "$line" == "    depends_on:" ]]; then
+        captured_block="    depends_on:"$'\n'
+        continue
+      fi
+
+      if [[ -n "$captured_block" ]]; then
+        if [[ "$line" =~ ^[[:space:]]{6} ]]; then
+          captured_block+="${line}"$'\n'
+          continue
+        fi
+        break
+      fi
+
+      if [[ "$line" =~ ^[[:space:]]{2}[^[:space:]] && "$line" != "  ${candidate_service}:" ]]; then
+        break
+      fi
+
+      if [[ "$line" =~ ^[^[:space:]] ]]; then
+        break
+      fi
+    fi
+  done < "$compose_file"
+
+  if [[ "$lightrag_has_depends_on" == "yes" || -z "$captured_block" || -z "$candidate_service" ]]; then
+    return 0
+  fi
+
+  candidate_header="  ${candidate_service}:"
+  : > "$tmp_file"
+  in_lightrag="no"
+
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    if [[ "$skipping_candidate_depends_on" == "yes" ]]; then
+      if [[ "$line" =~ ^[[:space:]]{6} ]]; then
+        continue
+      fi
+      skipping_candidate_depends_on="no"
+    fi
+
+    if [[ "$in_lightrag" == "yes" && "$inserted" == "no" ]] && \
+      [[ ( "$line" =~ ^[[:space:]]{2}[^[:space:]] && "$line" != "  lightrag:" ) || "$line" =~ ^[^[:space:]] ]]; then
+      printf '%s' "$captured_block" >> "$tmp_file"
+      inserted="yes"
+      in_lightrag="no"
+    fi
+
+    if [[ "$line" == "$candidate_header" ]]; then
+      in_candidate_service="yes"
+    elif [[ "$in_candidate_service" == "yes" ]] && \
+      [[ ( "$line" =~ ^[[:space:]]{2}[^[:space:]] && "$line" != "$candidate_header" ) || "$line" =~ ^[^[:space:]] ]]; then
+      in_candidate_service="no"
+    fi
+
+    if [[ "$in_candidate_service" == "yes" && "$line" == "    depends_on:" ]]; then
+      skipping_candidate_depends_on="yes"
+      continue
+    fi
+
+    printf '%s\n' "$line" >> "$tmp_file"
+
+    if [[ "$line" == "  lightrag:" ]]; then
+      in_lightrag="yes"
+    fi
+  done < "$compose_file"
+
+  if [[ "$in_lightrag" == "yes" && "$inserted" == "no" ]]; then
+    printf '%s' "$captured_block" >> "$tmp_file"
   fi
 
   mv "$tmp_file" "$compose_file"
