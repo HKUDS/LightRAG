@@ -215,13 +215,19 @@ class MilvusIndexConfig:
             field_name: Vector field name
 
         Returns:
-            IndexParams object, or None (for AUTOINDEX or when index_params is None)
+            IndexParams object, or a dict fallback when direct API creation is needed.
         """
-        if self.index_type == "AUTOINDEX":
-            logger.info("Using AUTOINDEX (Milvus default), no custom index params")
-            return None
-
         if index_params is None:
+            if self.index_type == "AUTOINDEX":
+                logger.info(
+                    "Using AUTOINDEX with direct API fallback because IndexParams is unavailable"
+                )
+                return {
+                    "field_name": field_name,
+                    "index_type": self.index_type,
+                    "metric_type": self.metric_type,
+                    "params": {},
+                }
             raise RuntimeError(
                 f"IndexParams not available but required for index type "
                 f"'{self.index_type}'. Ensure pymilvus is installed correctly."
@@ -324,6 +330,76 @@ class MilvusIndexConfig:
 @final
 @dataclass
 class MilvusVectorDBStorage(BaseVectorStorage):
+    def _get_milvus_connection_kwargs(self, include_db_name: bool = True) -> dict:
+        """Build Milvus connection kwargs from env/config."""
+        connection_kwargs = {
+            "uri": os.environ.get(
+                "MILVUS_URI",
+                config.get(
+                    "milvus",
+                    "uri",
+                    fallback=os.path.join(
+                        self.global_config["working_dir"], "milvus_lite.db"
+                    ),
+                ),
+            ),
+            "user": os.environ.get(
+                "MILVUS_USER", config.get("milvus", "user", fallback=None)
+            ),
+            "password": os.environ.get(
+                "MILVUS_PASSWORD",
+                config.get("milvus", "password", fallback=None),
+            ),
+            "token": os.environ.get(
+                "MILVUS_TOKEN", config.get("milvus", "token", fallback=None)
+            ),
+        }
+
+        db_name = os.environ.get(
+            "MILVUS_DB_NAME",
+            config.get("milvus", "db_name", fallback=None),
+        )
+        if include_db_name and db_name:
+            connection_kwargs["db_name"] = db_name
+
+        return connection_kwargs
+
+    def _get_milvus_db_name(self) -> Optional[str]:
+        """Return the configured Milvus database name, if any."""
+        db_name = self._get_milvus_connection_kwargs(include_db_name=True).get("db_name")
+        if db_name is None:
+            return None
+
+        normalized_name = str(db_name).strip()
+        return normalized_name or None
+
+    def _create_milvus_client(self) -> MilvusClient:
+        """Create a Milvus client and ensure the configured database exists."""
+        client = MilvusClient(**self._get_milvus_connection_kwargs(include_db_name=False))
+        db_name = self._get_milvus_db_name()
+
+        if not db_name:
+            return client
+
+        existing_databases = set(client.list_databases())
+        if db_name not in existing_databases:
+            logger.warning(
+                f"[{self.workspace}] Milvus database '{db_name}' not found, creating it"
+            )
+            client.create_database(db_name)
+
+        use_database = getattr(client, "use_database", None) or getattr(
+            client, "using_database", None
+        )
+        if callable(use_database):
+            use_database(db_name)
+            logger.debug(
+                f"[{self.workspace}] Using Milvus database '{db_name}' for namespace '{self.namespace}'"
+            )
+            return client
+
+        return MilvusClient(**self._get_milvus_connection_kwargs(include_db_name=True))
+
     def _create_schema_for_namespace(self) -> CollectionSchema:
         """Create schema based on the current instance's namespace"""
 
@@ -479,21 +555,26 @@ class MilvusVectorDBStorage(BaseVectorStorage):
             index_params_for_vector, field_name="vector"
         )
 
-        if vector_index_params is not None:
-            # Custom index configuration provided
-            # Re-raise exceptions to surface vector index creation failures
+        # Re-raise exceptions to surface vector index creation failures
+        if isinstance(vector_index_params, dict):
+            self._client.create_index(
+                collection_name=self.final_namespace,
+                field_name=vector_index_params["field_name"],
+                index_params={
+                    "index_type": vector_index_params["index_type"],
+                    "metric_type": vector_index_params["metric_type"],
+                    "params": vector_index_params["params"],
+                },
+            )
+        else:
             self._client.create_index(
                 collection_name=self.final_namespace,
                 index_params=vector_index_params,
             )
-            logger.debug(
-                f"[{self.workspace}] Created vector index with config: {self.index_config.to_dict()}"
-            )
-        else:
-            # AUTOINDEX - no index params needed (Milvus default behavior)
-            logger.debug(
-                f"[{self.workspace}] Using AUTOINDEX for vector field (Milvus default)"
-            )
+
+        logger.debug(
+            f"[{self.workspace}] Created vector index with config: {self.index_config.to_dict()}"
+        )
 
         # Create scalar indexes based on namespace
         # Wrap scalar index creation in try-except to allow graceful degradation
@@ -1073,6 +1154,22 @@ class MilvusVectorDBStorage(BaseVectorStorage):
             )
             raise
 
+    @staticmethod
+    def _is_missing_vector_index_error(error: Exception) -> bool:
+        """Return True when the error indicates the collection lacks a vector index."""
+        error_message = str(error).lower()
+        return (
+            "no vector index" in error_message
+            or "please create index firstly" in error_message
+        )
+
+    def _repair_missing_vector_index(self):
+        """Create indexes for an existing collection that is missing its vector index."""
+        logger.warning(
+            f"[{self.workspace}] Collection '{self.namespace}' is missing a vector index, attempting repair"
+        )
+        self._create_indexes_after_collection()
+
     def _ensure_collection_loaded(self):
         """Ensure the collection is loaded into memory for search operations"""
         try:
@@ -1109,9 +1206,26 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                 try:
                     self._client.describe_collection(self.final_namespace)
                     self._validate_collection_compatibility()
-                    # Ensure the collection is loaded after validation
-                    self._ensure_collection_loaded()
-                    return
+                    try:
+                        # Ensure the collection is loaded after validation
+                        self._ensure_collection_loaded()
+                        return
+                    except Exception as load_error:
+                        if not self._is_missing_vector_index_error(load_error):
+                            raise
+
+                        try:
+                            self._repair_missing_vector_index()
+                            self._ensure_collection_loaded()
+                            logger.info(
+                                f"[{self.workspace}] Repaired missing vector index for existing collection '{self.namespace}'"
+                            )
+                            return
+                        except Exception as repair_error:
+                            raise RuntimeError(
+                                f"Index repair failed for collection '{self.final_namespace}'. "
+                                f"Original error: {repair_error}"
+                            ) from repair_error
                 except Exception as validation_error:
                     # CRITICAL: Collection exists but validation failed
                     # This indicates potential data migration failure or incompatible schema
@@ -1308,32 +1422,7 @@ class MilvusVectorDBStorage(BaseVectorStorage):
             try:
                 # Create MilvusClient if not already created
                 if self._client is None:
-                    self._client = MilvusClient(
-                        uri=os.environ.get(
-                            "MILVUS_URI",
-                            config.get(
-                                "milvus",
-                                "uri",
-                                fallback=os.path.join(
-                                    self.global_config["working_dir"], "milvus_lite.db"
-                                ),
-                            ),
-                        ),
-                        user=os.environ.get(
-                            "MILVUS_USER", config.get("milvus", "user", fallback=None)
-                        ),
-                        password=os.environ.get(
-                            "MILVUS_PASSWORD",
-                            config.get("milvus", "password", fallback=None),
-                        ),
-                        token=os.environ.get(
-                            "MILVUS_TOKEN", config.get("milvus", "token", fallback=None)
-                        ),
-                        db_name=os.environ.get(
-                            "MILVUS_DB_NAME",
-                            config.get("milvus", "db_name", fallback=None),
-                        ),
-                    )
+                    self._client = self._create_milvus_client()
                     logger.debug(
                         f"[{self.workspace}] MilvusClient created successfully"
                     )
