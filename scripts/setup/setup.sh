@@ -745,8 +745,8 @@ collect_postgres_config() {
     set_compose_override "POSTGRES_HOST" ""
     set_compose_override "POSTGRES_PORT" ""
   fi
-  user="$(prompt_with_default "PostgreSQL user" "${ENV_VALUES[POSTGRES_USER]:-lightrag}")"
-  password="$(prompt_secret_with_default "PostgreSQL password: " "${ENV_VALUES[POSTGRES_PASSWORD]:-}")"
+  user="$(prompt_with_default "PostgreSQL user" "${ENV_VALUES[POSTGRES_USER]:-rag}")"
+  password="$(prompt_secret_with_default "PostgreSQL password: " "${ENV_VALUES[POSTGRES_PASSWORD]:-rag}")"
   database="$(prompt_with_default "PostgreSQL database" "${ENV_VALUES[POSTGRES_DATABASE]:-lightrag}")"
 
   ENV_VALUES["POSTGRES_HOST"]="$host"
