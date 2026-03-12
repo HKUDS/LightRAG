@@ -2025,6 +2025,7 @@ async def use_llm_func_with_cache(
             kwargs["history_messages"] = safe_history_messages
         if max_tokens is not None:
             kwargs["max_tokens"] = max_tokens
+            kwargs["max_completion_tokens"] = max_tokens
 
         res: str = await use_llm_func(
             safe_user_prompt, system_prompt=safe_system_prompt, **kwargs
@@ -2586,13 +2587,10 @@ class TokenTracker:
         self.prompt_tokens += token_counts.get("prompt_tokens", 0)
         self.completion_tokens += token_counts.get("completion_tokens", 0)
 
-        # If total_tokens is provided, use it directly; otherwise calculate the sum
         if "total_tokens" in token_counts:
             self.total_tokens += token_counts["total_tokens"]
         else:
-            self.total_tokens += token_counts.get(
-                "prompt_tokens", 0
-            ) + token_counts.get("completion_tokens", 0)
+            self.total_tokens += token_counts.get("prompt_tokens", 0) + token_counts.get("completion_tokens", 0)
 
         self.call_count += 1
 

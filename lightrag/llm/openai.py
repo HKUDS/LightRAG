@@ -320,6 +320,33 @@ async def openai_complete_if_cache(
     if timeout is not None:
         kwargs["timeout"] = timeout
 
+    # GPT-5 / o-series style models expect max_completion_tokens instead of max_tokens.
+    # Keep backward compatibility by remapping deprecated max_tokens when the newer field
+    # was not explicitly provided.
+    is_openai_reasoning_style_model = (
+        isinstance(model, str)
+        and (model.startswith("gpt-5") or model.startswith("o1") or model.startswith("o3") or model.startswith("o4"))
+    )
+
+    if (
+        "max_tokens" in kwargs
+        and "max_completion_tokens" not in kwargs
+        and is_openai_reasoning_style_model
+    ):
+        kwargs["max_completion_tokens"] = kwargs.pop("max_tokens")
+
+    # Newer OpenAI reasoning/GPT-5 style models reject or tightly restrict several classic
+    # sampling parameters. Strip them here for compatibility unless/ until model-specific
+    # support is implemented.
+    if is_openai_reasoning_style_model:
+        for unsupported_key in (
+            "temperature",
+            "top_p",
+            "presence_penalty",
+            "frequency_penalty",
+        ):
+            kwargs.pop(unsupported_key, None)
+
     # Determine the correct model identifier to use
     # For Azure OpenAI, we must use the deployment name instead of the model name
     api_model = azure_deployment if use_azure and azure_deployment else model
