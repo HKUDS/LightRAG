@@ -669,7 +669,7 @@ configure_storage_compose_rewrites() {
 
   if existing_managed_root_service_present "neo4j" && \
     [[ -n "${DOCKER_SERVICE_SET[neo4j]+set}" ]] && \
-    any_env_value_changed_from_original "NEO4J_PASSWORD" "NEO4J_DATABASE"; then
+    any_env_value_changed_from_original "NEO4J_DATABASE"; then
     mark_compose_service_for_rewrite "neo4j"
   fi
 
@@ -959,12 +959,18 @@ collect_neo4j_config() {
     uri="$(normalize_neo4j_uri_for_local_service "$uri")"
   fi
   if [[ "$use_docker" == "yes" ]]; then
-    username="neo4j"
+    username="$(prompt_until_valid "Neo4j username" "${ENV_VALUES[NEO4J_USERNAME]:-neo4j}" validate_non_empty)"
+    password="$(prompt_secret_until_valid_with_default "Neo4j password: " "${ENV_VALUES[NEO4J_PASSWORD]:-neo4j_password}" validate_non_empty)"
+    if [[ -n "${ENV_VALUES[NEO4J_DATABASE]:-}" ]]; then
+      database="$(prompt_with_default "Neo4j database" "${ENV_VALUES[NEO4J_DATABASE]}")"
+    else
+      database="neo4j"
+    fi
   else
     username="$(prompt_with_default "Neo4j username" "${ENV_VALUES[NEO4J_USERNAME]:-neo4j}")"
+    password="$(prompt_secret_with_default "Neo4j password: " "${ENV_VALUES[NEO4J_PASSWORD]:-neo4j_password}")"
+    database="$(prompt_with_default "Neo4j database" "${ENV_VALUES[NEO4J_DATABASE]:-neo4j}")"
   fi
-  password="$(prompt_secret_with_default "Neo4j password: " "${ENV_VALUES[NEO4J_PASSWORD]:-neo4j_password}")"
-  database="$(prompt_with_default "Neo4j database" "${ENV_VALUES[NEO4J_DATABASE]:-neo4j}")"
 
   ENV_VALUES["NEO4J_URI"]="$uri"
   ENV_VALUES["NEO4J_USERNAME"]="$username"
