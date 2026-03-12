@@ -2026,6 +2026,7 @@ env_storage_flow() {
   for db_type in "${db_order[@]}"; do
     if [[ -n "${REQUIRED_DB_TYPES[$db_type]+set}" ]]; then
       collect_database_config "$db_type" "$(storage_default_docker_for_db_type "$db_type")"
+      echo ""
     fi
   done
 
