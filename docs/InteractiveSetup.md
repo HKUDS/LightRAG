@@ -255,6 +255,11 @@ make env-storage
 docker compose -f docker-compose.final.yml up -d
 ```
 
+When the generated stack includes local Milvus, `docker-compose.final.yml` now references
+`MINIO_ACCESS_KEY_ID` and `MINIO_SECRET_ACCESS_KEY` at compose runtime instead of snapshotting
+their values during setup. Provide them through the repo `.env` or exported shell variables before
+starting the stack; compose fails fast if either one is missing.
+
 ### Production-style deployment with security and SSL
 
 ```bash

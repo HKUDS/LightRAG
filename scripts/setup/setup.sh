@@ -340,6 +340,25 @@ normalize_server_host_for_compose() {
   NORMALIZED_SERVER_HOST_FOR_COMPOSE="0.0.0.0"
 }
 
+host_cuda_available() {
+  command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi >/dev/null 2>&1
+}
+
+resolve_local_device_default() {
+  local configured_device="${1:-}"
+
+  if [[ "$configured_device" == "cpu" || "$configured_device" == "cuda" ]]; then
+    printf '%s' "$configured_device"
+    return 0
+  fi
+
+  if host_cuda_available; then
+    printf 'cuda'
+  else
+    printf 'cpu'
+  fi
+}
+
 default_loopback_url() {
   local port="$1"
   local path="${2:-}"
@@ -686,8 +705,6 @@ collect_database_config() {
   service_name="$(storage_service_name_for_db_type "$db_type")"
   if [[ -n "$service_name" && -n "${DOCKER_SERVICE_SET[$service_name]+set}" ]]; then
     deployment_mode="docker"
-  elif [[ "$db_type" == "mongodb" && "${ENV_VALUES[LIGHTRAG_VECTOR_STORAGE]:-}" == "MongoVectorDBStorage" ]]; then
-    deployment_mode="atlas-capable"
   fi
   persist_storage_deployment_choice "$db_type" "$deployment_mode"
 }
@@ -801,7 +818,7 @@ collect_mongodb_config() {
     log_warn "MongoVectorDBStorage cannot use the local Docker MongoDB service from this setup wizard."
     log_warn "Reason: the bundled local Docker MongoDB service is MongoDB Community Edition, but MongoVectorDBStorage requires Atlas Search / Vector Search support."
     log_warn "Provide a MongoDB endpoint that supports Atlas Search / Vector Search, such as MongoDB Atlas or Atlas local."
-    uri="${ENV_VALUES[MONGO_URI]:-mongodb://localhost:27017/}"
+    uri="${ENV_VALUES[MONGO_URI]:-mongodb+srv://cluster.example.mongodb.net/}"
   else
     if [[ "$default_docker" == "yes" ]]; then
       if confirm_default_yes "Run MongoDB locally via Docker?"; then
@@ -877,7 +894,7 @@ collect_redis_config() {
 collect_milvus_config() {
   local default_docker="${1:-no}"
   local use_docker="no"
-  local uri db_name
+  local uri db_name milvus_device=""
 
   if [[ "$default_docker" == "yes" ]]; then
     if confirm_default_yes "Run Milvus locally via Docker?"; then
@@ -898,12 +915,26 @@ collect_milvus_config() {
 
   uri="$(prompt_until_valid "Milvus URI" "$uri" validate_uri milvus)"
   if [[ "$use_docker" == "yes" ]]; then
+    milvus_device="$(resolve_local_device_default "${ENV_VALUES[MILVUS_DEVICE]:-}")"
+    milvus_device="$(prompt_choice "Milvus device" "$milvus_device" "cpu" "cuda")"
+    if [[ "$milvus_device" == "cuda" ]] && ! host_cuda_available; then
+      log_warn "CUDA device selected for Milvus but no NVIDIA driver detected on host."
+    fi
     uri="$(normalize_milvus_uri_for_local_service "$uri")"
+    if [[ -z "${ENV_VALUES[MINIO_ACCESS_KEY_ID]:-}" ]]; then
+      ENV_VALUES["MINIO_ACCESS_KEY_ID"]="minioadmin"
+    fi
+    if [[ -z "${ENV_VALUES[MINIO_SECRET_ACCESS_KEY]:-}" ]]; then
+      ENV_VALUES["MINIO_SECRET_ACCESS_KEY"]="minioadmin"
+    fi
   fi
   db_name="$(prompt_with_default "Milvus database name" "${ENV_VALUES[MILVUS_DB_NAME]:-lightrag}")"
 
   ENV_VALUES["MILVUS_URI"]="$uri"
   ENV_VALUES["MILVUS_DB_NAME"]="$db_name"
+  if [[ -n "$milvus_device" ]]; then
+    ENV_VALUES["MILVUS_DEVICE"]="$milvus_device"
+  fi
   if [[ "$use_docker" == "yes" ]]; then
     set_compose_override "MILVUS_URI" "http://milvus:19530"
   else
@@ -1310,8 +1341,9 @@ collect_rerank_config() {
       add_docker_service "vllm-rerank"
       vllm_model="$(prompt_with_default "vLLM rerank model" "${ENV_VALUES[VLLM_RERANK_MODEL]:-BAAI/bge-reranker-v2-m3}")"
       vllm_port="$(prompt_until_valid "vLLM rerank port" "${ENV_VALUES[VLLM_RERANK_PORT]:-8000}" validate_port)"
-      vllm_device="$(prompt_choice "vLLM device" "${ENV_VALUES[VLLM_RERANK_DEVICE]:-cpu}" "cpu" "cuda")"
-      if [[ "$vllm_device" == "cuda" ]] && ! command -v nvidia-smi >/dev/null 2>&1; then
+      vllm_device="$(resolve_local_device_default "${ENV_VALUES[VLLM_RERANK_DEVICE]:-}")"
+      vllm_device="$(prompt_choice "vLLM device" "$vllm_device" "cpu" "cuda")"
+      if [[ "$vllm_device" == "cuda" ]] && ! host_cuda_available; then
         log_warn "CUDA device selected but no NVIDIA driver detected on host."
         if confirm_default_yes "Use CPU instead?"; then
           vllm_device="cpu"
@@ -1691,10 +1723,7 @@ env_base_flow() {
   local existing_vllm_rerank_host=""
   local existing_vllm_rerank_device=""
   local previous_rerank_provider=""
-  # Auto-detect CUDA once; used for both embed and rerank
-  local has_gpu="no"
-  if command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi >/dev/null 2>&1; then
-    has_gpu="yes"
+  if host_cuda_available; then
     log_info "GPU detected: NVIDIA GPU found. New local vLLM services default to CUDA (GPU image + float16)."
   else
     log_info "GPU detection: no NVIDIA GPU found. New local vLLM services default to CPU image + float32."
@@ -1751,13 +1780,8 @@ env_base_flow() {
     ENV_VALUES["VLLM_EMBED_MODEL"]="$embed_model"
     ENV_VALUES["EMBEDDING_MODEL"]="$embed_model"
 
-    local vllm_embed_device="$existing_vllm_embed_device"
-    if [[ "$vllm_embed_device" != "cpu" && "$vllm_embed_device" != "cuda" ]]; then
-      vllm_embed_device="cpu"
-      if [[ "$has_gpu" == "yes" ]]; then
-        vllm_embed_device="cuda"
-      fi
-    fi
+    local vllm_embed_device
+    vllm_embed_device="$(resolve_local_device_default "$existing_vllm_embed_device")"
     ENV_VALUES["VLLM_EMBED_DEVICE"]="$vllm_embed_device"
     ENV_VALUES["LIGHTRAG_SETUP_EMBEDDING_PROVIDER"]="vllm"
 
@@ -1824,13 +1848,8 @@ env_base_flow() {
       ENV_VALUES["RERANK_MODEL"]="$rerank_model"
       ENV_VALUES["VLLM_RERANK_PORT"]="$rerank_port"
 
-      local vllm_rerank_device="$existing_vllm_rerank_device"
-      if [[ "$vllm_rerank_device" != "cpu" && "$vllm_rerank_device" != "cuda" ]]; then
-        vllm_rerank_device="cpu"
-        if [[ "$has_gpu" == "yes" ]]; then
-          vllm_rerank_device="cuda"
-        fi
-      fi
+      local vllm_rerank_device
+      vllm_rerank_device="$(resolve_local_device_default "$existing_vllm_rerank_device")"
       ENV_VALUES["VLLM_RERANK_DEVICE"]="$vllm_rerank_device"
       ENV_VALUES["LIGHTRAG_SETUP_RERANK_PROVIDER"]="vllm"
 
@@ -2317,14 +2336,14 @@ validate_env_file() {
     return 1
   fi
 
-  if ! validate_required_variables "$kv" "$vector" "$graph" "$doc_status"; then
-    errors=1
-  fi
-
   if ! validate_mongo_vector_storage_config \
     "$vector" \
     "${ENV_VALUES[MONGO_URI]:-}" \
     "${ENV_VALUES[LIGHTRAG_SETUP_MONGODB_DEPLOYMENT]:-}"; then
+    errors=1
+  fi
+
+  if ! validate_required_variables "$kv" "$vector" "$graph" "$doc_status"; then
     errors=1
   fi
 

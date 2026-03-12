@@ -224,6 +224,13 @@ validate_mongo_vector_storage_config() {
     return 1
   fi
 
+  if [[ ! "$mongo_uri" =~ ^mongodb\+srv:// ]]; then
+    format_error \
+      "MongoVectorDBStorage requires a MongoDB Atlas URI." \
+      "Set MONGO_URI to a mongodb+srv:// endpoint backed by Atlas Search / Vector Search."
+    return 1
+  fi
+
   return 0
 }
 

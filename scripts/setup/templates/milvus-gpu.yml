@@ -1,5 +1,5 @@
   milvus:
-    image: milvusdb/milvus:v2.6.11
+    image: milvusdb/milvus:v2.6.11-gpu
     command: ["milvus", "run", "standalone"]
     security_opt:
       - seccomp:unconfined
@@ -13,6 +13,12 @@
       - "9091:9091"
     volumes:
       - milvus_data:/var/lib/milvus
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              capabilities: ["gpu"]
     healthcheck:
       test:
         - CMD-SHELL

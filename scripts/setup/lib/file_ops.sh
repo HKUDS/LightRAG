@@ -879,6 +879,13 @@ generate_docker_compose() {
   : > "$service_blocks_file"
   for service in "${DOCKER_SERVICES[@]}"; do
     template_file="$TEMPLATES_DIR/${service}.yml"
+    if [[ "$service" == "milvus" ]]; then
+      if [[ "${ENV_VALUES[MILVUS_DEVICE]:-cpu}" == "cuda" ]]; then
+        if [[ -f "$TEMPLATES_DIR/${service}-gpu.yml" ]]; then
+          template_file="$TEMPLATES_DIR/${service}-gpu.yml"
+        fi
+      fi
+    fi
     if [[ "$service" == "vllm-rerank" ]]; then
       if [[ "${ENV_VALUES[VLLM_RERANK_DEVICE]:-cpu}" == "cuda" ]]; then
         if [[ -f "$TEMPLATES_DIR/${service}-gpu.yml" ]]; then
@@ -918,12 +925,6 @@ generate_docker_compose() {
       redis)
         ;;
       milvus)
-        inject_service_environment_overrides "$service_blocks_file" "milvus" \
-          "MINIO_ACCESS_KEY_ID=${ENV_VALUES[MINIO_ACCESS_KEY_ID]:-minioadmin}" \
-          "MINIO_SECRET_ACCESS_KEY=${ENV_VALUES[MINIO_SECRET_ACCESS_KEY]:-minioadmin}"
-        inject_service_environment_overrides "$service_blocks_file" "milvus-minio" \
-          "MINIO_ROOT_USER=${ENV_VALUES[MINIO_ACCESS_KEY_ID]:-minioadmin}" \
-          "MINIO_ROOT_PASSWORD=${ENV_VALUES[MINIO_SECRET_ACCESS_KEY]:-minioadmin}"
         ;;
       qdrant)
         ;;
