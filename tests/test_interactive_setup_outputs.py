@@ -2744,13 +2744,16 @@ def test_env_base_flow_backs_up_legacy_generated_compose_before_rewrite(
 ) -> None:
     """env-base should back up the active legacy compose file before regenerating final output."""
 
-    legacy_compose = "\n".join(
-        [
-            "services:",
-            "  lightrag:",
-            "    image: prod/lightrag",
-        ]
-    ) + "\n"
+    legacy_compose = (
+        "\n".join(
+            [
+                "services:",
+                "  lightrag:",
+                "    image: prod/lightrag",
+            ]
+        )
+        + "\n"
+    )
 
     write_text_lines(
         tmp_path / "env.example",
@@ -3814,15 +3817,18 @@ def test_env_storage_flow_backs_up_existing_compose_before_rewrite(
 ) -> None:
     """env-storage should back up the current compose file before rewriting it."""
 
-    existing_compose = "\n".join(
-        [
-            "services:",
-            "  lightrag:",
-            "    image: example/lightrag:test",
-            "    environment:",
-            '      LEGACY_SETTING: "1"',
-        ]
-    ) + "\n"
+    existing_compose = (
+        "\n".join(
+            [
+                "services:",
+                "  lightrag:",
+                "    image: example/lightrag:test",
+                "    environment:",
+                '      LEGACY_SETTING: "1"',
+            ]
+        )
+        + "\n"
+    )
 
     write_text_lines(
         tmp_path / ".env",
@@ -4062,15 +4068,18 @@ def test_env_server_flow_backs_up_existing_compose_before_rewrite(
 ) -> None:
     """env-server should back up the current compose file before rewriting it."""
 
-    existing_compose = "\n".join(
-        [
-            "services:",
-            "  lightrag:",
-            "    image: example/lightrag:test",
-            "    environment:",
-            '      PORT: "9621"',
-        ]
-    ) + "\n"
+    existing_compose = (
+        "\n".join(
+            [
+                "services:",
+                "  lightrag:",
+                "    image: example/lightrag:test",
+                "    environment:",
+                '      PORT: "9621"',
+            ]
+        )
+        + "\n"
+    )
 
     write_text_lines(
         tmp_path / ".env",
@@ -5802,13 +5811,16 @@ fi
 def test_backup_only_backs_up_env_and_generated_compose(tmp_path: Path) -> None:
     """backup_only should back up both .env and the active generated compose file."""
 
-    compose_content = "\n".join(
-        [
-            "services:",
-            "  lightrag:",
-            "    image: example/lightrag:test",
-        ]
-    ) + "\n"
+    compose_content = (
+        "\n".join(
+            [
+                "services:",
+                "  lightrag:",
+                "    image: example/lightrag:test",
+            ]
+        )
+        + "\n"
+    )
 
     write_text_lines(tmp_path / ".env", ["HOST=0.0.0.0"])
     (tmp_path / "docker-compose.final.yml").write_text(

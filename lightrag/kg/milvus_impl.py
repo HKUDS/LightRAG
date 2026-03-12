@@ -366,7 +366,9 @@ class MilvusVectorDBStorage(BaseVectorStorage):
 
     def _get_milvus_db_name(self) -> Optional[str]:
         """Return the configured Milvus database name, if any."""
-        db_name = self._get_milvus_connection_kwargs(include_db_name=True).get("db_name")
+        db_name = self._get_milvus_connection_kwargs(include_db_name=True).get(
+            "db_name"
+        )
         if db_name is None:
             return None
 
@@ -375,7 +377,9 @@ class MilvusVectorDBStorage(BaseVectorStorage):
 
     def _create_milvus_client(self) -> MilvusClient:
         """Create a Milvus client and ensure the configured database exists."""
-        client = MilvusClient(**self._get_milvus_connection_kwargs(include_db_name=False))
+        client = MilvusClient(
+            **self._get_milvus_connection_kwargs(include_db_name=False)
+        )
         db_name = self._get_milvus_db_name()
 
         if not db_name:

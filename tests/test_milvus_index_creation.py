@@ -491,7 +491,8 @@ class TestMilvusIndexCreation:
                 side_effect=RuntimeError("dimension mismatch"),
             ):
                 with pytest.raises(
-                    RuntimeError, match="Collection validation failed for 'space1_entities'"
+                    RuntimeError,
+                    match="Collection validation failed for 'space1_entities'",
                 ):
                     storage._create_collection_if_not_exist()
 
