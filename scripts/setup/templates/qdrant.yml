@@ -1,5 +1,5 @@
   qdrant:
-    image: qdrant/qdrant:v1.16.0
+    image: qdrant/qdrant:latest
     # ports:
     #   - "6333:6333"
     volumes:
