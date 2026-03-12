@@ -618,7 +618,7 @@ storage_default_docker_for_db_type() {
 
 persist_storage_deployment_choice() {
   local db_type="$1"
-  local use_docker="${2:-no}"
+  local deployment_mode="${2:-no}"
   local marker_key
 
   marker_key="$(storage_deployment_marker_key "$db_type")"
@@ -626,11 +626,17 @@ persist_storage_deployment_choice() {
     return 0
   fi
 
-  if [[ "$use_docker" == "yes" ]]; then
-    ENV_VALUES["$marker_key"]="docker"
-  else
-    unset "ENV_VALUES[$marker_key]"
-  fi
+  case "$deployment_mode" in
+    yes|docker)
+      ENV_VALUES["$marker_key"]="docker"
+      ;;
+    no|'')
+      unset "ENV_VALUES[$marker_key]"
+      ;;
+    *)
+      ENV_VALUES["$marker_key"]="$deployment_mode"
+      ;;
+  esac
 }
 
 clear_unused_storage_deployment_markers() {
@@ -647,7 +653,7 @@ collect_database_config() {
   local db_type="$1"
   local default_docker="${2:-no}"
   local service_name=""
-  local use_docker="no"
+  local deployment_mode="no"
 
   case "$db_type" in
     postgresql)
@@ -679,9 +685,11 @@ collect_database_config() {
 
   service_name="$(storage_service_name_for_db_type "$db_type")"
   if [[ -n "$service_name" && -n "${DOCKER_SERVICE_SET[$service_name]+set}" ]]; then
-    use_docker="yes"
+    deployment_mode="docker"
+  elif [[ "$db_type" == "mongodb" && "${ENV_VALUES[LIGHTRAG_VECTOR_STORAGE]:-}" == "MongoVectorDBStorage" ]]; then
+    deployment_mode="atlas-capable"
   fi
-  persist_storage_deployment_choice "$db_type" "$use_docker"
+  persist_storage_deployment_choice "$db_type" "$deployment_mode"
 }
 
 collect_postgres_config() {
@@ -783,15 +791,17 @@ collect_mongodb_config() {
   local default_docker="${1:-no}"
   local use_docker="no"
   local uri database
-  local atlas_required="no"
+  local vector_search_required="no"
 
   if [[ "${ENV_VALUES[LIGHTRAG_VECTOR_STORAGE]:-}" == "MongoVectorDBStorage" ]]; then
-    atlas_required="yes"
+    vector_search_required="yes"
   fi
 
-  if [[ "$atlas_required" == "yes" ]]; then
-    log_warn "MongoVectorDBStorage requires MongoDB Atlas. Skipping local Docker MongoDB."
-    uri="mongodb+srv://cluster.example.mongodb.net/"
+  if [[ "$vector_search_required" == "yes" ]]; then
+    log_warn "MongoVectorDBStorage cannot use the local Docker MongoDB service from this setup wizard."
+    log_warn "Reason: the bundled local Docker MongoDB service is MongoDB Community Edition, but MongoVectorDBStorage requires Atlas Search / Vector Search support."
+    log_warn "Provide a MongoDB endpoint that supports Atlas Search / Vector Search, such as MongoDB Atlas or Atlas local."
+    uri="${ENV_VALUES[MONGO_URI]:-mongodb://localhost:27017/}"
   else
     if [[ "$default_docker" == "yes" ]]; then
       if confirm_default_yes "Run MongoDB locally via Docker?"; then
@@ -811,8 +821,8 @@ collect_mongodb_config() {
     fi
   fi
 
-  if [[ "$atlas_required" == "yes" ]]; then
-    uri="$(prompt_until_valid "MongoDB Atlas URI" "${ENV_VALUES[MONGO_URI]:-$uri}" validate_mongodb_atlas_uri)"
+  if [[ "$vector_search_required" == "yes" ]]; then
+    uri="$(prompt_until_valid "MongoDB URI (must support Atlas Search / Vector Search)" "$uri" validate_uri mongodb)"
   else
     uri="$(prompt_until_valid "MongoDB URI" "$uri" validate_uri mongodb)"
   fi
@@ -2028,7 +2038,8 @@ finalize_storage_setup() {
 
   if ! validate_mongo_vector_storage_config \
     "${ENV_VALUES[LIGHTRAG_VECTOR_STORAGE]:-}" \
-    "${ENV_VALUES[MONGO_URI]:-}"; then
+    "${ENV_VALUES[MONGO_URI]:-}" \
+    "${ENV_VALUES[LIGHTRAG_SETUP_MONGODB_DEPLOYMENT]:-}"; then
     return 1
   fi
 
@@ -2294,7 +2305,10 @@ validate_env_file() {
     errors=1
   fi
 
-  if ! validate_mongo_vector_storage_config "$vector" "${ENV_VALUES[MONGO_URI]:-}"; then
+  if ! validate_mongo_vector_storage_config \
+    "$vector" \
+    "${ENV_VALUES[MONGO_URI]:-}" \
+    "${ENV_VALUES[LIGHTRAG_SETUP_MONGODB_DEPLOYMENT]:-}"; then
     errors=1
   fi
 

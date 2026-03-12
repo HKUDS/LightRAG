@@ -1237,7 +1237,7 @@ db_name = lightrag
 <details>
 <summary> <b>使用 MongoDB 存储</b> </summary>
 
-MongoDB 为 LightRAG 提供了一站式存储解决方案。MongoDB 提供原生的 KV 存储和向量存储。LightRAG 使用 MongoDB 集合来实现简单的图存储。MongoDB 官方的向量搜索功能（`$vectorSearch`）目前需要其官方云服务 MongoDB Atlas。此功能无法在自托管的 MongoDB Community/Enterprise 版本上使用。
+MongoDB 为 LightRAG 提供了一站式存储解决方案。MongoDB 提供原生的 KV 存储和向量存储。LightRAG 使用 MongoDB 集合来实现简单的图存储。`MongoVectorDBStorage` 需要目标 MongoDB 部署具备 Atlas Search / Vector Search 能力，例如 MongoDB Atlas 或 Atlas local。交互式 setup 向导内置的本地 Docker MongoDB 服务是 MongoDB Community Edition，因此它可以用于 KV / 图 / 文档状态存储，但不能作为 `MongoVectorDBStorage` 的后端。
 
 </details>
 

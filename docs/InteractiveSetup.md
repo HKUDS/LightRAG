@@ -97,9 +97,19 @@ Prompts for:
 - Connection settings for each required database
 - Whether to run each database as a Docker service
 
-On reruns, `env-storage` reloads wizard-only `LIGHTRAG_SETUP_*_DEPLOYMENT=docker`
+On reruns, `env-storage` reloads wizard-only `LIGHTRAG_SETUP_*_DEPLOYMENT`
 metadata from `.env` so each database's Docker prompt defaults to the previously
-selected deployment mode.
+selected deployment mode. Most databases currently use `docker` as the only
+persisted deployment marker. MongoDB can additionally use `atlas-capable` when
+`LIGHTRAG_VECTOR_STORAGE=MongoVectorDBStorage`.
+
+MongoDB has one special rule: when vector storage is set to
+`MongoVectorDBStorage`, the wizard does **not** offer the local Docker MongoDB
+service. Instead, it prints an explanation and asks for a `MONGO_URI` that
+points to a MongoDB deployment with Atlas Search / Vector Search support. This
+is because the bundled `mongodb` service in `scripts/setup/templates/mongodb.yml`
+is MongoDB Community Edition, which is suitable for KV / graph / doc-status
+storage but not for `MongoVectorDBStorage`.
 
 When Docker storage services are selected, `docker-compose.final.yml` is generated (or updated).
 Any existing vLLM services are detected and preserved in the compose file.
@@ -173,6 +183,21 @@ relevant setup target so `.env` is rewritten for that target runtime.
 
 The generated `.env` includes `LIGHTRAG_RUNTIME_TARGET=host|compose` near the top as wizard
 metadata describing which runtime the current file is meant for.
+
+For storage setup reruns, the wizard may also persist
+`LIGHTRAG_SETUP_*_DEPLOYMENT` metadata. For MongoDB, the meaningful values are:
+
+- `LIGHTRAG_SETUP_MONGODB_DEPLOYMENT=docker`: MongoDB is being provided by the
+  bundled local Docker service managed by the setup wizard.
+- `LIGHTRAG_SETUP_MONGODB_DEPLOYMENT=atlas-capable`: MongoDB is external to the
+  bundled Docker service and is expected to support Atlas Search / Vector
+  Search. This marker is written when `MongoVectorDBStorage` is selected.
+- Unset: MongoDB is not in use, or it is being used via an external non-Docker
+  endpoint for KV / graph / doc-status storage.
+
+When `MongoVectorDBStorage` is selected, `make env-validate` rejects
+`LIGHTRAG_SETUP_MONGODB_DEPLOYMENT=docker` because the bundled community MongoDB
+service does not provide Atlas Search / Vector Search support.
 
 ### `docker-compose.final.yml`
 
