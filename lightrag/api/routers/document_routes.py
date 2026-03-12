@@ -332,9 +332,7 @@ class UpdateMetadataRequest(BaseModel):
 
     class Config:
         json_schema_extra = {
-            "example": {
-                "metadata": {"author": "John Doe", "year": 2026}
-            }
+            "example": {"metadata": {"author": "John Doe", "year": 2026}}
         }
 
 
@@ -1237,20 +1235,24 @@ RESERVED_METADATA_FIELDS = {
 
 def reorder_metadata(metadata: dict[str, Any] | None) -> dict[str, Any]:
     """Reorder metadata to show system fields first, then user fields.
-    
+
     Args:
         metadata: Metadata dictionary (can be None)
-        
+
     Returns:
         Reordered metadata dictionary with system fields first
     """
     if not metadata:
         return metadata or {}
-    
+
     # Separate reserved and user fields
-    reserved_fields = {k: v for k, v in metadata.items() if k in RESERVED_METADATA_FIELDS}
-    user_fields = {k: v for k, v in metadata.items() if k not in RESERVED_METADATA_FIELDS}
-    
+    reserved_fields = {
+        k: v for k, v in metadata.items() if k in RESERVED_METADATA_FIELDS
+    }
+    user_fields = {
+        k: v for k, v in metadata.items() if k not in RESERVED_METADATA_FIELDS
+    }
+
     # Return with system fields first, then user fields
     return {**reserved_fields, **user_fields}
 
@@ -3379,12 +3381,14 @@ def create_document_routes(
                 )
 
             # Check for attempts to modify reserved fields
-            reserved_fields_in_request = set(request.metadata.keys()) & RESERVED_METADATA_FIELDS
+            reserved_fields_in_request = (
+                set(request.metadata.keys()) & RESERVED_METADATA_FIELDS
+            )
             if reserved_fields_in_request:
                 raise HTTPException(
                     status_code=400,
                     detail=f"Cannot modify reserved system fields: {', '.join(sorted(reserved_fields_in_request))}. "
-                           f"Reserved fields: {', '.join(sorted(RESERVED_METADATA_FIELDS))}",
+                    f"Reserved fields: {', '.join(sorted(RESERVED_METADATA_FIELDS))}",
                 )
 
             # Check if document exists

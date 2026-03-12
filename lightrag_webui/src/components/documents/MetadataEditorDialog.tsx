@@ -76,10 +76,10 @@ export default function MetadataEditorDialog({
       const entries = Object.entries(currentMetadata)
       const reservedEntries = entries.filter(([key]) => RESERVED_METADATA_FIELDS.has(key))
       const userEntries = entries.filter(([key]) => !RESERVED_METADATA_FIELDS.has(key))
-      
+
       // Reserved fields first, then user fields (both in original order)
       const orderedEntries = [...reservedEntries, ...userEntries]
-      
+
       const initialRows: MetadataRow[] = orderedEntries.map(
         ([key, value], index) => ({
           id: `initial-${index}`,

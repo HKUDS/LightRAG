@@ -3950,14 +3950,14 @@ async def _build_context_str(
     """
     Build the final LLM context string with token processing.
     This includes dynamic token calculation and final chunk truncation.
-    
+
     Args:
         entities_context: List of entity context dicts
         relations_context: List of relation context dicts
         merged_chunks: List of merged chunk dicts
         query: Query string
         query_param: Query parameters (includes include_metadata flag)
-        global_config: Global configuration  
+        global_config: Global configuration
         chunk_tracking: Chunk tracking information
         entity_id_to_original: Mapping from entity IDs to original data
         relation_id_to_original: Mapping from relation IDs to original data
@@ -4154,7 +4154,7 @@ async def _build_query_context(
     1. Search -> 2. Truncate -> 3. Merge chunks -> 4. Build LLM context
 
     Returns unified QueryContextResult containing both context and raw_data.
-    
+
     Args:
         query: Query string
         ll_keywords: Low-level keywords
@@ -4866,7 +4866,7 @@ async def naive_query(
     query_param: QueryParam,
     global_config: dict[str, str],
     hashing_kv: BaseKVStorage | None = None,
-    system_prompt: str |None = None,
+    system_prompt: str | None = None,
     doc_status_storage: BaseKVStorage | None = None,
 ) -> QueryResult | None:
     """
