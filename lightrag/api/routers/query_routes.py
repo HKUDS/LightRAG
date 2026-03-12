@@ -105,6 +105,11 @@ class QueryRequest(BaseModel):
         description="If True, includes actual chunk text content in references. Only applies when include_references=True. Useful for evaluation and debugging.",
     )
 
+    include_metadata: Optional[bool] = Field(
+        default=False,
+        description="If True, retrieves document metadata for each chunk using the full_doc_id. Metadata is looked up on-demand from document storage.",
+    )
+
     stream: Optional[bool] = Field(
         default=True,
         description="If True, enables streaming output for real-time responses. Only affects /query/stream endpoint.",
@@ -151,6 +156,10 @@ class ReferenceItem(BaseModel):
     content: Optional[List[str]] = Field(
         default=None,
         description="List of chunk contents from this file (only present when include_chunk_content=True)",
+    )
+    metadata: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Document metadata (only present when include_metadata=True)",
     )
 
 
@@ -221,6 +230,10 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                                                 "items": {"type": "string"},
                                                 "description": "List of chunk contents from this file (only included when include_chunk_content=True)",
                                             },
+                                            "metadata": {
+                                                "type": ["object", "null"],
+                                                "description": "Document metadata (included when include_metadata=True)",
+                                            },
                                         },
                                     },
                                     "description": "Reference list (only included when include_references=True)",
@@ -275,6 +288,32 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                                 "description": "Example response when include_references=False",
                                 "value": {
                                     "response": "Artificial Intelligence (AI) is a branch of computer science that aims to create intelligent machines capable of performing tasks that typically require human intelligence, such as learning, reasoning, and problem-solving."
+                                },
+                            },
+                            "with_metadata": {
+                                "summary": "Response with metadata",
+                                "description": "Example response when include_references=True and include_metadata=True",
+                                "value": {
+                                    "response": "Artificial Intelligence (AI) is a branch of computer science that aims to create intelligent machines capable of performing tasks that typically require human intelligence, such as learning, reasoning, and problem-solving.",
+                                    "references": [
+                                        {
+                                            "reference_id": "1",
+                                            "file_path": "/documents/ai_overview.pdf",
+                                            "metadata": {
+                                                "author": "Jane Doe",
+                                                "category": "research",
+                                                "institution": "AI Research Institute",
+                                            },
+                                        },
+                                        {
+                                            "reference_id": "2",
+                                            "file_path": "/documents/machine_learning.txt",
+                                            "metadata": {
+                                                "author": "John Doe",
+                                                "year": 2026,
+                                            },
+                                        },
+                                    ],
                                 },
                             },
                             "different_modes": {
@@ -421,26 +460,46 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
             if not response_content:
                 response_content = "No relevant context found for the query."
 
-            # Enrich references with chunk content if requested
-            if request.include_references and request.include_chunk_content:
+            # Enrich references with chunk content and/or metadata if requested
+            if request.include_references and (
+                request.include_chunk_content or request.include_metadata
+            ):
                 chunks = data.get("chunks", [])
-                # Create a mapping from reference_id to chunk content
+                # Create mappings from reference_id to chunk content and metadata
                 ref_id_to_content = {}
+                ref_id_to_metadata = {}
+
                 for chunk in chunks:
                     ref_id = chunk.get("reference_id", "")
-                    content = chunk.get("content", "")
-                    if ref_id and content:
-                        # Collect chunk content; join later to avoid quadratic string concatenation
-                        ref_id_to_content.setdefault(ref_id, []).append(content)
+                    if ref_id:
+                        # Collect chunk content if requested
+                        if request.include_chunk_content:
+                            content = chunk.get("content", "")
+                            if content:
+                                ref_id_to_content.setdefault(ref_id, []).append(content)
 
-                # Add content to references
+                        # Collect metadata if requested (use first non-None metadata for each ref_id)
+                        if (
+                            request.include_metadata
+                            and ref_id not in ref_id_to_metadata
+                        ):
+                            metadata = chunk.get("metadata")
+                            if metadata is not None:
+                                ref_id_to_metadata[ref_id] = metadata
+
+                # Add content and/or metadata to references
                 enriched_references = []
                 for ref in references:
                     ref_copy = ref.copy()
                     ref_id = ref.get("reference_id", "")
+
                     if ref_id in ref_id_to_content:
                         # Keep content as a list of chunks (one file may have multiple chunks)
                         ref_copy["content"] = ref_id_to_content[ref_id]
+
+                    if ref_id in ref_id_to_metadata:
+                        ref_copy["metadata"] = ref_id_to_metadata[ref_id]
+
                     enriched_references.append(ref_copy)
                 references = enriched_references
 
@@ -477,6 +536,11 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                                 "summary": "Streaming mode with chunk content (stream=true, include_chunk_content=true)",
                                 "description": "Multiple NDJSON lines when stream=True, include_references=True, and include_chunk_content=True. First line contains references with content arrays (one file may have multiple chunks), subsequent lines contain response chunks.",
                                 "value": '{"references": [{"reference_id": "1", "file_path": "/documents/ai_overview.pdf", "content": ["Artificial Intelligence (AI) represents a transformative field...", "AI systems can be categorized into narrow AI and general AI..."]}, {"reference_id": "2", "file_path": "/documents/ml_basics.txt", "content": ["Machine learning is a subset of AI that enables computers to learn..."]}]}\n{"response": "Artificial Intelligence (AI) is a branch of computer science"}\n{"response": " that aims to create intelligent machines capable of performing"}\n{"response": " tasks that typically require human intelligence."}',
+                            },
+                            "streaming_with_metadata": {
+                                "summary": "Streaming mode with metadata (stream=true, include_metadata=true)",
+                                "description": "Multiple NDJSON lines when stream=True, include_references=True, and include_metadata=True. First line contains references with metadata objects, subsequent lines contain response chunks.",
+                                "value": '{"references": [{"reference_id": "1", "file_path": "/documents/ai_overview.pdf", "metadata": {"author": "Jane Doe", "category": "research", "institution": "AI Research Institute"}}, {"reference_id": "2", "file_path": "/documents/ml_basics.txt", "metadata": {"author": "John Doe", "year": 2026}}]}\n{"response": "Artificial Intelligence (AI) is a branch of computer science"}\n{"response": " that aims to create intelligent machines capable of performing"}\n{"response": " tasks that typically require human intelligence."}',
                             },
                             "streaming_without_references": {
                                 "summary": "Streaming mode without references (stream=true)",
@@ -674,27 +738,49 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                 references = result.get("data", {}).get("references", [])
                 llm_response = result.get("llm_response", {})
 
-                # Enrich references with chunk content if requested
-                if request.include_references and request.include_chunk_content:
+                # Enrich references with chunk content and/or metadata if requested
+                if request.include_references and (
+                    request.include_chunk_content or request.include_metadata
+                ):
                     data = result.get("data", {})
                     chunks = data.get("chunks", [])
-                    # Create a mapping from reference_id to chunk content
+                    # Create mappings from reference_id to chunk content and metadata
                     ref_id_to_content = {}
+                    ref_id_to_metadata = {}
+
                     for chunk in chunks:
                         ref_id = chunk.get("reference_id", "")
-                        content = chunk.get("content", "")
-                        if ref_id and content:
-                            # Collect chunk content
-                            ref_id_to_content.setdefault(ref_id, []).append(content)
+                        if ref_id:
+                            # Collect chunk content if requested
+                            if request.include_chunk_content:
+                                content = chunk.get("content", "")
+                                if content:
+                                    ref_id_to_content.setdefault(ref_id, []).append(
+                                        content
+                                    )
 
-                    # Add content to references
+                            # Collect metadata if requested (use first non-None metadata for each ref_id)
+                            if (
+                                request.include_metadata
+                                and ref_id not in ref_id_to_metadata
+                            ):
+                                metadata = chunk.get("metadata")
+                                if metadata is not None:
+                                    ref_id_to_metadata[ref_id] = metadata
+
+                    # Add content and/or metadata to references
                     enriched_references = []
                     for ref in references:
                         ref_copy = ref.copy()
                         ref_id = ref.get("reference_id", "")
+
                         if ref_id in ref_id_to_content:
                             # Keep content as a list of chunks (one file may have multiple chunks)
                             ref_copy["content"] = ref_id_to_content[ref_id]
+
+                        if ref_id in ref_id_to_metadata:
+                            ref_copy["metadata"] = ref_id_to_metadata[ref_id]
+
                         enriched_references.append(ref_copy)
                     references = enriched_references
 
@@ -804,9 +890,13 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                                                     "file_path": {"type": "string"},
                                                     "chunk_id": {"type": "string"},
                                                     "reference_id": {"type": "string"},
+                                                    "metadata": {
+                                                        "type": ["object", "null"],
+                                                        "description": "Document metadata (included when include_metadata=True)",
+                                                    },
                                                 },
                                             },
-                                            "description": "Retrieved text chunks from vector database",
+                                            "description": "Retrieved text chunks from vector database. Set include_metadata=true to include document metadata.",
                                         },
                                         "references": {
                                             "type": "array",
@@ -998,6 +1088,60 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                                     "metadata": {
                                         "query_mode": "naive",
                                         "keywords": {"high_level": [], "low_level": []},
+                                    },
+                                },
+                            },
+                            "with_metadata": {
+                                "summary": "Query with document metadata",
+                                "description": "Example response when include_metadata=True is specified in the query request",
+                                "value": {
+                                    "status": "success",
+                                    "message": "Query executed successfully",
+                                    "data": {
+                                        "entities": [
+                                            {
+                                                "entity_name": "Neural Networks",
+                                                "entity_type": "TECHNOLOGY",
+                                                "description": "Computational models inspired by biological neural networks",
+                                                "source_id": "chunk-123",
+                                                "file_path": "/documents/ai_basics.pdf",
+                                                "reference_id": "1",
+                                            }
+                                        ],
+                                        "relationships": [],
+                                        "chunks": [
+                                            {
+                                                "content": "Neural networks are computational models that mimic the way biological neural networks work...",
+                                                "file_path": "/documents/ai_basics.pdf",
+                                                "chunk_id": "chunk-123",
+                                                "reference_id": "1",
+                                                "metadata": {
+                                                    "author": "Jane Doe",
+                                                    "category": "research",
+                                                    "institution": "AI Research Institute",
+                                                },
+                                            }
+                                        ],
+                                        "references": [
+                                            {
+                                                "reference_id": "1",
+                                                "file_path": "/documents/ai_basics.pdf",
+                                            }
+                                        ],
+                                    },
+                                    "metadata": {
+                                        "query_mode": "local",
+                                        "keywords": {
+                                            "high_level": ["neural", "networks"],
+                                            "low_level": ["computation", "model"],
+                                        },
+                                        "processing_info": {
+                                            "total_entities_found": 5,
+                                            "total_relations_found": 0,
+                                            "entities_after_truncation": 1,
+                                            "relations_after_truncation": 0,
+                                            "final_chunks_count": 1,
+                                        },
                                     },
                                 },
                             },

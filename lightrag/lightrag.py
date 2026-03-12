@@ -1163,6 +1163,7 @@ class LightRAG:
         ids: str | list[str] | None = None,
         file_paths: str | list[str] | None = None,
         track_id: str | None = None,
+        metadata: dict[str, Any] | list[dict[str, Any]] | None = None,
     ) -> str:
         """Async Insert documents with checkpoint support
 
@@ -1175,6 +1176,7 @@ class LightRAG:
             ids: list of unique document IDs, if not provided, MD5 hash IDs will be generated
             file_paths: list of file paths corresponding to each document, used for citation
             track_id: tracking ID for monitoring processing status, if not provided, will be generated
+            metadata: single metadata dict (applied to all docs) or list of metadata dicts (one per document)
 
         Returns:
             str: tracking ID for monitoring processing status
@@ -1183,7 +1185,9 @@ class LightRAG:
         if track_id is None:
             track_id = generate_track_id("insert")
 
-        await self.apipeline_enqueue_documents(input, ids, file_paths, track_id)
+        await self.apipeline_enqueue_documents(
+            input, ids, file_paths, track_id, metadata
+        )
         await self.apipeline_process_enqueue_documents(
             split_by_character, split_by_character_only
         )
@@ -1268,6 +1272,7 @@ class LightRAG:
         ids: list[str] | None = None,
         file_paths: str | list[str] | None = None,
         track_id: str | None = None,
+        metadata: dict[str, Any] | list[dict[str, Any]] | None = None,
     ) -> str:
         """
         Pipeline for Processing Documents
@@ -1282,6 +1287,7 @@ class LightRAG:
             ids: list of unique document IDs, if not provided, MD5 hash IDs will be generated
             file_paths: list of file paths corresponding to each document, used for citation
             track_id: tracking ID for monitoring processing status, if not provided, will be generated with "enqueue" prefix
+            metadata: single metadata dict (applied to all docs) or list of metadata dicts (one per document)
 
         Returns:
             str: tracking ID for monitoring processing status
@@ -1308,6 +1314,24 @@ class LightRAG:
             # If no file paths provided, use placeholder
             file_paths = ["unknown_source"] * len(input)
 
+        # Process metadata parameter
+        if metadata is not None:
+            if isinstance(metadata, dict):
+                # Single dict: apply to all documents
+                metadata_list = [metadata.copy() for _ in range(len(input))]
+            elif isinstance(metadata, list):
+                # List of dicts: validate length matches
+                if len(metadata) != len(input):
+                    raise ValueError(
+                        "Number of metadata dicts must match the number of documents"
+                    )
+                metadata_list = metadata
+            else:
+                raise ValueError("metadata must be a dict or list of dicts")
+        else:
+            # No metadata provided
+            metadata_list = [None] * len(input)
+
         # 1. Validate ids if provided or generate MD5 hash IDs and remove duplicate contents
         if ids is not None:
             # Check if the number of IDs matches the number of documents
@@ -1320,31 +1344,42 @@ class LightRAG:
 
             # Generate contents dict and remove duplicates in one pass
             unique_contents = {}
-            for id_, doc, path in zip(ids, input, file_paths):
+            for id_, doc, path, meta in zip(ids, input, file_paths, metadata_list):
                 cleaned_content = sanitize_text_for_encoding(doc)
                 if cleaned_content not in unique_contents:
-                    unique_contents[cleaned_content] = (id_, path)
+                    unique_contents[cleaned_content] = (id_, path, meta)
 
             # Reconstruct contents with unique content
             contents = {
-                id_: {"content": content, "file_path": file_path}
-                for content, (id_, file_path) in unique_contents.items()
+                id_: {"content": content, "file_path": file_path, "metadata": meta}
+                for content, (id_, file_path, meta) in unique_contents.items()
             }
         else:
             # Clean input text and remove duplicates in one pass
             unique_content_with_paths = {}
-            for doc, path in zip(input, file_paths):
+            for doc, path, meta in zip(input, file_paths, metadata_list):
                 cleaned_content = sanitize_text_for_encoding(doc)
                 if cleaned_content not in unique_content_with_paths:
-                    unique_content_with_paths[cleaned_content] = path
+                    unique_content_with_paths[cleaned_content] = (path, meta)
+                else:
+                    # Log when duplicate content has different metadata
+                    existing_path, existing_meta = unique_content_with_paths[
+                        cleaned_content
+                    ]
+                    if meta != existing_meta:
+                        logger.debug(
+                            f"Duplicate content detected: keeping first metadata {existing_meta}, "
+                            f"discarding {meta} (same content, different metadata)"
+                        )
 
             # Generate contents dict of MD5 hash IDs and documents with paths
             contents = {
                 compute_mdhash_id(content, prefix="doc-"): {
                     "content": content,
                     "file_path": path,
+                    "metadata": meta,
                 }
-                for content, path in unique_content_with_paths.items()
+                for content, (path, meta) in unique_content_with_paths.items()
             }
 
         # 2. Generate document initial status (without content)
@@ -1359,6 +1394,7 @@ class LightRAG:
                     "file_path"
                 ],  # Store file path in document status
                 "track_id": track_id,  # Store track_id in document status
+                "metadata": content_data.get("metadata") or {},  # Store user metadata
             }
             for id_, content_data in contents.items()
         }
@@ -1388,6 +1424,17 @@ class LightRAG:
 
                 # Create a new record with unique ID for this duplicate attempt
                 dup_record_id = compute_mdhash_id(f"{doc_id}-{track_id}", prefix="dup-")
+                # Merge user metadata with system duplicate metadata
+                user_metadata = new_docs.get(doc_id, {}).get("metadata", {})
+                system_metadata = {
+                    "is_duplicate": True,
+                    "original_doc_id": doc_id,
+                    "original_track_id": existing_track_id,
+                }
+                merged_metadata = {
+                    **user_metadata,
+                    **system_metadata,
+                }  # System metadata takes priority
                 duplicate_docs[dup_record_id] = {
                     "status": DocStatus.FAILED,
                     "content_summary": f"[DUPLICATE] Original document: {doc_id}",
@@ -1397,11 +1444,7 @@ class LightRAG:
                     "file_path": file_path,
                     "track_id": track_id,  # Use current track_id for tracking
                     "error_msg": f"Content already exists. Original doc_id: {doc_id}, Status: {existing_status}",
-                    "metadata": {
-                        "is_duplicate": True,
-                        "original_doc_id": doc_id,
-                        "original_track_id": existing_track_id,
-                    },
+                    "metadata": merged_metadata,
                 }
 
             # Store duplicate records in doc_status
@@ -2564,7 +2607,8 @@ class LightRAG:
                             "content": str,          # Document chunk content
                             "file_path": str,        # Origin file path
                             "chunk_id": str,         # Unique chunk identifier
-                            "reference_id": str      # Reference identifier for citations
+                            "reference_id": str,     # Reference identifier for citations
+                            "metadata": dict | None  # Document metadata (only when include_metadata=True)
                         }
                     ],
                     "references": [
@@ -2660,6 +2704,7 @@ class LightRAG:
                 hashing_kv=self.llm_response_cache,
                 system_prompt=None,
                 chunks_vdb=self.chunks_vdb,
+                doc_status_storage=self.doc_status,
             )
         elif data_param.mode == "naive":
             logger.debug(f"[aquery_data] Using naive_query for mode: {data_param.mode}")
@@ -2670,16 +2715,19 @@ class LightRAG:
                 global_config,
                 hashing_kv=self.llm_response_cache,
                 system_prompt=None,
+                doc_status_storage=self.doc_status,
             )
         elif data_param.mode == "bypass":
             logger.debug("[aquery_data] Using bypass mode")
             # bypass mode returns empty data using convert_to_user_format
-            empty_raw_data = convert_to_user_format(
+            empty_raw_data = await convert_to_user_format(
                 [],  # no entities
                 [],  # no relationships
                 [],  # no chunks
                 [],  # no references
                 "bypass",
+                doc_status_storage=self.doc_status,
+                include_metadata=data_param.include_metadata,
             )
             query_result = QueryResult(content="", raw_data=empty_raw_data)
         else:
@@ -2757,6 +2805,7 @@ class LightRAG:
                     hashing_kv=self.llm_response_cache,
                     system_prompt=system_prompt,
                     chunks_vdb=self.chunks_vdb,
+                    doc_status_storage=self.doc_status,
                 )
             elif param.mode == "naive":
                 query_result = await naive_query(
@@ -2766,6 +2815,7 @@ class LightRAG:
                     global_config,
                     hashing_kv=self.llm_response_cache,
                     system_prompt=system_prompt,
+                    doc_status_storage=self.doc_status,
                 )
             elif param.mode == "bypass":
                 # Bypass mode: directly use LLM without knowledge retrieval

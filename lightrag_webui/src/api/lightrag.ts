@@ -849,6 +849,21 @@ export const deleteDocuments = async (
   return response.data
 }
 
+export const getDocumentById = async (documentId: string): Promise<DocStatusResponse> => {
+  const response = await axiosInstance.get(`/documents/${documentId}`)
+  return response.data
+}
+
+export const updateDocumentMetadata = async (
+  documentId: string,
+  metadata: Record<string, any>
+): Promise<DocActionResponse> => {
+  const response = await axiosInstance.patch(`/documents/${documentId}/metadata`, {
+    metadata
+  })
+  return response.data
+}
+
 export const getAuthStatus = async (): Promise<AuthStatusResponse> => {
   try {
     // Add a timeout to the request to prevent hanging
