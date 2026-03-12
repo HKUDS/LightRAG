@@ -1,7 +1,7 @@
   mongodb:
     image: mongo:8.2.3
-    ports:
-      - "27017:27017"
+    # ports:
+    #   - "27017:27017"
     volumes:
       - mongo_data:/data/db
     healthcheck:

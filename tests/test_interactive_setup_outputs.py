@@ -290,6 +290,7 @@ reset_state
 {setup_block}
 
 confirm_default_yes() {{ return 0; }}
+prompt_choice() {{ printf '%s' "$2"; }}
 prompt_with_default() {{
   case "$1" in
     "PostgreSQL user") printf 'lightrag' ;;
@@ -444,6 +445,7 @@ def test_generate_docker_compose_removes_lightrag_env_file_to_preserve_dollar_va
         [
             "services:",
             "  lightrag:",
+            "    container_name: lightrag",
             "    image: example/lightrag:test",
             "    env_file:",
             "      - .env",
@@ -469,7 +471,41 @@ generate_docker_compose "$REPO_ROOT/docker-compose.generated.yml"
 
     assert "env_file:" not in generated_compose
     assert "environment:" not in generated_compose
+    assert "container_name:" not in generated_compose
     assert "- ./.env:/app/.env" in generated_compose
+
+
+def test_generate_docker_compose_removes_lightrag_container_name_from_existing_output(
+    tmp_path: Path,
+) -> None:
+    """Compose regeneration should strip fixed lightrag container names from prior output."""
+
+    write_text_lines(
+        tmp_path / "docker-compose.final.yml",
+        [
+            "services:",
+            "  lightrag:",
+            "    container_name: lightrag",
+            "    image: example/lightrag:test",
+        ],
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+
+generate_docker_compose "$REPO_ROOT/docker-compose.final.yml"
+"""
+    )
+
+    generated_compose = (tmp_path / "docker-compose.final.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "container_name:" not in generated_compose
 
 
 def test_generate_docker_compose_preserves_list_style_lightrag_environment(
@@ -2189,10 +2225,16 @@ generate_docker_compose "$REPO_ROOT/docker-compose.generated.yml"
     assert 'POSTGRES_DB: "db$$NAME"' in generated_compose
     assert 'NEO4J_AUTH: "neo4j/neo$$PASS"' in generated_compose
     assert 'NEO4J_dbms_default__database: "graph$$DB"' in generated_compose
-    assert 'MINIO_ACCESS_KEY_ID: "minio$$USER"' in generated_compose
-    assert 'MINIO_SECRET_ACCESS_KEY: "minio$$SECRET"' in generated_compose
-    assert 'MINIO_ROOT_USER: "minio$$USER"' in generated_compose
-    assert 'MINIO_ROOT_PASSWORD: "minio$$SECRET"' in generated_compose
+    assert 'MINIO_ACCESS_KEY_ID: "${MINIO_ACCESS_KEY_ID:?missing}"' in generated_compose
+    assert (
+        'MINIO_SECRET_ACCESS_KEY: "${MINIO_SECRET_ACCESS_KEY:?missing}"'
+        in generated_compose
+    )
+    assert 'MINIO_ROOT_USER: "${MINIO_ACCESS_KEY_ID:?missing}"' in generated_compose
+    assert (
+        'MINIO_ROOT_PASSWORD: "${MINIO_SECRET_ACCESS_KEY:?missing}"'
+        in generated_compose
+    )
     assert "milvus-etcd" in generated_compose
     assert "milvus-minio" in generated_compose
 
@@ -2737,13 +2779,16 @@ def test_env_base_flow_backs_up_legacy_generated_compose_before_rewrite(
 ) -> None:
     """env-base should back up the active legacy compose file before regenerating final output."""
 
-    legacy_compose = "\n".join(
-        [
-            "services:",
-            "  lightrag:",
-            "    image: prod/lightrag",
-        ]
-    ) + "\n"
+    legacy_compose = (
+        "\n".join(
+            [
+                "services:",
+                "  lightrag:",
+                "    image: prod/lightrag",
+            ]
+        )
+        + "\n"
+    )
 
     write_text_lines(
         tmp_path / "env.example",
@@ -3807,15 +3852,18 @@ def test_env_storage_flow_backs_up_existing_compose_before_rewrite(
 ) -> None:
     """env-storage should back up the current compose file before rewriting it."""
 
-    existing_compose = "\n".join(
-        [
-            "services:",
-            "  lightrag:",
-            "    image: example/lightrag:test",
-            "    environment:",
-            '      LEGACY_SETTING: "1"',
-        ]
-    ) + "\n"
+    existing_compose = (
+        "\n".join(
+            [
+                "services:",
+                "  lightrag:",
+                "    image: example/lightrag:test",
+                "    environment:",
+                '      LEGACY_SETTING: "1"',
+            ]
+        )
+        + "\n"
+    )
 
     write_text_lines(
         tmp_path / ".env",
@@ -4055,15 +4103,18 @@ def test_env_server_flow_backs_up_existing_compose_before_rewrite(
 ) -> None:
     """env-server should back up the current compose file before rewriting it."""
 
-    existing_compose = "\n".join(
-        [
-            "services:",
-            "  lightrag:",
-            "    image: example/lightrag:test",
-            "    environment:",
-            '      PORT: "9621"',
-        ]
-    ) + "\n"
+    existing_compose = (
+        "\n".join(
+            [
+                "services:",
+                "  lightrag:",
+                "    image: example/lightrag:test",
+                "    environment:",
+                '      PORT: "9621"',
+            ]
+        )
+        + "\n"
+    )
 
     write_text_lines(
         tmp_path / ".env",
@@ -4301,6 +4352,94 @@ printf 'MILVUS_DB_NAME=%s\\n' "${{ENV_VALUES[MILVUS_DB_NAME]}}"
     )
 
     assert values["MILVUS_DB_NAME"] == "lightrag"
+
+
+def test_collect_milvus_config_initializes_minio_credentials_for_local_docker(
+    tmp_path: Path,
+) -> None:
+    """Local Docker Milvus should write default MinIO credentials when none exist yet."""
+
+    env_file = tmp_path / ".env"
+    env_example = tmp_path / "env.example"
+    env_example.write_text((REPO_ROOT / "env.example").read_text(encoding="utf-8"))
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+
+confirm_default_yes() {{ return 0; }}
+prompt_choice() {{ printf '%s' "$2"; }}
+prompt_with_default() {{
+  printf '%s' "$2"
+}}
+prompt_until_valid() {{
+  printf '%s' "$2"
+}}
+
+collect_milvus_config yes
+generate_env_file "$REPO_ROOT/env.example" "$REPO_ROOT/.env"
+""",
+        cwd=tmp_path,
+    )
+
+    env_text = env_file.read_text(encoding="utf-8")
+    assert "MINIO_ACCESS_KEY_ID=minioadmin" in env_text
+    assert "MINIO_SECRET_ACCESS_KEY=minioadmin" in env_text
+
+
+@pytest.mark.parametrize(
+    ("setup_lines", "nvidia_impl", "expected_device"),
+    [
+        (
+            ['ENV_VALUES[MILVUS_DEVICE]="cpu"'],
+            "nvidia-smi() { return 0; }",
+            "cpu",
+        ),
+        (
+            ['ENV_VALUES[MILVUS_DEVICE]="cuda"'],
+            "nvidia-smi() { return 1; }",
+            "cuda",
+        ),
+        (
+            [],
+            "nvidia-smi() { return 0; }",
+            "cuda",
+        ),
+    ],
+    ids=["saved-cpu-wins", "saved-cuda-wins", "gpu-host-defaults-to-cuda"],
+)
+def test_collect_milvus_config_resolves_device_default_for_local_docker(
+    setup_lines: list[str],
+    nvidia_impl: str,
+    expected_device: str,
+) -> None:
+    """Milvus device defaults should prefer saved state and otherwise use host CUDA detection."""
+
+    setup_block = "\n".join(setup_lines)
+    values = run_bash_lines(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+reset_state
+
+{setup_block}
+{nvidia_impl}
+
+confirm_default_yes() {{ return 0; }}
+prompt_choice() {{ printf '%s' "$2"; }}
+prompt_with_default() {{ printf '%s' "$2"; }}
+prompt_until_valid() {{ printf '%s' "$2"; }}
+
+collect_milvus_config yes
+
+printf 'MILVUS_DEVICE=%s\\n' "${{ENV_VALUES[MILVUS_DEVICE]}}"
+"""
+    )
+
+    assert values["MILVUS_DEVICE"] == expected_device
 
 
 @pytest.mark.parametrize(
@@ -5019,6 +5158,119 @@ generate_docker_compose "$REPO_ROOT/docker-compose.generated.yml"
     assert 'grep -q ":$${PORT_HEX} "' in generated_compose
 
 
+@pytest.mark.parametrize(
+    ("device", "expected_image"),
+    [
+        ("cpu", "image: milvusdb/milvus:v2.6.11"),
+        ("cuda", "image: milvusdb/milvus:v2.6.11-gpu"),
+    ],
+)
+def test_generate_docker_compose_selects_milvus_template_from_device(
+    tmp_path: Path,
+    device: str,
+    expected_image: str,
+) -> None:
+    """Milvus compose generation should switch templates based on MILVUS_DEVICE."""
+
+    write_text_lines(
+        tmp_path / "env.example",
+        (REPO_ROOT / "env.example").read_text(encoding="utf-8").splitlines(),
+    )
+    write_text_lines(
+        tmp_path / "docker-compose.yml",
+        [
+            "services:",
+            "  lightrag:",
+            "    image: example/lightrag:test",
+        ],
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+
+ENV_VALUES[MILVUS_DEVICE]="{device}"
+add_docker_service milvus
+
+generate_docker_compose "$REPO_ROOT/docker-compose.final.yml"
+"""
+    )
+
+    generated_compose = (tmp_path / "docker-compose.final.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert expected_image in generated_compose
+
+
+@pytest.mark.parametrize(
+    ("setup_lines", "nvidia_impl", "expected_device"),
+    [
+        (
+            ['ENV_VALUES[VLLM_RERANK_DEVICE]="cpu"'],
+            "nvidia-smi() { return 0; }",
+            "cpu",
+        ),
+        (
+            ['ENV_VALUES[VLLM_RERANK_DEVICE]="cuda"'],
+            "nvidia-smi() { return 1; }",
+            "cuda",
+        ),
+        (
+            [],
+            "nvidia-smi() { return 0; }",
+            "cuda",
+        ),
+    ],
+    ids=["saved-cpu-wins", "saved-cuda-wins", "gpu-host-defaults-to-cuda"],
+)
+def test_collect_rerank_config_resolves_vllm_device_default_consistently(
+    setup_lines: list[str],
+    nvidia_impl: str,
+    expected_device: str,
+) -> None:
+    """Rerank vLLM device defaults should match env-base precedence rules."""
+
+    setup_block = "\n".join(setup_lines)
+    values = run_bash_lines(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+reset_state
+
+{setup_block}
+{nvidia_impl}
+
+confirm_default_no() {{ return 0; }}
+confirm_default_yes() {{
+  case "$1" in
+    "Use CPU instead?") return 1 ;;
+    *) return 0 ;;
+  esac
+}}
+prompt_choice() {{
+  case "$1" in
+    "Rerank provider") printf 'vllm' ;;
+    "vLLM device") printf '%s' "$2" ;;
+    *) printf '%s' "$2" ;;
+  esac
+}}
+prompt_with_default() {{ printf '%s' "$2"; }}
+prompt_until_valid() {{ printf '%s' "$2"; }}
+prompt_secret_with_default() {{ printf '%s' "$2"; }}
+
+collect_rerank_config
+
+printf 'VLLM_RERANK_DEVICE=%s\\n' "${{ENV_VALUES[VLLM_RERANK_DEVICE]}}"
+"""
+    )
+
+    assert values["VLLM_RERANK_DEVICE"] == expected_device
+
+
 def test_collect_security_config_can_clear_existing_values_on_rerun(
     tmp_path: Path,
 ) -> None:
@@ -5594,13 +5846,16 @@ fi
 def test_backup_only_backs_up_env_and_generated_compose(tmp_path: Path) -> None:
     """backup_only should back up both .env and the active generated compose file."""
 
-    compose_content = "\n".join(
-        [
-            "services:",
-            "  lightrag:",
-            "    image: example/lightrag:test",
-        ]
-    ) + "\n"
+    compose_content = (
+        "\n".join(
+            [
+                "services:",
+                "  lightrag:",
+                "    image: example/lightrag:test",
+            ]
+        )
+        + "\n"
+    )
 
     write_text_lines(tmp_path / ".env", ["HOST=0.0.0.0"])
     (tmp_path / "docker-compose.final.yml").write_text(
