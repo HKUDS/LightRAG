@@ -5423,7 +5423,7 @@ printf 'LANGFUSE_HOST_SET=%s\\n' "${{ENV_VALUES[LANGFUSE_HOST]+set}}"
 def test_collect_neo4j_config_bundled_service_keeps_username_editable(
     tmp_path: Path,
 ) -> None:
-    """Bundled Neo4j should preserve editable credentials for the managed service."""
+    """Bundled Neo4j should preserve editable credentials and existing database overrides."""
 
     compose_file = tmp_path / "docker-compose.yml"
     compose_file.write_text(
@@ -5449,14 +5449,16 @@ reset_state
 
 ENV_VALUES[NEO4J_USERNAME]="custom-user"
 ENV_VALUES[NEO4J_PASSWORD]="existing-password"
+ENV_VALUES[NEO4J_DATABASE]="custom-db"
 
 confirm_default_yes() {{ return 0; }}
 prompt_until_valid() {{ printf '%s' "$2"; }}
+prompt_log_file="$(mktemp)"
+trap 'rm -f "$prompt_log_file"' EXIT
 prompt_with_default() {{
-  if [[ "$1" == "Neo4j username" ]]; then
-    printf 'custom-user'
-  elif [[ "$1" == "Neo4j database" ]]; then
-    printf 'neo4j'
+  printf '%s\\n' "$1" >> "$prompt_log_file"
+  if [[ "$1" == "Neo4j database" ]]; then
+    printf 'custom-db-2'
   else
     printf '%s' "$2"
   fi
@@ -5468,7 +5470,9 @@ collect_neo4j_config yes
 generate_docker_compose "$REPO_ROOT/docker-compose.generated.yml"
 
 printf 'NEO4J_USERNAME=%s\\n' "${{ENV_VALUES[NEO4J_USERNAME]}}"
+printf 'NEO4J_DATABASE=%s\\n' "${{ENV_VALUES[NEO4J_DATABASE]}}"
 printf 'DOCKER_SERVICE=%s\\n' "${{DOCKER_SERVICES[0]}}"
+printf 'DATABASE_PROMPTS=%s\\n' "$(grep -c '^Neo4j database$' "$prompt_log_file" || true)"
 """
     )
     values = parse_lines(output)
@@ -5477,11 +5481,46 @@ printf 'DOCKER_SERVICE=%s\\n' "${{DOCKER_SERVICES[0]}}"
     )
 
     assert values["NEO4J_USERNAME"] == "custom-user"
+    assert values["NEO4J_DATABASE"] == "custom-db-2"
     assert values["DOCKER_SERVICE"] == "neo4j"
+    assert values["DATABASE_PROMPTS"] == "1"
     assert (
         "NEO4J_AUTH: ${NEO4J_USERNAME:?missing}/${NEO4J_PASSWORD:?missing}"
         in generated_compose
     )
+    assert 'NEO4J_dbms_default__database: "custom-db-2"' in generated_compose
+
+
+def test_collect_neo4j_config_bundled_service_defaults_database_when_unset() -> None:
+    """Bundled Neo4j should pin the community default database when no prior value exists."""
+
+    output = run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+reset_state
+
+prompt_log_file="$(mktemp)"
+trap 'rm -f "$prompt_log_file"' EXIT
+
+confirm_default_yes() {{ return 0; }}
+prompt_until_valid() {{ printf '%s' "$2"; }}
+prompt_with_default() {{
+  printf '%s\\n' "$1" >> "$prompt_log_file"
+  printf '%s' "$2"
+}}
+prompt_secret_until_valid_with_default() {{ printf 'secure-password'; }}
+
+collect_neo4j_config yes
+
+printf 'DATABASE=%s\\n' "${{ENV_VALUES[NEO4J_DATABASE]}}"
+printf 'DATABASE_PROMPTS=%s\\n' "$(grep -c '^Neo4j database$' "$prompt_log_file" || true)"
+"""
+    )
+    values = parse_lines(output)
+
+    assert values["DATABASE"] == "neo4j"
+    assert values["DATABASE_PROMPTS"] == "0"
 
 
 def test_collect_neo4j_config_bundled_service_reprompts_for_empty_credentials() -> None:

@@ -961,11 +961,16 @@ collect_neo4j_config() {
   if [[ "$use_docker" == "yes" ]]; then
     username="$(prompt_until_valid "Neo4j username" "${ENV_VALUES[NEO4J_USERNAME]:-neo4j}" validate_non_empty)"
     password="$(prompt_secret_until_valid_with_default "Neo4j password: " "${ENV_VALUES[NEO4J_PASSWORD]:-neo4j_password}" validate_non_empty)"
+    if [[ -n "${ENV_VALUES[NEO4J_DATABASE]:-}" ]]; then
+      database="$(prompt_with_default "Neo4j database" "${ENV_VALUES[NEO4J_DATABASE]}")"
+    else
+      database="neo4j"
+    fi
   else
     username="$(prompt_with_default "Neo4j username" "${ENV_VALUES[NEO4J_USERNAME]:-neo4j}")"
     password="$(prompt_secret_with_default "Neo4j password: " "${ENV_VALUES[NEO4J_PASSWORD]:-neo4j_password}")"
+    database="$(prompt_with_default "Neo4j database" "${ENV_VALUES[NEO4J_DATABASE]:-neo4j}")"
   fi
-  database="$(prompt_with_default "Neo4j database" "${ENV_VALUES[NEO4J_DATABASE]:-neo4j}")"
 
   ENV_VALUES["NEO4J_URI"]="$uri"
   ENV_VALUES["NEO4J_USERNAME"]="$username"
