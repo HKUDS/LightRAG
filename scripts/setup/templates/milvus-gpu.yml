@@ -8,9 +8,9 @@
       MINIO_ADDRESS: milvus-minio:9000
       MINIO_ACCESS_KEY_ID: "${MINIO_ACCESS_KEY_ID:?missing}"
       MINIO_SECRET_ACCESS_KEY: "${MINIO_SECRET_ACCESS_KEY:?missing}"
-    ports:
-      - "19530:19530"
-      - "9091:9091"
+    # ports:
+    #   - "19530:19530"
+    #   - "9091:9091"
     volumes:
       - milvus_data:/var/lib/milvus
     deploy:

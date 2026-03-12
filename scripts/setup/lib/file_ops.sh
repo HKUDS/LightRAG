@@ -973,6 +973,10 @@ prepare_lightrag_service_for_generated_compose() {
       continue
     fi
 
+    if [[ "$in_lightrag" == "yes" && "$line" =~ ^[[:space:]]{4}container_name: ]]; then
+      continue
+    fi
+
     printf '%s\n' "$line" >> "$tmp_file"
 
     if [[ "$line" == "  lightrag:" ]]; then

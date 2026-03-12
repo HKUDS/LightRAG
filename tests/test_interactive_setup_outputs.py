@@ -445,6 +445,7 @@ def test_generate_docker_compose_removes_lightrag_env_file_to_preserve_dollar_va
         [
             "services:",
             "  lightrag:",
+            "    container_name: lightrag",
             "    image: example/lightrag:test",
             "    env_file:",
             "      - .env",
@@ -470,7 +471,41 @@ generate_docker_compose "$REPO_ROOT/docker-compose.generated.yml"
 
     assert "env_file:" not in generated_compose
     assert "environment:" not in generated_compose
+    assert "container_name:" not in generated_compose
     assert "- ./.env:/app/.env" in generated_compose
+
+
+def test_generate_docker_compose_removes_lightrag_container_name_from_existing_output(
+    tmp_path: Path,
+) -> None:
+    """Compose regeneration should strip fixed lightrag container names from prior output."""
+
+    write_text_lines(
+        tmp_path / "docker-compose.final.yml",
+        [
+            "services:",
+            "  lightrag:",
+            "    container_name: lightrag",
+            "    image: example/lightrag:test",
+        ],
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+
+generate_docker_compose "$REPO_ROOT/docker-compose.final.yml"
+"""
+    )
+
+    generated_compose = (tmp_path / "docker-compose.final.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "container_name:" not in generated_compose
 
 
 def test_generate_docker_compose_preserves_list_style_lightrag_environment(
