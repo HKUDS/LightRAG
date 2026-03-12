@@ -2779,6 +2779,75 @@ env_base_flow
     assert "./data/certs/key.pem:/app/data/certs/key.pem:ro" in generated_compose
 
 
+def test_finalize_base_setup_uses_compose_native_storage_endpoints_on_rerun(
+    tmp_path: Path,
+) -> None:
+    """Preserved managed storage services should inject compose-native endpoints on base reruns."""
+
+    write_text_lines(
+        tmp_path / ".env",
+        [
+            "LIGHTRAG_RUNTIME_TARGET=compose",
+            "NEO4J_URI=neo4j://localhost:7687",
+            "MILVUS_URI=http://localhost:19530",
+            "LIGHTRAG_KV_STORAGE=JsonKVStorage",
+            "LIGHTRAG_VECTOR_STORAGE=NanoVectorDBStorage",
+            "LIGHTRAG_GRAPH_STORAGE=NetworkXStorage",
+            "LIGHTRAG_DOC_STATUS_STORAGE=JsonDocStatusStorage",
+        ],
+    )
+    write_text_lines(
+        tmp_path / "env.example",
+        (REPO_ROOT / "env.example").read_text(encoding="utf-8").splitlines(),
+    )
+    write_text_lines(
+        tmp_path / "docker-compose.final.yml",
+        [
+            "services:",
+            "  lightrag:",
+            "    image: example/lightrag:test",
+            "  neo4j:",
+            "    image: neo4j:latest",
+            "  milvus:",
+            "    image: milvusdb/milvus:v2.6.11",
+            "  milvus-etcd:",
+            "    image: quay.io/coreos/etcd:v3.5.16",
+            "  milvus-minio:",
+            "    image: minio/minio:latest",
+            "volumes:",
+            "  neo4j_data:",
+            "  milvus_data:",
+            "  milvus-etcd_data:",
+            "  milvus-minio_data:",
+        ],
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+load_existing_env_if_present
+show_summary() {{ :; }}
+confirm_required_yes_no() {{ return 0; }}
+confirm_default_yes() {{ return 0; }}
+validate_sensitive_env_literals() {{ return 0; }}
+finalize_base_setup
+"""
+    )
+
+    result = (tmp_path / "docker-compose.final.yml").read_text(encoding="utf-8")
+
+    assert 'NEO4J_URI: "neo4j://neo4j:7687"' in result
+    assert 'MILVUS_URI: "http://milvus:19530"' in result
+    assert 'NEO4J_URI: "neo4j://host.docker.internal:7687"' not in result
+    assert 'MILVUS_URI: "http://host.docker.internal:19530"' not in result
+    assert "      milvus:\n        condition: service_healthy" in result
+    assert "      milvus-etcd:\n        condition: service_healthy" not in result
+    assert "      milvus-minio:\n        condition: service_healthy" not in result
+
+
 def test_env_base_flow_backs_up_legacy_generated_compose_before_rewrite(
     tmp_path: Path,
 ) -> None:
@@ -4874,6 +4943,89 @@ finalize_server_setup
     assert "milvus" in result
     assert "milvus-etcd" in result
     assert "milvus-minio" in result
+    assert "      milvus:\n        condition: service_healthy" in result
+    assert "      milvus-etcd:\n        condition: service_healthy" not in result
+    assert "      milvus-minio:\n        condition: service_healthy" not in result
+
+
+def test_finalize_server_setup_uses_compose_native_neo4j_endpoint_on_rerun(
+    tmp_path: Path,
+) -> None:
+    """Preserved managed services should inject compose-native endpoints on server reruns."""
+
+    write_text_lines(
+        tmp_path / ".env",
+        [
+            "NEO4J_URI=neo4j://localhost:7687",
+        ],
+    )
+    write_text_lines(
+        tmp_path / "env.example",
+        (REPO_ROOT / "env.example").read_text(encoding="utf-8").splitlines(),
+    )
+    write_text_lines(
+        tmp_path / "docker-compose.final.yml",
+        [
+            "services:",
+            "  lightrag:",
+            "    image: example/lightrag:test",
+            "  neo4j:",
+            "    image: neo4j:latest",
+        ],
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+load_existing_env_if_present
+show_summary() {{ :; }}
+confirm_required_yes_no() {{ return 0; }}
+validate_sensitive_env_literals() {{ return 0; }}
+validate_security_config() {{ return 0; }}
+finalize_server_setup
+"""
+    )
+
+    result = (tmp_path / "docker-compose.final.yml").read_text(encoding="utf-8")
+
+    assert 'NEO4J_URI: "neo4j://neo4j:7687"' in result
+    assert 'NEO4J_URI: "neo4j://host.docker.internal:7687"' not in result
+
+
+def test_detect_managed_root_services_deduplicates_embedded_milvus_children(
+    tmp_path: Path,
+) -> None:
+    """Managed service discovery should collapse Milvus child services to the root service."""
+
+    write_text_lines(
+        tmp_path / "docker-compose.final.yml",
+        [
+            "services:",
+            "  lightrag:",
+            "    image: example/lightrag:test",
+            "  milvus:",
+            "    image: milvusdb/milvus:v2.6.11",
+            "  milvus-etcd:",
+            "    image: quay.io/coreos/etcd:v3.5.16",
+            "  milvus-minio:",
+            "    image: minio/minio:latest",
+            "  neo4j:",
+            "    image: neo4j:latest",
+        ],
+    )
+
+    output = run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+detect_managed_root_services "{tmp_path}/docker-compose.final.yml"
+"""
+    )
+
+    assert output.splitlines() == ["milvus", "neo4j"]
 
 
 def test_finalize_server_setup_allows_risky_security_config_and_security_check_reports_it(

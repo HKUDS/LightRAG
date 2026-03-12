@@ -349,7 +349,6 @@ _existing_managed_root_service_present() {
 _refresh_existing_managed_root_service_set_from_compose() {
   local compose_file="$1"
   local service_name
-  local root_service
 
   EXISTING_MANAGED_ROOT_SERVICE_SET=()
 
@@ -358,10 +357,7 @@ _refresh_existing_managed_root_service_set_from_compose() {
   fi
 
   while IFS= read -r service_name; do
-    root_service="$(_managed_service_root_name "$service_name")"
-    if [[ -n "$root_service" ]]; then
-      EXISTING_MANAGED_ROOT_SERVICE_SET["$root_service"]=1
-    fi
+    EXISTING_MANAGED_ROOT_SERVICE_SET["$service_name"]=1
   done < <(detect_managed_root_services "$compose_file")
 }
 
@@ -1872,10 +1868,14 @@ detect_compose_services() {
 detect_managed_root_services() {
   local compose_file="$1"
   local service_name
+  local root_service
+  declare -A seen_roots=()
 
   while IFS= read -r service_name; do
-    if _is_wizard_managed_root_service_name "$service_name"; then
-      printf '%s\n' "$service_name"
+    root_service="$(_managed_service_root_name "$service_name")"
+    if [[ -n "$root_service" && -z "${seen_roots[$root_service]+set}" ]]; then
+      seen_roots["$root_service"]=1
+      printf '%s\n' "$root_service"
     fi
   done < <(detect_compose_services "$compose_file")
 }

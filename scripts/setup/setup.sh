@@ -430,9 +430,56 @@ set_compose_override() {
   fi
 }
 
+set_managed_service_compose_overrides() {
+  local root_service="$1"
+
+  case "$root_service" in
+    postgres)
+      if [[ -z "${COMPOSE_ENV_OVERRIDES[POSTGRES_HOST]+set}" ]]; then
+        set_compose_override "POSTGRES_HOST" "postgres"
+      fi
+      # The bundled postgres compose service always listens on 5432 internally.
+      if [[ -z "${COMPOSE_ENV_OVERRIDES[POSTGRES_PORT]+set}" ]]; then
+        set_compose_override "POSTGRES_PORT" "5432"
+      fi
+      ;;
+    neo4j)
+      if [[ -z "${COMPOSE_ENV_OVERRIDES[NEO4J_URI]+set}" ]]; then
+        set_compose_override "NEO4J_URI" "neo4j://neo4j:7687"
+      fi
+      ;;
+    mongodb)
+      if [[ -z "${COMPOSE_ENV_OVERRIDES[MONGO_URI]+set}" ]]; then
+        set_compose_override "MONGO_URI" "mongodb://mongodb:27017/"
+      fi
+      ;;
+    redis)
+      if [[ -z "${COMPOSE_ENV_OVERRIDES[REDIS_URI]+set}" ]]; then
+        set_compose_override "REDIS_URI" "redis://redis:6379"
+      fi
+      ;;
+    milvus)
+      if [[ -z "${COMPOSE_ENV_OVERRIDES[MILVUS_URI]+set}" ]]; then
+        set_compose_override "MILVUS_URI" "http://milvus:19530"
+      fi
+      ;;
+    qdrant)
+      if [[ -z "${COMPOSE_ENV_OVERRIDES[QDRANT_URL]+set}" ]]; then
+        set_compose_override "QDRANT_URL" "http://qdrant:6333"
+      fi
+      ;;
+    memgraph)
+      if [[ -z "${COMPOSE_ENV_OVERRIDES[MEMGRAPH_URI]+set}" ]]; then
+        set_compose_override "MEMGRAPH_URI" "bolt://memgraph:7687"
+      fi
+      ;;
+  esac
+}
+
 prepare_compose_runtime_overrides() {
   local normalized_value
   local key
+  local root_service
 
   # EMBEDDING_BINDING_HOST: when vllm-embed is part of this compose, the LightRAG
   # container must reach it by Docker service name, not by a loopback address.
@@ -463,6 +510,12 @@ prepare_compose_runtime_overrides() {
       fi
     fi
   fi
+
+  for root_service in postgres neo4j mongodb redis milvus qdrant memgraph; do
+    if [[ -n "${DOCKER_SERVICE_SET[$root_service]+set}" ]]; then
+      set_managed_service_compose_overrides "$root_service"
+    fi
+  done
 
   for key in \
     "LLM_BINDING_HOST" \
