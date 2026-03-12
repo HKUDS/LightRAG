@@ -452,9 +452,13 @@ _write_service_environment_entries() {
     key="${entry%%=*}"
     value="${entry#*=}"
     if [[ "$style" == "list" ]]; then
-      printf '      - %s\n' "$(format_yaml_value "${key}=${value}")" >> "$tmp_file"
+      if [[ "$value" == "${_COMPOSE_RAW_VALUE_PREFIX}"* ]]; then
+        printf '      - %s=%s\n' "$key" "${value#${_COMPOSE_RAW_VALUE_PREFIX}}" >> "$tmp_file"
+      else
+        printf '      - %s\n' "$(format_yaml_value "${key}=${value}")" >> "$tmp_file"
+      fi
     else
-      printf '      %s: %s\n' "$key" "$(format_yaml_value "$value")" >> "$tmp_file"
+      printf '      %s: %s\n' "$key" "$(format_compose_environment_value "$value")" >> "$tmp_file"
     fi
   done
 }
@@ -1046,7 +1050,7 @@ generate_docker_compose() {
         ;;
       neo4j)
         inject_service_environment_overrides "$service_blocks_file" "neo4j" \
-          "NEO4J_AUTH=neo4j/${ENV_VALUES[NEO4J_PASSWORD]:-neo4j_password}" \
+          "NEO4J_AUTH=${_COMPOSE_RAW_VALUE_PREFIX}\${NEO4J_USERNAME:?missing}/\${NEO4J_PASSWORD:?missing}" \
           "NEO4J_dbms_default__database=${ENV_VALUES[NEO4J_DATABASE]:-neo4j}"
         ;;
       mongodb)
@@ -1145,6 +1149,19 @@ format_yaml_value() {
   escaped="${escaped//\"/\\\"}"
   escaped="${escaped//\$/\$\$}"
   printf '"%s"' "$escaped"
+}
+
+_COMPOSE_RAW_VALUE_PREFIX="__LIGHTRAG_RAW_COMPOSE__:"
+
+format_compose_environment_value() {
+  local value="$1"
+
+  if [[ "$value" == "${_COMPOSE_RAW_VALUE_PREFIX}"* ]]; then
+    printf '%s' "${value#${_COMPOSE_RAW_VALUE_PREFIX}}"
+    return 0
+  fi
+
+  format_yaml_value "$value"
 }
 
 inject_service_environment_overrides() {

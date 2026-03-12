@@ -2225,7 +2225,10 @@ generate_docker_compose "$REPO_ROOT/docker-compose.generated.yml"
     assert 'POSTGRES_USER: "user$$ID"' in generated_compose
     assert 'POSTGRES_PASSWORD: "pass$$HOME"' in generated_compose
     assert 'POSTGRES_DB: "db$$NAME"' in generated_compose
-    assert 'NEO4J_AUTH: "neo4j/neo$$PASS"' in generated_compose
+    assert (
+        "NEO4J_AUTH: ${NEO4J_USERNAME:?missing}/${NEO4J_PASSWORD:?missing}"
+        in generated_compose
+    )
     assert 'NEO4J_dbms_default__database: "graph$$DB"' in generated_compose
     assert 'MINIO_ACCESS_KEY_ID: "${MINIO_ACCESS_KEY_ID:?missing}"' in generated_compose
     assert (
@@ -5417,10 +5420,10 @@ printf 'LANGFUSE_HOST_SET=%s\\n' "${{ENV_VALUES[LANGFUSE_HOST]+set}}"
     assert not any(line.startswith("LANGFUSE_HOST=") for line in generated_lines)
 
 
-def test_collect_neo4j_config_bundled_service_pins_username_to_default(
+def test_collect_neo4j_config_bundled_service_keeps_username_editable(
     tmp_path: Path,
 ) -> None:
-    """Bundled Neo4j should keep the bootstrap username aligned with the image defaults."""
+    """Bundled Neo4j should preserve editable credentials for the managed service."""
 
     compose_file = tmp_path / "docker-compose.yml"
     compose_file.write_text(
@@ -5450,13 +5453,16 @@ ENV_VALUES[NEO4J_PASSWORD]="existing-password"
 confirm_default_yes() {{ return 0; }}
 prompt_until_valid() {{ printf '%s' "$2"; }}
 prompt_with_default() {{
-  if [[ "$1" == "Neo4j database" ]]; then
+  if [[ "$1" == "Neo4j username" ]]; then
+    printf 'custom-user'
+  elif [[ "$1" == "Neo4j database" ]]; then
     printf 'neo4j'
   else
-    printf 'custom-user'
+    printf '%s' "$2"
   fi
 }}
 prompt_secret_with_default() {{ printf 'test-password'; }}
+prompt_secret_until_valid_with_default() {{ printf 'test-password'; }}
 
 collect_neo4j_config yes
 generate_docker_compose "$REPO_ROOT/docker-compose.generated.yml"
@@ -5470,9 +5476,136 @@ printf 'DOCKER_SERVICE=%s\\n' "${{DOCKER_SERVICES[0]}}"
         encoding="utf-8"
     )
 
-    assert values["NEO4J_USERNAME"] == "neo4j"
+    assert values["NEO4J_USERNAME"] == "custom-user"
     assert values["DOCKER_SERVICE"] == "neo4j"
-    assert 'NEO4J_AUTH: "neo4j/test-password"' in generated_compose
+    assert (
+        "NEO4J_AUTH: ${NEO4J_USERNAME:?missing}/${NEO4J_PASSWORD:?missing}"
+        in generated_compose
+    )
+
+
+def test_collect_neo4j_config_bundled_service_reprompts_for_empty_credentials() -> None:
+    """Bundled Neo4j should reject empty username and password values."""
+
+    output = run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+reset_state
+
+prompt_log_file="$(mktemp)"
+trap 'rm -f "$prompt_log_file"' EXIT
+
+confirm_default_yes() {{ return 0; }}
+prompt_until_valid() {{
+  local prompt="$1"
+  local default="$2"
+  local validator="$3"
+  shift 3
+  local value=""
+
+  while true; do
+    if [[ "$prompt" == "Neo4j URI" ]]; then
+      value="$default"
+    else
+      printf 'username\\n' >> "$prompt_log_file"
+      if [[ "$(grep -c '^username$' "$prompt_log_file")" -eq 1 ]]; then
+        value=""
+      else
+        value="neo4j-user"
+      fi
+    fi
+
+    if "$validator" "$value" "$@"; then
+      printf '%s' "$value"
+      return 0
+    fi
+  done
+}}
+prompt_with_default() {{ printf '%s' "$2"; }}
+prompt_secret_until_valid_with_default() {{
+  local prompt="$1"
+  local default="$2"
+  local validator="$3"
+  shift 3
+  local value=""
+
+  while true; do
+    printf 'password\\n' >> "$prompt_log_file"
+    if [[ "$(grep -c '^password$' "$prompt_log_file")" -eq 1 ]]; then
+      value=""
+    else
+      value="secure-password"
+    fi
+
+    if "$validator" "$value" "$@"; then
+      printf '%s' "$value"
+      return 0
+    fi
+  done
+}}
+
+collect_neo4j_config yes
+
+printf 'USERNAME=%s\\n' "${{ENV_VALUES[NEO4J_USERNAME]}}"
+printf 'PASSWORD=%s\\n' "${{ENV_VALUES[NEO4J_PASSWORD]}}"
+printf 'USERNAME_CALLS=%s\\n' "$(grep -c '^username$' "$prompt_log_file")"
+printf 'PASSWORD_CALLS=%s\\n' "$(grep -c '^password$' "$prompt_log_file")"
+"""
+    )
+    values = parse_lines(output)
+
+    assert values["USERNAME"] == "neo4j-user"
+    assert values["PASSWORD"] == "secure-password"
+    assert values["USERNAME_CALLS"] == "2"
+    assert values["PASSWORD_CALLS"] == "2"
+
+
+def test_collect_neo4j_config_external_service_still_uses_standard_prompts() -> None:
+    """External Neo4j setup should keep the non-Docker prompt behavior unchanged."""
+
+    output = run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+reset_state
+
+prompt_log_file="$(mktemp)"
+trap 'rm -f "$prompt_log_file"' EXIT
+
+confirm_default_no() {{ return 1; }}
+prompt_until_valid() {{ printf '%s' "$2"; }}
+prompt_with_default() {{
+  printf 'with_default\\n' >> "$prompt_log_file"
+  if [[ "$1" == "Neo4j username" ]]; then
+    printf 'external-user'
+  elif [[ "$1" == "Neo4j database" ]]; then
+    printf 'external-db'
+  else
+    printf '%s' "$2"
+  fi
+}}
+prompt_secret_with_default() {{
+  printf 'secret_with_default\\n' >> "$prompt_log_file"
+  printf 'external-password'
+}}
+
+collect_neo4j_config no
+
+printf 'USERNAME=%s\\n' "${{ENV_VALUES[NEO4J_USERNAME]}}"
+printf 'PASSWORD=%s\\n' "${{ENV_VALUES[NEO4J_PASSWORD]}}"
+printf 'DATABASE=%s\\n' "${{ENV_VALUES[NEO4J_DATABASE]}}"
+printf 'USERNAME_PROMPTS=%s\\n' "$(grep -c '^with_default$' "$prompt_log_file")"
+printf 'PASSWORD_PROMPTS=%s\\n' "$(grep -c '^secret_with_default$' "$prompt_log_file")"
+"""
+    )
+    values = parse_lines(output)
+
+    assert values["USERNAME"] == "external-user"
+    assert values["PASSWORD"] == "external-password"
+    assert values["DATABASE"] == "external-db"
+    assert values["USERNAME_PROMPTS"] == "2"
+    assert values["PASSWORD_PROMPTS"] == "1"
 
 
 def test_validate_security_config_rejects_malformed_auth_accounts() -> None:
