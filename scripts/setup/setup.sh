@@ -906,6 +906,7 @@ collect_postgres_config() {
   local default_docker="${1:-no}"
   local use_docker="no"
   local host port user password database host_port=""
+  local existing_user="" existing_password=""
 
   if [[ "$default_docker" == "yes" ]]; then
     if confirm_default_yes "Run PostgreSQL locally via Docker?"; then
@@ -941,8 +942,16 @@ collect_postgres_config() {
     set_compose_override "POSTGRES_HOST" ""
     set_compose_override "POSTGRES_PORT" ""
   fi
-  user="$(prompt_with_default "PostgreSQL user" "${ENV_VALUES[POSTGRES_USER]:-rag}")"
-  password="$(prompt_secret_with_default "PostgreSQL password: " "${ENV_VALUES[POSTGRES_PASSWORD]:-rag}")"
+
+  existing_user="${ORIGINAL_ENV_VALUES[POSTGRES_USER]-${ENV_VALUES[POSTGRES_USER]:-}}"
+  existing_password="${ORIGINAL_ENV_VALUES[POSTGRES_PASSWORD]-${ENV_VALUES[POSTGRES_PASSWORD]:-}}"
+  if [[ "$use_docker" == "yes" && -z "$existing_user" && -z "$existing_password" ]]; then
+    user="rag"
+    password="rag"
+  else
+    user="$(prompt_with_default "PostgreSQL user" "${existing_user:-rag}")"
+    password="$(prompt_secret_with_default "PostgreSQL password: " "${existing_password:-rag}")"
+  fi
   database="$(prompt_with_default "PostgreSQL database" "${ENV_VALUES[POSTGRES_DATABASE]:-lightrag}")"
 
   ENV_VALUES["POSTGRES_HOST"]="$host"

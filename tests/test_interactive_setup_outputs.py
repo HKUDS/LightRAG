@@ -122,6 +122,178 @@ printf 'DOCKER_SERVICE=%s\\n' "${{DOCKER_SERVICES[0]}}"
     assert values["DOCKER_SERVICE"] == "postgres"
 
 
+def test_collect_postgres_config_uses_rag_defaults_without_prompt_for_empty_docker_credentials() -> (
+    None
+):
+    """Docker PostgreSQL should auto-fill bundled credentials when old `.env` creds are empty."""
+
+    values = run_bash_lines(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+reset_state
+
+PROMPT_LOG_FILE="$(mktemp)"
+: > "$PROMPT_LOG_FILE"
+
+confirm_default_yes() {{ return 0; }}
+prompt_with_default() {{
+  printf '%s\\n' "$1" >> "$PROMPT_LOG_FILE"
+  case "$1" in
+    "PostgreSQL host") printf 'localhost' ;;
+    "PostgreSQL database") printf 'lightrag' ;;
+    *) printf '%s' "$2" ;;
+  esac
+}}
+prompt_until_valid() {{
+  printf '%s\\n' "$1" >> "$PROMPT_LOG_FILE"
+  if [[ "$1" == "PostgreSQL host port" ]]; then
+    printf '15432'
+  else
+    printf '%s' "$2"
+  fi
+}}
+prompt_secret_with_default() {{
+  printf 'secret:%s\\n' "$1" >> "$PROMPT_LOG_FILE"
+  printf '%s' "$2"
+}}
+
+ORIGINAL_ENV_VALUES[POSTGRES_USER]=""
+ORIGINAL_ENV_VALUES[POSTGRES_PASSWORD]=""
+
+collect_postgres_config yes
+
+printf 'POSTGRES_USER=%s\\n' "${{ENV_VALUES[POSTGRES_USER]}}"
+printf 'POSTGRES_PASSWORD=%s\\n' "${{ENV_VALUES[POSTGRES_PASSWORD]}}"
+printf 'PROMPT_LOG=%s\\n' "$(paste -sd '|' "$PROMPT_LOG_FILE")"
+"""
+    )
+
+    assert values["POSTGRES_USER"] == "rag"
+    assert values["POSTGRES_PASSWORD"] == "rag"
+    assert (
+        values["PROMPT_LOG"]
+        == "PostgreSQL host|PostgreSQL host port|PostgreSQL database"
+    )
+
+
+def test_collect_postgres_config_prompts_for_existing_docker_credentials() -> None:
+    """Docker PostgreSQL should preserve editability when old `.env` creds already exist."""
+
+    values = run_bash_lines(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+reset_state
+
+PROMPT_LOG_FILE="$(mktemp)"
+: > "$PROMPT_LOG_FILE"
+
+confirm_default_yes() {{ return 0; }}
+prompt_with_default() {{
+  printf '%s[%s]\\n' "$1" "$2" >> "$PROMPT_LOG_FILE"
+  case "$1" in
+    "PostgreSQL host") printf 'localhost' ;;
+    "PostgreSQL user") printf 'updated-user' ;;
+    "PostgreSQL database") printf 'updated-db' ;;
+    *) printf '%s' "$2" ;;
+  esac
+}}
+prompt_until_valid() {{
+  printf '%s[%s]\\n' "$1" "$2" >> "$PROMPT_LOG_FILE"
+  if [[ "$1" == "PostgreSQL host port" ]]; then
+    printf '15432'
+  else
+    printf '%s' "$2"
+  fi
+}}
+prompt_secret_with_default() {{
+  printf '%s[%s]\\n' "$1" "$2" >> "$PROMPT_LOG_FILE"
+  printf 'updated-password'
+}}
+
+ORIGINAL_ENV_VALUES[POSTGRES_USER]="existing-user"
+ORIGINAL_ENV_VALUES[POSTGRES_PASSWORD]="existing-password"
+ENV_VALUES[POSTGRES_DATABASE]="existing-db"
+
+collect_postgres_config yes
+
+printf 'POSTGRES_USER=%s\\n' "${{ENV_VALUES[POSTGRES_USER]}}"
+printf 'POSTGRES_PASSWORD=%s\\n' "${{ENV_VALUES[POSTGRES_PASSWORD]}}"
+printf 'POSTGRES_DATABASE=%s\\n' "${{ENV_VALUES[POSTGRES_DATABASE]}}"
+printf 'PROMPT_LOG=%s\\n' "$(paste -sd '|' "$PROMPT_LOG_FILE")"
+"""
+    )
+
+    assert values["POSTGRES_USER"] == "updated-user"
+    assert values["POSTGRES_PASSWORD"] == "updated-password"
+    assert values["POSTGRES_DATABASE"] == "updated-db"
+    assert (
+        values["PROMPT_LOG"] == "PostgreSQL host[localhost]|PostgreSQL host port[5432]|"
+        "PostgreSQL user[existing-user]|PostgreSQL password: [existing-password]|"
+        "PostgreSQL database[existing-db]"
+    )
+
+
+def test_collect_postgres_config_still_prompts_for_host_credentials() -> None:
+    """Host PostgreSQL should keep prompting even when saved creds are empty."""
+
+    values = run_bash_lines(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+reset_state
+
+PROMPT_LOG_FILE="$(mktemp)"
+: > "$PROMPT_LOG_FILE"
+
+confirm_default_no() {{ return 1; }}
+prompt_with_default() {{
+  printf '%s[%s]\\n' "$1" "$2" >> "$PROMPT_LOG_FILE"
+  case "$1" in
+    "PostgreSQL host") printf 'db.internal' ;;
+    "PostgreSQL user") printf 'host-user' ;;
+    "PostgreSQL database") printf 'host-db' ;;
+    *) printf '%s' "$2" ;;
+  esac
+}}
+prompt_until_valid() {{
+  printf '%s[%s]\\n' "$1" "$2" >> "$PROMPT_LOG_FILE"
+  if [[ "$1" == "PostgreSQL port" ]]; then
+    printf '6543'
+  else
+    printf '%s' "$2"
+  fi
+}}
+prompt_secret_with_default() {{
+  printf '%s[%s]\\n' "$1" "$2" >> "$PROMPT_LOG_FILE"
+  printf 'host-password'
+}}
+
+ORIGINAL_ENV_VALUES[POSTGRES_USER]=""
+ORIGINAL_ENV_VALUES[POSTGRES_PASSWORD]=""
+
+collect_postgres_config no
+
+printf 'POSTGRES_HOST=%s\\n' "${{ENV_VALUES[POSTGRES_HOST]}}"
+printf 'POSTGRES_PORT=%s\\n' "${{ENV_VALUES[POSTGRES_PORT]}}"
+printf 'POSTGRES_USER=%s\\n' "${{ENV_VALUES[POSTGRES_USER]}}"
+printf 'POSTGRES_PASSWORD=%s\\n' "${{ENV_VALUES[POSTGRES_PASSWORD]}}"
+printf 'PROMPT_LOG=%s\\n' "$(paste -sd '|' "$PROMPT_LOG_FILE")"
+"""
+    )
+
+    assert values["POSTGRES_HOST"] == "db.internal"
+    assert values["POSTGRES_PORT"] == "6543"
+    assert values["POSTGRES_USER"] == "host-user"
+    assert values["POSTGRES_PASSWORD"] == "host-password"
+    assert (
+        values["PROMPT_LOG"] == "PostgreSQL host[localhost]|PostgreSQL port[5432]|"
+        "PostgreSQL user[rag]|PostgreSQL password: [rag]|"
+        "PostgreSQL database[lightrag]"
+    )
+
+
 def test_collect_server_config_includes_summary_language_last() -> None:
     """Server config should prompt for summary language after the WebUI fields."""
 
@@ -3919,6 +4091,99 @@ env_storage_flow
     assert "services:" in generated_compose
     assert "  lightrag:" in generated_compose
     assert "env_file:" not in generated_compose
+
+
+def test_env_storage_flow_uses_rag_defaults_for_empty_postgres_docker_credentials(
+    tmp_path: Path,
+) -> None:
+    """env-storage should write bundled postgres credentials when old `.env` creds are empty."""
+
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "\n".join(
+            [
+                "LLM_BINDING=ollama",
+                "EMBEDDING_BINDING=ollama",
+                "AUTH_ACCOUNTS=admin:secret",
+                "TOKEN_SECRET=jwt-secret",
+                "WHITELIST_PATHS=/health",
+                "POSTGRES_USER=",
+                "POSTGRES_PASSWORD=",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "env.example").write_text(
+        (REPO_ROOT / "env.example").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    (tmp_path / "docker-compose.yml").write_text(
+        (REPO_ROOT / "docker-compose.yml").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+
+PROMPT_LOG_FILE="$(mktemp)"
+: > "$PROMPT_LOG_FILE"
+
+select_storage_backends() {{
+  REQUIRED_DB_TYPES[postgresql]=1
+  ENV_VALUES[LIGHTRAG_KV_STORAGE]="PGKVStorage"
+  ENV_VALUES[LIGHTRAG_VECTOR_STORAGE]="PGVectorStorage"
+  ENV_VALUES[LIGHTRAG_GRAPH_STORAGE]="PGGraphStorage"
+  ENV_VALUES[LIGHTRAG_DOC_STATUS_STORAGE]="PGDocStatusStorage"
+}}
+confirm_default_no() {{
+  if [[ "$1" == "Run PostgreSQL locally via Docker?" ]]; then
+    return 0
+  fi
+  return 1
+}}
+confirm_default_yes() {{ return 0; }}
+confirm_required_yes_no() {{ return 0; }}
+prompt_with_default() {{
+  printf '%s\\n' "$1" >> "$PROMPT_LOG_FILE"
+  case "$1" in
+    "PostgreSQL host") printf 'localhost' ;;
+    "PostgreSQL database") printf 'lightrag' ;;
+    *) printf '%s' "$2" ;;
+  esac
+}}
+prompt_until_valid() {{
+  printf '%s\\n' "$1" >> "$PROMPT_LOG_FILE"
+  if [[ "$1" == "PostgreSQL host port" ]]; then
+    printf '15432'
+  else
+    printf '%s' "$2"
+  fi
+}}
+prompt_secret_with_default() {{
+  printf 'secret:%s\\n' "$1" >> "$PROMPT_LOG_FILE"
+  printf '%s' "$2"
+}}
+
+env_storage_flow
+
+printf 'PROMPT_LOG=%s\\n' "$(paste -sd '|' "$PROMPT_LOG_FILE")"
+""",
+        cwd=tmp_path,
+    )
+
+    generated_env = (tmp_path / ".env").read_text(encoding="utf-8")
+    generated_compose = (tmp_path / "docker-compose.final.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "POSTGRES_USER=rag" in generated_env
+    assert "POSTGRES_PASSWORD=rag" in generated_env
+    assert 'POSTGRES_USER: "rag"' in generated_compose
+    assert 'POSTGRES_PASSWORD: "rag"' in generated_compose
 
 
 @pytest.mark.parametrize(
