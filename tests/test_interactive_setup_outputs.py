@@ -76,8 +76,10 @@ def assert_single_compose_backup(tmp_path: Path, expected_content: str) -> Path:
     return backups[0]
 
 
-def test_collect_postgres_config_keeps_host_reachable_env_values() -> None:
-    """Bundled PostgreSQL should keep `.env` host-oriented and use compose overrides."""
+def test_collect_postgres_config_uses_fixed_bundled_port_and_compose_overrides() -> (
+    None
+):
+    """Bundled PostgreSQL should use the fixed service port and compose overrides."""
 
     values = run_bash_lines(
         f"""
@@ -94,20 +96,12 @@ prompt_with_default() {{
     *) printf '%s' "$2" ;;
   esac
 }}
-prompt_until_valid() {{
-  if [[ "$1" == "PostgreSQL host port" ]]; then
-    printf '15432'
-  else
-    printf '%s' "$2"
-  fi
-}}
 mask_sensitive_input() {{ printf 'supersecret'; }}
 
 collect_postgres_config yes
 
 printf 'POSTGRES_HOST=%s\\n' "${{ENV_VALUES[POSTGRES_HOST]}}"
 printf 'POSTGRES_PORT=%s\\n' "${{ENV_VALUES[POSTGRES_PORT]}}"
-printf 'POSTGRES_HOST_PORT=%s\\n' "${{ENV_VALUES[POSTGRES_HOST_PORT]}}"
 printf 'COMPOSE_POSTGRES_HOST=%s\\n' "${{COMPOSE_ENV_OVERRIDES[POSTGRES_HOST]}}"
 printf 'COMPOSE_POSTGRES_PORT=%s\\n' "${{COMPOSE_ENV_OVERRIDES[POSTGRES_PORT]}}"
 printf 'DOCKER_SERVICE=%s\\n' "${{DOCKER_SERVICES[0]}}"
@@ -115,11 +109,165 @@ printf 'DOCKER_SERVICE=%s\\n' "${{DOCKER_SERVICES[0]}}"
     )
 
     assert values["POSTGRES_HOST"] == "localhost"
-    assert values["POSTGRES_PORT"] == "15432"
-    assert values["POSTGRES_HOST_PORT"] == "15432"
+    assert values["POSTGRES_PORT"] == "5432"
     assert values["COMPOSE_POSTGRES_HOST"] == "postgres"
     assert values["COMPOSE_POSTGRES_PORT"] == "5432"
     assert values["DOCKER_SERVICE"] == "postgres"
+
+
+def test_collect_postgres_config_uses_rag_defaults_without_prompt_for_empty_docker_credentials() -> (
+    None
+):
+    """Docker PostgreSQL should auto-fill bundled credentials when old `.env` creds are empty."""
+
+    values = run_bash_lines(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+reset_state
+
+PROMPT_LOG_FILE="$(mktemp)"
+: > "$PROMPT_LOG_FILE"
+
+confirm_default_yes() {{ return 0; }}
+prompt_with_default() {{
+  printf '%s\\n' "$1" >> "$PROMPT_LOG_FILE"
+  case "$1" in
+    "PostgreSQL host") printf 'localhost' ;;
+    *) printf '%s' "$2" ;;
+  esac
+}}
+prompt_secret_with_default() {{
+  printf 'secret:%s\\n' "$1" >> "$PROMPT_LOG_FILE"
+  printf '%s' "$2"
+}}
+
+ORIGINAL_ENV_VALUES[POSTGRES_USER]=""
+ORIGINAL_ENV_VALUES[POSTGRES_PASSWORD]=""
+ORIGINAL_ENV_VALUES[POSTGRES_DATABASE]=""
+
+collect_postgres_config yes
+
+printf 'POSTGRES_USER=%s\\n' "${{ENV_VALUES[POSTGRES_USER]}}"
+printf 'POSTGRES_PASSWORD=%s\\n' "${{ENV_VALUES[POSTGRES_PASSWORD]}}"
+printf 'POSTGRES_DATABASE=%s\\n' "${{ENV_VALUES[POSTGRES_DATABASE]}}"
+printf 'PROMPT_LOG=%s\\n' "$(paste -sd '|' "$PROMPT_LOG_FILE")"
+"""
+    )
+
+    assert values["POSTGRES_USER"] == "rag"
+    assert values["POSTGRES_PASSWORD"] == "rag"
+    assert values["POSTGRES_DATABASE"] == "rag"
+    assert values["PROMPT_LOG"] == "PostgreSQL host"
+
+
+def test_collect_postgres_config_prompts_for_existing_docker_credentials() -> None:
+    """Docker PostgreSQL should preserve editability when old `.env` creds already exist."""
+
+    values = run_bash_lines(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+reset_state
+
+PROMPT_LOG_FILE="$(mktemp)"
+: > "$PROMPT_LOG_FILE"
+
+confirm_default_yes() {{ return 0; }}
+prompt_with_default() {{
+  printf '%s[%s]\\n' "$1" "$2" >> "$PROMPT_LOG_FILE"
+  case "$1" in
+    "PostgreSQL host") printf 'localhost' ;;
+    "PostgreSQL user") printf 'updated-user' ;;
+    "PostgreSQL database") printf 'updated-db' ;;
+    *) printf '%s' "$2" ;;
+  esac
+}}
+prompt_secret_with_default() {{
+  printf '%s[%s]\\n' "$1" "$2" >> "$PROMPT_LOG_FILE"
+  printf 'updated-password'
+}}
+
+ORIGINAL_ENV_VALUES[POSTGRES_USER]="existing-user"
+ORIGINAL_ENV_VALUES[POSTGRES_PASSWORD]="existing-password"
+ORIGINAL_ENV_VALUES[POSTGRES_DATABASE]="existing-db"
+
+collect_postgres_config yes
+
+printf 'POSTGRES_USER=%s\\n' "${{ENV_VALUES[POSTGRES_USER]}}"
+printf 'POSTGRES_PASSWORD=%s\\n' "${{ENV_VALUES[POSTGRES_PASSWORD]}}"
+printf 'POSTGRES_DATABASE=%s\\n' "${{ENV_VALUES[POSTGRES_DATABASE]}}"
+printf 'PROMPT_LOG=%s\\n' "$(paste -sd '|' "$PROMPT_LOG_FILE")"
+"""
+    )
+
+    assert values["POSTGRES_USER"] == "updated-user"
+    assert values["POSTGRES_PASSWORD"] == "updated-password"
+    assert values["POSTGRES_DATABASE"] == "updated-db"
+    assert (
+        values["PROMPT_LOG"] == "PostgreSQL host[localhost]|"
+        "PostgreSQL user[existing-user]|PostgreSQL password: [existing-password]|"
+        "PostgreSQL database[existing-db]"
+    )
+
+
+def test_collect_postgres_config_still_prompts_for_host_credentials() -> None:
+    """Host PostgreSQL should keep prompting even when saved creds are empty."""
+
+    values = run_bash_lines(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+reset_state
+
+PROMPT_LOG_FILE="$(mktemp)"
+: > "$PROMPT_LOG_FILE"
+
+confirm_default_no() {{ return 1; }}
+prompt_with_default() {{
+  printf '%s[%s]\\n' "$1" "$2" >> "$PROMPT_LOG_FILE"
+  case "$1" in
+    "PostgreSQL host") printf 'db.internal' ;;
+    "PostgreSQL user") printf 'host-user' ;;
+    "PostgreSQL database") printf 'host-db' ;;
+    *) printf '%s' "$2" ;;
+  esac
+}}
+prompt_until_valid() {{
+  printf '%s[%s]\\n' "$1" "$2" >> "$PROMPT_LOG_FILE"
+  if [[ "$1" == "PostgreSQL port" ]]; then
+    printf '6543'
+  else
+    printf '%s' "$2"
+  fi
+}}
+prompt_secret_with_default() {{
+  printf '%s[%s]\\n' "$1" "$2" >> "$PROMPT_LOG_FILE"
+  printf 'host-password'
+}}
+
+ORIGINAL_ENV_VALUES[POSTGRES_USER]=""
+ORIGINAL_ENV_VALUES[POSTGRES_PASSWORD]=""
+
+collect_postgres_config no
+
+printf 'POSTGRES_HOST=%s\\n' "${{ENV_VALUES[POSTGRES_HOST]}}"
+printf 'POSTGRES_PORT=%s\\n' "${{ENV_VALUES[POSTGRES_PORT]}}"
+printf 'POSTGRES_USER=%s\\n' "${{ENV_VALUES[POSTGRES_USER]}}"
+printf 'POSTGRES_PASSWORD=%s\\n' "${{ENV_VALUES[POSTGRES_PASSWORD]}}"
+printf 'PROMPT_LOG=%s\\n' "$(paste -sd '|' "$PROMPT_LOG_FILE")"
+"""
+    )
+
+    assert values["POSTGRES_HOST"] == "db.internal"
+    assert values["POSTGRES_PORT"] == "6543"
+    assert values["POSTGRES_USER"] == "host-user"
+    assert values["POSTGRES_PASSWORD"] == "host-password"
+    assert (
+        values["PROMPT_LOG"] == "PostgreSQL host[localhost]|PostgreSQL port[5432]|"
+        "PostgreSQL user[rag]|PostgreSQL password: [rag]|"
+        "PostgreSQL database[lightrag]"
+    )
 
 
 def test_collect_server_config_includes_summary_language_last() -> None:
@@ -194,7 +342,7 @@ printf 'PROMPT_LOG=%s\\n' "$(paste -sd '|' "$PROMPT_LOG_FILE")"
             ],
             "collect_postgres_config yes",
             "POSTGRES_PORT",
-            "6543",
+            "5432",
         ),
         (
             ['ENV_VALUES[NEO4J_URI]="neo4j+s://graph.example.com"'],
@@ -259,7 +407,7 @@ printf 'PROMPT_LOG=%s\\n' "$(paste -sd '|' "$PROMPT_LOG_FILE")"
     ],
     ids=[
         "postgres-remote-host",
-        "postgres-port-preserved",
+        "postgres-port-reset-to-bundled-default",
         "neo4j-remote-uri",
         "mongodb-remote-uri",
         "redis-remote-uri",
@@ -2779,6 +2927,75 @@ env_base_flow
     assert "./data/certs/key.pem:/app/data/certs/key.pem:ro" in generated_compose
 
 
+def test_finalize_base_setup_uses_compose_native_storage_endpoints_on_rerun(
+    tmp_path: Path,
+) -> None:
+    """Preserved managed storage services should inject compose-native endpoints on base reruns."""
+
+    write_text_lines(
+        tmp_path / ".env",
+        [
+            "LIGHTRAG_RUNTIME_TARGET=compose",
+            "NEO4J_URI=neo4j://localhost:7687",
+            "MILVUS_URI=http://localhost:19530",
+            "LIGHTRAG_KV_STORAGE=JsonKVStorage",
+            "LIGHTRAG_VECTOR_STORAGE=NanoVectorDBStorage",
+            "LIGHTRAG_GRAPH_STORAGE=NetworkXStorage",
+            "LIGHTRAG_DOC_STATUS_STORAGE=JsonDocStatusStorage",
+        ],
+    )
+    write_text_lines(
+        tmp_path / "env.example",
+        (REPO_ROOT / "env.example").read_text(encoding="utf-8").splitlines(),
+    )
+    write_text_lines(
+        tmp_path / "docker-compose.final.yml",
+        [
+            "services:",
+            "  lightrag:",
+            "    image: example/lightrag:test",
+            "  neo4j:",
+            "    image: neo4j:latest",
+            "  milvus:",
+            "    image: milvusdb/milvus:v2.6.11",
+            "  milvus-etcd:",
+            "    image: quay.io/coreos/etcd:v3.5.16",
+            "  milvus-minio:",
+            "    image: minio/minio:latest",
+            "volumes:",
+            "  neo4j_data:",
+            "  milvus_data:",
+            "  milvus-etcd_data:",
+            "  milvus-minio_data:",
+        ],
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+load_existing_env_if_present
+show_summary() {{ :; }}
+confirm_required_yes_no() {{ return 0; }}
+confirm_default_yes() {{ return 0; }}
+validate_sensitive_env_literals() {{ return 0; }}
+finalize_base_setup
+"""
+    )
+
+    result = (tmp_path / "docker-compose.final.yml").read_text(encoding="utf-8")
+
+    assert 'NEO4J_URI: "neo4j://neo4j:7687"' in result
+    assert 'MILVUS_URI: "http://milvus:19530"' in result
+    assert 'NEO4J_URI: "neo4j://host.docker.internal:7687"' not in result
+    assert 'MILVUS_URI: "http://host.docker.internal:19530"' not in result
+    assert "      milvus:\n        condition: service_healthy" in result
+    assert "      milvus-etcd:\n        condition: service_healthy" not in result
+    assert "      milvus-minio:\n        condition: service_healthy" not in result
+
+
 def test_env_base_flow_backs_up_legacy_generated_compose_before_rewrite(
     tmp_path: Path,
 ) -> None:
@@ -3852,6 +4069,93 @@ env_storage_flow
     assert "env_file:" not in generated_compose
 
 
+def test_env_storage_flow_uses_rag_defaults_for_empty_postgres_docker_credentials(
+    tmp_path: Path,
+) -> None:
+    """env-storage should write bundled postgres credentials when old `.env` creds are empty."""
+
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "\n".join(
+            [
+                "LLM_BINDING=ollama",
+                "EMBEDDING_BINDING=ollama",
+                "AUTH_ACCOUNTS=admin:secret",
+                "TOKEN_SECRET=jwt-secret",
+                "WHITELIST_PATHS=/health",
+                "POSTGRES_USER=",
+                "POSTGRES_PASSWORD=",
+                "POSTGRES_DATABASE=",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "env.example").write_text(
+        (REPO_ROOT / "env.example").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    (tmp_path / "docker-compose.yml").write_text(
+        (REPO_ROOT / "docker-compose.yml").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+
+PROMPT_LOG_FILE="$(mktemp)"
+: > "$PROMPT_LOG_FILE"
+
+select_storage_backends() {{
+  REQUIRED_DB_TYPES[postgresql]=1
+  ENV_VALUES[LIGHTRAG_KV_STORAGE]="PGKVStorage"
+  ENV_VALUES[LIGHTRAG_VECTOR_STORAGE]="PGVectorStorage"
+  ENV_VALUES[LIGHTRAG_GRAPH_STORAGE]="PGGraphStorage"
+  ENV_VALUES[LIGHTRAG_DOC_STATUS_STORAGE]="PGDocStatusStorage"
+}}
+confirm_default_no() {{
+  if [[ "$1" == "Run PostgreSQL locally via Docker?" ]]; then
+    return 0
+  fi
+  return 1
+}}
+confirm_default_yes() {{ return 0; }}
+confirm_required_yes_no() {{ return 0; }}
+prompt_with_default() {{
+  printf '%s\\n' "$1" >> "$PROMPT_LOG_FILE"
+  case "$1" in
+    "PostgreSQL host") printf 'localhost' ;;
+    *) printf '%s' "$2" ;;
+  esac
+}}
+prompt_secret_with_default() {{
+  printf 'secret:%s\\n' "$1" >> "$PROMPT_LOG_FILE"
+  printf '%s' "$2"
+}}
+
+env_storage_flow
+
+printf 'PROMPT_LOG=%s\\n' "$(paste -sd '|' "$PROMPT_LOG_FILE")"
+""",
+        cwd=tmp_path,
+    )
+
+    generated_env = (tmp_path / ".env").read_text(encoding="utf-8")
+    generated_compose = (tmp_path / "docker-compose.final.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "POSTGRES_USER=rag" in generated_env
+    assert "POSTGRES_PASSWORD=rag" in generated_env
+    assert "POSTGRES_DATABASE=rag" in generated_env
+    assert 'POSTGRES_USER: "rag"' in generated_compose
+    assert 'POSTGRES_PASSWORD: "rag"' in generated_compose
+    assert 'POSTGRES_DB: "rag"' in generated_compose
+
+
 @pytest.mark.parametrize(
     ("changed_key", "changed_value", "expected_rewrite"),
     [
@@ -3900,7 +4204,6 @@ fi
     [
         ("POSTGRES_HOST", "db.example.com", "no"),
         ("POSTGRES_PORT", "6543", "no"),
-        ("POSTGRES_HOST_PORT", "15432", "no"),
         ("POSTGRES_USER", "updated-user", "yes"),
         ("POSTGRES_PASSWORD", "updated-password", "yes"),
         ("POSTGRES_DATABASE", "updated-database", "yes"),
@@ -3908,7 +4211,6 @@ fi
     ids=[
         "postgres-host-does-not-rewrite",
         "postgres-port-does-not-rewrite",
-        "postgres-host-port-does-not-rewrite",
         "postgres-user-rewrites",
         "postgres-password-rewrites",
         "postgres-database-rewrites",
@@ -3931,13 +4233,11 @@ EXISTING_MANAGED_ROOT_SERVICE_SET[postgres]=1
 DOCKER_SERVICE_SET[postgres]=1
 ORIGINAL_ENV_VALUES[POSTGRES_HOST]="localhost"
 ORIGINAL_ENV_VALUES[POSTGRES_PORT]="5432"
-ORIGINAL_ENV_VALUES[POSTGRES_HOST_PORT]="5432"
 ORIGINAL_ENV_VALUES[POSTGRES_USER]="rag"
 ORIGINAL_ENV_VALUES[POSTGRES_PASSWORD]="rag"
 ORIGINAL_ENV_VALUES[POSTGRES_DATABASE]="lightrag"
 ENV_VALUES[POSTGRES_HOST]="localhost"
 ENV_VALUES[POSTGRES_PORT]="5432"
-ENV_VALUES[POSTGRES_HOST_PORT]="5432"
 ENV_VALUES[POSTGRES_USER]="rag"
 ENV_VALUES[POSTGRES_PASSWORD]="rag"
 ENV_VALUES[POSTGRES_DATABASE]="lightrag"
@@ -4874,6 +5174,89 @@ finalize_server_setup
     assert "milvus" in result
     assert "milvus-etcd" in result
     assert "milvus-minio" in result
+    assert "      milvus:\n        condition: service_healthy" in result
+    assert "      milvus-etcd:\n        condition: service_healthy" not in result
+    assert "      milvus-minio:\n        condition: service_healthy" not in result
+
+
+def test_finalize_server_setup_uses_compose_native_neo4j_endpoint_on_rerun(
+    tmp_path: Path,
+) -> None:
+    """Preserved managed services should inject compose-native endpoints on server reruns."""
+
+    write_text_lines(
+        tmp_path / ".env",
+        [
+            "NEO4J_URI=neo4j://localhost:7687",
+        ],
+    )
+    write_text_lines(
+        tmp_path / "env.example",
+        (REPO_ROOT / "env.example").read_text(encoding="utf-8").splitlines(),
+    )
+    write_text_lines(
+        tmp_path / "docker-compose.final.yml",
+        [
+            "services:",
+            "  lightrag:",
+            "    image: example/lightrag:test",
+            "  neo4j:",
+            "    image: neo4j:latest",
+        ],
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+load_existing_env_if_present
+show_summary() {{ :; }}
+confirm_required_yes_no() {{ return 0; }}
+validate_sensitive_env_literals() {{ return 0; }}
+validate_security_config() {{ return 0; }}
+finalize_server_setup
+"""
+    )
+
+    result = (tmp_path / "docker-compose.final.yml").read_text(encoding="utf-8")
+
+    assert 'NEO4J_URI: "neo4j://neo4j:7687"' in result
+    assert 'NEO4J_URI: "neo4j://host.docker.internal:7687"' not in result
+
+
+def test_detect_managed_root_services_deduplicates_embedded_milvus_children(
+    tmp_path: Path,
+) -> None:
+    """Managed service discovery should collapse Milvus child services to the root service."""
+
+    write_text_lines(
+        tmp_path / "docker-compose.final.yml",
+        [
+            "services:",
+            "  lightrag:",
+            "    image: example/lightrag:test",
+            "  milvus:",
+            "    image: milvusdb/milvus:v2.6.11",
+            "  milvus-etcd:",
+            "    image: quay.io/coreos/etcd:v3.5.16",
+            "  milvus-minio:",
+            "    image: minio/minio:latest",
+            "  neo4j:",
+            "    image: neo4j:latest",
+        ],
+    )
+
+    output = run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+detect_managed_root_services "{tmp_path}/docker-compose.final.yml"
+"""
+    )
+
+    assert output.splitlines() == ["milvus", "neo4j"]
 
 
 def test_finalize_server_setup_allows_risky_security_config_and_security_check_reports_it(

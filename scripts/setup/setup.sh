@@ -23,7 +23,6 @@ declare -A EXISTING_MANAGED_ROOT_SERVICE_SET
 declare -a DOCKER_SERVICES
 SSL_CERT_SOURCE_PATH=""
 SSL_KEY_SOURCE_PATH=""
-DEPLOYMENT_TYPE=""
 LIGHTRAG_COMPOSE_SERVER_PORT_MAPPING=""
 NORMALIZED_SERVER_HOST_FOR_COMPOSE=""
 FORCE_REWRITE_COMPOSE="no"
@@ -63,8 +62,6 @@ STORAGE_SERVICES=(
   "memgraph"
 )
 DEFAULT_RUNTIME_TARGET="host"
-
-WAIT_TIMEOUT="${SETUP_WAIT_TIMEOUT:-90}"
 # shellcheck disable=SC2034
 COLOR_RESET=""
 COLOR_BOLD=""
@@ -108,7 +105,6 @@ reset_state() {
   DOCKER_SERVICES=()
   SSL_CERT_SOURCE_PATH=""
   SSL_KEY_SOURCE_PATH=""
-  DEPLOYMENT_TYPE=""
   LIGHTRAG_COMPOSE_SERVER_PORT_MAPPING=""
   NORMALIZED_SERVER_HOST_FOR_COMPOSE=""
 }
@@ -166,30 +162,6 @@ snapshot_original_env_values() {
   ORIGINAL_ENV_VALUES=()
   for key in "${!ENV_VALUES[@]}"; do
     ORIGINAL_ENV_VALUES["$key"]="${ENV_VALUES[$key]}"
-  done
-}
-
-clear_inherited_ssl_state() {
-  unset 'ENV_VALUES[SSL]'
-  unset 'ENV_VALUES[SSL_CERTFILE]'
-  unset 'ENV_VALUES[SSL_KEYFILE]'
-  SSL_CERT_SOURCE_PATH=""
-  SSL_KEY_SOURCE_PATH=""
-}
-
-reset_quick_start_inherited_state() {
-  local key
-
-  clear_inherited_ssl_state
-
-  for key in "${!ENV_VALUES[@]}"; do
-    case "$key" in
-      HOST|PORT|WEBUI_TITLE|WEBUI_DESCRIPTION|LLM_BINDING_API_KEY|EMBEDDING_BINDING_API_KEY)
-        ;;
-      AUTH_ACCOUNTS|TOKEN_SECRET|TOKEN_EXPIRE_HOURS|GUEST_TOKEN_EXPIRE_HOURS|JWT_ALGORITHM|TOKEN_AUTO_RENEW|TOKEN_RENEW_THRESHOLD|LIGHTRAG_API_KEY|WHITELIST_PATHS|LANGFUSE_*|CUDA_VISIBLE_DEVICES|NVIDIA_VISIBLE_DEVICES|NVIDIA_DRIVER_CAPABILITIES)
-        unset "ENV_VALUES[$key]"
-        ;;
-    esac
   done
 }
 
@@ -430,9 +402,56 @@ set_compose_override() {
   fi
 }
 
+set_managed_service_compose_overrides() {
+  local root_service="$1"
+
+  case "$root_service" in
+    postgres)
+      if [[ -z "${COMPOSE_ENV_OVERRIDES[POSTGRES_HOST]+set}" ]]; then
+        set_compose_override "POSTGRES_HOST" "postgres"
+      fi
+      # The bundled postgres compose service always listens on 5432 internally.
+      if [[ -z "${COMPOSE_ENV_OVERRIDES[POSTGRES_PORT]+set}" ]]; then
+        set_compose_override "POSTGRES_PORT" "5432"
+      fi
+      ;;
+    neo4j)
+      if [[ -z "${COMPOSE_ENV_OVERRIDES[NEO4J_URI]+set}" ]]; then
+        set_compose_override "NEO4J_URI" "neo4j://neo4j:7687"
+      fi
+      ;;
+    mongodb)
+      if [[ -z "${COMPOSE_ENV_OVERRIDES[MONGO_URI]+set}" ]]; then
+        set_compose_override "MONGO_URI" "mongodb://mongodb:27017/"
+      fi
+      ;;
+    redis)
+      if [[ -z "${COMPOSE_ENV_OVERRIDES[REDIS_URI]+set}" ]]; then
+        set_compose_override "REDIS_URI" "redis://redis:6379"
+      fi
+      ;;
+    milvus)
+      if [[ -z "${COMPOSE_ENV_OVERRIDES[MILVUS_URI]+set}" ]]; then
+        set_compose_override "MILVUS_URI" "http://milvus:19530"
+      fi
+      ;;
+    qdrant)
+      if [[ -z "${COMPOSE_ENV_OVERRIDES[QDRANT_URL]+set}" ]]; then
+        set_compose_override "QDRANT_URL" "http://qdrant:6333"
+      fi
+      ;;
+    memgraph)
+      if [[ -z "${COMPOSE_ENV_OVERRIDES[MEMGRAPH_URI]+set}" ]]; then
+        set_compose_override "MEMGRAPH_URI" "bolt://memgraph:7687"
+      fi
+      ;;
+  esac
+}
+
 prepare_compose_runtime_overrides() {
   local normalized_value
   local key
+  local root_service
 
   # EMBEDDING_BINDING_HOST: when vllm-embed is part of this compose, the LightRAG
   # container must reach it by Docker service name, not by a loopback address.
@@ -463,6 +482,12 @@ prepare_compose_runtime_overrides() {
       fi
     fi
   fi
+
+  for root_service in postgres neo4j mongodb redis milvus qdrant memgraph; do
+    if [[ -n "${DOCKER_SERVICE_SET[$root_service]+set}" ]]; then
+      set_managed_service_compose_overrides "$root_service"
+    fi
+  done
 
   for key in \
     "LLM_BINDING_HOST" \
@@ -688,11 +713,6 @@ configure_storage_compose_rewrites() {
   fi
 }
 
-select_deployment_type() {
-  local options=("development" "production" "custom")
-  prompt_choice "Deployment type" "development" "${options[@]}"
-}
-
 select_storage_backends() {
   local deployment_type="$1"
   local kv_default="JsonKVStorage"
@@ -885,7 +905,8 @@ collect_database_config() {
 collect_postgres_config() {
   local default_docker="${1:-no}"
   local use_docker="no"
-  local host port user password database host_port=""
+  local host port user password database
+  local existing_user="" existing_password="" existing_database=""
 
   if [[ "$default_docker" == "yes" ]]; then
     if confirm_default_yes "Run PostgreSQL locally via Docker?"; then
@@ -911,9 +932,7 @@ collect_postgres_config() {
 
   host="$(prompt_with_default "PostgreSQL host" "$host")"
   if [[ "$use_docker" == "yes" ]]; then
-    host_port="$(prompt_until_valid "PostgreSQL host port" "${ENV_VALUES[POSTGRES_HOST_PORT]:-${ENV_VALUES[POSTGRES_PORT]:-5432}}" validate_port)"
-    port="$host_port"
-    ENV_VALUES["POSTGRES_HOST_PORT"]="$host_port"
+    port="5432"
     set_compose_override "POSTGRES_HOST" "postgres"
     set_compose_override "POSTGRES_PORT" "5432"
   else
@@ -921,9 +940,22 @@ collect_postgres_config() {
     set_compose_override "POSTGRES_HOST" ""
     set_compose_override "POSTGRES_PORT" ""
   fi
-  user="$(prompt_with_default "PostgreSQL user" "${ENV_VALUES[POSTGRES_USER]:-rag}")"
-  password="$(prompt_secret_with_default "PostgreSQL password: " "${ENV_VALUES[POSTGRES_PASSWORD]:-rag}")"
-  database="$(prompt_with_default "PostgreSQL database" "${ENV_VALUES[POSTGRES_DATABASE]:-lightrag}")"
+
+  existing_user="${ORIGINAL_ENV_VALUES[POSTGRES_USER]-${ENV_VALUES[POSTGRES_USER]:-}}"
+  existing_password="${ORIGINAL_ENV_VALUES[POSTGRES_PASSWORD]-${ENV_VALUES[POSTGRES_PASSWORD]:-}}"
+  existing_database="${ORIGINAL_ENV_VALUES[POSTGRES_DATABASE]-${ENV_VALUES[POSTGRES_DATABASE]:-}}"
+  if [[ "$use_docker" == "yes" && -z "$existing_user" && -z "$existing_password" ]]; then
+    user="rag"
+    password="rag"
+  else
+    user="$(prompt_with_default "PostgreSQL user" "${existing_user:-rag}")"
+    password="$(prompt_secret_with_default "PostgreSQL password: " "${existing_password:-rag}")"
+  fi
+  if [[ "$use_docker" == "yes" && -z "$existing_database" ]]; then
+    database="rag"
+  else
+    database="$(prompt_with_default "PostgreSQL database" "${existing_database:-lightrag}")"
+  fi
 
   ENV_VALUES["POSTGRES_HOST"]="$host"
   ENV_VALUES["POSTGRES_PORT"]="$port"
@@ -2591,11 +2623,6 @@ validate_env_file() {
     format_error "Invalid POSTGRES_PORT" "Use a port between 1 and 65535."
     errors=1
   fi
-  if [[ -n "${ENV_VALUES[POSTGRES_HOST_PORT]:-}" ]] && ! validate_port "${ENV_VALUES[POSTGRES_HOST_PORT]}"; then
-    format_error "Invalid POSTGRES_HOST_PORT" "Use a port between 1 and 65535."
-    errors=1
-  fi
-
   if ((errors != 0)); then
     return 1
   fi
