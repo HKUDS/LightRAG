@@ -1555,6 +1555,13 @@ class LightRAG:
             doc_id_content = f"{file_path}-{error_description}"
             doc_id = compute_mdhash_id(doc_id_content, prefix="error-")
 
+            # Preserve any existing user metadata and add system fields
+            existing_metadata = error_file.get("metadata", {})
+            error_metadata = {
+                **existing_metadata,
+                "error_type": "file_extraction_error",
+            }
+
             error_docs[doc_id] = {
                 "status": DocStatus.FAILED,
                 "content_summary": error_description,
@@ -1566,9 +1573,7 @@ class LightRAG:
                 "updated_at": current_time,
                 "file_path": file_path,
                 "track_id": track_id,
-                "metadata": {
-                    "error_type": "file_extraction_error",
-                },
+                "metadata": error_metadata,
             }
 
         # Store error documents in doc_status
@@ -1969,6 +1974,12 @@ class LightRAG:
 
                             # Process document in two stages
                             # Stage 1: Process text chunks and docs (parallel execution)
+                            # Preserve user metadata and add system fields
+                            existing_metadata = status_doc.metadata or {}
+                            updated_metadata = {
+                                **existing_metadata,
+                                "processing_start_time": processing_start_time,
+                            }
                             doc_status_task = asyncio.create_task(
                                 self.doc_status.upsert(
                                     {
@@ -1986,9 +1997,7 @@ class LightRAG:
                                             ).isoformat(),
                                             "file_path": file_path,
                                             "track_id": status_doc.track_id,  # Preserve existing track_id
-                                            "metadata": {
-                                                "processing_start_time": processing_start_time
-                                            },
+                                            "metadata": updated_metadata,
                                         }
                                     }
                                 )
@@ -2068,6 +2077,14 @@ class LightRAG:
                                 get_failed_chunk_snapshot()
                             )
 
+                            # Preserve user metadata and add system fields
+                            existing_metadata = status_doc.metadata or {}
+                            failed_metadata = {
+                                **existing_metadata,
+                                "processing_start_time": processing_start_time,
+                                "processing_end_time": processing_end_time,
+                            }
+
                             # Update document status to failed
                             await self.doc_status.upsert(
                                 {
@@ -2084,10 +2101,7 @@ class LightRAG:
                                         ).isoformat(),
                                         "file_path": file_path,
                                         "track_id": status_doc.track_id,  # Preserve existing track_id
-                                        "metadata": {
-                                            "processing_start_time": processing_start_time,
-                                            "processing_end_time": processing_end_time,
-                                        },
+                                        "metadata": failed_metadata,
                                     }
                                 }
                             )
@@ -2127,6 +2141,14 @@ class LightRAG:
                                 # Record processing end time
                                 processing_end_time = int(time.time())
 
+                                # Preserve user metadata and add system fields
+                                existing_metadata = status_doc.metadata or {}
+                                success_metadata = {
+                                    **existing_metadata,
+                                    "processing_start_time": processing_start_time,
+                                    "processing_end_time": processing_end_time,
+                                }
+
                                 await self.doc_status.upsert(
                                     {
                                         doc_id: {
@@ -2141,10 +2163,7 @@ class LightRAG:
                                             ).isoformat(),
                                             "file_path": file_path,
                                             "track_id": status_doc.track_id,  # Preserve existing track_id
-                                            "metadata": {
-                                                "processing_start_time": processing_start_time,
-                                                "processing_end_time": processing_end_time,
-                                            },
+                                            "metadata": success_metadata,
                                         }
                                     }
                                 )
@@ -2200,6 +2219,14 @@ class LightRAG:
                                     get_failed_chunk_snapshot()
                                 )
 
+                                # Preserve user metadata and add system fields
+                                existing_metadata = status_doc.metadata or {}
+                                merge_failed_metadata = {
+                                    **existing_metadata,
+                                    "processing_start_time": processing_start_time,
+                                    "processing_end_time": processing_end_time,
+                                }
+
                                 # Update document status to failed
                                 await self.doc_status.upsert(
                                     {
@@ -2214,10 +2241,7 @@ class LightRAG:
                                             "updated_at": datetime.now().isoformat(),
                                             "file_path": file_path,
                                             "track_id": status_doc.track_id,  # Preserve existing track_id
-                                            "metadata": {
-                                                "processing_start_time": processing_start_time,
-                                                "processing_end_time": processing_end_time,
-                                            },
+                                            "metadata": merge_failed_metadata,
                                         }
                                     }
                                 )
