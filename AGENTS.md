@@ -6,11 +6,16 @@ LightRAG is an advanced Retrieval-Augmented Generation (RAG) framework designed 
 - `lightrag/`: Core Python package with orchestrators (`lightrag/lightrag.py`), storage adapters in `kg/`, LLM bindings in `llm/`, and helpers such as `operate.py` and `utils_*.py`.
 - `lightrag-api/`: FastAPI service (`lightrag_server.py`) with routers under `routers/` and Gunicorn launcher `run_with_gunicorn.py`.
 - `lightrag_webui/`: React 19 + TypeScript client driven by Bun + Vite; UI components live in `src/`.
+- `scripts/setup/`: Interactive environment setup wizard. `setup.sh` orchestrates staged `--base` / `--storage` / `--server` / validation flows, `lib/` holds prompt/validation/file helpers, and `templates/*.yml` contains compose fragments for bundled services.
 - Tests live in `tests/` and root-level `test_*.py`. Working datasets stay in `inputs/`, `rag_storage/`, `temp/`; deployment collateral lives in `docs/`, `k8s-deploy/`, and `docker-compose.yml`.
+- `Makefile`: Canonical entry point for the setup wizard and local developer shortcuts; prefer documented targets over invoking ad hoc shell snippets.
 
 ## Build, Test, and Development Commands
 - `python -m venv .venv && source .venv/bin/activate`: set up the Python runtime.
 - `pip install -e .` / `pip install -e .[api]`: install the package and API extras in editable mode.
+- `make env-base`: first-run interactive setup for LLM, embedding, and reranker configuration; writes `.env` and may generate `docker-compose.final.yml`.
+- `make env-storage`, `make env-server`: optional follow-up wizard stages for storage backends and server/security/SSL settings; both reuse the existing `.env`.
+- `make env-validate`, `make env-security-check`, `make env-backup`: validate, audit, or back up the current `.env` via the setup wizard.
 - `lightrag-server` or `uvicorn lightrag.api.lightrag_server:app --reload`: start the API locally; ensure `.env` is present.
 - `python -m pytest tests` (offline markers apply by default) or `python -m pytest tests --run-integration` / `python test_graph_storage.py`: run the full suite, opt into integration coverage, or target an individual script.
 - `ruff check .`: lint Python sources before committing.
@@ -46,3 +51,5 @@ LightRAG is an advanced Retrieval-Augmented Generation (RAG) framework designed 
 - Honor existing local modifications; never revert or discard user changes (especially via `git reset --hard`) unless explicitly asked.
 - Follow the planning tool guidance: skip it for trivial fixes, but provide multi-step plans for non-trivial work and keep the plan updated as steps progress.
 - Validate changes by running the relevant `ruff`/`pytest`/`bun test` commands whenever feasible, and describe any unrun checks with follow-up guidance.
+- For setup workflow changes, prefer `make env-*` targets over calling `scripts/setup/setup.sh` directly; the `Makefile` resolves a Bash 4+ interpreter for macOS/Linux compatibility.
+- When editing setup logic, keep `.env` host-usable and treat `docker-compose.final.yml` as generated output assembled from `scripts/setup/templates/*.yml`; compose-only overrides belong in the wizard-managed compose layer rather than being persisted back into `.env`.
