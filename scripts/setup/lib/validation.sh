@@ -70,12 +70,6 @@ validate_existing_file() {
   [[ -n "$path" && -f "$path" ]]
 }
 
-validate_mongodb_atlas_uri() {
-  local uri="$1"
-
-  [[ "$uri" =~ ^mongodb\+srv://.+ ]]
-}
-
 check_storage_compatibility() {
   local kv_storage="$1"
   local vector_storage="$2"
@@ -84,7 +78,7 @@ check_storage_compatibility() {
   local warnings=()
 
   if [[ "$vector_storage" == "MongoVectorDBStorage" ]]; then
-    warnings+=("MongoDB vector storage requires Atlas (mongodb+srv:// URI).")
+    warnings+=("MongoDB vector storage requires an Atlas-capable deployment with Atlas Search / Vector Search support.")
   fi
 
   if [[ "$graph_storage" == "Neo4JStorage" && "$kv_storage" == "JsonKVStorage" ]]; then
@@ -210,15 +204,23 @@ validate_required_variables() {
 validate_mongo_vector_storage_config() {
   local vector_storage="$1"
   local mongo_uri="${2:-${ENV_VALUES[MONGO_URI]:-}}"
+  local mongo_deployment="${3:-${ENV_VALUES[LIGHTRAG_SETUP_MONGODB_DEPLOYMENT]:-}}"
 
   if [[ "$vector_storage" != "MongoVectorDBStorage" ]]; then
     return 0
   fi
 
-  if ! validate_mongodb_atlas_uri "$mongo_uri"; then
+  if [[ "$mongo_deployment" == "docker" ]]; then
     format_error \
-      "MongoVectorDBStorage requires a MongoDB Atlas URI." \
-      "Set MONGO_URI to a mongodb+srv:// Atlas connection string or choose another vector backend."
+      "MongoVectorDBStorage cannot use the local Docker MongoDB service managed by this setup wizard." \
+      "That service is MongoDB Community Edition without Atlas Search / Vector Search support. Use an Atlas-capable MongoDB endpoint instead."
+    return 1
+  fi
+
+  if ! validate_uri "$mongo_uri" mongodb; then
+    format_error \
+      "MongoVectorDBStorage requires a valid MongoDB URI." \
+      "Set MONGO_URI to a mongodb:// or mongodb+srv:// endpoint that supports Atlas Search / Vector Search."
     return 1
   fi
 

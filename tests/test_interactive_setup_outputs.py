@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import subprocess
 from pathlib import Path
 
@@ -63,6 +64,16 @@ def write_text_lines(path: Path, lines: list[str]) -> Path:
 
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return path
+
+
+def assert_single_compose_backup(tmp_path: Path, expected_content: str) -> Path:
+    """Assert that a single compose backup exists with the expected content."""
+
+    backups = sorted(tmp_path.glob("docker-compose.backup*.yml"))
+    assert len(backups) == 1
+    assert re.fullmatch(r"docker-compose\.backup\d{8}_\d{6}\.yml", backups[0].name)
+    assert backups[0].read_text(encoding="utf-8") == expected_content
+    return backups[0]
 
 
 def test_collect_postgres_config_keeps_host_reachable_env_values() -> None:
@@ -2721,6 +2732,79 @@ env_base_flow
     assert "./data/certs/key.pem:/app/data/certs/key.pem:ro" in generated_compose
 
 
+def test_env_base_flow_backs_up_legacy_generated_compose_before_rewrite(
+    tmp_path: Path,
+) -> None:
+    """env-base should back up the active legacy compose file before regenerating final output."""
+
+    legacy_compose = "\n".join(
+        [
+            "services:",
+            "  lightrag:",
+            "    image: prod/lightrag",
+        ]
+    ) + "\n"
+
+    write_text_lines(
+        tmp_path / "env.example",
+        (REPO_ROOT / "env.example").read_text(encoding="utf-8").splitlines(),
+    )
+    write_text_lines(
+        tmp_path / ".env",
+        [
+            "LIGHTRAG_SETUP_PROFILE=production",
+            "LLM_BINDING=openai",
+            "LLM_MODEL=gpt-4o-mini",
+            "LLM_BINDING_HOST=https://api.openai.com/v1",
+            "LLM_BINDING_API_KEY=sk-existing",
+            "EMBEDDING_BINDING=openai",
+            "EMBEDDING_MODEL=text-embedding-3-small",
+            "EMBEDDING_DIM=1536",
+            "EMBEDDING_BINDING_HOST=https://api.openai.com/v1",
+            "EMBEDDING_BINDING_API_KEY=sk-existing",
+        ],
+    )
+    (tmp_path / "docker-compose.production.yml").write_text(
+        legacy_compose,
+        encoding="utf-8",
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+
+prompt_choice() {{ printf '%s' "$2"; }}
+prompt_with_default() {{ printf '%s' "$2"; }}
+prompt_until_valid() {{ printf '%s' "$2"; }}
+prompt_secret_with_default() {{ printf '%s' "$2"; }}
+prompt_secret_until_valid_with_default() {{
+  case "$1" in
+    "LLM API key: "|"Embedding API key: ") printf 'sk-test-key' ;;
+    *) printf '%s' "$2" ;;
+  esac
+}}
+confirm_default_no() {{ return 1; }}
+confirm_default_yes() {{
+  case "$1" in
+    "Run LightRAG Server via Docker?") return 0 ;;
+    *) return 1 ;;
+  esac
+}}
+confirm_required_yes_no() {{ return 0; }}
+
+env_base_flow
+"""
+    )
+
+    assert_single_compose_backup(tmp_path, legacy_compose)
+    assert (tmp_path / "docker-compose.final.yml").exists()
+    assert (tmp_path / "docker-compose.production.yml").read_text(encoding="utf-8") == (
+        legacy_compose
+    )
+
+
 def test_env_base_flow_generates_env_and_compose_files(tmp_path: Path) -> None:
     """env-base should generate `.env` and docker-compose output for hosted and local providers."""
 
@@ -3718,6 +3802,65 @@ env_storage_flow
     assert "env_file:" not in generated_compose
 
 
+def test_env_storage_flow_backs_up_existing_compose_before_rewrite(
+    tmp_path: Path,
+) -> None:
+    """env-storage should back up the current compose file before rewriting it."""
+
+    existing_compose = "\n".join(
+        [
+            "services:",
+            "  lightrag:",
+            "    image: example/lightrag:test",
+            "    environment:",
+            '      LEGACY_SETTING: "1"',
+        ]
+    ) + "\n"
+
+    write_text_lines(
+        tmp_path / ".env",
+        [
+            "LLM_BINDING=openai",
+            "EMBEDDING_BINDING=openai",
+        ],
+    )
+    write_text_lines(
+        tmp_path / "env.example",
+        (REPO_ROOT / "env.example").read_text(encoding="utf-8").splitlines(),
+    )
+    (tmp_path / "docker-compose.final.yml").write_text(
+        existing_compose,
+        encoding="utf-8",
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+
+select_storage_backends() {{
+  ENV_VALUES[LIGHTRAG_KV_STORAGE]="JsonKVStorage"
+  ENV_VALUES[LIGHTRAG_VECTOR_STORAGE]="NanoVectorDBStorage"
+  ENV_VALUES[LIGHTRAG_GRAPH_STORAGE]="NetworkXStorage"
+  ENV_VALUES[LIGHTRAG_DOC_STATUS_STORAGE]="JsonDocStatusStorage"
+}}
+collect_database_config() {{ :; }}
+validate_required_variables() {{ return 0; }}
+validate_mongo_vector_storage_config() {{ return 0; }}
+validate_sensitive_env_literals() {{ return 0; }}
+confirm_default_yes() {{ return 0; }}
+confirm_default_no() {{ return 1; }}
+confirm_required_yes_no() {{ return 0; }}
+
+env_storage_flow
+"""
+    )
+
+    assert_single_compose_backup(tmp_path, existing_compose)
+    assert (tmp_path / "docker-compose.final.yml").exists()
+
+
 def test_env_storage_flow_clears_mongodb_docker_marker_for_atlas_vector_storage(
     tmp_path: Path,
 ) -> None:
@@ -3905,6 +4048,64 @@ env_server_flow
     assert "./data/certs/key.pem:/app/data/certs/key.pem:ro" in generated_compose
     assert 'PORT: "9621"' in generated_compose
     assert '      - "0.0.0.0:8080:9621"' in generated_compose
+
+
+def test_env_server_flow_backs_up_existing_compose_before_rewrite(
+    tmp_path: Path,
+) -> None:
+    """env-server should back up the current compose file before rewriting it."""
+
+    existing_compose = "\n".join(
+        [
+            "services:",
+            "  lightrag:",
+            "    image: example/lightrag:test",
+            "    environment:",
+            '      PORT: "9621"',
+        ]
+    ) + "\n"
+
+    write_text_lines(
+        tmp_path / ".env",
+        [
+            "HOST=0.0.0.0",
+            "PORT=9621",
+        ],
+    )
+    write_text_lines(
+        tmp_path / "env.example",
+        (REPO_ROOT / "env.example").read_text(encoding="utf-8").splitlines(),
+    )
+    (tmp_path / "docker-compose.final.yml").write_text(
+        existing_compose,
+        encoding="utf-8",
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+
+collect_server_config() {{
+  ENV_VALUES[HOST]="0.0.0.0"
+  ENV_VALUES[PORT]="8080"
+}}
+collect_security_config() {{ :; }}
+collect_ssl_config() {{ :; }}
+validate_sensitive_env_literals() {{ return 0; }}
+validate_security_config() {{ return 0; }}
+confirm_default_yes() {{ return 0; }}
+confirm_required_yes_no() {{ return 0; }}
+
+env_server_flow
+"""
+    )
+
+    assert_single_compose_backup(tmp_path, existing_compose)
+    assert (tmp_path / "docker-compose.final.yml").read_text(encoding="utf-8") != (
+        existing_compose
+    )
 
 
 def test_switching_to_non_docker_storage_removes_stale_services_from_compose(
@@ -5388,3 +5589,62 @@ fi
     values = parse_lines(result.stdout)
     assert values["VALID"] == "no"
     assert "MongoVectorDBStorage requires a MongoDB Atlas URI" in result.stderr
+
+
+def test_backup_only_backs_up_env_and_generated_compose(tmp_path: Path) -> None:
+    """backup_only should back up both .env and the active generated compose file."""
+
+    compose_content = "\n".join(
+        [
+            "services:",
+            "  lightrag:",
+            "    image: example/lightrag:test",
+        ]
+    ) + "\n"
+
+    write_text_lines(tmp_path / ".env", ["HOST=0.0.0.0"])
+    (tmp_path / "docker-compose.final.yml").write_text(
+        compose_content,
+        encoding="utf-8",
+    )
+
+    output = run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+
+backup_only
+"""
+    )
+
+    env_backups = sorted(tmp_path.glob(".env.backup.*"))
+    assert len(env_backups) == 1
+    assert env_backups[0].read_text(encoding="utf-8") == "HOST=0.0.0.0\n"
+    assert "Backed up .env to" in output
+    assert "Backed up compose file to" in output
+    assert_single_compose_backup(tmp_path, compose_content)
+
+
+def test_backup_only_skips_compose_backup_when_no_generated_compose_exists(
+    tmp_path: Path,
+) -> None:
+    """backup_only should still succeed when only .env exists."""
+
+    write_text_lines(tmp_path / ".env", ["HOST=0.0.0.0"])
+
+    output = run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+
+backup_only
+"""
+    )
+
+    env_backups = sorted(tmp_path.glob(".env.backup.*"))
+    assert len(env_backups) == 1
+    assert "Backed up .env to" in output
+    assert "Backed up compose file to" not in output
+    assert list(tmp_path.glob("docker-compose.backup*.yml")) == []

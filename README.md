@@ -1237,7 +1237,7 @@ For complete configuration options, see `env.example` and `docs/MilvusConfigurat
 <details>
 <summary> <b>Using MongoDB Storage</b> </summary>
 
-MongoDB provides a one-stop storage solution for LightRAG. MongoDB offers native KV storage and vector storage. LightRAG uses MongoDB collections to implement a simple graph storage. MongoDB's official vector search functionality (`$vectorSearch`) currently requires their official cloud service MongoDB Atlas. This functionality cannot be used on self-hosted MongoDB Community/Enterprise versions.
+MongoDB provides a one-stop storage solution for LightRAG. MongoDB offers native KV storage and vector storage. LightRAG uses MongoDB collections to implement a simple graph storage. `MongoVectorDBStorage` requires a MongoDB deployment with Atlas Search / Vector Search support, such as MongoDB Atlas or Atlas local. The setup wizard's bundled local Docker MongoDB service is MongoDB Community Edition, so it can be used for KV/graph/doc-status storage but not for `MongoVectorDBStorage`.
 
 </details>
 

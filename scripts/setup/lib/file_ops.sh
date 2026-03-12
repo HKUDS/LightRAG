@@ -56,6 +56,29 @@ backup_env_file() {
   fi
 }
 
+backup_compose_file() {
+  local compose_file="${1:-}"
+  local repo_root="${REPO_ROOT:-.}"
+  local backup_file=""
+
+  if [[ -z "$compose_file" ]]; then
+    compose_file="$(find_generated_compose_file)"
+  fi
+
+  if [[ -z "$compose_file" || ! -f "$compose_file" ]]; then
+    return 0
+  fi
+
+  backup_file="${repo_root}/docker-compose.backup$(date +%Y%m%d_%H%M%S).yml"
+  if ! cp "$compose_file" "$backup_file"; then
+    format_error "Failed to back up ${compose_file} to ${backup_file}." \
+      "Check disk space and file permissions."
+    return 1
+  fi
+
+  printf '%s' "$backup_file"
+}
+
 stage_ssl_assets() {
   local cert_source="$1"
   local key_source="$2"
