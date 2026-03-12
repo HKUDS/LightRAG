@@ -93,7 +93,9 @@ def test_validate_runtime_target_rejects_invalid_value() -> None:
     assert "must be 'host' or 'compose'" in error_message
 
 
-def test_validate_runtime_target_from_env_file_uses_raw_env_value(tmp_path: Path) -> None:
+def test_validate_runtime_target_from_env_file_uses_raw_env_value(
+    tmp_path: Path,
+) -> None:
     env_file = tmp_path / ".env"
     env_file.write_text("LIGHTRAG_RUNTIME_TARGET=compose\n", encoding="utf-8")
 
