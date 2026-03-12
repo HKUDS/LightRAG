@@ -985,6 +985,13 @@ generate_docker_compose() {
         fi
       fi
     fi
+    if [[ "$service" == "qdrant" ]]; then
+      if [[ "${ENV_VALUES[QDRANT_DEVICE]:-cpu}" == "cuda" ]]; then
+        if [[ -f "$TEMPLATES_DIR/${service}-gpu.yml" ]]; then
+          template_file="$TEMPLATES_DIR/${service}-gpu.yml"
+        fi
+      fi
+    fi
     if [[ "$service" == "vllm-rerank" ]]; then
       if [[ "${ENV_VALUES[VLLM_RERANK_DEVICE]:-cpu}" == "cuda" ]]; then
         if [[ -f "$TEMPLATES_DIR/${service}-gpu.yml" ]]; then

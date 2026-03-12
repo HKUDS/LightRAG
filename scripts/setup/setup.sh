@@ -602,6 +602,13 @@ compose_template_variant_for_service() {
         device="${ENV_VALUES[MILVUS_DEVICE]:-cpu}"
       fi
       ;;
+    qdrant)
+      if [[ "$snapshot" == "original" ]]; then
+        device="${ORIGINAL_ENV_VALUES[QDRANT_DEVICE]:-cpu}"
+      else
+        device="${ENV_VALUES[QDRANT_DEVICE]:-cpu}"
+      fi
+      ;;
     vllm-embed)
       if [[ "$snapshot" == "original" ]]; then
         device="${ORIGINAL_ENV_VALUES[VLLM_EMBED_DEVICE]:-cpu}"
@@ -671,6 +678,13 @@ configure_storage_compose_rewrites() {
     [[ "$(compose_template_variant_for_service "milvus" "current")" != \
       "$(compose_template_variant_for_service "milvus" "original")" ]]; then
     mark_compose_service_for_rewrite "milvus"
+  fi
+
+  if existing_managed_root_service_present "qdrant" && \
+    [[ -n "${DOCKER_SERVICE_SET[qdrant]+set}" ]] && \
+    [[ "$(compose_template_variant_for_service "qdrant" "current")" != \
+      "$(compose_template_variant_for_service "qdrant" "original")" ]]; then
+    mark_compose_service_for_rewrite "qdrant"
   fi
 }
 
@@ -1104,7 +1118,7 @@ collect_milvus_config() {
 collect_qdrant_config() {
   local default_docker="${1:-no}"
   local use_docker="no"
-  local url
+  local url qdrant_device=""
 
   if [[ "$default_docker" == "yes" ]]; then
     if confirm_default_yes "Run Qdrant locally via Docker?"; then
@@ -1125,9 +1139,17 @@ collect_qdrant_config() {
 
   url="$(prompt_until_valid "Qdrant URL" "$url" validate_uri qdrant)"
   if [[ "$use_docker" == "yes" ]]; then
+    qdrant_device="$(resolve_local_device_default "${ENV_VALUES[QDRANT_DEVICE]:-}")"
+    qdrant_device="$(prompt_choice "Qdrant device" "$qdrant_device" "cpu" "cuda")"
+    if [[ "$qdrant_device" == "cuda" ]] && ! host_cuda_available; then
+      log_warn "CUDA device selected for Qdrant but no NVIDIA driver detected on host."
+    fi
     url="$(normalize_qdrant_uri_for_local_service "$url")"
   fi
   ENV_VALUES["QDRANT_URL"]="$url"
+  if [[ -n "$qdrant_device" ]]; then
+    ENV_VALUES["QDRANT_DEVICE"]="$qdrant_device"
+  fi
   if [[ "$use_docker" == "yes" ]]; then
     set_compose_override "QDRANT_URL" "http://qdrant:6333"
   else
