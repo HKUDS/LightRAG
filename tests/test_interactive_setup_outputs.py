@@ -3852,6 +3852,111 @@ env_storage_flow
     assert "env_file:" not in generated_compose
 
 
+@pytest.mark.parametrize(
+    ("changed_key", "changed_value", "expected_rewrite"),
+    [
+        ("NEO4J_PASSWORD", "updated-password", "no"),
+        ("NEO4J_DATABASE", "updated-database", "yes"),
+    ],
+    ids=["neo4j-password-does-not-rewrite", "neo4j-database-rewrites"],
+)
+def test_configure_storage_compose_rewrites_only_rewrites_neo4j_on_database_change(
+    changed_key: str,
+    changed_value: str,
+    expected_rewrite: str,
+) -> None:
+    """Neo4j service rewrites should be driven by database changes, not credentials."""
+
+    output = run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+reset_state
+
+EXISTING_MANAGED_ROOT_SERVICE_SET[neo4j]=1
+DOCKER_SERVICE_SET[neo4j]=1
+ORIGINAL_ENV_VALUES[NEO4J_PASSWORD]="original-password"
+ORIGINAL_ENV_VALUES[NEO4J_DATABASE]="neo4j"
+ENV_VALUES[NEO4J_PASSWORD]="original-password"
+ENV_VALUES[NEO4J_DATABASE]="neo4j"
+ENV_VALUES[{changed_key}]="{changed_value}"
+
+configure_storage_compose_rewrites
+
+if [[ -n "${{COMPOSE_REWRITE_SERVICE_SET[neo4j]+set}}" ]]; then
+  printf 'REWRITE=yes\\n'
+else
+  printf 'REWRITE=no\\n'
+fi
+"""
+    )
+    values = parse_lines(output)
+
+    assert values["REWRITE"] == expected_rewrite
+
+
+@pytest.mark.parametrize(
+    ("changed_key", "changed_value", "expected_rewrite"),
+    [
+        ("POSTGRES_HOST", "db.example.com", "no"),
+        ("POSTGRES_PORT", "6543", "no"),
+        ("POSTGRES_HOST_PORT", "15432", "no"),
+        ("POSTGRES_USER", "updated-user", "yes"),
+        ("POSTGRES_PASSWORD", "updated-password", "yes"),
+        ("POSTGRES_DATABASE", "updated-database", "yes"),
+    ],
+    ids=[
+        "postgres-host-does-not-rewrite",
+        "postgres-port-does-not-rewrite",
+        "postgres-host-port-does-not-rewrite",
+        "postgres-user-rewrites",
+        "postgres-password-rewrites",
+        "postgres-database-rewrites",
+    ],
+)
+def test_configure_storage_compose_rewrites_only_rewrites_postgres_for_service_env_changes(
+    changed_key: str,
+    changed_value: str,
+    expected_rewrite: str,
+) -> None:
+    """Postgres service rewrites should only follow changes emitted into the postgres block."""
+
+    output = run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+reset_state
+
+EXISTING_MANAGED_ROOT_SERVICE_SET[postgres]=1
+DOCKER_SERVICE_SET[postgres]=1
+ORIGINAL_ENV_VALUES[POSTGRES_HOST]="localhost"
+ORIGINAL_ENV_VALUES[POSTGRES_PORT]="5432"
+ORIGINAL_ENV_VALUES[POSTGRES_HOST_PORT]="5432"
+ORIGINAL_ENV_VALUES[POSTGRES_USER]="rag"
+ORIGINAL_ENV_VALUES[POSTGRES_PASSWORD]="rag"
+ORIGINAL_ENV_VALUES[POSTGRES_DATABASE]="lightrag"
+ENV_VALUES[POSTGRES_HOST]="localhost"
+ENV_VALUES[POSTGRES_PORT]="5432"
+ENV_VALUES[POSTGRES_HOST_PORT]="5432"
+ENV_VALUES[POSTGRES_USER]="rag"
+ENV_VALUES[POSTGRES_PASSWORD]="rag"
+ENV_VALUES[POSTGRES_DATABASE]="lightrag"
+ENV_VALUES[{changed_key}]="{changed_value}"
+
+configure_storage_compose_rewrites
+
+if [[ -n "${{COMPOSE_REWRITE_SERVICE_SET[postgres]+set}}" ]]; then
+  printf 'REWRITE=yes\\n'
+else
+  printf 'REWRITE=no\\n'
+fi
+"""
+    )
+    values = parse_lines(output)
+
+    assert values["REWRITE"] == expected_rewrite
+
+
 def test_env_storage_flow_backs_up_existing_compose_before_rewrite(
     tmp_path: Path,
 ) -> None:

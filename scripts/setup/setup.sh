@@ -669,7 +669,7 @@ configure_storage_compose_rewrites() {
 
   if existing_managed_root_service_present "neo4j" && \
     [[ -n "${DOCKER_SERVICE_SET[neo4j]+set}" ]] && \
-    any_env_value_changed_from_original "NEO4J_PASSWORD" "NEO4J_DATABASE"; then
+    any_env_value_changed_from_original "NEO4J_DATABASE"; then
     mark_compose_service_for_rewrite "neo4j"
   fi
 
