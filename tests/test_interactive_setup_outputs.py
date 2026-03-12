@@ -134,7 +134,6 @@ prompt_with_default() {{
   printf '%s\\n' "$1" >> "$PROMPT_LOG_FILE"
   case "$1" in
     "PostgreSQL host") printf 'localhost' ;;
-    "PostgreSQL database") printf 'lightrag' ;;
     *) printf '%s' "$2" ;;
   esac
 }}
@@ -145,18 +144,21 @@ prompt_secret_with_default() {{
 
 ORIGINAL_ENV_VALUES[POSTGRES_USER]=""
 ORIGINAL_ENV_VALUES[POSTGRES_PASSWORD]=""
+ORIGINAL_ENV_VALUES[POSTGRES_DATABASE]=""
 
 collect_postgres_config yes
 
 printf 'POSTGRES_USER=%s\\n' "${{ENV_VALUES[POSTGRES_USER]}}"
 printf 'POSTGRES_PASSWORD=%s\\n' "${{ENV_VALUES[POSTGRES_PASSWORD]}}"
+printf 'POSTGRES_DATABASE=%s\\n' "${{ENV_VALUES[POSTGRES_DATABASE]}}"
 printf 'PROMPT_LOG=%s\\n' "$(paste -sd '|' "$PROMPT_LOG_FILE")"
 """
     )
 
     assert values["POSTGRES_USER"] == "rag"
     assert values["POSTGRES_PASSWORD"] == "rag"
-    assert values["PROMPT_LOG"] == "PostgreSQL host|PostgreSQL database"
+    assert values["POSTGRES_DATABASE"] == "rag"
+    assert values["PROMPT_LOG"] == "PostgreSQL host"
 
 
 def test_collect_postgres_config_prompts_for_existing_docker_credentials() -> None:
@@ -188,7 +190,7 @@ prompt_secret_with_default() {{
 
 ORIGINAL_ENV_VALUES[POSTGRES_USER]="existing-user"
 ORIGINAL_ENV_VALUES[POSTGRES_PASSWORD]="existing-password"
-ENV_VALUES[POSTGRES_DATABASE]="existing-db"
+ORIGINAL_ENV_VALUES[POSTGRES_DATABASE]="existing-db"
 
 collect_postgres_config yes
 
@@ -4083,6 +4085,7 @@ def test_env_storage_flow_uses_rag_defaults_for_empty_postgres_docker_credential
                 "WHITELIST_PATHS=/health",
                 "POSTGRES_USER=",
                 "POSTGRES_PASSWORD=",
+                "POSTGRES_DATABASE=",
             ]
         )
         + "\n",
@@ -4125,7 +4128,6 @@ prompt_with_default() {{
   printf '%s\\n' "$1" >> "$PROMPT_LOG_FILE"
   case "$1" in
     "PostgreSQL host") printf 'localhost' ;;
-    "PostgreSQL database") printf 'lightrag' ;;
     *) printf '%s' "$2" ;;
   esac
 }}
@@ -4148,8 +4150,10 @@ printf 'PROMPT_LOG=%s\\n' "$(paste -sd '|' "$PROMPT_LOG_FILE")"
 
     assert "POSTGRES_USER=rag" in generated_env
     assert "POSTGRES_PASSWORD=rag" in generated_env
+    assert "POSTGRES_DATABASE=rag" in generated_env
     assert 'POSTGRES_USER: "rag"' in generated_compose
     assert 'POSTGRES_PASSWORD: "rag"' in generated_compose
+    assert 'POSTGRES_DB: "rag"' in generated_compose
 
 
 @pytest.mark.parametrize(

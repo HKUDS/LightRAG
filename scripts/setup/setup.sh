@@ -906,7 +906,7 @@ collect_postgres_config() {
   local default_docker="${1:-no}"
   local use_docker="no"
   local host port user password database
-  local existing_user="" existing_password=""
+  local existing_user="" existing_password="" existing_database=""
 
   if [[ "$default_docker" == "yes" ]]; then
     if confirm_default_yes "Run PostgreSQL locally via Docker?"; then
@@ -943,6 +943,7 @@ collect_postgres_config() {
 
   existing_user="${ORIGINAL_ENV_VALUES[POSTGRES_USER]-${ENV_VALUES[POSTGRES_USER]:-}}"
   existing_password="${ORIGINAL_ENV_VALUES[POSTGRES_PASSWORD]-${ENV_VALUES[POSTGRES_PASSWORD]:-}}"
+  existing_database="${ORIGINAL_ENV_VALUES[POSTGRES_DATABASE]-${ENV_VALUES[POSTGRES_DATABASE]:-}}"
   if [[ "$use_docker" == "yes" && -z "$existing_user" && -z "$existing_password" ]]; then
     user="rag"
     password="rag"
@@ -950,7 +951,11 @@ collect_postgres_config() {
     user="$(prompt_with_default "PostgreSQL user" "${existing_user:-rag}")"
     password="$(prompt_secret_with_default "PostgreSQL password: " "${existing_password:-rag}")"
   fi
-  database="$(prompt_with_default "PostgreSQL database" "${ENV_VALUES[POSTGRES_DATABASE]:-lightrag}")"
+  if [[ "$use_docker" == "yes" && -z "$existing_database" ]]; then
+    database="rag"
+  else
+    database="$(prompt_with_default "PostgreSQL database" "${existing_database:-lightrag}")"
+  fi
 
   ENV_VALUES["POSTGRES_HOST"]="$host"
   ENV_VALUES["POSTGRES_PORT"]="$port"
