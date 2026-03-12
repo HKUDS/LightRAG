@@ -905,7 +905,7 @@ collect_database_config() {
 collect_postgres_config() {
   local default_docker="${1:-no}"
   local use_docker="no"
-  local host port user password database host_port=""
+  local host port user password database
   local existing_user="" existing_password=""
 
   if [[ "$default_docker" == "yes" ]]; then
@@ -932,9 +932,7 @@ collect_postgres_config() {
 
   host="$(prompt_with_default "PostgreSQL host" "$host")"
   if [[ "$use_docker" == "yes" ]]; then
-    host_port="$(prompt_until_valid "PostgreSQL host port" "${ENV_VALUES[POSTGRES_HOST_PORT]:-${ENV_VALUES[POSTGRES_PORT]:-5432}}" validate_port)"
-    port="$host_port"
-    ENV_VALUES["POSTGRES_HOST_PORT"]="$host_port"
+    port="5432"
     set_compose_override "POSTGRES_HOST" "postgres"
     set_compose_override "POSTGRES_PORT" "5432"
   else
@@ -2620,11 +2618,6 @@ validate_env_file() {
     format_error "Invalid POSTGRES_PORT" "Use a port between 1 and 65535."
     errors=1
   fi
-  if [[ -n "${ENV_VALUES[POSTGRES_HOST_PORT]:-}" ]] && ! validate_port "${ENV_VALUES[POSTGRES_HOST_PORT]}"; then
-    format_error "Invalid POSTGRES_HOST_PORT" "Use a port between 1 and 65535."
-    errors=1
-  fi
-
   if ((errors != 0)); then
     return 1
   fi

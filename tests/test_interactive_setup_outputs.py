@@ -76,8 +76,10 @@ def assert_single_compose_backup(tmp_path: Path, expected_content: str) -> Path:
     return backups[0]
 
 
-def test_collect_postgres_config_keeps_host_reachable_env_values() -> None:
-    """Bundled PostgreSQL should keep `.env` host-oriented and use compose overrides."""
+def test_collect_postgres_config_uses_fixed_bundled_port_and_compose_overrides() -> (
+    None
+):
+    """Bundled PostgreSQL should use the fixed service port and compose overrides."""
 
     values = run_bash_lines(
         f"""
@@ -94,20 +96,12 @@ prompt_with_default() {{
     *) printf '%s' "$2" ;;
   esac
 }}
-prompt_until_valid() {{
-  if [[ "$1" == "PostgreSQL host port" ]]; then
-    printf '15432'
-  else
-    printf '%s' "$2"
-  fi
-}}
 mask_sensitive_input() {{ printf 'supersecret'; }}
 
 collect_postgres_config yes
 
 printf 'POSTGRES_HOST=%s\\n' "${{ENV_VALUES[POSTGRES_HOST]}}"
 printf 'POSTGRES_PORT=%s\\n' "${{ENV_VALUES[POSTGRES_PORT]}}"
-printf 'POSTGRES_HOST_PORT=%s\\n' "${{ENV_VALUES[POSTGRES_HOST_PORT]}}"
 printf 'COMPOSE_POSTGRES_HOST=%s\\n' "${{COMPOSE_ENV_OVERRIDES[POSTGRES_HOST]}}"
 printf 'COMPOSE_POSTGRES_PORT=%s\\n' "${{COMPOSE_ENV_OVERRIDES[POSTGRES_PORT]}}"
 printf 'DOCKER_SERVICE=%s\\n' "${{DOCKER_SERVICES[0]}}"
@@ -115,8 +109,7 @@ printf 'DOCKER_SERVICE=%s\\n' "${{DOCKER_SERVICES[0]}}"
     )
 
     assert values["POSTGRES_HOST"] == "localhost"
-    assert values["POSTGRES_PORT"] == "15432"
-    assert values["POSTGRES_HOST_PORT"] == "15432"
+    assert values["POSTGRES_PORT"] == "5432"
     assert values["COMPOSE_POSTGRES_HOST"] == "postgres"
     assert values["COMPOSE_POSTGRES_PORT"] == "5432"
     assert values["DOCKER_SERVICE"] == "postgres"
@@ -145,14 +138,6 @@ prompt_with_default() {{
     *) printf '%s' "$2" ;;
   esac
 }}
-prompt_until_valid() {{
-  printf '%s\\n' "$1" >> "$PROMPT_LOG_FILE"
-  if [[ "$1" == "PostgreSQL host port" ]]; then
-    printf '15432'
-  else
-    printf '%s' "$2"
-  fi
-}}
 prompt_secret_with_default() {{
   printf 'secret:%s\\n' "$1" >> "$PROMPT_LOG_FILE"
   printf '%s' "$2"
@@ -171,10 +156,7 @@ printf 'PROMPT_LOG=%s\\n' "$(paste -sd '|' "$PROMPT_LOG_FILE")"
 
     assert values["POSTGRES_USER"] == "rag"
     assert values["POSTGRES_PASSWORD"] == "rag"
-    assert (
-        values["PROMPT_LOG"]
-        == "PostgreSQL host|PostgreSQL host port|PostgreSQL database"
-    )
+    assert values["PROMPT_LOG"] == "PostgreSQL host|PostgreSQL database"
 
 
 def test_collect_postgres_config_prompts_for_existing_docker_credentials() -> None:
@@ -199,14 +181,6 @@ prompt_with_default() {{
     *) printf '%s' "$2" ;;
   esac
 }}
-prompt_until_valid() {{
-  printf '%s[%s]\\n' "$1" "$2" >> "$PROMPT_LOG_FILE"
-  if [[ "$1" == "PostgreSQL host port" ]]; then
-    printf '15432'
-  else
-    printf '%s' "$2"
-  fi
-}}
 prompt_secret_with_default() {{
   printf '%s[%s]\\n' "$1" "$2" >> "$PROMPT_LOG_FILE"
   printf 'updated-password'
@@ -229,7 +203,7 @@ printf 'PROMPT_LOG=%s\\n' "$(paste -sd '|' "$PROMPT_LOG_FILE")"
     assert values["POSTGRES_PASSWORD"] == "updated-password"
     assert values["POSTGRES_DATABASE"] == "updated-db"
     assert (
-        values["PROMPT_LOG"] == "PostgreSQL host[localhost]|PostgreSQL host port[5432]|"
+        values["PROMPT_LOG"] == "PostgreSQL host[localhost]|"
         "PostgreSQL user[existing-user]|PostgreSQL password: [existing-password]|"
         "PostgreSQL database[existing-db]"
     )
@@ -366,7 +340,7 @@ printf 'PROMPT_LOG=%s\\n' "$(paste -sd '|' "$PROMPT_LOG_FILE")"
             ],
             "collect_postgres_config yes",
             "POSTGRES_PORT",
-            "6543",
+            "5432",
         ),
         (
             ['ENV_VALUES[NEO4J_URI]="neo4j+s://graph.example.com"'],
@@ -431,7 +405,7 @@ printf 'PROMPT_LOG=%s\\n' "$(paste -sd '|' "$PROMPT_LOG_FILE")"
     ],
     ids=[
         "postgres-remote-host",
-        "postgres-port-preserved",
+        "postgres-port-reset-to-bundled-default",
         "neo4j-remote-uri",
         "mongodb-remote-uri",
         "redis-remote-uri",
@@ -4155,14 +4129,6 @@ prompt_with_default() {{
     *) printf '%s' "$2" ;;
   esac
 }}
-prompt_until_valid() {{
-  printf '%s\\n' "$1" >> "$PROMPT_LOG_FILE"
-  if [[ "$1" == "PostgreSQL host port" ]]; then
-    printf '15432'
-  else
-    printf '%s' "$2"
-  fi
-}}
 prompt_secret_with_default() {{
   printf 'secret:%s\\n' "$1" >> "$PROMPT_LOG_FILE"
   printf '%s' "$2"
@@ -4234,7 +4200,6 @@ fi
     [
         ("POSTGRES_HOST", "db.example.com", "no"),
         ("POSTGRES_PORT", "6543", "no"),
-        ("POSTGRES_HOST_PORT", "15432", "no"),
         ("POSTGRES_USER", "updated-user", "yes"),
         ("POSTGRES_PASSWORD", "updated-password", "yes"),
         ("POSTGRES_DATABASE", "updated-database", "yes"),
@@ -4242,7 +4207,6 @@ fi
     ids=[
         "postgres-host-does-not-rewrite",
         "postgres-port-does-not-rewrite",
-        "postgres-host-port-does-not-rewrite",
         "postgres-user-rewrites",
         "postgres-password-rewrites",
         "postgres-database-rewrites",
@@ -4265,13 +4229,11 @@ EXISTING_MANAGED_ROOT_SERVICE_SET[postgres]=1
 DOCKER_SERVICE_SET[postgres]=1
 ORIGINAL_ENV_VALUES[POSTGRES_HOST]="localhost"
 ORIGINAL_ENV_VALUES[POSTGRES_PORT]="5432"
-ORIGINAL_ENV_VALUES[POSTGRES_HOST_PORT]="5432"
 ORIGINAL_ENV_VALUES[POSTGRES_USER]="rag"
 ORIGINAL_ENV_VALUES[POSTGRES_PASSWORD]="rag"
 ORIGINAL_ENV_VALUES[POSTGRES_DATABASE]="lightrag"
 ENV_VALUES[POSTGRES_HOST]="localhost"
 ENV_VALUES[POSTGRES_PORT]="5432"
-ENV_VALUES[POSTGRES_HOST_PORT]="5432"
 ENV_VALUES[POSTGRES_USER]="rag"
 ENV_VALUES[POSTGRES_PASSWORD]="rag"
 ENV_VALUES[POSTGRES_DATABASE]="lightrag"

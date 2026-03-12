@@ -2,7 +2,7 @@
     image: neo4j:5-community
     # ports:
     #   - "7474:7474"
-    #   - "${NEO4J_BOLT_PORT:-7687}:7687"
+    #   - "7687:7687"
     volumes:
       - neo4j_data:/data
     healthcheck:
