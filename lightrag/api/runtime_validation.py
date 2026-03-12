@@ -96,7 +96,7 @@ def validate_runtime_target(
             return (
                 False,
                 "Configuration error in .env: LIGHTRAG_RUNTIME_TARGET=host.\n"
-                "This .env requires the server process to run on the host, "
+                "This value from .env requires the server process to run on the host, "
                 f"but the current process is running inside {runtime_environment.label}.",
             )
         return True, None
@@ -107,7 +107,7 @@ def validate_runtime_target(
         return (
             False,
             f"Configuration error in .env: LIGHTRAG_RUNTIME_TARGET={runtime_target}.\n"
-            "This .env requires the server process to run inside Docker or "
+            "This value from .env requires the server process to run inside Docker or "
             "Kubernetes, but the current process is running on the host.",
         )
 
