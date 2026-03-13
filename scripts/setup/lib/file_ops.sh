@@ -245,6 +245,7 @@ _WIZARD_COMPOSE_LIGHTRAG_KEYS=(
   "EMBEDDING_BINDING_HOST" "RERANK_BINDING_HOST" "LLM_BINDING_HOST"
   "REDIS_URI" "MONGO_URI" "NEO4J_URI" "MILVUS_URI" "QDRANT_URL" "MEMGRAPH_URI"
   "POSTGRES_HOST" "POSTGRES_PORT" "PORT" "HOST" "SSL_CERTFILE" "SSL_KEYFILE"
+  "WORKING_DIR" "INPUT_DIR"
 )
 
 _managed_service_root_name() {
@@ -1320,6 +1321,11 @@ _strip_lightrag_wizard_bind_mounts() {
 
 _is_wizard_lightrag_port_mapping() {
   local port_spec="$(_strip_wrapping_quotes "$1")"
+
+  if [[ "$port_spec" == '${HOST:-0.0.0.0}:${PORT:-9621}:9621' || \
+        "$port_spec" == '${PORT:-9621}:9621' ]]; then
+    return 0
+  fi
 
   case "$port_spec" in
     9621|9621/tcp|*:9621|*:9621/tcp)
