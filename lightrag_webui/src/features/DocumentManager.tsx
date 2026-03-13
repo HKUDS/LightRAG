@@ -17,6 +17,7 @@ import Checkbox from '@/components/ui/Checkbox'
 import UploadDocumentsDialog from '@/components/documents/UploadDocumentsDialog'
 import ClearDocumentsDialog from '@/components/documents/ClearDocumentsDialog'
 import DeleteDocumentsDialog from '@/components/documents/DeleteDocumentsDialog'
+import MetadataEditorDialog from '@/components/documents/MetadataEditorDialog'
 import PaginationControls from '@/components/ui/PaginationControls'
 
 import {
@@ -1370,6 +1371,9 @@ export default function DocumentManager() {
                             )}
                           </div>
                         </TableHead>
+                        <TableHead className="w-20 text-center">
+                          {t('documentPanel.documentManager.columns.actions')}
+                        </TableHead>
                         <TableHead className="w-16 text-center">
                           {t('documentPanel.documentManager.columns.select')}
                         </TableHead>
@@ -1460,6 +1464,16 @@ export default function DocumentManager() {
                           </TableCell>
                           <TableCell className="truncate">
                             {new Date(doc.updated_at).toLocaleString()}
+                          </TableCell>
+                          <TableCell className="text-center">
+                            <MetadataEditorDialog
+                              documentId={doc.id}
+                              documentName={showFileName ? getDisplayFileName(doc, 30) : undefined}
+                              currentMetadata={doc.metadata || {}}
+                              onMetadataUpdated={async () => {
+                                await handleIntelligentRefresh(pagination.page)
+                              }}
+                            />
                           </TableCell>
                           <TableCell className="text-center">
                             <Checkbox
