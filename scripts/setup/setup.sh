@@ -626,7 +626,7 @@ resolve_compose_output_action() {
   fi
 
   if [[ -n "$existing_compose" ]]; then
-    if confirm_default_yes "All wizard-managed services have been removed. Remove LightRAG from Docker and switch to host mode?"; then
+    if confirm_default_no "All wizard-managed services have been removed. Remove LightRAG from Docker and switch to host mode?"; then
       action_ref="delete_compose_and_switch_host"
       runtime_target_ref="host"
       host_hint_ref="yes"
@@ -2281,7 +2281,7 @@ finalize_base_setup() {
     svc_names="$(printf '%s ' "${DOCKER_SERVICES[@]}")"
     svc_names="${svc_names% }"
     echo "LightRAG requires Docker services: ${svc_names}"
-    if ! confirm_default_yes "The compose file will be created/updated. Continue?"; then
+    if ! confirm_default_yes "${COLOR_YELLOW}The compose file will be created/updated. Continue?${COLOR_RESET}"; then
       log_warn "Setup cancelled."
       return 1
     fi

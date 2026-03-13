@@ -3208,13 +3208,13 @@ prompt_secret_until_valid_with_default() {{
     *) printf '%s' "$2" ;;
   esac
 }}
-confirm_default_no() {{ return 1; }}
-confirm_default_yes() {{
+confirm_default_no() {{
   case "$1" in
     "All wizard-managed services have been removed. Remove LightRAG from Docker and switch to host mode?") return 0 ;;
     *) return 1 ;;
   esac
 }}
+confirm_default_yes() {{ return 1; }}
 confirm_required_yes_no() {{ return 0; }}
 
 env_base_flow
@@ -5094,13 +5094,13 @@ collect_database_config() {{ :; }}
 validate_required_variables() {{ return 0; }}
 validate_mongo_vector_storage_config() {{ return 0; }}
 validate_sensitive_env_literals() {{ return 0; }}
-confirm_default_yes() {{
+confirm_default_yes() {{ return 1; }}
+confirm_default_no() {{
   case "$1" in
     "All wizard-managed services have been removed. Remove LightRAG from Docker and switch to host mode?") return 0 ;;
     *) return 1 ;;
   esac
 }}
-confirm_default_no() {{ return 1; }}
 confirm_required_yes_no() {{ return 0; }}
 
 env_storage_flow
@@ -5815,7 +5815,8 @@ collect_security_config() {{ :; }}
 collect_ssl_config() {{ :; }}
 validate_sensitive_env_literals() {{ return 0; }}
 validate_security_config() {{ return 0; }}
-confirm_default_yes() {{
+confirm_default_yes() {{ return 1; }}
+confirm_default_no() {{
   case "$1" in
     "All wizard-managed services have been removed. Remove LightRAG from Docker and switch to host mode?") return 0 ;;
     *) return 1 ;;
@@ -5950,7 +5951,8 @@ collect_ssl_config() {{
 }}
 validate_sensitive_env_literals() {{ return 0; }}
 validate_security_config() {{ return 0; }}
-confirm_default_yes() {{
+confirm_default_yes() {{ return 1; }}
+confirm_default_no() {{
   case "$1" in
     "All wizard-managed services have been removed. Remove LightRAG from Docker and switch to host mode?") return 0 ;;
     *) return 1 ;;
