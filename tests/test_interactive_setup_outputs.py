@@ -2223,6 +2223,45 @@ printf 'RERANK_BINDING_HOST=%s\\n' "${{ENV_VALUES[RERANK_BINDING_HOST]:-}}"
     assert "cohere" in values["RERANK_BINDING_HOST"]
 
 
+def test_collect_rerank_config_ignores_vllm_marker_when_docker_is_predeclined() -> None:
+    """A predeclined Docker path should default the provider prompt to the binding, not the setup marker."""
+
+    output = run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+reset_state
+
+ENV_VALUES[LIGHTRAG_SETUP_RERANK_PROVIDER]="vllm"
+ENV_VALUES[RERANK_BINDING]="cohere"
+
+prompt_choice() {{
+  case "$1" in
+    "Rerank provider")
+      if [[ "$2" != "cohere" ]]; then
+        echo "unexpected rerank provider default: $2" >&2
+        return 91
+      fi
+      printf 'cohere'
+      ;;
+    *)
+      printf '%s' "$2"
+      ;;
+  esac
+}}
+prompt_with_default() {{ printf '%s' "$2"; }}
+prompt_secret_until_valid_with_default() {{ printf 'cohere-secret-123'; }}
+
+collect_rerank_config "yes" "no"
+
+printf 'RERANK_BINDING=%s\\n' "${{ENV_VALUES[RERANK_BINDING]}}"
+"""
+    )
+    values = parse_lines(output)
+
+    assert values["RERANK_BINDING"] == "cohere"
+
+
 @pytest.mark.parametrize(
     (
         "setup_lines",

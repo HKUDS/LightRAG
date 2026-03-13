@@ -1663,7 +1663,15 @@ collect_rerank_config() {
   local default_model="" default_host="" model_default="" host_default="" use_docker="no"
   local previous_provider="${ENV_VALUES[LIGHTRAG_SETUP_RERANK_PROVIDER]:-}"
   local reset_vllm_defaults="no"
-  local rerank_default="${ENV_VALUES[LIGHTRAG_SETUP_RERANK_PROVIDER]:-${ENV_VALUES[RERANK_BINDING]:-cohere}}"
+  local rerank_default=""
+
+  # If the caller already decided against Docker, do not let the wizard-managed
+  # vLLM marker override the provider prompt default.
+  if [[ "$docker_choice_override" == "no" && "$previous_provider" == "vllm" ]]; then
+    rerank_default="${ENV_VALUES[RERANK_BINDING]:-cohere}"
+  else
+    rerank_default="${ENV_VALUES[LIGHTRAG_SETUP_RERANK_PROVIDER]:-${ENV_VALUES[RERANK_BINDING]:-cohere}}"
+  fi
 
   unset 'ENV_VALUES[VLLM_RERANK_DTYPE]'
 
