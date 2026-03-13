@@ -9,7 +9,7 @@ import pytest
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, patch
 import numpy as np
-from opensearchpy.exceptions import NotFoundError
+from opensearchpy.exceptions import NotFoundError, OpenSearchException
 
 from lightrag.kg.opensearch_impl import (
     OpenSearchKVStorage,
@@ -378,6 +378,29 @@ class TestKVStorage:
             result = await s.drop()
             assert result["status"] == "success"
             mock_client.indices.delete.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_drop_error_marks_index_not_ready_and_next_upsert_recreates_index(
+        self, global_config, embed_func, mock_client
+    ):
+        mock_client.indices.delete = AsyncMock(
+            side_effect=OpenSearchException("drop failed")
+        )
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            with patch(
+                "lightrag.kg.opensearch_impl.helpers.async_bulk", new_callable=AsyncMock
+            ) as mock_bulk:
+                mock_bulk.return_value = (1, [])
+                s = self._make(global_config, embed_func)
+                await s.initialize()
+                with patch.object(
+                    s, "_create_index_if_not_exists", new_callable=AsyncMock
+                ) as mock_create:
+                    result = await s.drop()
+                    assert result["status"] == "error"
+                    assert s._index_ready is False
+                    await s.upsert({"k1": {"content": "v1"}})
+                    mock_create.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_upsert_after_drop_recreates_index(
@@ -801,6 +824,29 @@ class TestDocStatusStorage:
         assert "error" not in data
         assert data["file_path"] == "no-file-path"
         assert data["metadata"] == {}
+
+    @pytest.mark.asyncio
+    async def test_drop_error_marks_index_not_ready_and_next_upsert_recreates_index(
+        self, global_config, embed_func, mock_client
+    ):
+        mock_client.indices.delete = AsyncMock(
+            side_effect=OpenSearchException("drop failed")
+        )
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            with patch(
+                "lightrag.kg.opensearch_impl.helpers.async_bulk", new_callable=AsyncMock
+            ) as mock_bulk:
+                mock_bulk.return_value = (1, [])
+                s = self._make(global_config, embed_func)
+                await s.initialize()
+                with patch.object(
+                    s, "_create_index_if_not_exists", new_callable=AsyncMock
+                ) as mock_create:
+                    result = await s.drop()
+                    assert result["status"] == "error"
+                    assert s._index_ready is False
+                    await s.upsert({"d1": {"status": "pending"}})
+                    mock_create.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_upsert_after_drop_recreates_index(
@@ -1244,6 +1290,41 @@ class TestGraphStorage:
             result = await s.drop()
             assert result["status"] == "success"
             assert mock_client.indices.delete.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_drop_partial_error_marks_indices_not_ready_and_next_upsert_recreates_indices(
+        self, global_config, embed_func, mock_client
+    ):
+        mock_client.exists = AsyncMock(return_value=False)
+        mock_client.indices.delete = AsyncMock(
+            side_effect=[None, OpenSearchException("edges drop failed")]
+        )
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+            with patch.object(
+                s, "_create_indices_if_not_exist", new_callable=AsyncMock
+            ) as mock_create:
+                result = await s.drop()
+                assert result["status"] == "error"
+                assert "edges drop failed" in result["message"]
+                assert s._indices_ready is False
+                await s.upsert_edge("A", "B", {"weight": "1.0"})
+                mock_create.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_drop_treats_missing_graph_indices_as_success(
+        self, global_config, embed_func, mock_client
+    ):
+        mock_client.indices.delete = AsyncMock(
+            side_effect=[_missing_index_error(), _missing_index_error()]
+        )
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+            result = await s.drop()
+            assert result["status"] == "success"
+            assert s._indices_ready is False
 
     @pytest.mark.asyncio
     async def test_construct_graph_node(self, global_config, embed_func):
@@ -1842,6 +1923,36 @@ class TestVectorStorage:
             mock_client.indices.delete.assert_awaited_once()
             # create called twice: once during init, once during drop recreate
             assert mock_client.indices.create.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_drop_delete_error_marks_index_not_ready(
+        self, global_config, embed_func, mock_client
+    ):
+        mock_client.indices.delete = AsyncMock(
+            side_effect=OpenSearchException("delete failed")
+        )
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+            result = await s.drop()
+            assert result["status"] == "error"
+            assert s._index_ready is False
+
+    @pytest.mark.asyncio
+    async def test_drop_recreate_error_marks_index_not_ready(
+        self, global_config, embed_func, mock_client
+    ):
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+            with patch.object(
+                s,
+                "_create_knn_index_if_not_exists",
+                new=AsyncMock(side_effect=OpenSearchException("recreate failed")),
+            ):
+                result = await s.drop()
+                assert result["status"] == "error"
+                assert s._index_ready is False
 
     @pytest.mark.asyncio
     async def test_drop_recreates_index_when_missing(

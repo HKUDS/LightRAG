@@ -385,12 +385,22 @@ class OpenSearchKVStorage(BaseKVStorage):
     async def drop(self) -> dict[str, str]:
         """Delete the entire index."""
         try:
-            await self.client.indices.delete(index=self._index_name)
-            self._index_ready = False
-            logger.info(f"[{self.workspace}] Dropped index: {self._index_name}")
+            try:
+                await self.client.indices.delete(index=self._index_name)
+                logger.info(f"[{self.workspace}] Dropped index: {self._index_name}")
+            except NotFoundError:
+                logger.info(
+                    f"[{self.workspace}] Index already missing during drop: {self._index_name}"
+                )
+            self._mark_index_missing()
             return {"status": "success", "message": f"Index {self._index_name} dropped"}
         except OpenSearchException as e:
+            self._mark_index_missing()
             logger.error(f"[{self.workspace}] Error dropping index: {e}")
+            return {"status": "error", "message": str(e)}
+        except Exception as e:
+            self._mark_index_missing()
+            logger.error(f"[{self.workspace}] Unexpected error dropping index: {e}")
             return {"status": "error", "message": str(e)}
 
 
@@ -839,14 +849,26 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
     async def drop(self) -> dict[str, str]:
         """Delete the entire doc status index."""
         try:
-            await self.client.indices.delete(index=self._index_name)
-            self._index_ready = False
-            logger.info(
-                f"[{self.workspace}] Dropped doc status index: {self._index_name}"
-            )
+            try:
+                await self.client.indices.delete(index=self._index_name)
+                logger.info(
+                    f"[{self.workspace}] Dropped doc status index: {self._index_name}"
+                )
+            except NotFoundError:
+                logger.info(
+                    f"[{self.workspace}] Doc status index already missing during drop: {self._index_name}"
+                )
+            self._mark_index_missing()
             return {"status": "success", "message": f"Index {self._index_name} dropped"}
         except OpenSearchException as e:
+            self._mark_index_missing()
             logger.error(f"[{self.workspace}] Error dropping doc status index: {e}")
+            return {"status": "error", "message": str(e)}
+        except Exception as e:
+            self._mark_index_missing()
+            logger.error(
+                f"[{self.workspace}] Unexpected error dropping doc status index: {e}"
+            )
             return {"status": "error", "message": str(e)}
 
 
@@ -2169,17 +2191,39 @@ class OpenSearchGraphStorage(BaseGraphStorage):
 
     async def drop(self) -> dict[str, str]:
         """Delete both node and edge indices."""
+        errors = []
+        for idx in (self._nodes_index, self._edges_index):
+            try:
+                await self.client.indices.delete(index=idx)
+                logger.info(f"[{self.workspace}] Dropped graph index: {idx}")
+            except NotFoundError:
+                logger.info(
+                    f"[{self.workspace}] Graph index already missing during drop: {idx}"
+                )
+            except OpenSearchException as e:
+                errors.append(f"{idx}: {e}")
+                logger.error(
+                    f"[{self.workspace}] Error dropping graph index {idx}: {e}"
+                )
+            except Exception as e:
+                errors.append(f"{idx}: {e}")
+                logger.error(
+                    f"[{self.workspace}] Unexpected error dropping graph index {idx}: {e}"
+                )
+
+        self._mark_indices_missing()
+
+        if errors:
+            return {
+                "status": "error",
+                "message": "Failed to drop graph indices: " + "; ".join(errors),
+            }
+
         try:
-            for idx in (self._nodes_index, self._edges_index):
-                try:
-                    await self.client.indices.delete(index=idx)
-                except NotFoundError:
-                    pass
-            self._indices_ready = False
             logger.info(f"[{self.workspace}] Dropped graph indices")
             return {"status": "success", "message": "Graph indices dropped"}
-        except OpenSearchException as e:
-            logger.error(f"[{self.workspace}] Error dropping graph indices: {e}")
+        except Exception as e:
+            logger.error(f"[{self.workspace}] Error finalizing graph drop: {e}")
             return {"status": "error", "message": str(e)}
 
 
@@ -2592,8 +2636,13 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
         try:
             try:
                 await self.client.indices.delete(index=self._index_name)
+                logger.info(
+                    f"[{self.workspace}] Dropped vector index: {self._index_name}"
+                )
             except NotFoundError:
-                pass
+                logger.info(
+                    f"[{self.workspace}] Vector index already missing during drop: {self._index_name}"
+                )
             # Recreate the index
             await self._create_knn_index_if_not_exists()
             self._index_ready = True
@@ -2605,5 +2654,12 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
                 "message": f"Vector index {self._index_name} dropped and recreated",
             }
         except OpenSearchException as e:
+            self._mark_index_missing()
             logger.error(f"[{self.workspace}] Error dropping vector index: {e}")
+            return {"status": "error", "message": str(e)}
+        except Exception as e:
+            self._mark_index_missing()
+            logger.error(
+                f"[{self.workspace}] Unexpected error dropping vector index: {e}"
+            )
             return {"status": "error", "message": str(e)}
