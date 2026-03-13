@@ -1805,33 +1805,17 @@ All exports include:
 <details>
   <summary> <b>Clear Cache</b> </summary>
 
-You can clear the LLM response cache with different modes:
+You can clear the configured LLM response cache storage with `aclear_cache()`. This API clears all cached entries in `llm_response_cache` and does not support selective cleanup by mode or cache type.
 
 ```python
 # Clear all cache
 await rag.aclear_cache()
 
-# Clear local mode cache
-await rag.aclear_cache(modes=["local"])
-
-# Clear extraction cache
-await rag.aclear_cache(modes=["default"])
-
-# Clear multiple modes
-await rag.aclear_cache(modes=["local", "global", "hybrid"])
-
 # Synchronous version
-rag.clear_cache(modes=["local"])
+rag.clear_cache()
 ```
 
-Valid modes are:
-
-- `"default"`: Extraction cache
-- `"naive"`: Naive search cache
-- `"local"`: Local search cache
-- `"global"`: Global search cache
-- `"hybrid"`: Hybrid search cache
-- `"mix"`: Mix search cache
+For selective cleanup of query-related caches, use the `lightrag.tools.clean_llm_query_cache` tool and see the guide in [lightrag/tools/README_CLEAN_LLM_QUERY_CACHE.md](./lightrag/tools/README_CLEAN_LLM_QUERY_CACHE.md). It manages query caches and keywords caches for `mix`, `hybrid`, `local`, and `global` modes. It does not clean extraction caches such as `default:extract:*` and `default:summary:*`.
 
 </details>
 

@@ -1805,33 +1805,17 @@ rag.export_data("complete_data.csv", include_vector_data=True)
 <details>
   <summary> <b>清除缓存</b> </summary>
 
-您可以使用不同的模式清除 LLM 响应缓存：
+您可以使用 `aclear_cache()` 清空当前配置的 LLM 响应缓存存储。该 API 会清除 `llm_response_cache` 中的全部缓存项，不支持按模式或缓存类型进行选择性清理。
 
 ```python
 # 清除所有缓存
 await rag.aclear_cache()
 
-# 清除 local 模式缓存
-await rag.aclear_cache(modes=["local"])
-
-# 清除提取（extraction）缓存
-await rag.aclear_cache(modes=["default"])
-
-# 清除多个模式的缓存
-await rag.aclear_cache(modes=["local", "global", "hybrid"])
-
 # 同步版本
-rag.clear_cache(modes=["local"])
+rag.clear_cache()
 ```
 
-有效模式包括：
-
-- `"default"`：提取缓存
-- `"naive"`：朴素搜索缓存
-- `"local"`：本地搜索缓存
-- `"global"`：全局搜索缓存
-- `"hybrid"`：混合搜索缓存
-- `"mix"`：混合（Mix）搜索缓存
+如果需要按类型管理查询相关缓存，可以使用 `lightrag.tools.clean_llm_query_cache` 工具，并参考说明文档 [lightrag/tools/README_CLEAN_LLM_QUERY_CACHE.md](./lightrag/tools/README_CLEAN_LLM_QUERY_CACHE.md)。该工具可管理 `mix`、`hybrid`、`local` 和 `global` 模式下的查询缓存与关键词缓存；它不会清理 `default:extract:*` 和 `default:summary:*` 这类提取缓存。
 
 </details>
 
