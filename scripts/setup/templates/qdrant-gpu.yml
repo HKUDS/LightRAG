@@ -1,9 +1,15 @@
   qdrant:
-    image: qdrant/qdrant:latest
+    image: qdrant/qdrant:gpu-nvidia-latest
     # ports:
     #   - "6333:6333"
     volumes:
       - qdrant_data:/qdrant/storage
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              capabilities: ["gpu"]
     healthcheck:
       test:
         - CMD-SHELL

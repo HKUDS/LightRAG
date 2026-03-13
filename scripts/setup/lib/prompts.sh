@@ -17,7 +17,6 @@ mask_sensitive_input() {
   local value
 
   read -r -p "$prompt" value
-  echo >&2
   printf '%s' "$value"
 }
 
@@ -33,7 +32,6 @@ prompt_secret_with_default() {
   else
     read -r -p "$prompt" value
   fi
-  echo >&2
 
   if [[ -z "$value" ]]; then
     value="$default"
@@ -102,11 +100,24 @@ prompt_with_default() {
   printf '%s' "$value"
 }
 
+style_prompt_text() {
+  local prompt="$1"
+
+  if [[ -n "${COLOR_YELLOW:-}" && "$prompt" == *Docker* ]]; then
+    prompt="${prompt//Docker/${COLOR_YELLOW}Docker${COLOR_RESET}}"
+  fi
+
+  printf '%s' "$prompt"
+}
+
 confirm_default_no() {
   local prompt="$1"
   local response
+  local styled_prompt
+
+  styled_prompt="$(style_prompt_text "$prompt")"
   while true; do
-    read -r -n 1 -p "$prompt [y/N]: " response
+    read -r -n 1 -p "$styled_prompt [y/N]: " response
     echo
     case "$response" in
       y|Y) return 0 ;;
@@ -118,12 +129,35 @@ confirm_default_no() {
 confirm_default_yes() {
   local prompt="$1"
   local response
+  local styled_prompt
+
+  styled_prompt="$(style_prompt_text "$prompt")"
   while true; do
-    read -r -n 1 -p "$prompt [Y/n]: " response
+    read -r -n 1 -p "$styled_prompt [Y/n]: " response
     echo
     case "$response" in
       y|Y|"") return 0 ;;
       n|N) return 1 ;;
+    esac
+  done
+}
+
+confirm_required_yes_no() {
+  local prompt="$1"
+  local response
+  local styled_prompt
+
+  styled_prompt="$(style_prompt_text "$prompt")"
+
+  while true; do
+    printf '%b' "$styled_prompt [yes/no]: " >&2
+    read -r response
+    case "${response,,}" in
+      yes) return 0 ;;
+      no) return 1 ;;
+      *)
+        echo "Please type 'yes' or 'no'." >&2
+        ;;
     esac
   done
 }
@@ -213,7 +247,15 @@ prompt_choice() {
     printf '%s\n' "${COLOR_BLUE}${prompt}${COLOR_RESET} options:" >&2
     index=1
     for option in "${options[@]}"; do
-      printf '  %s) %s\n' "${COLOR_GREEN}${index}${COLOR_RESET}" "$option" >&2
+      if [[ "$index" == "$default_index" ]]; then
+        printf '  %s) %s%s%s\n' \
+          "${COLOR_GREEN}${index}${COLOR_RESET}" \
+          "${COLOR_YELLOW}" \
+          "$option" \
+          "${COLOR_RESET}" >&2
+      else
+        printf '  %s) %s\n' "${COLOR_GREEN}${index}${COLOR_RESET}" "$option" >&2
+      fi
       index=$((index + 1))
     done
     if [[ -n "$default_index" ]]; then

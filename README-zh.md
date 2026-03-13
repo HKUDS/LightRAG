@@ -191,12 +191,16 @@ docker compose up
 make env-base           # 必跑第一步：配置 LLM、Embedding、Reranker
 make env-storage        # 可选：配置存储后端和数据库服务
 make env-server         # 可选：配置服务端口、鉴权和 SSL
+make env-base-rewrite   # 可选：强制重建向导托管的 compose 服务块
+make env-storage-rewrite # 可选：强制重建向导托管的 compose 服务块
 make env-security-check # 可选：审计当前 .env 中的安全风险
 ```
 
 每个目标的详细说明请参阅 [docs/InteractiveSetup.md](./docs/InteractiveSetup.md)。
 这些 setup 向导只负责更新配置；如需在部署前审计当前 `.env` 的安全风险，请额外运行
 `make env-security-check`。
+默认情况下，重新运行 setup 会保留未变化的向导托管 compose 服务块；只有在需要按模板强制重建这些托管块时，才使用
+`*-rewrite` 目标。
 
 ### 安装LightRAG Core
 
@@ -1241,7 +1245,7 @@ db_name = lightrag
 <details>
 <summary> <b>使用 MongoDB 存储</b> </summary>
 
-MongoDB 为 LightRAG 提供了一站式存储解决方案。MongoDB 提供原生的 KV 存储和向量存储。LightRAG 使用 MongoDB 集合来实现简单的图存储。MongoDB 官方的向量搜索功能（`$vectorSearch`）目前需要其官方云服务 MongoDB Atlas。此功能无法在自托管的 MongoDB Community/Enterprise 版本上使用。
+MongoDB 为 LightRAG 提供了一站式存储解决方案。MongoDB 提供原生的 KV 存储和向量存储。LightRAG 使用 MongoDB 集合来实现简单的图存储。`MongoVectorDBStorage` 需要目标 MongoDB 部署具备 Atlas Search / Vector Search 能力，例如 MongoDB Atlas 或 Atlas local。交互式 setup 向导内置的本地 Docker MongoDB 服务是 MongoDB Community Edition，因此它可以用于 KV / 图 / 文档状态存储，但不能作为 `MongoVectorDBStorage` 的后端。
 
 </details>
 
@@ -1259,6 +1263,8 @@ maxmemory 4gb
 maxmemory-policy noeviction
 maxclients 500
 ```
+
+当交互式 setup 管理本地 Redis 容器时，它会在 `./data/config/redis.conf` 生成一个可直接修改的配置文件，并将其挂载到容器内。后续重新运行 setup 时会保留该文件，避免覆盖用户的手工调整。
 
 </details>
 

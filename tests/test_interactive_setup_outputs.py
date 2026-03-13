@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import subprocess
 from pathlib import Path
 
@@ -12,16 +13,25 @@ pytestmark = pytest.mark.offline
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
-def run_bash(script: str, cwd: Path | None = None) -> str:
-    """Run a bash snippet and return stdout."""
+def run_bash_process(
+    script: str, cwd: Path | None = None, stdin: str | None = ""
+) -> subprocess.CompletedProcess[str]:
+    """Run a bash snippet and return the completed process."""
 
-    result = subprocess.run(
+    return subprocess.run(
         ["bash", "--norc", "--noprofile", "-c", script],
         cwd=cwd or REPO_ROOT,
+        input=stdin,
         capture_output=True,
         text=True,
         check=False,
     )
+
+
+def run_bash(script: str, cwd: Path | None = None) -> str:
+    """Run a bash snippet and return stdout."""
+
+    result = run_bash_process(script, cwd=cwd)
     if result.returncode != 0:
         raise AssertionError(
             f"bash script failed with code {result.returncode}\n"
@@ -56,10 +66,22 @@ def write_text_lines(path: Path, lines: list[str]) -> Path:
     return path
 
 
-def test_collect_postgres_config_keeps_host_reachable_env_values() -> None:
-    """Bundled PostgreSQL should keep `.env` host-oriented and use compose overrides."""
+def assert_single_compose_backup(tmp_path: Path, expected_content: str) -> Path:
+    """Assert that a single compose backup exists with the expected content."""
 
-    output = run_bash(
+    backups = sorted(tmp_path.glob("docker-compose.backup*.yml"))
+    assert len(backups) == 1
+    assert re.fullmatch(r"docker-compose\.backup\d{8}_\d{6}\.yml", backups[0].name)
+    assert backups[0].read_text(encoding="utf-8") == expected_content
+    return backups[0]
+
+
+def test_collect_postgres_config_uses_fixed_bundled_port_and_compose_overrides() -> (
+    None
+):
+    """Bundled PostgreSQL should use the fixed service port and compose overrides."""
+
+    values = run_bash_lines(
         f"""
 set -euo pipefail
 source "{REPO_ROOT}/scripts/setup/setup.sh"
@@ -74,33 +96,231 @@ prompt_with_default() {{
     *) printf '%s' "$2" ;;
   esac
 }}
-prompt_until_valid() {{
-  if [[ "$1" == "PostgreSQL host port" ]]; then
-    printf '15432'
-  else
-    printf '%s' "$2"
-  fi
-}}
 mask_sensitive_input() {{ printf 'supersecret'; }}
 
 collect_postgres_config yes
 
 printf 'POSTGRES_HOST=%s\\n' "${{ENV_VALUES[POSTGRES_HOST]}}"
 printf 'POSTGRES_PORT=%s\\n' "${{ENV_VALUES[POSTGRES_PORT]}}"
-printf 'POSTGRES_HOST_PORT=%s\\n' "${{ENV_VALUES[POSTGRES_HOST_PORT]}}"
 printf 'COMPOSE_POSTGRES_HOST=%s\\n' "${{COMPOSE_ENV_OVERRIDES[POSTGRES_HOST]}}"
 printf 'COMPOSE_POSTGRES_PORT=%s\\n' "${{COMPOSE_ENV_OVERRIDES[POSTGRES_PORT]}}"
 printf 'DOCKER_SERVICE=%s\\n' "${{DOCKER_SERVICES[0]}}"
 """
     )
-    values = parse_lines(output)
 
     assert values["POSTGRES_HOST"] == "localhost"
-    assert values["POSTGRES_PORT"] == "15432"
-    assert values["POSTGRES_HOST_PORT"] == "15432"
+    assert values["POSTGRES_PORT"] == "5432"
     assert values["COMPOSE_POSTGRES_HOST"] == "postgres"
     assert values["COMPOSE_POSTGRES_PORT"] == "5432"
     assert values["DOCKER_SERVICE"] == "postgres"
+
+
+def test_collect_postgres_config_uses_rag_defaults_without_prompt_for_empty_docker_credentials() -> (
+    None
+):
+    """Docker PostgreSQL should auto-fill bundled credentials when old `.env` creds are empty."""
+
+    values = run_bash_lines(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+reset_state
+
+PROMPT_LOG_FILE="$(mktemp)"
+: > "$PROMPT_LOG_FILE"
+
+confirm_default_yes() {{ return 0; }}
+prompt_with_default() {{
+  printf '%s\\n' "$1" >> "$PROMPT_LOG_FILE"
+  case "$1" in
+    "PostgreSQL host") printf 'localhost' ;;
+    *) printf '%s' "$2" ;;
+  esac
+}}
+prompt_secret_with_default() {{
+  printf 'secret:%s\\n' "$1" >> "$PROMPT_LOG_FILE"
+  printf '%s' "$2"
+}}
+
+ORIGINAL_ENV_VALUES[POSTGRES_USER]=""
+ORIGINAL_ENV_VALUES[POSTGRES_PASSWORD]=""
+ORIGINAL_ENV_VALUES[POSTGRES_DATABASE]=""
+
+collect_postgres_config yes
+
+printf 'POSTGRES_USER=%s\\n' "${{ENV_VALUES[POSTGRES_USER]}}"
+printf 'POSTGRES_PASSWORD=%s\\n' "${{ENV_VALUES[POSTGRES_PASSWORD]}}"
+printf 'POSTGRES_DATABASE=%s\\n' "${{ENV_VALUES[POSTGRES_DATABASE]}}"
+printf 'PROMPT_LOG=%s\\n' "$(paste -sd '|' "$PROMPT_LOG_FILE")"
+"""
+    )
+
+    assert values["POSTGRES_USER"] == "rag"
+    assert values["POSTGRES_PASSWORD"] == "rag"
+    assert values["POSTGRES_DATABASE"] == "rag"
+    assert values["PROMPT_LOG"] == "PostgreSQL host"
+
+
+def test_collect_postgres_config_prompts_for_existing_docker_credentials() -> None:
+    """Docker PostgreSQL should preserve editability when old `.env` creds already exist."""
+
+    values = run_bash_lines(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+reset_state
+
+PROMPT_LOG_FILE="$(mktemp)"
+: > "$PROMPT_LOG_FILE"
+
+confirm_default_yes() {{ return 0; }}
+prompt_with_default() {{
+  printf '%s[%s]\\n' "$1" "$2" >> "$PROMPT_LOG_FILE"
+  case "$1" in
+    "PostgreSQL host") printf 'localhost' ;;
+    "PostgreSQL user") printf 'updated-user' ;;
+    "PostgreSQL database") printf 'updated-db' ;;
+    *) printf '%s' "$2" ;;
+  esac
+}}
+prompt_secret_with_default() {{
+  printf '%s[%s]\\n' "$1" "$2" >> "$PROMPT_LOG_FILE"
+  printf 'updated-password'
+}}
+
+ORIGINAL_ENV_VALUES[POSTGRES_USER]="existing-user"
+ORIGINAL_ENV_VALUES[POSTGRES_PASSWORD]="existing-password"
+ORIGINAL_ENV_VALUES[POSTGRES_DATABASE]="existing-db"
+
+collect_postgres_config yes
+
+printf 'POSTGRES_USER=%s\\n' "${{ENV_VALUES[POSTGRES_USER]}}"
+printf 'POSTGRES_PASSWORD=%s\\n' "${{ENV_VALUES[POSTGRES_PASSWORD]}}"
+printf 'POSTGRES_DATABASE=%s\\n' "${{ENV_VALUES[POSTGRES_DATABASE]}}"
+printf 'PROMPT_LOG=%s\\n' "$(paste -sd '|' "$PROMPT_LOG_FILE")"
+"""
+    )
+
+    assert values["POSTGRES_USER"] == "updated-user"
+    assert values["POSTGRES_PASSWORD"] == "updated-password"
+    assert values["POSTGRES_DATABASE"] == "updated-db"
+    assert (
+        values["PROMPT_LOG"] == "PostgreSQL host[localhost]|"
+        "PostgreSQL user[existing-user]|PostgreSQL password: [existing-password]|"
+        "PostgreSQL database[existing-db]"
+    )
+
+
+def test_collect_postgres_config_still_prompts_for_host_credentials() -> None:
+    """Host PostgreSQL should keep prompting even when saved creds are empty."""
+
+    values = run_bash_lines(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+reset_state
+
+PROMPT_LOG_FILE="$(mktemp)"
+: > "$PROMPT_LOG_FILE"
+
+confirm_default_no() {{ return 1; }}
+prompt_with_default() {{
+  printf '%s[%s]\\n' "$1" "$2" >> "$PROMPT_LOG_FILE"
+  case "$1" in
+    "PostgreSQL host") printf 'db.internal' ;;
+    "PostgreSQL user") printf 'host-user' ;;
+    "PostgreSQL database") printf 'host-db' ;;
+    *) printf '%s' "$2" ;;
+  esac
+}}
+prompt_until_valid() {{
+  printf '%s[%s]\\n' "$1" "$2" >> "$PROMPT_LOG_FILE"
+  if [[ "$1" == "PostgreSQL port" ]]; then
+    printf '6543'
+  else
+    printf '%s' "$2"
+  fi
+}}
+prompt_secret_with_default() {{
+  printf '%s[%s]\\n' "$1" "$2" >> "$PROMPT_LOG_FILE"
+  printf 'host-password'
+}}
+
+ORIGINAL_ENV_VALUES[POSTGRES_USER]=""
+ORIGINAL_ENV_VALUES[POSTGRES_PASSWORD]=""
+
+collect_postgres_config no
+
+printf 'POSTGRES_HOST=%s\\n' "${{ENV_VALUES[POSTGRES_HOST]}}"
+printf 'POSTGRES_PORT=%s\\n' "${{ENV_VALUES[POSTGRES_PORT]}}"
+printf 'POSTGRES_USER=%s\\n' "${{ENV_VALUES[POSTGRES_USER]}}"
+printf 'POSTGRES_PASSWORD=%s\\n' "${{ENV_VALUES[POSTGRES_PASSWORD]}}"
+printf 'PROMPT_LOG=%s\\n' "$(paste -sd '|' "$PROMPT_LOG_FILE")"
+"""
+    )
+
+    assert values["POSTGRES_HOST"] == "db.internal"
+    assert values["POSTGRES_PORT"] == "6543"
+    assert values["POSTGRES_USER"] == "host-user"
+    assert values["POSTGRES_PASSWORD"] == "host-password"
+    assert (
+        values["PROMPT_LOG"] == "PostgreSQL host[localhost]|PostgreSQL port[5432]|"
+        "PostgreSQL user[rag]|PostgreSQL password: [rag]|"
+        "PostgreSQL database[lightrag]"
+    )
+
+
+def test_collect_server_config_includes_summary_language_last() -> None:
+    """Server config should prompt for summary language after the WebUI fields."""
+
+    values = run_bash_lines(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+reset_state
+
+PROMPT_LOG_FILE="$(mktemp)"
+: > "$PROMPT_LOG_FILE"
+
+prompt_with_default() {{
+  printf '%s\\n' "$1" >> "$PROMPT_LOG_FILE"
+  case "$1" in
+    "Server host") printf '127.0.0.1' ;;
+    "WebUI title") printf 'Custom KB' ;;
+    "WebUI description") printf 'Custom description' ;;
+    "Summary language") printf 'Chinese' ;;
+    *) printf '%s' "$2" ;;
+  esac
+}}
+prompt_until_valid() {{
+  printf '%s\\n' "$1" >> "$PROMPT_LOG_FILE"
+  if [[ "$1" == "Server port" ]]; then
+    printf '9630'
+  else
+    printf '%s' "$2"
+  fi
+}}
+
+collect_server_config
+
+printf 'HOST=%s\\n' "${{ENV_VALUES[HOST]}}"
+printf 'PORT=%s\\n' "${{ENV_VALUES[PORT]}}"
+printf 'WEBUI_TITLE=%s\\n' "${{ENV_VALUES[WEBUI_TITLE]}}"
+printf 'WEBUI_DESCRIPTION=%s\\n' "${{ENV_VALUES[WEBUI_DESCRIPTION]}}"
+printf 'SUMMARY_LANGUAGE=%s\\n' "${{ENV_VALUES[SUMMARY_LANGUAGE]}}"
+printf 'PROMPT_LOG=%s\\n' "$(paste -sd '|' "$PROMPT_LOG_FILE")"
+"""
+    )
+
+    assert values["HOST"] == "127.0.0.1"
+    assert values["PORT"] == "9630"
+    assert values["WEBUI_TITLE"] == "Custom KB"
+    assert values["WEBUI_DESCRIPTION"] == "Custom description"
+    assert values["SUMMARY_LANGUAGE"] == "Chinese"
+    assert (
+        values["PROMPT_LOG"]
+        == "Server host|Server port|WebUI title|WebUI description|Summary language"
+    )
 
 
 @pytest.mark.parametrize(
@@ -122,7 +342,7 @@ printf 'DOCKER_SERVICE=%s\\n' "${{DOCKER_SERVICES[0]}}"
             ],
             "collect_postgres_config yes",
             "POSTGRES_PORT",
-            "6543",
+            "5432",
         ),
         (
             ['ENV_VALUES[NEO4J_URI]="neo4j+s://graph.example.com"'],
@@ -187,7 +407,7 @@ printf 'DOCKER_SERVICE=%s\\n' "${{DOCKER_SERVICES[0]}}"
     ],
     ids=[
         "postgres-remote-host",
-        "postgres-port-preserved",
+        "postgres-port-reset-to-bundled-default",
         "neo4j-remote-uri",
         "mongodb-remote-uri",
         "redis-remote-uri",
@@ -218,6 +438,7 @@ reset_state
 {setup_block}
 
 confirm_default_yes() {{ return 0; }}
+prompt_choice() {{ printf '%s' "$2"; }}
 prompt_with_default() {{
   case "$1" in
     "PostgreSQL user") printf 'lightrag' ;;
@@ -372,6 +593,7 @@ def test_generate_docker_compose_removes_lightrag_env_file_to_preserve_dollar_va
         [
             "services:",
             "  lightrag:",
+            "    container_name: lightrag",
             "    image: example/lightrag:test",
             "    env_file:",
             "      - .env",
@@ -397,7 +619,41 @@ generate_docker_compose "$REPO_ROOT/docker-compose.generated.yml"
 
     assert "env_file:" not in generated_compose
     assert "environment:" not in generated_compose
+    assert "container_name:" not in generated_compose
     assert "- ./.env:/app/.env" in generated_compose
+
+
+def test_generate_docker_compose_removes_lightrag_container_name_from_existing_output(
+    tmp_path: Path,
+) -> None:
+    """Compose regeneration should strip fixed lightrag container names from prior output."""
+
+    write_text_lines(
+        tmp_path / "docker-compose.final.yml",
+        [
+            "services:",
+            "  lightrag:",
+            "    container_name: lightrag",
+            "    image: example/lightrag:test",
+        ],
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+
+generate_docker_compose "$REPO_ROOT/docker-compose.final.yml"
+"""
+    )
+
+    generated_compose = (tmp_path / "docker-compose.final.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "container_name:" not in generated_compose
 
 
 def test_generate_docker_compose_preserves_list_style_lightrag_environment(
@@ -439,6 +695,277 @@ generate_docker_compose "$REPO_ROOT/docker-compose.final.yml"
     assert '      - "PORT=1234"' in generated_compose
     assert "      - FOO=bar" in generated_compose
     assert "      PORT:" not in generated_compose
+
+
+def test_generate_docker_compose_injects_healthchecks_and_lightrag_depends_on(
+    tmp_path: Path,
+) -> None:
+    """Generated compose should gate LightRAG on all managed dependencies becoming healthy."""
+
+    write_text_lines(
+        tmp_path / "docker-compose.yml",
+        [
+            "services:",
+            "  lightrag:",
+            "    image: example/lightrag:test",
+        ],
+    )
+    write_text_lines(
+        tmp_path / "env.example",
+        (REPO_ROOT / "env.example").read_text(encoding="utf-8").splitlines(),
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+
+add_docker_service postgres
+add_docker_service neo4j
+add_docker_service mongodb
+add_docker_service redis
+add_docker_service milvus
+add_docker_service qdrant
+add_docker_service memgraph
+add_docker_service vllm-embed
+add_docker_service vllm-rerank
+
+generate_docker_compose "$REPO_ROOT/docker-compose.final.yml"
+"""
+    )
+
+    generated_compose = (tmp_path / "docker-compose.final.yml").read_text(
+        encoding="utf-8"
+    )
+
+    lightrag_start = generated_compose.index("  lightrag:\n")
+    embed_start = generated_compose.index("\n  vllm-embed:\n")
+    lightrag_block = generated_compose[lightrag_start:embed_start]
+
+    assert "    depends_on:" in generated_compose
+    assert "    depends_on:" in lightrag_block
+    for service_name in (
+        "postgres",
+        "neo4j",
+        "mongodb",
+        "redis",
+        "milvus",
+        "qdrant",
+        "memgraph",
+        "vllm-embed",
+        "vllm-rerank",
+    ):
+        assert (
+            f"      {service_name}:\n        condition: service_healthy"
+            in lightrag_block
+        )
+
+    assert generated_compose.count("    healthcheck:") == 11
+    assert "  milvus-etcd:" in generated_compose
+    assert "  milvus-minio:" in generated_compose
+    assert "      milvus-etcd:\n        condition: service_healthy" in generated_compose
+    assert (
+        "      milvus-minio:\n        condition: service_healthy" in generated_compose
+    )
+
+
+def test_generate_docker_compose_preserves_user_depends_on_and_removes_stale_managed_entries(
+    tmp_path: Path,
+) -> None:
+    """Compose regeneration should preserve user dependencies while refreshing wizard-managed ones."""
+
+    write_text_lines(
+        tmp_path / "docker-compose.final.yml",
+        [
+            "services:",
+            "  lightrag:",
+            "    image: example/lightrag:test",
+            "    depends_on:",
+            "      sidecar:",
+            "        condition: service_started",
+            "      postgres:",
+            "        condition: service_started",
+            "      vllm-embed:",
+            "        condition: service_healthy",
+            "  sidecar:",
+            "    image: busybox",
+        ],
+    )
+    write_text_lines(
+        tmp_path / "env.example",
+        (REPO_ROOT / "env.example").read_text(encoding="utf-8").splitlines(),
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+
+add_docker_service postgres
+add_docker_service redis
+
+generate_docker_compose "$REPO_ROOT/docker-compose.final.yml"
+"""
+    )
+
+    generated_compose = (tmp_path / "docker-compose.final.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "      sidecar:\n        condition: service_started" in generated_compose
+    assert "      postgres:\n        condition: service_healthy" in generated_compose
+    assert "      redis:\n        condition: service_healthy" in generated_compose
+    assert (
+        "      vllm-embed:\n        condition: service_healthy" not in generated_compose
+    )
+
+
+def test_generate_docker_compose_repairs_misplaced_lightrag_depends_on_from_existing_output(
+    tmp_path: Path,
+) -> None:
+    """Regeneration should move stale lightrag depends_on content back onto the lightrag service."""
+
+    write_text_lines(
+        tmp_path / "docker-compose.final.yml",
+        [
+            "services:",
+            "  lightrag:",
+            "    image: example/lightrag:test",
+            "    environment:",
+            "  vllm-rerank:",
+            "    image: example/vllm:test",
+            "    restart: unless-stopped",
+            "    depends_on:",
+            "      my-service:",
+            "        condition: service_healthy",
+            "volumes:",
+            "  vllm_rerank_cache:",
+        ],
+    )
+    write_text_lines(
+        tmp_path / "env.example",
+        (REPO_ROOT / "env.example").read_text(encoding="utf-8").splitlines(),
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+
+add_docker_service vllm-rerank
+
+generate_docker_compose "$REPO_ROOT/docker-compose.final.yml"
+"""
+    )
+
+    generated_compose = (tmp_path / "docker-compose.final.yml").read_text(
+        encoding="utf-8"
+    )
+
+    lightrag_start = generated_compose.index("  lightrag:\n")
+    rerank_start = generated_compose.index("\n  vllm-rerank:\n")
+    lightrag_block = generated_compose[lightrag_start:rerank_start]
+    rerank_block = generated_compose[rerank_start:]
+
+    assert "    depends_on:" in lightrag_block
+    assert "      my-service:\n        condition: service_healthy" in lightrag_block
+    assert "      vllm-rerank:\n        condition: service_healthy" in lightrag_block
+    assert "    depends_on:" not in rerank_block
+    assert generated_compose.count("\n  vllm-rerank:\n") == 1
+
+
+def test_generate_docker_compose_normalizes_lightrag_restart_policy_from_existing_output(
+    tmp_path: Path,
+) -> None:
+    """Regeneration should replace legacy lightrag restart with deploy.restart_policy."""
+
+    write_text_lines(
+        tmp_path / "docker-compose.final.yml",
+        [
+            "services:",
+            "  lightrag:",
+            "    image: example/lightrag:test",
+            "    restart: unless-stopped",
+            "    extra_hosts:",
+            '      - "host.docker.internal:host-gateway"',
+        ],
+    )
+    write_text_lines(
+        tmp_path / "env.example",
+        (REPO_ROOT / "env.example").read_text(encoding="utf-8").splitlines(),
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+
+generate_docker_compose "$REPO_ROOT/docker-compose.final.yml"
+"""
+    )
+
+    generated_compose = (tmp_path / "docker-compose.final.yml").read_text(
+        encoding="utf-8"
+    )
+
+    lightrag_start = generated_compose.index("  lightrag:\n")
+    lightrag_block = generated_compose[lightrag_start:]
+
+    assert "    restart: unless-stopped" not in lightrag_block
+    assert "    deploy:\n" in lightrag_block
+    assert "      restart_policy:\n" in lightrag_block
+    assert "        condition: on-failure\n" in lightrag_block
+    assert "        max_attempts: 10\n" in lightrag_block
+
+
+def test_generate_docker_compose_normalizes_lightrag_restart_policy_without_blank_line_before_deploy(
+    tmp_path: Path,
+) -> None:
+    """Regeneration should move the separator blank line after deploy, not before it."""
+
+    write_text_lines(
+        tmp_path / "docker-compose.final.yml",
+        [
+            "services:",
+            "  lightrag:",
+            "    image: example/lightrag:test",
+            "    restart: unless-stopped",
+            "",
+            "  sidecar:",
+            "    image: busybox",
+        ],
+    )
+    write_text_lines(
+        tmp_path / "env.example",
+        (REPO_ROOT / "env.example").read_text(encoding="utf-8").splitlines(),
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+
+generate_docker_compose "$REPO_ROOT/docker-compose.final.yml"
+"""
+    )
+
+    generated_compose = (tmp_path / "docker-compose.final.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "    image: example/lightrag:test\n\n    deploy:\n" not in generated_compose
+    assert "    image: example/lightrag:test\n    deploy:\n" in generated_compose
+    assert "        max_attempts: 10\n\n  sidecar:\n" in generated_compose
 
 
 def test_existing_ssl_env_keeps_compose_mount_overrides(tmp_path: Path) -> None:
@@ -550,7 +1077,13 @@ load_existing_env_if_present
 initialize_default_storage_backends
 
 show_summary() {{ :; }}
-confirm_default_yes() {{ return 0; }}
+confirm_default_yes() {{
+  case "$1" in
+    "All wizard-managed services have been removed. Remove LightRAG from Docker and switch to host mode?") return 1 ;;
+    *) return 0 ;;
+  esac
+}}
+confirm_required_yes_no() {{ return 0; }}
 
 finalize_base_setup
 
@@ -723,9 +1256,147 @@ generate_docker_compose "$REPO_ROOT/docker-compose.final.yml"
     result = (tmp_path / "docker-compose.final.yml").read_text(encoding="utf-8")
 
     assert "  postgres:" in result
-    assert "\nnetworks:\n" in result
+    assert "\n\nnetworks:\n" in result
     assert result.index("\n  postgres:") < result.index("\nnetworks:\n")
     assert "  appnet:" in result
+
+
+def test_generate_docker_compose_cleans_marker_and_blank_lines_when_only_lightrag_remains(
+    tmp_path: Path,
+) -> None:
+    """Regeneration should not leave a managed-services marker or stacked blank lines behind."""
+
+    write_text_lines(
+        tmp_path / "docker-compose.final.yml",
+        [
+            "services:",
+            "  lightrag:",
+            "    image: example/lightrag:test",
+            "    depends_on:",
+            "      vllm-embed:",
+            "        condition: service_healthy",
+            "      vllm-rerank:",
+            "        condition: service_healthy",
+            "",
+            "  vllm-embed:",
+            "    image: example/vllm:embed",
+            "",
+            "  vllm-rerank:",
+            "    image: example/vllm:rerank",
+            "",
+            "",
+            "",
+            "# __WIZARD_MANAGED_SERVICES__",
+            "networks:",
+            "  appnet:",
+            "    driver: bridge",
+        ],
+    )
+    write_text_lines(
+        tmp_path / "env.example",
+        (REPO_ROOT / "env.example").read_text(encoding="utf-8").splitlines(),
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+
+generate_docker_compose "$REPO_ROOT/docker-compose.final.yml"
+"""
+    )
+
+    result = (tmp_path / "docker-compose.final.yml").read_text(encoding="utf-8")
+
+    assert "  vllm-embed:" not in result
+    assert "  vllm-rerank:" not in result
+    assert "__WIZARD_MANAGED_SERVICES__" not in result
+    assert "depends_on:" not in result
+    assert "        max_attempts: 10\n\nnetworks:\n" in result
+
+
+def test_generate_docker_compose_keeps_blank_line_between_managed_service_and_top_level_sections(
+    tmp_path: Path,
+) -> None:
+    """Managed service blocks should stay visually separated from following top-level sections."""
+
+    write_text_lines(
+        tmp_path / "docker-compose.final.yml",
+        [
+            "services:",
+            "  lightrag:",
+            "    image: example/lightrag:test",
+            "networks:",
+            "  web_network:",
+            "    driver: bridge",
+        ],
+    )
+    write_text_lines(
+        tmp_path / "env.example",
+        (REPO_ROOT / "env.example").read_text(encoding="utf-8").splitlines(),
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+
+add_docker_service "vllm-embed"
+
+generate_docker_compose "$REPO_ROOT/docker-compose.final.yml"
+"""
+    )
+
+    result = (tmp_path / "docker-compose.final.yml").read_text(encoding="utf-8")
+
+    assert "  vllm-embed:" in result
+    assert "        max_attempts: 10\n    depends_on:\n" in result
+    assert "    restart: unless-stopped\n\nnetworks:\n" in result
+
+
+def test_generate_docker_compose_keeps_single_blank_line_before_generated_volumes(
+    tmp_path: Path,
+) -> None:
+    """Generated top-level volumes should be separated from prior sections by one blank line."""
+
+    write_text_lines(
+        tmp_path / "docker-compose.final.yml",
+        [
+            "services:",
+            "  lightrag:",
+            "    image: example/lightrag:test",
+            "networks:",
+            "  web_network:",
+            "    driver: bridge",
+            "",
+        ],
+    )
+    write_text_lines(
+        tmp_path / "env.example",
+        (REPO_ROOT / "env.example").read_text(encoding="utf-8").splitlines(),
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+
+add_docker_service "vllm-embed"
+
+generate_docker_compose "$REPO_ROOT/docker-compose.final.yml"
+"""
+    )
+
+    result = (tmp_path / "docker-compose.final.yml").read_text(encoding="utf-8")
+
+    assert "\n\nvolumes:\n" in result
+    assert "\n\n\nvolumes:\n" not in result
 
 
 def test_find_generated_compose_file_prefers_legacy_profile_match(
@@ -1191,7 +1862,7 @@ def test_collect_provider_config_clears_stale_api_key_for_bedrock(
 
     write_text_lines(tmp_path / ".env", env_lines)
 
-    values = run_bash_lines(
+    output = run_bash(
         f"""
 set -euo pipefail
 source "{REPO_ROOT}/scripts/setup/setup.sh"
@@ -1216,6 +1887,7 @@ else
 fi
 """
     )
+    values = parse_lines(output)
 
     assert values["BINDING"] == "aws_bedrock"
     assert values["API_KEY_SET"] == ""
@@ -1273,7 +1945,7 @@ def test_collect_provider_config_uses_provider_specific_defaults(
 ) -> None:
     """Fresh provider selection should pick provider-specific defaults."""
 
-    values = run_bash_lines(
+    output = run_bash(
         f"""
 set -euo pipefail
 source "{REPO_ROOT}/scripts/setup/setup.sh"
@@ -1292,6 +1964,7 @@ printf 'DIM=%s\\n' "${{ENV_VALUES[{binding_prefix}_DIM]:-}}"
 printf 'API_KEY_SET=%s\\n' "${{ENV_VALUES[{binding_prefix}_BINDING_API_KEY]+set}}"
 """
     )
+    values = parse_lines(output)
 
     assert values["BINDING"] == expected_binding
     assert values["MODEL"] == expected_model
@@ -1367,7 +2040,7 @@ def test_collect_provider_config_preserves_supported_binding_on_rerun(
 
     write_text_lines(tmp_path / ".env", env_lines)
 
-    values = run_bash_lines(
+    output = run_bash(
         f"""
 set -euo pipefail
 source "{REPO_ROOT}/scripts/setup/setup.sh"
@@ -1386,6 +2059,7 @@ printf 'DIM=%s\\n' "${{ENV_VALUES[{binding_prefix}_DIM]:-}}"
 printf 'API_KEY=%s\\n' "${{ENV_VALUES[{binding_prefix}_BINDING_API_KEY]:-}}"
 """
     )
+    values = parse_lines(output)
 
     assert values["BINDING"] == expected_binding
     assert values["MODEL"] == expected_model
@@ -1411,7 +2085,7 @@ def test_collect_embedding_config_forces_ollama_for_openai_ollama_llm(
         ],
     )
 
-    values = run_bash_lines(
+    output = run_bash(
         f"""
 set -euo pipefail
 source "{REPO_ROOT}/scripts/setup/setup.sh"
@@ -1431,6 +2105,7 @@ printf 'EMBEDDING_BINDING_HOST=%s\\n' "${{ENV_VALUES[EMBEDDING_BINDING_HOST]}}"
 printf 'EMBEDDING_BINDING_API_KEY_SET=%s\\n' "${{ENV_VALUES[EMBEDDING_BINDING_API_KEY]+set}}"
 """
     )
+    values = parse_lines(output)
 
     assert values["EMBEDDING_BINDING"] == "ollama"
     assert values["EMBEDDING_MODEL"] == "bge-m3:latest"
@@ -1442,7 +2117,7 @@ printf 'EMBEDDING_BINDING_API_KEY_SET=%s\\n' "${{ENV_VALUES[EMBEDDING_BINDING_AP
 def test_collect_llm_config_allows_bedrock_ambient_credential_chain() -> None:
     """Bedrock setup should allow IAM roles, AWS profiles, or SSO without saved keys."""
 
-    values = run_bash_lines(
+    output = run_bash(
         f"""
 set -euo pipefail
 source "{REPO_ROOT}/scripts/setup/setup.sh"
@@ -1463,6 +2138,7 @@ printf 'AWS_SESSION_TOKEN_SET=%s\\n' "${{ENV_VALUES[AWS_SESSION_TOKEN]+set}}"
 printf 'AWS_REGION_SET=%s\\n' "${{ENV_VALUES[AWS_REGION]+set}}"
 """
     )
+    values = parse_lines(output)
 
     assert values["LLM_BINDING"] == "aws_bedrock"
     assert values["AWS_ACCESS_KEY_ID_SET"] == ""
@@ -1511,7 +2187,7 @@ def test_switching_both_providers_off_bedrock_clears_saved_aws_credentials(
         ],
     )
 
-    values = run_bash_lines(
+    output = run_bash(
         f"""
 set -euo pipefail
 source "{REPO_ROOT}/scripts/setup/setup.sh"
@@ -1533,6 +2209,7 @@ printf 'AWS_SESSION_TOKEN_SET=%s\\n' "${{ENV_VALUES[AWS_SESSION_TOKEN]+set}}"
 printf 'AWS_REGION_SET=%s\\n' "${{ENV_VALUES[AWS_REGION]+set}}"
 """
     )
+    values = parse_lines(output)
     generated_lines = (
         (tmp_path / ".env.generated").read_text(encoding="utf-8").splitlines()
     )
@@ -1591,85 +2268,77 @@ fi
     assert values["VALID"] == "yes"
 
 
-@pytest.mark.parametrize(
-    ("setup_lines", "prompt_choice_impl", "expected_model", "expected_docker_service"),
-    [
-        (
-            [
-                'ENV_VALUES[RERANK_BINDING]="cohere"',
-                'ENV_VALUES[RERANK_MODEL]="rerank-v3.5"',
-                'ENV_VALUES[RERANK_BINDING_HOST]="https://api.cohere.com/v1/rerank"',
-            ],
-            """
-prompt_choice() {
-  case "$1" in
-    "Rerank provider") printf 'vllm' ;;
-    "vLLM device") printf 'cpu' ;;
-    *) printf '%s' "$2" ;;
-  esac
-}
-""",
-            "BAAI/bge-reranker-v2-m3",
-            "vllm-rerank",
-        ),
-        (
-            [
-                'ENV_VALUES[LIGHTRAG_SETUP_RERANK_PROVIDER]="vllm"',
-                'ENV_VALUES[RERANK_BINDING]="cohere"',
-                'ENV_VALUES[RERANK_MODEL]="BAAI/bge-reranker-v2-m3"',
-                'ENV_VALUES[RERANK_BINDING_HOST]="http://localhost:8000/rerank"',
-                'ENV_VALUES[VLLM_RERANK_MODEL]="BAAI/bge-reranker-v2-m3"',
-                'ENV_VALUES[VLLM_RERANK_PORT]="8000"',
-                'ENV_VALUES[VLLM_RERANK_DEVICE]="cpu"',
-            ],
-            """prompt_choice() { printf '%s' "$2"; }""",
-            "BAAI/bge-reranker-v2-m3",
-            "vllm-rerank",
-        ),
-    ],
-    ids=["switch-to-vllm", "rerun-vllm"],
-)
-def test_collect_rerank_config_uses_vllm_defaults(
-    setup_lines: list[str],
-    prompt_choice_impl: str,
-    expected_model: str,
-    expected_docker_service: str,
+def test_load_existing_env_forces_cohere_binding_for_vllm_rerank(
+    tmp_path: Path,
 ) -> None:
-    """Selecting or reusing local vLLM should converge on the vLLM rerank defaults."""
+    """Loading a Docker-managed vLLM rerank config should normalize the binding to cohere."""
 
-    setup_block = "\n".join(setup_lines)
+    write_text_lines(
+        tmp_path / ".env",
+        [
+            "RERANK_BINDING=jina",
+            "LIGHTRAG_SETUP_RERANK_PROVIDER=vllm",
+            "RERANK_BINDING_HOST=http://localhost:8000/rerank",
+        ],
+    )
+
     values = run_bash_lines(
         f"""
 set -euo pipefail
 source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
 reset_state
-
-{setup_block}
-
-confirm_default_no() {{ return 0; }}
-confirm_default_yes() {{ return 0; }}
-{prompt_choice_impl}
-prompt_with_default() {{ printf '%s' "$2"; }}
-prompt_until_valid() {{ printf '%s' "$2"; }}
-prompt_secret_with_default() {{ printf '%s' "$2"; }}
-
-collect_rerank_config
+load_existing_env_if_present
 
 printf 'RERANK_BINDING=%s\\n' "${{ENV_VALUES[RERANK_BINDING]}}"
 printf 'LIGHTRAG_SETUP_RERANK_PROVIDER=%s\\n' "${{ENV_VALUES[LIGHTRAG_SETUP_RERANK_PROVIDER]}}"
-printf 'RERANK_MODEL=%s\\n' "${{ENV_VALUES[RERANK_MODEL]}}"
-printf 'RERANK_BINDING_HOST=%s\\n' "${{ENV_VALUES[RERANK_BINDING_HOST]}}"
-printf 'DOCKER_SERVICE=%s\\n' "${{DOCKER_SERVICES[0]:-}}"
-printf 'COMPOSE_RERANK_BINDING_HOST=%s\\n' "${{COMPOSE_ENV_OVERRIDES[RERANK_BINDING_HOST]}}"
 """
     )
 
     assert values["RERANK_BINDING"] == "cohere"
     assert values["LIGHTRAG_SETUP_RERANK_PROVIDER"] == "vllm"
-    assert values["RERANK_MODEL"] == expected_model
-    assert values["RERANK_BINDING_HOST"] == "http://localhost:8000/rerank"
-    assert values["DOCKER_SERVICE"] == expected_docker_service
-    assert values["COMPOSE_RERANK_BINDING_HOST"] == "http://vllm-rerank:8000/rerank"
+
+
+def test_collect_rerank_config_does_not_offer_vllm_provider_option() -> None:
+    """The generic rerank provider prompt should only expose valid RERANK_BINDING values."""
+
+    output = run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+reset_state
+
+ENV_VALUES[RERANK_BINDING]="cohere"
+
+confirm_default_no() {{ return 0; }}
+prompt_choice() {{
+  case "$1" in
+    "Rerank provider")
+      shift 2
+      for option in "$@"; do
+        if [[ "$option" == "vllm" ]]; then
+          echo "unexpected vllm option" >&2
+          return 91
+        fi
+      done
+      printf 'cohere'
+      ;;
+    *)
+      printf '%s' "$2"
+      ;;
+  esac
+}}
+prompt_with_default() {{ printf '%s' "$2"; }}
+prompt_secret_until_valid_with_default() {{ printf 'cohere-secret-123'; }}
+
+collect_rerank_config
+
+printf 'RERANK_BINDING=%s\\n' "${{ENV_VALUES[RERANK_BINDING]}}"
+"""
+    )
+    values = parse_lines(output)
+
+    assert values["RERANK_BINDING"] == "cohere"
 
 
 def test_collect_rerank_config_switching_from_vllm_clears_local_defaults() -> None:
@@ -1699,7 +2368,7 @@ prompt_secret_until_valid_with_default() {{ printf 'cohere-secret-123'; }}
 collect_rerank_config
 
 printf 'RERANK_BINDING=%s\\n' "${{ENV_VALUES[RERANK_BINDING]}}"
-printf 'LIGHTRAG_SETUP_RERANK_PROVIDER=%s\\n' "${{ENV_VALUES[LIGHTRAG_SETUP_RERANK_PROVIDER]}}"
+printf 'LIGHTRAG_SETUP_RERANK_PROVIDER=%s\\n' "${{ENV_VALUES[LIGHTRAG_SETUP_RERANK_PROVIDER]:-}}"
 printf 'RERANK_MODEL=%s\\n' "${{ENV_VALUES[RERANK_MODEL]:-}}"
 printf 'RERANK_BINDING_HOST=%s\\n' "${{ENV_VALUES[RERANK_BINDING_HOST]:-}}"
 """
@@ -1707,7 +2376,7 @@ printf 'RERANK_BINDING_HOST=%s\\n' "${{ENV_VALUES[RERANK_BINDING_HOST]:-}}"
     values = parse_lines(output)
 
     assert values["RERANK_BINDING"] == "cohere"
-    assert values["LIGHTRAG_SETUP_RERANK_PROVIDER"] == "cohere"
+    assert values["LIGHTRAG_SETUP_RERANK_PROVIDER"] == ""
     # Stale vLLM model should be replaced by the cohere provider default
     assert values["RERANK_MODEL"] != "BAAI/bge-reranker-v2-m3"
     assert values["RERANK_MODEL"] == "rerank-v3.5"
@@ -1716,107 +2385,43 @@ printf 'RERANK_BINDING_HOST=%s\\n' "${{ENV_VALUES[RERANK_BINDING_HOST]:-}}"
     assert "cohere" in values["RERANK_BINDING_HOST"]
 
 
-@pytest.mark.parametrize(
-    (
-        "setup_lines",
-        "confirm_default_yes_impl",
-        "prompt_choice_impl",
-        "expected_device",
-        "expected_cuda_set",
-        "expected_nvidia_set",
-        "expected_cpu_set",
-    ),
-    [
-        (
-            [
-                'ENV_VALUES[CUDA_VISIBLE_DEVICES]="-1"',
-                'ENV_VALUES[NVIDIA_VISIBLE_DEVICES]="-1"',
-                'ENV_VALUES[VLLM_USE_CPU]="1"',
-            ],
-            """
-confirm_default_yes() {
-  if [[ "$1" == "Use CPU instead?" ]]; then
-    return 1
-  fi
-  return 0
-}
-""",
-            """
-prompt_choice() {
-  case "$1" in
-    "Rerank provider") printf 'vllm' ;;
-    "vLLM device") printf 'cuda' ;;
-    *) printf '%s' "$2" ;;
-  esac
-}
-""",
-            "cuda",
-            "",
-            "",
-            "",
-        ),
-        (
-            [
-                'ENV_VALUES[VLLM_RERANK_DEVICE]="cuda"',
-            ],
-            "confirm_default_yes() { return 0; }",
-            """
-prompt_choice() {
-  case "$1" in
-    "Rerank provider") printf 'vllm' ;;
-    "vLLM device") printf 'cpu' ;;
-    *) printf '%s' "$2" ;;
-  esac
-}
-""",
-            "cpu",
-            "",
-            "",
-            "",
-        ),
-    ],
-    ids=["cuda-clears-disabled-masks", "cpu-clears-gpu-flags"],
-)
-def test_collect_rerank_config_normalizes_vllm_device_state(
-    setup_lines: list[str],
-    confirm_default_yes_impl: str,
-    prompt_choice_impl: str,
-    expected_device: str,
-    expected_cuda_set: str,
-    expected_nvidia_set: str,
-    expected_cpu_set: str,
-) -> None:
-    """Changing vLLM device modes should normalize the related environment state."""
+def test_collect_rerank_config_ignores_vllm_marker_when_docker_is_predeclined() -> None:
+    """A predeclined Docker path should default the provider prompt to the binding, not the setup marker."""
 
-    setup_block = "\n".join(setup_lines)
-    values = run_bash_lines(
+    output = run_bash(
         f"""
 set -euo pipefail
 source "{REPO_ROOT}/scripts/setup/setup.sh"
 reset_state
 
-{setup_block}
+ENV_VALUES[LIGHTRAG_SETUP_RERANK_PROVIDER]="vllm"
+ENV_VALUES[RERANK_BINDING]="cohere"
 
-confirm_default_no() {{ return 0; }}
-{confirm_default_yes_impl}
-{prompt_choice_impl}
+prompt_choice() {{
+  case "$1" in
+    "Rerank provider")
+      if [[ "$2" != "cohere" ]]; then
+        echo "unexpected rerank provider default: $2" >&2
+        return 91
+      fi
+      printf 'cohere'
+      ;;
+    *)
+      printf '%s' "$2"
+      ;;
+  esac
+}}
 prompt_with_default() {{ printf '%s' "$2"; }}
-prompt_until_valid() {{ printf '%s' "$2"; }}
-prompt_secret_with_default() {{ printf '%s' "$2"; }}
+prompt_secret_until_valid_with_default() {{ printf 'cohere-secret-123'; }}
 
-collect_rerank_config
+collect_rerank_config "yes" "no"
 
-printf 'VLLM_RERANK_DEVICE=%s\\n' "${{ENV_VALUES[VLLM_RERANK_DEVICE]}}"
-printf 'CUDA_VISIBLE_DEVICES_SET=%s\\n' "${{ENV_VALUES[CUDA_VISIBLE_DEVICES]+set}}"
-printf 'NVIDIA_VISIBLE_DEVICES_SET=%s\\n' "${{ENV_VALUES[NVIDIA_VISIBLE_DEVICES]+set}}"
-printf 'VLLM_USE_CPU_SET=%s\\n' "${{ENV_VALUES[VLLM_USE_CPU]+set}}"
+printf 'RERANK_BINDING=%s\\n' "${{ENV_VALUES[RERANK_BINDING]}}"
 """
     )
+    values = parse_lines(output)
 
-    assert values["VLLM_RERANK_DEVICE"] == expected_device
-    assert values["CUDA_VISIBLE_DEVICES_SET"] == expected_cuda_set
-    assert values["NVIDIA_VISIBLE_DEVICES_SET"] == expected_nvidia_set
-    assert values["VLLM_USE_CPU_SET"] == expected_cpu_set
+    assert values["RERANK_BINDING"] == "cohere"
 
 
 def test_generate_docker_compose_escapes_dollar_signs_in_overrides_and_service_secrets(
@@ -1871,12 +2476,21 @@ generate_docker_compose "$REPO_ROOT/docker-compose.generated.yml"
     assert 'POSTGRES_USER: "user$$ID"' in generated_compose
     assert 'POSTGRES_PASSWORD: "pass$$HOME"' in generated_compose
     assert 'POSTGRES_DB: "db$$NAME"' in generated_compose
-    assert 'NEO4J_AUTH: "neo4j/neo$$PASS"' in generated_compose
+    assert (
+        "NEO4J_AUTH: ${NEO4J_USERNAME:?missing}/${NEO4J_PASSWORD:?missing}"
+        in generated_compose
+    )
     assert 'NEO4J_dbms_default__database: "graph$$DB"' in generated_compose
-    assert 'MINIO_ACCESS_KEY_ID: "minio$$USER"' in generated_compose
-    assert 'MINIO_SECRET_ACCESS_KEY: "minio$$SECRET"' in generated_compose
-    assert 'MINIO_ROOT_USER: "minio$$USER"' in generated_compose
-    assert 'MINIO_ROOT_PASSWORD: "minio$$SECRET"' in generated_compose
+    assert 'MINIO_ACCESS_KEY_ID: "${MINIO_ACCESS_KEY_ID:?missing}"' in generated_compose
+    assert (
+        'MINIO_SECRET_ACCESS_KEY: "${MINIO_SECRET_ACCESS_KEY:?missing}"'
+        in generated_compose
+    )
+    assert 'MINIO_ROOT_USER: "${MINIO_ACCESS_KEY_ID:?missing}"' in generated_compose
+    assert (
+        'MINIO_ROOT_PASSWORD: "${MINIO_SECRET_ACCESS_KEY:?missing}"'
+        in generated_compose
+    )
     assert "milvus-etcd" in generated_compose
     assert "milvus-minio" in generated_compose
 
@@ -2327,10 +2941,10 @@ prompt_secret_until_valid_with_default() {{ printf '%s' "$2"; }}
 confirm_default_no() {{ return 1; }}
 confirm_default_yes() {{
   case "$1" in
-    "Ready to proceed and write .env?") return 0 ;;
     *) return 1 ;;
   esac
 }}
+confirm_required_yes_no() {{ return 0; }}
 
 env_base_flow
 """
@@ -2396,10 +3010,11 @@ prompt_secret_until_valid_with_default() {{ printf '%s' "$2"; }}
 confirm_default_no() {{ return 1; }}
 confirm_default_yes() {{
   case "$1" in
-    "Ready to proceed and write .env?") return 0 ;;
+    "Run LightRAG Server via Docker?") return 0 ;;
     *) return 1 ;;
   esac
 }}
+confirm_required_yes_no() {{ return 0; }}
 
 env_base_flow
 """
@@ -2413,6 +3028,301 @@ env_base_flow
     assert 'SSL_KEYFILE: "/app/data/certs/key.pem"' in generated_compose
     assert "./data/certs/cert.pem:/app/data/certs/cert.pem:ro" in generated_compose
     assert "./data/certs/key.pem:/app/data/certs/key.pem:ro" in generated_compose
+
+
+def test_finalize_base_setup_uses_compose_native_storage_endpoints_on_rerun(
+    tmp_path: Path,
+) -> None:
+    """Preserved managed storage services should inject compose-native endpoints on base reruns."""
+
+    write_text_lines(
+        tmp_path / ".env",
+        [
+            "LIGHTRAG_RUNTIME_TARGET=compose",
+            "LIGHTRAG_SETUP_NEO4J_DEPLOYMENT=docker",
+            "LIGHTRAG_SETUP_MILVUS_DEPLOYMENT=docker",
+            "NEO4J_URI=neo4j://localhost:7687",
+            "MILVUS_URI=http://localhost:19530",
+            "LIGHTRAG_KV_STORAGE=JsonKVStorage",
+            "LIGHTRAG_VECTOR_STORAGE=NanoVectorDBStorage",
+            "LIGHTRAG_GRAPH_STORAGE=NetworkXStorage",
+            "LIGHTRAG_DOC_STATUS_STORAGE=JsonDocStatusStorage",
+        ],
+    )
+    write_text_lines(
+        tmp_path / "env.example",
+        (REPO_ROOT / "env.example").read_text(encoding="utf-8").splitlines(),
+    )
+    write_text_lines(
+        tmp_path / "docker-compose.final.yml",
+        [
+            "services:",
+            "  lightrag:",
+            "    image: example/lightrag:test",
+            "  neo4j:",
+            "    image: neo4j:latest",
+            "  milvus:",
+            "    image: milvusdb/milvus:v2.6.11",
+            "  milvus-etcd:",
+            "    image: quay.io/coreos/etcd:v3.5.16",
+            "  milvus-minio:",
+            "    image: minio/minio:latest",
+            "volumes:",
+            "  neo4j_data:",
+            "  milvus_data:",
+            "  milvus-etcd_data:",
+            "  milvus-minio_data:",
+        ],
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+load_existing_env_if_present
+show_summary() {{ :; }}
+confirm_required_yes_no() {{ return 0; }}
+confirm_default_yes() {{ return 0; }}
+validate_sensitive_env_literals() {{ return 0; }}
+finalize_base_setup
+"""
+    )
+
+    result = (tmp_path / "docker-compose.final.yml").read_text(encoding="utf-8")
+
+    assert 'NEO4J_URI: "neo4j://neo4j:7687"' in result
+    assert 'MILVUS_URI: "http://milvus:19530"' in result
+    assert 'NEO4J_URI: "neo4j://host.docker.internal:7687"' not in result
+    assert 'MILVUS_URI: "http://host.docker.internal:19530"' not in result
+    assert "      milvus:\n        condition: service_healthy" in result
+    assert "      milvus-etcd:\n        condition: service_healthy" not in result
+    assert "      milvus-minio:\n        condition: service_healthy" not in result
+
+
+def test_finalize_base_setup_drops_stale_storage_services_missing_from_env_markers(
+    tmp_path: Path,
+) -> None:
+    """env-base should treat storage Docker state in `.env` as authoritative."""
+
+    write_text_lines(
+        tmp_path / ".env",
+        [
+            "LIGHTRAG_RUNTIME_TARGET=compose",
+            "LLM_BINDING=openai",
+            "LLM_MODEL=gpt-4o-mini",
+            "LLM_BINDING_HOST=https://api.openai.com/v1",
+            "LLM_BINDING_API_KEY=sk-existing",
+            "EMBEDDING_BINDING=openai",
+            "EMBEDDING_MODEL=text-embedding-3-small",
+            "EMBEDDING_DIM=1536",
+            "EMBEDDING_BINDING_HOST=https://api.openai.com/v1",
+            "EMBEDDING_BINDING_API_KEY=sk-existing",
+            "LIGHTRAG_KV_STORAGE=JsonKVStorage",
+            "LIGHTRAG_VECTOR_STORAGE=NanoVectorDBStorage",
+            "LIGHTRAG_GRAPH_STORAGE=NetworkXStorage",
+            "LIGHTRAG_DOC_STATUS_STORAGE=JsonDocStatusStorage",
+        ],
+    )
+    write_text_lines(
+        tmp_path / "env.example",
+        (REPO_ROOT / "env.example").read_text(encoding="utf-8").splitlines(),
+    )
+    write_text_lines(
+        tmp_path / "docker-compose.final.yml",
+        [
+            "services:",
+            "  lightrag:",
+            "    image: example/lightrag:test",
+            "  redis:",
+            "    image: redis:latest",
+            "  qdrant:",
+            "    image: qdrant/qdrant:latest",
+            "volumes:",
+            "  redis_data:",
+            "  qdrant_data:",
+        ],
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+load_existing_env_if_present
+show_summary() {{ :; }}
+confirm_required_yes_no() {{ return 0; }}
+confirm_default_yes() {{ return 1; }}
+confirm_default_no() {{ return 1; }}
+validate_sensitive_env_literals() {{ return 0; }}
+finalize_base_setup
+"""
+    )
+
+    result = (tmp_path / "docker-compose.final.yml").read_text(encoding="utf-8")
+    generated_env = (tmp_path / ".env").read_text(encoding="utf-8")
+
+    assert "  lightrag:" in result
+    assert "  redis:" not in result
+    assert "  qdrant:" not in result
+    assert "redis_data:" not in result
+    assert "qdrant_data:" not in result
+    assert "LIGHTRAG_RUNTIME_TARGET=compose" in generated_env
+
+
+def test_env_base_flow_backs_up_legacy_generated_compose_before_rewrite(
+    tmp_path: Path,
+) -> None:
+    """env-base should back up the active legacy compose file before regenerating final output."""
+
+    legacy_compose = (
+        "\n".join(
+            [
+                "services:",
+                "  lightrag:",
+                "    image: prod/lightrag",
+            ]
+        )
+        + "\n"
+    )
+
+    write_text_lines(
+        tmp_path / "env.example",
+        (REPO_ROOT / "env.example").read_text(encoding="utf-8").splitlines(),
+    )
+    write_text_lines(
+        tmp_path / ".env",
+        [
+            "LIGHTRAG_SETUP_PROFILE=production",
+            "LLM_BINDING=openai",
+            "LLM_MODEL=gpt-4o-mini",
+            "LLM_BINDING_HOST=https://api.openai.com/v1",
+            "LLM_BINDING_API_KEY=sk-existing",
+            "EMBEDDING_BINDING=openai",
+            "EMBEDDING_MODEL=text-embedding-3-small",
+            "EMBEDDING_DIM=1536",
+            "EMBEDDING_BINDING_HOST=https://api.openai.com/v1",
+            "EMBEDDING_BINDING_API_KEY=sk-existing",
+        ],
+    )
+    (tmp_path / "docker-compose.production.yml").write_text(
+        legacy_compose,
+        encoding="utf-8",
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+
+prompt_choice() {{ printf '%s' "$2"; }}
+prompt_with_default() {{ printf '%s' "$2"; }}
+prompt_until_valid() {{ printf '%s' "$2"; }}
+prompt_secret_with_default() {{ printf '%s' "$2"; }}
+prompt_secret_until_valid_with_default() {{
+  case "$1" in
+    "LLM API key: "|"Embedding API key: ") printf 'sk-test-key' ;;
+    *) printf '%s' "$2" ;;
+  esac
+}}
+confirm_default_no() {{ return 1; }}
+confirm_default_yes() {{
+  case "$1" in
+    "Run LightRAG Server via Docker?") return 0 ;;
+    *) return 1 ;;
+  esac
+}}
+confirm_required_yes_no() {{ return 0; }}
+
+env_base_flow
+"""
+    )
+
+    assert_single_compose_backup(tmp_path, legacy_compose)
+    assert (tmp_path / "docker-compose.final.yml").exists()
+    assert (tmp_path / "docker-compose.production.yml").read_text(encoding="utf-8") == (
+        legacy_compose
+    )
+
+
+def test_env_base_flow_deletes_compose_when_switching_lightrag_to_host(
+    tmp_path: Path,
+) -> None:
+    """env-base should back up and delete compose when no Docker services remain."""
+
+    existing_compose = (
+        "\n".join(
+            [
+                "services:",
+                "  lightrag:",
+                "    image: example/lightrag:test",
+                "  redis:",
+                "    image: redis:latest",
+            ]
+        )
+        + "\n"
+    )
+
+    write_text_lines(
+        tmp_path / "env.example",
+        (REPO_ROOT / "env.example").read_text(encoding="utf-8").splitlines(),
+    )
+    write_text_lines(
+        tmp_path / ".env",
+        [
+            "LIGHTRAG_RUNTIME_TARGET=compose",
+            "LLM_BINDING=openai",
+            "LLM_MODEL=gpt-4o-mini",
+            "LLM_BINDING_HOST=https://api.openai.com/v1",
+            "LLM_BINDING_API_KEY=sk-existing",
+            "EMBEDDING_BINDING=openai",
+            "EMBEDDING_MODEL=text-embedding-3-small",
+            "EMBEDDING_DIM=1536",
+            "EMBEDDING_BINDING_HOST=https://api.openai.com/v1",
+            "EMBEDDING_BINDING_API_KEY=sk-existing",
+        ],
+    )
+    (tmp_path / "docker-compose.final.yml").write_text(
+        existing_compose,
+        encoding="utf-8",
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+
+prompt_choice() {{ printf '%s' "$2"; }}
+prompt_with_default() {{ printf '%s' "$2"; }}
+prompt_until_valid() {{ printf '%s' "$2"; }}
+prompt_secret_with_default() {{ printf '%s' "$2"; }}
+prompt_secret_until_valid_with_default() {{
+  case "$1" in
+    "LLM API key: "|"Embedding API key: ") printf 'sk-test-key' ;;
+    *) printf '%s' "$2" ;;
+  esac
+}}
+confirm_default_no() {{
+  case "$1" in
+    "All wizard-managed services have been removed. Remove LightRAG from Docker and switch to host mode?") return 0 ;;
+    *) return 1 ;;
+  esac
+}}
+confirm_default_yes() {{ return 1; }}
+confirm_required_yes_no() {{ return 0; }}
+
+env_base_flow
+"""
+    )
+
+    assert_single_compose_backup(tmp_path, existing_compose)
+    assert not (tmp_path / "docker-compose.final.yml").exists()
+    generated_env = (tmp_path / ".env").read_text(encoding="utf-8")
+    assert "LIGHTRAG_RUNTIME_TARGET=host" in generated_env
 
 
 def test_env_base_flow_generates_env_and_compose_files(tmp_path: Path) -> None:
@@ -2480,16 +3390,16 @@ confirm_default_no() {{
   case "$1" in
     "Run embedding model locally via Docker (vLLM)?") return 1 ;;
     "Enable reranking?") return 1 ;;
-    *"for LightRAG only?"*) return 0 ;;
+    "Run LightRAG Server via Docker?") return 0 ;;
     *) return 1 ;;
   esac
 }}
 confirm_default_yes() {{
   case "$1" in
-    "Ready to proceed and write .env?") return 0 ;;
     *) return 1 ;;
   esac
 }}
+confirm_required_yes_no() {{ return 0; }}
 
 env_base_flow
 """
@@ -2541,10 +3451,10 @@ prompt_secret_until_valid_with_default() {{
 confirm_default_no() {{ return 1; }}
 confirm_default_yes() {{
   case "$1" in
-    "Ready to proceed and write .env?") return 0 ;;
     *) return 1 ;;
   esac
 }}
+confirm_required_yes_no() {{ return 0; }}
 
 env_base_flow
 validate_env_file
@@ -2594,6 +3504,7 @@ collect_database_config() {{ :; }}
 validate_required_variables() {{ return 0; }}
 confirm_default_yes() {{ return 0; }}
 confirm_default_no() {{ return 1; }}
+confirm_required_yes_no() {{ return 0; }}
 
 env_storage_flow
 """
@@ -2706,6 +3617,192 @@ env_base_flow
     assert values["VLLM_RERANK_PORT"] == "9200"
 
 
+def test_env_base_flow_does_not_repeat_rerank_docker_prompt_when_declined(
+    tmp_path: Path,
+) -> None:
+    """Declining rerank Docker at the outer prompt should switch to endpoint-based config."""
+
+    write_text_lines(
+        tmp_path / ".env",
+        [
+            "LLM_BINDING=openai",
+            "LLM_MODEL=gpt-4o-mini",
+            "LLM_BINDING_HOST=https://api.openai.com/v1",
+            "LLM_BINDING_API_KEY=sk-existing",
+            "RERANK_BINDING=cohere",
+            "RERANK_MODEL=BAAI/custom-rerank",
+            "RERANK_BINDING_HOST=http://localhost:9200/rerank",
+            "RERANK_BINDING_API_KEY=rerank-key",
+            "LIGHTRAG_SETUP_RERANK_PROVIDER=vllm",
+            "VLLM_RERANK_MODEL=BAAI/custom-rerank",
+            "VLLM_RERANK_PORT=9200",
+            "VLLM_RERANK_DEVICE=cpu",
+        ],
+    )
+
+    output = run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+
+DOCKER_PROMPT_COUNT=0
+RERANK_MODEL_PROMPT_LOG="$REPO_ROOT/rerank-model-prompts.log"
+: > "$RERANK_MODEL_PROMPT_LOG"
+
+prompt_choice() {{
+  case "$1" in
+    "vLLM device")
+      echo "unexpected vLLM device prompt" >&2
+      return 91
+      ;;
+    *)
+      printf '%s' "$2"
+      ;;
+  esac
+}}
+prompt_with_default() {{
+  case "$1" in
+    "vLLM rerank model")
+      echo "unexpected vLLM rerank model prompt" >&2
+      return 93
+      ;;
+    "Rerank model")
+      printf 'hit\n' >> "$RERANK_MODEL_PROMPT_LOG"
+      printf '%s' "$2"
+      return 0
+      ;;
+    "Rerank endpoint")
+      printf '%s' "https://rerank.example.internal/rerank"
+      return 0
+      ;;
+  esac
+  printf '%s' "$2"
+}}
+prompt_until_valid() {{
+  case "$1" in
+    "vLLM rerank port")
+      echo "unexpected vLLM rerank port prompt" >&2
+      return 92
+      ;;
+  esac
+  printf '%s' "$2"
+}}
+prompt_secret_with_default() {{ printf '%s' "$2"; }}
+prompt_secret_until_valid_with_default() {{ printf '%s' "$2"; }}
+confirm_default_no() {{ return 1; }}
+confirm_default_yes() {{
+  case "$1" in
+    "Enable reranking?") return 0 ;;
+    "Run rerank service locally via Docker?")
+      DOCKER_PROMPT_COUNT=$((DOCKER_PROMPT_COUNT + 1))
+      return 1
+      ;;
+    *) return 1 ;;
+  esac
+}}
+collect_embedding_config() {{ :; }}
+
+finalize_base_setup() {{
+  local rerank_model_prompt_count
+  rerank_model_prompt_count="$(wc -l < "$RERANK_MODEL_PROMPT_LOG" | tr -d '[:space:]')"
+  printf 'DOCKER_PROMPT_COUNT=%s\\n' "$DOCKER_PROMPT_COUNT"
+  printf 'RERANK_MODEL_PROMPT_COUNT=%s\\n' "$rerank_model_prompt_count"
+  printf 'RERANK_BINDING_HOST=%s\\n' "${{ENV_VALUES[RERANK_BINDING_HOST]}}"
+  printf 'LIGHTRAG_SETUP_RERANK_PROVIDER=%s\\n' "${{ENV_VALUES[LIGHTRAG_SETUP_RERANK_PROVIDER]:-}}"
+}}
+
+env_base_flow
+"""
+    )
+    values = parse_lines(output)
+
+    assert values["DOCKER_PROMPT_COUNT"] == "1"
+    assert values["RERANK_MODEL_PROMPT_COUNT"] == "1"
+    assert values["RERANK_BINDING_HOST"] == "https://rerank.example.internal/rerank"
+    assert values["LIGHTRAG_SETUP_RERANK_PROVIDER"] == ""
+    assert "vLLM uses the Cohere-compatible rerank API." not in output
+
+
+def test_env_base_flow_comments_rerank_setup_marker_when_switching_off_docker(
+    tmp_path: Path,
+) -> None:
+    """Switching rerank from Docker to a non-Docker provider should drop the setup marker."""
+
+    write_text_lines(
+        tmp_path / "env.example",
+        (REPO_ROOT / "env.example").read_text(encoding="utf-8").splitlines(),
+    )
+    write_text_lines(
+        tmp_path / ".env",
+        [
+            "LLM_BINDING=openai",
+            "LLM_MODEL=gpt-4o-mini",
+            "LLM_BINDING_HOST=https://api.openai.com/v1",
+            "LLM_BINDING_API_KEY=sk-existing",
+            "RERANK_BINDING=cohere",
+            "RERANK_MODEL=BAAI/custom-rerank",
+            "RERANK_BINDING_HOST=http://localhost:9200/rerank",
+            "RERANK_BINDING_API_KEY=rerank-key",
+            "LIGHTRAG_SETUP_RERANK_PROVIDER=vllm",
+            "VLLM_RERANK_MODEL=BAAI/custom-rerank",
+            "VLLM_RERANK_PORT=9200",
+            "VLLM_RERANK_DEVICE=cpu",
+        ],
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+
+prompt_choice() {{
+  case "$1" in
+    "Rerank provider") printf 'cohere' ;;
+    *) printf '%s' "$2" ;;
+  esac
+}}
+prompt_with_default() {{
+  case "$1" in
+    "Rerank endpoint") printf '%s' "https://api.cohere.com/v2/rerank" ;;
+    *) printf '%s' "$2" ;;
+  esac
+}}
+prompt_until_valid() {{ printf '%s' "$2"; }}
+prompt_secret_with_default() {{ printf '%s' "$2"; }}
+prompt_secret_until_valid_with_default() {{ printf '%s' "$2"; }}
+confirm_default_no() {{
+  case "$1" in
+    "Run embedding model locally via Docker (vLLM)?") return 1 ;;
+    "Run rerank service locally via Docker?") return 1 ;;
+    "Run LightRAG Server via Docker?") return 1 ;;
+    *) return 1 ;;
+  esac
+}}
+confirm_default_yes() {{
+  case "$1" in
+    "Enable reranking?") return 0 ;;
+    *) return 1 ;;
+  esac
+}}
+confirm_required_yes_no() {{ return 0; }}
+
+env_base_flow
+"""
+    )
+
+    generated_env = (tmp_path / ".env").read_text(encoding="utf-8")
+    active_marker_lines = [
+        line
+        for line in generated_env.splitlines()
+        if line.startswith("LIGHTRAG_SETUP_RERANK_PROVIDER=")
+    ]
+
+    assert "RERANK_BINDING=cohere" in generated_env
+    assert active_marker_lines == []
+
+
 def test_env_base_flow_resets_remote_rerank_host_when_switching_to_vllm(
     tmp_path: Path,
 ) -> None:
@@ -2752,6 +3849,7 @@ confirm_default_yes() {{
 collect_embedding_config() {{ :; }}
 
 finalize_base_setup() {{
+  printf 'RERANK_BINDING=%s\\n' "${{ENV_VALUES[RERANK_BINDING]}}"
   printf 'RERANK_BINDING_HOST=%s\\n' "${{ENV_VALUES[RERANK_BINDING_HOST]}}"
   printf 'LIGHTRAG_SETUP_RERANK_PROVIDER=%s\\n' "${{ENV_VALUES[LIGHTRAG_SETUP_RERANK_PROVIDER]}}"
 }}
@@ -2760,6 +3858,7 @@ env_base_flow
 """
     )
 
+    assert values["RERANK_BINDING"] == "cohere"
     assert values["RERANK_BINDING_HOST"] == "http://localhost:9200/rerank"
     assert values["LIGHTRAG_SETUP_RERANK_PROVIDER"] == "vllm"
 
@@ -2942,6 +4041,234 @@ env_storage_flow
     assert values["EMBEDDING_BINDING"] == "ollama"
 
 
+def test_env_storage_flow_reuses_saved_storage_docker_default(
+    tmp_path: Path,
+) -> None:
+    """Saved storage deployment metadata should drive the next Docker prompt default."""
+
+    write_text_lines(
+        tmp_path / ".env",
+        [
+            "LIGHTRAG_SETUP_POSTGRES_DEPLOYMENT=docker",
+            "LIGHTRAG_KV_STORAGE=PGKVStorage",
+            "LIGHTRAG_VECTOR_STORAGE=PGVectorStorage",
+            "LIGHTRAG_GRAPH_STORAGE=PGGraphStorage",
+            "LIGHTRAG_DOC_STATUS_STORAGE=PGDocStatusStorage",
+        ],
+    )
+
+    values = run_bash_lines(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+
+select_storage_backends() {{
+  ENV_VALUES[LIGHTRAG_KV_STORAGE]="PGKVStorage"
+  ENV_VALUES[LIGHTRAG_VECTOR_STORAGE]="PGVectorStorage"
+  ENV_VALUES[LIGHTRAG_GRAPH_STORAGE]="PGGraphStorage"
+  ENV_VALUES[LIGHTRAG_DOC_STATUS_STORAGE]="PGDocStatusStorage"
+  REQUIRED_DB_TYPES[postgresql]=1
+}}
+collect_postgres_config() {{
+  printf 'POSTGRES_DEFAULT_DOCKER=%s\\n' "$1"
+}}
+finalize_storage_setup() {{ :; }}
+
+env_storage_flow
+"""
+    )
+
+    assert values["POSTGRES_DEFAULT_DOCKER"] == "yes"
+
+
+def test_env_storage_flow_writes_storage_docker_marker_for_selected_service(
+    tmp_path: Path,
+) -> None:
+    """Choosing a bundled storage service should persist its deployment marker in `.env`."""
+
+    write_text_lines(
+        tmp_path / ".env",
+        [
+            "LLM_BINDING=ollama",
+            "EMBEDDING_BINDING=ollama",
+        ],
+    )
+    write_text_lines(
+        tmp_path / "env.example",
+        (REPO_ROOT / "env.example").read_text(encoding="utf-8").splitlines(),
+    )
+    (tmp_path / "docker-compose.yml").write_text(
+        (REPO_ROOT / "docker-compose.yml").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+
+select_storage_backends() {{
+  ENV_VALUES[LIGHTRAG_KV_STORAGE]="PGKVStorage"
+  ENV_VALUES[LIGHTRAG_VECTOR_STORAGE]="PGVectorStorage"
+  ENV_VALUES[LIGHTRAG_GRAPH_STORAGE]="PGGraphStorage"
+  ENV_VALUES[LIGHTRAG_DOC_STATUS_STORAGE]="PGDocStatusStorage"
+  REQUIRED_DB_TYPES[postgresql]=1
+}}
+collect_postgres_config() {{
+  add_docker_service "postgres"
+  ENV_VALUES[POSTGRES_HOST]="localhost"
+  ENV_VALUES[POSTGRES_PORT]="5432"
+  ENV_VALUES[POSTGRES_USER]="lightrag"
+  ENV_VALUES[POSTGRES_PASSWORD]="secret"
+  ENV_VALUES[POSTGRES_DATABASE]="lightrag"
+}}
+validate_required_variables() {{ return 0; }}
+validate_mongo_vector_storage_config() {{ return 0; }}
+validate_sensitive_env_literals() {{ return 0; }}
+confirm_default_yes() {{
+  case "$1" in
+    "All wizard-managed services have been removed. Remove LightRAG from Docker and switch to host mode?") return 1 ;;
+    *) return 0 ;;
+  esac
+}}
+confirm_default_no() {{ return 1; }}
+confirm_required_yes_no() {{ return 0; }}
+
+env_storage_flow
+"""
+    )
+
+    generated_env = (tmp_path / ".env").read_text(encoding="utf-8")
+    assert any(
+        line == "LIGHTRAG_SETUP_POSTGRES_DEPLOYMENT=docker"
+        for line in generated_env.splitlines()
+    )
+    assert "LIGHTRAG_RUNTIME_TARGET=compose" in generated_env
+
+
+def test_env_storage_flow_removes_storage_docker_marker_when_switching_to_host(
+    tmp_path: Path,
+) -> None:
+    """Choosing a host-managed storage backend should clear a previously saved Docker marker."""
+
+    write_text_lines(
+        tmp_path / ".env",
+        [
+            "LIGHTRAG_SETUP_POSTGRES_DEPLOYMENT=docker",
+            "LIGHTRAG_KV_STORAGE=PGKVStorage",
+            "LIGHTRAG_VECTOR_STORAGE=PGVectorStorage",
+            "LIGHTRAG_GRAPH_STORAGE=PGGraphStorage",
+            "LIGHTRAG_DOC_STATUS_STORAGE=PGDocStatusStorage",
+        ],
+    )
+    write_text_lines(
+        tmp_path / "env.example",
+        (REPO_ROOT / "env.example").read_text(encoding="utf-8").splitlines(),
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+
+select_storage_backends() {{
+  ENV_VALUES[LIGHTRAG_KV_STORAGE]="PGKVStorage"
+  ENV_VALUES[LIGHTRAG_VECTOR_STORAGE]="PGVectorStorage"
+  ENV_VALUES[LIGHTRAG_GRAPH_STORAGE]="PGGraphStorage"
+  ENV_VALUES[LIGHTRAG_DOC_STATUS_STORAGE]="PGDocStatusStorage"
+  REQUIRED_DB_TYPES[postgresql]=1
+}}
+collect_postgres_config() {{
+  ENV_VALUES[POSTGRES_HOST]="localhost"
+  ENV_VALUES[POSTGRES_PORT]="5432"
+  ENV_VALUES[POSTGRES_USER]="lightrag"
+  ENV_VALUES[POSTGRES_PASSWORD]="secret"
+  ENV_VALUES[POSTGRES_DATABASE]="lightrag"
+}}
+validate_required_variables() {{ return 0; }}
+validate_mongo_vector_storage_config() {{ return 0; }}
+validate_sensitive_env_literals() {{ return 0; }}
+confirm_default_yes() {{
+  case "$1" in
+    "All wizard-managed services have been removed. Remove LightRAG from Docker and switch to host mode?") return 1 ;;
+    *) return 0 ;;
+  esac
+}}
+confirm_default_no() {{ return 1; }}
+confirm_required_yes_no() {{ return 0; }}
+
+env_storage_flow
+"""
+    )
+
+    generated_env = (tmp_path / ".env").read_text(encoding="utf-8")
+    assert not any(
+        line.startswith("LIGHTRAG_SETUP_POSTGRES_DEPLOYMENT=")
+        for line in generated_env.splitlines()
+    )
+    assert "LIGHTRAG_RUNTIME_TARGET=host" in generated_env
+
+
+def test_env_storage_flow_clears_unused_storage_docker_markers(
+    tmp_path: Path,
+) -> None:
+    """Markers for databases no longer required by the selected backends should be removed."""
+
+    write_text_lines(
+        tmp_path / ".env",
+        [
+            "LIGHTRAG_SETUP_POSTGRES_DEPLOYMENT=docker",
+            "LIGHTRAG_KV_STORAGE=PGKVStorage",
+            "LIGHTRAG_VECTOR_STORAGE=PGVectorStorage",
+            "LIGHTRAG_GRAPH_STORAGE=PGGraphStorage",
+            "LIGHTRAG_DOC_STATUS_STORAGE=PGDocStatusStorage",
+        ],
+    )
+    write_text_lines(
+        tmp_path / "env.example",
+        (REPO_ROOT / "env.example").read_text(encoding="utf-8").splitlines(),
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+
+select_storage_backends() {{
+  ENV_VALUES[LIGHTRAG_KV_STORAGE]="JsonKVStorage"
+  ENV_VALUES[LIGHTRAG_VECTOR_STORAGE]="NanoVectorDBStorage"
+  ENV_VALUES[LIGHTRAG_GRAPH_STORAGE]="NetworkXStorage"
+  ENV_VALUES[LIGHTRAG_DOC_STATUS_STORAGE]="JsonDocStatusStorage"
+}}
+collect_database_config() {{ :; }}
+validate_required_variables() {{ return 0; }}
+validate_mongo_vector_storage_config() {{ return 0; }}
+validate_sensitive_env_literals() {{ return 0; }}
+confirm_default_yes() {{
+  case "$1" in
+    "All wizard-managed services have been removed. Remove LightRAG from Docker and switch to host mode?") return 1 ;;
+    *) return 0 ;;
+  esac
+}}
+confirm_default_no() {{ return 1; }}
+confirm_required_yes_no() {{ return 0; }}
+
+env_storage_flow
+"""
+    )
+
+    generated_env = (tmp_path / ".env").read_text(encoding="utf-8")
+    assert not any(
+        line.startswith("LIGHTRAG_SETUP_POSTGRES_DEPLOYMENT=")
+        for line in generated_env.splitlines()
+    )
+    assert "LIGHTRAG_KV_STORAGE=JsonKVStorage" in generated_env
+
+
 def test_env_storage_flow_generates_env_and_compose_files(tmp_path: Path) -> None:
     """env-storage should write updated .env and a docker-compose.final.yml."""
 
@@ -2989,11 +4316,11 @@ prompt_secret_with_default() {{ printf '%s' "$2"; }}
 prompt_secret_until_valid_with_default() {{ printf '%s' "$2"; }}
 confirm_default_yes() {{
   case "$1" in
-    "Ready to proceed and write .env?") return 0 ;;
     *) return 1 ;;
   esac
 }}
 confirm_default_no() {{ return 1; }}
+confirm_required_yes_no() {{ return 0; }}
 
 env_storage_flow
 """
@@ -3010,6 +4337,386 @@ env_storage_flow
     assert "services:" in generated_compose
     assert "  lightrag:" in generated_compose
     assert "env_file:" not in generated_compose
+
+
+def test_env_storage_flow_uses_rag_defaults_for_empty_postgres_docker_credentials(
+    tmp_path: Path,
+) -> None:
+    """env-storage should write bundled postgres credentials when old `.env` creds are empty."""
+
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "\n".join(
+            [
+                "LLM_BINDING=ollama",
+                "EMBEDDING_BINDING=ollama",
+                "AUTH_ACCOUNTS=admin:secret",
+                "TOKEN_SECRET=jwt-secret",
+                "WHITELIST_PATHS=/health",
+                "POSTGRES_USER=",
+                "POSTGRES_PASSWORD=",
+                "POSTGRES_DATABASE=",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "env.example").write_text(
+        (REPO_ROOT / "env.example").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    (tmp_path / "docker-compose.yml").write_text(
+        (REPO_ROOT / "docker-compose.yml").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+
+PROMPT_LOG_FILE="$(mktemp)"
+: > "$PROMPT_LOG_FILE"
+
+select_storage_backends() {{
+  REQUIRED_DB_TYPES[postgresql]=1
+  ENV_VALUES[LIGHTRAG_KV_STORAGE]="PGKVStorage"
+  ENV_VALUES[LIGHTRAG_VECTOR_STORAGE]="PGVectorStorage"
+  ENV_VALUES[LIGHTRAG_GRAPH_STORAGE]="PGGraphStorage"
+  ENV_VALUES[LIGHTRAG_DOC_STATUS_STORAGE]="PGDocStatusStorage"
+}}
+confirm_default_no() {{
+  if [[ "$1" == "Run PostgreSQL locally via Docker?" ]]; then
+    return 0
+  fi
+  return 1
+}}
+confirm_default_yes() {{ return 0; }}
+confirm_required_yes_no() {{ return 0; }}
+prompt_with_default() {{
+  printf '%s\\n' "$1" >> "$PROMPT_LOG_FILE"
+  case "$1" in
+    "PostgreSQL host") printf 'localhost' ;;
+    *) printf '%s' "$2" ;;
+  esac
+}}
+prompt_secret_with_default() {{
+  printf 'secret:%s\\n' "$1" >> "$PROMPT_LOG_FILE"
+  printf '%s' "$2"
+}}
+
+env_storage_flow
+
+printf 'PROMPT_LOG=%s\\n' "$(paste -sd '|' "$PROMPT_LOG_FILE")"
+""",
+        cwd=tmp_path,
+    )
+
+    generated_env = (tmp_path / ".env").read_text(encoding="utf-8")
+    generated_compose = (tmp_path / "docker-compose.final.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "POSTGRES_USER=rag" in generated_env
+    assert "POSTGRES_PASSWORD=rag" in generated_env
+    assert "POSTGRES_DATABASE=rag" in generated_env
+    assert 'POSTGRES_USER: "rag"' in generated_compose
+    assert 'POSTGRES_PASSWORD: "rag"' in generated_compose
+    assert 'POSTGRES_DB: "rag"' in generated_compose
+
+
+@pytest.mark.parametrize(
+    ("changed_key", "changed_value", "expected_rewrite"),
+    [
+        ("NEO4J_PASSWORD", "updated-password", "no"),
+        ("NEO4J_DATABASE", "updated-database", "yes"),
+    ],
+    ids=["neo4j-password-does-not-rewrite", "neo4j-database-rewrites"],
+)
+def test_configure_storage_compose_rewrites_only_rewrites_neo4j_on_database_change(
+    changed_key: str,
+    changed_value: str,
+    expected_rewrite: str,
+) -> None:
+    """Neo4j service rewrites should be driven by database changes, not credentials."""
+
+    output = run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+reset_state
+
+EXISTING_MANAGED_ROOT_SERVICE_SET[neo4j]=1
+DOCKER_SERVICE_SET[neo4j]=1
+ORIGINAL_ENV_VALUES[NEO4J_PASSWORD]="original-password"
+ORIGINAL_ENV_VALUES[NEO4J_DATABASE]="neo4j"
+ENV_VALUES[NEO4J_PASSWORD]="original-password"
+ENV_VALUES[NEO4J_DATABASE]="neo4j"
+ENV_VALUES[{changed_key}]="{changed_value}"
+
+configure_storage_compose_rewrites
+
+if [[ -n "${{COMPOSE_REWRITE_SERVICE_SET[neo4j]+set}}" ]]; then
+  printf 'REWRITE=yes\\n'
+else
+  printf 'REWRITE=no\\n'
+fi
+"""
+    )
+    values = parse_lines(output)
+
+    assert values["REWRITE"] == expected_rewrite
+
+
+@pytest.mark.parametrize(
+    ("changed_key", "changed_value", "expected_rewrite"),
+    [
+        ("POSTGRES_HOST", "db.example.com", "no"),
+        ("POSTGRES_PORT", "6543", "no"),
+        ("POSTGRES_USER", "updated-user", "yes"),
+        ("POSTGRES_PASSWORD", "updated-password", "yes"),
+        ("POSTGRES_DATABASE", "updated-database", "yes"),
+    ],
+    ids=[
+        "postgres-host-does-not-rewrite",
+        "postgres-port-does-not-rewrite",
+        "postgres-user-rewrites",
+        "postgres-password-rewrites",
+        "postgres-database-rewrites",
+    ],
+)
+def test_configure_storage_compose_rewrites_only_rewrites_postgres_for_service_env_changes(
+    changed_key: str,
+    changed_value: str,
+    expected_rewrite: str,
+) -> None:
+    """Postgres service rewrites should only follow changes emitted into the postgres block."""
+
+    output = run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+reset_state
+
+EXISTING_MANAGED_ROOT_SERVICE_SET[postgres]=1
+DOCKER_SERVICE_SET[postgres]=1
+ORIGINAL_ENV_VALUES[POSTGRES_HOST]="localhost"
+ORIGINAL_ENV_VALUES[POSTGRES_PORT]="5432"
+ORIGINAL_ENV_VALUES[POSTGRES_USER]="rag"
+ORIGINAL_ENV_VALUES[POSTGRES_PASSWORD]="rag"
+ORIGINAL_ENV_VALUES[POSTGRES_DATABASE]="lightrag"
+ENV_VALUES[POSTGRES_HOST]="localhost"
+ENV_VALUES[POSTGRES_PORT]="5432"
+ENV_VALUES[POSTGRES_USER]="rag"
+ENV_VALUES[POSTGRES_PASSWORD]="rag"
+ENV_VALUES[POSTGRES_DATABASE]="lightrag"
+ENV_VALUES[{changed_key}]="{changed_value}"
+
+configure_storage_compose_rewrites
+
+if [[ -n "${{COMPOSE_REWRITE_SERVICE_SET[postgres]+set}}" ]]; then
+  printf 'REWRITE=yes\\n'
+else
+  printf 'REWRITE=no\\n'
+fi
+"""
+    )
+    values = parse_lines(output)
+
+    assert values["REWRITE"] == expected_rewrite
+
+
+def test_env_storage_flow_backs_up_existing_compose_before_rewrite(
+    tmp_path: Path,
+) -> None:
+    """env-storage should back up the current compose file before rewriting it."""
+
+    existing_compose = (
+        "\n".join(
+            [
+                "services:",
+                "  lightrag:",
+                "    image: example/lightrag:test",
+                "    environment:",
+                '      LEGACY_SETTING: "1"',
+                "  postgres:",
+                "    image: gzdaniel/postgres-for-rag:16.6",
+            ]
+        )
+        + "\n"
+    )
+
+    write_text_lines(
+        tmp_path / ".env",
+        [
+            "LLM_BINDING=openai",
+            "EMBEDDING_BINDING=openai",
+        ],
+    )
+    write_text_lines(
+        tmp_path / "env.example",
+        (REPO_ROOT / "env.example").read_text(encoding="utf-8").splitlines(),
+    )
+    (tmp_path / "docker-compose.final.yml").write_text(
+        existing_compose,
+        encoding="utf-8",
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+
+select_storage_backends() {{
+  ENV_VALUES[LIGHTRAG_KV_STORAGE]="JsonKVStorage"
+  ENV_VALUES[LIGHTRAG_VECTOR_STORAGE]="NanoVectorDBStorage"
+  ENV_VALUES[LIGHTRAG_GRAPH_STORAGE]="NetworkXStorage"
+  ENV_VALUES[LIGHTRAG_DOC_STATUS_STORAGE]="JsonDocStatusStorage"
+}}
+collect_database_config() {{ :; }}
+validate_required_variables() {{ return 0; }}
+validate_mongo_vector_storage_config() {{ return 0; }}
+validate_sensitive_env_literals() {{ return 0; }}
+confirm_default_yes() {{
+  case "$1" in
+    "All wizard-managed services have been removed. Remove LightRAG from Docker and switch to host mode?") return 1 ;;
+    *) return 0 ;;
+  esac
+}}
+confirm_default_no() {{ return 1; }}
+confirm_required_yes_no() {{ return 0; }}
+
+env_storage_flow
+"""
+    )
+
+    assert_single_compose_backup(tmp_path, existing_compose)
+    assert (tmp_path / "docker-compose.final.yml").exists()
+
+
+def test_env_storage_flow_keeps_compose_mode_for_user_sidecars(
+    tmp_path: Path,
+) -> None:
+    """env-storage should keep LightRAG in Docker when user sidecars are present."""
+
+    existing_compose = (
+        "\n".join(
+            [
+                "services:",
+                "  lightrag:",
+                "    image: example/lightrag:test",
+                "    environment:",
+                '      LEGACY_SETTING: "1"',
+                "  sidecar:",
+                "    image: busybox",
+            ]
+        )
+        + "\n"
+    )
+
+    write_text_lines(
+        tmp_path / ".env",
+        [
+            "LLM_BINDING=openai",
+            "EMBEDDING_BINDING=openai",
+        ],
+    )
+    write_text_lines(
+        tmp_path / "env.example",
+        (REPO_ROOT / "env.example").read_text(encoding="utf-8").splitlines(),
+    )
+    (tmp_path / "docker-compose.final.yml").write_text(
+        existing_compose,
+        encoding="utf-8",
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+
+select_storage_backends() {{
+  ENV_VALUES[LIGHTRAG_KV_STORAGE]="JsonKVStorage"
+  ENV_VALUES[LIGHTRAG_VECTOR_STORAGE]="NanoVectorDBStorage"
+  ENV_VALUES[LIGHTRAG_GRAPH_STORAGE]="NetworkXStorage"
+  ENV_VALUES[LIGHTRAG_DOC_STATUS_STORAGE]="JsonDocStatusStorage"
+}}
+collect_database_config() {{ :; }}
+validate_required_variables() {{ return 0; }}
+validate_mongo_vector_storage_config() {{ return 0; }}
+validate_sensitive_env_literals() {{ return 0; }}
+confirm_default_yes() {{ return 0; }}
+confirm_default_no() {{ return 1; }}
+confirm_required_yes_no() {{ return 0; }}
+
+env_storage_flow
+"""
+    )
+
+    result = (tmp_path / "docker-compose.final.yml").read_text(encoding="utf-8")
+    generated_env = (tmp_path / ".env").read_text(encoding="utf-8")
+
+    assert_single_compose_backup(tmp_path, existing_compose)
+    assert "  lightrag:" in result
+    assert "  sidecar:" in result
+    assert "LIGHTRAG_RUNTIME_TARGET=compose" in generated_env
+
+
+def test_env_storage_flow_clears_mongodb_docker_marker_for_atlas_vector_storage(
+    tmp_path: Path,
+) -> None:
+    """MongoDB Atlas-only vector storage should not preserve a local Docker deployment marker."""
+
+    write_text_lines(
+        tmp_path / ".env",
+        [
+            "LIGHTRAG_SETUP_MONGODB_DEPLOYMENT=docker",
+            "LIGHTRAG_KV_STORAGE=MongoKVStorage",
+            "LIGHTRAG_VECTOR_STORAGE=MongoVectorDBStorage",
+            "LIGHTRAG_GRAPH_STORAGE=MongoGraphStorage",
+            "LIGHTRAG_DOC_STATUS_STORAGE=MongoDocStatusStorage",
+        ],
+    )
+    write_text_lines(
+        tmp_path / "env.example",
+        (REPO_ROOT / "env.example").read_text(encoding="utf-8").splitlines(),
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+
+select_storage_backends() {{
+  ENV_VALUES[LIGHTRAG_KV_STORAGE]="MongoKVStorage"
+  ENV_VALUES[LIGHTRAG_VECTOR_STORAGE]="MongoVectorDBStorage"
+  ENV_VALUES[LIGHTRAG_GRAPH_STORAGE]="MongoGraphStorage"
+  ENV_VALUES[LIGHTRAG_DOC_STATUS_STORAGE]="MongoDocStatusStorage"
+  REQUIRED_DB_TYPES[mongodb]=1
+}}
+prompt_until_valid() {{ printf '%s' "$2"; }}
+prompt_with_default() {{ printf '%s' "$2"; }}
+validate_required_variables() {{ return 0; }}
+validate_mongo_vector_storage_config() {{ return 0; }}
+validate_sensitive_env_literals() {{ return 0; }}
+confirm_default_yes() {{ return 0; }}
+confirm_default_no() {{ return 1; }}
+confirm_required_yes_no() {{ return 0; }}
+
+env_storage_flow
+"""
+    )
+
+    generated_env = (tmp_path / ".env").read_text(encoding="utf-8")
+    assert not any(
+        line.startswith("LIGHTRAG_SETUP_MONGODB_DEPLOYMENT=")
+        for line in generated_env.splitlines()
+    )
+    assert "MONGO_URI=mongodb+srv://cluster.example.mongodb.net/" in generated_env
 
 
 def test_env_storage_flow_preserves_existing_compose_ssl_when_env_paths_are_stale(
@@ -3064,8 +4771,14 @@ select_storage_backends() {{
 }}
 collect_database_config() {{ :; }}
 validate_required_variables() {{ return 0; }}
-confirm_default_yes() {{ return 0; }}
+confirm_default_yes() {{
+  case "$1" in
+    "All wizard-managed services have been removed. Remove LightRAG from Docker and switch to host mode?") return 1 ;;
+    *) return 0 ;;
+  esac
+}}
 confirm_default_no() {{ return 1; }}
+confirm_required_yes_no() {{ return 0; }}
 
 env_storage_flow
 """
@@ -3127,7 +4840,13 @@ collect_server_config() {{
 }}
 collect_security_config() {{ :; }}
 collect_ssl_config() {{ :; }}
-confirm_default_yes() {{ return 0; }}
+confirm_default_yes() {{
+  case "$1" in
+    "All wizard-managed services have been removed. Remove LightRAG from Docker and switch to host mode?") return 1 ;;
+    *) return 0 ;;
+  esac
+}}
+confirm_required_yes_no() {{ return 0; }}
 
 env_server_flow
 """
@@ -3142,6 +4861,73 @@ env_server_flow
     assert "./data/certs/cert.pem:/app/data/certs/cert.pem:ro" in generated_compose
     assert "./data/certs/key.pem:/app/data/certs/key.pem:ro" in generated_compose
     assert 'PORT: "9621"' in generated_compose
+    assert '      - "0.0.0.0:8080:9621"' in generated_compose
+
+
+def test_env_server_flow_backs_up_existing_compose_before_rewrite(
+    tmp_path: Path,
+) -> None:
+    """env-server should back up the current compose file before rewriting it."""
+
+    existing_compose = (
+        "\n".join(
+            [
+                "services:",
+                "  lightrag:",
+                "    image: example/lightrag:test",
+                "    environment:",
+                '      PORT: "9621"',
+            ]
+        )
+        + "\n"
+    )
+
+    write_text_lines(
+        tmp_path / ".env",
+        [
+            "HOST=0.0.0.0",
+            "PORT=9621",
+        ],
+    )
+    write_text_lines(
+        tmp_path / "env.example",
+        (REPO_ROOT / "env.example").read_text(encoding="utf-8").splitlines(),
+    )
+    (tmp_path / "docker-compose.final.yml").write_text(
+        existing_compose,
+        encoding="utf-8",
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+
+collect_server_config() {{
+  ENV_VALUES[HOST]="0.0.0.0"
+  ENV_VALUES[PORT]="8080"
+}}
+collect_security_config() {{ :; }}
+collect_ssl_config() {{ :; }}
+validate_sensitive_env_literals() {{ return 0; }}
+validate_security_config() {{ return 0; }}
+confirm_default_yes() {{
+  case "$1" in
+    "All wizard-managed services have been removed. Remove LightRAG from Docker and switch to host mode?") return 1 ;;
+    *) return 0 ;;
+  esac
+}}
+confirm_required_yes_no() {{ return 0; }}
+
+env_server_flow
+"""
+    )
+
+    assert_single_compose_backup(tmp_path, existing_compose)
+    assert (tmp_path / "docker-compose.final.yml").read_text(encoding="utf-8") != (
+        existing_compose
+    )
 
 
 def test_switching_to_non_docker_storage_removes_stale_services_from_compose(
@@ -3205,6 +4991,7 @@ collect_docker_image_tags() {{ :; }}
 validate_required_variables() {{ return 0; }}
 confirm_default_yes() {{ return 0; }}
 confirm_default_no() {{ return 1; }}
+confirm_required_yes_no() {{ return 0; }}
 
 env_storage_flow
 """
@@ -3220,6 +5007,210 @@ env_storage_flow
     assert "  lightrag:" in result
     assert "  sidecar:" in result
     assert "sidecar_data:" in result
+
+
+def test_env_storage_flow_drops_stale_vllm_services_missing_from_env_markers(
+    tmp_path: Path,
+) -> None:
+    """env-storage should remove stale vLLM services unless `.env` still marks them as Docker-managed."""
+
+    write_text_lines(
+        tmp_path / ".env",
+        [
+            "LIGHTRAG_RUNTIME_TARGET=compose",
+            "LLM_BINDING=openai",
+            "EMBEDDING_BINDING=openai",
+            "RERANK_BINDING=cohere",
+            "LIGHTRAG_SETUP_RERANK_PROVIDER=cohere",
+        ],
+    )
+    write_text_lines(
+        tmp_path / "env.example",
+        (REPO_ROOT / "env.example").read_text(encoding="utf-8").splitlines(),
+    )
+    (tmp_path / "docker-compose.final.yml").write_text(
+        "\n".join(
+            [
+                "services:",
+                "  lightrag:",
+                "    image: example/lightrag:test",
+                "  vllm-embed:",
+                "    image: vllm/vllm-openai:latest",
+                "  vllm-rerank:",
+                "    image: vllm/vllm-openai:latest",
+                "volumes:",
+                "  vllm_embed_cache:",
+                "  vllm_rerank_cache:",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+
+select_storage_backends() {{
+  ENV_VALUES[LIGHTRAG_KV_STORAGE]="JsonKVStorage"
+  ENV_VALUES[LIGHTRAG_VECTOR_STORAGE]="NanoVectorDBStorage"
+  ENV_VALUES[LIGHTRAG_GRAPH_STORAGE]="NetworkXStorage"
+  ENV_VALUES[LIGHTRAG_DOC_STATUS_STORAGE]="JsonDocStatusStorage"
+}}
+collect_database_config() {{ :; }}
+validate_required_variables() {{ return 0; }}
+validate_mongo_vector_storage_config() {{ return 0; }}
+validate_sensitive_env_literals() {{ return 0; }}
+confirm_default_yes() {{ return 1; }}
+confirm_default_no() {{ return 1; }}
+confirm_required_yes_no() {{ return 0; }}
+
+env_storage_flow
+"""
+    )
+
+    result = (tmp_path / "docker-compose.final.yml").read_text(encoding="utf-8")
+    generated_env = (tmp_path / ".env").read_text(encoding="utf-8")
+
+    assert "  vllm-embed:" not in result
+    assert "  vllm-rerank:" not in result
+    assert "vllm_embed_cache:" not in result
+    assert "vllm_rerank_cache:" not in result
+    assert "LIGHTRAG_RUNTIME_TARGET=compose" in generated_env
+
+
+def test_env_storage_flow_preserves_vllm_services_marked_in_env(
+    tmp_path: Path,
+) -> None:
+    """env-storage should restore vLLM services from `.env` markers even without old compose entries."""
+
+    write_text_lines(
+        tmp_path / ".env",
+        [
+            "LIGHTRAG_RUNTIME_TARGET=compose",
+            "LLM_BINDING=openai",
+            "EMBEDDING_BINDING=openai",
+            "EMBEDDING_BINDING_HOST=http://localhost:8001/v1",
+            "LIGHTRAG_SETUP_EMBEDDING_PROVIDER=vllm",
+            "VLLM_EMBED_MODEL=BAAI/bge-m3",
+            "VLLM_EMBED_PORT=8001",
+            "VLLM_EMBED_DEVICE=cpu",
+        ],
+    )
+    write_text_lines(
+        tmp_path / "env.example",
+        (REPO_ROOT / "env.example").read_text(encoding="utf-8").splitlines(),
+    )
+    write_text_lines(
+        tmp_path / "docker-compose.final.yml",
+        [
+            "services:",
+            "  lightrag:",
+            "    image: example/lightrag:test",
+        ],
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+
+select_storage_backends() {{
+  ENV_VALUES[LIGHTRAG_KV_STORAGE]="JsonKVStorage"
+  ENV_VALUES[LIGHTRAG_VECTOR_STORAGE]="NanoVectorDBStorage"
+  ENV_VALUES[LIGHTRAG_GRAPH_STORAGE]="NetworkXStorage"
+  ENV_VALUES[LIGHTRAG_DOC_STATUS_STORAGE]="JsonDocStatusStorage"
+}}
+collect_database_config() {{ :; }}
+validate_required_variables() {{ return 0; }}
+validate_mongo_vector_storage_config() {{ return 0; }}
+validate_sensitive_env_literals() {{ return 0; }}
+confirm_default_yes() {{ return 1; }}
+confirm_default_no() {{ return 1; }}
+confirm_required_yes_no() {{ return 0; }}
+
+env_storage_flow
+"""
+    )
+
+    result = (tmp_path / "docker-compose.final.yml").read_text(encoding="utf-8")
+    generated_env = (tmp_path / ".env").read_text(encoding="utf-8")
+
+    assert "  vllm-embed:" in result
+    assert "LIGHTRAG_RUNTIME_TARGET=compose" in generated_env
+
+
+def test_env_storage_flow_deletes_compose_when_switching_lightrag_to_host(
+    tmp_path: Path,
+) -> None:
+    """env-storage should back up and delete compose when no Docker services remain."""
+
+    existing_compose = (
+        "\n".join(
+            [
+                "services:",
+                "  lightrag:",
+                "    image: example/lightrag:test",
+                "  redis:",
+                "    image: redis:latest",
+            ]
+        )
+        + "\n"
+    )
+
+    write_text_lines(
+        tmp_path / ".env",
+        [
+            "LIGHTRAG_RUNTIME_TARGET=compose",
+            "LLM_BINDING=openai",
+            "EMBEDDING_BINDING=openai",
+        ],
+    )
+    write_text_lines(
+        tmp_path / "env.example",
+        (REPO_ROOT / "env.example").read_text(encoding="utf-8").splitlines(),
+    )
+    (tmp_path / "docker-compose.final.yml").write_text(
+        existing_compose,
+        encoding="utf-8",
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+
+select_storage_backends() {{
+  ENV_VALUES[LIGHTRAG_KV_STORAGE]="JsonKVStorage"
+  ENV_VALUES[LIGHTRAG_VECTOR_STORAGE]="NanoVectorDBStorage"
+  ENV_VALUES[LIGHTRAG_GRAPH_STORAGE]="NetworkXStorage"
+  ENV_VALUES[LIGHTRAG_DOC_STATUS_STORAGE]="JsonDocStatusStorage"
+}}
+collect_database_config() {{ :; }}
+validate_required_variables() {{ return 0; }}
+validate_mongo_vector_storage_config() {{ return 0; }}
+validate_sensitive_env_literals() {{ return 0; }}
+confirm_default_yes() {{ return 1; }}
+confirm_default_no() {{
+  case "$1" in
+    "All wizard-managed services have been removed. Remove LightRAG from Docker and switch to host mode?") return 0 ;;
+    *) return 1 ;;
+  esac
+}}
+confirm_required_yes_no() {{ return 0; }}
+
+env_storage_flow
+"""
+    )
+
+    assert_single_compose_backup(tmp_path, existing_compose)
+    assert not (tmp_path / "docker-compose.final.yml").exists()
+    generated_env = (tmp_path / ".env").read_text(encoding="utf-8")
+    assert "LIGHTRAG_RUNTIME_TARGET=host" in generated_env
 
 
 def test_generate_docker_compose_uses_template_images_even_with_old_env_overrides(
@@ -3338,6 +5329,94 @@ printf 'MILVUS_DB_NAME=%s\\n' "${{ENV_VALUES[MILVUS_DB_NAME]}}"
     assert values["MILVUS_DB_NAME"] == "lightrag"
 
 
+def test_collect_milvus_config_initializes_minio_credentials_for_local_docker(
+    tmp_path: Path,
+) -> None:
+    """Local Docker Milvus should write default MinIO credentials when none exist yet."""
+
+    env_file = tmp_path / ".env"
+    env_example = tmp_path / "env.example"
+    env_example.write_text((REPO_ROOT / "env.example").read_text(encoding="utf-8"))
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+
+confirm_default_yes() {{ return 0; }}
+prompt_choice() {{ printf '%s' "$2"; }}
+prompt_with_default() {{
+  printf '%s' "$2"
+}}
+prompt_until_valid() {{
+  printf '%s' "$2"
+}}
+
+collect_milvus_config yes
+generate_env_file "$REPO_ROOT/env.example" "$REPO_ROOT/.env"
+""",
+        cwd=tmp_path,
+    )
+
+    env_text = env_file.read_text(encoding="utf-8")
+    assert "MINIO_ACCESS_KEY_ID=minioadmin" in env_text
+    assert "MINIO_SECRET_ACCESS_KEY=minioadmin" in env_text
+
+
+@pytest.mark.parametrize(
+    ("setup_lines", "nvidia_impl", "expected_device"),
+    [
+        (
+            ['ENV_VALUES[MILVUS_DEVICE]="cpu"'],
+            "nvidia-smi() { return 0; }",
+            "cpu",
+        ),
+        (
+            ['ENV_VALUES[MILVUS_DEVICE]="cuda"'],
+            "nvidia-smi() { return 1; }",
+            "cuda",
+        ),
+        (
+            [],
+            "nvidia-smi() { return 0; }",
+            "cuda",
+        ),
+    ],
+    ids=["saved-cpu-wins", "saved-cuda-wins", "gpu-host-defaults-to-cuda"],
+)
+def test_collect_milvus_config_resolves_device_default_for_local_docker(
+    setup_lines: list[str],
+    nvidia_impl: str,
+    expected_device: str,
+) -> None:
+    """Milvus device defaults should prefer saved state and otherwise use host CUDA detection."""
+
+    setup_block = "\n".join(setup_lines)
+    values = run_bash_lines(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+reset_state
+
+{setup_block}
+{nvidia_impl}
+
+confirm_default_yes() {{ return 0; }}
+prompt_choice() {{ printf '%s' "$2"; }}
+prompt_with_default() {{ printf '%s' "$2"; }}
+prompt_until_valid() {{ printf '%s' "$2"; }}
+
+collect_milvus_config yes
+
+printf 'MILVUS_DEVICE=%s\\n' "${{ENV_VALUES[MILVUS_DEVICE]}}"
+"""
+    )
+
+    assert values["MILVUS_DEVICE"] == expected_device
+
+
 @pytest.mark.parametrize(
     ("env_key", "env_value", "expected_value"),
     [
@@ -3405,31 +5484,6 @@ printf '{env_key}=%s\\n' "${{COMPOSE_ENV_OVERRIDES[{env_key}]}}"
     assert values[env_key] == expected_value
 
 
-def test_wait_for_port_uses_explicit_timeout_argument() -> None:
-    """`wait_for_port` should honor arg4 instead of always falling back to WAIT_TIMEOUT."""
-
-    values = run_bash_lines(
-        f"""
-set -euo pipefail
-source "{REPO_ROOT}/scripts/setup/setup.sh"
-reset_state
-WAIT_TIMEOUT=1
-
-start=$SECONDS
-if wait_for_port 127.0.0.1 65535 probe 0 >/dev/null 2>&1; then
-  printf 'RESULT=success\\n'
-else
-  printf 'RESULT=failure\\n'
-fi
-elapsed=$((SECONDS - start))
-printf 'ELAPSED=%s\\n' "$elapsed"
-"""
-    )
-
-    assert values["RESULT"] == "failure"
-    assert int(values["ELAPSED"]) < 2
-
-
 def test_collect_mongodb_config_local_service_strips_stale_credentials_on_rerun() -> (
     None
 ):
@@ -3494,12 +5548,15 @@ printf 'DOCKER_SERVICE=%s\\n' "${{DOCKER_SERVICES[0]}}"
 
 
 @pytest.mark.parametrize(
-    "host_value",
-    ["127.0.0.1", "192.168.1.10"],
+    ("host_value", "expected_port_mapping"),
+    [
+        ("127.0.0.1", "127.0.0.1:8080:9621"),
+        ("192.168.1.10", "192.168.1.10:8080:9621"),
+    ],
     ids=["loopback-bind", "lan-bind"],
 )
 def test_prepare_compose_runtime_overrides_normalizes_server_binding(
-    host_value: str,
+    host_value: str, expected_port_mapping: str
 ) -> None:
     """Compose runtime should always bind the API to the container-facing host/port."""
 
@@ -3516,17 +5573,19 @@ prepare_compose_runtime_overrides
 
 printf 'HOST=%s\\n' "${{COMPOSE_ENV_OVERRIDES[HOST]}}"
 printf 'PORT=%s\\n' "${{COMPOSE_ENV_OVERRIDES[PORT]}}"
+printf 'PORT_MAPPING=%s\\n' "${{LIGHTRAG_COMPOSE_SERVER_PORT_MAPPING}}"
 """
     )
 
     assert values["HOST"] == "0.0.0.0"
     assert values["PORT"] == "9621"
+    assert values["PORT_MAPPING"] == expected_port_mapping
 
 
 def test_generate_docker_compose_injects_server_host_and_port_overrides(
     tmp_path: Path,
 ) -> None:
-    """Generated compose should keep the published host port while fixing container bind values."""
+    """Generated compose should publish the requested host/IP while keeping container bind values fixed."""
 
     compose_file = tmp_path / "docker-compose.yml"
     compose_file.write_text(
@@ -3566,7 +5625,65 @@ generate_docker_compose "$REPO_ROOT/docker-compose.generated.yml"
 
     assert 'HOST: "0.0.0.0"' in generated_compose
     assert 'PORT: "9621"' in generated_compose
-    assert "${PORT:-9621}:9621" in generated_compose
+    assert '      - "127.0.0.1:8080:9621"' in generated_compose
+
+
+def test_generate_docker_compose_injects_env_overrides_into_lightrag_not_after_managed_services(
+    tmp_path: Path,
+) -> None:
+    """Env overrides must appear inside the lightrag environment block, not after managed services.
+
+    When the base compose has a top-level volumes: section, the strip pass inserts a
+    __WIZARD_MANAGED_SERVICES__ marker at the point where volumes: begins.  Before the
+    fix the environment injector would miss that marker (column-0 comment) as an
+    end-of-environment boundary and append overrides after it — which placed them outside
+    the lightrag service once postgres/neo4j were merged in.
+    """
+
+    compose_file = tmp_path / "docker-compose.yml"
+    compose_file.write_text(
+        "\n".join(
+            [
+                "services:",
+                "  lightrag:",
+                "    image: example/lightrag:test",
+                "    environment:",
+                "      EXISTING_KEY: existing_value",
+                "    volumes:",
+                "      - ./.env:/app/.env",
+                "volumes:",
+                "  some_volume:",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+
+ENV_VALUES[POSTGRES_USER]="lightrag"
+ENV_VALUES[POSTGRES_PASSWORD]="secret"
+ENV_VALUES[POSTGRES_DATABASE]="lightrag"
+add_docker_service "postgres"
+set_compose_override "LLM_BINDING_HOST" "http://host.docker.internal:11434"
+
+generate_docker_compose "$REPO_ROOT/docker-compose.generated.yml"
+"""
+    )
+
+    result = (tmp_path / "docker-compose.generated.yml").read_text(encoding="utf-8")
+
+    lightrag_pos = result.index("  lightrag:")
+    postgres_pos = result.index("  postgres:")
+    override_pos = result.index('LLM_BINDING_HOST: "http://host.docker.internal:11434"')
+
+    # Override must appear inside lightrag's block, before the postgres service.
+    assert lightrag_pos < override_pos < postgres_pos
 
 
 def test_finalize_server_setup_skips_embedded_milvus_sub_services(
@@ -3600,6 +5717,12 @@ def test_finalize_server_setup_skips_embedded_milvus_sub_services(
         (REPO_ROOT / "env.example").read_text(encoding="utf-8"),
         encoding="utf-8",
     )
+    write_text_lines(
+        tmp_path / ".env",
+        [
+            "LIGHTRAG_SETUP_MILVUS_DEPLOYMENT=docker",
+        ],
+    )
 
     # Should complete without error; Milvus child services are managed via the
     # Milvus template, not as independent root services.
@@ -3609,9 +5732,11 @@ set -euo pipefail
 source "{REPO_ROOT}/scripts/setup/setup.sh"
 REPO_ROOT="{tmp_path}"
 reset_state
+load_existing_env_if_present
 collect_server_config() {{ :; }}
 collect_security_config() {{ :; }}
 collect_ssl_config() {{ :; }}
+confirm_required_yes_no() {{ return 0; }}
 finalize_server_setup
 """
     )
@@ -3621,6 +5746,367 @@ finalize_server_setup
     assert "milvus" in result
     assert "milvus-etcd" in result
     assert "milvus-minio" in result
+    assert "      milvus:\n        condition: service_healthy" in result
+    assert "      milvus-etcd:\n        condition: service_healthy" not in result
+    assert "      milvus-minio:\n        condition: service_healthy" not in result
+
+
+def test_finalize_server_setup_uses_compose_native_neo4j_endpoint_on_rerun(
+    tmp_path: Path,
+) -> None:
+    """Preserved managed services should inject compose-native endpoints on server reruns."""
+
+    write_text_lines(
+        tmp_path / ".env",
+        [
+            "LIGHTRAG_SETUP_NEO4J_DEPLOYMENT=docker",
+            "NEO4J_URI=neo4j://localhost:7687",
+        ],
+    )
+    write_text_lines(
+        tmp_path / "env.example",
+        (REPO_ROOT / "env.example").read_text(encoding="utf-8").splitlines(),
+    )
+    write_text_lines(
+        tmp_path / "docker-compose.final.yml",
+        [
+            "services:",
+            "  lightrag:",
+            "    image: example/lightrag:test",
+            "  neo4j:",
+            "    image: neo4j:latest",
+        ],
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+load_existing_env_if_present
+show_summary() {{ :; }}
+confirm_required_yes_no() {{ return 0; }}
+validate_sensitive_env_literals() {{ return 0; }}
+validate_security_config() {{ return 0; }}
+finalize_server_setup
+"""
+    )
+
+    result = (tmp_path / "docker-compose.final.yml").read_text(encoding="utf-8")
+
+    assert 'NEO4J_URI: "neo4j://neo4j:7687"' in result
+    assert 'NEO4J_URI: "neo4j://host.docker.internal:7687"' not in result
+
+
+def test_finalize_server_setup_drops_stale_managed_services_missing_from_env_markers(
+    tmp_path: Path,
+) -> None:
+    """env-server should remove stale wizard-managed services not marked in `.env`."""
+
+    write_text_lines(
+        tmp_path / ".env",
+        [
+            "HOST=0.0.0.0",
+            "PORT=9621",
+        ],
+    )
+    write_text_lines(
+        tmp_path / "env.example",
+        (REPO_ROOT / "env.example").read_text(encoding="utf-8").splitlines(),
+    )
+    write_text_lines(
+        tmp_path / "docker-compose.final.yml",
+        [
+            "services:",
+            "  lightrag:",
+            "    image: example/lightrag:test",
+            "  redis:",
+            "    image: redis:latest",
+            "  vllm-embed:",
+            "    image: vllm/vllm-openai:latest",
+            "volumes:",
+            "  redis_data:",
+            "  vllm_embed_cache:",
+        ],
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+load_existing_env_if_present
+show_summary() {{ :; }}
+collect_server_config() {{ :; }}
+collect_security_config() {{ :; }}
+collect_ssl_config() {{ :; }}
+confirm_required_yes_no() {{ return 0; }}
+confirm_default_yes() {{
+  case "$1" in
+    "All wizard-managed services have been removed. Remove LightRAG from Docker and switch to host mode?") return 1 ;;
+    *) return 0 ;;
+  esac
+}}
+validate_sensitive_env_literals() {{ return 0; }}
+validate_security_config() {{ return 0; }}
+finalize_server_setup
+"""
+    )
+
+    result = (tmp_path / "docker-compose.final.yml").read_text(encoding="utf-8")
+    generated_env = (tmp_path / ".env").read_text(encoding="utf-8")
+
+    assert "  redis:" not in result
+    assert "  vllm-embed:" not in result
+    assert "redis_data:" not in result
+    assert "vllm_embed_cache:" not in result
+    assert "  lightrag:" in result
+    assert "LIGHTRAG_RUNTIME_TARGET=compose" in generated_env
+
+
+def test_env_server_flow_deletes_compose_when_switching_lightrag_to_host(
+    tmp_path: Path,
+) -> None:
+    """env-server should back up and delete compose when no managed or sidecar services remain."""
+
+    existing_compose = (
+        "\n".join(
+            [
+                "services:",
+                "  lightrag:",
+                "    image: example/lightrag:test",
+                "  redis:",
+                "    image: redis:latest",
+            ]
+        )
+        + "\n"
+    )
+
+    write_text_lines(
+        tmp_path / ".env",
+        [
+            "LIGHTRAG_RUNTIME_TARGET=compose",
+            "HOST=0.0.0.0",
+            "PORT=9621",
+        ],
+    )
+    write_text_lines(
+        tmp_path / "env.example",
+        (REPO_ROOT / "env.example").read_text(encoding="utf-8").splitlines(),
+    )
+    (tmp_path / "docker-compose.final.yml").write_text(
+        existing_compose,
+        encoding="utf-8",
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+
+collect_server_config() {{
+  ENV_VALUES[HOST]="0.0.0.0"
+  ENV_VALUES[PORT]="8080"
+}}
+collect_security_config() {{ :; }}
+collect_ssl_config() {{ :; }}
+validate_sensitive_env_literals() {{ return 0; }}
+validate_security_config() {{ return 0; }}
+confirm_default_yes() {{ return 1; }}
+confirm_default_no() {{
+  case "$1" in
+    "All wizard-managed services have been removed. Remove LightRAG from Docker and switch to host mode?") return 0 ;;
+    *) return 1 ;;
+  esac
+}}
+confirm_required_yes_no() {{ return 0; }}
+
+env_server_flow
+"""
+    )
+
+    assert_single_compose_backup(tmp_path, existing_compose)
+    assert not (tmp_path / "docker-compose.final.yml").exists()
+    generated_env = (tmp_path / ".env").read_text(encoding="utf-8")
+    assert "LIGHTRAG_RUNTIME_TARGET=host" in generated_env
+
+
+def test_env_server_flow_keeps_compose_mode_for_user_sidecars(
+    tmp_path: Path,
+) -> None:
+    """env-server should keep LightRAG in Docker when compose still carries user sidecars."""
+
+    existing_compose = (
+        "\n".join(
+            [
+                "services:",
+                "  lightrag:",
+                "    image: example/lightrag:test",
+                "  sidecar:",
+                "    image: busybox",
+            ]
+        )
+        + "\n"
+    )
+
+    write_text_lines(
+        tmp_path / ".env",
+        [
+            "LIGHTRAG_RUNTIME_TARGET=compose",
+            "HOST=0.0.0.0",
+            "PORT=9621",
+        ],
+    )
+    write_text_lines(
+        tmp_path / "env.example",
+        (REPO_ROOT / "env.example").read_text(encoding="utf-8").splitlines(),
+    )
+    (tmp_path / "docker-compose.final.yml").write_text(
+        existing_compose,
+        encoding="utf-8",
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+
+collect_server_config() {{
+  ENV_VALUES[HOST]="0.0.0.0"
+  ENV_VALUES[PORT]="8080"
+}}
+collect_security_config() {{ :; }}
+collect_ssl_config() {{ :; }}
+validate_sensitive_env_literals() {{ return 0; }}
+validate_security_config() {{ return 0; }}
+confirm_default_yes() {{ return 0; }}
+confirm_required_yes_no() {{ return 0; }}
+
+env_server_flow
+"""
+    )
+
+    result = (tmp_path / "docker-compose.final.yml").read_text(encoding="utf-8")
+    generated_env = (tmp_path / ".env").read_text(encoding="utf-8")
+
+    assert "  sidecar:" in result
+    assert "  lightrag:" in result
+    assert "LIGHTRAG_RUNTIME_TARGET=compose" in generated_env
+
+
+def test_env_server_flow_rejects_invalid_ssl_cert_when_switching_to_host(
+    tmp_path: Path,
+) -> None:
+    """finalize_server_setup should reject a missing SSL cert even when switching to host mode."""
+
+    existing_compose = (
+        "\n".join(
+            [
+                "services:",
+                "  lightrag:",
+                "    image: example/lightrag:test",
+                "  redis:",
+                "    image: redis:latest",
+            ]
+        )
+        + "\n"
+    )
+
+    write_text_lines(
+        tmp_path / ".env",
+        [
+            "LIGHTRAG_RUNTIME_TARGET=compose",
+            "HOST=0.0.0.0",
+            "PORT=9621",
+            "SSL=true",
+            "SSL_CERTFILE=/nonexistent/cert.pem",
+            "SSL_KEYFILE=/nonexistent/key.pem",
+        ],
+    )
+    write_text_lines(
+        tmp_path / "env.example",
+        (REPO_ROOT / "env.example").read_text(encoding="utf-8").splitlines(),
+    )
+    (tmp_path / "docker-compose.final.yml").write_text(
+        existing_compose,
+        encoding="utf-8",
+    )
+
+    result = run_bash_process(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+
+collect_server_config() {{ :; }}
+collect_security_config() {{ :; }}
+collect_ssl_config() {{
+  ENV_VALUES[SSL]="true"
+  SSL_CERT_SOURCE_PATH="/nonexistent/cert.pem"
+  SSL_KEY_SOURCE_PATH="/nonexistent/key.pem"
+}}
+validate_sensitive_env_literals() {{ return 0; }}
+validate_security_config() {{ return 0; }}
+confirm_default_yes() {{ return 1; }}
+confirm_default_no() {{
+  case "$1" in
+    "All wizard-managed services have been removed. Remove LightRAG from Docker and switch to host mode?") return 0 ;;
+    *) return 1 ;;
+  esac
+}}
+confirm_required_yes_no() {{ return 0; }}
+
+env_server_flow
+""",
+    )
+
+    assert result.returncode != 0
+    assert (
+        "Invalid SSL_CERTFILE" in result.stderr
+        or "Invalid SSL_CERTFILE" in result.stdout
+    )
+    # compose and .env must not have been modified
+    assert (tmp_path / "docker-compose.final.yml").exists()
+    assert "LIGHTRAG_RUNTIME_TARGET=compose" in (tmp_path / ".env").read_text(
+        encoding="utf-8"
+    )
+
+
+def test_detect_managed_root_services_deduplicates_embedded_milvus_children(
+    tmp_path: Path,
+) -> None:
+    """Managed service discovery should collapse Milvus child services to the root service."""
+
+    write_text_lines(
+        tmp_path / "docker-compose.final.yml",
+        [
+            "services:",
+            "  lightrag:",
+            "    image: example/lightrag:test",
+            "  milvus:",
+            "    image: milvusdb/milvus:v2.6.11",
+            "  milvus-etcd:",
+            "    image: quay.io/coreos/etcd:v3.5.16",
+            "  milvus-minio:",
+            "    image: minio/minio:latest",
+            "  neo4j:",
+            "    image: neo4j:latest",
+        ],
+    )
+
+    output = run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+detect_managed_root_services "{tmp_path}/docker-compose.final.yml"
+"""
+    )
+
+    assert output.splitlines() == ["milvus", "neo4j"]
 
 
 def test_finalize_server_setup_allows_risky_security_config_and_security_check_reports_it(
@@ -3651,6 +6137,7 @@ load_existing_env_if_present
 
 show_summary() {{ :; }}
 confirm_default_yes() {{ return 0; }}
+confirm_required_yes_no() {{ return 0; }}
 
 if finalize_server_setup; then
   printf 'RESULT=success\\n'
@@ -3708,6 +6195,7 @@ ENV_VALUES[AUTH_ACCOUNTS]="admin"
 ENV_VALUES[TOKEN_SECRET]="jwt-secret"
 show_summary() {{ :; }}
 confirm_default_yes() {{ return 0; }}
+confirm_required_yes_no() {{ return 0; }}
 
 if finalize_server_setup; then
   printf 'RESULT=success\\n'
@@ -3927,6 +6415,7 @@ load_existing_env_if_present
 
 show_summary() {{ :; }}
 confirm_default_yes() {{ return 0; }}
+confirm_required_yes_no() {{ return 0; }}
 
 {finalize_call}
 """
@@ -4006,6 +6495,58 @@ generate_docker_compose "$REPO_ROOT/docker-compose.generated.yml"
 
     assert "CUDA_VISIBLE_DEVICES=0" in generated_env
     assert "NVIDIA_VISIBLE_DEVICES: ${NVIDIA_VISIBLE_DEVICES:-all}" in generated_compose
+    assert "      vllm-rerank:\n        condition: service_healthy" in generated_compose
+    assert "    healthcheck:" in generated_compose
+    assert "VLLM_RERANK_PORT:-8000" in generated_compose
+    assert 'grep -q ":$${PORT_HEX} "' in generated_compose
+
+
+@pytest.mark.parametrize(
+    ("device", "expected_image"),
+    [
+        ("cpu", "image: milvusdb/milvus:v2.6.11"),
+        ("cuda", "image: milvusdb/milvus:v2.6.11-gpu"),
+    ],
+)
+def test_generate_docker_compose_selects_milvus_template_from_device(
+    tmp_path: Path,
+    device: str,
+    expected_image: str,
+) -> None:
+    """Milvus compose generation should switch templates based on MILVUS_DEVICE."""
+
+    write_text_lines(
+        tmp_path / "env.example",
+        (REPO_ROOT / "env.example").read_text(encoding="utf-8").splitlines(),
+    )
+    write_text_lines(
+        tmp_path / "docker-compose.yml",
+        [
+            "services:",
+            "  lightrag:",
+            "    image: example/lightrag:test",
+        ],
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+
+ENV_VALUES[MILVUS_DEVICE]="{device}"
+add_docker_service milvus
+
+generate_docker_compose "$REPO_ROOT/docker-compose.final.yml"
+"""
+    )
+
+    generated_compose = (tmp_path / "docker-compose.final.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert expected_image in generated_compose
 
 
 def test_collect_security_config_can_clear_existing_values_on_rerun(
@@ -4152,10 +6693,10 @@ printf 'LANGFUSE_HOST_SET=%s\\n' "${{ENV_VALUES[LANGFUSE_HOST]+set}}"
     assert not any(line.startswith("LANGFUSE_HOST=") for line in generated_lines)
 
 
-def test_collect_neo4j_config_bundled_service_pins_username_to_default(
+def test_collect_neo4j_config_bundled_service_keeps_username_editable(
     tmp_path: Path,
 ) -> None:
-    """Bundled Neo4j should keep the bootstrap username aligned with the image defaults."""
+    """Bundled Neo4j should preserve editable credentials and existing database overrides."""
 
     compose_file = tmp_path / "docker-compose.yml"
     compose_file.write_text(
@@ -4181,23 +6722,31 @@ reset_state
 
 ENV_VALUES[NEO4J_USERNAME]="custom-user"
 ENV_VALUES[NEO4J_PASSWORD]="existing-password"
+ENV_VALUES[NEO4J_DATABASE]="custom-db"
 
 confirm_default_yes() {{ return 0; }}
 prompt_until_valid() {{ printf '%s' "$2"; }}
+prompt_log_file="$(mktemp)"
+trap 'rm -f "$prompt_log_file"' EXIT
 prompt_with_default() {{
+  printf '%s\\n' "$1" >> "$prompt_log_file"
   if [[ "$1" == "Neo4j database" ]]; then
-    printf 'neo4j'
+    printf 'custom-db-2'
   else
-    printf 'custom-user'
+    printf '%s' "$2"
   fi
 }}
-prompt_secret_with_default() {{ printf 'test-password'; }}
+prompt_secret_with_default() {{ printf '%s' "$2"; }}
+prompt_secret_until_valid_with_default() {{ printf '%s' "$2"; }}
 
 collect_neo4j_config yes
 generate_docker_compose "$REPO_ROOT/docker-compose.generated.yml"
 
 printf 'NEO4J_USERNAME=%s\\n' "${{ENV_VALUES[NEO4J_USERNAME]}}"
+printf 'NEO4J_PASSWORD=%s\\n' "${{ENV_VALUES[NEO4J_PASSWORD]}}"
+printf 'NEO4J_DATABASE=%s\\n' "${{ENV_VALUES[NEO4J_DATABASE]}}"
 printf 'DOCKER_SERVICE=%s\\n' "${{DOCKER_SERVICES[0]}}"
+printf 'DATABASE_PROMPTS=%s\\n' "$(grep -c '^Neo4j database$' "$prompt_log_file" || true)"
 """
     )
     values = parse_lines(output)
@@ -4205,9 +6754,228 @@ printf 'DOCKER_SERVICE=%s\\n' "${{DOCKER_SERVICES[0]}}"
         encoding="utf-8"
     )
 
-    assert values["NEO4J_USERNAME"] == "neo4j"
+    assert values["NEO4J_USERNAME"] == "custom-user"
+    assert values["NEO4J_PASSWORD"] == "existing-password"
+    assert values["NEO4J_DATABASE"] == "custom-db-2"
     assert values["DOCKER_SERVICE"] == "neo4j"
-    assert 'NEO4J_AUTH: "neo4j/test-password"' in generated_compose
+    assert values["DATABASE_PROMPTS"] == "1"
+    assert (
+        "NEO4J_AUTH: ${NEO4J_USERNAME:?missing}/${NEO4J_PASSWORD:?missing}"
+        in generated_compose
+    )
+    assert 'NEO4J_dbms_default__database: "custom-db-2"' in generated_compose
+
+
+def test_collect_neo4j_config_bundled_service_defaults_database_when_unset() -> None:
+    """Bundled Neo4j should pin the community default database when no prior value exists."""
+
+    output = run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+reset_state
+
+prompt_log_file="$(mktemp)"
+trap 'rm -f "$prompt_log_file"' EXIT
+
+confirm_default_yes() {{ return 0; }}
+prompt_until_valid() {{ printf '%s' "$2"; }}
+prompt_with_default() {{
+  printf '%s\\n' "$1" >> "$prompt_log_file"
+  printf '%s' "$2"
+}}
+prompt_secret_until_valid_with_default() {{ printf 'secure-password'; }}
+
+collect_neo4j_config yes
+
+printf 'DATABASE=%s\\n' "${{ENV_VALUES[NEO4J_DATABASE]}}"
+printf 'DATABASE_PROMPTS=%s\\n' "$(grep -c '^Neo4j database$' "$prompt_log_file" || true)"
+"""
+    )
+    values = parse_lines(output)
+
+    assert values["DATABASE"] == "neo4j"
+    assert values["DATABASE_PROMPTS"] == "0"
+
+
+def test_collect_neo4j_config_uses_existing_password_as_default_in_docker_mode() -> (
+    None
+):
+    """Bundled Neo4j should preserve the existing password when the default is accepted."""
+
+    output = run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+reset_state
+
+ENV_VALUES[NEO4J_PASSWORD]="from-env-password"
+
+confirm_default_yes() {{ return 0; }}
+prompt_until_valid() {{ printf '%s' "$2"; }}
+prompt_with_default() {{ printf '%s' "$2"; }}
+prompt_secret_until_valid_with_default() {{ printf '%s' "$2"; }}
+
+collect_neo4j_config yes
+
+printf 'PASSWORD=%s\\n' "${{ENV_VALUES[NEO4J_PASSWORD]}}"
+"""
+    )
+    values = parse_lines(output)
+
+    assert values["PASSWORD"] == "from-env-password"
+
+
+def test_collect_neo4j_config_uses_existing_password_as_default_in_external_mode() -> (
+    None
+):
+    """External Neo4j should preserve the existing password when the default is accepted."""
+
+    output = run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+reset_state
+
+ENV_VALUES[NEO4J_PASSWORD]="from-env-password"
+
+confirm_default_no() {{ return 1; }}
+prompt_until_valid() {{ printf '%s' "$2"; }}
+prompt_with_default() {{ printf '%s' "$2"; }}
+prompt_secret_with_default() {{ printf '%s' "$2"; }}
+
+collect_neo4j_config no
+
+printf 'PASSWORD=%s\\n' "${{ENV_VALUES[NEO4J_PASSWORD]}}"
+"""
+    )
+    values = parse_lines(output)
+
+    assert values["PASSWORD"] == "from-env-password"
+
+
+def test_collect_neo4j_config_bundled_service_reprompts_for_empty_credentials() -> None:
+    """Bundled Neo4j should reject empty username and password values."""
+
+    output = run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+reset_state
+
+prompt_log_file="$(mktemp)"
+trap 'rm -f "$prompt_log_file"' EXIT
+
+confirm_default_yes() {{ return 0; }}
+prompt_until_valid() {{
+  local prompt="$1"
+  local default="$2"
+  local validator="$3"
+  shift 3
+  local value=""
+
+  while true; do
+    if [[ "$prompt" == "Neo4j URI" ]]; then
+      value="$default"
+    else
+      printf 'username\\n' >> "$prompt_log_file"
+      if [[ "$(grep -c '^username$' "$prompt_log_file")" -eq 1 ]]; then
+        value=""
+      else
+        value="neo4j-user"
+      fi
+    fi
+
+    if "$validator" "$value" "$@"; then
+      printf '%s' "$value"
+      return 0
+    fi
+  done
+}}
+prompt_with_default() {{ printf '%s' "$2"; }}
+prompt_secret_until_valid_with_default() {{
+  local prompt="$1"
+  local default="$2"
+  local validator="$3"
+  shift 3
+  local value=""
+
+  while true; do
+    printf 'password\\n' >> "$prompt_log_file"
+    if [[ "$(grep -c '^password$' "$prompt_log_file")" -eq 1 ]]; then
+      value=""
+    else
+      value="secure-password"
+    fi
+
+    if "$validator" "$value" "$@"; then
+      printf '%s' "$value"
+      return 0
+    fi
+  done
+}}
+
+collect_neo4j_config yes
+
+printf 'USERNAME=%s\\n' "${{ENV_VALUES[NEO4J_USERNAME]}}"
+printf 'PASSWORD=%s\\n' "${{ENV_VALUES[NEO4J_PASSWORD]}}"
+printf 'USERNAME_CALLS=%s\\n' "$(grep -c '^username$' "$prompt_log_file")"
+printf 'PASSWORD_CALLS=%s\\n' "$(grep -c '^password$' "$prompt_log_file")"
+"""
+    )
+    values = parse_lines(output)
+
+    assert values["USERNAME"] == "neo4j-user"
+    assert values["PASSWORD"] == "secure-password"
+    assert values["USERNAME_CALLS"] == "2"
+    assert values["PASSWORD_CALLS"] == "2"
+
+
+def test_collect_neo4j_config_external_service_still_uses_standard_prompts() -> None:
+    """External Neo4j setup should keep the non-Docker prompt behavior unchanged."""
+
+    output = run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+reset_state
+
+prompt_log_file="$(mktemp)"
+trap 'rm -f "$prompt_log_file"' EXIT
+
+confirm_default_no() {{ return 1; }}
+prompt_until_valid() {{ printf '%s' "$2"; }}
+prompt_with_default() {{
+  printf 'with_default\\n' >> "$prompt_log_file"
+  if [[ "$1" == "Neo4j username" ]]; then
+    printf 'external-user'
+  elif [[ "$1" == "Neo4j database" ]]; then
+    printf 'external-db'
+  else
+    printf '%s' "$2"
+  fi
+}}
+prompt_secret_with_default() {{
+  printf 'secret_with_default\\n' >> "$prompt_log_file"
+  printf 'external-password'
+}}
+
+collect_neo4j_config no
+
+printf 'USERNAME=%s\\n' "${{ENV_VALUES[NEO4J_USERNAME]}}"
+printf 'PASSWORD=%s\\n' "${{ENV_VALUES[NEO4J_PASSWORD]}}"
+printf 'DATABASE=%s\\n' "${{ENV_VALUES[NEO4J_DATABASE]}}"
+printf 'USERNAME_PROMPTS=%s\\n' "$(grep -c '^with_default$' "$prompt_log_file")"
+printf 'PASSWORD_PROMPTS=%s\\n' "$(grep -c '^secret_with_default$' "$prompt_log_file")"
+"""
+    )
+    values = parse_lines(output)
+
+    assert values["USERNAME"] == "external-user"
+    assert values["PASSWORD"] == "external-password"
+    assert values["DATABASE"] == "external-db"
+    assert values["USERNAME_PROMPTS"] == "2"
+    assert values["PASSWORD_PROMPTS"] == "1"
 
 
 def test_validate_security_config_rejects_malformed_auth_accounts() -> None:
@@ -4422,56 +7190,6 @@ show_summary
     assert "reader:hunter2" not in output
 
 
-def test_finalize_setup_validates_inherited_ssl_assets_before_staging(
-    tmp_path: Path,
-) -> None:
-    """Finalize should fail with a clear validation error before copying missing SSL files."""
-
-    (tmp_path / "env.example").write_text(
-        "\n".join(
-            [
-                "LIGHTRAG_KV_STORAGE=JsonKVStorage",
-                "LIGHTRAG_VECTOR_STORAGE=NanoVectorDBStorage",
-                "LIGHTRAG_GRAPH_STORAGE=NetworkXStorage",
-                "LIGHTRAG_DOC_STATUS_STORAGE=JsonDocStatusStorage",
-            ]
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-
-    result = subprocess.run(
-        [
-            "bash",
-            "-lc",
-            f"""
-source "{REPO_ROOT}/scripts/setup/setup.sh"
-REPO_ROOT="{tmp_path}"
-reset_state
-
-ENV_VALUES[LIGHTRAG_KV_STORAGE]="JsonKVStorage"
-ENV_VALUES[LIGHTRAG_VECTOR_STORAGE]="NanoVectorDBStorage"
-ENV_VALUES[LIGHTRAG_GRAPH_STORAGE]="NetworkXStorage"
-ENV_VALUES[LIGHTRAG_DOC_STATUS_STORAGE]="JsonDocStatusStorage"
-SSL_CERT_SOURCE_PATH="/missing/cert.pem"
-SSL_KEY_SOURCE_PATH="/missing/key.pem"
-
-
-finalize_setup
-""",
-        ],
-        cwd=REPO_ROOT,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-
-    assert result.returncode == 1
-    assert "Invalid SSL_CERTFILE" in result.stderr
-    assert "Invalid SSL_KEYFILE" not in result.stderr
-    assert "No such file or directory" not in result.stderr
-
-
 def test_validate_env_file_handles_supported_and_unsupported_uri_schemes(
     tmp_path: Path,
 ) -> None:
@@ -4628,3 +7346,65 @@ fi
     values = parse_lines(result.stdout)
     assert values["VALID"] == "no"
     assert "MongoVectorDBStorage requires a MongoDB Atlas URI" in result.stderr
+
+
+def test_backup_only_backs_up_env_and_generated_compose(tmp_path: Path) -> None:
+    """backup_only should back up both .env and the active generated compose file."""
+
+    compose_content = (
+        "\n".join(
+            [
+                "services:",
+                "  lightrag:",
+                "    image: example/lightrag:test",
+            ]
+        )
+        + "\n"
+    )
+
+    write_text_lines(tmp_path / ".env", ["HOST=0.0.0.0"])
+    (tmp_path / "docker-compose.final.yml").write_text(
+        compose_content,
+        encoding="utf-8",
+    )
+
+    output = run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+
+backup_only
+"""
+    )
+
+    env_backups = sorted(tmp_path.glob(".env.backup.*"))
+    assert len(env_backups) == 1
+    assert env_backups[0].read_text(encoding="utf-8") == "HOST=0.0.0.0\n"
+    assert "Backed up .env to" in output
+    assert "Backed up compose file to" in output
+    assert_single_compose_backup(tmp_path, compose_content)
+
+
+def test_backup_only_skips_compose_backup_when_no_generated_compose_exists(
+    tmp_path: Path,
+) -> None:
+    """backup_only should still succeed when only .env exists."""
+
+    write_text_lines(tmp_path / ".env", ["HOST=0.0.0.0"])
+
+    output = run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+
+backup_only
+"""
+    )
+
+    env_backups = sorted(tmp_path.glob(".env.backup.*"))
+    assert len(env_backups) == 1
+    assert "Backed up .env to" in output
+    assert "Backed up compose file to" not in output
+    assert list(tmp_path.glob("docker-compose.backup*.yml")) == []
