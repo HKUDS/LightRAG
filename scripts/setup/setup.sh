@@ -140,6 +140,12 @@ clear_deprecated_vllm_dtype_state() {
   unset 'ENV_VALUES[VLLM_RERANK_DTYPE]'
 }
 
+normalize_vllm_rerank_binding_state() {
+  if [[ "${ENV_VALUES[LIGHTRAG_SETUP_RERANK_PROVIDER]:-}" == "vllm" ]]; then
+    ENV_VALUES["RERANK_BINDING"]="cohere"
+  fi
+}
+
 load_existing_env_if_present() {
   local env_file="${REPO_ROOT}/.env"
 
@@ -147,6 +153,7 @@ load_existing_env_if_present() {
     log_debug "Loading existing .env defaults from $env_file"
     load_env_file "$env_file"
     clear_deprecated_vllm_dtype_state
+    normalize_vllm_rerank_binding_state
     if [[ "${ENV_VALUES[SSL]:-false}" == "true" ]]; then
       SSL_CERT_SOURCE_PATH="${ENV_VALUES[SSL_CERTFILE]:-}"
       SSL_KEY_SOURCE_PATH="${ENV_VALUES[SSL_KEYFILE]:-}"
@@ -1653,25 +1660,14 @@ collect_embedding_config() {
 
 collect_rerank_config() {
   # Pass "yes" to skip the "Enable reranking?" prompt (caller already asked it).
-  # The optional second argument can force the Docker choice to "yes" or "no".
+  # The optional second argument is retained for caller compatibility.
   local skip_enable_check="${1:-no}"
-  local docker_choice_override="${2:-prompt}"
-  local options=("cohere" "jina" "aliyun" "vllm")
-  local binding_choice binding model host api_key
-  local vllm_model vllm_port vllm_device vllm_extra
-  local vllm_host_default=""
-  local default_model="" default_host="" model_default="" host_default="" use_docker="no"
+  local _docker_choice_override="${2:-prompt}"
+  local options=("cohere" "jina" "aliyun")
+  local current_binding="${ENV_VALUES[RERANK_BINDING]:-cohere}"
+  local binding model host api_key
+  local default_model="" default_host="" model_default="" host_default=""
   local previous_provider="${ENV_VALUES[LIGHTRAG_SETUP_RERANK_PROVIDER]:-}"
-  local reset_vllm_defaults="no"
-  local rerank_default=""
-
-  # If the caller already decided against Docker, do not let the wizard-managed
-  # vLLM marker override the provider prompt default.
-  if [[ "$docker_choice_override" == "no" && "$previous_provider" == "vllm" ]]; then
-    rerank_default="${ENV_VALUES[RERANK_BINDING]:-cohere}"
-  else
-    rerank_default="${ENV_VALUES[LIGHTRAG_SETUP_RERANK_PROVIDER]:-${ENV_VALUES[RERANK_BINDING]:-cohere}}"
-  fi
 
   unset 'ENV_VALUES[VLLM_RERANK_DTYPE]'
 
@@ -1695,138 +1691,53 @@ collect_rerank_config() {
     fi
   fi
 
-  if [[ "$rerank_default" == "null" ]]; then
-    rerank_default="cohere"
+  if [[ "$current_binding" == "null" ]]; then
+    current_binding="cohere"
   fi
 
-  binding_choice="$(prompt_choice "Rerank provider" "$rerank_default" "${options[@]}")"
-  if [[ "$binding_choice" != "vllm" && "$previous_provider" == "vllm" ]]; then
-    reset_vllm_defaults="yes"
-  fi
+  binding="$(prompt_choice "Rerank provider" "$current_binding" "${options[@]}")"
+  case "$binding" in
+    cohere)
+      default_model="rerank-v3.5"
+      default_host="https://api.cohere.com/v2/rerank"
+      ;;
+    jina)
+      default_model="jina-reranker-v2-base-multilingual"
+      default_host="https://api.jina.ai/v1/rerank"
+      ;;
+    aliyun)
+      default_model="gte-rerank-v2"
+      default_host="https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank"
+      ;;
+    *)
+      default_model=""
+      default_host=""
+      ;;
+  esac
 
-  if [[ "$binding_choice" == "vllm" ]]; then
-    if [[ "$docker_choice_override" == "yes" || "$docker_choice_override" == "no" ]]; then
-      use_docker="$docker_choice_override"
-    elif confirm_default_yes "Run rerank service locally via Docker?"; then
-      use_docker="yes"
-    fi
-    if [[ "$use_docker" == "yes" ]]; then
-      add_docker_service "vllm-rerank"
-      vllm_model="$(prompt_with_default "vLLM rerank model" "${ENV_VALUES[VLLM_RERANK_MODEL]:-BAAI/bge-reranker-v2-m3}")"
-      vllm_port="$(prompt_until_valid "vLLM rerank port" "${ENV_VALUES[VLLM_RERANK_PORT]:-8000}" validate_port)"
-      vllm_device="$(resolve_local_device_default "${ENV_VALUES[VLLM_RERANK_DEVICE]:-}")"
-      vllm_device="$(prompt_choice "vLLM device" "$vllm_device" "cpu" "cuda")"
-      if [[ "$vllm_device" == "cuda" ]] && ! host_cuda_available; then
-        log_warn "CUDA device selected but no NVIDIA driver detected on host."
-        if confirm_default_yes "Use CPU instead?"; then
-          vllm_device="cpu"
-        fi
-      fi
-      vllm_extra="$(prompt_with_default "vLLM extra args" "${ENV_VALUES[VLLM_RERANK_EXTRA_ARGS]:-}")"
-    fi
-
-    if [[ "$use_docker" == "yes" && "$vllm_device" == "cuda" ]]; then
-      if [[ "${ENV_VALUES[CUDA_VISIBLE_DEVICES]:-}" == "-1" ]]; then
-        unset 'ENV_VALUES[CUDA_VISIBLE_DEVICES]'
-      fi
-      if [[ "${ENV_VALUES[NVIDIA_VISIBLE_DEVICES]:-}" == "-1" ]]; then
-        unset 'ENV_VALUES[NVIDIA_VISIBLE_DEVICES]'
-      fi
-      unset 'ENV_VALUES[VLLM_USE_CPU]'
-    fi
-
-    if [[ "$use_docker" == "yes" ]]; then
-      ENV_VALUES["VLLM_RERANK_MODEL"]="$vllm_model"
-      ENV_VALUES["VLLM_RERANK_PORT"]="$vllm_port"
-      ENV_VALUES["VLLM_RERANK_DEVICE"]="$vllm_device"
-      if [[ -n "$vllm_extra" ]]; then
-        ENV_VALUES["VLLM_RERANK_EXTRA_ARGS"]="$vllm_extra"
-      fi
-    fi
-
-    if [[ "$use_docker" == "yes" ]]; then
-      default_model="$vllm_model"
-      default_host="$(default_loopback_url "$vllm_port" "/rerank")"
-      set_compose_override "RERANK_BINDING_HOST" "http://vllm-rerank:${vllm_port}/rerank"
-    else
-      default_model="${ENV_VALUES[RERANK_MODEL]:-${ENV_VALUES[VLLM_RERANK_MODEL]:-BAAI/bge-reranker-v2-m3}}"
-      vllm_host_default="$(default_loopback_url "${ENV_VALUES[VLLM_RERANK_PORT]:-8000}" "/rerank")"
-      default_host="${ENV_VALUES[RERANK_BINDING_HOST]:-$vllm_host_default}"
-      set_compose_override "RERANK_BINDING_HOST" ""
-    fi
-    binding="cohere"
-  else
-    binding="$binding_choice"
-  fi
-
-  if [[ "$binding_choice" == "vllm" ]]; then
-    model_default="$default_model"
-    host_default="$default_host"
-  elif [[ "$reset_vllm_defaults" == "yes" ]]; then
-    case "$binding_choice" in
-      cohere)
-        default_model="rerank-v3.5"
-        default_host="https://api.cohere.com/v2/rerank"
-        ;;
-      jina)
-        default_model="jina-reranker-v2-base-multilingual"
-        default_host="https://api.jina.ai/v1/rerank"
-        ;;
-      aliyun)
-        default_model="gte-rerank-v2"
-        default_host="https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank"
-        ;;
-      *)
-        default_model=""
-        default_host=""
-        ;;
-    esac
+  if [[ "$previous_provider" == "vllm" ]]; then
     # Switching away from local vLLM should replace stale localhost/model values.
     model_default="$default_model"
     host_default="$default_host"
   else
-    model_default="${ENV_VALUES[RERANK_MODEL]:-$default_model}"
-    host_default="${ENV_VALUES[RERANK_BINDING_HOST]:-$default_host}"
+    model_default="$(provider_default_or_existing "$binding" "$current_binding" "${ENV_VALUES[RERANK_MODEL]:-}" "$default_model")"
+    host_default="$(provider_default_or_existing "$binding" "$current_binding" "${ENV_VALUES[RERANK_BINDING_HOST]:-}" "$default_host")"
   fi
 
   model="$(prompt_with_default "Rerank model" "$model_default")"
   host="$(prompt_with_default "Rerank endpoint" "$host_default")"
-  if [[ "$binding_choice" == "vllm" ]]; then
-    # Ensure a consistent key exists before prompting, generating one if needed.
-    local vllm_rerank_api_key="${ENV_VALUES[VLLM_RERANK_API_KEY]:-${ENV_VALUES[RERANK_BINDING_API_KEY]:-}}"
-    if [[ -z "$vllm_rerank_api_key" ]]; then
-      vllm_rerank_api_key="$(openssl rand -hex 16 2>/dev/null || LC_ALL=C tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 32)"
-    fi
-    api_key="$(prompt_secret_with_default "Rerank API key (optional): " "$vllm_rerank_api_key")"
-  else
-    api_key="$(prompt_secret_until_valid_with_default "Rerank API key: " "${ENV_VALUES[RERANK_BINDING_API_KEY]:-}" validate_api_key "$binding")"
-  fi
+  api_key="$(prompt_secret_until_valid_with_default "Rerank API key: " "${ENV_VALUES[RERANK_BINDING_API_KEY]:-}" validate_api_key "$binding")"
 
   ENV_VALUES["RERANK_BINDING"]="$binding"
-  # Only keep the setup marker for wizard-managed local Docker vLLM rerank.
-  # Host-managed or remote rerank endpoints should rely on RERANK_BINDING alone.
-  if [[ "$binding_choice" == "vllm" && "$use_docker" == "yes" ]]; then
-    ENV_VALUES["LIGHTRAG_SETUP_RERANK_PROVIDER"]="vllm"
-  else
-    unset 'ENV_VALUES[LIGHTRAG_SETUP_RERANK_PROVIDER]'
-  fi
+  # Only env_base_flow's Docker branch should keep the local vLLM setup marker.
+  unset 'ENV_VALUES[LIGHTRAG_SETUP_RERANK_PROVIDER]'
   if [[ -n "$model" ]]; then
     ENV_VALUES["RERANK_MODEL"]="$model"
-  elif [[ "$reset_vllm_defaults" == "yes" ]]; then
-    unset 'ENV_VALUES[RERANK_MODEL]'
   fi
   if [[ -n "$host" ]]; then
     ENV_VALUES["RERANK_BINDING_HOST"]="$host"
-  elif [[ "$reset_vllm_defaults" == "yes" ]]; then
-    unset 'ENV_VALUES[RERANK_BINDING_HOST]'
   fi
-  if [[ "$binding_choice" == "vllm" ]]; then
-    # Keep VLLM_RERANK_API_KEY and RERANK_BINDING_API_KEY in sync.
-    ENV_VALUES["VLLM_RERANK_API_KEY"]="${api_key:-$vllm_rerank_api_key}"
-    store_optional_env_value "RERANK_BINDING_API_KEY" "${api_key:-$vllm_rerank_api_key}"
-  else
-    store_optional_env_value "RERANK_BINDING_API_KEY" "$api_key"
-  fi
+  store_optional_env_value "RERANK_BINDING_API_KEY" "$api_key"
 }
 
 collect_server_config() {
