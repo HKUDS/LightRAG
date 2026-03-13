@@ -964,6 +964,7 @@ generate_docker_compose() {
   fi
 
   prepare_lightrag_service_for_generated_compose "$tmp_file"
+  normalize_lightrag_restart_policy "$tmp_file"
   # Remove stale wizard-managed keys from lightrag's environment so that
   # keys no longer in COMPOSE_ENV_OVERRIDES are not left behind.
   _strip_lightrag_wizard_environment_keys "$tmp_file"
@@ -1114,6 +1115,97 @@ prepare_lightrag_service_for_generated_compose() {
       in_env_file="no"
     fi
   done < "$compose_file"
+
+  mv "$tmp_file" "$compose_file"
+}
+
+normalize_lightrag_restart_policy() {
+  local compose_file="$1"
+  local tmp_file="${compose_file}.normalize-lightrag-restart"
+  _FILE_OPS_CLEANUP_TMP+=("$tmp_file")
+  local line
+  local in_lightrag="no"
+  local in_deploy="no"
+  local deploy_seen="no"
+  local -a deploy_lines=()
+
+  _write_normalized_lightrag_deploy_block() {
+    local deploy_line
+    local skipping_restart_policy="no"
+
+    printf '    deploy:\n' >> "$tmp_file"
+    for deploy_line in "${deploy_lines[@]}"; do
+      if [[ "$skipping_restart_policy" == "yes" ]]; then
+        if [[ "$deploy_line" =~ ^[[:space:]]{8} ]]; then
+          continue
+        fi
+        skipping_restart_policy="no"
+      fi
+
+      if [[ "$deploy_line" == "      restart_policy:" ]]; then
+        skipping_restart_policy="yes"
+        continue
+      fi
+
+      printf '%s\n' "$deploy_line" >> "$tmp_file"
+    done
+
+    printf '      restart_policy:\n' >> "$tmp_file"
+    printf '        condition: on-failure\n' >> "$tmp_file"
+    printf '        max_attempts: 10\n' >> "$tmp_file"
+  }
+
+  : > "$tmp_file"
+
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    if [[ "$in_deploy" == "yes" ]]; then
+      if [[ "$line" =~ ^[[:space:]]{6} || -z "$line" ]]; then
+        deploy_lines+=("$line")
+        continue
+      fi
+
+      _write_normalized_lightrag_deploy_block
+      deploy_lines=()
+      in_deploy="no"
+    fi
+
+    if [[ "$in_lightrag" == "yes" && "$line" =~ ^[[:space:]]{2}[^[:space:]] && "$line" != "  lightrag:" ]]; then
+      if [[ "$deploy_seen" != "yes" ]]; then
+        _write_normalized_lightrag_deploy_block
+      fi
+      in_lightrag="no"
+      deploy_seen="no"
+    fi
+
+    if [[ "$in_lightrag" == "yes" && "$line" == "    deploy:" ]]; then
+      in_deploy="yes"
+      deploy_seen="yes"
+      deploy_lines=()
+      continue
+    fi
+
+    if [[ "$in_lightrag" == "yes" && "$line" =~ ^[[:space:]]{4}restart: ]]; then
+      continue
+    fi
+
+    printf '%s\n' "$line" >> "$tmp_file"
+
+    if [[ "$line" == "  lightrag:" ]]; then
+      in_lightrag="yes"
+      in_deploy="no"
+      deploy_seen="no"
+      deploy_lines=()
+    fi
+  done < "$compose_file"
+
+  if [[ "$in_deploy" == "yes" ]]; then
+    _write_normalized_lightrag_deploy_block
+    deploy_seen="yes"
+  fi
+
+  if [[ "$in_lightrag" == "yes" && "$deploy_seen" != "yes" ]]; then
+    _write_normalized_lightrag_deploy_block
+  fi
 
   mv "$tmp_file" "$compose_file"
 }

@@ -880,6 +880,52 @@ generate_docker_compose "$REPO_ROOT/docker-compose.final.yml"
     assert generated_compose.count("\n  vllm-rerank:\n") == 1
 
 
+def test_generate_docker_compose_normalizes_lightrag_restart_policy_from_existing_output(
+    tmp_path: Path,
+) -> None:
+    """Regeneration should replace legacy lightrag restart with deploy.restart_policy."""
+
+    write_text_lines(
+        tmp_path / "docker-compose.final.yml",
+        [
+            "services:",
+            "  lightrag:",
+            "    image: example/lightrag:test",
+            "    restart: unless-stopped",
+            "    extra_hosts:",
+            '      - "host.docker.internal:host-gateway"',
+        ],
+    )
+    write_text_lines(
+        tmp_path / "env.example",
+        (REPO_ROOT / "env.example").read_text(encoding="utf-8").splitlines(),
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+
+generate_docker_compose "$REPO_ROOT/docker-compose.final.yml"
+"""
+    )
+
+    generated_compose = (tmp_path / "docker-compose.final.yml").read_text(
+        encoding="utf-8"
+    )
+
+    lightrag_start = generated_compose.index("  lightrag:\n")
+    lightrag_block = generated_compose[lightrag_start:]
+
+    assert "    restart: unless-stopped" not in lightrag_block
+    assert "    deploy:\n" in lightrag_block
+    assert "      restart_policy:\n" in lightrag_block
+    assert "        condition: on-failure\n" in lightrag_block
+    assert "        max_attempts: 10\n" in lightrag_block
+
+
 def test_existing_ssl_env_keeps_compose_mount_overrides(tmp_path: Path) -> None:
     """Compose regeneration should preserve working SSL mounts without implying `.env` is permanently dual-purpose."""
 

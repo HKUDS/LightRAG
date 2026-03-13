@@ -312,7 +312,24 @@ normalize_loopback_host_for_compose() {
 }
 
 normalize_server_host_for_compose() {
-  LIGHTRAG_COMPOSE_SERVER_PORT_MAPPING='${HOST:-0.0.0.0}:${PORT:-9621}:9621'
+  local host="${1:-0.0.0.0}"
+  local publish_host="$host"
+  local publish_port="${ENV_VALUES[PORT]:-9621}"
+
+  case "$publish_host" in
+    localhost)
+      publish_host="127.0.0.1"
+      ;;
+    "")
+      publish_host="0.0.0.0"
+      ;;
+  esac
+
+  if [[ -z "$publish_port" ]]; then
+    publish_port="9621"
+  fi
+
+  LIGHTRAG_COMPOSE_SERVER_PORT_MAPPING="${publish_host}:${publish_port}:9621"
   NORMALIZED_SERVER_HOST_FOR_COMPOSE="0.0.0.0"
 }
 
