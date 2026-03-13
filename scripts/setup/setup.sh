@@ -587,6 +587,21 @@ record_existing_managed_root_services() {
   done < <(detect_managed_root_services "$compose_file")
 }
 
+backup_existing_compose_if_generating() {
+  local generate_compose="${1:-no}"
+  local existing_compose="${2:-}"
+  local compose_backup_path=""
+
+  if [[ "$generate_compose" != "yes" ]]; then
+    return 0
+  fi
+
+  compose_backup_path="$(backup_compose_file "$existing_compose")" || return 1
+  if [[ -n "$compose_backup_path" ]]; then
+    log_success "Backed up existing compose file to $compose_backup_path"
+  fi
+}
+
 existing_managed_root_service_present() {
   local root_service="$1"
 
@@ -2096,7 +2111,6 @@ env_base_flow() {
 
 finalize_base_setup() {
   local backup_path
-  local compose_backup_path
   local compose_file
   local existing_compose
   local generate_compose="no"
@@ -2188,10 +2202,7 @@ finalize_base_setup() {
   fi
 
   if [[ "$generate_compose" == "yes" ]]; then
-    compose_backup_path="$(backup_compose_file "$existing_compose")" || return 1
-    if [[ -n "$compose_backup_path" ]]; then
-      log_success "Backed up existing compose file to $compose_backup_path"
-    fi
+    backup_existing_compose_if_generating "$generate_compose" "$existing_compose" || return 1
     if ! prepare_managed_service_assets_for_compose "$existing_compose"; then
       return 1
     fi
@@ -2257,7 +2268,6 @@ env_storage_flow() {
 
 finalize_storage_setup() {
   local backup_path
-  local compose_backup_path
   local compose_file
   local existing_compose
   local generate_compose="no"
@@ -2310,8 +2320,8 @@ finalize_storage_setup() {
   compose_file="${REPO_ROOT}/docker-compose.final.yml"
   record_existing_managed_root_services "$existing_compose"
 
-  if [[ "$has_docker_storage" == "no" && -z "$existing_compose" ]]; then
-    # No docker services selected and no existing compose to clean up.
+  if [[ "$has_docker_storage" == "no" && ${#EXISTING_MANAGED_ROOT_SERVICE_SET[@]} -eq 0 ]]; then
+    # No managed services are selected and no existing managed services need cleanup.
     backup_path="$(backup_env_file)"
     if [[ -n "$backup_path" ]]; then
       log_success "Backed up existing .env to $backup_path"
@@ -2342,10 +2352,7 @@ finalize_storage_setup() {
   generate_compose="yes"
   runtime_target="compose"
 
-  compose_backup_path="$(backup_compose_file "$existing_compose")" || return 1
-  if [[ -n "$compose_backup_path" ]]; then
-    log_success "Backed up existing compose file to $compose_backup_path"
-  fi
+  backup_existing_compose_if_generating "$generate_compose" "$existing_compose" || return 1
 
   if ! prepare_managed_service_assets_for_compose "$existing_compose"; then
     return 1
@@ -2402,7 +2409,6 @@ env_server_flow() {
 
 finalize_server_setup() {
   local backup_path
-  local compose_backup_path
   local compose_file
   local existing_compose
   local generate_compose="no"
@@ -2450,10 +2456,7 @@ finalize_server_setup() {
   fi
 
   if [[ "$generate_compose" == "yes" ]]; then
-    compose_backup_path="$(backup_compose_file "$existing_compose")" || return 1
-    if [[ -n "$compose_backup_path" ]]; then
-      log_success "Backed up existing compose file to $compose_backup_path"
-    fi
+    backup_existing_compose_if_generating "$generate_compose" "$existing_compose" || return 1
     if ! prepare_managed_service_assets_for_compose "$existing_compose"; then
       return 1
     fi

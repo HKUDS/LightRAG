@@ -4270,6 +4270,8 @@ def test_env_storage_flow_backs_up_existing_compose_before_rewrite(
                 "    image: example/lightrag:test",
                 "    environment:",
                 '      LEGACY_SETTING: "1"',
+                "  postgres:",
+                "    image: gzdaniel/postgres-for-rag:16.6",
             ]
         )
         + "\n"
@@ -4317,6 +4319,72 @@ env_storage_flow
 
     assert_single_compose_backup(tmp_path, existing_compose)
     assert (tmp_path / "docker-compose.final.yml").exists()
+
+
+def test_env_storage_flow_skips_compose_backup_when_no_managed_services_need_output(
+    tmp_path: Path,
+) -> None:
+    """env-storage should leave compose untouched when no managed services remain."""
+
+    existing_compose = (
+        "\n".join(
+            [
+                "services:",
+                "  lightrag:",
+                "    image: example/lightrag:test",
+                "    environment:",
+                '      LEGACY_SETTING: "1"',
+                "  sidecar:",
+                "    image: busybox",
+            ]
+        )
+        + "\n"
+    )
+
+    write_text_lines(
+        tmp_path / ".env",
+        [
+            "LLM_BINDING=openai",
+            "EMBEDDING_BINDING=openai",
+        ],
+    )
+    write_text_lines(
+        tmp_path / "env.example",
+        (REPO_ROOT / "env.example").read_text(encoding="utf-8").splitlines(),
+    )
+    (tmp_path / "docker-compose.final.yml").write_text(
+        existing_compose,
+        encoding="utf-8",
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+
+select_storage_backends() {{
+  ENV_VALUES[LIGHTRAG_KV_STORAGE]="JsonKVStorage"
+  ENV_VALUES[LIGHTRAG_VECTOR_STORAGE]="NanoVectorDBStorage"
+  ENV_VALUES[LIGHTRAG_GRAPH_STORAGE]="NetworkXStorage"
+  ENV_VALUES[LIGHTRAG_DOC_STATUS_STORAGE]="JsonDocStatusStorage"
+}}
+collect_database_config() {{ :; }}
+validate_required_variables() {{ return 0; }}
+validate_mongo_vector_storage_config() {{ return 0; }}
+validate_sensitive_env_literals() {{ return 0; }}
+confirm_default_yes() {{ return 0; }}
+confirm_default_no() {{ return 1; }}
+confirm_required_yes_no() {{ return 0; }}
+
+env_storage_flow
+"""
+    )
+
+    assert not sorted(tmp_path.glob("docker-compose.backup*.yml"))
+    assert (tmp_path / "docker-compose.final.yml").read_text(encoding="utf-8") == (
+        existing_compose
+    )
 
 
 def test_env_storage_flow_clears_mongodb_docker_marker_for_atlas_vector_storage(
