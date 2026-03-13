@@ -929,7 +929,7 @@ generate_docker_compose "$REPO_ROOT/docker-compose.final.yml"
 def test_generate_docker_compose_normalizes_lightrag_restart_policy_without_blank_line_before_deploy(
     tmp_path: Path,
 ) -> None:
-    """Regeneration should not leave a blank line before the injected deploy block."""
+    """Regeneration should move the separator blank line after deploy, not before it."""
 
     write_text_lines(
         tmp_path / "docker-compose.final.yml",
@@ -965,6 +965,7 @@ generate_docker_compose "$REPO_ROOT/docker-compose.final.yml"
 
     assert "    image: example/lightrag:test\n\n    deploy:\n" not in generated_compose
     assert "    image: example/lightrag:test\n    deploy:\n" in generated_compose
+    assert "        max_attempts: 10\n\n  sidecar:\n" in generated_compose
 
 
 def test_existing_ssl_env_keeps_compose_mount_overrides(tmp_path: Path) -> None:
@@ -1255,7 +1256,7 @@ generate_docker_compose "$REPO_ROOT/docker-compose.final.yml"
     result = (tmp_path / "docker-compose.final.yml").read_text(encoding="utf-8")
 
     assert "  postgres:" in result
-    assert "\nnetworks:\n" in result
+    assert "\n\nnetworks:\n" in result
     assert result.index("\n  postgres:") < result.index("\nnetworks:\n")
     assert "  appnet:" in result
 
@@ -1313,7 +1314,89 @@ generate_docker_compose "$REPO_ROOT/docker-compose.final.yml"
     assert "  vllm-rerank:" not in result
     assert "__WIZARD_MANAGED_SERVICES__" not in result
     assert "depends_on:" not in result
-    assert "    image: example/lightrag:test\nnetworks:\n" in result
+    assert "        max_attempts: 10\n\nnetworks:\n" in result
+
+
+def test_generate_docker_compose_keeps_blank_line_between_managed_service_and_top_level_sections(
+    tmp_path: Path,
+) -> None:
+    """Managed service blocks should stay visually separated from following top-level sections."""
+
+    write_text_lines(
+        tmp_path / "docker-compose.final.yml",
+        [
+            "services:",
+            "  lightrag:",
+            "    image: example/lightrag:test",
+            "networks:",
+            "  web_network:",
+            "    driver: bridge",
+        ],
+    )
+    write_text_lines(
+        tmp_path / "env.example",
+        (REPO_ROOT / "env.example").read_text(encoding="utf-8").splitlines(),
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+
+add_docker_service "vllm-embed"
+
+generate_docker_compose "$REPO_ROOT/docker-compose.final.yml"
+"""
+    )
+
+    result = (tmp_path / "docker-compose.final.yml").read_text(encoding="utf-8")
+
+    assert "  vllm-embed:" in result
+    assert "        max_attempts: 10\n    depends_on:\n" in result
+    assert "    restart: unless-stopped\n\nnetworks:\n" in result
+
+
+def test_generate_docker_compose_keeps_single_blank_line_before_generated_volumes(
+    tmp_path: Path,
+) -> None:
+    """Generated top-level volumes should be separated from prior sections by one blank line."""
+
+    write_text_lines(
+        tmp_path / "docker-compose.final.yml",
+        [
+            "services:",
+            "  lightrag:",
+            "    image: example/lightrag:test",
+            "networks:",
+            "  web_network:",
+            "    driver: bridge",
+            "",
+        ],
+    )
+    write_text_lines(
+        tmp_path / "env.example",
+        (REPO_ROOT / "env.example").read_text(encoding="utf-8").splitlines(),
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+
+add_docker_service "vllm-embed"
+
+generate_docker_compose "$REPO_ROOT/docker-compose.final.yml"
+"""
+    )
+
+    result = (tmp_path / "docker-compose.final.yml").read_text(encoding="utf-8")
+
+    assert "\n\nvolumes:\n" in result
+    assert "\n\n\nvolumes:\n" not in result
 
 
 def test_find_generated_compose_file_prefers_legacy_profile_match(
