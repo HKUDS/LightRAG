@@ -62,6 +62,8 @@ STORAGE_SERVICES=(
   "memgraph"
 )
 DEFAULT_RUNTIME_TARGET="host"
+COMPOSE_LIGHTRAG_WORKING_DIR="/app/data/rag_storage"
+COMPOSE_LIGHTRAG_INPUT_DIR="/app/data/inputs"
 # shellcheck disable=SC2034
 COLOR_RESET=""
 COLOR_BOLD=""
@@ -551,7 +553,16 @@ prepare_compose_ssl_overrides() {
   fi
 }
 
+prepare_compose_data_path_overrides() {
+  # Compose mounts always bind the data directories into these container paths.
+  # Force lightrag to use them so values from the mounted .env cannot redirect
+  # storage into a different location.
+  set_compose_override "WORKING_DIR" "$COMPOSE_LIGHTRAG_WORKING_DIR"
+  set_compose_override "INPUT_DIR" "$COMPOSE_LIGHTRAG_INPUT_DIR"
+}
+
 prepare_compose_env_overrides() {
+  prepare_compose_data_path_overrides
   prepare_compose_runtime_overrides
   prepare_compose_ssl_overrides
 }
