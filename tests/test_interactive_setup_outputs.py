@@ -5963,10 +5963,15 @@ env_server_flow
     )
 
     assert result.returncode != 0
-    assert "Invalid SSL_CERTFILE" in result.stderr or "Invalid SSL_CERTFILE" in result.stdout
+    assert (
+        "Invalid SSL_CERTFILE" in result.stderr
+        or "Invalid SSL_CERTFILE" in result.stdout
+    )
     # compose and .env must not have been modified
     assert (tmp_path / "docker-compose.final.yml").exists()
-    assert "LIGHTRAG_RUNTIME_TARGET=compose" in (tmp_path / ".env").read_text(encoding="utf-8")
+    assert "LIGHTRAG_RUNTIME_TARGET=compose" in (tmp_path / ".env").read_text(
+        encoding="utf-8"
+    )
 
 
 def test_detect_managed_root_services_deduplicates_embedded_milvus_children(
