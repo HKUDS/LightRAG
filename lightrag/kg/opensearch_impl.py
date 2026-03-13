@@ -383,8 +383,8 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
                             "status": {"type": "keyword"},
                             "file_path": {"type": "keyword"},
                             "track_id": {"type": "keyword"},
-                            "created_at": {"type": "long"},
-                            "updated_at": {"type": "long"},
+                            "created_at": {"type": "date"},
+                            "updated_at": {"type": "date"},
                         },
                     },
                     "settings": {
@@ -779,8 +779,8 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                     "query": (
                         f"source = {self._edges_index} | head 1 "
                         f"| graphLookup {self._edges_index} "
-                        f"startField=source_node_id fromField=target_node_id "
-                        f"toField=source_node_id maxDepth=0 as _gl_probe"
+                        f"start=source_node_id edge=target_node_id-->source_node_id "
+                        f"maxDepth=0 as _gl_probe"
                     )
                 },
             )
@@ -1447,10 +1447,49 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                     :max_nodes
                 ]
             else:
-                # Get all node IDs
-                body = {"query": {"match_all": {}}, "_source": False, "size": max_nodes}
-                resp = await self.client.search(index=self._nodes_index, body=body)
-                top_ids = [hit["_id"] for hit in resp["hits"]["hits"]]
+                # Get all node IDs — use PIT scrolling if max_nodes > 10000
+                top_ids = []
+                if max_nodes <= 10000:
+                    body = {
+                        "query": {"match_all": {}},
+                        "_source": False,
+                        "size": max_nodes,
+                    }
+                    resp = await self.client.search(index=self._nodes_index, body=body)
+                    top_ids = [hit["_id"] for hit in resp["hits"]["hits"]]
+                else:
+                    pit = await self.client.create_pit(
+                        index=self._nodes_index, params={"keep_alive": "1m"}
+                    )
+                    pit_id = pit["pit_id"]
+                    try:
+                        search_after = None
+                        while len(top_ids) < max_nodes:
+                            body = {
+                                "query": {"match_all": {}},
+                                "_source": False,
+                                "size": 10000,
+                                "pit": {"id": pit_id, "keep_alive": "1m"},
+                                "sort": [{"_shard_doc": "asc"}],
+                            }
+                            if search_after:
+                                body["search_after"] = search_after
+                            resp = await self.client.search(body=body)
+                            hits = resp["hits"]["hits"]
+                            if not hits:
+                                break
+                            for hit in hits:
+                                top_ids.append(hit["_id"])
+                                if len(top_ids) >= max_nodes:
+                                    break
+                            search_after = hits[-1]["sort"]
+                            if len(hits) < 10000:
+                                break
+                    finally:
+                        try:
+                            await self.client.delete_pit(body={"pit_id": [pit_id]})
+                        except Exception:
+                            pass
 
             # Fetch node data
             if top_ids:
@@ -1518,12 +1557,11 @@ class OpenSearchGraphStorage(BaseGraphStorage):
             f"source = {self._nodes_index}"
             f" | where entity_id = '{escaped}'"
             f" | graphLookup {self._edges_index}"
-            f" startField=entity_id"
-            f" fromField=target_node_id"
-            f" toField=source_node_id"
+            f" start=entity_id"
+            f" edge=target_node_id<->source_node_id"
             f" maxDepth={ppl_depth}"
             f" depthField=_depth"
-            f" direction=bi"
+            f" usePIT=true"
             f" as connected_edges"
         )
 
@@ -1696,31 +1734,52 @@ class OpenSearchGraphStorage(BaseGraphStorage):
 
             current_level = new_ids
 
-        # Fetch all edges between seen nodes
+        # Fetch all edges between seen nodes using PIT scrolling
         all_ids = list(seen_nodes)
         if all_ids:
-            edge_body = {
-                "query": {
-                    "bool": {
-                        "must": [
-                            {"terms": {"source_node_id": all_ids}},
-                            {"terms": {"target_node_id": all_ids}},
-                        ]
-                    }
-                },
-                "size": 10000,
+            edge_query = {
+                "bool": {
+                    "must": [
+                        {"terms": {"source_node_id": all_ids}},
+                        {"terms": {"target_node_id": all_ids}},
+                    ]
+                }
             }
             try:
-                edge_resp = await self.client.search(
-                    index=self._edges_index, body=edge_body
-                )
                 seen_edges = set()
-                for hit in edge_resp["hits"]["hits"]:
-                    e = hit["_source"]
-                    eid = f"{e['source_node_id']}-{e['target_node_id']}"
-                    if eid not in seen_edges:
-                        seen_edges.add(eid)
-                        result.edges.append(self._construct_graph_edge(eid, e))
+                pit = await self.client.create_pit(
+                    index=self._edges_index, params={"keep_alive": "1m"}
+                )
+                pit_id = pit["pit_id"]
+                try:
+                    search_after = None
+                    while True:
+                        edge_body = {
+                            "query": edge_query,
+                            "size": 10000,
+                            "pit": {"id": pit_id, "keep_alive": "1m"},
+                            "sort": [{"_shard_doc": "asc"}],
+                        }
+                        if search_after:
+                            edge_body["search_after"] = search_after
+                        edge_resp = await self.client.search(body=edge_body)
+                        hits = edge_resp["hits"]["hits"]
+                        if not hits:
+                            break
+                        for hit in hits:
+                            e = hit["_source"]
+                            eid = f"{e['source_node_id']}-{e['target_node_id']}"
+                            if eid not in seen_edges:
+                                seen_edges.add(eid)
+                                result.edges.append(self._construct_graph_edge(eid, e))
+                        search_after = hits[-1]["sort"]
+                        if len(hits) < 10000:
+                            break
+                finally:
+                    try:
+                        await self.client.delete_pit(body={"pit_id": [pit_id]})
+                    except Exception:
+                        pass
             except OpenSearchException:
                 pass
 
