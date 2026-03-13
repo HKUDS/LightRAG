@@ -49,13 +49,19 @@ async def zhipu_complete_if_cache(
     api_key: Optional[str] = None,
     system_prompt: Optional[str] = None,
     history_messages: List[Dict[str, str]] = [],
-    enable_cot: bool = False,
+    enable_cot: bool = False,  # LightRAG output switch: include reasoning_content as <think>...</think>
+    thinking: Optional[Dict[str, object]] = None,  # Zhipu request param: use {"type": "enabled"} to enable thinking
     **kwargs,
 ) -> str:
-    if enable_cot:
-        logger.debug(
-            "enable_cot=True is not supported for ZhipuAI and will be ignored."
-        )
+    """Call Zhipu chat completions with optional official thinking support.
+
+    Parameter roles:
+    - `thinking`: forwarded to the Zhipu API as-is. To enable thinking output,
+      pass a config such as `{"type": "enabled"}`.
+    - `enable_cot`: LightRAG-only formatting switch. When True and the API
+      returns `reasoning_content`, it is preserved in the final string as
+      `<think>...</think>`.
+    """
     # dynamically load ZhipuAI
     try:
         from zhipuai import ZhipuAI
@@ -89,10 +95,22 @@ async def zhipu_complete_if_cache(
     kwargs = {
         k: v for k, v in kwargs.items() if k not in ["hashing_kv", "keyword_extraction"]
     }
+    # `thinking` is an official Zhipu request field. Example:
+    # {"type": "enabled"} enables reasoning output on supported models.
+    if thinking is not None:
+        kwargs["thinking"] = thinking
 
     response = client.chat.completions.create(model=model, messages=messages, **kwargs)
+    message = response.choices[0].message
+    content = message.content or ""
+    reasoning_content = getattr(message, "reasoning_content", "") or ""
 
-    return response.choices[0].message.content
+    if enable_cot and reasoning_content.strip():
+        if content:
+            return f"<think>{reasoning_content}</think>{content}"
+        return f"<think>{reasoning_content}</think>"
+
+    return content
 
 
 async def zhipu_complete(
@@ -104,7 +122,7 @@ async def zhipu_complete(
     **kwargs,
 ):
     # Pop keyword_extraction from kwargs to avoid passing it to zhipu_complete_if_cache
-    keyword_extraction = kwargs.pop("keyword_extraction", None)
+    keyword_extraction = kwargs.pop("keyword_extraction", keyword_extraction)
 
     if keyword_extraction:
         # Add a system prompt to guide the model to return JSON format
@@ -190,7 +208,11 @@ async def zhipu_complete(
     ),
 )
 async def zhipu_embedding(
-    texts: list[str], model: str = "embedding-3", api_key: str = None, **kwargs
+    texts: list[str],
+    model: str = "embedding-3",
+    api_key: str = None,
+    embedding_dim: int | None = None,
+    **kwargs,
 ) -> np.ndarray:
     # dynamically load ZhipuAI
     try:
@@ -211,7 +233,12 @@ async def zhipu_embedding(
     embeddings = []
     for text in texts:
         try:
-            response = client.embeddings.create(model=model, input=[text], **kwargs)
+            request_kwargs = dict(kwargs)
+            if embedding_dim is not None:
+                request_kwargs["dimensions"] = embedding_dim
+            response = client.embeddings.create(
+                model=model, input=[text], **request_kwargs
+            )
             embeddings.append(response.data[0].embedding)
         except Exception as e:
             raise Exception(f"Error calling ChatGLM Embedding API: {str(e)}")
