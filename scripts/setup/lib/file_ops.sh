@@ -1127,6 +1127,7 @@ normalize_lightrag_restart_policy() {
   local in_lightrag="no"
   local in_deploy="no"
   local deploy_seen="no"
+  local skip_blank_after_removed_restart="no"
   local -a deploy_lines=()
 
   _write_normalized_lightrag_deploy_block() {
@@ -1135,6 +1136,10 @@ normalize_lightrag_restart_policy() {
 
     printf '    deploy:\n' >> "$tmp_file"
     for deploy_line in "${deploy_lines[@]}"; do
+      if [[ -z "$deploy_line" ]]; then
+        continue
+      fi
+
       if [[ "$skipping_restart_policy" == "yes" ]]; then
         if [[ "$deploy_line" =~ ^[[:space:]]{8} ]]; then
           continue
@@ -1175,6 +1180,7 @@ normalize_lightrag_restart_policy() {
       fi
       in_lightrag="no"
       deploy_seen="no"
+      skip_blank_after_removed_restart="no"
     fi
 
     if [[ "$in_lightrag" == "yes" && "$line" == "    deploy:" ]]; then
@@ -1185,7 +1191,15 @@ normalize_lightrag_restart_policy() {
     fi
 
     if [[ "$in_lightrag" == "yes" && "$line" =~ ^[[:space:]]{4}restart: ]]; then
+      skip_blank_after_removed_restart="yes"
       continue
+    fi
+
+    if [[ "$skip_blank_after_removed_restart" == "yes" && "$in_lightrag" == "yes" ]]; then
+      if [[ -z "$line" ]]; then
+        continue
+      fi
+      skip_blank_after_removed_restart="no"
     fi
 
     printf '%s\n' "$line" >> "$tmp_file"
@@ -1194,6 +1208,7 @@ normalize_lightrag_restart_policy() {
       in_lightrag="yes"
       in_deploy="no"
       deploy_seen="no"
+      skip_blank_after_removed_restart="no"
       deploy_lines=()
     fi
   done < "$compose_file"

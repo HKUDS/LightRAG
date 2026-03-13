@@ -926,6 +926,47 @@ generate_docker_compose "$REPO_ROOT/docker-compose.final.yml"
     assert "        max_attempts: 10\n" in lightrag_block
 
 
+def test_generate_docker_compose_normalizes_lightrag_restart_policy_without_blank_line_before_deploy(
+    tmp_path: Path,
+) -> None:
+    """Regeneration should not leave a blank line before the injected deploy block."""
+
+    write_text_lines(
+        tmp_path / "docker-compose.final.yml",
+        [
+            "services:",
+            "  lightrag:",
+            "    image: example/lightrag:test",
+            "    restart: unless-stopped",
+            "",
+            "  sidecar:",
+            "    image: busybox",
+        ],
+    )
+    write_text_lines(
+        tmp_path / "env.example",
+        (REPO_ROOT / "env.example").read_text(encoding="utf-8").splitlines(),
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+
+generate_docker_compose "$REPO_ROOT/docker-compose.final.yml"
+"""
+    )
+
+    generated_compose = (tmp_path / "docker-compose.final.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "    image: example/lightrag:test\n\n    deploy:\n" not in generated_compose
+    assert "    image: example/lightrag:test\n    deploy:\n" in generated_compose
+
+
 def test_existing_ssl_env_keeps_compose_mount_overrides(tmp_path: Path) -> None:
     """Compose regeneration should preserve working SSL mounts without implying `.env` is permanently dual-purpose."""
 
