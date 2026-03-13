@@ -1322,6 +1322,11 @@ _strip_lightrag_wizard_bind_mounts() {
 _is_wizard_lightrag_port_mapping() {
   local port_spec="$(_strip_wrapping_quotes "$1")"
 
+  if [[ "$port_spec" == '${HOST:-0.0.0.0}:${PORT:-9621}:9621' || \
+        "$port_spec" == '${PORT:-9621}:9621' ]]; then
+    return 0
+  fi
+
   case "$port_spec" in
     9621|9621/tcp|*:9621|*:9621/tcp)
       return 0
