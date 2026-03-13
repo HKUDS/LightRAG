@@ -161,6 +161,11 @@ async def _mget_optional_doc(
     return doc
 
 
+def _is_missing_index_error(exc: Exception) -> bool:
+    """Return True when an OpenSearch exception means the target index is missing."""
+    return "index_not_found_exception" in str(exc)
+
+
 @final
 @dataclass
 class OpenSearchKVStorage(BaseKVStorage):
@@ -168,6 +173,7 @@ class OpenSearchKVStorage(BaseKVStorage):
 
     client: AsyncOpenSearch = field(default=None)
     _index_name: str = field(default="", init=False)
+    _index_ready: bool = field(default=False, init=False)
 
     def __init__(self, namespace, global_config, embedding_func, workspace=None):
         super().__init__(
@@ -189,9 +195,25 @@ class OpenSearchKVStorage(BaseKVStorage):
             if self.client is None:
                 self.client = await ClientManager.get_client()
             await self._create_index_if_not_exists()
+            self._index_ready = True
             logger.debug(
                 f"[{self.workspace}] OpenSearch KV storage initialized: {self._index_name}"
             )
+
+    async def _ensure_index_ready(self):
+        """Recreate the KV index after drop before the next write."""
+        if self._index_ready:
+            return
+        async with get_data_init_lock():
+            if self.client is None:
+                self.client = await ClientManager.get_client()
+            if not self._index_ready:
+                await self._create_index_if_not_exists()
+                self._index_ready = True
+
+    def _mark_index_missing(self):
+        """Mark the KV index as unavailable for subsequent read short-circuiting."""
+        self._index_ready = False
 
     async def _create_index_if_not_exists(self):
         try:
@@ -220,6 +242,8 @@ class OpenSearchKVStorage(BaseKVStorage):
 
     async def get_by_id(self, id: str) -> dict[str, Any] | None:
         """Get a document by its ID, or None if not found."""
+        if not self._index_ready:
+            return None
         try:
             response = await _mget_optional_doc(self.client, self._index_name, id)
             if response is None:
@@ -230,11 +254,16 @@ class OpenSearchKVStorage(BaseKVStorage):
             doc.setdefault("update_time", 0)
             return doc
         except OpenSearchException as e:
+            if _is_missing_index_error(e):
+                self._mark_index_missing()
+                return None
             logger.error(f"[{self.workspace}] Error getting document {id}: {e}")
             return None
 
     async def get_by_ids(self, ids: list[str]) -> list[dict[str, Any]]:
         """Get multiple documents by IDs, preserving input order."""
+        if not self._index_ready:
+            return [None] * len(ids)
         try:
             response = await self.client.mget(index=self._index_name, body={"ids": ids})
             doc_map = {}
@@ -247,11 +276,16 @@ class OpenSearchKVStorage(BaseKVStorage):
                     doc_map[doc["_id"]] = data
             return [doc_map.get(id) for id in ids]
         except OpenSearchException as e:
+            if _is_missing_index_error(e):
+                self._mark_index_missing()
+                return [None] * len(ids)
             logger.error(f"[{self.workspace}] Error getting documents: {e}")
             return [None] * len(ids)
 
     async def filter_keys(self, keys: set[str]) -> set[str]:
         """Return the subset of keys that do not exist in storage."""
+        if not self._index_ready:
+            return keys
         try:
             response = await self.client.mget(
                 index=self._index_name, body={"ids": list(keys)}, _source=False
@@ -259,6 +293,9 @@ class OpenSearchKVStorage(BaseKVStorage):
             existing_ids = {doc["_id"] for doc in response["docs"] if doc.get("found")}
             return keys - existing_ids
         except OpenSearchException as e:
+            if _is_missing_index_error(e):
+                self._mark_index_missing()
+                return keys
             logger.error(f"[{self.workspace}] Error filtering keys: {e}")
             return keys
 
@@ -266,6 +303,7 @@ class OpenSearchKVStorage(BaseKVStorage):
         """Insert or update documents with automatic timestamping."""
         if not data:
             return
+        await self._ensure_index_ready()
         logger.debug(
             f"[{self.workspace}] Upserting {len(data)} documents to {self.namespace}"
         )
@@ -296,22 +334,34 @@ class OpenSearchKVStorage(BaseKVStorage):
 
     async def index_done_callback(self) -> None:
         """Refresh index to make recently indexed documents searchable."""
+        if not self._index_ready:
+            return
         try:
             await self.client.indices.refresh(index=self._index_name)
+        except OpenSearchException as e:
+            if _is_missing_index_error(e):
+                self._mark_index_missing()
+                return
         except Exception:
             pass
 
     async def is_empty(self) -> bool:
         """Return True if the index contains no documents."""
+        if not self._index_ready:
+            return True
         try:
             response = await self.client.count(index=self._index_name)
             return response["count"] == 0
-        except OpenSearchException:
+        except OpenSearchException as e:
+            if _is_missing_index_error(e):
+                self._mark_index_missing()
             return True
 
     async def delete(self, ids: list[str]) -> None:
         """Delete documents by their IDs."""
         if not ids:
+            return
+        if not self._index_ready:
             return
         if isinstance(ids, set):
             ids = list(ids)
@@ -327,12 +377,16 @@ class OpenSearchKVStorage(BaseKVStorage):
                 f"[{self.workspace}] Deleted {success} documents from {self.namespace}"
             )
         except OpenSearchException as e:
+            if _is_missing_index_error(e):
+                self._mark_index_missing()
+                return
             logger.error(f"[{self.workspace}] Error deleting documents: {e}")
 
     async def drop(self) -> dict[str, str]:
         """Delete the entire index."""
         try:
             await self.client.indices.delete(index=self._index_name)
+            self._index_ready = False
             logger.info(f"[{self.workspace}] Dropped index: {self._index_name}")
             return {"status": "success", "message": f"Index {self._index_name} dropped"}
         except OpenSearchException as e:
@@ -347,6 +401,7 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
 
     client: AsyncOpenSearch = field(default=None)
     _index_name: str = field(default="", init=False)
+    _index_ready: bool = field(default=False, init=False)
 
     def __init__(self, namespace, global_config, embedding_func, workspace=None):
         super().__init__(
@@ -383,9 +438,25 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
             if self.client is None:
                 self.client = await ClientManager.get_client()
             await self._create_index_if_not_exists()
+            self._index_ready = True
             logger.debug(
                 f"[{self.workspace}] OpenSearch DocStatus storage initialized: {self._index_name}"
             )
+
+    async def _ensure_index_ready(self):
+        """Recreate the doc status index after drop before the next write."""
+        if self._index_ready:
+            return
+        async with get_data_init_lock():
+            if self.client is None:
+                self.client = await ClientManager.get_client()
+            if not self._index_ready:
+                await self._create_index_if_not_exists()
+                self._index_ready = True
+
+    def _mark_index_missing(self):
+        """Mark the doc status index as unavailable for subsequent read short-circuiting."""
+        self._index_ready = False
 
     async def _create_index_if_not_exists(self):
         try:
@@ -424,6 +495,8 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
 
     async def get_by_id(self, id: str) -> Union[dict[str, Any], None]:
         """Get a document status record by ID."""
+        if not self._index_ready:
+            return None
         try:
             response = await _mget_optional_doc(self.client, self._index_name, id)
             if response is None:
@@ -432,11 +505,16 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
             doc["_id"] = response["_id"]
             return doc
         except OpenSearchException as e:
+            if _is_missing_index_error(e):
+                self._mark_index_missing()
+                return None
             logger.error(f"[{self.workspace}] Error getting doc status {id}: {e}")
             return None
 
     async def get_by_ids(self, ids: list[str]) -> list[dict[str, Any]]:
         """Get multiple document status records by IDs."""
+        if not self._index_ready:
+            return [None] * len(ids)
         try:
             response = await self.client.mget(index=self._index_name, body={"ids": ids})
             doc_map = {}
@@ -447,11 +525,16 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
                     doc_map[doc["_id"]] = data
             return [doc_map.get(id) for id in ids]
         except OpenSearchException as e:
+            if _is_missing_index_error(e):
+                self._mark_index_missing()
+                return [None] * len(ids)
             logger.error(f"[{self.workspace}] Error getting doc statuses: {e}")
             return [None] * len(ids)
 
     async def filter_keys(self, keys: set[str]) -> set[str]:
         """Return the subset of keys that do not exist in storage."""
+        if not self._index_ready:
+            return keys
         try:
             response = await self.client.mget(
                 index=self._index_name, body={"ids": list(keys)}, _source=False
@@ -459,6 +542,9 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
             existing_ids = {doc["_id"] for doc in response["docs"] if doc.get("found")}
             return keys - existing_ids
         except OpenSearchException as e:
+            if _is_missing_index_error(e):
+                self._mark_index_missing()
+                return keys
             logger.error(f"[{self.workspace}] Error filtering keys: {e}")
             return keys
 
@@ -466,6 +552,7 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
         """Insert or update document status records."""
         if not data:
             return
+        await self._ensure_index_ready()
         logger.debug(f"[{self.workspace}] Upserting {len(data)} doc statuses")
         actions = []
         for k, v in data.items():
@@ -487,6 +574,8 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
 
     async def get_status_counts(self) -> dict[str, int]:
         """Get document counts grouped by status."""
+        if not self._index_ready:
+            return {}
         try:
             body = {
                 "size": 0,
@@ -498,11 +587,16 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
                 for bucket in response["aggregations"]["status_counts"]["buckets"]
             }
         except OpenSearchException as e:
+            if _is_missing_index_error(e):
+                self._mark_index_missing()
+                return {}
             logger.error(f"[{self.workspace}] Error getting status counts: {e}")
             return {}
 
     async def _search_all_docs(self, query: dict) -> dict[str, DocProcessingStatus]:
         """Fetch all documents matching a query using PIT + search_after."""
+        if not self._index_ready:
+            return {}
         result = {}
         batch_size = 10000
         try:
@@ -542,6 +636,9 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
                 except Exception:
                     pass
         except OpenSearchException as e:
+            if _is_missing_index_error(e):
+                self._mark_index_missing()
+                return {}
             logger.error(f"[{self.workspace}] Error fetching docs: {e}")
         return result
 
@@ -566,6 +663,8 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
         sort_direction: str = "desc",
     ) -> tuple[list[tuple[str, DocProcessingStatus]], int]:
         """Get documents with pagination using PIT + search_after."""
+        if not self._index_ready:
+            return [], 0
         page = max(1, page)
         page_size = max(10, min(200, page_size))
         if sort_field == "id":
@@ -640,11 +739,16 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
                     )
             return documents, total_count
         except OpenSearchException as e:
+            if _is_missing_index_error(e):
+                self._mark_index_missing()
+                return [], 0
             logger.error(f"[{self.workspace}] Error in paginated query: {e}")
             return [], 0
 
     async def get_all_status_counts(self) -> dict[str, int]:
         """Get document counts for all statuses including an 'all' total."""
+        if not self._index_ready:
+            return {}
         try:
             body = {
                 "size": 0,
@@ -659,11 +763,16 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
             counts["all"] = total
             return counts
         except OpenSearchException as e:
+            if _is_missing_index_error(e):
+                self._mark_index_missing()
+                return {}
             logger.error(f"[{self.workspace}] Error getting all status counts: {e}")
             return {}
 
     async def get_doc_by_file_path(self, file_path: str) -> Union[dict[str, Any], None]:
         """Find a document status record by its file_path field."""
+        if not self._index_ready:
+            return None
         try:
             body = {"query": {"term": {"file_path": file_path}}, "size": 1}
             response = await self.client.search(index=self._index_name, body=body)
@@ -674,27 +783,42 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
                 return doc
             return None
         except OpenSearchException as e:
+            if _is_missing_index_error(e):
+                self._mark_index_missing()
+                return None
             logger.error(f"[{self.workspace}] Error getting doc by file_path: {e}")
             return None
 
     async def index_done_callback(self) -> None:
         """Refresh index to make recently indexed documents searchable."""
+        if not self._index_ready:
+            return
         try:
             await self.client.indices.refresh(index=self._index_name)
+        except OpenSearchException as e:
+            if _is_missing_index_error(e):
+                self._mark_index_missing()
+                return
         except Exception:
             pass
 
     async def is_empty(self) -> bool:
         """Return True if the index contains no documents."""
+        if not self._index_ready:
+            return True
         try:
             response = await self.client.count(index=self._index_name)
             return response["count"] == 0
-        except OpenSearchException:
+        except OpenSearchException as e:
+            if _is_missing_index_error(e):
+                self._mark_index_missing()
             return True
 
     async def delete(self, ids: list[str]) -> None:
         """Delete document status records by IDs."""
         if not ids:
+            return
+        if not self._index_ready:
             return
         if isinstance(ids, set):
             ids = list(ids)
@@ -707,12 +831,16 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
                 self.client, actions, raise_on_error=False, refresh="wait_for"
             )
         except OpenSearchException as e:
+            if _is_missing_index_error(e):
+                self._mark_index_missing()
+                return
             logger.error(f"[{self.workspace}] Error deleting doc statuses: {e}")
 
     async def drop(self) -> dict[str, str]:
         """Delete the entire doc status index."""
         try:
             await self.client.indices.delete(index=self._index_name)
+            self._index_ready = False
             logger.info(
                 f"[{self.workspace}] Dropped doc status index: {self._index_name}"
             )
@@ -738,6 +866,7 @@ class OpenSearchGraphStorage(BaseGraphStorage):
     client: AsyncOpenSearch = field(default=None)
     _nodes_index: str = field(default="", init=False)
     _edges_index: str = field(default="", init=False)
+    _indices_ready: bool = field(default=False, init=False)
     _ppl_graphlookup_available: bool = field(default=False, init=False)
 
     def __init__(self, namespace, global_config, embedding_func, workspace=None):
@@ -762,12 +891,28 @@ class OpenSearchGraphStorage(BaseGraphStorage):
             if self.client is None:
                 self.client = await ClientManager.get_client()
             await self._create_indices_if_not_exist()
+            self._indices_ready = True
             await self._detect_ppl_graphlookup()
             logger.debug(
                 f"[{self.workspace}] OpenSearch Graph storage initialized: "
                 f"{self._nodes_index}, {self._edges_index} "
                 f"(PPL graphlookup: {self._ppl_graphlookup_available})"
             )
+
+    async def _ensure_indices_ready(self):
+        """Recreate graph indices after drop before the next write."""
+        if self._indices_ready:
+            return
+        async with get_data_init_lock():
+            if self.client is None:
+                self.client = await ClientManager.get_client()
+            if not self._indices_ready:
+                await self._create_indices_if_not_exist()
+                self._indices_ready = True
+
+    def _mark_indices_missing(self):
+        """Mark graph indices as unavailable for subsequent read short-circuiting."""
+        self._indices_ready = False
 
     async def _detect_ppl_graphlookup(self):
         """Detect whether PPL graphlookup command is available on this cluster."""
@@ -876,13 +1021,19 @@ class OpenSearchGraphStorage(BaseGraphStorage):
 
     async def has_node(self, node_id: str) -> bool:
         """Check whether a node exists in the graph."""
+        if not self._indices_ready:
+            return False
         try:
             return await self.client.exists(index=self._nodes_index, id=node_id)
-        except OpenSearchException:
+        except OpenSearchException as e:
+            if _is_missing_index_error(e):
+                self._mark_indices_missing()
             return False
 
     async def has_edge(self, source_node_id: str, target_node_id: str) -> bool:
         """Check whether an edge exists between two nodes (bidirectional)."""
+        if not self._indices_ready:
+            return False
         try:
             body = {
                 "query": {
@@ -911,11 +1062,15 @@ class OpenSearchGraphStorage(BaseGraphStorage):
             }
             response = await self.client.search(index=self._edges_index, body=body)
             return response["hits"]["total"]["value"] > 0
-        except OpenSearchException:
+        except OpenSearchException as e:
+            if _is_missing_index_error(e):
+                self._mark_indices_missing()
             return False
 
     async def node_degree(self, node_id: str) -> int:
         """Count the number of edges connected to a node."""
+        if not self._indices_ready:
+            return 0
         try:
             response = await self.client.count(
                 index=self._edges_index,
@@ -931,7 +1086,9 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                 },
             )
             return response.get("count", 0)
-        except OpenSearchException:
+        except OpenSearchException as e:
+            if _is_missing_index_error(e):
+                self._mark_indices_missing()
             return 0
 
     async def edge_degree(self, src_id: str, tgt_id: str) -> int:
@@ -942,6 +1099,8 @@ class OpenSearchGraphStorage(BaseGraphStorage):
 
     async def get_node(self, node_id: str) -> dict[str, str] | None:
         """Get a node document by ID, or None if not found."""
+        if not self._indices_ready:
+            return None
         try:
             response = await _mget_optional_doc(self.client, self._nodes_index, node_id)
             if response is None:
@@ -949,13 +1108,17 @@ class OpenSearchGraphStorage(BaseGraphStorage):
             doc = response["_source"]
             doc["_id"] = response["_id"]
             return doc
-        except OpenSearchException:
+        except OpenSearchException as e:
+            if _is_missing_index_error(e):
+                self._mark_indices_missing()
             return None
 
     async def get_edge(
         self, source_node_id: str, target_node_id: str
     ) -> dict[str, str] | None:
         """Get an edge between two nodes (bidirectional), or None."""
+        if not self._indices_ready:
+            return None
         try:
             body = {
                 "query": {
@@ -989,11 +1152,15 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                 doc["_id"] = hits[0]["_id"]
                 return doc
             return None
-        except OpenSearchException:
+        except OpenSearchException as e:
+            if _is_missing_index_error(e):
+                self._mark_indices_missing()
             return None
 
     async def get_node_edges(self, source_node_id: str) -> list[tuple[str, str]] | None:
         """Get all (source, target) edge tuples connected to a node."""
+        if not self._indices_ready:
+            return None
         try:
             query = {
                 "bool": {
@@ -1040,13 +1207,17 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                 except Exception:
                     pass
             return edges
-        except OpenSearchException:
+        except OpenSearchException as e:
+            if _is_missing_index_error(e):
+                self._mark_indices_missing()
             return None
 
     # --- Batch operations ---
 
     async def get_nodes_batch(self, node_ids: list[str]) -> dict[str, dict]:
         """Batch-fetch multiple nodes by ID."""
+        if not self._indices_ready:
+            return {}
         try:
             response = await self.client.mget(
                 index=self._nodes_index, body={"ids": node_ids}
@@ -1058,12 +1229,16 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                     data["_id"] = doc["_id"]
                     result[doc["_id"]] = data
             return result
-        except OpenSearchException:
+        except OpenSearchException as e:
+            if _is_missing_index_error(e):
+                self._mark_indices_missing()
             return {}
 
     async def node_degrees_batch(self, node_ids: list[str]) -> dict[str, int]:
         """Batch-fetch edge counts for multiple nodes using aggregations."""
         if not node_ids:
+            return {}
+        if not self._indices_ready:
             return {}
         try:
             # Use a single query with aggregations for both source and target
@@ -1105,7 +1280,9 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                         result.get(bucket["key"], 0) + bucket["doc_count"]
                     )
             return result
-        except OpenSearchException:
+        except OpenSearchException as e:
+            if _is_missing_index_error(e):
+                self._mark_indices_missing()
             return {}
 
     async def get_nodes_edges_batch(
@@ -1113,6 +1290,8 @@ class OpenSearchGraphStorage(BaseGraphStorage):
     ) -> dict[str, list[tuple[str, str]]]:
         """Batch-fetch edge tuples for multiple nodes."""
         result = {nid: [] for nid in node_ids}
+        if not self._indices_ready:
+            return result
         try:
             query = {
                 "bool": {
@@ -1157,7 +1336,9 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                     await self.client.delete_pit(body={"pit_id": [pit_id]})
                 except Exception:
                     pass
-        except OpenSearchException:
+        except OpenSearchException as e:
+            if _is_missing_index_error(e):
+                self._mark_indices_missing()
             pass
         return result
 
@@ -1166,6 +1347,7 @@ class OpenSearchGraphStorage(BaseGraphStorage):
     async def upsert_node(self, node_id: str, node_data: dict[str, str]) -> None:
         """Insert or update a node. Adds entity_id for PPL compatibility."""
         try:
+            await self._ensure_indices_ready()
             doc = {k: v for k, v in node_data.items() if k != "_id"}
             doc["entity_id"] = node_id
             if node_data.get("source_id", ""):
@@ -1181,6 +1363,7 @@ class OpenSearchGraphStorage(BaseGraphStorage):
     ) -> None:
         """Insert or update an edge with deterministic ID for bidirectional handling."""
         try:
+            await self._ensure_indices_ready()
             # Ensure source node exists (don't overwrite if it already has data)
             if not await self.has_node(source_node_id):
                 await self.upsert_node(source_node_id, {})
@@ -1313,6 +1496,8 @@ class OpenSearchGraphStorage(BaseGraphStorage):
 
     async def get_all_labels(self) -> list[str]:
         """Get all node IDs (entity names) sorted alphabetically."""
+        if not self._indices_ready:
+            return []
         try:
             labels = []
             pit = await self.client.create_pit(
@@ -1347,7 +1532,9 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                     pass
             labels.sort()
             return labels
-        except OpenSearchException:
+        except OpenSearchException as e:
+            if _is_missing_index_error(e):
+                self._mark_indices_missing()
             return []
 
     def _construct_graph_node(self, node_id, node_data: dict) -> KnowledgeGraphNode:
@@ -1395,6 +1582,8 @@ class OpenSearchGraphStorage(BaseGraphStorage):
         max_nodes: int = None,
     ) -> KnowledgeGraph:
         """Retrieve a subgraph via PPL graphlookup (if available) or client-side BFS."""
+        if not self._indices_ready:
+            return KnowledgeGraph()
         if max_nodes is None:
             max_nodes = self.global_config.get("max_graph_nodes", 1000)
         else:
@@ -1417,6 +1606,9 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                 f"Nodes: {len(result.nodes)} | Edges: {len(result.edges)} | Truncated: {result.is_truncated}"
             )
         except OpenSearchException as e:
+            if _is_missing_index_error(e):
+                self._mark_indices_missing()
+                return KnowledgeGraph()
             logger.error(f"[{self.workspace}] Graph query failed: {e}")
 
         return result
@@ -1424,6 +1616,8 @@ class OpenSearchGraphStorage(BaseGraphStorage):
     async def _get_knowledge_graph_all(self, max_nodes: int) -> KnowledgeGraph:
         """Get all nodes (up to max_nodes, ranked by degree) and their interconnecting edges."""
         result = KnowledgeGraph()
+        if not self._indices_ready:
+            return result
         try:
             total = (await self.client.count(index=self._nodes_index))["count"]
             result.is_truncated = total > max_nodes
@@ -1539,6 +1733,9 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                         seen_edges.add(eid)
                         result.edges.append(self._construct_graph_edge(eid, e))
         except OpenSearchException as e:
+            if _is_missing_index_error(e):
+                self._mark_indices_missing()
+                return result
             logger.error(f"[{self.workspace}] Error in get_knowledge_graph_all: {e}")
         return result
 
@@ -1802,6 +1999,8 @@ class OpenSearchGraphStorage(BaseGraphStorage):
 
     async def get_all_nodes(self) -> list[dict]:
         """Get all nodes with their properties."""
+        if not self._indices_ready:
+            return []
         try:
             nodes = []
             pit = await self.client.create_pit(
@@ -1836,11 +2035,15 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                 except Exception:
                     pass
             return nodes
-        except OpenSearchException:
+        except OpenSearchException as e:
+            if _is_missing_index_error(e):
+                self._mark_indices_missing()
             return []
 
     async def get_all_edges(self) -> list[dict]:
         """Get all edges with source/target fields added."""
+        if not self._indices_ready:
+            return []
         try:
             edges = []
             pit = await self.client.create_pit(
@@ -1876,11 +2079,15 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                 except Exception:
                     pass
             return edges
-        except OpenSearchException:
+        except OpenSearchException as e:
+            if _is_missing_index_error(e):
+                self._mark_indices_missing()
             return []
 
     async def get_popular_labels(self, limit: int = 300) -> list[str]:
         """Get node labels ranked by edge degree (most connected first)."""
+        if not self._indices_ready:
+            return []
         try:
             body = {
                 "size": 0,
@@ -1901,13 +2108,17 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                 )
             sorted_labels = sorted(degree_map, key=degree_map.get, reverse=True)[:limit]
             return sorted_labels
-        except OpenSearchException:
+        except OpenSearchException as e:
+            if _is_missing_index_error(e):
+                self._mark_indices_missing()
             return []
 
     async def search_labels(self, query: str, limit: int = 50) -> list[str]:
         """Search node labels with wildcard and prefix matching."""
         query = query.strip()
         if not query:
+            return []
+        if not self._indices_ready:
             return []
         try:
             body = {
@@ -1937,14 +2148,22 @@ class OpenSearchGraphStorage(BaseGraphStorage):
             }
             response = await self.client.search(index=self._nodes_index, body=body)
             return [hit["_id"] for hit in response["hits"]["hits"]]
-        except OpenSearchException:
+        except OpenSearchException as e:
+            if _is_missing_index_error(e):
+                self._mark_indices_missing()
             return []
 
     async def index_done_callback(self) -> None:
         """Refresh both node and edge indices."""
+        if not self._indices_ready:
+            return
         try:
             await self.client.indices.refresh(index=self._nodes_index)
             await self.client.indices.refresh(index=self._edges_index)
+        except OpenSearchException as e:
+            if _is_missing_index_error(e):
+                self._mark_indices_missing()
+                return
         except Exception:
             pass
 
@@ -1956,6 +2175,7 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                     await self.client.indices.delete(index=idx)
                 except NotFoundError:
                     pass
+            self._indices_ready = False
             logger.info(f"[{self.workspace}] Dropped graph indices")
             return {"status": "success", "message": "Graph indices dropped"}
         except OpenSearchException as e:
@@ -1970,6 +2190,7 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
 
     client: AsyncOpenSearch = field(default=None)
     _index_name: str = field(default="", init=False)
+    _index_ready: bool = field(default=False, init=False)
 
     def __init__(
         self, namespace, global_config, embedding_func, workspace=None, meta_fields=None
@@ -2003,9 +2224,25 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
             if self.client is None:
                 self.client = await ClientManager.get_client()
             await self._create_knn_index_if_not_exists()
+            self._index_ready = True
             logger.debug(
                 f"[{self.workspace}] OpenSearch Vector storage initialized: {self._index_name}"
             )
+
+    async def _ensure_index_ready(self):
+        """Recreate the vector index before the next write if it is missing."""
+        if self._index_ready:
+            return
+        async with get_data_init_lock():
+            if self.client is None:
+                self.client = await ClientManager.get_client()
+            if not self._index_ready:
+                await self._create_knn_index_if_not_exists()
+                self._index_ready = True
+
+    def _mark_index_missing(self):
+        """Mark the vector index as unavailable for subsequent read short-circuiting."""
+        self._index_ready = False
 
     async def _create_knn_index_if_not_exists(self):
         try:
@@ -2098,6 +2335,7 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
         """Generate embeddings and upsert vectors in batches."""
         if not data:
             return
+        await self._ensure_index_ready()
         logger.debug(
             f"[{self.workspace}] Upserting {len(data)} vectors to {self.namespace}"
         )
@@ -2150,6 +2388,8 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
         self, query: str, top_k: int, query_embedding: list[float] = None
     ) -> list[dict[str, Any]]:
         """k-NN similarity search with cosine score conversion for lucene engine."""
+        if not self._index_ready:
+            return []
         if query_embedding is not None:
             query_vector = (
                 query_embedding.tolist()
@@ -2190,18 +2430,29 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
             )
             return results
         except OpenSearchException as e:
+            if _is_missing_index_error(e):
+                self._mark_index_missing()
+                return []
             logger.error(f"[{self.workspace}] Error querying vectors: {e}")
             return []
 
     async def index_done_callback(self) -> None:
         """Refresh index to make recently indexed vectors searchable."""
+        if not self._index_ready:
+            return
         try:
             await self.client.indices.refresh(index=self._index_name)
+        except OpenSearchException as e:
+            if _is_missing_index_error(e):
+                self._mark_index_missing()
+                return
         except Exception:
             pass
 
     async def get_by_id(self, id: str) -> dict[str, Any] | None:
         """Get a vector document by ID."""
+        if not self._index_ready:
+            return None
         try:
             response = await _mget_optional_doc(self.client, self._index_name, id)
             if response is None:
@@ -2210,6 +2461,9 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
             doc["id"] = response["_id"]
             return doc
         except OpenSearchException as e:
+            if _is_missing_index_error(e):
+                self._mark_index_missing()
+                return None
             logger.error(f"[{self.workspace}] Error getting vector {id}: {e}")
             return None
 
@@ -2217,6 +2471,8 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
         """Get multiple vector documents by IDs, preserving order."""
         if not ids:
             return []
+        if not self._index_ready:
+            return [None] * len(ids)
         try:
             response = await self.client.mget(index=self._index_name, body={"ids": ids})
             doc_map = {}
@@ -2227,12 +2483,17 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
                     doc_map[doc["_id"]] = data
             return [doc_map.get(id) for id in ids]
         except OpenSearchException as e:
+            if _is_missing_index_error(e):
+                self._mark_index_missing()
+                return [None] * len(ids)
             logger.error(f"[{self.workspace}] Error getting vectors by ids: {e}")
-            return []
+            return [None] * len(ids)
 
     async def get_vectors_by_ids(self, ids: list[str]) -> dict[str, list[float]]:
         """Get only the vector embeddings for given IDs."""
         if not ids:
+            return {}
+        if not self._index_ready:
             return {}
         try:
             response = await self.client.mget(
@@ -2244,12 +2505,17 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
                     result[doc["_id"]] = doc["_source"]["vector"]
             return result
         except OpenSearchException as e:
+            if _is_missing_index_error(e):
+                self._mark_index_missing()
+                return {}
             logger.error(f"[{self.workspace}] Error getting vectors: {e}")
             return {}
 
     async def delete(self, ids: list[str]) -> None:
         """Delete vectors by their IDs."""
         if not ids:
+            return
+        if not self._index_ready:
             return
         if isinstance(ids, set):
             ids = list(ids)
@@ -2265,10 +2531,15 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
                 f"[{self.workspace}] Deleted {result[0]} vectors from {self.namespace}"
             )
         except OpenSearchException as e:
+            if _is_missing_index_error(e):
+                self._mark_index_missing()
+                return
             logger.error(f"[{self.workspace}] Error deleting vectors: {e}")
 
     async def delete_entity(self, entity_name: str) -> None:
         """Delete an entity vector by computing its hash ID."""
+        if not self._index_ready:
+            return
         try:
             entity_id = compute_mdhash_id(entity_name, prefix="ent-")
             try:
@@ -2276,13 +2547,21 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
                     index=self._index_name, id=entity_id, refresh="wait_for"
                 )
                 logger.debug(f"[{self.workspace}] Deleted entity {entity_name}")
-            except NotFoundError:
+            except NotFoundError as e:
+                if _is_missing_index_error(e):
+                    self._mark_index_missing()
+                    return
                 logger.debug(f"[{self.workspace}] Entity {entity_name} not found")
         except OpenSearchException as e:
+            if _is_missing_index_error(e):
+                self._mark_index_missing()
+                return
             logger.error(f"[{self.workspace}] Error deleting entity {entity_name}: {e}")
 
     async def delete_entity_relation(self, entity_name: str) -> None:
         """Delete all relation vectors where entity appears as src or tgt."""
+        if not self._index_ready:
+            return
         try:
             body = {
                 "query": {
@@ -2301,6 +2580,9 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
                 f"[{self.workspace}] Deleted relations for entity {entity_name}"
             )
         except OpenSearchException as e:
+            if _is_missing_index_error(e):
+                self._mark_index_missing()
+                return
             logger.error(
                 f"[{self.workspace}] Error deleting relations for {entity_name}: {e}"
             )
@@ -2308,9 +2590,13 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
     async def drop(self) -> dict[str, str]:
         """Delete and recreate the vector index."""
         try:
-            await self.client.indices.delete(index=self._index_name)
+            try:
+                await self.client.indices.delete(index=self._index_name)
+            except NotFoundError:
+                pass
             # Recreate the index
             await self._create_knn_index_if_not_exists()
+            self._index_ready = True
             logger.info(
                 f"[{self.workspace}] Dropped and recreated vector index: {self._index_name}"
             )

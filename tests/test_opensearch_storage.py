@@ -9,6 +9,7 @@ import pytest
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, patch
 import numpy as np
+from opensearchpy.exceptions import NotFoundError
 
 from lightrag.kg.opensearch_impl import (
     OpenSearchKVStorage,
@@ -35,6 +36,10 @@ async def _mock_lock():
 
 def _mock_lock_factory():
     return _mock_lock()
+
+
+def _missing_index_error() -> NotFoundError:
+    return NotFoundError(404, "index_not_found_exception", "no such index")
 
 
 @pytest.fixture(autouse=True)
@@ -373,6 +378,54 @@ class TestKVStorage:
             result = await s.drop()
             assert result["status"] == "success"
             mock_client.indices.delete.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_upsert_after_drop_recreates_index(
+        self, global_config, embed_func, mock_client
+    ):
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            with patch(
+                "lightrag.kg.opensearch_impl.helpers.async_bulk", new_callable=AsyncMock
+            ) as mock_bulk:
+                mock_bulk.return_value = (1, [])
+                s = self._make(global_config, embed_func)
+                await s.initialize()
+                with patch.object(
+                    s, "_create_index_if_not_exists", new_callable=AsyncMock
+                ) as mock_create:
+                    await s.drop()
+                    await s.upsert({"k1": {"content": "v1"}})
+                    mock_create.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_reads_short_circuit_after_drop(
+        self, global_config, embed_func, mock_client
+    ):
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+            await s.drop()
+
+            assert await s.get_by_id("doc1") is None
+            assert await s.get_by_ids(["doc1", "doc2"]) == [None, None]
+            assert await s.is_empty() is True
+
+            mock_client.mget.assert_not_awaited()
+            mock_client.count.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_read_missing_index_demotes_readiness(
+        self, global_config, embed_func, mock_client
+    ):
+        mock_client.mget = AsyncMock(side_effect=_missing_index_error())
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+
+            assert await s.get_by_id("doc1") is None
+            assert await s.get_by_id("doc1") is None
+            assert s._index_ready is False
+            assert mock_client.mget.await_count == 1
 
     @pytest.mark.asyncio
     async def test_finalize(self, global_config, embed_func, mock_client):
@@ -749,6 +802,56 @@ class TestDocStatusStorage:
         assert data["file_path"] == "no-file-path"
         assert data["metadata"] == {}
 
+    @pytest.mark.asyncio
+    async def test_upsert_after_drop_recreates_index(
+        self, global_config, embed_func, mock_client
+    ):
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            with patch(
+                "lightrag.kg.opensearch_impl.helpers.async_bulk", new_callable=AsyncMock
+            ) as mock_bulk:
+                mock_bulk.return_value = (1, [])
+                s = self._make(global_config, embed_func)
+                await s.initialize()
+                with patch.object(
+                    s, "_create_index_if_not_exists", new_callable=AsyncMock
+                ) as mock_create:
+                    await s.drop()
+                    await s.upsert({"d1": {"status": "pending"}})
+                    mock_create.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_reads_short_circuit_after_drop(
+        self, global_config, embed_func, mock_client
+    ):
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+            await s.drop()
+
+            assert await s.get_all_status_counts() == {}
+            assert await s.get_docs_paginated(page=1, page_size=10) == ([], 0)
+            assert await s.get_doc_by_file_path("/a.txt") is None
+            assert await s.get_docs_by_status(DocStatus.PROCESSED) == {}
+
+            mock_client.count.assert_not_awaited()
+            mock_client.search.assert_not_awaited()
+            mock_client.create_pit.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_read_missing_index_demotes_readiness(
+        self, global_config, embed_func, mock_client
+    ):
+        mock_client.search = AsyncMock(side_effect=_missing_index_error())
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+
+            assert await s.get_all_status_counts() == {}
+            assert await s.get_all_status_counts() == {}
+            assert s._index_ready is False
+            assert mock_client.search.await_count == 1
+
 
 # ---------------------------------------------------------------------------
 # Graph Storage
@@ -989,6 +1092,68 @@ class TestGraphStorage:
             await s.upsert_edge("A", "B", {"weight": "1.0", "description": "knows"})
             # Should call index twice: once for ensuring source node, once for edge
             assert mock_client.index.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_upsert_after_drop_recreates_indices(
+        self, global_config, embed_func, mock_client
+    ):
+        mock_client.exists = AsyncMock(return_value=False)
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            with patch.object(
+                s, "_create_indices_if_not_exist", new_callable=AsyncMock
+            ) as mock_create:
+                await s.initialize()
+                mock_create.reset_mock()
+                await s.drop()
+                await s.upsert_edge("A", "B", {"weight": "1.0"})
+                mock_create.assert_awaited_once()
+                assert mock_client.index.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_reads_short_circuit_after_drop(
+        self, global_config, embed_func, mock_client
+    ):
+        mock_client.transport = AsyncMock()
+        mock_client.transport.perform_request = AsyncMock(
+            side_effect=Exception("PPL not available")
+        )
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+            await s.drop()
+
+            graph = await s.get_knowledge_graph("A", max_depth=2)
+
+            assert await s.get_node("A") is None
+            assert await s.get_all_labels() == []
+            assert await s.has_edge("A", "B") is False
+            assert await s.node_degree("A") == 0
+            assert len(graph.nodes) == 0
+            assert len(graph.edges) == 0
+
+            mock_client.mget.assert_not_awaited()
+            mock_client.search.assert_not_awaited()
+            mock_client.create_pit.assert_not_awaited()
+            mock_client.count.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_read_missing_index_demotes_readiness(
+        self, global_config, embed_func, mock_client
+    ):
+        mock_client.transport = AsyncMock()
+        mock_client.transport.perform_request = AsyncMock(
+            side_effect=Exception("PPL not available")
+        )
+        mock_client.mget = AsyncMock(side_effect=_missing_index_error())
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+
+            assert await s.get_node("A") is None
+            assert await s.get_node("A") is None
+            assert s._indices_ready is False
+            assert mock_client.mget.await_count == 1
 
     @pytest.mark.asyncio
     async def test_delete_node(self, global_config, embed_func, mock_client):
@@ -1677,6 +1842,51 @@ class TestVectorStorage:
             mock_client.indices.delete.assert_awaited_once()
             # create called twice: once during init, once during drop recreate
             assert mock_client.indices.create.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_drop_recreates_index_when_missing(
+        self, global_config, embed_func, mock_client
+    ):
+        mock_client.indices.exists = AsyncMock(return_value=False)
+        mock_client.indices.delete = AsyncMock(
+            side_effect=NotFoundError(404, "not found")
+        )
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+            result = await s.drop()
+            assert result["status"] == "success"
+            assert mock_client.indices.create.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_reads_short_circuit_when_index_not_ready(
+        self, global_config, embed_func, mock_client
+    ):
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+            s._index_ready = False
+
+            assert await s.query("test", top_k=5) == []
+            assert await s.get_by_id("v1") is None
+            assert await s.get_vectors_by_ids(["v1"]) == {}
+
+            mock_client.search.assert_not_awaited()
+            mock_client.mget.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_read_missing_index_demotes_readiness(
+        self, global_config, embed_func, mock_client
+    ):
+        mock_client.search = AsyncMock(side_effect=_missing_index_error())
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+
+            assert await s.query("test", top_k=5) == []
+            assert await s.query("test", top_k=5) == []
+            assert s._index_ready is False
+            assert mock_client.search.await_count == 1
 
 
 # ---------------------------------------------------------------------------
