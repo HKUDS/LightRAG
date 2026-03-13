@@ -250,6 +250,21 @@ class TestKVStorage:
 
     @pytest.mark.asyncio
     async def test_get_by_id(self, global_config, embed_func, mock_client):
+        mock_client.mget = AsyncMock(
+            return_value={
+                "docs": [
+                    {
+                        "_id": "doc1",
+                        "found": True,
+                        "_source": {
+                            "content": "hello",
+                            "create_time": 0,
+                            "update_time": 0,
+                        },
+                    }
+                ]
+            }
+        )
         with patch.object(ClientManager, "get_client", return_value=mock_client):
             s = self._make(global_config, embed_func)
             await s.initialize()
@@ -257,16 +272,20 @@ class TestKVStorage:
             assert doc is not None
             assert doc["content"] == "hello"
             assert doc["_id"] == "doc1"
+            mock_client.mget.assert_awaited_once_with(
+                index=s._index_name, body={"ids": ["doc1"]}
+            )
 
     @pytest.mark.asyncio
     async def test_get_by_id_not_found(self, global_config, embed_func, mock_client):
-        from opensearchpy.exceptions import NotFoundError
-
-        mock_client.get = AsyncMock(side_effect=NotFoundError(404, "not found"))
+        mock_client.mget = AsyncMock(
+            return_value={"docs": [{"_id": "missing", "found": False}]}
+        )
         with patch.object(ClientManager, "get_client", return_value=mock_client):
             s = self._make(global_config, embed_func)
             await s.initialize()
             assert await s.get_by_id("missing") is None
+            mock_client.get.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_get_by_ids_preserves_order(
@@ -400,10 +419,15 @@ class TestDocStatusStorage:
 
     @pytest.mark.asyncio
     async def test_get_by_id(self, global_config, embed_func, mock_client):
-        mock_client.get = AsyncMock(
+        mock_client.mget = AsyncMock(
             return_value={
-                "_id": "doc-abc",
-                "_source": {"status": "processed", "file_path": "/a.txt"},
+                "docs": [
+                    {
+                        "_id": "doc-abc",
+                        "found": True,
+                        "_source": {"status": "processed", "file_path": "/a.txt"},
+                    }
+                ]
             }
         )
         with patch.object(ClientManager, "get_client", return_value=mock_client):
@@ -412,16 +436,20 @@ class TestDocStatusStorage:
             doc = await s.get_by_id("doc-abc")
             assert doc["status"] == "processed"
             assert doc["_id"] == "doc-abc"
+            mock_client.mget.assert_awaited_once_with(
+                index=s._index_name, body={"ids": ["doc-abc"]}
+            )
 
     @pytest.mark.asyncio
     async def test_get_by_id_not_found(self, global_config, embed_func, mock_client):
-        from opensearchpy.exceptions import NotFoundError
-
-        mock_client.get = AsyncMock(side_effect=NotFoundError(404, "not found"))
+        mock_client.mget = AsyncMock(
+            return_value={"docs": [{"_id": "missing", "found": False}]}
+        )
         with patch.object(ClientManager, "get_client", return_value=mock_client):
             s = self._make(global_config, embed_func)
             await s.initialize()
             assert await s.get_by_id("missing") is None
+            mock_client.get.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_upsert_sets_chunks_list_default(
@@ -798,10 +826,18 @@ class TestGraphStorage:
 
     @pytest.mark.asyncio
     async def test_get_node(self, global_config, embed_func, mock_client):
-        mock_client.get = AsyncMock(
+        mock_client.mget = AsyncMock(
             return_value={
-                "_id": "Alice",
-                "_source": {"entity_type": "person", "description": "A researcher"},
+                "docs": [
+                    {
+                        "_id": "Alice",
+                        "found": True,
+                        "_source": {
+                            "entity_type": "person",
+                            "description": "A researcher",
+                        },
+                    }
+                ]
             }
         )
         with patch.object(ClientManager, "get_client", return_value=mock_client):
@@ -810,16 +846,20 @@ class TestGraphStorage:
             node = await s.get_node("Alice")
             assert node["entity_type"] == "person"
             assert node["_id"] == "Alice"
+            mock_client.mget.assert_awaited_once_with(
+                index=s._nodes_index, body={"ids": ["Alice"]}
+            )
 
     @pytest.mark.asyncio
     async def test_get_node_not_found(self, global_config, embed_func, mock_client):
-        from opensearchpy.exceptions import NotFoundError
-
-        mock_client.get = AsyncMock(side_effect=NotFoundError(404, "not found"))
+        mock_client.mget = AsyncMock(
+            return_value={"docs": [{"_id": "Nobody", "found": False}]}
+        )
         with patch.object(ClientManager, "get_client", return_value=mock_client):
             s = self._make(global_config, embed_func)
             await s.initialize()
             assert await s.get_node("Nobody") is None
+            mock_client.get.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_get_edge(self, global_config, embed_func, mock_client):
@@ -1078,9 +1118,9 @@ class TestGraphStorage:
     async def test_bfs_subgraph_start_not_found(
         self, global_config, embed_func, mock_client
     ):
-        from opensearchpy.exceptions import NotFoundError
-
-        mock_client.get = AsyncMock(side_effect=NotFoundError(404, "not found"))
+        mock_client.mget = AsyncMock(
+            return_value={"docs": [{"_id": "NonExistent", "found": False}]}
+        )
         with patch.object(ClientManager, "get_client", return_value=mock_client):
             s = self._make(global_config, embed_func)
             await s.initialize()
@@ -1266,9 +1306,9 @@ class TestGraphPPLDetection:
 
         mock_client.transport = AsyncMock()
         mock_client.transport.perform_request = AsyncMock(side_effect=ppl_side_effect)
-        from opensearchpy.exceptions import NotFoundError
-
-        mock_client.get = AsyncMock(side_effect=NotFoundError(404, "not found"))
+        mock_client.mget = AsyncMock(
+            return_value={"docs": [{"_id": "A", "found": False}]}
+        )
 
         with patch.object(ClientManager, "get_client", return_value=mock_client):
             s = self._make(global_config, embed_func)
@@ -1526,10 +1566,15 @@ class TestVectorStorage:
 
     @pytest.mark.asyncio
     async def test_get_by_id(self, global_config, embed_func, mock_client):
-        mock_client.get = AsyncMock(
+        mock_client.mget = AsyncMock(
             return_value={
-                "_id": "v1",
-                "_source": {"content": "hello", "vector": [0.1] * 128},
+                "docs": [
+                    {
+                        "_id": "v1",
+                        "found": True,
+                        "_source": {"content": "hello", "vector": [0.1] * 128},
+                    }
+                ]
             }
         )
         with patch.object(ClientManager, "get_client", return_value=mock_client):
@@ -1538,6 +1583,20 @@ class TestVectorStorage:
             doc = await s.get_by_id("v1")
             assert doc["id"] == "v1"
             assert doc["content"] == "hello"
+            mock_client.mget.assert_awaited_once_with(
+                index=s._index_name, body={"ids": ["v1"]}
+            )
+
+    @pytest.mark.asyncio
+    async def test_get_by_id_not_found(self, global_config, embed_func, mock_client):
+        mock_client.mget = AsyncMock(
+            return_value={"docs": [{"_id": "missing", "found": False}]}
+        )
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+            assert await s.get_by_id("missing") is None
+            mock_client.get.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_get_by_ids(self, global_config, embed_func, mock_client):

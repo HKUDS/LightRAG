@@ -147,6 +147,20 @@ def _build_index_name(workspace: str, namespace: str) -> tuple[str, str, str]:
     return effective, final_ns, index_name
 
 
+async def _mget_optional_doc(
+    client: AsyncOpenSearch, index_name: str, doc_id: str
+) -> dict[str, Any] | None:
+    """Fetch a single document via mget and return None when it is absent."""
+    response = await client.mget(index=index_name, body={"ids": [doc_id]})
+    docs = response.get("docs", [])
+    if not docs:
+        return None
+    doc = docs[0]
+    if not doc.get("found"):
+        return None
+    return doc
+
+
 @final
 @dataclass
 class OpenSearchKVStorage(BaseKVStorage):
@@ -207,14 +221,14 @@ class OpenSearchKVStorage(BaseKVStorage):
     async def get_by_id(self, id: str) -> dict[str, Any] | None:
         """Get a document by its ID, or None if not found."""
         try:
-            response = await self.client.get(index=self._index_name, id=id)
+            response = await _mget_optional_doc(self.client, self._index_name, id)
+            if response is None:
+                return None
             doc = response["_source"]
             doc["_id"] = response["_id"]
             doc.setdefault("create_time", 0)
             doc.setdefault("update_time", 0)
             return doc
-        except NotFoundError:
-            return None
         except OpenSearchException as e:
             logger.error(f"[{self.workspace}] Error getting document {id}: {e}")
             return None
@@ -411,12 +425,12 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
     async def get_by_id(self, id: str) -> Union[dict[str, Any], None]:
         """Get a document status record by ID."""
         try:
-            response = await self.client.get(index=self._index_name, id=id)
+            response = await _mget_optional_doc(self.client, self._index_name, id)
+            if response is None:
+                return None
             doc = response["_source"]
             doc["_id"] = response["_id"]
             return doc
-        except NotFoundError:
-            return None
         except OpenSearchException as e:
             logger.error(f"[{self.workspace}] Error getting doc status {id}: {e}")
             return None
@@ -929,12 +943,12 @@ class OpenSearchGraphStorage(BaseGraphStorage):
     async def get_node(self, node_id: str) -> dict[str, str] | None:
         """Get a node document by ID, or None if not found."""
         try:
-            response = await self.client.get(index=self._nodes_index, id=node_id)
+            response = await _mget_optional_doc(self.client, self._nodes_index, node_id)
+            if response is None:
+                return None
             doc = response["_source"]
             doc["_id"] = response["_id"]
             return doc
-        except NotFoundError:
-            return None
         except OpenSearchException:
             return None
 
@@ -2189,12 +2203,12 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
     async def get_by_id(self, id: str) -> dict[str, Any] | None:
         """Get a vector document by ID."""
         try:
-            response = await self.client.get(index=self._index_name, id=id)
+            response = await _mget_optional_doc(self.client, self._index_name, id)
+            if response is None:
+                return None
             doc = response["_source"]
             doc["id"] = response["_id"]
             return doc
-        except NotFoundError:
-            return None
         except OpenSearchException as e:
             logger.error(f"[{self.workspace}] Error getting vector {id}: {e}")
             return None
