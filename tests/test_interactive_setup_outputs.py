@@ -4627,7 +4627,7 @@ env_storage_flow
 def test_env_server_flow_preserves_existing_compose_ssl_when_env_paths_are_stale(
     tmp_path: Path,
 ) -> None:
-    """env-server should keep compose SSL wiring when inherited source paths no longer exist."""
+    """env-server should keep compose SSL wiring and variable-based port publishing."""
 
     write_text_lines(
         tmp_path / ".env",
@@ -4691,7 +4691,7 @@ env_server_flow
     assert "./data/certs/cert.pem:/app/data/certs/cert.pem:ro" in generated_compose
     assert "./data/certs/key.pem:/app/data/certs/key.pem:ro" in generated_compose
     assert 'PORT: "9621"' in generated_compose
-    assert '      - "0.0.0.0:8080:9621"' in generated_compose
+    assert '      - "${HOST:-0.0.0.0}:${PORT:-9621}:9621"' in generated_compose
 
 
 def test_env_server_flow_backs_up_existing_compose_before_rewrite(
@@ -5380,15 +5380,15 @@ printf 'DOCKER_SERVICE=%s\\n' "${{DOCKER_SERVICES[0]}}"
 @pytest.mark.parametrize(
     ("host_value", "expected_port_mapping"),
     [
-        ("127.0.0.1", "127.0.0.1:8080:9621"),
-        ("192.168.1.10", "192.168.1.10:8080:9621"),
+        ("127.0.0.1", "${HOST:-0.0.0.0}:${PORT:-9621}:9621"),
+        ("192.168.1.10", "${HOST:-0.0.0.0}:${PORT:-9621}:9621"),
     ],
     ids=["loopback-bind", "lan-bind"],
 )
 def test_prepare_compose_runtime_overrides_normalizes_server_binding(
     host_value: str, expected_port_mapping: str
 ) -> None:
-    """Compose runtime should always bind the API to the container-facing host/port."""
+    """Compose runtime should keep variable-based publishing while fixing container bind values."""
 
     values = run_bash_lines(
         f"""
@@ -5415,7 +5415,7 @@ printf 'PORT_MAPPING=%s\\n' "${{LIGHTRAG_COMPOSE_SERVER_PORT_MAPPING}}"
 def test_generate_docker_compose_injects_server_host_and_port_overrides(
     tmp_path: Path,
 ) -> None:
-    """Generated compose should publish the requested host/IP while keeping container bind values fixed."""
+    """Generated compose should preserve variable-based host publishing and fix container bind values."""
 
     compose_file = tmp_path / "docker-compose.yml"
     compose_file.write_text(
@@ -5455,7 +5455,7 @@ generate_docker_compose "$REPO_ROOT/docker-compose.generated.yml"
 
     assert 'HOST: "0.0.0.0"' in generated_compose
     assert 'PORT: "9621"' in generated_compose
-    assert '      - "127.0.0.1:8080:9621"' in generated_compose
+    assert '      - "${HOST:-0.0.0.0}:${PORT:-9621}:9621"' in generated_compose
 
 
 def test_generate_docker_compose_injects_env_overrides_into_lightrag_not_after_managed_services(
