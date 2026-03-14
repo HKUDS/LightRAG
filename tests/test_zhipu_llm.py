@@ -52,7 +52,9 @@ async def test_zhipu_embedding_sends_dimensions_when_embedding_dim_provided(
 
         def create(self, **kwargs):
             captured_calls.append(kwargs)
-            return SimpleNamespace(data=[SimpleNamespace(embedding=_fake_embedding_vector())])
+            return SimpleNamespace(
+                data=[SimpleNamespace(embedding=_fake_embedding_vector())]
+            )
 
     zhipu_module = _load_zhipu_module(monkeypatch, FakeClient)
 
@@ -83,7 +85,9 @@ async def test_zhipu_embedding_omits_dimensions_when_embedding_dim_not_provided(
 
         def create(self, **kwargs):
             captured_calls.append(kwargs)
-            return SimpleNamespace(data=[SimpleNamespace(embedding=_fake_embedding_vector())])
+            return SimpleNamespace(
+                data=[SimpleNamespace(embedding=_fake_embedding_vector())]
+            )
 
     zhipu_module = _load_zhipu_module(monkeypatch, FakeClient)
 
@@ -100,9 +104,7 @@ async def test_zhipu_complete_forwards_official_thinking(monkeypatch):
     class FakeClient:
         def __init__(self, api_key=None):
             self.api_key = api_key
-            self.chat = SimpleNamespace(
-                completions=SimpleNamespace(create=self.create)
-            )
+            self.chat = SimpleNamespace(completions=SimpleNamespace(create=self.create))
 
         def create(self, **kwargs):
             captured_calls.append(kwargs)
@@ -126,9 +128,7 @@ async def test_zhipu_complete_filters_reasoning_when_cot_disabled(monkeypatch):
     class FakeClient:
         def __init__(self, api_key=None):
             self.api_key = api_key
-            self.chat = SimpleNamespace(
-                completions=SimpleNamespace(create=self.create)
-            )
+            self.chat = SimpleNamespace(completions=SimpleNamespace(create=self.create))
 
         def create(self, **kwargs):
             return _fake_chat_response(
@@ -153,9 +153,7 @@ async def test_zhipu_complete_includes_reasoning_when_cot_enabled(monkeypatch):
     class FakeClient:
         def __init__(self, api_key=None):
             self.api_key = api_key
-            self.chat = SimpleNamespace(
-                completions=SimpleNamespace(create=self.create)
-            )
+            self.chat = SimpleNamespace(completions=SimpleNamespace(create=self.create))
 
         def create(self, **kwargs):
             return _fake_chat_response(
@@ -180,9 +178,7 @@ async def test_zhipu_keyword_extraction_ignores_reasoning_content(monkeypatch):
     class FakeClient:
         def __init__(self, api_key=None):
             self.api_key = api_key
-            self.chat = SimpleNamespace(
-                completions=SimpleNamespace(create=self.create)
-            )
+            self.chat = SimpleNamespace(completions=SimpleNamespace(create=self.create))
 
         def create(self, **kwargs):
             return _fake_chat_response(

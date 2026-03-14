@@ -50,7 +50,9 @@ async def zhipu_complete_if_cache(
     system_prompt: Optional[str] = None,
     history_messages: List[Dict[str, str]] = [],
     enable_cot: bool = False,  # LightRAG output switch: include reasoning_content as <think>...</think>
-    thinking: Optional[Dict[str, object]] = None,  # Zhipu request param: use {"type": "enabled"} to enable thinking
+    thinking: Optional[
+        Dict[str, object]
+    ] = None,  # Zhipu request param: use {"type": "enabled"} to enable thinking
     **kwargs,
 ) -> str:
     """Call Zhipu chat completions with optional official thinking support.
