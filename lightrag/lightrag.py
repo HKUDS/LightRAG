@@ -14,6 +14,7 @@ import mimetypes
 import sys
 import time
 import warnings
+from copy import deepcopy
 
 try:
     import httpx
@@ -523,6 +524,7 @@ class LightRAG:
     extract_llm_timeout: int | None = field(default=None)
     keyword_llm_timeout: int | None = field(default=None)
     query_llm_timeout: int | None = field(default=None)
+    vlm_llm_timeout: int | None = field(default=None)
 
     llm_model_name: str = field(default="gpt-4o-mini")
     """Name of the LLM model used for generating responses."""
@@ -551,6 +553,18 @@ class LightRAG:
 
     llm_model_kwargs: dict[str, Any] = field(default_factory=dict)
     """Additional keyword arguments passed to the LLM model function."""
+
+    extract_llm_model_kwargs: dict[str, Any] | None = field(default=None)
+    """Additional kwargs for extract role LLM. Falls back to llm_model_kwargs if None."""
+
+    keyword_llm_model_kwargs: dict[str, Any] | None = field(default=None)
+    """Additional kwargs for keyword role LLM. Falls back to llm_model_kwargs if None."""
+
+    query_llm_model_kwargs: dict[str, Any] | None = field(default=None)
+    """Additional kwargs for query role LLM. Falls back to llm_model_kwargs if None."""
+
+    vlm_llm_model_kwargs: dict[str, Any] | None = field(default=None)
+    """Additional kwargs for VLM role LLM. Falls back to llm_model_kwargs if None."""
 
     default_llm_timeout: int = field(
         default=int(os.getenv("LLM_TIMEOUT", DEFAULT_LLM_TIMEOUT))
@@ -677,6 +691,199 @@ class LightRAG:
     """Configuration for Ollama server information."""
 
     _storages_status: StoragesStatus = field(default=StoragesStatus.NOT_CREATED)
+
+    @staticmethod
+    def _normalize_llm_role(role: str) -> str:
+        normalized = role.strip().lower()
+        if normalized not in {"extract", "keyword", "query", "vlm"}:
+            raise ValueError(f"Invalid LLM role: {role}")
+        return normalized
+
+    def register_role_llm_builder(
+        self,
+        builder: Callable[
+            [str, dict[str, Any]], tuple[Callable[..., object], dict[str, Any] | None]
+        ],
+    ) -> None:
+        """Register a runtime builder used by update_llm_role_config for binding/model updates."""
+        self._llm_role_builder = builder
+
+    def set_role_llm_metadata(self, role: str, **metadata: Any) -> None:
+        """Store role metadata used when rebuilding a role-specific LLM function."""
+        role = self._normalize_llm_role(role)
+        if not hasattr(self, "_role_llm_runtime_meta"):
+            self._role_llm_runtime_meta = {}
+        existing = dict(self._role_llm_runtime_meta.get(role, {}))
+        existing.update({k: v for k, v in metadata.items() if v is not None})
+        self._role_llm_runtime_meta[role] = existing
+
+    def _role_llm_kwargs_attr(self, role: str) -> str:
+        return f"{self._normalize_llm_role(role)}_llm_model_kwargs"
+
+    def _role_llm_max_async_attr(self, role: str) -> str:
+        normalized = self._normalize_llm_role(role)
+        if normalized == "vlm":
+            return "vlm_llm_model_max_async"
+        return f"{normalized}_llm_model_max_async"
+
+    def _role_llm_timeout_attr(self, role: str) -> str:
+        return f"{self._normalize_llm_role(role)}_llm_timeout"
+
+    def _get_effective_role_llm_kwargs(self, role: str) -> dict[str, Any]:
+        stored = getattr(self, self._role_llm_kwargs_attr(role))
+        return stored if stored is not None else self.llm_model_kwargs
+
+    def _get_effective_role_llm_timeout(self, role: str) -> int:
+        timeout = getattr(self, self._role_llm_timeout_attr(role))
+        return timeout if timeout is not None else self.default_llm_timeout
+
+    def _get_effective_role_llm_max_async(self, role: str) -> int:
+        max_async = getattr(self, self._role_llm_max_async_attr(role))
+        return max_async if max_async is not None else self.llm_model_max_async
+
+    def _wrap_llm_role_func(
+        self,
+        role_name: str,
+        raw_func: Callable[..., object],
+        max_async: int,
+        timeout: int,
+        model_kwargs: dict[str, Any],
+    ) -> Callable[..., object]:
+        return priority_limit_async_func_call(
+            max_async,
+            llm_timeout=timeout,
+            queue_name=f"{role_name} LLM func",
+        )(
+            partial(
+                raw_func,
+                hashing_kv=self.llm_response_cache,
+                **model_kwargs,
+            )
+        )
+
+    def _rebuild_all_role_llm_funcs(self) -> None:
+        base_raw = self._raw_llm_model_func
+        self.llm_model_func = self._wrap_llm_role_func(
+            "base",
+            base_raw,
+            self.llm_model_max_async,
+            self.default_llm_timeout,
+            self.llm_model_kwargs,
+        )
+
+        for role in ("extract", "keyword", "query", "vlm"):
+            raw_func = self._raw_role_llm_funcs.get(role) or base_raw
+            wrapped = self._wrap_llm_role_func(
+                role,
+                raw_func,
+                self._get_effective_role_llm_max_async(role),
+                self._get_effective_role_llm_timeout(role),
+                self._get_effective_role_llm_kwargs(role),
+            )
+            setattr(self, f"{role}_llm_model_func", wrapped)
+
+    def _rebuild_single_role_llm_func(self, role: str) -> None:
+        role = self._normalize_llm_role(role)
+        raw_func = self._raw_role_llm_funcs.get(role) or self._raw_llm_model_func
+        wrapped = self._wrap_llm_role_func(
+            role,
+            raw_func,
+            self._get_effective_role_llm_max_async(role),
+            self._get_effective_role_llm_timeout(role),
+            self._get_effective_role_llm_kwargs(role),
+        )
+        setattr(self, f"{role}_llm_model_func", wrapped)
+
+    def update_llm_role_config(
+        self,
+        role: str,
+        *,
+        model_func: Callable[..., object] | None = None,
+        model_kwargs: dict[str, Any] | None = None,
+        max_async: int | None = None,
+        timeout: int | None = None,
+        binding: str | None = None,
+        model: str | None = None,
+        host: str | None = None,
+        api_key: str | None = None,
+        provider_options: dict[str, Any] | None = None,
+    ) -> None:
+        """
+        Update a role-specific LLM configuration at runtime.
+
+        Supports lightweight updates (kwargs/max_async/timeout/model_func) directly.
+        For binding/model/host/api_key/provider_options updates, a role builder must
+        be registered via register_role_llm_builder().
+        """
+        role = self._normalize_llm_role(role)
+        kwargs_attr = self._role_llm_kwargs_attr(role)
+        max_async_attr = self._role_llm_max_async_attr(role)
+        timeout_attr = self._role_llm_timeout_attr(role)
+        func_attr = f"{role}_llm_model_func"
+
+        snapshot = {
+            "raw_func": self._raw_role_llm_funcs.get(role),
+            "wrapped_func": getattr(self, func_attr),
+            "model_kwargs": deepcopy(getattr(self, kwargs_attr)),
+            "max_async": getattr(self, max_async_attr),
+            "timeout": getattr(self, timeout_attr),
+            "meta": deepcopy(getattr(self, "_role_llm_runtime_meta", {}).get(role, {})),
+        }
+
+        if not hasattr(self, "_role_llm_runtime_meta"):
+            self._role_llm_runtime_meta = {}
+
+        try:
+            if model_func is not None and not callable(model_func):
+                raise TypeError("model_func must be callable")
+
+            if model_kwargs is not None:
+                setattr(self, kwargs_attr, model_kwargs)
+            if max_async is not None:
+                setattr(self, max_async_attr, max_async)
+            if timeout is not None:
+                setattr(self, timeout_attr, timeout)
+            if model_func is not None:
+                self._raw_role_llm_funcs[role] = model_func
+
+            metadata_updated = any(
+                value is not None
+                for value in (binding, model, host, api_key, provider_options)
+            )
+            role_meta = deepcopy(self._role_llm_runtime_meta.get(role, {}))
+            if binding is not None:
+                role_meta["binding"] = binding
+            if model is not None:
+                role_meta["model"] = model
+            if host is not None:
+                role_meta["host"] = host
+            if api_key is not None:
+                role_meta["api_key"] = api_key
+            if provider_options is not None:
+                role_meta["provider_options"] = provider_options
+
+            if metadata_updated:
+                builder = getattr(self, "_llm_role_builder", None)
+                if builder is None and model_func is None:
+                    raise ValueError(
+                        "Runtime role builder is not configured; provide model_func or register_role_llm_builder() first"
+                    )
+                if builder is not None:
+                    built_func, built_kwargs = builder(role, role_meta)
+                    self._raw_role_llm_funcs[role] = built_func
+                    if model_kwargs is None and built_kwargs is not None:
+                        setattr(self, kwargs_attr, built_kwargs)
+
+            self._role_llm_runtime_meta[role] = role_meta
+            self._rebuild_single_role_llm_func(role)
+        except Exception:
+            self._raw_role_llm_funcs[role] = snapshot["raw_func"]
+            setattr(self, func_attr, snapshot["wrapped_func"])
+            setattr(self, kwargs_attr, snapshot["model_kwargs"])
+            setattr(self, max_async_attr, snapshot["max_async"])
+            setattr(self, timeout_attr, snapshot["timeout"])
+            self._role_llm_runtime_meta[role] = snapshot["meta"]
+            raise
 
     def __post_init__(self):
         from lightrag.kg.shared_storage import (
@@ -886,38 +1093,21 @@ class LightRAG:
             embedding_func=None,
         )
 
-        # Directly use llm_response_cache, don't create a new object
-        hashing_kv = self.llm_response_cache
-
         # Build base + role-isolated LLM wrappers (independent queues per role).
         base_llm_func = self.llm_model_func
         if base_llm_func is None:
             raise ValueError("llm_model_func must be provided")
 
-        def _build_role_func(
-            role_name: str, role_func: Callable[..., object] | None
-        ) -> Callable[..., object]:
-            raw_func = role_func or base_llm_func
-            return priority_limit_async_func_call(
-                self.llm_model_max_async,
-                llm_timeout=self.default_llm_timeout,
-                queue_name=f"{role_name} LLM func",
-            )(
-                partial(
-                    raw_func,  # type: ignore[arg-type]
-                    hashing_kv=hashing_kv,
-                    **self.llm_model_kwargs,
-                )
-            )
-
-        self.llm_model_func = _build_role_func("base", base_llm_func)
-        self.extract_llm_model_func = _build_role_func(
-            "extract", self.extract_llm_model_func
-        )
-        self.keyword_llm_model_func = _build_role_func(
-            "keyword", self.keyword_llm_model_func
-        )
-        self.query_llm_model_func = _build_role_func("query", self.query_llm_model_func)
+        self._llm_role_builder = None
+        self._role_llm_runtime_meta: dict[str, dict[str, Any]] = {}
+        self._raw_llm_model_func = base_llm_func
+        self._raw_role_llm_funcs: dict[str, Callable[..., object]] = {
+            "extract": self.extract_llm_model_func or base_llm_func,
+            "keyword": self.keyword_llm_model_func or base_llm_func,
+            "query": self.query_llm_model_func or base_llm_func,
+            "vlm": self.vlm_llm_model_func or base_llm_func,
+        }
+        self._rebuild_all_role_llm_funcs()
 
         self._storages_status = StoragesStatus.CREATED
 
