@@ -65,6 +65,7 @@ def get_default_host(binding_type: str) -> str:
         "lollms": os.getenv("LLM_BINDING_HOST", "http://localhost:9600"),
         "azure_openai": os.getenv("AZURE_OPENAI_ENDPOINT", "https://api.openai.com/v1"),
         "openai": os.getenv("LLM_BINDING_HOST", "https://api.openai.com/v1"),
+        "minimax": os.getenv("LLM_BINDING_HOST", "https://api.minimax.io/v1"),
         "gemini": os.getenv(
             "LLM_BINDING_HOST", "https://generativelanguage.googleapis.com"
         ),
@@ -232,6 +233,7 @@ def parse_args() -> argparse.Namespace:
             "azure_openai",
             "aws_bedrock",
             "gemini",
+            "minimax",
         ],
         help="LLM binding type (default: from env or ollama)",
     )
@@ -247,6 +249,7 @@ def parse_args() -> argparse.Namespace:
             "aws_bedrock",
             "jina",
             "gemini",
+            "minimax",
         ],
         help="Embedding binding type (default: from env or ollama)",
     )
@@ -287,7 +290,7 @@ def parse_args() -> argparse.Namespace:
     # Add LLM binding options based on determined value
     if llm_binding_value == "ollama":
         OllamaLLMOptions.add_args(parser)
-    elif llm_binding_value in ["openai", "azure_openai"]:
+    elif llm_binding_value in ["openai", "azure_openai", "minimax"]:
         OpenAILLMOptions.add_args(parser)
     elif llm_binding_value == "gemini":
         GeminiLLMOptions.add_args(parser)

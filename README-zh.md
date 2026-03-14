@@ -802,6 +802,65 @@ rag = LightRAG(
 
 </details>
 
+<details>
+<summary> <b>使用 MiniMax 模型</b> </summary>
+
+[MiniMax](https://www.minimax.io/) 提供 OpenAI 兼容的 API，模型支持最多 204K 的上下文长度。您可以按如下方式在 LightRAG 中使用 MiniMax 模型：
+
+```python
+import os
+import numpy as np
+from lightrag.utils import wrap_embedding_func_with_attrs
+from lightrag.llm.openai import openai_complete_if_cache, openai_embed
+
+async def llm_model_func(
+    prompt, system_prompt=None, history_messages=[], keyword_extraction=False, **kwargs
+) -> str:
+    return await openai_complete_if_cache(
+        "MiniMax-M2.5",
+        prompt,
+        system_prompt=system_prompt,
+        history_messages=history_messages,
+        api_key=os.getenv("MINIMAX_API_KEY"),
+        base_url="https://api.minimax.io/v1",
+        **kwargs
+    )
+
+@wrap_embedding_func_with_attrs(
+    embedding_dim=1536,
+    max_token_size=8192,
+    model_name="text-embedding-3-small"
+)
+async def embedding_func(texts: list[str]) -> np.ndarray:
+    return await openai_embed.func(
+        texts,
+        api_key=os.getenv("MINIMAX_API_KEY"),
+        base_url="https://api.minimax.io/v1",
+        model="text-embedding-3-small"
+    )
+
+rag = LightRAG(
+    working_dir=WORKING_DIR,
+    llm_model_func=llm_model_func,
+    llm_model_name="MiniMax-M2.5",
+    embedding_func=embedding_func
+)
+```
+
+对于 API 服务器，设置以下环境变量：
+
+```bash
+LLM_BINDING=minimax
+LLM_BINDING_HOST=https://api.minimax.io/v1
+LLM_BINDING_API_KEY=your_minimax_api_key
+LLM_MODEL=MiniMax-M2.5
+```
+
+可用模型包括 `MiniMax-M2.5` 和 `MiniMax-M2.5-highspeed`（204K 上下文）。
+注意：MiniMax 的 temperature 参数范围为 (0.0, 1.0]。
+
+</details>
+
 ### Rerank 函数注入
 
 为了提升检索质量，可以基于更有效的相关性评分模型对文档进行重新排序。`rerank.py` 文件提供了三个 Reranker 服务商的驱动函数：

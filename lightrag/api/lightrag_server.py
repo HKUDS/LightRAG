@@ -95,7 +95,7 @@ class LLMConfigCache:
         self.ollama_embedding_options = None
 
         # Only initialize and log OpenAI options when using OpenAI-related bindings
-        if args.llm_binding in ["openai", "azure_openai"]:
+        if args.llm_binding in ["openai", "azure_openai", "minimax"]:
             from lightrag.llm.binding_options import OpenAILLMOptions
 
             self.openai_llm_options = OpenAILLMOptions.options_dict(args)
