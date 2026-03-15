@@ -4846,8 +4846,8 @@ class PGGraphStorage(BaseGraphStorage):
             """SELECT * FROM cypher('%s', $$
                      MATCH (n:base)
                      WHERE n.entity_id IS NOT NULL
-                     RETURN DISTINCT n.entity_id AS label
-                     ORDER BY n.entity_id
+                     RETURN DISTINCT COALESCE(n.label, n.entity_id) AS label
+                     ORDER BY label
                    $$) AS (label text)"""
             % self.graph_name
         )
@@ -4903,7 +4903,7 @@ class PGGraphStorage(BaseGraphStorage):
 
         start_node = KnowledgeGraphNode(
             id=internal_id,
-            labels=[entity_id],
+            labels=[start_node_data["properties"].get("label") or entity_id],
             properties=start_node_data["properties"],
         )
 
@@ -5018,7 +5018,7 @@ class PGGraphStorage(BaseGraphStorage):
                 # Create neighbor node object
                 neighbor_node = KnowledgeGraphNode(
                     id=neighbor_internal_id,
-                    labels=[neighbor_entity_id],
+                    labels=[b_node["properties"].get("label") or neighbor_entity_id],
                     properties=b_node["properties"],
                 )
 
@@ -5145,7 +5145,10 @@ class PGGraphStorage(BaseGraphStorage):
                         if node_id not in nodes_dict and "properties" in node_a:
                             nodes_dict[node_id] = KnowledgeGraphNode(
                                 id=node_id,
-                                labels=[node_a["properties"]["entity_id"]],
+                                labels=[
+                                    node_a["properties"].get("label")
+                                    or node_a["properties"]["entity_id"]
+                                ],
                                 properties=node_a["properties"],
                             )
 
@@ -5156,7 +5159,10 @@ class PGGraphStorage(BaseGraphStorage):
                         if node_id not in nodes_dict and "properties" in node_b:
                             nodes_dict[node_id] = KnowledgeGraphNode(
                                 id=node_id,
-                                labels=[node_b["properties"]["entity_id"]],
+                                labels=[
+                                    node_b["properties"].get("label")
+                                    or node_b["properties"]["entity_id"]
+                                ],
                                 properties=node_b["properties"],
                             )
 
@@ -5288,7 +5294,10 @@ class PGGraphStorage(BaseGraphStorage):
                 GROUP BY node_id
             )
             SELECT
-                (ag_catalog.agtype_access_operator(VARIADIC ARRAY[v.properties, '"entity_id"'::agtype]))::text AS label
+                COALESCE(
+                    (ag_catalog.agtype_access_operator(VARIADIC ARRAY[v.properties, '"label"'::agtype]))::text,
+                    (ag_catalog.agtype_access_operator(VARIADIC ARRAY[v.properties, '"entity_id"'::agtype]))::text
+                ) AS label
             FROM
                 node_degrees d
             JOIN
@@ -5324,13 +5333,22 @@ class PGGraphStorage(BaseGraphStorage):
             sql_query = f"""
             WITH ranked_labels AS (
                 SELECT
-                    (ag_catalog.agtype_access_operator(VARIADIC ARRAY[properties, '"entity_id"'::agtype]))::text AS label,
-                    LOWER((ag_catalog.agtype_access_operator(VARIADIC ARRAY[properties, '"entity_id"'::agtype]))::text) AS label_lower
+                    COALESCE(
+                        (ag_catalog.agtype_access_operator(VARIADIC ARRAY[properties, '"label"'::agtype]))::text,
+                        (ag_catalog.agtype_access_operator(VARIADIC ARRAY[properties, '"entity_id"'::agtype]))::text
+                    ) AS label,
+                    LOWER(COALESCE(
+                        (ag_catalog.agtype_access_operator(VARIADIC ARRAY[properties, '"label"'::agtype]))::text,
+                        (ag_catalog.agtype_access_operator(VARIADIC ARRAY[properties, '"entity_id"'::agtype]))::text
+                    )) AS label_lower
                 FROM
                     {self.graph_name}._ag_label_vertex
                 WHERE
                     ag_catalog.agtype_access_operator(VARIADIC ARRAY[properties, '"entity_id"'::agtype]) IS NOT NULL
-                    AND LOWER((ag_catalog.agtype_access_operator(VARIADIC ARRAY[properties, '"entity_id"'::agtype]))::text) ILIKE $1
+                    AND LOWER(COALESCE(
+                        (ag_catalog.agtype_access_operator(VARIADIC ARRAY[properties, '"label"'::agtype]))::text,
+                        (ag_catalog.agtype_access_operator(VARIADIC ARRAY[properties, '"entity_id"'::agtype]))::text
+                    )) ILIKE $1
             )
             SELECT
                 label

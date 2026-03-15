@@ -209,7 +209,7 @@ class NetworkXStorage(BaseGraphStorage):
         graph = await self._get_graph()
         labels = set()
         for node in graph.nodes():
-            labels.add(str(node))  # Add node id as a label
+            labels.add(graph.nodes[node].get("label", str(node)))
 
         # Return sorted list
         return sorted(list(labels))
@@ -231,7 +231,10 @@ class NetworkXStorage(BaseGraphStorage):
         sorted_nodes = sorted(degrees.items(), key=lambda x: x[1], reverse=True)
 
         # Return top labels limited by the specified limit
-        popular_labels = [str(node) for node, _ in sorted_nodes[:limit]]
+        popular_labels = [
+            graph.nodes[node].get("label", str(node))
+            for node, _ in sorted_nodes[:limit]
+        ]
 
         logger.debug(
             f"[{self.workspace}] Retrieved {len(popular_labels)} popular labels (limit: {limit})"
@@ -259,7 +262,7 @@ class NetworkXStorage(BaseGraphStorage):
         # Collect matching nodes with relevance scores
         matches = []
         for node in graph.nodes():
-            node_str = str(node)
+            node_str = graph.nodes[node].get("label", str(node))
             node_lower = node_str.lower()
 
             # Skip if no match
@@ -438,7 +441,9 @@ class NetworkXStorage(BaseGraphStorage):
 
             result.nodes.append(
                 KnowledgeGraphNode(
-                    id=str(node), labels=[str(node)], properties=node_properties
+                    id=str(node),
+                    labels=[node_data.get("label", str(node))],
+                    properties=node_properties,
                 )
             )
             seen_nodes.add(str(node))

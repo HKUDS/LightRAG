@@ -1303,7 +1303,7 @@ class Neo4JStorage(BaseGraphStorage):
                             result.nodes.append(
                                 KnowledgeGraphNode(
                                     id=f"{node_id}",
-                                    labels=[node.get("entity_id")],
+                                    labels=[node.get("label") or node.get("entity_id")],
                                     properties=dict(node),
                                 )
                             )
@@ -1520,7 +1520,7 @@ class Neo4JStorage(BaseGraphStorage):
             query = f"""
             MATCH (n:`{workspace_label}`)
             WHERE n.entity_id IS NOT NULL
-            RETURN DISTINCT n.entity_id AS label
+            RETURN DISTINCT COALESCE(n.label, n.entity_id) AS label
             ORDER BY label
             """
             result = await session.run(query)
@@ -1709,7 +1709,7 @@ class Neo4JStorage(BaseGraphStorage):
                 MATCH (n:`{workspace_label}`)
                 WHERE n.entity_id IS NOT NULL
                 OPTIONAL MATCH (n)-[r]-()
-                WITH n.entity_id AS label, count(r) AS degree
+                WITH COALESCE(n.label, n.entity_id) AS label, count(r) AS degree
                 ORDER BY degree DESC, label ASC
                 LIMIT $limit
                 RETURN label
@@ -1758,7 +1758,7 @@ class Neo4JStorage(BaseGraphStorage):
                     CALL db.index.fulltext.queryNodes($index_name, $search_query) YIELD node, score
                     WITH node, score
                     WHERE node:`{workspace_label}`
-                    WITH node.entity_id AS label, score
+                    WITH COALESCE(node.label, node.entity_id) AS label, score
                     WITH label, score,
                          CASE
                              WHEN label = $query_strip THEN score + 1000
@@ -1777,7 +1777,7 @@ class Neo4JStorage(BaseGraphStorage):
                     CALL db.index.fulltext.queryNodes($index_name, $search_query) YIELD node, score
                     WITH node, score
                     WHERE node:`{workspace_label}`
-                    WITH node.entity_id AS label, toLower(node.entity_id) AS label_lower, score
+                    WITH COALESCE(node.label, node.entity_id) AS label, toLower(COALESCE(node.label, node.entity_id)) AS label_lower, score
                     WITH label, label_lower, score,
                          CASE
                              WHEN label_lower = $query_lower THEN score + 1000
@@ -1823,7 +1823,7 @@ class Neo4JStorage(BaseGraphStorage):
                     cypher_query = f"""
                     MATCH (n:`{workspace_label}`)
                     WHERE n.entity_id IS NOT NULL
-                    WITH n.entity_id AS label
+                    WITH COALESCE(n.label, n.entity_id) AS label
                     WHERE label CONTAINS $query_strip
                     WITH label,
                          CASE
@@ -1843,7 +1843,7 @@ class Neo4JStorage(BaseGraphStorage):
                     cypher_query = f"""
                     MATCH (n:`{workspace_label}`)
                     WHERE n.entity_id IS NOT NULL
-                    WITH n.entity_id AS label, toLower(n.entity_id) AS label_lower
+                    WITH COALESCE(n.label, n.entity_id) AS label, toLower(COALESCE(n.label, n.entity_id)) AS label_lower
                     WHERE label_lower CONTAINS $query_lower
                     WITH label, label_lower,
                          CASE
