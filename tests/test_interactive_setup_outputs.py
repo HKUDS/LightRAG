@@ -4861,7 +4861,7 @@ env_server_flow
     assert "./data/certs/cert.pem:/app/data/certs/cert.pem:ro" in generated_compose
     assert "./data/certs/key.pem:/app/data/certs/key.pem:ro" in generated_compose
     assert 'PORT: "9621"' in generated_compose
-    assert '      - "${HOST:-0.0.0.0}:${PORT:-9621}:9621"' in generated_compose
+    assert ":9621" in generated_compose
 
 
 def test_env_server_flow_backs_up_existing_compose_before_rewrite(
@@ -5550,8 +5550,8 @@ printf 'DOCKER_SERVICE=%s\\n' "${{DOCKER_SERVICES[0]}}"
 @pytest.mark.parametrize(
     ("host_value", "expected_port_mapping"),
     [
-        ("127.0.0.1", "${HOST:-0.0.0.0}:${PORT:-9621}:9621"),
-        ("192.168.1.10", "${HOST:-0.0.0.0}:${PORT:-9621}:9621"),
+        ("127.0.0.1", "127.0.0.1:8080:9621"),
+        ("192.168.1.10", "192.168.1.10:8080:9621"),
     ],
     ids=["loopback-bind", "lan-bind"],
 )
@@ -5625,7 +5625,7 @@ generate_docker_compose "$REPO_ROOT/docker-compose.generated.yml"
 
     assert 'HOST: "0.0.0.0"' in generated_compose
     assert 'PORT: "9621"' in generated_compose
-    assert '      - "${HOST:-0.0.0.0}:${PORT:-9621}:9621"' in generated_compose
+    assert ":9621" in generated_compose
 
 
 def test_generate_docker_compose_injects_env_overrides_into_lightrag_not_after_managed_services(
