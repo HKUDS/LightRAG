@@ -1709,6 +1709,9 @@ from lightrag.utils import TokenTracker
 # Create TokenTracker instance
 token_tracker = TokenTracker()
 
+# Pass token_tracker via llm_model_kwargs when creating LightRAG
+rag = LightRAG(..., llm_model_kwargs={"token_tracker": token_tracker})
+
 # Method 1: Using context manager (Recommended)
 # Suitable for scenarios requiring automatic token usage tracking
 with token_tracker:
