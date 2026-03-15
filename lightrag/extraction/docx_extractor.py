@@ -47,6 +47,7 @@ class Paragraph:
     has_drawing: bool = False
     drawing_id: str = ""
     drawing_name: str = ""
+    drawing_rIds: list = field(default_factory=list)
 
 
 @dataclass
@@ -275,7 +276,7 @@ def _extract_paragraph_text(para_element: ET.Element) -> str:
 
         # Drawing (image)
         elif tag == "drawing":
-            img_id, img_name = _extract_drawing_info(child)
+            img_id, img_name, _ = _extract_drawing_info(child)
             if img_id:
                 parts.append(f'<drawing id="{img_id}" name="{img_name}" />')
 
@@ -314,7 +315,7 @@ def _extract_paragraph_text_with_formatting(para_element: ET.Element) -> str:
 
         # Drawing inside run
         for drawing in run.findall(".//w:drawing", _NS):
-            img_id, img_name = _extract_drawing_info(drawing)
+            img_id, img_name, _ = _extract_drawing_info(drawing)
             if img_id:
                 parts.append(f'<drawing id="{img_id}" name="{img_name}" />')
 
@@ -327,16 +328,24 @@ def _extract_paragraph_text_with_formatting(para_element: ET.Element) -> str:
     return "".join(parts)
 
 
-def _extract_drawing_info(drawing_el: ET.Element) -> tuple[str, str]:
-    """Extract image id and name from a drawing element."""
-    # Try docPr
+def _extract_drawing_info(
+    drawing_el: ET.Element,
+) -> tuple[str, str, str]:
+    """Extract image id, name and r:embed relationship ID from a drawing element."""
+    img_id = ""
+    img_name = ""
+    r_embed = ""
     for dp in drawing_el.iter():
-        tag = dp.tag.split("}")[-1] if "}" in dp.tag else dp.tag
-        if tag == "docPr":
+        local_tag = dp.tag.split("}")[-1] if "}" in dp.tag else dp.tag
+        if local_tag == "docPr" and not img_id:
             img_id = dp.get("id", "")
             img_name = dp.get("name", "")
-            return img_id, img_name
-    return "", ""
+        if local_tag == "blip" and not r_embed:
+            for attr_key, attr_val in dp.attrib.items():
+                if attr_key.endswith("}embed") or attr_key == "embed":
+                    r_embed = attr_val
+                    break
+    return img_id, img_name, r_embed
 
 
 def _omml_to_text(math_el: ET.Element) -> str:
@@ -435,6 +444,36 @@ def _table_to_content(rows: list[list[str]]) -> str:
 
 
 # ── Main extraction entry point ──────────────────────────────────────
+def extract_docx_images(file_bytes: bytes) -> dict[str, tuple[str, bytes]]:
+    """Extract all embedded images from a .docx file.
+
+    Returns a dict mapping relationship ID to (filename, image_bytes).
+    """
+    from docx import Document as DocxDocument  # type: ignore
+
+    result: dict[str, tuple[str, bytes]] = {}
+    try:
+        doc = DocxDocument(BytesIO(file_bytes))
+        image_rel_type = (
+            "http://schemas.openxmlformats.org/officeDocument/2006/relationships/image"
+        )
+        for rel_id, rel in doc.part.rels.items():
+            if rel.reltype == image_rel_type:
+                try:
+                    target_part = rel.target_part
+                    blob = target_part.blob
+                    target_ref = str(rel.target_ref)
+                    filename = (
+                        target_ref.split("/")[-1] if "/" in target_ref else target_ref
+                    )
+                    result[rel_id] = (filename, blob)
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    return result
+
+
 def extract_docx_paragraphs(file_bytes: bytes) -> list[Paragraph]:
     """Extract all paragraphs from a .docx file with structure awareness.
 
@@ -504,8 +543,13 @@ def extract_docx_paragraphs(file_bytes: bytes) -> list[Paragraph]:
                 if inferred is not None:
                     outline_level = inferred - 1  # convert to 0-based (0..8)
 
-            # Check for drawings
-            has_drawing = len(element.findall(".//w:drawing", _NS)) > 0
+            drawing_els = element.findall(".//w:drawing", _NS)
+            has_drawing = len(drawing_els) > 0
+            drawing_rIds = []
+            for dr_el in drawing_els:
+                _, _, r_embed = _extract_drawing_info(dr_el)
+                if r_embed:
+                    drawing_rIds.append(r_embed)
 
             paragraphs.append(
                 Paragraph(
@@ -514,6 +558,7 @@ def extract_docx_paragraphs(file_bytes: bytes) -> list[Paragraph]:
                     outline_level=outline_level,
                     is_table=False,
                     has_drawing=has_drawing,
+                    drawing_rIds=drawing_rIds,
                 )
             )
 

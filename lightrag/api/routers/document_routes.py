@@ -23,7 +23,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from lightrag import LightRAG
 from lightrag.base import DeletionResult, DocProcessingStatus, DocStatus
-from lightrag.constants import PARSED_DIR_NAME
+from lightrag.constants import PARSED_DIR_NAME, FULL_DOCS_FORMAT_PENDING_PARSE
 from lightrag.utils import (
     generate_track_id,
     compute_mdhash_id,
@@ -1405,49 +1405,28 @@ async def pipeline_enqueue_file(
                         return False, track_id
 
                 case ".docx":
+                    # Defer parsing to three-stage pipeline (parse_native / parse_docling).
+                    # Enqueue with pending_parse format so parse worker handles extraction.
+                    logger.info(
+                        f"[File Extraction]DOCX deferred to pipeline: {file_path.name}"
+                    )
                     try:
-                        # Try DOCLING first if configured and available
-                        if (
-                            global_args.document_loading_engine == "DOCLING"
-                            and _is_docling_available()
-                        ):
-                            content = await asyncio.to_thread(
-                                _convert_with_docling, file_path
-                            )
-                        else:
-                            if (
-                                global_args.document_loading_engine == "DOCLING"
-                                and not _is_docling_available()
-                            ):
-                                logger.warning(
-                                    f"DOCLING engine configured but not available for {file_path.name}. Falling back to smart extraction."
-                                )
-                            # Use smart docx extraction with structure awareness
-                            try:
-                                from lightrag.extraction.parse_document import (
-                                    parse_docx_to_interchange_jsonl,
-                                )
-
-                                content = await asyncio.to_thread(
-                                    parse_docx_to_interchange_jsonl,
-                                    file,
-                                    file_path.name,
-                                )
-                                logger.info(
-                                    f"[File Extraction]Smart extraction completed for {file_path.name}"
-                                )
-                            except Exception as smart_err:
-                                logger.warning(
-                                    f"[File Extraction]Smart extraction failed for {file_path.name}: {smart_err}. Falling back to basic extraction."
-                                )
-                                # Fallback to basic python-docx extraction
-                                content = await asyncio.to_thread(_extract_docx, file)
+                        await rag.apipeline_enqueue_documents(
+                            "",
+                            file_paths=str(file_path),
+                            track_id=track_id,
+                            docs_format=FULL_DOCS_FORMAT_PENDING_PARSE,
+                        )
+                        logger.info(
+                            f"Successfully enqueued DOCX for pipeline parsing: {file_path.name}"
+                        )
+                        return True, track_id
                     except Exception as e:
                         error_files = [
                             {
                                 "file_path": str(file_path.name),
-                                "error_description": "[File Extraction]DOCX processing error",
-                                "original_error": f"Failed to extract text from DOCX: {str(e)}",
+                                "error_description": "[File Extraction]DOCX enqueue error",
+                                "original_error": f"Failed to enqueue DOCX for pipeline: {str(e)}",
                                 "file_size": file_size,
                             }
                         ]
@@ -1455,7 +1434,7 @@ async def pipeline_enqueue_file(
                             error_files, track_id
                         )
                         logger.error(
-                            f"[File Extraction]Error processing DOCX {file_path.name}: {str(e)}"
+                            f"[File Extraction]Error enqueuing DOCX {file_path.name}: {str(e)}"
                         )
                         return False, track_id
 

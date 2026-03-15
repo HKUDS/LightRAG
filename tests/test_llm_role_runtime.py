@@ -1,6 +1,5 @@
 """Offline tests for role-specific LLM runtime configuration."""
 
-import asyncio
 from argparse import Namespace
 
 import numpy as np
@@ -135,7 +134,9 @@ async def test_update_llm_role_config_with_builder_metadata(tmp_path):
 
     def builder(role: str, meta: dict):
         async def built_func(*args, **kwargs):
-            built_calls.append({"role": role, "meta": dict(meta), "kwargs": dict(kwargs)})
+            built_calls.append(
+                {"role": role, "meta": dict(meta), "kwargs": dict(kwargs)}
+            )
             return f"{meta['model']}"
 
         return built_func, {
@@ -170,6 +171,56 @@ async def test_update_llm_role_config_with_builder_metadata(tmp_path):
     assert built_calls[-1]["meta"]["model"] == "gemini-2.0-flash"
     assert built_calls[-1]["kwargs"]["runtime_host"] == "https://new-host"
     assert built_calls[-1]["kwargs"]["provider_options"]["top_k"] == 8
+
+
+@pytest.mark.asyncio
+async def test_cross_provider_update_does_not_inherit_base_kwargs(tmp_path):
+    built_calls = []
+
+    def builder(role: str, meta: dict):
+        async def built_func(*args, **kwargs):
+            built_calls.append(
+                {"role": role, "meta": dict(meta), "kwargs": dict(kwargs)}
+            )
+            return "ok"
+
+        return built_func, None
+
+    rag = _make_rag(
+        tmp_path,
+        llm_model_kwargs={
+            "host": "http://base-host:11434",
+            "options": {"temperature": 0.1},
+            "api_key": "base-key",
+        },
+    )
+    rag.register_role_llm_builder(builder)
+    rag.set_role_llm_metadata(
+        "query",
+        base_binding="ollama",
+        binding="ollama",
+        model="base-ollama",
+        host="http://base-host:11434",
+        api_key="base-key",
+        provider_options={"temperature": 0.1},
+        is_cross_provider=False,
+    )
+
+    rag.update_llm_role_config(
+        "query",
+        binding="openai",
+        model="gpt-4o-mini",
+        host="https://api.example.com/v1",
+        api_key="role-key",
+        provider_options={"temperature": 0.4},
+    )
+
+    await rag.query_llm_model_func("hello")
+    call_kwargs = built_calls[-1]["kwargs"]
+    assert call_kwargs["hashing_kv"] is not None
+    assert "host" not in call_kwargs
+    assert "options" not in call_kwargs
+    assert "api_key" not in call_kwargs
 
 
 @pytest.mark.asyncio

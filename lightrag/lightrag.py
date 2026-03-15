@@ -68,6 +68,7 @@ from lightrag.constants import (
     DEFAULT_MAX_FILE_PATHS,
     FULL_DOCS_FORMAT_RAW,
     FULL_DOCS_FORMAT_LIGHTRAG,
+    FULL_DOCS_FORMAT_PENDING_PARSE,
     PARSED_DIR_NAME,
     DEFAULT_MAX_PARALLEL_ANALYZE,
     DEFAULT_FILE_PATH_MORE_PLACEHOLDER,
@@ -731,7 +732,16 @@ class LightRAG:
 
     def _get_effective_role_llm_kwargs(self, role: str) -> dict[str, Any]:
         stored = getattr(self, self._role_llm_kwargs_attr(role))
-        return stored if stored is not None else self.llm_model_kwargs
+        if stored is not None:
+            return stored
+
+        role_meta = getattr(self, "_role_llm_runtime_meta", {}).get(
+            self._normalize_llm_role(role), {}
+        )
+        if role_meta.get("is_cross_provider"):
+            return {}
+
+        return self.llm_model_kwargs
 
     def _get_effective_role_llm_timeout(self, role: str) -> int:
         timeout = getattr(self, self._role_llm_timeout_attr(role))
@@ -861,6 +871,10 @@ class LightRAG:
                 role_meta["api_key"] = api_key
             if provider_options is not None:
                 role_meta["provider_options"] = provider_options
+            if "base_binding" in role_meta and "binding" in role_meta:
+                role_meta["is_cross_provider"] = (
+                    role_meta["binding"] != role_meta["base_binding"]
+                )
 
             if metadata_updated:
                 builder = getattr(self, "_llm_role_builder", None)
@@ -1801,6 +1815,19 @@ class LightRAG:
                 }
                 for content, (id_, file_path) in unique_contents.items()
             }
+        elif docs_format == FULL_DOCS_FORMAT_PENDING_PARSE:
+            contents = {}
+            for i, (doc, path) in enumerate(zip(input, file_paths)):
+                doc_id = (
+                    ids[i]
+                    if ids is not None
+                    else compute_mdhash_id(path, prefix="doc-")
+                )
+                contents[doc_id] = {
+                    "content": doc or "",
+                    "file_path": path,
+                    "format": FULL_DOCS_FORMAT_PENDING_PARSE,
+                }
         else:
             # Clean input text and remove duplicates in one pass
             unique_content_with_paths = {}
@@ -4190,7 +4217,7 @@ class LightRAG:
     async def parse_native(
         self, doc_id: str, file_path: str, content_data: dict[str, Any]
     ) -> dict[str, Any]:
-        """Phase 1 parse for native/raw and lightrag formats."""
+        """Phase 1 parse for native/raw, lightrag and pending_parse formats."""
         doc_format = content_data.get("format", FULL_DOCS_FORMAT_RAW)
         if doc_format == FULL_DOCS_FORMAT_LIGHTRAG:
             doc_path = content_data.get("lightrag_document_path") or file_path
@@ -4204,6 +4231,87 @@ class LightRAG:
                 "content": merged_text,
                 "blocks_path": blocks_path,
             }
+
+        if doc_format == FULL_DOCS_FORMAT_PENDING_PARSE:
+            source_path = self._resolve_source_file_for_parser(file_path)
+            p = Path(source_path)
+            if p.exists() and p.is_file() and p.suffix.lower() == ".docx":
+                try:
+                    from lightrag.extraction.parse_document import (
+                        parse_docx_to_interchange_jsonl,
+                    )
+
+                    file_bytes = await asyncio.to_thread(p.read_bytes)
+                    parsed_dir = Path(self.working_dir) / PARSED_DIR_NAME
+                    parsed_dir.mkdir(parents=True, exist_ok=True)
+                    output_dir = str(parsed_dir)
+                    interchange_text = await asyncio.to_thread(
+                        parse_docx_to_interchange_jsonl,
+                        file_bytes,
+                        p.name,
+                        doc_id,
+                        output_dir,
+                    )
+                    if interchange_text and interchange_text.strip():
+                        await self.full_docs.upsert(
+                            {
+                                doc_id: {
+                                    "content": interchange_text,
+                                    "file_path": file_path,
+                                    "format": FULL_DOCS_FORMAT_RAW,
+                                    "update_time": int(time.time()),
+                                }
+                            }
+                        )
+                        logger.info(
+                            f"[parse_native] pending_parse completed for {file_path} via interchange JSONL"
+                        )
+                        return {
+                            "doc_id": doc_id,
+                            "file_path": file_path,
+                            "format": FULL_DOCS_FORMAT_RAW,
+                            "content": interchange_text,
+                            "blocks_path": "",
+                        }
+                except Exception as e:
+                    logger.warning(
+                        f"[parse_native] pending_parse interchange failed for {file_path}: {e}, fallback to basic extraction"
+                    )
+            if p.exists() and p.is_file():
+                try:
+                    file_bytes = await asyncio.to_thread(p.read_bytes)
+                    from lightrag.api.routers.document_routes import _extract_docx
+
+                    content = await asyncio.to_thread(_extract_docx, file_bytes)
+                    await self.full_docs.upsert(
+                        {
+                            doc_id: {
+                                "content": content,
+                                "file_path": file_path,
+                                "format": FULL_DOCS_FORMAT_RAW,
+                                "update_time": int(time.time()),
+                            }
+                        }
+                    )
+                    return {
+                        "doc_id": doc_id,
+                        "file_path": file_path,
+                        "format": FULL_DOCS_FORMAT_RAW,
+                        "content": content,
+                        "blocks_path": "",
+                    }
+                except Exception as fallback_err:
+                    logger.warning(
+                        f"[parse_native] pending_parse fallback also failed for {file_path}: {fallback_err}"
+                    )
+            return {
+                "doc_id": doc_id,
+                "file_path": file_path,
+                "format": FULL_DOCS_FORMAT_RAW,
+                "content": content_data.get("content", ""),
+                "blocks_path": "",
+            }
+
         return {
             "doc_id": doc_id,
             "file_path": file_path,

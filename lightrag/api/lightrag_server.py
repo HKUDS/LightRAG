@@ -731,13 +731,71 @@ def create_app(args):
 
         try:
             if role_binding == "ollama":
-                from lightrag.llm.ollama import ollama_model_complete
+                from lightrag.llm.ollama import _ollama_model_if_cache
 
-                return ollama_model_complete
+                async def role_ollama_complete(
+                    prompt,
+                    system_prompt=None,
+                    history_messages=None,
+                    enable_cot: bool = False,
+                    keyword_extraction=False,
+                    entity_extraction=False,
+                    **kwargs,
+                ):
+                    keyword_extraction = kwargs.pop("keyword_extraction", None)
+                    entity_extraction = kwargs.pop(
+                        "entity_extraction", entity_extraction
+                    )
+                    if keyword_extraction or entity_extraction:
+                        kwargs["format"] = "json"
+                    if history_messages is None:
+                        history_messages = []
+                    if role_provider_options:
+                        kwargs.setdefault("options", dict(role_provider_options))
+                    return await _ollama_model_if_cache(
+                        role_model,
+                        prompt,
+                        system_prompt=system_prompt,
+                        history_messages=history_messages,
+                        enable_cot=enable_cot,
+                        host=role_host,
+                        timeout=role_timeout,
+                        api_key=role_apikey,
+                        **kwargs,
+                    )
+
+                return role_ollama_complete
             if role_binding == "lollms":
-                from lightrag.llm.lollms import lollms_model_complete
+                from lightrag.llm.lollms import lollms_model_if_cache
 
-                return lollms_model_complete
+                async def role_lollms_complete(
+                    prompt,
+                    system_prompt=None,
+                    history_messages=None,
+                    enable_cot: bool = False,
+                    keyword_extraction=False,
+                    entity_extraction=False,
+                    **kwargs,
+                ):
+                    kwargs.pop("entity_extraction", entity_extraction)
+                    kwargs.pop("keyword_extraction", keyword_extraction)
+                    if history_messages is None:
+                        history_messages = []
+                    if role_provider_options:
+                        kwargs = {**role_provider_options, **kwargs}
+                    return await lollms_model_if_cache(
+                        role_model,
+                        prompt,
+                        system_prompt=system_prompt,
+                        history_messages=history_messages,
+                        enable_cot=enable_cot,
+                        base_url=role_host,
+                        api_key=role_apikey,
+                        timeout=role_timeout,
+                        **kwargs,
+                    )
+
+                return role_lollms_complete
             if role_binding == "azure_openai":
                 from lightrag.llm.azure_openai import azure_openai_complete_if_cache
 
@@ -832,17 +890,15 @@ def create_app(args):
     def create_role_llm_model_kwargs(
         role: str, override_meta: dict | None = None
     ) -> dict[str, Any] | None:
-        """Create role-specific kwargs when the binding expects runtime kwargs."""
-        settings = resolve_role_llm_settings(role, override_meta)
-        role_binding = settings["binding"]
-        if role_binding in ["lollms", "ollama"]:
-            return {
-                "host": settings["host"],
-                "timeout": settings["timeout"],
-                "options": settings["provider_options"],
-                "api_key": settings["api_key"],
-            }
-        return None
+        """Create role-specific kwargs for runtime wrapper injection.
+
+        Role functions built above already encapsulate provider host/model/api_key/options,
+        so we intentionally return an empty dict here to prevent base kwargs inheritance
+        from polluting cross-provider role calls.
+        """
+        _ = role
+        _ = override_meta
+        return {}
 
     def create_optimized_embedding_function(
         config_cache: LLMConfigCache, binding, model, host, api_key, args
@@ -1332,11 +1388,13 @@ def create_app(args):
     for role in ("extract", "keyword", "query", "vlm"):
         rag.set_role_llm_metadata(
             role,
+            base_binding=args.llm_binding,
             binding=role_llm_configs[role]["binding"],
             model=role_llm_configs[role]["model"],
             host=role_llm_configs[role]["host"],
             api_key=role_llm_configs[role]["api_key"],
             provider_options=role_llm_configs[role]["provider_options"],
+            is_cross_provider=role_llm_configs[role]["is_cross_provider"],
         )
 
     # Print role LLM configuration

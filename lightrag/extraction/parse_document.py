@@ -13,7 +13,9 @@ import re
 from datetime import datetime, timezone
 from typing import Any
 
-from .docx_extractor import extract_docx_paragraphs
+from pathlib import Path
+
+from .docx_extractor import extract_docx_images, extract_docx_paragraphs
 from .smart_chunker import Block, smart_chunk
 from .token_estimation import estimate_tokens
 
@@ -86,24 +88,48 @@ def parse_docx_to_interchange_jsonl(
     file_bytes: bytes,
     source_file: str = "document.docx",
     doc_id: str = "",
+    output_dir: str | None = None,
 ) -> str:
     """Parse .docx into LightRAG 2.0 interchange format JSONL.
 
     Compatible with extraction_interchange.py consumer.
     Adds chunk_id, chunk_order_index, tokens, content_type fields.
+    When output_dir is provided, embedded images are extracted to an assets subdirectory.
     """
     source_hash = _sha256_hex(file_bytes)
+
+    images = extract_docx_images(file_bytes)
+    has_images = bool(images)
+
+    capabilities = ["t"]
+    if has_images:
+        capabilities.append("i")
+
+    asset_dir_created = False
+    if output_dir and images:
+        prefix = (
+            doc_id.strip() if doc_id and doc_id.strip() else f"doc-{source_hash[:12]}"
+        )
+        assets_dir = Path(output_dir) / f"{prefix}.{source_file}.blocks.assets"
+        try:
+            assets_dir.mkdir(parents=True, exist_ok=True)
+            for _rel_id, (filename, blob) in images.items():
+                (assets_dir / filename).write_bytes(blob)
+            asset_dir_created = True
+        except Exception:
+            pass
 
     meta = {
         "type": "meta",
         "format_version": "2.0",
         "source_file": source_file,
         "source_hash": f"sha256:{source_hash}",
-        "doc_id": doc_id,  # may be empty before enqueue
+        "doc_id": doc_id,
         "engine": "default",
-        "engine_capabilities": ["t"],  # tables supported
+        "engine_capabilities": capabilities,
         "chunking_method": "heading_semantic",
         "parsed_at": datetime.now(timezone.utc).isoformat(),
+        "asset_dir": asset_dir_created,
     }
 
     paragraphs = extract_docx_paragraphs(file_bytes)
@@ -160,6 +186,17 @@ def parse_docx_to_interchange_jsonl(
                 "summary": "",
             }
 
+        positions = []
+        if block.uuid or block.uuid_end:
+            positions.append(
+                {
+                    "type": "paraid",
+                    "anchor": "",
+                    "range": [block.uuid or "", block.uuid_end or block.uuid or ""],
+                    "charspan": [],
+                }
+            )
+
         chunk = {
             "type": "text",
             "chunk_id": f"{chunk_id_prefix}-chunk-{i:03d}",
@@ -173,6 +210,7 @@ def parse_docx_to_interchange_jsonl(
             "content_type": "table" if is_table_block else "body",
             "uuid": block.uuid,
             "uuid_end": block.uuid_end,
+            "positions": positions,
             "table_chunk_role": block.table_chunk_role,
             "table_fragment_num": table_fragment_num,
             "table_meta": table_meta,
