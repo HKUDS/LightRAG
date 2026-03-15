@@ -703,11 +703,16 @@ class BaseGraphStorage(StorageNameSpace, ABC):
 
 
 class DocStatus(str, Enum):
-    """Document processing status"""
+    """Document processing status.
+    Pipeline order: PENDING -> PARSING -> ANALYZING (optional) -> PROCESSING -> PROCESSED | FAILED.
+    PREPROCESSED is deprecated, kept for backward compatibility.
+    """
 
     PENDING = "pending"
-    PROCESSING = "processing"
-    PREPROCESSED = "preprocessed"
+    PARSING = "parsing"  # Phase 1: content extraction (parse_native/mineru/docling)
+    ANALYZING = "analyzing"  # Phase 2: multimodal analysis (VLM)
+    PROCESSING = "processing"  # Phase 3: entity/relation extraction
+    PREPROCESSED = "preprocessed"  # Deprecated: use ANALYZING in new pipeline
     PROCESSED = "processed"
     FAILED = "failed"
 

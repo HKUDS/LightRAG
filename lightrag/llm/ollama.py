@@ -156,10 +156,12 @@ async def ollama_model_complete(
     history_messages=[],
     enable_cot: bool = False,
     keyword_extraction=False,
+    entity_extraction=False,
     **kwargs,
 ) -> Union[str, AsyncIterator[str]]:
     keyword_extraction = kwargs.pop("keyword_extraction", None)
-    if keyword_extraction:
+    entity_extraction = kwargs.pop("entity_extraction", entity_extraction)
+    if keyword_extraction or entity_extraction:
         kwargs["format"] = "json"
     model_name = kwargs["hashing_kv"].global_config["llm_model_name"]
     return await _ollama_model_if_cache(

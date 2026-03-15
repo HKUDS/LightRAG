@@ -89,6 +89,15 @@ DEFAULT_TEMPERATURE = 1.0
 DEFAULT_MAX_ASYNC = 4  # Default maximum async operations
 DEFAULT_MAX_PARALLEL_INSERT = 2  # Default maximum parallel insert operations
 
+# RAG-Anything / LightRAG Document pipeline (LR2-PRD)
+FULL_DOCS_FORMAT_RAW = "raw"  # content in full_docs["content"]
+FULL_DOCS_FORMAT_LIGHTRAG = "lightrag"  # content in LightRAG Document files
+FULL_DOCS_FORMAT_PENDING_PARSE = (
+    "pending_parse"  # file saved but not yet parsed; parse_native will read from disk
+)
+PARSED_DIR_NAME = "__parsed__"  # Dir for parsed files (renamed from __enqueued__)
+DEFAULT_MAX_PARALLEL_ANALYZE = 2  # Multimodal analysis (VLM) concurrency
+
 # Embedding configuration defaults
 DEFAULT_EMBEDDING_FUNC_MAX_ASYNC = 8  # Default max async for embedding functions
 DEFAULT_EMBEDDING_BATCH_NUM = 10  # Default batch size for embedding computations

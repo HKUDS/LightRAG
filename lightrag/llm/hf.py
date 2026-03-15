@@ -126,10 +126,12 @@ async def hf_model_complete(
     system_prompt=None,
     history_messages=[],
     keyword_extraction=False,
+    entity_extraction=False,
     enable_cot: bool = False,
     **kwargs,
 ) -> str:
     kwargs.pop("keyword_extraction", None)
+    kwargs.pop("entity_extraction", None)
     model_name = kwargs["hashing_kv"].global_config["llm_model_name"]
     result = await hf_model_if_cache(
         model_name,

@@ -84,6 +84,7 @@ async def anthropic_complete_if_cache(
 
     kwargs.pop("hashing_kv", None)
     kwargs.pop("keyword_extraction", None)
+    kwargs.pop("entity_extraction", None)
     timeout = kwargs.pop("timeout", None)
 
     anthropic_async_client = (
