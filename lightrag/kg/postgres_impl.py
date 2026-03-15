@@ -5746,31 +5746,37 @@ SQL_TEMPLATES = {
     "relationships": """
                      SELECT r.source_id AS src_id,
                             r.target_id AS tgt_id,
-                            EXTRACT(EPOCH FROM r.create_time)::BIGINT AS created_at
-                     FROM {table_name} r
+                            EXTRACT(EPOCH FROM r.create_time)::BIGINT AS created_at,
+                            1 - d.dist AS score
+                     FROM {table_name} r,
+                     LATERAL (SELECT r.content_vector <=> '[{embedding_string}]'::vector AS dist) d
                      WHERE r.workspace = $1
-                       AND r.content_vector <=> '[{embedding_string}]'::vector < $2
-                     ORDER BY r.content_vector <=> '[{embedding_string}]'::vector
+                       AND d.dist < $2
+                     ORDER BY d.dist
                      LIMIT $3;
                      """,
     "entities": """
                 SELECT e.entity_name,
-                       EXTRACT(EPOCH FROM e.create_time)::BIGINT AS created_at
-                FROM {table_name} e
+                       EXTRACT(EPOCH FROM e.create_time)::BIGINT AS created_at,
+                       1 - d.dist AS score
+                FROM {table_name} e,
+                LATERAL (SELECT e.content_vector <=> '[{embedding_string}]'::vector AS dist) d
                 WHERE e.workspace = $1
-                  AND e.content_vector <=> '[{embedding_string}]'::vector < $2
-                ORDER BY e.content_vector <=> '[{embedding_string}]'::vector
+                  AND d.dist < $2
+                ORDER BY d.dist
                 LIMIT $3;
                 """,
     "chunks": """
               SELECT c.id,
                      c.content,
                      c.file_path,
-                     EXTRACT(EPOCH FROM c.create_time)::BIGINT AS created_at
-              FROM {table_name} c
+                     EXTRACT(EPOCH FROM c.create_time)::BIGINT AS created_at,
+                       1 - d.dist AS score
+              FROM {table_name} c,
+              LATERAL (SELECT c.content_vector <=> '[{embedding_string}]'::vector AS dist) d
               WHERE c.workspace = $1
-                AND c.content_vector <=> '[{embedding_string}]'::vector < $2
-              ORDER BY c.content_vector <=> '[{embedding_string}]'::vector
+                AND d.dist < $2
+              ORDER BY d.dist
               LIMIT $3;
               """,
     # DROP tables
