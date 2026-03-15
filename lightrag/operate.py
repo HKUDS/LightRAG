@@ -3034,50 +3034,58 @@ async def extract_entities(
                 prefixed_exception = create_prefixed_exception(e, chunk_id)
                 raise prefixed_exception from e
 
+    task_to_chunk_key: dict = {}
     tasks = []
     for c in ordered_chunks:
         task = asyncio.create_task(_process_with_semaphore(c))
+        task_to_chunk_key[task] = c[0]
         tasks.append(task)
 
-    # Wait for tasks to complete or for the first exception to occur
-    # This allows us to cancel remaining tasks if any task fails
-    done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_EXCEPTION)
+    # Wait for ALL tasks to complete, even if some fail.
+    # This ensures that a single chunk failure (e.g., content filter error)
+    # does not abort the entire document's entity extraction.
+    done, pending = await asyncio.wait(tasks, return_when=asyncio.ALL_COMPLETED)
 
-    # Check if any task raised an exception and ensure all exceptions are retrieved
-    first_exception = None
+    # Collect successful results and track failures
     chunk_results = []
+    failed_chunk_ids: list[str] = []
 
     for task in done:
+        chunk_key = task_to_chunk_key.get(task, "unknown")
         try:
             exception = task.exception()
             if exception is not None:
-                if first_exception is None:
-                    first_exception = exception
+                if isinstance(exception, PipelineCancelledException):
+                    raise exception
+                failed_chunk_ids.append(chunk_key)
+                logger.warning(
+                    f"Skipping chunk {chunk_key}: {exception}"
+                )
             else:
                 chunk_results.append(task.result())
+        except PipelineCancelledException:
+            raise
         except Exception as e:
-            if first_exception is None:
-                first_exception = e
+            failed_chunk_ids.append(chunk_key)
+            logger.warning(f"Skipping chunk {chunk_key}: {e}")
 
-    # If any task failed, cancel all pending tasks and raise the first exception
-    if first_exception is not None:
-        # Cancel all pending tasks
-        for pending_task in pending:
-            pending_task.cancel()
+    if failed_chunk_ids:
+        logger.warning(
+            f"Entity extraction: {len(failed_chunk_ids)}/{total_chunks} chunk(s) failed, "
+            f"{len(chunk_results)} succeeded. Failed: {failed_chunk_ids}"
+        )
+        if pipeline_status is not None and pipeline_status_lock is not None:
+            async with pipeline_status_lock:
+                pipeline_status.setdefault("failed_chunks", []).extend(failed_chunk_ids)
 
-        # Wait for cancellation to complete
-        if pending:
-            await asyncio.wait(pending)
+    # If ALL chunks failed, raise an error so the document is marked as FAILED
+    if not chunk_results and total_chunks > 0:
+        raise RuntimeError(
+            f"All {total_chunks} chunks failed during entity extraction. "
+            f"The document cannot be processed."
+        )
 
-        # Add progress prefix to the exception message
-        progress_prefix = f"C[{processed_chunks + 1}/{total_chunks}]"
-
-        # Re-raise the original exception with a prefix
-        prefixed_exception = create_prefixed_exception(first_exception, progress_prefix)
-        raise prefixed_exception from first_exception
-
-    # If all tasks completed successfully, chunk_results already contains the results
-    # Return the chunk_results for later processing in merge_nodes_and_edges
+    # Return partial results from successful chunks
     return chunk_results
 
 
