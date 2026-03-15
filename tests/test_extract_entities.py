@@ -23,8 +23,12 @@ def _make_global_config(
 ) -> dict:
     """Build a minimal global_config dict for extract_entities."""
     tokenizer = Tokenizer("dummy", DummyTokenizer())
+    llm_mock = AsyncMock(return_value="")
     return {
-        "llm_model_func": AsyncMock(return_value=""),
+        "llm_model_func": llm_mock,
+        "extract_llm_model_func": llm_mock,
+        "keyword_llm_model_func": llm_mock,
+        "query_llm_model_func": llm_mock,
         "entity_extract_max_gleaning": entity_extract_max_gleaning,
         "addon_params": {},
         "tokenizer": tokenizer,
@@ -62,7 +66,7 @@ async def test_gleaning_skipped_when_tokens_exceed_limit():
         entity_extract_max_gleaning=1,
     )
 
-    llm_func = global_config["llm_model_func"]
+    llm_func = global_config["extract_llm_model_func"]
     llm_func.return_value = _EXTRACTION_RESULT
 
     with patch("lightrag.operate.logger") as mock_logger:
@@ -92,7 +96,7 @@ async def test_gleaning_proceeds_when_tokens_within_limit():
         entity_extract_max_gleaning=1,
     )
 
-    llm_func = global_config["llm_model_func"]
+    llm_func = global_config["extract_llm_model_func"]
     llm_func.return_value = _EXTRACTION_RESULT
 
     with patch("lightrag.operate.logger"):
@@ -116,7 +120,7 @@ async def test_no_gleaning_when_max_gleaning_zero():
         entity_extract_max_gleaning=0,
     )
 
-    llm_func = global_config["llm_model_func"]
+    llm_func = global_config["extract_llm_model_func"]
     llm_func.return_value = _EXTRACTION_RESULT
 
     with patch("lightrag.operate.logger"):

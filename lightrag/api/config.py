@@ -461,6 +461,47 @@ def parse_args() -> argparse.Namespace:
     ollama_server_infos.LIGHTRAG_NAME = args.simulated_model_name
     ollama_server_infos.LIGHTRAG_TAG = args.simulated_model_tag
 
+    # Per-role LLM configuration
+    # Extract role
+    args.extract_llm_binding = get_env_value("EXTRACT_LLM_BINDING", None)
+    args.extract_llm_model = get_env_value("EXTRACT_LLM_MODEL", None)
+    args.extract_llm_binding_host = get_env_value("EXTRACT_LLM_BINDING_HOST", None)
+    args.extract_llm_binding_api_key = get_env_value(
+        "EXTRACT_LLM_BINDING_API_KEY", None
+    )
+    args.max_async_extract_llm = get_env_value(
+        "MAX_ASYNC_EXTRACT_LLM", None, int, special_none=True
+    )
+    args.llm_timeout_extract_llm = get_env_value(
+        "LLM_TIMEOUT_EXTRACT_LLM", None, int, special_none=True
+    )
+
+    # Keyword role
+    args.keyword_llm_binding = get_env_value("KEYWORD_LLM_BINDING", None)
+    args.keyword_llm_model = get_env_value("KEYWORD_LLM_MODEL", None)
+    args.keyword_llm_binding_host = get_env_value("KEYWORD_LLM_BINDING_HOST", None)
+    args.keyword_llm_binding_api_key = get_env_value(
+        "KEYWORD_LLM_BINDING_API_KEY", None
+    )
+    args.max_async_keyword_llm = get_env_value(
+        "MAX_ASYNC_KEYWORD_LLM", None, int, special_none=True
+    )
+    args.llm_timeout_keyword_llm = get_env_value(
+        "LLM_TIMEOUT_KEYWORD_LLM", None, int, special_none=True
+    )
+
+    # Query role
+    args.query_llm_binding = get_env_value("QUERY_LLM_BINDING", None)
+    args.query_llm_model = get_env_value("QUERY_LLM_MODEL", None)
+    args.query_llm_binding_host = get_env_value("QUERY_LLM_BINDING_HOST", None)
+    args.query_llm_binding_api_key = get_env_value("QUERY_LLM_BINDING_API_KEY", None)
+    args.max_async_query_llm = get_env_value(
+        "MAX_ASYNC_QUERY_LLM", None, int, special_none=True
+    )
+    args.llm_timeout_query_llm = get_env_value(
+        "LLM_TIMEOUT_QUERY_LLM", None, int, special_none=True
+    )
+
     return args
 
 
