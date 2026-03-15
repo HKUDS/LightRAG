@@ -26,6 +26,7 @@ from lightrag.utils import (
     wrap_embedding_func_with_attrs,
     safe_unicode_decode,
     logger,
+    TokenTracker,
 )
 
 from lightrag.types import GPTKeywordExtractionFormat
@@ -278,6 +279,13 @@ async def openai_complete_if_cache(
     # Remove special kwargs that shouldn't be passed to OpenAI
     kwargs.pop("hashing_kv", None)
 
+    if token_tracker is None:
+        token_tracker = TokenTracker(
+            model_name=model,
+            input_price_per_million=os.getenv("OPENAI_LLM_INPUT_PRICE_PER_MILLION", "0"),
+            output_price_per_million=os.getenv("OPENAI_LLM_OUTPUT_PRICE_PER_MILLION", "0"),
+        )
+
     # Extract client configuration options
     client_configs = kwargs.pop("openai_client_configs", {})
 
@@ -319,6 +327,33 @@ async def openai_complete_if_cache(
         kwargs["stream"] = stream
     if timeout is not None:
         kwargs["timeout"] = timeout
+
+    # GPT-5 / o-series style models expect max_completion_tokens instead of max_tokens.
+    # Keep backward compatibility by remapping deprecated max_tokens when the newer field
+    # was not explicitly provided.
+    is_openai_reasoning_style_model = (
+        isinstance(model, str)
+        and (model.startswith("gpt-5") or model.startswith("o1") or model.startswith("o3") or model.startswith("o4"))
+    )
+
+    if (
+        "max_tokens" in kwargs
+        and "max_completion_tokens" not in kwargs
+        and is_openai_reasoning_style_model
+    ):
+        kwargs["max_completion_tokens"] = kwargs.pop("max_tokens")
+
+    # Newer OpenAI reasoning/GPT-5 style models reject or tightly restrict several classic
+    # sampling parameters. Strip them here for compatibility unless/ until model-specific
+    # support is implemented.
+    if is_openai_reasoning_style_model:
+        for unsupported_key in (
+            "temperature",
+            "top_p",
+            "presence_penalty",
+            "frequency_penalty",
+        ):
+            kwargs.pop(unsupported_key, None)
 
     # Determine the correct model identifier to use
     # For Azure OpenAI, we must use the deployment name instead of the model name
@@ -456,6 +491,7 @@ async def openai_complete_if_cache(
                         "total_tokens": getattr(final_chunk_usage, "total_tokens", 0),
                     }
                     token_tracker.add_usage(token_counts)
+                    logger.info(f"OpenAI streaming usage summary: {token_tracker}")
                     logger.debug(f"Streaming token usage (from API): {token_counts}")
                 elif token_tracker:
                     logger.debug("No usage information available in streaming response")
@@ -811,6 +847,13 @@ async def openai_embed(
         client_configs=client_configs,
     )
 
+    if token_tracker is None:
+        token_tracker = TokenTracker(
+            model_name=model,
+            input_price_per_million=os.getenv("OPENAI_EMBEDDING_INPUT_PRICE_PER_MILLION", "0"),
+            output_price_per_million=0,
+        )
+
     async with openai_async_client:
         # Determine the correct model identifier to use
         # For Azure OpenAI, we must use the deployment name instead of the model name
@@ -836,6 +879,7 @@ async def openai_embed(
                 "total_tokens": getattr(response.usage, "total_tokens", 0),
             }
             token_tracker.add_usage(token_counts)
+            logger.info(f"OpenAI embedding usage summary: {token_tracker}")
 
         return np.array(
             [

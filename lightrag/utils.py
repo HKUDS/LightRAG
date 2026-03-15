@@ -2025,6 +2025,7 @@ async def use_llm_func_with_cache(
             kwargs["history_messages"] = safe_history_messages
         if max_tokens is not None:
             kwargs["max_tokens"] = max_tokens
+            kwargs["max_completion_tokens"] = max_tokens
 
         res: str = await use_llm_func(
             safe_user_prompt, system_prompt=safe_system_prompt, **kwargs
@@ -2557,9 +2558,12 @@ async def pick_by_vector_similarity(
 
 
 class TokenTracker:
-    """Track token usage for LLM calls."""
+    """Track token usage and optional estimated cost for model calls."""
 
-    def __init__(self):
+    def __init__(self, model_name=None, input_price_per_million=None, output_price_per_million=None):
+        self.model_name = model_name or "unknown"
+        self.input_price_per_million = float(input_price_per_million or 0.0)
+        self.output_price_per_million = float(output_price_per_million or 0.0)
         self.reset()
 
     def __enter__(self):
@@ -2574,6 +2578,7 @@ class TokenTracker:
         self.completion_tokens = 0
         self.total_tokens = 0
         self.call_count = 0
+        self.estimated_cost_usd = 0.0
 
     def add_usage(self, token_counts):
         """Add token usage from one LLM call.
@@ -2593,23 +2598,33 @@ class TokenTracker:
             ) + token_counts.get("completion_tokens", 0)
 
         self.call_count += 1
+        self.estimated_cost_usd += (
+            (token_counts.get("prompt_tokens", 0) / 1_000_000.0) * self.input_price_per_million
+            + (token_counts.get("completion_tokens", 0) / 1_000_000.0) * self.output_price_per_million
+        )
 
     def get_usage(self):
         """Get current usage statistics."""
         return {
+            "model_name": self.model_name,
             "prompt_tokens": self.prompt_tokens,
             "completion_tokens": self.completion_tokens,
             "total_tokens": self.total_tokens,
             "call_count": self.call_count,
+            "estimated_cost_usd": round(self.estimated_cost_usd, 8),
+            "input_price_per_million": self.input_price_per_million,
+            "output_price_per_million": self.output_price_per_million,
         }
 
     def __str__(self):
         usage = self.get_usage()
         return (
+            f"Model: {usage['model_name']}, "
             f"LLM call count: {usage['call_count']}, "
             f"Prompt tokens: {usage['prompt_tokens']}, "
             f"Completion tokens: {usage['completion_tokens']}, "
-            f"Total tokens: {usage['total_tokens']}"
+            f"Total tokens: {usage['total_tokens']}, "
+            f"Estimated cost (USD): {usage['estimated_cost_usd']:.8f}"
         )
 
 
