@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import time
 import asyncio
 from typing import Any, cast
@@ -965,6 +966,23 @@ async def acreate_entity(
                 "file_path": entity_data.get("file_path", "manual_creation"),
                 "created_at": int(time.time()),
             }
+            # Pass through custom properties, serializing complex types for
+            # GraphML compatibility (NetworkX write_graphml requires scalar attrs)
+            _reserved_keys = {
+                "entity_name",
+                "entity_id",
+                "entity_type",
+                "description",
+                "source_id",
+                "file_path",
+                "created_at",
+            }
+            for key, value in entity_data.items():
+                if key not in _reserved_keys:
+                    if isinstance(value, (list, dict)):
+                        node_data[key] = json.dumps(value)
+                    else:
+                        node_data[key] = value
 
             # Add entity to knowledge graph
             await chunk_entity_relation_graph.upsert_node(entity_name, node_data)
