@@ -436,6 +436,9 @@ class EmbeddingFunc:
         max_token_size: Enable embedding token limit checking for description summarization(Set embedding_token_limit in LightRAG)
         send_dimensions: Whether to inject embedding_dim argument to underlying function
         model_name: Model name for implementing workspace data isolation in vector DB
+        allow_extra_vectors: When True, silently slice overflow vectors instead of raising.
+            Only enable this for providers known to safely append extra padding vectors
+            (e.g. multimodal parsers that split images into extra embeddings). Default False.
     """
 
     embedding_dim: int
@@ -445,6 +448,7 @@ class EmbeddingFunc:
     model_name: str | None = (
         None  # Model name for implementing workspace data isolation in vector DB
     )
+    allow_extra_vectors: bool = False
 
     def __post_init__(self):
         """Unwrap nested EmbeddingFunc to prevent double wrapping issues.
@@ -514,15 +518,29 @@ class EmbeddingFunc:
                 f"expected dimension ({expected_dim}). "
             )
 
-        # Optional: Verify vector count matches input text count
+        # Verify vector count matches input text count
         actual_vectors = total_elements // expected_dim
         if args and isinstance(args[0], (list, tuple)):
             expected_vectors = len(args[0])
             if actual_vectors != expected_vectors:
-                raise ValueError(
-                    f"Vector count mismatch: "
-                    f"expected {expected_vectors} vectors but got {actual_vectors} vectors (from embedding result)."
-                )
+                provider = self.model_name or "unknown"
+                if actual_vectors > expected_vectors and self.allow_extra_vectors:
+                    logger.warning(
+                        f"Vector count mismatch (provider={provider}): "
+                        f"expected {expected_vectors} vectors for "
+                        f"{expected_vectors} inputs but got {actual_vectors}. "
+                        f"Slicing to first {expected_vectors} vectors "
+                        f"(allow_extra_vectors=True)."
+                    )
+                    result = result.reshape(-1, expected_dim)[:expected_vectors]
+                else:
+                    raise ValueError(
+                        f"Vector count mismatch (provider={provider}): "
+                        f"expected {expected_vectors} vectors for "
+                        f"{expected_vectors} inputs but got {actual_vectors}. "
+                        f"If this provider is known to return extra padding "
+                        f"vectors, set allow_extra_vectors=True on EmbeddingFunc."
+                    )
 
         return result
 
