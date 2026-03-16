@@ -87,6 +87,7 @@ async def initialize_rag(
         embedding_batch_num=8,
         llm_model_max_async=2,
         addon_params={"entity_types": entity_types},
+        use_structured_extraction=True,  # JSON output; set False for legacy delimiter format
     )
 
     await rag.initialize_storages()
