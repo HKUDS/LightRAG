@@ -99,6 +99,80 @@ Based on the last extraction task, identify and extract any **missed or incorrec
 <Output>
 """
 
+# Structured extraction prompts (JSON output, for providers with structured output support)
+PROMPTS["entity_extraction_structured_system_prompt"] = """---Role---
+You are a Knowledge Graph Specialist responsible for extracting entities and relationships from the input text.
+
+---Instructions---
+1.  **Entity Extraction:**
+    *   **Identification:** Identify clearly defined and meaningful entities in the input text.
+    *   **Entity Details:** For each entity, extract: `entity_name` (title case, consistent naming), `entity_type` (from: {entity_types}; use `Other` if none apply), `entity_description` (concise, based solely on input text).
+
+2.  **Relationship Extraction:**
+    *   **Identification:** Identify direct, meaningful relationships between extracted entities.
+    *   **N-ary Decomposition:** For statements involving more than two entities, decompose into binary relationship pairs.
+    *   **Relationship Details:** For each: `source_entity`, `target_entity` (consistent with entity names), `relationship_keywords` (comma-separated), `relationship_description`.
+
+3.  **Output Format:** Return a JSON object with exactly two keys: `entities` (array of objects with entity_name, entity_type, entity_description) and `relationships` (array of objects with source_entity, target_entity, relationship_keywords, relationship_description). Output only valid JSON, no markdown or extra text.
+
+4.  **Relationship Direction & Duplication:** Treat relationships as undirected; avoid duplicates.
+
+5.  **Context & Objectivity:** Use third person; avoid pronouns. Output in {language}. Keep proper nouns in original language when translation would cause ambiguity.
+
+---Examples---
+{examples}
+"""
+
+PROMPTS["entity_extraction_structured_user_prompt"] = """---Task---
+Extract entities and relationships from the input text. Output a JSON object with keys "entities" and "relationships" only.
+
+---Data to be Processed---
+<Entity_types>
+[{entity_types}]
+
+<Input Text>
+```
+{input_text}
+```
+
+<Output (JSON only)>
+"""
+
+PROMPTS["entity_extraction_structured_examples"] = [
+    """<Entity_types>
+["Person","Creature","Organization","Location","Event","Concept","Method","Content","Data","Artifact","NaturalObject"]
+
+<Input Text>
+```
+while Alex clenched his jaw, the buzz of frustration dull against the backdrop of Taylor's authoritarian certainty...
+```
+
+<Output>
+{"entities":[{"entity_name":"Alex","entity_type":"person","entity_description":"Alex is a character who experiences frustration and is observant of the dynamics among other characters."},{"entity_name":"Taylor","entity_type":"person","entity_description":"Taylor is portrayed with authoritarian certainty and shows a moment of reverence towards a device."},{"entity_name":"Jordan","entity_type":"person","entity_description":"Jordan shares a commitment to discovery and has a significant interaction with Taylor regarding a device."}],"relationships":[{"source_entity":"Alex","target_entity":"Taylor","relationship_keywords":"power dynamics, observation","relationship_description":"Alex observes Taylor's authoritarian behavior and notes changes in Taylor's attitude toward the device."}]}
+""",
+    """<Entity_types>
+["Person","Organization","Location","Event","Concept"]
+
+<Input Text>
+```
+At the World Athletics Championship in Tokyo, Noah Carter broke the 100m sprint record using cutting-edge carbon-fiber spikes.
+```
+
+<Output>
+{"entities":[{"entity_name":"World Athletics Championship","entity_type":"event","entity_description":"The World Athletics Championship is a global sports competition featuring top athletes in track and field."},{"entity_name":"Tokyo","entity_type":"location","entity_description":"Tokyo is the host city of the World Athletics Championship."},{"entity_name":"Noah Carter","entity_type":"person","entity_description":"Noah Carter is a sprinter who set a new record in the 100m sprint."}],"relationships":[{"source_entity":"World Athletics Championship","target_entity":"Tokyo","relationship_keywords":"event location","relationship_description":"The World Athletics Championship is being hosted in Tokyo."},{"source_entity":"Noah Carter","target_entity":"World Athletics Championship","relationship_keywords":"athlete participation","relationship_description":"Noah Carter is competing at the World Athletics Championship."}]}
+""",
+]
+
+PROMPTS["entity_continue_extraction_structured_user_prompt"] = """---Task---
+Based on the last extraction, identify any **missed or incorrectly formatted** entities and relationships. Output a JSON object with keys "entities" and "relationships" containing ONLY the missed or corrected items. Do not re-output items that were correct.
+
+---Instructions---
+- Output only valid JSON. Use the same schema: entities (entity_name, entity_type, entity_description), relationships (source_entity, target_entity, relationship_keywords, relationship_description).
+- Output language: {language}. Keep proper nouns in original language.
+
+<Output (JSON only)>
+"""
+
 PROMPTS["entity_extraction_examples"] = [
     """<Entity_types>
 ["Person","Creature","Organization","Location","Event","Concept","Method","Content","Data","Artifact","NaturalObject"]
