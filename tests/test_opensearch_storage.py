@@ -320,7 +320,7 @@ class TestKVStorage:
             assert result == {"b"}
 
     @pytest.mark.asyncio
-    async def test_upsert_uses_wait_for_refresh(
+    async def test_upsert_no_per_operation_refresh(
         self, global_config, embed_func, mock_client
     ):
         with patch.object(ClientManager, "get_client", return_value=mock_client):
@@ -332,7 +332,7 @@ class TestKVStorage:
                 await s.initialize()
                 await s.upsert({"k1": {"content": "v1"}})
                 _, kwargs = mock_bulk.call_args
-                assert kwargs["refresh"] == "wait_for"
+                assert "refresh" not in kwargs
 
     @pytest.mark.asyncio
     async def test_upsert_sets_timestamps(self, global_config, embed_func, mock_client):

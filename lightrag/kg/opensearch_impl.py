@@ -322,7 +322,7 @@ class OpenSearchKVStorage(BaseKVStorage):
             )
         try:
             success, failed = await helpers.async_bulk(
-                self.client, actions, raise_on_error=False, refresh="wait_for"
+                self.client, actions, raise_on_error=False
             )
             if failed:
                 logger.warning(
@@ -371,7 +371,7 @@ class OpenSearchKVStorage(BaseKVStorage):
                 for doc_id in ids
             ]
             success, _ = await helpers.async_bulk(
-                self.client, actions, raise_on_error=False, refresh="wait_for"
+                self.client, actions, raise_on_error=False
             )
             logger.info(
                 f"[{self.workspace}] Deleted {success} documents from {self.namespace}"
@@ -576,6 +576,8 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
                 }
             )
         try:
+            # DocStatus needs refresh="wait_for" because get_docs_by_status
+            # (search-based) is called immediately after enqueue upserts.
             await helpers.async_bulk(
                 self.client, actions, raise_on_error=False, refresh="wait_for"
             )
@@ -837,9 +839,7 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
                 {"_op_type": "delete", "_index": self._index_name, "_id": doc_id}
                 for doc_id in ids
             ]
-            await helpers.async_bulk(
-                self.client, actions, raise_on_error=False, refresh="wait_for"
-            )
+            await helpers.async_bulk(self.client, actions, raise_on_error=False)
         except OpenSearchException as e:
             if _is_missing_index_error(e):
                 self._mark_index_missing()
@@ -1374,9 +1374,7 @@ class OpenSearchGraphStorage(BaseGraphStorage):
             doc["entity_id"] = node_id
             if node_data.get("source_id", ""):
                 doc["source_ids"] = node_data["source_id"].split(GRAPH_FIELD_SEP)
-            await self.client.index(
-                index=self._nodes_index, id=node_id, body=doc, refresh="wait_for"
-            )
+            await self.client.index(index=self._nodes_index, id=node_id, body=doc)
         except OpenSearchException as e:
             logger.error(f"[{self.workspace}] Error upserting node {node_id}: {e}")
 
@@ -1411,9 +1409,7 @@ class OpenSearchGraphStorage(BaseGraphStorage):
             except OpenSearchException:
                 pass
 
-            await self.client.index(
-                index=self._edges_index, id=edge_id, body=doc, refresh="wait_for"
-            )
+            await self.client.index(index=self._edges_index, id=edge_id, body=doc)
         except OpenSearchException as e:
             logger.error(
                 f"[{self.workspace}] Error upserting edge {source_node_id}->{target_node_id}: {e}"
@@ -1435,14 +1431,10 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                     }
                 }
             }
-            await self.client.delete_by_query(
-                index=self._edges_index, body=body, refresh=True
-            )
+            await self.client.delete_by_query(index=self._edges_index, body=body)
             # Delete the node
             try:
-                await self.client.delete(
-                    index=self._nodes_index, id=node_id, refresh="wait_for"
-                )
+                await self.client.delete(index=self._nodes_index, id=node_id)
             except NotFoundError:
                 pass
         except OpenSearchException as e:
@@ -1465,17 +1457,13 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                     }
                 }
             }
-            await self.client.delete_by_query(
-                index=self._edges_index, body=body, refresh=True
-            )
+            await self.client.delete_by_query(index=self._edges_index, body=body)
             # Delete nodes
             actions = [
                 {"_op_type": "delete", "_index": self._nodes_index, "_id": nid}
                 for nid in nodes
             ]
-            await helpers.async_bulk(
-                self.client, actions, raise_on_error=False, refresh="wait_for"
-            )
+            await helpers.async_bulk(self.client, actions, raise_on_error=False)
         except OpenSearchException as e:
             logger.error(f"[{self.workspace}] Error removing nodes: {e}")
 
@@ -1508,9 +1496,7 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                     }
                 )
             body = {"query": {"bool": {"should": should_clauses}}}
-            await self.client.delete_by_query(
-                index=self._edges_index, body=body, refresh=True
-            )
+            await self.client.delete_by_query(index=self._edges_index, body=body)
         except OpenSearchException as e:
             logger.error(f"[{self.workspace}] Error removing edges: {e}")
 
@@ -2418,7 +2404,7 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
         ]
         try:
             success, failed = await helpers.async_bulk(
-                self.client, actions, raise_on_error=False, refresh="wait_for"
+                self.client, actions, raise_on_error=False
             )
             if failed:
                 logger.warning(
@@ -2569,7 +2555,7 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
                 for doc_id in ids
             ]
             result = await helpers.async_bulk(
-                self.client, actions, raise_on_error=False, refresh="wait_for"
+                self.client, actions, raise_on_error=False
             )
             logger.debug(
                 f"[{self.workspace}] Deleted {result[0]} vectors from {self.namespace}"
@@ -2587,9 +2573,7 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
         try:
             entity_id = compute_mdhash_id(entity_name, prefix="ent-")
             try:
-                await self.client.delete(
-                    index=self._index_name, id=entity_id, refresh="wait_for"
-                )
+                await self.client.delete(index=self._index_name, id=entity_id)
                 logger.debug(f"[{self.workspace}] Deleted entity {entity_name}")
             except NotFoundError as e:
                 if _is_missing_index_error(e):
@@ -2617,9 +2601,7 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
                     }
                 }
             }
-            await self.client.delete_by_query(
-                index=self._index_name, body=body, refresh=True
-            )
+            await self.client.delete_by_query(index=self._index_name, body=body)
             logger.debug(
                 f"[{self.workspace}] Deleted relations for entity {entity_name}"
             )
