@@ -9,6 +9,14 @@ import pytest
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, patch
 import numpy as np
+
+pytestmark = pytest.mark.offline
+
+pytest.importorskip(
+    "opensearchpy",
+    reason="opensearchpy is required for OpenSearch storage tests",
+)
+
 from opensearchpy.exceptions import NotFoundError, OpenSearchException
 
 from lightrag.kg.opensearch_impl import (
