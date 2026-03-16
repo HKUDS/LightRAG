@@ -120,6 +120,8 @@ def _build_generation_config(
     base_config: dict[str, Any] | None,
     system_prompt: str | None,
     keyword_extraction: bool,
+    entity_extraction: bool = False,
+    entity_types: list[str] | None = None,
 ) -> types.GenerateContentConfig | None:
     config_data = dict(base_config or {})
 
@@ -131,8 +133,18 @@ def _build_generation_config(
         else:
             config_data["system_instruction"] = system_prompt
 
-    if keyword_extraction and not config_data.get("response_mime_type"):
+    if (keyword_extraction or entity_extraction) and not config_data.get(
+        "response_mime_type"
+    ):
         config_data["response_mime_type"] = "application/json"
+
+    # Schema-level enforcement: when entity_types provided, use JSON schema so Gemini
+    # cannot return entity types outside the allowed list (see ai.google.dev/gemini-api/docs/structured-output)
+    if entity_extraction and entity_types and not config_data.get("response_json_schema"):
+        from lightrag.types import create_graph_extraction_schema
+
+        schema_cls = create_graph_extraction_schema(entity_types)
+        config_data["response_json_schema"] = schema_cls.model_json_schema()
 
     # Remove entries that are explicitly set to None to avoid type errors
     sanitized = {
@@ -226,6 +238,8 @@ async def gemini_complete_if_cache(
     token_tracker: Any | None = None,
     stream: bool | None = None,
     keyword_extraction: bool = False,
+    entity_extraction: bool = False,
+    entity_types: list[str] | None = None,
     generation_config: dict[str, Any] | None = None,
     timeout: int | None = None,
     **_: Any,
@@ -282,6 +296,8 @@ async def gemini_complete_if_cache(
         generation_config,
         system_prompt=system_prompt,
         keyword_extraction=keyword_extraction,
+        entity_extraction=entity_extraction,
+        entity_types=entity_types,
     )
 
     request_kwargs: dict[str, Any] = {
@@ -450,6 +466,7 @@ async def gemini_model_complete(
         model_name = kwargs.pop("model_name", None)
     if model_name is None:
         raise ValueError("Gemini model name not provided in configuration.")
+    entity_extraction = kwargs.pop("entity_extraction", False)
 
     return await gemini_complete_if_cache(
         model_name,
@@ -457,6 +474,7 @@ async def gemini_model_complete(
         system_prompt=system_prompt,
         history_messages=history_messages,
         keyword_extraction=keyword_extraction,
+        entity_extraction=entity_extraction,
         **kwargs,
     )
 

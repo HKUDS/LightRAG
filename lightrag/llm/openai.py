@@ -28,7 +28,11 @@ from lightrag.utils import (
     logger,
 )
 
-from lightrag.types import GPTKeywordExtractionFormat
+from lightrag.types import (
+    GPTKeywordExtractionFormat,
+    GraphExtraction,
+    create_graph_extraction_schema,
+)
 from lightrag.api import __api_version__
 
 import numpy as np
@@ -281,9 +285,18 @@ async def openai_complete_if_cache(
     # Extract client configuration options
     client_configs = kwargs.pop("openai_client_configs", {})
 
-    # Handle keyword extraction mode
+    # Handle structured output modes
+    entity_extraction = kwargs.pop("entity_extraction", False)
+    entity_types = kwargs.pop("entity_types", None)
     if keyword_extraction:
         kwargs["response_format"] = GPTKeywordExtractionFormat
+    elif entity_extraction:
+        # Schema-level enforcement: use dynamic schema with Literal[*entity_types]
+        # when entity_types provided, so LLM cannot return types outside allowed list
+        if entity_types:
+            kwargs["response_format"] = create_graph_extraction_schema(entity_types)
+        else:
+            kwargs["response_format"] = GraphExtraction
 
     # Create the OpenAI client (supports both OpenAI and Azure)
     openai_async_client = create_openai_async_client(
