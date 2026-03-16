@@ -164,6 +164,35 @@ rag = LightRAG(
 )
 ```
 
+### Structured Extraction
+
+LightRAG uses structured JSON output for entity/relationship extraction when `use_structured_extraction=True` (default). This avoids delimiter-collision parsing errors (e.g. LaTeX in descriptions, Issue #1215). Schema: `GraphExtraction` with `entities` and `relationships` lists. Providers: OpenAI/Azure use native `response_format`; Ollama/Gemini use JSON mode; others fall back to JSON-in-prompt. Set `USE_STRUCTURED_EXTRACTION=false` for legacy delimiter format.
+
+### Custom Entity Types & Schema Enforcement
+
+Entity types constrain what categories the LLM assigns to extracted entities (e.g. Person, Organization, Location). Configure via `addon_params["entity_types"]` or `ENTITY_TYPES` env var (JSON array).
+
+- **addon_params**: `rag = LightRAG(..., addon_params={"entity_types": ["Person", "Organization", "Location"]})`
+- **ENTITY_TYPES**: `ENTITY_TYPES='["Person", "Organization", "Location"]'` in `.env`
+
+When `entity_types` is set and structured extraction is enabled, LightRAG builds a dynamic Pydantic schema with `entity_type: Literal[*entity_types]` (plus `"Other"` if not listed). Providers that support structured output receive this schema: **OpenAI/Azure** use `response_format`; **Gemini** uses `response_json_schema` ([docs](https://ai.google.dev/gemini-api/docs/structured-output)). The LLM cannot return entity types outside the allowed list. Providers without native schema support (e.g. Ollama) rely on prompt instructions only. See `lightrag.types.create_graph_extraction_schema`.
+
+#### LLM Structured Output Support Matrix
+
+| Provider | Native structured output | Mechanism | Notes |
+|----------|---------------------------|-----------|-------|
+| OpenAI | Yes | `response_format` | Full schema enforcement for GraphExtraction and keyword extraction |
+| Azure OpenAI | Yes | Inherits from OpenAI | Same as OpenAI via `openai_complete_if_cache` |
+| Gemini | Yes | `response_json_schema` | Schema enforcement when `entity_types` provided; `response_mime_type="application/json"` for JSON mode |
+| Bedrock | No | — | Explicitly removes `response_format`; uses prompt instructions |
+| Anthropic | No | — | Does not handle `entity_extraction`; uses prompt instructions |
+| Ollama | JSON mode | `format="json"` | No schema; prompt-based, may have delimiter collision risk |
+| LMDeploy | No | — | Pops `response_format` |
+| Zhipu | Prompt-only | Custom JSON prompt | Keyword extraction only; no entity extraction handling |
+| Lollms | No | — | No structured output implementation |
+| Llama Index | Delegated | Depends on underlying LLM | Passes through to configured model |
+| HuggingFace | No | — | Uses `model.generate()` |
+
 ### Document Insertion
 
 ```python
