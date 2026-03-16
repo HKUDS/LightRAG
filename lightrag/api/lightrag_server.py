@@ -36,7 +36,7 @@ from .config import (
 from lightrag.utils import get_env_value
 from lightrag import LightRAG, __version__ as core_version
 from lightrag.api import __api_version__
-from lightrag.types import GPTKeywordExtractionFormat, GraphExtraction
+from lightrag.types import GPTKeywordExtractionFormat
 from lightrag.utils import EmbeddingFunc
 from lightrag.constants import (
     DEFAULT_LOG_MAX_BYTES,
