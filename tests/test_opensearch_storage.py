@@ -10,15 +10,12 @@ from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, patch
 import numpy as np
 
-pytestmark = pytest.mark.offline
-
 pytest.importorskip(
     "opensearchpy",
     reason="opensearchpy is required for OpenSearch storage tests",
 )
 
-from opensearchpy.exceptions import NotFoundError, OpenSearchException
-
+from opensearchpy.exceptions import NotFoundError, OpenSearchException  # type: ignore
 from lightrag.kg.opensearch_impl import (
     OpenSearchKVStorage,
     OpenSearchDocStatusStorage,
@@ -30,6 +27,8 @@ from lightrag.kg.opensearch_impl import (
     _sanitize_index_name,
 )
 from lightrag.base import DocStatus, DocProcessingStatus
+
+pytestmark = pytest.mark.offline
 
 
 # ---------------------------------------------------------------------------

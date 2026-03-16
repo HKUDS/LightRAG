@@ -37,8 +37,8 @@ import pipmaster as pm
 if not pm.is_installed("opensearch-py"):
     pm.install("opensearch-py")
 
-from opensearchpy import AsyncOpenSearch, helpers
-from opensearchpy.exceptions import OpenSearchException, NotFoundError, RequestError
+from opensearchpy import AsyncOpenSearch, helpers  # type: ignore
+from opensearchpy.exceptions import OpenSearchException, NotFoundError, RequestError  # type: ignore
 
 config = configparser.ConfigParser()
 config.read("config.ini", "utf-8")
