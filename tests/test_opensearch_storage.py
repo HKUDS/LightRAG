@@ -9,6 +9,8 @@ import pytest
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, patch
 import numpy as np
+
+opensearchpy = pytest.importorskip("opensearchpy", reason="opensearch-py not installed")
 from opensearchpy.exceptions import NotFoundError, OpenSearchException
 
 from lightrag.kg.opensearch_impl import (
