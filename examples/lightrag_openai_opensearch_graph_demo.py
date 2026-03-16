@@ -106,6 +106,7 @@ async def initialize_rag() -> LightRAG:
     await rag.initialize_storages()
 
     # Clean previous data so the example is re-runnable
+    # (LLM response cache is preserved for faster reruns)
     for storage in [
         rag.full_docs,
         rag.text_chunks,
@@ -117,7 +118,6 @@ async def initialize_rag() -> LightRAG:
         rag.relationships_vdb,
         rag.chunks_vdb,
         rag.chunk_entity_relation_graph,
-        rag.llm_response_cache,
         rag.doc_status,
     ]:
         await storage.drop()
