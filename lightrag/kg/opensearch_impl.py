@@ -321,6 +321,8 @@ class OpenSearchKVStorage(BaseKVStorage):
                 }
             )
         try:
+            # No per-operation refresh: immediate reads use ID-based mget (translog),
+            # search visibility is guaranteed after index_done_callback() batch refresh.
             success, failed = await helpers.async_bulk(
                 self.client, actions, raise_on_error=False
             )
@@ -366,6 +368,8 @@ class OpenSearchKVStorage(BaseKVStorage):
         if isinstance(ids, set):
             ids = list(ids)
         try:
+            # No per-operation refresh: immediate reads use ID-based mget (translog),
+            # search visibility is guaranteed after index_done_callback() batch refresh.
             actions = [
                 {"_op_type": "delete", "_index": self._index_name, "_id": doc_id}
                 for doc_id in ids
@@ -835,11 +839,17 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
         if isinstance(ids, set):
             ids = list(ids)
         try:
+            # DocStatus needs refresh="wait_for" because downstream readers
+            # (get_docs_by_status, get_docs_paginated, etc.) are search-based
+            # and callers like _validate_and_fix_document_consistency() may
+            # query immediately after deletion without index_done_callback().
             actions = [
                 {"_op_type": "delete", "_index": self._index_name, "_id": doc_id}
                 for doc_id in ids
             ]
-            await helpers.async_bulk(self.client, actions, raise_on_error=False)
+            await helpers.async_bulk(
+                self.client, actions, raise_on_error=False, refresh="wait_for"
+            )
         except OpenSearchException as e:
             if _is_missing_index_error(e):
                 self._mark_index_missing()
@@ -1374,6 +1384,8 @@ class OpenSearchGraphStorage(BaseGraphStorage):
             doc["entity_id"] = node_id
             if node_data.get("source_id", ""):
                 doc["source_ids"] = node_data["source_id"].split(GRAPH_FIELD_SEP)
+            # No per-operation refresh: node reads use ID-based mget/exists
+            # (translog, real-time). Search visibility after index_done_callback().
             await self.client.index(index=self._nodes_index, id=node_id, body=doc)
         except OpenSearchException as e:
             logger.error(f"[{self.workspace}] Error upserting node {node_id}: {e}")
@@ -1409,6 +1421,10 @@ class OpenSearchGraphStorage(BaseGraphStorage):
             except OpenSearchException:
                 pass
 
+            # No per-operation refresh: the reverse-edge check above uses
+            # client.exists() which reads from the translog (real-time).
+            # Note: has_edge() and get_edge() use the search API, so they may
+            # not see this write until the next index_done_callback() refresh.
             await self.client.index(index=self._edges_index, id=edge_id, body=doc)
         except OpenSearchException as e:
             logger.error(
@@ -1418,7 +1434,11 @@ class OpenSearchGraphStorage(BaseGraphStorage):
     # --- Delete operations ---
 
     async def delete_node(self, node_id: str) -> None:
-        """Delete a node and all its connected edges."""
+        """Delete a node and all its connected edges.
+
+        No per-operation refresh: delete_node is called from document deletion
+        pipelines that invoke index_done_callback() afterward.
+        """
         try:
             # Delete all edges referencing this node
             body = {
@@ -1441,7 +1461,10 @@ class OpenSearchGraphStorage(BaseGraphStorage):
             logger.error(f"[{self.workspace}] Error deleting node {node_id}: {e}")
 
     async def remove_nodes(self, nodes: list[str]) -> None:
-        """Batch-delete multiple nodes and their connected edges."""
+        """Batch-delete multiple nodes and their connected edges.
+
+        No per-operation refresh: callers invoke index_done_callback() afterward.
+        """
         if not nodes:
             return
         logger.info(f"[{self.workspace}] Deleting {len(nodes)} nodes")
@@ -1468,7 +1491,10 @@ class OpenSearchGraphStorage(BaseGraphStorage):
             logger.error(f"[{self.workspace}] Error removing nodes: {e}")
 
     async def remove_edges(self, edges: list[tuple[str, str]]) -> None:
-        """Batch-delete multiple edges (bidirectional matching)."""
+        """Batch-delete multiple edges (bidirectional matching).
+
+        No per-operation refresh: callers invoke index_done_callback() afterward.
+        """
         if not edges:
             return
         logger.info(f"[{self.workspace}] Deleting {len(edges)} edges")
@@ -2403,6 +2429,8 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
             for doc in list_data
         ]
         try:
+            # No per-operation refresh: immediate reads use ID-based mget (translog),
+            # k-NN search visibility is guaranteed after index_done_callback() batch refresh.
             success, failed = await helpers.async_bulk(
                 self.client, actions, raise_on_error=False
             )
@@ -2550,6 +2578,7 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
         if isinstance(ids, set):
             ids = list(ids)
         try:
+            # No per-operation refresh: search visibility after index_done_callback().
             actions = [
                 {"_op_type": "delete", "_index": self._index_name, "_id": doc_id}
                 for doc_id in ids
@@ -2571,6 +2600,7 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
         if not self._index_ready:
             return
         try:
+            # No per-operation refresh: search visibility after index_done_callback().
             entity_id = compute_mdhash_id(entity_name, prefix="ent-")
             try:
                 await self.client.delete(index=self._index_name, id=entity_id)
@@ -2591,6 +2621,7 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
         if not self._index_ready:
             return
         try:
+            # No per-operation refresh: search visibility after index_done_callback().
             body = {
                 "query": {
                     "bool": {
