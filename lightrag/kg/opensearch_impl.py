@@ -1438,6 +1438,8 @@ class OpenSearchGraphStorage(BaseGraphStorage):
 
         No per-operation refresh: delete_node is called from document deletion
         pipelines that invoke index_done_callback() afterward.
+        Uses conflicts="proceed" to tolerate stale search views when prior
+        delete_by_query calls have already removed some edges.
         """
         try:
             # Delete all edges referencing this node
@@ -1451,7 +1453,9 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                     }
                 }
             }
-            await self.client.delete_by_query(index=self._edges_index, body=body)
+            await self.client.delete_by_query(
+                index=self._edges_index, body=body, params={"conflicts": "proceed"}
+            )
             # Delete the node
             try:
                 await self.client.delete(index=self._nodes_index, id=node_id)
@@ -1464,6 +1468,8 @@ class OpenSearchGraphStorage(BaseGraphStorage):
         """Batch-delete multiple nodes and their connected edges.
 
         No per-operation refresh: callers invoke index_done_callback() afterward.
+        Uses conflicts="proceed" to tolerate stale search views when prior
+        remove_edges() calls have already removed some edges without refresh.
         """
         if not nodes:
             return
@@ -1480,7 +1486,9 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                     }
                 }
             }
-            await self.client.delete_by_query(index=self._edges_index, body=body)
+            await self.client.delete_by_query(
+                index=self._edges_index, body=body, params={"conflicts": "proceed"}
+            )
             # Delete nodes
             actions = [
                 {"_op_type": "delete", "_index": self._nodes_index, "_id": nid}
@@ -1494,6 +1502,8 @@ class OpenSearchGraphStorage(BaseGraphStorage):
         """Batch-delete multiple edges (bidirectional matching).
 
         No per-operation refresh: callers invoke index_done_callback() afterward.
+        Uses conflicts="proceed" to tolerate stale search views when
+        subsequent remove_nodes() may target already-deleted edges.
         """
         if not edges:
             return
@@ -1522,7 +1532,9 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                     }
                 )
             body = {"query": {"bool": {"should": should_clauses}}}
-            await self.client.delete_by_query(index=self._edges_index, body=body)
+            await self.client.delete_by_query(
+                index=self._edges_index, body=body, params={"conflicts": "proceed"}
+            )
         except OpenSearchException as e:
             logger.error(f"[{self.workspace}] Error removing edges: {e}")
 
@@ -2632,7 +2644,10 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
                     }
                 }
             }
-            await self.client.delete_by_query(index=self._index_name, body=body)
+            # conflicts="proceed" tolerates stale search view after refresh removal.
+            await self.client.delete_by_query(
+                index=self._index_name, body=body, params={"conflicts": "proceed"}
+            )
             logger.debug(
                 f"[{self.workspace}] Deleted relations for entity {entity_name}"
             )
