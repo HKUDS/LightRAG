@@ -79,9 +79,7 @@ class TestCleanupToolOpenSearch:
             ("keywords", ["mix:keywords:1", "local:keywords:1"]),
         ],
     )
-    async def test_delete_query_caches_opensearch(
-        self, cleanup_type, expected_ids
-    ):
+    async def test_delete_query_caches_opensearch(self, cleanup_type, expected_ids):
         tool = CleanupTool()
         tool.batch_size = 2
         storage = FakeOpenSearchStorage(
@@ -174,9 +172,7 @@ class TestMigrationToolOpenSearch:
         monkeypatch.setattr(
             tool, "initialize_storage", AsyncMock(return_value=fake_storage)
         )
-        monkeypatch.setattr(
-            tool, "count_default_caches", AsyncMock(return_value=3)
-        )
+        monkeypatch.setattr(tool, "count_default_caches", AsyncMock(return_value=3))
 
         with patch("builtins.input", return_value="5"):
             storage, storage_name, workspace, total_count = await tool.setup_storage(

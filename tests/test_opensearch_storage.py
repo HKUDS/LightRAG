@@ -491,9 +491,10 @@ class TestKVStorage:
                 ["d1", "d2"],
                 ["d3"],
             ]
-            assert "search_after" not in mock_client.search.await_args_list[0].kwargs[
-                "body"
-            ]
+            assert (
+                "search_after"
+                not in mock_client.search.await_args_list[0].kwargs["body"]
+            )
             assert mock_client.search.await_args_list[1].kwargs["body"][
                 "search_after"
             ] == [2]
