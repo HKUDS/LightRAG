@@ -15,7 +15,7 @@ import ssl as ssl_module
 import time
 import asyncio
 from dataclasses import dataclass, field
-from typing import Any, Union, final
+from typing import Any, AsyncIterator, Union, final
 import numpy as np
 import configparser
 
@@ -239,6 +239,52 @@ class OpenSearchKVStorage(BaseKVStorage):
         if self.client is not None:
             await ClientManager.release_client(self.client)
             self.client = None
+
+    async def _iter_raw_docs(
+        self, batch_size: int = 1000
+    ) -> AsyncIterator[list[dict[str, Any]]]:
+        """Yield raw OpenSearch hits using PIT + search_after pagination."""
+        if not self._index_ready:
+            return
+
+        try:
+            pit = await self.client.create_pit(
+                index=self._index_name, params={"keep_alive": "1m"}
+            )
+            pit_id = pit["pit_id"]
+            try:
+                search_after = None
+                while True:
+                    body = {
+                        "query": {"match_all": {}},
+                        "size": batch_size,
+                        "pit": {"id": pit_id, "keep_alive": "1m"},
+                        "sort": [{"_shard_doc": "asc"}],
+                    }
+                    if search_after:
+                        body["search_after"] = search_after
+
+                    response = await self.client.search(body=body)
+                    hits = response["hits"]["hits"]
+                    if not hits:
+                        break
+
+                    yield hits
+
+                    search_after = hits[-1]["sort"]
+                    if len(hits) < batch_size:
+                        break
+            finally:
+                try:
+                    await self.client.delete_pit(body={"pit_id": [pit_id]})
+                except Exception:
+                    pass
+        except OpenSearchException as e:
+            if _is_missing_index_error(e):
+                self._mark_index_missing()
+                return
+            logger.error(f"[{self.workspace}] Error scanning documents: {e}")
+            raise
 
     async def get_by_id(self, id: str) -> dict[str, Any] | None:
         """Get a document by its ID, or None if not found."""
