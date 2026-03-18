@@ -1742,7 +1742,9 @@ async def pipeline_index_texts(
 
     normalized_file_sources: list[str] | None = None
     if file_sources:
-        normalized_file_sources = [normalize_file_path(source) for source in file_sources]
+        normalized_file_sources = [
+            normalize_file_path(source) for source in file_sources
+        ]
         if len(normalized_file_sources) > len(texts):
             raise ValueError("Number of file sources must not exceed number of texts")
         if len(normalized_file_sources) < len(texts):
