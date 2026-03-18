@@ -3122,7 +3122,7 @@ def create_document_routes(
                         chunks_count=doc.chunks_count,
                         error_msg=doc.error_msg,
                         metadata=doc.metadata,
-                        file_path=doc.file_path,
+                        file_path=doc.file_path or "",
                     )
                 )
 
