@@ -312,7 +312,7 @@ async def _summarize_descriptions(
     Returns:
         Summarized description string
     """
-    use_llm_func: callable = global_config["llm_model_func"]
+    use_llm_func: callable = global_config["extract_llm_model_func"]
     # Apply higher priority (8) to entity/relation summary tasks
     use_llm_func = partial(use_llm_func, _priority=8)
 
@@ -2826,7 +2826,7 @@ async def extract_entities(
                     "User cancelled during entity extraction"
                 )
 
-    use_llm_func: callable = global_config["llm_model_func"]
+    use_llm_func: callable = global_config["extract_llm_model_func"]
     entity_extract_max_gleaning = global_config["entity_extract_max_gleaning"]
 
     ordered_chunks = list(chunks.items())
@@ -3129,7 +3129,7 @@ async def kg_query(
     if query_param.model_func:
         use_model_func = query_param.model_func
     else:
-        use_model_func = global_config["llm_model_func"]
+        use_model_func = global_config["query_llm_model_func"]
         # Apply higher priority (5) to query relation LLM function
         use_model_func = partial(use_model_func, _priority=5)
 
@@ -3378,8 +3378,8 @@ async def extract_keywords_only(
     if param.model_func:
         use_model_func = param.model_func
     else:
-        use_model_func = global_config["llm_model_func"]
-        # Apply higher priority (5) to query relation LLM function
+        use_model_func = global_config["keyword_llm_model_func"]
+        # Apply higher priority (5) to keyword extraction LLM function
         use_model_func = partial(use_model_func, _priority=5)
 
     result = await use_model_func(kw_prompt, keyword_extraction=True)
@@ -4905,7 +4905,7 @@ async def naive_query(
     if query_param.model_func:
         use_model_func = query_param.model_func
     else:
-        use_model_func = global_config["llm_model_func"]
+        use_model_func = global_config["query_llm_model_func"]
         # Apply higher priority (5) to query relation LLM function
         use_model_func = partial(use_model_func, _priority=5)
 

@@ -626,6 +626,225 @@ def create_app(args):
         except ImportError as e:
             raise Exception(f"Failed to import {binding} LLM binding: {e}")
 
+    def create_role_llm_func(
+        role: str,
+        role_binding: str | None,
+        role_model: str | None,
+        role_host: str | None,
+        role_api_key: str | None,
+        role_timeout: int | None,
+    ):
+        """
+        Create a role-specific LLM function.
+
+        If role_binding differs from the base binding (cross-provider), creates a
+        standalone function with the role's own provider settings.
+        If same provider, creates a function that uses the role's model/host/api_key
+        with the base provider's configuration.
+
+        Returns None if no role-specific config is set (caller should fall back to base).
+        """
+        # If no role-specific binding or model, no custom function needed
+        if not role_binding and not role_model:
+            return None
+
+        effective_binding = role_binding or args.llm_binding
+        effective_model = role_model or args.llm_model
+        effective_host = role_host or (
+            get_default_host(effective_binding)
+            if role_binding
+            else args.llm_binding_host
+        )
+        effective_api_key = (
+            role_api_key if role_api_key is not None else args.llm_binding_api_key
+        )
+        effective_timeout = role_timeout or llm_timeout
+
+        is_cross_provider = role_binding and role_binding != args.llm_binding
+
+        if is_cross_provider:
+            # Cross-provider: validate required fields
+            if not role_model:
+                raise ValueError(
+                    f"{role.upper()}_LLM_MODEL is required when using cross-provider binding "
+                    f"({role.upper()}_LLM_BINDING={role_binding} differs from base LLM_BINDING={args.llm_binding})"
+                )
+            # Validate api_key for providers that require one
+            providers_requiring_key = {
+                "openai",
+                "azure_openai",
+                "gemini",
+                "aws_bedrock",
+            }
+            if effective_binding in providers_requiring_key and not effective_api_key:
+                raise ValueError(
+                    f"{role.upper()}_LLM_BINDING_API_KEY is required when using cross-provider binding "
+                    f"({role.upper()}_LLM_BINDING={role_binding}) with provider '{effective_binding}'"
+                )
+
+        # Build role-specific provider options
+        role_provider_options = None
+        try:
+            if effective_binding in ["openai", "azure_openai"]:
+                from lightrag.llm.binding_options import OpenAILLMOptions
+
+                role_provider_options = OpenAILLMOptions.options_dict_for_role(
+                    args, role, is_cross_provider
+                )
+            elif effective_binding == "gemini":
+                from lightrag.llm.binding_options import GeminiLLMOptions
+
+                role_provider_options = GeminiLLMOptions.options_dict_for_role(
+                    args, role, is_cross_provider
+                )
+            elif effective_binding == "ollama":
+                from lightrag.llm.binding_options import OllamaLLMOptions
+
+                role_provider_options = OllamaLLMOptions.options_dict_for_role(
+                    args, role, is_cross_provider
+                )
+        except ImportError:
+            pass
+
+        # Create the function based on the effective binding
+        try:
+            if effective_binding == "lollms":
+                from lightrag.llm.lollms import lollms_model_complete
+
+                return lollms_model_complete
+            elif effective_binding == "ollama":
+                from lightrag.llm.ollama import _ollama_model_if_cache
+
+                _role_ollama_opts = role_provider_options
+
+                async def role_ollama_complete(
+                    prompt,
+                    system_prompt=None,
+                    history_messages=None,
+                    keyword_extraction=False,
+                    **kwargs,
+                ):
+                    keyword_extraction = kwargs.pop("keyword_extraction", None)
+                    if keyword_extraction:
+                        kwargs["format"] = "json"
+                    if _role_ollama_opts:
+                        kwargs.update(_role_ollama_opts)
+                    if history_messages is None:
+                        history_messages = []
+                    return await _ollama_model_if_cache(
+                        effective_model,
+                        prompt,
+                        system_prompt=system_prompt,
+                        history_messages=history_messages,
+                        host=effective_host,
+                        **kwargs,
+                    )
+
+                return role_ollama_complete
+            elif effective_binding == "aws_bedrock":
+                return bedrock_model_complete
+            elif effective_binding == "azure_openai":
+                from lightrag.llm.azure_openai import azure_openai_complete_if_cache
+
+                _role_openai_opts = role_provider_options
+
+                async def role_azure_openai_complete(
+                    prompt,
+                    system_prompt=None,
+                    history_messages=None,
+                    keyword_extraction=False,
+                    **kwargs,
+                ) -> str:
+                    keyword_extraction = kwargs.pop("keyword_extraction", None)
+                    if keyword_extraction:
+                        kwargs["response_format"] = GPTKeywordExtractionFormat
+                    if history_messages is None:
+                        history_messages = []
+                    kwargs["timeout"] = effective_timeout
+                    if _role_openai_opts:
+                        kwargs.update(_role_openai_opts)
+                    return await azure_openai_complete_if_cache(
+                        effective_model,
+                        prompt,
+                        system_prompt=system_prompt,
+                        history_messages=history_messages,
+                        base_url=effective_host,
+                        api_key=os.getenv("AZURE_OPENAI_API_KEY", effective_api_key),
+                        api_version=os.getenv(
+                            "AZURE_OPENAI_API_VERSION", "2024-08-01-preview"
+                        ),
+                        **kwargs,
+                    )
+
+                return role_azure_openai_complete
+            elif effective_binding == "gemini":
+                from lightrag.llm.gemini import gemini_complete_if_cache
+
+                _role_gemini_opts = role_provider_options
+
+                async def role_gemini_complete(
+                    prompt,
+                    system_prompt=None,
+                    history_messages=None,
+                    keyword_extraction=False,
+                    **kwargs,
+                ) -> str:
+                    if history_messages is None:
+                        history_messages = []
+                    kwargs["timeout"] = effective_timeout
+                    if (
+                        _role_gemini_opts is not None
+                        and "generation_config" not in kwargs
+                    ):
+                        kwargs["generation_config"] = dict(_role_gemini_opts)
+                    return await gemini_complete_if_cache(
+                        effective_model,
+                        prompt,
+                        system_prompt=system_prompt,
+                        history_messages=history_messages,
+                        api_key=effective_api_key,
+                        base_url=effective_host,
+                        keyword_extraction=keyword_extraction,
+                        **kwargs,
+                    )
+
+                return role_gemini_complete
+            else:  # openai and compatible
+                from lightrag.llm.openai import openai_complete_if_cache
+
+                _role_oai_opts = role_provider_options
+
+                async def role_openai_complete(
+                    prompt,
+                    system_prompt=None,
+                    history_messages=None,
+                    keyword_extraction=False,
+                    **kwargs,
+                ) -> str:
+                    keyword_extraction = kwargs.pop("keyword_extraction", None)
+                    if keyword_extraction:
+                        kwargs["response_format"] = GPTKeywordExtractionFormat
+                    if history_messages is None:
+                        history_messages = []
+                    kwargs["timeout"] = effective_timeout
+                    if _role_oai_opts:
+                        kwargs.update(_role_oai_opts)
+                    return await openai_complete_if_cache(
+                        effective_model,
+                        prompt,
+                        system_prompt=system_prompt,
+                        history_messages=history_messages,
+                        base_url=effective_host,
+                        api_key=effective_api_key,
+                        **kwargs,
+                    )
+
+                return role_openai_complete
+        except ImportError as e:
+            raise Exception(
+                f"Failed to import {effective_binding} LLM binding for {role} role: {e}"
+            )
+
     def create_llm_model_kwargs(binding: str, args, llm_timeout: int) -> dict:
         """
         Create LLM model kwargs based on binding type.
@@ -644,6 +863,38 @@ def create_app(args):
             except ImportError as e:
                 raise Exception(f"Failed to import {binding} options: {e}")
         return {}
+
+    def create_role_llm_model_kwargs(
+        role: str,
+        role_binding: str | None,
+        role_host: str | None,
+        role_api_key: str | None,
+        role_timeout: int | None,
+    ) -> dict | None:
+        """
+        Create role-specific LLM model kwargs for ollama/lollms bindings.
+        Uses role-specific provider options with proper inheritance.
+        Returns None if no role-specific config warrants separate kwargs.
+        """
+        effective_binding = role_binding or args.llm_binding
+        is_cross_provider = role_binding and role_binding != args.llm_binding
+        if effective_binding in ["lollms", "ollama"]:
+            try:
+                from lightrag.llm.binding_options import OllamaLLMOptions
+
+                return {
+                    "host": role_host or args.llm_binding_host,
+                    "timeout": role_timeout or llm_timeout,
+                    "options": OllamaLLMOptions.options_dict_for_role(
+                        args, role, is_cross_provider
+                    ),
+                    "api_key": role_api_key
+                    if role_api_key is not None
+                    else args.llm_binding_api_key,
+                }
+            except ImportError:
+                pass
+        return None
 
     def create_optimized_embedding_function(
         config_cache: LLMConfigCache, binding, model, host, api_key, args
@@ -1051,6 +1302,44 @@ def create_app(args):
         name=args.simulated_model_name, tag=args.simulated_model_tag
     )
 
+    # Create per-role LLM functions
+    role_llm_configs = {}
+    for role, prefix in [
+        ("extract", "extract"),
+        ("keyword", "keyword"),
+        ("query", "query"),
+    ]:
+        role_binding = getattr(args, f"{prefix}_llm_binding", None)
+        role_model = getattr(args, f"{prefix}_llm_model", None)
+        role_host = getattr(args, f"{prefix}_llm_binding_host", None)
+        role_api_key = getattr(args, f"{prefix}_llm_binding_api_key", None)
+        role_max_async = getattr(args, f"max_async_{prefix}_llm", None)
+        role_timeout_val = getattr(args, f"llm_timeout_{prefix}_llm", None)
+
+        role_func = create_role_llm_func(
+            role, role_binding, role_model, role_host, role_api_key, role_timeout_val
+        )
+        role_kwargs = create_role_llm_model_kwargs(
+            role, role_binding, role_host, role_api_key, role_timeout_val
+        )
+
+        role_llm_configs[role] = {
+            "func": role_func,
+            "kwargs": role_kwargs,
+            "max_async": role_max_async,
+            "timeout": role_timeout_val,
+            "binding": role_binding or args.llm_binding,
+            "model": role_model or args.llm_model,
+        }
+
+        if role_func or role_max_async or role_timeout_val:
+            logger.info(
+                f"LLM role '{role}': binding={role_binding or args.llm_binding}, "
+                f"model={role_model or args.llm_model}, "
+                f"max_async={role_max_async or args.max_async}, "
+                f"timeout={role_timeout_val or llm_timeout}"
+            )
+
     # Initialize RAG with unified configuration
     try:
         rag = LightRAG(
@@ -1086,6 +1375,19 @@ def create_app(args):
                 "entity_types": args.entity_types,
             },
             ollama_server_infos=ollama_server_infos,
+            # Per-role LLM configuration
+            extract_llm_model_func=role_llm_configs["extract"]["func"],
+            extract_llm_model_max_async=role_llm_configs["extract"]["max_async"],
+            extract_llm_timeout=role_llm_configs["extract"]["timeout"],
+            extract_llm_model_kwargs=role_llm_configs["extract"]["kwargs"],
+            keyword_llm_model_func=role_llm_configs["keyword"]["func"],
+            keyword_llm_model_max_async=role_llm_configs["keyword"]["max_async"],
+            keyword_llm_timeout=role_llm_configs["keyword"]["timeout"],
+            keyword_llm_model_kwargs=role_llm_configs["keyword"]["kwargs"],
+            query_llm_model_func=role_llm_configs["query"]["func"],
+            query_llm_model_max_async=role_llm_configs["query"]["max_async"],
+            query_llm_timeout=role_llm_configs["query"]["timeout"],
+            query_llm_model_kwargs=role_llm_configs["query"]["kwargs"],
         )
     except Exception as e:
         logger.error(f"Failed to initialize LightRAG: {e}")
@@ -1291,6 +1593,16 @@ def create_app(args):
                     "max_async": args.max_async,
                     "embedding_func_max_async": args.embedding_func_max_async,
                     "embedding_batch_num": args.embedding_batch_num,
+                    # Per-role LLM configuration
+                    "role_llm_config": {
+                        role: {
+                            "binding": cfg["binding"],
+                            "model": cfg["model"],
+                            "max_async": cfg["max_async"] or args.max_async,
+                            "timeout": cfg["timeout"] or llm_timeout,
+                        }
+                        for role, cfg in role_llm_configs.items()
+                    },
                 },
                 "auth_mode": auth_mode,
                 "pipeline_busy": pipeline_status.get("busy", False),
