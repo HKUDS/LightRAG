@@ -409,87 +409,142 @@ class TaskState:
 
 @dataclass
 class EmbeddingFunc:
-    """Embedding function wrapper with dimension validation + allow_extra_vectors flag (fixes #2549)"""
+    """Embedding function wrapper with dimension validation
+
+    This class wraps an embedding function to ensure that the output embeddings have the correct dimension.
+    If wrapped multiple times, the inner wrappers will be automatically unwrapped to prevent
+    configuration conflicts where inner wrapper settings would override outer wrapper settings.
+
+    Using functools.partial for parameter binding:
+        A common pattern is to use functools.partial to pre-bind model and host parameters
+        to an embedding function. When the base embedding function is already decorated with
+        @wrap_embedding_func_with_attrs (e.g., ollama_embed), use `.func` to access the
+        original unwrapped function to avoid double wrapping:
+
+        Example:
+            from functools import partial
+
+            # ❌ Wrong - causes double wrapping (inner EmbeddingFunc still executes)
+            func=partial(ollama_embed, embed_model="bge-m3:latest", host="http://localhost:11434")
+
+            # ✅ Correct - access the unwrapped function via .func
+            func=partial(ollama_embed.func, embed_model="bge-m3:latest", host="http://localhost:11434")
+
+    Args:
+        embedding_dim: Expected dimension of the embeddings(For dimension checking and workspace data isolation in vector DB)
+        func: The actual embedding function to wrap
+        max_token_size: Enable embedding token limit checking for description summarization(Set embedding_token_limit in LightRAG)
+        send_dimensions: Whether to inject embedding_dim argument to underlying function
+        model_name: Model name for implementing workspace data isolation in vector DB
+    """
 
     embedding_dim: int
     func: callable
     max_token_size: int | None = None
     send_dimensions: bool = False
-    model_name: str | None = None
-    allow_extra_vectors: bool = False  # ← our fix — default is safe fail-fast
+    model_name: str | None = (
+        None  # Model name for implementing workspace data isolation in vector DB
+    )
 
     def __post_init__(self):
-        """Unwrap nested EmbeddingFunc to prevent double wrapping issues."""
-        max_unwrap_depth = 3
+        """Unwrap nested EmbeddingFunc to prevent double wrapping issues.
+
+        When an EmbeddingFunc wraps another EmbeddingFunc, the inner wrapper's
+        __call__ preprocessing would override the outer wrapper's settings.
+        This method detects and unwraps nested EmbeddingFunc instances to ensure
+        that only the outermost wrapper's configuration is applied.
+        """
+        # Check if func is already an EmbeddingFunc instance and unwrap it
+        max_unwrap_depth = 3  # Safety limit to prevent infinite loops
         unwrap_count = 0
         while isinstance(self.func, EmbeddingFunc):
             unwrap_count += 1
             if unwrap_count > max_unwrap_depth:
                 raise ValueError(
-                    "EmbeddingFunc unwrap depth exceeded — possible circular reference."
+                    f"EmbeddingFunc unwrap depth exceeded {max_unwrap_depth}. "
+                    "Possible circular reference detected."
                 )
+            # Unwrap to get the original function
             self.func = self.func.func
 
         if unwrap_count > 0:
             logger.warning(
-                f"Detected nested EmbeddingFunc (depth: {unwrap_count}), auto-unwrapped."
+                f"Detected nested EmbeddingFunc wrapping (depth: {unwrap_count}), "
+                "auto-unwrapped to prevent configuration conflicts. "
+                "Consider using .func to access the unwrapped function directly."
             )
 
     async def __call__(self, *args, **kwargs) -> np.ndarray:
-        # === Original upstream logic (unchanged) ===
+        # Only inject embedding_dim when send_dimensions is True
         if self.send_dimensions:
-            if (
-                "embedding_dim" in kwargs
-                and kwargs["embedding_dim"] is not None
-                and kwargs["embedding_dim"] != self.embedding_dim
-            ):
-                logger.warning(
-                    f"Ignoring user-provided embedding_dim, using {self.embedding_dim}"
-                )
+            # Check if user provided embedding_dim parameter
+            if "embedding_dim" in kwargs:
+                user_provided_dim = kwargs["embedding_dim"]
+                # If user's value differs from class attribute, output warning
+                if (
+                    user_provided_dim is not None
+                    and user_provided_dim != self.embedding_dim
+                ):
+                    logger.warning(
+                        f"Ignoring user-provided embedding_dim={user_provided_dim}, "
+                        f"using declared embedding_dim={self.embedding_dim} from decorator"
+                    )
+
+            # Inject embedding_dim from decorator
             kwargs["embedding_dim"] = self.embedding_dim
 
+        # Check if underlying function supports max_token_size and inject if not provided
         if self.max_token_size is not None and "max_token_size" not in kwargs:
             sig = inspect.signature(self.func)
             if "max_token_size" in sig.parameters:
                 kwargs["max_token_size"] = self.max_token_size
 
-        # Call the real function
+        # Call the actual embedding function
         result = await self.func(*args, **kwargs)
 
-        # === Dimension validation (unchanged) ===
-        total_elements = result.size
+        # Validate embedding dimensions using total element count
+        total_elements = result.size  # Total number of elements in the numpy array
         expected_dim = self.embedding_dim
+
+        # Check if total elements can be evenly divided by embedding_dim
         if total_elements % expected_dim != 0:
             raise ValueError(
-                f"Embedding dimension mismatch: got {total_elements}, expected multiple of {expected_dim}"
+                f"Embedding dimension mismatch detected: "
+                f"total elements ({total_elements}) cannot be evenly divided by "
+                f"expected dimension ({expected_dim}). "
             )
 
-        # === Our approved fix for MinerU/RAGAnything ===
+        # Optional: Verify vector count matches input text count
+        # actual_vectors = total_elements // expected_dim
+        # if args and isinstance(args[0], (list, tuple)):
+        #     expected_vectors = len(args[0])
+        #     if actual_vectors != expected_vectors:
+        #         raise ValueError(
+        #             f"Vector count mismatch: "
+        #             f"expected {expected_vectors} vectors but got {actual_vectors} vectors (from embedding result)."
+        #         )
+
+        # Optional: Verify vector count matches input text count
         actual_vectors = total_elements // expected_dim
         if args and isinstance(args[0], (list, tuple)):
             expected_vectors = len(args[0])
             if actual_vectors != expected_vectors:
-                provider = self.model_name or "unknown"
-                if self.allow_extra_vectors:
+                # WORKAROUND: Handle the doubling bug in multimodal/mineru pipelines
+                if actual_vectors == 2 * expected_vectors:
                     logger.warning(
-                        f"Vector count mismatch (provider={provider}): "
-                        f"expected {expected_vectors} but got {actual_vectors}. "
-                        f"Adjusting... (allow_extra_vectors=True — normal for MinerU)."
+                        f"Vector count doubling detected ({actual_vectors} vs {expected_vectors}). Slicing result to match."
                     )
-                    # Over = slice    |   Under = pad with last vector (safe fallback)
-                    reshaped = result.reshape(-1, expected_dim)
-                    if actual_vectors > expected_vectors:
-                        result = reshaped[:expected_vectors]
+                    # Reshape if it's a 2D array, slice, then return
+                    if len(result.shape) > 1:
+                        return result[:expected_vectors]
                     else:
-                        pad = np.tile(
-                            reshaped[-1:], (expected_vectors - actual_vectors, 1)
-                        )
-                        result = np.vstack([reshaped, pad])
+                        # Fallback for flat arrays
+                        new_size = expected_vectors * expected_dim
+                        return result[:new_size]
                 else:
                     raise ValueError(
-                        f"Vector count mismatch (provider={provider}): "
-                        f"expected {expected_vectors} vectors but got {actual_vectors}. "
-                        f"Set allow_extra_vectors=True on EmbeddingFunc if using MinerU/RAGAnything."
+                        f"Vector count mismatch: "
+                        f"expected {expected_vectors} vectors but got {actual_vectors} vectors (from embedding result)."
                     )
 
         return result

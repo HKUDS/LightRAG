@@ -154,14 +154,14 @@ def main():
     parser.add_argument(
         "--file",
         "-f",
-        default="/home/js/LightRAG/mm_query_output.md",
+        default="/home/js/LightRAG-Dev/mm_query_output.md",
         help="Path to the output markdown file",
     )
 
     parser.add_argument(
         "--working_dir",
         "-w",
-        default="/home/js/LightRAG/jrs/work/mod_linx/_mod_linx_work_dir",
+        default="/home/js/LightRAG-Dev/jrs/work/music/music_work_dir",
         help="Path to directory where index of knowledge is stored",
     )
 

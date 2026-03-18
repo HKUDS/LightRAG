@@ -71,6 +71,7 @@ async def run_indexing(file_path, output_dir, api_key, base_url, working_dir):
                 api_key=api_key,
                 base_url=base_url,
             ),
+            allow_extra_vectors=True,  # ← correct place
         )
 
         rag = RAGAnything(
@@ -100,17 +101,17 @@ def main():
     parser.add_argument(
         "-f",
         "--file_path",
-        default="/home/js/LightRAG/jrs/work/mod_linx_schm/mod_linx_data/PS20115MLM4-2.pdf",
+        default="/home/js/LightRAG-Dev/jrs/work/music/music_data/lesson02.pdf",
     )
     parser.add_argument(
         "-w",
         "--working_dir",
-        default="/home/js/LightRAG/jrs/work/mod_linx_schm/_mod_linx_work_dir",
+        default="/home/js/LightRAG-Dev/jrs/work/music/music_work_dir",
     )
     parser.add_argument(
         "-o",
         "--output",
-        default="/home/js/LightRAG/jrs/work/mod_linx_schm/mod_linx_output_dir",
+        default="/home/js/LightRAG-Dev/jrs/work/music/music_output_dir",
     )
     parser.add_argument("--api-key", default=os.getenv("OPENAI_API_KEY"))
     parser.add_argument("--base-url", default=os.getenv("OPENAI_BASE_URL"))

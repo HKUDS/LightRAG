@@ -30,6 +30,7 @@
 # 5.  --- SYNC WITH UPSTREAM (HKUDS/LightRAG) ---
     #   git fetch upstream
     #   git merge upstream/main -X ours
+    #   uv pip install -e .          # ← KEEP OUR PATCH ACTIVE
 #
 #     --> Note: The -X ours flag above tells Git: "If we both changed the exact same line, keep my version."
 #     --> Note: If conflicts occur, prioritize keeping your new WebUI files

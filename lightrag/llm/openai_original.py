@@ -703,10 +703,7 @@ async def nvidia_openai_complete(
 
 
 @wrap_embedding_func_with_attrs(
-    embedding_dim=3072,
-    max_token_size=8192,
-    model_name="text-embedding-3-large",
-    allow_extra_vectors=True,
+    embedding_dim=1536, max_token_size=8192, model_name="text-embedding-3-small"
 )
 @retry(
     stop=stop_after_attempt(3),
@@ -719,7 +716,7 @@ async def nvidia_openai_complete(
 )
 async def openai_embed(
     texts: list[str],
-    model: str = "text-embedding-3-large",
+    model: str = "text-embedding-3-small",
     base_url: str | None = None,
     api_key: str | None = None,
     embedding_dim: int | None = None,
@@ -934,10 +931,9 @@ async def azure_openai_complete(
 
 
 @wrap_embedding_func_with_attrs(
-    embedding_dim=3072,
+    embedding_dim=1536,
     max_token_size=8192,
     model_name="my-text-embedding-3-large-deployment",
-    allow_extra_vectors=True,
 )
 async def azure_openai_embed(
     texts: list[str],
