@@ -39,6 +39,7 @@ LightRAG is an advanced Retrieval-Augmented Generation (RAG) framework designed 
 - Use concise, imperative commit subjects (e.g., `Fix lock key normalization`) and add body context only when necessary.
 - PRs should include a summary, operational impact, linked issues, and screenshots or API samples for user-facing work.
 - Verify `ruff check .`, `python -m pytest`, and affected Bun commands succeed before requesting review; note the runs in the PR text.
+- This repo is a fork of `HKUDS/LightRAG`. Always target **`HKUDS/LightRAG:main`** (upstream) when creating PRs, not the fork's own main.
 
 ## Security & Configuration Tips
 - Copy `.env.example` and `config.ini.example`; never commit secrets or real connection strings.
