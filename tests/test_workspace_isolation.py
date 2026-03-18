@@ -222,7 +222,7 @@ async def test_lock_mechanism(stress_test_mode, parallel_workers):
     # Support stress testing with configurable number of workers
     num_workers = parallel_workers if stress_test_mode else 3
     parallel_workload = [
-        (f"ws_{chr(97+i)}", f"ws_{chr(97+i)}", "test_namespace")
+        (f"ws_{chr(97 + i)}", f"ws_{chr(97 + i)}", "test_namespace")
         for i in range(num_workers)
     ]
 
@@ -491,7 +491,7 @@ async def test_namespace_lock_reentrance():
 
     print("✅ PASSED: NamespaceLock Concurrent Reuse")
     print(
-        f"   Same NamespaceLock instance used successfully in {expected_entries//2} concurrent coroutines"
+        f"   Same NamespaceLock instance used successfully in {expected_entries // 2} concurrent coroutines"
     )
 
 

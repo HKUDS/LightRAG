@@ -29,6 +29,7 @@ dependencies = [
     "nano-vectordb",
     "networkx",
     "numpy>=1.24.0,<3.0.0",
+    "packaging",
     "pandas>=2.0.0,<2.4.0",
     "pipmaster",
     "pydantic",
@@ -110,6 +111,7 @@ offline-storage = [
     "asyncpg>=0.31.0,<1.0.0",
     "pgvector>=0.4.2,<1.0.0",
     "qdrant-client>=1.11.0,<2.0.0",
+    "opensearch-py>=3.0.0,<4.0.0",
 ]
 
 offline-llm = [

@@ -3,6 +3,7 @@ Configs for the LightRAG API.
 """
 
 import os
+import re
 import argparse
 import logging
 from dotenv import load_dotenv
@@ -394,7 +395,9 @@ def parse_args() -> argparse.Namespace:
 
     # For JWT Auth
     args.auth_accounts = get_env_value("AUTH_ACCOUNTS", "")
-    args.token_secret = get_env_value("TOKEN_SECRET", "lightrag-jwt-default-secret")
+    args.token_secret = get_env_value(
+        "TOKEN_SECRET", "lightrag-jwt-default-secret-key!"
+    )
     args.token_expire_hours = get_env_value("TOKEN_EXPIRE_HOURS", 48, float)
     args.guest_token_expire_hours = get_env_value("GUEST_TOKEN_EXPIRE_HOURS", 24, float)
     args.jwt_algorithm = get_env_value("JWT_ALGORITHM", "HS256")
@@ -458,6 +461,17 @@ def parse_args() -> argparse.Namespace:
 
     ollama_server_infos.LIGHTRAG_NAME = args.simulated_model_name
     ollama_server_infos.LIGHTRAG_TAG = args.simulated_model_tag
+
+    # Sanitize workspace: only alphanumeric characters and underscores are allowed
+    if args.workspace:
+        sanitized = re.sub(r"[^a-zA-Z0-9_]", "_", args.workspace)
+        if sanitized != args.workspace:
+            logging.warning(
+                f"Workspace name '{args.workspace}' contains invalid characters. "
+                f"It has been sanitized to '{sanitized}'. "
+                "Only alphanumeric characters and underscores are allowed."
+            )
+            args.workspace = sanitized
 
     return args
 

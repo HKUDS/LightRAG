@@ -2238,8 +2238,6 @@ def normalize_extracted_info(name: str, remove_inner_quotes=False) -> str:
         return all(c.isdigit() or c == "." for c in text) and "." in text
 
     if len(name) < 6 and should_filter_by_dots(name):
-        # Filter out mixed numeric and dot content with length < 6
-        return ""
         # Filter out mixed numeric and dot content with length < 6, requiring at least one dot
         return ""
 
