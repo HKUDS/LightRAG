@@ -16,7 +16,7 @@ COLOR_GREEN :=
 COLOR_YELLOW :=
 endif
 
-.PHONY: help configure env env-base env-storage env-server env-validate env-security-check env-backup env-base-rewrite env-storage-rewrite
+.PHONY: help configure env-base env-storage env-server env-validate env-backup env-security-check env-base-rewrite env-storage-rewrite env base storage server validate backup security security-check base-rewrite storage-rewrite
 
 help:
 	@printf "$(COLOR_BOLD)Interactive setup targets$(COLOR_RESET)\n"
@@ -26,9 +26,9 @@ help:
 	@printf "  $(COLOR_GREEN)make env-validate$(COLOR_RESET)           Validate existing .env\n"
 	@printf "  $(COLOR_GREEN)make env-security-check$(COLOR_RESET)     Audit existing .env for security risks\n"
 	@printf "  $(COLOR_GREEN)make env-backup$(COLOR_RESET)             Backup current .env\n"
-	@printf "  $(COLOR_GREEN)make env$(COLOR_RESET)                    Short form of make env-base\n"
 	@printf "  $(COLOR_GREEN)make env-base-rewrite$(COLOR_RESET)       Force-regenerate wizard-managed compose services during base setup\n"
 	@printf "  $(COLOR_GREEN)make env-storage-rewrite$(COLOR_RESET)    Force-regenerate wizard-managed compose services during storage setup\n"
+	@printf "  $(COLOR_GREEN)make base$(COLOR_RESET)                   Short form of make env-base (all env prefix can be stripped)\n"
 	@printf "\n"
 	@printf "$(COLOR_BOLD)Typical workflow$(COLOR_RESET)\n"
 	@printf "  1. make env-base       # set LLM/embedding/reranker\n"
@@ -44,26 +44,26 @@ help:
 	@printf "  Bundled service images are defined in scripts/setup/templates/*.yml.\n"
 	@printf "  Compose file output: docker-compose.final.yml\n"
 
-env env-base configure:
+env-base env base configure:
 	@$(SETUP_BASH) $(SETUP_SCRIPT) --base $(SETUP_OPTS)
 
-env-storage:
+env-storage storage:
 	@$(SETUP_BASH) $(SETUP_SCRIPT) --storage $(SETUP_OPTS)
 
-env-base-rewrite:
+env-base-rewrite base-rewrite:
 	@$(SETUP_BASH) $(SETUP_SCRIPT) --base --rewrite-compose $(SETUP_OPTS)
 
-env-storage-rewrite:
+env-storage-rewrite storage-rewrite:
 	@$(SETUP_BASH) $(SETUP_SCRIPT) --storage --rewrite-compose $(SETUP_OPTS)
 
-env-server:
+env-server server:
 	@$(SETUP_BASH) $(SETUP_SCRIPT) --server $(SETUP_OPTS)
 
-env-validate:
+env-validate validate:
 	@$(SETUP_BASH) $(SETUP_SCRIPT) --validate $(SETUP_OPTS)
 
-env-security-check:
+env-security-check security security-check:
 	@$(SETUP_BASH) $(SETUP_SCRIPT) --security-check $(SETUP_OPTS)
 
-env-backup:
+env-backup backup:
 	@$(SETUP_BASH) $(SETUP_SCRIPT) --backup $(SETUP_OPTS)

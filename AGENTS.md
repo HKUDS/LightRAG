@@ -39,6 +39,7 @@ LightRAG is an advanced Retrieval-Augmented Generation (RAG) framework designed 
 - Use concise, imperative commit subjects (e.g., `Fix lock key normalization`) and add body context only when necessary.
 - PRs should include a summary, operational impact, linked issues, and screenshots or API samples for user-facing work.
 - Verify `ruff check .`, `python -m pytest`, and affected Bun commands succeed before requesting review; note the runs in the PR text.
+- This repo is a fork of `HKUDS/LightRAG`. Always target **`HKUDS/LightRAG:main`** (upstream) when creating PRs, not the fork's own main.
 
 ## Security & Configuration Tips
 - Copy `.env.example` and `config.ini.example`; never commit secrets or real connection strings.
@@ -51,5 +52,6 @@ LightRAG is an advanced Retrieval-Augmented Generation (RAG) framework designed 
 - Honor existing local modifications; never revert or discard user changes (especially via `git reset --hard`) unless explicitly asked.
 - Follow the planning tool guidance: skip it for trivial fixes, but provide multi-step plans for non-trivial work and keep the plan updated as steps progress.
 - Validate changes by running the relevant `ruff`/`pytest`/`bun test` commands whenever feasible, and describe any unrun checks with follow-up guidance.
+- For Codex and other fresh-shell automation, prefer `./scripts/test.sh` instead of bare `pytest`; the script falls back through `PYTHON`, the active virtualenv, `uv`, `.venv`, and `venv` before trying `python` or `python3`.
 - For setup workflow changes, prefer `make env-*` targets over calling `scripts/setup/setup.sh` directly; the `Makefile` resolves a Bash 4+ interpreter for macOS/Linux compatibility.
 - When editing setup logic, keep `.env` host-usable and treat `docker-compose.final.yml` as generated output assembled from `scripts/setup/templates/*.yml`; compose-only overrides belong in the wizard-managed compose layer rather than being persisted back into `.env`.

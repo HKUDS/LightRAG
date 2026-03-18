@@ -15,6 +15,7 @@ Supported KV Storage Types:
     - RedisKVStorage
     - PGKVStorage
     - MongoKVStorage
+    - OpenSearchKVStorage
 """
 
 import asyncio
@@ -49,6 +50,7 @@ STORAGE_TYPES = {
     "2": "RedisKVStorage",
     "3": "PGKVStorage",
     "4": "MongoKVStorage",
+    "5": "OpenSearchKVStorage",
 }
 
 # Workspace environment variable mapping
@@ -56,6 +58,7 @@ WORKSPACE_ENV_MAP = {
     "PGKVStorage": "POSTGRES_WORKSPACE",
     "MongoKVStorage": "MONGODB_WORKSPACE",
     "RedisKVStorage": "REDIS_WORKSPACE",
+    "OpenSearchKVStorage": "OPENSEARCH_WORKSPACE",
 }
 
 # Default batch size for migration
@@ -155,6 +158,8 @@ class MigrationTool:
                 return config.has_option("mongodb", "uri") and config.has_option(
                     "mongodb", "database"
                 )
+            elif storage_name == "OpenSearchKVStorage":
+                return config.has_option("opensearch", "hosts")
 
             return False
         except Exception:
@@ -247,6 +252,10 @@ class MigrationTool:
             from lightrag.kg.mongo_impl import MongoKVStorage
 
             return MongoKVStorage
+        elif storage_name == "OpenSearchKVStorage":
+            from lightrag.kg.opensearch_impl import OpenSearchKVStorage
+
+            return OpenSearchKVStorage
         else:
             raise ValueError(f"Unsupported storage type: {storage_name}")
 
@@ -483,6 +492,22 @@ class MigrationTool:
 
         return cache_data
 
+    async def get_default_caches_opensearch(
+        self, storage, batch_size: int = 1000
+    ) -> Dict[str, Any]:
+        """Get default caches from OpenSearchKVStorage."""
+        cache_data = {}
+
+        async for hits in storage._iter_raw_docs(batch_size=batch_size):
+            for hit in hits:
+                key = hit["_id"]
+                if key.startswith("default:extract:") or key.startswith(
+                    "default:summary:"
+                ):
+                    cache_data[key] = hit["_source"].copy()
+
+        return cache_data
+
     async def get_default_caches(self, storage, storage_name: str) -> Dict[str, Any]:
         """Get default caches from any storage type
 
@@ -501,6 +526,8 @@ class MigrationTool:
             return await self.get_default_caches_pg(storage)
         elif storage_name == "MongoKVStorage":
             return await self.get_default_caches_mongo(storage)
+        elif storage_name == "OpenSearchKVStorage":
+            return await self.get_default_caches_opensearch(storage)
         else:
             raise ValueError(f"Unsupported storage type: {storage_name}")
 
@@ -611,6 +638,27 @@ class MigrationTool:
 
         return count
 
+    async def count_default_caches_opensearch(self, storage) -> int:
+        """Count default caches in OpenSearch using PIT pagination."""
+        count = 0
+        print("Scanning OpenSearch documents...", end="", flush=True)
+        start_time = time.time()
+
+        async for hits in storage._iter_raw_docs(batch_size=DEFAULT_COUNT_BATCH_SIZE):
+            for hit in hits:
+                key = hit["_id"]
+                if key.startswith("default:extract:") or key.startswith(
+                    "default:summary:"
+                ):
+                    count += 1
+
+        elapsed = time.time() - start_time
+        if elapsed > 1:
+            print(f" (took {elapsed:.1f}s)", end="")
+        print()
+
+        return count
+
     async def count_default_caches(self, storage, storage_name: str) -> int:
         """Count default caches from any storage type efficiently
 
@@ -629,6 +677,8 @@ class MigrationTool:
             return await self.count_default_caches_pg(storage)
         elif storage_name == "MongoKVStorage":
             return await self.count_default_caches_mongo(storage)
+        elif storage_name == "OpenSearchKVStorage":
+            return await self.count_default_caches_opensearch(storage)
         else:
             raise ValueError(f"Unsupported storage type: {storage_name}")
 
@@ -831,6 +881,25 @@ class MigrationTool:
         if batch:
             yield batch
 
+    async def stream_default_caches_opensearch(self, storage, batch_size: int):
+        """Stream default caches from OpenSearchKVStorage - yields batches."""
+        batch = {}
+
+        async for hits in storage._iter_raw_docs(batch_size=batch_size):
+            for hit in hits:
+                key = hit["_id"]
+                if key.startswith("default:extract:") or key.startswith(
+                    "default:summary:"
+                ):
+                    batch[key] = hit["_source"].copy()
+
+                if len(batch) >= batch_size:
+                    yield batch
+                    batch = {}
+
+        if batch:
+            yield batch
+
     async def stream_default_caches(
         self, storage, storage_name: str, batch_size: int = None
     ):
@@ -858,6 +927,11 @@ class MigrationTool:
                 yield batch
         elif storage_name == "MongoKVStorage":
             async for batch in self.stream_default_caches_mongo(storage, batch_size):
+                yield batch
+        elif storage_name == "OpenSearchKVStorage":
+            async for batch in self.stream_default_caches_opensearch(
+                storage, batch_size
+            ):
                 yield batch
         else:
             raise ValueError(f"Unsupported storage type: {storage_name}")
@@ -1004,6 +1078,7 @@ class MigrationTool:
         print(f"\nInitializing {storage_type} storage...")
         try:
             storage = await self.initialize_storage(storage_name, workspace)
+            workspace = storage.workspace
             print(f"- Storage Type: {storage_name}")
             print(f"- Workspace: {workspace if workspace else '(default)'}")
             print("- Connection Status: ✓ Success")
@@ -1027,6 +1102,16 @@ class MigrationTool:
                 )
                 print(f"- Configuration Source: {config_source}")
             elif storage_name == "MongoKVStorage":
+                config_source = (
+                    "environment variables"
+                    if all(
+                        var in os.environ
+                        for var in STORAGE_ENV_REQUIREMENTS[storage_name]
+                    )
+                    else "config.ini or defaults"
+                )
+                print(f"- Configuration Source: {config_source}")
+            elif storage_name == "OpenSearchKVStorage":
                 config_source = (
                     "environment variables"
                     if all(
@@ -1062,6 +1147,9 @@ class MigrationTool:
                 print("     [mongodb]")
                 print("     uri = mongodb://root:root@localhost:27017/")
                 print("     database = LightRAG")
+            elif storage_name == "OpenSearchKVStorage":
+                print("     [opensearch]")
+                print("     hosts = localhost:9200")
 
             return None, None, None, 0
 

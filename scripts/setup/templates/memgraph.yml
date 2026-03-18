@@ -10,6 +10,7 @@
         - 'PORT_HEX="$(printf ''%04X'' 7687)"; cat /proc/net/tcp /proc/net/tcp6 2>/dev/null | grep -q ":$${PORT_HEX} "'
       interval: 5s
       timeout: 3s
-      retries: 120
+      retries: 20
       start_period: 10s
+    stop_grace_period: 30s
     restart: unless-stopped

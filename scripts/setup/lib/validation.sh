@@ -64,6 +64,12 @@ validate_port() {
   return 0
 }
 
+validate_non_empty() {
+  local value="$1"
+
+  [[ -n "$value" ]]
+}
+
 validate_existing_file() {
   local path="$1"
 

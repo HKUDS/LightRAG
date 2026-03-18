@@ -10,6 +10,7 @@ This tool cleans up LightRAG's LLM query cache from KV storage implementations. 
 2. **RedisKVStorage** - Redis database storage
 3. **PGKVStorage** - PostgreSQL database storage
 4. **MongoKVStorage** - MongoDB database storage
+5. **OpenSearchKVStorage** - OpenSearch index storage
 
 ## Cache Types
 
@@ -73,8 +74,9 @@ Supported KV Storage Types:
 [2] RedisKVStorage
 [3] PGKVStorage
 [4] MongoKVStorage
+[5] OpenSearchKVStorage
 
-Select storage type (1-4) (Press Enter to exit): 1
+Select storage type (1-5) (Press Enter to exit): 1
 ```
 
 **Note**: You can press Enter or type `0` at any prompt to exit gracefully.
@@ -199,6 +201,16 @@ Pattern 2/8: Deleted 567 records ✓
 Total deleted: 7,605 records
 ```
 
+**OpenSearchKVStorage Example:**
+```
+=== Starting Cleanup ===
+💡 Processing 1,000 records at a time from OpenSearchKVStorage
+
+Batch 1/8: ████░░░░░░░░░░░░░░░░ 1,000/7,605 (13.1%) ✓
+Batch 2/8: ████████░░░░░░░░░░░░ 2,000/7,605 (26.3%) ✓
+...
+```
+
 #### 7. Review Cleanup Report
 
 The tool provides a comprehensive final report:
@@ -291,6 +303,7 @@ The tool retrieves workspace in the following priority order:
    - PGKVStorage: `POSTGRES_WORKSPACE`
    - MongoKVStorage: `MONGODB_WORKSPACE`
    - RedisKVStorage: `REDIS_WORKSPACE`
+   - OpenSearchKVStorage: `OPENSEARCH_WORKSPACE`
 
 2. **Generic workspace environment variable**
    - `WORKSPACE`
@@ -352,6 +365,12 @@ WHERE id LIKE 'mix:query:%' OR id LIKE 'mix:keywords:%'
 ```python
 # Regex queries on _id field
 {"_id": {"$regex": "^mix:query:"}}
+```
+
+**OpenSearchKVStorage:**
+```python
+# Scan raw hits, then match cache key prefixes in Python
+if hit["_id"].startswith("mix:query:"):
 ```
 
 ## Error Handling & Resilience
@@ -459,6 +478,13 @@ MONGO_URI=mongodb://root:root@localhost:27017/
 MONGO_DATABASE=LightRAG
 ```
 
+#### OpenSearchKVStorage
+
+```bash
+OPENSEARCH_HOSTS=localhost:9200
+OPENSEARCH_WORKSPACE=search_space
+```
+
 ### config.ini Configuration
 
 Alternatively, create a `config.ini` file in the project root:
@@ -477,6 +503,9 @@ database = lightrag
 [mongodb]
 uri = mongodb://root:root@localhost:27017/
 database = LightRAG
+
+[opensearch]
+hosts = localhost:9200
 ```
 
 **Note**: Environment variables take precedence over config.ini settings.

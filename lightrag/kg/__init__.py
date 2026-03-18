@@ -5,6 +5,7 @@ STORAGE_IMPLEMENTATIONS = {
             "RedisKVStorage",
             "PGKVStorage",
             "MongoKVStorage",
+            "OpenSearchKVStorage",
         ],
         "required_methods": ["get_by_id", "upsert"],
     },
@@ -15,6 +16,7 @@ STORAGE_IMPLEMENTATIONS = {
             "PGGraphStorage",
             "MongoGraphStorage",
             "MemgraphStorage",
+            "OpenSearchGraphStorage",
         ],
         "required_methods": ["upsert_node", "upsert_edge"],
     },
@@ -26,6 +28,7 @@ STORAGE_IMPLEMENTATIONS = {
             "FaissVectorDBStorage",
             "QdrantVectorDBStorage",
             "MongoVectorDBStorage",
+            "OpenSearchVectorDBStorage",
             # "ChromaVectorDBStorage",
         ],
         "required_methods": ["query", "upsert"],
@@ -36,6 +39,7 @@ STORAGE_IMPLEMENTATIONS = {
             "RedisDocStatusStorage",
             "PGDocStatusStorage",
             "MongoDocStatusStorage",
+            "OpenSearchDocStatusStorage",
         ],
         "required_methods": ["get_docs_by_status"],
     },
@@ -91,6 +95,19 @@ STORAGE_ENV_REQUIREMENTS: dict[str, list[str]] = {
         "MONGO_URI",
         "MONGO_DATABASE",
     ],
+    # OpenSearch Storage Implementations
+    "OpenSearchKVStorage": [
+        "OPENSEARCH_HOSTS",
+    ],
+    "OpenSearchDocStatusStorage": [
+        "OPENSEARCH_HOSTS",
+    ],
+    "OpenSearchGraphStorage": [
+        "OPENSEARCH_HOSTS",
+    ],
+    "OpenSearchVectorDBStorage": [
+        "OPENSEARCH_HOSTS",
+    ],
 }
 
 # Storage implementation module mapping
@@ -116,6 +133,10 @@ STORAGES = {
     "FaissVectorDBStorage": ".kg.faiss_impl",
     "QdrantVectorDBStorage": ".kg.qdrant_impl",
     "MemgraphStorage": ".kg.memgraph_impl",
+    "OpenSearchKVStorage": ".kg.opensearch_impl",
+    "OpenSearchDocStatusStorage": ".kg.opensearch_impl",
+    "OpenSearchGraphStorage": ".kg.opensearch_impl",
+    "OpenSearchVectorDBStorage": ".kg.opensearch_impl",
 }
 
 
