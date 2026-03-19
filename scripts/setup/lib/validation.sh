@@ -207,6 +207,89 @@ validate_required_variables() {
   return 0
 }
 
+validate_opensearch_hosts_format() {
+  local hosts="${1:-${ENV_VALUES[OPENSEARCH_HOSTS]:-}}"
+  local entry=""
+  local trimmed=""
+  local has_host="no"
+  local -a entries=()
+
+  if [[ "$hosts" == *"://"* ]]; then
+    format_error \
+      "OPENSEARCH_HOSTS must use bare host:port entries, not URLs." \
+      "Set comma-separated host:port values such as localhost:9200; control TLS with OPENSEARCH_USE_SSL."
+    return 1
+  fi
+
+  IFS=',' read -r -a entries <<< "$hosts"
+  for entry in "${entries[@]}"; do
+    trimmed="${entry#"${entry%%[![:space:]]*}"}"
+    trimmed="${trimmed%"${trimmed##*[![:space:]]}"}"
+    if [[ -z "$trimmed" ]]; then
+      format_error \
+        "OPENSEARCH_HOSTS must not contain empty host entries." \
+        "Use comma-separated host:port values such as localhost:9200 or host1:9200,host2:9200."
+      return 1
+    fi
+    has_host="yes"
+  done
+
+  if [[ "$has_host" != "yes" ]]; then
+    format_error \
+      "OPENSEARCH_HOSTS must include at least one host:port entry." \
+      "Set it to a value such as localhost:9200."
+    return 1
+  fi
+
+  return 0
+}
+
+validate_opensearch_password_strength() {
+  local password="${1:-${ENV_VALUES[OPENSEARCH_PASSWORD]:-}}"
+
+  if [[ ${#password} -lt 8 || ! "$password" =~ [A-Z] || ! "$password" =~ [a-z] || ! "$password" =~ [0-9] || ! "$password" =~ [^A-Za-z0-9] ]]; then
+    format_error \
+      "OpenSearch requires a strong OPENSEARCH_PASSWORD." \
+      "Use at least 8 characters with uppercase, lowercase, number, and special character."
+    return 1
+  fi
+
+  return 0
+}
+
+validate_opensearch_config() {
+  local deployment_mode="${1:-${ENV_VALUES[LIGHTRAG_SETUP_OPENSEARCH_DEPLOYMENT]:-}}"
+  local hosts="${2:-${ENV_VALUES[OPENSEARCH_HOSTS]:-}}"
+  local user="${3:-${ENV_VALUES[OPENSEARCH_USER]:-}}"
+  local password="${4:-${ENV_VALUES[OPENSEARCH_PASSWORD]:-}}"
+
+  if ! validate_opensearch_hosts_format "$hosts"; then
+    return 1
+  fi
+
+  if [[ -z "$user" || -z "$password" ]]; then
+    if [[ "$deployment_mode" == "docker" ]]; then
+      format_error \
+        "Bundled OpenSearch requires OPENSEARCH_USER and OPENSEARCH_PASSWORD." \
+        "Set both variables or rerun setup; the managed Docker service starts with security enabled."
+    else
+      format_error \
+        "OpenSearch requires both OPENSEARCH_USER and OPENSEARCH_PASSWORD." \
+        "This setup wizard only supports authenticated OpenSearch clusters. Set both values or rerun setup."
+    fi
+    return 1
+  fi
+
+  if ! validate_opensearch_password_strength "$password"; then
+    if [[ "$deployment_mode" == "docker" ]]; then
+      echo "${COLOR_YELLOW:-}Hint:${COLOR_RESET:-} The managed Docker image also enforces this password strength at startup." >&2
+    fi
+    return 1
+  fi
+
+  return 0
+}
+
 validate_mongo_vector_storage_config() {
   local vector_storage="$1"
   local mongo_uri="${2:-${ENV_VALUES[MONGO_URI]:-}}"

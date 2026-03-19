@@ -243,7 +243,7 @@ generate_env_file() {
 # keys no longer needed are not left behind in the compose file.
 _WIZARD_COMPOSE_LIGHTRAG_KEYS=(
   "EMBEDDING_BINDING_HOST" "RERANK_BINDING_HOST" "LLM_BINDING_HOST"
-  "REDIS_URI" "MONGO_URI" "NEO4J_URI" "MILVUS_URI" "QDRANT_URL" "MEMGRAPH_URI"
+  "REDIS_URI" "MONGO_URI" "NEO4J_URI" "MILVUS_URI" "QDRANT_URL" "MEMGRAPH_URI" "OPENSEARCH_HOSTS"
   "POSTGRES_HOST" "POSTGRES_PORT" "PORT" "HOST" "SSL_CERTFILE" "SSL_KEYFILE"
   "WORKING_DIR" "INPUT_DIR"
 )
@@ -252,7 +252,7 @@ _managed_service_root_name() {
   local service_name="$1"
 
   case "$service_name" in
-    postgres|neo4j|mongodb|redis|qdrant|memgraph|vllm-embed|vllm-rerank)
+    postgres|neo4j|mongodb|redis|qdrant|memgraph|opensearch|vllm-embed|vllm-rerank)
       printf '%s' "$service_name"
       ;;
     milvus|milvus-etcd|milvus-minio)
@@ -288,6 +288,9 @@ _managed_volume_root_name() {
       ;;
     memgraph_data)
       printf 'memgraph'
+      ;;
+    opensearch_data)
+      printf 'opensearch'
       ;;
     vllm_rerank_cache)
       printf 'vllm-rerank'
@@ -1085,6 +1088,8 @@ generate_docker_compose() {
       qdrant)
         ;;
       memgraph)
+        ;;
+      opensearch)
         ;;
       vllm-rerank)
         ;;
