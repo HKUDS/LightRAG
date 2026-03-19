@@ -4,8 +4,8 @@
       - discovery.type=single-node
       - OPENSEARCH_INITIAL_ADMIN_PASSWORD=${OPENSEARCH_PASSWORD:?missing}
       - OPENSEARCH_JAVA_OPTS=-Xms512m -Xmx512m
-    ports:
-      - "9200:9200"
+    # ports:
+    #   - "9200:9200"
     ulimits:
       memlock:
         soft: -1

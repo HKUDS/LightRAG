@@ -312,6 +312,49 @@ normalize_loopback_host_for_compose() {
   printf '%s' "$host"
 }
 
+normalize_opensearch_hosts_for_compose() {
+  local hosts="$1"
+  local entry=""
+  local trimmed=""
+  local normalized_entry=""
+  local -a raw_entries=()
+  local -a normalized_entries=()
+
+  IFS=',' read -r -a raw_entries <<< "$hosts"
+  for entry in "${raw_entries[@]}"; do
+    trimmed="${entry#"${entry%%[![:space:]]*}"}"
+    trimmed="${trimmed%"${trimmed##*[![:space:]]}"}"
+    # OPENSEARCH_HOSTS is intentionally limited to bare host[:port] entries.
+    # TLS is configured separately via OPENSEARCH_USE_SSL, so scheme-bearing
+    # URLs are rejected during validation rather than normalized here.
+    normalized_entry="$trimmed"
+
+    if [[ "$trimmed" =~ ^(localhost|127\.0\.0\.1|0\.0\.0\.0)(:[0-9]+)?$ ]]; then
+      normalized_entry="host.docker.internal${BASH_REMATCH[2]}"
+    fi
+
+    normalized_entries+=("$normalized_entry")
+  done
+
+  (
+    IFS=','
+    printf '%s' "${normalized_entries[*]}"
+  )
+}
+
+env_value_is_true() {
+  local value="${1:-}"
+
+  case "${value,,}" in
+    true|1|yes)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
 normalize_server_host_for_compose() {
   # Keep the published bind address/port configurable through compose-time
   # variable expansion, while forcing the container itself to listen on the
@@ -491,13 +534,24 @@ prepare_compose_runtime_overrides() {
     "NEO4J_URI" \
     "MILVUS_URI" \
     "QDRANT_URL" \
-    "MEMGRAPH_URI" \
-    "OPENSEARCH_HOSTS"; do
+    "MEMGRAPH_URI"; do
     if [[ -n "${COMPOSE_ENV_OVERRIDES[$key]+set}" ]]; then
       continue
     fi
     if [[ -n "${ENV_VALUES[$key]:-}" ]]; then
       normalized_value="$(normalize_loopback_uri_for_compose "${ENV_VALUES[$key]}")"
+      if [[ "$normalized_value" != "${ENV_VALUES[$key]}" ]]; then
+        set_compose_override "$key" "$normalized_value"
+      fi
+    fi
+  done
+
+  for key in "OPENSEARCH_HOSTS"; do
+    if [[ -n "${COMPOSE_ENV_OVERRIDES[$key]+set}" ]]; then
+      continue
+    fi
+    if [[ -n "${ENV_VALUES[$key]:-}" ]]; then
+      normalized_value="$(normalize_opensearch_hosts_for_compose "${ENV_VALUES[$key]}")"
       if [[ "$normalized_value" != "${ENV_VALUES[$key]}" ]]; then
         set_compose_override "$key" "$normalized_value"
       fi
@@ -1018,6 +1072,15 @@ collect_database_config() {
   local service_name=""
   local deployment_mode="no"
 
+  # Storage collector rule for this wizard:
+  # - Existing ENV_VALUES loaded from .env are user-owned configuration.
+  # - Collectors should use those values as defaults and preserve them when they
+  #   are already set, even for Docker-managed services.
+  # - A collector may normalize the stored form, or write a hard default only
+  #   when the key is absent.
+  # Keep future storage collectors aligned with this behavior so rerunning the
+  # wizard does not silently erase explicit .env overrides.
+
   case "$db_type" in
     postgresql)
       collect_postgres_config "$default_docker"
@@ -1387,6 +1450,10 @@ collect_opensearch_config() {
   local default_docker="${1:-no}"
   local use_docker="no"
   local hosts user password
+  local use_ssl="true"
+  local verify_certs="false"
+  local use_ssl_default="yes"
+  local verify_certs_default="no"
 
   if [[ "$default_docker" == "yes" ]]; then
     if confirm_default_yes "Run OpenSearch locally via Docker?"; then
@@ -1405,16 +1472,46 @@ collect_opensearch_config() {
     hosts="${ENV_VALUES[OPENSEARCH_HOSTS]:-localhost:9200}"
   fi
 
-  hosts="$(prompt_with_default "OpenSearch hosts" "$hosts")"
+  hosts="$(prompt_until_valid "OpenSearch hosts (host:port, comma-separated)" "$hosts" validate_opensearch_hosts_format)"
   user="$(prompt_with_default "OpenSearch user" "${ENV_VALUES[OPENSEARCH_USER]:-admin}")"
-  password="$(prompt_secret_with_default "OpenSearch password: " "${ENV_VALUES[OPENSEARCH_PASSWORD]:-LightRAG2026_!@}")"
+  password="$(prompt_secret_until_valid_with_default "OpenSearch password: " "${ENV_VALUES[OPENSEARCH_PASSWORD]:-LightRAG2026_!@}" validate_opensearch_password_strength)"
+
+  if [[ "$use_docker" == "yes" ]]; then
+    if [[ -n "${ENV_VALUES[OPENSEARCH_USE_SSL]:-}" ]]; then
+      env_value_is_true "${ENV_VALUES[OPENSEARCH_USE_SSL]}" && use_ssl="true" || use_ssl="false"
+    else
+      use_ssl="true"
+    fi
+    verify_certs="false"
+  else
+    if [[ -n "${ENV_VALUES[OPENSEARCH_USE_SSL]:-}" ]] && ! env_value_is_true "${ENV_VALUES[OPENSEARCH_USE_SSL]}"; then
+      use_ssl_default="no"
+    fi
+
+    if [[ "$use_ssl_default" == "yes" ]]; then
+      confirm_default_yes "Use SSL for OpenSearch?" && use_ssl="true" || use_ssl="false"
+    else
+      confirm_default_no "Use SSL for OpenSearch?" && use_ssl="true" || use_ssl="false"
+    fi
+
+    if [[ "$use_ssl" == "true" ]]; then
+      if [[ -n "${ENV_VALUES[OPENSEARCH_VERIFY_CERTS]:-}" ]] && env_value_is_true "${ENV_VALUES[OPENSEARCH_VERIFY_CERTS]}"; then
+        verify_certs_default="yes"
+      fi
+
+      if [[ "$verify_certs_default" == "yes" ]]; then
+        confirm_default_yes "Verify OpenSearch TLS certificates?" && verify_certs="true" || verify_certs="false"
+      else
+        confirm_default_no "Verify OpenSearch TLS certificates?" && verify_certs="true" || verify_certs="false"
+      fi
+    fi
+  fi
 
   ENV_VALUES["OPENSEARCH_HOSTS"]="$hosts"
   ENV_VALUES["OPENSEARCH_USER"]="$user"
   ENV_VALUES["OPENSEARCH_PASSWORD"]="$password"
-  ENV_VALUES["OPENSEARCH_USE_SSL"]="${ENV_VALUES[OPENSEARCH_USE_SSL]:-true}"
-  ENV_VALUES["OPENSEARCH_VERIFY_CERTS"]="${ENV_VALUES[OPENSEARCH_VERIFY_CERTS]:-false}"
-  ENV_VALUES["OPENSEARCH_USE_PPL_GRAPHLOOKUP"]="${ENV_VALUES[OPENSEARCH_USE_PPL_GRAPHLOOKUP]:-false}"
+  ENV_VALUES["OPENSEARCH_USE_SSL"]="$use_ssl"
+  ENV_VALUES["OPENSEARCH_VERIFY_CERTS"]="$verify_certs"
 
   if [[ "$use_docker" == "yes" ]]; then
     set_compose_override "OPENSEARCH_HOSTS" "opensearch:9200"
@@ -2610,6 +2707,8 @@ validate_env_file() {
   local errors=0
   local kv vector graph doc_status
   local runtime_target
+  local storage db_type
+  local -A referenced_db_types=()
 
   reset_state
 
@@ -2622,6 +2721,16 @@ validate_env_file() {
   graph="${ENV_VALUES[LIGHTRAG_GRAPH_STORAGE]:-}"
   doc_status="${ENV_VALUES[LIGHTRAG_DOC_STATUS_STORAGE]:-}"
   runtime_target="${ENV_VALUES[LIGHTRAG_RUNTIME_TARGET]:-$DEFAULT_RUNTIME_TARGET}"
+
+  for storage in "$kv" "$vector" "$graph" "$doc_status"; do
+    if [[ -z "$storage" ]]; then
+      continue
+    fi
+    db_type="${STORAGE_DB_TYPES[$storage]:-}"
+    if [[ -n "$db_type" ]]; then
+      referenced_db_types["$db_type"]=1
+    fi
+  done
 
   if ! validate_runtime_target "$runtime_target"; then
     errors=1
@@ -2665,37 +2774,46 @@ validate_env_file() {
     fi
   fi
 
-  if [[ -n "${ENV_VALUES[NEO4J_URI]:-}" ]] && ! validate_uri "${ENV_VALUES[NEO4J_URI]}" neo4j; then
+  if [[ -n "${referenced_db_types[neo4j]+set}" ]] && [[ -n "${ENV_VALUES[NEO4J_URI]:-}" ]] && ! validate_uri "${ENV_VALUES[NEO4J_URI]}" neo4j; then
     format_error "Invalid NEO4J_URI" "Use neo4j:// or bolt:// format."
     errors=1
   fi
-  if [[ -n "${ENV_VALUES[MONGO_URI]:-}" ]] && ! validate_uri "${ENV_VALUES[MONGO_URI]}" mongodb; then
+  if [[ -n "${referenced_db_types[mongodb]+set}" ]] && [[ -n "${ENV_VALUES[MONGO_URI]:-}" ]] && ! validate_uri "${ENV_VALUES[MONGO_URI]}" mongodb; then
     format_error "Invalid MONGO_URI" "Use mongodb:// or mongodb+srv:// format."
     errors=1
   fi
-  if [[ -n "${ENV_VALUES[REDIS_URI]:-}" ]] && ! validate_uri "${ENV_VALUES[REDIS_URI]}" redis; then
+  if [[ -n "${referenced_db_types[redis]+set}" ]] && [[ -n "${ENV_VALUES[REDIS_URI]:-}" ]] && ! validate_uri "${ENV_VALUES[REDIS_URI]}" redis; then
     format_error "Invalid REDIS_URI" "Use redis:// or rediss:// format."
     errors=1
   fi
-  if [[ -n "${ENV_VALUES[MILVUS_URI]:-}" ]] && ! validate_uri "${ENV_VALUES[MILVUS_URI]}" milvus; then
+  if [[ -n "${referenced_db_types[milvus]+set}" ]] && [[ -n "${ENV_VALUES[MILVUS_URI]:-}" ]] && ! validate_uri "${ENV_VALUES[MILVUS_URI]}" milvus; then
     format_error "Invalid MILVUS_URI" "Use http://host:port format."
     errors=1
   fi
-  if [[ -n "${ENV_VALUES[QDRANT_URL]:-}" ]] && ! validate_uri "${ENV_VALUES[QDRANT_URL]}" qdrant; then
+  if [[ -n "${referenced_db_types[qdrant]+set}" ]] && [[ -n "${ENV_VALUES[QDRANT_URL]:-}" ]] && ! validate_uri "${ENV_VALUES[QDRANT_URL]}" qdrant; then
     format_error "Invalid QDRANT_URL" "Use http://host:port format."
     errors=1
   fi
-  if [[ -n "${ENV_VALUES[MEMGRAPH_URI]:-}" ]] && ! validate_uri "${ENV_VALUES[MEMGRAPH_URI]}" memgraph; then
+  if [[ -n "${referenced_db_types[memgraph]+set}" ]] && [[ -n "${ENV_VALUES[MEMGRAPH_URI]:-}" ]] && ! validate_uri "${ENV_VALUES[MEMGRAPH_URI]}" memgraph; then
     format_error "Invalid MEMGRAPH_URI" "Use bolt://host:port format."
     errors=1
   fi
-  if [[ -n "${ENV_VALUES[POSTGRES_PORT]:-}" ]] && ! validate_port "${ENV_VALUES[POSTGRES_PORT]}"; then
+  if [[ -n "${referenced_db_types[postgresql]+set}" ]] && [[ -n "${ENV_VALUES[POSTGRES_PORT]:-}" ]] && ! validate_port "${ENV_VALUES[POSTGRES_PORT]}"; then
     format_error "Invalid POSTGRES_PORT" "Use a port between 1 and 65535."
     errors=1
   fi
-  if [[ -n "${ENV_VALUES[OPENSEARCH_HOSTS]:-}" ]] && [[ -z "${ENV_VALUES[OPENSEARCH_HOSTS]}" ]]; then
+  if [[ -n "${referenced_db_types[opensearch]+set}" ]] && [[ -v 'ENV_VALUES[OPENSEARCH_HOSTS]' ]] && [[ -z "${ENV_VALUES[OPENSEARCH_HOSTS]}" ]]; then
     format_error "Empty OPENSEARCH_HOSTS" "Set it to host:port (e.g. localhost:9200)."
     errors=1
+  fi
+  if [[ -n "${referenced_db_types[opensearch]+set}" ]]; then
+    if ! validate_opensearch_config \
+      "${ENV_VALUES[LIGHTRAG_SETUP_OPENSEARCH_DEPLOYMENT]:-}" \
+      "${ENV_VALUES[OPENSEARCH_HOSTS]:-}" \
+      "${ENV_VALUES[OPENSEARCH_USER]:-}" \
+      "${ENV_VALUES[OPENSEARCH_PASSWORD]:-}"; then
+      errors=1
+    fi
   fi
   if ((errors != 0)); then
     return 1
@@ -2723,8 +2841,16 @@ security_check_env_file() {
   local whitelist_paths=""
   local whitelist_is_set="no"
   local effective_whitelist=""
+  local kv=""
+  local vector=""
+  local graph=""
+  local doc_status=""
+  local storage=""
+  local db_type=""
+  local opensearch_in_use="no"
   local key value
   local invalid_sensitive_keys=()
+  local -A referenced_db_types=()
 
   reset_state
 
@@ -2735,9 +2861,30 @@ security_check_env_file() {
   auth_accounts="${ENV_VALUES[AUTH_ACCOUNTS]:-}"
   token_secret="${ENV_VALUES[TOKEN_SECRET]:-}"
   api_key="${ENV_VALUES[LIGHTRAG_API_KEY]:-}"
+  kv="${ENV_VALUES[LIGHTRAG_KV_STORAGE]:-}"
+  vector="${ENV_VALUES[LIGHTRAG_VECTOR_STORAGE]:-}"
+  graph="${ENV_VALUES[LIGHTRAG_GRAPH_STORAGE]:-}"
+  doc_status="${ENV_VALUES[LIGHTRAG_DOC_STATUS_STORAGE]:-}"
   if [[ -n "${ENV_VALUES[WHITELIST_PATHS]+set}" ]]; then
     whitelist_paths="${ENV_VALUES[WHITELIST_PATHS]}"
     whitelist_is_set="yes"
+  fi
+
+  for storage in "$kv" "$vector" "$graph" "$doc_status"; do
+    if [[ -z "$storage" ]]; then
+      continue
+    fi
+    if [[ ! -v "STORAGE_DB_TYPES[$storage]" ]]; then
+      continue
+    fi
+    db_type="${STORAGE_DB_TYPES[$storage]}"
+    if [[ -n "$db_type" ]]; then
+      referenced_db_types["$db_type"]=1
+    fi
+  done
+
+  if [[ -n "${referenced_db_types[opensearch]+set}" || "${ENV_VALUES[LIGHTRAG_SETUP_OPENSEARCH_DEPLOYMENT]:-}" == "docker" ]]; then
+    opensearch_in_use="yes"
   fi
 
   for key in "${!ENV_VALUES[@]}"; do
@@ -2809,7 +2956,7 @@ security_check_env_file() {
     fi
   fi
 
-  if [[ -n "${ENV_VALUES[OPENSEARCH_PASSWORD]:-}" ]]; then
+  if [[ "$opensearch_in_use" == "yes" ]] && [[ -n "${ENV_VALUES[OPENSEARCH_PASSWORD]:-}" ]]; then
     local os_pass="${ENV_VALUES[OPENSEARCH_PASSWORD]}"
     if [[ "$os_pass" == "admin" || "$os_pass" == "LightRAG2026_!@" ]]; then
       report_security_issue \
