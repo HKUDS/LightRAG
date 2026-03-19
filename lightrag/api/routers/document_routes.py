@@ -83,6 +83,20 @@ router = APIRouter(
 
 # Temporary file prefix
 temp_prefix = "__tmp__"
+UNKNOWN_FILE_SOURCE = "unknown_source"
+LEGACY_EMPTY_FILE_PATH_SENTINELS = {"", "no-file-path"}
+
+
+def normalize_file_path(file_path: str | None) -> str:
+    """Normalize missing document sources to a single non-null sentinel."""
+    if file_path is None:
+        return UNKNOWN_FILE_SOURCE
+
+    normalized = file_path.strip()
+    if normalized in LEGACY_EMPTY_FILE_PATH_SENTINELS:
+        return UNKNOWN_FILE_SOURCE
+
+    return normalized
 
 
 def sanitize_filename(filename: str, input_dir: Path) -> str:
@@ -219,17 +233,19 @@ class InsertTextRequest(BaseModel):
         min_length=1,
         description="The text to insert",
     )
-    file_source: str = Field(default=None, min_length=0, description="File Source")
+    file_source: Optional[str] = Field(
+        default=None, min_length=0, description="File Source"
+    )
 
     @field_validator("text", mode="after")
     @classmethod
     def strip_text_after(cls, text: str) -> str:
         return text.strip()
 
-    @field_validator("file_source", mode="after")
+    @field_validator("file_source", mode="before")
     @classmethod
-    def strip_source_after(cls, file_source: str) -> str:
-        return file_source.strip()
+    def normalize_source_before(cls, file_source: Optional[str]) -> str:
+        return normalize_file_path(file_source)
 
     class Config:
         json_schema_extra = {
@@ -252,7 +268,7 @@ class InsertTextsRequest(BaseModel):
         min_length=1,
         description="The texts to insert",
     )
-    file_sources: list[str] = Field(
+    file_sources: Optional[list[str]] = Field(
         default=None, min_length=0, description="Sources of the texts"
     )
 
@@ -261,10 +277,15 @@ class InsertTextsRequest(BaseModel):
     def strip_texts_after(cls, texts: list[str]) -> list[str]:
         return [text.strip() for text in texts]
 
-    @field_validator("file_sources", mode="after")
+    @field_validator("file_sources", mode="before")
     @classmethod
-    def strip_sources_after(cls, file_sources: list[str]) -> list[str]:
-        return [file_source.strip() for file_source in file_sources]
+    def normalize_sources_before(
+        cls, file_sources: Optional[list[str]]
+    ) -> Optional[list[str]]:
+        if file_sources is None:
+            return None
+
+        return [normalize_file_path(file_source) for file_source in file_sources]
 
     class Config:
         json_schema_extra = {
@@ -1716,14 +1737,21 @@ async def pipeline_index_texts(
     """
     if not texts:
         return
-    if file_sources is not None:
-        if len(file_sources) != 0 and len(file_sources) != len(texts):
-            [
-                file_sources.append("unknown_source")
-                for _ in range(len(file_sources), len(texts))
-            ]
+
+    normalized_file_sources: list[str] | None = None
+    if file_sources:
+        normalized_file_sources = [
+            normalize_file_path(source) for source in file_sources
+        ]
+        if len(normalized_file_sources) > len(texts):
+            raise ValueError("Number of file sources must not exceed number of texts")
+        if len(normalized_file_sources) < len(texts):
+            normalized_file_sources.extend(
+                [UNKNOWN_FILE_SOURCE] * (len(texts) - len(normalized_file_sources))
+            )
+
     await rag.apipeline_enqueue_documents(
-        input=texts, file_paths=file_sources, track_id=track_id
+        input=texts, file_paths=normalized_file_sources, track_id=track_id
     )
     await rag.apipeline_process_enqueue_documents()
 
@@ -2779,7 +2807,7 @@ def create_document_routes(
                             chunks_count=doc_status.chunks_count,
                             error_msg=doc_status.error_msg,
                             metadata=doc_status.metadata,
-                            file_path=doc_status.file_path,
+                            file_path=normalize_file_path(doc_status.file_path),
                         )
                     )
 
@@ -3041,7 +3069,7 @@ def create_document_routes(
                         chunks_count=doc_status.chunks_count,
                         error_msg=doc_status.error_msg,
                         metadata=doc_status.metadata,
-                        file_path=doc_status.file_path,
+                        file_path=normalize_file_path(doc_status.file_path),
                     )
                 )
 
@@ -3122,7 +3150,7 @@ def create_document_routes(
                         chunks_count=doc.chunks_count,
                         error_msg=doc.error_msg,
                         metadata=doc.metadata,
-                        file_path=doc.file_path,
+                        file_path=normalize_file_path(doc.file_path),
                     )
                 )
 

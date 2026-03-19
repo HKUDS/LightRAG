@@ -168,12 +168,18 @@ class TestMilvusIndexConfig:
         config.validate_milvus_version("2.6.9-dev")
 
     def test_build_index_params_autoindex(self):
-        """Test AUTOINDEX does not generate parameters"""
+        """Test AUTOINDEX generates explicit index parameters"""
         config = MilvusIndexConfig(index_type="AUTOINDEX")
         mock_index_params = MagicMock()
 
         result = config.build_index_params(mock_index_params)
-        assert result is None
+        assert result is mock_index_params
+        mock_index_params.add_index.assert_called_once_with(
+            field_name="vector",
+            index_type="AUTOINDEX",
+            metric_type="COSINE",
+            params={},
+        )
 
     def test_build_index_params_hnsw(self):
         """Test HNSW index parameters construction"""

@@ -1762,6 +1762,10 @@ class LightRAG:
                 raise ValueError(
                     "Number of file paths must match the number of documents"
                 )
+            file_paths = [
+                path.strip() if isinstance(path, str) else "" for path in file_paths
+            ]
+            file_paths = [path if path else "unknown_source" for path in file_paths]
         else:
             file_paths = ["unknown_source"] * len(input)
 

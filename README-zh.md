@@ -183,6 +183,25 @@ docker compose up
 
 > 在此获取LightRAG docker镜像历史版本: [LightRAG Docker Images]( https://github.com/HKUDS/LightRAG/pkgs/container/lightrag)
 
+### 使用 Setup 工具创建 .env 文件
+
+除了手动编辑 `env.example` 之外，您还可以使用交互式向导生成配置好的 `.env`，并在需要时生成 `docker-compose.final.yml`：
+
+```bash
+make env-base           # 必跑第一步：配置 LLM、Embedding、Reranker
+make env-storage        # 可选：配置存储后端和数据库服务
+make env-server         # 可选：配置服务端口、鉴权和 SSL
+make env-base-rewrite   # 可选：强制重建向导托管的 compose 服务块
+make env-storage-rewrite # 可选：强制重建向导托管的 compose 服务块
+make env-security-check # 可选：审计当前 .env 中的安全风险
+```
+
+每个目标的详细说明请参阅 [docs/InteractiveSetup.md](./docs/InteractiveSetup.md)。
+这些 setup 向导只负责更新配置；如需在部署前审计当前 `.env` 的安全风险，请额外运行
+`make env-security-check`。
+默认情况下，重新运行 setup 会保留未变化的向导托管 compose 服务块；只有在需要按模板强制重建这些托管块时，才使用
+`*-rewrite` 目标。
+
 ### 安装LightRAG Core
 
 * 从源代码安装（推荐）
@@ -326,10 +345,10 @@ if __name__ == "__main__":
 | -------------- | ---------- | ----------------- | ------------- |
 | **working_dir** | `str` | 存储缓存的目录 | `lightrag_cache+timestamp` |
 | **workspace** | str | 用于不同 LightRAG 实例之间数据隔离的工作区名称 | |
-| **kv_storage** | `str` | Storage type for documents and text chunks. Supported types: `JsonKVStorage`,`PGKVStorage`,`RedisKVStorage`,`MongoKVStorage` | `JsonKVStorage` |
-| **vector_storage** | `str` | Storage type for embedding vectors. Supported types: `NanoVectorDBStorage`,`PGVectorStorage`,`MilvusVectorDBStorage`,`ChromaVectorDBStorage`,`FaissVectorDBStorage`,`MongoVectorDBStorage`,`QdrantVectorDBStorage` | `NanoVectorDBStorage` |
-| **graph_storage** | `str` | Storage type for graph edges and nodes. Supported types: `NetworkXStorage`,`Neo4JStorage`,`PGGraphStorage`,`AGEStorage` | `NetworkXStorage` |
-| **doc_status_storage** | `str` | Storage type for documents process status. Supported types: `JsonDocStatusStorage`,`PGDocStatusStorage`,`MongoDocStatusStorage` | `JsonDocStatusStorage` |
+| **kv_storage** | `str` | Storage type for documents and text chunks. Supported types: `JsonKVStorage`,`PGKVStorage`,`RedisKVStorage`,`MongoKVStorage`,`OpenSearchKVStorage` | `JsonKVStorage` |
+| **vector_storage** | `str` | Storage type for embedding vectors. Supported types: `NanoVectorDBStorage`,`PGVectorStorage`,`MilvusVectorDBStorage`,`ChromaVectorDBStorage`,`FaissVectorDBStorage`,`MongoVectorDBStorage`,`QdrantVectorDBStorage`,`OpenSearchVectorDBStorage` | `NanoVectorDBStorage` |
+| **graph_storage** | `str` | Storage type for graph edges and nodes. Supported types: `NetworkXStorage`,`Neo4JStorage`,`PGGraphStorage`,`AGEStorage`,`OpenSearchGraphStorage` | `NetworkXStorage` |
+| **doc_status_storage** | `str` | Storage type for documents process status. Supported types: `JsonDocStatusStorage`,`PGDocStatusStorage`,`MongoDocStatusStorage`,`OpenSearchDocStatusStorage` | `JsonDocStatusStorage` |
 | **chunk_token_size** | `int` | 拆分文档时每个块的最大令牌大小 | `1200` |
 | **chunk_overlap_token_size** | `int` | 拆分文档时两个块之间的重叠令牌大小 | `100` |
 | **tokenizer** | `Tokenizer` | 用于将文本转换为 tokens（数字）以及使用遵循 TokenizerInterface 协议的 .encode() 和 .decode() 函数将 tokens 转换回文本的函数。 如果您不指定，它将使用默认的 Tiktoken tokenizer。 | `TiktokenTokenizer` |
@@ -921,19 +940,21 @@ LightRAG 使用 4 种类型的存储来满足不同用途：
 * KV_STORAGE 支持的实现：
 
 ```
-JsonKVStorage    JsonFile（默认）
-PGKVStorage      Postgres
-RedisKVStorage   Redis
-MongoKVStorage   MongoDB
+JsonKVStorage        JsonFile（默认）
+PGKVStorage          Postgres
+RedisKVStorage       Redis
+MongoKVStorage       MongoDB
+OpenSearchKVStorage  OpenSearch
 ```
 
 * GRAPH_STORAGE 支持的实现：
 
 ```
-NetworkXStorage      NetworkX（默认）
-Neo4JStorage         Neo4J
-PGGraphStorage       PostgreSQL with AGE 插件
-MemgraphStorage      Memgraph
+NetworkXStorage          NetworkX（默认）
+Neo4JStorage             Neo4J
+PGGraphStorage           PostgreSQL with AGE 插件
+MemgraphStorage          Memgraph
+OpenSearchGraphStorage   OpenSearch
 ```
 
 > 测试表明，Neo4J 在生产环境中的性能优于带有 AGE 插件的 PostgreSQL。
@@ -947,6 +968,7 @@ MilvusVectorDBStorage       Milvus
 FaissVectorDBStorage        Faiss
 QdrantVectorDBStorage       Qdrant
 MongoVectorDBStorage        MongoDB
+OpenSearchVectorDBStorage   OpenSearch
 ```
 
 * DOC_STATUS_STORAGE 支持的实现：
@@ -955,6 +977,7 @@ MongoVectorDBStorage        MongoDB
 JsonDocStatusStorage        JsonFile（默认）
 PGDocStatusStorage          Postgres
 MongoDocStatusStorage       MongoDB
+OpenSearchDocStatusStorage  OpenSearch
 ```
 
 各存储类型的示例连接配置可在仓库中的 `env.example` 文件里找到。连接字符串中的数据库实例需要您预先在数据库服务器上创建。LightRAG 仅负责在数据库实例中创建表，不负责创建数据库实例本身。如果使用 Redis 作为存储，请记住配置 Redis 的自动数据持久化规则，否则 Redis 服务重启后数据将会丢失。如果使用 PostgreSQL，建议使用 16.6 或更高版本。
@@ -1222,7 +1245,7 @@ db_name = lightrag
 <details>
 <summary> <b>使用 MongoDB 存储</b> </summary>
 
-MongoDB 为 LightRAG 提供了一站式存储解决方案。MongoDB 提供原生的 KV 存储和向量存储。LightRAG 使用 MongoDB 集合来实现简单的图存储。MongoDB 官方的向量搜索功能（`$vectorSearch`）目前需要其官方云服务 MongoDB Atlas。此功能无法在自托管的 MongoDB Community/Enterprise 版本上使用。
+MongoDB 为 LightRAG 提供了一站式存储解决方案。MongoDB 提供原生的 KV 存储和向量存储。LightRAG 使用 MongoDB 集合来实现简单的图存储。`MongoVectorDBStorage` 需要目标 MongoDB 部署具备 Atlas Search / Vector Search 能力，例如 MongoDB Atlas 或 Atlas local。交互式 setup 向导内置的本地 Docker MongoDB 服务是 MongoDB Community Edition，因此它可以用于 KV / 图 / 文档状态存储，但不能作为 `MongoVectorDBStorage` 的后端。
 
 </details>
 
@@ -1241,6 +1264,120 @@ maxmemory-policy noeviction
 maxclients 500
 ```
 
+当交互式 setup 管理本地 Redis 容器时，它会在 `./data/config/redis.conf` 生成一个可直接修改的配置文件，并将其挂载到容器内。后续重新运行 setup 时会保留该文件，避免覆盖用户的手工调整。
+
+</details>
+
+<details>
+<summary> <b>使用 OpenSearch 存储</b> </summary>
+
+OpenSearch 为 LightRAG 的全部四种存储类型（KV、向量、图、文档状态）提供了统一的存储解决方案。它提供原生 k-NN 向量搜索、全文搜索和水平扩展能力，且无云服务限制。
+
+* **环境要求**：OpenSearch 3.x 或更高版本，需启用 k-NN 插件。
+
+使用 Docker 安装 (不含插件)：
+```bash
+docker run -d -p 9200:9200 -e "discovery.type=single-node" \
+  -e "OPENSEARCH_INITIAL_ADMIN_PASSWORD=<custom-admin-password>" \
+  opensearchproject/opensearch:latest
+```
+
+使用 Docker Compose 安装 (推荐，含插件)：
+```bash
+curl -O https://raw.githubusercontent.com/opensearch-project/opensearch-build/main/docker/release/dockercomposefiles/docker-compose-3.x.yml
+# 启动 OpenSearch 集群
+OPENSEARCH_INITIAL_ADMIN_PASSWORD=<custom-admin-password> docker-compose -f docker-compose-3.x.yml up -d
+```
+
+* **配置**：设置环境变量（完整列表请参见 `env.example`）：
+
+```bash
+export OPENSEARCH_HOSTS=localhost:9200
+export OPENSEARCH_USER=admin
+export OPENSEARCH_PASSWORD=<custom-admin-password>
+export OPENSEARCH_USE_SSL=true
+export OPENSEARCH_VERIFY_CERTS=false
+```
+
+* **使用方式**：
+
+```python
+rag = LightRAG(
+    working_dir=WORKING_DIR,
+    llm_model_func=your_llm_func,
+    embedding_func=your_embed_func,
+    kv_storage="OpenSearchKVStorage",
+    doc_status_storage="OpenSearchDocStatusStorage",
+    graph_storage="OpenSearchGraphStorage",
+    vector_storage="OpenSearchVectorDBStorage",
+)
+```
+
+* **图遍历**：当 OpenSearch SQL 插件支持 PPL 时，图查询会使用 `graphlookup` 命令进行服务端 BFS 遍历以获得最佳性能。否则，将回退到客户端批量 BFS。此功能在启动时自动检测，也可通过 `OPENSEARCH_USE_PPL_GRAPHLOOKUP=true|false` 强制设置。
+
+* **集成测试**：针对实际运行的 OpenSearch 集群进行集成测试：
+
+1. 使用 Docker Compose 启动 OpenSearch（下载 [`docker-compose-3.x.yml`](https://raw.githubusercontent.com/opensearch-project/opensearch-build/main/docker/release/dockercomposefiles/docker-compose-3.x.yml)）：
+
+```bash
+OPENSEARCH_INITIAL_ADMIN_PASSWORD=<custom-admin-password> docker-compose -f docker-compose-3.x.yml up -d
+```
+
+2. 验证集群是否正常运行：
+
+```bash
+curl -sk -u admin:<custom-admin-password> https://localhost:9200
+curl -sk -u admin:<custom-admin-password> https://localhost:9200/_cat/plugins?v
+```
+
+3. 运行单元测试（无需 OpenSearch 实例，使用 mock）：
+
+```bash
+python -m pytest tests/test_opensearch_storage.py -v
+```
+
+4. 使用实际集群以OpenSearch作为存储的演示：
+
+```bash
+export OPENSEARCH_HOSTS=localhost:9200
+export OPENSEARCH_USER=admin
+export OPENSEARCH_PASSWORD=<custom-admin-password>
+export OPENSEARCH_USE_SSL=true
+export OPENSEARCH_VERIFY_CERTS=false
+python examples/opensearch_storage_demo.py
+```
+
+5. 运行完整的 OpenAI + OpenSearch 示例（需要 `OPENAI_API_KEY`）：
+
+```bash
+export OPENAI_API_KEY=your-api-key
+python examples/lightrag_openai_opensearch_graph_demo.py
+```
+
+6. 通过 LightRAG WebUI 或独立 HTML 文件可视化知识图谱：
+
+启动 LightRAG 服务器之前，需要[构建前端组建](https://github.com/HKUDS/LightRAG/blob/main/lightrag/api/README.md).
+```bash
+# 带上 OpenSearch 存储的配置，启动 LightRAG 服务器
+LIGHTRAG_KV_STORAGE=OpenSearchKVStorage \
+LIGHTRAG_DOC_STATUS_STORAGE=OpenSearchDocStatusStorage \
+LIGHTRAG_GRAPH_STORAGE=OpenSearchGraphStorage \
+LIGHTRAG_VECTOR_STORAGE=OpenSearchVectorDBStorage \
+LLM_BINDING=openai \
+EMBEDDING_BINDING=openai \
+EMBEDDING_MODEL=text-embedding-3-large \
+EMBEDDING_DIM=3072 \
+OPENAI_API_KEY=your-api-key \
+lightrag-server
+
+# 执行该脚本读取 OpenSearch 存储的数据，生成知识图谱
+python examples/graph_visual_with_opensearch.py
+
+# 打开 http://localhost:9621/webui/ -> 知识图谱标签
+# 或执行该脚本生成独立 HTML 文件
+python examples/graph_visual_with_opensearch.py --html
+```
+
 </details>
 
 ### LightRAG 实例之间的数据隔离
@@ -1252,8 +1389,9 @@ maxclients 500
 - **对于 Qdrant 向量数据库，通过基于 payload 的分区实现数据隔离（Qdrant 推荐的多租户方法）**：`QdrantVectorDBStorage` 使用带有 payload 过滤的共享集合，实现无限的工作区可扩展性。
 - **对于关系型数据库，通过在表中添加 `workspace` 字段实现逻辑数据分离**：`PGKVStorage`、`PGVectorStorage`、`PGDocStatusStorage`。
 - **对于 Neo4j 图数据库，通过标签实现逻辑数据隔离**：`Neo4JStorage`
+- **对于 OpenSearch，通过索引名称前缀实现数据隔离**：`OpenSearchKVStorage`、`OpenSearchDocStatusStorage`、`OpenSearchGraphStorage`、`OpenSearchVectorDBStorage`
 
-为了保持与旧数据的兼容性，当未配置工作区时，PostgreSQL 非图存储的默认工作区为 `default`，PostgreSQL AGE 图存储的默认工作区为 null，Neo4j 图存储的默认工作区为 `base`。对于所有外部存储，系统提供专用的工作区环境变量来覆盖通用的 `WORKSPACE` 环境变量配置。这些存储特定的工作区环境变量包括：`REDIS_WORKSPACE`、`MILVUS_WORKSPACE`、`QDRANT_WORKSPACE`、`MONGODB_WORKSPACE`、`POSTGRES_WORKSPACE`、`NEO4J_WORKSPACE`。
+为了保持与旧数据的兼容性，当未配置工作区时，PostgreSQL 非图存储的默认工作区为 `default`，PostgreSQL AGE 图存储的默认工作区为 null，Neo4j 图存储的默认工作区为 `base`。对于所有外部存储，系统提供专用的工作区环境变量来覆盖通用的 `WORKSPACE` 环境变量配置。这些存储特定的工作区环境变量包括：`REDIS_WORKSPACE`、`MILVUS_WORKSPACE`、`QDRANT_WORKSPACE`、`MONGODB_WORKSPACE`、`POSTGRES_WORKSPACE`、`NEO4J_WORKSPACE`、`OPENSEARCH_WORKSPACE`。
 
 **使用示例：**
 有关在单个应用程序中管理多个隔离知识库（例如，将"书籍"内容与"人力资源政策"分开）的实际演示，请参阅 [Workspace Demo](examples/lightrag_gemini_workspace_demo.py)。
@@ -1784,33 +1922,17 @@ rag.export_data("complete_data.csv", include_vector_data=True)
 <details>
   <summary> <b>清除缓存</b> </summary>
 
-您可以使用不同的模式清除 LLM 响应缓存：
+您可以使用 `aclear_cache()` 清空当前配置的 LLM 响应缓存存储。该 API 会清除 `llm_response_cache` 中的全部缓存项，不支持按模式或缓存类型进行选择性清理。
 
 ```python
 # 清除所有缓存
 await rag.aclear_cache()
 
-# 清除 local 模式缓存
-await rag.aclear_cache(modes=["local"])
-
-# 清除提取（extraction）缓存
-await rag.aclear_cache(modes=["default"])
-
-# 清除多个模式的缓存
-await rag.aclear_cache(modes=["local", "global", "hybrid"])
-
 # 同步版本
-rag.clear_cache(modes=["local"])
+rag.clear_cache()
 ```
 
-有效模式包括：
-
-- `"default"`：提取缓存
-- `"naive"`：朴素搜索缓存
-- `"local"`：本地搜索缓存
-- `"global"`：全局搜索缓存
-- `"hybrid"`：混合搜索缓存
-- `"mix"`：混合（Mix）搜索缓存
+如果需要按类型管理查询相关缓存，可以使用 `lightrag.tools.clean_llm_query_cache` 工具，并参考说明文档 [lightrag/tools/README_CLEAN_LLM_QUERY_CACHE.md](./lightrag/tools/README_CLEAN_LLM_QUERY_CACHE.md)。该工具可管理 `mix`、`hybrid`、`local` 和 `global` 模式下的查询缓存与关键词缓存；它不会清理 `default:extract:*` 和 `default:summary:*` 这类提取缓存。
 
 </details>
 

@@ -15,7 +15,7 @@ import ssl as ssl_module
 import time
 import asyncio
 from dataclasses import dataclass, field
-from typing import Any, Union, final
+from typing import Any, AsyncIterator, Union, final
 import numpy as np
 import configparser
 
@@ -37,8 +37,8 @@ import pipmaster as pm
 if not pm.is_installed("opensearch-py"):
     pm.install("opensearch-py")
 
-from opensearchpy import AsyncOpenSearch, helpers
-from opensearchpy.exceptions import OpenSearchException, NotFoundError, RequestError
+from opensearchpy import AsyncOpenSearch, helpers  # type: ignore
+from opensearchpy.exceptions import OpenSearchException, NotFoundError, RequestError  # type: ignore
 
 config = configparser.ConfigParser()
 config.read("config.ini", "utf-8")
@@ -240,6 +240,52 @@ class OpenSearchKVStorage(BaseKVStorage):
             await ClientManager.release_client(self.client)
             self.client = None
 
+    async def _iter_raw_docs(
+        self, batch_size: int = 1000
+    ) -> AsyncIterator[list[dict[str, Any]]]:
+        """Yield raw OpenSearch hits using PIT + search_after pagination."""
+        if not self._index_ready:
+            return
+
+        try:
+            pit = await self.client.create_pit(
+                index=self._index_name, params={"keep_alive": "1m"}
+            )
+            pit_id = pit["pit_id"]
+            try:
+                search_after = None
+                while True:
+                    body = {
+                        "query": {"match_all": {}},
+                        "size": batch_size,
+                        "pit": {"id": pit_id, "keep_alive": "1m"},
+                        "sort": [{"_shard_doc": "asc"}],
+                    }
+                    if search_after:
+                        body["search_after"] = search_after
+
+                    response = await self.client.search(body=body)
+                    hits = response["hits"]["hits"]
+                    if not hits:
+                        break
+
+                    yield hits
+
+                    search_after = hits[-1]["sort"]
+                    if len(hits) < batch_size:
+                        break
+            finally:
+                try:
+                    await self.client.delete_pit(body={"pit_id": [pit_id]})
+                except Exception:
+                    pass
+        except OpenSearchException as e:
+            if _is_missing_index_error(e):
+                self._mark_index_missing()
+                return
+            logger.error(f"[{self.workspace}] Error scanning documents: {e}")
+            raise
+
     async def get_by_id(self, id: str) -> dict[str, Any] | None:
         """Get a document by its ID, or None if not found."""
         if not self._index_ready:
@@ -321,8 +367,10 @@ class OpenSearchKVStorage(BaseKVStorage):
                 }
             )
         try:
+            # No per-operation refresh: immediate reads use ID-based mget (translog),
+            # search visibility is guaranteed after index_done_callback() batch refresh.
             success, failed = await helpers.async_bulk(
-                self.client, actions, raise_on_error=False, refresh="wait_for"
+                self.client, actions, raise_on_error=False
             )
             if failed:
                 logger.warning(
@@ -366,12 +414,14 @@ class OpenSearchKVStorage(BaseKVStorage):
         if isinstance(ids, set):
             ids = list(ids)
         try:
+            # No per-operation refresh: immediate reads use ID-based mget (translog),
+            # search visibility is guaranteed after index_done_callback() batch refresh.
             actions = [
                 {"_op_type": "delete", "_index": self._index_name, "_id": doc_id}
                 for doc_id in ids
             ]
             success, _ = await helpers.async_bulk(
-                self.client, actions, raise_on_error=False, refresh="wait_for"
+                self.client, actions, raise_on_error=False
             )
             logger.info(
                 f"[{self.workspace}] Deleted {success} documents from {self.namespace}"
@@ -576,6 +626,8 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
                 }
             )
         try:
+            # DocStatus needs refresh="wait_for" because get_docs_by_status
+            # (search-based) is called immediately after enqueue upserts.
             await helpers.async_bulk(
                 self.client, actions, raise_on_error=False, refresh="wait_for"
             )
@@ -833,6 +885,10 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
         if isinstance(ids, set):
             ids = list(ids)
         try:
+            # DocStatus needs refresh="wait_for" because downstream readers
+            # (get_docs_by_status, get_docs_paginated, etc.) are search-based
+            # and callers like _validate_and_fix_document_consistency() may
+            # query immediately after deletion without index_done_callback().
             actions = [
                 {"_op_type": "delete", "_index": self._index_name, "_id": doc_id}
                 for doc_id in ids
@@ -1374,9 +1430,9 @@ class OpenSearchGraphStorage(BaseGraphStorage):
             doc["entity_id"] = node_id
             if node_data.get("source_id", ""):
                 doc["source_ids"] = node_data["source_id"].split(GRAPH_FIELD_SEP)
-            await self.client.index(
-                index=self._nodes_index, id=node_id, body=doc, refresh="wait_for"
-            )
+            # No per-operation refresh: node reads use ID-based mget/exists
+            # (translog, real-time). Search visibility after index_done_callback().
+            await self.client.index(index=self._nodes_index, id=node_id, body=doc)
         except OpenSearchException as e:
             logger.error(f"[{self.workspace}] Error upserting node {node_id}: {e}")
 
@@ -1411,9 +1467,11 @@ class OpenSearchGraphStorage(BaseGraphStorage):
             except OpenSearchException:
                 pass
 
-            await self.client.index(
-                index=self._edges_index, id=edge_id, body=doc, refresh="wait_for"
-            )
+            # No per-operation refresh: the reverse-edge check above uses
+            # client.exists() which reads from the translog (real-time).
+            # Note: has_edge() and get_edge() use the search API, so they may
+            # not see this write until the next index_done_callback() refresh.
+            await self.client.index(index=self._edges_index, id=edge_id, body=doc)
         except OpenSearchException as e:
             logger.error(
                 f"[{self.workspace}] Error upserting edge {source_node_id}->{target_node_id}: {e}"
@@ -1422,7 +1480,13 @@ class OpenSearchGraphStorage(BaseGraphStorage):
     # --- Delete operations ---
 
     async def delete_node(self, node_id: str) -> None:
-        """Delete a node and all its connected edges."""
+        """Delete a node and all its connected edges.
+
+        No per-operation refresh: delete_node is called from document deletion
+        pipelines that invoke index_done_callback() afterward.
+        Uses conflicts="proceed" to tolerate stale search views when prior
+        delete_by_query calls have already removed some edges.
+        """
         try:
             # Delete all edges referencing this node
             body = {
@@ -1436,20 +1500,23 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                 }
             }
             await self.client.delete_by_query(
-                index=self._edges_index, body=body, refresh=True
+                index=self._edges_index, body=body, params={"conflicts": "proceed"}
             )
             # Delete the node
             try:
-                await self.client.delete(
-                    index=self._nodes_index, id=node_id, refresh="wait_for"
-                )
+                await self.client.delete(index=self._nodes_index, id=node_id)
             except NotFoundError:
                 pass
         except OpenSearchException as e:
             logger.error(f"[{self.workspace}] Error deleting node {node_id}: {e}")
 
     async def remove_nodes(self, nodes: list[str]) -> None:
-        """Batch-delete multiple nodes and their connected edges."""
+        """Batch-delete multiple nodes and their connected edges.
+
+        No per-operation refresh: callers invoke index_done_callback() afterward.
+        Uses conflicts="proceed" to tolerate stale search views when prior
+        remove_edges() calls have already removed some edges without refresh.
+        """
         if not nodes:
             return
         logger.info(f"[{self.workspace}] Deleting {len(nodes)} nodes")
@@ -1466,21 +1533,24 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                 }
             }
             await self.client.delete_by_query(
-                index=self._edges_index, body=body, refresh=True
+                index=self._edges_index, body=body, params={"conflicts": "proceed"}
             )
             # Delete nodes
             actions = [
                 {"_op_type": "delete", "_index": self._nodes_index, "_id": nid}
                 for nid in nodes
             ]
-            await helpers.async_bulk(
-                self.client, actions, raise_on_error=False, refresh="wait_for"
-            )
+            await helpers.async_bulk(self.client, actions, raise_on_error=False)
         except OpenSearchException as e:
             logger.error(f"[{self.workspace}] Error removing nodes: {e}")
 
     async def remove_edges(self, edges: list[tuple[str, str]]) -> None:
-        """Batch-delete multiple edges (bidirectional matching)."""
+        """Batch-delete multiple edges (bidirectional matching).
+
+        No per-operation refresh: callers invoke index_done_callback() afterward.
+        Uses conflicts="proceed" to tolerate stale search views when
+        subsequent remove_nodes() may target already-deleted edges.
+        """
         if not edges:
             return
         logger.info(f"[{self.workspace}] Deleting {len(edges)} edges")
@@ -1509,7 +1579,7 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                 )
             body = {"query": {"bool": {"should": should_clauses}}}
             await self.client.delete_by_query(
-                index=self._edges_index, body=body, refresh=True
+                index=self._edges_index, body=body, params={"conflicts": "proceed"}
             )
         except OpenSearchException as e:
             logger.error(f"[{self.workspace}] Error removing edges: {e}")
@@ -2417,8 +2487,10 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
             for doc in list_data
         ]
         try:
+            # No per-operation refresh: immediate reads use ID-based mget (translog),
+            # k-NN search visibility is guaranteed after index_done_callback() batch refresh.
             success, failed = await helpers.async_bulk(
-                self.client, actions, raise_on_error=False, refresh="wait_for"
+                self.client, actions, raise_on_error=False
             )
             if failed:
                 logger.warning(
@@ -2564,12 +2636,13 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
         if isinstance(ids, set):
             ids = list(ids)
         try:
+            # No per-operation refresh: search visibility after index_done_callback().
             actions = [
                 {"_op_type": "delete", "_index": self._index_name, "_id": doc_id}
                 for doc_id in ids
             ]
             result = await helpers.async_bulk(
-                self.client, actions, raise_on_error=False, refresh="wait_for"
+                self.client, actions, raise_on_error=False
             )
             logger.debug(
                 f"[{self.workspace}] Deleted {result[0]} vectors from {self.namespace}"
@@ -2585,11 +2658,10 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
         if not self._index_ready:
             return
         try:
+            # No per-operation refresh: search visibility after index_done_callback().
             entity_id = compute_mdhash_id(entity_name, prefix="ent-")
             try:
-                await self.client.delete(
-                    index=self._index_name, id=entity_id, refresh="wait_for"
-                )
+                await self.client.delete(index=self._index_name, id=entity_id)
                 logger.debug(f"[{self.workspace}] Deleted entity {entity_name}")
             except NotFoundError as e:
                 if _is_missing_index_error(e):
@@ -2607,6 +2679,7 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
         if not self._index_ready:
             return
         try:
+            # No per-operation refresh: search visibility after index_done_callback().
             body = {
                 "query": {
                     "bool": {
@@ -2617,8 +2690,9 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
                     }
                 }
             }
+            # conflicts="proceed" tolerates stale search view after refresh removal.
             await self.client.delete_by_query(
-                index=self._index_name, body=body, refresh=True
+                index=self._index_name, body=body, params={"conflicts": "proceed"}
             )
             logger.debug(
                 f"[{self.workspace}] Deleted relations for entity {entity_name}"

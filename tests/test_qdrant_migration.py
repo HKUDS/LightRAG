@@ -80,8 +80,8 @@ async def test_qdrant_migration_trigger(mock_qdrant_client, mock_embedding_func)
 
     # Setup mocks for migration scenario
     # 1. New collection does not exist, only legacy exists
-    mock_qdrant_client.collection_exists.side_effect = (
-        lambda name: name == legacy_collection
+    mock_qdrant_client.collection_exists.side_effect = lambda name: (
+        name == legacy_collection
     )
 
     # 2. Legacy collection exists and has data
@@ -173,8 +173,8 @@ async def test_qdrant_no_migration_needed(mock_qdrant_client, mock_embedding_fun
     )
 
     # Only new collection exists (no legacy collection found)
-    mock_qdrant_client.collection_exists.side_effect = (
-        lambda name: name == storage.final_namespace
+    mock_qdrant_client.collection_exists.side_effect = lambda name: (
+        name == storage.final_namespace
     )
 
     # Initialize
@@ -285,8 +285,8 @@ async def test_scenario_2_legacy_upgrade_migration(
     new_collection = storage.final_namespace
 
     # Case 4: Only legacy collection exists
-    mock_qdrant_client.collection_exists.side_effect = (
-        lambda name: name == legacy_collection
+    mock_qdrant_client.collection_exists.side_effect = lambda name: (
+        name == legacy_collection
     )
 
     # Mock legacy collection info with 1536d vectors
@@ -454,10 +454,13 @@ async def test_case1_empty_legacy_auto_cleanup(mock_qdrant_client, mock_embeddin
     new_collection = storage.final_namespace
 
     # Mock: Both collections exist
-    mock_qdrant_client.collection_exists.side_effect = lambda name: name in [
-        legacy_collection,
-        new_collection,
-    ]
+    mock_qdrant_client.collection_exists.side_effect = lambda name: (
+        name
+        in [
+            legacy_collection,
+            new_collection,
+        ]
+    )
 
     # Mock: Legacy collection is empty (0 records)
     def count_mock(collection_name, exact=True, count_filter=None):
@@ -520,10 +523,13 @@ async def test_case1_nonempty_legacy_warning(mock_qdrant_client, mock_embedding_
     new_collection = storage.final_namespace
 
     # Mock: Both collections exist
-    mock_qdrant_client.collection_exists.side_effect = lambda name: name in [
-        legacy_collection,
-        new_collection,
-    ]
+    mock_qdrant_client.collection_exists.side_effect = lambda name: (
+        name
+        in [
+            legacy_collection,
+            new_collection,
+        ]
+    )
 
     # Mock: Legacy collection has data (50 records)
     def count_mock(collection_name, exact=True, count_filter=None):
