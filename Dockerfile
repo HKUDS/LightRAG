@@ -1,7 +1,9 @@
 # syntax=docker/dockerfile:1
 
-# Frontend build stage
-FROM oven/bun:1 AS frontend-builder
+# Frontend build stage -- run on the host's native architecture so that
+# @tailwindcss/oxide uses its native binary rather than running under emulation
+# (e.g. Rosetta on Apple Silicon building for linux/amd64).
+FROM --platform=$BUILDPLATFORM oven/bun:1 AS frontend-builder
 
 WORKDIR /app
 
