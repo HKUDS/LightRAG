@@ -120,6 +120,7 @@ def _build_generation_config(
     base_config: dict[str, Any] | None,
     system_prompt: str | None,
     keyword_extraction: bool,
+    entity_extraction: bool = False,
 ) -> types.GenerateContentConfig | None:
     config_data = dict(base_config or {})
 
@@ -131,7 +132,9 @@ def _build_generation_config(
         else:
             config_data["system_instruction"] = system_prompt
 
-    if keyword_extraction and not config_data.get("response_mime_type"):
+    if (keyword_extraction or entity_extraction) and not config_data.get(
+        "response_mime_type"
+    ):
         config_data["response_mime_type"] = "application/json"
 
     # Remove entries that are explicitly set to None to avoid type errors
@@ -226,6 +229,7 @@ async def gemini_complete_if_cache(
     token_tracker: Any | None = None,
     stream: bool | None = None,
     keyword_extraction: bool = False,
+    entity_extraction: bool = False,
     generation_config: dict[str, Any] | None = None,
     timeout: int | None = None,
     **_: Any,
@@ -282,6 +286,7 @@ async def gemini_complete_if_cache(
         generation_config,
         system_prompt=system_prompt,
         keyword_extraction=keyword_extraction,
+        entity_extraction=entity_extraction,
     )
 
     request_kwargs: dict[str, Any] = {
@@ -440,8 +445,10 @@ async def gemini_model_complete(
     system_prompt: str | None = None,
     history_messages: list[dict[str, Any]] | None = None,
     keyword_extraction: bool = False,
+    entity_extraction: bool = False,
     **kwargs: Any,
 ) -> str | AsyncIterator[str]:
+    entity_extraction = kwargs.pop("entity_extraction", entity_extraction)
     hashing_kv = kwargs.get("hashing_kv")
     model_name = None
     if hashing_kv is not None:
@@ -457,6 +464,7 @@ async def gemini_model_complete(
         system_prompt=system_prompt,
         history_messages=history_messages,
         keyword_extraction=keyword_extraction,
+        entity_extraction=entity_extraction,
         **kwargs,
     )
 

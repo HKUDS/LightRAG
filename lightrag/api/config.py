@@ -3,7 +3,6 @@ Configs for the LightRAG API.
 """
 
 import os
-import re
 import argparse
 import logging
 from dotenv import load_dotenv
@@ -387,6 +386,48 @@ def parse_args() -> argparse.Namespace:
     # PDF decryption password
     args.pdf_decrypt_password = get_env_value("PDF_DECRYPT_PASSWORD", None)
 
+    # --- Per-role LLM configuration (extract / keyword / query / vlm) ---
+    ROLE_PREFIXES = ["EXTRACT", "KEYWORD", "QUERY", "VLM"]
+    for role in ROLE_PREFIXES:
+        binding_key = f"{role}_LLM_BINDING"
+        model_key = f"{role}_LLM_MODEL"
+        host_key = f"{role}_LLM_BINDING_HOST"
+        apikey_key = f"{role}_LLM_BINDING_API_KEY"
+        max_async_key = f"MAX_ASYNC_{role}_LLM"
+        timeout_key = f"LLM_TIMEOUT_{role}_LLM"
+
+        role_binding = get_env_value(binding_key, None, special_none=True)
+        role_model = get_env_value(model_key, None, special_none=True)
+        role_host = get_env_value(host_key, None, special_none=True)
+        role_apikey = get_env_value(apikey_key, None, special_none=True)
+        role_max_async = get_env_value(max_async_key, None, int, special_none=True)
+        role_timeout = get_env_value(timeout_key, None, int, special_none=True)
+
+        attr_prefix = role.lower()
+        setattr(args, f"{attr_prefix}_llm_binding", role_binding)
+        setattr(args, f"{attr_prefix}_llm_model", role_model)
+        setattr(args, f"{attr_prefix}_llm_binding_host", role_host)
+        setattr(args, f"{attr_prefix}_llm_binding_api_key", role_apikey)
+        setattr(args, f"{attr_prefix}_llm_max_async", role_max_async)
+        setattr(args, f"{attr_prefix}_llm_timeout", role_timeout)
+
+        # Cross-provider validation
+        if role_binding and role_binding != args.llm_binding:
+            missing = []
+            if not role_model:
+                missing.append(model_key)
+            if not role_host:
+                role_host = get_default_host(role_binding)
+                setattr(args, f"{attr_prefix}_llm_binding_host", role_host)
+            if not role_apikey:
+                missing.append(apikey_key)
+            if missing:
+                raise SystemExit(
+                    f"Cross-provider error for role '{role}': "
+                    f"binding={role_binding} differs from base={args.llm_binding}, "
+                    f"but required env vars are missing: {', '.join(missing)}"
+                )
+
     # Add environment variables that were previously read directly
     args.cors_origins = get_env_value("CORS_ORIGINS", "*")
     args.summary_language = get_env_value("SUMMARY_LANGUAGE", DEFAULT_SUMMARY_LANGUAGE)
@@ -395,9 +436,7 @@ def parse_args() -> argparse.Namespace:
 
     # For JWT Auth
     args.auth_accounts = get_env_value("AUTH_ACCOUNTS", "")
-    args.token_secret = get_env_value(
-        "TOKEN_SECRET", "lightrag-jwt-default-secret-key!"
-    )
+    args.token_secret = get_env_value("TOKEN_SECRET", "lightrag-jwt-default-secret")
     args.token_expire_hours = get_env_value("TOKEN_EXPIRE_HOURS", 48, float)
     args.guest_token_expire_hours = get_env_value("GUEST_TOKEN_EXPIRE_HOURS", 24, float)
     args.jwt_algorithm = get_env_value("JWT_ALGORITHM", "HS256")
@@ -461,17 +500,6 @@ def parse_args() -> argparse.Namespace:
 
     ollama_server_infos.LIGHTRAG_NAME = args.simulated_model_name
     ollama_server_infos.LIGHTRAG_TAG = args.simulated_model_tag
-
-    # Sanitize workspace: only alphanumeric characters and underscores are allowed
-    if args.workspace:
-        sanitized = re.sub(r"[^a-zA-Z0-9_]", "_", args.workspace)
-        if sanitized != args.workspace:
-            logging.warning(
-                f"Workspace name '{args.workspace}' contains invalid characters. "
-                f"It has been sanitized to '{sanitized}'. "
-                "Only alphanumeric characters and underscores are allowed."
-            )
-            args.workspace = sanitized
 
     return args
 

@@ -23,6 +23,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from lightrag import LightRAG
 from lightrag.base import DeletionResult, DocProcessingStatus, DocStatus
+from lightrag.constants import PARSED_DIR_NAME, FULL_DOCS_FORMAT_PENDING_PARSE
 from lightrag.utils import (
     generate_track_id,
     compute_mdhash_id,
@@ -232,19 +233,17 @@ class InsertTextRequest(BaseModel):
         min_length=1,
         description="The text to insert",
     )
-    file_source: Optional[str] = Field(
-        default=None, min_length=0, description="File Source"
-    )
+    file_source: str = Field(default=None, min_length=0, description="File Source")
 
     @field_validator("text", mode="after")
     @classmethod
     def strip_text_after(cls, text: str) -> str:
         return text.strip()
 
-    @field_validator("file_source", mode="before")
+    @field_validator("file_source", mode="after")
     @classmethod
-    def normalize_source_before(cls, file_source: Optional[str]) -> str:
-        return normalize_file_path(file_source)
+    def strip_source_after(cls, file_source: str) -> str:
+        return file_source.strip()
 
     class Config:
         json_schema_extra = {
@@ -267,7 +266,7 @@ class InsertTextsRequest(BaseModel):
         min_length=1,
         description="The texts to insert",
     )
-    file_sources: Optional[list[str]] = Field(
+    file_sources: list[str] = Field(
         default=None, min_length=0, description="Sources of the texts"
     )
 
@@ -276,15 +275,10 @@ class InsertTextsRequest(BaseModel):
     def strip_texts_after(cls, texts: list[str]) -> list[str]:
         return [text.strip() for text in texts]
 
-    @field_validator("file_sources", mode="before")
+    @field_validator("file_sources", mode="after")
     @classmethod
-    def normalize_sources_before(
-        cls, file_sources: Optional[list[str]]
-    ) -> Optional[list[str]]:
-        if file_sources is None:
-            return None
-
-        return [normalize_file_path(file_source) for file_source in file_sources]
+    def strip_sources_after(cls, file_sources: list[str]) -> list[str]:
+        return [file_source.strip() for file_source in file_sources]
 
     class Config:
         json_schema_extra = {
@@ -1425,31 +1419,28 @@ async def pipeline_enqueue_file(
                         return False, track_id
 
                 case ".docx":
+                    # Defer parsing to three-stage pipeline (parse_native / parse_docling).
+                    # Enqueue with pending_parse format so parse worker handles extraction.
+                    logger.info(
+                        f"[File Extraction]DOCX deferred to pipeline: {file_path.name}"
+                    )
                     try:
-                        # Try DOCLING first if configured and available
-                        if (
-                            global_args.document_loading_engine == "DOCLING"
-                            and _is_docling_available()
-                        ):
-                            content = await asyncio.to_thread(
-                                _convert_with_docling, file_path
-                            )
-                        else:
-                            if (
-                                global_args.document_loading_engine == "DOCLING"
-                                and not _is_docling_available()
-                            ):
-                                logger.warning(
-                                    f"DOCLING engine configured but not available for {file_path.name}. Falling back to python-docx."
-                                )
-                            # Use python-docx (non-blocking via to_thread)
-                            content = await asyncio.to_thread(_extract_docx, file)
+                        await rag.apipeline_enqueue_documents(
+                            "",
+                            file_paths=str(file_path),
+                            track_id=track_id,
+                            docs_format=FULL_DOCS_FORMAT_PENDING_PARSE,
+                        )
+                        logger.info(
+                            f"Successfully enqueued DOCX for pipeline parsing: {file_path.name}"
+                        )
+                        return True, track_id
                     except Exception as e:
                         error_files = [
                             {
                                 "file_path": str(file_path.name),
-                                "error_description": "[File Extraction]DOCX processing error",
-                                "original_error": f"Failed to extract text from DOCX: {str(e)}",
+                                "error_description": "[File Extraction]DOCX enqueue error",
+                                "original_error": f"Failed to enqueue DOCX for pipeline: {str(e)}",
                                 "file_size": file_size,
                             }
                         ]
@@ -1457,7 +1448,7 @@ async def pipeline_enqueue_file(
                             error_files, track_id
                         )
                         logger.error(
-                            f"[File Extraction]Error processing DOCX {file_path.name}: {str(e)}"
+                            f"[File Extraction]Error enqueuing DOCX {file_path.name}: {str(e)}"
                         )
                         return False, track_id
 
@@ -1592,9 +1583,9 @@ async def pipeline_enqueue_file(
                     f"Successfully extracted and enqueued file: {file_path.name}"
                 )
 
-                # Move file to __enqueued__ directory after enqueuing
+                # Move file to __parsed__ directory after enqueuing (LR2-PRD: parsed output dir)
                 try:
-                    enqueued_dir = file_path.parent / "__enqueued__"
+                    enqueued_dir = file_path.parent / PARSED_DIR_NAME
                     enqueued_dir.mkdir(exist_ok=True)
 
                     # Generate unique filename to avoid conflicts
@@ -1611,7 +1602,7 @@ async def pipeline_enqueue_file(
 
                 except Exception as move_error:
                     logger.error(
-                        f"Failed to move file {file_path.name} to __enqueued__ directory: {move_error}"
+                        f"Failed to move file {file_path.name} to {PARSED_DIR_NAME} directory: {move_error}"
                     )
                     # Don't affect the main function's success status
 
@@ -1739,21 +1730,14 @@ async def pipeline_index_texts(
     """
     if not texts:
         return
-
-    normalized_file_sources: list[str] | None = None
-    if file_sources:
-        normalized_file_sources = [
-            normalize_file_path(source) for source in file_sources
-        ]
-        if len(normalized_file_sources) > len(texts):
-            raise ValueError("Number of file sources must not exceed number of texts")
-        if len(normalized_file_sources) < len(texts):
-            normalized_file_sources.extend(
-                [UNKNOWN_FILE_SOURCE] * (len(texts) - len(normalized_file_sources))
-            )
-
+    if file_sources is not None:
+        if len(file_sources) != 0 and len(file_sources) != len(texts):
+            [
+                file_sources.append("unknown_source")
+                for _ in range(len(file_sources), len(texts))
+            ]
     await rag.apipeline_enqueue_documents(
-        input=texts, file_paths=normalized_file_sources, track_id=track_id
+        input=texts, file_paths=file_sources, track_id=track_id
     )
     await rag.apipeline_process_enqueue_documents()
 
@@ -1954,8 +1938,8 @@ async def background_delete_documents(
                                                 file_error_msg
                                             )
 
-                                # Also check and delete files from __enqueued__ directory
-                                enqueued_dir = doc_manager.input_dir / "__enqueued__"
+                                # Also check and delete files from __parsed__ directory
+                                enqueued_dir = doc_manager.input_dir / PARSED_DIR_NAME
                                 if enqueued_dir.exists():
                                     # SECURITY FIX: Validate that the file path is safe before processing
                                     # Only proceed if the original path validation passed
@@ -2746,6 +2730,8 @@ def create_document_routes(
         try:
             statuses = (
                 DocStatus.PENDING,
+                DocStatus.PARSING,
+                DocStatus.ANALYZING,
                 DocStatus.PROCESSING,
                 DocStatus.PREPROCESSED,
                 DocStatus.PROCESSED,
@@ -2807,7 +2793,7 @@ def create_document_routes(
                             chunks_count=doc_status.chunks_count,
                             error_msg=doc_status.error_msg,
                             metadata=doc_status.metadata,
-                            file_path=normalize_file_path(doc_status.file_path),
+                            file_path=doc_status.file_path,
                         )
                     )
 
@@ -3069,7 +3055,7 @@ def create_document_routes(
                         chunks_count=doc_status.chunks_count,
                         error_msg=doc_status.error_msg,
                         metadata=doc_status.metadata,
-                        file_path=normalize_file_path(doc_status.file_path),
+                        file_path=doc_status.file_path,
                     )
                 )
 
@@ -3150,7 +3136,7 @@ def create_document_routes(
                         chunks_count=doc.chunks_count,
                         error_msg=doc.error_msg,
                         metadata=doc.metadata,
-                        file_path=normalize_file_path(doc.file_path),
+                        file_path=doc.file_path,
                     )
                 )
 

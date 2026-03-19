@@ -112,12 +112,14 @@ async def lollms_model_complete(
     history_messages=[],
     enable_cot: bool = False,
     keyword_extraction=False,
+    entity_extraction=False,
     **kwargs,
 ) -> Union[str, AsyncIterator[str]]:
     """Complete function for lollms model generation."""
 
-    # Extract and remove keyword_extraction from kwargs if present
+    # Extract and remove keyword_extraction and entity_extraction from kwargs if present
     keyword_extraction = kwargs.pop("keyword_extraction", None)
+    kwargs.pop("entity_extraction", None)
 
     # Get model name from config
     model_name = kwargs["hashing_kv"].global_config["llm_model_name"]
