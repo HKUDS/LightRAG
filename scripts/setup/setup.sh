@@ -60,6 +60,7 @@ STORAGE_SERVICES=(
   "milvus"
   "qdrant"
   "memgraph"
+  "opensearch"
 )
 DEFAULT_RUNTIME_TARGET="host"
 COMPOSE_LIGHTRAG_WORKING_DIR="/app/data/rag_storage"
@@ -434,6 +435,11 @@ set_managed_service_compose_overrides() {
         set_compose_override "MEMGRAPH_URI" "bolt://memgraph:7687"
       fi
       ;;
+    opensearch)
+      if [[ -z "${COMPOSE_ENV_OVERRIDES[OPENSEARCH_HOSTS]+set}" ]]; then
+        set_compose_override "OPENSEARCH_HOSTS" "opensearch:9200"
+      fi
+      ;;
   esac
 }
 
@@ -472,7 +478,7 @@ prepare_compose_runtime_overrides() {
     fi
   fi
 
-  for root_service in postgres neo4j mongodb redis milvus qdrant memgraph; do
+  for root_service in postgres neo4j mongodb redis milvus qdrant memgraph opensearch; do
     if [[ -n "${DOCKER_SERVICE_SET[$root_service]+set}" ]]; then
       set_managed_service_compose_overrides "$root_service"
     fi
@@ -485,7 +491,8 @@ prepare_compose_runtime_overrides() {
     "NEO4J_URI" \
     "MILVUS_URI" \
     "QDRANT_URL" \
-    "MEMGRAPH_URI"; do
+    "MEMGRAPH_URI" \
+    "OPENSEARCH_HOSTS"; do
     if [[ -n "${COMPOSE_ENV_OVERRIDES[$key]+set}" ]]; then
       continue
     fi
@@ -557,7 +564,7 @@ restore_storage_docker_services_from_env() {
   local db_type
   local marker_key=""
   local service_name=""
-  local db_types=("postgresql" "neo4j" "mongodb" "redis" "milvus" "qdrant" "memgraph")
+  local db_types=("postgresql" "neo4j" "mongodb" "redis" "milvus" "qdrant" "memgraph" "opensearch")
 
   for db_type in "${db_types[@]}"; do
     marker_key="$(storage_deployment_marker_key "$db_type")"
@@ -917,7 +924,7 @@ storage_service_name_for_db_type() {
     postgresql)
       printf 'postgres'
       ;;
-    neo4j|mongodb|redis|milvus|qdrant|memgraph)
+    neo4j|mongodb|redis|milvus|qdrant|memgraph|opensearch)
       printf '%s' "$db_type"
       ;;
     *)
@@ -950,6 +957,9 @@ storage_deployment_marker_key() {
       ;;
     memgraph)
       printf 'LIGHTRAG_SETUP_MEMGRAPH_DEPLOYMENT'
+      ;;
+    opensearch)
+      printf 'LIGHTRAG_SETUP_OPENSEARCH_DEPLOYMENT'
       ;;
     *)
       printf ''
@@ -995,7 +1005,7 @@ persist_storage_deployment_choice() {
 clear_unused_storage_deployment_markers() {
   local db_type
 
-  for db_type in postgresql neo4j mongodb redis milvus qdrant memgraph; do
+  for db_type in postgresql neo4j mongodb redis milvus qdrant memgraph opensearch; do
     if [[ -z "${REQUIRED_DB_TYPES[$db_type]+set}" ]]; then
       persist_storage_deployment_choice "$db_type" "no"
     fi
@@ -1029,6 +1039,9 @@ collect_database_config() {
       ;;
     memgraph)
       collect_memgraph_config "$default_docker"
+      ;;
+    opensearch)
+      collect_opensearch_config "$default_docker"
       ;;
     *)
       echo "Unknown database type: $db_type" >&2
@@ -1367,6 +1380,46 @@ collect_memgraph_config() {
     set_compose_override "MEMGRAPH_URI" "bolt://memgraph:7687"
   else
     set_compose_override "MEMGRAPH_URI" ""
+  fi
+}
+
+collect_opensearch_config() {
+  local default_docker="${1:-no}"
+  local use_docker="no"
+  local hosts user password
+
+  if [[ "$default_docker" == "yes" ]]; then
+    if confirm_default_yes "Run OpenSearch locally via Docker?"; then
+      use_docker="yes"
+    fi
+  else
+    if confirm_default_no "Run OpenSearch locally via Docker?"; then
+      use_docker="yes"
+    fi
+  fi
+
+  if [[ "$use_docker" == "yes" ]]; then
+    add_docker_service "opensearch"
+    hosts="$(prefer_local_service_uri "${ENV_VALUES[OPENSEARCH_HOSTS]:-}" "localhost:9200" "opensearch" "localhost" "127.0.0.1" "0.0.0.0")"
+  else
+    hosts="${ENV_VALUES[OPENSEARCH_HOSTS]:-localhost:9200}"
+  fi
+
+  hosts="$(prompt_with_default "OpenSearch hosts" "$hosts")"
+  user="$(prompt_with_default "OpenSearch user" "${ENV_VALUES[OPENSEARCH_USER]:-admin}")"
+  password="$(prompt_secret_with_default "OpenSearch password: " "${ENV_VALUES[OPENSEARCH_PASSWORD]:-LightRAG2026_!@}")"
+
+  ENV_VALUES["OPENSEARCH_HOSTS"]="$hosts"
+  ENV_VALUES["OPENSEARCH_USER"]="$user"
+  ENV_VALUES["OPENSEARCH_PASSWORD"]="$password"
+  ENV_VALUES["OPENSEARCH_USE_SSL"]="${ENV_VALUES[OPENSEARCH_USE_SSL]:-true}"
+  ENV_VALUES["OPENSEARCH_VERIFY_CERTS"]="${ENV_VALUES[OPENSEARCH_VERIFY_CERTS]:-false}"
+  ENV_VALUES["OPENSEARCH_USE_PPL_GRAPHLOOKUP"]="${ENV_VALUES[OPENSEARCH_USE_PPL_GRAPHLOOKUP]:-false}"
+
+  if [[ "$use_docker" == "yes" ]]; then
+    set_compose_override "OPENSEARCH_HOSTS" "opensearch:9200"
+  else
+    set_compose_override "OPENSEARCH_HOSTS" ""
   fi
 }
 
@@ -2244,7 +2297,7 @@ finalize_base_setup() {
 env_storage_flow() {
   local env_file="${REPO_ROOT}/.env"
   local db_type
-  local db_order=("postgresql" "neo4j" "mongodb" "redis" "milvus" "qdrant" "memgraph")
+  local db_order=("postgresql" "neo4j" "mongodb" "redis" "milvus" "qdrant" "memgraph" "opensearch")
 
   if [[ ! -f "$env_file" ]]; then
     format_error "No .env file found." "Run 'make env-base' first to configure LLM and embedding."
@@ -2640,6 +2693,10 @@ validate_env_file() {
     format_error "Invalid POSTGRES_PORT" "Use a port between 1 and 65535."
     errors=1
   fi
+  if [[ -n "${ENV_VALUES[OPENSEARCH_HOSTS]:-}" ]] && [[ -z "${ENV_VALUES[OPENSEARCH_HOSTS]}" ]]; then
+    format_error "Empty OPENSEARCH_HOSTS" "Set it to host:port (e.g. localhost:9200)."
+    errors=1
+  fi
   if ((errors != 0)); then
     return 1
   fi
@@ -2748,6 +2805,16 @@ security_check_env_file() {
       report_security_issue \
         "WHITELIST_PATHS exposes /api routes while LIGHTRAG_API_KEY is the only active auth mechanism." \
         "Use a minimal whitelist such as /health,/docs and keep /api routes protected by the API key."
+      findings=$((findings + 1))
+    fi
+  fi
+
+  if [[ -n "${ENV_VALUES[OPENSEARCH_PASSWORD]:-}" ]]; then
+    local os_pass="${ENV_VALUES[OPENSEARCH_PASSWORD]}"
+    if [[ "$os_pass" == "admin" || "$os_pass" == "LightRAG2026_!@" ]]; then
+      report_security_issue \
+        "OPENSEARCH_PASSWORD uses a well-known default value." \
+        "Set a unique, strong password for the OpenSearch admin account."
       findings=$((findings + 1))
     fi
   fi
