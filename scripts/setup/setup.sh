@@ -1525,11 +1525,22 @@ collect_opensearch_config() {
     fi
   fi
 
+  local num_shards num_replicas
+  if [[ "$use_docker" == "yes" ]]; then
+    num_shards="1"
+    num_replicas="0"
+  else
+    num_shards="$(prompt_with_default "Number of index shards" "${ENV_VALUES[OPENSEARCH_NUMBER_OF_SHARDS]:-1}")"
+    num_replicas="$(prompt_with_default "Number of index replicas (use 2 for 3-AZ clusters)" "${ENV_VALUES[OPENSEARCH_NUMBER_OF_REPLICAS]:-0}")"
+  fi
+
   ENV_VALUES["OPENSEARCH_HOSTS"]="$hosts"
   ENV_VALUES["OPENSEARCH_USER"]="$user"
   ENV_VALUES["OPENSEARCH_PASSWORD"]="$password"
   ENV_VALUES["OPENSEARCH_USE_SSL"]="$use_ssl"
   ENV_VALUES["OPENSEARCH_VERIFY_CERTS"]="$verify_certs"
+  ENV_VALUES["OPENSEARCH_NUMBER_OF_SHARDS"]="$num_shards"
+  ENV_VALUES["OPENSEARCH_NUMBER_OF_REPLICAS"]="$num_replicas"
 
   if [[ "$use_docker" == "yes" ]]; then
     set_compose_override "OPENSEARCH_HOSTS" "opensearch:9200"
