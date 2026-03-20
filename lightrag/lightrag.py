@@ -1874,7 +1874,9 @@ class LightRAG:
         if ignored_ids:
             duplicate_docs: dict[str, Any] = {}
             for doc_id in ignored_ids:
-                file_path = new_docs.get(doc_id, {}).get("file_path", "unknown_source")
+                file_path = (
+                    new_docs.get(doc_id, {}).get("file_path") or "unknown_source"
+                )
                 logger.warning(f"Duplicate document detected: {doc_id} ({file_path})")
 
                 # Get existing document info for reference
@@ -2071,7 +2073,9 @@ class LightRAG:
             for doc_id in inconsistent_docs:
                 try:
                     status_doc = to_process_docs[doc_id]
-                    file_path = getattr(status_doc, "file_path", "unknown_source")
+                    file_path = (
+                        getattr(status_doc, "file_path", None) or "unknown_source"
+                    )
 
                     # Delete doc_status entry
                     await self.doc_status.delete([doc_id])
@@ -2131,7 +2135,8 @@ class LightRAG:
                         "chunks_list": preserved_chunks_list,
                         "created_at": status_doc.created_at,
                         "updated_at": datetime.now(timezone.utc).isoformat(),
-                        "file_path": getattr(status_doc, "file_path", "unknown_source"),
+                        "file_path": getattr(status_doc, "file_path", None)
+                        or "unknown_source",
                         "track_id": getattr(status_doc, "track_id", ""),
                         # Clear any error messages and processing metadata
                         "error_msg": "",
@@ -2343,8 +2348,9 @@ class LightRAG:
                                     raise PipelineCancelledException("User cancelled")
 
                             # Get file path from status document
-                            file_path = getattr(
-                                status_doc, "file_path", "unknown_source"
+                            file_path = (
+                                getattr(status_doc, "file_path", None)
+                                or "unknown_source"
                             )
 
                             async with pipeline_status_lock:

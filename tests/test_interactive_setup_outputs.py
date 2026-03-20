@@ -4148,6 +4148,72 @@ env_storage_flow
     assert "LIGHTRAG_RUNTIME_TARGET=compose" in generated_env
 
 
+def test_env_storage_flow_writes_opensearch_docker_marker_for_selected_service(
+    tmp_path: Path,
+) -> None:
+    """Choosing bundled OpenSearch should persist its deployment marker in `.env`."""
+
+    write_text_lines(
+        tmp_path / ".env",
+        [
+            "LLM_BINDING=ollama",
+            "EMBEDDING_BINDING=ollama",
+        ],
+    )
+    write_text_lines(
+        tmp_path / "env.example",
+        (REPO_ROOT / "env.example").read_text(encoding="utf-8").splitlines(),
+    )
+    (tmp_path / "docker-compose.yml").write_text(
+        (REPO_ROOT / "docker-compose.yml").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+
+select_storage_backends() {{
+  ENV_VALUES[LIGHTRAG_KV_STORAGE]="OpenSearchKVStorage"
+  ENV_VALUES[LIGHTRAG_VECTOR_STORAGE]="OpenSearchVectorDBStorage"
+  ENV_VALUES[LIGHTRAG_GRAPH_STORAGE]="OpenSearchGraphStorage"
+  ENV_VALUES[LIGHTRAG_DOC_STATUS_STORAGE]="OpenSearchDocStatusStorage"
+  REQUIRED_DB_TYPES[opensearch]=1
+}}
+collect_opensearch_config() {{
+  add_docker_service "opensearch"
+  ENV_VALUES[OPENSEARCH_HOSTS]="localhost:9200"
+  ENV_VALUES[OPENSEARCH_USER]="admin"
+  ENV_VALUES[OPENSEARCH_PASSWORD]="secret"
+  ENV_VALUES[OPENSEARCH_USE_SSL]="true"
+  ENV_VALUES[OPENSEARCH_VERIFY_CERTS]="false"
+}}
+validate_required_variables() {{ return 0; }}
+validate_mongo_vector_storage_config() {{ return 0; }}
+validate_sensitive_env_literals() {{ return 0; }}
+confirm_default_yes() {{
+  case "$1" in
+    "All wizard-managed services have been removed. Remove LightRAG from Docker and switch to host mode?") return 1 ;;
+    *) return 0 ;;
+  esac
+}}
+confirm_default_no() {{ return 1; }}
+confirm_required_yes_no() {{ return 0; }}
+
+env_storage_flow
+"""
+    )
+
+    generated_env = (tmp_path / ".env").read_text(encoding="utf-8")
+    assert any(
+        line == "LIGHTRAG_SETUP_OPENSEARCH_DEPLOYMENT=docker"
+        for line in generated_env.splitlines()
+    )
+    assert "LIGHTRAG_RUNTIME_TARGET=compose" in generated_env
+
+
 def test_env_storage_flow_removes_storage_docker_marker_when_switching_to_host(
     tmp_path: Path,
 ) -> None:
@@ -7167,6 +7233,90 @@ security_check_env_file
     assert "No obvious security issues found" in result.stdout
 
 
+def test_security_check_ignores_default_opensearch_password_when_opensearch_unused(
+    tmp_path: Path,
+) -> None:
+    """Security audit should ignore OpenSearch defaults when no OpenSearch storage is selected."""
+
+    write_text_lines(
+        tmp_path / ".env",
+        [
+            "AUTH_ACCOUNTS=admin:secret",
+            "TOKEN_SECRET=jwt-secret",
+            "WHITELIST_PATHS=/health",
+            "LIGHTRAG_KV_STORAGE=JsonKVStorage",
+            "LIGHTRAG_VECTOR_STORAGE=NanoVectorDBStorage",
+            "LIGHTRAG_GRAPH_STORAGE=NetworkXStorage",
+            "LIGHTRAG_DOC_STATUS_STORAGE=JsonDocStatusStorage",
+            "OPENSEARCH_PASSWORD=LightRAG2026_!@",
+        ],
+    )
+
+    result = subprocess.run(
+        [
+            "bash",
+            "--norc",
+            "--noprofile",
+            "-c",
+            f"""
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+security_check_env_file
+""",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0
+    assert "OPENSEARCH_PASSWORD uses a well-known default value." not in result.stdout
+
+
+def test_security_check_reports_default_opensearch_password_when_opensearch_selected(
+    tmp_path: Path,
+) -> None:
+    """Security audit should flag the default OpenSearch password when OpenSearch is selected."""
+
+    write_text_lines(
+        tmp_path / ".env",
+        [
+            "AUTH_ACCOUNTS=admin:secret",
+            "TOKEN_SECRET=jwt-secret",
+            "WHITELIST_PATHS=/health",
+            "LIGHTRAG_KV_STORAGE=OpenSearchKVStorage",
+            "LIGHTRAG_VECTOR_STORAGE=OpenSearchVectorDBStorage",
+            "LIGHTRAG_GRAPH_STORAGE=OpenSearchGraphStorage",
+            "LIGHTRAG_DOC_STATUS_STORAGE=OpenSearchDocStatusStorage",
+            "OPENSEARCH_HOSTS=localhost:9200",
+            "OPENSEARCH_USER=admin",
+            "OPENSEARCH_PASSWORD=LightRAG2026_!@",
+        ],
+    )
+
+    result = subprocess.run(
+        [
+            "bash",
+            "--norc",
+            "--noprofile",
+            "-c",
+            f"""
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+security_check_env_file
+""",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    assert "OPENSEARCH_PASSWORD uses a well-known default value." in result.stdout
+
+
 def test_show_summary_masks_auth_accounts() -> None:
     """Configuration summaries should not print auth account passwords."""
 
@@ -7197,17 +7347,28 @@ def test_validate_env_file_handles_supported_and_unsupported_uri_schemes(
 
     cases = {
         "invalid-neo4j-scheme": (
-            ["NEO4J_URI=http://localhost:7687"],
+            [
+                "LIGHTRAG_GRAPH_STORAGE=Neo4JStorage",
+                "NEO4J_URI=http://localhost:7687",
+                "NEO4J_USERNAME=neo4j",
+                "NEO4J_PASSWORD=secret",
+            ],
             "no",
             "Invalid NEO4J_URI",
         ),
         "invalid-redis-scheme": (
-            ["REDIS_URI=tcp://localhost:6379"],
+            [
+                "LIGHTRAG_KV_STORAGE=RedisKVStorage",
+                "REDIS_URI=tcp://localhost:6379",
+            ],
             "no",
             "Invalid REDIS_URI",
         ),
         "valid-rediss-scheme": (
-            ["REDIS_URI=rediss://localhost:6380"],
+            [
+                "LIGHTRAG_KV_STORAGE=RedisKVStorage",
+                "REDIS_URI=rediss://localhost:6380",
+            ],
             "yes",
             "",
         ),
@@ -7299,6 +7460,198 @@ fi
     assert "Invalid LIGHTRAG_RUNTIME_TARGET" in result.stderr
 
 
+def test_validate_required_variables_requires_opensearch_basic_auth() -> None:
+    """OpenSearch storages should require both OPENSEARCH_USER and OPENSEARCH_PASSWORD."""
+
+    values = run_bash_lines(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+reset_state
+
+ENV_VALUES[LIGHTRAG_KV_STORAGE]="OpenSearchKVStorage"
+ENV_VALUES[LIGHTRAG_VECTOR_STORAGE]="OpenSearchVectorDBStorage"
+ENV_VALUES[LIGHTRAG_GRAPH_STORAGE]="OpenSearchGraphStorage"
+ENV_VALUES[LIGHTRAG_DOC_STATUS_STORAGE]="OpenSearchDocStatusStorage"
+ENV_VALUES[OPENSEARCH_HOSTS]="localhost:9200"
+
+if validate_required_variables \
+  "${{ENV_VALUES[LIGHTRAG_KV_STORAGE]}}" \
+  "${{ENV_VALUES[LIGHTRAG_VECTOR_STORAGE]}}" \
+  "${{ENV_VALUES[LIGHTRAG_GRAPH_STORAGE]}}" \
+  "${{ENV_VALUES[LIGHTRAG_DOC_STATUS_STORAGE]}}"; then
+  printf 'VALID=yes\\n'
+else
+  printf 'VALID=no\\n'
+fi
+"""
+    )
+
+    assert values["VALID"] == "no"
+
+
+def test_collect_opensearch_config_preserves_graphlookup_auto_detection() -> None:
+    """collect_opensearch_config should leave PPL graphlookup unset unless explicitly configured."""
+
+    values = run_bash_lines(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+reset_state
+
+confirm_default_yes() {{ return 0; }}
+confirm_default_no() {{ return 1; }}
+prompt_until_valid() {{ printf '%s' "$2"; }}
+prompt_with_default() {{ printf '%s' "$2"; }}
+prompt_secret_until_valid_with_default() {{ printf '%s' "$2"; }}
+
+collect_opensearch_config "yes"
+
+if [[ -v 'ENV_VALUES[OPENSEARCH_USE_PPL_GRAPHLOOKUP]' ]]; then
+  printf 'GRAPHLOOKUP_SET=yes\\n'
+else
+  printf 'GRAPHLOOKUP_SET=no\\n'
+fi
+"""
+    )
+
+    assert values["GRAPHLOOKUP_SET"] == "no"
+
+
+def test_collect_opensearch_config_preserves_explicit_graphlookup_override() -> None:
+    """collect_opensearch_config should keep an existing PPL graphlookup override."""
+
+    values = run_bash_lines(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+reset_state
+
+ENV_VALUES[OPENSEARCH_USE_PPL_GRAPHLOOKUP]="true"
+
+confirm_default_yes() {{ return 0; }}
+confirm_default_no() {{ return 1; }}
+prompt_until_valid() {{ printf '%s' "$2"; }}
+prompt_with_default() {{ printf '%s' "$2"; }}
+prompt_secret_until_valid_with_default() {{ printf '%s' "$2"; }}
+
+collect_opensearch_config "yes"
+printf 'GRAPHLOOKUP=%s\\n' "${{ENV_VALUES[OPENSEARCH_USE_PPL_GRAPHLOOKUP]}}"
+"""
+    )
+
+    assert values["GRAPHLOOKUP"] == "true"
+
+
+def test_collect_opensearch_config_forces_docker_verify_certs_false() -> None:
+    """collect_opensearch_config should force OPENSEARCH_VERIFY_CERTS=false for Docker."""
+
+    values = run_bash_lines(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+reset_state
+
+ENV_VALUES[OPENSEARCH_USE_SSL]="false"
+ENV_VALUES[OPENSEARCH_VERIFY_CERTS]="true"
+
+confirm_default_yes() {{ return 0; }}
+confirm_default_no() {{ return 1; }}
+prompt_until_valid() {{ printf '%s' "$2"; }}
+prompt_with_default() {{ printf '%s' "$2"; }}
+prompt_secret_until_valid_with_default() {{ printf '%s' "$2"; }}
+
+collect_opensearch_config "yes"
+printf 'USE_SSL=%s\\n' "${{ENV_VALUES[OPENSEARCH_USE_SSL]}}"
+printf 'VERIFY_CERTS=%s\\n' "${{ENV_VALUES[OPENSEARCH_VERIFY_CERTS]}}"
+"""
+    )
+
+    assert values["USE_SSL"] == "false"
+    assert values["VERIFY_CERTS"] == "false"
+
+
+def test_collect_opensearch_config_defaults_docker_tls_flags_when_unset() -> None:
+    """collect_opensearch_config should supply Docker TLS defaults when .env has no values."""
+
+    values = run_bash_lines(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+reset_state
+
+confirm_default_yes() {{ return 0; }}
+confirm_default_no() {{ return 1; }}
+prompt_until_valid() {{ printf '%s' "$2"; }}
+prompt_with_default() {{ printf '%s' "$2"; }}
+prompt_secret_until_valid_with_default() {{ printf '%s' "$2"; }}
+
+collect_opensearch_config "yes"
+printf 'USE_SSL=%s\\n' "${{ENV_VALUES[OPENSEARCH_USE_SSL]}}"
+printf 'VERIFY_CERTS=%s\\n' "${{ENV_VALUES[OPENSEARCH_VERIFY_CERTS]}}"
+"""
+    )
+
+    assert values["USE_SSL"] == "true"
+    assert values["VERIFY_CERTS"] == "false"
+
+
+def test_collect_opensearch_config_validates_hosts_during_prompt() -> None:
+    """collect_opensearch_config should validate OPENSEARCH_HOSTS at prompt time."""
+
+    values = run_bash_lines(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+reset_state
+
+validator_file="$(mktemp)"
+
+confirm_default_yes() {{ return 0; }}
+confirm_default_no() {{ return 1; }}
+prompt_until_valid() {{
+  printf '%s' "$3" > "$validator_file"
+  printf '%s' "$2"
+}}
+prompt_with_default() {{ printf '%s' "$2"; }}
+prompt_secret_until_valid_with_default() {{ printf '%s' "$2"; }}
+
+collect_opensearch_config "yes"
+printf 'HOST_VALIDATOR=%s\\n' "$(cat "$validator_file")"
+"""
+    )
+
+    assert values["HOST_VALIDATOR"] == "validate_opensearch_hosts_format"
+
+
+def test_collect_opensearch_config_validates_password_during_prompt() -> None:
+    """collect_opensearch_config should validate OPENSEARCH_PASSWORD at prompt time."""
+
+    values = run_bash_lines(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+reset_state
+
+validator_file="$(mktemp)"
+
+confirm_default_yes() {{ return 0; }}
+confirm_default_no() {{ return 1; }}
+prompt_until_valid() {{ printf '%s' "$2"; }}
+prompt_with_default() {{ printf '%s' "$2"; }}
+prompt_secret_until_valid_with_default() {{
+  printf '%s' "$3" > "$validator_file"
+  printf '%s' "$2"
+}}
+
+collect_opensearch_config "yes"
+printf 'PASSWORD_VALIDATOR=%s\\n' "$(cat "$validator_file")"
+"""
+    )
+
+    assert values["PASSWORD_VALIDATOR"] == "validate_opensearch_password_strength"
+
+
 def test_validate_env_file_rejects_mongo_vector_storage_without_atlas_uri(
     tmp_path: Path,
 ) -> None:
@@ -7346,6 +7699,524 @@ fi
     values = parse_lines(result.stdout)
     assert values["VALID"] == "no"
     assert "MongoVectorDBStorage requires a MongoDB Atlas URI" in result.stderr
+
+
+def test_validate_env_file_rejects_empty_opensearch_hosts(tmp_path: Path) -> None:
+    """validate_env_file should reject an explicitly empty OPENSEARCH_HOSTS setting."""
+
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "\n".join(
+            [
+                "LIGHTRAG_KV_STORAGE=OpenSearchKVStorage",
+                "LIGHTRAG_VECTOR_STORAGE=OpenSearchVectorDBStorage",
+                "LIGHTRAG_GRAPH_STORAGE=OpenSearchGraphStorage",
+                "LIGHTRAG_DOC_STATUS_STORAGE=OpenSearchDocStatusStorage",
+                "OPENSEARCH_HOSTS=",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "env.example").write_text("LLM_BINDING=openai\n", encoding="utf-8")
+
+    result = subprocess.run(
+        [
+            "bash",
+            "--norc",
+            "--noprofile",
+            "-c",
+            f"""
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+if validate_env_file; then
+  printf 'VALID=yes\\n'
+else
+  printf 'VALID=no\\n'
+fi
+""",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    values = parse_lines(result.stdout)
+    assert values["VALID"] == "no"
+    assert "Empty OPENSEARCH_HOSTS" in result.stderr
+
+
+def test_validate_env_file_rejects_whitespace_only_opensearch_hosts(
+    tmp_path: Path,
+) -> None:
+    """validate_env_file should reject OpenSearch host lists with only blank entries."""
+
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "\n".join(
+            [
+                "LIGHTRAG_KV_STORAGE=OpenSearchKVStorage",
+                "LIGHTRAG_VECTOR_STORAGE=OpenSearchVectorDBStorage",
+                "LIGHTRAG_GRAPH_STORAGE=OpenSearchGraphStorage",
+                "LIGHTRAG_DOC_STATUS_STORAGE=OpenSearchDocStatusStorage",
+                "OPENSEARCH_HOSTS=   ,   ",
+                "OPENSEARCH_USER=admin",
+                "OPENSEARCH_PASSWORD=StrongPass1!",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "env.example").write_text("LLM_BINDING=openai\n", encoding="utf-8")
+
+    result = subprocess.run(
+        [
+            "bash",
+            "--norc",
+            "--noprofile",
+            "-c",
+            f"""
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+if validate_env_file; then
+  printf 'VALID=yes\\n'
+else
+  printf 'VALID=no\\n'
+fi
+""",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    values = parse_lines(result.stdout)
+    assert values["VALID"] == "no"
+    assert "OPENSEARCH_HOSTS must not contain empty host entries." in result.stderr
+
+
+def test_validate_env_file_rejects_docker_opensearch_without_password(
+    tmp_path: Path,
+) -> None:
+    """validate_env_file should reject bundled OpenSearch when auth is incomplete."""
+
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "\n".join(
+            [
+                "LIGHTRAG_KV_STORAGE=OpenSearchKVStorage",
+                "LIGHTRAG_VECTOR_STORAGE=OpenSearchVectorDBStorage",
+                "LIGHTRAG_GRAPH_STORAGE=OpenSearchGraphStorage",
+                "LIGHTRAG_DOC_STATUS_STORAGE=OpenSearchDocStatusStorage",
+                "LIGHTRAG_SETUP_OPENSEARCH_DEPLOYMENT=docker",
+                "OPENSEARCH_HOSTS=localhost:9200",
+                "OPENSEARCH_USER=admin",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "env.example").write_text("LLM_BINDING=openai\n", encoding="utf-8")
+
+    result = subprocess.run(
+        [
+            "bash",
+            "--norc",
+            "--noprofile",
+            "-c",
+            f"""
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+if validate_env_file; then
+  printf 'VALID=yes\\n'
+else
+  printf 'VALID=no\\n'
+fi
+""",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    values = parse_lines(result.stdout)
+    assert values["VALID"] == "no"
+    assert (
+        "Bundled OpenSearch requires OPENSEARCH_USER and OPENSEARCH_PASSWORD"
+        in result.stderr
+    )
+
+
+def test_validate_env_file_rejects_weak_docker_opensearch_password(
+    tmp_path: Path,
+) -> None:
+    """validate_env_file should reject bundled OpenSearch passwords the image will refuse."""
+
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "\n".join(
+            [
+                "LIGHTRAG_KV_STORAGE=OpenSearchKVStorage",
+                "LIGHTRAG_VECTOR_STORAGE=OpenSearchVectorDBStorage",
+                "LIGHTRAG_GRAPH_STORAGE=OpenSearchGraphStorage",
+                "LIGHTRAG_DOC_STATUS_STORAGE=OpenSearchDocStatusStorage",
+                "LIGHTRAG_SETUP_OPENSEARCH_DEPLOYMENT=docker",
+                "OPENSEARCH_HOSTS=localhost:9200",
+                "OPENSEARCH_USER=admin",
+                "OPENSEARCH_PASSWORD=weakpass",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "env.example").write_text("LLM_BINDING=openai\n", encoding="utf-8")
+
+    result = subprocess.run(
+        [
+            "bash",
+            "--norc",
+            "--noprofile",
+            "-c",
+            f"""
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+if validate_env_file; then
+  printf 'VALID=yes\\n'
+else
+  printf 'VALID=no\\n'
+fi
+""",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    values = parse_lines(result.stdout)
+    assert values["VALID"] == "no"
+    assert "OpenSearch requires a strong OPENSEARCH_PASSWORD" in result.stderr
+
+
+def test_validate_env_file_rejects_weak_host_opensearch_password(
+    tmp_path: Path,
+) -> None:
+    """validate_env_file should reject weak OpenSearch passwords even for host deployments."""
+
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "\n".join(
+            [
+                "LIGHTRAG_KV_STORAGE=OpenSearchKVStorage",
+                "LIGHTRAG_VECTOR_STORAGE=OpenSearchVectorDBStorage",
+                "LIGHTRAG_GRAPH_STORAGE=OpenSearchGraphStorage",
+                "LIGHTRAG_DOC_STATUS_STORAGE=OpenSearchDocStatusStorage",
+                "OPENSEARCH_HOSTS=localhost:9200",
+                "OPENSEARCH_USER=admin",
+                "OPENSEARCH_PASSWORD=weakpass",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "env.example").write_text("LLM_BINDING=openai\n", encoding="utf-8")
+
+    result = subprocess.run(
+        [
+            "bash",
+            "--norc",
+            "--noprofile",
+            "-c",
+            f"""
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+if validate_env_file; then
+  printf 'VALID=yes\\n'
+else
+  printf 'VALID=no\\n'
+fi
+""",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    values = parse_lines(result.stdout)
+    assert values["VALID"] == "no"
+    assert "OpenSearch requires a strong OPENSEARCH_PASSWORD" in result.stderr
+
+
+def test_validate_env_file_rejects_unauthenticated_host_opensearch(
+    tmp_path: Path,
+) -> None:
+    """validate_env_file should reject host-mode OpenSearch with no auth fields."""
+
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "\n".join(
+            [
+                "LIGHTRAG_KV_STORAGE=OpenSearchKVStorage",
+                "LIGHTRAG_VECTOR_STORAGE=OpenSearchVectorDBStorage",
+                "LIGHTRAG_GRAPH_STORAGE=OpenSearchGraphStorage",
+                "LIGHTRAG_DOC_STATUS_STORAGE=OpenSearchDocStatusStorage",
+                "OPENSEARCH_HOSTS=localhost:9200",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "env.example").write_text("LLM_BINDING=openai\n", encoding="utf-8")
+
+    result = subprocess.run(
+        [
+            "bash",
+            "--norc",
+            "--noprofile",
+            "-c",
+            f"""
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+if validate_env_file; then
+  printf 'VALID=yes\\n'
+else
+  printf 'VALID=no\\n'
+fi
+""",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    values = parse_lines(result.stdout)
+    assert values["VALID"] == "no"
+    assert "OPENSEARCH_USER" in result.stderr
+    assert "OPENSEARCH_PASSWORD" in result.stderr
+
+
+def test_validate_env_file_rejects_partial_host_opensearch_auth(
+    tmp_path: Path,
+) -> None:
+    """validate_env_file should reject host-mode OpenSearch when only one auth field is set."""
+
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "\n".join(
+            [
+                "LIGHTRAG_KV_STORAGE=OpenSearchKVStorage",
+                "LIGHTRAG_VECTOR_STORAGE=OpenSearchVectorDBStorage",
+                "LIGHTRAG_GRAPH_STORAGE=OpenSearchGraphStorage",
+                "LIGHTRAG_DOC_STATUS_STORAGE=OpenSearchDocStatusStorage",
+                "OPENSEARCH_HOSTS=localhost:9200",
+                "OPENSEARCH_USER=admin",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "env.example").write_text("LLM_BINDING=openai\n", encoding="utf-8")
+
+    result = subprocess.run(
+        [
+            "bash",
+            "--norc",
+            "--noprofile",
+            "-c",
+            f"""
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+if validate_env_file; then
+  printf 'VALID=yes\\n'
+else
+  printf 'VALID=no\\n'
+fi
+""",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    values = parse_lines(result.stdout)
+    assert values["VALID"] == "no"
+    assert "OPENSEARCH_PASSWORD" in result.stderr
+
+
+def test_validate_env_file_rejects_opensearch_hosts_with_uri_scheme(
+    tmp_path: Path,
+) -> None:
+    """validate_env_file should require OPENSEARCH_HOSTS to stay as host:port entries."""
+
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "\n".join(
+            [
+                "LIGHTRAG_KV_STORAGE=OpenSearchKVStorage",
+                "LIGHTRAG_VECTOR_STORAGE=OpenSearchVectorDBStorage",
+                "LIGHTRAG_GRAPH_STORAGE=OpenSearchGraphStorage",
+                "LIGHTRAG_DOC_STATUS_STORAGE=OpenSearchDocStatusStorage",
+                "OPENSEARCH_HOSTS=https://localhost:9200",
+                "OPENSEARCH_USER=admin",
+                "OPENSEARCH_PASSWORD=StrongPass1!",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "env.example").write_text("LLM_BINDING=openai\n", encoding="utf-8")
+
+    result = subprocess.run(
+        [
+            "bash",
+            "--norc",
+            "--noprofile",
+            "-c",
+            f"""
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+if validate_env_file; then
+  printf 'VALID=yes\\n'
+else
+  printf 'VALID=no\\n'
+fi
+""",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    values = parse_lines(result.stdout)
+    assert values["VALID"] == "no"
+    assert (
+        "OPENSEARCH_HOSTS must use bare host:port entries, not URLs." in result.stderr
+    )
+
+
+def test_validate_env_file_ignores_invalid_unused_storage_settings(
+    tmp_path: Path,
+) -> None:
+    """validate_env_file should ignore malformed settings for backends not selected by storage."""
+
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "\n".join(
+            [
+                "LIGHTRAG_KV_STORAGE=JsonKVStorage",
+                "LIGHTRAG_VECTOR_STORAGE=NanoVectorDBStorage",
+                "LIGHTRAG_GRAPH_STORAGE=NetworkXStorage",
+                "LIGHTRAG_DOC_STATUS_STORAGE=JsonDocStatusStorage",
+                "NEO4J_URI=http://localhost:7687",
+                "MONGO_URI=not-a-mongo-uri",
+                "REDIS_URI=tcp://localhost:6379",
+                "MILVUS_URI=tcp://localhost:19530",
+                "QDRANT_URL=tcp://localhost:6333",
+                "MEMGRAPH_URI=http://localhost:7687",
+                "POSTGRES_PORT=99999",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "env.example").write_text("LLM_BINDING=openai\n", encoding="utf-8")
+
+    result = subprocess.run(
+        [
+            "bash",
+            "--norc",
+            "--noprofile",
+            "-c",
+            f"""
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+if validate_env_file; then
+  printf 'VALID=yes\\n'
+else
+  printf 'VALID=no\\n'
+fi
+""",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    values = parse_lines(result.stdout)
+    assert values["VALID"] == "yes"
+    assert "Invalid NEO4J_URI" not in result.stderr
+    assert "Invalid MONGO_URI" not in result.stderr
+    assert "Invalid REDIS_URI" not in result.stderr
+    assert "Invalid MILVUS_URI" not in result.stderr
+    assert "Invalid QDRANT_URL" not in result.stderr
+    assert "Invalid MEMGRAPH_URI" not in result.stderr
+    assert "Invalid POSTGRES_PORT" not in result.stderr
+
+
+def test_validate_env_file_allows_empty_opensearch_hosts_when_unused(
+    tmp_path: Path,
+) -> None:
+    """validate_env_file should ignore blank OpenSearch hosts when no OpenSearch storage is selected."""
+
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "\n".join(
+            [
+                "LIGHTRAG_KV_STORAGE=JsonKVStorage",
+                "LIGHTRAG_VECTOR_STORAGE=NanoVectorDBStorage",
+                "LIGHTRAG_GRAPH_STORAGE=NetworkXStorage",
+                "LIGHTRAG_DOC_STATUS_STORAGE=JsonDocStatusStorage",
+                "OPENSEARCH_HOSTS=",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "env.example").write_text("LLM_BINDING=openai\n", encoding="utf-8")
+
+    result = subprocess.run(
+        [
+            "bash",
+            "--norc",
+            "--noprofile",
+            "-c",
+            f"""
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+if validate_env_file; then
+  printf 'VALID=yes\\n'
+else
+  printf 'VALID=no\\n'
+fi
+""",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    values = parse_lines(result.stdout)
+    assert values["VALID"] == "yes"
+    assert "Empty OPENSEARCH_HOSTS" not in result.stderr
 
 
 def test_backup_only_backs_up_env_and_generated_compose(tmp_path: Path) -> None:
