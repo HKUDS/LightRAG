@@ -7730,7 +7730,9 @@ printf 'PASSWORD_VALIDATOR=%s\\n' "$(cat "$validator_file")"
     assert values["PASSWORD_VALIDATOR"] == "validate_opensearch_password_strength"
 
 
-def test_validate_env_file_rejects_invalid_opensearch_index_settings(tmp_path: Path) -> None:
+def test_validate_env_file_rejects_invalid_opensearch_index_settings(
+    tmp_path: Path,
+) -> None:
     """validate_env_file should reject invalid OpenSearch shard and replica counts."""
 
     write_text_lines(
@@ -7774,6 +7776,80 @@ fi
     values = parse_lines(result.stdout)
     assert values["VALID"] == "no"
     assert "OPENSEARCH_NUMBER_OF_SHARDS must be a positive integer." in result.stderr
+
+
+def test_validate_env_file_rejects_blank_opensearch_index_settings(
+    tmp_path: Path,
+) -> None:
+    """validate_env_file should reject blank OpenSearch shard and replica counts."""
+
+    write_text_lines(
+        tmp_path / ".env",
+        [
+            "LIGHTRAG_KV_STORAGE=OpenSearchKVStorage",
+            "LIGHTRAG_VECTOR_STORAGE=OpenSearchVectorDBStorage",
+            "LIGHTRAG_GRAPH_STORAGE=OpenSearchGraphStorage",
+            "LIGHTRAG_DOC_STATUS_STORAGE=OpenSearchDocStatusStorage",
+            "OPENSEARCH_HOSTS=localhost:9200",
+            "OPENSEARCH_USER=admin",
+            "OPENSEARCH_PASSWORD=StrongPass1!",
+            "OPENSEARCH_NUMBER_OF_SHARDS=",
+            "OPENSEARCH_NUMBER_OF_REPLICAS=",
+        ],
+    )
+    write_text_lines(tmp_path / "env.example", ["LLM_BINDING=openai"])
+
+    result = subprocess.run(
+        [
+            "bash",
+            "--norc",
+            "--noprofile",
+            "-c",
+            f"""
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+if validate_env_file; then
+  printf 'VALID=yes\\n'
+else
+  printf 'VALID=no\\n'
+fi
+""",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    values = parse_lines(result.stdout)
+    assert values["VALID"] == "no"
+    assert "OPENSEARCH_NUMBER_OF_SHARDS must be a positive integer." in result.stderr
+
+
+def test_opensearch_index_validators_accept_zero_padded_values() -> None:
+    """OpenSearch shard and replica validators should accept zero-padded decimals."""
+
+    values = run_bash_lines(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+
+if validate_positive_integer "08"; then
+  printf 'SHARDS=valid\\n'
+else
+  printf 'SHARDS=invalid\\n'
+fi
+
+if validate_non_negative_integer "09"; then
+  printf 'REPLICAS=valid\\n'
+else
+  printf 'REPLICAS=invalid\\n'
+fi
+"""
+    )
+
+    assert values["SHARDS"] == "valid"
+    assert values["REPLICAS"] == "valid"
 
 
 def test_validate_env_file_rejects_mongo_vector_storage_without_atlas_uri(

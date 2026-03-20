@@ -71,7 +71,7 @@ validate_positive_integer() {
     return 1
   fi
 
-  (( value > 0 ))
+  (( 10#$value > 0 ))
 }
 
 validate_non_negative_integer() {
@@ -81,7 +81,7 @@ validate_non_negative_integer() {
     return 1
   fi
 
-  (( value >= 0 ))
+  (( 10#$value >= 0 ))
 }
 
 validate_non_empty() {
@@ -282,8 +282,8 @@ validate_opensearch_config() {
   local hosts="${2:-${ENV_VALUES[OPENSEARCH_HOSTS]:-}}"
   local user="${3:-${ENV_VALUES[OPENSEARCH_USER]:-}}"
   local password="${4:-${ENV_VALUES[OPENSEARCH_PASSWORD]:-}}"
-  local num_shards="${5:-${ENV_VALUES[OPENSEARCH_NUMBER_OF_SHARDS]:-1}}"
-  local num_replicas="${6:-${ENV_VALUES[OPENSEARCH_NUMBER_OF_REPLICAS]:-0}}"
+  local num_shards="${5-${ENV_VALUES[OPENSEARCH_NUMBER_OF_SHARDS]-1}}"
+  local num_replicas="${6-${ENV_VALUES[OPENSEARCH_NUMBER_OF_REPLICAS]-0}}"
 
   if ! validate_opensearch_hosts_format "$hosts"; then
     return 1
