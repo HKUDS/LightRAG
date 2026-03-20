@@ -1450,6 +1450,8 @@ collect_opensearch_config() {
   local default_docker="${1:-no}"
   local use_docker="no"
   local hosts user password
+  local existing_user="" existing_password=""
+  local existing_use_ssl="" existing_verify_certs=""
   local use_ssl="true"
   local verify_certs="false"
   local use_ssl_default="yes"
@@ -1472,19 +1474,24 @@ collect_opensearch_config() {
     hosts="${ENV_VALUES[OPENSEARCH_HOSTS]:-localhost:9200}"
   fi
 
+  existing_user="${ORIGINAL_ENV_VALUES[OPENSEARCH_USER]-${ENV_VALUES[OPENSEARCH_USER]:-}}"
+  existing_password="${ORIGINAL_ENV_VALUES[OPENSEARCH_PASSWORD]-${ENV_VALUES[OPENSEARCH_PASSWORD]:-}}"
+  existing_use_ssl="${ORIGINAL_ENV_VALUES[OPENSEARCH_USE_SSL]-${ENV_VALUES[OPENSEARCH_USE_SSL]:-}}"
+  existing_verify_certs="${ORIGINAL_ENV_VALUES[OPENSEARCH_VERIFY_CERTS]-${ENV_VALUES[OPENSEARCH_VERIFY_CERTS]:-}}"
+
   hosts="$(prompt_until_valid "OpenSearch hosts (host:port, comma-separated)" "$hosts" validate_opensearch_hosts_format)"
-  user="$(prompt_with_default "OpenSearch user" "${ENV_VALUES[OPENSEARCH_USER]:-admin}")"
-  password="$(prompt_secret_until_valid_with_default "OpenSearch password: " "${ENV_VALUES[OPENSEARCH_PASSWORD]:-LightRAG2026_!@}" validate_opensearch_password_strength)"
+  user="$(prompt_with_default "OpenSearch user" "${existing_user:-admin}")"
+  password="$(prompt_secret_until_valid_with_default "OpenSearch password: " "${existing_password:-LightRAG2026_!@}" validate_opensearch_password_strength)"
 
   if [[ "$use_docker" == "yes" ]]; then
-    if [[ -n "${ENV_VALUES[OPENSEARCH_USE_SSL]:-}" ]]; then
-      env_value_is_true "${ENV_VALUES[OPENSEARCH_USE_SSL]}" && use_ssl="true" || use_ssl="false"
+    if [[ -n "$existing_use_ssl" ]]; then
+      env_value_is_true "$existing_use_ssl" && use_ssl="true" || use_ssl="false"
     else
       use_ssl="true"
     fi
     verify_certs="false"
   else
-    if [[ -n "${ENV_VALUES[OPENSEARCH_USE_SSL]:-}" ]] && ! env_value_is_true "${ENV_VALUES[OPENSEARCH_USE_SSL]}"; then
+    if [[ -n "$existing_use_ssl" ]] && ! env_value_is_true "$existing_use_ssl"; then
       use_ssl_default="no"
     fi
 
@@ -1495,7 +1502,7 @@ collect_opensearch_config() {
     fi
 
     if [[ "$use_ssl" == "true" ]]; then
-      if [[ -n "${ENV_VALUES[OPENSEARCH_VERIFY_CERTS]:-}" ]] && env_value_is_true "${ENV_VALUES[OPENSEARCH_VERIFY_CERTS]}"; then
+      if [[ -n "$existing_verify_certs" ]] && env_value_is_true "$existing_verify_certs"; then
         verify_certs_default="yes"
       fi
 
