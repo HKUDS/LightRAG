@@ -7596,6 +7596,84 @@ printf 'VERIFY_CERTS=%s\\n' "${{ENV_VALUES[OPENSEARCH_VERIFY_CERTS]}}"
     assert values["VERIFY_CERTS"] == "false"
 
 
+def test_collect_opensearch_config_uses_original_index_settings_as_defaults() -> None:
+    """collect_opensearch_config should prefer ORIGINAL_ENV_VALUES for shard/replica defaults."""
+
+    values = run_bash_lines(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+reset_state
+
+default_log="$(mktemp)"
+
+ORIGINAL_ENV_VALUES[OPENSEARCH_NUMBER_OF_SHARDS]="3"
+ORIGINAL_ENV_VALUES[OPENSEARCH_NUMBER_OF_REPLICAS]="2"
+ENV_VALUES[OPENSEARCH_NUMBER_OF_SHARDS]="9"
+ENV_VALUES[OPENSEARCH_NUMBER_OF_REPLICAS]="8"
+
+confirm_default_yes() {{ return 1; }}
+confirm_default_no() {{ return 1; }}
+prompt_until_valid() {{
+  case "$1" in
+    "Number of index shards"|"Number of index replicas (use 2 for 3-AZ clusters)")
+      printf '%s=%s\\n' "$1" "$2" >> "$default_log"
+      ;;
+  esac
+  printf '%s' "$2"
+}}
+prompt_with_default() {{ printf '%s' "$2"; }}
+prompt_secret_until_valid_with_default() {{ printf '%s' "$2"; }}
+
+collect_opensearch_config "no"
+printf 'SHARDS=%s\\n' "${{ENV_VALUES[OPENSEARCH_NUMBER_OF_SHARDS]}}"
+printf 'REPLICAS=%s\\n' "${{ENV_VALUES[OPENSEARCH_NUMBER_OF_REPLICAS]}}"
+printf 'DEFAULTS=%s\\n' "$(tr '\\n' ';' < "$default_log")"
+"""
+    )
+
+    assert values["SHARDS"] == "3"
+    assert values["REPLICAS"] == "2"
+    assert "Number of index shards=3;" in values["DEFAULTS"]
+    assert "Number of index replicas (use 2 for 3-AZ clusters)=2;" in values["DEFAULTS"]
+
+
+def test_collect_opensearch_config_validates_index_settings_during_prompt() -> None:
+    """collect_opensearch_config should validate shard and replica prompts."""
+
+    values = run_bash_lines(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+reset_state
+
+validator_file="$(mktemp)"
+
+confirm_default_yes() {{ return 1; }}
+confirm_default_no() {{ return 1; }}
+prompt_until_valid() {{
+  case "$1" in
+    "Number of index shards"|"Number of index replicas (use 2 for 3-AZ clusters)")
+      printf '%s=%s\\n' "$1" "$3" >> "$validator_file"
+      ;;
+  esac
+  printf '%s' "$2"
+}}
+prompt_with_default() {{ printf '%s' "$2"; }}
+prompt_secret_until_valid_with_default() {{ printf '%s' "$2"; }}
+
+collect_opensearch_config "no"
+printf 'VALIDATORS=%s\\n' "$(tr '\\n' ';' < "$validator_file")"
+"""
+    )
+
+    assert "Number of index shards=validate_positive_integer;" in values["VALIDATORS"]
+    assert (
+        "Number of index replicas (use 2 for 3-AZ clusters)=validate_non_negative_integer;"
+        in values["VALIDATORS"]
+    )
+
+
 def test_collect_opensearch_config_validates_hosts_during_prompt() -> None:
     """collect_opensearch_config should validate OPENSEARCH_HOSTS at prompt time."""
 
@@ -7650,6 +7728,128 @@ printf 'PASSWORD_VALIDATOR=%s\\n' "$(cat "$validator_file")"
     )
 
     assert values["PASSWORD_VALIDATOR"] == "validate_opensearch_password_strength"
+
+
+def test_validate_env_file_rejects_invalid_opensearch_index_settings(
+    tmp_path: Path,
+) -> None:
+    """validate_env_file should reject invalid OpenSearch shard and replica counts."""
+
+    write_text_lines(
+        tmp_path / ".env",
+        [
+            "LIGHTRAG_KV_STORAGE=OpenSearchKVStorage",
+            "LIGHTRAG_VECTOR_STORAGE=OpenSearchVectorDBStorage",
+            "LIGHTRAG_GRAPH_STORAGE=OpenSearchGraphStorage",
+            "LIGHTRAG_DOC_STATUS_STORAGE=OpenSearchDocStatusStorage",
+            "OPENSEARCH_HOSTS=localhost:9200",
+            "OPENSEARCH_USER=admin",
+            "OPENSEARCH_PASSWORD=StrongPass1!",
+            "OPENSEARCH_NUMBER_OF_SHARDS=abc",
+            "OPENSEARCH_NUMBER_OF_REPLICAS=-1",
+        ],
+    )
+    write_text_lines(tmp_path / "env.example", ["LLM_BINDING=openai"])
+
+    result = subprocess.run(
+        [
+            "bash",
+            "--norc",
+            "--noprofile",
+            "-c",
+            f"""
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+if validate_env_file; then
+  printf 'VALID=yes\\n'
+else
+  printf 'VALID=no\\n'
+fi
+""",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    values = parse_lines(result.stdout)
+    assert values["VALID"] == "no"
+    assert "OPENSEARCH_NUMBER_OF_SHARDS must be a positive integer." in result.stderr
+
+
+def test_validate_env_file_rejects_blank_opensearch_index_settings(
+    tmp_path: Path,
+) -> None:
+    """validate_env_file should reject blank OpenSearch shard and replica counts."""
+
+    write_text_lines(
+        tmp_path / ".env",
+        [
+            "LIGHTRAG_KV_STORAGE=OpenSearchKVStorage",
+            "LIGHTRAG_VECTOR_STORAGE=OpenSearchVectorDBStorage",
+            "LIGHTRAG_GRAPH_STORAGE=OpenSearchGraphStorage",
+            "LIGHTRAG_DOC_STATUS_STORAGE=OpenSearchDocStatusStorage",
+            "OPENSEARCH_HOSTS=localhost:9200",
+            "OPENSEARCH_USER=admin",
+            "OPENSEARCH_PASSWORD=StrongPass1!",
+            "OPENSEARCH_NUMBER_OF_SHARDS=",
+            "OPENSEARCH_NUMBER_OF_REPLICAS=",
+        ],
+    )
+    write_text_lines(tmp_path / "env.example", ["LLM_BINDING=openai"])
+
+    result = subprocess.run(
+        [
+            "bash",
+            "--norc",
+            "--noprofile",
+            "-c",
+            f"""
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+if validate_env_file; then
+  printf 'VALID=yes\\n'
+else
+  printf 'VALID=no\\n'
+fi
+""",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    values = parse_lines(result.stdout)
+    assert values["VALID"] == "no"
+    assert "OPENSEARCH_NUMBER_OF_SHARDS must be a positive integer." in result.stderr
+
+
+def test_opensearch_index_validators_accept_zero_padded_values() -> None:
+    """OpenSearch shard and replica validators should accept zero-padded decimals."""
+
+    values = run_bash_lines(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+
+if validate_positive_integer "08"; then
+  printf 'SHARDS=valid\\n'
+else
+  printf 'SHARDS=invalid\\n'
+fi
+
+if validate_non_negative_integer "09"; then
+  printf 'REPLICAS=valid\\n'
+else
+  printf 'REPLICAS=invalid\\n'
+fi
+"""
+    )
+
+    assert values["SHARDS"] == "valid"
+    assert values["REPLICAS"] == "valid"
 
 
 def test_validate_env_file_rejects_mongo_vector_storage_without_atlas_uri(
