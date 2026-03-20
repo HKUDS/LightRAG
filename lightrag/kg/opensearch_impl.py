@@ -49,6 +49,14 @@ def _get_opensearch_env(key, fallback):
     return os.environ.get(key, config.get("opensearch", cfg_key, fallback=fallback))
 
 
+def _get_index_number_of_shards() -> int:
+    return int(_get_opensearch_env("OPENSEARCH_NUMBER_OF_SHARDS", "1"))
+
+
+def _get_index_number_of_replicas() -> int:
+    return int(_get_opensearch_env("OPENSEARCH_NUMBER_OF_REPLICAS", "0"))
+
+
 def _sanitize_index_name(name: str) -> str:
     """Sanitize a string to be a valid OpenSearch index name."""
     sanitized = re.sub(r"[^a-z0-9_-]", "_", name.lower())
@@ -222,7 +230,10 @@ class OpenSearchKVStorage(BaseKVStorage):
                 body = {
                     "mappings": {"dynamic": True},
                     "settings": {
-                        "index": {"number_of_shards": 1, "number_of_replicas": 0},
+                        "index": {
+                            "number_of_shards": _get_index_number_of_shards(),
+                            "number_of_replicas": _get_index_number_of_replicas(),
+                        },
                     },
                 }
                 await self.client.indices.create(index=self._index_name, body=body)
@@ -533,7 +544,10 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
                         },
                     },
                     "settings": {
-                        "index": {"number_of_shards": 1, "number_of_replicas": 0},
+                        "index": {
+                            "number_of_shards": _get_index_number_of_shards(),
+                            "number_of_replicas": _get_index_number_of_replicas(),
+                        },
                     },
                 }
                 await self.client.indices.create(index=self._index_name, body=body)
@@ -1048,7 +1062,10 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                         },
                     },
                     "settings": {
-                        "index": {"number_of_shards": 1, "number_of_replicas": 0}
+                        "index": {
+                            "number_of_shards": _get_index_number_of_shards(),
+                            "number_of_replicas": _get_index_number_of_replicas(),
+                        }
                     },
                 }
                 await self.client.indices.create(index=self._nodes_index, body=body)
@@ -1078,7 +1095,10 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                         },
                     },
                     "settings": {
-                        "index": {"number_of_shards": 1, "number_of_replicas": 0}
+                        "index": {
+                            "number_of_shards": _get_index_number_of_shards(),
+                            "number_of_replicas": _get_index_number_of_replicas(),
+                        }
                     },
                 }
                 await self.client.indices.create(index=self._edges_index, body=body)
@@ -2397,8 +2417,8 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
                     "index": {
                         "knn": True,
                         "knn.algo_param.ef_search": ef_search,
-                        "number_of_shards": 1,
-                        "number_of_replicas": 0,
+                        "number_of_shards": _get_index_number_of_shards(),
+                        "number_of_replicas": _get_index_number_of_replicas(),
                     }
                 },
                 "mappings": {
