@@ -438,7 +438,7 @@ validate_security_config() {
     return 1
   fi
 
-  if [[ "$token_secret" == "lightrag-jwt-default-secret" ]]; then
+  if [[ "$token_secret" == "lightrag-jwt-default-secret-key!" ]]; then
     format_error \
       "TOKEN_SECRET must not use the built-in default value when AUTH_ACCOUNTS is enabled." \
       "Generate a unique JWT signing secret and update TOKEN_SECRET."
