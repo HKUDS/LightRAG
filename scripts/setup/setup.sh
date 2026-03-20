@@ -1463,6 +1463,7 @@ collect_opensearch_config() {
   local hosts user password
   local existing_user="" existing_password=""
   local existing_use_ssl="" existing_verify_certs=""
+  local existing_num_shards="" existing_num_replicas=""
   local use_ssl="true"
   local verify_certs="false"
   local use_ssl_default="yes"
@@ -1489,6 +1490,8 @@ collect_opensearch_config() {
   existing_password="${ORIGINAL_ENV_VALUES[OPENSEARCH_PASSWORD]-${ENV_VALUES[OPENSEARCH_PASSWORD]:-}}"
   existing_use_ssl="${ORIGINAL_ENV_VALUES[OPENSEARCH_USE_SSL]-${ENV_VALUES[OPENSEARCH_USE_SSL]:-}}"
   existing_verify_certs="${ORIGINAL_ENV_VALUES[OPENSEARCH_VERIFY_CERTS]-${ENV_VALUES[OPENSEARCH_VERIFY_CERTS]:-}}"
+  existing_num_shards="${ORIGINAL_ENV_VALUES[OPENSEARCH_NUMBER_OF_SHARDS]-${ENV_VALUES[OPENSEARCH_NUMBER_OF_SHARDS]:-}}"
+  existing_num_replicas="${ORIGINAL_ENV_VALUES[OPENSEARCH_NUMBER_OF_REPLICAS]-${ENV_VALUES[OPENSEARCH_NUMBER_OF_REPLICAS]:-}}"
 
   hosts="$(prompt_until_valid "OpenSearch hosts (host:port, comma-separated)" "$hosts" validate_opensearch_hosts_format)"
   user="$(prompt_with_default "OpenSearch user" "${existing_user:-admin}")"
@@ -1530,8 +1533,8 @@ collect_opensearch_config() {
     num_shards="1"
     num_replicas="0"
   else
-    num_shards="$(prompt_with_default "Number of index shards" "${ENV_VALUES[OPENSEARCH_NUMBER_OF_SHARDS]:-1}")"
-    num_replicas="$(prompt_with_default "Number of index replicas (use 2 for 3-AZ clusters)" "${ENV_VALUES[OPENSEARCH_NUMBER_OF_REPLICAS]:-0}")"
+    num_shards="$(prompt_with_default "Number of index shards" "${existing_num_shards:-1}")"
+    num_replicas="$(prompt_with_default "Number of index replicas (use 2 for 3-AZ clusters)" "${existing_num_replicas:-0}")"
   fi
 
   ENV_VALUES["OPENSEARCH_HOSTS"]="$hosts"

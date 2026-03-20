@@ -7596,6 +7596,48 @@ printf 'VERIFY_CERTS=%s\\n' "${{ENV_VALUES[OPENSEARCH_VERIFY_CERTS]}}"
     assert values["VERIFY_CERTS"] == "false"
 
 
+def test_collect_opensearch_config_uses_original_index_settings_as_defaults() -> None:
+    """collect_opensearch_config should prefer ORIGINAL_ENV_VALUES for shard/replica defaults."""
+
+    values = run_bash_lines(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+reset_state
+
+default_log="$(mktemp)"
+
+ORIGINAL_ENV_VALUES[OPENSEARCH_NUMBER_OF_SHARDS]="3"
+ORIGINAL_ENV_VALUES[OPENSEARCH_NUMBER_OF_REPLICAS]="2"
+ENV_VALUES[OPENSEARCH_NUMBER_OF_SHARDS]="9"
+ENV_VALUES[OPENSEARCH_NUMBER_OF_REPLICAS]="8"
+
+confirm_default_yes() {{ return 1; }}
+confirm_default_no() {{ return 1; }}
+prompt_until_valid() {{ printf '%s' "$2"; }}
+prompt_with_default() {{
+  case "$1" in
+    "Number of index shards"|"Number of index replicas (use 2 for 3-AZ clusters)")
+      printf '%s=%s\\n' "$1" "$2" >> "$default_log"
+      ;;
+  esac
+  printf '%s' "$2"
+}}
+prompt_secret_until_valid_with_default() {{ printf '%s' "$2"; }}
+
+collect_opensearch_config "no"
+printf 'SHARDS=%s\\n' "${{ENV_VALUES[OPENSEARCH_NUMBER_OF_SHARDS]}}"
+printf 'REPLICAS=%s\\n' "${{ENV_VALUES[OPENSEARCH_NUMBER_OF_REPLICAS]}}"
+printf 'DEFAULTS=%s\\n' "$(tr '\\n' ';' < "$default_log")"
+"""
+    )
+
+    assert values["SHARDS"] == "3"
+    assert values["REPLICAS"] == "2"
+    assert "Number of index shards=3;" in values["DEFAULTS"]
+    assert "Number of index replicas (use 2 for 3-AZ clusters)=2;" in values["DEFAULTS"]
+
+
 def test_collect_opensearch_config_validates_hosts_during_prompt() -> None:
     """collect_opensearch_config should validate OPENSEARCH_HOSTS at prompt time."""
 
