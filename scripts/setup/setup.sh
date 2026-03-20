@@ -1533,8 +1533,8 @@ collect_opensearch_config() {
     num_shards="1"
     num_replicas="0"
   else
-    num_shards="$(prompt_with_default "Number of index shards" "${existing_num_shards:-1}")"
-    num_replicas="$(prompt_with_default "Number of index replicas (use 2 for 3-AZ clusters)" "${existing_num_replicas:-0}")"
+    num_shards="$(prompt_until_valid "Number of index shards" "${existing_num_shards:-1}" validate_positive_integer)"
+    num_replicas="$(prompt_until_valid "Number of index replicas (use 2 for 3-AZ clusters)" "${existing_num_replicas:-0}" validate_non_negative_integer)"
   fi
 
   ENV_VALUES["OPENSEARCH_HOSTS"]="$hosts"
@@ -2843,7 +2843,9 @@ validate_env_file() {
       "${ENV_VALUES[LIGHTRAG_SETUP_OPENSEARCH_DEPLOYMENT]:-}" \
       "${ENV_VALUES[OPENSEARCH_HOSTS]:-}" \
       "${ENV_VALUES[OPENSEARCH_USER]:-}" \
-      "${ENV_VALUES[OPENSEARCH_PASSWORD]:-}"; then
+      "${ENV_VALUES[OPENSEARCH_PASSWORD]:-}" \
+      "${ENV_VALUES[OPENSEARCH_NUMBER_OF_SHARDS]:-1}" \
+      "${ENV_VALUES[OPENSEARCH_NUMBER_OF_REPLICAS]:-0}"; then
       errors=1
     fi
   fi

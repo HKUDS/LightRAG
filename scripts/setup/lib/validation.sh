@@ -64,6 +64,26 @@ validate_port() {
   return 0
 }
 
+validate_positive_integer() {
+  local value="$1"
+
+  if [[ ! "$value" =~ ^[0-9]+$ ]]; then
+    return 1
+  fi
+
+  (( value > 0 ))
+}
+
+validate_non_negative_integer() {
+  local value="$1"
+
+  if [[ ! "$value" =~ ^[0-9]+$ ]]; then
+    return 1
+  fi
+
+  (( value >= 0 ))
+}
+
 validate_non_empty() {
   local value="$1"
 
@@ -262,6 +282,8 @@ validate_opensearch_config() {
   local hosts="${2:-${ENV_VALUES[OPENSEARCH_HOSTS]:-}}"
   local user="${3:-${ENV_VALUES[OPENSEARCH_USER]:-}}"
   local password="${4:-${ENV_VALUES[OPENSEARCH_PASSWORD]:-}}"
+  local num_shards="${5:-${ENV_VALUES[OPENSEARCH_NUMBER_OF_SHARDS]:-1}}"
+  local num_replicas="${6:-${ENV_VALUES[OPENSEARCH_NUMBER_OF_REPLICAS]:-0}}"
 
   if ! validate_opensearch_hosts_format "$hosts"; then
     return 1
@@ -284,6 +306,20 @@ validate_opensearch_config() {
     if [[ "$deployment_mode" == "docker" ]]; then
       echo "${COLOR_YELLOW:-}Hint:${COLOR_RESET:-} The managed Docker image also enforces this password strength at startup." >&2
     fi
+    return 1
+  fi
+
+  if ! validate_positive_integer "$num_shards"; then
+    format_error \
+      "OPENSEARCH_NUMBER_OF_SHARDS must be a positive integer." \
+      "Set it to 1 or greater, or rerun setup to regenerate the OpenSearch index settings."
+    return 1
+  fi
+
+  if ! validate_non_negative_integer "$num_replicas"; then
+    format_error \
+      "OPENSEARCH_NUMBER_OF_REPLICAS must be a non-negative integer." \
+      "Set it to 0 or greater, or rerun setup to regenerate the OpenSearch index settings."
     return 1
   fi
 
