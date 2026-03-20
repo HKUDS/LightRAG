@@ -19,7 +19,7 @@ from fastapi import (
     HTTPException,
     UploadFile,
 )
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from lightrag import LightRAG
 from lightrag.base import DeletionResult, DocProcessingStatus, DocStatus
@@ -160,14 +160,15 @@ class ScanResponse(BaseModel):
     )
     track_id: str = Field(description="Tracking ID for monitoring scanning progress")
 
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "status": "scanning_started",
                 "message": "Scanning process has been initiated in the background",
                 "track_id": "scan_20250729_170612_abc123",
             }
         }
+    )
 
 
 class ReprocessResponse(BaseModel):
@@ -188,14 +189,15 @@ class ReprocessResponse(BaseModel):
         description="Always empty string. Reprocessed documents retain their original track_id from initial upload.",
     )
 
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "status": "reprocessing_started",
                 "message": "Reprocessing of failed documents has been initiated in background",
                 "track_id": "",
             }
         }
+    )
 
 
 class CancelPipelineResponse(BaseModel):
@@ -211,13 +213,14 @@ class CancelPipelineResponse(BaseModel):
     )
     message: str = Field(description="Human-readable message describing the operation")
 
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "status": "cancellation_requested",
                 "message": "Pipeline cancellation has been requested. Documents will be marked as FAILED.",
             }
         }
+    )
 
 
 class InsertTextRequest(BaseModel):
@@ -246,13 +249,14 @@ class InsertTextRequest(BaseModel):
     def normalize_source_before(cls, file_source: Optional[str]) -> str:
         return normalize_file_path(file_source)
 
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "text": "This is a sample text to be inserted into the RAG system.",
                 "file_source": "Source of the text (optional)",
             }
         }
+    )
 
 
 class InsertTextsRequest(BaseModel):
@@ -286,8 +290,8 @@ class InsertTextsRequest(BaseModel):
 
         return [normalize_file_path(file_source) for file_source in file_sources]
 
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "texts": [
                     "This is the first text to be inserted.",
@@ -298,6 +302,7 @@ class InsertTextsRequest(BaseModel):
                 ],
             }
         }
+    )
 
 
 class InsertResponse(BaseModel):
@@ -315,14 +320,15 @@ class InsertResponse(BaseModel):
     message: str = Field(description="Message describing the operation result")
     track_id: str = Field(description="Tracking ID for monitoring processing status")
 
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "status": "success",
                 "message": "File 'document.pdf' uploaded successfully. Processing will continue in background.",
                 "track_id": "upload_20250729_170612_abc123",
             }
         }
+    )
 
 
 class ClearDocumentsResponse(BaseModel):
@@ -338,13 +344,14 @@ class ClearDocumentsResponse(BaseModel):
     )
     message: str = Field(description="Message describing the operation result")
 
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "status": "success",
                 "message": "All documents cleared successfully. Deleted 15 files.",
             }
         }
+    )
 
 
 class ClearCacheRequest(BaseModel):
@@ -354,8 +361,7 @@ class ClearCacheRequest(BaseModel):
     All cache will be cleared regardless of the request content.
     """
 
-    class Config:
-        json_schema_extra = {"example": {}}
+    model_config = ConfigDict(json_schema_extra={"example": {}})
 
 
 class ClearCacheResponse(BaseModel):
@@ -371,13 +377,14 @@ class ClearCacheResponse(BaseModel):
     )
     message: str = Field(description="Message describing the operation result")
 
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "status": "success",
                 "message": "Successfully cleared cache for modes: ['default', 'naive']",
             }
         }
+    )
 
 
 """Response model for document status
@@ -470,8 +477,8 @@ class DocStatusResponse(BaseModel):
     )
     file_path: str = Field(description="Path to the document file")
 
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "id": "doc_123456",
                 "content_summary": "Research paper on machine learning",
@@ -486,6 +493,7 @@ class DocStatusResponse(BaseModel):
                 "file_path": "research_paper.pdf",
             }
         }
+    )
 
 
 class DocsStatusesResponse(BaseModel):
@@ -500,8 +508,8 @@ class DocsStatusesResponse(BaseModel):
         description="Dictionary mapping document status to lists of document status responses",
     )
 
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "statuses": {
                     "PENDING": [
@@ -552,6 +560,7 @@ class DocsStatusesResponse(BaseModel):
                 }
             }
         }
+    )
 
 
 class TrackStatusResponse(BaseModel):
@@ -571,8 +580,8 @@ class TrackStatusResponse(BaseModel):
     total_count: int = Field(description="Total number of documents for this track_id")
     status_summary: Dict[str, int] = Field(description="Count of documents by status")
 
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "track_id": "upload_20250729_170612_abc123",
                 "documents": [
@@ -594,6 +603,7 @@ class TrackStatusResponse(BaseModel):
                 "status_summary": {"PROCESSED": 1},
             }
         }
+    )
 
 
 class DocumentsRequest(BaseModel):
@@ -621,8 +631,8 @@ class DocumentsRequest(BaseModel):
         default="desc", description="Sort direction"
     )
 
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "status_filter": "PROCESSED",
                 "page": 1,
@@ -631,6 +641,7 @@ class DocumentsRequest(BaseModel):
                 "sort_direction": "desc",
             }
         }
+    )
 
 
 class PaginationInfo(BaseModel):
@@ -652,8 +663,8 @@ class PaginationInfo(BaseModel):
     has_next: bool = Field(description="Whether there is a next page")
     has_prev: bool = Field(description="Whether there is a previous page")
 
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "page": 1,
                 "page_size": 50,
@@ -663,6 +674,7 @@ class PaginationInfo(BaseModel):
                 "has_prev": False,
             }
         }
+    )
 
 
 class PaginatedDocsResponse(BaseModel):
@@ -682,8 +694,8 @@ class PaginatedDocsResponse(BaseModel):
         description="Count of documents by status for all documents"
     )
 
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "documents": [
                     {
@@ -717,6 +729,7 @@ class PaginatedDocsResponse(BaseModel):
                 },
             }
         }
+    )
 
 
 class StatusCountsResponse(BaseModel):
@@ -728,8 +741,8 @@ class StatusCountsResponse(BaseModel):
 
     status_counts: Dict[str, int] = Field(description="Count of documents by status")
 
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "status_counts": {
                     "PENDING": 10,
@@ -740,6 +753,7 @@ class StatusCountsResponse(BaseModel):
                 }
             }
         }
+    )
 
 
 class PipelineStatusResponse(BaseModel):
@@ -777,8 +791,7 @@ class PipelineStatusResponse(BaseModel):
         """Process datetime and return as ISO format string with timezone"""
         return format_datetime(value)
 
-    class Config:
-        extra = "allow"  # Allow additional fields from the pipeline status
+    model_config = ConfigDict(extra="allow")
 
 
 class DocumentManager:
