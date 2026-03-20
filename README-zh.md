@@ -73,6 +73,8 @@
 ---
 
 ## 🎉 新闻
+- [2026.03]🎯[新功能]: 集成了 **OpenSearch** 作为统一存储后端，为 LightRAG 的全部四种存储类型提供全面支持。
+- [2026.03]🎯[新功能]: 推出交互式安装向导，支持通过 Docker 在本地部署 Embedding、Reranking 及存储后端服务。
 - [2025.11]🎯[新功能]: 集成了 **RAGAS 评估**和 **Langfuse 追踪**。更新了 API 以在查询结果中返回召回上下文，支持上下文精度指标。
 - [2025.10]🎯[可扩展性增强]: 消除了处理瓶颈，以高效支持**大规模数据集**。
 - [2025.09]🎯[新功能]: 显著提升了 Qwen3-30B-A3B 等**开源 LLM** 的知识图谱提取准确性。
@@ -90,7 +92,6 @@
 - [2024.11]🎯[新功能]: 现在您可以[使用 Neo4J 进行存储](https://github.com/HKUDS/LightRAG?tab=readme-ov-file#using-neo4j-for-storage) —— 开启图数据库支持。
 - [2024.10]🎯[新功能]: 我们添加了 [LightRAG 介绍视频](https://youtu.be/oageL-1I0GE) 的链接 —— 演示 LightRAG 的各项功能。感谢作者的杰出贡献！
 - [2024.10]🎯[新频道]: 我们创建了一个 [Discord 频道](https://discord.gg/yF2MmDJyGJ)！💬 欢迎加入我们的社区进行分享、讨论和协作！ 🎉🎉
-- [2024.10]🎯[新功能]: LightRAG 现在支持 [Ollama 模型](https://github.com/HKUDS/LightRAG?tab=readme-ov-file#quick-start)！
 
 <details>
   <summary style="font-size: 1.4em; font-weight: bold; cursor: pointer; display: list-item;">
