@@ -1,6 +1,5 @@
 from datetime import datetime, timedelta
 
-import bcrypt
 import jwt
 from dotenv import load_dotenv
 from fastapi import HTTPException, status
@@ -8,6 +7,7 @@ from pydantic import BaseModel
 
 from ..utils import logger
 from .config import global_args
+from .passwords import verify_password
 
 # use the .env that is inside the current folder
 # allows to use different .env file for each lightrag instance
@@ -34,17 +34,26 @@ class AuthHandler:
         self.guest_expire_hours = global_args.guest_token_expire_hours
         self.accounts = {}
         auth_accounts = global_args.auth_accounts
+        invalid_accounts = []
         if auth_accounts:
             for account in auth_accounts.split(","):
                 try:
                     username, password = account.split(":", 1)
+                    if not username or not password:
+                        raise ValueError
                     self.accounts[username] = password
                 except ValueError:
-                    logger.error(f"Invalid account format in AUTH_ACCOUNTS: {account}")
+                    invalid_accounts.append(account)
+        if invalid_accounts:
+            invalid_entries = ", ".join(invalid_accounts)
+            logger.error(f"Invalid account format in AUTH_ACCOUNTS: {invalid_entries}")
+            raise ValueError(
+                "AUTH_ACCOUNTS must use comma-separated user:password pairs."
+            )
 
     def verify_password(self, username: str, plain_password: str) -> bool:
         """
-        Verify password for a user. Supports both bcrypt hashes and plaintext.
+        Verify password for a user. Supports explicit bcrypt values and plaintext.
 
         Args:
             username: Username to verify
@@ -57,38 +66,7 @@ class AuthHandler:
             return False
 
         stored_password = self.accounts[username]
-
-        # Check if stored_password is a bcrypt hash
-        # Bcrypt hashes typically start with $2a$, $2b$, or $2y$
-        if (
-            stored_password.startswith("$2b$")
-            or stored_password.startswith("$2a$")
-            or stored_password.startswith("$2y$")
-        ):
-            try:
-                return bcrypt.checkpw(
-                    plain_password.encode("utf-8"), stored_password.encode("utf-8")
-                )
-            except Exception as e:
-                logger.error(f"Error verifying bcrypt password for {username}: {e}")
-                return False
-
-        # Fallback to plaintext comparison for backward compatibility
-        return stored_password == plain_password
-
-    @staticmethod
-    def hash_password(password: str) -> str:
-        """
-        Hash a password using bcrypt.
-
-        Args:
-            password: Plaintext password to hash
-
-        Returns:
-            str: Bcrypt hash
-        """
-        salt = bcrypt.gensalt()
-        return bcrypt.hashpw(password.encode("utf-8"), salt).decode("utf-8")
+        return verify_password(plain_password, stored_password)
 
     def create_token(
         self,
