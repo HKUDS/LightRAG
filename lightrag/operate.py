@@ -1770,6 +1770,31 @@ async def _merge_nodes_then_upsert(
         )
         description_list = [fallback_description]
 
+    # Skip LLM summary if no new descriptions were added (re-ingestion optimisation)
+    if already_node and already_description:
+        existing_descriptions = set(
+            d.strip()
+            for d in already_description
+            if d.strip()
+        )
+        incoming_descriptions = set(
+            d.strip()
+            for d in sorted_descriptions
+            if d.strip()
+        )
+        if incoming_descriptions and incoming_descriptions.issubset(existing_descriptions):
+            logger.debug(
+                f"Entity '{entity_name}': no new descriptions, skipping LLM summary"
+            )
+            node_data = dict(already_node)
+            node_data["source_id"] = source_id
+            node_data["file_path"] = GRAPH_FIELD_SEP.join(
+                list(dict.fromkeys(already_file_paths + [dp.get("file_path") for dp in nodes_data if dp.get("file_path")]))
+            )
+            await knowledge_graph_inst.upsert_node(entity_name, node_data=node_data)
+            node_data["entity_name"] = entity_name
+            return node_data
+
     # Check for cancellation before LLM summary
     if pipeline_status is not None and pipeline_status_lock is not None:
         async with pipeline_status_lock:
