@@ -60,6 +60,14 @@ T = TypeVar("T")
 # PostgreSQL identifier length limit (in bytes)
 PG_MAX_IDENTIFIER_LENGTH = 63
 
+# All known vector index suffixes, used to drop conflicting indexes when switching types
+_VECTOR_INDEX_SUFFIXES = [
+    "hnsw_cosine",
+    "hnsw_halfvec_cosine",
+    "ivfflat_cosine",
+    "vchordrq_cosine",
+]
+
 
 def _safe_index_name(table_name: str, index_suffix: str) -> str:
     """
@@ -1627,7 +1635,11 @@ class PostgreSQLDB:
         try:
             vector_index_exists = await self.query(check_vector_index_sql)
             if not vector_index_exists:
-                # Only set vector dimension when index doesn't exist
+                for suffix in _VECTOR_INDEX_SUFFIXES:
+                    if suffix == index_suffix:
+                        continue
+                    old_name = _safe_index_name(k, suffix)
+                    await self.execute(f"DROP INDEX IF EXISTS {old_name}")
                 alter_sql = f"ALTER TABLE {k} ALTER COLUMN content_vector TYPE {column_type}({embedding_dim})"
                 await self.execute(alter_sql)
                 logger.debug(f"Ensured vector dimension for {k}")
@@ -2771,6 +2783,11 @@ class PGVectorStorage(BaseVectorStorage):
                             ):
                                 # Handle NumPy arrays and other array-like objects
                                 legacy_dim = len(vector_data)
+                            elif hasattr(vector_data, "dimensions") and callable(
+                                vector_data.dimensions
+                            ):
+                                # pgvector HalfVector / SparseVector expose dimensions()
+                                legacy_dim = vector_data.dimensions()
                             elif isinstance(vector_data, str):
                                 import json
 
