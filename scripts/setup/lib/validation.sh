@@ -387,6 +387,26 @@ validate_auth_accounts_format() {
   return 0
 }
 
+validate_auth_accounts_password_safety() {
+  local auth_accounts="$1"
+  local entry password normalized_password
+
+  if [[ -z "$auth_accounts" ]]; then
+    return 0
+  fi
+
+  IFS=',' read -r -a entries <<< "$auth_accounts"
+  for entry in "${entries[@]}"; do
+    password="${entry#*:}"
+    normalized_password="${password,,}"
+    if [[ "$normalized_password" == admin* || "$normalized_password" == pass* ]]; then
+      return 1
+    fi
+  done
+
+  return 0
+}
+
 whitelist_exposes_api_routes() {
   local whitelist_paths="$1"
   local entry trimmed_entry normalized_entry
@@ -427,7 +447,14 @@ validate_security_config() {
   if ! validate_auth_accounts_format "$auth_accounts"; then
     format_error \
       "AUTH_ACCOUNTS must use comma-separated user:password pairs." \
-      "Use entries like admin:secret or admin:secret,reader:another-secret."
+      "Use entries like admin:{bcrypt}<hash> or admin:secret,reader:another-secret."
+    return 1
+  fi
+
+  if ! validate_auth_accounts_password_safety "$auth_accounts"; then
+    format_error \
+      "AUTH_ACCOUNTS passwords must not start with 'admin' or 'pass'." \
+      "Choose a less predictable password or use lightrag-hash-password to generate a {bcrypt} value."
     return 1
   fi
 
