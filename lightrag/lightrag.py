@@ -3137,7 +3137,10 @@ class LightRAG:
         return found_statuses
 
     async def adelete_by_doc_id(
-        self, doc_id: str, delete_llm_cache: bool = False
+        self,
+        doc_id: str,
+        delete_llm_cache: bool = False,
+        skip_rebuild: bool = False,
     ) -> DeletionResult:
         """Delete a document and all its related data, including chunks, graph elements.
 
@@ -3170,6 +3173,10 @@ class LightRAG:
             doc_id (str): The unique identifier of the document to be deleted.
             delete_llm_cache (bool): Whether to delete cached LLM extraction results
                 associated with the document. Defaults to False.
+            skip_rebuild (bool): When True, skip the per-document KG rebuild step.
+                The caller is responsible for performing a single deferred rebuild
+                using the entities/relationships returned in the DeletionResult.
+                Used by batch deletion to avoid N redundant rebuilds. Defaults to False.
 
         Returns:
             DeletionResult: An object containing the outcome of the deletion process.
@@ -3178,6 +3185,8 @@ class LightRAG:
                 - `message` (str): A summary of the operation's result.
                 - `status_code` (int): HTTP status code (e.g., 200, 404, 403, 500).
                 - `file_path` (str | None): The file path of the deleted document, if available.
+                - `entities_to_rebuild` (dict | None): Populated when skip_rebuild=True.
+                - `relationships_to_rebuild` (dict | None): Populated when skip_rebuild=True.
         """
         # Get pipeline status shared data and lock for validation
         pipeline_status = await get_namespace_data(
@@ -3860,27 +3869,39 @@ class LightRAG:
                 raise Exception(f"Failed to persist pre-rebuild changes: {e}") from e
 
             # 8. Rebuild entities and relationships from remaining chunks
+            #    When skip_rebuild is set (batch deletion), we hand the targets back
+            #    to the caller so it can do one combined rebuild at the end.
             if entities_to_rebuild or relationships_to_rebuild:
-                try:
-                    deletion_stage = "rebuild_knowledge_graph"
-                    await rebuild_knowledge_from_chunks(
-                        entities_to_rebuild=entities_to_rebuild,
-                        relationships_to_rebuild=relationships_to_rebuild,
-                        knowledge_graph_inst=self.chunk_entity_relation_graph,
-                        entities_vdb=self.entities_vdb,
-                        relationships_vdb=self.relationships_vdb,
-                        text_chunks_storage=self.text_chunks,
-                        llm_response_cache=self.llm_response_cache,
-                        global_config=asdict(self),
-                        pipeline_status=pipeline_status,
-                        pipeline_status_lock=pipeline_status_lock,
-                        entity_chunks_storage=self.entity_chunks,
-                        relation_chunks_storage=self.relation_chunks,
+                if skip_rebuild:
+                    logger.info(
+                        "Skipping per-doc rebuild (skip_rebuild=True), "
+                        "%d entities / %d relations deferred",
+                        len(entities_to_rebuild),
+                        len(relationships_to_rebuild),
                     )
+                else:
+                    try:
+                        deletion_stage = "rebuild_knowledge_graph"
+                        await rebuild_knowledge_from_chunks(
+                            entities_to_rebuild=entities_to_rebuild,
+                            relationships_to_rebuild=relationships_to_rebuild,
+                            knowledge_graph_inst=self.chunk_entity_relation_graph,
+                            entities_vdb=self.entities_vdb,
+                            relationships_vdb=self.relationships_vdb,
+                            text_chunks_storage=self.text_chunks,
+                            llm_response_cache=self.llm_response_cache,
+                            global_config=asdict(self),
+                            pipeline_status=pipeline_status,
+                            pipeline_status_lock=pipeline_status_lock,
+                            entity_chunks_storage=self.entity_chunks,
+                            relation_chunks_storage=self.relation_chunks,
+                        )
 
-                except Exception as e:
-                    logger.error(f"Failed to rebuild knowledge from chunks: {e}")
-                    raise Exception(f"Failed to rebuild knowledge graph: {e}") from e
+                    except Exception as e:
+                        logger.error(f"Failed to rebuild knowledge from chunks: {e}")
+                        raise Exception(
+                            f"Failed to rebuild knowledge graph: {e}"
+                        ) from e
 
             # 9. Delete LLM cache while the document status still exists so a failure
             # remains retryable via the same doc_id.
@@ -3953,13 +3974,18 @@ class LightRAG:
                 raise Exception(f"Failed to delete document and status: {e}") from e
 
             deletion_fully_completed = True
-            return DeletionResult(
+
+            result = DeletionResult(
                 status="success",
                 doc_id=doc_id,
                 message=log_message,
                 status_code=200,
                 file_path=file_path,
             )
+            if skip_rebuild:
+                result.entities_to_rebuild = entities_to_rebuild
+                result.relationships_to_rebuild = relationships_to_rebuild
+            return result
 
         except Exception as e:
             original_exception = e

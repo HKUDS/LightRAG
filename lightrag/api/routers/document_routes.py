@@ -1854,6 +1854,9 @@ async def background_delete_documents(
     total_docs = len(doc_ids)
     successful_deletions = []
     failed_deletions = []
+    # Aggregate rebuild targets across all deletions so we only rebuild once
+    all_entities_to_rebuild: dict[str, list] = {}
+    all_relationships_to_rebuild: dict[tuple, list] = {}
 
     # Double-check pipeline status before proceeding
     async with pipeline_status_lock:
@@ -1906,13 +1909,22 @@ async def background_delete_documents(
             file_path = "#"
             try:
                 result = await rag.adelete_by_doc_id(
-                    doc_id, delete_llm_cache=delete_llm_cache
+                    doc_id,
+                    delete_llm_cache=delete_llm_cache,
+                    skip_rebuild=True,
                 )
                 file_path = (
                     getattr(result, "file_path", "-") if "result" in locals() else "-"
                 )
                 if result.status == "success":
                     successful_deletions.append(doc_id)
+                    # Collect deferred rebuild targets
+                    if result.entities_to_rebuild:
+                        all_entities_to_rebuild.update(result.entities_to_rebuild)
+                    if result.relationships_to_rebuild:
+                        all_relationships_to_rebuild.update(
+                            result.relationships_to_rebuild
+                        )
                     success_msg = (
                         f"Document deleted {i}/{total_docs}: {doc_id}[{file_path}]"
                     )
@@ -2048,6 +2060,44 @@ async def background_delete_documents(
                 async with pipeline_status_lock:
                     pipeline_status["latest_message"] = error_msg
                     pipeline_status["history_messages"].append(error_msg)
+
+        # Single deferred rebuild for all affected entities/relations
+        if all_entities_to_rebuild or all_relationships_to_rebuild:
+            from dataclasses import asdict
+
+            from lightrag.operate import rebuild_knowledge_from_chunks
+
+            rebuild_msg = (
+                f"Rebuilding knowledge graph: {len(all_entities_to_rebuild)} entities, "
+                f"{len(all_relationships_to_rebuild)} relations"
+            )
+            logger.info(rebuild_msg)
+            async with pipeline_status_lock:
+                pipeline_status["latest_message"] = rebuild_msg
+                pipeline_status["history_messages"].append(rebuild_msg)
+            try:
+                await rebuild_knowledge_from_chunks(
+                    entities_to_rebuild=all_entities_to_rebuild,
+                    relationships_to_rebuild=all_relationships_to_rebuild,
+                    knowledge_graph_inst=rag.chunk_entity_relation_graph,
+                    entities_vdb=rag.entities_vdb,
+                    relationships_vdb=rag.relationships_vdb,
+                    text_chunks_storage=rag.text_chunks,
+                    llm_response_cache=rag.llm_response_cache,
+                    global_config=asdict(rag),
+                    pipeline_status=pipeline_status,
+                    pipeline_status_lock=pipeline_status_lock,
+                    entity_chunks_storage=rag.entity_chunks,
+                    relation_chunks_storage=rag.relation_chunks,
+                )
+                await rag._insert_done()
+            except Exception as rebuild_err:
+                rebuild_error_msg = f"Failed to rebuild knowledge graph after batch deletion: {rebuild_err}"
+                logger.error(rebuild_error_msg)
+                logger.error(traceback.format_exc())
+                async with pipeline_status_lock:
+                    pipeline_status["latest_message"] = rebuild_error_msg
+                    pipeline_status["history_messages"].append(rebuild_error_msg)
 
     except Exception as e:
         error_msg = f"Critical error during batch deletion: {str(e)}"
