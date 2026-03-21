@@ -1133,6 +1133,109 @@ class Neo4JStorage(BaseGraphStorage):
             logger.error(f"[{self.workspace}] Error during edge upsert: {str(e)}")
             raise
 
+    _BATCH_CHUNK_SIZE = 500
+
+    async def batch_upsert_nodes(
+        self, nodes: list[tuple[str, dict[str, str]]]
+    ) -> None:
+        """UNWIND-based batch node upsert, grouped by entity_type."""
+        if not nodes:
+            return
+
+        # Group by entity_type for separate SET n:`{type}` labels
+        by_type: dict[str, list[tuple[str, dict[str, str]]]] = {}
+        for node_id, node_data in nodes:
+            entity_type = node_data.get("entity_type", "unknown")
+            by_type.setdefault(entity_type, []).append((node_id, node_data))
+
+        workspace_label = self._get_workspace_label()
+
+        try:
+            async with self._driver.session(database=self._DATABASE) as session:
+                for entity_type, typed_nodes in by_type.items():
+                    for i in range(0, len(typed_nodes), self._BATCH_CHUNK_SIZE):
+                        chunk = typed_nodes[i : i + self._BATCH_CHUNK_SIZE]
+                        batch_params = [
+                            {"entity_id": nid, "properties": ndata}
+                            for nid, ndata in chunk
+                        ]
+
+                        async def _execute(tx, params=batch_params, et=entity_type):
+                            query = (
+                                "UNWIND $batch AS item "
+                                f"MERGE (n:`{workspace_label}` {{entity_id: item.entity_id}}) "
+                                "SET n += item.properties "
+                                f"SET n:`{et}`"
+                            )
+                            await tx.run(query, batch=params)
+
+                        await session.execute_write(_execute)
+        except Exception as e:
+            logger.error(f"[{self.workspace}] Error during batch node upsert: {str(e)}")
+            raise
+
+    async def batch_upsert_edges(
+        self, edges: list[tuple[str, str, dict[str, str]]]
+    ) -> None:
+        """UNWIND-based batch edge upsert."""
+        if not edges:
+            return
+
+        workspace_label = self._get_workspace_label()
+
+        try:
+            async with self._driver.session(database=self._DATABASE) as session:
+                for i in range(0, len(edges), self._BATCH_CHUNK_SIZE):
+                    chunk = edges[i : i + self._BATCH_CHUNK_SIZE]
+                    batch_params = [
+                        {"source_id": src, "target_id": tgt, "properties": data}
+                        for src, tgt, data in chunk
+                    ]
+
+                    async def _execute(tx, params=batch_params):
+                        query = (
+                            "UNWIND $batch AS item "
+                            f"MATCH (source:`{workspace_label}` {{entity_id: item.source_id}}) "
+                            f"WITH source, item "
+                            f"MATCH (target:`{workspace_label}` {{entity_id: item.target_id}}) "
+                            "MERGE (source)-[r:DIRECTED]-(target) "
+                            "SET r += item.properties"
+                        )
+                        result = await tx.run(query, batch=params)
+                        await result.consume()
+
+                    await session.execute_write(_execute)
+        except Exception as e:
+            logger.error(f"[{self.workspace}] Error during batch edge upsert: {str(e)}")
+            raise
+
+    async def has_nodes_batch(self, node_ids: list[str]) -> set[str]:
+        """UNWIND-based batch existence check."""
+        if not node_ids:
+            return set()
+
+        workspace_label = self._get_workspace_label()
+        result = set()
+
+        try:
+            async with self._driver.session(
+                database=self._DATABASE, default_access_mode="READ"
+            ) as session:
+                query = (
+                    "UNWIND $ids AS eid "
+                    f"MATCH (n:`{workspace_label}` {{entity_id: eid}}) "
+                    "RETURN n.entity_id AS entity_id"
+                )
+                records = await session.run(query, ids=node_ids)
+                async for record in records:
+                    result.add(record["entity_id"])
+                await records.consume()
+        except Exception as e:
+            logger.error(f"[{self.workspace}] Error during batch has_nodes: {str(e)}")
+            raise
+
+        return result
+
     async def get_knowledge_graph(
         self,
         node_label: str,

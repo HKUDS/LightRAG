@@ -63,7 +63,8 @@ async def test_merge_nodes_then_upsert_handles_missing_legacy_description():
     )
 
     assert result["description"] == "Entity LegacyEntity"
-    assert graph.upserted_nodes[-1][1]["description"] == "Entity LegacyEntity"
+    # upsert_node is now deferred to batch — verify no individual call was made
+    assert len(graph.upserted_nodes) == 0
 
 
 @pytest.mark.asyncio

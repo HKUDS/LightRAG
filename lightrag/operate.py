@@ -1726,6 +1726,7 @@ async def _merge_nodes_then_upsert(
                 f"Skipped `{entity_name}`: KEEP old chunks {already_source_ids}/{len(full_source_ids)}"
             )
             existing_node_data = dict(already_node)
+            existing_node_data["_skip_graph_upsert"] = True
             return existing_node_data
         else:
             logger.error(f"Internal Error: already_node missing for `{entity_name}`")
@@ -1888,10 +1889,6 @@ async def _merge_nodes_then_upsert(
         created_at=int(time.time()),
         truncate=truncation_info,
     )
-    await knowledge_graph_inst.upsert_node(
-        entity_name,
-        node_data=node_data,
-    )
     node_data["entity_name"] = entity_name
     if entity_vdb is not None:
         entity_vdb_id = compute_mdhash_id(str(entity_name), prefix="ent-")
@@ -2045,6 +2042,7 @@ async def _merge_edges_then_upsert(
                 f"Skipped `{src_id}`~`{tgt_id}`: KEEP old chunks  {already_source_ids}/{len(full_source_ids)}"
             )
             existing_edge_data = dict(already_edge)
+            existing_edge_data["_skip_graph_upsert"] = True
             return existing_edge_data
         else:
             logger.error(
@@ -2377,20 +2375,6 @@ async def _merge_edges_then_upsert(
                         pipeline_status["history_messages"].append(status_message)
 
     edge_created_at = int(time.time())
-    await knowledge_graph_inst.upsert_edge(
-        src_id,
-        tgt_id,
-        edge_data=dict(
-            weight=weight,
-            description=description,
-            keywords=keywords,
-            source_id=source_id,
-            file_path=file_path,
-            created_at=edge_created_at,
-            truncate=truncation_info,
-        ),
-    )
-
     edge_data = dict(
         src_id=src_id,
         tgt_id=tgt_id,
@@ -2618,6 +2602,15 @@ async def merge_nodes_and_edges(
         if first_exception is not None:
             raise first_exception
 
+    # Batch-write all entity nodes to the graph in one call
+    nodes_to_upsert = [
+        (e["entity_name"], {k: v for k, v in e.items() if k != "_skip_graph_upsert"})
+        for e in processed_entities
+        if e is not None and not e.get("_skip_graph_upsert")
+    ]
+    if nodes_to_upsert:
+        await knowledge_graph_inst.batch_upsert_nodes(nodes_to_upsert)
+
     # ===== Phase 2: Process all relationships concurrently =====
     log_message = f"Phase 2: Processing {total_relations_count} relations from {doc_id} (async: {graph_max_async})"
     logger.info(log_message)
@@ -2737,6 +2730,19 @@ async def merge_nodes_and_edges(
 
         if first_exception is not None:
             raise first_exception
+
+    # Batch-write all edges to the graph in one call
+    edges_to_upsert = [
+        (
+            e["src_id"],
+            e["tgt_id"],
+            {k: v for k, v in e.items() if k not in ("src_id", "tgt_id", "_skip_graph_upsert")},
+        )
+        for e in processed_edges
+        if e is not None and not e.get("_skip_graph_upsert")
+    ]
+    if edges_to_upsert:
+        await knowledge_graph_inst.batch_upsert_edges(edges_to_upsert)
 
     # ===== Phase 3: Update full_entities and full_relations storage =====
     if full_entities_storage and full_relations_storage and doc_id:

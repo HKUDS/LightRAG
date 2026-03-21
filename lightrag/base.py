@@ -565,6 +565,28 @@ class BaseGraphStorage(StorageNameSpace, ABC):
             result[node_id] = edges if edges is not None else []
         return result
 
+    async def batch_upsert_nodes(
+        self, nodes: list[tuple[str, dict[str, str]]]
+    ) -> None:
+        """Batch insert/update nodes. Default loops over upsert_node."""
+        for node_id, node_data in nodes:
+            await self.upsert_node(node_id, node_data)
+
+    async def batch_upsert_edges(
+        self, edges: list[tuple[str, str, dict[str, str]]]
+    ) -> None:
+        """Batch insert/update edges. Default loops over upsert_edge."""
+        for src, tgt, edge_data in edges:
+            await self.upsert_edge(src, tgt, edge_data)
+
+    async def has_nodes_batch(self, node_ids: list[str]) -> set[str]:
+        """Return the subset of node_ids that exist. Default loops over has_node."""
+        result = set()
+        for node_id in node_ids:
+            if await self.has_node(node_id):
+                result.add(node_id)
+        return result
+
     @abstractmethod
     async def upsert_node(self, node_id: str, node_data: dict[str, str]) -> None:
         """Insert a new node or update an existing node in the graph.
