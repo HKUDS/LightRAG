@@ -7070,6 +7070,24 @@ if validate_security_config "admin:secret,reader:hunter2" "token-secret" "" no "
 else
   printf 'VALID_FORMAT=no\\n'
 fi
+
+if validate_security_config 'admin:{{bcrypt}}$2b$12$abcdefghijklmnopqrstuuuuuuuuuuuuuuuuuuuuuuuuuuuu' "token-secret" "" no "/health"; then
+  printf 'BCRYPT_FORMAT=yes\\n'
+else
+  printf 'BCRYPT_FORMAT=no\\n'
+fi
+
+if validate_security_config "admin:admin123!" "token-secret" "" no "/health"; then
+  printf 'ADMIN_PREFIX=yes\\n'
+else
+  printf 'ADMIN_PREFIX=no\\n'
+fi
+
+if validate_security_config "admin:Passw0rd!" "token-secret" "" no "/health"; then
+  printf 'PASS_PREFIX=yes\\n'
+else
+  printf 'PASS_PREFIX=no\\n'
+fi
 """
     )
     values = parse_lines(output)
@@ -7077,6 +7095,9 @@ fi
     assert values["MISSING_COLON"] == "no"
     assert values["TRAILING_COMMA"] == "no"
     assert values["VALID_FORMAT"] == "yes"
+    assert values["BCRYPT_FORMAT"] == "yes"
+    assert values["ADMIN_PREFIX"] == "no"
+    assert values["PASS_PREFIX"] == "no"
 
 
 def test_security_check_reports_missing_authentication(tmp_path: Path) -> None:
@@ -7137,7 +7158,42 @@ security_check_env_file
     )
 
     assert result.returncode == 0
-    assert "No obvious security issues found" in result.stdout
+
+
+def test_security_check_reports_predictable_auth_password_prefix(
+    tmp_path: Path,
+) -> None:
+    """Security audit should flag AUTH_ACCOUNTS passwords with predictable prefixes."""
+
+    write_text_lines(
+        tmp_path / ".env",
+        [
+            "AUTH_ACCOUNTS=admin:admin123!",
+            "TOKEN_SECRET=jwt-secret",
+            "WHITELIST_PATHS=/health",
+        ],
+    )
+
+    result = subprocess.run(
+        [
+            "bash",
+            "--norc",
+            "--noprofile",
+            "-c",
+            f"""
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+security_check_env_file
+""",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    assert "AUTH_ACCOUNTS uses a predictable password prefix." in result.stdout
 
 
 def test_security_check_reports_api_key_only_with_default_whitelist(
