@@ -3044,7 +3044,7 @@ class LightRAG:
         return found_statuses
 
     async def adelete_by_doc_id(
-        self, doc_id: str, delete_llm_cache: bool = False
+        self, doc_id: str, delete_llm_cache: bool = False, skip_rebuild: bool = False
     ) -> DeletionResult:
         """Delete a document and all its related data, including chunks, graph elements.
 
@@ -3645,7 +3645,19 @@ class LightRAG:
             await self._insert_done()
 
             # 8. Rebuild entities and relationships from remaining chunks
+            # If skip_rebuild is True, collect data and return instead of rebuilding
+            # This is used for batch deletion optimization to avoid redundant rebuilds
             if entities_to_rebuild or relationships_to_rebuild:
+                if skip_rebuild:
+                    # Return rebuild data for batch processing
+                    return DeletionResult(
+                        status="success",
+                        doc_id=doc_id,
+                        message=f"Document {doc_id} deleted, rebuild data collected for batch processing",
+                        file_path=file_path,
+                        entities_to_rebuild=entities_to_rebuild,
+                        relationships_to_rebuild=relationships_to_rebuild,
+                    )
                 try:
                     await rebuild_knowledge_from_chunks(
                         entities_to_rebuild=entities_to_rebuild,
