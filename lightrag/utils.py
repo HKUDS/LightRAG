@@ -2244,6 +2244,8 @@ def normalize_extracted_info(name: str, remove_inner_quotes=False) -> str:
     return name
 
 
+_CONTROL_CHARS_RE = re.compile(r"[\x00-\x08\x0B\x0C\x0E-\x1F\x7F-\x9F]")
+
 def sanitize_text_for_encoding(text: str, replacement_char: str = "") -> str:
     """Sanitize text to ensure safe UTF-8 encoding by removing or replacing problematic characters.
 
@@ -2276,43 +2278,38 @@ def sanitize_text_for_encoding(text: str, replacement_char: str = "") -> str:
         if not text:
             return text
 
-        # Try to encode/decode to catch any encoding issues early
-        text.encode("utf-8")
-
-        # Remove or replace surrogate characters (U+D800 to U+DFFF)
-        # These are the main cause of the encoding error
-        sanitized = ""
-        for char in text:
-            code_point = ord(char)
-            # Check for surrogate characters
-            if 0xD800 <= code_point <= 0xDFFF:
-                # Replace surrogate with replacement character
-                sanitized += replacement_char
-                continue
-            # Check for other problematic characters
-            elif code_point == 0xFFFE or code_point == 0xFFFF:
-                # These are non-characters in Unicode
-                sanitized += replacement_char
-                continue
-            else:
-                sanitized += char
-
-        # Additional cleanup: remove null bytes and other control characters that might cause issues
-        # (but preserve common whitespace like \t, \n, \r)
-        sanitized = re.sub(
-            r"[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]", replacement_char, sanitized
-        )
-
-        # Test final encoding to ensure it's safe
-        sanitized.encode("utf-8")
+        # Fast path: try to encode to catch any encoding issues early
+        try:
+            text.encode("utf-8")
+        except UnicodeEncodeError:
+            # Slower path: handle surrogate and invalid characters
+            sanitized = ""
+            for char in text:
+                code_point = ord(char)
+                # Check for surrogate characters
+                if 0xD800 <= code_point <= 0xDFFF:
+                    # Replace surrogate with replacement character
+                    sanitized += replacement_char
+                    continue
+                # Check for other problematic characters
+                elif code_point == 0xFFFE or code_point == 0xFFFF:
+                    # These are non-characters in Unicode
+                    sanitized += replacement_char
+                    continue
+                else:
+                    sanitized += char
+            text = sanitized
 
         # Unescape HTML escapes
-        sanitized = html.unescape(sanitized)
+        text = html.unescape(text)
 
         # Remove control characters but preserve common whitespace (\t, \n, \r)
-        sanitized = re.sub(r"[\x00-\x08\x0B\x0C\x0E-\x1F\x7F-\x9F]", "", sanitized)
+        if replacement_char == "":
+            text = _CONTROL_CHARS_RE.sub("", text)
+        else:
+            text = _CONTROL_CHARS_RE.sub(replacement_char, text)
 
-        return sanitized.strip()
+        return text.strip()
 
     except UnicodeEncodeError as e:
         # Critical change: Don't return placeholder, raise exception for caller to handle
