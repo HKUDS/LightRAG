@@ -2949,7 +2949,12 @@ security_check_env_file() {
     if ! validate_auth_accounts_format "$auth_accounts"; then
       report_security_issue \
         "AUTH_ACCOUNTS is malformed." \
-        "Use comma-separated user:password pairs such as admin:secret or admin:secret,reader:another-secret."
+        "Use comma-separated user:password pairs such as admin:{bcrypt}<hash> or admin:secret,reader:another-secret."
+      findings=$((findings + 1))
+    elif ! validate_auth_accounts_password_safety "$auth_accounts"; then
+      report_security_issue \
+        "AUTH_ACCOUNTS uses a predictable password prefix." \
+        "Passwords must not start with 'admin' or 'pass'. Choose a stronger password or use lightrag-hash-password."
       findings=$((findings + 1))
     fi
 
