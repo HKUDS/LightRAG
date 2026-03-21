@@ -3321,6 +3321,10 @@ class PGVectorStorage(BaseVectorStorage):
                         # Handle numpy arrays from pgvector
                         elif hasattr(vector_data, "tolist"):
                             vectors_dict[result["id"]] = vector_data.tolist()
+                        elif hasattr(vector_data, "to_list") and callable(
+                            vector_data.to_list
+                        ):
+                            vectors_dict[result["id"]] = vector_data.to_list()
                     except (json.JSONDecodeError, TypeError) as e:
                         logger.warning(
                             f"[{self.workspace}] Failed to parse vector data for ID {result['id']}: {e}"
