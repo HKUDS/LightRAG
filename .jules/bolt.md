@@ -1,3 +1,0 @@
-## 2025-05-23 - Text Sanitization Optimization
-**Learning:** Manual character-by-character loops for text processing in Python are extremely slow compared to pre-compiled regex. Additionally, redundant checks like `.encode("utf-8")` followed by manual surrogate removal not only waste time but can cause crashes on invalid input that the function was intended to clean. `html.unescape` must be called before sanitization to ensure newly introduced surrogates or control characters are caught.
-**Action:** Always prefer pre-compiled regex for string cleaning. Ensure sanitization logic is robust against characters introduced by unescaping or decoding steps. Avoid redundant validation checks that prevent the cleaning logic from reaching problematic data.

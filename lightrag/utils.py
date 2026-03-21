@@ -45,7 +45,7 @@ from lightrag.constants import (
 
 # Precompile regex pattern for JSON sanitization (module-level, compiled once)
 _SURROGATE_PATTERN = re.compile(r"[\uD800-\uDFFF\uFFFE\uFFFF]")
-_CONTROL_CHAR_PATTERN_ALL = re.compile(r"[\x00-\x08\x0B\x0C\x0E-\x1F\x7F-\x9F]")
+_CONTROL_CHAR_PATTERN_ALL = re.compile(r"[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]")
 
 
 class SafeStreamHandler(logging.StreamHandler):
@@ -2281,7 +2281,7 @@ def sanitize_text_for_encoding(text: str, replacement_char: str = "") -> str:
     text = _SURROGATE_PATTERN.sub(replacement_char, text)
 
     # 3. Remove control characters but preserve common whitespace (\t, \n, \r)
-    text = _CONTROL_CHAR_PATTERN_ALL.sub("", text)
+    text = _CONTROL_CHAR_PATTERN_ALL.sub(replacement_char, text)
 
     return text.strip()
 
