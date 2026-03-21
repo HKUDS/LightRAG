@@ -12,7 +12,12 @@ import os
 import json
 import tempfile
 import pytest
-from lightrag.utils import write_json, load_json, SanitizingJSONEncoder
+from lightrag.utils import (
+    write_json,
+    load_json,
+    SanitizingJSONEncoder,
+    sanitize_text_for_encoding,
+)
 
 
 @pytest.mark.offline
@@ -340,6 +345,102 @@ class TestWriteJsonOptimization:
 
         finally:
             os.unlink(temp_file)
+
+
+@pytest.mark.offline
+class TestSanitizeTextForEncoding:
+    """Direct unit tests for sanitize_text_for_encoding function."""
+
+    def test_empty_string_returns_empty(self):
+        assert sanitize_text_for_encoding("") == ""
+
+    def test_none_like_falsy_returns_as_is(self):
+        # The function checks `if not text`, so empty string returns early
+        assert sanitize_text_for_encoding("") == ""
+
+    def test_whitespace_only_returns_empty(self):
+        assert sanitize_text_for_encoding("   ") == ""
+
+    def test_clean_text_unchanged(self):
+        assert sanitize_text_for_encoding("hello world") == "hello world"
+
+    def test_strips_leading_trailing_whitespace(self):
+        assert sanitize_text_for_encoding("  hello  ") == "hello"
+
+    def test_lone_surrogate_removed(self):
+        assert sanitize_text_for_encoding("hello\ud800world") == "helloworld"
+
+    def test_lone_surrogate_with_replacement_char(self):
+        assert (
+            sanitize_text_for_encoding("hello\ud800world", replacement_char="?")
+            == "hello?world"
+        )
+
+    def test_surrogate_range_boundaries(self):
+        # U+D800 and U+DFFF are the surrogate range boundaries
+        assert "\ud800" not in sanitize_text_for_encoding("\ud800")
+        assert "\udfff" not in sanitize_text_for_encoding("\udfff")
+
+    def test_non_characters_fffe_ffff_removed(self):
+        # U+FFFE and U+FFFF are included in _SURROGATE_PATTERN
+        assert sanitize_text_for_encoding("a\ufffeb") == "ab"
+        assert sanitize_text_for_encoding("a\uffffb") == "ab"
+
+    def test_html_entities_unescaped(self):
+        assert sanitize_text_for_encoding("&amp;") == "&"
+        assert sanitize_text_for_encoding("&lt;p&gt;") == "<p>"
+        assert sanitize_text_for_encoding("&quot;hello&quot;") == '"hello"'
+
+    def test_html_entity_that_becomes_surrogate_is_removed(self):
+        # &#xD800; — Python's html.unescape follows HTML5 spec and maps surrogate code
+        # points to U+FFFD (replacement character), so \uD800 never appears in output.
+        # Either way the result must not contain an actual lone surrogate.
+        result = sanitize_text_for_encoding("&#xD800;")
+        assert "\ud800" not in result
+
+    def test_control_chars_removed(self):
+        # C0 control characters (excluding \t \n \r)
+        assert sanitize_text_for_encoding("\x01hello\x1fworld") == "helloworld"
+        assert sanitize_text_for_encoding("\x00null") == "null"
+        assert sanitize_text_for_encoding("del\x7f") == "del"
+
+    def test_control_chars_with_replacement_char(self):
+        # replacement_char must apply to control chars, not just surrogates.
+        # Note: \x1f is treated as Unicode whitespace by Python's str.strip(),
+        # so place control chars in the middle to avoid them being stripped first.
+        result = sanitize_text_for_encoding("a\x01b\x08c", replacement_char="?")
+        assert result == "a?b?c"
+
+    def test_common_whitespace_preserved(self):
+        # \t, \n, \r must NOT be removed (excluded from control char pattern)
+        assert sanitize_text_for_encoding("line1\nline2") == "line1\nline2"
+        assert sanitize_text_for_encoding("col1\tcol2") == "col1\tcol2"
+        assert sanitize_text_for_encoding("line1\rline2") == "line1\rline2"
+
+    def test_c1_control_chars_not_removed(self):
+        # \x80-\x9F range must NOT be removed (restored original behavior).
+        # These are valid in Latin-1 encoded European language text.
+        result = sanitize_text_for_encoding("caf\x85e")
+        assert "\x85" in result
+
+    def test_replacement_char_default_is_deletion(self):
+        # Default replacement_char="" means characters are deleted, not replaced
+        assert sanitize_text_for_encoding("\ud800hello\x01") == "hello"
+
+    def test_mixed_issues_in_one_string(self):
+        # Surrogate + control char + HTML entity + clean text
+        text = "\ud800&amp;\x01clean"
+        result = sanitize_text_for_encoding(text)
+        assert result == "&clean"
+
+    def test_large_text_with_scattered_surrogates(self):
+        # Regression guard: regex must handle large inputs correctly
+        clean_segment = "a" * 10000
+        text = f"prefix\ud800{clean_segment}\udfffsuffix"
+        result = sanitize_text_for_encoding(text)
+        assert "\ud800" not in result
+        assert "\udfff" not in result
+        assert clean_segment in result
 
 
 if __name__ == "__main__":
