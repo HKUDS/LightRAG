@@ -482,7 +482,7 @@ def update_uvicorn_mode_config():
         original_workers = global_args.workers
         global_args.workers = 1
         # Log warning directly here
-        logging.warning(
+        logging.debug(
             f">> Forcing workers=1 in uvicorn mode(Ignoring workers={original_workers})"
         )
 

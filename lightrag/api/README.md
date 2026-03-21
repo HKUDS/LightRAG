@@ -115,8 +115,7 @@ make env-server         # Optional: server port, auth, and SSL
 make env-security-check # Optional: audit the current .env for security risks
 ```
 
-For a full description of every target and what each flow does, see
-[docs/InteractiveSetup.md](../../docs/InteractiveSetup.md).
+For a full description of every target and what each flow does, see [docs/InteractiveSetup.md](../../docs/InteractiveSetup.md).
 The setup wizards update configuration only; run `make env-security-check` separately to audit the
 current `.env` for security risks before deployment.
 
@@ -381,10 +380,18 @@ LightRAG API Server implements JWT-based authentication using the HS256 algorith
 
 ```bash
 # For jwt auth
-AUTH_ACCOUNTS='admin:admin123,user1:pass456'
+AUTH_ACCOUNTS='admin:{bcrypt}$2b$12$replace-with-generated-hash,user1:pass456'
 TOKEN_SECRET='your-key'
 TOKEN_EXPIRE_HOURS=4
 ```
+
+Passwords without a prefix are treated as plaintext. To store a bcrypt password, prefix the generated hash with `{bcrypt}`. The easiest way to generate a value that can be pasted directly into `AUTH_ACCOUNTS` is:
+
+```bash
+lightrag-hash-password --username admin
+```
+
+The command prompts for the password and prints an `admin:{bcrypt}...` entry ready to paste into `.env`.
 
 > Currently, only the configuration of an administrator account and password is supported. A comprehensive account system is yet to be developed and implemented.
 
@@ -643,7 +650,7 @@ EMBEDDING_BINDING=ollama
 EMBEDDING_BINDING_HOST=http://localhost:11434
 
 ### For JWT Auth
-# AUTH_ACCOUNTS='admin:admin123,user1:pass456'
+# AUTH_ACCOUNTS='admin:{bcrypt}$2b$12$replace-with-generated-hash,user1:pass456'
 # TOKEN_SECRET=your-key-for-LightRAG-API-Server-xxx
 # TOKEN_EXPIRE_HOURS=48
 
