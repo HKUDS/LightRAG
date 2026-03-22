@@ -3381,7 +3381,14 @@ class LightRAG:
                         entities_to_rebuild[node_label] = remaining_sources
                         entity_chunk_updates[node_label] = remaining_sources
                     else:
-                        logger.info(f"Untouch entity: {node_label}")
+                        logger.info(
+                            f"Untouch entity (or previously updated in failed deletion): {node_label}"
+                        )
+                        # We must still rebuild the entity. If the previous deletion failed,
+                        # remaining_sources == existing_sources, but the LLM graph rebuild was skipped.
+                        # This ensures the entity graph properties are correctly re-summarized without the deleted chunk.
+                        entities_to_rebuild[node_label] = remaining_sources
+                        entity_chunk_updates[node_label] = remaining_sources
 
                 async with pipeline_status_lock:
                     log_message = f"Found {len(entities_to_rebuild)} affected entities"
@@ -3442,7 +3449,14 @@ class LightRAG:
                         relationships_to_rebuild[edge_tuple] = remaining_sources
                         relation_chunk_updates[edge_tuple] = remaining_sources
                     else:
-                        logger.info(f"Untouch relation: {edge_tuple}")
+                        logger.info(
+                            f"Untouch relation (or previously updated in failed deletion): {edge_tuple}"
+                        )
+                        # We must still rebuild the relation. If the previous deletion failed,
+                        # remaining_sources == existing_sources, but the LLM graph rebuild was skipped.
+                        # This ensures the relation graph properties are correctly re-summarized without the deleted chunk.
+                        relationships_to_rebuild[edge_tuple] = remaining_sources
+                        relation_chunk_updates[edge_tuple] = remaining_sources
 
                 async with pipeline_status_lock:
                     log_message = (
@@ -3451,6 +3465,38 @@ class LightRAG:
                     logger.info(log_message)
                     pipeline_status["latest_message"] = log_message
                     pipeline_status["history_messages"].append(log_message)
+
+                current_time = int(time.time())
+
+                if entity_chunk_updates and self.entity_chunks:
+                    entity_upsert_payload = {}
+                    for entity_name, remaining in entity_chunk_updates.items():
+                        if not remaining:
+                            # Empty entities are deleted alongside graph nodes later
+                            continue
+                        entity_upsert_payload[entity_name] = {
+                            "chunk_ids": remaining,
+                            "count": len(remaining),
+                            "updated_at": current_time,
+                        }
+                    if entity_upsert_payload:
+                        await self.entity_chunks.upsert(entity_upsert_payload)
+
+                if relation_chunk_updates and self.relation_chunks:
+                    relation_upsert_payload = {}
+                    for edge_tuple, remaining in relation_chunk_updates.items():
+                        if not remaining:
+                            # Empty relations are deleted alongside graph edges later
+                            continue
+                        storage_key = make_relation_chunk_key(*edge_tuple)
+                        relation_upsert_payload[storage_key] = {
+                            "chunk_ids": remaining,
+                            "count": len(remaining),
+                            "updated_at": current_time,
+                        }
+
+                    if relation_upsert_payload:
+                        await self.relation_chunks.upsert(relation_upsert_payload)
 
             except Exception as e:
                 logger.error(f"Failed to process graph analysis results: {e}")
@@ -3633,46 +3679,6 @@ class LightRAG:
                 except Exception as e:
                     logger.error(f"Failed to rebuild knowledge from chunks: {e}")
                     raise Exception(f"Failed to rebuild knowledge graph: {e}") from e
-
-            # 8.5 Update entity and relation chunk associations after successful LLM rebuild
-            # This must happen after rebuild to ensure we don't lose track of chunks
-            # if the rebuild process fails and we need to retry.
-            try:
-                current_time = int(time.time())
-
-                if entity_chunk_updates and self.entity_chunks:
-                    entity_upsert_payload = {}
-                    for entity_name, remaining in entity_chunk_updates.items():
-                        if not remaining:
-                            # Empty entities are deleted alongside graph nodes later
-                            continue
-                        entity_upsert_payload[entity_name] = {
-                            "chunk_ids": remaining,
-                            "count": len(remaining),
-                            "updated_at": current_time,
-                        }
-                    if entity_upsert_payload:
-                        await self.entity_chunks.upsert(entity_upsert_payload)
-
-                if relation_chunk_updates and self.relation_chunks:
-                    relation_upsert_payload = {}
-                    for edge_tuple, remaining in relation_chunk_updates.items():
-                        if not remaining:
-                            # Empty relations are deleted alongside graph edges later
-                            continue
-                        storage_key = make_relation_chunk_key(*edge_tuple)
-                        relation_upsert_payload[storage_key] = {
-                            "chunk_ids": remaining,
-                            "count": len(remaining),
-                            "updated_at": current_time,
-                        }
-
-                    if relation_upsert_payload:
-                        await self.relation_chunks.upsert(relation_upsert_payload)
-
-            except Exception as e:
-                logger.error(f"Failed to update entity and relation chunk associations: {e}")
-                raise Exception(f"Failed to update entity and relation chunk associations: {e}") from e
 
             # 9. Delete from full_entities and full_relations storage
             try:
