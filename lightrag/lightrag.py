@@ -3164,9 +3164,7 @@ class LightRAG:
                 if not isinstance(raw_values, list):
                     return []
                 return [
-                    value
-                    for value in raw_values
-                    if isinstance(value, str) and value
+                    value for value in raw_values if isinstance(value, str) and value
                 ]
 
             # Check document status and log warning for non-completed documents
