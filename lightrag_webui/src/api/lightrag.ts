@@ -920,15 +920,12 @@ export const cancelPipeline = async (): Promise<{
 }
 
 export const loginToServer = async (username: string, password: string): Promise<LoginResponse> => {
-  const formData = new FormData();
+  const formData = new URLSearchParams();
   formData.append('username', username);
   formData.append('password', password);
+  formData.append('grant_type', 'password');
 
-  const response = await axiosInstance.post('/login', formData, {
-    headers: {
-      'Content-Type': 'multipart/form-data'
-    }
-  });
+  const response = await axiosInstance.post('/login', formData);
 
   return response.data;
 }
