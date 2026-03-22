@@ -925,7 +925,9 @@ export const loginToServer = async (username: string, password: string): Promise
   formData.append('password', password);
   formData.append('grant_type', 'password');
 
-  const response = await axiosInstance.post('/login', formData);
+  const response = await axiosInstance.post('/login', formData, {
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
+  });
 
   return response.data;
 }
