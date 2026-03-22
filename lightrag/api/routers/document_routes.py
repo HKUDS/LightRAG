@@ -363,23 +363,6 @@ class UpdateMetadataRequest(BaseModel):
         }
 
 
-class UpdateMetadataRequest(BaseModel):
-    """Request model for updating document metadata
-
-    Attributes:
-        metadata: New metadata dictionary to replace existing metadata
-    """
-
-    metadata: dict[str, Any] = Field(
-        description="New metadata to replace existing document metadata"
-    )
-
-    class Config:
-        json_schema_extra = {
-            "example": {"metadata": {"author": "John Doe", "year": 2026}}
-        }
-
-
 class ClearDocumentsResponse(BaseModel):
     """Response model for document clearing operation
 
