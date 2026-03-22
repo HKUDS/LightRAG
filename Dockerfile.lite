@@ -1,7 +1,9 @@
 # syntax=docker/dockerfile:1
 
 # Frontend build stage
-FROM oven/bun:1 AS frontend-builder
+# Build frontend assets on the native build platform to avoid
+# cross-architecture emulation issues during multi-platform builds.
+FROM --platform=$BUILDPLATFORM oven/bun:1 AS frontend-builder
 
 WORKDIR /app
 

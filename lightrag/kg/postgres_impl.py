@@ -145,6 +145,12 @@ class PostgreSQLDB:
         self.ssl_crl = config.get("ssl_crl")
 
         # Vector configuration
+        _ev = config.get("enable_vector", True)
+        self.enable_vector = (
+            _ev
+            if isinstance(_ev, bool)
+            else str(_ev).lower() in ("true", "1", "yes", "on")
+        )  # True for backward compatibility, can be set to False to disable vector features
         self.vector_index_type = config.get("vector_index_type")
         self.hnsw_m = config.get("hnsw_m")
         self.hnsw_ef = config.get("hnsw_ef")
@@ -332,7 +338,8 @@ class PostgreSQLDB:
             encode/decode vector columns, eliminating non-deterministic behavior
             where some connections have the codec and others don't.
             """
-            await register_vector(connection)
+            if self.enable_vector:
+                await register_vector(connection)
 
         async def _create_pool_once() -> None:
             # STEP 1: Bootstrap - ensure vector extension exists BEFORE pool creation.
@@ -340,24 +347,26 @@ class PostgreSQLDB:
             # if the vector extension doesn't exist yet, because the 'vector' type
             # won't be found in pg_catalog. We must create the extension first
             # using a standalone bootstrap connection.
-            bootstrap_conn = await asyncpg.connect(
-                user=self.user,
-                password=self.password,
-                database=self.database,
-                host=self.host,
-                port=self.port,
-                ssl=connection_params.get("ssl"),
-            )
-            try:
-                await self.configure_vector_extension(bootstrap_conn)
-            finally:
-                await bootstrap_conn.close()
+            # Skip this step if vector support is not enabled.
+            if self.enable_vector:
+                bootstrap_conn = await asyncpg.connect(
+                    user=self.user,
+                    password=self.password,
+                    database=self.database,
+                    host=self.host,
+                    port=self.port,
+                    ssl=connection_params.get("ssl"),
+                )
+                try:
+                    await self.configure_vector_extension(bootstrap_conn)
+                finally:
+                    await bootstrap_conn.close()
 
             # STEP 2: Now safe to create pool with register_vector callback.
-            # The vector extension is guaranteed to exist at this point.
+            # The vector extension is guaranteed to exist at this point (if enabled).
             pool = await asyncpg.create_pool(
                 **connection_params,
-                init=_init_connection,  # Register pgvector codec on every connection
+                init=_init_connection,  # Register pgvector codec on every connection (if enabled)
             )  # type: ignore
             self.pool = pool
 
@@ -464,7 +473,7 @@ class PostgreSQLDB:
                         await self.configure_age(connection, graph_name)
                     elif with_age and not graph_name:
                         raise ValueError("Graph name is required when with_age is True")
-                    if self.vector_index_type == "VCHORDRQ":
+                    if self.enable_vector and self.vector_index_type == "VCHORDRQ":
                         await self.configure_vchordrq(connection)
                     return await operation(connection)
 
@@ -1750,6 +1759,12 @@ class ClientManager:
                 "POSTGRES_SSL_CRL",
                 config.get("postgres", "ssl_crl", fallback=None),
             ),
+            # Vector configuration
+            "enable_vector": os.environ.get(
+                "POSTGRES_ENABLE_VECTOR",
+                config.get("postgres", "enable_vector", fallback="true"),
+            ).lower()
+            in ("true", "1", "yes", "on"),
             "vector_index_type": os.environ.get(
                 "POSTGRES_VECTOR_INDEX_TYPE",
                 config.get("postgres", "vector_index_type", fallback="HNSW"),
@@ -1797,34 +1812,34 @@ class ClientManager:
             ),
             # Connection retry configuration
             "connection_retry_attempts": min(
-                10,
+                100,  # Increased from 10 to 100 for long-running operations
                 int(
                     os.environ.get(
                         "POSTGRES_CONNECTION_RETRIES",
-                        config.get("postgres", "connection_retries", fallback=3),
+                        config.get("postgres", "connection_retries", fallback=10),
                     )
                 ),
             ),
             "connection_retry_backoff": min(
-                5.0,
+                300.0,  # Increased from 5.0 to 300.0 (5 minutes) for PG switchover scenarios
                 float(
                     os.environ.get(
                         "POSTGRES_CONNECTION_RETRY_BACKOFF",
                         config.get(
-                            "postgres", "connection_retry_backoff", fallback=0.5
+                            "postgres", "connection_retry_backoff", fallback=3.0
                         ),
                     )
                 ),
             ),
             "connection_retry_backoff_max": min(
-                60.0,
+                600.0,  # Increased from 60.0 to 600.0 (10 minutes) for PG switchover scenarios
                 float(
                     os.environ.get(
                         "POSTGRES_CONNECTION_RETRY_BACKOFF_MAX",
                         config.get(
                             "postgres",
                             "connection_retry_backoff_max",
-                            fallback=5.0,
+                            fallback=30.0,
                         ),
                     )
                 ),
@@ -1873,7 +1888,7 @@ class PGKVStorage(BaseKVStorage):
     db: PostgreSQLDB = field(default=None)
 
     def __post_init__(self):
-        self._max_batch_size = self.global_config["embedding_batch_num"]
+        self._max_batch_size = 200  # DB batch size, independent of embedding batch size
 
     async def initialize(self):
         async with get_data_init_lock():
@@ -2177,108 +2192,149 @@ class PGKVStorage(BaseKVStorage):
         if not data:
             return
 
-        if is_namespace(self.namespace, NameSpace.KV_STORE_TEXT_CHUNKS):
-            # Get current UTC time and convert to naive datetime for database storage
-            current_time = datetime.datetime.now(timezone.utc).replace(tzinfo=None)
-            for k, v in data.items():
-                upsert_sql = SQL_TEMPLATES["upsert_text_chunk"]
-                _data = {
-                    "workspace": self.workspace,
-                    "id": k,
-                    "tokens": v["tokens"],
-                    "chunk_order_index": v["chunk_order_index"],
-                    "full_doc_id": v["full_doc_id"],
-                    "content": v["content"],
-                    "file_path": v["file_path"],
-                    "llm_cache_list": json.dumps(v.get("llm_cache_list", [])),
-                    "create_time": current_time,
-                    "update_time": current_time,
-                }
-                await self.db.execute(upsert_sql, _data)
-        elif is_namespace(self.namespace, NameSpace.KV_STORE_FULL_DOCS):
-            for k, v in data.items():
-                upsert_sql = SQL_TEMPLATES["upsert_doc_full"]
-                _data = {
-                    "id": k,
-                    "content": v["content"],
-                    "doc_name": v.get("file_path", ""),  # Map file_path to doc_name
-                    "workspace": self.workspace,
-                }
-                await self.db.execute(upsert_sql, _data)
-        elif is_namespace(self.namespace, NameSpace.KV_STORE_LLM_RESPONSE_CACHE):
-            for k, v in data.items():
-                upsert_sql = SQL_TEMPLATES["upsert_llm_response_cache"]
-                _data = {
-                    "workspace": self.workspace,
-                    "id": k,  # Use flattened key as id
-                    "original_prompt": v["original_prompt"],
-                    "return_value": v["return"],
-                    "chunk_id": v.get("chunk_id"),
-                    "cache_type": v.get(
-                        "cache_type", "extract"
-                    ),  # Get cache_type from data
-                    "queryparam": json.dumps(v.get("queryparam"))
-                    if v.get("queryparam")
-                    else None,
-                }
+        batch_values: list[tuple] = []
+        upsert_sql = ""
 
-                await self.db.execute(upsert_sql, _data)
+        if is_namespace(self.namespace, NameSpace.KV_STORE_TEXT_CHUNKS):
+            upsert_sql = SQL_TEMPLATES["upsert_text_chunk"]
+            # Get current UTC time and convert to naive datetime for database storage
+            current_time = datetime.datetime.now(timezone.utc).replace(tzinfo=None)
+            for k, v in data.items():
+                # Tuple order must match SQL: (workspace, id, tokens, chunk_order_index,
+                #   full_doc_id, content, file_path, llm_cache_list, create_time, update_time)
+                batch_values.append(
+                    (
+                        self.workspace,
+                        k,
+                        v["tokens"],
+                        v["chunk_order_index"],
+                        v["full_doc_id"],
+                        v["content"],
+                        v["file_path"],
+                        json.dumps(v.get("llm_cache_list", [])),
+                        current_time,
+                        current_time,
+                    )
+                )
+        elif is_namespace(self.namespace, NameSpace.KV_STORE_FULL_DOCS):
+            upsert_sql = SQL_TEMPLATES["upsert_doc_full"]
+            for k, v in data.items():
+                # Tuple order must match SQL: (id, content, doc_name, workspace)
+                batch_values.append(
+                    (k, v["content"], v.get("file_path", ""), self.workspace)
+                )
+        elif is_namespace(self.namespace, NameSpace.KV_STORE_LLM_RESPONSE_CACHE):
+            upsert_sql = SQL_TEMPLATES["upsert_llm_response_cache"]
+            for k, v in data.items():
+                # Tuple order must match SQL: (workspace, id, original_prompt, return_value,
+                #   chunk_id, cache_type, queryparam)
+                batch_values.append(
+                    (
+                        self.workspace,
+                        k,
+                        v["original_prompt"],
+                        v["return"],
+                        v.get("chunk_id"),
+                        v.get("cache_type", "extract"),
+                        json.dumps(v.get("queryparam"))
+                        if v.get("queryparam")
+                        else None,
+                    )
+                )
         elif is_namespace(self.namespace, NameSpace.KV_STORE_FULL_ENTITIES):
+            upsert_sql = SQL_TEMPLATES["upsert_full_entities"]
             # Get current UTC time and convert to naive datetime for database storage
             current_time = datetime.datetime.now(timezone.utc).replace(tzinfo=None)
             for k, v in data.items():
-                upsert_sql = SQL_TEMPLATES["upsert_full_entities"]
-                _data = {
-                    "workspace": self.workspace,
-                    "id": k,
-                    "entity_names": json.dumps(v["entity_names"]),
-                    "count": v["count"],
-                    "create_time": current_time,
-                    "update_time": current_time,
-                }
-                await self.db.execute(upsert_sql, _data)
+                # Tuple order must match SQL: (workspace, id, entity_names, count,
+                #   create_time, update_time)
+                batch_values.append(
+                    (
+                        self.workspace,
+                        k,
+                        json.dumps(v["entity_names"]),
+                        v["count"],
+                        current_time,
+                        current_time,
+                    )
+                )
         elif is_namespace(self.namespace, NameSpace.KV_STORE_FULL_RELATIONS):
+            upsert_sql = SQL_TEMPLATES["upsert_full_relations"]
             # Get current UTC time and convert to naive datetime for database storage
             current_time = datetime.datetime.now(timezone.utc).replace(tzinfo=None)
             for k, v in data.items():
-                upsert_sql = SQL_TEMPLATES["upsert_full_relations"]
-                _data = {
-                    "workspace": self.workspace,
-                    "id": k,
-                    "relation_pairs": json.dumps(v["relation_pairs"]),
-                    "count": v["count"],
-                    "create_time": current_time,
-                    "update_time": current_time,
-                }
-                await self.db.execute(upsert_sql, _data)
+                # Tuple order must match SQL: (workspace, id, relation_pairs, count,
+                #   create_time, update_time)
+                batch_values.append(
+                    (
+                        self.workspace,
+                        k,
+                        json.dumps(v["relation_pairs"]),
+                        v["count"],
+                        current_time,
+                        current_time,
+                    )
+                )
         elif is_namespace(self.namespace, NameSpace.KV_STORE_ENTITY_CHUNKS):
+            upsert_sql = SQL_TEMPLATES["upsert_entity_chunks"]
             # Get current UTC time and convert to naive datetime for database storage
             current_time = datetime.datetime.now(timezone.utc).replace(tzinfo=None)
             for k, v in data.items():
-                upsert_sql = SQL_TEMPLATES["upsert_entity_chunks"]
-                _data = {
-                    "workspace": self.workspace,
-                    "id": k,
-                    "chunk_ids": json.dumps(v["chunk_ids"]),
-                    "count": v["count"],
-                    "create_time": current_time,
-                    "update_time": current_time,
-                }
-                await self.db.execute(upsert_sql, _data)
+                # Tuple order must match SQL: (workspace, id, chunk_ids, count,
+                #   create_time, update_time)
+                batch_values.append(
+                    (
+                        self.workspace,
+                        k,
+                        json.dumps(v["chunk_ids"]),
+                        v["count"],
+                        current_time,
+                        current_time,
+                    )
+                )
         elif is_namespace(self.namespace, NameSpace.KV_STORE_RELATION_CHUNKS):
+            upsert_sql = SQL_TEMPLATES["upsert_relation_chunks"]
             # Get current UTC time and convert to naive datetime for database storage
             current_time = datetime.datetime.now(timezone.utc).replace(tzinfo=None)
             for k, v in data.items():
-                upsert_sql = SQL_TEMPLATES["upsert_relation_chunks"]
-                _data = {
-                    "workspace": self.workspace,
-                    "id": k,
-                    "chunk_ids": json.dumps(v["chunk_ids"]),
-                    "count": v["count"],
-                    "create_time": current_time,
-                    "update_time": current_time,
-                }
-                await self.db.execute(upsert_sql, _data)
+                # Tuple order must match SQL: (workspace, id, chunk_ids, count,
+                #   create_time, update_time)
+                batch_values.append(
+                    (
+                        self.workspace,
+                        k,
+                        json.dumps(v["chunk_ids"]),
+                        v["count"],
+                        current_time,
+                        current_time,
+                    )
+                )
+        else:
+            logger.error(f"Unknown namespace: {self.namespace}")
+            raise ValueError(f"Unknown namespace: {self.namespace}")
+
+        # upsert_sql is always set here; unknown namespace raises ValueError above
+        if batch_values:
+            # Split into sub-batches to prevent database overload
+            for i in range(0, len(batch_values), self._max_batch_size):
+                sub_batch = batch_values[i : i + self._max_batch_size]
+
+                async def _batch_upsert(
+                    connection: asyncpg.Connection,
+                    _sql: str = upsert_sql,
+                    _data: list[tuple] = sub_batch,
+                ) -> None:
+                    await connection.executemany(_sql, _data)
+
+                await self.db._run_with_retry(_batch_upsert)
+
+            num_batches = (
+                len(batch_values) + self._max_batch_size - 1
+            ) // self._max_batch_size
+            logger.debug(
+                f"[{self.workspace}] Batch upserted {len(batch_values)} records to {self.namespace} "
+                f"in {num_batches} sub-batches"
+            )
 
     async def index_done_callback(self) -> None:
         # PG handles persistence automatically
@@ -2427,13 +2483,17 @@ class PGVectorStorage(BaseVectorStorage):
         # Replace table name
         ddl = ddl.replace(base_table, table_name)
 
+        # Make creation idempotent to handle restarts and race conditions
+        ddl = ddl.replace("CREATE TABLE ", "CREATE TABLE IF NOT EXISTS ", 1)
         await db.execute(ddl)
 
         # Create indexes similar to check_tables() but with safe index names
         # Create index for id column
         id_index_name = _safe_index_name(table_name, "id")
         try:
-            create_id_index_sql = f"CREATE INDEX {id_index_name} ON {table_name}(id)"
+            create_id_index_sql = (
+                f"CREATE INDEX IF NOT EXISTS {id_index_name} ON {table_name}(id)"
+            )
             logger.info(
                 f"PostgreSQL, Creating index {id_index_name} on table {table_name}"
             )
@@ -2446,9 +2506,7 @@ class PGVectorStorage(BaseVectorStorage):
         # Create composite index for (workspace, id)
         workspace_id_index_name = _safe_index_name(table_name, "workspace_id")
         try:
-            create_composite_index_sql = (
-                f"CREATE INDEX {workspace_id_index_name} ON {table_name}(workspace, id)"
-            )
+            create_composite_index_sql = f"CREATE INDEX IF NOT EXISTS {workspace_id_index_name} ON {table_name}(workspace, id)"
             logger.info(
                 f"PostgreSQL, Creating composite index {workspace_id_index_name} on table {table_name}"
             )
@@ -2827,6 +2885,11 @@ class PGVectorStorage(BaseVectorStorage):
             else:
                 # Use "default" for compatibility (lowest priority)
                 self.workspace = "default"
+
+            if not self.db.enable_vector:
+                raise ValueError(
+                    "Cannot use PGVectorStorage when POSTGRES_ENABLE_VECTOR=false. Configure an alternative vector backend."
+                )
 
             # Setup table (create if not exists and handle migration)
             await PGVectorStorage.setup_table(
@@ -4651,7 +4714,7 @@ class PGGraphStorage(BaseGraphStorage):
     ) -> dict[tuple[str, str], dict]:
         """
         Retrieve edge properties for multiple (src, tgt) pairs in one query.
-        Get forward and backward edges seperately and merge them before return
+        Get forward and backward edges separately and merge them before return
 
         Args:
             pairs: List of dictionaries, e.g. [{"src": "node1", "tgt": "node2"}, ...]
@@ -4817,7 +4880,7 @@ class PGGraphStorage(BaseGraphStorage):
 
     async def get_all_labels(self) -> list[str]:
         """
-        Get all labels (node IDs) in the graph.
+        Get all labels(node IDs, entity names) in the graph.
 
         Returns:
             list[str]: A list of all labels in the graph.

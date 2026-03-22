@@ -59,8 +59,18 @@ class MemgraphStorage(BaseGraphStorage):
         self._driver = None
 
     def _get_workspace_label(self) -> str:
-        """Return workspace label (guaranteed non-empty during initialization)"""
-        return self.workspace
+        """Return sanitized workspace label safe for use as a backtick-quoted identifier in Cypher queries.
+
+        Escapes backticks by doubling them to prevent Cypher injection
+        via the LIGHTRAG-WORKSPACE header, while preserving a 1-to-1 mapping
+        for all other characters. The returned value is intended to be used
+        inside backticks (for example, MATCH (n:`{label}`)) and is not
+        validated as a standalone unquoted identifier.
+        """
+        workspace = self.workspace.strip()
+        if not workspace:
+            return "base"
+        return workspace.replace("`", "``")
 
     async def initialize(self):
         async with get_data_init_lock():
@@ -313,7 +323,7 @@ class MemgraphStorage(BaseGraphStorage):
 
     async def get_all_labels(self) -> list[str]:
         """
-        Get all existing node labels in the database
+        Get all existing node labels(entity names) in the database
         Returns:
             ["Person", "Company", ...]  # Alphabetically sorted label list
 
@@ -1046,10 +1056,10 @@ class MemgraphStorage(BaseGraphStorage):
         """Get popular labels by node degree (most connected entities)
 
         Args:
-            limit: Maximum number of labels to return
+            limit: Maximum number of labels(entity names) to return
 
         Returns:
-            List of labels sorted by degree (highest first)
+            List of labels(entity names) sorted by degree (highest first)
         """
         if self._driver is None:
             raise RuntimeError(
@@ -1088,14 +1098,14 @@ class MemgraphStorage(BaseGraphStorage):
             return []
 
     async def search_labels(self, query: str, limit: int = 50) -> list[str]:
-        """Search labels with fuzzy matching
+        """Search labels(entity names) with fuzzy matching
 
         Args:
             query: Search query string
             limit: Maximum number of results to return
 
         Returns:
-            List of matching labels sorted by relevance
+            List of matching labels(entity names) sorted by relevance
         """
         if self._driver is None:
             raise RuntimeError(

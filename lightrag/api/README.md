@@ -15,10 +15,12 @@ The LightRAG Server is designed to provide a Web UI and API support. The Web UI 
 * Install from PyPI
 
 ```bash
-# Using uv (recommended)
-uv pip install "lightrag-hku[api]"
+### Install LightRAG Server as tool using uv (recommended)
+uv tool install "lightrag-hku[api]"
 
-# Or using pip
+### Or using pip
+# python -m venv .venv
+# source .venv/bin/activate  # Windows: .venv\Scripts\activate
 # pip install "lightrag-hku[api]"
 ```
 
@@ -102,6 +104,21 @@ EMBEDDING_DIM=1024
 
 > **Important Note**: The Embedding model must be determined before document indexing, and the same model must be used during the document query phase. For certain storage solutions (e.g., PostgreSQL), the vector dimension must be defined upon initial table creation. Therefore, when changing embedding models, it is necessary to delete the existing vector-related tables and allow LightRAG to recreate them with the new dimensions.
 
+### Create .env File With Setup Tool
+
+Instead of editing `env.example` by hand, you can use the interactive setup wizard to generate a configured `.env` and, when needed, `docker-compose.final.yml`:
+
+```bash
+make env-base           # Required first step: LLM, embedding, reranker
+make env-storage        # Optional: storage backends and database services
+make env-server         # Optional: server port, auth, and SSL
+make env-security-check # Optional: audit the current .env for security risks
+```
+
+For a full description of every target and what each flow does, see [docs/InteractiveSetup.md](../../docs/InteractiveSetup.md).
+The setup wizards update configuration only; run `make env-security-check` separately to audit the
+current `.env` for security risks before deployment.
+
 ### Starting LightRAG Server
 
 The LightRAG Server supports two operational modes:
@@ -132,13 +149,10 @@ During startup, configurations in the `.env` file can be overridden by command-l
 
 Using Docker Compose is the most convenient way to deploy and run the LightRAG Server.
 
-* Create a project directory.
-
-* Copy the `docker-compose.yml` file from the LightRAG repository into your project directory.
-
-* Prepare the `.env` file: Duplicate the sample file [`env.example`](https://ai.znipower.com:5013/c/env.example)to create a customized `.env` file, and configure the LLM and embedding parameters according to your specific requirements.
-
-* Start the LightRAG Server with the following command:
+- Create a project directory.
+- Copy the `docker-compose.yml` file from the LightRAG repository into your project directory.
+- Prepare the `.env` file: Duplicate the sample file [`env.example`](https://ai.znipower.com:5013/c/env.example)to create a customized `.env` file, and configure the LLM and embedding parameters according to your specific requirements.
+- Start the LightRAG Server with the following command:
 
 ```shell
 docker compose up
@@ -146,6 +160,71 @@ docker compose up
 ```
 
 You can get the official docker compose file from here: [docker-compose.yml](https://raw.githubusercontent.com/HKUDS/LightRAG/refs/heads/main/docker-compose.yml). For historical versions of LightRAG docker images, visit this link: [LightRAG Docker Images](https://github.com/HKUDS/LightRAG/pkgs/container/lightrag). For more details about docker deployment, please refer to [DockerDeployment.md](./../../docs/DockerDeployment.md).
+
+### Nginx Reverse Proxy Configuration
+
+When using Nginx as a reverse proxy in front of LightRAG Server, you need to configure `client_max_body_size` for the `/documents/upload` endpoint to handle large file uploads. Without this configuration, Nginx will reject files larger than 1MB (the default limit) with a `413 Request Entity Too Large` error before the request reaches LightRAG.
+
+**Recommended Configuration:**
+
+```nginx
+server {
+    listen 80;
+    server_name your-domain.com;
+
+    # Global default: 8MB for LLM queries with long context
+    client_max_body_size 8M;
+
+    # Upload endpoint: 100MB for large file uploads
+    location /documents/upload {
+        client_max_body_size 100M;
+
+        proxy_pass http://localhost:9621;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # Increase timeouts for large file uploads
+        proxy_read_timeout 300s;
+        proxy_send_timeout 300s;
+    }
+
+    # Streaming endpoints: LLM response streaming
+    location ~ ^/(query/stream|api/chat|api/generate) {
+        gzip off;  # Disable compression for streaming responses
+
+        proxy_pass http://localhost:9621;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # Long timeout for LLM generation
+        proxy_read_timeout 300s;
+    }
+
+    # Other endpoints
+    location / {
+        proxy_pass http://localhost:9621;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+```
+
+**Key Points:**
+
+1. **Global Limit (8MB)**: Sufficient for LLM queries with long conversation history and context (128K tokens ≈ 512KB + JSON overhead).
+2. **Upload Endpoint (100MB)**: Must match or exceed `MAX_UPLOAD_SIZE` in your `.env` file. The default `MAX_UPLOAD_SIZE` is 100MB.
+3. **Streaming Endpoints**: Disable gzip compression (`gzip off`) for streaming endpoints to ensure real-time response delivery. LightRAG automatically sets `X-Accel-Buffering: no` header to disable response buffering.
+4. **Timeout Settings**: Large file uploads and LLM generation require longer timeouts; adjust `proxy_read_timeout` and `proxy_send_timeout` accordingly.
+5. **Size Validation Layers**:
+   - Nginx validates the `Content-Length` header first
+   - LightRAG performs streaming validation during upload
+   - Setting appropriate limits at both layers ensures better error messages and security
 
 ### Offline Deployment
 
@@ -180,8 +259,9 @@ The command-line `workspace` argument and the `WORKSPACE` environment variable i
 - **For Qdrant vector database, data isolation is achieved through payload-based partitioning (Qdrant's recommended multitenancy approach):** `QdrantVectorDBStorage` uses shared collections with payload filtering for unlimited workspace scalability.
 - **For relational databases, data isolation is achieved by adding a `workspace` field to the tables for logical data separation:** `PGKVStorage`, `PGVectorStorage`, `PGDocStatusStorage`.
 - **For graph databases, logical data isolation is achieved through labels:** `Neo4JStorage`, `MemgraphStorage`
+- **For OpenSearch, data isolation is achieved through index name prefixes:** `OpenSearchKVStorage`, `OpenSearchDocStatusStorage`, `OpenSearchGraphStorage`, `OpenSearchVectorDBStorage`
 
-To maintain compatibility with legacy data, the default workspace for PostgreSQL is `default` and for Neo4j is `base` when no workspace is configured. For all external storages, the system provides dedicated workspace environment variables to override the common `WORKSPACE` environment variable configuration. These storage-specific workspace environment variables are: `REDIS_WORKSPACE`, `MILVUS_WORKSPACE`, `QDRANT_WORKSPACE`, `MONGODB_WORKSPACE`, `POSTGRES_WORKSPACE`, `NEO4J_WORKSPACE`, `MEMGRAPH_WORKSPACE`.
+To maintain compatibility with legacy data, the default workspace for PostgreSQL is `default` and for Neo4j is `base` when no workspace is configured. For all external storages, the system provides dedicated workspace environment variables to override the common `WORKSPACE` environment variable configuration. These storage-specific workspace environment variables are: `REDIS_WORKSPACE`, `MILVUS_WORKSPACE`, `QDRANT_WORKSPACE`, `MONGODB_WORKSPACE`, `POSTGRES_WORKSPACE`, `NEO4J_WORKSPACE`, `MEMGRAPH_WORKSPACE`, `OPENSEARCH_WORKSPACE`.
 
 ### Multiple workers for Gunicorn + Uvicorn
 
@@ -208,7 +288,6 @@ Environment="PATH=/home/netman/lightrag-xyj/venv/bin"
 WorkingDirectory=/home/netman/lightrag-xyj
 # ExecStart=/home/netman/lightrag-xyj/venv/bin/lightrag-server
 ExecStart=/home/netman/lightrag-xyj/venv/bin/lightrag-gunicorn
-
 ```
 
 > The ExecStart command must be either `lightrag-gunicorn` or `lightrag-server`; no wrapper scripts are allowed. This is because service termination requires the main process to be one of these two executables.
@@ -301,10 +380,18 @@ LightRAG API Server implements JWT-based authentication using the HS256 algorith
 
 ```bash
 # For jwt auth
-AUTH_ACCOUNTS='admin:admin123,user1:pass456'
+AUTH_ACCOUNTS='admin:{bcrypt}$2b$12$replace-with-generated-hash,user1:pass456'
 TOKEN_SECRET='your-key'
 TOKEN_EXPIRE_HOURS=4
 ```
+
+Passwords without a prefix are treated as plaintext. To store a bcrypt password, prefix the generated hash with `{bcrypt}`. The easiest way to generate a value that can be pasted directly into `AUTH_ACCOUNTS` is:
+
+```bash
+lightrag-hash-password --username admin
+```
+
+The command prompts for the password and prints an `admin:{bcrypt}...` entry ready to paste into `.env`.
 
 > Currently, only the configuration of an administrator account and password is supported. A comprehensive account system is yet to be developed and implemented.
 
@@ -407,6 +494,8 @@ LightRAG uses 4 types of storage for different purposes:
 
 LightRAG Server offers various storage implementations, with the default being an in-memory database that persists data to the WORKING_DIR directory. Additionally, LightRAG supports a wide range of storage solutions including PostgreSQL, MongoDB, FAISS, Milvus, Qdrant, Neo4j, Memgraph, and Redis. For detailed information on supported storage options, please refer to the storage section in the README.md file located in the root directory.
 
+**Milvus Index Configuration:** LightRAG now supports configurable index types for Milvus vector storage (AUTOINDEX, HNSW, HNSW_SQ, IVF_FLAT, etc.) through environment variables. HNSW_SQ requires Milvus 2.6.8+ and provides significant memory savings. See the "Using Milvus for Vector Storage" section in the main README.md for complete configuration options.
+
 You can select the storage implementation by configuring environment variables. For instance, prior to the initial launch of the API server, you can set the following environment variable to specify your desired storage implementation:
 
 ```
@@ -453,7 +542,7 @@ The rerank provider is configured via the `.env` file. Below is an example confi
 ```
 RERANK_BINDING=cohere
 RERANK_MODEL=BAAI/bge-reranker-v2-m3
-RERANK_BINDING_HOST=http://localhost:8000/v1/rerank
+RERANK_BINDING_HOST=http://localhost:8000/rerank
 RERANK_BINDING_API_KEY=your_rerank_api_key_here
 ```
 
@@ -561,17 +650,16 @@ EMBEDDING_BINDING=ollama
 EMBEDDING_BINDING_HOST=http://localhost:11434
 
 ### For JWT Auth
-# AUTH_ACCOUNTS='admin:admin123,user1:pass456'
+# AUTH_ACCOUNTS='admin:{bcrypt}$2b$12$replace-with-generated-hash,user1:pass456'
 # TOKEN_SECRET=your-key-for-LightRAG-API-Server-xxx
 # TOKEN_EXPIRE_HOURS=48
 
 # LIGHTRAG_API_KEY=your-secure-api-key-here-123
 # WHITELIST_PATHS=/api/*
 # WHITELIST_PATHS=/health,/api/*
-
 ```
 
-## Document and Chunk  Processing Login Clarification
+## Document and Chunk Processing
 
 The document processing pipeline in LightRAG is somewhat complex and is divided into two primary stages: the Extraction stage (entity and relationship extraction) and the Merging stage (entity and relationship merging). There are two key parameters that control pipeline concurrency: the maximum number of files processed in parallel (MAX_PARALLEL_INSERT) and the maximum number of concurrent LLM requests (MAX_ASYNC). The workflow is described as follows:
 

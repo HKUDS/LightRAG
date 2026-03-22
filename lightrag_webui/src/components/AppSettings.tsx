@@ -22,7 +22,7 @@ export default function AppSettings({ className }: AppSettingsProps) {
   const setTheme = useSettingsStore.use.setTheme()
 
   const handleLanguageChange = useCallback((value: string) => {
-    setLanguage(value as 'en' | 'zh' | 'fr' | 'ar' | 'zh_TW' | 'ru' | 'ja' | 'de' | 'uk')
+    setLanguage(value as 'en' | 'zh' | 'fr' | 'ar' | 'zh_TW' | 'ru' | 'ja' | 'de' | 'uk' | 'ko' | 'vi')
   }, [setLanguage])
 
   const handleThemeChange = useCallback((value: string) => {
@@ -54,6 +54,8 @@ export default function AppSettings({ className }: AppSettingsProps) {
                 <SelectItem value="ja">日本語</SelectItem>
                 <SelectItem value="de">Deutsch</SelectItem>
                 <SelectItem value="uk">Українська</SelectItem>
+                <SelectItem value="ko">한국어</SelectItem>
+                <SelectItem value="vi">Tiếng Việt</SelectItem>
               </SelectContent>
             </Select>
           </div>

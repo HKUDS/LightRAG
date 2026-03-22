@@ -113,8 +113,8 @@ class JsonDocStatusStorage(DocStatusStorage):
                         data = v.copy()
                         # Remove deprecated content field if it exists
                         data.pop("content", None)
-                        # If file_path is not in data, use document id as file path
-                        if "file_path" not in data:
+                        # Normalize missing or null file_path
+                        if not data.get("file_path"):
                             data["file_path"] = "no-file-path"
                         # Ensure new fields exist with default values
                         if "metadata" not in data:
@@ -142,8 +142,8 @@ class JsonDocStatusStorage(DocStatusStorage):
                         data = v.copy()
                         # Remove deprecated content field if it exists
                         data.pop("content", None)
-                        # If file_path is not in data, use document id as file path
-                        if "file_path" not in data:
+                        # Normalize missing or null file_path
+                        if not data.get("file_path"):
                             data["file_path"] = "no-file-path"
                         # Ensure new fields exist with default values
                         if "metadata" not in data:
@@ -274,7 +274,7 @@ class JsonDocStatusStorage(DocStatusStorage):
                     # Prepare document data
                     data = doc_data.copy()
                     data.pop("content", None)
-                    if "file_path" not in data:
+                    if not data.get("file_path"):
                         data["file_path"] = "no-file-path"
                     if "metadata" not in data:
                         data["metadata"] = {}

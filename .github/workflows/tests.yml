@@ -5,10 +5,12 @@ on:
     branches: [ main, dev ]
   pull_request:
     branches: [ main, dev ]
+    types: [opened, synchronize, reopened, ready_for_review]
 
 jobs:
   offline-tests:
     name: Offline Tests
+    if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
     runs-on: ubuntu-latest
 
     strategy:
@@ -45,7 +47,7 @@ jobs:
 
     - name: Upload test results
       if: always()
-      uses: actions/upload-artifact@v6
+      uses: actions/upload-artifact@v7
       with:
         name: test-results-py${{ matrix.python-version }}
         path: |

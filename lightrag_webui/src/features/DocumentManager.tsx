@@ -584,7 +584,7 @@ export default function DocumentManager() {
   // Utility function to create timeout wrapper for API calls
   const withTimeout = useCallback((
     promise: Promise<any>,
-    timeoutMs: number = 30000,
+    timeoutMs: number = 30000, // Default 30s timeout for normal operations
     errorMsg: string = 'Request timeout'
   ): Promise<any> => {
     const timeoutPromise = new Promise((_, reject) => {
@@ -676,7 +676,8 @@ export default function DocumentManager() {
   // Intelligent refresh function: handles all boundary cases
   const handleIntelligentRefresh = useCallback(async (
     targetPage?: number, // Optional target page, defaults to current page
-    resetToFirst?: boolean // Whether to force reset to first page
+    resetToFirst?: boolean, // Whether to force reset to first page
+    customTimeout?: number // Optional custom timeout in milliseconds (uses withTimeout default if not provided)
   ) => {
     try {
       if (!isMountedRef.current) return;
@@ -694,10 +695,10 @@ export default function DocumentManager() {
         sort_direction: sortDirection
       };
 
-      // Use timeout wrapper for the API call
+      // Use timeout wrapper for the API call (uses customTimeout if provided, otherwise withTimeout default)
       const response = await withTimeout(
         getDocumentsPaginated(request),
-        30000, // 30 second timeout
+        customTimeout, // Pass undefined to use default 30s, or explicit timeout for special cases
         'Document fetch timeout'
       );
 
@@ -717,7 +718,7 @@ export default function DocumentManager() {
 
           const lastPageResponse = await withTimeout(
             getDocumentsPaginated(lastPageRequest),
-            30000,
+            customTimeout, // Use same timeout for consistency
             'Document fetch timeout'
           );
 
@@ -847,7 +848,10 @@ export default function DocumentManager() {
       // Reset health check timer with 1 second delay to avoid race condition
       useBackendState.getState().resetHealthCheckTimerDelayed(1000);
 
-      // Start fast refresh with 2-second interval immediately after scan
+      // Perform immediate refresh with 90s timeout after scan (tolerates PostgreSQL switchover)
+      await handleIntelligentRefresh(undefined, false, 90000);
+
+      // Start fast refresh with 2-second interval after initial refresh
       startPollingInterval(2000);
 
       // Set recovery timer to restore normal polling interval after 15 seconds
@@ -865,7 +869,7 @@ export default function DocumentManager() {
         toast.error(t('documentPanel.documentManager.errors.scanFailed', { error: errorMessage(err) }));
       }
     }
-  }, [t, startPollingInterval, currentTab, health, statusCounts])
+  }, [t, startPollingInterval, currentTab, health, statusCounts, handleIntelligentRefresh])
 
   // Handle page size change - update state and save to store
   const handlePageSizeChange = useCallback((newPageSize: number) => {
@@ -1184,7 +1188,7 @@ export default function DocumentManager() {
             ) : !isSelectionMode ? (
               <ClearDocumentsDialog onDocumentsCleared={handleDocumentsCleared} />
             ) : null}
-            <UploadDocumentsDialog onDocumentsUploaded={fetchDocuments} />
+            <UploadDocumentsDialog onDocumentsUploaded={() => handleIntelligentRefresh(undefined, false, 120000)} />
             <PipelineStatusDialog
               open={showPipelineStatus}
               onOpenChange={setShowPipelineStatus}

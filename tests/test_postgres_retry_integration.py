@@ -31,7 +31,13 @@ class TestPostgresRetryIntegration:
 
     @pytest.fixture
     def db_config(self):
-        """Load database configuration from environment variables."""
+        """Load database configuration from environment variables.
+
+        Uses new HA-optimized defaults that match postgres_impl.py ClientManager.get_config():
+        - 10 retry attempts (up from 3)
+        - 3.0s initial backoff (up from 0.5s)
+        - 30.0s max backoff (up from 5.0s)
+        """
         return {
             "host": os.getenv("POSTGRES_HOST", "localhost"),
             "port": int(os.getenv("POSTGRES_PORT", "5432")),
@@ -40,31 +46,31 @@ class TestPostgresRetryIntegration:
             "database": os.getenv("POSTGRES_DATABASE", "postgres"),
             "workspace": os.getenv("POSTGRES_WORKSPACE", "test_retry"),
             "max_connections": int(os.getenv("POSTGRES_MAX_CONNECTIONS", "10")),
-            # Connection retry configuration
+            # Connection retry configuration - mirrors postgres_impl.py ClientManager.get_config()
+            # NEW DEFAULTS optimized for HA deployments
             "connection_retry_attempts": min(
-                10, int(os.getenv("POSTGRES_CONNECTION_RETRIES", "3"))
+                100,
+                int(os.getenv("POSTGRES_CONNECTION_RETRIES", "10")),  # 3 → 10
             ),
             "connection_retry_backoff": min(
-                5.0, float(os.getenv("POSTGRES_CONNECTION_RETRY_BACKOFF", "0.5"))
+                300.0,
+                float(
+                    os.getenv("POSTGRES_CONNECTION_RETRY_BACKOFF", "3.0")
+                ),  # 0.5 → 3.0
             ),
             "connection_retry_backoff_max": min(
-                60.0, float(os.getenv("POSTGRES_CONNECTION_RETRY_BACKOFF_MAX", "5.0"))
+                600.0,
+                float(
+                    os.getenv("POSTGRES_CONNECTION_RETRY_BACKOFF_MAX", "30.0")
+                ),  # 5.0 → 30.0
             ),
             "pool_close_timeout": min(
                 30.0, float(os.getenv("POSTGRES_POOL_CLOSE_TIMEOUT", "5.0"))
             ),
         }
 
-    @pytest.fixture
-    def test_env(self, monkeypatch):
-        """Set up test environment variables for retry configuration."""
-        monkeypatch.setenv("POSTGRES_CONNECTION_RETRIES", "3")
-        monkeypatch.setenv("POSTGRES_CONNECTION_RETRY_BACKOFF", "0.5")
-        monkeypatch.setenv("POSTGRES_CONNECTION_RETRY_BACKOFF_MAX", "2.0")
-        monkeypatch.setenv("POSTGRES_POOL_CLOSE_TIMEOUT", "3.0")
-
     @pytest.mark.asyncio
-    async def test_real_connection_success(self, db_config, test_env):
+    async def test_real_connection_success(self, db_config):
         """
         Test successful connection to real PostgreSQL database.
 
@@ -100,11 +106,12 @@ class TestPostgresRetryIntegration:
                 await db.pool.close()
 
     @pytest.mark.asyncio
-    async def test_simulated_transient_error_with_real_db(self, db_config, test_env):
+    async def test_simulated_transient_error_with_real_db(self, db_config):
         """
         Test retry mechanism with simulated transient errors on real database.
 
         Simulates connection failures on first 2 attempts, then succeeds.
+        Uses new HA defaults (10 retries, 3s backoff).
         """
         print("\n" + "=" * 80)
         print("INTEGRATION TEST 2: Simulated Transient Errors")
@@ -155,12 +162,13 @@ class TestPostgresRetryIntegration:
                 await db.pool.close()
 
     @pytest.mark.asyncio
-    async def test_query_retry_with_real_db(self, db_config, test_env):
+    async def test_query_retry_with_real_db(self, db_config):
         """
         Test query-level retry with simulated connection issues.
 
         Tests that queries retry on transient failures by simulating
         a temporary database unavailability.
+        Uses new HA defaults (10 retries, 3s backoff).
         """
         print("\n" + "=" * 80)
         print("INTEGRATION TEST 3: Query-Level Retry")
@@ -193,11 +201,12 @@ class TestPostgresRetryIntegration:
                 await db.pool.close()
 
     @pytest.mark.asyncio
-    async def test_concurrent_queries_with_real_db(self, db_config, test_env):
+    async def test_concurrent_queries_with_real_db(self, db_config):
         """
         Test concurrent queries to validate thread safety and connection pooling.
 
         Runs multiple concurrent queries to ensure no deadlocks or race conditions.
+        Uses new HA defaults (10 retries, 3s backoff).
         """
         print("\n" + "=" * 80)
         print("INTEGRATION TEST 4: Concurrent Queries")
@@ -243,9 +252,10 @@ class TestPostgresRetryIntegration:
                 await db.pool.close()
 
     @pytest.mark.asyncio
-    async def test_pool_close_timeout_real(self, db_config, test_env):
+    async def test_pool_close_timeout_real(self, db_config):
         """
         Test pool close timeout protection with real database.
+        Uses new HA defaults (10 retries, 3s backoff).
         """
         print("\n" + "=" * 80)
         print("INTEGRATION TEST 5: Pool Close Timeout")

@@ -1,4 +1,5 @@
 import os
+from collections import deque
 from dataclasses import dataclass
 from typing import final
 
@@ -201,7 +202,7 @@ class NetworkXStorage(BaseGraphStorage):
 
     async def get_all_labels(self) -> list[str]:
         """
-        Get all node labels in the graph
+        Get all node labels(entity names) in the graph
         Returns:
             [label1, label2, ...]  # Alphabetically sorted label list
         """
@@ -215,7 +216,7 @@ class NetworkXStorage(BaseGraphStorage):
 
     async def get_popular_labels(self, limit: int = 300) -> list[str]:
         """
-        Get popular labels by node degree (most connected entities)
+        Get popular labels(entity names) by node degree (most connected entities)
 
         Args:
             limit: Maximum number of labels to return
@@ -240,7 +241,7 @@ class NetworkXStorage(BaseGraphStorage):
 
     async def search_labels(self, query: str, limit: int = 50) -> list[str]:
         """
-        Search labels with fuzzy matching
+        Search labels(entity names) with fuzzy matching
 
         Args:
             query: Search query string
@@ -352,7 +353,7 @@ class NetworkXStorage(BaseGraphStorage):
             bfs_nodes = []
             visited = set()
             # Store (node, depth, degree) in the queue
-            queue = [(node_label, 0, graph.degree(node_label))]
+            queue = deque([(node_label, 0, graph.degree(node_label))])
 
             # Flag to track if there are unexplored neighbors due to depth limit
             has_unexplored_neighbors = False
@@ -365,7 +366,7 @@ class NetworkXStorage(BaseGraphStorage):
                 # Collect all nodes at the current depth
                 current_level_nodes = []
                 while queue and queue[0][1] == current_depth:
-                    current_level_nodes.append(queue.pop(0))
+                    current_level_nodes.append(queue.popleft())
 
                 # Sort nodes at current depth by degree (highest first)
                 current_level_nodes.sort(key=lambda x: x[2], reverse=True)

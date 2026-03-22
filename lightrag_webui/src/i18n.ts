@@ -11,6 +11,8 @@ import ru from './locales/ru.json'
 import ja from './locales/ja.json'
 import de from './locales/de.json'
 import uk from './locales/uk.json'
+import ko from './locales/ko.json'
+import vi from './locales/vi.json'
 
 const getStoredLanguage = () => {
   try {
@@ -37,7 +39,9 @@ i18n
       ru: { translation: ru },
       ja: { translation: ja },
       de: { translation: de },
-      uk: { translation: uk }
+      uk: { translation: uk },
+      ko: { translation: ko },
+      vi: { translation: vi }
     },
     lng: getStoredLanguage(), // Use stored language settings
     fallbackLng: 'en',
