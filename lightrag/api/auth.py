@@ -5,7 +5,9 @@ from dotenv import load_dotenv
 from fastapi import HTTPException, status
 from pydantic import BaseModel
 
+from ..utils import logger
 from .config import global_args
+from .passwords import verify_password
 
 # use the .env that is inside the current folder
 # allows to use different .env file for each lightrag instance
@@ -23,15 +25,48 @@ class TokenPayload(BaseModel):
 class AuthHandler:
     def __init__(self):
         self.secret = global_args.token_secret
+        if self.secret == "lightrag-jwt-default-secret-key!":
+            logger.warning(
+                "Using default TOKEN_SECRET. Please set a unique TOKEN_SECRET in your .env file for better security."
+            )
         self.algorithm = global_args.jwt_algorithm
         self.expire_hours = global_args.token_expire_hours
         self.guest_expire_hours = global_args.guest_token_expire_hours
         self.accounts = {}
         auth_accounts = global_args.auth_accounts
+        invalid_accounts = []
         if auth_accounts:
             for account in auth_accounts.split(","):
-                username, password = account.split(":", 1)
-                self.accounts[username] = password
+                try:
+                    username, password = account.split(":", 1)
+                    if not username or not password:
+                        raise ValueError
+                    self.accounts[username] = password
+                except ValueError:
+                    invalid_accounts.append(account)
+        if invalid_accounts:
+            invalid_entries = ", ".join(invalid_accounts)
+            logger.error(f"Invalid account format in AUTH_ACCOUNTS: {invalid_entries}")
+            raise ValueError(
+                "AUTH_ACCOUNTS must use comma-separated user:password pairs."
+            )
+
+    def verify_password(self, username: str, plain_password: str) -> bool:
+        """
+        Verify password for a user. Supports explicit bcrypt values and plaintext.
+
+        Args:
+            username: Username to verify
+            plain_password: Plaintext password to check
+
+        Returns:
+            bool: True if password is correct, False otherwise
+        """
+        if username not in self.accounts:
+            return False
+
+        stored_password = self.accounts[username]
+        return verify_password(plain_password, stored_password)
 
     def create_token(
         self,
