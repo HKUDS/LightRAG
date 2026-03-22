@@ -618,7 +618,7 @@ export const queryTextStream = async (
           } catch (refreshError) {
             console.error('Failed to refresh guest token for streaming:', refreshError);
             navigationService.navigateToLogin();
-            throw new Error('Failed to refresh authentication');
+            throw new Error('Failed to refresh authentication', { cause: refreshError });
           }
         }
 
