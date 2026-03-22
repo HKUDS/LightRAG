@@ -14,6 +14,7 @@ from lightrag import __version__ as core_version
 from lightrag.constants import (
     DEFAULT_FORCE_LLM_SUMMARY_ON_MERGE,
 )
+from lightrag.api.runtime_validation import validate_runtime_target_from_env_file
 from fastapi import HTTPException, Security, Request, Response, status
 from fastapi.security import APIKeyHeader, OAuth2PasswordBearer
 from starlette.status import HTTP_403_FORBIDDEN
@@ -45,7 +46,9 @@ def check_env_file():
     Check if .env file exists and handle user confirmation if needed.
     Returns True if should continue, False if should exit.
     """
-    if not os.path.exists(".env"):
+    env_path = ".env"
+
+    if not os.path.exists(env_path):
         warning_msg = "Warning: Startup directory must contain .env file for multi-instance support."
         ASCIIColors.yellow(warning_msg)
 
@@ -55,6 +58,14 @@ def check_env_file():
             if response.lower() != "yes":
                 ASCIIColors.red("Server startup cancelled")
                 return False
+        return True
+
+    is_valid, error_message = validate_runtime_target_from_env_file(env_path)
+    if not is_valid:
+        for line in error_message.splitlines():
+            ASCIIColors.red(line)
+        return False
+
     return True
 
 

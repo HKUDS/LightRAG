@@ -1,296 +1,298 @@
-# Interactive Setup With Make Tool
+# Interactive Setup Guide
 
-Use the Make targets below to configure and deploy LightRAG with an interactive wizard.
-All targets require Bash 4+ and auto-detect the correct interpreter (`/opt/homebrew/bin/bash`,
-`/usr/local/bin/bash`, or the system `bash`).
+Use the interactive setup wizard when you want LightRAG to guide you through the configuration instead of editing `.env` by hand.
 
-## Quick Reference
+The wizard is exposed through `make` targets:
 
-| Target | Script flag | Use case |
-|---|---|---|
-| `make env-base` | `--base` | Configure LLM, embedding, and reranker (run first) |
-| `make env-storage` | `--storage` | Configure storage backends and databases |
-| `make env-server` | `--server` | Configure server, security, and SSL |
-| `make env-validate` | `--validate` | Validate current `.env` |
-| `make env-security-check` | `--security-check` | Audit current `.env` for security risks |
-| `make env-backup` | `--backup` | Backup current `.env` |
-| `make help` | `--help` | Show script CLI help |
-
-## Modular Configuration
+- `make env-base`
+- `make env-storage`
+- `make env-server`
+- `make env-validate`
+- `make env-security-check`
+- `make env-backup`
+- `make env-base-rewrite`
+- `make env-storage-rewrite`
 
-The three wizards are designed to be run independently and in any order, allowing you to update
-one configuration domain without touching the others:
+You do not need to call the underlying shell script directly.
 
-```bash
-make env-base     # Step 1: always required — sets up LLM / embedding / reranker
-make env-storage  # Step 2: optional — configures storage backends; requires .env from env-base
-make env-server   # Step 3: optional — configures port, auth, SSL; requires .env from env-base
-make env-security-check  # Optional audit: report risky auth / whitelist / secret settings
-```
+## What This Wizard Is For
 
-The modular wizards focus on collecting and updating configuration. They do **not** block writes
-based on deployment profile or security posture. Use `make env-security-check` to audit the
-current `.env` after editing or before exposing the service.
+The setup wizard helps you configure LightRAG in three parts:
 
-**Compose file merging:** When a `docker-compose.final.yml` (or a previously-generated compose
-file) already exists, each wizard preserves the services belonging to the *other* wizards:
+- `env-base` sets up the LLM, embedding model, and optional reranker.
+- `env-storage` adds or changes storage backends such as PostgreSQL, Neo4j, Redis, Milvus, Qdrant, MongoDB, or Memgraph.
+- `env-server` sets server host and port, WebUI labels, authentication, API keys, and SSL.
 
-- `env-base` detects and keeps any storage services (postgres, neo4j, …) in the compose file
-  while updating vLLM services.
-- `env-storage` detects and keeps any vLLM services (vllm-embed, vllm-rerank) while updating
-  storage services.
-- `env-server` keeps all existing services unchanged and only rebuilds the `lightrag` service's
-  environment overrides (port, SSL paths, etc.).
+You can rerun each step later. The wizard loads your existing `.env` and shows current values as defaults, so you only need to change what is different.
 
-The generated compose file is always written as `docker-compose.final.yml`. Older files named
-`docker-compose.development.yml`, `docker-compose.production.yml`, etc. are detected automatically
-for backwards compatibility. If a legacy `.env` still contains `LIGHTRAG_SETUP_PROFILE`, that
-value is used only to pick the matching legacy compose file during migration; new `.env` files do
-not persist this variable.
+## Before You Start
 
-**`.env` ownership principle:** The setup wizard does not promise that one `.env` file will be
-simultaneously correct for both host startup and Docker Compose startup. Instead, each wizard run
-updates `.env` for the runtime you are configuring at that moment, and rerunning the wizard later
-may rewrite `.env` again when you switch between host-oriented and compose-oriented settings.
+- Run commands from the repository root.
+- The `make env-*` targets automatically choose a compatible Bash 4+ interpreter.
+- Use the documented `make env-*` targets rather than invoking the setup script yourself.
+- `make env-base` is the normal starting point because it creates the initial `.env`.
+- `make env-storage` and `make env-server` require an existing `.env`.
+- If you choose any wizard-managed Docker service, the wizard also prepares LightRAG for the Docker startup path.
 
-## Make Variable Overrides
+## Choose Your Setup Path
 
-| Variable | Default | Description |
-|---|---|---|
-| `SETUP_OPTS` | (empty) | Extra flags passed directly to the setup script |
-| `NO_COLOR` | (unset) | Set to `1` to disable colored output |
+Use this quick guide to decide what to run:
 
-Examples:
+- I want the fastest first run with remote model providers: `make env-base`
+- I want embedding or reranking to run locally in Docker: `make env-base`
+- I already configured models and now want databases: `make env-storage`
+- I already configured models and now want auth, API keys, or SSL: `make env-server`
+- I want to check whether my current setup is valid: `make env-validate`
+- I want to audit my current setup before exposing it: `make env-security-check`
+- I want a standalone backup without changing configuration: `make env-backup`
+- I need to repair the generated compose services from the bundled templates: `make env-base-rewrite` or `make env-storage-rewrite`
 
-```bash
-make env-base SETUP_OPTS=--debug
-make env-storage NO_COLOR=1
-SETUP_WAIT_TIMEOUT=120 make env-server SETUP_OPTS=--debug
-make env-security-check NO_COLOR=1
-```
+## Scenario 1: First-Time Local Setup
 
-## Target Details
+Use this when you want LightRAG running with the least amount of setup and you already have remote model endpoints or API keys.
 
-### `make env-base` — LLM / Embedding / Reranker
-
-Configures the three inference providers:
-
-1. **LLM** — provider, model, endpoint, API key
-2. **Embedding** — choice between a remote provider (OpenAI, Ollama, Jina, …) or a local Docker
-   vLLM service (`BAAI/bge-m3` by default). When Docker is chosen, a `vllm-embed` service is added
-   to the compose file and `EMBEDDING_BINDING_HOST` is wired to the container hostname.
-3. **Reranker** — same choice: remote provider or local Docker vLLM reranker.
-
-**First run:** creates `.env` (and optionally `docker-compose.final.yml`) from scratch.
-
-**Re-run:** loads the existing `.env` as defaults. If a compose file already exists, its storage
-services are detected and preserved when the compose file is regenerated.
-
-### `make env-storage` — Storage Backends
-
-Configures which storage backends LightRAG uses and how to reach them. Requires `.env` to exist
-(run `make env-base` first).
-
-Prompts for:
-
-- KV, vector, graph, and doc-status storage backend selection
-- Connection settings for each required database
-- Whether to run each database as a Docker service
-
-On reruns, `env-storage` reloads wizard-only `LIGHTRAG_SETUP_*_DEPLOYMENT`
-metadata from `.env` so each database's Docker prompt defaults to the previously
-selected deployment mode. Most databases currently use `docker` as the only
-persisted deployment marker. MongoDB can additionally use `atlas-capable` when
-`LIGHTRAG_VECTOR_STORAGE=MongoVectorDBStorage`.
-
-MongoDB has one special rule: when vector storage is set to
-`MongoVectorDBStorage`, the wizard does **not** offer the local Docker MongoDB
-service. Instead, it prints an explanation and asks for a `MONGO_URI` that
-points to a MongoDB deployment with Atlas Search / Vector Search support. This
-is because the bundled `mongodb` service in `scripts/setup/templates/mongodb.yml`
-is MongoDB Community Edition, which is suitable for KV / graph / doc-status
-storage but not for `MongoVectorDBStorage`.
-
-When Docker storage services are selected, `docker-compose.final.yml` is generated (or updated).
-Any existing vLLM services are detected and preserved in the compose file.
-
-### `make env-server` — Server / Security / SSL
-
-Configures server-level settings. Requires `.env` to exist (run `make env-base` first).
-
-Prompts for:
-
-- Server host and port
-- WebUI title and description
-- Authentication: AUTH_ACCOUNTS, TOKEN_SECRET, TOKEN_EXPIRE_HOURS, LIGHTRAG_API_KEY, WHITELIST_PATHS
-- SSL: certificate and key paths (copied into `./data/certs/` and mounted in the container)
-
-If a compose file already exists, all services are preserved and the `lightrag` container's
-environment overrides are updated to reflect the new port and SSL settings.
-
-### `make env-validate` — Validate Existing `.env`
-
-Reads the current `.env` and reports:
-
-- Missing required keys
-- Invalid runtime combinations such as malformed `AUTH_ACCOUNTS`, missing `TOKEN_SECRET` when
-  auth is enabled, bad URIs, or invalid ports
-- File/path problems such as missing SSL assets
-
-Does not modify any files.
-
-`env-validate` checks whether the configuration is internally consistent and loadable. It does not
-enforce a deployment profile or judge whether the resulting setup is sufficiently hardened for
-internet exposure.
-
-### `make env-security-check` — Audit Existing `.env`
-
-Reads the current `.env` and reports security risks such as:
-
-- No API protection configured (`AUTH_ACCOUNTS` and `LIGHTRAG_API_KEY` both unset)
-- `AUTH_ACCOUNTS` enabled with a missing or default `TOKEN_SECRET`
-- `WHITELIST_PATHS` exposing `/api` routes while account-based auth is enabled
-- Sensitive values that still contain `${...}` interpolation syntax
-
-The command does not modify any files. It exits with a non-zero status when any security issues are
-found, which makes it suitable for CI or pre-deploy checks.
-
-### `make env-backup` — Backup `.env`
-
-Copies `.env` to `.env.bak.<timestamp>`. Safe to run at any time before a re-run.
-
-### `make help` — Script Help
-
-Prints the setup script's built-in `--help` output listing all supported flags and environment
-variables.
-
-## Generated Files
-
-### `.env`
-
-Written to the project root. Contains all runtime configuration for `lightrag-server` and the
-Docker services. The wizard uses `env.example` as a template:
-
-- Active (uncommented) keys in `env.example` provide **default values** used when a key is not
-  already set.
-- Commented keys in `env.example` are activated only when the wizard has a value to write,
-  positioned at the template line whose commented value best matches what is being written.
-
-The wizard does not guarantee that a single `.env` stays valid for both host startup and Docker
-Compose startup forever. Treat `.env` as the runtime configuration produced by the most recent
-wizard run. If you later switch from host execution to Docker Compose, or back again, rerun the
-relevant setup target so `.env` is rewritten for that target runtime.
-
-The generated `.env` includes `LIGHTRAG_RUNTIME_TARGET=host|compose` near the top as wizard
-metadata describing which runtime the current file is meant for.
-
-For storage setup reruns, the wizard may also persist
-`LIGHTRAG_SETUP_*_DEPLOYMENT` metadata. For MongoDB, the meaningful values are:
-
-- `LIGHTRAG_SETUP_MONGODB_DEPLOYMENT=docker`: MongoDB is being provided by the
-  bundled local Docker service managed by the setup wizard.
-- `LIGHTRAG_SETUP_MONGODB_DEPLOYMENT=atlas-capable`: MongoDB is external to the
-  bundled Docker service and is expected to support Atlas Search / Vector
-  Search. This marker is written when `MongoVectorDBStorage` is selected.
-- Unset: MongoDB is not in use, or it is being used via an external non-Docker
-  endpoint for KV / graph / doc-status storage.
-
-When `MongoVectorDBStorage` is selected, `make env-validate` rejects
-`LIGHTRAG_SETUP_MONGODB_DEPLOYMENT=docker` because the bundled community MongoDB
-service does not provide Atlas Search / Vector Search support.
-
-### `docker-compose.final.yml`
-
-Generated by `env-base` or `env-storage` when Docker services are selected. The base
-`docker-compose.yml` is never touched.
-
-Previously generated files named `docker-compose.development.yml`, `docker-compose.production.yml`,
-or `docker-compose.custom.yml` are automatically detected for backwards compatibility; new runs
-write to `docker-compose.final.yml`. If a legacy `.env` still carries `LIGHTRAG_SETUP_PROFILE`,
-the migration step prefers the matching legacy compose file before falling back to the default
-search order.
-
-When a local vLLM service is selected, the compose file includes the overrides needed for the
-containerized `lightrag` service to reach that endpoint from inside Docker. If you later switch
-back to host startup, rerun the relevant setup target so `.env` is rewritten for host execution.
-
-## Image Settings
-
-Bundled service images are defined by the Docker Compose templates in
-`scripts/setup/templates/*.yml`. The modular setup wizards do not prompt for image overrides and
-do not manage image-selection environment variables in `.env`.
-
-When the wizard includes the bundled Redis service, it stages `./data/config/redis.conf` and mounts
-that file into the container. The file is created only if missing, so local edits are preserved on
-later setup reruns.
-
-## Common Workflows
-
-### First-time local development
+**Command**
 
 ```bash
 make env-base
-# Answer: LLM provider, API key, embedding provider
-# docker-compose.final.yml is generated if Docker services are selected
+```
+
+**What the wizard asks**
+
+- LLM provider, model, endpoint, and API key
+- Whether the embedding model should run locally via Docker
+- If embedding stays remote: embedding provider, model, dimension, endpoint, and API key
+- Whether reranking should be enabled
+- If reranking is enabled: whether the rerank service should run locally via Docker
+- If reranking stays remote: rerank provider, model, endpoint, and API key
+
+**What gets written**
+
+- `.env`
+- `docker-compose.final.yml` only if you enabled wizard-managed Docker services
+
+**What to do next**
+
+- If you did not enable wizard-managed Docker services:
+
+```bash
+lightrag-server
+```
+
+- If you enabled wizard-managed Docker services:
+
+```bash
 docker compose -f docker-compose.final.yml up -d
-lightrag-server
 ```
 
-### Local development with local models (no API key)
+## Scenario 2: Local Setup With Docker-Hosted Embedding or Rerank
+
+Use this when you want LightRAG to run local inference services for embedding and/or reranking through Docker.
+
+**Command**
 
 ```bash
 make env-base
-# When prompted "Run embedding model locally via Docker (vLLM)?", answer yes
-# When prompted "Run reranker locally via Docker (vLLM)?", answer yes
-docker compose -f docker-compose.final.yml up -d   # starts vllm-embed + vllm-rerank
-lightrag-server
 ```
 
-### Adding a database backend after initial setup
+**Recommended answers**
+
+- Answer `yes` to `Run embedding model locally via Docker (vLLM)?` if you want local embeddings
+- Answer `yes` to `Enable reranking?` and then `yes` to `Run rerank service locally via Docker?` if you want local reranking
+
+**What the wizard asks after you enable local services**
+
+- Embedding model name for local vLLM
+- Rerank model name for local vLLM
+- Remote LLM details if your main LLM is still external
+
+**What gets written**
+
+- `.env`
+- `docker-compose.final.yml` with the selected local services
+
+**What to do next**
+
+```bash
+docker compose -f docker-compose.final.yml up -d
+```
+
+This starts the generated Docker-based LightRAG stack together with the selected local services.
+
+## Scenario 3: Add Storage After The Base Setup
+
+Use this when you already have `.env` from `make env-base` and now want to switch from default local-file storage to database-backed storage.
+
+**Command**
 
 ```bash
 make env-storage
-# Select PostgreSQL, answer the connection prompts
-# docker-compose.final.yml is updated; existing vLLM services are preserved
+```
+
+**Prerequisite**
+
+- `.env` must already exist
+
+**What the wizard asks**
+
+- KV storage backend
+- Vector storage backend
+- Graph storage backend
+- Doc-status storage backend
+- For each required database, whether it should run locally via Docker
+- For each required database, the needed connection details such as host, URI, port, user, password, database name, or device type
+
+**Important rule**
+
+- If you choose `MongoVectorDBStorage` for vector storage, the wizard does not offer the bundled local Docker MongoDB service. You must provide a MongoDB deployment that supports Atlas Search / Vector Search.
+
+**What gets written**
+
+- `.env`
+- `docker-compose.final.yml` if you selected wizard-managed storage services
+
+**What to do next**
+
+- If you selected Docker-managed storage services:
+
+```bash
 docker compose -f docker-compose.final.yml up -d
 ```
 
-### Production-style deployment with security and SSL
+- If you pointed LightRAG at external databases, make sure those services are reachable before starting LightRAG.
+
+## Scenario 4: Harden A Deployment With Auth And SSL
+
+Use this when you already have `.env` and need to prepare the server for shared or external use.
+
+**Commands**
 
 ```bash
-make env-base
-make env-storage   # configure PostgreSQL + Neo4j
-make env-server    # set auth tokens, SSL certificate paths
+make env-server
 make env-security-check
-docker compose -f docker-compose.final.yml up -d
 ```
 
-### Re-running setup after initial configuration
+**Prerequisite**
 
-```bash
-make env-backup    # save current .env
-make env-base      # re-run; existing .env values are shown as defaults
-```
+- `.env` must already exist
 
-### Validating before deployment
+**What `env-server` asks**
+
+- Server host and port
+- WebUI title and description
+- Summary language
+- Whether to configure authentication and API key settings
+- Auth accounts, JWT secret, token lifetime, API key, and whitelist paths
+- Whether to enable SSL/TLS
+- SSL certificate file path and SSL key file path
+
+**What gets written**
+
+- `.env`
+- `docker-compose.final.yml` may be updated if your current setup already uses wizard-managed Docker services
+
+**What to do next**
+
+- Run `make env-security-check`
+- If the stack uses Docker, recreate the LightRAG service with your compose file
+- If the stack runs on the host, restart `lightrag-server`
+
+For broader deployment guidance, see [DockerDeployment.md](/Users/ydh/mycode/ai/paper-RAG/docs/DockerDeployment.md).
+
+## Validate, Audit, And Backup
+
+These commands do not walk you through a full setup flow, but they are part of normal operations.
+
+### Validate The Current Configuration
 
 ```bash
 make env-validate
+```
+
+Use this when you want to confirm that the current `.env` is internally consistent. It reports problems such as missing required values, malformed auth settings, invalid URIs, invalid ports, or missing SSL files.
+
+### Audit Security Before Exposure
+
+```bash
 make env-security-check
 ```
 
-## Tips
+Use this before exposing LightRAG beyond localhost. It reports risky setups such as missing authentication, weak or missing JWT secrets, unsafe whitelist settings, or unresolved sensitive placeholders.
 
-- Pass `SETUP_OPTS=--debug` to any target for verbose logging: `make env-base SETUP_OPTS=--debug`
-- Set `SETUP_WAIT_TIMEOUT=120` to increase the service startup wait (default 60 s).
-- Set `NO_COLOR=1` to disable colored output in CI or terminals without color support.
-- When exposing PostgreSQL on a custom host port, `.env` keeps `POSTGRES_HOST=localhost` and
-  `POSTGRES_PORT=<host-port>` while the compose file overrides the container to `postgres:5432`.
-- For GPU vLLM services, set `VLLM_EMBED_DEVICE=cuda` / `VLLM_RERANK_DEVICE=cuda`. On reruns, the
-  saved `VLLM_*_DEVICE` value takes precedence over auto-detection so an existing CPU deployment is
-  not silently switched to GPU mode.
-- SSL certificates are copied into `./data/certs/` for Docker use, but `.env` should still be
-  treated as mode-specific output from the latest wizard run rather than a permanent host/compose
-  hybrid configuration.
-- Each wizard can be re-run independently; current `.env` values are loaded as defaults so you
-  only need to change what has actually changed.
+### Create A Standalone Backup
+
+```bash
+make env-backup
+```
+
+Use this when you want a manual backup without running any setup flow.
+
+## Outputs And What They Mean
+
+### `.env`
+
+The wizard writes `.env` in the repository root. This file becomes the current runtime configuration produced by the latest wizard run.
+
+In practice, this means:
+
+- rerunning the wizard updates `.env`
+- existing values are reused as defaults on later runs
+- you should treat `.env` as the active configuration for the workflow you most recently configured
+- before `env-base`, `env-storage`, or `env-server` writes `.env`, the wizard automatically creates a timestamped backup of the existing file when one is present
+
+### `docker-compose.final.yml`
+
+The wizard creates or updates `docker-compose.final.yml` only when you choose wizard-managed Docker services or when an existing wizard-generated compose setup needs to stay aligned with new server settings.
+
+When one of the setup flows is about to replace or remove an existing generated compose file, it automatically creates a timestamped backup first.
+
+Use this file when starting the generated Docker stack:
+
+```bash
+docker compose -f docker-compose.final.yml up -d
+```
+
+The base `docker-compose.yml` remains the general project compose file. The generated `docker-compose.final.yml` is the wizard-managed output.
+
+## Troubleshooting And Advanced Notes
+
+- If `make env-storage` or `make env-server` says `.env` is missing, run `make env-base` first.
+- You do not need to run `make env-backup` before rerunning `env-base`, `env-storage`, or `env-server`; those flows already back up the existing `.env`, and they also back up the generated compose file before changing it.
+- If you need to fully rebuild wizard-managed compose services from the current bundled templates, use `make env-base-rewrite` or `make env-storage-rewrite`.
+- If you switch between host-oriented and Docker-oriented workflows, rerun the relevant setup step instead of trying to manually merge old settings.
+- If the generated stack includes local Milvus, make sure `MINIO_ACCESS_KEY_ID` and `MINIO_SECRET_ACCESS_KEY` are available before running `docker compose -f docker-compose.final.yml up -d`.
+- For Docker deployment details beyond the interactive wizard, see [DockerDeployment.md](/Users/ydh/mycode/ai/paper-RAG/docs/DockerDeployment.md).
+
+## Typical Command Sequences
+
+### Remote models, local server
+
+```bash
+make env-base
+lightrag-server
+```
+
+### Remote LLM, local embedding and rerank in Docker
+
+```bash
+make env-base
+docker compose -f docker-compose.final.yml up -d
+```
+
+### Add storage after the base setup
+
+```bash
+make env-base
+make env-storage
+docker compose -f docker-compose.final.yml up -d
+```
+
+### Add security and SSL before exposure
+
+```bash
+make env-base
+make env-storage
+make env-server
+make env-security-check
+docker compose -f docker-compose.final.yml up -d
+```

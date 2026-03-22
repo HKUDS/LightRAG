@@ -618,7 +618,7 @@ export const queryTextStream = async (
           } catch (refreshError) {
             console.error('Failed to refresh guest token for streaming:', refreshError);
             navigationService.navigateToLogin();
-            throw new Error('Failed to refresh authentication');
+            throw new Error('Failed to refresh authentication', { cause: refreshError });
           }
         }
 
@@ -935,14 +935,13 @@ export const cancelPipeline = async (): Promise<{
 }
 
 export const loginToServer = async (username: string, password: string): Promise<LoginResponse> => {
-  const formData = new FormData();
+  const formData = new URLSearchParams();
   formData.append('username', username);
   formData.append('password', password);
+  formData.append('grant_type', 'password');
 
   const response = await axiosInstance.post('/login', formData, {
-    headers: {
-      'Content-Type': 'multipart/form-data'
-    }
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
   });
 
   return response.data;

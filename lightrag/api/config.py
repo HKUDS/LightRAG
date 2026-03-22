@@ -3,6 +3,7 @@ Configs for the LightRAG API.
 """
 
 import os
+import re
 import argparse
 import logging
 from dotenv import load_dotenv
@@ -461,6 +462,17 @@ def parse_args() -> argparse.Namespace:
     ollama_server_infos.LIGHTRAG_NAME = args.simulated_model_name
     ollama_server_infos.LIGHTRAG_TAG = args.simulated_model_tag
 
+    # Sanitize workspace: only alphanumeric characters and underscores are allowed
+    if args.workspace:
+        sanitized = re.sub(r"[^a-zA-Z0-9_]", "_", args.workspace)
+        if sanitized != args.workspace:
+            logging.warning(
+                f"Workspace name '{args.workspace}' contains invalid characters. "
+                f"It has been sanitized to '{sanitized}'. "
+                "Only alphanumeric characters and underscores are allowed."
+            )
+            args.workspace = sanitized
+
     return args
 
 
@@ -470,7 +482,7 @@ def update_uvicorn_mode_config():
         original_workers = global_args.workers
         global_args.workers = 1
         # Log warning directly here
-        logging.warning(
+        logging.debug(
             f">> Forcing workers=1 in uvicorn mode(Ignoring workers={original_workers})"
         )
 

@@ -115,8 +115,7 @@ make env-server         # Optional: server port, auth, and SSL
 make env-security-check # Optional: audit the current .env for security risks
 ```
 
-For a full description of every target and what each flow does, see
-[docs/InteractiveSetup.md](../../docs/InteractiveSetup.md).
+For a full description of every target and what each flow does, see [docs/InteractiveSetup.md](../../docs/InteractiveSetup.md).
 The setup wizards update configuration only; run `make env-security-check` separately to audit the
 current `.env` for security risks before deployment.
 
@@ -260,8 +259,9 @@ The command-line `workspace` argument and the `WORKSPACE` environment variable i
 - **For Qdrant vector database, data isolation is achieved through payload-based partitioning (Qdrant's recommended multitenancy approach):** `QdrantVectorDBStorage` uses shared collections with payload filtering for unlimited workspace scalability.
 - **For relational databases, data isolation is achieved by adding a `workspace` field to the tables for logical data separation:** `PGKVStorage`, `PGVectorStorage`, `PGDocStatusStorage`.
 - **For graph databases, logical data isolation is achieved through labels:** `Neo4JStorage`, `MemgraphStorage`
+- **For OpenSearch, data isolation is achieved through index name prefixes:** `OpenSearchKVStorage`, `OpenSearchDocStatusStorage`, `OpenSearchGraphStorage`, `OpenSearchVectorDBStorage`
 
-To maintain compatibility with legacy data, the default workspace for PostgreSQL is `default` and for Neo4j is `base` when no workspace is configured. For all external storages, the system provides dedicated workspace environment variables to override the common `WORKSPACE` environment variable configuration. These storage-specific workspace environment variables are: `REDIS_WORKSPACE`, `MILVUS_WORKSPACE`, `QDRANT_WORKSPACE`, `MONGODB_WORKSPACE`, `POSTGRES_WORKSPACE`, `NEO4J_WORKSPACE`, `MEMGRAPH_WORKSPACE`.
+To maintain compatibility with legacy data, the default workspace for PostgreSQL is `default` and for Neo4j is `base` when no workspace is configured. For all external storages, the system provides dedicated workspace environment variables to override the common `WORKSPACE` environment variable configuration. These storage-specific workspace environment variables are: `REDIS_WORKSPACE`, `MILVUS_WORKSPACE`, `QDRANT_WORKSPACE`, `MONGODB_WORKSPACE`, `POSTGRES_WORKSPACE`, `NEO4J_WORKSPACE`, `MEMGRAPH_WORKSPACE`, `OPENSEARCH_WORKSPACE`.
 
 ### Multiple workers for Gunicorn + Uvicorn
 
@@ -380,10 +380,18 @@ LightRAG API Server implements JWT-based authentication using the HS256 algorith
 
 ```bash
 # For jwt auth
-AUTH_ACCOUNTS='admin:admin123,user1:pass456'
+AUTH_ACCOUNTS='admin:{bcrypt}$2b$12$replace-with-generated-hash,user1:pass456'
 TOKEN_SECRET='your-key'
 TOKEN_EXPIRE_HOURS=4
 ```
+
+Passwords without a prefix are treated as plaintext. To store a bcrypt password, prefix the generated hash with `{bcrypt}`. The easiest way to generate a value that can be pasted directly into `AUTH_ACCOUNTS` is:
+
+```bash
+lightrag-hash-password --username admin
+```
+
+The command prompts for the password and prints an `admin:{bcrypt}...` entry ready to paste into `.env`.
 
 > Currently, only the configuration of an administrator account and password is supported. A comprehensive account system is yet to be developed and implemented.
 
@@ -642,7 +650,7 @@ EMBEDDING_BINDING=ollama
 EMBEDDING_BINDING_HOST=http://localhost:11434
 
 ### For JWT Auth
-# AUTH_ACCOUNTS='admin:admin123,user1:pass456'
+# AUTH_ACCOUNTS='admin:{bcrypt}$2b$12$replace-with-generated-hash,user1:pass456'
 # TOKEN_SECRET=your-key-for-LightRAG-API-Server-xxx
 # TOKEN_EXPIRE_HOURS=48
 

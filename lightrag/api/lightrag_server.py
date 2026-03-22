@@ -10,6 +10,7 @@ from fastapi.openapi.docs import (
     get_swagger_ui_oauth2_redirect_html,
 )
 import os
+import re
 import logging
 import logging.config
 import sys
@@ -478,6 +479,14 @@ def create_app(args):
 
         if not workspace:
             workspace = None
+        else:
+            sanitized = re.sub(r"[^a-zA-Z0-9_]", "_", workspace)
+            if sanitized != workspace:
+                logger.warning(
+                    f"Workspace header '{workspace}' contains invalid characters. "
+                    f"Sanitized to '{sanitized}'."
+                )
+                workspace = sanitized
 
         return workspace
 
@@ -1181,7 +1190,7 @@ def create_app(args):
                 "webui_description": webui_description,
             }
         username = form_data.username
-        if auth_handler.accounts.get(username) != form_data.password:
+        if not auth_handler.verify_password(username, form_data.password):
             raise HTTPException(status_code=401, detail="Incorrect credentials")
 
         # Regular user login

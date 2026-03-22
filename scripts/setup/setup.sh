@@ -14,15 +14,18 @@ TEMPLATES_DIR="$SCRIPT_DIR/templates"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 declare -A ENV_VALUES
+declare -A ORIGINAL_ENV_VALUES
 declare -A COMPOSE_ENV_OVERRIDES
+declare -A COMPOSE_REWRITE_SERVICE_SET
 declare -A REQUIRED_DB_TYPES
 declare -A DOCKER_SERVICE_SET
+declare -A EXISTING_MANAGED_ROOT_SERVICE_SET
 declare -a DOCKER_SERVICES
 SSL_CERT_SOURCE_PATH=""
 SSL_KEY_SOURCE_PATH=""
-DEPLOYMENT_TYPE=""
 LIGHTRAG_COMPOSE_SERVER_PORT_MAPPING=""
 NORMALIZED_SERVER_HOST_FOR_COMPOSE=""
+FORCE_REWRITE_COMPOSE="no"
 DEBUG="${DEBUG:-false}"
 
 PRESET_VLLM_EMBEDDING=(
@@ -57,10 +60,11 @@ STORAGE_SERVICES=(
   "milvus"
   "qdrant"
   "memgraph"
+  "opensearch"
 )
 DEFAULT_RUNTIME_TARGET="host"
-
-WAIT_TIMEOUT="${SETUP_WAIT_TIMEOUT:-90}"
+COMPOSE_LIGHTRAG_WORKING_DIR="/app/data/rag_storage"
+COMPOSE_LIGHTRAG_INPUT_DIR="/app/data/inputs"
 # shellcheck disable=SC2034
 COLOR_RESET=""
 COLOR_BOLD=""
@@ -95,13 +99,15 @@ init_colors() {
 
 reset_state() {
   ENV_VALUES=()
+  ORIGINAL_ENV_VALUES=()
   COMPOSE_ENV_OVERRIDES=()
+  COMPOSE_REWRITE_SERVICE_SET=()
   REQUIRED_DB_TYPES=()
   DOCKER_SERVICE_SET=()
+  EXISTING_MANAGED_ROOT_SERVICE_SET=()
   DOCKER_SERVICES=()
   SSL_CERT_SOURCE_PATH=""
   SSL_KEY_SOURCE_PATH=""
-  DEPLOYMENT_TYPE=""
   LIGHTRAG_COMPOSE_SERVER_PORT_MAPPING=""
   NORMALIZED_SERVER_HOST_FOR_COMPOSE=""
 }
@@ -137,6 +143,12 @@ clear_deprecated_vllm_dtype_state() {
   unset 'ENV_VALUES[VLLM_RERANK_DTYPE]'
 }
 
+normalize_vllm_rerank_binding_state() {
+  if [[ "${ENV_VALUES[LIGHTRAG_SETUP_RERANK_PROVIDER]:-}" == "vllm" ]]; then
+    ENV_VALUES["RERANK_BINDING"]="cohere"
+  fi
+}
+
 load_existing_env_if_present() {
   local env_file="${REPO_ROOT}/.env"
 
@@ -144,34 +156,22 @@ load_existing_env_if_present() {
     log_debug "Loading existing .env defaults from $env_file"
     load_env_file "$env_file"
     clear_deprecated_vllm_dtype_state
+    normalize_vllm_rerank_binding_state
     if [[ "${ENV_VALUES[SSL]:-false}" == "true" ]]; then
       SSL_CERT_SOURCE_PATH="${ENV_VALUES[SSL_CERTFILE]:-}"
       SSL_KEY_SOURCE_PATH="${ENV_VALUES[SSL_KEYFILE]:-}"
     fi
+
+    snapshot_original_env_values
   fi
 }
 
-clear_inherited_ssl_state() {
-  unset 'ENV_VALUES[SSL]'
-  unset 'ENV_VALUES[SSL_CERTFILE]'
-  unset 'ENV_VALUES[SSL_KEYFILE]'
-  SSL_CERT_SOURCE_PATH=""
-  SSL_KEY_SOURCE_PATH=""
-}
-
-reset_quick_start_inherited_state() {
+snapshot_original_env_values() {
   local key
 
-  clear_inherited_ssl_state
-
+  ORIGINAL_ENV_VALUES=()
   for key in "${!ENV_VALUES[@]}"; do
-    case "$key" in
-      HOST|PORT|WEBUI_TITLE|WEBUI_DESCRIPTION|LLM_BINDING_API_KEY|EMBEDDING_BINDING_API_KEY)
-        ;;
-      AUTH_ACCOUNTS|TOKEN_SECRET|TOKEN_EXPIRE_HOURS|GUEST_TOKEN_EXPIRE_HOURS|JWT_ALGORITHM|TOKEN_AUTO_RENEW|TOKEN_RENEW_THRESHOLD|LIGHTRAG_API_KEY|WHITELIST_PATHS|LANGFUSE_*|CUDA_VISIBLE_DEVICES|NVIDIA_VISIBLE_DEVICES|NVIDIA_DRIVER_CAPABILITIES)
-        unset "ENV_VALUES[$key]"
-        ;;
-    esac
+    ORIGINAL_ENV_VALUES["$key"]="${ENV_VALUES[$key]}"
   done
 }
 
@@ -312,32 +312,74 @@ normalize_loopback_host_for_compose() {
   printf '%s' "$host"
 }
 
-normalize_server_host_for_compose() {
-  local host="${1:-}"
-  local published_host="$host"
-  local published_port="${ENV_VALUES[PORT]:-9621}"
+normalize_opensearch_hosts_for_compose() {
+  local hosts="$1"
+  local entry=""
+  local trimmed=""
+  local normalized_entry=""
+  local -a raw_entries=()
+  local -a normalized_entries=()
 
-  if [[ -z "$published_host" ]]; then
-    published_host="0.0.0.0"
-  elif [[ "$published_host" == "localhost" ]]; then
-    published_host="127.0.0.1"
-  fi
+  IFS=',' read -r -a raw_entries <<< "$hosts"
+  for entry in "${raw_entries[@]}"; do
+    trimmed="${entry#"${entry%%[![:space:]]*}"}"
+    trimmed="${trimmed%"${trimmed##*[![:space:]]}"}"
+    # OPENSEARCH_HOSTS is intentionally limited to bare host[:port] entries.
+    # TLS is configured separately via OPENSEARCH_USE_SSL, so scheme-bearing
+    # URLs are rejected during validation rather than normalized here.
+    normalized_entry="$trimmed"
 
-  if [[ -z "$published_port" ]]; then
-    published_port="9621"
-  fi
-
-  LIGHTRAG_COMPOSE_SERVER_PORT_MAPPING="${published_host}:${published_port}:9621"
-
-  if [[ -z "${COMPOSE_ENV_OVERRIDES[PORT]+set}" ]]; then
-    if [[ "$published_port" != "9621" ]]; then
-      set_compose_override "PORT" "9621"
-    else
-      set_compose_override "PORT" ""
+    if [[ "$trimmed" =~ ^(localhost|127\.0\.0\.1|0\.0\.0\.0)(:[0-9]+)?$ ]]; then
+      normalized_entry="host.docker.internal${BASH_REMATCH[2]}"
     fi
+
+    normalized_entries+=("$normalized_entry")
+  done
+
+  (
+    IFS=','
+    printf '%s' "${normalized_entries[*]}"
+  )
+}
+
+env_value_is_true() {
+  local value="${1:-}"
+
+  case "${value,,}" in
+    true|1|yes)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+normalize_server_host_for_compose() {
+  # Keep the published bind address/port configurable through compose-time
+  # variable expansion, while forcing the container itself to listen on the
+  # internal service defaults.
+  LIGHTRAG_COMPOSE_SERVER_PORT_MAPPING='${HOST:-0.0.0.0}:${PORT:-9621}:9621'
+  NORMALIZED_SERVER_HOST_FOR_COMPOSE="0.0.0.0"
+}
+
+host_cuda_available() {
+  command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi >/dev/null 2>&1
+}
+
+resolve_local_device_default() {
+  local configured_device="${1:-}"
+
+  if [[ "$configured_device" == "cpu" || "$configured_device" == "cuda" ]]; then
+    printf '%s' "$configured_device"
+    return 0
   fi
 
-  NORMALIZED_SERVER_HOST_FOR_COMPOSE="0.0.0.0"
+  if host_cuda_available; then
+    printf 'cuda'
+  else
+    printf 'cpu'
+  fi
 }
 
 default_loopback_url() {
@@ -393,9 +435,61 @@ set_compose_override() {
   fi
 }
 
+set_managed_service_compose_overrides() {
+  local root_service="$1"
+
+  case "$root_service" in
+    postgres)
+      if [[ -z "${COMPOSE_ENV_OVERRIDES[POSTGRES_HOST]+set}" ]]; then
+        set_compose_override "POSTGRES_HOST" "postgres"
+      fi
+      # The bundled postgres compose service always listens on 5432 internally.
+      if [[ -z "${COMPOSE_ENV_OVERRIDES[POSTGRES_PORT]+set}" ]]; then
+        set_compose_override "POSTGRES_PORT" "5432"
+      fi
+      ;;
+    neo4j)
+      if [[ -z "${COMPOSE_ENV_OVERRIDES[NEO4J_URI]+set}" ]]; then
+        set_compose_override "NEO4J_URI" "neo4j://neo4j:7687"
+      fi
+      ;;
+    mongodb)
+      if [[ -z "${COMPOSE_ENV_OVERRIDES[MONGO_URI]+set}" ]]; then
+        set_compose_override "MONGO_URI" "mongodb://mongodb:27017/"
+      fi
+      ;;
+    redis)
+      if [[ -z "${COMPOSE_ENV_OVERRIDES[REDIS_URI]+set}" ]]; then
+        set_compose_override "REDIS_URI" "redis://redis:6379"
+      fi
+      ;;
+    milvus)
+      if [[ -z "${COMPOSE_ENV_OVERRIDES[MILVUS_URI]+set}" ]]; then
+        set_compose_override "MILVUS_URI" "http://milvus:19530"
+      fi
+      ;;
+    qdrant)
+      if [[ -z "${COMPOSE_ENV_OVERRIDES[QDRANT_URL]+set}" ]]; then
+        set_compose_override "QDRANT_URL" "http://qdrant:6333"
+      fi
+      ;;
+    memgraph)
+      if [[ -z "${COMPOSE_ENV_OVERRIDES[MEMGRAPH_URI]+set}" ]]; then
+        set_compose_override "MEMGRAPH_URI" "bolt://memgraph:7687"
+      fi
+      ;;
+    opensearch)
+      if [[ -z "${COMPOSE_ENV_OVERRIDES[OPENSEARCH_HOSTS]+set}" ]]; then
+        set_compose_override "OPENSEARCH_HOSTS" "opensearch:9200"
+      fi
+      ;;
+  esac
+}
+
 prepare_compose_runtime_overrides() {
   local normalized_value
   local key
+  local root_service
 
   # EMBEDDING_BINDING_HOST: when vllm-embed is part of this compose, the LightRAG
   # container must reach it by Docker service name, not by a loopback address.
@@ -427,6 +521,12 @@ prepare_compose_runtime_overrides() {
     fi
   fi
 
+  for root_service in postgres neo4j mongodb redis milvus qdrant memgraph opensearch; do
+    if [[ -n "${DOCKER_SERVICE_SET[$root_service]+set}" ]]; then
+      set_managed_service_compose_overrides "$root_service"
+    fi
+  done
+
   for key in \
     "LLM_BINDING_HOST" \
     "REDIS_URI" \
@@ -446,6 +546,18 @@ prepare_compose_runtime_overrides() {
     fi
   done
 
+  for key in "OPENSEARCH_HOSTS"; do
+    if [[ -n "${COMPOSE_ENV_OVERRIDES[$key]+set}" ]]; then
+      continue
+    fi
+    if [[ -n "${ENV_VALUES[$key]:-}" ]]; then
+      normalized_value="$(normalize_opensearch_hosts_for_compose "${ENV_VALUES[$key]}")"
+      if [[ "$normalized_value" != "${ENV_VALUES[$key]}" ]]; then
+        set_compose_override "$key" "$normalized_value"
+      fi
+    fi
+  done
+
   for key in "POSTGRES_HOST"; do
     if [[ -n "${COMPOSE_ENV_OVERRIDES[$key]+set}" ]]; then
       continue
@@ -458,13 +570,10 @@ prepare_compose_runtime_overrides() {
     fi
   done
 
-  if [[ -n "${ENV_VALUES[HOST]:-}" || -n "${ENV_VALUES[PORT]:-}" ]]; then
-    normalize_server_host_for_compose "${ENV_VALUES[HOST]:-0.0.0.0}"
-    normalized_value="$NORMALIZED_SERVER_HOST_FOR_COMPOSE"
-    if [[ -z "${COMPOSE_ENV_OVERRIDES[HOST]+set}" && "$normalized_value" != "${ENV_VALUES[HOST]:-0.0.0.0}" ]]; then
-      set_compose_override "HOST" "$normalized_value"
-    fi
-  fi
+  normalize_server_host_for_compose "${ENV_VALUES[HOST]:-0.0.0.0}"
+  normalized_value="$NORMALIZED_SERVER_HOST_FOR_COMPOSE"
+  set_compose_override "HOST" "$normalized_value"
+  set_compose_override "PORT" "9621"
 }
 
 prepare_compose_ssl_overrides() {
@@ -482,7 +591,16 @@ prepare_compose_ssl_overrides() {
   fi
 }
 
+prepare_compose_data_path_overrides() {
+  # Compose mounts always bind the data directories into these container paths.
+  # Force lightrag to use them so values from the mounted .env cannot redirect
+  # storage into a different location.
+  set_compose_override "WORKING_DIR" "$COMPOSE_LIGHTRAG_WORKING_DIR"
+  set_compose_override "INPUT_DIR" "$COMPOSE_LIGHTRAG_INPUT_DIR"
+}
+
 prepare_compose_env_overrides() {
+  prepare_compose_data_path_overrides
   prepare_compose_runtime_overrides
   prepare_compose_ssl_overrides
 }
@@ -496,9 +614,305 @@ add_docker_service() {
   fi
 }
 
-select_deployment_type() {
-  local options=("development" "production" "custom")
-  prompt_choice "Deployment type" "development" "${options[@]}"
+restore_storage_docker_services_from_env() {
+  local db_type
+  local marker_key=""
+  local service_name=""
+  local db_types=("postgresql" "neo4j" "mongodb" "redis" "milvus" "qdrant" "memgraph" "opensearch")
+
+  for db_type in "${db_types[@]}"; do
+    marker_key="$(storage_deployment_marker_key "$db_type")"
+    if [[ -n "$marker_key" && "${ENV_VALUES[$marker_key]:-}" == "docker" ]]; then
+      service_name="$(storage_service_name_for_db_type "$db_type")"
+      if [[ -n "$service_name" ]]; then
+        add_docker_service "$service_name"
+      fi
+    fi
+  done
+}
+
+restore_vllm_docker_services_from_env() {
+  if [[ "${ENV_VALUES[LIGHTRAG_SETUP_EMBEDDING_PROVIDER]:-}" == "vllm" ]]; then
+    add_docker_service "vllm-embed"
+  fi
+
+  if [[ "${ENV_VALUES[LIGHTRAG_SETUP_RERANK_PROVIDER]:-}" == "vllm" ]]; then
+    add_docker_service "vllm-rerank"
+  fi
+}
+
+compose_has_non_wizard_services() {
+  local compose_file="$1"
+  local service_name=""
+
+  if [[ -z "$compose_file" || ! -f "$compose_file" ]]; then
+    return 1
+  fi
+
+  while IFS= read -r service_name; do
+    if [[ -z "$(_managed_service_root_name "$service_name")" ]]; then
+      return 0
+    fi
+  done < <(detect_compose_services "$compose_file")
+
+  return 1
+}
+
+resolve_compose_output_action() {
+  local existing_compose="$1"
+  local -n action_ref="$2"
+  local -n runtime_target_ref="$3"
+  local -n host_hint_ref="$4"
+  local current_target="${ENV_VALUES[LIGHTRAG_RUNTIME_TARGET]:-$DEFAULT_RUNTIME_TARGET}"
+
+  action_ref="write_env_only"
+  runtime_target_ref="$DEFAULT_RUNTIME_TARGET"
+  host_hint_ref="no"
+
+  if ((${#DOCKER_SERVICES[@]} > 0)); then
+    action_ref="rewrite_compose"
+    runtime_target_ref="compose"
+    return 0
+  fi
+
+  if compose_has_non_wizard_services "$existing_compose"; then
+    action_ref="rewrite_compose"
+    runtime_target_ref="compose"
+    return 0
+  fi
+
+  if [[ -n "$existing_compose" ]]; then
+    if confirm_default_no "All wizard-managed services have been removed. Remove LightRAG from Docker and switch to host mode?"; then
+      action_ref="delete_compose_and_switch_host"
+      runtime_target_ref="host"
+      host_hint_ref="yes"
+    else
+      action_ref="rewrite_compose"
+      runtime_target_ref="compose"
+    fi
+    return 0
+  fi
+
+  if [[ "$current_target" == "compose" ]]; then
+    if confirm_default_yes "Run LightRAG Server via Docker?"; then
+      action_ref="rewrite_compose"
+      runtime_target_ref="compose"
+    else
+      host_hint_ref="yes"
+    fi
+  else
+    if confirm_default_no "Run LightRAG Server via Docker?"; then
+      action_ref="rewrite_compose"
+      runtime_target_ref="compose"
+    else
+      host_hint_ref="yes"
+    fi
+  fi
+}
+
+mark_compose_service_for_rewrite() {
+  local service="$1"
+  local root_service=""
+
+  root_service="$(_managed_service_root_name "$service")"
+  if [[ -n "$root_service" ]]; then
+    COMPOSE_REWRITE_SERVICE_SET["$root_service"]=1
+  fi
+}
+
+record_existing_managed_root_services() {
+  local compose_file="$1"
+  local service_name
+  local root_service
+
+  EXISTING_MANAGED_ROOT_SERVICE_SET=()
+
+  if [[ -z "$compose_file" || ! -f "$compose_file" ]]; then
+    return 0
+  fi
+
+  while IFS= read -r service_name; do
+    root_service="$(_managed_service_root_name "$service_name")"
+    if [[ -n "$root_service" ]]; then
+      EXISTING_MANAGED_ROOT_SERVICE_SET["$root_service"]=1
+    fi
+  done < <(detect_managed_root_services "$compose_file")
+}
+
+backup_existing_compose_if_generating() {
+  local generate_compose="${1:-no}"
+  local existing_compose="${2:-}"
+  local compose_backup_path=""
+
+  if [[ "$generate_compose" != "yes" ]]; then
+    return 0
+  fi
+
+  compose_backup_path="$(backup_compose_file "$existing_compose")" || return 1
+  if [[ -n "$compose_backup_path" ]]; then
+    log_success "Backed up existing compose file to $compose_backup_path"
+  fi
+}
+
+backup_existing_compose_for_action() {
+  local compose_action="${1:-write_env_only}"
+  local existing_compose="${2:-}"
+  local compose_backup_path=""
+
+  case "$compose_action" in
+    rewrite_compose|delete_compose_and_switch_host)
+      ;;
+    *)
+      return 0
+      ;;
+  esac
+
+  compose_backup_path="$(backup_compose_file "$existing_compose")" || return 1
+  if [[ -n "$compose_backup_path" ]]; then
+    log_success "Backed up existing compose file to $compose_backup_path"
+  fi
+}
+
+remove_existing_compose_file() {
+  local compose_file="${1:-}"
+
+  if [[ -z "$compose_file" || ! -f "$compose_file" ]]; then
+    return 0
+  fi
+
+  if ! rm "$compose_file"; then
+    format_error "Failed to remove ${compose_file}" \
+      "Check file permissions, then remove the compose file manually or rerun setup."
+    return 1
+  fi
+
+  log_success "Removed ${compose_file}"
+}
+
+existing_managed_root_service_present() {
+  local root_service="$1"
+
+  [[ -n "${EXISTING_MANAGED_ROOT_SERVICE_SET[$root_service]+set}" ]]
+}
+
+env_value_changed_from_original() {
+  local key="$1"
+  local missing_marker="__LIGHTRAG_MISSING__"
+  local current_value="${ENV_VALUES[$key]-$missing_marker}"
+  local original_value="${ORIGINAL_ENV_VALUES[$key]-$missing_marker}"
+
+  [[ "$current_value" != "$original_value" ]]
+}
+
+any_env_value_changed_from_original() {
+  local key
+
+  for key in "$@"; do
+    if env_value_changed_from_original "$key"; then
+      return 0
+    fi
+  done
+
+  return 1
+}
+
+compose_template_variant_for_service() {
+  local service="$1"
+  local snapshot="${2:-current}"
+  local device=""
+
+  case "$service" in
+    milvus)
+      if [[ "$snapshot" == "original" ]]; then
+        device="${ORIGINAL_ENV_VALUES[MILVUS_DEVICE]:-cpu}"
+      else
+        device="${ENV_VALUES[MILVUS_DEVICE]:-cpu}"
+      fi
+      ;;
+    qdrant)
+      if [[ "$snapshot" == "original" ]]; then
+        device="${ORIGINAL_ENV_VALUES[QDRANT_DEVICE]:-cpu}"
+      else
+        device="${ENV_VALUES[QDRANT_DEVICE]:-cpu}"
+      fi
+      ;;
+    vllm-embed)
+      if [[ "$snapshot" == "original" ]]; then
+        device="${ORIGINAL_ENV_VALUES[VLLM_EMBED_DEVICE]:-cpu}"
+      else
+        device="${ENV_VALUES[VLLM_EMBED_DEVICE]:-cpu}"
+      fi
+      ;;
+    vllm-rerank)
+      if [[ "$snapshot" == "original" ]]; then
+        device="${ORIGINAL_ENV_VALUES[VLLM_RERANK_DEVICE]:-cpu}"
+      else
+        device="${ENV_VALUES[VLLM_RERANK_DEVICE]:-cpu}"
+      fi
+      ;;
+    *)
+      printf 'default'
+      return 0
+      ;;
+  esac
+
+  if [[ "$device" == "cuda" ]]; then
+    printf 'gpu'
+  else
+    printf 'cpu'
+  fi
+}
+
+configure_base_compose_rewrites() {
+  if [[ "$FORCE_REWRITE_COMPOSE" == "yes" ]]; then
+    return 0
+  fi
+
+  if existing_managed_root_service_present "vllm-embed" && \
+    [[ -n "${DOCKER_SERVICE_SET[vllm-embed]+set}" ]] && \
+    [[ "$(compose_template_variant_for_service "vllm-embed" "current")" != \
+      "$(compose_template_variant_for_service "vllm-embed" "original")" ]]; then
+    mark_compose_service_for_rewrite "vllm-embed"
+  fi
+
+  if existing_managed_root_service_present "vllm-rerank" && \
+    [[ -n "${DOCKER_SERVICE_SET[vllm-rerank]+set}" ]] && \
+    [[ "$(compose_template_variant_for_service "vllm-rerank" "current")" != \
+      "$(compose_template_variant_for_service "vllm-rerank" "original")" ]]; then
+    mark_compose_service_for_rewrite "vllm-rerank"
+  fi
+}
+
+configure_storage_compose_rewrites() {
+  if [[ "$FORCE_REWRITE_COMPOSE" == "yes" ]]; then
+    return 0
+  fi
+
+  if existing_managed_root_service_present "postgres" && \
+    [[ -n "${DOCKER_SERVICE_SET[postgres]+set}" ]] && \
+    any_env_value_changed_from_original "POSTGRES_USER" "POSTGRES_PASSWORD" "POSTGRES_DATABASE"; then
+    mark_compose_service_for_rewrite "postgres"
+  fi
+
+  if existing_managed_root_service_present "neo4j" && \
+    [[ -n "${DOCKER_SERVICE_SET[neo4j]+set}" ]] && \
+    any_env_value_changed_from_original "NEO4J_DATABASE"; then
+    mark_compose_service_for_rewrite "neo4j"
+  fi
+
+  if existing_managed_root_service_present "milvus" && \
+    [[ -n "${DOCKER_SERVICE_SET[milvus]+set}" ]] && \
+    [[ "$(compose_template_variant_for_service "milvus" "current")" != \
+      "$(compose_template_variant_for_service "milvus" "original")" ]]; then
+    mark_compose_service_for_rewrite "milvus"
+  fi
+
+  if existing_managed_root_service_present "qdrant" && \
+    [[ -n "${DOCKER_SERVICE_SET[qdrant]+set}" ]] && \
+    [[ "$(compose_template_variant_for_service "qdrant" "current")" != \
+      "$(compose_template_variant_for_service "qdrant" "original")" ]]; then
+    mark_compose_service_for_rewrite "qdrant"
+  fi
 }
 
 select_storage_backends() {
@@ -564,7 +978,7 @@ storage_service_name_for_db_type() {
     postgresql)
       printf 'postgres'
       ;;
-    neo4j|mongodb|redis|milvus|qdrant|memgraph)
+    neo4j|mongodb|redis|milvus|qdrant|memgraph|opensearch)
       printf '%s' "$db_type"
       ;;
     *)
@@ -597,6 +1011,9 @@ storage_deployment_marker_key() {
       ;;
     memgraph)
       printf 'LIGHTRAG_SETUP_MEMGRAPH_DEPLOYMENT'
+      ;;
+    opensearch)
+      printf 'LIGHTRAG_SETUP_OPENSEARCH_DEPLOYMENT'
       ;;
     *)
       printf ''
@@ -642,7 +1059,7 @@ persist_storage_deployment_choice() {
 clear_unused_storage_deployment_markers() {
   local db_type
 
-  for db_type in postgresql neo4j mongodb redis milvus qdrant memgraph; do
+  for db_type in postgresql neo4j mongodb redis milvus qdrant memgraph opensearch; do
     if [[ -z "${REQUIRED_DB_TYPES[$db_type]+set}" ]]; then
       persist_storage_deployment_choice "$db_type" "no"
     fi
@@ -654,6 +1071,15 @@ collect_database_config() {
   local default_docker="${2:-no}"
   local service_name=""
   local deployment_mode="no"
+
+  # Storage collector rule for this wizard:
+  # - Existing ENV_VALUES loaded from .env are user-owned configuration.
+  # - Collectors should use those values as defaults and preserve them when they
+  #   are already set, even for Docker-managed services.
+  # - A collector may normalize the stored form, or write a hard default only
+  #   when the key is absent.
+  # Keep future storage collectors aligned with this behavior so rerunning the
+  # wizard does not silently erase explicit .env overrides.
 
   case "$db_type" in
     postgresql)
@@ -677,6 +1103,9 @@ collect_database_config() {
     memgraph)
       collect_memgraph_config "$default_docker"
       ;;
+    opensearch)
+      collect_opensearch_config "$default_docker"
+      ;;
     *)
       echo "Unknown database type: $db_type" >&2
       return 1
@@ -686,8 +1115,6 @@ collect_database_config() {
   service_name="$(storage_service_name_for_db_type "$db_type")"
   if [[ -n "$service_name" && -n "${DOCKER_SERVICE_SET[$service_name]+set}" ]]; then
     deployment_mode="docker"
-  elif [[ "$db_type" == "mongodb" && "${ENV_VALUES[LIGHTRAG_VECTOR_STORAGE]:-}" == "MongoVectorDBStorage" ]]; then
-    deployment_mode="atlas-capable"
   fi
   persist_storage_deployment_choice "$db_type" "$deployment_mode"
 }
@@ -695,7 +1122,8 @@ collect_database_config() {
 collect_postgres_config() {
   local default_docker="${1:-no}"
   local use_docker="no"
-  local host port user password database host_port=""
+  local host port user password database
+  local existing_user="" existing_password="" existing_database=""
 
   if [[ "$default_docker" == "yes" ]]; then
     if confirm_default_yes "Run PostgreSQL locally via Docker?"; then
@@ -721,9 +1149,7 @@ collect_postgres_config() {
 
   host="$(prompt_with_default "PostgreSQL host" "$host")"
   if [[ "$use_docker" == "yes" ]]; then
-    host_port="$(prompt_until_valid "PostgreSQL host port" "${ENV_VALUES[POSTGRES_HOST_PORT]:-${ENV_VALUES[POSTGRES_PORT]:-5432}}" validate_port)"
-    port="$host_port"
-    ENV_VALUES["POSTGRES_HOST_PORT"]="$host_port"
+    port="5432"
     set_compose_override "POSTGRES_HOST" "postgres"
     set_compose_override "POSTGRES_PORT" "5432"
   else
@@ -731,9 +1157,22 @@ collect_postgres_config() {
     set_compose_override "POSTGRES_HOST" ""
     set_compose_override "POSTGRES_PORT" ""
   fi
-  user="$(prompt_with_default "PostgreSQL user" "${ENV_VALUES[POSTGRES_USER]:-rag}")"
-  password="$(prompt_secret_with_default "PostgreSQL password: " "${ENV_VALUES[POSTGRES_PASSWORD]:-rag}")"
-  database="$(prompt_with_default "PostgreSQL database" "${ENV_VALUES[POSTGRES_DATABASE]:-lightrag}")"
+
+  existing_user="${ORIGINAL_ENV_VALUES[POSTGRES_USER]-${ENV_VALUES[POSTGRES_USER]:-}}"
+  existing_password="${ORIGINAL_ENV_VALUES[POSTGRES_PASSWORD]-${ENV_VALUES[POSTGRES_PASSWORD]:-}}"
+  existing_database="${ORIGINAL_ENV_VALUES[POSTGRES_DATABASE]-${ENV_VALUES[POSTGRES_DATABASE]:-}}"
+  if [[ "$use_docker" == "yes" && -z "$existing_user" && -z "$existing_password" ]]; then
+    user="rag"
+    password="rag"
+  else
+    user="$(prompt_with_default "PostgreSQL user" "${existing_user:-rag}")"
+    password="$(prompt_secret_with_default "PostgreSQL password: " "${existing_password:-rag}")"
+  fi
+  if [[ "$use_docker" == "yes" && -z "$existing_database" ]]; then
+    database="rag"
+  else
+    database="$(prompt_with_default "PostgreSQL database" "${existing_database:-lightrag}")"
+  fi
 
   ENV_VALUES["POSTGRES_HOST"]="$host"
   ENV_VALUES["POSTGRES_PORT"]="$port"
@@ -746,6 +1185,7 @@ collect_neo4j_config() {
   local default_docker="${1:-no}"
   local use_docker="no"
   local uri username password database
+  local existing_username="" existing_password="" existing_database=""
 
   if [[ "$default_docker" == "yes" ]]; then
     if confirm_default_yes "Run Neo4j locally via Docker?"; then
@@ -768,13 +1208,22 @@ collect_neo4j_config() {
   if [[ "$use_docker" == "yes" ]]; then
     uri="$(normalize_neo4j_uri_for_local_service "$uri")"
   fi
+  existing_username="${ORIGINAL_ENV_VALUES[NEO4J_USERNAME]-${ENV_VALUES[NEO4J_USERNAME]:-}}"
+  existing_password="${ORIGINAL_ENV_VALUES[NEO4J_PASSWORD]-${ENV_VALUES[NEO4J_PASSWORD]:-}}"
+  existing_database="${ORIGINAL_ENV_VALUES[NEO4J_DATABASE]-${ENV_VALUES[NEO4J_DATABASE]:-}}"
   if [[ "$use_docker" == "yes" ]]; then
-    username="neo4j"
+    username="$(prompt_until_valid "Neo4j username" "${existing_username:-neo4j}" validate_non_empty)"
+    password="$(prompt_secret_until_valid_with_default "Neo4j password: " "${existing_password:-neo4j_password}" validate_non_empty)"
+    if [[ -n "$existing_database" ]]; then
+      database="$(prompt_with_default "Neo4j database" "$existing_database")"
+    else
+      database="neo4j"
+    fi
   else
-    username="$(prompt_with_default "Neo4j username" "${ENV_VALUES[NEO4J_USERNAME]:-neo4j}")"
+    username="$(prompt_with_default "Neo4j username" "${existing_username:-neo4j}")"
+    password="$(prompt_secret_with_default "Neo4j password: " "${existing_password:-neo4j_password}")"
+    database="$(prompt_with_default "Neo4j database" "${existing_database:-neo4j}")"
   fi
-  password="$(prompt_secret_with_default "Neo4j password: " "${ENV_VALUES[NEO4J_PASSWORD]:-neo4j_password}")"
-  database="$(prompt_with_default "Neo4j database" "${ENV_VALUES[NEO4J_DATABASE]:-neo4j}")"
 
   ENV_VALUES["NEO4J_URI"]="$uri"
   ENV_VALUES["NEO4J_USERNAME"]="$username"
@@ -791,6 +1240,7 @@ collect_mongodb_config() {
   local default_docker="${1:-no}"
   local use_docker="no"
   local uri database
+  local existing_database=""
   local vector_search_required="no"
 
   if [[ "${ENV_VALUES[LIGHTRAG_VECTOR_STORAGE]:-}" == "MongoVectorDBStorage" ]]; then
@@ -801,7 +1251,7 @@ collect_mongodb_config() {
     log_warn "MongoVectorDBStorage cannot use the local Docker MongoDB service from this setup wizard."
     log_warn "Reason: the bundled local Docker MongoDB service is MongoDB Community Edition, but MongoVectorDBStorage requires Atlas Search / Vector Search support."
     log_warn "Provide a MongoDB endpoint that supports Atlas Search / Vector Search, such as MongoDB Atlas or Atlas local."
-    uri="${ENV_VALUES[MONGO_URI]:-mongodb://localhost:27017/}"
+    uri="${ENV_VALUES[MONGO_URI]:-mongodb+srv://cluster.example.mongodb.net/}"
   else
     if [[ "$default_docker" == "yes" ]]; then
       if confirm_default_yes "Run MongoDB locally via Docker?"; then
@@ -829,7 +1279,8 @@ collect_mongodb_config() {
   if [[ "$use_docker" == "yes" ]]; then
     uri="$(normalize_mongodb_uri_for_local_service "$uri")"
   fi
-  database="$(prompt_with_default "MongoDB database" "${ENV_VALUES[MONGO_DATABASE]:-LightRAG}")"
+  existing_database="${ORIGINAL_ENV_VALUES[MONGO_DATABASE]-${ENV_VALUES[MONGO_DATABASE]:-}}"
+  database="$(prompt_with_default "MongoDB database" "${existing_database:-LightRAG}")"
 
   ENV_VALUES["MONGO_URI"]="$uri"
   ENV_VALUES["MONGO_DATABASE"]="$database"
@@ -877,7 +1328,8 @@ collect_redis_config() {
 collect_milvus_config() {
   local default_docker="${1:-no}"
   local use_docker="no"
-  local uri db_name
+  local uri db_name milvus_device=""
+  local existing_db_name="" existing_device=""
 
   if [[ "$default_docker" == "yes" ]]; then
     if confirm_default_yes "Run Milvus locally via Docker?"; then
@@ -897,13 +1349,29 @@ collect_milvus_config() {
   fi
 
   uri="$(prompt_until_valid "Milvus URI" "$uri" validate_uri milvus)"
+  existing_db_name="${ORIGINAL_ENV_VALUES[MILVUS_DB_NAME]-${ENV_VALUES[MILVUS_DB_NAME]:-}}"
+  existing_device="${ORIGINAL_ENV_VALUES[MILVUS_DEVICE]-${ENV_VALUES[MILVUS_DEVICE]:-}}"
   if [[ "$use_docker" == "yes" ]]; then
+    milvus_device="$(resolve_local_device_default "$existing_device")"
+    milvus_device="$(prompt_choice "Milvus device" "$milvus_device" "cpu" "cuda")"
+    if [[ "$milvus_device" == "cuda" ]] && ! host_cuda_available; then
+      log_warn "CUDA device selected for Milvus but no NVIDIA driver detected on host."
+    fi
     uri="$(normalize_milvus_uri_for_local_service "$uri")"
+    if [[ -z "${ENV_VALUES[MINIO_ACCESS_KEY_ID]:-}" ]]; then
+      ENV_VALUES["MINIO_ACCESS_KEY_ID"]="minioadmin"
+    fi
+    if [[ -z "${ENV_VALUES[MINIO_SECRET_ACCESS_KEY]:-}" ]]; then
+      ENV_VALUES["MINIO_SECRET_ACCESS_KEY"]="minioadmin"
+    fi
   fi
-  db_name="$(prompt_with_default "Milvus database name" "${ENV_VALUES[MILVUS_DB_NAME]:-lightrag}")"
+  db_name="$(prompt_with_default "Milvus database name" "${existing_db_name:-lightrag}")"
 
   ENV_VALUES["MILVUS_URI"]="$uri"
   ENV_VALUES["MILVUS_DB_NAME"]="$db_name"
+  if [[ -n "$milvus_device" ]]; then
+    ENV_VALUES["MILVUS_DEVICE"]="$milvus_device"
+  fi
   if [[ "$use_docker" == "yes" ]]; then
     set_compose_override "MILVUS_URI" "http://milvus:19530"
   else
@@ -914,7 +1382,8 @@ collect_milvus_config() {
 collect_qdrant_config() {
   local default_docker="${1:-no}"
   local use_docker="no"
-  local url
+  local url qdrant_device=""
+  local existing_device=""
 
   if [[ "$default_docker" == "yes" ]]; then
     if confirm_default_yes "Run Qdrant locally via Docker?"; then
@@ -934,10 +1403,19 @@ collect_qdrant_config() {
   fi
 
   url="$(prompt_until_valid "Qdrant URL" "$url" validate_uri qdrant)"
+  existing_device="${ORIGINAL_ENV_VALUES[QDRANT_DEVICE]-${ENV_VALUES[QDRANT_DEVICE]:-}}"
   if [[ "$use_docker" == "yes" ]]; then
+    qdrant_device="$(resolve_local_device_default "$existing_device")"
+    qdrant_device="$(prompt_choice "Qdrant device" "$qdrant_device" "cpu" "cuda")"
+    if [[ "$qdrant_device" == "cuda" ]] && ! host_cuda_available; then
+      log_warn "CUDA device selected for Qdrant but no NVIDIA driver detected on host."
+    fi
     url="$(normalize_qdrant_uri_for_local_service "$url")"
   fi
   ENV_VALUES["QDRANT_URL"]="$url"
+  if [[ -n "$qdrant_device" ]]; then
+    ENV_VALUES["QDRANT_DEVICE"]="$qdrant_device"
+  fi
   if [[ "$use_docker" == "yes" ]]; then
     set_compose_override "QDRANT_URL" "http://qdrant:6333"
   else
@@ -976,6 +1454,101 @@ collect_memgraph_config() {
     set_compose_override "MEMGRAPH_URI" "bolt://memgraph:7687"
   else
     set_compose_override "MEMGRAPH_URI" ""
+  fi
+}
+
+collect_opensearch_config() {
+  local default_docker="${1:-no}"
+  local use_docker="no"
+  local hosts user password
+  local existing_user="" existing_password=""
+  local existing_use_ssl="" existing_verify_certs=""
+  local existing_num_shards="" existing_num_replicas=""
+  local use_ssl="true"
+  local verify_certs="false"
+  local use_ssl_default="yes"
+  local verify_certs_default="no"
+
+  if [[ "$default_docker" == "yes" ]]; then
+    if confirm_default_yes "Run OpenSearch locally via Docker?"; then
+      use_docker="yes"
+    fi
+  else
+    if confirm_default_no "Run OpenSearch locally via Docker?"; then
+      use_docker="yes"
+    fi
+  fi
+
+  if [[ "$use_docker" == "yes" ]]; then
+    add_docker_service "opensearch"
+    hosts="$(prefer_local_service_uri "${ENV_VALUES[OPENSEARCH_HOSTS]:-}" "localhost:9200" "opensearch" "localhost" "127.0.0.1" "0.0.0.0")"
+  else
+    hosts="${ENV_VALUES[OPENSEARCH_HOSTS]:-localhost:9200}"
+  fi
+
+  existing_user="${ORIGINAL_ENV_VALUES[OPENSEARCH_USER]-${ENV_VALUES[OPENSEARCH_USER]:-}}"
+  existing_password="${ORIGINAL_ENV_VALUES[OPENSEARCH_PASSWORD]-${ENV_VALUES[OPENSEARCH_PASSWORD]:-}}"
+  existing_use_ssl="${ORIGINAL_ENV_VALUES[OPENSEARCH_USE_SSL]-${ENV_VALUES[OPENSEARCH_USE_SSL]:-}}"
+  existing_verify_certs="${ORIGINAL_ENV_VALUES[OPENSEARCH_VERIFY_CERTS]-${ENV_VALUES[OPENSEARCH_VERIFY_CERTS]:-}}"
+  existing_num_shards="${ORIGINAL_ENV_VALUES[OPENSEARCH_NUMBER_OF_SHARDS]-${ENV_VALUES[OPENSEARCH_NUMBER_OF_SHARDS]:-}}"
+  existing_num_replicas="${ORIGINAL_ENV_VALUES[OPENSEARCH_NUMBER_OF_REPLICAS]-${ENV_VALUES[OPENSEARCH_NUMBER_OF_REPLICAS]:-}}"
+
+  hosts="$(prompt_until_valid "OpenSearch hosts (host:port, comma-separated)" "$hosts" validate_opensearch_hosts_format)"
+  user="$(prompt_with_default "OpenSearch user" "${existing_user:-admin}")"
+  password="$(prompt_secret_until_valid_with_default "OpenSearch password: " "${existing_password:-LightRAG2026_!@}" validate_opensearch_password_strength)"
+
+  if [[ "$use_docker" == "yes" ]]; then
+    if [[ -n "$existing_use_ssl" ]]; then
+      env_value_is_true "$existing_use_ssl" && use_ssl="true" || use_ssl="false"
+    else
+      use_ssl="true"
+    fi
+    verify_certs="false"
+  else
+    if [[ -n "$existing_use_ssl" ]] && ! env_value_is_true "$existing_use_ssl"; then
+      use_ssl_default="no"
+    fi
+
+    if [[ "$use_ssl_default" == "yes" ]]; then
+      confirm_default_yes "Use SSL for OpenSearch?" && use_ssl="true" || use_ssl="false"
+    else
+      confirm_default_no "Use SSL for OpenSearch?" && use_ssl="true" || use_ssl="false"
+    fi
+
+    if [[ "$use_ssl" == "true" ]]; then
+      if [[ -n "$existing_verify_certs" ]] && env_value_is_true "$existing_verify_certs"; then
+        verify_certs_default="yes"
+      fi
+
+      if [[ "$verify_certs_default" == "yes" ]]; then
+        confirm_default_yes "Verify OpenSearch TLS certificates?" && verify_certs="true" || verify_certs="false"
+      else
+        confirm_default_no "Verify OpenSearch TLS certificates?" && verify_certs="true" || verify_certs="false"
+      fi
+    fi
+  fi
+
+  local num_shards num_replicas
+  if [[ "$use_docker" == "yes" ]]; then
+    num_shards="1"
+    num_replicas="0"
+  else
+    num_shards="$(prompt_until_valid "Number of index shards" "${existing_num_shards:-1}" validate_positive_integer)"
+    num_replicas="$(prompt_until_valid "Number of index replicas (use 2 for 3-AZ clusters)" "${existing_num_replicas:-0}" validate_non_negative_integer)"
+  fi
+
+  ENV_VALUES["OPENSEARCH_HOSTS"]="$hosts"
+  ENV_VALUES["OPENSEARCH_USER"]="$user"
+  ENV_VALUES["OPENSEARCH_PASSWORD"]="$password"
+  ENV_VALUES["OPENSEARCH_USE_SSL"]="$use_ssl"
+  ENV_VALUES["OPENSEARCH_VERIFY_CERTS"]="$verify_certs"
+  ENV_VALUES["OPENSEARCH_NUMBER_OF_SHARDS"]="$num_shards"
+  ENV_VALUES["OPENSEARCH_NUMBER_OF_REPLICAS"]="$num_replicas"
+
+  if [[ "$use_docker" == "yes" ]]; then
+    set_compose_override "OPENSEARCH_HOSTS" "opensearch:9200"
+  else
+    set_compose_override "OPENSEARCH_HOSTS" ""
   fi
 }
 
@@ -1257,17 +1830,14 @@ collect_embedding_config() {
 
 collect_rerank_config() {
   # Pass "yes" to skip the "Enable reranking?" prompt (caller already asked it).
-  # The optional second argument can force the Docker choice to "yes" or "no".
+  # The optional second argument is retained for caller compatibility.
   local skip_enable_check="${1:-no}"
-  local docker_choice_override="${2:-prompt}"
-  local options=("cohere" "jina" "aliyun" "vllm")
-  local binding_choice binding model host api_key
-  local vllm_model vllm_port vllm_device vllm_extra
-  local vllm_host_default=""
-  local default_model="" default_host="" model_default="" host_default="" use_docker="no"
+  local _docker_choice_override="${2:-prompt}"
+  local options=("cohere" "jina" "aliyun")
+  local current_binding="${ENV_VALUES[RERANK_BINDING]:-cohere}"
+  local binding model host api_key
+  local default_model="" default_host="" model_default="" host_default=""
   local previous_provider="${ENV_VALUES[LIGHTRAG_SETUP_RERANK_PROVIDER]:-}"
-  local reset_vllm_defaults="no"
-  local rerank_default="${ENV_VALUES[LIGHTRAG_SETUP_RERANK_PROVIDER]:-${ENV_VALUES[RERANK_BINDING]:-cohere}}"
 
   unset 'ENV_VALUES[VLLM_RERANK_DTYPE]'
 
@@ -1291,137 +1861,53 @@ collect_rerank_config() {
     fi
   fi
 
-  if [[ "$rerank_default" == "null" ]]; then
-    rerank_default="cohere"
+  if [[ "$current_binding" == "null" ]]; then
+    current_binding="cohere"
   fi
 
-  binding_choice="$(prompt_choice "Rerank provider" "$rerank_default" "${options[@]}")"
-  if [[ "$binding_choice" != "vllm" && "$previous_provider" == "vllm" ]]; then
-    reset_vllm_defaults="yes"
-  fi
+  binding="$(prompt_choice "Rerank provider" "$current_binding" "${options[@]}")"
+  case "$binding" in
+    cohere)
+      default_model="rerank-v3.5"
+      default_host="https://api.cohere.com/v2/rerank"
+      ;;
+    jina)
+      default_model="jina-reranker-v2-base-multilingual"
+      default_host="https://api.jina.ai/v1/rerank"
+      ;;
+    aliyun)
+      default_model="gte-rerank-v2"
+      default_host="https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank"
+      ;;
+    *)
+      default_model=""
+      default_host=""
+      ;;
+  esac
 
-  if [[ "$binding_choice" == "vllm" ]]; then
-    if [[ "$docker_choice_override" == "yes" || "$docker_choice_override" == "no" ]]; then
-      use_docker="$docker_choice_override"
-    elif confirm_default_yes "Run rerank service locally via Docker?"; then
-      use_docker="yes"
-    fi
-    if [[ "$use_docker" == "yes" ]]; then
-      add_docker_service "vllm-rerank"
-      vllm_model="$(prompt_with_default "vLLM rerank model" "${ENV_VALUES[VLLM_RERANK_MODEL]:-BAAI/bge-reranker-v2-m3}")"
-      vllm_port="$(prompt_until_valid "vLLM rerank port" "${ENV_VALUES[VLLM_RERANK_PORT]:-8000}" validate_port)"
-      vllm_device="$(prompt_choice "vLLM device" "${ENV_VALUES[VLLM_RERANK_DEVICE]:-cpu}" "cpu" "cuda")"
-      if [[ "$vllm_device" == "cuda" ]] && ! command -v nvidia-smi >/dev/null 2>&1; then
-        log_warn "CUDA device selected but no NVIDIA driver detected on host."
-        if confirm_default_yes "Use CPU instead?"; then
-          vllm_device="cpu"
-        fi
-      fi
-      vllm_extra="$(prompt_with_default "vLLM extra args" "${ENV_VALUES[VLLM_RERANK_EXTRA_ARGS]:-}")"
-    fi
-
-    if [[ "$use_docker" == "yes" && "$vllm_device" == "cuda" ]]; then
-      if [[ "${ENV_VALUES[CUDA_VISIBLE_DEVICES]:-}" == "-1" ]]; then
-        unset 'ENV_VALUES[CUDA_VISIBLE_DEVICES]'
-      fi
-      if [[ "${ENV_VALUES[NVIDIA_VISIBLE_DEVICES]:-}" == "-1" ]]; then
-        unset 'ENV_VALUES[NVIDIA_VISIBLE_DEVICES]'
-      fi
-      unset 'ENV_VALUES[VLLM_USE_CPU]'
-    fi
-
-    if [[ "$use_docker" == "yes" ]]; then
-      ENV_VALUES["VLLM_RERANK_MODEL"]="$vllm_model"
-      ENV_VALUES["VLLM_RERANK_PORT"]="$vllm_port"
-      ENV_VALUES["VLLM_RERANK_DEVICE"]="$vllm_device"
-      if [[ -n "$vllm_extra" ]]; then
-        ENV_VALUES["VLLM_RERANK_EXTRA_ARGS"]="$vllm_extra"
-      fi
-    fi
-
-    if [[ "$use_docker" == "yes" ]]; then
-      default_model="$vllm_model"
-      default_host="$(default_loopback_url "$vllm_port" "/rerank")"
-      set_compose_override "RERANK_BINDING_HOST" "http://vllm-rerank:${vllm_port}/rerank"
-    else
-      default_model="${ENV_VALUES[RERANK_MODEL]:-${ENV_VALUES[VLLM_RERANK_MODEL]:-BAAI/bge-reranker-v2-m3}}"
-      vllm_host_default="$(default_loopback_url "${ENV_VALUES[VLLM_RERANK_PORT]:-8000}" "/rerank")"
-      default_host="${ENV_VALUES[RERANK_BINDING_HOST]:-$vllm_host_default}"
-      set_compose_override "RERANK_BINDING_HOST" ""
-    fi
-    binding="cohere"
-  else
-    binding="$binding_choice"
-  fi
-
-  if [[ "$binding_choice" == "vllm" ]]; then
-    model_default="$default_model"
-    host_default="$default_host"
-  elif [[ "$reset_vllm_defaults" == "yes" ]]; then
-    case "$binding_choice" in
-      cohere)
-        default_model="rerank-v3.5"
-        default_host="https://api.cohere.com/v2/rerank"
-        ;;
-      jina)
-        default_model="jina-reranker-v2-base-multilingual"
-        default_host="https://api.jina.ai/v1/rerank"
-        ;;
-      aliyun)
-        default_model="gte-rerank-v2"
-        default_host="https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank"
-        ;;
-      *)
-        default_model=""
-        default_host=""
-        ;;
-    esac
+  if [[ "$previous_provider" == "vllm" ]]; then
     # Switching away from local vLLM should replace stale localhost/model values.
     model_default="$default_model"
     host_default="$default_host"
   else
-    model_default="${ENV_VALUES[RERANK_MODEL]:-$default_model}"
-    host_default="${ENV_VALUES[RERANK_BINDING_HOST]:-$default_host}"
+    model_default="$(provider_default_or_existing "$binding" "$current_binding" "${ENV_VALUES[RERANK_MODEL]:-}" "$default_model")"
+    host_default="$(provider_default_or_existing "$binding" "$current_binding" "${ENV_VALUES[RERANK_BINDING_HOST]:-}" "$default_host")"
   fi
 
   model="$(prompt_with_default "Rerank model" "$model_default")"
   host="$(prompt_with_default "Rerank endpoint" "$host_default")"
-  if [[ "$binding_choice" == "vllm" ]]; then
-    # Ensure a consistent key exists before prompting, generating one if needed.
-    local vllm_rerank_api_key="${ENV_VALUES[VLLM_RERANK_API_KEY]:-${ENV_VALUES[RERANK_BINDING_API_KEY]:-}}"
-    if [[ -z "$vllm_rerank_api_key" ]]; then
-      vllm_rerank_api_key="$(openssl rand -hex 16 2>/dev/null || LC_ALL=C tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 32)"
-    fi
-    api_key="$(prompt_secret_with_default "Rerank API key (optional): " "$vllm_rerank_api_key")"
-  else
-    api_key="$(prompt_secret_until_valid_with_default "Rerank API key: " "${ENV_VALUES[RERANK_BINDING_API_KEY]:-}" validate_api_key "$binding")"
-  fi
+  api_key="$(prompt_secret_until_valid_with_default "Rerank API key: " "${ENV_VALUES[RERANK_BINDING_API_KEY]:-}" validate_api_key "$binding")"
 
   ENV_VALUES["RERANK_BINDING"]="$binding"
-  # Only keep the setup marker for wizard-managed local Docker vLLM rerank.
-  # Host-managed or remote rerank endpoints should rely on RERANK_BINDING alone.
-  if [[ "$binding_choice" == "vllm" && "$use_docker" == "yes" ]]; then
-    ENV_VALUES["LIGHTRAG_SETUP_RERANK_PROVIDER"]="vllm"
-  else
-    unset 'ENV_VALUES[LIGHTRAG_SETUP_RERANK_PROVIDER]'
-  fi
+  # Only env_base_flow's Docker branch should keep the local vLLM setup marker.
+  unset 'ENV_VALUES[LIGHTRAG_SETUP_RERANK_PROVIDER]'
   if [[ -n "$model" ]]; then
     ENV_VALUES["RERANK_MODEL"]="$model"
-  elif [[ "$reset_vllm_defaults" == "yes" ]]; then
-    unset 'ENV_VALUES[RERANK_MODEL]'
   fi
   if [[ -n "$host" ]]; then
     ENV_VALUES["RERANK_BINDING_HOST"]="$host"
-  elif [[ "$reset_vllm_defaults" == "yes" ]]; then
-    unset 'ENV_VALUES[RERANK_BINDING_HOST]'
   fi
-  if [[ "$binding_choice" == "vllm" ]]; then
-    # Keep VLLM_RERANK_API_KEY and RERANK_BINDING_API_KEY in sync.
-    ENV_VALUES["VLLM_RERANK_API_KEY"]="${api_key:-$vllm_rerank_api_key}"
-    store_optional_env_value "RERANK_BINDING_API_KEY" "${api_key:-$vllm_rerank_api_key}"
-  else
-    store_optional_env_value "RERANK_BINDING_API_KEY" "$api_key"
-  fi
+  store_optional_env_value "RERANK_BINDING_API_KEY" "$api_key"
 }
 
 collect_server_config() {
@@ -1691,10 +2177,7 @@ env_base_flow() {
   local existing_vllm_rerank_host=""
   local existing_vllm_rerank_device=""
   local previous_rerank_provider=""
-  # Auto-detect CUDA once; used for both embed and rerank
-  local has_gpu="no"
-  if command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi >/dev/null 2>&1; then
-    has_gpu="yes"
+  if host_cuda_available; then
     log_info "GPU detected: NVIDIA GPU found. New local vLLM services default to CUDA (GPU image + float16)."
   else
     log_info "GPU detection: no NVIDIA GPU found. New local vLLM services default to CPU image + float32."
@@ -1751,13 +2234,8 @@ env_base_flow() {
     ENV_VALUES["VLLM_EMBED_MODEL"]="$embed_model"
     ENV_VALUES["EMBEDDING_MODEL"]="$embed_model"
 
-    local vllm_embed_device="$existing_vllm_embed_device"
-    if [[ "$vllm_embed_device" != "cpu" && "$vllm_embed_device" != "cuda" ]]; then
-      vllm_embed_device="cpu"
-      if [[ "$has_gpu" == "yes" ]]; then
-        vllm_embed_device="cuda"
-      fi
-    fi
+    local vllm_embed_device
+    vllm_embed_device="$(resolve_local_device_default "$existing_vllm_embed_device")"
     ENV_VALUES["VLLM_EMBED_DEVICE"]="$vllm_embed_device"
     ENV_VALUES["LIGHTRAG_SETUP_EMBEDDING_PROVIDER"]="vllm"
 
@@ -1824,13 +2302,8 @@ env_base_flow() {
       ENV_VALUES["RERANK_MODEL"]="$rerank_model"
       ENV_VALUES["VLLM_RERANK_PORT"]="$rerank_port"
 
-      local vllm_rerank_device="$existing_vllm_rerank_device"
-      if [[ "$vllm_rerank_device" != "cpu" && "$vllm_rerank_device" != "cuda" ]]; then
-        vllm_rerank_device="cpu"
-        if [[ "$has_gpu" == "yes" ]]; then
-          vllm_rerank_device="cuda"
-        fi
-      fi
+      local vllm_rerank_device
+      vllm_rerank_device="$(resolve_local_device_default "$existing_vllm_rerank_device")"
       ENV_VALUES["VLLM_RERANK_DEVICE"]="$vllm_rerank_device"
       ENV_VALUES["LIGHTRAG_SETUP_RERANK_PROVIDER"]="vllm"
 
@@ -1858,13 +2331,12 @@ env_base_flow() {
 
 finalize_base_setup() {
   local backup_path
-  local compose_backup_path
   local compose_file
   local existing_compose
-  local generate_compose="no"
+  local compose_action="write_env_only"
   local runtime_target="$DEFAULT_RUNTIME_TARGET"
   local show_host_start_hint="no"
-  local svc
+  local svc_names=""
 
   if [[ ! -f "${REPO_ROOT}/env.example" ]]; then
     format_error "env.example is missing in $REPO_ROOT" "Restore env.example before running setup."
@@ -1888,73 +2360,38 @@ finalize_base_setup() {
 
   existing_compose="$(find_generated_compose_file)"
   compose_file="${REPO_ROOT}/docker-compose.final.yml"
+  record_existing_managed_root_services "$existing_compose"
+  restore_storage_docker_services_from_env
 
-  # Preserve storage services from any existing compose file.
-  if [[ -n "$existing_compose" ]]; then
-    while IFS= read -r svc; do
-      local is_storage="no"
-      for storage_svc in "${STORAGE_SERVICES[@]}"; do
-        if [[ "$svc" == "$storage_svc" ]]; then
-          is_storage="yes"
-          break
-        fi
-      done
-      if [[ "$is_storage" == "yes" ]]; then
-        add_docker_service "$svc"
-      fi
-    done < <(detect_managed_root_services "$existing_compose")
-  fi
+  configure_base_compose_rewrites
 
   if ((${#DOCKER_SERVICES[@]} > 0)); then
     # LightRAG depends on managed Docker services; it must run via Docker.
-    local svc_names
     svc_names="$(printf '%s ' "${DOCKER_SERVICES[@]}")"
     svc_names="${svc_names% }"
     echo "LightRAG requires Docker services: ${svc_names}"
-    if ! confirm_default_yes "The compose file will be created/updated. Continue?"; then
+    if ! confirm_default_yes "${COLOR_YELLOW}The compose file will be created/updated. Continue?${COLOR_RESET}"; then
       log_warn "Setup cancelled."
       return 1
     fi
-    generate_compose="yes"
+    compose_action="rewrite_compose"
     runtime_target="compose"
   else
-    # No managed service dependencies — ask whether to run LightRAG via Docker.
-    local current_target="${ENV_VALUES[LIGHTRAG_RUNTIME_TARGET]:-$DEFAULT_RUNTIME_TARGET}"
-    # If an existing compose file is present, default to keeping Docker mode.
-    local effective_default="$current_target"
-    if [[ -n "$existing_compose" ]]; then
-      effective_default="compose"
-    fi
-
-    if [[ "$effective_default" == "compose" ]]; then
-      if ! confirm_default_yes "Run LightRAG Server via Docker?"; then
-        # User opts out: switch to host mode and remove the stale compose file.
-        if [[ -n "$existing_compose" ]]; then
-          rm "$existing_compose"
-          log_success "Removed ${existing_compose}"
-        fi
-        show_host_start_hint="yes"
-      else
-        generate_compose="yes"
-        runtime_target="compose"
-      fi
-    else
-      if confirm_default_no "Run LightRAG Server via Docker?"; then
-        generate_compose="yes"
-        runtime_target="compose"
-      fi
-    fi
+    resolve_compose_output_action \
+      "$existing_compose" \
+      compose_action \
+      runtime_target \
+      show_host_start_hint
   fi
 
-  if [[ "$generate_compose" == "yes" ]]; then
-    compose_backup_path="$(backup_compose_file "$existing_compose")" || return 1
-    if [[ -n "$compose_backup_path" ]]; then
-      log_success "Backed up existing compose file to $compose_backup_path"
-    fi
+  if [[ "$compose_action" == "rewrite_compose" ]]; then
+    backup_existing_compose_for_action "$compose_action" "$existing_compose" || return 1
     if ! prepare_managed_service_assets_for_compose "$existing_compose"; then
       return 1
     fi
     prepare_compose_env_overrides
+  elif [[ "$compose_action" == "delete_compose_and_switch_host" ]]; then
+    backup_existing_compose_for_action "$compose_action" "$existing_compose" || return 1
   fi
 
   backup_path="$(backup_env_file)"
@@ -1967,23 +2404,29 @@ finalize_base_setup() {
   generate_env_file "${REPO_ROOT}/env.example" "${REPO_ROOT}/.env"
   log_success "Wrote .env"
 
-  if [[ "$generate_compose" == "yes" ]]; then
-    prepare_compose_output_from_existing "$compose_file" "$existing_compose" || return 1
-    generate_docker_compose "$compose_file"
-    log_success "Wrote ${compose_file}"
-    if [[ -n "$existing_compose" ]]; then
-      log_success "Storage services preserved; vLLM services updated."
-    fi
-    echo "  To start: docker compose -f ${compose_file} up -d"
-  elif [[ "$show_host_start_hint" == "yes" ]]; then
-    echo "  To start: lightrag-server"
-  fi
+  case "$compose_action" in
+    rewrite_compose)
+      prepare_compose_output_from_existing "$compose_file" "$existing_compose" || return 1
+      generate_docker_compose "$compose_file"
+      log_success "Wrote ${compose_file}"
+      echo "  To start: docker compose -f ${compose_file} up -d"
+      ;;
+    delete_compose_and_switch_host)
+      remove_existing_compose_file "$existing_compose" || return 1
+      echo "  To start: lightrag-server"
+      ;;
+    *)
+      if [[ "$show_host_start_hint" == "yes" ]]; then
+        echo "  To start: lightrag-server"
+      fi
+      ;;
+  esac
 }
 
 env_storage_flow() {
   local env_file="${REPO_ROOT}/.env"
   local db_type
-  local db_order=("postgresql" "neo4j" "mongodb" "redis" "milvus" "qdrant" "memgraph")
+  local db_order=("postgresql" "neo4j" "mongodb" "redis" "milvus" "qdrant" "memgraph" "opensearch")
 
   if [[ ! -f "$env_file" ]]; then
     format_error "No .env file found." "Run 'make env-base' first to configure LLM and embedding."
@@ -2007,6 +2450,7 @@ env_storage_flow() {
   for db_type in "${db_order[@]}"; do
     if [[ -n "${REQUIRED_DB_TYPES[$db_type]+set}" ]]; then
       collect_database_config "$db_type" "$(storage_default_docker_for_db_type "$db_type")"
+      echo ""
     fi
   done
 
@@ -2015,13 +2459,11 @@ env_storage_flow() {
 
 finalize_storage_setup() {
   local backup_path
-  local compose_backup_path
   local compose_file
   local existing_compose
-  local generate_compose="no"
-  local has_docker_storage="no"
+  local compose_action="write_env_only"
   local runtime_target="$DEFAULT_RUNTIME_TARGET"
-  local svc
+  local show_host_start_hint="no"
 
   if [[ ! -f "${REPO_ROOT}/env.example" ]]; then
     format_error "env.example is missing in $REPO_ROOT" "Restore env.example before running setup."
@@ -2053,10 +2495,6 @@ finalize_storage_setup() {
     return 1
   fi
 
-  if ((${#DOCKER_SERVICES[@]} > 0)); then
-    has_docker_storage="yes"
-  fi
-
   show_summary
 
   if ! confirm_required_yes_no "${COLOR_YELLOW}Ready to proceed and write .env${COLOR_RESET}"; then
@@ -2066,47 +2504,24 @@ finalize_storage_setup() {
 
   existing_compose="$(find_generated_compose_file)"
   compose_file="${REPO_ROOT}/docker-compose.final.yml"
+  record_existing_managed_root_services "$existing_compose"
+  restore_vllm_docker_services_from_env
+  configure_storage_compose_rewrites
+  resolve_compose_output_action \
+    "$existing_compose" \
+    compose_action \
+    runtime_target \
+    show_host_start_hint
 
-  if [[ "$has_docker_storage" == "no" && -z "$existing_compose" ]]; then
-    # No docker services selected and no existing compose to clean up.
-    backup_path="$(backup_env_file)"
-    if [[ -n "$backup_path" ]]; then
-      log_success "Backed up existing .env to $backup_path"
+  if [[ "$compose_action" == "rewrite_compose" ]]; then
+    backup_existing_compose_for_action "$compose_action" "$existing_compose" || return 1
+    if ! prepare_managed_service_assets_for_compose "$existing_compose"; then
+      return 1
     fi
-    clear_deprecated_vllm_dtype_state
-    set_runtime_target "$runtime_target" || return 1
-    generate_env_file "${REPO_ROOT}/env.example" "${REPO_ROOT}/.env"
-    log_success "Wrote .env"
-    return 0
+    prepare_compose_env_overrides
+  elif [[ "$compose_action" == "delete_compose_and_switch_host" ]]; then
+    backup_existing_compose_for_action "$compose_action" "$existing_compose" || return 1
   fi
-
-  if [[ -n "$existing_compose" ]]; then
-    # Detect and preserve existing vLLM services.
-    while IFS= read -r svc; do
-      local is_vllm="no"
-      for vllm_svc in "${VLLM_SERVICES[@]}"; do
-        if [[ "$svc" == "$vllm_svc" ]]; then
-          is_vllm="yes"
-          break
-        fi
-      done
-      if [[ "$is_vllm" == "yes" ]]; then
-        add_docker_service "$svc"
-      fi
-    done < <(detect_managed_root_services "$existing_compose")
-  fi
-  generate_compose="yes"
-  runtime_target="compose"
-
-  compose_backup_path="$(backup_compose_file "$existing_compose")" || return 1
-  if [[ -n "$compose_backup_path" ]]; then
-    log_success "Backed up existing compose file to $compose_backup_path"
-  fi
-
-  if ! prepare_managed_service_assets_for_compose "$existing_compose"; then
-    return 1
-  fi
-  prepare_compose_env_overrides
 
   backup_path="$(backup_env_file)"
   if [[ -n "$backup_path" ]]; then
@@ -2118,13 +2533,23 @@ finalize_storage_setup() {
   generate_env_file "${REPO_ROOT}/env.example" "${REPO_ROOT}/.env"
   log_success "Wrote .env"
 
-  prepare_compose_output_from_existing "$compose_file" "$existing_compose" || return 1
-  generate_docker_compose "$compose_file"
-  log_success "Wrote ${compose_file}"
-  if [[ -n "$existing_compose" ]]; then
-    log_success "vLLM services preserved; storage services updated."
-  fi
-  echo "  To start: docker compose -f ${compose_file} up -d"
+  case "$compose_action" in
+    rewrite_compose)
+      prepare_compose_output_from_existing "$compose_file" "$existing_compose" || return 1
+      generate_docker_compose "$compose_file"
+      log_success "Wrote ${compose_file}"
+      echo "  To start: docker compose -f ${compose_file} up -d"
+      ;;
+    delete_compose_and_switch_host)
+      remove_existing_compose_file "$existing_compose" || return 1
+      echo "  To start: lightrag-server"
+      ;;
+    *)
+      if [[ "$show_host_start_hint" == "yes" ]]; then
+        echo "  To start: lightrag-server"
+      fi
+      ;;
+  esac
 }
 
 env_server_flow() {
@@ -2158,12 +2583,11 @@ env_server_flow() {
 
 finalize_server_setup() {
   local backup_path
-  local compose_backup_path
   local compose_file
   local existing_compose
-  local generate_compose="no"
+  local compose_action="write_env_only"
   local runtime_target="$DEFAULT_RUNTIME_TARGET"
-  local svc
+  local show_host_start_hint="no"
 
   if [[ ! -f "${REPO_ROOT}/env.example" ]]; then
     format_error "env.example is missing in $REPO_ROOT" "Restore env.example before running setup."
@@ -2194,25 +2618,34 @@ finalize_server_setup() {
 
   existing_compose="$(find_generated_compose_file)"
   compose_file="${REPO_ROOT}/docker-compose.final.yml"
+  record_existing_managed_root_services "$existing_compose"
+  restore_storage_docker_services_from_env
+  restore_vllm_docker_services_from_env
+  resolve_compose_output_action \
+    "$existing_compose" \
+    compose_action \
+    runtime_target \
+    show_host_start_hint
 
-  if [[ -n "$existing_compose" ]]; then
-    generate_compose="yes"
-    runtime_target="compose"
-    # Detect and preserve all existing wizard-managed root services.
-    while IFS= read -r svc; do
-      add_docker_service "$svc"
-    done < <(detect_managed_root_services "$existing_compose")
-  fi
-
-  if [[ "$generate_compose" == "yes" ]]; then
-    compose_backup_path="$(backup_compose_file "$existing_compose")" || return 1
-    if [[ -n "$compose_backup_path" ]]; then
-      log_success "Backed up existing compose file to $compose_backup_path"
-    fi
+  if [[ "$compose_action" == "rewrite_compose" ]]; then
+    backup_existing_compose_for_action "$compose_action" "$existing_compose" || return 1
     if ! prepare_managed_service_assets_for_compose "$existing_compose"; then
       return 1
     fi
     prepare_compose_env_overrides
+  elif [[ "$compose_action" == "delete_compose_and_switch_host" ]]; then
+    backup_existing_compose_for_action "$compose_action" "$existing_compose" || return 1
+    if [[ -n "$SSL_CERT_SOURCE_PATH" ]] && ! validate_existing_file "$SSL_CERT_SOURCE_PATH"; then
+      format_error "Invalid SSL_CERTFILE" \
+        "Set it to an existing certificate file, disable SSL, or rerun the wizard to choose a new certificate."
+      return 1
+    fi
+
+    if [[ -n "$SSL_KEY_SOURCE_PATH" ]] && ! validate_existing_file "$SSL_KEY_SOURCE_PATH"; then
+      format_error "Invalid SSL_KEYFILE" \
+        "Set it to an existing private key file, disable SSL, or rerun the wizard to choose a new key."
+      return 1
+    fi
   else
     if [[ -n "$SSL_CERT_SOURCE_PATH" ]] && ! validate_existing_file "$SSL_CERT_SOURCE_PATH"; then
       format_error "Invalid SSL_CERTFILE" \
@@ -2237,13 +2670,24 @@ finalize_server_setup() {
   generate_env_file "${REPO_ROOT}/env.example" "${REPO_ROOT}/.env"
   log_success "Wrote .env"
 
-  if [[ "$generate_compose" == "yes" ]]; then
-    prepare_compose_output_from_existing "$compose_file" "$existing_compose" || return 1
-    generate_docker_compose "$compose_file"
-    log_success "Wrote ${compose_file}"
-    log_success "Server port and security settings updated in compose."
-    echo "  To restart: docker compose -f ${compose_file} up -d --force-recreate lightrag"
-  fi
+  case "$compose_action" in
+    rewrite_compose)
+      prepare_compose_output_from_existing "$compose_file" "$existing_compose" || return 1
+      generate_docker_compose "$compose_file"
+      log_success "Wrote ${compose_file}"
+      log_success "Server port and security settings updated in compose."
+      echo "  To restart: docker compose -f ${compose_file} up -d --force-recreate lightrag"
+      ;;
+    delete_compose_and_switch_host)
+      remove_existing_compose_file "$existing_compose" || return 1
+      echo "  To start: lightrag-server"
+      ;;
+    *)
+      if [[ "$show_host_start_hint" == "yes" ]]; then
+        echo "  To start: lightrag-server"
+      fi
+      ;;
+  esac
 }
 
 load_env_file() {
@@ -2295,6 +2739,8 @@ validate_env_file() {
   local errors=0
   local kv vector graph doc_status
   local runtime_target
+  local storage db_type
+  local -A referenced_db_types=()
 
   reset_state
 
@@ -2308,6 +2754,16 @@ validate_env_file() {
   doc_status="${ENV_VALUES[LIGHTRAG_DOC_STATUS_STORAGE]:-}"
   runtime_target="${ENV_VALUES[LIGHTRAG_RUNTIME_TARGET]:-$DEFAULT_RUNTIME_TARGET}"
 
+  for storage in "$kv" "$vector" "$graph" "$doc_status"; do
+    if [[ -z "$storage" ]]; then
+      continue
+    fi
+    db_type="${STORAGE_DB_TYPES[$storage]:-}"
+    if [[ -n "$db_type" ]]; then
+      referenced_db_types["$db_type"]=1
+    fi
+  done
+
   if ! validate_runtime_target "$runtime_target"; then
     errors=1
   fi
@@ -2317,14 +2773,14 @@ validate_env_file() {
     return 1
   fi
 
-  if ! validate_required_variables "$kv" "$vector" "$graph" "$doc_status"; then
-    errors=1
-  fi
-
   if ! validate_mongo_vector_storage_config \
     "$vector" \
     "${ENV_VALUES[MONGO_URI]:-}" \
     "${ENV_VALUES[LIGHTRAG_SETUP_MONGODB_DEPLOYMENT]:-}"; then
+    errors=1
+  fi
+
+  if ! validate_required_variables "$kv" "$vector" "$graph" "$doc_status"; then
     errors=1
   fi
 
@@ -2350,39 +2806,49 @@ validate_env_file() {
     fi
   fi
 
-  if [[ -n "${ENV_VALUES[NEO4J_URI]:-}" ]] && ! validate_uri "${ENV_VALUES[NEO4J_URI]}" neo4j; then
+  if [[ -n "${referenced_db_types[neo4j]+set}" ]] && [[ -n "${ENV_VALUES[NEO4J_URI]:-}" ]] && ! validate_uri "${ENV_VALUES[NEO4J_URI]}" neo4j; then
     format_error "Invalid NEO4J_URI" "Use neo4j:// or bolt:// format."
     errors=1
   fi
-  if [[ -n "${ENV_VALUES[MONGO_URI]:-}" ]] && ! validate_uri "${ENV_VALUES[MONGO_URI]}" mongodb; then
+  if [[ -n "${referenced_db_types[mongodb]+set}" ]] && [[ -n "${ENV_VALUES[MONGO_URI]:-}" ]] && ! validate_uri "${ENV_VALUES[MONGO_URI]}" mongodb; then
     format_error "Invalid MONGO_URI" "Use mongodb:// or mongodb+srv:// format."
     errors=1
   fi
-  if [[ -n "${ENV_VALUES[REDIS_URI]:-}" ]] && ! validate_uri "${ENV_VALUES[REDIS_URI]}" redis; then
+  if [[ -n "${referenced_db_types[redis]+set}" ]] && [[ -n "${ENV_VALUES[REDIS_URI]:-}" ]] && ! validate_uri "${ENV_VALUES[REDIS_URI]}" redis; then
     format_error "Invalid REDIS_URI" "Use redis:// or rediss:// format."
     errors=1
   fi
-  if [[ -n "${ENV_VALUES[MILVUS_URI]:-}" ]] && ! validate_uri "${ENV_VALUES[MILVUS_URI]}" milvus; then
+  if [[ -n "${referenced_db_types[milvus]+set}" ]] && [[ -n "${ENV_VALUES[MILVUS_URI]:-}" ]] && ! validate_uri "${ENV_VALUES[MILVUS_URI]}" milvus; then
     format_error "Invalid MILVUS_URI" "Use http://host:port format."
     errors=1
   fi
-  if [[ -n "${ENV_VALUES[QDRANT_URL]:-}" ]] && ! validate_uri "${ENV_VALUES[QDRANT_URL]}" qdrant; then
+  if [[ -n "${referenced_db_types[qdrant]+set}" ]] && [[ -n "${ENV_VALUES[QDRANT_URL]:-}" ]] && ! validate_uri "${ENV_VALUES[QDRANT_URL]}" qdrant; then
     format_error "Invalid QDRANT_URL" "Use http://host:port format."
     errors=1
   fi
-  if [[ -n "${ENV_VALUES[MEMGRAPH_URI]:-}" ]] && ! validate_uri "${ENV_VALUES[MEMGRAPH_URI]}" memgraph; then
+  if [[ -n "${referenced_db_types[memgraph]+set}" ]] && [[ -n "${ENV_VALUES[MEMGRAPH_URI]:-}" ]] && ! validate_uri "${ENV_VALUES[MEMGRAPH_URI]}" memgraph; then
     format_error "Invalid MEMGRAPH_URI" "Use bolt://host:port format."
     errors=1
   fi
-  if [[ -n "${ENV_VALUES[POSTGRES_PORT]:-}" ]] && ! validate_port "${ENV_VALUES[POSTGRES_PORT]}"; then
+  if [[ -n "${referenced_db_types[postgresql]+set}" ]] && [[ -n "${ENV_VALUES[POSTGRES_PORT]:-}" ]] && ! validate_port "${ENV_VALUES[POSTGRES_PORT]}"; then
     format_error "Invalid POSTGRES_PORT" "Use a port between 1 and 65535."
     errors=1
   fi
-  if [[ -n "${ENV_VALUES[POSTGRES_HOST_PORT]:-}" ]] && ! validate_port "${ENV_VALUES[POSTGRES_HOST_PORT]}"; then
-    format_error "Invalid POSTGRES_HOST_PORT" "Use a port between 1 and 65535."
+  if [[ -n "${referenced_db_types[opensearch]+set}" ]] && [[ -v 'ENV_VALUES[OPENSEARCH_HOSTS]' ]] && [[ -z "${ENV_VALUES[OPENSEARCH_HOSTS]}" ]]; then
+    format_error "Empty OPENSEARCH_HOSTS" "Set it to host:port (e.g. localhost:9200)."
     errors=1
   fi
-
+  if [[ -n "${referenced_db_types[opensearch]+set}" ]]; then
+    if ! validate_opensearch_config \
+      "${ENV_VALUES[LIGHTRAG_SETUP_OPENSEARCH_DEPLOYMENT]:-}" \
+      "${ENV_VALUES[OPENSEARCH_HOSTS]:-}" \
+      "${ENV_VALUES[OPENSEARCH_USER]:-}" \
+      "${ENV_VALUES[OPENSEARCH_PASSWORD]:-}" \
+      "${ENV_VALUES[OPENSEARCH_NUMBER_OF_SHARDS]-1}" \
+      "${ENV_VALUES[OPENSEARCH_NUMBER_OF_REPLICAS]-0}"; then
+      errors=1
+    fi
+  fi
   if ((errors != 0)); then
     return 1
   fi
@@ -2409,8 +2875,16 @@ security_check_env_file() {
   local whitelist_paths=""
   local whitelist_is_set="no"
   local effective_whitelist=""
+  local kv=""
+  local vector=""
+  local graph=""
+  local doc_status=""
+  local storage=""
+  local db_type=""
+  local opensearch_in_use="no"
   local key value
   local invalid_sensitive_keys=()
+  local -A referenced_db_types=()
 
   reset_state
 
@@ -2421,9 +2895,30 @@ security_check_env_file() {
   auth_accounts="${ENV_VALUES[AUTH_ACCOUNTS]:-}"
   token_secret="${ENV_VALUES[TOKEN_SECRET]:-}"
   api_key="${ENV_VALUES[LIGHTRAG_API_KEY]:-}"
+  kv="${ENV_VALUES[LIGHTRAG_KV_STORAGE]:-}"
+  vector="${ENV_VALUES[LIGHTRAG_VECTOR_STORAGE]:-}"
+  graph="${ENV_VALUES[LIGHTRAG_GRAPH_STORAGE]:-}"
+  doc_status="${ENV_VALUES[LIGHTRAG_DOC_STATUS_STORAGE]:-}"
   if [[ -n "${ENV_VALUES[WHITELIST_PATHS]+set}" ]]; then
     whitelist_paths="${ENV_VALUES[WHITELIST_PATHS]}"
     whitelist_is_set="yes"
+  fi
+
+  for storage in "$kv" "$vector" "$graph" "$doc_status"; do
+    if [[ -z "$storage" ]]; then
+      continue
+    fi
+    if [[ ! -v "STORAGE_DB_TYPES[$storage]" ]]; then
+      continue
+    fi
+    db_type="${STORAGE_DB_TYPES[$storage]}"
+    if [[ -n "$db_type" ]]; then
+      referenced_db_types["$db_type"]=1
+    fi
+  done
+
+  if [[ -n "${referenced_db_types[opensearch]+set}" || "${ENV_VALUES[LIGHTRAG_SETUP_OPENSEARCH_DEPLOYMENT]:-}" == "docker" ]]; then
+    opensearch_in_use="yes"
   fi
 
   for key in "${!ENV_VALUES[@]}"; do
@@ -2454,7 +2949,12 @@ security_check_env_file() {
     if ! validate_auth_accounts_format "$auth_accounts"; then
       report_security_issue \
         "AUTH_ACCOUNTS is malformed." \
-        "Use comma-separated user:password pairs such as admin:secret or admin:secret,reader:another-secret."
+        "Use comma-separated user:password pairs such as admin:{bcrypt}<hash> or admin:secret,reader:another-secret."
+      findings=$((findings + 1))
+    elif ! validate_auth_accounts_password_safety "$auth_accounts"; then
+      report_security_issue \
+        "AUTH_ACCOUNTS uses a predictable password prefix." \
+        "Passwords must not start with 'admin' or 'pass'. Choose a stronger password or use lightrag-hash-password."
       findings=$((findings + 1))
     fi
 
@@ -2495,6 +2995,16 @@ security_check_env_file() {
     fi
   fi
 
+  if [[ "$opensearch_in_use" == "yes" ]] && [[ -n "${ENV_VALUES[OPENSEARCH_PASSWORD]:-}" ]]; then
+    local os_pass="${ENV_VALUES[OPENSEARCH_PASSWORD]}"
+    if [[ "$os_pass" == "admin" || "$os_pass" == "LightRAG2026_!@" ]]; then
+      report_security_issue \
+        "OPENSEARCH_PASSWORD uses a well-known default value." \
+        "Set a unique, strong password for the OpenSearch admin account."
+      findings=$((findings + 1))
+    fi
+  fi
+
   if ((findings == 0)); then
     log_success "No obvious security issues found in ${env_file}."
     return 0
@@ -2523,7 +3033,7 @@ backup_only() {
 
 print_help() {
   cat <<'HELP'
-Usage: scripts/setup/setup.sh [--base|--storage|--server|--validate|--security-check|--backup]
+Usage: scripts/setup/setup.sh [--base|--storage|--server|--validate|--security-check|--backup] [--rewrite-compose]
 
 Options:
   --base         Configure LLM, embedding, and reranker (run first)
@@ -2532,6 +3042,7 @@ Options:
   --validate     Validate an existing .env file
   --security-check  Audit an existing .env for security risks
   --backup       Backup the current .env and generated compose file when present
+  --rewrite-compose  Force regeneration of all wizard-managed compose services
   --debug        Enable debug logging
   --help         Show this help message
 HELP
@@ -2570,6 +3081,9 @@ main() {
         ;;
       --debug)
         DEBUG="true"
+        ;;
+      --rewrite-compose)
+        FORCE_REWRITE_COMPOSE="yes"
         ;;
       --help|-h)
         mode="help"

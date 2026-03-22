@@ -243,47 +243,144 @@ generate_env_file() {
 # keys no longer needed are not left behind in the compose file.
 _WIZARD_COMPOSE_LIGHTRAG_KEYS=(
   "EMBEDDING_BINDING_HOST" "RERANK_BINDING_HOST" "LLM_BINDING_HOST"
-  "REDIS_URI" "MONGO_URI" "NEO4J_URI" "MILVUS_URI" "QDRANT_URL" "MEMGRAPH_URI"
+  "REDIS_URI" "MONGO_URI" "NEO4J_URI" "MILVUS_URI" "QDRANT_URL" "MEMGRAPH_URI" "OPENSEARCH_HOSTS"
   "POSTGRES_HOST" "POSTGRES_PORT" "PORT" "HOST" "SSL_CERTFILE" "SSL_KEYFILE"
+  "WORKING_DIR" "INPUT_DIR"
 )
+
+_managed_service_root_name() {
+  local service_name="$1"
+
+  case "$service_name" in
+    postgres|neo4j|mongodb|redis|qdrant|memgraph|opensearch|vllm-embed|vllm-rerank)
+      printf '%s' "$service_name"
+      ;;
+    milvus|milvus-etcd|milvus-minio)
+      printf 'milvus'
+      ;;
+    *)
+      printf ''
+      ;;
+  esac
+}
+
+_managed_volume_root_name() {
+  local volume_name="$1"
+
+  case "$volume_name" in
+    postgres_data)
+      printf 'postgres'
+      ;;
+    neo4j_data)
+      printf 'neo4j'
+      ;;
+    mongo_data)
+      printf 'mongodb'
+      ;;
+    redis_data)
+      printf 'redis'
+      ;;
+    milvus_data|milvus-etcd_data|milvus-minio_data)
+      printf 'milvus'
+      ;;
+    qdrant_data)
+      printf 'qdrant'
+      ;;
+    memgraph_data)
+      printf 'memgraph'
+      ;;
+    opensearch_data)
+      printf 'opensearch'
+      ;;
+    vllm_rerank_cache)
+      printf 'vllm-rerank'
+      ;;
+    vllm_embed_cache)
+      printf 'vllm-embed'
+      ;;
+    *)
+      printf ''
+      ;;
+  esac
+}
+
+_should_rewrite_wizard_managed_root_service() {
+  local root_service="$1"
+
+  if [[ -z "$root_service" ]]; then
+    return 1
+  fi
+
+  if [[ "${FORCE_REWRITE_COMPOSE:-no}" == "yes" ]]; then
+    return 0
+  fi
+
+  if [[ -z "${DOCKER_SERVICE_SET[$root_service]+set}" ]]; then
+    return 0
+  fi
+
+  if [[ -n "${COMPOSE_REWRITE_SERVICE_SET[$root_service]+set}" ]]; then
+    return 0
+  fi
+
+  return 1
+}
+
+_should_preserve_wizard_managed_root_service() {
+  local root_service="$1"
+
+  if [[ -z "$root_service" || "${FORCE_REWRITE_COMPOSE:-no}" == "yes" ]]; then
+    return 1
+  fi
+
+  if [[ -z "${DOCKER_SERVICE_SET[$root_service]+set}" ]]; then
+    return 1
+  fi
+
+  if [[ -n "${COMPOSE_REWRITE_SERVICE_SET[$root_service]+set}" ]]; then
+    return 1
+  fi
+
+  return 0
+}
+
+_existing_managed_root_service_present() {
+  local root_service="$1"
+
+  [[ -n "$root_service" && -n "${EXISTING_MANAGED_ROOT_SERVICE_SET[$root_service]+set}" ]]
+}
+
+_refresh_existing_managed_root_service_set_from_compose() {
+  local compose_file="$1"
+  local service_name
+
+  EXISTING_MANAGED_ROOT_SERVICE_SET=()
+
+  if [[ -z "$compose_file" || ! -f "$compose_file" ]]; then
+    return 0
+  fi
+
+  while IFS= read -r service_name; do
+    EXISTING_MANAGED_ROOT_SERVICE_SET["$service_name"]=1
+  done < <(detect_managed_root_services "$compose_file")
+}
 
 _is_wizard_managed_root_service_name() {
   local service_name="$1"
 
-  case "$service_name" in
-    postgres|neo4j|mongodb|redis|milvus|qdrant|memgraph|vllm-embed|vllm-rerank)
-      return 0
-      ;;
-    *)
-      return 1
-      ;;
-  esac
+  [[ -n "$(_managed_service_root_name "$service_name")" ]]
 }
 
 _is_wizard_managed_service_name() {
   local service_name="$1"
 
-  case "$service_name" in
-    postgres|neo4j|mongodb|redis|milvus|milvus-etcd|milvus-minio|qdrant|memgraph|vllm-embed|vllm-rerank)
-      return 0
-      ;;
-    *)
-      return 1
-      ;;
-  esac
+  [[ -n "$(_managed_service_root_name "$service_name")" ]]
 }
 
 _is_wizard_managed_volume_name() {
   local volume_name="$1"
 
-  case "$volume_name" in
-    postgres_data|neo4j_data|mongo_data|redis_data|milvus_data|milvus-etcd_data|milvus-minio_data|qdrant_data|memgraph_data|vllm_rerank_cache|vllm_embed_cache)
-      return 0
-      ;;
-    *)
-      return 1
-      ;;
-  esac
+  [[ -n "$(_managed_volume_root_name "$volume_name")" ]]
 }
 
 # Remove wizard-managed keys from the lightrag service's environment block,
@@ -355,9 +452,13 @@ _write_service_environment_entries() {
     key="${entry%%=*}"
     value="${entry#*=}"
     if [[ "$style" == "list" ]]; then
-      printf '      - %s\n' "$(format_yaml_value "${key}=${value}")" >> "$tmp_file"
+      if [[ "$value" == "${_COMPOSE_RAW_VALUE_PREFIX}"* ]]; then
+        printf '      - %s=%s\n' "$key" "${value#${_COMPOSE_RAW_VALUE_PREFIX}}" >> "$tmp_file"
+      else
+        printf '      - %s\n' "$(format_yaml_value "${key}=${value}")" >> "$tmp_file"
+      fi
     else
-      printf '      %s: %s\n' "$key" "$(format_yaml_value "$value")" >> "$tmp_file"
+      printf '      %s: %s\n' "$key" "$(format_compose_environment_value "$value")" >> "$tmp_file"
     fi
   done
 }
@@ -427,7 +528,7 @@ _strip_wizard_managed_services_and_top_level_volumes() {
   local compose_file="$1"
   local tmp_file="${compose_file}.strip-svc"
   _FILE_OPS_CLEANUP_TMP+=("$tmp_file")
-  local line current_service=""
+  local line current_service="" current_root_service=""
   local in_services="no"
   local in_top_volumes="no"
   local inserted_marker="no"
@@ -470,17 +571,24 @@ _strip_wizard_managed_services_and_top_level_volumes() {
     # Track current service inside the services: block.
     if [[ "$in_services" == "yes" && "$line" =~ ^[[:space:]]{2}([A-Za-z0-9_-]+):[[:space:]]*$ ]]; then
       current_service="${BASH_REMATCH[1]}"
+      current_root_service="$(_managed_service_root_name "$current_service")"
     fi
 
-    # Skip wizard-managed services; preserve lightrag and all user-added services.
+    # Skip managed services that are being removed or regenerated. Preserve
+    # lightrag, user-added services, and unchanged managed service groups.
     if [[ "$in_services" == "yes" && -n "$current_service" ]] && \
       [[ "$current_service" != "lightrag" ]] && \
-      _is_wizard_managed_service_name "$current_service"; then
+      [[ -n "$current_root_service" ]] && \
+      _should_rewrite_wizard_managed_root_service "$current_root_service"; then
       continue
     fi
 
     printf '%s\n' "$line" >> "$tmp_file"
   done < "$compose_file"
+
+  if [[ "$in_services" == "yes" && "$inserted_marker" != "yes" ]]; then
+    printf '%s\n' "$_WIZARD_MANAGED_SERVICES_MARKER" >> "$tmp_file"
+  fi
 
   mv "$tmp_file" "$compose_file"
 }
@@ -538,6 +646,9 @@ _normalize_services_section_spacing() {
 
       if [[ ! "$line" =~ ^[[:space:]] ]]; then
         pending_blank="no"
+        if [[ "$saw_service_content" == "yes" ]]; then
+          printf '\n' >> "$tmp_file"
+        fi
         printf '%s\n' "$line" >> "$tmp_file"
         in_services="no"
         continue
@@ -788,10 +899,32 @@ _collect_referenced_named_volumes() {
   done < "$compose_file"
 }
 
+_trim_trailing_blank_lines_in_file() {
+  local file="$1"
+  local trim_file="${file}.trim-tail"
+  _FILE_OPS_CLEANUP_TMP+=("$trim_file")
+
+  awk '
+    { lines[NR] = $0 }
+    END {
+      last = NR
+      while (last > 0 && lines[last] == "") {
+        last--
+      }
+      for (i = 1; i <= last; i++) {
+        print lines[i]
+      }
+    }
+  ' "$file" > "$trim_file"
+
+  mv "$trim_file" "$file"
+}
+
 _append_referenced_volume_blocks() {
   local compose_file="$1"
   local -a referenced_volumes=()
   local volume_name
+  local root_service
 
   while IFS= read -r volume_name; do
     if [[ -n "$volume_name" ]]; then
@@ -803,10 +936,17 @@ _append_referenced_volume_blocks() {
     return 0
   fi
 
+  _trim_trailing_blank_lines_in_file "$compose_file"
   printf '\nvolumes:\n' >> "$compose_file"
   for volume_name in "${referenced_volumes[@]}"; do
     if _is_wizard_managed_volume_name "$volume_name"; then
-      printf '  %s:\n' "$volume_name" >> "$compose_file"
+      root_service="$(_managed_volume_root_name "$volume_name")"
+      if [[ -n "${_FILE_OPS_VOLUME_BLOCKS[$volume_name]+set}" ]] && \
+        _should_preserve_wizard_managed_root_service "$root_service"; then
+        printf '%s' "${_FILE_OPS_VOLUME_BLOCKS[$volume_name]}" >> "$compose_file"
+      else
+        printf '  %s:\n' "$volume_name" >> "$compose_file"
+      fi
     elif [[ -n "${_FILE_OPS_VOLUME_BLOCKS[$volume_name]+set}" ]]; then
       printf '%s' "${_FILE_OPS_VOLUME_BLOCKS[$volume_name]}" >> "$compose_file"
     else
@@ -826,11 +966,13 @@ generate_docker_compose() {
   local lightrag_mounts=()
   local lightrag_env_entries=()
   local key
+  local root_service
 
   # Prefer the existing generated compose as the starting point to preserve
   # any user customisations to the lightrag service.  Fall back to the base
   # docker-compose.yml when the output file doesn't exist yet.
   if [[ -f "$output_file" && "$output_file" != "$base_file" ]]; then
+    _refresh_existing_managed_root_service_set_from_compose "$output_file"
     _collect_top_level_volume_blocks "$output_file"
     cp "$output_file" "$tmp_file"
     # Strip wizard-managed services and top-level volumes. User-managed
@@ -838,16 +980,19 @@ generate_docker_compose() {
     # references after managed templates are appended.
     _strip_wizard_managed_services_and_top_level_volumes "$tmp_file"
   elif [[ -f "$base_file" ]]; then
+    _refresh_existing_managed_root_service_set_from_compose "$base_file"
     _collect_top_level_volume_blocks "$base_file"
     cp "$base_file" "$tmp_file"
     _strip_wizard_managed_services_and_top_level_volumes "$tmp_file"
   else
+    EXISTING_MANAGED_ROOT_SERVICE_SET=()
     _FILE_OPS_VOLUME_BLOCKS=()
     _FILE_OPS_VOLUME_ORDER=()
     printf 'services:\n' > "$tmp_file"
   fi
 
   prepare_lightrag_service_for_generated_compose "$tmp_file"
+  normalize_lightrag_restart_policy "$tmp_file"
   # Remove stale wizard-managed keys from lightrag's environment so that
   # keys no longer in COMPOSE_ENV_OVERRIDES are not left behind.
   _strip_lightrag_wizard_environment_keys "$tmp_file"
@@ -874,11 +1019,32 @@ generate_docker_compose() {
     inject_lightrag_environment_overrides "$tmp_file" "${lightrag_env_entries[@]}"
   fi
 
+  repair_misplaced_lightrag_depends_on "$tmp_file"
   inject_lightrag_depends_on "$tmp_file" "${DOCKER_SERVICES[@]}"
 
   : > "$service_blocks_file"
   for service in "${DOCKER_SERVICES[@]}"; do
+    root_service="$(_managed_service_root_name "$service")"
+    if _should_preserve_wizard_managed_root_service "$root_service" && \
+      _existing_managed_root_service_present "$root_service"; then
+      continue
+    fi
+
     template_file="$TEMPLATES_DIR/${service}.yml"
+    if [[ "$service" == "milvus" ]]; then
+      if [[ "${ENV_VALUES[MILVUS_DEVICE]:-cpu}" == "cuda" ]]; then
+        if [[ -f "$TEMPLATES_DIR/${service}-gpu.yml" ]]; then
+          template_file="$TEMPLATES_DIR/${service}-gpu.yml"
+        fi
+      fi
+    fi
+    if [[ "$service" == "qdrant" ]]; then
+      if [[ "${ENV_VALUES[QDRANT_DEVICE]:-cpu}" == "cuda" ]]; then
+        if [[ -f "$TEMPLATES_DIR/${service}-gpu.yml" ]]; then
+          template_file="$TEMPLATES_DIR/${service}-gpu.yml"
+        fi
+      fi
+    fi
     if [[ "$service" == "vllm-rerank" ]]; then
       if [[ "${ENV_VALUES[VLLM_RERANK_DEVICE]:-cpu}" == "cuda" ]]; then
         if [[ -f "$TEMPLATES_DIR/${service}-gpu.yml" ]]; then
@@ -910,7 +1076,7 @@ generate_docker_compose() {
         ;;
       neo4j)
         inject_service_environment_overrides "$service_blocks_file" "neo4j" \
-          "NEO4J_AUTH=neo4j/${ENV_VALUES[NEO4J_PASSWORD]:-neo4j_password}" \
+          "NEO4J_AUTH=${_COMPOSE_RAW_VALUE_PREFIX}\${NEO4J_USERNAME:?missing}/\${NEO4J_PASSWORD:?missing}" \
           "NEO4J_dbms_default__database=${ENV_VALUES[NEO4J_DATABASE]:-neo4j}"
         ;;
       mongodb)
@@ -918,16 +1084,12 @@ generate_docker_compose() {
       redis)
         ;;
       milvus)
-        inject_service_environment_overrides "$service_blocks_file" "milvus" \
-          "MINIO_ACCESS_KEY_ID=${ENV_VALUES[MINIO_ACCESS_KEY_ID]:-minioadmin}" \
-          "MINIO_SECRET_ACCESS_KEY=${ENV_VALUES[MINIO_SECRET_ACCESS_KEY]:-minioadmin}"
-        inject_service_environment_overrides "$service_blocks_file" "milvus-minio" \
-          "MINIO_ROOT_USER=${ENV_VALUES[MINIO_ACCESS_KEY_ID]:-minioadmin}" \
-          "MINIO_ROOT_PASSWORD=${ENV_VALUES[MINIO_SECRET_ACCESS_KEY]:-minioadmin}"
         ;;
       qdrant)
         ;;
       memgraph)
+        ;;
+      opensearch)
         ;;
       vllm-rerank)
         ;;
@@ -972,6 +1134,10 @@ prepare_lightrag_service_for_generated_compose() {
       continue
     fi
 
+    if [[ "$in_lightrag" == "yes" && "$line" =~ ^[[:space:]]{4}container_name: ]]; then
+      continue
+    fi
+
     printf '%s\n' "$line" >> "$tmp_file"
 
     if [[ "$line" == "  lightrag:" ]]; then
@@ -979,6 +1145,149 @@ prepare_lightrag_service_for_generated_compose() {
       in_env_file="no"
     fi
   done < "$compose_file"
+
+  mv "$tmp_file" "$compose_file"
+}
+
+normalize_lightrag_restart_policy() {
+  local compose_file="$1"
+  local tmp_file="${compose_file}.normalize-lightrag-restart"
+  _FILE_OPS_CLEANUP_TMP+=("$tmp_file")
+  local line
+  local in_lightrag="no"
+  local in_deploy="no"
+  local deploy_seen="no"
+  local insert_blank_after_deploy="no"
+  local skip_blank_after_removed_restart="no"
+  local -a deploy_lines=()
+
+  _trim_trailing_blank_lines() {
+    local file="$1"
+    local trim_file="${file}.trim"
+    _FILE_OPS_CLEANUP_TMP+=("$trim_file")
+
+    awk '
+      { lines[NR] = $0 }
+      END {
+        last = NR
+        while (last > 0 && lines[last] == "") {
+          last--
+        }
+        for (i = 1; i <= last; i++) {
+          print lines[i]
+        }
+      }
+    ' "$file" > "$trim_file"
+
+    mv "$trim_file" "$file"
+  }
+
+  _write_normalized_lightrag_deploy_block() {
+    local deploy_line
+    local skipping_restart_policy="no"
+
+    printf '    deploy:\n' >> "$tmp_file"
+    for deploy_line in "${deploy_lines[@]}"; do
+      if [[ -z "$deploy_line" ]]; then
+        continue
+      fi
+
+      if [[ "$skipping_restart_policy" == "yes" ]]; then
+        if [[ "$deploy_line" =~ ^[[:space:]]{8} ]]; then
+          continue
+        fi
+        skipping_restart_policy="no"
+      fi
+
+      if [[ "$deploy_line" == "      restart_policy:" ]]; then
+        skipping_restart_policy="yes"
+        continue
+      fi
+
+      printf '%s\n' "$deploy_line" >> "$tmp_file"
+    done
+
+    printf '      restart_policy:\n' >> "$tmp_file"
+    printf '        condition: on-failure\n' >> "$tmp_file"
+    printf '        max_attempts: 10\n' >> "$tmp_file"
+  }
+
+  : > "$tmp_file"
+
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    if [[ "$in_deploy" == "yes" ]]; then
+      if [[ "$line" =~ ^[[:space:]]{6} || -z "$line" ]]; then
+        deploy_lines+=("$line")
+        continue
+      fi
+
+      _trim_trailing_blank_lines "$tmp_file"
+      _write_normalized_lightrag_deploy_block
+      deploy_lines=()
+      in_deploy="no"
+      if [[ "$line" =~ ^[[:space:]]{2}[^[:space:]] || "$line" =~ ^[^[:space:]] ]]; then
+        insert_blank_after_deploy="yes"
+      fi
+    fi
+
+    if [[ "$in_lightrag" == "yes" && "$line" =~ ^[[:space:]]{2}[^[:space:]] && "$line" != "  lightrag:" ]] || \
+      [[ "$in_lightrag" == "yes" && "$line" =~ ^[^[:space:]] ]]; then
+      if [[ "$deploy_seen" != "yes" ]]; then
+        _trim_trailing_blank_lines "$tmp_file"
+        _write_normalized_lightrag_deploy_block
+        insert_blank_after_deploy="yes"
+      fi
+      in_lightrag="no"
+      deploy_seen="no"
+      skip_blank_after_removed_restart="no"
+    fi
+
+    if [[ "$in_lightrag" == "yes" && "$line" == "    deploy:" ]]; then
+      in_deploy="yes"
+      deploy_seen="yes"
+      deploy_lines=()
+      continue
+    fi
+
+    if [[ "$in_lightrag" == "yes" && "$line" =~ ^[[:space:]]{4}restart: ]]; then
+      skip_blank_after_removed_restart="yes"
+      continue
+    fi
+
+    if [[ "$skip_blank_after_removed_restart" == "yes" && "$in_lightrag" == "yes" ]]; then
+      if [[ -z "$line" ]]; then
+        continue
+      fi
+      skip_blank_after_removed_restart="no"
+    fi
+
+    if [[ "$insert_blank_after_deploy" == "yes" ]]; then
+      printf '\n' >> "$tmp_file"
+      insert_blank_after_deploy="no"
+    fi
+
+    printf '%s\n' "$line" >> "$tmp_file"
+
+    if [[ "$line" == "  lightrag:" ]]; then
+      in_lightrag="yes"
+      in_deploy="no"
+      deploy_seen="no"
+      insert_blank_after_deploy="no"
+      skip_blank_after_removed_restart="no"
+      deploy_lines=()
+    fi
+  done < "$compose_file"
+
+  if [[ "$in_deploy" == "yes" ]]; then
+    _trim_trailing_blank_lines "$tmp_file"
+    _write_normalized_lightrag_deploy_block
+    deploy_seen="yes"
+  fi
+
+  if [[ "$in_lightrag" == "yes" && "$deploy_seen" != "yes" ]]; then
+    _trim_trailing_blank_lines "$tmp_file"
+    _write_normalized_lightrag_deploy_block
+  fi
 
   mv "$tmp_file" "$compose_file"
 }
@@ -1011,6 +1320,19 @@ format_yaml_value() {
   escaped="${escaped//\"/\\\"}"
   escaped="${escaped//\$/\$\$}"
   printf '"%s"' "$escaped"
+}
+
+_COMPOSE_RAW_VALUE_PREFIX="__LIGHTRAG_RAW_COMPOSE__:"
+
+format_compose_environment_value() {
+  local value="$1"
+
+  if [[ "$value" == "${_COMPOSE_RAW_VALUE_PREFIX}"* ]]; then
+    printf '%s' "${value#${_COMPOSE_RAW_VALUE_PREFIX}}"
+    return 0
+  fi
+
+  format_yaml_value "$value"
 }
 
 inject_service_environment_overrides() {
@@ -1174,6 +1496,11 @@ _strip_lightrag_wizard_bind_mounts() {
 _is_wizard_lightrag_port_mapping() {
   local port_spec="$(_strip_wrapping_quotes "$1")"
 
+  if [[ "$port_spec" == '${HOST:-0.0.0.0}:${PORT:-9621}:9621' || \
+        "$port_spec" == '${PORT:-9621}:9621' ]]; then
+    return 0
+  fi
+
   case "$port_spec" in
     9621|9621/tcp|*:9621|*:9621/tcp)
       return 0
@@ -1336,6 +1663,132 @@ inject_lightrag_port_mapping() {
   mv "$tmp_file" "$compose_file"
 }
 
+repair_misplaced_lightrag_depends_on() {
+  local compose_file="$1"
+  local tmp_file="${compose_file}.repair-lightrag-depends-on"
+  _FILE_OPS_CLEANUP_TMP+=("$tmp_file")
+  local line
+  local in_services="no"
+  local in_lightrag="no"
+  local lightrag_has_depends_on="no"
+  local candidate_service=""
+  local candidate_root_service=""
+  local captured_block=""
+  local candidate_header=""
+  local inserted="no"
+  local in_candidate_service="no"
+  local skipping_candidate_depends_on="no"
+
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    if [[ "$line" == "services:" ]]; then
+      in_services="yes"
+      continue
+    fi
+
+    if [[ "$in_services" == "yes" && "$line" =~ ^[^[:space:]] && "$line" != "services:" ]]; then
+      break
+    fi
+
+    if [[ "$in_services" != "yes" ]]; then
+      continue
+    fi
+
+    if [[ "$in_lightrag" == "yes" ]]; then
+      if [[ "$line" == "    depends_on:" ]]; then
+        lightrag_has_depends_on="yes"
+        break
+      fi
+
+      if [[ "$line" =~ ^[[:space:]]{2}([A-Za-z0-9_-]+):[[:space:]]*$ ]] && \
+        [[ "${BASH_REMATCH[1]}" != "lightrag" ]]; then
+        candidate_service="${BASH_REMATCH[1]}"
+        candidate_root_service="$(_managed_service_root_name "$candidate_service")"
+        if [[ -z "$candidate_root_service" || "$candidate_root_service" == "milvus" ]]; then
+          break
+        fi
+        in_lightrag="no"
+      fi
+      continue
+    fi
+
+    if [[ "$line" == "  lightrag:" ]]; then
+      in_lightrag="yes"
+      continue
+    fi
+
+    if [[ -n "$candidate_service" ]]; then
+      if [[ "$line" == "    depends_on:" ]]; then
+        captured_block="    depends_on:"$'\n'
+        continue
+      fi
+
+      if [[ -n "$captured_block" ]]; then
+        if [[ "$line" =~ ^[[:space:]]{6} ]]; then
+          captured_block+="${line}"$'\n'
+          continue
+        fi
+        break
+      fi
+
+      if [[ "$line" =~ ^[[:space:]]{2}[^[:space:]] && "$line" != "  ${candidate_service}:" ]]; then
+        break
+      fi
+
+      if [[ "$line" =~ ^[^[:space:]] ]]; then
+        break
+      fi
+    fi
+  done < "$compose_file"
+
+  if [[ "$lightrag_has_depends_on" == "yes" || -z "$captured_block" || -z "$candidate_service" ]]; then
+    return 0
+  fi
+
+  candidate_header="  ${candidate_service}:"
+  : > "$tmp_file"
+  in_lightrag="no"
+
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    if [[ "$skipping_candidate_depends_on" == "yes" ]]; then
+      if [[ "$line" =~ ^[[:space:]]{6} ]]; then
+        continue
+      fi
+      skipping_candidate_depends_on="no"
+    fi
+
+    if [[ "$in_lightrag" == "yes" && "$inserted" == "no" ]] && \
+      [[ ( "$line" =~ ^[[:space:]]{2}[^[:space:]] && "$line" != "  lightrag:" ) || "$line" =~ ^[^[:space:]] ]]; then
+      printf '%s' "$captured_block" >> "$tmp_file"
+      inserted="yes"
+      in_lightrag="no"
+    fi
+
+    if [[ "$line" == "$candidate_header" ]]; then
+      in_candidate_service="yes"
+    elif [[ "$in_candidate_service" == "yes" ]] && \
+      [[ ( "$line" =~ ^[[:space:]]{2}[^[:space:]] && "$line" != "$candidate_header" ) || "$line" =~ ^[^[:space:]] ]]; then
+      in_candidate_service="no"
+    fi
+
+    if [[ "$in_candidate_service" == "yes" && "$line" == "    depends_on:" ]]; then
+      skipping_candidate_depends_on="yes"
+      continue
+    fi
+
+    printf '%s\n' "$line" >> "$tmp_file"
+
+    if [[ "$line" == "  lightrag:" ]]; then
+      in_lightrag="yes"
+    fi
+  done < "$compose_file"
+
+  if [[ "$in_lightrag" == "yes" && "$inserted" == "no" ]]; then
+    printf '%s' "$captured_block" >> "$tmp_file"
+  fi
+
+  mv "$tmp_file" "$compose_file"
+}
+
 inject_lightrag_environment_overrides() {
   local compose_file="$1"
   shift
@@ -1353,6 +1806,7 @@ inject_lightrag_depends_on() {
   local in_lightrag="no"
   local in_depends_on="no"
   local inserted="no"
+  local insert_blank_after_depends_on="no"
   local current_dep_name=""
   local current_dep_block=""
   local dep_name=""
@@ -1393,6 +1847,27 @@ inject_lightrag_depends_on() {
     _record_preserved_depends_on_entry "$current_dep_name" "$current_dep_block"
     current_dep_name=""
     current_dep_block=""
+  }
+
+  _trim_trailing_blank_lines() {
+    local file="$1"
+    local trim_file="${file}.trim"
+    _FILE_OPS_CLEANUP_TMP+=("$trim_file")
+
+    awk '
+      { lines[NR] = $0 }
+      END {
+        last = NR
+        while (last > 0 && lines[last] == "") {
+          last--
+        }
+        for (i = 1; i <= last; i++) {
+          print lines[i]
+        }
+      }
+    ' "$file" > "$trim_file"
+
+    mv "$trim_file" "$file"
   }
 
   _write_lightrag_depends_on_block() {
@@ -1451,6 +1926,7 @@ inject_lightrag_depends_on() {
 
       _flush_current_depends_on_entry
       if [[ "$inserted" == "no" ]]; then
+        _trim_trailing_blank_lines "$tmp_file"
         _write_lightrag_depends_on_block
       fi
       in_depends_on="no"
@@ -1465,9 +1941,16 @@ inject_lightrag_depends_on() {
           ( "$line" =~ ^[[:space:]]{2}[^[:space:]] || "$line" =~ ^[^[:space:]] ) && \
           "$line" != "  lightrag:" ]]; then
       if [[ "$inserted" == "no" ]]; then
+        _trim_trailing_blank_lines "$tmp_file"
         _write_lightrag_depends_on_block
+        insert_blank_after_depends_on="yes"
       fi
       in_lightrag="no"
+    fi
+
+    if [[ "$insert_blank_after_depends_on" == "yes" ]]; then
+      printf '\n' >> "$tmp_file"
+      insert_blank_after_depends_on="no"
     fi
 
     printf '%s\n' "$line" >> "$tmp_file"
@@ -1475,6 +1958,7 @@ inject_lightrag_depends_on() {
     if [[ "$line" == "  lightrag:" ]]; then
       in_lightrag="yes"
       inserted="no"
+      insert_blank_after_depends_on="no"
       in_depends_on="no"
       current_dep_name=""
       current_dep_block=""
@@ -1487,9 +1971,11 @@ inject_lightrag_depends_on() {
   if [[ "$in_depends_on" == "yes" ]]; then
     _flush_current_depends_on_entry
     if [[ "$inserted" == "no" ]]; then
+      _trim_trailing_blank_lines "$tmp_file"
       _write_lightrag_depends_on_block
     fi
   elif [[ "$in_lightrag" == "yes" && "$inserted" == "no" ]]; then
+    _trim_trailing_blank_lines "$tmp_file"
     _write_lightrag_depends_on_block
   fi
 
@@ -1595,10 +2081,14 @@ detect_compose_services() {
 detect_managed_root_services() {
   local compose_file="$1"
   local service_name
+  local root_service
+  declare -A seen_roots=()
 
   while IFS= read -r service_name; do
-    if _is_wizard_managed_root_service_name "$service_name"; then
-      printf '%s\n' "$service_name"
+    root_service="$(_managed_service_root_name "$service_name")"
+    if [[ -n "$root_service" && -z "${seen_roots[$root_service]+set}" ]]; then
+      seen_roots["$root_service"]=1
+      printf '%s\n' "$root_service"
     fi
   done < <(detect_compose_services "$compose_file")
 }
