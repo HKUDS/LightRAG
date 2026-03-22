@@ -558,6 +558,113 @@ async def test_delete_retry_succeeds_after_rebuild_failure(tmp_path, monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_delete_retry_cleans_llm_cache_after_rebuild_failure(
+    tmp_path, monkeypatch
+):
+    rag = await _build_rag(
+        tmp_path, "delete_retry_cleans_llm_cache", _deterministic_chunking
+    )
+    try:
+        doc_id = "doc-delete-retry-cache-cleanup"
+        keep_chunk_id = "chunk-keep"
+        drop_chunk_id = "chunk-drop"
+        seeded = await _seed_delete_retry_state(
+            rag,
+            doc_id=doc_id,
+            status_chunk_ids=[drop_chunk_id],
+            tracking_chunk_ids=[keep_chunk_id, drop_chunk_id],
+            chunk_owners={
+                keep_chunk_id: "doc-keep",
+                drop_chunk_id: doc_id,
+            },
+        )
+        entity_a = seeded["entity_a"]
+        entity_b = seeded["entity_b"]
+        cache_ids = await _seed_chunk_cache_entries(rag, [drop_chunk_id], "retry")
+
+        async def fail_rebuild(**kwargs):
+            raise RuntimeError("rebuild fail sentinel")
+
+        async def succeed_rebuild(
+            entities_to_rebuild,
+            relationships_to_rebuild,
+            knowledge_graph_inst,
+            entities_vdb,
+            relationships_vdb,
+            **kwargs,
+        ):
+            for entity_name, remaining_chunk_ids in entities_to_rebuild.items():
+                node = await knowledge_graph_inst.get_node(entity_name)
+                assert node is not None
+                updated_node = {
+                    **node,
+                    "source_id": GRAPH_FIELD_SEP.join(remaining_chunk_ids),
+                }
+                await knowledge_graph_inst.upsert_node(entity_name, updated_node)
+                await entities_vdb.upsert(
+                    {
+                        compute_mdhash_id(entity_name, prefix="ent-"): {
+                            "content": f"{entity_name}\n{updated_node['description']}",
+                            "entity_name": entity_name,
+                            "source_id": updated_node["source_id"],
+                            "description": updated_node["description"],
+                            "entity_type": updated_node["entity_type"],
+                            "file_path": updated_node["file_path"],
+                        }
+                    }
+                )
+
+            for (src, tgt), remaining_chunk_ids in relationships_to_rebuild.items():
+                edge = await knowledge_graph_inst.get_edge(src, tgt)
+                assert edge is not None
+                updated_edge = {
+                    **edge,
+                    "source_id": GRAPH_FIELD_SEP.join(remaining_chunk_ids),
+                }
+                await knowledge_graph_inst.upsert_edge(src, tgt, updated_edge)
+                await relationships_vdb.upsert(
+                    {
+                        compute_mdhash_id(src + tgt, prefix="rel-"): {
+                            "content": f"{updated_edge['keywords']}\t{src}\n{tgt}\n{updated_edge['description']}",
+                            "src_id": src,
+                            "tgt_id": tgt,
+                            "source_id": updated_edge["source_id"],
+                            "description": updated_edge["description"],
+                            "keywords": updated_edge["keywords"],
+                            "weight": updated_edge["weight"],
+                            "file_path": updated_edge["file_path"],
+                        }
+                    }
+                )
+
+        monkeypatch.setattr(
+            lightrag_module, "rebuild_knowledge_from_chunks", fail_rebuild
+        )
+        first_result = await rag.adelete_by_doc_id(doc_id, delete_llm_cache=True)
+        assert first_result.status == "fail"
+
+        failed_status = await rag.doc_status.get_by_id(doc_id)
+        assert failed_status is not None
+        assert failed_status["metadata"]["deletion_llm_cache_ids"] == cache_ids
+        assert await rag.text_chunks.get_by_id(drop_chunk_id) is None
+
+        monkeypatch.setattr(
+            lightrag_module, "rebuild_knowledge_from_chunks", succeed_rebuild
+        )
+        second_result = await rag.adelete_by_doc_id(doc_id, delete_llm_cache=True)
+
+        assert second_result.status == "success"
+        assert await rag.doc_status.get_by_id(doc_id) is None
+        assert await rag.full_docs.get_by_id(doc_id) is None
+        assert await rag.llm_response_cache.get_by_id(cache_ids[0]) is None
+        edge = await rag.chunk_entity_relation_graph.get_edge(entity_a, entity_b)
+        assert edge is not None
+        assert edge["source_id"] == keep_chunk_id
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
 async def test_delete_with_metadata_chunk_backup_when_chunks_list_missing(tmp_path):
     rag = await _build_rag(
         tmp_path, "delete_missing_chunks_list_backup", _deterministic_chunking

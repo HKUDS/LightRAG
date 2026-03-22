@@ -3160,13 +3160,13 @@ class LightRAG:
                     file_path="",
                 )
 
-            def _normalize_chunk_ids(raw_chunk_ids: Any) -> list[str]:
-                if not isinstance(raw_chunk_ids, list):
+            def _normalize_string_list(raw_values: Any) -> list[str]:
+                if not isinstance(raw_values, list):
                     return []
                 return [
-                    chunk_id
-                    for chunk_id in raw_chunk_ids
-                    if isinstance(chunk_id, str) and chunk_id
+                    value
+                    for value in raw_values
+                    if isinstance(value, str) and value
                 ]
 
             # Check document status and log warning for non-completed documents
@@ -3187,17 +3187,23 @@ class LightRAG:
                 if not isinstance(metadata, dict):
                     metadata = {}
 
-                backup_chunk_ids = _normalize_chunk_ids(
+                backup_chunk_ids = _normalize_string_list(
                     metadata.get("deletion_chunk_ids", [])
                 )
-                current_chunk_ids = _normalize_chunk_ids(
+                current_chunk_ids = _normalize_string_list(
                     doc_status_data.get("chunks_list", [])
                 )
                 retry_chunk_ids = current_chunk_ids or backup_chunk_ids
+                backup_cache_ids = _normalize_string_list(
+                    metadata.get("deletion_llm_cache_ids", [])
+                )
+                retry_cache_ids = doc_llm_cache_ids or backup_cache_ids
 
                 updated_metadata = dict(metadata)
                 if retry_chunk_ids:
                     updated_metadata["deletion_chunk_ids"] = retry_chunk_ids
+                if retry_cache_ids:
+                    updated_metadata["deletion_llm_cache_ids"] = retry_cache_ids
                 updated_metadata["last_deletion_attempt_at"] = datetime.now(
                     timezone.utc
                 ).isoformat()
@@ -3253,12 +3259,12 @@ class LightRAG:
             # 2. Get chunk IDs from document status
             metadata = doc_status_data.get("metadata", {})
             metadata_chunk_ids = (
-                _normalize_chunk_ids(metadata.get("deletion_chunk_ids", []))
+                _normalize_string_list(metadata.get("deletion_chunk_ids", []))
                 if isinstance(metadata, dict)
                 else []
             )
             chunk_ids = set(
-                _normalize_chunk_ids(doc_status_data.get("chunks_list", []))
+                _normalize_string_list(doc_status_data.get("chunks_list", []))
                 or metadata_chunk_ids
             )
 
@@ -3287,6 +3293,13 @@ class LightRAG:
                     )
                 else:
                     try:
+                        metadata_cache_ids = (
+                            _normalize_string_list(
+                                metadata.get("deletion_llm_cache_ids", [])
+                            )
+                            if isinstance(metadata, dict)
+                            else []
+                        )
                         chunk_data_list = await self.text_chunks.get_by_ids(
                             list(chunk_ids)
                         )
@@ -3305,7 +3318,12 @@ class LightRAG:
                                 ):
                                     doc_llm_cache_ids.append(cache_id)
                                     seen_cache_ids.add(cache_id)
+                        if metadata_cache_ids:
+                            doc_llm_cache_ids = merge_source_ids(
+                                doc_llm_cache_ids, metadata_cache_ids
+                            )
                         if doc_llm_cache_ids:
+                            await _update_delete_retry_state(failed=False)
                             logger.info(
                                 "Collected %d LLM cache entries for document %s",
                                 len(doc_llm_cache_ids),
