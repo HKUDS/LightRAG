@@ -840,6 +840,12 @@ class DeletionResult:
     message: str
     status_code: int = 200
     file_path: str | None = None
+    # Populated when skip_rebuild=True so the caller can do a single deferred rebuild
+    entities_to_rebuild: Dict[str, list] | None = None
+    relationships_to_rebuild: Dict[Any, list] | None = None
+    # Track fully deleted entities/relationships that should NOT be rebuilt
+    deleted_entities: list[str] | None = None
+    deleted_relationships: list[tuple[str, str]] | None = None
 
 
 # Unified Query Result Data Structures for Reference List Support
