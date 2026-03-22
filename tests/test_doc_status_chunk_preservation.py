@@ -423,7 +423,10 @@ async def test_delete_rebuild_failure_prunes_chunk_tracking_before_abort(
         assert failed_status is not None
         assert failed_status["chunks_list"] == [drop_chunk_id]
         assert failed_status["metadata"]["deletion_failed"] is True
-        assert failed_status["metadata"]["deletion_failure_stage"] == "rebuild_knowledge_graph"
+        assert (
+            failed_status["metadata"]["deletion_failure_stage"]
+            == "rebuild_knowledge_graph"
+        )
         assert failed_status["metadata"]["deletion_chunk_ids"] == [drop_chunk_id]
         assert "rebuild fail sentinel" in failed_status["error_msg"]
         assert entity_tracking is not None
@@ -432,16 +435,19 @@ async def test_delete_rebuild_failure_prunes_chunk_tracking_before_abort(
         assert relation_tracking is not None
         assert relation_tracking["chunk_ids"] == [keep_chunk_id]
         assert relation_tracking["count"] == 1
-        assert await rag.chunk_entity_relation_graph.get_edge(entity_a, entity_b) is not None
+        assert (
+            await rag.chunk_entity_relation_graph.get_edge(entity_a, entity_b)
+            is not None
+        )
     finally:
         await rag.finalize_storages()
 
 
 @pytest.mark.asyncio
-async def test_delete_retry_succeeds_after_rebuild_failure(
-    tmp_path, monkeypatch
-):
-    rag = await _build_rag(tmp_path, "delete_retry_after_failure", _deterministic_chunking)
+async def test_delete_retry_succeeds_after_rebuild_failure(tmp_path, monkeypatch):
+    rag = await _build_rag(
+        tmp_path, "delete_retry_after_failure", _deterministic_chunking
+    )
     try:
         doc_id = "doc-delete-retry-success"
         keep_chunk_id = "chunk-keep"
@@ -582,19 +588,26 @@ async def test_delete_with_metadata_chunk_backup_when_chunks_list_missing(tmp_pa
         assert await rag.chunks_vdb.get_by_id(drop_chunk_id) is None
         assert await rag.chunk_entity_relation_graph.get_node(entity_a) is None
         assert await rag.chunk_entity_relation_graph.get_node(entity_b) is None
-        assert await rag.chunk_entity_relation_graph.get_edge(entity_a, entity_b) is None
+        assert (
+            await rag.chunk_entity_relation_graph.get_edge(entity_a, entity_b) is None
+        )
         assert await rag.entity_chunks.get_by_id(entity_a) is None
         assert await rag.entity_chunks.get_by_id(entity_b) is None
         assert await rag.relation_chunks.get_by_id(relation_key) is None
-        assert await rag.entities_vdb.get_by_id(
-            compute_mdhash_id(entity_a, prefix="ent-")
-        ) is None
-        assert await rag.entities_vdb.get_by_id(
-            compute_mdhash_id(entity_b, prefix="ent-")
-        ) is None
-        assert await rag.relationships_vdb.get_by_id(
-            compute_mdhash_id(entity_a + entity_b, prefix="rel-")
-        ) is None
+        assert (
+            await rag.entities_vdb.get_by_id(compute_mdhash_id(entity_a, prefix="ent-"))
+            is None
+        )
+        assert (
+            await rag.entities_vdb.get_by_id(compute_mdhash_id(entity_b, prefix="ent-"))
+            is None
+        )
+        assert (
+            await rag.relationships_vdb.get_by_id(
+                compute_mdhash_id(entity_a + entity_b, prefix="rel-")
+            )
+            is None
+        )
     finally:
         await rag.finalize_storages()
 

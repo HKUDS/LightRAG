@@ -3473,9 +3473,7 @@ class LightRAG:
 
                     graph_sources = [
                         chunk_id
-                        for chunk_id in edge_data["source_id"].split(
-                            GRAPH_FIELD_SEP
-                        )
+                        for chunk_id in edge_data["source_id"].split(GRAPH_FIELD_SEP)
                         if chunk_id
                     ]
 
