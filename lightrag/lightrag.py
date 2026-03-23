@@ -3758,7 +3758,7 @@ class LightRAG:
         if not self._ensure_local_raganything_importable():
             return None
         try:
-            from raganything.parser import MineruParser, DoclingParser
+            from raganything.parser import MineruParser, DoclingParser  # type: ignore[import-untyped]
         except Exception as e:
             logger.info(f"Local RAG-Anything import unavailable: {e}")
             return None
