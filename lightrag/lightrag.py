@@ -2990,6 +2990,22 @@ class LightRAG:
         await self.doc_status.upsert({doc_id: updated_status_data})
         return updated_status_data
 
+    async def _get_existing_llm_cache_ids(self, cache_ids: list[str]) -> list[str]:
+        """Return cache IDs that still exist in cache storage.
+
+        Some KV storage backends only log delete failures and return without
+        raising, so callers must verify which records still exist after delete.
+        """
+        if not self.llm_response_cache or not cache_ids:
+            return []
+
+        existing_records = await self.llm_response_cache.get_by_ids(cache_ids)
+        return [
+            cache_id
+            for cache_id, record in zip(cache_ids, existing_records)
+            if record is not None
+        ]
+
     async def aclear_cache(self) -> None:
         """Clear all cache data from the LLM response cache storage.
 
@@ -3301,12 +3317,7 @@ class LightRAG:
                 # place left to recover the cache keys for cleanup.
                 deletion_stage = "collect_llm_cache"
                 doc_llm_cache_ids = list(metadata_cache_ids)
-                if not self.llm_response_cache:
-                    logger.info(
-                        "Skipping LLM cache id collection for document %s because cache storage is unavailable",
-                        doc_id,
-                    )
-                elif not self.text_chunks:
+                if not self.text_chunks:
                     logger.info(
                         "Skipping LLM cache id collection for document %s because text chunk storage is unavailable",
                         doc_id,
@@ -3797,6 +3808,17 @@ class LightRAG:
                 try:
                     deletion_stage = "delete_llm_cache"
                     await self.llm_response_cache.delete(doc_llm_cache_ids)
+                    # Some storage implementations do not raise on delete errors and
+                    # instead only log internally, so confirm the cache entries are
+                    # actually gone before deleting the document/status records.
+                    remaining_cache_ids = await self._get_existing_llm_cache_ids(
+                        doc_llm_cache_ids
+                    )
+                    if remaining_cache_ids:
+                        doc_llm_cache_ids = remaining_cache_ids
+                        raise Exception(
+                            f"{len(remaining_cache_ids)} LLM cache entries still exist after delete"
+                        )
                     cache_log_message = f"Successfully deleted {len(doc_llm_cache_ids)} LLM cache entries for document {doc_id}"
                     logger.info(cache_log_message)
                     async with pipeline_status_lock:

@@ -769,6 +769,65 @@ async def test_delete_retry_cleans_llm_cache_when_enabled_on_retry(
 
 
 @pytest.mark.asyncio
+async def test_delete_retry_collects_cache_ids_without_cache_storage(
+    tmp_path, monkeypatch
+):
+    rag = await _build_rag(
+        tmp_path,
+        "delete_retry_collect_cache_ids_without_storage",
+        _deterministic_chunking,
+    )
+    try:
+        doc_id = "doc-delete-retry-collect-cache-ids"
+        keep_chunk_id = "chunk-keep"
+        drop_chunk_id = "chunk-drop"
+        await _seed_delete_retry_state(
+            rag,
+            doc_id=doc_id,
+            status_chunk_ids=[drop_chunk_id],
+            tracking_chunk_ids=[keep_chunk_id, drop_chunk_id],
+            chunk_owners={
+                keep_chunk_id: "doc-keep",
+                drop_chunk_id: doc_id,
+            },
+        )
+        cache_ids = await _seed_chunk_cache_entries(
+            rag, [drop_chunk_id], "collect-without-storage"
+        )
+
+        async def fail_rebuild(**kwargs):
+            raise RuntimeError("rebuild fail sentinel")
+
+        cache_storage = rag.llm_response_cache
+        rag.llm_response_cache = None
+        monkeypatch.setattr(
+            lightrag_module, "rebuild_knowledge_from_chunks", fail_rebuild
+        )
+        first_result = await rag.adelete_by_doc_id(doc_id, delete_llm_cache=False)
+
+        assert first_result.status == "fail"
+        failed_status = await rag.doc_status.get_by_id(doc_id)
+        assert failed_status is not None
+        assert failed_status["metadata"]["deletion_llm_cache_ids"] == cache_ids
+        assert await rag.text_chunks.get_by_id(drop_chunk_id) is None
+
+        rag.llm_response_cache = cache_storage
+        monkeypatch.setattr(
+            lightrag_module,
+            "rebuild_knowledge_from_chunks",
+            _succeed_rebuild_from_remaining_chunks,
+        )
+        second_result = await rag.adelete_by_doc_id(doc_id, delete_llm_cache=True)
+
+        assert second_result.status == "success"
+        assert await rag.doc_status.get_by_id(doc_id) is None
+        assert await rag.full_docs.get_by_id(doc_id) is None
+        assert await rag.llm_response_cache.get_by_id(cache_ids[0]) is None
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
 async def test_delete_retry_succeeds_after_llm_cache_cleanup_failure(
     tmp_path, monkeypatch
 ):
@@ -801,6 +860,56 @@ async def test_delete_retry_succeeds_after_llm_cache_cleanup_failure(
 
         assert first_result.status == "fail"
         assert "Failed to delete LLM cache" in first_result.message
+        assert await rag.doc_status.get_by_id(doc_id) is not None
+        assert await rag.full_docs.get_by_id(doc_id) is not None
+        assert await rag.llm_response_cache.get_by_id(cache_ids[0]) is not None
+
+        monkeypatch.undo()
+        second_result = await rag.adelete_by_doc_id(doc_id, delete_llm_cache=True)
+
+        assert second_result.status == "success"
+        assert await rag.doc_status.get_by_id(doc_id) is None
+        assert await rag.full_docs.get_by_id(doc_id) is None
+        assert await rag.llm_response_cache.get_by_id(cache_ids[0]) is None
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_delete_retry_succeeds_after_silent_llm_cache_cleanup_failure(
+    tmp_path, monkeypatch
+):
+    rag = await _build_rag(
+        tmp_path,
+        "delete_retry_after_silent_cache_cleanup_failure",
+        _deterministic_chunking,
+    )
+    try:
+        doc_id = "doc-delete-silent-cache-cleanup-failure"
+        drop_chunk_id = "chunk-drop"
+        await _seed_delete_retry_state(
+            rag,
+            doc_id=doc_id,
+            status_chunk_ids=[drop_chunk_id],
+            tracking_chunk_ids=[drop_chunk_id],
+            chunk_owners={drop_chunk_id: doc_id},
+        )
+        cache_ids = await _seed_chunk_cache_entries(
+            rag, [drop_chunk_id], "silent-cache-cleanup-failure"
+        )
+
+        async def silently_fail_cache_delete(self, ids):
+            return None
+
+        monkeypatch.setattr(
+            rag.llm_response_cache,
+            "delete",
+            MethodType(silently_fail_cache_delete, rag.llm_response_cache),
+        )
+        first_result = await rag.adelete_by_doc_id(doc_id, delete_llm_cache=True)
+
+        assert first_result.status == "fail"
+        assert "still exist after delete" in first_result.message
         assert await rag.doc_status.get_by_id(doc_id) is not None
         assert await rag.full_docs.get_by_id(doc_id) is not None
         assert await rag.llm_response_cache.get_by_id(cache_ids[0]) is not None
