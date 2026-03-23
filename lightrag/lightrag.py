@@ -3331,9 +3331,13 @@ class LightRAG:
                         ) from cache_err
 
                 try:
-                    # Still need to delete the doc status and full doc
-                    await self.full_docs.delete([doc_id])
+                    # Still need to delete the doc status and full doc.
+                    # Delete doc_status first: if full_docs.delete fails on retry, the
+                    # doc_status record is already gone so the retry finds no record and
+                    # treats the document as already deleted rather than creating a zombie.
+                    deletion_stage = "delete_doc_entries"
                     await self.doc_status.delete([doc_id])
+                    await self.full_docs.delete([doc_id])
                 except Exception as e:
                     logger.error(
                         f"Failed to delete document {doc_id} with no chunks: {e}"
@@ -3418,9 +3422,16 @@ class LightRAG:
                             doc_id,
                             status_write_error,
                         )
+                        # Describe whether this is a fresh attempt or a retry so
+                        # operators can tell whether prior partial deletions exist.
+                        attempt_context = (
+                            "retry — prior partial deletions may exist"
+                            if metadata_cache_ids
+                            else "deletion not yet started"
+                        )
                         raise Exception(
                             f"Failed to persist LLM cache IDs for document {doc_id} "
-                            f"(deletion not yet started): {status_write_error}"
+                            f"({attempt_context}): {status_write_error}"
                         ) from status_write_error
                     logger.info(
                         "Collected %d LLM cache entries for document %s",
