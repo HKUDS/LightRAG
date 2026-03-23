@@ -664,7 +664,7 @@ async def test_delete_retry_cleans_llm_cache_after_rebuild_failure(
 
 
 @pytest.mark.asyncio
-async def test_delete_rejects_when_chunks_list_missing(tmp_path):
+async def test_delete_succeeds_when_chunks_list_missing(tmp_path):
     rag = await _build_rag(
         tmp_path, "delete_missing_chunks_list_rejected", _deterministic_chunking
     )
@@ -683,17 +683,11 @@ async def test_delete_rejects_when_chunks_list_missing(tmp_path):
         relation_key = seeded["relation_key"]
 
         result = await rag.adelete_by_doc_id(doc_id)
-        failed_status = await rag.doc_status.get_by_id(doc_id)
 
-        assert result.status == "fail"
-        assert "chunks_list is empty" in result.message
-        assert failed_status is not None
-        assert failed_status["metadata"]["deletion_failed"] is True
-        assert (
-            failed_status["metadata"]["deletion_failure_stage"] == "resolve_chunk_ids"
-        )
-        assert "chunks_list is empty" in failed_status["error_msg"]
-        assert await rag.full_docs.get_by_id(doc_id) is not None
+        assert result.status == "success"
+        assert "without associated chunks" in result.message
+        assert await rag.doc_status.get_by_id(doc_id) is None
+        assert await rag.full_docs.get_by_id(doc_id) is None
         assert await rag.full_entities.get_by_id(doc_id) is not None
         assert await rag.full_relations.get_by_id(doc_id) is not None
         assert await rag.text_chunks.get_by_id(drop_chunk_id) is not None
@@ -721,6 +715,83 @@ async def test_delete_rejects_when_chunks_list_missing(tmp_path):
             )
             is not None
         )
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_delete_ignores_stale_graph_source_ids_when_tracking_exists(tmp_path):
+    rag = await _build_rag(
+        tmp_path, "delete_ignore_stale_graph_sources", _deterministic_chunking
+    )
+    try:
+        doc_id = "doc-delete-stale-graph-sources"
+        drop_chunk_id = "chunk-drop"
+        stale_chunk_id = "chunk-stale"
+        seeded = await _seed_delete_retry_state(
+            rag,
+            doc_id=doc_id,
+            status_chunk_ids=[drop_chunk_id],
+            tracking_chunk_ids=[drop_chunk_id],
+            chunk_owners={drop_chunk_id: doc_id},
+        )
+        entity_a = seeded["entity_a"]
+        entity_b = seeded["entity_b"]
+        relation_key = seeded["relation_key"]
+        stale_source_id = GRAPH_FIELD_SEP.join([stale_chunk_id, drop_chunk_id])
+
+        await rag.chunk_entity_relation_graph.upsert_node(
+            entity_a,
+            {
+                "entity_id": entity_a,
+                "source_id": stale_source_id,
+                "description": f"{entity_a} description",
+                "entity_type": "test",
+                "file_path": "delete_retry.txt",
+                "created_at": 1,
+                "truncate": "",
+            },
+        )
+        await rag.chunk_entity_relation_graph.upsert_node(
+            entity_b,
+            {
+                "entity_id": entity_b,
+                "source_id": stale_source_id,
+                "description": f"{entity_b} description",
+                "entity_type": "test",
+                "file_path": "delete_retry.txt",
+                "created_at": 1,
+                "truncate": "",
+            },
+        )
+        await rag.chunk_entity_relation_graph.upsert_edge(
+            entity_a,
+            entity_b,
+            {
+                "source": entity_a,
+                "target": entity_b,
+                "source_id": stale_source_id,
+                "description": "related",
+                "keywords": "test",
+                "weight": 1.0,
+                "file_path": "delete_retry.txt",
+            },
+        )
+
+        result = await rag.adelete_by_doc_id(doc_id)
+
+        assert result.status == "success"
+        assert await rag.doc_status.get_by_id(doc_id) is None
+        assert await rag.full_docs.get_by_id(doc_id) is None
+        assert await rag.text_chunks.get_by_id(drop_chunk_id) is None
+        assert await rag.chunk_entity_relation_graph.get_node(entity_a) is None
+        assert await rag.chunk_entity_relation_graph.get_node(entity_b) is None
+        assert (
+            await rag.chunk_entity_relation_graph.get_edge(entity_a, entity_b) is None
+        )
+        assert await rag.entity_chunks.get_by_id(entity_a) is None
+        assert await rag.entity_chunks.get_by_id(entity_b) is None
+        assert await rag.relation_chunks.get_by_id(relation_key) is None
     finally:
         await rag.finalize_storages()
 

@@ -3256,37 +3256,33 @@ class LightRAG:
                 _normalize_string_list(doc_status_data.get("chunks_list", []))
             )
 
-            if chunk_ids:
-                doc_status_data = await self._update_delete_retry_state(
-                    doc_id,
-                    doc_status_data,
-                    deletion_stage=deletion_stage,
-                    doc_llm_cache_ids=doc_llm_cache_ids,
-                    failed=False,
-                )
-            else:
-                deletion_stage = "resolve_chunk_ids"
+            if not chunk_ids:
+                logger.warning(f"No chunks found for document {doc_id}")
+                # Mark that deletion operations have started
                 deletion_operations_started = True
-                error_message = (
-                    f"Cannot safely delete document {doc_id}: chunks_list is empty"
-                )
-                logger.warning(
-                    "Refusing to delete document %s because chunks_list is empty",
-                    doc_id,
-                )
-                doc_status_data = await self._update_delete_retry_state(
-                    doc_id,
-                    doc_status_data,
-                    deletion_stage=deletion_stage,
-                    doc_llm_cache_ids=doc_llm_cache_ids,
-                    error_message=error_message,
-                    failed=True,
-                )
+                try:
+                    # Still need to delete the doc status and full doc
+                    await self.full_docs.delete([doc_id])
+                    await self.doc_status.delete([doc_id])
+                except Exception as e:
+                    logger.error(
+                        f"Failed to delete document {doc_id} with no chunks: {e}"
+                    )
+                    raise Exception(f"Failed to delete document entry: {e}") from e
+
+                async with pipeline_status_lock:
+                    log_message = (
+                        f"Document deleted without associated chunks: {doc_id}"
+                    )
+                    logger.info(log_message)
+                    pipeline_status["latest_message"] = log_message
+                    pipeline_status["history_messages"].append(log_message)
+
                 return DeletionResult(
-                    status="fail",
+                    status="success",
                     doc_id=doc_id,
-                    message=error_message,
-                    status_code=500,
+                    message=log_message,
+                    status_code=200,
                     file_path=file_path,
                 )
 
@@ -3449,11 +3445,7 @@ class LightRAG:
                             if chunk_id
                         ]
 
-                    if existing_sources and graph_sources:
-                        existing_sources = merge_source_ids(
-                            existing_sources, graph_sources
-                        )
-                    elif not existing_sources:
+                    if not existing_sources:
                         existing_sources = graph_sources
 
                     if not existing_sources:
@@ -3463,11 +3455,22 @@ class LightRAG:
                         continue
 
                     remaining_sources = subtract_source_ids(existing_sources, chunk_ids)
+                    # `existing_sources` comes from chunk-tracking storage when available, but
+                    # graph `source_id` can still be stale after a failed prior delete. If the
+                    # graph still references any chunk being deleted in this attempt, force a
+                    # rebuild/delete so the graph metadata gets synchronized instead of being
+                    # left untouched with orphaned source references.
+                    graph_references_deleted_chunks = bool(
+                        graph_sources and set(graph_sources) & chunk_ids
+                    )
 
                     if not remaining_sources:
                         entities_to_delete.add(node_label)
                         entity_chunk_updates[node_label] = []
-                    elif remaining_sources != existing_sources:
+                    elif (
+                        remaining_sources != existing_sources
+                        or graph_references_deleted_chunks
+                    ):
                         entities_to_rebuild[node_label] = remaining_sources
                         entity_chunk_updates[node_label] = remaining_sources
                     else:
@@ -3515,11 +3518,7 @@ class LightRAG:
                         if chunk_id
                     ]
 
-                    if existing_sources and graph_sources:
-                        existing_sources = merge_source_ids(
-                            existing_sources, graph_sources
-                        )
-                    elif not existing_sources:
+                    if not existing_sources:
                         existing_sources = graph_sources
 
                     if not existing_sources:
@@ -3529,11 +3528,21 @@ class LightRAG:
                         continue
 
                     remaining_sources = subtract_source_ids(existing_sources, chunk_ids)
+                    # Same as the entity path above: even when relation chunk-tracking is already
+                    # correct, the graph edge may still carry a stale `source_id` that mentions a
+                    # chunk deleted in this attempt. Treat that as an affected relation so retry
+                    # deletion can repair the graph metadata rather than skipping it as "untouched".
+                    graph_references_deleted_chunks = bool(
+                        graph_sources and set(graph_sources) & chunk_ids
+                    )
 
                     if not remaining_sources:
                         relationships_to_delete.add(edge_tuple)
                         relation_chunk_updates[edge_tuple] = []
-                    elif remaining_sources != existing_sources:
+                    elif (
+                        remaining_sources != existing_sources
+                        or graph_references_deleted_chunks
+                    ):
                         relationships_to_rebuild[edge_tuple] = remaining_sources
                         relation_chunk_updates[edge_tuple] = remaining_sources
                     else:
