@@ -148,15 +148,26 @@ def _chunk_fields_from_status_doc(
     return chunks_list, len(chunks_list)
 
 
-def _normalize_string_list(raw_values: Any) -> list[str]:
+def _normalize_string_list(raw_values: Any, context: str = "") -> list[str]:
     """Return a list of non-empty strings from raw_values.
 
-    Non-string elements are silently dropped. If raw_values is not a list,
-    an empty list is returned.
+    Non-string elements are dropped and logged as warnings. If raw_values is
+    not a list, an empty list is returned.
     """
     if not isinstance(raw_values, list):
         return []
-    return [value for value in raw_values if isinstance(value, str) and value]
+    result = []
+    for i, value in enumerate(raw_values):
+        if isinstance(value, str) and value:
+            result.append(value)
+        else:
+            logger.warning(
+                "Non-string element dropped from list%s at index %d: %r",
+                f" ({context})" if context else "",
+                i,
+                value,
+            )
+    return result
 
 
 @final
@@ -2966,7 +2977,8 @@ class LightRAG:
             metadata = {}
 
         backup_cache_ids = _normalize_string_list(
-            metadata.get("deletion_llm_cache_ids", [])
+            metadata.get("deletion_llm_cache_ids", []),
+            context=f"doc {doc_id} metadata.deletion_llm_cache_ids",
         )
         retry_cache_ids = doc_llm_cache_ids or backup_cache_ids
 
@@ -3215,6 +3227,7 @@ class LightRAG:
 
         deletion_operations_started = False
         deletion_fully_completed = False
+        doc_status_already_deleted = False
         original_exception = None
         doc_llm_cache_ids: list[str] = []
         deletion_stage = "initializing"
@@ -3285,10 +3298,14 @@ class LightRAG:
             if not isinstance(metadata, dict):
                 metadata = {}
             metadata_cache_ids = _normalize_string_list(
-                metadata.get("deletion_llm_cache_ids", [])
+                metadata.get("deletion_llm_cache_ids", []),
+                context=f"doc {doc_id} metadata.deletion_llm_cache_ids",
             )
             chunk_ids = set(
-                _normalize_string_list(doc_status_data.get("chunks_list", []))
+                _normalize_string_list(
+                    doc_status_data.get("chunks_list", []),
+                    context=f"doc {doc_id} chunks_list",
+                )
             )
 
             if not chunk_ids:
@@ -3929,6 +3946,7 @@ class LightRAG:
             try:
                 deletion_stage = "delete_doc_entries"
                 await self.doc_status.delete([doc_id])
+                doc_status_already_deleted = True
                 await self.full_docs.delete([doc_id])
             except Exception as e:
                 logger.error(f"Failed to delete document and status: {e}")
@@ -3949,14 +3967,11 @@ class LightRAG:
             logger.error(error_message)
             logger.error(traceback.format_exc())
             try:
-                # Do not attempt to write retry state if doc_status was already deleted
-                # (delete_doc_entries stage): upsert would re-create the record as a
-                # zombie. All earlier stages still have doc_status intact and can safely
-                # update it, even if some chunk/graph data has already been removed.
-                if (
-                    doc_status_data is not None
-                    and deletion_stage != "delete_doc_entries"
-                ):
+                # Do not attempt to write retry state if doc_status was already deleted:
+                # upsert would re-create the record as a zombie. All earlier stages still
+                # have doc_status intact and can safely update it, even if some chunk/graph
+                # data has already been removed.
+                if doc_status_data is not None and not doc_status_already_deleted:
                     doc_status_data = await self._update_delete_retry_state(
                         doc_id,
                         doc_status_data,
