@@ -251,6 +251,59 @@ async def _seed_delete_retry_state(
     }
 
 
+async def _succeed_rebuild_from_remaining_chunks(
+    entities_to_rebuild,
+    relationships_to_rebuild,
+    knowledge_graph_inst,
+    entities_vdb,
+    relationships_vdb,
+    **kwargs,
+):
+    for entity_name, remaining_chunk_ids in entities_to_rebuild.items():
+        node = await knowledge_graph_inst.get_node(entity_name)
+        assert node is not None
+        updated_node = {
+            **node,
+            "source_id": GRAPH_FIELD_SEP.join(remaining_chunk_ids),
+        }
+        await knowledge_graph_inst.upsert_node(entity_name, updated_node)
+        await entities_vdb.upsert(
+            {
+                compute_mdhash_id(entity_name, prefix="ent-"): {
+                    "content": f"{entity_name}\n{updated_node['description']}",
+                    "entity_name": entity_name,
+                    "source_id": updated_node["source_id"],
+                    "description": updated_node["description"],
+                    "entity_type": updated_node["entity_type"],
+                    "file_path": updated_node["file_path"],
+                }
+            }
+        )
+
+    for (src, tgt), remaining_chunk_ids in relationships_to_rebuild.items():
+        edge = await knowledge_graph_inst.get_edge(src, tgt)
+        assert edge is not None
+        updated_edge = {
+            **edge,
+            "source_id": GRAPH_FIELD_SEP.join(remaining_chunk_ids),
+        }
+        await knowledge_graph_inst.upsert_edge(src, tgt, updated_edge)
+        await relationships_vdb.upsert(
+            {
+                compute_mdhash_id(src + tgt, prefix="rel-"): {
+                    "content": f"{updated_edge['keywords']}\t{src}\n{tgt}\n{updated_edge['description']}",
+                    "src_id": src,
+                    "tgt_id": tgt,
+                    "source_id": updated_edge["source_id"],
+                    "description": updated_edge["description"],
+                    "keywords": updated_edge["keywords"],
+                    "weight": updated_edge["weight"],
+                    "file_path": updated_edge["file_path"],
+                }
+            }
+        )
+
+
 @pytest.mark.asyncio
 async def test_extract_failure_preserves_chunks_and_allows_delete_with_cache_cleanup(
     tmp_path, monkeypatch
@@ -659,6 +712,106 @@ async def test_delete_retry_cleans_llm_cache_after_rebuild_failure(
         edge = await rag.chunk_entity_relation_graph.get_edge(entity_a, entity_b)
         assert edge is not None
         assert edge["source_id"] == keep_chunk_id
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_delete_retry_cleans_llm_cache_when_enabled_on_retry(
+    tmp_path, monkeypatch
+):
+    rag = await _build_rag(
+        tmp_path, "delete_retry_cache_cleanup_flag_change", _deterministic_chunking
+    )
+    try:
+        doc_id = "doc-delete-retry-cache-flag-change"
+        keep_chunk_id = "chunk-keep"
+        drop_chunk_id = "chunk-drop"
+        await _seed_delete_retry_state(
+            rag,
+            doc_id=doc_id,
+            status_chunk_ids=[drop_chunk_id],
+            tracking_chunk_ids=[keep_chunk_id, drop_chunk_id],
+            chunk_owners={
+                keep_chunk_id: "doc-keep",
+                drop_chunk_id: doc_id,
+            },
+        )
+        cache_ids = await _seed_chunk_cache_entries(rag, [drop_chunk_id], "retry-flag")
+
+        async def fail_rebuild(**kwargs):
+            raise RuntimeError("rebuild fail sentinel")
+
+        monkeypatch.setattr(
+            lightrag_module, "rebuild_knowledge_from_chunks", fail_rebuild
+        )
+        first_result = await rag.adelete_by_doc_id(doc_id, delete_llm_cache=False)
+
+        assert first_result.status == "fail"
+        failed_status = await rag.doc_status.get_by_id(doc_id)
+        assert failed_status is not None
+        assert failed_status["metadata"]["deletion_llm_cache_ids"] == cache_ids
+        assert await rag.text_chunks.get_by_id(drop_chunk_id) is None
+
+        monkeypatch.setattr(
+            lightrag_module,
+            "rebuild_knowledge_from_chunks",
+            _succeed_rebuild_from_remaining_chunks,
+        )
+        second_result = await rag.adelete_by_doc_id(doc_id, delete_llm_cache=True)
+
+        assert second_result.status == "success"
+        assert await rag.doc_status.get_by_id(doc_id) is None
+        assert await rag.full_docs.get_by_id(doc_id) is None
+        assert await rag.llm_response_cache.get_by_id(cache_ids[0]) is None
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_delete_retry_succeeds_after_llm_cache_cleanup_failure(
+    tmp_path, monkeypatch
+):
+    rag = await _build_rag(
+        tmp_path, "delete_retry_after_cache_cleanup_failure", _deterministic_chunking
+    )
+    try:
+        doc_id = "doc-delete-cache-cleanup-failure"
+        drop_chunk_id = "chunk-drop"
+        await _seed_delete_retry_state(
+            rag,
+            doc_id=doc_id,
+            status_chunk_ids=[drop_chunk_id],
+            tracking_chunk_ids=[drop_chunk_id],
+            chunk_owners={drop_chunk_id: doc_id},
+        )
+        cache_ids = await _seed_chunk_cache_entries(
+            rag, [drop_chunk_id], "cache-cleanup-failure"
+        )
+
+        async def fail_cache_delete(self, ids):
+            raise RuntimeError("llm cache delete fail sentinel")
+
+        monkeypatch.setattr(
+            rag.llm_response_cache,
+            "delete",
+            MethodType(fail_cache_delete, rag.llm_response_cache),
+        )
+        first_result = await rag.adelete_by_doc_id(doc_id, delete_llm_cache=True)
+
+        assert first_result.status == "fail"
+        assert "Failed to delete LLM cache" in first_result.message
+        assert await rag.doc_status.get_by_id(doc_id) is not None
+        assert await rag.full_docs.get_by_id(doc_id) is not None
+        assert await rag.llm_response_cache.get_by_id(cache_ids[0]) is not None
+
+        monkeypatch.undo()
+        second_result = await rag.adelete_by_doc_id(doc_id, delete_llm_cache=True)
+
+        assert second_result.status == "success"
+        assert await rag.doc_status.get_by_id(doc_id) is None
+        assert await rag.full_docs.get_by_id(doc_id) is None
+        assert await rag.llm_response_cache.get_by_id(cache_ids[0]) is None
     finally:
         await rag.finalize_storages()
 

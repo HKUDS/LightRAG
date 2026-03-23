@@ -3291,16 +3291,16 @@ class LightRAG:
             # Mark that deletion operations have started
             deletion_operations_started = True
 
-            if delete_llm_cache and chunk_ids:
+            if chunk_ids:
                 deletion_stage = "collect_llm_cache"
                 if not self.llm_response_cache:
                     logger.info(
-                        "Skipping LLM cache collection for document %s because cache storage is unavailable",
+                        "Skipping LLM cache id collection for document %s because cache storage is unavailable",
                         doc_id,
                     )
                 elif not self.text_chunks:
                     logger.info(
-                        "Skipping LLM cache collection for document %s because text chunk storage is unavailable",
+                        "Skipping LLM cache id collection for document %s because text chunk storage is unavailable",
                         doc_id,
                     )
                 else:
@@ -3517,7 +3517,9 @@ class LightRAG:
                     if edge_data.get("source_id"):
                         graph_sources = [
                             chunk_id
-                            for chunk_id in edge_data["source_id"].split(GRAPH_FIELD_SEP)
+                            for chunk_id in edge_data["source_id"].split(
+                                GRAPH_FIELD_SEP
+                            )
                             if chunk_id
                         ]
 
@@ -3782,26 +3784,8 @@ class LightRAG:
                     logger.error(f"Failed to rebuild knowledge from chunks: {e}")
                     raise Exception(f"Failed to rebuild knowledge graph: {e}") from e
 
-            # 9. Delete from full_entities and full_relations storage
-            try:
-                deletion_stage = "delete_doc_graph_metadata"
-                await self.full_entities.delete([doc_id])
-                await self.full_relations.delete([doc_id])
-            except Exception as e:
-                logger.error(f"Failed to delete from full_entities/full_relations: {e}")
-                raise Exception(
-                    f"Failed to delete from full_entities/full_relations: {e}"
-                ) from e
-
-            # 10. Delete original document and status
-            try:
-                deletion_stage = "delete_doc_entries"
-                await self.full_docs.delete([doc_id])
-                await self.doc_status.delete([doc_id])
-            except Exception as e:
-                logger.error(f"Failed to delete document and status: {e}")
-                raise Exception(f"Failed to delete document and status: {e}") from e
-
+            # 9. Delete LLM cache while the document status still exists so a failure
+            # remains retryable via the same doc_id.
             log_message = f"Document {doc_id} successfully deleted"
             if delete_llm_cache and doc_llm_cache_ids and self.llm_response_cache:
                 try:
@@ -3814,19 +3798,36 @@ class LightRAG:
                         pipeline_status["history_messages"].append(cache_log_message)
                     log_message = cache_log_message
                 except Exception as cache_delete_error:
-                    log_message = f"Document {doc_id} deleted but LLM cache cleanup failed: {cache_delete_error}"
+                    log_message = (
+                        f"Failed to delete LLM cache for document {doc_id}: "
+                        f"{cache_delete_error}"
+                    )
                     logger.error(log_message)
                     logger.error(traceback.format_exc())
                     async with pipeline_status_lock:
                         pipeline_status["latest_message"] = log_message
                         pipeline_status["history_messages"].append(log_message)
-                    return DeletionResult(
-                        status="fail",
-                        doc_id=doc_id,
-                        message=log_message,
-                        status_code=500,
-                        file_path=file_path,
-                    )
+                    raise Exception(log_message) from cache_delete_error
+
+            # 10. Delete from full_entities and full_relations storage
+            try:
+                deletion_stage = "delete_doc_graph_metadata"
+                await self.full_entities.delete([doc_id])
+                await self.full_relations.delete([doc_id])
+            except Exception as e:
+                logger.error(f"Failed to delete from full_entities/full_relations: {e}")
+                raise Exception(
+                    f"Failed to delete from full_entities/full_relations: {e}"
+                ) from e
+
+            # 11. Delete original document and status
+            try:
+                deletion_stage = "delete_doc_entries"
+                await self.full_docs.delete([doc_id])
+                await self.doc_status.delete([doc_id])
+            except Exception as e:
+                logger.error(f"Failed to delete document and status: {e}")
+                raise Exception(f"Failed to delete document and status: {e}") from e
 
             return DeletionResult(
                 status="success",
