@@ -109,6 +109,7 @@ from lightrag.utils import (
     generate_track_id,
     convert_to_user_format,
     logger,
+    merge_source_ids,
     subtract_source_ids,
     make_relation_chunk_key,
     normalize_source_ids_limit_method,
@@ -3135,6 +3136,9 @@ class LightRAG:
         deletion_operations_started = False
         original_exception = None
         doc_llm_cache_ids: list[str] = []
+        deletion_stage = "initializing"
+        doc_status_data: dict[str, Any] | None = None
+        file_path: str | None = None
 
         async with pipeline_status_lock:
             log_message = f"Starting deletion process for document {doc_id}"
@@ -3156,12 +3160,58 @@ class LightRAG:
                     file_path="",
                 )
 
+            def _normalize_string_list(raw_values: Any) -> list[str]:
+                if not isinstance(raw_values, list):
+                    return []
+                return [
+                    value for value in raw_values if isinstance(value, str) and value
+                ]
+
             # Check document status and log warning for non-completed documents
             raw_status = doc_status_data.get("status")
             try:
                 doc_status = DocStatus(raw_status)
             except ValueError:
                 doc_status = raw_status
+
+            async def _update_delete_retry_state(
+                error_message: str | None = None,
+                *,
+                failed: bool,
+            ) -> None:
+                nonlocal doc_status_data
+
+                metadata = doc_status_data.get("metadata", {})
+                if not isinstance(metadata, dict):
+                    metadata = {}
+
+                backup_cache_ids = _normalize_string_list(
+                    metadata.get("deletion_llm_cache_ids", [])
+                )
+                retry_cache_ids = doc_llm_cache_ids or backup_cache_ids
+
+                updated_metadata = dict(metadata)
+                if retry_cache_ids:
+                    updated_metadata["deletion_llm_cache_ids"] = retry_cache_ids
+                updated_metadata["last_deletion_attempt_at"] = datetime.now(
+                    timezone.utc
+                ).isoformat()
+
+                if failed:
+                    updated_metadata["deletion_failed"] = True
+                    updated_metadata["deletion_failure_stage"] = deletion_stage
+                else:
+                    updated_metadata.pop("deletion_failed", None)
+                    updated_metadata.pop("deletion_failure_stage", None)
+
+                doc_status_data = {
+                    **doc_status_data,
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                    "metadata": updated_metadata,
+                    "error_msg": error_message if failed else "",
+                }
+
+                await self.doc_status.upsert({doc_id: doc_status_data})
 
             if doc_status != DocStatus.PROCESSED:
                 if doc_status == DocStatus.PENDING:
@@ -3196,35 +3246,29 @@ class LightRAG:
                     pipeline_status["history_messages"].append(warning_msg)
 
             # 2. Get chunk IDs from document status
-            chunk_ids = set(doc_status_data.get("chunks_list", []))
+            metadata = doc_status_data.get("metadata", {})
+            chunk_ids = set(
+                _normalize_string_list(doc_status_data.get("chunks_list", []))
+            )
 
-            if not chunk_ids:
-                logger.warning(f"No chunks found for document {doc_id}")
-                # Mark that deletion operations have started
+            if chunk_ids:
+                await _update_delete_retry_state(failed=False)
+            else:
+                deletion_stage = "resolve_chunk_ids"
                 deletion_operations_started = True
-                try:
-                    # Still need to delete the doc status and full doc
-                    await self.full_docs.delete([doc_id])
-                    await self.doc_status.delete([doc_id])
-                except Exception as e:
-                    logger.error(
-                        f"Failed to delete document {doc_id} with no chunks: {e}"
-                    )
-                    raise Exception(f"Failed to delete document entry: {e}") from e
-
-                async with pipeline_status_lock:
-                    log_message = (
-                        f"Document deleted without associated chunks: {doc_id}"
-                    )
-                    logger.info(log_message)
-                    pipeline_status["latest_message"] = log_message
-                    pipeline_status["history_messages"].append(log_message)
-
+                error_message = (
+                    f"Cannot safely delete document {doc_id}: chunks_list is empty"
+                )
+                logger.warning(
+                    "Refusing to delete document %s because chunks_list is empty",
+                    doc_id,
+                )
+                await _update_delete_retry_state(error_message, failed=True)
                 return DeletionResult(
-                    status="success",
+                    status="fail",
                     doc_id=doc_id,
-                    message=log_message,
-                    status_code=200,
+                    message=error_message,
+                    status_code=500,
                     file_path=file_path,
                 )
 
@@ -3232,6 +3276,7 @@ class LightRAG:
             deletion_operations_started = True
 
             if delete_llm_cache and chunk_ids:
+                deletion_stage = "collect_llm_cache"
                 if not self.llm_response_cache:
                     logger.info(
                         "Skipping LLM cache collection for document %s because cache storage is unavailable",
@@ -3244,6 +3289,13 @@ class LightRAG:
                     )
                 else:
                     try:
+                        metadata_cache_ids = (
+                            _normalize_string_list(
+                                metadata.get("deletion_llm_cache_ids", [])
+                            )
+                            if isinstance(metadata, dict)
+                            else []
+                        )
                         chunk_data_list = await self.text_chunks.get_by_ids(
                             list(chunk_ids)
                         )
@@ -3262,7 +3314,12 @@ class LightRAG:
                                 ):
                                     doc_llm_cache_ids.append(cache_id)
                                     seen_cache_ids.add(cache_id)
+                        if metadata_cache_ids:
+                            doc_llm_cache_ids = merge_source_ids(
+                                doc_llm_cache_ids, metadata_cache_ids
+                            )
                         if doc_llm_cache_ids:
+                            await _update_delete_retry_state(failed=False)
                             logger.info(
                                 "Collected %d LLM cache entries for document %s",
                                 len(doc_llm_cache_ids),
@@ -3291,6 +3348,7 @@ class LightRAG:
             relation_chunk_updates: dict[tuple[str, str], list[str]] = {}
 
             try:
+                deletion_stage = "analyze_graph_dependencies"
                 # Get affected entities and relations from full_entities and full_relations storage
                 doc_entities_data = await self.full_entities.get_by_id(doc_id)
                 doc_relations_data = await self.full_relations.get_by_id(doc_id)
@@ -3348,6 +3406,7 @@ class LightRAG:
                         continue
 
                     existing_sources: list[str] = []
+                    graph_sources: list[str] = []
                     if self.entity_chunks:
                         stored_chunks = await self.entity_chunks.get_by_id(node_label)
                         if stored_chunks and isinstance(stored_chunks, dict):
@@ -3357,14 +3416,21 @@ class LightRAG:
                                 if chunk_id
                             ]
 
-                    if not existing_sources and node_data.get("source_id"):
-                        existing_sources = [
+                    if node_data.get("source_id"):
+                        graph_sources = [
                             chunk_id
                             for chunk_id in node_data["source_id"].split(
                                 GRAPH_FIELD_SEP
                             )
                             if chunk_id
                         ]
+
+                    if existing_sources and graph_sources:
+                        existing_sources = merge_source_ids(
+                            existing_sources, graph_sources
+                        )
+                    elif not existing_sources:
+                        existing_sources = graph_sources
 
                     if not existing_sources:
                         # No chunk references means this entity should be deleted
@@ -3406,6 +3472,7 @@ class LightRAG:
                         continue
 
                     existing_sources: list[str] = []
+                    graph_sources: list[str] = []
                     if self.relation_chunks:
                         storage_key = make_relation_chunk_key(src, tgt)
                         stored_chunks = await self.relation_chunks.get_by_id(
@@ -3418,14 +3485,18 @@ class LightRAG:
                                 if chunk_id
                             ]
 
-                    if not existing_sources:
-                        existing_sources = [
-                            chunk_id
-                            for chunk_id in edge_data["source_id"].split(
-                                GRAPH_FIELD_SEP
-                            )
-                            if chunk_id
-                        ]
+                    graph_sources = [
+                        chunk_id
+                        for chunk_id in edge_data["source_id"].split(GRAPH_FIELD_SEP)
+                        if chunk_id
+                    ]
+
+                    if existing_sources and graph_sources:
+                        existing_sources = merge_source_ids(
+                            existing_sources, graph_sources
+                        )
+                    elif not existing_sources:
+                        existing_sources = graph_sources
 
                     if not existing_sources:
                         # No chunk references means this relationship should be deleted
@@ -3493,6 +3564,7 @@ class LightRAG:
             # 5. Delete chunks from storage
             if chunk_ids:
                 try:
+                    deletion_stage = "delete_chunks"
                     await self.chunks_vdb.delete(chunk_ids)
                     await self.text_chunks.delete(chunk_ids)
 
@@ -3511,6 +3583,7 @@ class LightRAG:
             # 6. Delete relationships that have no remaining sources
             if relationships_to_delete:
                 try:
+                    deletion_stage = "delete_relationships"
                     # Delete from relation vdb
                     rel_ids_to_delete = []
                     for src, tgt in relationships_to_delete:
@@ -3548,6 +3621,7 @@ class LightRAG:
             # 7. Delete entities that have no remaining sources
             if entities_to_delete:
                 try:
+                    deletion_stage = "delete_entities"
                     # Batch get all edges for entities to avoid N+1 query problem
                     nodes_edges_dict = (
                         await self.chunk_entity_relation_graph.get_nodes_edges_batch(
@@ -3642,11 +3716,13 @@ class LightRAG:
                     raise Exception(f"Failed to delete entities: {e}") from e
 
             # Persist changes to graph database before entity and relationship rebuild
+            deletion_stage = "persist_pre_rebuild_changes"
             await self._insert_done()
 
             # 8. Rebuild entities and relationships from remaining chunks
             if entities_to_rebuild or relationships_to_rebuild:
                 try:
+                    deletion_stage = "rebuild_knowledge_graph"
                     await rebuild_knowledge_from_chunks(
                         entities_to_rebuild=entities_to_rebuild,
                         relationships_to_rebuild=relationships_to_rebuild,
@@ -3668,6 +3744,7 @@ class LightRAG:
 
             # 9. Delete from full_entities and full_relations storage
             try:
+                deletion_stage = "delete_doc_graph_metadata"
                 await self.full_entities.delete([doc_id])
                 await self.full_relations.delete([doc_id])
             except Exception as e:
@@ -3678,6 +3755,7 @@ class LightRAG:
 
             # 10. Delete original document and status
             try:
+                deletion_stage = "delete_doc_entries"
                 await self.full_docs.delete([doc_id])
                 await self.doc_status.delete([doc_id])
             except Exception as e:
@@ -3686,6 +3764,7 @@ class LightRAG:
 
             if delete_llm_cache and doc_llm_cache_ids and self.llm_response_cache:
                 try:
+                    deletion_stage = "delete_llm_cache"
                     await self.llm_response_cache.delete(doc_llm_cache_ids)
                     cache_log_message = f"Successfully deleted {len(doc_llm_cache_ids)} LLM cache entries for document {doc_id}"
                     logger.info(cache_log_message)
@@ -3714,6 +3793,16 @@ class LightRAG:
             error_message = f"Error while deleting document {doc_id}: {e}"
             logger.error(error_message)
             logger.error(traceback.format_exc())
+            try:
+                if doc_status_data is not None:
+                    await _update_delete_retry_state(error_message, failed=True)
+            except Exception as status_update_error:
+                logger.error(
+                    "Failed to update deletion retry state for document %s: %s",
+                    doc_id,
+                    status_update_error,
+                )
+                logger.error(traceback.format_exc())
             return DeletionResult(
                 status="fail",
                 doc_id=doc_id,
