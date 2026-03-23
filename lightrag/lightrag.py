@@ -3185,21 +3185,12 @@ class LightRAG:
                 if not isinstance(metadata, dict):
                     metadata = {}
 
-                backup_chunk_ids = _normalize_string_list(
-                    metadata.get("deletion_chunk_ids", [])
-                )
-                current_chunk_ids = _normalize_string_list(
-                    doc_status_data.get("chunks_list", [])
-                )
-                retry_chunk_ids = current_chunk_ids or backup_chunk_ids
                 backup_cache_ids = _normalize_string_list(
                     metadata.get("deletion_llm_cache_ids", [])
                 )
                 retry_cache_ids = doc_llm_cache_ids or backup_cache_ids
 
                 updated_metadata = dict(metadata)
-                if retry_chunk_ids:
-                    updated_metadata["deletion_chunk_ids"] = retry_chunk_ids
                 if retry_cache_ids:
                     updated_metadata["deletion_llm_cache_ids"] = retry_cache_ids
                 updated_metadata["last_deletion_attempt_at"] = datetime.now(
@@ -3256,22 +3247,29 @@ class LightRAG:
 
             # 2. Get chunk IDs from document status
             metadata = doc_status_data.get("metadata", {})
-            metadata_chunk_ids = (
-                _normalize_string_list(metadata.get("deletion_chunk_ids", []))
-                if isinstance(metadata, dict)
-                else []
-            )
             chunk_ids = set(
                 _normalize_string_list(doc_status_data.get("chunks_list", []))
-                or metadata_chunk_ids
             )
 
             if chunk_ids:
                 await _update_delete_retry_state(failed=False)
             else:
+                deletion_stage = "resolve_chunk_ids"
+                deletion_operations_started = True
+                error_message = (
+                    f"Cannot safely delete document {doc_id}: chunks_list is empty"
+                )
                 logger.warning(
-                    "No chunk IDs found in chunks_list or deletion metadata for document %s; proceeding with best-effort metadata cleanup",
+                    "Refusing to delete document %s because chunks_list is empty",
                     doc_id,
+                )
+                await _update_delete_retry_state(error_message, failed=True)
+                return DeletionResult(
+                    status="fail",
+                    doc_id=doc_id,
+                    message=error_message,
+                    status_code=500,
+                    file_path=file_path,
                 )
 
             # Mark that deletion operations have started

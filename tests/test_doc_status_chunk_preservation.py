@@ -427,7 +427,6 @@ async def test_delete_rebuild_failure_prunes_chunk_tracking_before_abort(
             failed_status["metadata"]["deletion_failure_stage"]
             == "rebuild_knowledge_graph"
         )
-        assert failed_status["metadata"]["deletion_chunk_ids"] == [drop_chunk_id]
         assert "rebuild fail sentinel" in failed_status["error_msg"]
         assert entity_tracking is not None
         assert entity_tracking["chunk_ids"] == [keep_chunk_id]
@@ -665,9 +664,9 @@ async def test_delete_retry_cleans_llm_cache_after_rebuild_failure(
 
 
 @pytest.mark.asyncio
-async def test_delete_with_metadata_chunk_backup_when_chunks_list_missing(tmp_path):
+async def test_delete_rejects_when_chunks_list_missing(tmp_path):
     rag = await _build_rag(
-        tmp_path, "delete_missing_chunks_list_backup", _deterministic_chunking
+        tmp_path, "delete_missing_chunks_list_rejected", _deterministic_chunking
     )
     try:
         doc_id = "doc-delete-missing-chunks-list"
@@ -678,42 +677,49 @@ async def test_delete_with_metadata_chunk_backup_when_chunks_list_missing(tmp_pa
             status_chunk_ids=[],
             tracking_chunk_ids=[drop_chunk_id],
             chunk_owners={drop_chunk_id: doc_id},
-            metadata={"deletion_chunk_ids": [drop_chunk_id]},
         )
         entity_a = seeded["entity_a"]
         entity_b = seeded["entity_b"]
         relation_key = seeded["relation_key"]
 
         result = await rag.adelete_by_doc_id(doc_id)
+        failed_status = await rag.doc_status.get_by_id(doc_id)
 
-        assert result.status == "success"
-        assert await rag.doc_status.get_by_id(doc_id) is None
-        assert await rag.full_docs.get_by_id(doc_id) is None
-        assert await rag.full_entities.get_by_id(doc_id) is None
-        assert await rag.full_relations.get_by_id(doc_id) is None
-        assert await rag.text_chunks.get_by_id(drop_chunk_id) is None
-        assert await rag.chunks_vdb.get_by_id(drop_chunk_id) is None
-        assert await rag.chunk_entity_relation_graph.get_node(entity_a) is None
-        assert await rag.chunk_entity_relation_graph.get_node(entity_b) is None
+        assert result.status == "fail"
+        assert "chunks_list is empty" in result.message
+        assert failed_status is not None
+        assert failed_status["metadata"]["deletion_failed"] is True
         assert (
-            await rag.chunk_entity_relation_graph.get_edge(entity_a, entity_b) is None
+            failed_status["metadata"]["deletion_failure_stage"] == "resolve_chunk_ids"
         )
-        assert await rag.entity_chunks.get_by_id(entity_a) is None
-        assert await rag.entity_chunks.get_by_id(entity_b) is None
-        assert await rag.relation_chunks.get_by_id(relation_key) is None
+        assert "chunks_list is empty" in failed_status["error_msg"]
+        assert await rag.full_docs.get_by_id(doc_id) is not None
+        assert await rag.full_entities.get_by_id(doc_id) is not None
+        assert await rag.full_relations.get_by_id(doc_id) is not None
+        assert await rag.text_chunks.get_by_id(drop_chunk_id) is not None
+        assert await rag.chunks_vdb.get_by_id(drop_chunk_id) is not None
+        assert await rag.chunk_entity_relation_graph.get_node(entity_a) is not None
+        assert await rag.chunk_entity_relation_graph.get_node(entity_b) is not None
+        assert (
+            await rag.chunk_entity_relation_graph.get_edge(entity_a, entity_b)
+            is not None
+        )
+        assert await rag.entity_chunks.get_by_id(entity_a) is not None
+        assert await rag.entity_chunks.get_by_id(entity_b) is not None
+        assert await rag.relation_chunks.get_by_id(relation_key) is not None
         assert (
             await rag.entities_vdb.get_by_id(compute_mdhash_id(entity_a, prefix="ent-"))
-            is None
+            is not None
         )
         assert (
             await rag.entities_vdb.get_by_id(compute_mdhash_id(entity_b, prefix="ent-"))
-            is None
+            is not None
         )
         assert (
             await rag.relationships_vdb.get_by_id(
                 compute_mdhash_id(entity_a + entity_b, prefix="rel-")
             )
-            is None
+            is not None
         )
     finally:
         await rag.finalize_storages()
