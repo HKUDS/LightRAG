@@ -817,6 +817,55 @@ async def test_delete_retry_succeeds_after_llm_cache_cleanup_failure(
 
 
 @pytest.mark.asyncio
+async def test_delete_retry_preserves_cache_cleanup_state_when_cache_storage_unavailable(
+    tmp_path,
+):
+    rag = await _build_rag(
+        tmp_path, "delete_retry_cache_storage_unavailable", _deterministic_chunking
+    )
+    try:
+        doc_id = "doc-delete-cache-storage-unavailable"
+        drop_chunk_id = "chunk-drop"
+        await _seed_delete_retry_state(
+            rag,
+            doc_id=doc_id,
+            status_chunk_ids=[drop_chunk_id],
+            tracking_chunk_ids=[drop_chunk_id],
+            chunk_owners={drop_chunk_id: doc_id},
+        )
+        cache_ids = await _seed_chunk_cache_entries(
+            rag, [drop_chunk_id], "cache-storage-unavailable"
+        )
+
+        status_doc = await rag.doc_status.get_by_id(doc_id)
+        assert status_doc is not None
+        status_doc["metadata"] = {"deletion_llm_cache_ids": cache_ids}
+        await rag.doc_status.upsert({doc_id: status_doc})
+
+        cache_storage = rag.llm_response_cache
+        rag.llm_response_cache = None
+
+        first_result = await rag.adelete_by_doc_id(doc_id, delete_llm_cache=True)
+
+        assert first_result.status == "fail"
+        assert "cache storage is unavailable" in first_result.message
+        failed_status = await rag.doc_status.get_by_id(doc_id)
+        assert failed_status is not None
+        assert failed_status["metadata"]["deletion_llm_cache_ids"] == cache_ids
+        assert await rag.full_docs.get_by_id(doc_id) is not None
+
+        rag.llm_response_cache = cache_storage
+        second_result = await rag.adelete_by_doc_id(doc_id, delete_llm_cache=True)
+
+        assert second_result.status == "success"
+        assert await rag.doc_status.get_by_id(doc_id) is None
+        assert await rag.full_docs.get_by_id(doc_id) is None
+        assert await rag.llm_response_cache.get_by_id(cache_ids[0]) is None
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
 async def test_delete_succeeds_when_chunks_list_missing(tmp_path):
     rag = await _build_rag(
         tmp_path, "delete_missing_chunks_list_rejected", _deterministic_chunking

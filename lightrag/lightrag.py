@@ -109,7 +109,6 @@ from lightrag.utils import (
     generate_track_id,
     convert_to_user_format,
     logger,
-    merge_source_ids,
     subtract_source_ids,
     make_relation_chunk_key,
     normalize_source_ids_limit_method,
@@ -3254,6 +3253,9 @@ class LightRAG:
             metadata = doc_status_data.get("metadata", {})
             if not isinstance(metadata, dict):
                 metadata = {}
+            metadata_cache_ids = _normalize_string_list(
+                metadata.get("deletion_llm_cache_ids", [])
+            )
             chunk_ids = set(
                 _normalize_string_list(doc_status_data.get("chunks_list", []))
             )
@@ -3292,7 +3294,13 @@ class LightRAG:
             deletion_operations_started = True
 
             if chunk_ids:
+                # Always collect/persist cache IDs for chunk-backed documents, even when
+                # this call does not request cache deletion. If a delete fails after the
+                # chunks/graph have already been removed, a later retry may turn on
+                # delete_llm_cache=True, and doc_status metadata is then the only durable
+                # place left to recover the cache keys for cleanup.
                 deletion_stage = "collect_llm_cache"
+                doc_llm_cache_ids = list(metadata_cache_ids)
                 if not self.llm_response_cache:
                     logger.info(
                         "Skipping LLM cache id collection for document %s because cache storage is unavailable",
@@ -3305,17 +3313,10 @@ class LightRAG:
                     )
                 else:
                     try:
-                        metadata_cache_ids = (
-                            _normalize_string_list(
-                                metadata.get("deletion_llm_cache_ids", [])
-                            )
-                            if isinstance(metadata, dict)
-                            else []
-                        )
                         chunk_data_list = await self.text_chunks.get_by_ids(
                             list(chunk_ids)
                         )
-                        seen_cache_ids: set[str] = set()
+                        seen_cache_ids: set[str] = set(doc_llm_cache_ids)
                         for chunk_data in chunk_data_list:
                             if not chunk_data or not isinstance(chunk_data, dict):
                                 continue
@@ -3330,27 +3331,6 @@ class LightRAG:
                                 ):
                                     doc_llm_cache_ids.append(cache_id)
                                     seen_cache_ids.add(cache_id)
-                        if metadata_cache_ids:
-                            doc_llm_cache_ids = merge_source_ids(
-                                doc_llm_cache_ids, metadata_cache_ids
-                            )
-                        if doc_llm_cache_ids:
-                            doc_status_data = await self._update_delete_retry_state(
-                                doc_id,
-                                doc_status_data,
-                                deletion_stage=deletion_stage,
-                                doc_llm_cache_ids=doc_llm_cache_ids,
-                                failed=False,
-                            )
-                            logger.info(
-                                "Collected %d LLM cache entries for document %s",
-                                len(doc_llm_cache_ids),
-                                doc_id,
-                            )
-                        else:
-                            logger.info(
-                                "No LLM cache entries found for document %s", doc_id
-                            )
                     except Exception as cache_collect_error:
                         logger.error(
                             "Failed to collect LLM cache ids for document %s: %s",
@@ -3360,6 +3340,22 @@ class LightRAG:
                         raise Exception(
                             f"Failed to collect LLM cache ids for document {doc_id}: {cache_collect_error}"
                         ) from cache_collect_error
+
+                if doc_llm_cache_ids:
+                    doc_status_data = await self._update_delete_retry_state(
+                        doc_id,
+                        doc_status_data,
+                        deletion_stage=deletion_stage,
+                        doc_llm_cache_ids=doc_llm_cache_ids,
+                        failed=False,
+                    )
+                    logger.info(
+                        "Collected %d LLM cache entries for document %s",
+                        len(doc_llm_cache_ids),
+                        doc_id,
+                    )
+                else:
+                    logger.info("No LLM cache entries found for document %s", doc_id)
 
             # 4. Analyze entities and relationships that will be affected
             entities_to_delete = set()
@@ -3787,7 +3783,17 @@ class LightRAG:
             # 9. Delete LLM cache while the document status still exists so a failure
             # remains retryable via the same doc_id.
             log_message = f"Document {doc_id} successfully deleted"
-            if delete_llm_cache and doc_llm_cache_ids and self.llm_response_cache:
+            if delete_llm_cache and doc_llm_cache_ids:
+                if not self.llm_response_cache:
+                    log_message = (
+                        f"Cannot delete LLM cache for document {doc_id}: "
+                        "cache storage is unavailable"
+                    )
+                    logger.error(log_message)
+                    async with pipeline_status_lock:
+                        pipeline_status["latest_message"] = log_message
+                        pipeline_status["history_messages"].append(log_message)
+                    raise Exception(log_message)
                 try:
                     deletion_stage = "delete_llm_cache"
                     await self.llm_response_cache.delete(doc_llm_cache_ids)
