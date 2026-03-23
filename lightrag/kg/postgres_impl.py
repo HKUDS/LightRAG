@@ -60,6 +60,14 @@ T = TypeVar("T")
 # PostgreSQL identifier length limit (in bytes)
 PG_MAX_IDENTIFIER_LENGTH = 63
 
+# All known vector index suffixes, used to drop conflicting indexes when switching types
+_VECTOR_INDEX_SUFFIXES = [
+    "hnsw_cosine",
+    "hnsw_halfvec_cosine",
+    "ivfflat_cosine",
+    "vchordrq_cosine",
+]
+
 
 def _safe_index_name(table_name: str, index_suffix: str) -> str:
     """
@@ -477,15 +485,46 @@ class PostgreSQLDB:
                         await self.configure_vchordrq(connection)
                     return await operation(connection)
 
-    @staticmethod
-    async def configure_vector_extension(connection: asyncpg.Connection) -> None:
-        """Create VECTOR extension if it doesn't exist for vector similarity operations."""
+    async def configure_vector_extension(self, connection: asyncpg.Connection) -> None:
+        """Create VECTOR extension if it doesn't exist for vector similarity operations.
+
+        When vector_index_type is HNSW_HALFVEC, validates that pgvector >= 0.7.0
+        (required for halfvec support) and raises RuntimeError if older.
+        """
         try:
             await connection.execute("CREATE EXTENSION IF NOT EXISTS vector")  # type: ignore
             logger.info("PostgreSQL, VECTOR extension enabled")
         except Exception as e:
             logger.warning(f"Could not create VECTOR extension: {e}")
             # Don't raise - let the system continue without vector extension
+            return
+
+        if getattr(self, "vector_index_type", None) == "HNSW_HALFVEC":
+            row = await connection.fetchrow(
+                "SELECT extversion FROM pg_extension WHERE extname = 'vector'"
+            )
+            if not row or not row["extversion"]:
+                raise RuntimeError(
+                    "POSTGRES_VECTOR_INDEX_TYPE=HNSW_HALFVEC requires the pgvector "
+                    "extension. Ensure it is installed and CREATE EXTENSION vector succeeded."
+                )
+            raw_version = row["extversion"]
+            try:
+                parts = [int(p) for p in str(raw_version).split(".")[:3]]
+                while len(parts) < 3:
+                    parts.append(0)
+                version_tuple = (parts[0], parts[1], parts[2])
+            except (ValueError, IndexError):
+                raise RuntimeError(
+                    f"Could not parse pgvector version {raw_version!r}. "
+                    "HNSW_HALFVEC requires pgvector >= 0.7.0."
+                ) from None
+            if version_tuple < (0, 7, 0):
+                raise RuntimeError(
+                    f"POSTGRES_VECTOR_INDEX_TYPE=HNSW_HALFVEC requires pgvector >= 0.7.0, "
+                    f"but installed version is {raw_version}. Upgrade the pgvector extension "
+                    "or use a different index type (e.g. HNSW with embeddings <= 2000 dimensions)."
+                )
 
     @staticmethod
     async def configure_age_extension(connection: asyncpg.Connection) -> None:
@@ -1557,6 +1596,11 @@ class PostgreSQLDB:
                 ON {{table_name}} USING hnsw (content_vector vector_cosine_ops)
                 WITH (m = {self.hnsw_m}, ef_construction = {self.hnsw_ef})
             """,
+            "HNSW_HALFVEC": f"""
+                CREATE INDEX {{vector_index_name}}
+                ON {{table_name}} USING hnsw (content_vector halfvec_cosine_ops)
+                WITH (m = {self.hnsw_m}, ef_construction = {self.hnsw_ef})
+            """,
             "IVFFLAT": f"""
                 CREATE INDEX {{vector_index_name}}
                 ON {{table_name}} USING ivfflat (content_vector vector_cosine_ops)
@@ -1572,7 +1616,7 @@ class PostgreSQLDB:
         if self.vector_index_type not in create_sql:
             logger.warning(
                 f"Unsupported vector index type: {self.vector_index_type}. "
-                "Supported types: HNSW, IVFFLAT, VCHORDRQ"
+                "Supported types: HNSW, HNSW_HALFVEC, IVFFLAT, VCHORDRQ"
             )
             return
 
@@ -1584,11 +1628,19 @@ class PostgreSQLDB:
             SELECT 1 FROM pg_indexes
             WHERE indexname = '{vector_index_name}' AND tablename = '{k.lower()}'
         """
+        if self.vector_index_type == "HNSW_HALFVEC":
+            column_type = "HALFVEC"
+        else:
+            column_type = "VECTOR"
         try:
             vector_index_exists = await self.query(check_vector_index_sql)
             if not vector_index_exists:
-                # Only set vector dimension when index doesn't exist
-                alter_sql = f"ALTER TABLE {k} ALTER COLUMN content_vector TYPE VECTOR({embedding_dim})"
+                for suffix in _VECTOR_INDEX_SUFFIXES:
+                    if suffix == index_suffix:
+                        continue
+                    old_name = _safe_index_name(k, suffix)
+                    await self.execute(f"DROP INDEX IF EXISTS {old_name}")
+                alter_sql = f"ALTER TABLE {k} ALTER COLUMN content_vector TYPE {column_type}({embedding_dim})"
                 await self.execute(alter_sql)
                 logger.debug(f"Ensured vector dimension for {k}")
                 logger.info(
@@ -2477,8 +2529,16 @@ class PGVectorStorage(BaseVectorStorage):
 
         ddl_template = TABLES[base_table]["ddl"]
 
+        # Determine vector column type based on configuration
+        # HALFVEC is used when HNSW_HALFVEC is selected
+        vector_type = "VECTOR"
+        if getattr(db, "vector_index_type", None) == "HNSW_HALFVEC":
+            vector_type = "HALFVEC"
+
         # Replace embedding dimension placeholder if exists
-        ddl = ddl_template.replace("VECTOR(dimension)", f"VECTOR({embedding_dim})")
+        ddl = ddl_template.replace(
+            "VECTOR(dimension)", f"{vector_type}({embedding_dim})"
+        )
 
         # Replace table name
         ddl = ddl.replace(base_table, table_name)
@@ -2723,6 +2783,11 @@ class PGVectorStorage(BaseVectorStorage):
                             ):
                                 # Handle NumPy arrays and other array-like objects
                                 legacy_dim = len(vector_data)
+                            elif hasattr(vector_data, "dimensions") and callable(
+                                vector_data.dimensions
+                            ):
+                                # pgvector HalfVector / SparseVector expose dimensions()
+                                legacy_dim = vector_data.dimensions()
                             elif isinstance(vector_data, str):
                                 import json
 
@@ -3069,8 +3134,15 @@ class PGVectorStorage(BaseVectorStorage):
 
         embedding_string = ",".join(map(str, embedding))
 
+        vector_cast = (
+            "halfvec"
+            if getattr(self.db, "vector_index_type", None) == "HNSW_HALFVEC"
+            else "vector"
+        )
         sql = SQL_TEMPLATES[self.namespace].format(
-            embedding_string=embedding_string, table_name=self.table_name
+            embedding_string=embedding_string,
+            table_name=self.table_name,
+            vector_cast=vector_cast,
         )
         params = {
             "workspace": self.workspace,
@@ -3249,6 +3321,10 @@ class PGVectorStorage(BaseVectorStorage):
                         # Handle numpy arrays from pgvector
                         elif hasattr(vector_data, "tolist"):
                             vectors_dict[result["id"]] = vector_data.tolist()
+                        elif hasattr(vector_data, "to_list") and callable(
+                            vector_data.to_list
+                        ):
+                            vectors_dict[result["id"]] = vector_data.to_list()
                     except (json.JSONDecodeError, TypeError) as e:
                         logger.warning(
                             f"[{self.workspace}] Failed to parse vector data for ID {result['id']}: {e}"
@@ -5790,8 +5866,8 @@ SQL_TEMPLATES = {
                             EXTRACT(EPOCH FROM r.create_time)::BIGINT AS created_at
                      FROM {table_name} r
                      WHERE r.workspace = $1
-                       AND r.content_vector <=> '[{embedding_string}]'::vector < $2
-                     ORDER BY r.content_vector <=> '[{embedding_string}]'::vector
+                       AND r.content_vector <=> '[{embedding_string}]'::{vector_cast} < $2
+                     ORDER BY r.content_vector <=> '[{embedding_string}]'::{vector_cast}
                      LIMIT $3;
                      """,
     "entities": """
@@ -5799,8 +5875,8 @@ SQL_TEMPLATES = {
                        EXTRACT(EPOCH FROM e.create_time)::BIGINT AS created_at
                 FROM {table_name} e
                 WHERE e.workspace = $1
-                  AND e.content_vector <=> '[{embedding_string}]'::vector < $2
-                ORDER BY e.content_vector <=> '[{embedding_string}]'::vector
+                  AND e.content_vector <=> '[{embedding_string}]'::{vector_cast} < $2
+                ORDER BY e.content_vector <=> '[{embedding_string}]'::{vector_cast}
                 LIMIT $3;
                 """,
     "chunks": """
@@ -5810,8 +5886,8 @@ SQL_TEMPLATES = {
                      EXTRACT(EPOCH FROM c.create_time)::BIGINT AS created_at
               FROM {table_name} c
               WHERE c.workspace = $1
-                AND c.content_vector <=> '[{embedding_string}]'::vector < $2
-              ORDER BY c.content_vector <=> '[{embedding_string}]'::vector
+                AND c.content_vector <=> '[{embedding_string}]'::{vector_cast} < $2
+              ORDER BY c.content_vector <=> '[{embedding_string}]'::{vector_cast}
               LIMIT $3;
               """,
     # DROP tables
