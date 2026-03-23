@@ -302,7 +302,7 @@ class RedisKVStorage(BaseKVStorage):
                 return processed_results
             except json.JSONDecodeError as e:
                 logger.error(f"[{self.workspace}] JSON decode error in batch get: {e}")
-                return [None] * len(ids)
+                raise
 
     async def filter_keys(self, keys: set[str]) -> set[str]:
         async with self._get_redis_connection() as redis:

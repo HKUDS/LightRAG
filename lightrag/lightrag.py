@@ -149,7 +149,11 @@ def _chunk_fields_from_status_doc(
 
 
 def _normalize_string_list(raw_values: Any) -> list[str]:
-    """Return a list containing only non-empty strings from raw_values."""
+    """Return a list of non-empty strings from raw_values.
+
+    Non-string elements are silently dropped. If raw_values is not a list,
+    an empty list is returned.
+    """
     if not isinstance(raw_values, list):
         return []
     return [value for value in raw_values if isinstance(value, str) and value]
@@ -2995,6 +2999,10 @@ class LightRAG:
 
         Some KV storage backends only log delete failures and return without
         raising, so callers must verify which records still exist after delete.
+
+        Returns an empty list immediately if cache storage is unavailable.
+        Callers must check storage availability independently before treating
+        an empty result as a confirmed deletion.
         """
         if not self.llm_response_cache or not cache_ids:
             return []
@@ -3153,7 +3161,7 @@ class LightRAG:
 
         Returns:
             DeletionResult: An object containing the outcome of the deletion process.
-                - `status` (str): "success", "not_found", "not_allowed", or "failure".
+                - `status` (str): "success", "not_found", "not_allowed", or "fail".
                 - `doc_id` (str): The ID of the document attempted to be deleted.
                 - `message` (str): A summary of the operation's result.
                 - `status_code` (int): HTTP status code (e.g., 200, 404, 403, 500).
@@ -3340,6 +3348,7 @@ class LightRAG:
                     pipeline_status["latest_message"] = log_message
                     pipeline_status["history_messages"].append(log_message)
 
+                deletion_fully_completed = True
                 return DeletionResult(
                     status="success",
                     doc_id=doc_id,
@@ -3622,6 +3631,7 @@ class LightRAG:
                     pipeline_status["history_messages"].append(log_message)
 
                 current_time = int(time.time())
+                deletion_stage = "update_chunk_tracking"
 
                 if entity_chunk_updates and self.entity_chunks:
                     entity_upsert_payload = {}
@@ -3901,11 +3911,14 @@ class LightRAG:
                     f"Failed to delete from full_entities/full_relations: {e}"
                 ) from e
 
-            # 11. Delete original document and status
+            # 11. Delete original document and status.
+            # doc_status is deleted first so that if full_docs.delete fails, a retry
+            # finds no doc_status record and treats the document as already gone,
+            # rather than finding a doc_status that points to a missing full_docs entry.
             try:
                 deletion_stage = "delete_doc_entries"
-                await self.full_docs.delete([doc_id])
                 await self.doc_status.delete([doc_id])
+                await self.full_docs.delete([doc_id])
             except Exception as e:
                 logger.error(f"Failed to delete document and status: {e}")
                 raise Exception(f"Failed to delete document and status: {e}") from e
@@ -3926,8 +3939,9 @@ class LightRAG:
             logger.error(traceback.format_exc())
             try:
                 # Do not attempt to write retry state if doc_status was already deleted
-                # (delete_doc_entries stage): doing so would re-create a zombie record that
-                # can never be retried because all associated chunk/graph data is gone.
+                # (delete_doc_entries stage): upsert would re-create the record as a
+                # zombie. All earlier stages still have doc_status intact and can safely
+                # update it, even if some chunk/graph data has already been removed.
                 if (
                     doc_status_data is not None
                     and deletion_stage != "delete_doc_entries"
@@ -3947,6 +3961,10 @@ class LightRAG:
                     status_update_error,
                 )
                 logger.error(traceback.format_exc())
+                error_message = (
+                    f"{error_message}. Additionally, failed to persist retry state: "
+                    f"{status_update_error}. Manual cleanup may be required."
+                )
             return DeletionResult(
                 status="fail",
                 doc_id=doc_id,

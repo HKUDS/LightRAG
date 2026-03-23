@@ -1109,8 +1109,9 @@ async def test_delete_doc_entries_guard_prevents_zombie_record(tmp_path, monkeyp
     """When doc_status.delete fails, the guard must not re-create a zombie record.
 
     The exception handler skips _update_delete_retry_state when deletion_stage is
-    "delete_doc_entries". This test confirms: (a) the result is status="fail", and
-    (b) no zombie doc_status record is written after full_docs has already been removed.
+    "delete_doc_entries". doc_status.delete runs first, so full_docs is still intact
+    on failure. This test confirms: (a) the result is status="fail", and (b) the
+    exception handler does not upsert a new record with deletion_failed=True.
     """
     rag = await _build_rag(
         tmp_path, "delete_doc_entries_guard", _deterministic_chunking
@@ -1143,17 +1144,18 @@ async def test_delete_doc_entries_guard_prevents_zombie_record(tmp_path, monkeyp
 
         assert result.status == "fail"
         assert "doc_status delete fail sentinel" in result.message
-        # full_docs.delete ran before doc_status.delete; check doc_status was not
-        # re-created as a zombie by the exception handler's retry-state write.
+        # doc_status.delete is now called first (before full_docs.delete). The patch
+        # makes it fail, so doc_status still exists. The guard must not call
+        # _update_delete_retry_state (which would upsert the record with
+        # deletion_failed=True) when deletion_stage is "delete_doc_entries".
         status_record = await rag.doc_status.get_by_id(doc_id)
-        # The record may still exist because doc_status.delete was patched to fail,
-        # but it must NOT have been re-created with deletion_failed=True metadata
-        # (which would indicate the guard fired incorrectly).
-        if status_record is not None:
-            metadata = status_record.get("metadata", {})
-            assert not metadata.get(
-                "deletion_failed"
-            ), "guard failed: zombie record written with deletion_failed=True"
+        assert (
+            status_record is not None
+        ), "doc_status should still exist (delete failed)"
+        metadata = status_record.get("metadata", {})
+        assert not metadata.get(
+            "deletion_failed"
+        ), "guard failed: zombie record written with deletion_failed=True"
     finally:
         await rag.finalize_storages()
 
@@ -1199,7 +1201,212 @@ async def test_retry_state_write_failure_in_exception_handler_still_returns_fail
         result = await rag.adelete_by_doc_id(doc_id)
 
         assert result.status == "fail"
-        # The original rebuild error must be in the message, not the status-write error
+        # The original rebuild error must be present in the message; the compound
+        # "Additionally, failed to persist retry state" suffix may also be present.
         assert "rebuild fail sentinel" in result.message
     finally:
         await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_persist_pre_rebuild_failure_records_stage_and_allows_retry(
+    tmp_path, monkeypatch
+):
+    """A failure in _insert_done (persist_pre_rebuild_changes stage) records the
+    correct stage in doc_status metadata, and a subsequent retry completes the
+    deletion successfully.
+    """
+    rag = await _build_rag(
+        tmp_path, "persist_pre_rebuild_failure", _deterministic_chunking
+    )
+    try:
+        doc_id = "doc-persist-pre-rebuild-failure"
+        keep_chunk_id = "chunk-keep"
+        drop_chunk_id = "chunk-drop"
+        seeded = await _seed_delete_retry_state(
+            rag,
+            doc_id=doc_id,
+            status_chunk_ids=[drop_chunk_id],
+            tracking_chunk_ids=[keep_chunk_id, drop_chunk_id],
+            chunk_owners={
+                keep_chunk_id: "doc-keep",
+                drop_chunk_id: doc_id,
+            },
+        )
+        entity_a = seeded["entity_a"]
+        # entity_b = seeded["entity_b"]
+
+        insert_done_calls = 0
+        original_insert_done = rag._insert_done
+
+        async def fail_first_insert_done():
+            nonlocal insert_done_calls
+            insert_done_calls += 1
+            if insert_done_calls == 1:
+                raise RuntimeError("insert_done fail sentinel")
+            await original_insert_done()
+
+        monkeypatch.setattr(rag, "_insert_done", fail_first_insert_done)
+
+        first_result = await rag.adelete_by_doc_id(doc_id)
+
+        failed_status = await rag.doc_status.get_by_id(doc_id)
+        assert first_result.status == "fail"
+        assert "insert_done fail sentinel" in first_result.message
+        assert failed_status is not None
+        assert failed_status["metadata"]["deletion_failed"] is True
+        assert (
+            failed_status["metadata"]["deletion_failure_stage"]
+            == "persist_pre_rebuild_changes"
+        )
+
+        monkeypatch.undo()
+        monkeypatch.setattr(
+            lightrag_module,
+            "rebuild_knowledge_from_chunks",
+            _succeed_rebuild_from_remaining_chunks,
+        )
+        second_result = await rag.adelete_by_doc_id(doc_id)
+
+        assert second_result.status == "success"
+        assert await rag.doc_status.get_by_id(doc_id) is None
+        assert await rag.full_docs.get_by_id(doc_id) is None
+        assert await rag.text_chunks.get_by_id(drop_chunk_id) is None
+        assert await rag.text_chunks.get_by_id(keep_chunk_id) is not None
+        entity_a_tracking = await rag.entity_chunks.get_by_id(entity_a)
+        assert entity_a_tracking is not None
+        assert entity_a_tracking["chunk_ids"] == [keep_chunk_id]
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_delete_doc_graph_metadata_failure_records_stage_and_allows_retry(
+    tmp_path, monkeypatch
+):
+    """A failure in full_relations.delete (delete_doc_graph_metadata stage) records
+    the correct stage in retry metadata, and a subsequent retry completes the deletion.
+    """
+    rag = await _build_rag(
+        tmp_path, "delete_doc_graph_metadata_failure", _deterministic_chunking
+    )
+    try:
+        doc_id = "doc-graph-metadata-failure"
+        drop_chunk_id = "chunk-drop"
+        await _seed_delete_retry_state(
+            rag,
+            doc_id=doc_id,
+            status_chunk_ids=[drop_chunk_id],
+            tracking_chunk_ids=[drop_chunk_id],
+            chunk_owners={drop_chunk_id: doc_id},
+        )
+
+        relations_delete_calls = 0
+        original_relations_delete = rag.full_relations.delete
+
+        async def fail_first_relations_delete(ids):
+            nonlocal relations_delete_calls
+            relations_delete_calls += 1
+            if relations_delete_calls == 1:
+                raise RuntimeError("full_relations delete fail sentinel")
+            await original_relations_delete(ids)
+
+        monkeypatch.setattr(rag.full_relations, "delete", fail_first_relations_delete)
+
+        first_result = await rag.adelete_by_doc_id(doc_id)
+
+        failed_status = await rag.doc_status.get_by_id(doc_id)
+        assert first_result.status == "fail"
+        assert "full_relations delete fail sentinel" in first_result.message
+        assert failed_status is not None
+        assert failed_status["metadata"]["deletion_failed"] is True
+        assert (
+            failed_status["metadata"]["deletion_failure_stage"]
+            == "delete_doc_graph_metadata"
+        )
+
+        monkeypatch.undo()
+        second_result = await rag.adelete_by_doc_id(doc_id)
+
+        assert second_result.status == "success"
+        assert await rag.doc_status.get_by_id(doc_id) is None
+        assert await rag.full_docs.get_by_id(doc_id) is None
+        assert await rag.full_entities.get_by_id(doc_id) is None
+        assert await rag.full_relations.get_by_id(doc_id) is None
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_deletion_fully_completed_prevents_success_override_in_finally(
+    tmp_path, monkeypatch
+):
+    """When deletion completes successfully but _insert_done fails in the finally
+    block, the already-returned success result must not be overridden with a failure.
+    This covers both the no-chunk path and the full deletion path.
+    """
+    for scenario in ("no_chunk", "full"):
+        rag = await _build_rag(
+            tmp_path,
+            f"deletion_fully_completed_{scenario}",
+            _deterministic_chunking,
+        )
+        try:
+            doc_id = f"doc-fully-completed-{scenario}"
+
+            if scenario == "no_chunk":
+                # Seed a doc with no chunks: doc_status.chunks_list is empty.
+                now = datetime.now(timezone.utc).isoformat()
+                await rag.full_docs.upsert(
+                    {doc_id: {"content": "no chunk doc", "file_path": "nc.txt"}}
+                )
+                await rag.doc_status.upsert(
+                    {
+                        doc_id: {
+                            "status": DocStatus.PROCESSED,
+                            "content_summary": "no chunks",
+                            "content_length": 11,
+                            "chunks_count": 0,
+                            "chunks_list": [],
+                            "created_at": now,
+                            "updated_at": now,
+                            "file_path": "nc.txt",
+                            "track_id": f"track-{doc_id}",
+                            "error_msg": "",
+                            "metadata": {},
+                        }
+                    }
+                )
+            else:
+                drop_chunk_id = "chunk-drop-fc"
+                await _seed_delete_retry_state(
+                    rag,
+                    doc_id=doc_id,
+                    status_chunk_ids=[drop_chunk_id],
+                    tracking_chunk_ids=[drop_chunk_id],
+                    chunk_owners={drop_chunk_id: doc_id},
+                )
+
+            insert_done_calls = 0
+            original_insert_done = rag._insert_done
+
+            async def fail_later_insert_done():
+                nonlocal insert_done_calls
+                insert_done_calls += 1
+                # Let the first call (persist_pre_rebuild_changes) succeed for the
+                # full path; only fail the finally-block call.
+                if insert_done_calls <= (1 if scenario == "full" else 0):
+                    await original_insert_done()
+                else:
+                    raise RuntimeError("finally insert_done fail sentinel")
+
+            monkeypatch.setattr(rag, "_insert_done", fail_later_insert_done)
+
+            result = await rag.adelete_by_doc_id(doc_id)
+
+            assert (
+                result.status == "success"
+            ), f"[{scenario}] expected success but got {result.status}: {result.message}"
+        finally:
+            monkeypatch.undo()
+            await rag.finalize_storages()
