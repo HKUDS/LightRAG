@@ -149,6 +149,13 @@ def _chunk_fields_from_status_doc(
     return chunks_list, len(chunks_list)
 
 
+def _normalize_string_list(raw_values: Any) -> list[str]:
+    """Return a list containing only non-empty strings from raw_values."""
+    if not isinstance(raw_values, list):
+        return []
+    return [value for value in raw_values if isinstance(value, str) and value]
+
+
 @final
 @dataclass
 class LightRAG:
@@ -2940,6 +2947,50 @@ class LightRAG:
     async def _query_done(self):
         await self.llm_response_cache.index_done_callback()
 
+    async def _update_delete_retry_state(
+        self,
+        doc_id: str,
+        doc_status_data: dict[str, Any],
+        *,
+        deletion_stage: str,
+        doc_llm_cache_ids: list[str],
+        error_message: str | None = None,
+        failed: bool,
+    ) -> dict[str, Any]:
+        """Persist deletion retry metadata and return the updated status record."""
+        metadata = doc_status_data.get("metadata", {})
+        if not isinstance(metadata, dict):
+            metadata = {}
+
+        backup_cache_ids = _normalize_string_list(
+            metadata.get("deletion_llm_cache_ids", [])
+        )
+        retry_cache_ids = doc_llm_cache_ids or backup_cache_ids
+
+        updated_metadata = dict(metadata)
+        if retry_cache_ids:
+            updated_metadata["deletion_llm_cache_ids"] = retry_cache_ids
+        updated_metadata["last_deletion_attempt_at"] = datetime.now(
+            timezone.utc
+        ).isoformat()
+
+        if failed:
+            updated_metadata["deletion_failed"] = True
+            updated_metadata["deletion_failure_stage"] = deletion_stage
+        else:
+            updated_metadata.pop("deletion_failed", None)
+            updated_metadata.pop("deletion_failure_stage", None)
+
+        updated_status_data = {
+            **doc_status_data,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "metadata": updated_metadata,
+            "error_msg": error_message if failed else "",
+        }
+
+        await self.doc_status.upsert({doc_id: updated_status_data})
+        return updated_status_data
+
     async def aclear_cache(self) -> None:
         """Clear all cache data from the LLM response cache storage.
 
@@ -3160,58 +3211,12 @@ class LightRAG:
                     file_path="",
                 )
 
-            def _normalize_string_list(raw_values: Any) -> list[str]:
-                if not isinstance(raw_values, list):
-                    return []
-                return [
-                    value for value in raw_values if isinstance(value, str) and value
-                ]
-
             # Check document status and log warning for non-completed documents
             raw_status = doc_status_data.get("status")
             try:
                 doc_status = DocStatus(raw_status)
             except ValueError:
                 doc_status = raw_status
-
-            async def _update_delete_retry_state(
-                error_message: str | None = None,
-                *,
-                failed: bool,
-            ) -> None:
-                nonlocal doc_status_data
-
-                metadata = doc_status_data.get("metadata", {})
-                if not isinstance(metadata, dict):
-                    metadata = {}
-
-                backup_cache_ids = _normalize_string_list(
-                    metadata.get("deletion_llm_cache_ids", [])
-                )
-                retry_cache_ids = doc_llm_cache_ids or backup_cache_ids
-
-                updated_metadata = dict(metadata)
-                if retry_cache_ids:
-                    updated_metadata["deletion_llm_cache_ids"] = retry_cache_ids
-                updated_metadata["last_deletion_attempt_at"] = datetime.now(
-                    timezone.utc
-                ).isoformat()
-
-                if failed:
-                    updated_metadata["deletion_failed"] = True
-                    updated_metadata["deletion_failure_stage"] = deletion_stage
-                else:
-                    updated_metadata.pop("deletion_failed", None)
-                    updated_metadata.pop("deletion_failure_stage", None)
-
-                doc_status_data = {
-                    **doc_status_data,
-                    "updated_at": datetime.now(timezone.utc).isoformat(),
-                    "metadata": updated_metadata,
-                    "error_msg": error_message if failed else "",
-                }
-
-                await self.doc_status.upsert({doc_id: doc_status_data})
 
             if doc_status != DocStatus.PROCESSED:
                 if doc_status == DocStatus.PENDING:
@@ -3252,7 +3257,13 @@ class LightRAG:
             )
 
             if chunk_ids:
-                await _update_delete_retry_state(failed=False)
+                doc_status_data = await self._update_delete_retry_state(
+                    doc_id,
+                    doc_status_data,
+                    deletion_stage=deletion_stage,
+                    doc_llm_cache_ids=doc_llm_cache_ids,
+                    failed=False,
+                )
             else:
                 deletion_stage = "resolve_chunk_ids"
                 deletion_operations_started = True
@@ -3263,7 +3274,14 @@ class LightRAG:
                     "Refusing to delete document %s because chunks_list is empty",
                     doc_id,
                 )
-                await _update_delete_retry_state(error_message, failed=True)
+                doc_status_data = await self._update_delete_retry_state(
+                    doc_id,
+                    doc_status_data,
+                    deletion_stage=deletion_stage,
+                    doc_llm_cache_ids=doc_llm_cache_ids,
+                    error_message=error_message,
+                    failed=True,
+                )
                 return DeletionResult(
                     status="fail",
                     doc_id=doc_id,
@@ -3319,7 +3337,13 @@ class LightRAG:
                                 doc_llm_cache_ids, metadata_cache_ids
                             )
                         if doc_llm_cache_ids:
-                            await _update_delete_retry_state(failed=False)
+                            doc_status_data = await self._update_delete_retry_state(
+                                doc_id,
+                                doc_status_data,
+                                deletion_stage=deletion_stage,
+                                doc_llm_cache_ids=doc_llm_cache_ids,
+                                failed=False,
+                            )
                             logger.info(
                                 "Collected %d LLM cache entries for document %s",
                                 len(doc_llm_cache_ids),
@@ -3795,7 +3819,14 @@ class LightRAG:
             logger.error(traceback.format_exc())
             try:
                 if doc_status_data is not None:
-                    await _update_delete_retry_state(error_message, failed=True)
+                    doc_status_data = await self._update_delete_retry_state(
+                        doc_id,
+                        doc_status_data,
+                        deletion_stage=deletion_stage,
+                        doc_llm_cache_ids=doc_llm_cache_ids,
+                        error_message=error_message,
+                        failed=True,
+                    )
             except Exception as status_update_error:
                 logger.error(
                     "Failed to update deletion retry state for document %s: %s",
