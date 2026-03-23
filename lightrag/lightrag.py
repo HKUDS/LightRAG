@@ -2999,7 +2999,13 @@ class LightRAG:
         if not self.llm_response_cache or not cache_ids:
             return []
 
-        existing_records = await self.llm_response_cache.get_by_ids(cache_ids)
+        try:
+            existing_records = await self.llm_response_cache.get_by_ids(cache_ids)
+        except Exception as verification_error:
+            raise Exception(
+                f"Failed to verify LLM cache deletion "
+                f"(delete may have succeeded): {verification_error}"
+            ) from verification_error
         return [
             cache_id
             for cache_id, record in zip(cache_ids, existing_records)
@@ -3200,6 +3206,7 @@ class LightRAG:
                 # Pipeline is busy with deletion - proceed without acquiring
 
         deletion_operations_started = False
+        deletion_fully_completed = False
         original_exception = None
         doc_llm_cache_ids: list[str] = []
         deletion_stage = "initializing"
@@ -3280,6 +3287,41 @@ class LightRAG:
                 logger.warning(f"No chunks found for document {doc_id}")
                 # Mark that deletion operations have started
                 deletion_operations_started = True
+
+                # A prior failed deletion may have collected LLM cache IDs before the
+                # chunks were removed. If delete_llm_cache is requested and persisted IDs
+                # exist, clean them up now before removing the doc/status entries.
+                if delete_llm_cache and metadata_cache_ids:
+                    if not self.llm_response_cache:
+                        no_cache_msg = (
+                            f"Cannot delete LLM cache for document {doc_id}: "
+                            "cache storage is unavailable"
+                        )
+                        logger.error(no_cache_msg)
+                        async with pipeline_status_lock:
+                            pipeline_status["latest_message"] = no_cache_msg
+                            pipeline_status["history_messages"].append(no_cache_msg)
+                        raise Exception(no_cache_msg)
+                    try:
+                        deletion_stage = "delete_llm_cache"
+                        await self.llm_response_cache.delete(metadata_cache_ids)
+                        remaining_cache_ids = await self._get_existing_llm_cache_ids(
+                            metadata_cache_ids
+                        )
+                        if remaining_cache_ids:
+                            raise Exception(
+                                f"{len(remaining_cache_ids)} LLM cache entries still exist after delete"
+                            )
+                        logger.info(
+                            "Cleaned up %d LLM cache entries from prior attempt for document %s",
+                            len(metadata_cache_ids),
+                            doc_id,
+                        )
+                    except Exception as cache_err:
+                        raise Exception(
+                            f"Failed to delete LLM cache for document {doc_id}: {cache_err}"
+                        ) from cache_err
+
                 try:
                     # Still need to delete the doc status and full doc
                     await self.full_docs.delete([doc_id])
@@ -3353,13 +3395,24 @@ class LightRAG:
                         ) from cache_collect_error
 
                 if doc_llm_cache_ids:
-                    doc_status_data = await self._update_delete_retry_state(
-                        doc_id,
-                        doc_status_data,
-                        deletion_stage=deletion_stage,
-                        doc_llm_cache_ids=doc_llm_cache_ids,
-                        failed=False,
-                    )
+                    try:
+                        doc_status_data = await self._update_delete_retry_state(
+                            doc_id,
+                            doc_status_data,
+                            deletion_stage=deletion_stage,
+                            doc_llm_cache_ids=doc_llm_cache_ids,
+                            failed=False,
+                        )
+                    except Exception as status_write_error:
+                        logger.error(
+                            "Failed to persist LLM cache IDs for document %s to retry state: %s",
+                            doc_id,
+                            status_write_error,
+                        )
+                        raise Exception(
+                            f"Failed to persist LLM cache IDs for document {doc_id} "
+                            f"(deletion not yet started): {status_write_error}"
+                        ) from status_write_error
                     logger.info(
                         "Collected %d LLM cache entries for document %s",
                         len(doc_llm_cache_ids),
@@ -3857,6 +3910,7 @@ class LightRAG:
                 logger.error(f"Failed to delete document and status: {e}")
                 raise Exception(f"Failed to delete document and status: {e}") from e
 
+            deletion_fully_completed = True
             return DeletionResult(
                 status="success",
                 doc_id=doc_id,
@@ -3911,8 +3965,18 @@ class LightRAG:
                     logger.error(persistence_error_msg)
                     logger.error(traceback.format_exc())
 
-                    # If there was no original exception, this persistence error becomes the main error
-                    if original_exception is None:
+                    if deletion_fully_completed:
+                        # All deletion stages succeeded; the flush error is a post-cleanup
+                        # concern. Do not override the success result already returned.
+                        logger.error(
+                            "Post-deletion persistence flush failed for %s, "
+                            "but deletion completed successfully: %s",
+                            doc_id,
+                            persistence_error,
+                        )
+                    elif original_exception is None:
+                        # Deletion stages were in-flight but the try-block return was never
+                        # reached; treat the persistence failure as the primary error.
                         return DeletionResult(
                             status="fail",
                             doc_id=doc_id,
@@ -3920,8 +3984,8 @@ class LightRAG:
                             status_code=500,
                             file_path=file_path,
                         )
-                    # If there was an original exception, log the persistence error but don't override the original error
-                    # The original error result was already returned in the except block
+                    # If there was an original exception, log the persistence error but
+                    # don't override it — the original error result was already returned.
             else:
                 logger.debug(
                     f"No deletion operations were started for document {doc_id}, skipping persistence"

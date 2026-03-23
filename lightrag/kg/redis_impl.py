@@ -683,6 +683,7 @@ class RedisDocStatusStorage(DocStatusStorage):
                         ordered_results.append(None)
             except Exception as e:
                 logger.error(f"[{self.workspace}] Error in get_by_ids: {e}")
+                raise
         return ordered_results
 
     async def get_status_counts(self) -> dict[str, int]:
