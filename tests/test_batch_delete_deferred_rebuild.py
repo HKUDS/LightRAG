@@ -151,6 +151,15 @@ async def test_skip_rebuild_returns_targets():
     has_relations = bool(result.relationships_to_rebuild)
     assert has_entities or has_relations, "Expected deferred rebuild targets"
 
+    # doc_status should NOT be deleted when skip_rebuild=True — the caller
+    # is responsible for cleaning it up after a successful deferred rebuild.
+    doc_status_delete_calls = [
+        c for c in rag.doc_status.delete.call_args_list
+    ]
+    assert len(doc_status_delete_calls) == 0, (
+        "doc_status.delete should not be called with skip_rebuild=True"
+    )
+
 
 @pytest.mark.asyncio
 async def test_default_rebuild_still_runs():
@@ -188,3 +197,5 @@ async def test_default_rebuild_still_runs():
     # Default mode should NOT populate the rebuild fields
     assert result.entities_to_rebuild is None
     assert result.relationships_to_rebuild is None
+    # Default mode removes doc_status immediately
+    rag.doc_status.delete.assert_called()
