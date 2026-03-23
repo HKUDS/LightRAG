@@ -3961,13 +3961,15 @@ class LightRAG:
                 ) from e
 
             # 11. Delete original document and status.
-            # doc_status is deleted first so that if full_docs.delete fails, a retry
-            # finds no doc_status record and treats the document as already gone,
-            # rather than finding a doc_status that points to a missing full_docs entry.
+            #     doc_status is deleted first so that if full_docs.delete fails, a retry
+            #     finds no doc_status record and treats the document as already gone.
+            #     When skip_rebuild is set the caller handles a deferred rebuild that may
+            #     fail -- keep doc_status alive so the user can re-trigger deletion later.
             try:
                 deletion_stage = "delete_doc_entries"
                 in_final_delete_stage = True
-                await self.doc_status.delete([doc_id])
+                if not skip_rebuild:
+                    await self.doc_status.delete([doc_id])
                 await self.full_docs.delete([doc_id])
             except Exception as e:
                 logger.error(f"Failed to delete document and status: {e}")

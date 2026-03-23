@@ -2062,42 +2062,96 @@ async def background_delete_documents(
                     pipeline_status["history_messages"].append(error_msg)
 
         # Single deferred rebuild for all affected entities/relations
+        rebuild_ok = True
         if all_entities_to_rebuild or all_relationships_to_rebuild:
             from dataclasses import asdict
 
             from lightrag.operate import rebuild_knowledge_from_chunks
 
-            rebuild_msg = (
-                f"Rebuilding knowledge graph: {len(all_entities_to_rebuild)} entities, "
-                f"{len(all_relationships_to_rebuild)} relations"
-            )
-            logger.info(rebuild_msg)
-            async with pipeline_status_lock:
-                pipeline_status["latest_message"] = rebuild_msg
-                pipeline_status["history_messages"].append(rebuild_msg)
-            try:
-                await rebuild_knowledge_from_chunks(
-                    entities_to_rebuild=all_entities_to_rebuild,
-                    relationships_to_rebuild=all_relationships_to_rebuild,
-                    knowledge_graph_inst=rag.chunk_entity_relation_graph,
-                    entities_vdb=rag.entities_vdb,
-                    relationships_vdb=rag.relationships_vdb,
-                    text_chunks_storage=rag.text_chunks,
-                    llm_response_cache=rag.llm_response_cache,
-                    global_config=asdict(rag),
-                    pipeline_status=pipeline_status,
-                    pipeline_status_lock=pipeline_status_lock,
-                    entity_chunks_storage=rag.entity_chunks,
-                    relation_chunks_storage=rag.relation_chunks,
+            # --- Issue 1: filter out entities/relations that were already fully
+            # deleted by a later per-doc call.  When documents share entities,
+            # an earlier doc might tag an entity for "rebuild" while a later doc
+            # ends up deleting it entirely.  Trying to rebuild a deleted node is
+            # wasteful and may error out.
+            pruned_entities = 0
+            for ent_name in list(all_entities_to_rebuild):
+                if not await rag.chunk_entity_relation_graph.has_node(ent_name):
+                    del all_entities_to_rebuild[ent_name]
+                    pruned_entities += 1
+            pruned_relations = 0
+            for edge_key in list(all_relationships_to_rebuild):
+                src, tgt = edge_key
+                if not await rag.chunk_entity_relation_graph.has_edge(src, tgt):
+                    del all_relationships_to_rebuild[edge_key]
+                    pruned_relations += 1
+            if pruned_entities or pruned_relations:
+                prune_msg = (
+                    f"Pruned {pruned_entities} entities and {pruned_relations} "
+                    f"relations that were already deleted by overlapping docs"
                 )
-                await rag._insert_done()
-            except Exception as rebuild_err:
-                rebuild_error_msg = f"Failed to rebuild knowledge graph after batch deletion: {rebuild_err}"
-                logger.error(rebuild_error_msg)
-                logger.error(traceback.format_exc())
+                logger.info(prune_msg)
                 async with pipeline_status_lock:
-                    pipeline_status["latest_message"] = rebuild_error_msg
-                    pipeline_status["history_messages"].append(rebuild_error_msg)
+                    pipeline_status["history_messages"].append(prune_msg)
+
+            if all_entities_to_rebuild or all_relationships_to_rebuild:
+                rebuild_msg = (
+                    f"Rebuilding knowledge graph: {len(all_entities_to_rebuild)} entities, "
+                    f"{len(all_relationships_to_rebuild)} relations"
+                )
+                logger.info(rebuild_msg)
+                async with pipeline_status_lock:
+                    pipeline_status["latest_message"] = rebuild_msg
+                    pipeline_status["history_messages"].append(rebuild_msg)
+                try:
+                    await rebuild_knowledge_from_chunks(
+                        entities_to_rebuild=all_entities_to_rebuild,
+                        relationships_to_rebuild=all_relationships_to_rebuild,
+                        knowledge_graph_inst=rag.chunk_entity_relation_graph,
+                        entities_vdb=rag.entities_vdb,
+                        relationships_vdb=rag.relationships_vdb,
+                        text_chunks_storage=rag.text_chunks,
+                        llm_response_cache=rag.llm_response_cache,
+                        global_config=asdict(rag),
+                        pipeline_status=pipeline_status,
+                        pipeline_status_lock=pipeline_status_lock,
+                        entity_chunks_storage=rag.entity_chunks,
+                        relation_chunks_storage=rag.relation_chunks,
+                    )
+                    await rag._insert_done()
+                except Exception as rebuild_err:
+                    rebuild_ok = False
+                    rebuild_error_msg = (
+                        f"Failed to rebuild knowledge graph after batch deletion: {rebuild_err}"
+                    )
+                    logger.error(rebuild_error_msg)
+                    logger.error(traceback.format_exc())
+                    async with pipeline_status_lock:
+                        pipeline_status["latest_message"] = rebuild_error_msg
+                        pipeline_status["history_messages"].append(rebuild_error_msg)
+
+        # --- Issue 2: only finalize doc_status removal after rebuild succeeds.
+        # adelete_by_doc_id(skip_rebuild=True) intentionally keeps doc_status
+        # alive so a failed rebuild doesn't lose track of the documents.
+        if rebuild_ok and successful_deletions:
+            try:
+                await rag.doc_status.delete(successful_deletions)
+            except Exception as status_err:
+                logger.error(
+                    f"Failed to clean up doc_status for {len(successful_deletions)} docs: {status_err}"
+                )
+                async with pipeline_status_lock:
+                    pipeline_status["history_messages"].append(
+                        f"Warning: doc_status cleanup failed: {status_err}"
+                    )
+        elif not rebuild_ok:
+            keep_msg = (
+                f"Keeping doc_status for {len(successful_deletions)} docs "
+                f"because rebuild failed — re-trigger deletion to retry"
+            )
+            logger.warning(keep_msg)
+            async with pipeline_status_lock:
+                pipeline_status["latest_message"] = keep_msg
+                pipeline_status["history_messages"].append(keep_msg)
 
     except Exception as e:
         error_msg = f"Critical error during batch deletion: {str(e)}"
