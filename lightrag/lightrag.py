@@ -3252,6 +3252,8 @@ class LightRAG:
 
             # 2. Get chunk IDs from document status
             metadata = doc_status_data.get("metadata", {})
+            if not isinstance(metadata, dict):
+                metadata = {}
             chunk_ids = set(
                 _normalize_string_list(doc_status_data.get("chunks_list", []))
             )
@@ -3512,11 +3514,12 @@ class LightRAG:
                                 if chunk_id
                             ]
 
-                    graph_sources = [
-                        chunk_id
-                        for chunk_id in edge_data["source_id"].split(GRAPH_FIELD_SEP)
-                        if chunk_id
-                    ]
+                    if edge_data.get("source_id"):
+                        graph_sources = [
+                            chunk_id
+                            for chunk_id in edge_data["source_id"].split(GRAPH_FIELD_SEP)
+                            if chunk_id
+                        ]
 
                     if not existing_sources:
                         existing_sources = graph_sources
@@ -3749,8 +3752,12 @@ class LightRAG:
                     raise Exception(f"Failed to delete entities: {e}") from e
 
             # Persist changes to graph database before entity and relationship rebuild
-            deletion_stage = "persist_pre_rebuild_changes"
-            await self._insert_done()
+            try:
+                deletion_stage = "persist_pre_rebuild_changes"
+                await self._insert_done()
+            except Exception as e:
+                logger.error(f"Failed to persist pre-rebuild changes: {e}")
+                raise Exception(f"Failed to persist pre-rebuild changes: {e}") from e
 
             # 8. Rebuild entities and relationships from remaining chunks
             if entities_to_rebuild or relationships_to_rebuild:
@@ -3795,6 +3802,7 @@ class LightRAG:
                 logger.error(f"Failed to delete document and status: {e}")
                 raise Exception(f"Failed to delete document and status: {e}") from e
 
+            log_message = f"Document {doc_id} successfully deleted"
             if delete_llm_cache and doc_llm_cache_ids and self.llm_response_cache:
                 try:
                     deletion_stage = "delete_llm_cache"
@@ -3806,12 +3814,19 @@ class LightRAG:
                         pipeline_status["history_messages"].append(cache_log_message)
                     log_message = cache_log_message
                 except Exception as cache_delete_error:
-                    log_message = f"Failed to delete LLM cache for document {doc_id}: {cache_delete_error}"
+                    log_message = f"Document {doc_id} deleted but LLM cache cleanup failed: {cache_delete_error}"
                     logger.error(log_message)
                     logger.error(traceback.format_exc())
                     async with pipeline_status_lock:
                         pipeline_status["latest_message"] = log_message
                         pipeline_status["history_messages"].append(log_message)
+                    return DeletionResult(
+                        status="fail",
+                        doc_id=doc_id,
+                        message=log_message,
+                        status_code=500,
+                        file_path=file_path,
+                    )
 
             return DeletionResult(
                 status="success",
@@ -3827,7 +3842,13 @@ class LightRAG:
             logger.error(error_message)
             logger.error(traceback.format_exc())
             try:
-                if doc_status_data is not None:
+                # Do not attempt to write retry state if doc_status was already deleted
+                # (delete_doc_entries stage): doing so would re-create a zombie record that
+                # can never be retried because all associated chunk/graph data is gone.
+                if (
+                    doc_status_data is not None
+                    and deletion_stage != "delete_doc_entries"
+                ):
                     doc_status_data = await self._update_delete_retry_state(
                         doc_id,
                         doc_status_data,

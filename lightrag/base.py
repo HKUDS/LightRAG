@@ -835,7 +835,7 @@ class StoragesStatus(str, Enum):
 class DeletionResult:
     """Represents the result of a deletion operation."""
 
-    status: Literal["success", "not_found", "fail"]
+    status: Literal["success", "not_found", "not_allowed", "fail"]
     doc_id: str
     message: str
     status_code: int = 200
