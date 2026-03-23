@@ -3227,7 +3227,7 @@ class LightRAG:
 
         deletion_operations_started = False
         deletion_fully_completed = False
-        doc_status_already_deleted = False
+        in_final_delete_stage = False
         original_exception = None
         doc_llm_cache_ids: list[str] = []
         deletion_stage = "initializing"
@@ -3945,8 +3945,8 @@ class LightRAG:
             # rather than finding a doc_status that points to a missing full_docs entry.
             try:
                 deletion_stage = "delete_doc_entries"
+                in_final_delete_stage = True
                 await self.doc_status.delete([doc_id])
-                doc_status_already_deleted = True
                 await self.full_docs.delete([doc_id])
             except Exception as e:
                 logger.error(f"Failed to delete document and status: {e}")
@@ -3971,7 +3971,7 @@ class LightRAG:
                 # upsert would re-create the record as a zombie. All earlier stages still
                 # have doc_status intact and can safely update it, even if some chunk/graph
                 # data has already been removed.
-                if doc_status_data is not None and not doc_status_already_deleted:
+                if doc_status_data is not None and not in_final_delete_stage:
                     doc_status_data = await self._update_delete_retry_state(
                         doc_id,
                         doc_status_data,
