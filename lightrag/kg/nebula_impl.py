@@ -4,11 +4,13 @@ import asyncio
 import hashlib
 import os
 import re
+from collections import deque
 from dataclasses import dataclass
 from typing import Any, final
 
 from ..base import BaseGraphStorage
-from ..types import KnowledgeGraph
+from ..types import KnowledgeGraph, KnowledgeGraphEdge, KnowledgeGraphNode
+from ..utils import logger
 
 _SAFE_NAME_RE = re.compile(r"[^0-9A-Za-z_]+")
 _DEFAULT_SPACE_PREFIX = "lightrag"
@@ -693,6 +695,262 @@ class NebulaGraphStorage(BaseGraphStorage):
             output[field] = value
         return output
 
+    @staticmethod
+    def _resolve_max_nodes(global_config: dict[str, Any], max_nodes: int | None) -> int:
+        config_limit = int(global_config.get("max_graph_nodes", 1000))
+        if max_nodes is None:
+            return max(0, config_limit)
+        return max(0, min(int(max_nodes), config_limit))
+
+    @staticmethod
+    def _extract_neighbor(node_id: str, edge: tuple[str, str]) -> str | None:
+        src, tgt = edge
+        if src == node_id and tgt:
+            return tgt
+        if tgt == node_id and src:
+            return src
+        if src and src != node_id:
+            return src
+        if tgt and tgt != node_id:
+            return tgt
+        return None
+
+    @staticmethod
+    def _to_knowledge_graph_node(node_id: str, node_data: dict[str, Any]) -> KnowledgeGraphNode:
+        props = dict(node_data)
+        entity_id = str(props.get("entity_id", node_id))
+        props.setdefault("entity_id", entity_id)
+        return KnowledgeGraphNode(
+            id=entity_id,
+            labels=[entity_id],
+            properties=props,
+        )
+
+    @staticmethod
+    def _to_knowledge_graph_edge(
+        source: str, target: str, edge_data: dict[str, Any] | None
+    ) -> KnowledgeGraphEdge:
+        props = dict(edge_data or {})
+        edge_type = props.get("relationship")
+        props.pop("source", None)
+        props.pop("target", None)
+        edge_id = f"{source}->{target}"
+        return KnowledgeGraphEdge(
+            id=edge_id,
+            type=str(edge_type) if edge_type is not None else None,
+            source=source,
+            target=target,
+            properties=props,
+        )
+
+    @staticmethod
+    def _label_match_tier(label: str, query_lower: str) -> int:
+        label_lower = label.lower()
+        if label_lower == query_lower:
+            return 0
+        if label_lower.startswith(query_lower):
+            return 1
+        if query_lower in label_lower:
+            return 2
+        return 3
+
+    @classmethod
+    def _rank_labels(
+        cls, labels: list[str], query: str, limit: int
+    ) -> list[str]:
+        if limit <= 0:
+            return []
+        query_lower = query.lower()
+        deduplicated: dict[str, tuple[int, str, str]] = {}
+        for raw_label in labels:
+            label = str(raw_label)
+            if query_lower not in label.lower():
+                continue
+            if label in deduplicated:
+                continue
+            deduplicated[label] = (
+                cls._label_match_tier(label, query_lower),
+                label.lower(),
+                label,
+            )
+        ranked = sorted(
+            deduplicated.items(),
+            key=lambda item: (item[1][0], item[1][1], item[1][2]),
+        )
+        return [label for label, _ in ranked[:limit]]
+
+    async def _build_global_knowledge_graph(self, max_nodes: int) -> KnowledgeGraph:
+        result = KnowledgeGraph()
+        if max_nodes <= 0:
+            all_nodes = await self.get_all_nodes()
+            result.is_truncated = bool(all_nodes)
+            return result
+
+        all_nodes = await self.get_all_nodes()
+        all_edges = await self.get_all_edges()
+
+        node_map: dict[str, dict[str, Any]] = {}
+        for node in all_nodes:
+            entity_id = node.get("entity_id") or node.get("id")
+            if entity_id is None:
+                continue
+            node_map[str(entity_id)] = dict(node)
+
+        degree_map = {node_id: 0 for node_id in node_map}
+        for edge in all_edges:
+            src = edge.get("source")
+            tgt = edge.get("target")
+            if src is not None and str(src) in degree_map:
+                degree_map[str(src)] += 1
+            if tgt is not None and str(tgt) in degree_map:
+                degree_map[str(tgt)] += 1
+
+        sorted_nodes = sorted(
+            node_map.keys(), key=lambda node_id: (-degree_map[node_id], node_id)
+        )
+        selected_ids = sorted_nodes[:max_nodes]
+        selected_set = set(selected_ids)
+        result.is_truncated = len(sorted_nodes) > len(selected_ids)
+
+        for node_id in selected_ids:
+            result.nodes.append(
+                self._to_knowledge_graph_node(node_id, node_map[node_id])
+            )
+
+        seen_edges: set[tuple[str, str, str]] = set()
+        for edge in all_edges:
+            src = edge.get("source")
+            tgt = edge.get("target")
+            if src is None or tgt is None:
+                continue
+            source = str(src)
+            target = str(tgt)
+            if source not in selected_set or target not in selected_set:
+                continue
+            relation = str(edge.get("relationship", ""))
+            edge_key = (source, target, relation)
+            if edge_key in seen_edges:
+                continue
+            seen_edges.add(edge_key)
+            result.edges.append(self._to_knowledge_graph_edge(source, target, edge))
+
+        return result
+
+    async def _build_bounded_subgraph(
+        self, node_label: str, max_depth: int, max_nodes: int
+    ) -> KnowledgeGraph:
+        result = KnowledgeGraph()
+        if max_nodes <= 0:
+            if await self.get_node(node_label) is not None:
+                result.is_truncated = True
+            return result
+
+        start_nodes = await self.get_nodes_batch([node_label])
+        if node_label not in start_nodes:
+            return result
+
+        visited: set[str] = set()
+        bfs_order: list[str] = []
+        frontier: deque[tuple[str, int]] = deque([(node_label, 0)])
+        hit_node_limit = False
+        hit_depth_limit = False
+
+        while frontier and len(bfs_order) < max_nodes:
+            current_layer: list[str] = []
+            current_depth = frontier[0][1]
+            while frontier and frontier[0][1] == current_depth:
+                node_id, _depth = frontier.popleft()
+                if node_id in visited:
+                    continue
+                visited.add(node_id)
+                current_layer.append(node_id)
+                bfs_order.append(node_id)
+                if len(bfs_order) >= max_nodes:
+                    break
+
+            if len(bfs_order) >= max_nodes:
+                hit_node_limit = bool(frontier)
+                if not hit_node_limit:
+                    adjacency = await self.get_nodes_edges_batch(current_layer)
+                    for node_id in current_layer:
+                        for edge in adjacency.get(node_id, []):
+                            neighbor = self._extract_neighbor(node_id, edge)
+                            if neighbor and neighbor not in visited:
+                                hit_node_limit = True
+                                break
+                        if hit_node_limit:
+                            break
+                break
+
+            if current_depth >= max_depth:
+                adjacency = await self.get_nodes_edges_batch(current_layer)
+                for node_id in current_layer:
+                    for edge in adjacency.get(node_id, []):
+                        neighbor = self._extract_neighbor(node_id, edge)
+                        if neighbor and neighbor not in visited:
+                            hit_depth_limit = True
+                            break
+                    if hit_depth_limit:
+                        break
+                continue
+
+            adjacency = await self.get_nodes_edges_batch(current_layer)
+            next_candidates: list[str] = []
+            seen_next: set[str] = set()
+            for node_id in current_layer:
+                for edge in adjacency.get(node_id, []):
+                    neighbor = self._extract_neighbor(node_id, edge)
+                    if neighbor is None or neighbor in visited or neighbor in seen_next:
+                        continue
+                    seen_next.add(neighbor)
+                    next_candidates.append(neighbor)
+            next_candidates.sort()
+            for neighbor in next_candidates:
+                frontier.append((neighbor, current_depth + 1))
+
+        selected_ids = bfs_order[:max_nodes]
+        selected_set = set(selected_ids)
+        result.is_truncated = hit_node_limit or hit_depth_limit or bool(frontier)
+        if not selected_ids:
+            return result
+
+        node_payloads = await self.get_nodes_batch(selected_ids)
+        for node_id in selected_ids:
+            node_data = node_payloads.get(node_id)
+            if node_data is None:
+                node_data = {"entity_id": node_id}
+            result.nodes.append(self._to_knowledge_graph_node(node_id, node_data))
+
+        adjacency = await self.get_nodes_edges_batch(selected_ids)
+        edge_pairs: list[dict[str, str]] = []
+        seen_pairs: set[tuple[str, str]] = set()
+        for node_id in selected_ids:
+            for edge in adjacency.get(node_id, []):
+                src, tgt = edge
+                source = str(src)
+                target = str(tgt)
+                if source not in selected_set or target not in selected_set:
+                    continue
+                canonical = _canonical_edge_pair(source, target)
+                if canonical in seen_pairs:
+                    continue
+                seen_pairs.add(canonical)
+                edge_pairs.append({"src": canonical[0], "tgt": canonical[1]})
+
+        edge_payloads = (
+            await self.get_edges_batch(edge_pairs)
+            if edge_pairs
+            else {}
+        )
+        for pair in edge_pairs:
+            source = pair["src"]
+            target = pair["tgt"]
+            payload = edge_payloads.get((source, target), {"source": source, "target": target})
+            payload.setdefault("source", source)
+            payload.setdefault("target", target)
+            result.edges.append(self._to_knowledge_graph_edge(source, target, payload))
+        return result
+
     async def node_degree(self, node_id: str) -> int:
         degrees = await self.node_degrees_batch([node_id])
         return int(degrees.get(node_id, 0))
@@ -993,7 +1251,16 @@ class NebulaGraphStorage(BaseGraphStorage):
     async def get_knowledge_graph(
         self, node_label: str, max_depth: int = 3, max_nodes: int = 1000
     ) -> KnowledgeGraph:
-        raise NotImplementedError("Nebula I/O is not implemented in this task")
+        resolved_max_nodes = self._resolve_max_nodes(self.global_config, max_nodes)
+        resolved_max_depth = max(0, int(max_depth))
+        label = str(node_label).strip()
+        if not label:
+            return KnowledgeGraph()
+        if label == "*":
+            return await self._build_global_knowledge_graph(resolved_max_nodes)
+        return await self._build_bounded_subgraph(
+            label, resolved_max_depth, resolved_max_nodes
+        )
 
     async def get_all_nodes(self) -> list[dict]:
         result = await self._execute_in_space(
@@ -1073,5 +1340,57 @@ class NebulaGraphStorage(BaseGraphStorage):
         ranking = sorted(degrees.items(), key=lambda item: (-item[1], item[0]))
         return [label for label, _ in ranking[:limit]]
 
+    async def _search_labels_fulltext(self, query: str, limit: int = 50) -> list[str]:
+        if limit <= 0:
+            return []
+        query_strip = query.strip()
+        if not query_strip:
+            return []
+        escaped_query = _ngql_escape_string(query_strip)
+        result = await self._execute_in_space(
+            "LOOKUP ON entity "
+            f'WHERE ES_QUERY(entity.name, "{escaped_query}*") '
+            "YIELD entity.entity_id AS entity_id "
+            f"LIMIT {int(limit)};"
+        )
+        rows = _result_to_rows(result)
+        labels = [
+            str(row["entity_id"])
+            for row in rows
+            if row.get("entity_id") is not None
+        ]
+        return self._rank_labels(labels, query_strip, limit)
+
+    async def _search_labels_contains(self, query: str, limit: int = 50) -> list[str]:
+        if limit <= 0:
+            return []
+        query_strip = query.strip()
+        if not query_strip:
+            return []
+        labels = await self.get_all_labels()
+        return self._rank_labels(labels, query_strip, limit)
+
     async def search_labels(self, query: str, limit: int = 50) -> list[str]:
-        raise NotImplementedError("Nebula I/O is not implemented in this task")
+        if limit <= 0:
+            return []
+        query_strip = query.strip()
+        if not query_strip:
+            return []
+
+        if self._fulltext_init_error:
+            logger.warning(
+                f"[{self.workspace}] Nebula full-text unavailable during init: "
+                f"{self._fulltext_init_error}; falling back to contains search."
+            )
+            return await self._search_labels_contains(query_strip, limit=limit)
+
+        try:
+            labels = await self._search_labels_fulltext(query_strip, limit=limit)
+            if labels:
+                return labels
+        except Exception as exc:
+            logger.warning(
+                f"[{self.workspace}] Nebula full-text search failed for "
+                f"query '{query_strip}': {exc}; falling back to contains search."
+            )
+        return await self._search_labels_contains(query_strip, limit=limit)

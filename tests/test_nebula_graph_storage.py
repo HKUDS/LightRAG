@@ -19,6 +19,7 @@ from lightrag.kg.nebula_impl import (
     NebulaIndexJobError,
     NebulaGraphStorage,
 )
+from lightrag.types import KnowledgeGraph
 
 
 def build_storage(workspace: str | None = "finance") -> NebulaGraphStorage:
@@ -890,3 +891,98 @@ async def test_nebula_get_popular_labels_orders_by_degree_desc():
     assert "LOOKUP ON relation" in sql
     assert "src(edge) AS source" in sql
     assert "dst(edge) AS target" in sql
+
+
+@pytest.mark.asyncio
+async def test_nebula_get_knowledge_graph_wildcard_returns_truncated_graph():
+    storage = build_storage(workspace="finance")
+    all_nodes = [
+        {"entity_id": "A", "name": "A", "description": "node-a"},
+        {"entity_id": "B", "name": "B", "description": "node-b"},
+        {"entity_id": "C", "name": "C", "description": "node-c"},
+    ]
+    all_edges = [
+        {"source": "A", "target": "B", "relationship": "ab"},
+        {"source": "A", "target": "C", "relationship": "ac"},
+    ]
+    with (
+        patch.object(storage, "get_all_nodes", AsyncMock(return_value=all_nodes)),
+        patch.object(storage, "get_all_edges", AsyncMock(return_value=all_edges)),
+    ):
+        graph = await storage.get_knowledge_graph("*", max_depth=2, max_nodes=2)
+
+    assert isinstance(graph, KnowledgeGraph)
+    assert graph.is_truncated is True
+    assert len(graph.nodes) == 2
+    node_ids = {node.id for node in graph.nodes}
+    assert "A" in node_ids
+    assert len(graph.edges) == 1
+    assert graph.edges[0].source in node_ids
+    assert graph.edges[0].target in node_ids
+
+
+@pytest.mark.asyncio
+async def test_nebula_get_knowledge_graph_entity_returns_bounded_subgraph():
+    storage = build_storage(workspace="finance")
+    nodes_by_id = {
+        "A": {"entity_id": "A", "name": "A"},
+        "B": {"entity_id": "B", "name": "B"},
+        "C": {"entity_id": "C", "name": "C"},
+    }
+    adjacency = {
+        "A": [("A", "B"), ("A", "C")],
+        "B": [("A", "B")],
+    }
+    edges = {
+        ("A", "B"): {"source": "A", "target": "B", "relationship": "ab"},
+        ("A", "C"): {"source": "A", "target": "C", "relationship": "ac"},
+    }
+    with (
+        patch.object(storage, "get_nodes_batch", AsyncMock(return_value=nodes_by_id)),
+        patch.object(
+            storage, "get_nodes_edges_batch", AsyncMock(return_value=adjacency)
+        ),
+        patch.object(storage, "get_edges_batch", AsyncMock(return_value=edges)),
+    ):
+        graph = await storage.get_knowledge_graph("A", max_depth=1, max_nodes=2)
+
+    assert isinstance(graph, KnowledgeGraph)
+    assert graph.is_truncated is True
+    assert len(graph.nodes) == 2
+    node_ids = {node.id for node in graph.nodes}
+    assert "A" in node_ids
+    assert len(graph.edges) == 1
+    assert graph.edges[0].source in node_ids
+    assert graph.edges[0].target in node_ids
+
+
+@pytest.mark.asyncio
+async def test_search_labels_uses_fulltext_path_when_available():
+    storage = build_storage(workspace="finance")
+    fulltext_mock = AsyncMock(return_value=["learn", "learning"])
+    fallback_mock = AsyncMock(return_value=["learning"])
+    with (
+        patch.object(storage, "_search_labels_fulltext", fulltext_mock),
+        patch.object(storage, "_search_labels_contains", fallback_mock),
+    ):
+        labels = await storage.search_labels("learn", limit=10)
+
+    assert labels == ["learn", "learning"]
+    fulltext_mock.assert_awaited_once_with("learn", limit=10)
+    fallback_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_search_labels_falls_back_when_fulltext_unavailable():
+    storage = build_storage(workspace="finance")
+    fulltext_mock = AsyncMock(side_effect=RuntimeError("no ft"))
+    fallback_mock = AsyncMock(return_value=["Machine Learning"])
+    with (
+        patch.object(storage, "_search_labels_fulltext", fulltext_mock),
+        patch.object(storage, "_search_labels_contains", fallback_mock),
+    ):
+        labels = await storage.search_labels("learn", limit=10)
+
+    assert labels == ["Machine Learning"]
+    fulltext_mock.assert_awaited_once_with("learn", limit=10)
+    fallback_mock.assert_awaited_once_with("learn", limit=10)
