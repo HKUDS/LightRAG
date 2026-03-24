@@ -1022,6 +1022,40 @@ async def test_search_labels_uses_fallback_when_fulltext_init_error_exists():
 
 
 @pytest.mark.asyncio
+async def test_search_labels_fulltext_deduplicates_and_keeps_ranked_stable_order():
+    storage = build_storage(workspace="finance")
+    execute_in_space = AsyncMock(
+        return_value=[
+            {"entity_id": "learn"},
+            {"entity_id": "foo"},
+            {"entity_id": "learn"},
+            {"entity_id": "learning"},
+            {"entity_id": "foo"},
+        ]
+    )
+    with patch.object(storage, "_execute_in_space", execute_in_space):
+        labels = await storage.search_labels("learn", limit=10)
+
+    assert labels == ["learn", "learning", "foo"]
+
+
+@pytest.mark.asyncio
+async def test_search_labels_fulltext_promotes_exact_before_prefix_and_keeps_other_hits():
+    storage = build_storage(workspace="finance")
+    execute_in_space = AsyncMock(
+        return_value=[
+            {"entity_id": "learning"},
+            {"entity_id": "learn"},
+            {"entity_id": "foo"},
+        ]
+    )
+    with patch.object(storage, "_execute_in_space", execute_in_space):
+        labels = await storage.search_labels("learn", limit=10)
+
+    assert labels == ["learn", "learning", "foo"]
+
+
+@pytest.mark.asyncio
 async def test_nebula_get_knowledge_graph_marks_truncated_when_max_depth_reached():
     storage = build_storage(workspace="finance")
     with (

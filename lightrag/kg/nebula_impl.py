@@ -795,6 +795,20 @@ class NebulaGraphStorage(BaseGraphStorage):
                 break
         return output
 
+    @classmethod
+    def _rank_fulltext_labels_stable(
+        cls, labels: list[str], query: str, limit: int
+    ) -> list[str]:
+        if limit <= 0:
+            return []
+        query_lower = query.lower()
+        deduped = cls._dedupe_labels_preserve_order(labels, len(labels))
+        ranked = sorted(
+            enumerate(deduped),
+            key=lambda item: (cls._label_match_tier(item[1], query_lower), item[0]),
+        )
+        return [label for _, label in ranked[:limit]]
+
     async def _build_global_knowledge_graph(self, max_nodes: int) -> KnowledgeGraph:
         result = KnowledgeGraph()
         if max_nodes <= 0:
@@ -1375,7 +1389,7 @@ class NebulaGraphStorage(BaseGraphStorage):
             for row in rows
             if row.get("entity_id") is not None
         ]
-        return self._dedupe_labels_preserve_order(labels, limit)
+        return self._rank_fulltext_labels_stable(labels, query_strip, limit)
 
     async def _search_labels_contains(self, query: str, limit: int = 50) -> list[str]:
         if limit <= 0:
