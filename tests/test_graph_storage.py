@@ -131,6 +131,28 @@ async def initialize_graph_storage():
         return None
 
 
+@pytest.fixture
+async def storage():
+    """Provide a fresh graph storage instance for pytest-based tests."""
+    storage_instance = await initialize_graph_storage()
+    if not storage_instance:
+        pytest.skip("Failed to initialize graph storage instance")
+
+    try:
+        await storage_instance.drop()
+    except Exception:
+        pass
+
+    try:
+        yield storage_instance
+    finally:
+        try:
+            await storage_instance.drop()
+        except Exception:
+            pass
+        await storage_instance.finalize()
+
+
 @pytest.mark.integration
 @pytest.mark.requires_db
 async def test_graph_basic(storage):
