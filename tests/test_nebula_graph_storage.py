@@ -212,6 +212,7 @@ async def test_initialize_creates_space_and_schema():
         patch.object(storage, "_acquire_session", AsyncMock(return_value=session)),
         patch.object(storage, "_release_session", AsyncMock()),
         patch.object(storage, "_use_space", use_space_mock),
+        patch.object(storage, "_ensure_fulltext_ready", AsyncMock()),
     ):
         await storage._ensure_space_ready()
 
@@ -552,7 +553,10 @@ async def test_create_indexes_falls_back_when_fulltext_if_not_exists_is_unsuppor
             object(),  # create fulltext edge index without IF
         ]
     )
-    with patch.object(storage, "_execute_in_space", execute_in_space):
+    with (
+        patch.object(storage, "_execute_in_space", execute_in_space),
+        patch.object(storage, "_ensure_fulltext_ready", AsyncMock()),
+    ):
         await storage._create_indexes_if_needed()
 
     sql_calls = [call.args[0] for call in execute_in_space.await_args_list]
@@ -581,7 +585,10 @@ async def test_create_indexes_records_service_not_found_for_fulltext():
             RuntimeError("Service not found!"),
         ]
     )
-    with patch.object(storage, "_execute_in_space", execute_in_space):
+    with (
+        patch.object(storage, "_execute_in_space", execute_in_space),
+        patch.object(storage, "_ensure_fulltext_ready", AsyncMock()),
+    ):
         await storage._create_indexes_if_needed()
 
     assert storage._fulltext_init_error is not None

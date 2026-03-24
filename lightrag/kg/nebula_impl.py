@@ -400,6 +400,12 @@ def _first_row(result: Any) -> dict[str, Any] | None:
     return rows[0]
 
 
+def _normalize_listener_endpoint(endpoint: Any) -> str:
+    value = str(endpoint).strip()
+    value = value.replace('"', "").replace("'", "")
+    return value
+
+
 @final
 @dataclass
 class NebulaGraphStorage(BaseGraphStorage):
@@ -424,6 +430,11 @@ class NebulaGraphStorage(BaseGraphStorage):
         self._timeout_ms = _env_int("NEBULA_TIMEOUT_MS", 60_000)
         self._ssl_enabled = _env_bool("NEBULA_SSL", default=False)
         self._use_http2 = _env_bool("NEBULA_USE_HTTP2", default=False)
+        self._listener_hosts = [
+            _normalize_listener_endpoint(item)
+            for item in (_env_str("NEBULA_LISTENER_HOSTS", "") or "").split(",")
+            if item.strip()
+        ]
         self._partition_num = _env_int("NEBULA_SPACE_PARTITIONS", _DEFAULT_PARTITION_NUM)
         self._replica_factor = _env_int(
             "NEBULA_SPACE_REPLICA_FACTOR", _DEFAULT_REPLICA_FACTOR
@@ -621,6 +632,7 @@ class NebulaGraphStorage(BaseGraphStorage):
                 raise
         self._fulltext_init_error = None
         try:
+            await self._ensure_fulltext_ready()
             await self._create_fulltext_index(
                 "CREATE FULLTEXT TAG INDEX IF NOT EXISTS entity_name_ft_idx "
                 "ON entity(name);",
@@ -634,6 +646,75 @@ class NebulaGraphStorage(BaseGraphStorage):
         except RuntimeError as exc:
             self._fulltext_init_error = str(exc)
             return
+
+    async def _ensure_fulltext_ready(self) -> None:
+        text_clients = await self._execute("SHOW TEXT SEARCH CLIENTS;")
+        client_rows = _result_to_rows(text_clients)
+        if not client_rows:
+            raise RuntimeError(
+                "Nebula text search client is not configured. Run SIGN IN TEXT SERVICE first."
+            )
+
+        listener_rows_result = await self._execute_in_space("SHOW LISTENER;")
+        listener_rows = _result_to_rows(listener_rows_result)
+        if not listener_rows:
+            listener_hosts = (
+                self._listener_hosts or await self._discover_listener_hosts()
+            )
+            if not listener_hosts:
+                raise RuntimeError(
+                    "Nebula listener is not configured for this space. Set NEBULA_LISTENER_HOSTS or configure listener manually."
+                )
+            await self._execute_in_space(
+                "ADD LISTENER ELASTICSEARCH " + ",".join(listener_hosts) + ";"
+            )
+            listener_rows = _result_to_rows(
+                await self._execute_in_space("SHOW LISTENER;")
+            )
+
+        for attempt in range(1, self._schema_retry_times + 1):
+            listener_rows = _result_to_rows(
+                await self._execute_in_space("SHOW LISTENER;")
+            )
+            if listener_rows and all(
+                str(row.get("col_3", "")).upper() == "ONLINE" for row in listener_rows
+            ):
+                return
+            if attempt == self._schema_retry_times:
+                raise RuntimeError(
+                    "Nebula listener did not become ONLINE for the current space."
+                )
+            await asyncio.sleep(self._schema_retry_delay_ms / 1000)
+
+    async def _discover_listener_hosts(self) -> list[str]:
+        spaces_result = await self._execute("SHOW SPACES;")
+        spaces_rows = _result_to_rows(spaces_result)
+        space_names = [
+            str(next(iter(row.values())))
+            for row in spaces_rows
+            if row and next(iter(row.values()), None) is not None
+        ]
+        for space in space_names:
+            if space == self._space_name:
+                continue
+            session = await self._acquire_session()
+            try:
+                await self._execute(f"USE `{space}`;", session=session)
+                result = await self._execute("SHOW LISTENER;", session=session)
+            except Exception:
+                await self._release_session(session)
+                continue
+            rows = _result_to_rows(result)
+            await self._release_session(session)
+            endpoints = [
+                _normalize_listener_endpoint(row.get("col_2"))
+                for row in rows
+                if row.get("col_2")
+            ]
+            endpoints = [endpoint for endpoint in endpoints if endpoint]
+            if endpoints:
+                return self._unique_preserve_order(endpoints)
+        return []
 
     async def _create_fulltext_index(
         self, stmt_if_not_exists: str, stmt_plain: str
@@ -1420,9 +1501,9 @@ class NebulaGraphStorage(BaseGraphStorage):
         escaped_query = _ngql_escape_string(query_strip)
         result = await self._execute_in_space(
             "LOOKUP ON entity "
-            f'WHERE ES_QUERY(entity.name, "{escaped_query}*") '
+            f'WHERE ES_QUERY(entity_name_ft_idx, "{escaped_query}*") '
             "YIELD entity.entity_id AS entity_id "
-            f"LIMIT {int(limit)};"
+            f"| LIMIT {int(limit)};"
         )
         rows = _result_to_rows(result)
         labels = [
