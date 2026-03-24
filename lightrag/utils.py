@@ -2526,7 +2526,7 @@ async def pick_by_vector_similarity(
     try:
         # Use pre-computed query embedding if provided, otherwise compute it
         if query_embedding is None:
-            query_embedding = await embedding_func([query])
+            query_embedding = await embedding_func([query], context="query")
             query_embedding = query_embedding[
                 0
             ]  # Extract first embedding from batch result

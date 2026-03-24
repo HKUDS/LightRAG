@@ -2665,7 +2665,7 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
             for i in range(0, len(contents), self._max_batch_size)
         ]
         embeddings_list = await asyncio.gather(
-            *[self.embedding_func(batch) for batch in batches]
+            *[self.embedding_func(batch, context="document") for batch in batches]
         )
         embeddings = np.concatenate(embeddings_list)
         assert len(embeddings) == len(
@@ -2713,7 +2713,7 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
                 else list(query_embedding)
             )
         else:
-            embedding = await self.embedding_func([query], _priority=5)
+            embedding = await self.embedding_func([query], context="query", _priority=5)
             query_vector = embedding[0].tolist()
 
         search_body = {
