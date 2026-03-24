@@ -2120,9 +2120,7 @@ async def background_delete_documents(
                     await rag._insert_done()
                 except Exception as rebuild_err:
                     rebuild_ok = False
-                    rebuild_error_msg = (
-                        f"Failed to rebuild knowledge graph after batch deletion: {rebuild_err}"
-                    )
+                    rebuild_error_msg = f"Failed to rebuild knowledge graph after batch deletion: {rebuild_err}"
                     logger.error(rebuild_error_msg)
                     logger.error(traceback.format_exc())
                     async with pipeline_status_lock:

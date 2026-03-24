@@ -57,9 +57,7 @@ def _make_rag_stub():
     )
 
     rag.full_entities = AsyncMock()
-    rag.full_entities.get_by_id = AsyncMock(
-        return_value={"entity_names": ["EntityX"]}
-    )
+    rag.full_entities.get_by_id = AsyncMock(return_value={"entity_names": ["EntityX"]})
     rag.full_entities.delete = AsyncMock()
 
     rag.full_relations = AsyncMock()
@@ -89,9 +87,7 @@ def _make_rag_stub():
     )
     rag.chunk_entity_relation_graph.remove_edges = AsyncMock()
     rag.chunk_entity_relation_graph.remove_nodes = AsyncMock()
-    rag.chunk_entity_relation_graph.get_nodes_edges_batch = AsyncMock(
-        return_value={}
-    )
+    rag.chunk_entity_relation_graph.get_nodes_edges_batch = AsyncMock(return_value={})
 
     rag.chunks_vdb = AsyncMock()
     rag.entities_vdb = AsyncMock()
@@ -153,12 +149,10 @@ async def test_skip_rebuild_returns_targets():
 
     # doc_status should NOT be deleted when skip_rebuild=True — the caller
     # is responsible for cleaning it up after a successful deferred rebuild.
-    doc_status_delete_calls = [
-        c for c in rag.doc_status.delete.call_args_list
-    ]
-    assert len(doc_status_delete_calls) == 0, (
-        "doc_status.delete should not be called with skip_rebuild=True"
-    )
+    doc_status_delete_calls = [c for c in rag.doc_status.delete.call_args_list]
+    assert (
+        len(doc_status_delete_calls) == 0
+    ), "doc_status.delete should not be called with skip_rebuild=True"
 
 
 @pytest.mark.asyncio
