@@ -2323,6 +2323,13 @@ def extract_queries(file_path):
 ## 🤝 贡献
 
 <div align="center">
+  我们欢迎各种形式的贡献——Bug 修复、新功能、文档改进等。<br>
+  提交 Pull Request 前，请阅读 <a href=".github/CONTRIBUTING.md"><strong>贡献指南</strong></a>。
+</div>
+
+<br>
+
+<div align="center">
   我们感谢所有贡献者做出的宝贵贡献。
 </div>
 
