@@ -6,11 +6,6 @@ import re
 from dataclasses import dataclass
 from typing import final
 
-import pipmaster as pm
-
-if not pm.is_installed("nebula3-python"):
-    pm.install("nebula3-python")
-
 from ..base import BaseGraphStorage
 from ..types import KnowledgeGraph
 
@@ -22,7 +17,8 @@ _DEFAULT_NEBULA_PORT = 9669
 
 
 def _canonical_edge_pair(src: str, tgt: str) -> tuple[str, str]:
-    return tuple(sorted((src, tgt)))
+    a, b = sorted((src, tgt))
+    return a, b
 
 
 def _sanitize_workspace_component(value: str, *, fallback: str) -> str:
@@ -86,18 +82,68 @@ def _parse_nebula_hosts(hosts_value: str | None) -> list[tuple[str, int]]:
         candidate = item.strip()
         if not candidate:
             continue
-        if ":" in candidate:
+        host = ""
+        port = _DEFAULT_NEBULA_PORT
+
+        if candidate.startswith("["):
+            right = candidate.find("]")
+            if right < 0:
+                raise ValueError(
+                    f"Invalid Nebula host entry '{candidate}': missing closing ']' for IPv6 host"
+                )
+            host = candidate[1:right].strip()
+            if not host:
+                raise ValueError(
+                    f"Invalid Nebula host entry '{candidate}': empty IPv6 host"
+                )
+            tail = candidate[right + 1 :].strip()
+            if tail:
+                if not tail.startswith(":"):
+                    raise ValueError(
+                        f"Invalid Nebula host entry '{candidate}': expected ':port' after bracketed host"
+                    )
+                port_text = tail[1:].strip()
+                if not port_text:
+                    raise ValueError(
+                        f"Invalid Nebula host entry '{candidate}': missing port after ':'"
+                    )
+                try:
+                    port = int(port_text)
+                except ValueError as exc:
+                    raise ValueError(
+                        f"Invalid Nebula port in host entry '{candidate}': '{port_text}' is not an integer"
+                    ) from exc
+        elif ":" in candidate:
+            if candidate.count(":") > 1:
+                raise ValueError(
+                    f"Invalid Nebula host entry '{candidate}': IPv6 host must use bracket notation like [::1]:9669"
+                )
             host, port_text = candidate.rsplit(":", 1)
             host = host.strip()
+            port_text = port_text.strip()
             if not host:
-                raise ValueError(f"Invalid Nebula host entry: {candidate}")
+                raise ValueError(
+                    f"Invalid Nebula host entry '{candidate}': host is empty"
+                )
+            if not port_text:
+                raise ValueError(
+                    f"Invalid Nebula host entry '{candidate}': port is empty"
+                )
             try:
                 port = int(port_text)
             except ValueError as exc:
-                raise ValueError(f"Invalid Nebula port in host entry: {candidate}") from exc
+                raise ValueError(
+                    f"Invalid Nebula port in host entry '{candidate}': '{port_text}' is not an integer"
+                ) from exc
         else:
             host = candidate
-            port = _DEFAULT_NEBULA_PORT
+            if not host:
+                raise ValueError(f"Invalid Nebula host entry '{candidate}': host is empty")
+
+        if not (1 <= port <= 65535):
+            raise ValueError(
+                f"Invalid Nebula port in host entry '{candidate}': {port} must be in 1..65535"
+            )
         hosts.append((host, port))
     return hosts
 
@@ -105,8 +151,6 @@ def _parse_nebula_hosts(hosts_value: str | None) -> list[tuple[str, int]]:
 @final
 @dataclass
 class NebulaGraphStorage(BaseGraphStorage):
-    _initialized: bool = False
-
     def __init__(self, namespace, global_config, embedding_func, workspace=None):
         env_workspace = _env_str("NEBULA_WORKSPACE")
         resolved_workspace = env_workspace if env_workspace is not None else workspace
@@ -127,6 +171,7 @@ class NebulaGraphStorage(BaseGraphStorage):
         self._password = _env_str("NEBULA_PASSWORD")
         self._timeout_ms = _env_int("NEBULA_TIMEOUT_MS", 60_000)
         self._ssl_enabled = _env_bool("NEBULA_SSL", default=False)
+        self._initialized = False
 
     async def initialize(self):
         self._initialized = True
