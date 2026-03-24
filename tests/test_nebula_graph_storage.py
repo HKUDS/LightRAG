@@ -581,3 +581,266 @@ async def test_nebula_remove_edges_canonicalizes_pairs():
     assert any('"C"->"D"' in sql for sql in sql_calls)
     assert not any('"B"->"A"' in sql for sql in sql_calls)
     assert not any('"D"->"C"' in sql for sql in sql_calls)
+
+
+@pytest.mark.asyncio
+async def test_nebula_get_nodes_batch_uses_single_lookup_query():
+    storage = build_storage(workspace="finance")
+    execute_in_space = AsyncMock(
+        return_value=[
+            {
+                "entity_id": "A",
+                "name": "A",
+                "entity_type": "TypeA",
+                "description": "node-a",
+                "keywords": "k1",
+                "source_id": "s1",
+            },
+            {
+                "entity_id": "B",
+                "name": "B",
+                "entity_type": "TypeB",
+                "description": "node-b",
+                "keywords": "k2",
+                "source_id": "s2",
+            },
+        ]
+    )
+    with patch.object(storage, "_execute_in_space", execute_in_space):
+        nodes = await storage.get_nodes_batch(["A", "B", "Missing"])
+
+    assert nodes == {
+        "A": {
+            "entity_id": "A",
+            "name": "A",
+            "entity_type": "TypeA",
+            "description": "node-a",
+            "keywords": "k1",
+            "source_id": "s1",
+        },
+        "B": {
+            "entity_id": "B",
+            "name": "B",
+            "entity_type": "TypeB",
+            "description": "node-b",
+            "keywords": "k2",
+            "source_id": "s2",
+        },
+    }
+    assert execute_in_space.await_count == 1
+    sql = execute_in_space.await_args_list[0].args[0]
+    assert "LOOKUP ON entity" in sql
+    assert "entity.entity_id" in sql
+
+
+@pytest.mark.asyncio
+async def test_nebula_node_degrees_batch_aggregates_with_single_query():
+    storage = build_storage(workspace="finance")
+    execute_in_space = AsyncMock(
+        return_value=[
+            {"source_id": "A", "target_id": "B"},
+            {"source_id": "C", "target_id": "A"},
+            {"source_id": "B", "target_id": "C"},
+        ]
+    )
+    with patch.object(storage, "_execute_in_space", execute_in_space):
+        degrees = await storage.node_degrees_batch(["A", "B", "C", "X"])
+
+    assert degrees == {"A": 2, "B": 2, "C": 2, "X": 0}
+    assert execute_in_space.await_count == 1
+    sql = execute_in_space.await_args_list[0].args[0]
+    assert "LOOKUP ON relation" in sql
+    assert "relation.source_id" in sql
+    assert "relation.target_id" in sql
+
+
+@pytest.mark.asyncio
+async def test_nebula_get_edges_batch_uses_canonical_pairs_and_preserves_keys():
+    storage = build_storage(workspace="finance")
+    execute_in_space = AsyncMock(
+        return_value=[
+            {
+                "source_id": "A",
+                "target_id": "B",
+                "relationship": "rel-ab",
+                "description": "A-B edge",
+                "weight": 2.5,
+            }
+        ]
+    )
+    pairs = [
+        {"src": "B", "tgt": "A"},
+        {"src": "A", "tgt": "B"},
+        {"src": "A", "tgt": "C"},
+    ]
+    with patch.object(storage, "_execute_in_space", execute_in_space):
+        edges = await storage.get_edges_batch(pairs)
+
+    assert edges == {
+        ("B", "A"): {
+            "source_id": "A",
+            "target_id": "B",
+            "relationship": "rel-ab",
+            "description": "A-B edge",
+            "weight": 2.5,
+        },
+        ("A", "B"): {
+            "source_id": "A",
+            "target_id": "B",
+            "relationship": "rel-ab",
+            "description": "A-B edge",
+            "weight": 2.5,
+        },
+    }
+    assert execute_in_space.await_count == 1
+    sql = execute_in_space.await_args_list[0].args[0]
+    assert "LOOKUP ON relation" in sql
+    assert 'relation.source_id == "A"' in sql
+    assert 'relation.target_id == "B"' in sql
+    assert '"B"' not in sql or 'relation.source_id == "B" AND relation.target_id == "A"' not in sql
+
+
+@pytest.mark.asyncio
+async def test_nebula_get_nodes_edges_batch_returns_adjacency_mapping():
+    storage = build_storage(workspace="finance")
+    execute_in_space = AsyncMock(
+        return_value=[
+            {"source_id": "A", "target_id": "B"},
+            {"source_id": "C", "target_id": "A"},
+        ]
+    )
+    with patch.object(storage, "_execute_in_space", execute_in_space):
+        nodes_edges = await storage.get_nodes_edges_batch(["A", "B", "X"])
+
+    assert nodes_edges == {
+        "A": [("A", "B"), ("C", "A")],
+        "B": [("A", "B")],
+        "X": [],
+    }
+    assert execute_in_space.await_count == 1
+    sql = execute_in_space.await_args_list[0].args[0]
+    assert "LOOKUP ON relation" in sql
+
+
+@pytest.mark.asyncio
+async def test_nebula_get_all_labels_returns_sorted_entity_ids():
+    storage = build_storage(workspace="finance")
+    execute_in_space = AsyncMock(
+        return_value=[
+            {"entity_id": "B"},
+            {"entity_id": "A"},
+            {"entity_id": "C"},
+        ]
+    )
+    with patch.object(storage, "_execute_in_space", execute_in_space):
+        labels = await storage.get_all_labels()
+
+    assert labels == ["A", "B", "C"]
+    assert execute_in_space.await_count == 1
+    sql = execute_in_space.await_args_list[0].args[0]
+    assert "LOOKUP ON entity" in sql
+    assert "entity.entity_id" in sql
+
+
+@pytest.mark.asyncio
+async def test_nebula_get_all_nodes_returns_node_property_dicts():
+    storage = build_storage(workspace="finance")
+    execute_in_space = AsyncMock(
+        return_value=[
+            {
+                "entity_id": "A",
+                "name": "A",
+                "entity_type": "TypeA",
+                "description": "desc-a",
+                "keywords": "k1",
+                "source_id": "src-a",
+            },
+            {
+                "entity_id": "B",
+                "name": "B",
+                "entity_type": "TypeB",
+                "description": "desc-b",
+                "keywords": "k2",
+                "source_id": "src-b",
+            },
+        ]
+    )
+    with patch.object(storage, "_execute_in_space", execute_in_space):
+        nodes = await storage.get_all_nodes()
+
+    assert nodes == [
+        {
+            "entity_id": "A",
+            "name": "A",
+            "entity_type": "TypeA",
+            "description": "desc-a",
+            "keywords": "k1",
+            "source_id": "src-a",
+            "id": "A",
+        },
+        {
+            "entity_id": "B",
+            "name": "B",
+            "entity_type": "TypeB",
+            "description": "desc-b",
+            "keywords": "k2",
+            "source_id": "src-b",
+            "id": "B",
+        },
+    ]
+    assert execute_in_space.await_count == 1
+    sql = execute_in_space.await_args_list[0].args[0]
+    assert "LOOKUP ON entity" in sql
+
+
+@pytest.mark.asyncio
+async def test_nebula_get_all_edges_returns_relation_properties():
+    storage = build_storage(workspace="finance")
+    execute_in_space = AsyncMock(
+        return_value=[
+            {
+                "source_id": "A",
+                "target_id": "B",
+                "relationship": "rel-ab",
+                "description": "desc",
+                "weight": 3.0,
+            }
+        ]
+    )
+    with patch.object(storage, "_execute_in_space", execute_in_space):
+        edges = await storage.get_all_edges()
+
+    assert edges == [
+        {
+            "source_id": "A",
+            "target_id": "B",
+            "relationship": "rel-ab",
+            "description": "desc",
+            "weight": 3.0,
+            "source": "A",
+            "target": "B",
+        }
+    ]
+    assert execute_in_space.await_count == 1
+    sql = execute_in_space.await_args_list[0].args[0]
+    assert "LOOKUP ON relation" in sql
+
+
+@pytest.mark.asyncio
+async def test_nebula_get_popular_labels_orders_by_degree_desc():
+    storage = build_storage(workspace="finance")
+    execute_in_space = AsyncMock(
+        return_value=[
+            {"source_id": "A", "target_id": "B"},
+            {"source_id": "A", "target_id": "C"},
+            {"source_id": "B", "target_id": "C"},
+            {"source_id": "B", "target_id": "D"},
+        ]
+    )
+    with patch.object(storage, "_execute_in_space", execute_in_space):
+        labels = await storage.get_popular_labels(limit=3)
+
+    assert labels == ["B", "A", "C"]
+    assert execute_in_space.await_count == 1
+    sql = execute_in_space.await_args_list[0].args[0]
+    assert "LOOKUP ON relation" in sql

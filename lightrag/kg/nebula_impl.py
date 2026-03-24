@@ -646,11 +646,62 @@ class NebulaGraphStorage(BaseGraphStorage):
     async def has_edge(self, source_node_id: str, target_node_id: str) -> bool:
         return await self.get_edge(source_node_id, target_node_id) is not None
 
+    @staticmethod
+    def _unique_preserve_order(values: list[str]) -> list[str]:
+        seen: set[str] = set()
+        unique: list[str] = []
+        for value in values:
+            if value in seen:
+                continue
+            seen.add(value)
+            unique.append(value)
+        return unique
+
+    @staticmethod
+    def _build_or_equals_clause(field: str, values: list[str]) -> str:
+        return " OR ".join(f"{field} == {_ngql_literal(value)}" for value in values)
+
+    @staticmethod
+    def _build_relation_endpoint_clause(node_ids: list[str]) -> str:
+        conditions: list[str] = []
+        for node_id in node_ids:
+            literal = _ngql_literal(node_id)
+            conditions.append(
+                f"(relation.source_id == {literal} OR relation.target_id == {literal})"
+            )
+        return " OR ".join(conditions)
+
+    @staticmethod
+    def _extract_node_props(
+        row: dict[str, Any], *, fallback_entity_id: str | None = None
+    ) -> dict[str, str]:
+        output: dict[str, str] = {}
+        for field in _NODE_FIELDS:
+            value = row.get(field)
+            if value is None:
+                continue
+            output[field] = str(value)
+        if "entity_id" not in output and fallback_entity_id is not None:
+            output["entity_id"] = fallback_entity_id
+        return output
+
+    @staticmethod
+    def _extract_edge_props(row: dict[str, Any]) -> dict[str, Any]:
+        output: dict[str, Any] = {}
+        for field in _EDGE_FIELDS:
+            value = row.get(field)
+            if value is None:
+                continue
+            output[field] = value
+        return output
+
     async def node_degree(self, node_id: str) -> int:
-        raise NotImplementedError("Nebula I/O is not implemented in this task")
+        degrees = await self.node_degrees_batch([node_id])
+        return int(degrees.get(node_id, 0))
 
     async def edge_degree(self, src_id: str, tgt_id: str) -> int:
-        raise NotImplementedError("Nebula I/O is not implemented in this task")
+        degrees = await self.node_degrees_batch([src_id, tgt_id])
+        return int(degrees.get(src_id, 0)) + int(degrees.get(tgt_id, 0))
 
     async def get_node(self, node_id: str) -> dict[str, str] | None:
         vid = _ngql_quote(node_id)
@@ -668,15 +719,7 @@ class NebulaGraphStorage(BaseGraphStorage):
         row = _first_row(result)
         if row is None:
             return None
-        output: dict[str, str] = {}
-        for field in _NODE_FIELDS:
-            value = row.get(field)
-            if value is None:
-                continue
-            output[field] = str(value)
-        if "entity_id" not in output:
-            output["entity_id"] = node_id
-        return output
+        return self._extract_node_props(row, fallback_entity_id=node_id)
 
     async def get_edge(
         self, source_node_id: str, target_node_id: str
@@ -695,16 +738,178 @@ class NebulaGraphStorage(BaseGraphStorage):
         row = _first_row(result)
         if row is None:
             return None
-        output: dict[str, Any] = {}
-        for field in _EDGE_FIELDS:
-            value = row.get(field)
-            if value is None:
+        return self._extract_edge_props(row)
+
+    async def get_nodes_batch(self, node_ids: list[str]) -> dict[str, dict]:
+        requested_ids = [str(node_id) for node_id in node_ids]
+        unique_ids = self._unique_preserve_order(
+            [node_id for node_id in requested_ids if node_id]
+        )
+        if not unique_ids:
+            return {}
+
+        where_clause = self._build_or_equals_clause("entity.entity_id", unique_ids)
+        result = await self._execute_in_space(
+            "LOOKUP ON entity "
+            f"WHERE {where_clause} "
+            "YIELD "
+            "entity.entity_id AS entity_id, "
+            "entity.name AS name, "
+            "entity.entity_type AS entity_type, "
+            "entity.description AS description, "
+            "entity.keywords AS keywords, "
+            "entity.source_id AS source_id;"
+        )
+        rows = _result_to_rows(result)
+
+        found_by_entity_id: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            entity_id = row.get("entity_id")
+            if entity_id is None:
                 continue
-            output[field] = value
+            found_by_entity_id[str(entity_id)] = row
+
+        output: dict[str, dict] = {}
+        for node_id in requested_ids:
+            row = found_by_entity_id.get(node_id)
+            if row is None:
+                continue
+            output[node_id] = self._extract_node_props(row, fallback_entity_id=node_id)
+        return output
+
+    async def node_degrees_batch(self, node_ids: list[str]) -> dict[str, int]:
+        requested_ids = [str(node_id) for node_id in node_ids]
+        output = {node_id: 0 for node_id in requested_ids}
+        unique_ids = self._unique_preserve_order(
+            [node_id for node_id in requested_ids if node_id]
+        )
+        if not unique_ids:
+            return output
+
+        where_clause = self._build_relation_endpoint_clause(unique_ids)
+        result = await self._execute_in_space(
+            "LOOKUP ON relation "
+            f"WHERE {where_clause} "
+            "YIELD "
+            "relation.source_id AS source_id, "
+            "relation.target_id AS target_id;"
+        )
+        rows = _result_to_rows(result)
+        requested_set = set(output)
+        for row in rows:
+            src = row.get("source_id")
+            tgt = row.get("target_id")
+            if src is not None:
+                src_id = str(src)
+                if src_id in requested_set:
+                    output[src_id] += 1
+            if tgt is not None:
+                tgt_id = str(tgt)
+                if tgt_id in requested_set:
+                    output[tgt_id] += 1
+        return output
+
+    async def get_edges_batch(self, pairs: list[dict[str, str]]) -> dict[tuple[str, str], dict]:
+        requested_pairs: list[tuple[str, str]] = []
+        canonical_to_requested: dict[tuple[str, str], list[tuple[str, str]]] = {}
+        for pair in pairs:
+            src = str(pair.get("src", ""))
+            tgt = str(pair.get("tgt", ""))
+            if not src or not tgt:
+                continue
+            request_key = (src, tgt)
+            requested_pairs.append(request_key)
+            canonical = _canonical_edge_pair(src, tgt)
+            canonical_to_requested.setdefault(canonical, []).append(request_key)
+
+        if not requested_pairs:
+            return {}
+
+        canonical_pairs = self._unique_preserve_order(
+            [f"{src}\x00{tgt}" for src, tgt in canonical_to_requested]
+        )
+        conditions: list[str] = []
+        for packed in canonical_pairs:
+            src_id, tgt_id = packed.split("\x00", 1)
+            conditions.append(
+                "("
+                f"relation.source_id == {_ngql_literal(src_id)} AND "
+                f"relation.target_id == {_ngql_literal(tgt_id)}"
+                ")"
+            )
+        where_clause = " OR ".join(conditions)
+
+        result = await self._execute_in_space(
+            "LOOKUP ON relation "
+            f"WHERE {where_clause} "
+            "YIELD "
+            "relation.source_id AS source_id, "
+            "relation.target_id AS target_id, "
+            "relation.relationship AS relationship, "
+            "relation.description AS description, "
+            "relation.weight AS weight;"
+        )
+        rows = _result_to_rows(result)
+
+        by_canonical: dict[tuple[str, str], dict[str, Any]] = {}
+        for row in rows:
+            src = row.get("source_id")
+            tgt = row.get("target_id")
+            if src is None or tgt is None:
+                continue
+            canonical = _canonical_edge_pair(str(src), str(tgt))
+            by_canonical[canonical] = self._extract_edge_props(row)
+
+        output: dict[tuple[str, str], dict] = {}
+        for canonical, request_keys in canonical_to_requested.items():
+            props = by_canonical.get(canonical)
+            if props is None:
+                continue
+            for request_key in request_keys:
+                output[request_key] = dict(props)
         return output
 
     async def get_node_edges(self, source_node_id: str) -> list[tuple[str, str]] | None:
-        raise NotImplementedError("Nebula I/O is not implemented in this task")
+        node = await self.get_node(source_node_id)
+        if node is None:
+            return None
+        batched = await self.get_nodes_edges_batch([source_node_id])
+        return batched.get(source_node_id, [])
+
+    async def get_nodes_edges_batch(
+        self, node_ids: list[str]
+    ) -> dict[str, list[tuple[str, str]]]:
+        requested_ids = [str(node_id) for node_id in node_ids]
+        output = {node_id: [] for node_id in requested_ids}
+        unique_ids = self._unique_preserve_order(
+            [node_id for node_id in requested_ids if node_id]
+        )
+        if not unique_ids:
+            return output
+
+        where_clause = self._build_relation_endpoint_clause(unique_ids)
+        result = await self._execute_in_space(
+            "LOOKUP ON relation "
+            f"WHERE {where_clause} "
+            "YIELD "
+            "relation.source_id AS source_id, "
+            "relation.target_id AS target_id;"
+        )
+        rows = _result_to_rows(result)
+        requested_set = set(output)
+        for row in rows:
+            src = row.get("source_id")
+            tgt = row.get("target_id")
+            if src is None or tgt is None:
+                continue
+            src_id = str(src)
+            tgt_id = str(tgt)
+            edge = (src_id, tgt_id)
+            if src_id in requested_set:
+                output[src_id].append(edge)
+            if tgt_id in requested_set and tgt_id != src_id:
+                output[tgt_id].append(edge)
+        return output
 
     async def upsert_node(self, node_id: str, node_data: dict[str, str]) -> None:
         entity_id = str(node_id)
@@ -765,7 +970,13 @@ class NebulaGraphStorage(BaseGraphStorage):
             )
 
     async def get_all_labels(self) -> list[str]:
-        raise NotImplementedError("Nebula I/O is not implemented in this task")
+        result = await self._execute_in_space(
+            "LOOKUP ON entity "
+            "YIELD entity.entity_id AS entity_id;"
+        )
+        rows = _result_to_rows(result)
+        labels = {str(row["entity_id"]) for row in rows if row.get("entity_id") is not None}
+        return sorted(labels)
 
     async def get_knowledge_graph(
         self, node_label: str, max_depth: int = 3, max_nodes: int = 1000
@@ -773,13 +984,80 @@ class NebulaGraphStorage(BaseGraphStorage):
         raise NotImplementedError("Nebula I/O is not implemented in this task")
 
     async def get_all_nodes(self) -> list[dict]:
-        raise NotImplementedError("Nebula I/O is not implemented in this task")
+        result = await self._execute_in_space(
+            "LOOKUP ON entity "
+            "YIELD "
+            "entity.entity_id AS entity_id, "
+            "entity.name AS name, "
+            "entity.entity_type AS entity_type, "
+            "entity.description AS description, "
+            "entity.keywords AS keywords, "
+            "entity.source_id AS source_id;"
+        )
+        rows = _result_to_rows(result)
+        output: list[dict] = []
+        for row in rows:
+            node = self._extract_node_props(row)
+            entity_id = node.get("entity_id")
+            if entity_id:
+                node["id"] = entity_id
+            if node:
+                output.append(node)
+        output.sort(key=lambda item: str(item.get("entity_id", "")))
+        return output
 
     async def get_all_edges(self) -> list[dict]:
-        raise NotImplementedError("Nebula I/O is not implemented in this task")
+        result = await self._execute_in_space(
+            "LOOKUP ON relation "
+            "YIELD "
+            "relation.source_id AS source_id, "
+            "relation.target_id AS target_id, "
+            "relation.relationship AS relationship, "
+            "relation.description AS description, "
+            "relation.weight AS weight;"
+        )
+        rows = _result_to_rows(result)
+        output: list[dict] = []
+        for row in rows:
+            edge = self._extract_edge_props(row)
+            source_id = edge.get("source_id")
+            target_id = edge.get("target_id")
+            if source_id is None or target_id is None:
+                continue
+            edge["source"] = str(source_id)
+            edge["target"] = str(target_id)
+            output.append(edge)
+        output.sort(
+            key=lambda item: (
+                str(item.get("source_id", "")),
+                str(item.get("target_id", "")),
+                str(item.get("relationship", "")),
+            )
+        )
+        return output
 
     async def get_popular_labels(self, limit: int = 300) -> list[str]:
-        raise NotImplementedError("Nebula I/O is not implemented in this task")
+        if limit <= 0:
+            return []
+        result = await self._execute_in_space(
+            "LOOKUP ON relation "
+            "YIELD "
+            "relation.source_id AS source_id, "
+            "relation.target_id AS target_id;"
+        )
+        rows = _result_to_rows(result)
+        degrees: dict[str, int] = {}
+        for row in rows:
+            source_id = row.get("source_id")
+            target_id = row.get("target_id")
+            if source_id is not None:
+                src = str(source_id)
+                degrees[src] = degrees.get(src, 0) + 1
+            if target_id is not None:
+                tgt = str(target_id)
+                degrees[tgt] = degrees.get(tgt, 0) + 1
+        ranking = sorted(degrees.items(), key=lambda item: (-item[1], item[0]))
+        return [label for label, _ in ranking[:limit]]
 
     async def search_labels(self, query: str, limit: int = 50) -> list[str]:
         raise NotImplementedError("Nebula I/O is not implemented in this task")
