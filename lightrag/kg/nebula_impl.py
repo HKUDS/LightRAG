@@ -779,6 +779,22 @@ class NebulaGraphStorage(BaseGraphStorage):
         )
         return [label for label, _ in ranked[:limit]]
 
+    @staticmethod
+    def _dedupe_labels_preserve_order(labels: list[str], limit: int) -> list[str]:
+        if limit <= 0:
+            return []
+        seen: set[str] = set()
+        output: list[str] = []
+        for raw_label in labels:
+            label = str(raw_label)
+            if label in seen:
+                continue
+            seen.add(label)
+            output.append(label)
+            if len(output) >= limit:
+                break
+        return output
+
     async def _build_global_knowledge_graph(self, max_nodes: int) -> KnowledgeGraph:
         result = KnowledgeGraph()
         if max_nodes <= 0:
@@ -1359,7 +1375,7 @@ class NebulaGraphStorage(BaseGraphStorage):
             for row in rows
             if row.get("entity_id") is not None
         ]
-        return self._rank_labels(labels, query_strip, limit)
+        return self._dedupe_labels_preserve_order(labels, limit)
 
     async def _search_labels_contains(self, query: str, limit: int = 50) -> list[str]:
         if limit <= 0:

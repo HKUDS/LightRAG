@@ -986,3 +986,58 @@ async def test_search_labels_falls_back_when_fulltext_unavailable():
     assert labels == ["Machine Learning"]
     fulltext_mock.assert_awaited_once_with("learn", limit=10)
     fallback_mock.assert_awaited_once_with("learn", limit=10)
+
+
+@pytest.mark.asyncio
+async def test_search_labels_fulltext_keeps_hits_even_if_entity_id_not_contains_query():
+    storage = build_storage(workspace="finance")
+    execute_in_space = AsyncMock(return_value=[{"entity_id": "KB-001"}])
+    fallback_mock = AsyncMock(return_value=["learn-node"])
+    with (
+        patch.object(storage, "_execute_in_space", execute_in_space),
+        patch.object(storage, "_search_labels_contains", fallback_mock),
+    ):
+        labels = await storage.search_labels("learn", limit=10)
+
+    assert labels == ["KB-001"]
+    fallback_mock.assert_not_awaited()
+    execute_in_space.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_search_labels_uses_fallback_when_fulltext_init_error_exists():
+    storage = build_storage(workspace="finance")
+    storage._fulltext_init_error = "fulltext unavailable"
+    fulltext_mock = AsyncMock(return_value=["SHOULD_NOT_BE_USED"])
+    fallback_mock = AsyncMock(return_value=["Machine Learning"])
+    with (
+        patch.object(storage, "_search_labels_fulltext", fulltext_mock),
+        patch.object(storage, "_search_labels_contains", fallback_mock),
+    ):
+        labels = await storage.search_labels("learn", limit=10)
+
+    assert labels == ["Machine Learning"]
+    fulltext_mock.assert_not_awaited()
+    fallback_mock.assert_awaited_once_with("learn", limit=10)
+
+
+@pytest.mark.asyncio
+async def test_nebula_get_knowledge_graph_marks_truncated_when_max_depth_reached():
+    storage = build_storage(workspace="finance")
+    with (
+        patch.object(
+            storage,
+            "get_nodes_batch",
+            AsyncMock(return_value={"A": {"entity_id": "A", "name": "A"}}),
+        ),
+        patch.object(
+            storage,
+            "get_nodes_edges_batch",
+            AsyncMock(return_value={"A": [("A", "B")]}),
+        ),
+    ):
+        graph = await storage.get_knowledge_graph("A", max_depth=0, max_nodes=10)
+
+    assert isinstance(graph, KnowledgeGraph)
+    assert graph.is_truncated is True
+    assert [node.id for node in graph.nodes] == ["A"]
