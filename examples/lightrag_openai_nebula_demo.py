@@ -9,6 +9,9 @@ Required environment variables:
     NEBULA_PASSWORD=nebula
     OPENAI_API_KEY=your-openai-api-key
 
+Required input file:
+    BOOK_FILE=./book.txt (must exist before running this demo)
+
 Notes:
     - This script already sets graph_storage="NebulaGraphStorage" in code.
       If you prefer env-based selection, you may set:
@@ -48,6 +51,11 @@ async def main():
             "Missing required environment variables: "
             + ", ".join(missing_envs)
             + ". Please configure Nebula and OpenAI credentials before running this demo."
+        )
+    if not os.path.exists(BOOK_FILE):
+        raise FileNotFoundError(
+            f"Input file '{BOOK_FILE}' was not found. Prepare a text file to index first, "
+            "or update BOOK_FILE in this script."
         )
 
     rag = None
