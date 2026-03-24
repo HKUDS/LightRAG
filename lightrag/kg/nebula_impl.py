@@ -225,6 +225,7 @@ class NebulaGraphStorage(BaseGraphStorage):
         self._password = _env_str("NEBULA_PASSWORD")
         self._timeout_ms = _env_int("NEBULA_TIMEOUT_MS", 60_000)
         self._ssl_enabled = _env_bool("NEBULA_SSL", default=False)
+        self._use_http2 = _env_bool("NEBULA_USE_HTTP2", default=False)
         self._partition_num = _env_int("NEBULA_SPACE_PARTITIONS", _DEFAULT_PARTITION_NUM)
         self._replica_factor = _env_int(
             "NEBULA_SPACE_REPLICA_FACTOR", _DEFAULT_REPLICA_FACTOR
@@ -238,32 +239,42 @@ class NebulaGraphStorage(BaseGraphStorage):
 
         self._connection_pool: Any | None = None
         self._fulltext_init_error: str | None = None
+        self._initialize_lock = asyncio.Lock()
         self._initialized = False
 
     async def initialize(self):
-        if self._initialized:
-            return
-        self._validate_required_env()
-        await self._bootstrap_client()
-        await self._ensure_space_ready()
-        self._initialized = True
+        async with self._initialize_lock:
+            if self._initialized:
+                return
+            self._validate_required_env()
+            try:
+                await self._bootstrap_client()
+                await self._ensure_space_ready()
+            except Exception:
+                await self._close_connection_pool()
+                self._initialized = False
+                raise
+            self._initialized = True
 
     async def finalize(self):
+        await self._close_connection_pool()
+        self._initialized = False
+
+    async def _close_connection_pool(self) -> None:
         if self._connection_pool is not None:
             await asyncio.to_thread(self._connection_pool.close)
             self._connection_pool = None
-        self._initialized = False
 
     def _validate_required_env(self) -> None:
         if not self._hosts:
             raise ValueError(
                 "Environment variable NEBULA_HOSTS is required and must not be empty."
             )
-        if not self._user:
+        if self._user is None or not str(self._user).strip():
             raise ValueError(
                 "Environment variable NEBULA_USER is required and must not be empty."
             )
-        if not self._password:
+        if self._password is None or not str(self._password).strip():
             raise ValueError(
                 "Environment variable NEBULA_PASSWORD is required and must not be empty."
             )
@@ -277,7 +288,7 @@ class NebulaGraphStorage(BaseGraphStorage):
         config.timeout = self._timeout_ms
         config.max_connection_pool_size = _env_int("NEBULA_MAX_CONNECTION_POOL_SIZE", 10)
         config.min_connection_pool_size = _env_int("NEBULA_MIN_CONNECTION_POOL_SIZE", 1)
-        config.use_http2 = self._ssl_enabled
+        config.use_http2 = self._use_http2
 
         connection_pool = ConnectionPool()
         ok = await asyncio.to_thread(connection_pool.init, self._hosts, config)
@@ -335,8 +346,8 @@ class NebulaGraphStorage(BaseGraphStorage):
         await self._create_space_if_needed()
         await self._wait_for_space_ready()
         await self._create_schema_if_needed()
-        await self._create_indexes_if_needed()
         await self._wait_for_schema_ready()
+        await self._create_indexes_if_needed()
         await self._wait_for_index_ready()
 
     async def _create_space_if_needed(self) -> None:

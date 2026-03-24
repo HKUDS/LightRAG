@@ -1,4 +1,5 @@
 import re
+import asyncio
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
@@ -14,6 +15,7 @@ from lightrag.kg.nebula_impl import (
     _normalize_space_name,
     _parse_nebula_hosts,
     _short_hash_suffix,
+    NebulaIndexJobError,
     NebulaGraphStorage,
 )
 
@@ -108,9 +110,9 @@ async def test_initialize_creates_space_and_schema():
         )
     )
     with (
-        patch.object(storage, "_execute", exec_mock, create=True),
-        patch.object(storage, "_acquire_session", AsyncMock(return_value=session), create=True),
-        patch.object(storage, "_release_session", AsyncMock(), create=True),
+        patch.object(storage, "_execute", exec_mock),
+        patch.object(storage, "_acquire_session", AsyncMock(return_value=session)),
+        patch.object(storage, "_release_session", AsyncMock()),
     ):
         await storage._ensure_space_ready()
 
@@ -126,6 +128,11 @@ async def test_initialize_creates_space_and_schema():
     assert any("REBUILD EDGE INDEX relation_pair_idx" in sql for sql in sql_calls)
     assert any("SHOW TAG INDEX STATUS" in sql for sql in sql_calls)
     assert any("SHOW EDGE INDEX STATUS" in sql for sql in sql_calls)
+    describe_tag_idx = next(i for i, sql in enumerate(sql_calls) if "DESCRIBE TAG entity" in sql)
+    create_tag_index_idx = next(
+        i for i, sql in enumerate(sql_calls) if "CREATE TAG INDEX IF NOT EXISTS entity_entity_id_idx" in sql
+    )
+    assert describe_tag_idx < create_tag_index_idx
 
 
 @pytest.mark.asyncio
@@ -140,6 +147,29 @@ async def test_initialize_rejects_empty_required_env_values():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("field_name", "field_value", "expected_env"),
+    [
+        ("_user", None, "NEBULA_USER"),
+        ("_user", "   ", "NEBULA_USER"),
+        ("_password", None, "NEBULA_PASSWORD"),
+        ("_password", "   ", "NEBULA_PASSWORD"),
+    ],
+)
+async def test_initialize_rejects_blank_user_or_password(
+    field_name: str, field_value: str | None, expected_env: str
+):
+    storage = build_storage()
+    storage._hosts = [("127.0.0.1", 9669)]
+    storage._user = "root"
+    storage._password = "nebula"
+    setattr(storage, field_name, field_value)
+
+    with pytest.raises(ValueError, match=expected_env):
+        await storage.initialize()
+
+
+@pytest.mark.asyncio
 async def test_initialize_is_idempotent():
     storage = build_storage()
     storage._hosts = [("127.0.0.1", 9669)]
@@ -148,8 +178,8 @@ async def test_initialize_is_idempotent():
     bootstrap_mock = AsyncMock()
     ensure_mock = AsyncMock()
     with (
-        patch.object(storage, "_bootstrap_client", bootstrap_mock, create=True),
-        patch.object(storage, "_ensure_space_ready", ensure_mock, create=True),
+        patch.object(storage, "_bootstrap_client", bootstrap_mock),
+        patch.object(storage, "_ensure_space_ready", ensure_mock),
     ):
         await storage.initialize()
         await storage.initialize()
@@ -185,6 +215,77 @@ async def test_bootstrap_client_initializes_connection_pool_only():
 
 
 @pytest.mark.asyncio
+async def test_bootstrap_client_uses_http2_env_flag_independently_from_ssl():
+    with patch.dict("os.environ", {"NEBULA_USE_HTTP2": "0", "NEBULA_SSL": "1"}):
+        storage = build_storage()
+    storage._hosts = [("127.0.0.1", 9669)]
+    storage._user = "root"
+    storage._password = "nebula"
+    config = Mock()
+    connection_pool = Mock()
+    connection_pool.init.return_value = True
+    with patch(
+        "lightrag.kg.nebula_impl._load_nebula_client_types",
+        return_value=(Mock(return_value=config), Mock(return_value=connection_pool)),
+    ):
+        await storage._bootstrap_client()
+
+    assert config.use_http2 is False
+
+
+@pytest.mark.asyncio
+async def test_initialize_closes_connection_pool_when_ensure_space_ready_fails():
+    storage = build_storage()
+    storage._hosts = [("127.0.0.1", 9669)]
+    storage._user = "root"
+    storage._password = "nebula"
+    connection_pool = Mock()
+
+    async def fake_bootstrap():
+        storage._connection_pool = connection_pool
+
+    with (
+        patch.object(storage, "_bootstrap_client", AsyncMock(side_effect=fake_bootstrap)),
+        patch.object(storage, "_ensure_space_ready", AsyncMock(side_effect=RuntimeError("boom"))),
+    ):
+        with pytest.raises(RuntimeError, match="boom"):
+            await storage.initialize()
+
+    connection_pool.close.assert_called_once()
+    assert storage._connection_pool is None
+    assert storage._initialized is False
+
+
+@pytest.mark.asyncio
+async def test_initialize_lock_prevents_duplicate_bootstrap():
+    storage = build_storage()
+    storage._hosts = [("127.0.0.1", 9669)]
+    storage._user = "root"
+    storage._password = "nebula"
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    calls = {"bootstrap": 0}
+
+    async def fake_bootstrap():
+        calls["bootstrap"] += 1
+        entered.set()
+        await release.wait()
+
+    with (
+        patch.object(storage, "_bootstrap_client", AsyncMock(side_effect=fake_bootstrap)),
+        patch.object(storage, "_ensure_space_ready", AsyncMock()),
+    ):
+        task1 = asyncio.create_task(storage.initialize())
+        await entered.wait()
+        task2 = asyncio.create_task(storage.initialize())
+        await asyncio.sleep(0)
+        release.set()
+        await asyncio.gather(task1, task2)
+
+    assert calls["bootstrap"] == 1
+
+
+@pytest.mark.asyncio
 async def test_finalize_closes_client_resources():
     storage = build_storage()
     connection_pool = Mock()
@@ -209,7 +310,7 @@ async def test_wait_for_space_ready_polls_until_target_space_visible():
             [[storage._space_name]],
         ]
     )
-    with patch.object(storage, "_execute", execute_mock, create=True):
+    with patch.object(storage, "_execute", execute_mock):
         await storage._wait_for_space_ready()
 
     assert execute_mock.await_count == 2
@@ -221,7 +322,7 @@ async def test_wait_for_space_ready_times_out_when_space_not_visible():
     storage._schema_retry_times = 2
     storage._schema_retry_delay_ms = 0
     execute_mock = AsyncMock(side_effect=[[["other_space"]], [["still_other"]]])
-    with patch.object(storage, "_execute", execute_mock, create=True):
+    with patch.object(storage, "_execute", execute_mock):
         with pytest.raises(TimeoutError, match="space"):
             await storage._wait_for_space_ready()
 
@@ -239,7 +340,7 @@ async def test_wait_for_index_ready_polls_until_status_finished():
             [["job", "relation_pair_idx", "FINISHED"]],
         ]
     )
-    with patch.object(storage, "_execute_in_space", execute_in_space_mock, create=True):
+    with patch.object(storage, "_execute_in_space", execute_in_space_mock):
         await storage._wait_for_index_ready()
 
     assert execute_in_space_mock.await_count == 4
@@ -258,7 +359,7 @@ async def test_wait_for_index_ready_times_out_when_still_running():
             [["job", "relation_pair_idx", "RUNNING"]],
         ]
     )
-    with patch.object(storage, "_execute_in_space", execute_in_space_mock, create=True):
+    with patch.object(storage, "_execute_in_space", execute_in_space_mock):
         with pytest.raises(TimeoutError, match="indexes"):
             await storage._wait_for_index_ready()
 
@@ -269,7 +370,7 @@ async def test_wait_for_schema_ready_times_out_when_schema_not_visible():
     storage._schema_retry_times = 2
     storage._schema_retry_delay_ms = 0
     execute_in_space_mock = AsyncMock(side_effect=RuntimeError("not ready"))
-    with patch.object(storage, "_execute_in_space", execute_in_space_mock, create=True):
+    with patch.object(storage, "_execute_in_space", execute_in_space_mock):
         with pytest.raises(TimeoutError, match="schema"):
             await storage._wait_for_schema_ready()
 
@@ -285,8 +386,8 @@ async def test_wait_for_index_ready_raises_immediately_on_failed_job():
             [["job", "relation_pair_idx", "FINISHED"]],
         ]
     )
-    with patch.object(storage, "_execute_in_space", execute_in_space_mock, create=True):
-        with pytest.raises(RuntimeError, match="index job failed"):
+    with patch.object(storage, "_execute_in_space", execute_in_space_mock):
+        with pytest.raises(NebulaIndexJobError, match="index job failed"):
             await storage._wait_for_index_ready()
 
     assert execute_in_space_mock.await_count == 2
