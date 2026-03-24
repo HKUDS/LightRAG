@@ -1262,6 +1262,7 @@ RESERVED_METADATA_FIELDS = {
     "is_duplicate",
     "original_doc_id",
     "original_track_id",
+    "error_type",
     "processing_start_time",
     "processing_end_time",
 }
