@@ -221,8 +221,17 @@ async def test_initialize_creates_space_and_schema():
     assert use_space_mock.await_count >= 1
     assert any("CREATE TAG IF NOT EXISTS entity" in sql for sql in sql_calls)
     assert any("CREATE EDGE IF NOT EXISTS relation" in sql for sql in sql_calls)
-    assert any("CREATE FULLTEXT TAG INDEX IF NOT EXISTS entity_name_ft_idx" in sql for sql in sql_calls)
-    assert any("CREATE FULLTEXT EDGE INDEX IF NOT EXISTS relation_rel_ft_idx" in sql for sql in sql_calls)
+    assert any(
+        f"CREATE FULLTEXT TAG INDEX IF NOT EXISTS {storage._fulltext_tag_index_name}"
+        in sql
+        for sql in sql_calls
+    )
+    assert any(
+        f"CREATE FULLTEXT EDGE INDEX IF NOT EXISTS {storage._fulltext_edge_index_name}"
+        in sql
+        for sql in sql_calls
+    )
+    assert any("REBUILD FULLTEXT INDEX" in sql for sql in sql_calls)
     assert any("REBUILD TAG INDEX entity_entity_id_idx" in sql for sql in sql_calls)
     assert any("REBUILD EDGE INDEX relation_pair_idx" in sql for sql in sql_calls)
     assert any("SHOW TAG INDEX STATUS" in sql for sql in sql_calls)
@@ -567,6 +576,8 @@ async def test_create_indexes_falls_back_when_fulltext_if_not_exists_is_unsuppor
             object(),  # create fulltext tag index without IF
             RuntimeError("SyntaxError: syntax error near `IF'"),
             object(),  # create fulltext edge index without IF
+            object(),  # rebuild fulltext index
+            [],        # fulltext query-ready probe
         ]
     )
     with (
@@ -577,12 +588,12 @@ async def test_create_indexes_falls_back_when_fulltext_if_not_exists_is_unsuppor
 
     sql_calls = [call.args[0] for call in execute_in_space.await_args_list]
     assert any(
-        sql == "CREATE FULLTEXT TAG INDEX entity_name_ft_idx ON entity(name);"
+        sql == f"CREATE FULLTEXT TAG INDEX {storage._fulltext_tag_index_name} ON entity(name);"
         for sql in sql_calls
     )
     assert any(
         sql
-        == "CREATE FULLTEXT EDGE INDEX relation_rel_ft_idx ON relation(relationship);"
+        == f"CREATE FULLTEXT EDGE INDEX {storage._fulltext_edge_index_name} ON relation(relationship);"
         for sql in sql_calls
     )
     assert storage._fulltext_init_error is None
@@ -609,6 +620,31 @@ async def test_create_indexes_records_service_not_found_for_fulltext():
 
     assert storage._fulltext_init_error is not None
     assert "Service not found" in storage._fulltext_init_error
+
+
+@pytest.mark.asyncio
+async def test_wait_for_fulltext_query_ready_retries_until_query_succeeds():
+    storage = build_storage(workspace="finance")
+    storage._schema_retry_times = 3
+    storage._schema_retry_delay_ms = 0
+    execute_in_space = AsyncMock(
+        side_effect=[RuntimeError("Index not found"), RuntimeError("Index not found"), []]
+    )
+    with patch.object(storage, "_execute_in_space", execute_in_space):
+        await storage._wait_for_fulltext_query_ready("nebula_entity_name_ft_demo")
+
+    assert execute_in_space.await_count == 3
+
+
+@pytest.mark.asyncio
+async def test_wait_for_fulltext_query_ready_times_out():
+    storage = build_storage(workspace="finance")
+    storage._schema_retry_times = 2
+    storage._schema_retry_delay_ms = 0
+    execute_in_space = AsyncMock(side_effect=RuntimeError("Index not found"))
+    with patch.object(storage, "_execute_in_space", execute_in_space):
+        with pytest.raises(RuntimeError, match="query-ready"):
+            await storage._wait_for_fulltext_query_ready("nebula_entity_name_ft_demo")
 
 
 @pytest.mark.asyncio

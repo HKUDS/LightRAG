@@ -424,6 +424,12 @@ class NebulaGraphStorage(BaseGraphStorage):
         self._space_name = _normalize_space_name(
             self._space_prefix or _DEFAULT_SPACE_PREFIX, self.workspace
         )
+        self._fulltext_tag_index_name = (
+            f"nebula_entity_name_ft_{_short_hash_suffix(self._space_name, length=8)}"
+        )
+        self._fulltext_edge_index_name = (
+            f"nebula_relation_rel_ft_{_short_hash_suffix(self._space_name, length=8)}"
+        )
         self._hosts = _parse_nebula_hosts(_env_str("NEBULA_HOSTS"))
         self._user = _env_str("NEBULA_USER")
         self._password = _env_raw("NEBULA_PASSWORD")
@@ -634,15 +640,22 @@ class NebulaGraphStorage(BaseGraphStorage):
         try:
             await self._ensure_fulltext_ready()
             await self._create_fulltext_index(
-                "CREATE FULLTEXT TAG INDEX IF NOT EXISTS entity_name_ft_idx "
+                f"CREATE FULLTEXT TAG INDEX IF NOT EXISTS {self._fulltext_tag_index_name} "
                 "ON entity(name);",
-                "CREATE FULLTEXT TAG INDEX entity_name_ft_idx ON entity(name);",
+                f"CREATE FULLTEXT TAG INDEX {self._fulltext_tag_index_name} ON entity(name);",
             )
             await self._create_fulltext_index(
-                "CREATE FULLTEXT EDGE INDEX IF NOT EXISTS relation_rel_ft_idx "
+                f"CREATE FULLTEXT EDGE INDEX IF NOT EXISTS {self._fulltext_edge_index_name} "
                 "ON relation(relationship);",
-                "CREATE FULLTEXT EDGE INDEX relation_rel_ft_idx ON relation(relationship);",
+                f"CREATE FULLTEXT EDGE INDEX {self._fulltext_edge_index_name} ON relation(relationship);",
             )
+            try:
+                await self._execute_in_space("REBUILD FULLTEXT INDEX;")
+            except RuntimeError as exc:
+                logger.warning(
+                    f"[{self.workspace}] Nebula full-text rebuild skipped: {exc}"
+                )
+            await self._wait_for_fulltext_query_ready(self._fulltext_tag_index_name)
         except RuntimeError as exc:
             self._fulltext_init_error = str(exc)
             return
@@ -730,6 +743,24 @@ class NebulaGraphStorage(BaseGraphStorage):
             if "syntax error" not in str(exc).lower() or "if" not in str(exc).lower():
                 raise
         await self._execute_in_space(stmt_plain)
+
+    async def _wait_for_fulltext_query_ready(self, index_name: str) -> None:
+        probe = (
+            "LOOKUP ON entity "
+            f'WHERE ES_QUERY({index_name}, "a*") '
+            "YIELD entity.entity_id AS entity_id "
+            "| LIMIT 1;"
+        )
+        for attempt in range(1, self._schema_retry_times + 1):
+            try:
+                await self._execute_in_space(probe)
+                return
+            except RuntimeError:
+                if attempt == self._schema_retry_times:
+                    raise RuntimeError(
+                        f"Nebula full-text index {index_name} did not become query-ready in time."
+                    ) from None
+                await asyncio.sleep(self._schema_retry_delay_ms / 1000)
 
     async def _wait_for_schema_ready(self) -> None:
         for attempt in range(1, self._schema_retry_times + 1):
@@ -1505,7 +1536,7 @@ class NebulaGraphStorage(BaseGraphStorage):
         escaped_query = _ngql_escape_string(query_strip)
         result = await self._execute_in_space(
             "LOOKUP ON entity "
-            f'WHERE ES_QUERY(entity_name_ft_idx, "{escaped_query}*") '
+            f'WHERE ES_QUERY({self._fulltext_tag_index_name}, "{escaped_query}*") '
             "YIELD entity.entity_id AS entity_id "
             f"| LIMIT {int(limit)};"
         )
