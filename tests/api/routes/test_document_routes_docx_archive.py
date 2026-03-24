@@ -225,8 +225,10 @@ class _DeleteRag:
         self.workspace = f"delete-test-{uuid4().hex}"
         self.deleted_doc_ids = []
 
-    async def adelete_by_doc_id(self, doc_id, delete_llm_cache=False):
-        self.deleted_doc_ids.append((doc_id, delete_llm_cache))
+    async def adelete_by_doc_id(
+        self, doc_id, delete_llm_cache=False, skip_rebuild=False
+    ):
+        self.deleted_doc_ids.append((doc_id, delete_llm_cache, skip_rebuild))
         return self.result
 
     async def apipeline_process_enqueue_documents(self):
@@ -1787,7 +1789,7 @@ async def test_background_delete_removes_parser_hint_file_variants(tmp_path):
         delete_llm_cache=True,
     )
 
-    assert rag.deleted_doc_ids == [("doc-paper", True)]
+    assert rag.deleted_doc_ids == [("doc-paper", True, True)]
     assert not source_file.exists()
     assert not parsed_variant.exists()
     assert unrelated_file.exists()

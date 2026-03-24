@@ -2603,7 +2603,7 @@ async def run_scanning_process(
                 ):
                     # File is already PROCESSED, skip it with warning and archive it.
                     processed_files.append(filename)
-                    warning = f"Skipping already processed file: " f"{filename}"
+                    warning = f"Skipping already processed file: {filename}"
                     await record_scan_warning(rag, warning)
                     try:
                         await move_file_to_parsed_dir(file_path)
@@ -2965,9 +2965,7 @@ async def background_delete_documents(
                     await rag._insert_done()
                 except Exception as rebuild_err:
                     rebuild_ok = False
-                    rebuild_error_msg = (
-                        f"Failed to rebuild knowledge graph after batch deletion: {rebuild_err}"
-                    )
+                    rebuild_error_msg = f"Failed to rebuild knowledge graph after batch deletion: {rebuild_err}"
                     logger.error(rebuild_error_msg)
                     logger.error(traceback.format_exc())
                     async with pipeline_status_lock:
