@@ -507,22 +507,13 @@ class EmbeddingFunc:
             # Inject embedding_dim from decorator
             kwargs["embedding_dim"] = self.embedding_dim
 
-        # Extract context parameter and track if it was explicitly provided
-        if "context" in kwargs:
-            context = kwargs.pop("context")
-            is_context_provided = True
-        else:
-            context = "document"
-            is_context_provided = False
-
-        # Only inject context when supports_asymmetric is True
-        if self.supports_asymmetric:
-            kwargs["context"] = context
-        elif is_context_provided:
+        # Remove context parameter if underlying function does not support asymmetric embedding
+        if "context" in kwargs and not self.supports_asymmetric:
             # Log when a user-provided context is ignored due to lack of support
             logger.debug(
                 "Context parameter was provided but supports_asymmetric=False. The context value has been ignored."
             )
+            kwargs.pop("context")
 
         # Check if underlying function supports max_token_size and inject if not provided
         if self.max_token_size is not None and "max_token_size" not in kwargs:
