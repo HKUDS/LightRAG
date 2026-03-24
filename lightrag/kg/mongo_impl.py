@@ -20,6 +20,7 @@ from ..utils import logger, compute_mdhash_id
 from ..types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
 from ..constants import GRAPH_FIELD_SEP
 from ..kg.shared_storage import get_data_init_lock
+from ... import __version__ 
 
 import pipmaster as pm
 
@@ -59,7 +60,10 @@ class ClientManager:
                     "MONGO_DATABASE",
                     config.get("mongodb", "database", fallback="LightRAG"),
                 )
-                client = AsyncMongoClient(uri, driver=DriverInfo(name="LightRAG"))
+                client = AsyncMongoClient(
+                    uri,
+                    driver=DriverInfo(name="LightRAG", version=__version__),
+                )
                 db = client.get_database(database_name)
                 cls._instances["db"] = db
                 cls._instances["ref_count"] = 0
