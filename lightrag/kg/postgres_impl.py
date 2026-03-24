@@ -60,6 +60,14 @@ T = TypeVar("T")
 # PostgreSQL identifier length limit (in bytes)
 PG_MAX_IDENTIFIER_LENGTH = 63
 
+# All known vector index suffixes, used to drop conflicting indexes when switching types
+_VECTOR_INDEX_SUFFIXES = [
+    "hnsw_cosine",
+    "hnsw_halfvec_cosine",
+    "ivfflat_cosine",
+    "vchordrq_cosine",
+]
+
 
 def _safe_index_name(table_name: str, index_suffix: str) -> str:
     """
@@ -477,15 +485,46 @@ class PostgreSQLDB:
                         await self.configure_vchordrq(connection)
                     return await operation(connection)
 
-    @staticmethod
-    async def configure_vector_extension(connection: asyncpg.Connection) -> None:
-        """Create VECTOR extension if it doesn't exist for vector similarity operations."""
+    async def configure_vector_extension(self, connection: asyncpg.Connection) -> None:
+        """Create VECTOR extension if it doesn't exist for vector similarity operations.
+
+        When vector_index_type is HNSW_HALFVEC, validates that pgvector >= 0.7.0
+        (required for halfvec support) and raises RuntimeError if older.
+        """
         try:
             await connection.execute("CREATE EXTENSION IF NOT EXISTS vector")  # type: ignore
             logger.info("PostgreSQL, VECTOR extension enabled")
         except Exception as e:
             logger.warning(f"Could not create VECTOR extension: {e}")
             # Don't raise - let the system continue without vector extension
+            return
+
+        if getattr(self, "vector_index_type", None) == "HNSW_HALFVEC":
+            row = await connection.fetchrow(
+                "SELECT extversion FROM pg_extension WHERE extname = 'vector'"
+            )
+            if not row or not row["extversion"]:
+                raise RuntimeError(
+                    "POSTGRES_VECTOR_INDEX_TYPE=HNSW_HALFVEC requires the pgvector "
+                    "extension. Ensure it is installed and CREATE EXTENSION vector succeeded."
+                )
+            raw_version = row["extversion"]
+            try:
+                parts = [int(p) for p in str(raw_version).split(".")[:3]]
+                while len(parts) < 3:
+                    parts.append(0)
+                version_tuple = (parts[0], parts[1], parts[2])
+            except (ValueError, IndexError):
+                raise RuntimeError(
+                    f"Could not parse pgvector version {raw_version!r}. "
+                    "HNSW_HALFVEC requires pgvector >= 0.7.0."
+                ) from None
+            if version_tuple < (0, 7, 0):
+                raise RuntimeError(
+                    f"POSTGRES_VECTOR_INDEX_TYPE=HNSW_HALFVEC requires pgvector >= 0.7.0, "
+                    f"but installed version is {raw_version}. Upgrade the pgvector extension "
+                    "or use a different index type (e.g. HNSW with embeddings <= 2000 dimensions)."
+                )
 
     @staticmethod
     async def configure_age_extension(connection: asyncpg.Connection) -> None:
@@ -1557,6 +1596,11 @@ class PostgreSQLDB:
                 ON {{table_name}} USING hnsw (content_vector vector_cosine_ops)
                 WITH (m = {self.hnsw_m}, ef_construction = {self.hnsw_ef})
             """,
+            "HNSW_HALFVEC": f"""
+                CREATE INDEX {{vector_index_name}}
+                ON {{table_name}} USING hnsw (content_vector halfvec_cosine_ops)
+                WITH (m = {self.hnsw_m}, ef_construction = {self.hnsw_ef})
+            """,
             "IVFFLAT": f"""
                 CREATE INDEX {{vector_index_name}}
                 ON {{table_name}} USING ivfflat (content_vector vector_cosine_ops)
@@ -1572,7 +1616,7 @@ class PostgreSQLDB:
         if self.vector_index_type not in create_sql:
             logger.warning(
                 f"Unsupported vector index type: {self.vector_index_type}. "
-                "Supported types: HNSW, IVFFLAT, VCHORDRQ"
+                "Supported types: HNSW, HNSW_HALFVEC, IVFFLAT, VCHORDRQ"
             )
             return
 
@@ -1584,11 +1628,19 @@ class PostgreSQLDB:
             SELECT 1 FROM pg_indexes
             WHERE indexname = '{vector_index_name}' AND tablename = '{k.lower()}'
         """
+        if self.vector_index_type == "HNSW_HALFVEC":
+            column_type = "HALFVEC"
+        else:
+            column_type = "VECTOR"
         try:
             vector_index_exists = await self.query(check_vector_index_sql)
             if not vector_index_exists:
-                # Only set vector dimension when index doesn't exist
-                alter_sql = f"ALTER TABLE {k} ALTER COLUMN content_vector TYPE VECTOR({embedding_dim})"
+                for suffix in _VECTOR_INDEX_SUFFIXES:
+                    if suffix == index_suffix:
+                        continue
+                    old_name = _safe_index_name(k, suffix)
+                    await self.execute(f"DROP INDEX IF EXISTS {old_name}")
+                alter_sql = f"ALTER TABLE {k} ALTER COLUMN content_vector TYPE {column_type}({embedding_dim})"
                 await self.execute(alter_sql)
                 logger.debug(f"Ensured vector dimension for {k}")
                 logger.info(
@@ -1888,7 +1940,7 @@ class PGKVStorage(BaseKVStorage):
     db: PostgreSQLDB = field(default=None)
 
     def __post_init__(self):
-        self._max_batch_size = self.global_config["embedding_batch_num"]
+        self._max_batch_size = 200  # DB batch size, independent of embedding batch size
 
     async def initialize(self):
         async with get_data_init_lock():
@@ -2192,108 +2244,149 @@ class PGKVStorage(BaseKVStorage):
         if not data:
             return
 
-        if is_namespace(self.namespace, NameSpace.KV_STORE_TEXT_CHUNKS):
-            # Get current UTC time and convert to naive datetime for database storage
-            current_time = datetime.datetime.now(timezone.utc).replace(tzinfo=None)
-            for k, v in data.items():
-                upsert_sql = SQL_TEMPLATES["upsert_text_chunk"]
-                _data = {
-                    "workspace": self.workspace,
-                    "id": k,
-                    "tokens": v["tokens"],
-                    "chunk_order_index": v["chunk_order_index"],
-                    "full_doc_id": v["full_doc_id"],
-                    "content": v["content"],
-                    "file_path": v["file_path"],
-                    "llm_cache_list": json.dumps(v.get("llm_cache_list", [])),
-                    "create_time": current_time,
-                    "update_time": current_time,
-                }
-                await self.db.execute(upsert_sql, _data)
-        elif is_namespace(self.namespace, NameSpace.KV_STORE_FULL_DOCS):
-            for k, v in data.items():
-                upsert_sql = SQL_TEMPLATES["upsert_doc_full"]
-                _data = {
-                    "id": k,
-                    "content": v["content"],
-                    "doc_name": v.get("file_path", ""),  # Map file_path to doc_name
-                    "workspace": self.workspace,
-                }
-                await self.db.execute(upsert_sql, _data)
-        elif is_namespace(self.namespace, NameSpace.KV_STORE_LLM_RESPONSE_CACHE):
-            for k, v in data.items():
-                upsert_sql = SQL_TEMPLATES["upsert_llm_response_cache"]
-                _data = {
-                    "workspace": self.workspace,
-                    "id": k,  # Use flattened key as id
-                    "original_prompt": v["original_prompt"],
-                    "return_value": v["return"],
-                    "chunk_id": v.get("chunk_id"),
-                    "cache_type": v.get(
-                        "cache_type", "extract"
-                    ),  # Get cache_type from data
-                    "queryparam": json.dumps(v.get("queryparam"))
-                    if v.get("queryparam")
-                    else None,
-                }
+        batch_values: list[tuple] = []
+        upsert_sql = ""
 
-                await self.db.execute(upsert_sql, _data)
+        if is_namespace(self.namespace, NameSpace.KV_STORE_TEXT_CHUNKS):
+            upsert_sql = SQL_TEMPLATES["upsert_text_chunk"]
+            # Get current UTC time and convert to naive datetime for database storage
+            current_time = datetime.datetime.now(timezone.utc).replace(tzinfo=None)
+            for k, v in data.items():
+                # Tuple order must match SQL: (workspace, id, tokens, chunk_order_index,
+                #   full_doc_id, content, file_path, llm_cache_list, create_time, update_time)
+                batch_values.append(
+                    (
+                        self.workspace,
+                        k,
+                        v["tokens"],
+                        v["chunk_order_index"],
+                        v["full_doc_id"],
+                        v["content"],
+                        v["file_path"],
+                        json.dumps(v.get("llm_cache_list", [])),
+                        current_time,
+                        current_time,
+                    )
+                )
+        elif is_namespace(self.namespace, NameSpace.KV_STORE_FULL_DOCS):
+            upsert_sql = SQL_TEMPLATES["upsert_doc_full"]
+            for k, v in data.items():
+                # Tuple order must match SQL: (id, content, doc_name, workspace)
+                batch_values.append(
+                    (k, v["content"], v.get("file_path", ""), self.workspace)
+                )
+        elif is_namespace(self.namespace, NameSpace.KV_STORE_LLM_RESPONSE_CACHE):
+            upsert_sql = SQL_TEMPLATES["upsert_llm_response_cache"]
+            for k, v in data.items():
+                # Tuple order must match SQL: (workspace, id, original_prompt, return_value,
+                #   chunk_id, cache_type, queryparam)
+                batch_values.append(
+                    (
+                        self.workspace,
+                        k,
+                        v["original_prompt"],
+                        v["return"],
+                        v.get("chunk_id"),
+                        v.get("cache_type", "extract"),
+                        json.dumps(v.get("queryparam"))
+                        if v.get("queryparam")
+                        else None,
+                    )
+                )
         elif is_namespace(self.namespace, NameSpace.KV_STORE_FULL_ENTITIES):
+            upsert_sql = SQL_TEMPLATES["upsert_full_entities"]
             # Get current UTC time and convert to naive datetime for database storage
             current_time = datetime.datetime.now(timezone.utc).replace(tzinfo=None)
             for k, v in data.items():
-                upsert_sql = SQL_TEMPLATES["upsert_full_entities"]
-                _data = {
-                    "workspace": self.workspace,
-                    "id": k,
-                    "entity_names": json.dumps(v["entity_names"]),
-                    "count": v["count"],
-                    "create_time": current_time,
-                    "update_time": current_time,
-                }
-                await self.db.execute(upsert_sql, _data)
+                # Tuple order must match SQL: (workspace, id, entity_names, count,
+                #   create_time, update_time)
+                batch_values.append(
+                    (
+                        self.workspace,
+                        k,
+                        json.dumps(v["entity_names"]),
+                        v["count"],
+                        current_time,
+                        current_time,
+                    )
+                )
         elif is_namespace(self.namespace, NameSpace.KV_STORE_FULL_RELATIONS):
+            upsert_sql = SQL_TEMPLATES["upsert_full_relations"]
             # Get current UTC time and convert to naive datetime for database storage
             current_time = datetime.datetime.now(timezone.utc).replace(tzinfo=None)
             for k, v in data.items():
-                upsert_sql = SQL_TEMPLATES["upsert_full_relations"]
-                _data = {
-                    "workspace": self.workspace,
-                    "id": k,
-                    "relation_pairs": json.dumps(v["relation_pairs"]),
-                    "count": v["count"],
-                    "create_time": current_time,
-                    "update_time": current_time,
-                }
-                await self.db.execute(upsert_sql, _data)
+                # Tuple order must match SQL: (workspace, id, relation_pairs, count,
+                #   create_time, update_time)
+                batch_values.append(
+                    (
+                        self.workspace,
+                        k,
+                        json.dumps(v["relation_pairs"]),
+                        v["count"],
+                        current_time,
+                        current_time,
+                    )
+                )
         elif is_namespace(self.namespace, NameSpace.KV_STORE_ENTITY_CHUNKS):
+            upsert_sql = SQL_TEMPLATES["upsert_entity_chunks"]
             # Get current UTC time and convert to naive datetime for database storage
             current_time = datetime.datetime.now(timezone.utc).replace(tzinfo=None)
             for k, v in data.items():
-                upsert_sql = SQL_TEMPLATES["upsert_entity_chunks"]
-                _data = {
-                    "workspace": self.workspace,
-                    "id": k,
-                    "chunk_ids": json.dumps(v["chunk_ids"]),
-                    "count": v["count"],
-                    "create_time": current_time,
-                    "update_time": current_time,
-                }
-                await self.db.execute(upsert_sql, _data)
+                # Tuple order must match SQL: (workspace, id, chunk_ids, count,
+                #   create_time, update_time)
+                batch_values.append(
+                    (
+                        self.workspace,
+                        k,
+                        json.dumps(v["chunk_ids"]),
+                        v["count"],
+                        current_time,
+                        current_time,
+                    )
+                )
         elif is_namespace(self.namespace, NameSpace.KV_STORE_RELATION_CHUNKS):
+            upsert_sql = SQL_TEMPLATES["upsert_relation_chunks"]
             # Get current UTC time and convert to naive datetime for database storage
             current_time = datetime.datetime.now(timezone.utc).replace(tzinfo=None)
             for k, v in data.items():
-                upsert_sql = SQL_TEMPLATES["upsert_relation_chunks"]
-                _data = {
-                    "workspace": self.workspace,
-                    "id": k,
-                    "chunk_ids": json.dumps(v["chunk_ids"]),
-                    "count": v["count"],
-                    "create_time": current_time,
-                    "update_time": current_time,
-                }
-                await self.db.execute(upsert_sql, _data)
+                # Tuple order must match SQL: (workspace, id, chunk_ids, count,
+                #   create_time, update_time)
+                batch_values.append(
+                    (
+                        self.workspace,
+                        k,
+                        json.dumps(v["chunk_ids"]),
+                        v["count"],
+                        current_time,
+                        current_time,
+                    )
+                )
+        else:
+            logger.error(f"Unknown namespace: {self.namespace}")
+            raise ValueError(f"Unknown namespace: {self.namespace}")
+
+        # upsert_sql is always set here; unknown namespace raises ValueError above
+        if batch_values:
+            # Split into sub-batches to prevent database overload
+            for i in range(0, len(batch_values), self._max_batch_size):
+                sub_batch = batch_values[i : i + self._max_batch_size]
+
+                async def _batch_upsert(
+                    connection: asyncpg.Connection,
+                    _sql: str = upsert_sql,
+                    _data: list[tuple] = sub_batch,
+                ) -> None:
+                    await connection.executemany(_sql, _data)
+
+                await self.db._run_with_retry(_batch_upsert)
+
+            num_batches = (
+                len(batch_values) + self._max_batch_size - 1
+            ) // self._max_batch_size
+            logger.debug(
+                f"[{self.workspace}] Batch upserted {len(batch_values)} records to {self.namespace} "
+                f"in {num_batches} sub-batches"
+            )
 
     async def index_done_callback(self) -> None:
         # PG handles persistence automatically
@@ -2436,19 +2529,31 @@ class PGVectorStorage(BaseVectorStorage):
 
         ddl_template = TABLES[base_table]["ddl"]
 
+        # Determine vector column type based on configuration
+        # HALFVEC is used when HNSW_HALFVEC is selected
+        vector_type = "VECTOR"
+        if getattr(db, "vector_index_type", None) == "HNSW_HALFVEC":
+            vector_type = "HALFVEC"
+
         # Replace embedding dimension placeholder if exists
-        ddl = ddl_template.replace("VECTOR(dimension)", f"VECTOR({embedding_dim})")
+        ddl = ddl_template.replace(
+            "VECTOR(dimension)", f"{vector_type}({embedding_dim})"
+        )
 
         # Replace table name
         ddl = ddl.replace(base_table, table_name)
 
+        # Make creation idempotent to handle restarts and race conditions
+        ddl = ddl.replace("CREATE TABLE ", "CREATE TABLE IF NOT EXISTS ", 1)
         await db.execute(ddl)
 
         # Create indexes similar to check_tables() but with safe index names
         # Create index for id column
         id_index_name = _safe_index_name(table_name, "id")
         try:
-            create_id_index_sql = f"CREATE INDEX {id_index_name} ON {table_name}(id)"
+            create_id_index_sql = (
+                f"CREATE INDEX IF NOT EXISTS {id_index_name} ON {table_name}(id)"
+            )
             logger.info(
                 f"PostgreSQL, Creating index {id_index_name} on table {table_name}"
             )
@@ -2461,9 +2566,7 @@ class PGVectorStorage(BaseVectorStorage):
         # Create composite index for (workspace, id)
         workspace_id_index_name = _safe_index_name(table_name, "workspace_id")
         try:
-            create_composite_index_sql = (
-                f"CREATE INDEX {workspace_id_index_name} ON {table_name}(workspace, id)"
-            )
+            create_composite_index_sql = f"CREATE INDEX IF NOT EXISTS {workspace_id_index_name} ON {table_name}(workspace, id)"
             logger.info(
                 f"PostgreSQL, Creating composite index {workspace_id_index_name} on table {table_name}"
             )
@@ -2680,6 +2783,11 @@ class PGVectorStorage(BaseVectorStorage):
                             ):
                                 # Handle NumPy arrays and other array-like objects
                                 legacy_dim = len(vector_data)
+                            elif hasattr(vector_data, "dimensions") and callable(
+                                vector_data.dimensions
+                            ):
+                                # pgvector HalfVector / SparseVector expose dimensions()
+                                legacy_dim = vector_data.dimensions()
                             elif isinstance(vector_data, str):
                                 import json
 
@@ -3026,8 +3134,15 @@ class PGVectorStorage(BaseVectorStorage):
 
         embedding_string = ",".join(map(str, embedding))
 
+        vector_cast = (
+            "halfvec"
+            if getattr(self.db, "vector_index_type", None) == "HNSW_HALFVEC"
+            else "vector"
+        )
         sql = SQL_TEMPLATES[self.namespace].format(
-            embedding_string=embedding_string, table_name=self.table_name
+            embedding_string=embedding_string,
+            table_name=self.table_name,
+            vector_cast=vector_cast,
         )
         params = {
             "workspace": self.workspace,
@@ -3206,6 +3321,10 @@ class PGVectorStorage(BaseVectorStorage):
                         # Handle numpy arrays from pgvector
                         elif hasattr(vector_data, "tolist"):
                             vectors_dict[result["id"]] = vector_data.tolist()
+                        elif hasattr(vector_data, "to_list") and callable(
+                            vector_data.to_list
+                        ):
+                            vectors_dict[result["id"]] = vector_data.to_list()
                     except (json.JSONDecodeError, TypeError) as e:
                         logger.warning(
                             f"[{self.workspace}] Failed to parse vector data for ID {result['id']}: {e}"
@@ -5747,8 +5866,8 @@ SQL_TEMPLATES = {
                             EXTRACT(EPOCH FROM r.create_time)::BIGINT AS created_at
                      FROM {table_name} r
                      WHERE r.workspace = $1
-                       AND r.content_vector <=> '[{embedding_string}]'::vector < $2
-                     ORDER BY r.content_vector <=> '[{embedding_string}]'::vector
+                       AND r.content_vector <=> '[{embedding_string}]'::{vector_cast} < $2
+                     ORDER BY r.content_vector <=> '[{embedding_string}]'::{vector_cast}
                      LIMIT $3;
                      """,
     "entities": """
@@ -5756,8 +5875,8 @@ SQL_TEMPLATES = {
                        EXTRACT(EPOCH FROM e.create_time)::BIGINT AS created_at
                 FROM {table_name} e
                 WHERE e.workspace = $1
-                  AND e.content_vector <=> '[{embedding_string}]'::vector < $2
-                ORDER BY e.content_vector <=> '[{embedding_string}]'::vector
+                  AND e.content_vector <=> '[{embedding_string}]'::{vector_cast} < $2
+                ORDER BY e.content_vector <=> '[{embedding_string}]'::{vector_cast}
                 LIMIT $3;
                 """,
     "chunks": """
@@ -5767,8 +5886,8 @@ SQL_TEMPLATES = {
                      EXTRACT(EPOCH FROM c.create_time)::BIGINT AS created_at
               FROM {table_name} c
               WHERE c.workspace = $1
-                AND c.content_vector <=> '[{embedding_string}]'::vector < $2
-              ORDER BY c.content_vector <=> '[{embedding_string}]'::vector
+                AND c.content_vector <=> '[{embedding_string}]'::{vector_cast} < $2
+              ORDER BY c.content_vector <=> '[{embedding_string}]'::{vector_cast}
               LIMIT $3;
               """,
     # DROP tables

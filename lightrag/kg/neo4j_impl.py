@@ -91,8 +91,18 @@ class Neo4JStorage(BaseGraphStorage):
         self._driver = None
 
     def _get_workspace_label(self) -> str:
-        """Return workspace label (guaranteed non-empty during initialization)"""
-        return self.workspace
+        """Return sanitized workspace label safe for use as a backtick-quoted identifier in Cypher queries.
+
+        Escapes backticks by doubling them to prevent Cypher injection
+        via the LIGHTRAG-WORKSPACE header, while preserving a 1-to-1 mapping
+        for all other characters. The returned value is intended to be used
+        inside backticks (for example, MATCH (n:`{label}`)) and is not
+        validated as a standalone unquoted identifier.
+        """
+        workspace = self.workspace.strip()
+        if not workspace:
+            return "base"
+        return workspace.replace("`", "``")
 
     def _normalize_index_suffix(self, workspace_label: str) -> str:
         """Normalize workspace label for safe use in index names."""
@@ -1021,6 +1031,27 @@ class Neo4JStorage(BaseGraphStorage):
         entity_type = properties["entity_type"]
         if "entity_id" not in properties:
             raise ValueError("Neo4j: node properties must contain an 'entity_id' field")
+
+        # Coerce to str first so membership checks below never raise TypeError
+        # regardless of what upstream callers (e.g. API payloads) pass in.
+        entity_type = (
+            str(entity_type) if not isinstance(entity_type, str) else entity_type
+        )
+
+        # Sanitize entity_type: strip backticks and handle comma-separated values.
+        # This guards against dirty data from LLM extraction or database read-back.
+        if "`" in entity_type or "," in entity_type or not entity_type.strip():
+            original = entity_type
+            entity_type = entity_type.replace("`", "").strip()
+            if "," in entity_type:
+                entity_type = entity_type.split(",")[0].strip()
+            if not entity_type:
+                entity_type = "UNKNOWN"
+            logger.warning(
+                f"[{self.workspace}] Entity type sanitized in upsert_node: '{original}' -> '{entity_type}'"
+            )
+            properties = dict(properties)
+            properties["entity_type"] = entity_type
 
         try:
             async with self._driver.session(database=self._DATABASE) as session:

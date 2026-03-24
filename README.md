@@ -73,6 +73,8 @@
 ---
 
 ## 🎉 News
+- [2026.03]🎯[New Feature]: Integrated **OpenSearch** as a unified storage backend, providing comprehensive support for all four LightRAG storage.
+- [2026.03]🎯[New Feature]: Introduced a setup wizard. Support for local deployment of embedding, reranking, and storage backends via Docker.
 - [2025.11]🎯[New Feature]: Integrated **RAGAS for Evaluation** and **Langfuse for Tracing**. Updated the API to return retrieved contexts alongside query results to support context precision metrics.
 - [2025.10]🎯[Scalability Enhancement]: Eliminated processing bottlenecks to support **Large-Scale Datasets Efficiently**.
 - [2025.09]🎯[New Feature] Enhances knowledge graph extraction accuracy for **Open-Sourced LLMs** such as Qwen3-30B-A3B.
@@ -90,7 +92,6 @@
 - [2024.11]🎯[New Feature] You can now [use Neo4J for Storage](https://github.com/HKUDS/LightRAG?tab=readme-ov-file#using-neo4j-for-storage)-enabling graph database support.
 - [2024.10]🎯[New Feature] We've added a link to a [LightRAG Introduction Video](https://youtu.be/oageL-1I0GE). — a walkthrough of LightRAG's capabilities. Thanks to the author for this excellent contribution!
 - [2024.10]🎯[New Channel] We have created a [Discord channel](https://discord.gg/yF2MmDJyGJ)!💬 Welcome to join our community for sharing, discussions, and collaboration! 🎉🎉
-- [2024.10]🎯[New Feature] LightRAG now supports [Ollama models](https://github.com/HKUDS/LightRAG?tab=readme-ov-file#quick-start)!
 
 <details>
   <summary style="font-size: 1.4em; font-weight: bold; cursor: pointer; display: list-item;">
@@ -182,6 +183,25 @@ docker compose up
 ```
 
 > Historical versions of LightRAG docker images can be found here: [LightRAG Docker Images]( https://github.com/HKUDS/LightRAG/pkgs/container/lightrag)
+
+### Create .env File With Setup Tool
+
+Instead of editing `env.example` by hand, use the interactive setup wizard to generate a configured `.env` and, when needed, `docker-compose.final.yml`:
+
+```bash
+make env-base           # Required first step: LLM, embedding, reranker
+make env-storage        # Optional: storage backends and database services
+make env-server         # Optional: server port, auth, and SSL
+make env-base-rewrite   # Optional: force-regenerate wizard-managed compose services
+make env-storage-rewrite # Optional: force-regenerate wizard-managed compose services
+make env-security-check # Optional: audit the current .env for security risks
+```
+
+For full description of every target see [docs/InteractiveSetup.md](./docs/InteractiveSetup.md).
+The setup wizards update configuration only; run `make env-security-check` separately to audit the
+current `.env` for security risks before deployment.
+By default, rerunning the setup preserves unchanged wizard-managed compose service blocks; use a
+`*-rewrite` target only when you need to rebuild those managed blocks from the bundled templates.
 
 ### Install  LightRAG Core
 
@@ -326,10 +346,10 @@ A full list of LightRAG init parameters:
 | -------------- | ---------- | ----------------- | ------------- |
 | **working_dir** | `str` | Directory where the cache will be stored | `lightrag_cache+timestamp` |
 | **workspace** | str | Workspace name for data isolation between different LightRAG Instances | |
-| **kv_storage** | `str` | Storage type for documents and text chunks. Supported types: `JsonKVStorage`,`PGKVStorage`,`RedisKVStorage`,`MongoKVStorage` | `JsonKVStorage` |
-| **vector_storage** | `str` | Storage type for embedding vectors. Supported types: `NanoVectorDBStorage`,`PGVectorStorage`,`MilvusVectorDBStorage`,`ChromaVectorDBStorage`,`FaissVectorDBStorage`,`MongoVectorDBStorage`,`QdrantVectorDBStorage` | `NanoVectorDBStorage` |
-| **graph_storage** | `str` | Storage type for graph edges and nodes. Supported types: `NetworkXStorage`,`Neo4JStorage`,`PGGraphStorage`,`AGEStorage` | `NetworkXStorage` |
-| **doc_status_storage** | `str` | Storage type for documents process status. Supported types: `JsonDocStatusStorage`,`PGDocStatusStorage`,`MongoDocStatusStorage` | `JsonDocStatusStorage` |
+| **kv_storage** | `str` | Storage type for documents and text chunks. Supported types: `JsonKVStorage`,`PGKVStorage`,`RedisKVStorage`,`MongoKVStorage`,`OpenSearchKVStorage` | `JsonKVStorage` |
+| **vector_storage** | `str` | Storage type for embedding vectors. Supported types: `NanoVectorDBStorage`,`PGVectorStorage`,`MilvusVectorDBStorage`,`ChromaVectorDBStorage`,`FaissVectorDBStorage`,`MongoVectorDBStorage`,`QdrantVectorDBStorage`,`OpenSearchVectorDBStorage` | `NanoVectorDBStorage` |
+| **graph_storage** | `str` | Storage type for graph edges and nodes. Supported types: `NetworkXStorage`,`Neo4JStorage`,`PGGraphStorage`,`AGEStorage`,`OpenSearchGraphStorage` | `NetworkXStorage` |
+| **doc_status_storage** | `str` | Storage type for documents process status. Supported types: `JsonDocStatusStorage`,`PGDocStatusStorage`,`MongoDocStatusStorage`,`OpenSearchDocStatusStorage` | `JsonDocStatusStorage` |
 | **chunk_token_size** | `int` | Maximum token size per chunk when splitting documents | `1200` |
 | **chunk_overlap_token_size** | `int` | Overlap token size between two chunks when splitting documents | `100` |
 | **tokenizer** | `Tokenizer` | The function used to convert text into tokens (numbers) and back using .encode() and .decode() functions following `TokenizerInterface` protocol. If you don't specify one, it will use the default Tiktoken tokenizer. | `TiktokenTokenizer` |
@@ -921,19 +941,21 @@ Each storage type has several implementations:
 * KV_STORAGE supported implementations:
 
 ```
-JsonKVStorage    JsonFile (default)
-PGKVStorage      Postgres
-RedisKVStorage   Redis
-MongoKVStorage   MongoDB
+JsonKVStorage        JsonFile (default)
+PGKVStorage          Postgres
+RedisKVStorage       Redis
+MongoKVStorage       MongoDB
+OpenSearchKVStorage  OpenSearch
 ```
 
 * GRAPH_STORAGE supported implementations:
 
 ```
-NetworkXStorage      NetworkX (default)
-Neo4JStorage         Neo4J
-PGGraphStorage       PostgreSQL with AGE plugin
-MemgraphStorage.     Memgraph
+NetworkXStorage          NetworkX (default)
+Neo4JStorage             Neo4J
+PGGraphStorage           PostgreSQL with AGE plugin
+MemgraphStorage          Memgraph
+OpenSearchGraphStorage   OpenSearch
 ```
 
 > Testing has shown that Neo4J delivers superior performance in production environments compared to PostgreSQL with AGE plugin.
@@ -947,6 +969,7 @@ MilvusVectorDBStorage       Milvus
 FaissVectorDBStorage        Faiss
 QdrantVectorDBStorage       Qdrant
 MongoVectorDBStorage        MongoDB
+OpenSearchVectorDBStorage   OpenSearch
 ```
 
 * DOC_STATUS_STORAGE: supported implementations:
@@ -955,6 +978,7 @@ MongoVectorDBStorage        MongoDB
 JsonDocStatusStorage        JsonFile (default)
 PGDocStatusStorage          Postgres
 MongoDocStatusStorage       MongoDB
+OpenSearchDocStatusStorage  OpenSearch
 ```
 
 Example connection configurations for each storage type can be found in the repository's `env.example` file. The database instance in the connection string needs to be created by you on the database server beforehand. LightRAG is only responsible for creating tables within the database instance, not for creating the database instance itself. If using Redis as storage, remember to configure automatic data persistence rules for Redis, otherwise data will be lost after the Redis service restarts. If using PostgreSQL, it is recommended to use version 16.6 or above.
@@ -1079,9 +1103,150 @@ async def initialize_rag():
 </details>
 
 <details>
+<summary> <b>Using Milvus for Vector Storage</b> </summary>
+
+Milvus is a high-performance, scalable vector database for production-level vector storage. LightRAG provides three ways to configure Milvus, plus support for configurable index types to optimize performance and memory usage.
+
+### Supported Index Types
+
+- `AUTOINDEX` (default): Milvus automatically selects the best index
+- `HNSW`: Hierarchical Navigable Small World graph for high recall
+- `HNSW_SQ`: HNSW with scalar quantization for memory savings (requires Milvus 2.6.8+)
+- `HNSW_PQ`, `HNSW_PRQ`: HNSW with product / product-residual quantization
+- `IVF_FLAT`, `IVF_SQ8`, `IVF_PQ`: Inverted-file family indexes
+- `DISKANN`: Disk-based approximate nearest neighbor
+- `SCANN`: Scalable nearest neighbor
+
+### Supported Metric Types
+
+`COSINE` (default), `L2`, `IP`
+
+---
+
+### Config Approach 1 — Environment Variables (`.env` file)
+
+Best for: **LightRAG Server deployments and Docker/k8s setups**.
+
+```bash
+# Connection
+MILVUS_URI=http://localhost:19530
+MILVUS_DB_NAME=lightrag
+# MILVUS_USER=root
+# MILVUS_PASSWORD=your_password
+# MILVUS_TOKEN=your_token
+
+# Storage selection
+LIGHTRAG_VECTOR_STORAGE=MilvusVectorDBStorage
+
+# Index configuration (all optional — sensible defaults apply)
+MILVUS_INDEX_TYPE=HNSW              # Default: AUTOINDEX
+MILVUS_METRIC_TYPE=COSINE           # Default: COSINE
+MILVUS_HNSW_M=16                    # Default: 16, range [2-2048]
+MILVUS_HNSW_EF_CONSTRUCTION=360     # Default: 360
+MILVUS_HNSW_EF=200                  # Default: 200
+
+# HNSW_SQ options (requires Milvus 2.6.8+)
+# MILVUS_INDEX_TYPE=HNSW_SQ
+# MILVUS_HNSW_SQ_TYPE=SQ8           # SQ4U, SQ6, SQ8, BF16, FP16
+# MILVUS_HNSW_SQ_REFINE=false       # Enable refinement
+# MILVUS_HNSW_SQ_REFINE_TYPE=FP32   # Refinement precision
+# MILVUS_HNSW_SQ_REFINE_K=10        # Refinement expansion factor
+
+# IVF options
+# MILVUS_IVF_NLIST=1024
+# MILVUS_IVF_NPROBE=16
+```
+
+Then in Python code:
+
+```python
+from lightrag import LightRAG
+
+async def initialize_rag():
+    rag = LightRAG(
+        working_dir="./rag_storage",
+        llm_model_func=...,
+        embedding_func=...,
+        vector_storage="MilvusVectorDBStorage",
+    )
+    await rag.initialize_storages()
+    return rag
+```
+
+### Config Approach 2 — `vector_db_storage_cls_kwargs` (Python SDK)
+
+Best for: **Python SDK / framework integration** where you want all config in code.
+
+```python
+from lightrag import LightRAG
+
+async def initialize_rag():
+    rag = LightRAG(
+        working_dir="./rag_storage",
+        llm_model_func=...,
+        embedding_func=...,
+        vector_storage="MilvusVectorDBStorage",
+        vector_db_storage_cls_kwargs={
+            "milvus_uri": "http://localhost:19530",
+            "milvus_db_name": "lightrag",
+            "index_type": "HNSW",
+            "metric_type": "COSINE",
+            "hnsw_m": 16,
+            "hnsw_ef_construction": 360,
+            "hnsw_ef": 200,
+            "cosine_better_than_threshold": 0.2,
+        },
+    )
+    await rag.initialize_storages()
+    return rag
+```
+
+### Config Approach 3 — `config.ini` (legacy)
+
+Connection parameters only; index settings use env vars or kwargs.
+
+```ini
+[milvus]
+uri = http://localhost:19530
+db_name = lightrag
+# user = root
+# password = your_password
+# token = your_token
+```
+
+### Configuration Priority
+
+| Setting | 1st (highest) | 2nd | 3rd (lowest) |
+|---|---|---|---|
+| Connection (`uri`, …) | `vector_db_storage_cls_kwargs` | Environment variables | `config.ini` |
+| Index (`index_type`, …) | `vector_db_storage_cls_kwargs` | Environment variables | defaults |
+
+### HNSW_SQ Compression Trade-offs
+
+| SQ Type | Compression | Precision | Notes |
+|---|---|---|---|
+| `SQ4U` | ~8× | Lower | Best memory savings |
+| `SQ6` | ~5.3× | Balanced | Good trade-off |
+| `SQ8` | ~4× | Good | **Recommended** |
+| `BF16` / `FP16` | ~2× | High | Near-lossless |
+
+**Version Requirements:**
+- HNSW_SQ index type requires **Milvus 2.6.8 or higher**
+- LightRAG will automatically validate the server version and raise an error if requirements are not met
+- Other index types work with Milvus 2.0+
+
+**Backward Compatibility:**
+- If no index configuration is provided, LightRAG uses AUTOINDEX (Milvus default behavior)
+- Existing collections are not affected; index configuration only applies to newly created collections
+
+For complete configuration options, see `env.example` and `docs/MilvusConfigurationGuide.md`.
+
+</details>
+
+<details>
 <summary> <b>Using MongoDB Storage</b> </summary>
 
-MongoDB provides a one-stop storage solution for LightRAG. MongoDB offers native KV storage and vector storage. LightRAG uses MongoDB collections to implement a simple graph storage. MongoDB's official vector search functionality (`$vectorSearch`) currently requires their official cloud service MongoDB Atlas. This functionality cannot be used on self-hosted MongoDB Community/Enterprise versions.
+MongoDB provides a one-stop storage solution for LightRAG. MongoDB offers native KV storage and vector storage. LightRAG uses MongoDB collections to implement a simple graph storage. `MongoVectorDBStorage` requires a MongoDB deployment with Atlas Search / Vector Search support, such as MongoDB Atlas or Atlas local. The setup wizard's bundled local Docker MongoDB service is MongoDB Community Edition, so it can be used for KV/graph/doc-status storage but not for `MongoVectorDBStorage`.
 
 </details>
 
@@ -1100,6 +1265,120 @@ maxmemory-policy noeviction
 maxclients 500
 ```
 
+When the interactive setup manages a local Redis container, it stages a user-editable config at `./data/config/redis.conf` and mounts it into the container. Setup preserves that file on reruns so local Redis tuning can be adjusted without losing manual edits.
+
+</details>
+
+<details>
+<summary> <b>Using OpenSearch Storage</b> </summary>
+
+OpenSearch provides a unified storage solution for all four LightRAG storage types (KV, Vector, Graph, DocStatus). It offers native k-NN vector search, full-text search, and horizontal scalability — all without cloud-only restrictions.
+
+* **Requirements**: OpenSearch 3.x or higher with k-NN plugin enabled.
+
+Install with Docker (without plugins):
+```bash
+docker run -d -p 9200:9200 -e "discovery.type=single-node" \
+  -e "OPENSEARCH_INITIAL_ADMIN_PASSWORD=<custom-admin-password>" \
+  opensearchproject/opensearch:latest
+```
+
+Install with Docker Compose (Recommended, with plugins):
+```bash
+curl -O https://raw.githubusercontent.com/opensearch-project/opensearch-build/main/docker/release/dockercomposefiles/docker-compose-3.x.yml
+# Launch OpenSearch cluster
+OPENSEARCH_INITIAL_ADMIN_PASSWORD=<custom-admin-password> docker-compose -f docker-compose-3.x.yml up -d
+```
+
+* **Configuration**: Set environment variables (see `env.example` for full list):
+
+```bash
+export OPENSEARCH_HOSTS=localhost:9200
+export OPENSEARCH_USER=admin
+export OPENSEARCH_PASSWORD=<custom-admin-password>
+export OPENSEARCH_USE_SSL=true
+export OPENSEARCH_VERIFY_CERTS=false
+```
+
+* **Usage**:
+
+```python
+rag = LightRAG(
+    working_dir=WORKING_DIR,
+    llm_model_func=your_llm_func,
+    embedding_func=your_embed_func,
+    kv_storage="OpenSearchKVStorage",
+    doc_status_storage="OpenSearchDocStatusStorage",
+    graph_storage="OpenSearchGraphStorage",
+    vector_storage="OpenSearchVectorDBStorage",
+)
+```
+
+* **Graph Traversal**: When the OpenSearch SQL plugin with PPL support is available, graph queries use server-side BFS via the `graphlookup` command for optimal performance. Otherwise, it falls back to client-side batched BFS. This is auto-detected at startup, or can be forced via `OPENSEARCH_USE_PPL_GRAPHLOOKUP=true|false`.
+
+* **Integration Testing**: To run integration tests against a live OpenSearch cluster:
+
+1. Start OpenSearch using Docker Compose (download [`docker-compose-3.x.yml`](https://raw.githubusercontent.com/opensearch-project/opensearch-build/main/docker/release/dockercomposefiles/docker-compose-3.x.yml)):
+
+```bash
+OPENSEARCH_INITIAL_ADMIN_PASSWORD=<custom-admin-password> docker-compose -f docker-compose-3.x.yml up -d
+```
+
+2. Verify the cluster is running:
+
+```bash
+curl -sk -u admin:<custom-admin-password> https://localhost:9200
+curl -sk -u admin:<custom-admin-password> https://localhost:9200/_cat/plugins?v
+```
+
+3. Run the unit tests (no OpenSearch required — uses mocks):
+
+```bash
+python -m pytest tests/test_opensearch_storage.py -v
+```
+
+4. Run the OpenSearch storage demo against the live cluster:
+
+```bash
+export OPENSEARCH_HOSTS=localhost:9200
+export OPENSEARCH_USER=admin
+export OPENSEARCH_PASSWORD=<custom-admin-password>
+export OPENSEARCH_USE_SSL=true
+export OPENSEARCH_VERIFY_CERTS=false
+python examples/opensearch_storage_demo.py
+```
+
+5. Run the full OpenAI + OpenSearch demo (requires `OPENAI_API_KEY`):
+
+```bash
+export OPENAI_API_KEY=your-api-key
+python examples/lightrag_openai_opensearch_graph_demo.py
+```
+
+6. Visualize the knowledge graph via LightRAG WebUI or standalone HTML:
+
+Requires [building front-end artifacts](https://github.com/HKUDS/LightRAG/blob/main/lightrag/api/README.md) before starting LightRAG Server.
+```bash
+# Starting lightrag-server with OpenSearch Storage
+LIGHTRAG_KV_STORAGE=OpenSearchKVStorage \
+LIGHTRAG_DOC_STATUS_STORAGE=OpenSearchDocStatusStorage \
+LIGHTRAG_GRAPH_STORAGE=OpenSearchGraphStorage \
+LIGHTRAG_VECTOR_STORAGE=OpenSearchVectorDBStorage \
+LLM_BINDING=openai \
+EMBEDDING_BINDING=openai \
+EMBEDDING_MODEL=text-embedding-3-large \
+EMBEDDING_DIM=3072 \
+OPENAI_API_KEY=your-api-key \
+lightrag-server
+
+# Display the knowledge graph via LightRAG WebUI
+python examples/graph_visual_with_opensearch.py
+
+# Open http://localhost:9621/webui/ -> Knowledge Graph
+# Or generate standalone HTML file
+python examples/graph_visual_with_opensearch.py --html
+```
+
 </details>
 
 ### Data Isolation Between LightRAG Instances
@@ -1111,8 +1390,9 @@ The `workspace` parameter ensures data isolation between different LightRAG inst
 - **For Qdrant vector database, data isolation is achieved through payload-based partitioning (Qdrant's recommended multitenancy approach):** `QdrantVectorDBStorage` uses shared collections with payload filtering for unlimited workspace scalability.
 - **For relational databases, data isolation is achieved by adding a `workspace` field to the tables for logical data separation:** `PGKVStorage`, `PGVectorStorage`, `PGDocStatusStorage`.
 - **For the Neo4j graph database, logical data isolation is achieved through labels:** `Neo4JStorage`
+- **For OpenSearch, data isolation is achieved through index name prefixes:** `OpenSearchKVStorage`, `OpenSearchDocStatusStorage`, `OpenSearchGraphStorage`, `OpenSearchVectorDBStorage`
 
-To maintain compatibility with legacy data, the default workspace for PostgreSQL non-graph storage is `default` and, for PostgreSQL AGE graph storage is null, for Neo4j graph storage is `base` when no workspace is configured. For all external storages, the system provides dedicated workspace environment variables to override the common `WORKSPACE` environment variable configuration. These storage-specific workspace environment variables are: `REDIS_WORKSPACE`, `MILVUS_WORKSPACE`, `QDRANT_WORKSPACE`, `MONGODB_WORKSPACE`, `POSTGRES_WORKSPACE`, `NEO4J_WORKSPACE`.
+To maintain compatibility with legacy data, the default workspace for PostgreSQL non-graph storage is `default` and, for PostgreSQL AGE graph storage is null, for Neo4j graph storage is `base` when no workspace is configured. For all external storages, the system provides dedicated workspace environment variables to override the common `WORKSPACE` environment variable configuration. These storage-specific workspace environment variables are: `REDIS_WORKSPACE`, `MILVUS_WORKSPACE`, `QDRANT_WORKSPACE`, `MONGODB_WORKSPACE`, `POSTGRES_WORKSPACE`, `NEO4J_WORKSPACE`, `OPENSEARCH_WORKSPACE`.
 
 **Usage Example:**
 For a practical demonstration of managing multiple isolated knowledge bases (e.g., separating "Book" content from "HR Policies") within a single application, refer to the [Workspace Demo](examples/lightrag_gemini_workspace_demo.py).
@@ -1643,33 +1923,17 @@ All exports include:
 <details>
   <summary> <b>Clear Cache</b> </summary>
 
-You can clear the LLM response cache with different modes:
+You can clear the configured LLM response cache storage with `aclear_cache()`. This API clears all cached entries in `llm_response_cache` and does not support selective cleanup by mode or cache type.
 
 ```python
 # Clear all cache
 await rag.aclear_cache()
 
-# Clear local mode cache
-await rag.aclear_cache(modes=["local"])
-
-# Clear extraction cache
-await rag.aclear_cache(modes=["default"])
-
-# Clear multiple modes
-await rag.aclear_cache(modes=["local", "global", "hybrid"])
-
 # Synchronous version
-rag.clear_cache(modes=["local"])
+rag.clear_cache()
 ```
 
-Valid modes are:
-
-- `"default"`: Extraction cache
-- `"naive"`: Naive search cache
-- `"local"`: Local search cache
-- `"global"`: Global search cache
-- `"hybrid"`: Hybrid search cache
-- `"mix"`: Mix search cache
+For selective cleanup of query-related caches, use the `lightrag.tools.clean_llm_query_cache` tool and see the guide in [lightrag/tools/README_CLEAN_LLM_QUERY_CACHE.md](./lightrag/tools/README_CLEAN_LLM_QUERY_CACHE.md). It manages query caches and keywords caches for `mix`, `hybrid`, `local`, and `global` modes. It does not clean extraction caches such as `default:extract:*` and `default:summary:*`.
 
 </details>
 
@@ -2054,15 +2318,16 @@ def extract_queries(file_path):
 
 ## ⭐ Star History
 
-<a href="https://star-history.com/#HKUDS/LightRAG&Date">
- <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=HKUDS/LightRAG&type=Date&theme=dark" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=HKUDS/LightRAG&type=Date" />
-   <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=HKUDS/LightRAG&type=Date" />
- </picture>
-</a>
+[![Star History Chart](https://api.star-history.com/svg?repos=HKUDS/LightRAG&type=Date)](https://star-history.com/#HKUDS/LightRAG&Date)
 
 ## 🤝 Contribution
+
+<div align="center">
+  We welcome contributions of all kinds — bug fixes, new features, documentation improvements, and more.<br>
+  Please read our <a href=".github/CONTRIBUTING.md"><strong>Contributing Guide</strong></a> before submitting a pull request.
+</div>
+
+<br>
 
 <div align="center">
   We thank all our contributors for their valuable contributions.
