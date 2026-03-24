@@ -446,7 +446,7 @@ class EmbeddingFunc:
         max_token_size: Enable embedding token limit checking for description summarization(Set embedding_token_limit in LightRAG)
         send_dimensions: Whether to inject embedding_dim argument to underlying function
         model_name: Model name for implementing workspace data isolation in vector DB
-        supports_context: Whether the underlying function supports context parameter so it can be injected
+        supports_asymmetric: Whether the underlying function supports context parameter so it can be injected
     """
 
     embedding_dim: int
@@ -456,7 +456,7 @@ class EmbeddingFunc:
     model_name: str | None = (
         None  # Model name for implementing workspace data isolation in vector DB
     )
-    supports_context: bool = (
+    supports_asymmetric: bool = (
         False  # Whether underlying function accepts context parameter
     )
 
@@ -515,13 +515,13 @@ class EmbeddingFunc:
             context = "document"
             is_context_provided = False
 
-        # Only inject context when supports_context is True
-        if self.supports_context:
+        # Only inject context when supports_asymmetric is True
+        if self.supports_asymmetric:
             kwargs["context"] = context
         elif is_context_provided:
             # Log when a user-provided context is ignored due to lack of support
             logger.debug(
-                "Context parameter was provided but supports_context=False. The context value has been ignored."
+                "Context parameter was provided but supports_asymmetric=False. The context value has been ignored."
             )
 
         # Check if underlying function supports max_token_size and inject if not provided
@@ -1128,7 +1128,7 @@ def wrap_embedding_func_with_attrs(**kwargs):
         @wrap_embedding_func_with_attrs(
             embedding_dim=1536,
             model_name="my_embedding_model",
-            supports_context=True
+            supports_asymmetric=True
         )
         async def my_embed(texts, context="document"):
             # Apply different prefixes based on context
@@ -1143,7 +1143,7 @@ def wrap_embedding_func_with_attrs(**kwargs):
     - embedding_dim: The embedding dimension
     - max_token_size: Maximum token limit (optional)
     - model_name: Model name (optional)
-    - supports_context: Whether context parameter is supported (optional)
+    - supports_asymmetric: Whether context parameter is supported (optional)
     - func: The original unwrapped function (access via .func)
     - __call__: Wrapper that injects embedding_dim parameter and context
 
@@ -1151,7 +1151,7 @@ def wrap_embedding_func_with_attrs(**kwargs):
         embedding_dim: The dimension of embedding vectors
         max_token_size: Maximum number of tokens (optional)
         send_dimensions: Whether to pass embedding_dim as a keyword argument (for models with configurable embedding dimensions).
-        supports_context: Whether the function supports context parameter (optional)
+        supports_asymmetric: Whether the function supports context parameter (optional)
 
     Returns:
         A decorator that wraps the function as an EmbeddingFunc instance

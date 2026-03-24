@@ -62,7 +62,7 @@ async def fetch_data(url, headers, data):
     embedding_dim=2048,
     max_token_size=8192,
     model_name="jina-embeddings-v4",
-    supports_context=True,
+    supports_asymmetric=True,
 )
 @retry(
     stop=stop_after_attempt(3),
@@ -79,8 +79,8 @@ async def jina_embed(
     late_chunking: bool = False,
     base_url: str = None,
     api_key: str = None,
-    context: str = "document",
-    task: str | None = "text-matching",
+    context: str | None = None,
+    task: str | None = None,
 ) -> np.ndarray:
     """Generate embeddings for a list of texts using Jina AI's API.
 
@@ -99,7 +99,8 @@ async def jina_embed(
         api_key: Optional Jina API key. If None, uses the JINA_API_KEY environment variable.
         context: The embedding context - "query" for search queries, "document" for indexed content.
             **IMPORTANT**: This parameter is automatically injected by the EmbeddingFunc wrapper
-            when supports_context=True. Default is "document".
+            when supports_asymmetric=True. If omitted, behavior falls back to "text-matching"
+            for backward compatibility.
         task: Optional task type override. If not provided, automatically determined from context:
             - "retrieval.query" for context="query"
             - "retrieval.passage" for context="document"

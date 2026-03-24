@@ -146,7 +146,7 @@ async def hf_model_complete(
     embedding_dim=1024,
     max_token_size=8192,
     model_name="hf_embedding_model",
-    supports_context=True,
+    supports_asymmetric=True,
 )
 async def hf_embed(
     texts: list[str],
