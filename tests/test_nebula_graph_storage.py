@@ -466,6 +466,23 @@ async def test_wait_for_space_ready_retries_until_space_can_be_used():
 
 
 @pytest.mark.asyncio
+async def test_wait_for_space_ready_default_retry_budget_handles_live_cluster_delay():
+    with patch.dict("os.environ", {}, clear=True):
+        storage = build_storage(workspace="finance")
+    storage._schema_retry_delay_ms = 0
+    session = Mock()
+    use_mock = AsyncMock(side_effect=[RuntimeError("not ready")] * 35 + [None])
+    with (
+        patch.object(storage, "_acquire_session", AsyncMock(return_value=session)),
+        patch.object(storage, "_release_session", AsyncMock()),
+        patch.object(storage, "_use_space", use_mock),
+    ):
+        await storage._wait_for_space_ready()
+
+    assert use_mock.await_count == 36
+
+
+@pytest.mark.asyncio
 async def test_wait_for_space_ready_times_out_when_space_not_visible():
     storage = build_storage(workspace="finance")
     storage._schema_retry_times = 2
@@ -541,6 +558,20 @@ async def test_wait_for_schema_ready_times_out_when_schema_not_visible():
     with patch.object(storage, "_execute_in_space", execute_in_space_mock):
         with pytest.raises(TimeoutError, match="schema"):
             await storage._wait_for_schema_ready()
+
+
+@pytest.mark.asyncio
+async def test_wait_for_schema_ready_default_retry_budget_handles_live_cluster_delay():
+    with patch.dict("os.environ", {}, clear=True):
+        storage = build_storage(workspace="finance")
+    storage._schema_retry_delay_ms = 0
+    execute_in_space_mock = AsyncMock(
+        side_effect=[RuntimeError("not ready")] * 42 + [object(), object()]
+    )
+    with patch.object(storage, "_execute_in_space", execute_in_space_mock):
+        await storage._wait_for_schema_ready()
+
+    assert execute_in_space_mock.await_count == 44
 
 
 @pytest.mark.asyncio
@@ -824,6 +855,19 @@ async def test_nebula_delete_node_executes_delete_vertex():
 
 
 @pytest.mark.asyncio
+async def test_nebula_remove_nodes_deletes_each_vertex_with_edges():
+    storage = build_storage(workspace="finance")
+    execute_in_space = AsyncMock(return_value=object())
+    with patch.object(storage, "_execute_in_space", execute_in_space):
+        await storage.remove_nodes(["B", "A", "B"])
+
+    sql_calls = [call.args[0] for call in execute_in_space.await_args_list]
+    assert len(sql_calls) == 2
+    assert any('DELETE VERTEX "A" WITH EDGE;' == sql for sql in sql_calls)
+    assert any('DELETE VERTEX "B" WITH EDGE;' == sql for sql in sql_calls)
+
+
+@pytest.mark.asyncio
 async def test_nebula_remove_edges_canonicalizes_pairs():
     storage = build_storage(workspace="finance")
     execute_in_space = AsyncMock(return_value=object())
@@ -835,6 +879,34 @@ async def test_nebula_remove_edges_canonicalizes_pairs():
     assert any('"C"->"D"' in sql for sql in sql_calls)
     assert not any('"B"->"A"' in sql for sql in sql_calls)
     assert not any('"D"->"C"' in sql for sql in sql_calls)
+
+
+@pytest.mark.asyncio
+async def test_nebula_drop_drops_space_and_resets_state():
+    storage = build_storage(workspace="finance")
+    storage._initialized = True
+    storage._connection_pool = object()
+    execute = AsyncMock(return_value=object())
+
+    async def close_pool():
+        storage._connection_pool = None
+
+    close_connection_pool = AsyncMock(side_effect=close_pool)
+    with (
+        patch.object(storage, "_execute", execute),
+        patch.object(storage, "_close_connection_pool", close_connection_pool),
+    ):
+        result = await storage.drop()
+
+    sql = execute.await_args_list[0].args[0]
+    assert sql == f'DROP SPACE IF EXISTS `{storage._space_name}`;'
+    assert close_connection_pool.await_count == 1
+    assert storage._initialized is False
+    assert storage._connection_pool is None
+    assert result == {
+        "status": "success",
+        "message": f"workspace '{storage._space_name}' dropped",
+    }
 
 
 @pytest.mark.asyncio

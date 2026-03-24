@@ -1,0 +1,231 @@
+{
+  "analysis_period_days": 90,
+  "stats": {
+    "total_commits": 665,
+    "total_authors": 32
+  },
+  "hotspots": [
+    {
+      "path": "scripts/setup/setup.sh",
+      "changes": 132,
+      "risk": "high"
+    },
+    {
+      "path": "tests/test_interactive_setup_outputs.py",
+      "changes": 107,
+      "risk": "high"
+    },
+    {
+      "path": "env.example",
+      "changes": 63,
+      "risk": "high"
+    },
+    {
+      "path": "lightrag_webui/package.json",
+      "changes": 45,
+      "risk": "high"
+    },
+    {
+      "path": "scripts/setup/lib/file_ops.sh",
+      "changes": 45,
+      "risk": "high"
+    },
+    {
+      "path": "lightrag_webui/bun.lock",
+      "changes": 44,
+      "risk": "high"
+    },
+    {
+      "path": "README.md",
+      "changes": 36,
+      "risk": "high"
+    },
+    {
+      "path": "README-zh.md",
+      "changes": 29,
+      "risk": "high"
+    },
+    {
+      "path": "scripts/setup/lib/validation.sh",
+      "changes": 26,
+      "risk": "high"
+    },
+    {
+      "path": "tests/test_nebula_graph_storage.py",
+      "changes": 25,
+      "risk": "high"
+    },
+    {
+      "path": "docs/InteractiveSetup.md",
+      "changes": 21,
+      "risk": "high"
+    },
+    {
+      "path": "lightrag/kg/nebula_impl.py",
+      "changes": 20,
+      "risk": "high"
+    },
+    {
+      "path": "lightrag/lightrag.py",
+      "changes": 20,
+      "risk": "high"
+    },
+    {
+      "path": "lightrag/kg/milvus_impl.py",
+      "changes": 17,
+      "risk": "high"
+    },
+    {
+      "path": "lightrag/kg/postgres_impl.py",
+      "changes": 16,
+      "risk": "high"
+    },
+    {
+      "path": "lightrag/kg/opensearch_impl.py",
+      "changes": 16,
+      "risk": "high"
+    },
+    {
+      "path": "Makefile",
+      "changes": 16,
+      "risk": "high"
+    },
+    {
+      "path": "lightrag/api/routers/document_routes.py",
+      "changes": 15,
+      "risk": "high"
+    },
+    {
+      "path": "lightrag/operate.py",
+      "changes": 15,
+      "risk": "high"
+    },
+    {
+      "path": "docs/DockerDeployment.md",
+      "changes": 15,
+      "risk": "high"
+    }
+  ],
+  "coupling_pairs": [
+    {
+      "file_a": "scripts/setup/setup.sh",
+      "file_b": "tests/test_interactive_setup_outputs.py",
+      "co_changes": 79,
+      "coupling_score": 0.738
+    },
+    {
+      "file_a": "lightrag_webui/bun.lock",
+      "file_b": "lightrag_webui/package.json",
+      "co_changes": 44,
+      "coupling_score": 1.0
+    },
+    {
+      "file_a": "scripts/setup/lib/file_ops.sh",
+      "file_b": "scripts/setup/setup.sh",
+      "co_changes": 33,
+      "coupling_score": 0.733
+    },
+    {
+      "file_a": "scripts/setup/lib/file_ops.sh",
+      "file_b": "tests/test_interactive_setup_outputs.py",
+      "co_changes": 31,
+      "coupling_score": 0.689
+    },
+    {
+      "file_a": "env.example",
+      "file_b": "scripts/setup/setup.sh",
+      "co_changes": 29,
+      "coupling_score": 0.46
+    },
+    {
+      "file_a": "README-zh.md",
+      "file_b": "README.md",
+      "co_changes": 27,
+      "coupling_score": 0.931
+    },
+    {
+      "file_a": "scripts/setup/lib/validation.sh",
+      "file_b": "scripts/setup/setup.sh",
+      "co_changes": 24,
+      "coupling_score": 0.923
+    },
+    {
+      "file_a": "lightrag/kg/nebula_impl.py",
+      "file_b": "tests/test_nebula_graph_storage.py",
+      "co_changes": 20,
+      "coupling_score": 1.0
+    },
+    {
+      "file_a": "scripts/setup/lib/validation.sh",
+      "file_b": "tests/test_interactive_setup_outputs.py",
+      "co_changes": 18,
+      "coupling_score": 0.692
+    },
+    {
+      "file_a": "env.example",
+      "file_b": "tests/test_interactive_setup_outputs.py",
+      "co_changes": 17,
+      "coupling_score": 0.27
+    },
+    {
+      "file_a": "docs/InteractiveSetup.md",
+      "file_b": "scripts/setup/setup.sh",
+      "co_changes": 16,
+      "coupling_score": 0.762
+    },
+    {
+      "file_a": "docs/DockerDeployment.md",
+      "file_b": "scripts/setup/setup.sh",
+      "co_changes": 13,
+      "coupling_score": 0.867
+    },
+    {
+      "file_a": "docs/InteractiveSetup.md",
+      "file_b": "env.example",
+      "co_changes": 13,
+      "coupling_score": 0.619
+    },
+    {
+      "file_a": "env.example",
+      "file_b": "scripts/setup/lib/file_ops.sh",
+      "co_changes": 12,
+      "coupling_score": 0.267
+    },
+    {
+      "file_a": "docs/DockerDeployment.md",
+      "file_b": "docs/InteractiveSetup.md",
+      "co_changes": 12,
+      "coupling_score": 0.8
+    },
+    {
+      "file_a": "docs/InteractiveSetup.md",
+      "file_b": "scripts/setup/lib/file_ops.sh",
+      "co_changes": 11,
+      "coupling_score": 0.524
+    },
+    {
+      "file_a": "scripts/setup/lib/prompts.sh",
+      "file_b": "scripts/setup/setup.sh",
+      "co_changes": 11,
+      "coupling_score": 0.917
+    },
+    {
+      "file_a": "lightrag/kg/opensearch_impl.py",
+      "file_b": "tests/test_opensearch_storage.py",
+      "co_changes": 10,
+      "coupling_score": 0.769
+    },
+    {
+      "file_a": "lightrag/kg/milvus_impl.py",
+      "file_b": "tests/test_milvus_index_config.py",
+      "co_changes": 10,
+      "coupling_score": 0.909
+    },
+    {
+      "file_a": "lightrag/lightrag.py",
+      "file_b": "tests/test_doc_status_chunk_preservation.py",
+      "co_changes": 9,
+      "coupling_score": 1.0
+    }
+  ]
+}

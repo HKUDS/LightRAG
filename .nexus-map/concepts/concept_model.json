@@ -1,0 +1,279 @@
+{
+  "$schema": "nexus-mapper/concept-model/v1",
+  "generated_at": "2026-03-24T13:52:27Z",
+  "repo_path": "/root/project/LightRAG",
+  "generator": "nexus-mapper v2",
+  "nodes": [
+    {
+      "id": "lightrag-core-runtime",
+      "type": "System",
+      "label": "LightRAG Core Runtime",
+      "responsibility": "协调工作目录、文档摄取、查询流程、实体关系抽取与运行时生命周期。",
+      "implementation_status": "implemented",
+      "code_path": "lightrag/",
+      "evidence_path": null,
+      "evidence_gap": null,
+      "tech_stack": ["python", "asyncio"],
+      "related_reqs": [],
+      "complexity": "high",
+      "hotspot": true
+    },
+    {
+      "id": "lightrag-storage-adapters",
+      "type": "System",
+      "label": "Storage Adapters",
+      "responsibility": "提供 KV、向量、图谱与文档状态存储的实现注册、环境契约和后端适配。",
+      "implementation_status": "implemented",
+      "code_path": "lightrag/kg/",
+      "evidence_path": null,
+      "evidence_gap": null,
+      "tech_stack": ["python", "postgres", "neo4j", "milvus", "qdrant", "mongodb", "redis", "opensearch", "nebula", "memgraph"],
+      "related_reqs": [],
+      "complexity": "high",
+      "hotspot": true
+    },
+    {
+      "id": "lightrag-llm-bindings",
+      "type": "System",
+      "label": "LLM and Rerank Bindings",
+      "responsibility": "封装多供应商 LLM、Embedding 与 Rerank 的参数桥接和兼容调用。",
+      "implementation_status": "implemented",
+      "code_path": "lightrag/llm/",
+      "evidence_path": null,
+      "evidence_gap": null,
+      "tech_stack": ["python", "openai", "ollama", "gemini", "bedrock"],
+      "related_reqs": [],
+      "complexity": "medium",
+      "hotspot": false
+    },
+    {
+      "id": "lightrag-api-server",
+      "type": "System",
+      "label": "API Server",
+      "responsibility": "组装 FastAPI 应用、鉴权、路由、服务启动与 WebUI 静态托管。",
+      "implementation_status": "implemented",
+      "code_path": "lightrag/api/",
+      "evidence_path": null,
+      "evidence_gap": null,
+      "tech_stack": ["python", "fastapi", "uvicorn", "gunicorn"],
+      "related_reqs": [],
+      "complexity": "high",
+      "hotspot": true
+    },
+    {
+      "id": "lightrag-webui",
+      "type": "System",
+      "label": "WebUI",
+      "responsibility": "提供文档管理、图谱浏览、检索调试与 API 浏览的前端界面。",
+      "implementation_status": "implemented",
+      "code_path": "lightrag_webui/",
+      "evidence_path": null,
+      "evidence_gap": null,
+      "tech_stack": ["typescript", "react", "vite", "bun"],
+      "related_reqs": [],
+      "complexity": "medium",
+      "hotspot": true
+    },
+    {
+      "id": "lightrag-setup-wizard",
+      "type": "System",
+      "label": "Setup Wizard",
+      "responsibility": "生成环境配置、Compose 输出与部署参数，并引导 host 或 compose 运行目标。",
+      "implementation_status": "implemented",
+      "code_path": "scripts/setup/",
+      "evidence_path": null,
+      "evidence_gap": null,
+      "tech_stack": ["bash", "make", "docker-compose"],
+      "related_reqs": [],
+      "complexity": "high",
+      "hotspot": true
+    },
+    {
+      "id": "lightrag-test-suite",
+      "type": "System",
+      "label": "Test Suite",
+      "responsibility": "为核心运行时、存储后端、API 与配置向导提供离线和集成回归保护。",
+      "implementation_status": "implemented",
+      "code_path": "tests/",
+      "evidence_path": null,
+      "evidence_gap": null,
+      "tech_stack": ["pytest", "bash"],
+      "related_reqs": [],
+      "complexity": "medium",
+      "hotspot": true
+    },
+    {
+      "id": "domain-storage-quartet",
+      "type": "Domain",
+      "label": "Storage Quartet",
+      "responsibility": "将存储能力拆分为 KV、Vector、Graph 与 DocStatus 四个并行契约。",
+      "implementation_status": "implemented",
+      "code_path": "lightrag/kg/",
+      "evidence_path": null,
+      "evidence_gap": null,
+      "tech_stack": ["python"],
+      "related_reqs": [],
+      "complexity": "medium",
+      "hotspot": false
+    },
+    {
+      "id": "domain-query-modes",
+      "type": "Domain",
+      "label": "Query Modes",
+      "responsibility": "定义 local、global、hybrid、naive、mix 与 bypass 等检索查询策略。",
+      "implementation_status": "implemented",
+      "code_path": "lightrag/api/routers/",
+      "evidence_path": null,
+      "evidence_gap": null,
+      "tech_stack": ["python", "fastapi"],
+      "related_reqs": [],
+      "complexity": "medium",
+      "hotspot": false
+    },
+    {
+      "id": "domain-binding-triad",
+      "type": "Domain",
+      "label": "Binding Triad",
+      "responsibility": "用 LLM、Embedding 与 Rerank 三类绑定统一描述模型侧能力接入。",
+      "implementation_status": "implemented",
+      "code_path": "lightrag/llm/",
+      "evidence_path": null,
+      "evidence_gap": null,
+      "tech_stack": ["python"],
+      "related_reqs": [],
+      "complexity": "medium",
+      "hotspot": false
+    },
+    {
+      "id": "domain-workspace-runtime-targets",
+      "type": "Domain",
+      "label": "Workspace and Runtime Targets",
+      "responsibility": "区分数据隔离边界 workspace 与部署边界 LIGHTRAG_RUNTIME_TARGET。",
+      "implementation_status": "implemented",
+      "code_path": "scripts/setup/",
+      "evidence_path": null,
+      "evidence_gap": null,
+      "tech_stack": ["bash", "python"],
+      "related_reqs": [],
+      "complexity": "medium",
+      "hotspot": false
+    }
+  ],
+  "edges": [
+    {
+      "source": "lightrag-storage-adapters",
+      "target": "lightrag-core-runtime",
+      "type": "depends_on",
+      "description": "存储实现通过核心抽象、命名空间和共享工具接入运行时。"
+    },
+    {
+      "source": "lightrag-llm-bindings",
+      "target": "lightrag-core-runtime",
+      "type": "depends_on",
+      "description": "模型绑定复用核心工具与类型，并为运行时提供模型能力。"
+    },
+    {
+      "source": "lightrag-llm-bindings",
+      "target": "lightrag-api-server",
+      "type": "depends_on",
+      "description": "部分 provider 模块读取 lightrag.api.__api_version__，存在轻微反向耦合。"
+    },
+    {
+      "source": "lightrag-api-server",
+      "target": "lightrag-core-runtime",
+      "type": "depends_on",
+      "description": "API 服务实例化 LightRAG 并调用其存储初始化、迁移与查询能力。"
+    },
+    {
+      "source": "lightrag-api-server",
+      "target": "lightrag-storage-adapters",
+      "type": "depends_on",
+      "description": "服务层通过运行时消费多种存储后端与共享存储状态。"
+    },
+    {
+      "source": "lightrag-api-server",
+      "target": "lightrag-llm-bindings",
+      "type": "depends_on",
+      "description": "服务启动根据 binding 选择模型、嵌入与 rerank 实现。"
+    },
+    {
+      "source": "lightrag-webui",
+      "target": "lightrag-api-server",
+      "type": "depends_on",
+      "description": "前端通过 HTTP 调用服务端文档、图谱、检索和状态接口。"
+    },
+    {
+      "source": "lightrag-setup-wizard",
+      "target": "lightrag-api-server",
+      "type": "depends_on",
+      "description": "配置向导输出 .env 与服务参数，决定 API 和 WebUI 的运行方式。"
+    },
+    {
+      "source": "lightrag-setup-wizard",
+      "target": "lightrag-storage-adapters",
+      "type": "depends_on",
+      "description": "配置向导负责生成各类数据库后端的连接配置与 compose 服务。"
+    },
+    {
+      "source": "lightrag-test-suite",
+      "target": "lightrag-core-runtime",
+      "type": "depends_on",
+      "description": "测试覆盖 chunking、抽取、工作区隔离和状态保留等核心能力。"
+    },
+    {
+      "source": "lightrag-test-suite",
+      "target": "lightrag-api-server",
+      "type": "depends_on",
+      "description": "测试覆盖查询接口、鉴权、文档接口与 Ollama 兼容行为。"
+    },
+    {
+      "source": "lightrag-test-suite",
+      "target": "lightrag-storage-adapters",
+      "type": "depends_on",
+      "description": "测试覆盖 Postgres、Milvus、Qdrant、OpenSearch 和 Nebula 等后端。"
+    },
+    {
+      "source": "lightrag-test-suite",
+      "target": "lightrag-setup-wizard",
+      "type": "depends_on",
+      "description": "配置向导输出和运行目标校验均有专门回归测试。"
+    },
+    {
+      "source": "domain-storage-quartet",
+      "target": "lightrag-storage-adapters",
+      "type": "depends_on",
+      "description": "四类存储契约由存储适配层具体实现。"
+    },
+    {
+      "source": "domain-query-modes",
+      "target": "lightrag-api-server",
+      "type": "depends_on",
+      "description": "查询模式首先在 API 请求模型与 QueryParam 中暴露。"
+    },
+    {
+      "source": "domain-binding-triad",
+      "target": "lightrag-llm-bindings",
+      "type": "depends_on",
+      "description": "三类绑定术语由模型绑定层统一承载。"
+    },
+    {
+      "source": "domain-workspace-runtime-targets",
+      "target": "lightrag-core-runtime",
+      "type": "depends_on",
+      "description": "workspace 由运行时数据模型和命名空间实现。"
+    },
+    {
+      "source": "domain-workspace-runtime-targets",
+      "target": "lightrag-setup-wizard",
+      "type": "depends_on",
+      "description": "LIGHTRAG_RUNTIME_TARGET 的 host 或 compose 语义由配置向导固化。"
+    }
+  ],
+  "metadata": {
+    "total_files": 316,
+    "total_lines": 121967,
+    "languages": ["bash", "javascript", "python", "tsx", "typescript"],
+    "git_commits_analyzed": 665,
+    "analysis_days": 90
+  }
+}

@@ -27,6 +27,7 @@ dependencies = [
     "google-genai>=1.0.0,<2.0.0",
     "json_repair",
     "nano-vectordb",
+    "nebula3-python>=3.8.3",
     "networkx",
     "numpy>=1.24.0,<3.0.0",
     "packaging",

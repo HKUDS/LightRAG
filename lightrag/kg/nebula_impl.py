@@ -19,7 +19,8 @@ _MAX_SPACE_NAME_LEN = 127
 _DEFAULT_NEBULA_PORT = 9669
 _DEFAULT_PARTITION_NUM = 10
 _DEFAULT_REPLICA_FACTOR = 1
-_DEFAULT_SCHEMA_RETRY_TIMES = 30
+# Live Nebula clusters can take >10s to surface new spaces/tags to graphd.
+_DEFAULT_SCHEMA_RETRY_TIMES = 60
 _DEFAULT_SCHEMA_RETRY_DELAY_MS = 200
 _INDEX_STATUS_DONE_TOKENS = ("FINISHED", "SUCCEEDED", "SUCCESS", "DONE", "COMPLETED")
 _INDEX_STATUS_PENDING_TOKENS = (
@@ -817,7 +818,25 @@ class NebulaGraphStorage(BaseGraphStorage):
         return None
 
     async def drop(self) -> dict[str, str]:
-        return {"status": "error", "message": "unsupported"}
+        try:
+            if self._connection_pool is None:
+                self._validate_required_env()
+                await self._bootstrap_client()
+
+            await self._execute(f"DROP SPACE IF EXISTS `{self._space_name}`;")
+            return {
+                "status": "success",
+                "message": f"workspace '{self._space_name}' dropped",
+            }
+        except Exception as exc:
+            logger.error(
+                f"[{self.workspace}] Error dropping Nebula space '{self._space_name}': {exc}"
+            )
+            return {"status": "error", "message": str(exc)}
+        finally:
+            self._fulltext_init_error = None
+            self._initialized = False
+            await self._close_connection_pool()
 
     async def has_node(self, node_id: str) -> bool:
         return await self.get_node(node_id) is not None
@@ -1415,7 +1434,13 @@ class NebulaGraphStorage(BaseGraphStorage):
         await self._execute_in_space(f"DELETE VERTEX {_ngql_quote(node_id)} WITH EDGE;")
 
     async def remove_nodes(self, nodes: list[str]):
-        raise NotImplementedError("Nebula I/O is not implemented in this task")
+        unique_nodes = self._unique_preserve_order(
+            [str(node_id) for node_id in nodes if str(node_id)]
+        )
+        for node_id in unique_nodes:
+            await self._execute_in_space(
+                f"DELETE VERTEX {_ngql_quote(node_id)} WITH EDGE;"
+            )
 
     async def remove_edges(self, edges: list[tuple[str, str]]):
         unique_pairs: set[tuple[str, str]] = set()
