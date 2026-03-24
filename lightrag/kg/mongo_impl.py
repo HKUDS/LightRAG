@@ -59,7 +59,7 @@ class ClientManager:
                     "MONGO_DATABASE",
                     config.get("mongodb", "database", fallback="LightRAG"),
                 )
-                client = AsyncMongoClient(uri)
+                client = AsyncMongoClient(uri, driver=DriverInfo(name="LightRAG"))
                 db = client.get_database(database_name)
                 cls._instances["db"] = db
                 cls._instances["ref_count"] = 0
