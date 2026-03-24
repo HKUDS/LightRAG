@@ -1848,7 +1848,10 @@ async def pipeline_index_texts(
             )
 
     await rag.apipeline_enqueue_documents(
-        input=texts, file_paths=normalized_file_sources, track_id=track_id, metadata=metadata
+        input=texts,
+        file_paths=normalized_file_sources,
+        track_id=track_id,
+        metadata=metadata,
     )
     await rag.apipeline_process_enqueue_documents()
 

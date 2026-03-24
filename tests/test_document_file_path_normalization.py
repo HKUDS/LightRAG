@@ -17,7 +17,9 @@ class DummyRAG:
         self.enqueued_calls = []
         self.processed = False
 
-    async def apipeline_enqueue_documents(self, input, file_paths=None, track_id=None):
+    async def apipeline_enqueue_documents(
+        self, input, file_paths=None, track_id=None, metadata=None
+    ):
         self.enqueued_calls.append(
             {"input": input, "file_paths": file_paths, "track_id": track_id}
         )

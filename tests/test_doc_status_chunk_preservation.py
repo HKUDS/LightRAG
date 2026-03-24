@@ -263,7 +263,12 @@ async def test_validate_and_fix_consistency_preserves_chunks_on_reset(tmp_path):
                     "file_path": "failed.txt",
                     "track_id": "track-1",
                     "error_msg": "old error",
-                    "metadata": {"old": True},
+                    "metadata": {
+                        "old": True,
+                        "processing_start_time": 123,
+                        "processing_end_time": 456,
+                        "error_type": "file_extraction_error",
+                    },
                 },
                 processing_doc_id: {
                     "status": DocStatus.PROCESSING,
@@ -276,7 +281,10 @@ async def test_validate_and_fix_consistency_preserves_chunks_on_reset(tmp_path):
                     "file_path": "processing.txt",
                     "track_id": "track-2",
                     "error_msg": "old error",
-                    "metadata": {"old": True},
+                    "metadata": {
+                        "old": True,
+                        "processing_start_time": 999,
+                    },
                 },
                 inferred_count_doc_id: {
                     "status": DocStatus.FAILED,
@@ -288,7 +296,10 @@ async def test_validate_and_fix_consistency_preserves_chunks_on_reset(tmp_path):
                     "file_path": "inferred.txt",
                     "track_id": "track-3",
                     "error_msg": "old error",
-                    "metadata": {"old": True},
+                    "metadata": {
+                        "old": True,
+                        "processing_end_time": 777,
+                    },
                 },
             }
         )
@@ -309,17 +320,20 @@ async def test_validate_and_fix_consistency_preserves_chunks_on_reset(tmp_path):
         assert _status_to_text(failed_reset["status"]) == "pending"
         assert failed_reset.get("chunks_list") == ["f-1", "f-2"]
         assert failed_reset.get("chunks_count") == 2
+        assert failed_reset.get("metadata") == {"old": True}
 
         processing_reset = await rag.doc_status.get_by_id(processing_doc_id)
         assert processing_reset is not None
         assert _status_to_text(processing_reset["status"]) == "pending"
         assert processing_reset.get("chunks_list") == ["p-1"]
         assert processing_reset.get("chunks_count") == 1
+        assert processing_reset.get("metadata") == {"old": True}
 
         inferred_count_reset = await rag.doc_status.get_by_id(inferred_count_doc_id)
         assert inferred_count_reset is not None
         assert _status_to_text(inferred_count_reset["status"]) == "pending"
         assert inferred_count_reset.get("chunks_list") == ["i-1", "i-2", "i-3"]
         assert inferred_count_reset.get("chunks_count") == 3
+        assert inferred_count_reset.get("metadata") == {"old": True}
     finally:
         await rag.finalize_storages()
