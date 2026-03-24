@@ -685,6 +685,7 @@ def create_app(args):
         provider_func = None
         provider_max_token_size = None
         provider_embedding_dim = None
+        provider_supports_asymmetric = False
 
         try:
             if binding == "openai":
@@ -720,10 +721,12 @@ def create_app(args):
             if provider_func and isinstance(provider_func, EmbeddingFunc):
                 provider_max_token_size = provider_func.max_token_size
                 provider_embedding_dim = provider_func.embedding_dim
+                provider_supports_asymmetric = provider_func.supports_asymmetric
                 logger.debug(
                     f"Extracted from {binding} provider: "
                     f"max_token_size={provider_max_token_size}, "
-                    f"embedding_dim={provider_embedding_dim}"
+                    f"embedding_dim={provider_embedding_dim}, "
+                    f"supports_asymmetric={provider_supports_asymmetric}"
                 )
         except ImportError as e:
             logger.warning(f"Could not import provider function for {binding}: {e}")
@@ -736,10 +739,17 @@ def create_app(args):
         final_embedding_dim = (
             args.embedding_dim if args.embedding_dim else provider_embedding_dim
         )
+        # Backward compatibility: context-aware behavior is disabled by default
+        # It is enabled when EMBEDDING_ASYMMETRIC=true or when prefixes are used
+        asymmetric_opt_in = args.embedding_asymmetric or bool(
+            query_prefix or document_prefix
+        )
 
         # Step 3: Create optimized embedding function (calls underlying function directly)
         # Note: When model is None, each binding will use its own default model
-        async def optimized_embedding_function(texts, embedding_dim=None):
+        async def optimized_embedding_function(
+            texts, embedding_dim=None, context="document"
+        ):
             try:
                 if binding == "lollms":
                     from lightrag.llm.lollms import lollms_embed
@@ -778,6 +788,12 @@ def create_app(args):
                         "api_key": api_key,
                         "options": ollama_options,
                     }
+                    if provider_supports_asymmetric and asymmetric_opt_in:
+                        kwargs["context"] = context
+                    if query_prefix:
+                        kwargs["query_prefix"] = query_prefix
+                    if document_prefix:
+                        kwargs["document_prefix"] = document_prefix
                     if model:
                         kwargs["embed_model"] = model
                     return await actual_func(**kwargs)
@@ -797,6 +813,12 @@ def create_app(args):
                     }
                     if model:
                         kwargs["model"] = model
+                    if provider_supports_asymmetric and asymmetric_opt_in:
+                        kwargs["context"] = context
+                    if query_prefix:
+                        kwargs["query_prefix"] = query_prefix
+                    if document_prefix:
+                        kwargs["document_prefix"] = document_prefix
                     return await actual_func(**kwargs)
                 elif binding == "aws_bedrock":
                     from lightrag.llm.bedrock import bedrock_embed
@@ -828,8 +850,8 @@ def create_app(args):
                     }
                     if model:
                         kwargs["model"] = model
-                    # Jina supports context via task parameter (handled internally by jina_embed)
-                    # The function will receive context from EmbeddingFunc wrapper
+                    if provider_supports_asymmetric and asymmetric_opt_in:
+                        kwargs["context"] = context
                     return await actual_func(**kwargs)
                 elif binding == "gemini":
                     from lightrag.llm.gemini import gemini_embed
@@ -854,12 +876,14 @@ def create_app(args):
                         "base_url": host,
                         "api_key": api_key,
                         "embedding_dim": embedding_dim,
-                        "task_type": gemini_options.get(
-                            "task_type", "RETRIEVAL_DOCUMENT"
-                        ),
                     }
                     if model:
                         kwargs["model"] = model
+                    task_type = gemini_options.get("task_type")
+                    if task_type is not None:
+                        kwargs["task_type"] = task_type
+                    if provider_supports_asymmetric and asymmetric_opt_in:
+                        kwargs["context"] = context
                     return await actual_func(**kwargs)
                 else:  # openai and compatible
                     from lightrag.llm.openai import openai_embed
@@ -878,7 +902,8 @@ def create_app(args):
                     }
                     if model:
                         kwargs["model"] = model
-                    # OpenAI supports explicit prefix parameters
+                    if provider_supports_asymmetric and asymmetric_opt_in:
+                        kwargs["context"] = context
                     if query_prefix:
                         kwargs["query_prefix"] = query_prefix
                     if document_prefix:
@@ -894,6 +919,7 @@ def create_app(args):
             max_token_size=final_max_token_size,
             send_dimensions=False,  # Will be set later based on binding requirements
             model_name=model,
+            supports_asymmetric=provider_supports_asymmetric and asymmetric_opt_in,
         )
 
         # Log final embedding configuration

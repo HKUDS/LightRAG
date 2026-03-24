@@ -726,7 +726,7 @@ async def nvidia_openai_complete(
     embedding_dim=1536,
     max_token_size=8192,
     model_name="text-embedding-3-small",
-    supports_context=True,
+    supports_asymmetric=True,
 )
 @retry(
     stop=stop_after_attempt(3),
@@ -791,7 +791,7 @@ async def openai_embed(
             environment variable.
         context: The embedding context - "query" for search queries, "document" for indexed content.
             **IMPORTANT**: This parameter is automatically injected by the EmbeddingFunc wrapper
-            when supports_context=True. Default is "document".
+            when supports_asymmetric=True. Default is "document".
         query_prefix: Optional prefix to prepend to texts when context="query" (e.g., "search_query: ").
         document_prefix: Optional prefix to prepend to texts when context="document" (e.g., "search_document: ").
 
@@ -973,6 +973,7 @@ async def azure_openai_complete(
     embedding_dim=1536,
     max_token_size=8192,
     model_name="my-text-embedding-3-large-deployment",
+    supports_asymmetric=True,
 )
 async def azure_openai_embed(
     texts: list[str],
@@ -983,6 +984,9 @@ async def azure_openai_embed(
     token_tracker: Any | None = None,
     client_configs: dict[str, Any] | None = None,
     api_version: str | None = None,
+    context: str = "document",
+    query_prefix: str | None = None,
+    document_prefix: str | None = None,
 ) -> np.ndarray:
     """Azure OpenAI embedding wrapper function.
 
@@ -1058,4 +1062,7 @@ async def azure_openai_embed(
         use_azure=True,
         azure_deployment=deployment,
         api_version=api_version,
+        context=context,
+        query_prefix=query_prefix,
+        document_prefix=document_prefix,
     )

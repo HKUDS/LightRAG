@@ -176,7 +176,7 @@ async def ollama_model_complete(
     embedding_dim=1024,
     max_token_size=8192,
     model_name="bge-m3:latest",
-    supports_context=True,
+    supports_asymmetric=True,
 )
 async def ollama_embed(
     texts: list[str],
@@ -199,7 +199,7 @@ async def ollama_embed(
             (num_ctx), so no client-side truncation is needed.
         context: The embedding context - "query" for search queries, "document" for indexed content.
             **IMPORTANT**: This parameter is automatically injected by the EmbeddingFunc wrapper
-            when supports_context=True. Default is "document".
+            when supports_asymmetric=True. Default is "document".
         query_prefix: Optional prefix to prepend to texts when context="query" (e.g., "search_query: ").
         document_prefix: Optional prefix to prepend to texts when context="document" (e.g., "search_document: ").
         **kwargs: Additional arguments passed to the Ollama client.

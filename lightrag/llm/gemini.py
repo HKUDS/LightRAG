@@ -465,7 +465,7 @@ async def gemini_model_complete(
     embedding_dim=1536,
     max_token_size=2048,
     model_name="gemini-embedding-001",
-    supports_context=True,
+    supports_asymmetric=True,
 )
 @retry(
     stop=stop_after_attempt(3),
@@ -523,7 +523,7 @@ async def gemini_embed(
         token_tracker: Optional token usage tracker for monitoring API usage.
         context: The embedding context - "query" for search queries, "document" for indexed content.
             **IMPORTANT**: This parameter is automatically injected by the EmbeddingFunc wrapper
-            when supports_context=True. Default is "document".
+            when supports_asymmetric=True. Default is "document".
 
     Returns:
         A numpy array of embeddings, one per input text. For dimensions < 3072,
