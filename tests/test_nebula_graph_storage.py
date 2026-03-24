@@ -479,8 +479,10 @@ async def test_nebula_edge_reads_are_undirected():
             object(),
             [
                 {
-                    "source_id": "A",
-                    "target_id": "B",
+                    "source": "A",
+                    "target": "B",
+                    "source_id": "chunk-1<SEP>chunk-2",
+                    "target_id": "meta-target",
                     "relationship": "rel",
                     "description": "d",
                     "weight": 1.0,
@@ -488,8 +490,10 @@ async def test_nebula_edge_reads_are_undirected():
             ],
             [
                 {
-                    "source_id": "A",
-                    "target_id": "B",
+                    "source": "A",
+                    "target": "B",
+                    "source_id": "chunk-1<SEP>chunk-2",
+                    "target_id": "meta-target",
                     "relationship": "rel",
                     "description": "d",
                     "weight": 1.0,
@@ -527,8 +531,10 @@ async def test_nebula_upsert_edge_forces_canonical_source_target_properties():
             object(),
             [
                 {
-                    "source_id": "A",
-                    "target_id": "B",
+                    "source": "A",
+                    "target": "B",
+                    "source_id": "chunk1<SEP>chunk2",
+                    "target_id": "meta-target",
                     "relationship": "rel",
                     "description": "d",
                     "weight": 1.0,
@@ -541,8 +547,8 @@ async def test_nebula_upsert_edge_forces_canonical_source_target_properties():
             "B",
             "A",
             {
-                "source_id": "B",
-                "target_id": "A",
+                "source_id": "chunk1<SEP>chunk2",
+                "target_id": "meta-target",
                 "relationship": "rel",
                 "description": "d",
                 "weight": 1.0,
@@ -551,10 +557,15 @@ async def test_nebula_upsert_edge_forces_canonical_source_target_properties():
         edge = await storage.get_edge("A", "B")
 
     assert edge is not None
-    assert edge["source_id"] == "A"
-    assert edge["target_id"] == "B"
+    assert edge["source"] == "A"
+    assert edge["target"] == "B"
+    assert edge["source_id"] == "chunk1<SEP>chunk2"
+    assert edge["target_id"] == "meta-target"
     upsert_sql = execute_in_space.await_args_list[0].args[0]
-    assert 'VALUES "A"->"B":("A", "B"' in upsert_sql
+    assert 'VALUES "A"->"B":("chunk1<SEP>chunk2", "meta-target"' in upsert_sql
+    fetch_sql = execute_in_space.await_args_list[1].args[0]
+    assert "src(edge) AS source" in fetch_sql
+    assert "dst(edge) AS target" in fetch_sql
 
 
 @pytest.mark.asyncio
@@ -638,9 +649,9 @@ async def test_nebula_node_degrees_batch_aggregates_with_single_query():
     storage = build_storage(workspace="finance")
     execute_in_space = AsyncMock(
         return_value=[
-            {"source_id": "A", "target_id": "B"},
-            {"source_id": "C", "target_id": "A"},
-            {"source_id": "B", "target_id": "C"},
+            {"source": "A", "target": "B"},
+            {"source": "C", "target": "A"},
+            {"source": "B", "target": "C"},
         ]
     )
     with patch.object(storage, "_execute_in_space", execute_in_space):
@@ -650,8 +661,8 @@ async def test_nebula_node_degrees_batch_aggregates_with_single_query():
     assert execute_in_space.await_count == 1
     sql = execute_in_space.await_args_list[0].args[0]
     assert "LOOKUP ON relation" in sql
-    assert "relation.source_id" in sql
-    assert "relation.target_id" in sql
+    assert "src(edge) AS source" in sql
+    assert "dst(edge) AS target" in sql
 
 
 @pytest.mark.asyncio
@@ -660,6 +671,8 @@ async def test_nebula_get_edges_batch_uses_canonical_pairs_and_preserves_keys():
     execute_in_space = AsyncMock(
         return_value=[
             {
+                "source": "A",
+                "target": "B",
                 "source_id": "A",
                 "target_id": "B",
                 "relationship": "rel-ab",
@@ -678,6 +691,8 @@ async def test_nebula_get_edges_batch_uses_canonical_pairs_and_preserves_keys():
 
     assert edges == {
         ("B", "A"): {
+            "source": "A",
+            "target": "B",
             "source_id": "A",
             "target_id": "B",
             "relationship": "rel-ab",
@@ -685,6 +700,8 @@ async def test_nebula_get_edges_batch_uses_canonical_pairs_and_preserves_keys():
             "weight": 2.5,
         },
         ("A", "B"): {
+            "source": "A",
+            "target": "B",
             "source_id": "A",
             "target_id": "B",
             "relationship": "rel-ab",
@@ -695,9 +712,9 @@ async def test_nebula_get_edges_batch_uses_canonical_pairs_and_preserves_keys():
     assert execute_in_space.await_count == 1
     sql = execute_in_space.await_args_list[0].args[0]
     assert "LOOKUP ON relation" in sql
-    assert 'relation.source_id == "A"' in sql
-    assert 'relation.target_id == "B"' in sql
-    assert '"B"' not in sql or 'relation.source_id == "B" AND relation.target_id == "A"' not in sql
+    assert 'src(edge) == "A"' in sql
+    assert 'dst(edge) == "B"' in sql
+    assert 'src(edge) == "B" AND dst(edge) == "A"' not in sql
 
 
 @pytest.mark.asyncio
@@ -705,8 +722,8 @@ async def test_nebula_get_nodes_edges_batch_returns_adjacency_mapping():
     storage = build_storage(workspace="finance")
     execute_in_space = AsyncMock(
         return_value=[
-            {"source_id": "A", "target_id": "B"},
-            {"source_id": "C", "target_id": "A"},
+            {"source": "A", "target": "B"},
+            {"source": "C", "target": "A"},
         ]
     )
     with patch.object(storage, "_execute_in_space", execute_in_space):
@@ -720,6 +737,31 @@ async def test_nebula_get_nodes_edges_batch_returns_adjacency_mapping():
     assert execute_in_space.await_count == 1
     sql = execute_in_space.await_args_list[0].args[0]
     assert "LOOKUP ON relation" in sql
+    assert "src(edge) AS source" in sql
+    assert "dst(edge) AS target" in sql
+
+
+@pytest.mark.asyncio
+async def test_nebula_get_node_edges_returns_none_when_node_missing():
+    storage = build_storage(workspace="finance")
+    with patch.object(storage, "get_node", AsyncMock(return_value=None)):
+        edges = await storage.get_node_edges("missing")
+    assert edges is None
+
+
+@pytest.mark.asyncio
+async def test_nebula_get_node_edges_returns_edges_for_existing_node():
+    storage = build_storage(workspace="finance")
+    with (
+        patch.object(storage, "get_node", AsyncMock(return_value={"entity_id": "A"})),
+        patch.object(
+            storage,
+            "get_nodes_edges_batch",
+            AsyncMock(return_value={"A": [("A", "B"), ("C", "A")]}),
+        ),
+    ):
+        edges = await storage.get_node_edges("A")
+    assert edges == [("A", "B"), ("C", "A")]
 
 
 @pytest.mark.asyncio
@@ -799,8 +841,10 @@ async def test_nebula_get_all_edges_returns_relation_properties():
     execute_in_space = AsyncMock(
         return_value=[
             {
-                "source_id": "A",
-                "target_id": "B",
+                "source": "A",
+                "target": "B",
+                "source_id": "chunk1<SEP>chunk2",
+                "target_id": "meta-target",
                 "relationship": "rel-ab",
                 "description": "desc",
                 "weight": 3.0,
@@ -812,8 +856,8 @@ async def test_nebula_get_all_edges_returns_relation_properties():
 
     assert edges == [
         {
-            "source_id": "A",
-            "target_id": "B",
+            "source_id": "chunk1<SEP>chunk2",
+            "target_id": "meta-target",
             "relationship": "rel-ab",
             "description": "desc",
             "weight": 3.0,
@@ -831,10 +875,10 @@ async def test_nebula_get_popular_labels_orders_by_degree_desc():
     storage = build_storage(workspace="finance")
     execute_in_space = AsyncMock(
         return_value=[
-            {"source_id": "A", "target_id": "B"},
-            {"source_id": "A", "target_id": "C"},
-            {"source_id": "B", "target_id": "C"},
-            {"source_id": "B", "target_id": "D"},
+            {"source": "A", "target": "B"},
+            {"source": "A", "target": "C"},
+            {"source": "B", "target": "C"},
+            {"source": "B", "target": "D"},
         ]
     )
     with patch.object(storage, "_execute_in_space", execute_in_space):
@@ -844,3 +888,5 @@ async def test_nebula_get_popular_labels_orders_by_degree_desc():
     assert execute_in_space.await_count == 1
     sql = execute_in_space.await_args_list[0].args[0]
     assert "LOOKUP ON relation" in sql
+    assert "src(edge) AS source" in sql
+    assert "dst(edge) AS target" in sql

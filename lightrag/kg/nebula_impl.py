@@ -666,9 +666,7 @@ class NebulaGraphStorage(BaseGraphStorage):
         conditions: list[str] = []
         for node_id in node_ids:
             literal = _ngql_literal(node_id)
-            conditions.append(
-                f"(relation.source_id == {literal} OR relation.target_id == {literal})"
-            )
+            conditions.append(f"(src(edge) == {literal} OR dst(edge) == {literal})")
         return " OR ".join(conditions)
 
     @staticmethod
@@ -729,6 +727,8 @@ class NebulaGraphStorage(BaseGraphStorage):
             "FETCH PROP ON relation "
             f"{_ngql_quote(src_id)}->{_ngql_quote(tgt_id)} "
             "YIELD "
+            "src(edge) AS source, "
+            "dst(edge) AS target, "
             "properties(edge).source_id AS source_id, "
             "properties(edge).target_id AS target_id, "
             "properties(edge).relationship AS relationship, "
@@ -738,7 +738,14 @@ class NebulaGraphStorage(BaseGraphStorage):
         row = _first_row(result)
         if row is None:
             return None
-        return self._extract_edge_props(row)
+        output = self._extract_edge_props(row)
+        source = row.get("source")
+        target = row.get("target")
+        if source is not None:
+            output["source"] = str(source)
+        if target is not None:
+            output["target"] = str(target)
+        return output
 
     async def get_nodes_batch(self, node_ids: list[str]) -> dict[str, dict]:
         requested_ids = [str(node_id) for node_id in node_ids]
@@ -791,14 +798,14 @@ class NebulaGraphStorage(BaseGraphStorage):
             "LOOKUP ON relation "
             f"WHERE {where_clause} "
             "YIELD "
-            "relation.source_id AS source_id, "
-            "relation.target_id AS target_id;"
+            "src(edge) AS source, "
+            "dst(edge) AS target;"
         )
         rows = _result_to_rows(result)
         requested_set = set(output)
         for row in rows:
-            src = row.get("source_id")
-            tgt = row.get("target_id")
+            src = row.get("source")
+            tgt = row.get("target")
             if src is not None:
                 src_id = str(src)
                 if src_id in requested_set:
@@ -833,8 +840,8 @@ class NebulaGraphStorage(BaseGraphStorage):
             src_id, tgt_id = packed.split("\x00", 1)
             conditions.append(
                 "("
-                f"relation.source_id == {_ngql_literal(src_id)} AND "
-                f"relation.target_id == {_ngql_literal(tgt_id)}"
+                f"src(edge) == {_ngql_literal(src_id)} AND "
+                f"dst(edge) == {_ngql_literal(tgt_id)}"
                 ")"
             )
         where_clause = " OR ".join(conditions)
@@ -843,6 +850,8 @@ class NebulaGraphStorage(BaseGraphStorage):
             "LOOKUP ON relation "
             f"WHERE {where_clause} "
             "YIELD "
+            "src(edge) AS source, "
+            "dst(edge) AS target, "
             "relation.source_id AS source_id, "
             "relation.target_id AS target_id, "
             "relation.relationship AS relationship, "
@@ -853,12 +862,15 @@ class NebulaGraphStorage(BaseGraphStorage):
 
         by_canonical: dict[tuple[str, str], dict[str, Any]] = {}
         for row in rows:
-            src = row.get("source_id")
-            tgt = row.get("target_id")
+            src = row.get("source")
+            tgt = row.get("target")
             if src is None or tgt is None:
                 continue
             canonical = _canonical_edge_pair(str(src), str(tgt))
-            by_canonical[canonical] = self._extract_edge_props(row)
+            props = self._extract_edge_props(row)
+            props["source"] = str(src)
+            props["target"] = str(tgt)
+            by_canonical[canonical] = props
 
         output: dict[tuple[str, str], dict] = {}
         for canonical, request_keys in canonical_to_requested.items():
@@ -892,14 +904,14 @@ class NebulaGraphStorage(BaseGraphStorage):
             "LOOKUP ON relation "
             f"WHERE {where_clause} "
             "YIELD "
-            "relation.source_id AS source_id, "
-            "relation.target_id AS target_id;"
+            "src(edge) AS source, "
+            "dst(edge) AS target;"
         )
         rows = _result_to_rows(result)
         requested_set = set(output)
         for row in rows:
-            src = row.get("source_id")
-            tgt = row.get("target_id")
+            src = row.get("source")
+            tgt = row.get("target")
             if src is None or tgt is None:
                 continue
             src_id = str(src)
@@ -936,8 +948,8 @@ class NebulaGraphStorage(BaseGraphStorage):
         self, source_node_id: str, target_node_id: str, edge_data: dict[str, str]
     ) -> None:
         src_id, tgt_id = _canonical_edge_pair(source_node_id, target_node_id)
-        source_id = src_id
-        target_id = tgt_id
+        source_id = str(edge_data.get("source_id", ""))
+        target_id = str(edge_data.get("target_id", ""))
         relationship = str(edge_data.get("relationship", ""))
         description = str(edge_data.get("description", ""))
         weight = _coerce_edge_weight(edge_data.get("weight"))
@@ -1010,6 +1022,8 @@ class NebulaGraphStorage(BaseGraphStorage):
         result = await self._execute_in_space(
             "LOOKUP ON relation "
             "YIELD "
+            "src(edge) AS source, "
+            "dst(edge) AS target, "
             "relation.source_id AS source_id, "
             "relation.target_id AS target_id, "
             "relation.relationship AS relationship, "
@@ -1020,17 +1034,17 @@ class NebulaGraphStorage(BaseGraphStorage):
         output: list[dict] = []
         for row in rows:
             edge = self._extract_edge_props(row)
-            source_id = edge.get("source_id")
-            target_id = edge.get("target_id")
-            if source_id is None or target_id is None:
+            source = row.get("source")
+            target = row.get("target")
+            if source is None or target is None:
                 continue
-            edge["source"] = str(source_id)
-            edge["target"] = str(target_id)
+            edge["source"] = str(source)
+            edge["target"] = str(target)
             output.append(edge)
         output.sort(
             key=lambda item: (
-                str(item.get("source_id", "")),
-                str(item.get("target_id", "")),
+                str(item.get("source", "")),
+                str(item.get("target", "")),
                 str(item.get("relationship", "")),
             )
         )
@@ -1042,14 +1056,14 @@ class NebulaGraphStorage(BaseGraphStorage):
         result = await self._execute_in_space(
             "LOOKUP ON relation "
             "YIELD "
-            "relation.source_id AS source_id, "
-            "relation.target_id AS target_id;"
+            "src(edge) AS source, "
+            "dst(edge) AS target;"
         )
         rows = _result_to_rows(result)
         degrees: dict[str, int] = {}
         for row in rows:
-            source_id = row.get("source_id")
-            target_id = row.get("target_id")
+            source_id = row.get("source")
+            target_id = row.get("target")
             if source_id is not None:
                 src = str(source_id)
                 degrees[src] = degrees.get(src, 0) + 1
