@@ -348,7 +348,7 @@ A full list of LightRAG init parameters:
 | **workspace** | str | Workspace name for data isolation between different LightRAG Instances | |
 | **kv_storage** | `str` | Storage type for documents and text chunks. Supported types: `JsonKVStorage`,`PGKVStorage`,`RedisKVStorage`,`MongoKVStorage`,`OpenSearchKVStorage` | `JsonKVStorage` |
 | **vector_storage** | `str` | Storage type for embedding vectors. Supported types: `NanoVectorDBStorage`,`PGVectorStorage`,`MilvusVectorDBStorage`,`ChromaVectorDBStorage`,`FaissVectorDBStorage`,`MongoVectorDBStorage`,`QdrantVectorDBStorage`,`OpenSearchVectorDBStorage` | `NanoVectorDBStorage` |
-| **graph_storage** | `str` | Storage type for graph edges and nodes. Supported types: `NetworkXStorage`,`Neo4JStorage`,`PGGraphStorage`,`AGEStorage`,`OpenSearchGraphStorage` | `NetworkXStorage` |
+| **graph_storage** | `str` | Storage type for graph edges and nodes. Supported types: `NetworkXStorage`,`Neo4JStorage`,`PGGraphStorage`,`AGEStorage`,`MemgraphStorage`,`NebulaGraphStorage`,`OpenSearchGraphStorage` | `NetworkXStorage` |
 | **doc_status_storage** | `str` | Storage type for documents process status. Supported types: `JsonDocStatusStorage`,`PGDocStatusStorage`,`MongoDocStatusStorage`,`OpenSearchDocStatusStorage` | `JsonDocStatusStorage` |
 | **chunk_token_size** | `int` | Maximum token size per chunk when splitting documents | `1200` |
 | **chunk_overlap_token_size** | `int` | Overlap token size between two chunks when splitting documents | `100` |
@@ -956,6 +956,7 @@ Neo4JStorage             Neo4J
 PGGraphStorage           PostgreSQL with AGE plugin
 MemgraphStorage          Memgraph
 OpenSearchGraphStorage   OpenSearch
+NebulaGraphStorage       NebulaGraph
 ```
 
 > Testing has shown that Neo4J delivers superior performance in production environments compared to PostgreSQL with AGE plugin.
@@ -1270,6 +1271,28 @@ When the interactive setup manages a local Redis container, it stages a user-edi
 </details>
 
 <details>
+<summary> <b>Using NebulaGraph Storage</b> </summary>
+
+NebulaGraph can be used as the `GRAPH_STORAGE` backend through `NebulaGraphStorage`.
+
+* **Required env vars**: `LIGHTRAG_GRAPH_STORAGE=NebulaGraphStorage`, `NEBULA_HOSTS`, `NEBULA_USER`, `NEBULA_PASSWORD`.
+* **Workspace mapping**: each LightRAG `workspace` maps to a dedicated NebulaGraph `SPACE` (space-per-workspace isolation).
+* **Full-text note**: high-quality `search_labels` depends on NebulaGraph full-text search backed by **Elasticsearch + Listener**. If Elasticsearch/Listener is unavailable, LightRAG falls back to a degraded contains-based path.
+
+```python
+rag = LightRAG(
+    working_dir=WORKING_DIR,
+    llm_model_func=your_llm_func,
+    embedding_func=your_embed_func,
+    graph_storage="NebulaGraphStorage",
+)
+```
+
+Example script: `examples/lightrag_openai_nebula_demo.py`.
+
+</details>
+
+<details>
 <summary> <b>Using OpenSearch Storage</b> </summary>
 
 OpenSearch provides a unified storage solution for all four LightRAG storage types (KV, Vector, Graph, DocStatus). It offers native k-NN vector search, full-text search, and horizontal scalability — all without cloud-only restrictions.
@@ -1391,9 +1414,10 @@ The `workspace` parameter ensures data isolation between different LightRAG inst
 - **For Qdrant vector database, data isolation is achieved through payload-based partitioning (Qdrant's recommended multitenancy approach):** `QdrantVectorDBStorage` uses shared collections with payload filtering for unlimited workspace scalability.
 - **For relational databases, data isolation is achieved by adding a `workspace` field to the tables for logical data separation:** `PGKVStorage`, `PGVectorStorage`, `PGDocStatusStorage`.
 - **For the Neo4j graph database, logical data isolation is achieved through labels:** `Neo4JStorage`
+- **For NebulaGraph, logical data isolation is achieved by mapping each workspace to a dedicated Nebula `SPACE`:** `NebulaGraphStorage`
 - **For OpenSearch, data isolation is achieved through index name prefixes:** `OpenSearchKVStorage`, `OpenSearchDocStatusStorage`, `OpenSearchGraphStorage`, `OpenSearchVectorDBStorage`
 
-To maintain compatibility with legacy data, the default workspace for PostgreSQL non-graph storage is `default` and, for PostgreSQL AGE graph storage is null, for Neo4j graph storage is `base` when no workspace is configured. For all external storages, the system provides dedicated workspace environment variables to override the common `WORKSPACE` environment variable configuration. These storage-specific workspace environment variables are: `REDIS_WORKSPACE`, `MILVUS_WORKSPACE`, `QDRANT_WORKSPACE`, `MONGODB_WORKSPACE`, `POSTGRES_WORKSPACE`, `NEO4J_WORKSPACE`, `OPENSEARCH_WORKSPACE`.
+To maintain compatibility with legacy data, the default workspace for PostgreSQL non-graph storage is `default` and, for PostgreSQL AGE graph storage is null, for Neo4j graph storage is `base` when no workspace is configured. For all external storages, the system provides dedicated workspace environment variables to override the common `WORKSPACE` environment variable configuration. These storage-specific workspace environment variables are: `REDIS_WORKSPACE`, `MILVUS_WORKSPACE`, `QDRANT_WORKSPACE`, `MONGODB_WORKSPACE`, `POSTGRES_WORKSPACE`, `NEO4J_WORKSPACE`, `NEBULA_WORKSPACE`, `OPENSEARCH_WORKSPACE`.
 
 **Usage Example:**
 For a practical demonstration of managing multiple isolated knowledge bases (e.g., separating "Book" content from "HR Policies") within a single application, refer to the [Workspace Demo](examples/lightrag_gemini_workspace_demo.py).

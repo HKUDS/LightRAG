@@ -1,5 +1,6 @@
 import re
 import asyncio
+from pathlib import Path
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
@@ -20,6 +21,9 @@ from lightrag.kg.nebula_impl import (
     NebulaGraphStorage,
 )
 from lightrag.types import KnowledgeGraph
+
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def build_storage(workspace: str | None = "finance") -> NebulaGraphStorage:
@@ -49,6 +53,28 @@ def test_nebula_graph_storage_env_requirements():
 
 def test_nebula_graph_storage_verify_compatibility():
     verify_storage_implementation("GRAPH_STORAGE", "NebulaGraphStorage")
+
+
+def test_nebula_env_example_documents_required_keys():
+    content = (REPO_ROOT / "env.example").read_text(encoding="utf-8")
+
+    assert "LIGHTRAG_GRAPH_STORAGE=NebulaGraphStorage" in content
+    assert "NEBULA_HOSTS" in content
+    assert "NEBULA_USER" in content
+    assert "NEBULA_PASSWORD" in content
+
+
+def test_nebula_readme_documents_manual_configuration_flow():
+    readme_en = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    readme_zh = (REPO_ROOT / "README-zh.md").read_text(encoding="utf-8")
+
+    for content in (readme_en, readme_zh):
+        assert "NebulaGraphStorage" in content
+        assert "NEBULA_HOSTS" in content
+        assert "search_labels" in content
+        assert "Elasticsearch" in content
+        assert "Listener" in content
+        assert re.search(r"workspace.{0,160}space|space.{0,160}workspace", content, re.IGNORECASE | re.DOTALL)
 
 
 def test_normalize_space_name_uses_prefix_and_workspace():

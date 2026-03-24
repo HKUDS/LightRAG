@@ -348,7 +348,7 @@ if __name__ == "__main__":
 | **workspace** | str | 用于不同 LightRAG 实例之间数据隔离的工作区名称 | |
 | **kv_storage** | `str` | Storage type for documents and text chunks. Supported types: `JsonKVStorage`,`PGKVStorage`,`RedisKVStorage`,`MongoKVStorage`,`OpenSearchKVStorage` | `JsonKVStorage` |
 | **vector_storage** | `str` | Storage type for embedding vectors. Supported types: `NanoVectorDBStorage`,`PGVectorStorage`,`MilvusVectorDBStorage`,`ChromaVectorDBStorage`,`FaissVectorDBStorage`,`MongoVectorDBStorage`,`QdrantVectorDBStorage`,`OpenSearchVectorDBStorage` | `NanoVectorDBStorage` |
-| **graph_storage** | `str` | Storage type for graph edges and nodes. Supported types: `NetworkXStorage`,`Neo4JStorage`,`PGGraphStorage`,`AGEStorage`,`OpenSearchGraphStorage` | `NetworkXStorage` |
+| **graph_storage** | `str` | Storage type for graph edges and nodes. Supported types: `NetworkXStorage`,`Neo4JStorage`,`PGGraphStorage`,`AGEStorage`,`MemgraphStorage`,`NebulaGraphStorage`,`OpenSearchGraphStorage` | `NetworkXStorage` |
 | **doc_status_storage** | `str` | Storage type for documents process status. Supported types: `JsonDocStatusStorage`,`PGDocStatusStorage`,`MongoDocStatusStorage`,`OpenSearchDocStatusStorage` | `JsonDocStatusStorage` |
 | **chunk_token_size** | `int` | 拆分文档时每个块的最大令牌大小 | `1200` |
 | **chunk_overlap_token_size** | `int` | 拆分文档时两个块之间的重叠令牌大小 | `100` |
@@ -956,6 +956,7 @@ Neo4JStorage             Neo4J
 PGGraphStorage           PostgreSQL with AGE 插件
 MemgraphStorage          Memgraph
 OpenSearchGraphStorage   OpenSearch
+NebulaGraphStorage       NebulaGraph
 ```
 
 > 测试表明，Neo4J 在生产环境中的性能优于带有 AGE 插件的 PostgreSQL。
@@ -1270,6 +1271,28 @@ maxclients 500
 </details>
 
 <details>
+<summary> <b>使用 NebulaGraph 存储</b> </summary>
+
+NebulaGraph 可以作为 `GRAPH_STORAGE` 后端，通过 `NebulaGraphStorage` 接入。
+
+* **必需环境变量**：`LIGHTRAG_GRAPH_STORAGE=NebulaGraphStorage`、`NEBULA_HOSTS`、`NEBULA_USER`、`NEBULA_PASSWORD`。
+* **工作区映射**：每个 LightRAG `workspace` 都会映射到一个独立的 Nebula `SPACE`（space-per-workspace 隔离）。
+* **全文检索说明**：高质量 `search_labels` 依赖 NebulaGraph 的全文检索链路，即 **Elasticsearch + Listener**。如果 Elasticsearch/Listener 不可用，LightRAG 会回退到较弱的 contains 匹配路径。
+
+```python
+rag = LightRAG(
+    working_dir=WORKING_DIR,
+    llm_model_func=your_llm_func,
+    embedding_func=your_embed_func,
+    graph_storage="NebulaGraphStorage",
+)
+```
+
+示例脚本：`examples/lightrag_openai_nebula_demo.py`。
+
+</details>
+
+<details>
 <summary> <b>使用 OpenSearch 存储</b> </summary>
 
 OpenSearch 为 LightRAG 的全部四种存储类型（KV、向量、图、文档状态）提供了统一的存储解决方案。它提供原生 k-NN 向量搜索、全文搜索和水平扩展能力，且无云服务限制。
@@ -1390,9 +1413,10 @@ python examples/graph_visual_with_opensearch.py --html
 - **对于 Qdrant 向量数据库，通过基于 payload 的分区实现数据隔离（Qdrant 推荐的多租户方法）**：`QdrantVectorDBStorage` 使用带有 payload 过滤的共享集合，实现无限的工作区可扩展性。
 - **对于关系型数据库，通过在表中添加 `workspace` 字段实现逻辑数据分离**：`PGKVStorage`、`PGVectorStorage`、`PGDocStatusStorage`。
 - **对于 Neo4j 图数据库，通过标签实现逻辑数据隔离**：`Neo4JStorage`
+- **对于 NebulaGraph，通过将每个 workspace 映射到独立 Nebula `SPACE` 来实现逻辑数据隔离**：`NebulaGraphStorage`
 - **对于 OpenSearch，通过索引名称前缀实现数据隔离**：`OpenSearchKVStorage`、`OpenSearchDocStatusStorage`、`OpenSearchGraphStorage`、`OpenSearchVectorDBStorage`
 
-为了保持与旧数据的兼容性，当未配置工作区时，PostgreSQL 非图存储的默认工作区为 `default`，PostgreSQL AGE 图存储的默认工作区为 null，Neo4j 图存储的默认工作区为 `base`。对于所有外部存储，系统提供专用的工作区环境变量来覆盖通用的 `WORKSPACE` 环境变量配置。这些存储特定的工作区环境变量包括：`REDIS_WORKSPACE`、`MILVUS_WORKSPACE`、`QDRANT_WORKSPACE`、`MONGODB_WORKSPACE`、`POSTGRES_WORKSPACE`、`NEO4J_WORKSPACE`、`OPENSEARCH_WORKSPACE`。
+为了保持与旧数据的兼容性，当未配置工作区时，PostgreSQL 非图存储的默认工作区为 `default`，PostgreSQL AGE 图存储的默认工作区为 null，Neo4j 图存储的默认工作区为 `base`。对于所有外部存储，系统提供专用的工作区环境变量来覆盖通用的 `WORKSPACE` 环境变量配置。这些存储特定的工作区环境变量包括：`REDIS_WORKSPACE`、`MILVUS_WORKSPACE`、`QDRANT_WORKSPACE`、`MONGODB_WORKSPACE`、`POSTGRES_WORKSPACE`、`NEO4J_WORKSPACE`、`NEBULA_WORKSPACE`、`OPENSEARCH_WORKSPACE`。
 
 **使用示例：**
 有关在单个应用程序中管理多个隔离知识库（例如，将"书籍"内容与"人力资源政策"分开）的实际演示，请参阅 [Workspace Demo](examples/lightrag_gemini_workspace_demo.py)。
