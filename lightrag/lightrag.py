@@ -3961,10 +3961,11 @@ class LightRAG:
                 ) from e
 
             # 11. Delete original document and status.
-            #     doc_status is deleted first so that if full_docs.delete fails, a retry
-            #     finds no doc_status record and treats the document as already gone.
-            #     When skip_rebuild is set the caller handles a deferred rebuild that may
-            #     fail -- keep doc_status alive so the user can re-trigger deletion later.
+            #     Normal mode: doc_status is deleted first so that if full_docs.delete
+            #     fails, a retry finds no doc_status record and treats the doc as gone.
+            #     Batch mode (skip_rebuild): doc_status stays alive because the caller
+            #     still needs to do a deferred rebuild that might fail. If it does fail,
+            #     having doc_status around means the user can just re-trigger deletion.
             try:
                 deletion_stage = "delete_doc_entries"
                 in_final_delete_stage = True
