@@ -105,6 +105,14 @@ def _env_str(name: str, default: str | None = None) -> str | None:
     return cleaned
 
 
+def _env_raw(name: str, default: str | None = None) -> str | None:
+    """Return the raw env value without stripping empty strings to None."""
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value
+
+
 def _env_int(name: str, default: int) -> int:
     raw = _env_str(name)
     if raw is None:
@@ -298,6 +306,21 @@ def _unwrap_nebula_value(value: Any) -> Any:
             except Exception:
                 pass
 
+    for getter_name in (
+        "get_sVal",
+        "get_iVal",
+        "get_bVal",
+        "get_fVal",
+        "get_dVal",
+        "get_lVal",
+    ):
+        getter = getattr(value, getter_name, None)
+        if callable(getter):
+            try:
+                return _decode_if_bytes(getter())
+            except Exception:
+                pass
+
     if isinstance(value, dict):
         return {str(k): _unwrap_nebula_value(v) for k, v in value.items()}
     if isinstance(value, (list, tuple)):
@@ -316,6 +339,10 @@ def _result_to_rows(result: Any) -> list[dict[str, Any]]:
         for item in result:
             if isinstance(item, dict):
                 rows.append(item)
+            elif isinstance(item, (list, tuple)):
+                rows.append(
+                    {f"col_{idx}": _unwrap_nebula_value(value) for idx, value in enumerate(item)}
+                )
         return rows
 
     keys: list[str] = []
@@ -389,7 +416,7 @@ class NebulaGraphStorage(BaseGraphStorage):
         )
         self._hosts = _parse_nebula_hosts(_env_str("NEBULA_HOSTS"))
         self._user = _env_str("NEBULA_USER")
-        self._password = _env_str("NEBULA_PASSWORD")
+        self._password = _env_raw("NEBULA_PASSWORD")
         self._timeout_ms = _env_int("NEBULA_TIMEOUT_MS", 60_000)
         self._ssl_enabled = _env_bool("NEBULA_SSL", default=False)
         self._use_http2 = _env_bool("NEBULA_USE_HTTP2", default=False)
@@ -441,10 +468,8 @@ class NebulaGraphStorage(BaseGraphStorage):
             raise ValueError(
                 "Environment variable NEBULA_USER is required and must not be empty."
             )
-        if self._password is None or not str(self._password).strip():
-            raise ValueError(
-                "Environment variable NEBULA_PASSWORD is required and must not be empty."
-            )
+        if self._password is None:
+            raise ValueError("Environment variable NEBULA_PASSWORD is required.")
 
     async def _bootstrap_client(self) -> None:
         if self._connection_pool is not None:
@@ -531,9 +556,12 @@ class NebulaGraphStorage(BaseGraphStorage):
     async def _wait_for_space_ready(self) -> None:
         for attempt in range(1, self._schema_retry_times + 1):
             try:
-                result = await self._execute("SHOW SPACES;")
-                if self._space_name.lower() in _flatten_result_text(result).lower():
+                session = await self._acquire_session()
+                try:
+                    await self._use_space(session)
                     return
+                finally:
+                    await self._release_session(session)
             except RuntimeError:
                 if attempt == self._schema_retry_times:
                     raise TimeoutError(
@@ -574,8 +602,19 @@ class NebulaGraphStorage(BaseGraphStorage):
             "CREATE EDGE INDEX IF NOT EXISTS relation_pair_idx "
             "ON relation(source_id(256), target_id(256));"
         )
-        await self._execute_in_space("REBUILD TAG INDEX entity_entity_id_idx;")
-        await self._execute_in_space("REBUILD EDGE INDEX relation_pair_idx;")
+        for stmt in (
+            "REBUILD TAG INDEX entity_entity_id_idx;",
+            "REBUILD EDGE INDEX relation_pair_idx;",
+        ):
+            try:
+                await self._execute_in_space(stmt)
+            except RuntimeError as exc:
+                if "index" in str(exc).lower() and "not found" in str(exc).lower():
+                    logger.warning(
+                        f"[{self.workspace}] Nebula rebuild skipped for missing index metadata: {exc}"
+                    )
+                    continue
+                raise
         try:
             await self._execute_in_space(
                 "CREATE FULLTEXT TAG INDEX IF NOT EXISTS entity_name_ft_idx "
@@ -630,6 +669,8 @@ class NebulaGraphStorage(BaseGraphStorage):
 
     def _is_index_status_ready(self, result: Any) -> bool:
         status_text = _flatten_result_text(result).upper()
+        if not status_text.strip():
+            return True
         if any(token in status_text for token in _INDEX_STATUS_FAILED_TOKENS):
             raise NebulaIndexJobError(f"Nebula index job failed: {status_text}")
         if any(token in status_text for token in _INDEX_STATUS_PENDING_TOKENS):

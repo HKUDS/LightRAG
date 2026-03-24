@@ -16,7 +16,9 @@ from lightrag.kg.nebula_impl import (
     _ngql_escape_string,
     _normalize_space_name,
     _parse_nebula_hosts,
+    _result_to_rows,
     _short_hash_suffix,
+    _unwrap_nebula_value,
     NebulaIndexJobError,
     NebulaGraphStorage,
 )
@@ -153,6 +155,38 @@ def test_parse_nebula_hosts_supports_unbracketed_ipv6_with_default_port():
     assert _parse_nebula_hosts("::1") == [("::1", 9669)]
 
 
+def test_unwrap_nebula_value_supports_thrift_style_getters():
+    class DummyValue:
+        def get_sVal(self):
+            return b"nebula-space"
+
+    assert _unwrap_nebula_value(DummyValue()) == "nebula-space"
+
+
+def test_result_to_rows_parses_thrift_style_rows():
+    class DummyValue:
+        def __init__(self, value):
+            self._value = value
+
+        def get_sVal(self):
+            return self._value.encode("utf-8")
+
+    class DummyRow:
+        def __init__(self, *values):
+            self.values = [DummyValue(v) for v in values]
+
+    class DummyResult:
+        def keys(self):
+            return [b"Name"]
+
+        rows = [DummyRow("space_a"), DummyRow("space_b")]
+
+    assert _result_to_rows(DummyResult()) == [
+        {"Name": "space_a"},
+        {"Name": "space_b"},
+    ]
+
+
 def test_nebula_graph_storage_sets_initialized_as_instance_attr():
     storage = build_storage(workspace=None)
     assert "_initialized" in storage.__dict__
@@ -165,26 +199,25 @@ async def test_initialize_creates_space_and_schema():
     session = Mock()
     exec_mock = AsyncMock(
         side_effect=lambda sql, **_: (
-            [[storage._space_name]]
-            if "SHOW SPACES" in sql
-            else [["job", "entity_entity_id_idx", "FINISHED"]]
+            [["job", "entity_entity_id_idx", "FINISHED"]]
             if "SHOW TAG INDEX STATUS" in sql
             else [["job", "relation_pair_idx", "FINISHED"]]
             if "SHOW EDGE INDEX STATUS" in sql
             else object()
         )
     )
+    use_space_mock = AsyncMock()
     with (
         patch.object(storage, "_execute", exec_mock),
         patch.object(storage, "_acquire_session", AsyncMock(return_value=session)),
         patch.object(storage, "_release_session", AsyncMock()),
+        patch.object(storage, "_use_space", use_space_mock),
     ):
         await storage._ensure_space_ready()
 
     sql_calls = [call.args[0] for call in exec_mock.await_args_list]
     assert any("CREATE SPACE IF NOT EXISTS" in sql for sql in sql_calls)
-    assert any("SHOW SPACES" in sql for sql in sql_calls)
-    assert any("USE " in sql for sql in sql_calls)
+    assert use_space_mock.await_count >= 1
     assert any("CREATE TAG IF NOT EXISTS entity" in sql for sql in sql_calls)
     assert any("CREATE EDGE IF NOT EXISTS relation" in sql for sql in sql_calls)
     assert any("CREATE FULLTEXT TAG INDEX IF NOT EXISTS entity_name_ft_idx" in sql for sql in sql_calls)
@@ -218,7 +251,6 @@ async def test_initialize_rejects_empty_required_env_values():
         ("_user", None, "NEBULA_USER"),
         ("_user", "   ", "NEBULA_USER"),
         ("_password", None, "NEBULA_PASSWORD"),
-        ("_password", "   ", "NEBULA_PASSWORD"),
     ],
 )
 async def test_initialize_rejects_blank_user_or_password(
@@ -232,6 +264,21 @@ async def test_initialize_rejects_blank_user_or_password(
 
     with pytest.raises(ValueError, match=expected_env):
         await storage.initialize()
+
+
+@pytest.mark.asyncio
+async def test_initialize_allows_empty_password():
+    storage = build_storage()
+    storage._hosts = [("127.0.0.1", 9669)]
+    storage._user = "root"
+    storage._password = ""
+    with (
+        patch.object(storage, "_bootstrap_client", AsyncMock()),
+        patch.object(storage, "_ensure_space_ready", AsyncMock()),
+    ):
+        await storage.initialize()
+
+    assert storage._initialized is True
 
 
 @pytest.mark.asyncio
@@ -369,16 +416,36 @@ async def test_wait_for_space_ready_polls_until_target_space_visible():
     storage = build_storage(workspace="finance")
     storage._schema_retry_times = 3
     storage._schema_retry_delay_ms = 0
-    execute_mock = AsyncMock(
-        side_effect=[
-            [["other_space"]],
-            [[storage._space_name]],
-        ]
-    )
-    with patch.object(storage, "_execute", execute_mock):
+    session = Mock()
+    with (
+        patch.object(storage, "_acquire_session", AsyncMock(return_value=session)),
+        patch.object(storage, "_release_session", AsyncMock()),
+        patch.object(storage, "_use_space", AsyncMock(side_effect=[RuntimeError("not ready"), None])),
+    ):
         await storage._wait_for_space_ready()
 
-    assert execute_mock.await_count == 2
+
+@pytest.mark.asyncio
+async def test_wait_for_space_ready_retries_until_space_can_be_used():
+    storage = build_storage(workspace="finance")
+    storage._schema_retry_times = 4
+    storage._schema_retry_delay_ms = 0
+    session = Mock()
+    acquire_mock = AsyncMock(return_value=session)
+    release_mock = AsyncMock()
+    use_mock = AsyncMock(
+        side_effect=[RuntimeError("not ready"), RuntimeError("not ready"), None]
+    )
+    with (
+        patch.object(storage, "_acquire_session", acquire_mock),
+        patch.object(storage, "_release_session", release_mock),
+        patch.object(storage, "_use_space", use_mock),
+    ):
+        await storage._wait_for_space_ready()
+
+    assert acquire_mock.await_count == 3
+    assert use_mock.await_count == 3
+    assert release_mock.await_count == 3
 
 
 @pytest.mark.asyncio
@@ -386,8 +453,11 @@ async def test_wait_for_space_ready_times_out_when_space_not_visible():
     storage = build_storage(workspace="finance")
     storage._schema_retry_times = 2
     storage._schema_retry_delay_ms = 0
-    execute_mock = AsyncMock(side_effect=[[["other_space"]], [["still_other"]]])
-    with patch.object(storage, "_execute", execute_mock):
+    with (
+        patch.object(storage, "_acquire_session", AsyncMock(return_value=Mock())),
+        patch.object(storage, "_release_session", AsyncMock()),
+        patch.object(storage, "_use_space", AsyncMock(side_effect=RuntimeError("not ready"))),
+    ):
         with pytest.raises(TimeoutError, match="space"):
             await storage._wait_for_space_ready()
 
@@ -456,6 +526,11 @@ async def test_wait_for_index_ready_raises_immediately_on_failed_job():
             await storage._wait_for_index_ready()
 
     assert execute_in_space_mock.await_count == 2
+
+
+def test_is_index_status_ready_accepts_empty_status_output():
+    storage = build_storage(workspace="finance")
+    assert storage._is_index_status_ready([]) is True
 
 
 @pytest.mark.asyncio
