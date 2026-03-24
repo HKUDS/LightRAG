@@ -26,6 +26,18 @@ from lightrag.types import KnowledgeGraph
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
+def _extract_details_section(content: str, summary_text: str) -> str:
+    start = content.find(summary_text)
+    if start == -1:
+        raise AssertionError(f"Section summary not found: {summary_text}")
+
+    end = content.find("</details>", start)
+    if end == -1:
+        raise AssertionError(f"Section end not found: {summary_text}")
+
+    return content[start:end]
+
+
 def build_storage(workspace: str | None = "finance") -> NebulaGraphStorage:
     return NebulaGraphStorage(
         namespace="test",
@@ -67,14 +79,26 @@ def test_nebula_env_example_documents_required_keys():
 def test_nebula_readme_documents_manual_configuration_flow():
     readme_en = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
     readme_zh = (REPO_ROOT / "README-zh.md").read_text(encoding="utf-8")
+    nebula_en = _extract_details_section(
+        readme_en, "<summary> <b>Using NebulaGraph Storage</b> </summary>"
+    )
+    nebula_zh = _extract_details_section(
+        readme_zh, "<summary> <b>使用 NebulaGraph 存储</b> </summary>"
+    )
 
-    for content in (readme_en, readme_zh):
+    for content in (nebula_en, nebula_zh):
         assert "NebulaGraphStorage" in content
         assert "NEBULA_HOSTS" in content
+        assert "NEBULA_USER" in content
+        assert "NEBULA_PASSWORD" in content
         assert "search_labels" in content
         assert "Elasticsearch" in content
         assert "Listener" in content
-        assert re.search(r"workspace.{0,160}space|space.{0,160}workspace", content, re.IGNORECASE | re.DOTALL)
+        assert re.search(
+            r"workspace.{0,160}space|space.{0,160}workspace",
+            content,
+            re.IGNORECASE | re.DOTALL,
+        )
 
 
 def test_normalize_space_name_uses_prefix_and_workspace():

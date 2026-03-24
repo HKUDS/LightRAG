@@ -1275,7 +1275,9 @@ When the interactive setup manages a local Redis container, it stages a user-edi
 
 NebulaGraph can be used as the `GRAPH_STORAGE` backend through `NebulaGraphStorage`.
 
-* **Required env vars**: `LIGHTRAG_GRAPH_STORAGE=NebulaGraphStorage`, `NEBULA_HOSTS`, `NEBULA_USER`, `NEBULA_PASSWORD`.
+* **Install dependency**: ensure Nebula Python client is installed, e.g. `uv sync --extra offline-storage`.
+* **Storage selection**: if you choose graph storage via environment variables, set `LIGHTRAG_GRAPH_STORAGE=NebulaGraphStorage`.
+* **Required Nebula connection env vars**: `NEBULA_HOSTS`, `NEBULA_USER`, `NEBULA_PASSWORD`.
 * **Workspace mapping**: each LightRAG `workspace` maps to a dedicated NebulaGraph `SPACE` (space-per-workspace isolation).
 * **Full-text note**: high-quality `search_labels` depends on NebulaGraph full-text search backed by **Elasticsearch + Listener**. If Elasticsearch/Listener is unavailable, LightRAG falls back to a degraded contains-based path.
 

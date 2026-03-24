@@ -1275,7 +1275,9 @@ maxclients 500
 
 NebulaGraph 可以作为 `GRAPH_STORAGE` 后端，通过 `NebulaGraphStorage` 接入。
 
-* **必需环境变量**：`LIGHTRAG_GRAPH_STORAGE=NebulaGraphStorage`、`NEBULA_HOSTS`、`NEBULA_USER`、`NEBULA_PASSWORD`。
+* **安装依赖**：请先安装 Nebula Python 客户端依赖，例如 `uv sync --extra offline-storage`。
+* **存储选择**：如果通过环境变量选择图存储，请设置 `LIGHTRAG_GRAPH_STORAGE=NebulaGraphStorage`。
+* **Nebula 连接必需环境变量**：`NEBULA_HOSTS`、`NEBULA_USER`、`NEBULA_PASSWORD`。
 * **工作区映射**：每个 LightRAG `workspace` 都会映射到一个独立的 Nebula `SPACE`（space-per-workspace 隔离）。
 * **全文检索说明**：高质量 `search_labels` 依赖 NebulaGraph 的全文检索链路，即 **Elasticsearch + Listener**。如果 Elasticsearch/Listener 不可用，LightRAG 会回退到较弱的 contains 匹配路径。
 

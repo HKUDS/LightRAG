@@ -4,13 +4,15 @@ LightRAG demo with OpenAI + NebulaGraphStorage.
 This demo focuses on manual configuration for an external NebulaGraph cluster.
 
 Required environment variables:
-    LIGHTRAG_GRAPH_STORAGE=NebulaGraphStorage
     NEBULA_HOSTS=127.0.0.1:9669
     NEBULA_USER=root
     NEBULA_PASSWORD=nebula
     OPENAI_API_KEY=your-openai-api-key
 
 Notes:
+    - This script already sets graph_storage="NebulaGraphStorage" in code.
+      If you prefer env-based selection, you may set:
+      LIGHTRAG_GRAPH_STORAGE=NebulaGraphStorage
     - NebulaGraphStorage maps each LightRAG workspace to one Nebula SPACE.
     - For higher-quality search_labels, deploy Nebula full-text search
       dependencies (Elasticsearch + Listener).
@@ -39,8 +41,14 @@ async def initialize_rag() -> LightRAG:
 
 
 async def main():
-    if not os.getenv("OPENAI_API_KEY"):
-        raise RuntimeError("OPENAI_API_KEY is required")
+    required_envs = ("OPENAI_API_KEY", "NEBULA_HOSTS", "NEBULA_USER", "NEBULA_PASSWORD")
+    missing_envs = [name for name in required_envs if not os.getenv(name)]
+    if missing_envs:
+        raise RuntimeError(
+            "Missing required environment variables: "
+            + ", ".join(missing_envs)
+            + ". Please configure Nebula and OpenAI credentials before running this demo."
+        )
 
     rag = None
     try:
