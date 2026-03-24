@@ -1,4 +1,9 @@
-from lightrag.kg import STORAGE_IMPLEMENTATIONS, STORAGE_ENV_REQUIREMENTS, STORAGES
+from lightrag.kg import (
+    STORAGE_IMPLEMENTATIONS,
+    STORAGE_ENV_REQUIREMENTS,
+    STORAGES,
+    verify_storage_implementation,
+)
 
 
 def test_nebula_graph_storage_is_registered():
@@ -15,3 +20,7 @@ def test_nebula_graph_storage_env_requirements():
         "NEBULA_USER",
         "NEBULA_PASSWORD",
     ]
+
+
+def test_nebula_graph_storage_verify_compatibility():
+    verify_storage_implementation("GRAPH_STORAGE", "NebulaGraphStorage")

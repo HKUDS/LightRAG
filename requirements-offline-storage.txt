@@ -10,7 +10,7 @@
 # Storage backend dependencies (with version constraints matching pyproject.toml)
 asyncpg>=0.31.0,<1.0.0
 neo4j>=5.0.0,<7.0.0
-nebula3-python
+nebula3-python>=3.8.3,<4.0.0
 opensearch-py>=3.0.0,<4.0.0
 pgvector>=0.4.2,<1.0.0
 pymilvus>=2.6.2,<3.0.0
