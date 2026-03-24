@@ -307,6 +307,7 @@ def _unwrap_nebula_value(value: Any) -> Any:
                 pass
 
     for getter_name in (
+        "get_nVal",
         "get_sVal",
         "get_iVal",
         "get_bVal",
@@ -317,6 +318,9 @@ def _unwrap_nebula_value(value: Any) -> Any:
         getter = getattr(value, getter_name, None)
         if callable(getter):
             try:
+                if getter_name == "get_nVal":
+                    getter()
+                    return None
                 return _decode_if_bytes(getter())
             except Exception:
                 pass
@@ -633,8 +637,12 @@ class NebulaGraphStorage(BaseGraphStorage):
     async def _wait_for_schema_ready(self) -> None:
         for attempt in range(1, self._schema_retry_times + 1):
             try:
-                await self._execute_in_space("DESCRIBE TAG entity;")
-                await self._execute_in_space("DESCRIBE EDGE relation;")
+                await self._execute_in_space(
+                    "MATCH (v:entity) RETURN count(v) AS vertex_count LIMIT 1;"
+                )
+                await self._execute_in_space(
+                    "MATCH ()-[e:relation]->() RETURN count(e) AS edge_count LIMIT 1;"
+                )
                 return
             except RuntimeError:
                 if attempt == self._schema_retry_times:
@@ -1053,16 +1061,17 @@ class NebulaGraphStorage(BaseGraphStorage):
     ) -> dict[str, Any] | None:
         src_id, tgt_id = _canonical_edge_pair(source_node_id, target_node_id)
         result = await self._execute_in_space(
-            "FETCH PROP ON relation "
-            f"{_ngql_quote(src_id)}->{_ngql_quote(tgt_id)} "
-            "YIELD "
-            "src(edge) AS source, "
-            "dst(edge) AS target, "
-            "properties(edge).source_id AS source_id, "
-            "properties(edge).target_id AS target_id, "
-            "properties(edge).relationship AS relationship, "
-            "properties(edge).description AS description, "
-            "properties(edge).weight AS weight;"
+            "MATCH (a:entity)-[e:relation]->(b:entity) "
+            f"WHERE id(a) == {_ngql_literal(src_id)} AND id(b) == {_ngql_literal(tgt_id)} "
+            "RETURN "
+            "id(a) AS source, "
+            "id(b) AS target, "
+            "e.source_id AS source_id, "
+            "e.target_id AS target_id, "
+            "e.relationship AS relationship, "
+            "e.description AS description, "
+            "e.weight AS weight "
+            "LIMIT 1;"
         )
         row = _first_row(result)
         if row is None:
@@ -1084,17 +1093,15 @@ class NebulaGraphStorage(BaseGraphStorage):
         if not unique_ids:
             return {}
 
-        where_clause = self._build_or_equals_clause("entity.entity_id", unique_ids)
         result = await self._execute_in_space(
-            "LOOKUP ON entity "
-            f"WHERE {where_clause} "
-            "YIELD "
-            "entity.entity_id AS entity_id, "
-            "entity.name AS name, "
-            "entity.entity_type AS entity_type, "
-            "entity.description AS description, "
-            "entity.keywords AS keywords, "
-            "entity.source_id AS source_id;"
+            "MATCH (v:entity) "
+            "RETURN "
+            "id(v) AS entity_id, "
+            "v.name AS name, "
+            "v.entity_type AS entity_type, "
+            "v.description AS description, "
+            "v.keywords AS keywords, "
+            "v.source_id AS source_id;"
         )
         rows = _result_to_rows(result)
 
@@ -1122,13 +1129,11 @@ class NebulaGraphStorage(BaseGraphStorage):
         if not unique_ids:
             return output
 
-        where_clause = self._build_relation_endpoint_clause(unique_ids)
         result = await self._execute_in_space(
-            "LOOKUP ON relation "
-            f"WHERE {where_clause} "
-            "YIELD "
-            "src(edge) AS source, "
-            "dst(edge) AS target;"
+            "MATCH (a:entity)-[e:relation]->(b:entity) "
+            "RETURN "
+            "id(a) AS source, "
+            "id(b) AS target;"
         )
         rows = _result_to_rows(result)
         requested_set = set(output)
@@ -1161,31 +1166,16 @@ class NebulaGraphStorage(BaseGraphStorage):
         if not requested_pairs:
             return {}
 
-        canonical_pairs = self._unique_preserve_order(
-            [f"{src}\x00{tgt}" for src, tgt in canonical_to_requested]
-        )
-        conditions: list[str] = []
-        for packed in canonical_pairs:
-            src_id, tgt_id = packed.split("\x00", 1)
-            conditions.append(
-                "("
-                f"src(edge) == {_ngql_literal(src_id)} AND "
-                f"dst(edge) == {_ngql_literal(tgt_id)}"
-                ")"
-            )
-        where_clause = " OR ".join(conditions)
-
         result = await self._execute_in_space(
-            "LOOKUP ON relation "
-            f"WHERE {where_clause} "
-            "YIELD "
-            "src(edge) AS source, "
-            "dst(edge) AS target, "
-            "relation.source_id AS source_id, "
-            "relation.target_id AS target_id, "
-            "relation.relationship AS relationship, "
-            "relation.description AS description, "
-            "relation.weight AS weight;"
+            "MATCH (a:entity)-[e:relation]->(b:entity) "
+            "RETURN "
+            "id(a) AS source, "
+            "id(b) AS target, "
+            "e.source_id AS source_id, "
+            "e.target_id AS target_id, "
+            "e.relationship AS relationship, "
+            "e.description AS description, "
+            "e.weight AS weight;"
         )
         rows = _result_to_rows(result)
 
@@ -1228,13 +1218,11 @@ class NebulaGraphStorage(BaseGraphStorage):
         if not unique_ids:
             return output
 
-        where_clause = self._build_relation_endpoint_clause(unique_ids)
         result = await self._execute_in_space(
-            "LOOKUP ON relation "
-            f"WHERE {where_clause} "
-            "YIELD "
-            "src(edge) AS source, "
-            "dst(edge) AS target;"
+            "MATCH (a:entity)-[e:relation]->(b:entity) "
+            "RETURN "
+            "id(a) AS source, "
+            "id(b) AS target;"
         )
         rows = _result_to_rows(result)
         requested_set = set(output)
@@ -1312,8 +1300,8 @@ class NebulaGraphStorage(BaseGraphStorage):
 
     async def get_all_labels(self) -> list[str]:
         result = await self._execute_in_space(
-            "LOOKUP ON entity "
-            "YIELD entity.entity_id AS entity_id;"
+            "MATCH (v:entity) "
+            "RETURN id(v) AS entity_id;"
         )
         rows = _result_to_rows(result)
         labels = {str(row["entity_id"]) for row in rows if row.get("entity_id") is not None}
@@ -1335,14 +1323,14 @@ class NebulaGraphStorage(BaseGraphStorage):
 
     async def get_all_nodes(self) -> list[dict]:
         result = await self._execute_in_space(
-            "LOOKUP ON entity "
-            "YIELD "
-            "entity.entity_id AS entity_id, "
-            "entity.name AS name, "
-            "entity.entity_type AS entity_type, "
-            "entity.description AS description, "
-            "entity.keywords AS keywords, "
-            "entity.source_id AS source_id;"
+            "MATCH (v:entity) "
+            "RETURN "
+            "id(v) AS entity_id, "
+            "v.name AS name, "
+            "v.entity_type AS entity_type, "
+            "v.description AS description, "
+            "v.keywords AS keywords, "
+            "v.source_id AS source_id;"
         )
         rows = _result_to_rows(result)
         output: list[dict] = []
@@ -1358,15 +1346,15 @@ class NebulaGraphStorage(BaseGraphStorage):
 
     async def get_all_edges(self) -> list[dict]:
         result = await self._execute_in_space(
-            "LOOKUP ON relation "
-            "YIELD "
-            "src(edge) AS source, "
-            "dst(edge) AS target, "
-            "relation.source_id AS source_id, "
-            "relation.target_id AS target_id, "
-            "relation.relationship AS relationship, "
-            "relation.description AS description, "
-            "relation.weight AS weight;"
+            "MATCH (a:entity)-[e:relation]->(b:entity) "
+            "RETURN "
+            "id(a) AS source, "
+            "id(b) AS target, "
+            "e.source_id AS source_id, "
+            "e.target_id AS target_id, "
+            "e.relationship AS relationship, "
+            "e.description AS description, "
+            "e.weight AS weight;"
         )
         rows = _result_to_rows(result)
         output: list[dict] = []
@@ -1392,10 +1380,10 @@ class NebulaGraphStorage(BaseGraphStorage):
         if limit <= 0:
             return []
         result = await self._execute_in_space(
-            "LOOKUP ON relation "
-            "YIELD "
-            "src(edge) AS source, "
-            "dst(edge) AS target;"
+            "MATCH (a:entity)-[e:relation]->(b:entity) "
+            "RETURN "
+            "id(a) AS source, "
+            "id(b) AS target;"
         )
         rows = _result_to_rows(result)
         degrees: dict[str, int] = {}

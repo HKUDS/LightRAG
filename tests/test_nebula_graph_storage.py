@@ -226,7 +226,11 @@ async def test_initialize_creates_space_and_schema():
     assert any("REBUILD EDGE INDEX relation_pair_idx" in sql for sql in sql_calls)
     assert any("SHOW TAG INDEX STATUS" in sql for sql in sql_calls)
     assert any("SHOW EDGE INDEX STATUS" in sql for sql in sql_calls)
-    describe_tag_idx = next(i for i, sql in enumerate(sql_calls) if "DESCRIBE TAG entity" in sql)
+    describe_tag_idx = next(
+        i
+        for i, sql in enumerate(sql_calls)
+        if "MATCH (v:entity) RETURN count(v) AS vertex_count" in sql
+    )
     create_tag_index_idx = next(
         i for i, sql in enumerate(sql_calls) if "CREATE TAG INDEX IF NOT EXISTS entity_entity_id_idx" in sql
     )
@@ -645,8 +649,8 @@ async def test_nebula_edge_reads_are_undirected():
     assert 'VALUES "A"->"B"' in upsert_sql
     fetch_sql_1 = execute_in_space.await_args_list[1].args[0]
     fetch_sql_2 = execute_in_space.await_args_list[2].args[0]
-    assert '"A"->"B"' in fetch_sql_1
-    assert '"A"->"B"' in fetch_sql_2
+    assert 'WHERE id(a) == "A" AND id(b) == "B"' in fetch_sql_1
+    assert 'WHERE id(a) == "A" AND id(b) == "B"' in fetch_sql_2
 
 
 @pytest.mark.asyncio
@@ -690,8 +694,8 @@ async def test_nebula_upsert_edge_forces_canonical_source_target_properties():
     upsert_sql = execute_in_space.await_args_list[0].args[0]
     assert 'VALUES "A"->"B":("chunk1<SEP>chunk2", "meta-target"' in upsert_sql
     fetch_sql = execute_in_space.await_args_list[1].args[0]
-    assert "src(edge) AS source" in fetch_sql
-    assert "dst(edge) AS target" in fetch_sql
+    assert "id(a) AS source" in fetch_sql
+    assert "id(b) AS target" in fetch_sql
 
 
 @pytest.mark.asyncio
@@ -766,8 +770,8 @@ async def test_nebula_get_nodes_batch_uses_single_lookup_query():
     }
     assert execute_in_space.await_count == 1
     sql = execute_in_space.await_args_list[0].args[0]
-    assert "LOOKUP ON entity" in sql
-    assert "entity.entity_id" in sql
+    assert "MATCH (v:entity)" in sql
+    assert "id(v) AS entity_id" in sql
 
 
 @pytest.mark.asyncio
@@ -786,9 +790,9 @@ async def test_nebula_node_degrees_batch_aggregates_with_single_query():
     assert degrees == {"A": 2, "B": 2, "C": 2, "X": 0}
     assert execute_in_space.await_count == 1
     sql = execute_in_space.await_args_list[0].args[0]
-    assert "LOOKUP ON relation" in sql
-    assert "src(edge) AS source" in sql
-    assert "dst(edge) AS target" in sql
+    assert "MATCH (a:entity)-[e:relation]->(b:entity)" in sql
+    assert "id(a) AS source" in sql
+    assert "id(b) AS target" in sql
 
 
 @pytest.mark.asyncio
@@ -837,10 +841,9 @@ async def test_nebula_get_edges_batch_uses_canonical_pairs_and_preserves_keys():
     }
     assert execute_in_space.await_count == 1
     sql = execute_in_space.await_args_list[0].args[0]
-    assert "LOOKUP ON relation" in sql
-    assert 'src(edge) == "A"' in sql
-    assert 'dst(edge) == "B"' in sql
-    assert 'src(edge) == "B" AND dst(edge) == "A"' not in sql
+    assert "MATCH (a:entity)-[e:relation]->(b:entity)" in sql
+    assert "id(a) AS source" in sql
+    assert "id(b) AS target" in sql
 
 
 @pytest.mark.asyncio
@@ -862,9 +865,9 @@ async def test_nebula_get_nodes_edges_batch_returns_adjacency_mapping():
     }
     assert execute_in_space.await_count == 1
     sql = execute_in_space.await_args_list[0].args[0]
-    assert "LOOKUP ON relation" in sql
-    assert "src(edge) AS source" in sql
-    assert "dst(edge) AS target" in sql
+    assert "MATCH (a:entity)-[e:relation]->(b:entity)" in sql
+    assert "id(a) AS source" in sql
+    assert "id(b) AS target" in sql
 
 
 @pytest.mark.asyncio
@@ -906,8 +909,8 @@ async def test_nebula_get_all_labels_returns_sorted_entity_ids():
     assert labels == ["A", "B", "C"]
     assert execute_in_space.await_count == 1
     sql = execute_in_space.await_args_list[0].args[0]
-    assert "LOOKUP ON entity" in sql
-    assert "entity.entity_id" in sql
+    assert "MATCH (v:entity)" in sql
+    assert "id(v) AS entity_id" in sql
 
 
 @pytest.mark.asyncio
@@ -958,7 +961,7 @@ async def test_nebula_get_all_nodes_returns_node_property_dicts():
     ]
     assert execute_in_space.await_count == 1
     sql = execute_in_space.await_args_list[0].args[0]
-    assert "LOOKUP ON entity" in sql
+    assert "MATCH (v:entity)" in sql
 
 
 @pytest.mark.asyncio
@@ -993,7 +996,7 @@ async def test_nebula_get_all_edges_returns_relation_properties():
     ]
     assert execute_in_space.await_count == 1
     sql = execute_in_space.await_args_list[0].args[0]
-    assert "LOOKUP ON relation" in sql
+    assert "MATCH (a:entity)-[e:relation]->(b:entity)" in sql
 
 
 @pytest.mark.asyncio
@@ -1013,9 +1016,9 @@ async def test_nebula_get_popular_labels_orders_by_degree_desc():
     assert labels == ["B", "A", "C"]
     assert execute_in_space.await_count == 1
     sql = execute_in_space.await_args_list[0].args[0]
-    assert "LOOKUP ON relation" in sql
-    assert "src(edge) AS source" in sql
-    assert "dst(edge) AS target" in sql
+    assert "MATCH (a:entity)-[e:relation]->(b:entity)" in sql
+    assert "id(a) AS source" in sql
+    assert "id(b) AS target" in sql
 
 
 @pytest.mark.asyncio
