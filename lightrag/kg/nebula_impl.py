@@ -115,26 +115,25 @@ def _parse_nebula_hosts(hosts_value: str | None) -> list[tuple[str, int]]:
                     ) from exc
         elif ":" in candidate:
             if candidate.count(":") > 1:
-                raise ValueError(
-                    f"Invalid Nebula host entry '{candidate}': IPv6 host must use bracket notation like [::1]:9669"
-                )
-            host, port_text = candidate.rsplit(":", 1)
-            host = host.strip()
-            port_text = port_text.strip()
-            if not host:
-                raise ValueError(
-                    f"Invalid Nebula host entry '{candidate}': host is empty"
-                )
-            if not port_text:
-                raise ValueError(
-                    f"Invalid Nebula host entry '{candidate}': port is empty"
-                )
-            try:
-                port = int(port_text)
-            except ValueError as exc:
-                raise ValueError(
-                    f"Invalid Nebula port in host entry '{candidate}': '{port_text}' is not an integer"
-                ) from exc
+                host = candidate
+            else:
+                host, port_text = candidate.rsplit(":", 1)
+                host = host.strip()
+                port_text = port_text.strip()
+                if not host:
+                    raise ValueError(
+                        f"Invalid Nebula host entry '{candidate}': host is empty"
+                    )
+                if not port_text:
+                    raise ValueError(
+                        f"Invalid Nebula host entry '{candidate}': port is empty"
+                    )
+                try:
+                    port = int(port_text)
+                except ValueError as exc:
+                    raise ValueError(
+                        f"Invalid Nebula port in host entry '{candidate}': '{port_text}' is not an integer"
+                    ) from exc
         else:
             host = candidate
             if not host:

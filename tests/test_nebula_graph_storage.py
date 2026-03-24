@@ -72,9 +72,8 @@ def test_parse_nebula_hosts_rejects_out_of_range_port():
         _parse_nebula_hosts("127.0.0.1:70000")
 
 
-def test_parse_nebula_hosts_rejects_unbracketed_ipv6_with_port():
-    with pytest.raises(ValueError, match="IPv6 host must use bracket notation"):
-        _parse_nebula_hosts("::1:9669")
+def test_parse_nebula_hosts_supports_unbracketed_ipv6_with_default_port():
+    assert _parse_nebula_hosts("::1") == [("::1", 9669)]
 
 
 def test_nebula_graph_storage_sets_initialized_as_instance_attr():
