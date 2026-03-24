@@ -538,6 +538,57 @@ def test_is_index_status_ready_accepts_empty_status_output():
 
 
 @pytest.mark.asyncio
+async def test_create_indexes_falls_back_when_fulltext_if_not_exists_is_unsupported():
+    storage = build_storage(workspace="finance")
+    execute_in_space = AsyncMock(
+        side_effect=[
+            object(),  # create tag index
+            object(),  # create edge index
+            object(),  # rebuild tag index
+            object(),  # rebuild edge index
+            RuntimeError("SyntaxError: syntax error near `IF'"),
+            object(),  # create fulltext tag index without IF
+            RuntimeError("SyntaxError: syntax error near `IF'"),
+            object(),  # create fulltext edge index without IF
+        ]
+    )
+    with patch.object(storage, "_execute_in_space", execute_in_space):
+        await storage._create_indexes_if_needed()
+
+    sql_calls = [call.args[0] for call in execute_in_space.await_args_list]
+    assert any(
+        sql == "CREATE FULLTEXT TAG INDEX entity_name_ft_idx ON entity(name);"
+        for sql in sql_calls
+    )
+    assert any(
+        sql
+        == "CREATE FULLTEXT EDGE INDEX relation_rel_ft_idx ON relation(relationship);"
+        for sql in sql_calls
+    )
+    assert storage._fulltext_init_error is None
+
+
+@pytest.mark.asyncio
+async def test_create_indexes_records_service_not_found_for_fulltext():
+    storage = build_storage(workspace="finance")
+    execute_in_space = AsyncMock(
+        side_effect=[
+            object(),  # create tag index
+            object(),  # create edge index
+            object(),  # rebuild tag index
+            object(),  # rebuild edge index
+            RuntimeError("SyntaxError: syntax error near `IF'"),
+            RuntimeError("Service not found!"),
+        ]
+    )
+    with patch.object(storage, "_execute_in_space", execute_in_space):
+        await storage._create_indexes_if_needed()
+
+    assert storage._fulltext_init_error is not None
+    assert "Service not found" in storage._fulltext_init_error
+
+
+@pytest.mark.asyncio
 async def test_execute_in_space_uses_same_session_for_use_and_query():
     storage = build_storage(workspace="finance")
     session = Mock()

@@ -619,20 +619,32 @@ class NebulaGraphStorage(BaseGraphStorage):
                     )
                     continue
                 raise
+        self._fulltext_init_error = None
         try:
-            await self._execute_in_space(
+            await self._create_fulltext_index(
                 "CREATE FULLTEXT TAG INDEX IF NOT EXISTS entity_name_ft_idx "
-                "ON entity(name);"
+                "ON entity(name);",
+                "CREATE FULLTEXT TAG INDEX entity_name_ft_idx ON entity(name);",
             )
-            await self._execute_in_space(
+            await self._create_fulltext_index(
                 "CREATE FULLTEXT EDGE INDEX IF NOT EXISTS relation_rel_ft_idx "
-                "ON relation(relationship);"
+                "ON relation(relationship);",
+                "CREATE FULLTEXT EDGE INDEX relation_rel_ft_idx ON relation(relationship);",
             )
         except RuntimeError as exc:
-            # Full-text support depends on deployment wiring outside this backend.
-            # Keep startup alive, but retain the original error for diagnostics.
             self._fulltext_init_error = str(exc)
             return
+
+    async def _create_fulltext_index(
+        self, stmt_if_not_exists: str, stmt_plain: str
+    ) -> None:
+        try:
+            await self._execute_in_space(stmt_if_not_exists)
+            return
+        except RuntimeError as exc:
+            if "syntax error" not in str(exc).lower() or "if" not in str(exc).lower():
+                raise
+        await self._execute_in_space(stmt_plain)
 
     async def _wait_for_schema_ready(self) -> None:
         for attempt in range(1, self._schema_retry_times + 1):
