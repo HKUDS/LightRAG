@@ -8,9 +8,10 @@ and tests its basic and advanced operations.
 Supported graph storage types include:
 - NetworkXStorage
 - Neo4JStorage
-- MongoDBStorage
+- MongoGraphStorage
 - PGGraphStorage
 - MemgraphStorage
+- NebulaGraphStorage
 """
 
 import asyncio

@@ -16,6 +16,7 @@ google-genai>=1.0.0,<2.0.0
 llama-index>=0.14.0,<1.0.0
 llama-index-llms-openai>=0.6.12
 neo4j>=5.0.0,<7.0.0
+nebula3-python
 ollama>=0.1.0,<1.0.0
 openai>=2.0.0,<3.0.0
 openpyxl>=3.0.0,<4.0.0

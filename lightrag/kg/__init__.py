@@ -16,6 +16,7 @@ STORAGE_IMPLEMENTATIONS = {
             "PGGraphStorage",
             "MongoGraphStorage",
             "MemgraphStorage",
+            "NebulaGraphStorage",
             "OpenSearchGraphStorage",
         ],
         "required_methods": ["upsert_node", "upsert_edge"],
@@ -63,6 +64,11 @@ STORAGE_ENV_REQUIREMENTS: dict[str, list[str]] = {
         "MONGO_DATABASE",
     ],
     "MemgraphStorage": ["MEMGRAPH_URI"],
+    "NebulaGraphStorage": [
+        "NEBULA_HOSTS",
+        "NEBULA_USER",
+        "NEBULA_PASSWORD",
+    ],
     "AGEStorage": [
         "AGE_POSTGRES_DB",
         "AGE_POSTGRES_USER",
@@ -133,6 +139,7 @@ STORAGES = {
     "FaissVectorDBStorage": ".kg.faiss_impl",
     "QdrantVectorDBStorage": ".kg.qdrant_impl",
     "MemgraphStorage": ".kg.memgraph_impl",
+    "NebulaGraphStorage": ".kg.nebula_impl",
     "OpenSearchKVStorage": ".kg.opensearch_impl",
     "OpenSearchDocStatusStorage": ".kg.opensearch_impl",
     "OpenSearchGraphStorage": ".kg.opensearch_impl",
