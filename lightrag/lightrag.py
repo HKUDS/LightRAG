@@ -148,6 +148,30 @@ def _chunk_fields_from_status_doc(
     return chunks_list, len(chunks_list)
 
 
+_TRANSIENT_RESET_METADATA_FIELDS = {
+    "processing_start_time",
+    "processing_end_time",
+    "error_type",
+}
+
+
+def _metadata_for_pending_reset(status_doc: "DocProcessingStatus") -> dict[str, Any]:
+    """Return metadata to keep when resetting a doc back to PENDING.
+
+    Keeps user-defined metadata and non-transient system keys while removing
+    processing/error fields that should not survive a reset.
+    """
+    existing_metadata = status_doc.metadata
+    if not isinstance(existing_metadata, dict):
+        return {}
+
+    return {
+        key: value
+        for key, value in existing_metadata.items()
+        if key not in _TRANSIENT_RESET_METADATA_FIELDS
+    }
+
+
 @final
 @dataclass
 class LightRAG:
@@ -1707,7 +1731,7 @@ class LightRAG:
                         "track_id": getattr(status_doc, "track_id", ""),
                         # Clear any error messages and processing metadata
                         "error_msg": "",
-                        "metadata": {},
+                        "metadata": _metadata_for_pending_reset(status_doc),
                     }
 
                     # Update the status in to_process_docs as well
@@ -2768,6 +2792,7 @@ class LightRAG:
             model_func=param.model_func,
             user_prompt=param.user_prompt,
             enable_rerank=param.enable_rerank,
+            include_metadata=param.include_metadata,
         )
 
         query_result = None
