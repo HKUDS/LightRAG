@@ -468,6 +468,22 @@ async def test_wait_for_space_ready_times_out_when_space_not_visible():
 
 
 @pytest.mark.asyncio
+async def test_ensure_fulltext_ready_accepts_named_listener_status_columns():
+    storage = build_storage(workspace="finance")
+    execute_mock = AsyncMock(
+        side_effect=[
+            [{"client_type": "ELASTICSEARCH"}],  # SHOW TEXT SEARCH CLIENTS
+            [{"Host Status": "ONLINE"}],         # initial SHOW LISTENER
+            [{"Host Status": "ONLINE"}],         # polling SHOW LISTENER
+        ]
+    )
+    with patch.object(storage, "_execute_in_space", execute_mock), patch.object(
+        storage, "_execute", execute_mock
+    ):
+        await storage._ensure_fulltext_ready()
+
+
+@pytest.mark.asyncio
 async def test_wait_for_index_ready_polls_until_status_finished():
     storage = build_storage(workspace="finance")
     storage._schema_retry_times = 3

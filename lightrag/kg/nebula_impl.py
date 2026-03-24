@@ -677,7 +677,11 @@ class NebulaGraphStorage(BaseGraphStorage):
                 await self._execute_in_space("SHOW LISTENER;")
             )
             if listener_rows and all(
-                str(row.get("col_3", "")).upper() == "ONLINE" for row in listener_rows
+                str(
+                    row.get("Host Status", row.get("host status", row.get("col_3", "")))
+                ).upper()
+                == "ONLINE"
+                for row in listener_rows
             ):
                 return
             if attempt == self._schema_retry_times:
