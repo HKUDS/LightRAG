@@ -218,7 +218,13 @@ def _flatten_result_text(result: Any) -> str:
 
 
 def _ngql_escape_string(value: str) -> str:
-    return value.replace("\\", "\\\\").replace('"', '\\"')
+    return (
+        value.replace("\\", "\\\\")
+        .replace("\n", "\\n")
+        .replace("\r", "\\r")
+        .replace("\t", "\\t")
+        .replace('"', '\\"')
+    )
 
 
 def _ngql_quote(value: Any) -> str:
@@ -674,7 +680,7 @@ class NebulaGraphStorage(BaseGraphStorage):
 
     async def get_edge(
         self, source_node_id: str, target_node_id: str
-    ) -> dict[str, str] | None:
+    ) -> dict[str, Any] | None:
         src_id, tgt_id = _canonical_edge_pair(source_node_id, target_node_id)
         result = await self._execute_in_space(
             "FETCH PROP ON relation "
@@ -725,8 +731,8 @@ class NebulaGraphStorage(BaseGraphStorage):
         self, source_node_id: str, target_node_id: str, edge_data: dict[str, str]
     ) -> None:
         src_id, tgt_id = _canonical_edge_pair(source_node_id, target_node_id)
-        source_id = str(edge_data.get("source_id", src_id))
-        target_id = str(edge_data.get("target_id", tgt_id))
+        source_id = src_id
+        target_id = tgt_id
         relationship = str(edge_data.get("relationship", ""))
         description = str(edge_data.get("description", ""))
         weight = _coerce_edge_weight(edge_data.get("weight"))

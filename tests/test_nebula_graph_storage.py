@@ -12,6 +12,7 @@ from lightrag.kg import (
 )
 from lightrag.kg.nebula_impl import (
     _canonical_edge_pair,
+    _ngql_escape_string,
     _normalize_space_name,
     _parse_nebula_hosts,
     _short_hash_suffix,
@@ -59,6 +60,19 @@ def test_normalize_space_name_uses_base_for_empty_workspace():
 
 def test_canonical_edge_pair_is_undirected():
     assert _canonical_edge_pair("B", "A") == ("A", "B")
+
+
+def test_ngql_escape_string_escapes_control_characters():
+    raw = 'line1\nline2\tcell\rend "quote" \\ slash'
+    escaped = _ngql_escape_string(raw)
+    assert "\n" not in escaped
+    assert "\r" not in escaped
+    assert "\t" not in escaped
+    assert "\\n" in escaped
+    assert "\\r" in escaped
+    assert "\\t" in escaped
+    assert '\\"quote\\"' in escaped
+    assert "\\\\" in escaped
 
 
 def test_short_hash_suffix_rejects_non_positive_length():
@@ -503,6 +517,44 @@ async def test_nebula_edge_reads_are_undirected():
     fetch_sql_2 = execute_in_space.await_args_list[2].args[0]
     assert '"A"->"B"' in fetch_sql_1
     assert '"A"->"B"' in fetch_sql_2
+
+
+@pytest.mark.asyncio
+async def test_nebula_upsert_edge_forces_canonical_source_target_properties():
+    storage = build_storage(workspace="finance")
+    execute_in_space = AsyncMock(
+        side_effect=[
+            object(),
+            [
+                {
+                    "source_id": "A",
+                    "target_id": "B",
+                    "relationship": "rel",
+                    "description": "d",
+                    "weight": 1.0,
+                }
+            ],
+        ]
+    )
+    with patch.object(storage, "_execute_in_space", execute_in_space):
+        await storage.upsert_edge(
+            "B",
+            "A",
+            {
+                "source_id": "B",
+                "target_id": "A",
+                "relationship": "rel",
+                "description": "d",
+                "weight": 1.0,
+            },
+        )
+        edge = await storage.get_edge("A", "B")
+
+    assert edge is not None
+    assert edge["source_id"] == "A"
+    assert edge["target_id"] == "B"
+    upsert_sql = execute_in_space.await_args_list[0].args[0]
+    assert 'VALUES "A"->"B":("A", "B"' in upsert_sql
 
 
 @pytest.mark.asyncio
