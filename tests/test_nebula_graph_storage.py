@@ -95,19 +95,32 @@ def test_nebula_graph_storage_sets_initialized_as_instance_attr():
 @pytest.mark.asyncio
 async def test_initialize_creates_space_and_schema():
     storage = build_storage(workspace="finance")
-    exec_mock = AsyncMock()
-    with (
-        patch.object(storage, "_execute", exec_mock, create=True),
-        patch.object(storage, "_wait_for_schema_ready", AsyncMock(), create=True),
-        patch.object(storage, "_wait_for_index_ready", AsyncMock(), create=True),
-    ):
+    exec_mock = AsyncMock(
+        side_effect=lambda sql: (
+            [[storage._space_name]]
+            if "SHOW SPACES" in sql
+            else [["job", "entity_entity_id_idx", "FINISHED"]]
+            if "SHOW TAG INDEX STATUS" in sql
+            else [["job", "relation_pair_idx", "FINISHED"]]
+            if "SHOW EDGE INDEX STATUS" in sql
+            else object()
+        )
+    )
+    with patch.object(storage, "_execute", exec_mock, create=True):
         await storage._ensure_space_ready()
 
     sql_calls = [call.args[0] for call in exec_mock.await_args_list]
     assert any("CREATE SPACE IF NOT EXISTS" in sql for sql in sql_calls)
+    assert any("SHOW SPACES" in sql for sql in sql_calls)
     assert any("USE " in sql for sql in sql_calls)
     assert any("CREATE TAG IF NOT EXISTS entity" in sql for sql in sql_calls)
     assert any("CREATE EDGE IF NOT EXISTS relation" in sql for sql in sql_calls)
+    assert any("CREATE FULLTEXT TAG INDEX IF NOT EXISTS entity_name_ft_idx" in sql for sql in sql_calls)
+    assert any("CREATE FULLTEXT EDGE INDEX IF NOT EXISTS relation_rel_ft_idx" in sql for sql in sql_calls)
+    assert any("REBUILD TAG INDEX entity_entity_id_idx" in sql for sql in sql_calls)
+    assert any("REBUILD EDGE INDEX relation_pair_idx" in sql for sql in sql_calls)
+    assert any("SHOW TAG INDEX STATUS" in sql for sql in sql_calls)
+    assert any("SHOW EDGE INDEX STATUS" in sql for sql in sql_calls)
 
 
 @pytest.mark.asyncio
@@ -157,3 +170,68 @@ async def test_finalize_closes_client_resources():
     assert storage._session_pool is None
     assert storage._connection_pool is None
     assert storage._initialized is False
+
+
+@pytest.mark.asyncio
+async def test_wait_for_space_ready_polls_until_target_space_visible():
+    storage = build_storage(workspace="finance")
+    storage._schema_retry_times = 3
+    storage._schema_retry_delay_ms = 0
+    execute_mock = AsyncMock(
+        side_effect=[
+            [["other_space"]],
+            [[storage._space_name]],
+        ]
+    )
+    with patch.object(storage, "_execute", execute_mock, create=True):
+        await storage._wait_for_space_ready()
+
+    assert execute_mock.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_wait_for_space_ready_times_out_when_space_not_visible():
+    storage = build_storage(workspace="finance")
+    storage._schema_retry_times = 2
+    storage._schema_retry_delay_ms = 0
+    execute_mock = AsyncMock(side_effect=[[["other_space"]], [["still_other"]]])
+    with patch.object(storage, "_execute", execute_mock, create=True):
+        with pytest.raises(TimeoutError, match="space"):
+            await storage._wait_for_space_ready()
+
+
+@pytest.mark.asyncio
+async def test_wait_for_index_ready_polls_until_status_finished():
+    storage = build_storage(workspace="finance")
+    storage._schema_retry_times = 3
+    storage._schema_retry_delay_ms = 0
+    execute_in_space_mock = AsyncMock(
+        side_effect=[
+            [["job", "entity_entity_id_idx", "RUNNING"]],
+            [["job", "relation_pair_idx", "RUNNING"]],
+            [["job", "entity_entity_id_idx", "FINISHED"]],
+            [["job", "relation_pair_idx", "FINISHED"]],
+        ]
+    )
+    with patch.object(storage, "_execute_in_space", execute_in_space_mock, create=True):
+        await storage._wait_for_index_ready()
+
+    assert execute_in_space_mock.await_count == 4
+
+
+@pytest.mark.asyncio
+async def test_wait_for_index_ready_times_out_when_still_running():
+    storage = build_storage(workspace="finance")
+    storage._schema_retry_times = 2
+    storage._schema_retry_delay_ms = 0
+    execute_in_space_mock = AsyncMock(
+        side_effect=[
+            [["job", "entity_entity_id_idx", "RUNNING"]],
+            [["job", "relation_pair_idx", "RUNNING"]],
+            [["job", "entity_entity_id_idx", "RUNNING"]],
+            [["job", "relation_pair_idx", "RUNNING"]],
+        ]
+    )
+    with patch.object(storage, "_execute_in_space", execute_in_space_mock, create=True):
+        with pytest.raises(TimeoutError, match="indexes"):
+            await storage._wait_for_index_ready()

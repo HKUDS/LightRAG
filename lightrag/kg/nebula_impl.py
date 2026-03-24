@@ -19,6 +19,17 @@ _DEFAULT_PARTITION_NUM = 10
 _DEFAULT_REPLICA_FACTOR = 1
 _DEFAULT_SCHEMA_RETRY_TIMES = 30
 _DEFAULT_SCHEMA_RETRY_DELAY_MS = 200
+_INDEX_STATUS_DONE_TOKENS = ("FINISHED", "SUCCEEDED", "SUCCESS", "DONE", "COMPLETED")
+_INDEX_STATUS_PENDING_TOKENS = (
+    "RUNNING",
+    "QUEUE",
+    "QUEUED",
+    "QUEUING",
+    "IN_PROGRESS",
+    "BUILDING",
+    "STARTING",
+)
+_INDEX_STATUS_FAILED_TOKENS = ("FAILED", "FAIL", "ERROR", "CANCELLED", "STOPPED")
 
 
 def _load_nebula_client_types() -> tuple[Any, Any, Any]:
@@ -163,6 +174,30 @@ def _parse_nebula_hosts(hosts_value: str | None) -> list[tuple[str, int]]:
     return hosts
 
 
+def _flatten_result_text(result: Any) -> str:
+    if result is None:
+        return ""
+    if isinstance(result, bytes):
+        return result.decode("utf-8", errors="ignore")
+    if isinstance(result, str):
+        return result
+    if isinstance(result, dict):
+        return " ".join(_flatten_result_text(v) for v in result.values())
+    if isinstance(result, (list, tuple, set)):
+        return " ".join(_flatten_result_text(v) for v in result)
+
+    rows_attr = getattr(result, "rows", None)
+    if callable(rows_attr):
+        try:
+            return _flatten_result_text(rows_attr())
+        except Exception:
+            pass
+    elif rows_attr is not None:
+        return _flatten_result_text(rows_attr)
+
+    return str(result)
+
+
 @final
 @dataclass
 class NebulaGraphStorage(BaseGraphStorage):
@@ -280,6 +315,7 @@ class NebulaGraphStorage(BaseGraphStorage):
 
     async def _ensure_space_ready(self) -> None:
         await self._create_space_if_needed()
+        await self._wait_for_space_ready()
         await self._use_space()
         await self._create_schema_if_needed()
         await self._create_indexes_if_needed()
@@ -296,6 +332,23 @@ class NebulaGraphStorage(BaseGraphStorage):
 
     async def _use_space(self) -> None:
         await self._execute(f"USE `{self._space_name}`;")
+
+    async def _wait_for_space_ready(self) -> None:
+        for attempt in range(1, self._schema_retry_times + 1):
+            try:
+                result = await self._execute("SHOW SPACES;")
+                if self._space_name.lower() in _flatten_result_text(result).lower():
+                    return
+            except RuntimeError:
+                if attempt == self._schema_retry_times:
+                    raise TimeoutError(
+                        "Nebula space did not become ready in the expected time."
+                    ) from None
+            if attempt == self._schema_retry_times:
+                raise TimeoutError(
+                    "Nebula space did not become ready in the expected time."
+                )
+            await asyncio.sleep(self._schema_retry_delay_ms / 1000)
 
     async def _create_schema_if_needed(self) -> None:
         await self._execute(
@@ -324,6 +377,8 @@ class NebulaGraphStorage(BaseGraphStorage):
             "CREATE EDGE INDEX IF NOT EXISTS relation_pair_idx "
             "ON relation(source_id(256), target_id(256));"
         )
+        await self._execute("REBUILD TAG INDEX entity_entity_id_idx;")
+        await self._execute("REBUILD EDGE INDEX relation_pair_idx;")
         try:
             await self._execute(
                 "CREATE FULLTEXT TAG INDEX IF NOT EXISTS entity_name_ft_idx "
@@ -354,15 +409,32 @@ class NebulaGraphStorage(BaseGraphStorage):
     async def _wait_for_index_ready(self) -> None:
         for attempt in range(1, self._schema_retry_times + 1):
             try:
-                await self._execute_in_space("SHOW TAG INDEXES;")
-                await self._execute_in_space("SHOW EDGE INDEXES;")
-                return
+                tag_status = await self._execute_in_space("SHOW TAG INDEX STATUS;")
+                edge_status = await self._execute_in_space("SHOW EDGE INDEX STATUS;")
+                if self._is_index_status_ready(tag_status) and self._is_index_status_ready(
+                    edge_status
+                ):
+                    return
             except RuntimeError:
                 if attempt == self._schema_retry_times:
                     raise TimeoutError(
                         "Nebula indexes did not become ready in the expected time."
                     ) from None
                 await asyncio.sleep(self._schema_retry_delay_ms / 1000)
+                continue
+            if attempt == self._schema_retry_times:
+                raise TimeoutError(
+                    "Nebula indexes did not become ready in the expected time."
+                )
+            await asyncio.sleep(self._schema_retry_delay_ms / 1000)
+
+    def _is_index_status_ready(self, result: Any) -> bool:
+        status_text = _flatten_result_text(result).upper()
+        if any(token in status_text for token in _INDEX_STATUS_FAILED_TOKENS):
+            raise RuntimeError(f"Nebula index job failed: {status_text}")
+        if any(token in status_text for token in _INDEX_STATUS_PENDING_TOKENS):
+            return False
+        return any(token in status_text for token in _INDEX_STATUS_DONE_TOKENS)
 
     async def index_done_callback(self) -> None:
         return None
