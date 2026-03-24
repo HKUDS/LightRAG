@@ -3557,7 +3557,7 @@ async def _perform_kg_search(
         if texts_to_embed:
             try:
                 all_embeddings = await actual_embedding_func(
-                    texts_to_embed, context="query" , _priority=5
+                    texts_to_embed, context="query", _priority=5
                 )
                 for i, purpose in enumerate(text_purposes):
                     if purpose == "query":
