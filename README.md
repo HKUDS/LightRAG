@@ -1278,9 +1278,11 @@ NebulaGraph can be used as the `GRAPH_STORAGE` backend through `NebulaGraphStora
 * **Install dependency**: recommended path is `uv sync --extra offline-storage`; if you only need the Nebula client, `uv add nebula3-python` also works.
 * **Storage selection**: if you choose graph storage via environment variables, set `LIGHTRAG_GRAPH_STORAGE=NebulaGraphStorage`.
 * **Required Nebula connection env vars**: `NEBULA_HOSTS`, `NEBULA_USER`, `NEBULA_PASSWORD`.
+  `NEBULA_PASSWORD` may be an empty string if your NebulaGraph deployment allows passwordless access.
 * **Input file**: prepare a text file before running the demo script (for example, `./book.txt`).
 * **Workspace mapping**: each LightRAG `workspace` maps to a dedicated NebulaGraph `SPACE` (space-per-workspace isolation).
 * **Full-text note**: high-quality `search_labels` depends on NebulaGraph full-text search backed by **Elasticsearch + Listener**. If Elasticsearch/Listener is unavailable, LightRAG falls back to a degraded contains-based path.
+* **Listener automation**: if you want newly created workspaces to auto-register Nebula listeners, set `NEBULA_LISTENER_HOSTS` (for example, `172.28.0.10:9789`).
 
 ```python
 rag = LightRAG(

@@ -76,6 +76,7 @@ def test_nebula_env_example_documents_required_keys():
     assert "NEBULA_HOSTS" in content
     assert "NEBULA_USER" in content
     assert "NEBULA_PASSWORD" in content
+    assert "NEBULA_LISTENER_HOSTS" in content
 
 
 def test_nebula_readme_documents_manual_configuration_flow():
@@ -93,9 +94,11 @@ def test_nebula_readme_documents_manual_configuration_flow():
         assert "NEBULA_HOSTS" in content
         assert "NEBULA_USER" in content
         assert "NEBULA_PASSWORD" in content
+        assert "NEBULA_LISTENER_HOSTS" in content
         assert "search_labels" in content
         assert "Elasticsearch" in content
         assert "Listener" in content
+        assert "empty string" in content or "空字符串" in content
         assert re.search(
             r"workspace.{0,160}space|space.{0,160}workspace",
             content,

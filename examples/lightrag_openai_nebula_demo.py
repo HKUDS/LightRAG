@@ -9,6 +9,11 @@ Required environment variables:
     NEBULA_PASSWORD=nebula
     OPENAI_API_KEY=your-openai-api-key
 
+Optional environment variables:
+    NEBULA_LISTENER_HOSTS=172.28.0.10:9789
+        Enable auto-registration of Nebula listeners for newly created workspaces.
+        Use this when you want new workspaces to automatically provision full-text support.
+
 Required input file:
     BOOK_FILE=./book.txt (must exist before running this demo)
 
@@ -44,13 +49,16 @@ async def initialize_rag() -> LightRAG:
 
 
 async def main():
-    required_envs = ("OPENAI_API_KEY", "NEBULA_HOSTS", "NEBULA_USER", "NEBULA_PASSWORD")
+    required_envs = ("OPENAI_API_KEY", "NEBULA_HOSTS", "NEBULA_USER")
     missing_envs = [name for name in required_envs if not os.getenv(name)]
+    if "NEBULA_PASSWORD" not in os.environ:
+        missing_envs.append("NEBULA_PASSWORD")
     if missing_envs:
         raise RuntimeError(
             "Missing required environment variables: "
             + ", ".join(missing_envs)
-            + ". Please configure Nebula and OpenAI credentials before running this demo."
+            + ". Please configure Nebula and OpenAI credentials before running this demo. "
+            + "NEBULA_PASSWORD may be an empty string, but it must still be set."
         )
     if not os.path.exists(BOOK_FILE):
         raise FileNotFoundError(
