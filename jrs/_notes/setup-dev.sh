@@ -20,6 +20,7 @@
 
 # 3.  --- COMMIT LOCAL CHANGES ---
     #   pre-commit run --all-files
+    #   uv pip install -e .          # ← KEEP OUR PATCH ACTIVE
     #   git add .
     #   git commit -m "Checkpoint: Save WebUI modifications and built assets"
 

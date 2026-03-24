@@ -1654,7 +1654,7 @@ export default function SanitizeData() {
             <button
               onClick={handleRemoveSepDelimiters}  // We'll add this handler in Step 2
               tabIndex={buttonTabIndex}
-              className="ml-auto px-3.5 py-1.5 bg-yellow-600 text-white rounded hover:bg-yellow-700 text-sm flex items-center gap-1.5 shadow-sm"
+              className="hidden ml-auto px-3.5 py-1.5 bg-yellow-600 text-white rounded hover:bg-yellow-700 text-sm flex items-center gap-1.5 shadow-sm"
               title="Remove <SEP> delimiters from all entity and relationship descriptions"
             >
               Clean Descriptions
