@@ -411,3 +411,121 @@ async def test_execute_in_space_uses_same_session_for_use_and_query():
     assert session.execute.call_args_list[0].args[0] == f"USE `{storage._space_name}`;"
     assert session.execute.call_args_list[1].args[0] == "SHOW TAG INDEX STATUS;"
     session.release.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_nebula_upsert_and_get_node_roundtrip():
+    storage = build_storage(workspace="finance")
+    execute_in_space = AsyncMock(
+        side_effect=[
+            object(),
+            [
+                {
+                    "entity_id": "A",
+                    "entity_type": "TypeX",
+                    "description": "desc",
+                    "keywords": "k1,k2",
+                    "source_id": "src-1",
+                }
+            ],
+        ]
+    )
+    with patch.object(storage, "_execute_in_space", execute_in_space):
+        await storage.upsert_node(
+            "A",
+            {
+                "entity_id": "A",
+                "entity_type": "TypeX",
+                "description": "desc",
+                "keywords": "k1,k2",
+                "source_id": "src-1",
+            },
+        )
+        node = await storage.get_node("A")
+
+    assert node is not None
+    assert node["entity_id"] == "A"
+    assert node["entity_type"] == "TypeX"
+    assert node["description"] == "desc"
+    assert node["keywords"] == "k1,k2"
+    assert node["source_id"] == "src-1"
+    upsert_sql = execute_in_space.await_args_list[0].args[0]
+    assert "INSERT VERTEX entity" in upsert_sql
+    assert 'VALUES "A"' in upsert_sql
+    get_sql = execute_in_space.await_args_list[1].args[0]
+    assert "FETCH PROP ON entity" in get_sql
+    assert '"A"' in get_sql
+
+
+@pytest.mark.asyncio
+async def test_nebula_edge_reads_are_undirected():
+    storage = build_storage(workspace="finance")
+    execute_in_space = AsyncMock(
+        side_effect=[
+            object(),
+            [
+                {
+                    "source_id": "A",
+                    "target_id": "B",
+                    "relationship": "rel",
+                    "description": "d",
+                    "weight": 1.0,
+                }
+            ],
+            [
+                {
+                    "source_id": "A",
+                    "target_id": "B",
+                    "relationship": "rel",
+                    "description": "d",
+                    "weight": 1.0,
+                }
+            ],
+        ]
+    )
+    with patch.object(storage, "_execute_in_space", execute_in_space):
+        await storage.upsert_edge(
+            "B",
+            "A",
+            {
+                "relationship": "rel",
+                "description": "d",
+                "weight": 1.0,
+            },
+        )
+        forward = await storage.get_edge("A", "B")
+        reverse = await storage.get_edge("B", "A")
+
+    assert forward == reverse
+    upsert_sql = execute_in_space.await_args_list[0].args[0]
+    assert 'VALUES "A"->"B"' in upsert_sql
+    fetch_sql_1 = execute_in_space.await_args_list[1].args[0]
+    fetch_sql_2 = execute_in_space.await_args_list[2].args[0]
+    assert '"A"->"B"' in fetch_sql_1
+    assert '"A"->"B"' in fetch_sql_2
+
+
+@pytest.mark.asyncio
+async def test_nebula_delete_node_executes_delete_vertex():
+    storage = build_storage(workspace="finance")
+    execute_in_space = AsyncMock(return_value=object())
+    with patch.object(storage, "_execute_in_space", execute_in_space):
+        await storage.delete_node("A")
+
+    sql = execute_in_space.await_args_list[0].args[0]
+    assert "DELETE VERTEX" in sql
+    assert '"A"' in sql
+
+
+@pytest.mark.asyncio
+async def test_nebula_remove_edges_canonicalizes_pairs():
+    storage = build_storage(workspace="finance")
+    execute_in_space = AsyncMock(return_value=object())
+    with patch.object(storage, "_execute_in_space", execute_in_space):
+        await storage.remove_edges([("B", "A"), ("D", "C")])
+
+    sql_calls = [call.args[0] for call in execute_in_space.await_args_list]
+    assert any('"A"->"B"' in sql for sql in sql_calls)
+    assert any('"C"->"D"' in sql for sql in sql_calls)
+    assert not any('"B"->"A"' in sql for sql in sql_calls)
+    assert not any('"D"->"C"' in sql for sql in sql_calls)

@@ -30,6 +30,21 @@ _INDEX_STATUS_PENDING_TOKENS = (
     "STARTING",
 )
 _INDEX_STATUS_FAILED_TOKENS = ("FAILED", "FAIL", "ERROR", "CANCELLED", "STOPPED")
+_NODE_FIELDS = (
+    "entity_id",
+    "name",
+    "entity_type",
+    "description",
+    "keywords",
+    "source_id",
+)
+_EDGE_FIELDS = (
+    "source_id",
+    "target_id",
+    "relationship",
+    "description",
+    "weight",
+)
 
 
 class NebulaIndexJobError(RuntimeError):
@@ -200,6 +215,150 @@ def _flatten_result_text(result: Any) -> str:
         return _flatten_result_text(rows_attr)
 
     return str(result)
+
+
+def _ngql_escape_string(value: str) -> str:
+    return value.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _ngql_quote(value: Any) -> str:
+    return f'"{_ngql_escape_string(str(value))}"'
+
+
+def _ngql_literal(value: Any) -> str:
+    if value is None:
+        return "NULL"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return str(value)
+    return _ngql_quote(value)
+
+
+def _coerce_edge_weight(value: Any) -> float:
+    if value is None:
+        return 1.0
+    if isinstance(value, bool):
+        return 1.0 if value else 0.0
+    if isinstance(value, (int, float)):
+        return float(value)
+    try:
+        return float(str(value))
+    except (TypeError, ValueError):
+        return 1.0
+
+
+def _decode_if_bytes(value: Any) -> Any:
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="ignore")
+    return value
+
+
+def _unwrap_nebula_value(value: Any) -> Any:
+    if value is None:
+        return None
+
+    cast_fn = getattr(value, "cast", None)
+    if callable(cast_fn):
+        try:
+            return _decode_if_bytes(cast_fn())
+        except Exception:
+            pass
+
+    for check_name, read_name in (
+        ("is_null", None),
+        ("is_string", "as_string"),
+        ("is_int", "as_int"),
+        ("is_double", "as_double"),
+        ("is_bool", "as_bool"),
+    ):
+        check_fn = getattr(value, check_name, None)
+        if not callable(check_fn):
+            continue
+        try:
+            checked = check_fn()
+        except Exception:
+            continue
+        if not checked:
+            continue
+        if read_name is None:
+            return None
+        read_fn = getattr(value, read_name, None)
+        if callable(read_fn):
+            try:
+                return _decode_if_bytes(read_fn())
+            except Exception:
+                pass
+
+    if isinstance(value, dict):
+        return {str(k): _unwrap_nebula_value(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_unwrap_nebula_value(v) for v in value]
+    return _decode_if_bytes(value)
+
+
+def _result_to_rows(result: Any) -> list[dict[str, Any]]:
+    if result is None:
+        return []
+
+    if isinstance(result, dict):
+        return [result]
+    if isinstance(result, list):
+        rows: list[dict[str, Any]] = []
+        for item in result:
+            if isinstance(item, dict):
+                rows.append(item)
+        return rows
+
+    keys: list[str] = []
+    keys_fn = getattr(result, "keys", None)
+    if callable(keys_fn):
+        try:
+            raw_keys = keys_fn()
+            keys = [str(_decode_if_bytes(k)) for k in raw_keys]
+        except Exception:
+            keys = []
+
+    rows_attr = getattr(result, "rows", None)
+    if callable(rows_attr):
+        try:
+            raw_rows = rows_attr()
+        except Exception:
+            raw_rows = []
+    else:
+        raw_rows = rows_attr if isinstance(rows_attr, list) else []
+
+    parsed_rows: list[dict[str, Any]] = []
+    for row in raw_rows:
+        if isinstance(row, dict):
+            parsed_rows.append(row)
+            continue
+        values = None
+        values_attr = getattr(row, "values", None)
+        if callable(values_attr):
+            try:
+                values = values_attr()
+            except Exception:
+                values = None
+        elif isinstance(values_attr, (list, tuple)):
+            values = values_attr
+        if values is None:
+            continue
+        row_values = [_unwrap_nebula_value(v) for v in values]
+        if keys and len(keys) == len(row_values):
+            parsed_rows.append(dict(zip(keys, row_values, strict=True)))
+            continue
+        parsed_rows.append(
+            {f"col_{idx}": value for idx, value in enumerate(row_values)}
+        )
+    return parsed_rows
+
+
+def _first_row(result: Any) -> dict[str, Any] | None:
+    rows = _result_to_rows(result)
+    if not rows:
+        return None
+    return rows[0]
 
 
 @final
@@ -383,7 +542,9 @@ class NebulaGraphStorage(BaseGraphStorage):
             "CREATE TAG IF NOT EXISTS entity("
             "entity_id string, "
             "name string, "
+            "entity_type string, "
             "description string, "
+            "keywords string, "
             "source_id string"
             ");"
         )
@@ -474,10 +635,10 @@ class NebulaGraphStorage(BaseGraphStorage):
         return {"status": "error", "message": "unsupported"}
 
     async def has_node(self, node_id: str) -> bool:
-        raise NotImplementedError("Nebula I/O is not implemented in this task")
+        return await self.get_node(node_id) is not None
 
     async def has_edge(self, source_node_id: str, target_node_id: str) -> bool:
-        raise NotImplementedError("Nebula I/O is not implemented in this task")
+        return await self.get_edge(source_node_id, target_node_id) is not None
 
     async def node_degree(self, node_id: str) -> int:
         raise NotImplementedError("Nebula I/O is not implemented in this task")
@@ -486,32 +647,116 @@ class NebulaGraphStorage(BaseGraphStorage):
         raise NotImplementedError("Nebula I/O is not implemented in this task")
 
     async def get_node(self, node_id: str) -> dict[str, str] | None:
-        raise NotImplementedError("Nebula I/O is not implemented in this task")
+        vid = _ngql_quote(node_id)
+        result = await self._execute_in_space(
+            "FETCH PROP ON entity "
+            f"{vid} "
+            "YIELD "
+            "properties(vertex).entity_id AS entity_id, "
+            "properties(vertex).name AS name, "
+            "properties(vertex).entity_type AS entity_type, "
+            "properties(vertex).description AS description, "
+            "properties(vertex).keywords AS keywords, "
+            "properties(vertex).source_id AS source_id;"
+        )
+        row = _first_row(result)
+        if row is None:
+            return None
+        output: dict[str, str] = {}
+        for field in _NODE_FIELDS:
+            value = row.get(field)
+            if value is None:
+                continue
+            output[field] = str(value)
+        if "entity_id" not in output:
+            output["entity_id"] = node_id
+        return output
 
     async def get_edge(
         self, source_node_id: str, target_node_id: str
     ) -> dict[str, str] | None:
-        raise NotImplementedError("Nebula I/O is not implemented in this task")
+        src_id, tgt_id = _canonical_edge_pair(source_node_id, target_node_id)
+        result = await self._execute_in_space(
+            "FETCH PROP ON relation "
+            f"{_ngql_quote(src_id)}->{_ngql_quote(tgt_id)} "
+            "YIELD "
+            "properties(edge).source_id AS source_id, "
+            "properties(edge).target_id AS target_id, "
+            "properties(edge).relationship AS relationship, "
+            "properties(edge).description AS description, "
+            "properties(edge).weight AS weight;"
+        )
+        row = _first_row(result)
+        if row is None:
+            return None
+        output: dict[str, Any] = {}
+        for field in _EDGE_FIELDS:
+            value = row.get(field)
+            if value is None:
+                continue
+            output[field] = value
+        return output
 
     async def get_node_edges(self, source_node_id: str) -> list[tuple[str, str]] | None:
         raise NotImplementedError("Nebula I/O is not implemented in this task")
 
     async def upsert_node(self, node_id: str, node_data: dict[str, str]) -> None:
-        raise NotImplementedError("Nebula I/O is not implemented in this task")
+        entity_id = str(node_id)
+        name = str(node_data.get("name", entity_id))
+        entity_type = str(node_data.get("entity_type", ""))
+        description = str(node_data.get("description", ""))
+        keywords = str(node_data.get("keywords", ""))
+        source_id = str(node_data.get("source_id", ""))
+
+        await self._execute_in_space(
+            "INSERT VERTEX entity(entity_id, name, entity_type, description, keywords, source_id) "
+            f"VALUES {_ngql_quote(entity_id)}:"
+            "("
+            f"{_ngql_literal(entity_id)}, "
+            f"{_ngql_literal(name)}, "
+            f"{_ngql_literal(entity_type)}, "
+            f"{_ngql_literal(description)}, "
+            f"{_ngql_literal(keywords)}, "
+            f"{_ngql_literal(source_id)}"
+            ");"
+        )
 
     async def upsert_edge(
         self, source_node_id: str, target_node_id: str, edge_data: dict[str, str]
     ) -> None:
-        raise NotImplementedError("Nebula I/O is not implemented in this task")
+        src_id, tgt_id = _canonical_edge_pair(source_node_id, target_node_id)
+        source_id = str(edge_data.get("source_id", src_id))
+        target_id = str(edge_data.get("target_id", tgt_id))
+        relationship = str(edge_data.get("relationship", ""))
+        description = str(edge_data.get("description", ""))
+        weight = _coerce_edge_weight(edge_data.get("weight"))
+
+        await self._execute_in_space(
+            "INSERT EDGE relation(source_id, target_id, relationship, description, weight) "
+            f"VALUES {_ngql_quote(src_id)}->{_ngql_quote(tgt_id)}:"
+            "("
+            f"{_ngql_literal(source_id)}, "
+            f"{_ngql_literal(target_id)}, "
+            f"{_ngql_literal(relationship)}, "
+            f"{_ngql_literal(description)}, "
+            f"{_ngql_literal(weight)}"
+            ");"
+        )
 
     async def delete_node(self, node_id: str) -> None:
-        raise NotImplementedError("Nebula I/O is not implemented in this task")
+        await self._execute_in_space(f"DELETE VERTEX {_ngql_quote(node_id)} WITH EDGE;")
 
     async def remove_nodes(self, nodes: list[str]):
         raise NotImplementedError("Nebula I/O is not implemented in this task")
 
     async def remove_edges(self, edges: list[tuple[str, str]]):
-        raise NotImplementedError("Nebula I/O is not implemented in this task")
+        unique_pairs: set[tuple[str, str]] = set()
+        for src, tgt in edges:
+            unique_pairs.add(_canonical_edge_pair(src, tgt))
+        for src_id, tgt_id in unique_pairs:
+            await self._execute_in_space(
+                f"DELETE EDGE relation {_ngql_quote(src_id)}->{_ngql_quote(tgt_id)};"
+            )
 
     async def get_all_labels(self) -> list[str]:
         raise NotImplementedError("Nebula I/O is not implemented in this task")
