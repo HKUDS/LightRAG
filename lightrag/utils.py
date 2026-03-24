@@ -3230,9 +3230,6 @@ async def convert_to_user_format(
 
         # Batch lookup metadata for all unique document IDs
         if unique_doc_ids:
-            logger.debug(
-                f"[convert_to_user_format] Looking up metadata for {len(unique_doc_ids)} unique documents"
-            )
             for doc_id in unique_doc_ids:
                 try:
                     doc_data = await doc_status_storage.get_by_id(doc_id)
