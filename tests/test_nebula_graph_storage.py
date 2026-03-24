@@ -95,8 +95,9 @@ def test_nebula_graph_storage_sets_initialized_as_instance_attr():
 @pytest.mark.asyncio
 async def test_initialize_creates_space_and_schema():
     storage = build_storage(workspace="finance")
+    session = Mock()
     exec_mock = AsyncMock(
-        side_effect=lambda sql: (
+        side_effect=lambda sql, **_: (
             [[storage._space_name]]
             if "SHOW SPACES" in sql
             else [["job", "entity_entity_id_idx", "FINISHED"]]
@@ -106,7 +107,11 @@ async def test_initialize_creates_space_and_schema():
             else object()
         )
     )
-    with patch.object(storage, "_execute", exec_mock, create=True):
+    with (
+        patch.object(storage, "_execute", exec_mock, create=True),
+        patch.object(storage, "_acquire_session", AsyncMock(return_value=session), create=True),
+        patch.object(storage, "_release_session", AsyncMock(), create=True),
+    ):
         await storage._ensure_space_ready()
 
     sql_calls = [call.args[0] for call in exec_mock.await_args_list]
@@ -155,19 +160,40 @@ async def test_initialize_is_idempotent():
 
 
 @pytest.mark.asyncio
+async def test_bootstrap_client_initializes_connection_pool_only():
+    storage = build_storage()
+    storage._hosts = [("127.0.0.1", 9669)]
+    storage._user = "root"
+    storage._password = "nebula"
+    config = Mock()
+    connection_pool = Mock()
+    connection_pool.init.return_value = True
+    connection_pool_cls = Mock(return_value=connection_pool)
+
+    with (
+        patch(
+            "lightrag.kg.nebula_impl._load_nebula_client_types",
+            return_value=(Mock(return_value=config), connection_pool_cls),
+        ),
+        patch.object(storage, "_ensure_space_ready", AsyncMock()),
+    ):
+        await storage.initialize()
+
+    connection_pool_cls.assert_called_once()
+    connection_pool.init.assert_called_once()
+    assert storage._connection_pool is connection_pool
+
+
+@pytest.mark.asyncio
 async def test_finalize_closes_client_resources():
     storage = build_storage()
-    session_pool = Mock()
     connection_pool = Mock()
-    storage._session_pool = session_pool
     storage._connection_pool = connection_pool
     storage._initialized = True
 
     await storage.finalize()
 
-    session_pool.close.assert_called_once()
     connection_pool.close.assert_called_once()
-    assert storage._session_pool is None
     assert storage._connection_pool is None
     assert storage._initialized is False
 
@@ -235,3 +261,52 @@ async def test_wait_for_index_ready_times_out_when_still_running():
     with patch.object(storage, "_execute_in_space", execute_in_space_mock, create=True):
         with pytest.raises(TimeoutError, match="indexes"):
             await storage._wait_for_index_ready()
+
+
+@pytest.mark.asyncio
+async def test_wait_for_schema_ready_times_out_when_schema_not_visible():
+    storage = build_storage(workspace="finance")
+    storage._schema_retry_times = 2
+    storage._schema_retry_delay_ms = 0
+    execute_in_space_mock = AsyncMock(side_effect=RuntimeError("not ready"))
+    with patch.object(storage, "_execute_in_space", execute_in_space_mock, create=True):
+        with pytest.raises(TimeoutError, match="schema"):
+            await storage._wait_for_schema_ready()
+
+
+@pytest.mark.asyncio
+async def test_wait_for_index_ready_raises_immediately_on_failed_job():
+    storage = build_storage(workspace="finance")
+    storage._schema_retry_times = 3
+    storage._schema_retry_delay_ms = 0
+    execute_in_space_mock = AsyncMock(
+        side_effect=[
+            [["job", "entity_entity_id_idx", "FAILED"]],
+            [["job", "relation_pair_idx", "FINISHED"]],
+        ]
+    )
+    with patch.object(storage, "_execute_in_space", execute_in_space_mock, create=True):
+        with pytest.raises(RuntimeError, match="index job failed"):
+            await storage._wait_for_index_ready()
+
+    assert execute_in_space_mock.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_execute_in_space_uses_same_session_for_use_and_query():
+    storage = build_storage(workspace="finance")
+    session = Mock()
+    session.execute.side_effect = [object(), object()]
+    session.release = Mock()
+    connection_pool = Mock()
+    connection_pool.get_session.return_value = session
+    storage._connection_pool = connection_pool
+    storage._user = "root"
+    storage._password = "nebula"
+
+    await storage._execute_in_space("SHOW TAG INDEX STATUS;")
+
+    connection_pool.get_session.assert_called_once_with("root", "nebula")
+    assert session.execute.call_args_list[0].args[0] == f"USE `{storage._space_name}`;"
+    assert session.execute.call_args_list[1].args[0] == "SHOW TAG INDEX STATUS;"
+    session.release.assert_called_once()

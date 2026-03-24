@@ -32,15 +32,19 @@ _INDEX_STATUS_PENDING_TOKENS = (
 _INDEX_STATUS_FAILED_TOKENS = ("FAILED", "FAIL", "ERROR", "CANCELLED", "STOPPED")
 
 
-def _load_nebula_client_types() -> tuple[Any, Any, Any]:
+class NebulaIndexJobError(RuntimeError):
+    """Raised when Nebula explicitly reports an index job failure."""
+
+
+def _load_nebula_client_types() -> tuple[Any, Any]:
     try:
         from nebula3.Config import Config  # type: ignore
-        from nebula3.gclient.net import ConnectionPool, SessionPool  # type: ignore
+        from nebula3.gclient.net import ConnectionPool  # type: ignore
     except Exception as exc:  # pragma: no cover - depends on optional package
         raise ImportError(
             "nebula3-python is required for NebulaGraphStorage. Install with `uv add nebula3-python`."
         ) from exc
-    return Config, ConnectionPool, SessionPool
+    return Config, ConnectionPool
 
 
 def _canonical_edge_pair(src: str, tgt: str) -> tuple[str, str]:
@@ -233,7 +237,7 @@ class NebulaGraphStorage(BaseGraphStorage):
         )
 
         self._connection_pool: Any | None = None
-        self._session_pool: Any | None = None
+        self._fulltext_init_error: str | None = None
         self._initialized = False
 
     async def initialize(self):
@@ -245,9 +249,6 @@ class NebulaGraphStorage(BaseGraphStorage):
         self._initialized = True
 
     async def finalize(self):
-        if self._session_pool is not None:
-            await asyncio.to_thread(self._session_pool.close)
-            self._session_pool = None
         if self._connection_pool is not None:
             await asyncio.to_thread(self._connection_pool.close)
             self._connection_pool = None
@@ -268,10 +269,10 @@ class NebulaGraphStorage(BaseGraphStorage):
             )
 
     async def _bootstrap_client(self) -> None:
-        if self._session_pool is not None and self._connection_pool is not None:
+        if self._connection_pool is not None:
             return
 
-        Config, ConnectionPool, SessionPool = _load_nebula_client_types()
+        Config, ConnectionPool = _load_nebula_client_types()
         config = Config()
         config.timeout = self._timeout_ms
         config.max_connection_pool_size = _env_int("NEBULA_MAX_CONNECTION_POOL_SIZE", 10)
@@ -283,21 +284,32 @@ class NebulaGraphStorage(BaseGraphStorage):
         if not ok:
             raise RuntimeError("Failed to initialize Nebula connection pool.")
 
-        session_pool = SessionPool(
-            self._user, self._password, self._space_name, self._hosts
-        )
-        session_ok = await asyncio.to_thread(session_pool.init, config)
-        if not session_ok:
-            await asyncio.to_thread(connection_pool.close)
-            raise RuntimeError("Failed to initialize Nebula session pool.")
-
         self._connection_pool = connection_pool
-        self._session_pool = session_pool
 
-    async def _execute(self, statement: str) -> Any:
-        if self._session_pool is None:
-            raise RuntimeError("Nebula session pool is not initialized.")
-        result = await asyncio.to_thread(self._session_pool.execute, statement)
+    async def _acquire_session(self) -> Any:
+        if self._connection_pool is None:
+            raise RuntimeError("Nebula connection pool is not initialized.")
+        return await asyncio.to_thread(
+            self._connection_pool.get_session, self._user, self._password
+        )
+
+    async def _release_session(self, session: Any) -> None:
+        if hasattr(session, "release"):
+            await asyncio.to_thread(session.release)
+            return
+        if hasattr(session, "signout"):
+            await asyncio.to_thread(session.signout)
+
+    async def _execute(self, statement: str, *, session: Any | None = None) -> Any:
+        owns_session = session is None
+        active_session = session if session is not None else await self._acquire_session()
+        if active_session is None:
+            raise RuntimeError("Failed to acquire Nebula session from connection pool.")
+        try:
+            result = await asyncio.to_thread(active_session.execute, statement)
+        finally:
+            if owns_session:
+                await self._release_session(active_session)
         if hasattr(result, "is_succeeded") and not result.is_succeeded():
             error_msg = "unknown error"
             if hasattr(result, "error_msg"):
@@ -310,13 +322,18 @@ class NebulaGraphStorage(BaseGraphStorage):
         return result
 
     async def _execute_in_space(self, statement: str) -> Any:
-        await self._use_space()
-        return await self._execute(statement)
+        session = await self._acquire_session()
+        if session is None:
+            raise RuntimeError("Failed to acquire Nebula session from connection pool.")
+        try:
+            await self._use_space(session)
+            return await self._execute(statement, session=session)
+        finally:
+            await self._release_session(session)
 
     async def _ensure_space_ready(self) -> None:
         await self._create_space_if_needed()
         await self._wait_for_space_ready()
-        await self._use_space()
         await self._create_schema_if_needed()
         await self._create_indexes_if_needed()
         await self._wait_for_schema_ready()
@@ -330,8 +347,8 @@ class NebulaGraphStorage(BaseGraphStorage):
         )
         await self._execute(sql)
 
-    async def _use_space(self) -> None:
-        await self._execute(f"USE `{self._space_name}`;")
+    async def _use_space(self, session: Any) -> None:
+        await self._execute(f"USE `{self._space_name}`;", session=session)
 
     async def _wait_for_space_ready(self) -> None:
         for attempt in range(1, self._schema_retry_times + 1):
@@ -351,7 +368,7 @@ class NebulaGraphStorage(BaseGraphStorage):
             await asyncio.sleep(self._schema_retry_delay_ms / 1000)
 
     async def _create_schema_if_needed(self) -> None:
-        await self._execute(
+        await self._execute_in_space(
             "CREATE TAG IF NOT EXISTS entity("
             "entity_id string, "
             "name string, "
@@ -359,7 +376,7 @@ class NebulaGraphStorage(BaseGraphStorage):
             "source_id string"
             ");"
         )
-        await self._execute(
+        await self._execute_in_space(
             "CREATE EDGE IF NOT EXISTS relation("
             "source_id string, "
             "target_id string, "
@@ -370,27 +387,28 @@ class NebulaGraphStorage(BaseGraphStorage):
         )
 
     async def _create_indexes_if_needed(self) -> None:
-        await self._execute(
+        await self._execute_in_space(
             "CREATE TAG INDEX IF NOT EXISTS entity_entity_id_idx ON entity(entity_id(256));"
         )
-        await self._execute(
+        await self._execute_in_space(
             "CREATE EDGE INDEX IF NOT EXISTS relation_pair_idx "
             "ON relation(source_id(256), target_id(256));"
         )
-        await self._execute("REBUILD TAG INDEX entity_entity_id_idx;")
-        await self._execute("REBUILD EDGE INDEX relation_pair_idx;")
+        await self._execute_in_space("REBUILD TAG INDEX entity_entity_id_idx;")
+        await self._execute_in_space("REBUILD EDGE INDEX relation_pair_idx;")
         try:
-            await self._execute(
+            await self._execute_in_space(
                 "CREATE FULLTEXT TAG INDEX IF NOT EXISTS entity_name_ft_idx "
                 "ON entity(name);"
             )
-            await self._execute(
+            await self._execute_in_space(
                 "CREATE FULLTEXT EDGE INDEX IF NOT EXISTS relation_rel_ft_idx "
                 "ON relation(relationship);"
             )
-        except RuntimeError:
-            # Full-text index requires NebulaGraph + fulltext service integration.
-            # Keep initialization alive when the deployment does not enable it.
+        except RuntimeError as exc:
+            # Full-text support depends on deployment wiring outside this backend.
+            # Keep startup alive, but retain the original error for diagnostics.
+            self._fulltext_init_error = str(exc)
             return
 
     async def _wait_for_schema_ready(self) -> None:
@@ -415,6 +433,8 @@ class NebulaGraphStorage(BaseGraphStorage):
                     edge_status
                 ):
                     return
+            except NebulaIndexJobError:
+                raise
             except RuntimeError:
                 if attempt == self._schema_retry_times:
                     raise TimeoutError(
@@ -431,7 +451,7 @@ class NebulaGraphStorage(BaseGraphStorage):
     def _is_index_status_ready(self, result: Any) -> bool:
         status_text = _flatten_result_text(result).upper()
         if any(token in status_text for token in _INDEX_STATUS_FAILED_TOKENS):
-            raise RuntimeError(f"Nebula index job failed: {status_text}")
+            raise NebulaIndexJobError(f"Nebula index job failed: {status_text}")
         if any(token in status_text for token in _INDEX_STATUS_PENDING_TOKENS):
             return False
         return any(token in status_text for token in _INDEX_STATUS_DONE_TOKENS)
