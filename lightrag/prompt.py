@@ -522,6 +522,8 @@ PROMPT_SCHEMA: dict[str, dict[str, PromptRule]] = {
     },
 }
 
+PROMPT_FAMILY_NAMES = frozenset(PROMPT_SCHEMA)
+
 
 def get_default_prompt_config() -> dict[str, Any]:
     return {
