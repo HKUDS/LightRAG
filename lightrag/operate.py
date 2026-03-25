@@ -1,4 +1,5 @@
 from __future__ import annotations
+from copy import deepcopy
 from functools import partial
 from pathlib import Path
 
@@ -85,6 +86,46 @@ INDEXING_TIME_PROMPT_FAMILIES = {"entity_extraction", "summary", "shared"}
 _INDEXING_PROMPT_WARNED_FINGERPRINTS: set[str] = set()
 
 
+def _project_prompt_group_families(
+    payload: dict[str, Any] | None, allowed_families: set[str]
+) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        return {}
+    return {
+        family: deepcopy(payload[family])
+        for family in allowed_families
+        if family in payload
+    }
+
+
+def _resolve_active_prompt_group_payload(
+    global_config: dict[str, Any], group_type: str
+) -> dict[str, Any] | None:
+    active_groups = global_config.get("active_prompt_groups") or {}
+    payload = active_groups.get(group_type)
+    return deepcopy(payload) if isinstance(payload, dict) else None
+
+
+def _resolve_indexing_runtime_addon_params(global_config: dict[str, Any]) -> dict[str, Any]:
+    addon_params = deepcopy(global_config.get("addon_params") or {})
+    language = addon_params.get("language", DEFAULT_SUMMARY_LANGUAGE)
+    entity_types = deepcopy(addon_params.get("entity_types", DEFAULT_ENTITY_TYPES))
+
+    active_indexing_payload = _resolve_active_prompt_group_payload(
+        global_config, "indexing"
+    )
+    if active_indexing_payload:
+        if active_indexing_payload.get("summary_language"):
+            language = active_indexing_payload["summary_language"]
+        if active_indexing_payload.get("entity_types"):
+            entity_types = deepcopy(active_indexing_payload["entity_types"])
+
+    return {
+        "language": language,
+        "entity_types": entity_types,
+    }
+
+
 def _resolve_query_time_prompt_config(
     global_config: dict[str, Any], query_param: QueryParam | None = None
 ) -> dict[str, Any]:
@@ -93,6 +134,17 @@ def _resolve_query_time_prompt_config(
         get_default_prompt_config(),
         global_config.get("prompt_config"),
     )
+    active_retrieval_payload = _resolve_active_prompt_group_payload(
+        global_config, "retrieval"
+    )
+    if active_retrieval_payload is not None:
+        effective_config = merge_prompt_config(
+            effective_config,
+            _project_prompt_group_families(
+                active_retrieval_payload, QUERY_TIME_PROMPT_OVERRIDE_FAMILIES
+            ),
+            allowed_families=QUERY_TIME_PROMPT_OVERRIDE_FAMILIES,
+        )
     prompt_overrides = query_param.prompt_overrides if query_param else None
     if prompt_overrides is not None:
         effective_config = merge_prompt_config(
@@ -124,6 +176,17 @@ def _resolve_indexing_time_prompt_config(global_config: dict[str, Any]) -> dict[
         default_prompt_config,
         global_config.get("prompt_config"),
     )
+    active_indexing_payload = _resolve_active_prompt_group_payload(
+        global_config, "indexing"
+    )
+    if active_indexing_payload is not None:
+        effective_config = merge_prompt_config(
+            effective_config,
+            _project_prompt_group_families(
+                active_indexing_payload, INDEXING_TIME_PROMPT_FAMILIES
+            ),
+            allowed_families=INDEXING_TIME_PROMPT_FAMILIES,
+        )
 
     default_fingerprint = _get_prompt_fingerprint_for_families(
         default_prompt_config, INDEXING_TIME_PROMPT_FAMILIES
@@ -505,7 +568,8 @@ async def _summarize_descriptions(
     # Apply higher priority (8) to entity/relation summary tasks
     use_llm_func = partial(use_llm_func, _priority=8)
 
-    language = global_config["addon_params"].get("language", DEFAULT_SUMMARY_LANGUAGE)
+    resolved_addon_params = _resolve_indexing_runtime_addon_params(global_config)
+    language = resolved_addon_params["language"]
 
     summary_length_recommended = global_config["summary_length_recommended"]
 
@@ -3061,10 +3125,9 @@ async def extract_entities(
 
     ordered_chunks = list(chunks.items())
     # add language and example number params to prompt
-    language = global_config["addon_params"].get("language", DEFAULT_SUMMARY_LANGUAGE)
-    entity_types = global_config["addon_params"].get(
-        "entity_types", DEFAULT_ENTITY_TYPES
-    )
+    resolved_addon_params = _resolve_indexing_runtime_addon_params(global_config)
+    language = resolved_addon_params["language"]
+    entity_types = resolved_addon_params["entity_types"]
 
     prompt_config = _resolve_indexing_time_prompt_config(global_config)
     shared_prompt_config = prompt_config["shared"]
@@ -3603,7 +3666,8 @@ async def extract_keywords_only(
     # 1. Build the examples
     examples = "\n".join(prompt_config["keywords"]["keywords_extraction_examples"])
 
-    language = global_config["addon_params"].get("language", DEFAULT_SUMMARY_LANGUAGE)
+    resolved_addon_params = _resolve_indexing_runtime_addon_params(global_config)
+    language = resolved_addon_params["language"]
 
     # 2. Handle cache if needed - add cache type for keywords
     args_hash = compute_args_hash(

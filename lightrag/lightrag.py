@@ -25,6 +25,7 @@ from typing import (
     Union,
 )
 from lightrag.prompt import PROMPTS
+from lightrag.prompt_version_store import PromptVersionStore
 from lightrag.exceptions import PipelineCancelledException
 from lightrag.constants import (
     DEFAULT_MAX_GLEANING,
@@ -576,6 +577,9 @@ class LightRAG:
         # Init Embedding
         # Step 1: Capture embedding_func and max_token_size before applying rate_limit decorator
         original_embedding_func = self.embedding_func
+        self.prompt_version_store = PromptVersionStore(
+            self.working_dir, workspace=self.workspace
+        )
         embedding_max_token_size = None
         if self.embedding_func and hasattr(self.embedding_func, "max_token_size"):
             embedding_max_token_size = self.embedding_func.max_token_size
@@ -585,9 +589,9 @@ class LightRAG:
         self.embedding_token_limit = embedding_max_token_size
 
         # Fix global_config now
-        global_config = asdict(self)
-        # Restore original EmbeddingFunc object (asdict converts it to dict)
-        global_config["embedding_func"] = original_embedding_func
+        global_config = self._build_runtime_global_config(
+            embedding_func_override=original_embedding_func
+        )
 
         _print_config = ",\n  ".join([f"{k} = {v}" for k, v in global_config.items()])
         logger.debug(f"LightRAG init with param:\n  {_print_config}\n")
@@ -721,6 +725,30 @@ class LightRAG:
         )
 
         self._storages_status = StoragesStatus.CREATED
+
+    def _resolve_active_prompt_groups(self) -> dict[str, Any]:
+        active_groups: dict[str, Any] = {}
+        for group_type in ("indexing", "retrieval"):
+            group_registry = self.prompt_version_store.list_versions(group_type)
+            active_version_id = group_registry.get("active_version_id")
+            if not active_version_id:
+                active_groups[group_type] = None
+                continue
+            active_groups[group_type] = self.prompt_version_store.get_version(
+                group_type, active_version_id
+            )["payload"]
+        return active_groups
+
+    def _build_runtime_global_config(
+        self, *, embedding_func_override: Any | None = None
+    ) -> dict[str, Any]:
+        global_config = asdict(self)
+        global_config["active_prompt_groups"] = self._resolve_active_prompt_groups()
+        if embedding_func_override is not None:
+            global_config["embedding_func"] = embedding_func_override
+        elif self.embedding_func is not None:
+            global_config["embedding_func"] = self.embedding_func
+        return global_config
 
     async def initialize_storages(self):
         """Storage initialization must be called one by one to prevent deadlock"""
@@ -2102,7 +2130,7 @@ class LightRAG:
                                     knowledge_graph_inst=self.chunk_entity_relation_graph,
                                     entity_vdb=self.entities_vdb,
                                     relationships_vdb=self.relationships_vdb,
-                                    global_config=asdict(self),
+                                    global_config=self._build_runtime_global_config(),
                                     full_entities_storage=self.full_entities,
                                     full_relations_storage=self.full_relations,
                                     doc_id=doc_id,
@@ -2290,7 +2318,7 @@ class LightRAG:
         try:
             chunk_results = await extract_entities(
                 chunk,
-                global_config=asdict(self),
+                global_config=self._build_runtime_global_config(),
                 pipeline_status=pipeline_status,
                 pipeline_status_lock=pipeline_status_lock,
                 llm_response_cache=self.llm_response_cache,
@@ -2704,7 +2732,7 @@ class LightRAG:
             actual data is nested under the 'data' field, with 'status' and 'message'
             fields at the top level.
         """
-        global_config = asdict(self)
+        global_config = self._build_runtime_global_config()
 
         # Create a copy of param to avoid modifying the original
         data_param = QueryParam(
@@ -2823,7 +2851,7 @@ class LightRAG:
         """
         logger.debug(f"[aquery_llm] Query param: {param}")
 
-        global_config = asdict(self)
+        global_config = self._build_runtime_global_config()
 
         try:
             query_result = None
@@ -3879,7 +3907,7 @@ class LightRAG:
                         relationships_vdb=self.relationships_vdb,
                         text_chunks_storage=self.text_chunks,
                         llm_response_cache=self.llm_response_cache,
-                        global_config=asdict(self),
+                        global_config=self._build_runtime_global_config(),
                         pipeline_status=pipeline_status,
                         pipeline_status_lock=pipeline_status_lock,
                         entity_chunks_storage=self.entity_chunks,
