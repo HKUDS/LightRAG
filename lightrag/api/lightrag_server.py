@@ -857,6 +857,7 @@ def create_app(args):
                         kwargs["model"] = model
                     if provider_supports_asymmetric and asymmetric_opt_in:
                         kwargs["context"] = context
+                        kwargs["task"] = None
                     return await actual_func(**kwargs)
                 elif binding == "gemini":
                     from lightrag.llm.gemini import gemini_embed
