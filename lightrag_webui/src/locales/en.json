@@ -20,6 +20,41 @@
       "switchToDark": "Switch to dark theme"
     }
   },
+  "promptManagement": {
+    "title": "Prompt Management",
+    "emptyTitle": "Prompt Management",
+    "emptyDescription": "No prompt versions exist for this workspace yet.",
+    "initializeSeedVersions": "Initialize Seed Versions",
+    "groups": {
+      "retrieval": "Retrieval",
+      "indexing": "Indexing"
+    },
+    "versions": "Versions",
+    "active": "ACTIVE",
+    "saveAsVersionName": "Save As Version Name",
+    "source": "Source",
+    "comment": "Comment",
+    "saveAsNewVersion": "Save As New Version",
+    "viewDiff": "View Diff",
+    "setActive": "Set Active",
+    "delete": "Delete",
+    "versionEditor": "Version Editor",
+    "selectVersion": "Select a version from the left to inspect or save as a new version.",
+    "versionDiffTitle": "Version Diff",
+    "versionDiffDescription": "Compare the selected version against the active version or chosen base.",
+    "noChanges": "No changes to display.",
+    "manual": "Manual",
+    "deleted": "Deleted",
+    "edit": "Edit",
+    "collapse": "Collapse",
+    "emptyPreview": "Empty",
+    "saved": "Saved {{name}}",
+    "activated": "Activated {{name}}",
+    "deletedMessage": "Deleted {{name}}",
+    "deleteConfirm": "Delete {{name}}?",
+    "indexingActivateWarning": "Changing indexing configuration can create mixed-schema graph data unless you rebuild the workspace. Continue?",
+    "remove": "Remove"
+  },
   "login": {
     "description": "Please enter your account and password to log in to the system",
     "username": "Username",
@@ -402,6 +437,10 @@
     "querySettings": {
       "parametersTitle": "Parameters",
       "parametersDescription": "Configure your query parameters",
+      "promptVersionLabel": "Prompt Version",
+      "promptVersionTooltip": "Use the active retrieval version, a saved version for this request, or a custom draft.",
+      "useActiveVersion": "Use active version",
+      "customDraft": "Custom / Draft",
       "queryMode": "Query Mode",
       "queryModeTooltip": "Select the retrieval strategy:\n• Naive: Traditional text chunk vector retrieval\n• Local: Focus on entity retrieval\n• Global: Focus on relationship retrieval\n• Hybrid: Local+Global\n• Mix: Local+Global+Naive\n• Bypass: Skip retrieval, send conversation history and current question to LLM",
       "queryModeOptions": {

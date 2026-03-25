@@ -130,11 +130,11 @@ export default function QuerySettings() {
                 <Tooltip>
                   <TooltipTrigger asChild>
                     <label className="ml-1 cursor-help">
-                      Prompt Version
+                      {t('retrievePanel.querySettings.promptVersionLabel')}
                     </label>
                   </TooltipTrigger>
                   <TooltipContent side="left">
-                    <p>Use the active retrieval version, a saved version for this request, or a custom draft.</p>
+                    <p>{t('retrievePanel.querySettings.promptVersionTooltip')}</p>
                   </TooltipContent>
                 </Tooltip>
               </TooltipProvider>

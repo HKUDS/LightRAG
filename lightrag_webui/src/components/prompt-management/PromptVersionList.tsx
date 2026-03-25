@@ -1,6 +1,7 @@
 import { PromptVersionRecord } from '@/api/lightrag'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card'
 import { cn } from '@/lib/utils'
+import { useTranslation } from 'react-i18next'
 
 type PromptVersionListProps = {
   versions: PromptVersionRecord[]
@@ -15,10 +16,12 @@ export default function PromptVersionList({
   selectedVersionId,
   onSelectVersion
 }: PromptVersionListProps) {
+  const { t } = useTranslation()
+
   return (
     <Card className="h-full">
       <CardHeader className="pb-3">
-        <CardTitle>Versions</CardTitle>
+        <CardTitle>{t('promptManagement.versions')}</CardTitle>
       </CardHeader>
       <CardContent className="space-y-2">
         {versions.map((version) => (
@@ -37,7 +40,7 @@ export default function PromptVersionList({
               <div className="font-medium">{version.version_name}</div>
               {activeVersionId === version.version_id ? (
                 <span className="rounded-full bg-emerald-400 px-2 py-0.5 text-[10px] font-semibold text-white">
-                  ACTIVE
+                  {t('promptManagement.active')}
                 </span>
               ) : null}
             </div>

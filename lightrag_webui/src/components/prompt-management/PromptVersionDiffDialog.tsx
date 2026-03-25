@@ -5,6 +5,7 @@ import {
   DialogHeader,
   DialogTitle
 } from '@/components/ui/Dialog'
+import { useTranslation } from 'react-i18next'
 
 type PromptVersionDiffDialogProps = {
   open: boolean
@@ -19,20 +20,21 @@ export default function PromptVersionDiffDialog({
   onOpenChange,
   diffData
 }: PromptVersionDiffDialogProps) {
+  const { t } = useTranslation()
   const entries = Object.entries(diffData?.changes || {})
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-4xl">
         <DialogHeader>
-          <DialogTitle>Version Diff</DialogTitle>
+          <DialogTitle>{t('promptManagement.versionDiffTitle')}</DialogTitle>
           <DialogDescription>
-            Compare the selected version against the active version or chosen base.
+            {t('promptManagement.versionDiffDescription')}
           </DialogDescription>
         </DialogHeader>
         <div className="max-h-[70vh] space-y-4 overflow-auto">
           {entries.length === 0 ? (
-            <div className="text-sm text-muted-foreground">No changes to display.</div>
+            <div className="text-sm text-muted-foreground">{t('promptManagement.noChanges')}</div>
           ) : (
             entries.map(([key, value]) => (
               <div key={key} className="rounded-lg border p-3">

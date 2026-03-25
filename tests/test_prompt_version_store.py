@@ -46,6 +46,23 @@ def test_store_writes_registry_atomically(tmp_path: Path):
     assert not list(tmp_path.rglob("*.tmp"))
 
 
+def test_initialize_adds_missing_locale_seed_versions_without_replacing_existing(
+    tmp_path: Path,
+):
+    store = PromptVersionStore(tmp_path, workspace="demo")
+
+    store.initialize(locale="en")
+    registry = store.initialize(locale="zh")
+
+    retrieval_names = {item["version_name"] for item in registry["retrieval"]["versions"]}
+    indexing_names = {item["version_name"] for item in registry["indexing"]["versions"]}
+
+    assert "retrieval-en-default" in retrieval_names
+    assert "retrieval-zh-default" in retrieval_names
+    assert "indexing-en-default" in indexing_names
+    assert "indexing-zh-default" in indexing_names
+
+
 def test_delete_active_version_is_rejected(tmp_path: Path):
     store = PromptVersionStore(tmp_path, workspace="demo")
     registry = store.initialize(locale="en")

@@ -17,6 +17,20 @@ def test_build_seed_versions_returns_indexing_and_retrieval_groups():
     assert seeds["retrieval"]["group_type"] == "retrieval"
 
 
+def test_zh_seed_versions_use_localized_prompt_content():
+    seeds = build_localized_seed_versions("zh")
+
+    rag_response = seeds["retrieval"]["payload"]["query"]["rag_response"]
+    entity_system_prompt = seeds["indexing"]["payload"]["entity_extraction"][
+        "system_prompt"
+    ]
+
+    assert "你是一名" in rag_response
+    assert "You are an expert AI assistant" not in rag_response
+    assert "你是一名知识图谱专家" in entity_system_prompt
+    assert "You are a Knowledge Graph Specialist" not in entity_system_prompt
+
+
 def test_validate_indexing_payload_accepts_entity_types_and_summary_language():
     validate_prompt_group_payload(
         "indexing",

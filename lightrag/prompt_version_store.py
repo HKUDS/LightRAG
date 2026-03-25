@@ -60,13 +60,18 @@ class PromptVersionStore:
 
     def initialize(self, locale: str) -> dict[str, Any]:
         registry = self._read_or_default()
-        if registry["indexing"]["versions"] or registry["retrieval"]["versions"]:
-            return registry
-
         seeds = build_localized_seed_versions(locale)
-        registry["indexing"]["versions"] = [seeds["indexing"]]
-        registry["retrieval"]["versions"] = [seeds["retrieval"]]
-        self._atomic_write(registry)
+        changed = False
+        for group_type in ("indexing", "retrieval"):
+            existing_ids = {
+                version["version_id"] for version in registry[group_type]["versions"]
+            }
+            seed = seeds[group_type]
+            if seed["version_id"] not in existing_ids:
+                registry[group_type]["versions"].append(seed)
+                changed = True
+        if changed:
+            self._atomic_write(registry)
         return registry
 
     def list_versions(self, group_type: str) -> dict[str, Any]:

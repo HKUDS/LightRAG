@@ -18,8 +18,10 @@ import Button from '@/components/ui/Button'
 import { useSettingsStore } from '@/stores/settings'
 import { useMemo, useEffect, useState, useCallback } from 'react'
 import { toast } from 'sonner'
+import { useTranslation } from 'react-i18next'
 
 export default function PromptManagement() {
+  const { t } = useTranslation()
   const language = useSettingsStore.use.language()
   const groupType = useSettingsStore.use.promptManagementGroup()
   const selectedVersionId = useSettingsStore.use.promptManagementSelectedVersionId()
@@ -34,6 +36,7 @@ export default function PromptManagement() {
   const loadVersions = useCallback(async () => {
     setLoading(true)
     try {
+      await initializePromptConfig(locale)
       const nextRegistry = await getPromptConfigVersions(groupType)
       setRegistry(nextRegistry)
       const nextSelectedVersionId = nextRegistry.versions.some((version) => version.version_id === selectedVersionId)
@@ -45,7 +48,7 @@ export default function PromptManagement() {
     } finally {
       setLoading(false)
     }
-  }, [groupType, selectedVersionId, setSelectedVersionId])
+  }, [groupType, locale, selectedVersionId, setSelectedVersionId])
 
   useEffect(() => {
     loadVersions()
@@ -65,8 +68,8 @@ export default function PromptManagement() {
     return (
       <EmptyCard
         className="h-full"
-        title="Prompt Management"
-        description="No prompt versions exist for this workspace yet."
+        title={t('promptManagement.emptyTitle')}
+        description={t('promptManagement.emptyDescription')}
         action={
           <Button
             type="button"
@@ -75,7 +78,7 @@ export default function PromptManagement() {
               await loadVersions()
             }}
           >
-            Initialize Seed Versions
+            {t('promptManagement.initializeSeedVersions')}
           </Button>
         }
       />
@@ -84,7 +87,7 @@ export default function PromptManagement() {
 
   const handleSaveVersion = async (payload: PromptVersionCreateRequest) => {
     const savedVersion = await createPromptConfigVersion(groupType, payload)
-    toast.success(`Saved ${savedVersion.version_name}`)
+    toast.success(t('promptManagement.saved', { name: savedVersion.version_name }))
     await loadVersions()
     setSelectedVersionId(savedVersion.version_id)
   }
@@ -92,28 +95,30 @@ export default function PromptManagement() {
   const handleActivateVersion = async (version: PromptVersionRecord) => {
     if (
       groupType === 'indexing' &&
-      !window.confirm(
-        'Changing indexing configuration can create mixed-schema graph data unless you rebuild the workspace. Continue?'
-      )
+      !window.confirm(t('promptManagement.indexingActivateWarning'))
     ) {
       return
     }
 
     const response = await activatePromptConfigVersion(groupType, version.version_id)
     if (response.warning) {
-      toast.warning(response.warning)
+      toast.warning(
+        groupType === 'indexing'
+          ? t('promptManagement.indexingActivateWarning')
+          : response.warning
+      )
     } else {
-      toast.success(`Activated ${version.version_name}`)
+      toast.success(t('promptManagement.activated', { name: version.version_name }))
     }
     await loadVersions()
   }
 
   const handleDeleteVersion = async (version: PromptVersionRecord) => {
-    if (!window.confirm(`Delete ${version.version_name}?`)) {
+    if (!window.confirm(t('promptManagement.deleteConfirm', { name: version.version_name }))) {
       return
     }
     await deletePromptConfigVersion(groupType, version.version_id)
-    toast.success(`Deleted ${version.version_name}`)
+    toast.success(t('promptManagement.deletedMessage', { name: version.version_name }))
     await loadVersions()
   }
 

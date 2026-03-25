@@ -43,6 +43,25 @@ export const formatVersionLineageLabel = (
   return versionsById[version.source_version_id]?.version_name || 'Deleted'
 }
 
+export const getPromptFieldPreview = (value: unknown): string => {
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => String(item).trim())
+      .filter(Boolean)
+      .join(', ')
+  }
+
+  if (typeof value === 'string') {
+    return value.split('\n')[0].trim()
+  }
+
+  if (value == null) {
+    return ''
+  }
+
+  return String(value)
+}
+
 export const projectRetrievalVersionToOverrides = (
   payload?: Record<string, unknown> | null
 ): QueryPromptOverrides | undefined => {

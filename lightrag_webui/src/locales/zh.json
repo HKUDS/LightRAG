@@ -20,6 +20,41 @@
       "switchToDark": "切换到深色主题"
     }
   },
+  "promptManagement": {
+    "title": "提示词管理",
+    "emptyTitle": "提示词管理",
+    "emptyDescription": "当前 workspace 还没有提示词版本。",
+    "initializeSeedVersions": "初始化默认版本",
+    "groups": {
+      "retrieval": "检索配置",
+      "indexing": "建库配置"
+    },
+    "versions": "版本列表",
+    "active": "当前生效",
+    "saveAsVersionName": "另存为版本名",
+    "source": "来源版本",
+    "comment": "注释",
+    "saveAsNewVersion": "保存为新版本",
+    "viewDiff": "查看差异",
+    "setActive": "设为当前版本",
+    "delete": "删除",
+    "versionEditor": "版本编辑器",
+    "selectVersion": "请先从左侧选择一个版本，再查看或另存为新版本。",
+    "versionDiffTitle": "版本差异",
+    "versionDiffDescription": "对比当前选中版本与当前生效版本或指定基线版本。",
+    "noChanges": "当前没有可显示的差异。",
+    "manual": "手动创建",
+    "deleted": "已删除",
+    "edit": "展开编辑",
+    "collapse": "收起编辑",
+    "emptyPreview": "未设置",
+    "saved": "已保存 {{name}}",
+    "activated": "已激活 {{name}}",
+    "deletedMessage": "已删除 {{name}}",
+    "deleteConfirm": "确定删除 {{name}} 吗？",
+    "indexingActivateWarning": "切换建库配置后，后续新文档会使用新的抽取规则，但已有图谱不会自动重建。是否继续？",
+    "remove": "删除"
+  },
   "login": {
     "description": "请输入您的账号和密码登录系统",
     "username": "用户名",
@@ -400,6 +435,10 @@
       "queryModePrefixInvalid": "无效的查询模式前缀。请使用：/<模式> [空格] 查询内容"
     },
     "querySettings": {
+      "promptVersionLabel": "提示词版本",
+      "promptVersionTooltip": "使用当前生效的 retrieval 版本、某个已保存版本，或仅对本次请求生效的自定义草稿。",
+      "useActiveVersion": "使用当前生效版本",
+      "customDraft": "自定义 / 草稿",
       "parametersTitle": "参数",
       "parametersDescription": "配置查询参数",
       "queryMode": "查询模式",

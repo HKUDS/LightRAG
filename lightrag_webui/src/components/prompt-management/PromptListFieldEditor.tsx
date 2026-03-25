@@ -1,5 +1,6 @@
 import Button from '@/components/ui/Button'
 import Textarea from '@/components/ui/Textarea'
+import { useTranslation } from 'react-i18next'
 
 type PromptListFieldEditorProps = {
   value: string[]
@@ -12,6 +13,7 @@ export default function PromptListFieldEditor({
   onChange,
   placeholder
 }: PromptListFieldEditorProps) {
+  const { t } = useTranslation()
   const items = [...value, '']
 
   return (
@@ -44,7 +46,7 @@ export default function PromptListFieldEditor({
                 size="sm"
                 onClick={() => onChange(value.filter((_, itemIndex) => itemIndex !== index))}
               >
-                Remove
+                {t('promptManagement.remove')}
               </Button>
             ) : null}
           </div>

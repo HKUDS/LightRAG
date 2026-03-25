@@ -7,6 +7,7 @@ import {
   SelectValue
 } from '@/components/ui/Select'
 import { useEffect, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 
 type RetrievalPromptVersionSelectorProps = {
   enabled: boolean
@@ -19,6 +20,7 @@ export default function RetrievalPromptVersionSelector({
   value,
   onChange
 }: RetrievalPromptVersionSelectorProps) {
+  const { t } = useTranslation()
   const [versions, setVersions] = useState<PromptVersionRecord[]>([])
 
   useEffect(() => {
@@ -38,8 +40,8 @@ export default function RetrievalPromptVersionSelector({
         <SelectValue />
       </SelectTrigger>
       <SelectContent>
-        <SelectItem value="active">Use active version</SelectItem>
-        <SelectItem value="custom">Custom / Draft</SelectItem>
+        <SelectItem value="active">{t('retrievePanel.querySettings.useActiveVersion')}</SelectItem>
+        <SelectItem value="custom">{t('retrievePanel.querySettings.customDraft')}</SelectItem>
         {versions.map((version) => (
           <SelectItem key={version.version_id} value={version.version_id}>
             {version.version_name}
