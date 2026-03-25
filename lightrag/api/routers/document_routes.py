@@ -23,6 +23,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from lightrag import LightRAG
 from lightrag.base import DeletionResult, DocProcessingStatus, DocStatus
+from lightrag.constants import PARSED_DIR_NAME, FULL_DOCS_FORMAT_PENDING_PARSE
 from lightrag.utils import (
     generate_track_id,
     compute_mdhash_id,
@@ -1439,31 +1440,28 @@ async def pipeline_enqueue_file(
                         return False, track_id
 
                 case ".docx":
+                    # Defer parsing to three-stage pipeline (parse_native / parse_docling).
+                    # Enqueue with pending_parse format so parse worker handles extraction.
+                    logger.info(
+                        f"[File Extraction]DOCX deferred to pipeline: {file_path.name}"
+                    )
                     try:
-                        # Try DOCLING first if configured and available
-                        if (
-                            global_args.document_loading_engine == "DOCLING"
-                            and _is_docling_available()
-                        ):
-                            content = await asyncio.to_thread(
-                                _convert_with_docling, file_path
-                            )
-                        else:
-                            if (
-                                global_args.document_loading_engine == "DOCLING"
-                                and not _is_docling_available()
-                            ):
-                                logger.warning(
-                                    f"DOCLING engine configured but not available for {file_path.name}. Falling back to python-docx."
-                                )
-                            # Use python-docx (non-blocking via to_thread)
-                            content = await asyncio.to_thread(_extract_docx, file)
+                        await rag.apipeline_enqueue_documents(
+                            "",
+                            file_paths=str(file_path),
+                            track_id=track_id,
+                            docs_format=FULL_DOCS_FORMAT_PENDING_PARSE,
+                        )
+                        logger.info(
+                            f"Successfully enqueued DOCX for pipeline parsing: {file_path.name}"
+                        )
+                        return True, track_id
                     except Exception as e:
                         error_files = [
                             {
                                 "file_path": str(file_path.name),
-                                "error_description": "[File Extraction]DOCX processing error",
-                                "original_error": f"Failed to extract text from DOCX: {str(e)}",
+                                "error_description": "[File Extraction]DOCX enqueue error",
+                                "original_error": f"Failed to enqueue DOCX for pipeline: {str(e)}",
                                 "file_size": file_size,
                             }
                         ]
@@ -1471,7 +1469,7 @@ async def pipeline_enqueue_file(
                             error_files, track_id
                         )
                         logger.error(
-                            f"[File Extraction]Error processing DOCX {file_path.name}: {str(e)}"
+                            f"[File Extraction]Error enqueuing DOCX {file_path.name}: {str(e)}"
                         )
                         return False, track_id
 
@@ -1606,9 +1604,9 @@ async def pipeline_enqueue_file(
                     f"Successfully extracted and enqueued file: {file_path.name}"
                 )
 
-                # Move file to __enqueued__ directory after enqueuing
+                # Move file to __parsed__ directory after enqueuing (LR2-PRD: parsed output dir)
                 try:
-                    enqueued_dir = file_path.parent / "__enqueued__"
+                    enqueued_dir = file_path.parent / PARSED_DIR_NAME
                     enqueued_dir.mkdir(exist_ok=True)
 
                     # Generate unique filename to avoid conflicts
@@ -1625,7 +1623,7 @@ async def pipeline_enqueue_file(
 
                 except Exception as move_error:
                     logger.error(
-                        f"Failed to move file {file_path.name} to __enqueued__ directory: {move_error}"
+                        f"Failed to move file {file_path.name} to {PARSED_DIR_NAME} directory: {move_error}"
                     )
                     # Don't affect the main function's success status
 
@@ -1968,8 +1966,8 @@ async def background_delete_documents(
                                                 file_error_msg
                                             )
 
-                                # Also check and delete files from __enqueued__ directory
-                                enqueued_dir = doc_manager.input_dir / "__enqueued__"
+                                # Also check and delete files from __parsed__ directory
+                                enqueued_dir = doc_manager.input_dir / PARSED_DIR_NAME
                                 if enqueued_dir.exists():
                                     # SECURITY FIX: Validate that the file path is safe before processing
                                     # Only proceed if the original path validation passed
@@ -2760,6 +2758,8 @@ def create_document_routes(
         try:
             statuses = (
                 DocStatus.PENDING,
+                DocStatus.PARSING,
+                DocStatus.ANALYZING,
                 DocStatus.PROCESSING,
                 DocStatus.PREPROCESSED,
                 DocStatus.PROCESSED,

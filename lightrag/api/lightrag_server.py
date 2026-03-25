@@ -16,6 +16,7 @@ import logging.config
 import sys
 import uvicorn
 import pipmaster as pm
+from typing import Any
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import RedirectResponse
 from pathlib import Path
@@ -654,6 +655,260 @@ def create_app(args):
                 raise Exception(f"Failed to import {binding} options: {e}")
         return {}
 
+    def resolve_role_llm_settings(
+        role: str, override_meta: dict | None = None
+    ) -> dict[str, Any]:
+        attr = role.lower()
+        override_meta = override_meta or {}
+
+        role_binding = (
+            override_meta.get("binding")
+            or getattr(args, f"{attr}_llm_binding", None)
+            or args.llm_binding
+        )
+        role_model = (
+            override_meta.get("model")
+            or getattr(args, f"{attr}_llm_model", None)
+            or args.llm_model
+        )
+        role_host = (
+            override_meta.get("host")
+            or getattr(args, f"{attr}_llm_binding_host", None)
+            or args.llm_binding_host
+        )
+        role_apikey = (
+            override_meta.get("api_key")
+            or getattr(args, f"{attr}_llm_binding_api_key", None)
+            or args.llm_binding_api_key
+        )
+        role_timeout = (
+            override_meta.get("timeout")
+            or getattr(args, f"{attr}_llm_timeout", None)
+            or llm_timeout
+        )
+        role_max_async = getattr(args, f"{attr}_llm_max_async", None) or args.max_async
+        is_cross_provider = role_binding != args.llm_binding
+
+        role_provider_options = override_meta.get("provider_options")
+        if role_provider_options is None:
+            if role_binding in ["openai", "azure_openai"]:
+                from lightrag.llm.binding_options import OpenAILLMOptions
+
+                role_provider_options = OpenAILLMOptions.options_dict_for_role(
+                    args, role, is_cross_provider
+                )
+            elif role_binding == "gemini":
+                from lightrag.llm.binding_options import GeminiLLMOptions
+
+                role_provider_options = GeminiLLMOptions.options_dict_for_role(
+                    args, role, is_cross_provider
+                )
+            elif role_binding in ["lollms", "ollama"]:
+                from lightrag.llm.binding_options import OllamaLLMOptions
+
+                role_provider_options = OllamaLLMOptions.options_dict_for_role(
+                    args, role, is_cross_provider
+                )
+            else:
+                role_provider_options = {}
+
+        return {
+            "binding": role_binding,
+            "model": role_model,
+            "host": role_host,
+            "api_key": role_apikey,
+            "timeout": role_timeout,
+            "max_async": role_max_async,
+            "provider_options": role_provider_options,
+            "is_cross_provider": is_cross_provider,
+        }
+
+    def create_role_llm_func(role: str, override_meta: dict | None = None):
+        """Create an independent raw LLM function for a role."""
+        settings = resolve_role_llm_settings(role, override_meta)
+        role_binding = settings["binding"]
+        role_model = settings["model"]
+        role_host = settings["host"]
+        role_apikey = settings["api_key"]
+        role_timeout = settings["timeout"]
+        role_provider_options = settings["provider_options"]
+
+        logger.info(
+            f"  Role '{role}': binding={role_binding}, model={role_model}, "
+            f"host={role_host}, timeout={role_timeout}"
+        )
+
+        try:
+            if role_binding == "ollama":
+                from lightrag.llm.ollama import _ollama_model_if_cache
+
+                async def role_ollama_complete(
+                    prompt,
+                    system_prompt=None,
+                    history_messages=None,
+                    enable_cot: bool = False,
+                    keyword_extraction=False,
+                    entity_extraction=False,
+                    **kwargs,
+                ):
+                    keyword_extraction = kwargs.pop("keyword_extraction", None)
+                    entity_extraction = kwargs.pop(
+                        "entity_extraction", entity_extraction
+                    )
+                    if keyword_extraction or entity_extraction:
+                        kwargs["format"] = "json"
+                    if history_messages is None:
+                        history_messages = []
+                    if role_provider_options:
+                        kwargs.setdefault("options", dict(role_provider_options))
+                    return await _ollama_model_if_cache(
+                        role_model,
+                        prompt,
+                        system_prompt=system_prompt,
+                        history_messages=history_messages,
+                        enable_cot=enable_cot,
+                        host=role_host,
+                        timeout=role_timeout,
+                        api_key=role_apikey,
+                        **kwargs,
+                    )
+
+                return role_ollama_complete
+            if role_binding == "lollms":
+                from lightrag.llm.lollms import lollms_model_if_cache
+
+                async def role_lollms_complete(
+                    prompt,
+                    system_prompt=None,
+                    history_messages=None,
+                    enable_cot: bool = False,
+                    keyword_extraction=False,
+                    entity_extraction=False,
+                    **kwargs,
+                ):
+                    kwargs.pop("entity_extraction", entity_extraction)
+                    kwargs.pop("keyword_extraction", keyword_extraction)
+                    if history_messages is None:
+                        history_messages = []
+                    if role_provider_options:
+                        kwargs = {**role_provider_options, **kwargs}
+                    return await lollms_model_if_cache(
+                        role_model,
+                        prompt,
+                        system_prompt=system_prompt,
+                        history_messages=history_messages,
+                        enable_cot=enable_cot,
+                        base_url=role_host,
+                        api_key=role_apikey,
+                        timeout=role_timeout,
+                        **kwargs,
+                    )
+
+                return role_lollms_complete
+            if role_binding == "azure_openai":
+                from lightrag.llm.azure_openai import azure_openai_complete_if_cache
+
+                async def role_azure_openai_complete(
+                    prompt,
+                    system_prompt=None,
+                    history_messages=None,
+                    keyword_extraction=False,
+                    **kwargs,
+                ) -> str:
+                    keyword_extraction = kwargs.pop("keyword_extraction", None)
+                    if keyword_extraction:
+                        kwargs["response_format"] = GPTKeywordExtractionFormat
+                    if history_messages is None:
+                        history_messages = []
+                    kwargs["timeout"] = role_timeout
+                    if role_provider_options:
+                        kwargs.update(role_provider_options)
+                    return await azure_openai_complete_if_cache(
+                        role_model,
+                        prompt,
+                        system_prompt=system_prompt,
+                        history_messages=history_messages,
+                        base_url=role_host,
+                        api_key=os.getenv("AZURE_OPENAI_API_KEY", role_apikey),
+                        api_version=os.getenv(
+                            "AZURE_OPENAI_API_VERSION", "2024-08-01-preview"
+                        ),
+                        **kwargs,
+                    )
+
+                return role_azure_openai_complete
+            if role_binding == "gemini":
+                from lightrag.llm.gemini import gemini_complete_if_cache
+
+                async def role_gemini_complete(
+                    prompt,
+                    system_prompt=None,
+                    history_messages=None,
+                    keyword_extraction=False,
+                    **kwargs,
+                ) -> str:
+                    if history_messages is None:
+                        history_messages = []
+                    kwargs["timeout"] = role_timeout
+                    if role_provider_options and "generation_config" not in kwargs:
+                        kwargs["generation_config"] = dict(role_provider_options)
+                    return await gemini_complete_if_cache(
+                        role_model,
+                        prompt,
+                        system_prompt=system_prompt,
+                        history_messages=history_messages,
+                        api_key=role_apikey,
+                        base_url=role_host,
+                        keyword_extraction=keyword_extraction,
+                        **kwargs,
+                    )
+
+                return role_gemini_complete
+
+            from lightrag.llm.openai import openai_complete_if_cache
+
+            async def role_openai_complete(
+                prompt,
+                system_prompt=None,
+                history_messages=None,
+                keyword_extraction=False,
+                **kwargs,
+            ) -> str:
+                keyword_extraction = kwargs.pop("keyword_extraction", None)
+                if keyword_extraction:
+                    kwargs["response_format"] = GPTKeywordExtractionFormat
+                if history_messages is None:
+                    history_messages = []
+                kwargs["timeout"] = role_timeout
+                if role_provider_options:
+                    kwargs.update(role_provider_options)
+                return await openai_complete_if_cache(
+                    role_model,
+                    prompt,
+                    system_prompt=system_prompt,
+                    history_messages=history_messages,
+                    base_url=role_host,
+                    api_key=role_apikey,
+                    **kwargs,
+                )
+
+            return role_openai_complete
+        except ImportError as e:
+            raise Exception(f"Failed to create LLM for role '{role}': {e}")
+
+    def create_role_llm_model_kwargs(
+        role: str, override_meta: dict | None = None
+    ) -> dict[str, Any] | None:
+        """Create role-specific kwargs for runtime wrapper injection.
+
+        Role functions built above already encapsulate provider host/model/api_key/options,
+        so we intentionally return an empty dict here to prevent base kwargs inheritance
+        from polluting cross-provider role calls.
+        """
+        _ = role
+        _ = override_meta
+        return {}
+
     def create_optimized_embedding_function(
         config_cache: LLMConfigCache, binding, model, host, api_key, args
     ) -> EmbeddingFunc:
@@ -1060,6 +1315,26 @@ def create_app(args):
         name=args.simulated_model_name, tag=args.simulated_model_tag
     )
 
+    # Build addon params by merging LightRAG defaults with API-level overrides.
+    addon_params_defaults: dict = {}
+    addon_params_field = LightRAG.__dataclass_fields__.get("addon_params")
+    if addon_params_field and callable(addon_params_field.default_factory):
+        addon_params_defaults = addon_params_field.default_factory()
+    addon_params = {
+        **addon_params_defaults,
+        "language": args.summary_language,
+        "entity_types": args.entity_types,
+    }
+
+    role_llm_configs = {
+        role: {
+            **resolve_role_llm_settings(role),
+            "func": create_role_llm_func(role),
+            "kwargs": create_role_llm_model_kwargs(role),
+        }
+        for role in ("extract", "keyword", "query", "vlm")
+    }
+
     # Initialize RAG with unified configuration
     try:
         rag = LightRAG(
@@ -1090,15 +1365,55 @@ def create_app(args):
             rerank_model_func=rerank_model_func,
             max_parallel_insert=args.max_parallel_insert,
             max_graph_nodes=args.max_graph_nodes,
-            addon_params={
-                "language": args.summary_language,
-                "entity_types": args.entity_types,
-            },
+            addon_params=addon_params,
             ollama_server_infos=ollama_server_infos,
+            extract_llm_model_func=role_llm_configs["extract"]["func"],
+            extract_llm_model_kwargs=role_llm_configs["extract"]["kwargs"],
+            extract_llm_model_max_async=role_llm_configs["extract"]["max_async"],
+            extract_llm_timeout=role_llm_configs["extract"]["timeout"],
+            keyword_llm_model_func=role_llm_configs["keyword"]["func"],
+            keyword_llm_model_kwargs=role_llm_configs["keyword"]["kwargs"],
+            keyword_llm_model_max_async=role_llm_configs["keyword"]["max_async"],
+            keyword_llm_timeout=role_llm_configs["keyword"]["timeout"],
+            query_llm_model_func=role_llm_configs["query"]["func"],
+            query_llm_model_kwargs=role_llm_configs["query"]["kwargs"],
+            query_llm_model_max_async=role_llm_configs["query"]["max_async"],
+            query_llm_timeout=role_llm_configs["query"]["timeout"],
+            vlm_llm_model_func=role_llm_configs["vlm"]["func"],
+            vlm_llm_model_kwargs=role_llm_configs["vlm"]["kwargs"],
+            vlm_llm_model_max_async=role_llm_configs["vlm"]["max_async"],
+            vlm_llm_timeout=role_llm_configs["vlm"]["timeout"],
         )
     except Exception as e:
         logger.error(f"Failed to initialize LightRAG: {e}")
         raise
+
+    rag.register_role_llm_builder(
+        lambda role, meta: (
+            create_role_llm_func(role, meta),
+            create_role_llm_model_kwargs(role, meta),
+        )
+    )
+    for role in ("extract", "keyword", "query", "vlm"):
+        rag.set_role_llm_metadata(
+            role,
+            base_binding=args.llm_binding,
+            binding=role_llm_configs[role]["binding"],
+            model=role_llm_configs[role]["model"],
+            host=role_llm_configs[role]["host"],
+            api_key=role_llm_configs[role]["api_key"],
+            provider_options=role_llm_configs[role]["provider_options"],
+            is_cross_provider=role_llm_configs[role]["is_cross_provider"],
+        )
+
+    # Print role LLM configuration
+    logger.info(f"\n{'🎭 Role LLM Configuration:'}")
+    for role in ["extract", "keyword", "query", "vlm"]:
+        role_cfg = role_llm_configs[role]
+        logger.info(
+            f"    ├─ {role}: binding={role_cfg['binding']}, model={role_cfg['model']}, "
+            f"host={role_cfg['host']}, max_async={role_cfg['max_async']}"
+        )
 
     # Add routes
     app.include_router(
@@ -1300,6 +1615,19 @@ def create_app(args):
                     "max_async": args.max_async,
                     "embedding_func_max_async": args.embedding_func_max_async,
                     "embedding_batch_num": args.embedding_batch_num,
+                    "role_llm_config": {
+                        role: {
+                            "binding": getattr(args, f"{role}_llm_binding", None)
+                            or args.llm_binding,
+                            "model": getattr(args, f"{role}_llm_model", None)
+                            or args.llm_model,
+                            "host": getattr(args, f"{role}_llm_binding_host", None)
+                            or args.llm_binding_host,
+                            "max_async": getattr(args, f"{role}_llm_max_async", None)
+                            or args.max_async,
+                        }
+                        for role in ["extract", "keyword", "query", "vlm"]
+                    },
                 },
                 "auth_mode": auth_mode,
                 "pipeline_busy": pipeline_status.get("busy", False),

@@ -281,6 +281,14 @@ async def openai_complete_if_cache(
     # Extract client configuration options
     client_configs = kwargs.pop("openai_client_configs", {})
 
+    # Handle entity extraction mode (JSON structured output)
+    # Uses {"type": "json_object"} for broad compatibility with OpenAI-compatible APIs
+    # (e.g., Moonshot, DeepSeek, vLLM, etc.) instead of Pydantic schema mode
+    # which requires native OpenAI structured output support.
+    entity_extraction = kwargs.pop("entity_extraction", False)
+    if entity_extraction:
+        kwargs["response_format"] = {"type": "json_object"}
+
     # Handle keyword extraction mode
     if keyword_extraction:
         kwargs["response_format"] = GPTKeywordExtractionFormat
@@ -326,7 +334,15 @@ async def openai_complete_if_cache(
 
     try:
         # Don't use async with context manager, use client directly
-        if "response_format" in kwargs:
+        # Use parse() for Pydantic schema-based structured output (e.g., keyword_extraction)
+        # Use create() for simple JSON mode {"type": "json_object"} (e.g., entity_extraction)
+        response_format = kwargs.get("response_format")
+        use_parse = (
+            "response_format" in kwargs
+            and response_format is not None
+            and not isinstance(response_format, dict)
+        )
+        if use_parse:
             response = await openai_async_client.chat.completions.parse(
                 model=api_model, messages=messages, **kwargs
             )
@@ -622,10 +638,13 @@ async def openai_complete(
     system_prompt=None,
     history_messages=None,
     keyword_extraction=False,
+    entity_extraction=False,
     **kwargs,
 ) -> Union[str, AsyncIterator[str]]:
     if history_messages is None:
         history_messages = []
+    # Pop entity_extraction from kwargs if also passed there (avoid duplication)
+    entity_extraction = kwargs.pop("entity_extraction", entity_extraction)
     model_name = kwargs["hashing_kv"].global_config["llm_model_name"]
     return await openai_complete_if_cache(
         model_name,
@@ -633,6 +652,7 @@ async def openai_complete(
         system_prompt=system_prompt,
         history_messages=history_messages,
         keyword_extraction=keyword_extraction,
+        entity_extraction=entity_extraction,
         **kwargs,
     )
 
@@ -643,10 +663,12 @@ async def gpt_4o_complete(
     history_messages=None,
     enable_cot: bool = False,
     keyword_extraction=False,
+    entity_extraction=False,
     **kwargs,
 ) -> str:
     if history_messages is None:
         history_messages = []
+    entity_extraction = kwargs.pop("entity_extraction", entity_extraction)
     return await openai_complete_if_cache(
         "gpt-4o",
         prompt,
@@ -654,6 +676,7 @@ async def gpt_4o_complete(
         history_messages=history_messages,
         enable_cot=enable_cot,
         keyword_extraction=keyword_extraction,
+        entity_extraction=entity_extraction,
         **kwargs,
     )
 
@@ -664,10 +687,12 @@ async def gpt_4o_mini_complete(
     history_messages=None,
     enable_cot: bool = False,
     keyword_extraction=False,
+    entity_extraction=False,
     **kwargs,
 ) -> str:
     if history_messages is None:
         history_messages = []
+    entity_extraction = kwargs.pop("entity_extraction", entity_extraction)
     return await openai_complete_if_cache(
         "gpt-4o-mini",
         prompt,
@@ -675,6 +700,7 @@ async def gpt_4o_mini_complete(
         history_messages=history_messages,
         enable_cot=enable_cot,
         keyword_extraction=keyword_extraction,
+        entity_extraction=entity_extraction,
         **kwargs,
     )
 
@@ -685,10 +711,12 @@ async def nvidia_openai_complete(
     history_messages=None,
     enable_cot: bool = False,
     keyword_extraction=False,
+    entity_extraction=False,
     **kwargs,
 ) -> str:
     if history_messages is None:
         history_messages = []
+    entity_extraction = kwargs.pop("entity_extraction", entity_extraction)
     result = await openai_complete_if_cache(
         "nvidia/llama-3.1-nemotron-70b-instruct",  # context length 128k
         prompt,
@@ -696,6 +724,7 @@ async def nvidia_openai_complete(
         history_messages=history_messages,
         enable_cot=enable_cot,
         keyword_extraction=keyword_extraction,
+        entity_extraction=entity_extraction,
         base_url="https://integrate.api.nvidia.com/v1",
         **kwargs,
     )
@@ -911,6 +940,7 @@ async def azure_openai_complete(
     system_prompt=None,
     history_messages=None,
     keyword_extraction=False,
+    entity_extraction=False,
     **kwargs,
 ) -> str:
     """Azure OpenAI complete wrapper function.
@@ -919,12 +949,14 @@ async def azure_openai_complete(
     """
     if history_messages is None:
         history_messages = []
+    entity_extraction = kwargs.pop("entity_extraction", entity_extraction)
     result = await azure_openai_complete_if_cache(
         os.getenv("LLM_MODEL", "gpt-4o-mini"),
         prompt,
         system_prompt=system_prompt,
         history_messages=history_messages,
         keyword_extraction=keyword_extraction,
+        entity_extraction=entity_extraction,
         **kwargs,
     )
     return result
