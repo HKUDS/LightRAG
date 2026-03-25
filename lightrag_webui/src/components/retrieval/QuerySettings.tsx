@@ -4,6 +4,7 @@ import { QueryMode, QueryRequest } from '@/api/lightrag'
 import Checkbox from '@/components/ui/Checkbox'
 import Input from '@/components/ui/Input'
 import UserPromptInputWithHistory from '@/components/ui/UserPromptInputWithHistory'
+import PromptOverridesEditor from '@/components/retrieval/PromptOverridesEditor'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/Card'
 import {
   Select,
@@ -15,6 +16,7 @@ import {
 } from '@/components/ui/Select'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/Tooltip'
 import { useSettingsStore } from '@/stores/settings'
+import { useBackendState } from '@/stores/state'
 import { useTranslation } from 'react-i18next'
 import { RotateCcw } from 'lucide-react'
 
@@ -22,6 +24,11 @@ export default function QuerySettings() {
   const { t } = useTranslation()
   const querySettings = useSettingsStore((state) => state.querySettings)
   const userPromptHistory = useSettingsStore((state) => state.userPromptHistory)
+  const allowPromptOverridesViaApi = useBackendState.use.allowPromptOverridesViaApi()
+  const promptOverridesEnabled = allowPromptOverridesViaApi && querySettings.mode !== 'bypass'
+  const promptOverridesDisabledReason = !allowPromptOverridesViaApi
+    ? t('retrievePanel.querySettings.promptOverrides.disabledHint')
+    : t('retrievePanel.querySettings.promptOverrides.bypassHint')
 
   const handleChange = useCallback((key: keyof QueryRequest, value: any) => {
     useSettingsStore.getState().updateQuerySettings({ [key]: value })
@@ -107,6 +114,13 @@ export default function QuerySettings() {
                   className="h-9"
                 />
               </div>
+
+              <PromptOverridesEditor
+                enabled={promptOverridesEnabled}
+                disabledReason={promptOverridesDisabledReason}
+                value={querySettings.prompt_overrides}
+                onChange={(value) => handleChange('prompt_overrides', value)}
+              />
             </>
 
             {/* Query Mode */}

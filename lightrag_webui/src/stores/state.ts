@@ -9,6 +9,7 @@ interface BackendState {
   message: string | null
   messageTitle: string | null
   status: LightragStatus | null
+  allowPromptOverridesViaApi: boolean
   lastCheckTime: number
   pipelineBusy: boolean
   healthCheckIntervalId: ReturnType<typeof setInterval> | null
@@ -49,6 +50,7 @@ const useBackendStateStoreBase = create<BackendState>()((set, get) => ({
   messageTitle: null,
   lastCheckTime: Date.now(),
   status: null,
+  allowPromptOverridesViaApi: false,
   pipelineBusy: false,
   healthCheckIntervalId: null,
   healthCheckFunction: null,
@@ -98,6 +100,7 @@ const useBackendStateStoreBase = create<BackendState>()((set, get) => ({
         messageTitle: null,
         lastCheckTime: Date.now(),
         status: health,
+        allowPromptOverridesViaApi: health.configuration?.allow_prompt_overrides_via_api === true,
         pipelineBusy: health.pipeline_busy
       })
       return true
@@ -107,17 +110,18 @@ const useBackendStateStoreBase = create<BackendState>()((set, get) => ({
       message: health.message,
       messageTitle: 'Backend Health Check Error!',
       lastCheckTime: Date.now(),
-      status: null
+      status: null,
+      allowPromptOverridesViaApi: false
     })
     return false
   },
 
   clear: () => {
-    set({ health: true, message: null, messageTitle: null })
+    set({ health: true, message: null, messageTitle: null, allowPromptOverridesViaApi: false })
   },
 
   setErrorMessage: (message: string, messageTitle: string) => {
-    set({ health: false, message, messageTitle })
+    set({ health: false, message, messageTitle, allowPromptOverridesViaApi: false })
   },
 
   setPipelineBusy: (busy: boolean) => {

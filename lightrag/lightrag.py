@@ -210,6 +210,9 @@ class LightRAG:
     # Query parameters
     # ---
 
+    prompt_config: dict[str, Any] = field(default_factory=dict)
+    """Instance-level default prompt configuration."""
+
     top_k: int = field(default=get_env_value("TOP_K", DEFAULT_TOP_K, int))
     """Number of entities/relations to retrieve for each query."""
 
@@ -2721,6 +2724,7 @@ class LightRAG:
             history_turns=param.history_turns,
             model_func=param.model_func,
             user_prompt=param.user_prompt,
+            prompt_overrides=param.prompt_overrides,
             enable_rerank=param.enable_rerank,
         )
 
@@ -2847,6 +2851,10 @@ class LightRAG:
                     system_prompt=system_prompt,
                 )
             elif param.mode == "bypass":
+                if param.prompt_overrides is not None:
+                    raise ValueError(
+                        "prompt_overrides are not supported in bypass mode"
+                    )
                 # Bypass mode: directly use LLM without knowledge retrieval
                 use_llm_func = param.model_func or global_config["llm_model_func"]
                 # Apply higher priority (8) to entity/relation summary tasks

@@ -55,6 +55,7 @@ export type LightragStatus = {
     cosine_threshold: number
     min_rerank_score: number
     related_chunk_number: number
+    allow_prompt_overrides_via_api?: boolean
   }
   update_status?: Record<string, any>
   core_version?: string
@@ -97,6 +98,19 @@ export type LightragDocumentsScanProgress = {
  */
 export type QueryMode = 'naive' | 'local' | 'global' | 'hybrid' | 'mix' | 'bypass'
 
+export type QueryPromptOverrides = {
+  query?: {
+    rag_response?: string
+    naive_rag_response?: string
+    kg_query_context?: string
+    naive_query_context?: string
+  }
+  keywords?: {
+    keywords_extraction?: string
+    keywords_extraction_examples?: string[]
+  }
+}
+
 export type Message = {
   role: 'user' | 'assistant' | 'system'
   content: string
@@ -136,6 +150,8 @@ export type QueryRequest = {
   history_turns?: number
   /** User-provided prompt for the query. If provided, this will be used instead of the default value from prompt template. */
   user_prompt?: string
+  /** Optional per-request prompt template overrides. */
+  prompt_overrides?: QueryPromptOverrides
   /** Enable reranking for retrieved text chunks. If True but no rerank model is configured, a warning will be issued. Default is True. */
   enable_rerank?: boolean
 }

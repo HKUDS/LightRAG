@@ -440,6 +440,20 @@
       "userPrompt": "Additional Output Prompt",
       "userPromptTooltip": "Provide additional response requirements to the LLM (unrelated to query content, only for output processing).",
       "userPromptPlaceholder": "Enter custom prompt (optional)",
+      "promptOverrides": {
+        "title": "Prompt Customization",
+        "description": "Override query-time prompt templates for retrieval testing.",
+        "disabledHint": "This backend does not allow query-time prompt overrides via API.",
+        "bypassHint": "Prompt overrides are not supported in bypass mode.",
+        "queryRagResponse": "query.rag_response",
+        "queryNaiveRagResponse": "query.naive_rag_response",
+        "queryKgQueryContext": "query.kg_query_context",
+        "queryNaiveQueryContext": "query.naive_query_context",
+        "keywordsExtraction": "keywords.keywords_extraction",
+        "keywordsExtractionExamples": "keywords.keywords_extraction_examples",
+        "examplePlaceholder": "Example {{index}}",
+        "removeExample": "Remove"
+      },
       "enableRerank": "Enable Rerank",
       "enableRerankTooltip": "Enable reranking for retrieved text chunks. If True but no rerank model is configured, a warning will be issued. Default is True."
     }

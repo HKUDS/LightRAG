@@ -157,6 +157,9 @@ class QueryParam:
     It's purpose is the let user customize the way LLM generate the response.
     """
 
+    prompt_overrides: dict[str, Any] | None = None
+    """Optional query-time prompt overrides carried with the request."""
+
     enable_rerank: bool = os.getenv("RERANK_BY_DEFAULT", "true").lower() == "true"
     """Enable reranking for retrieved text chunks. If True but no rerank model is configured, a warning will be issued.
     Default is True to enable reranking when rerank model is available.

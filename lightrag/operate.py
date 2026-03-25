@@ -39,6 +39,7 @@ from lightrag.utils import (
     apply_source_ids_limit,
     merge_source_ids,
     make_relation_chunk_key,
+    sanitize_text_for_encoding,
 )
 from lightrag.base import (
     BaseGraphStorage,
@@ -49,7 +50,12 @@ from lightrag.base import (
     QueryResult,
     QueryContextResult,
 )
-from lightrag.prompt import PROMPTS
+from lightrag.prompt import (
+    PROMPTS,
+    get_default_prompt_config,
+    get_prompt_fingerprint,
+    merge_prompt_config,
+)
 from lightrag.constants import (
     GRAPH_FIELD_SEP,
     DEFAULT_MAX_ENTITY_TOKENS,
@@ -73,6 +79,189 @@ from dotenv import load_dotenv
 # allows to use different .env file for each lightrag instance
 # the OS environment variables take precedence over the .env file
 load_dotenv(dotenv_path=Path(__file__).resolve().parent / ".env", override=False)
+
+QUERY_TIME_PROMPT_OVERRIDE_FAMILIES = {"query", "keywords"}
+INDEXING_TIME_PROMPT_FAMILIES = {"entity_extraction", "summary", "shared"}
+_INDEXING_PROMPT_WARNED_FINGERPRINTS: set[str] = set()
+
+
+def _resolve_query_time_prompt_config(
+    global_config: dict[str, Any], query_param: QueryParam | None = None
+) -> dict[str, Any]:
+    """Resolve effective query-time prompt config without mutating inputs."""
+    effective_config = merge_prompt_config(
+        get_default_prompt_config(),
+        global_config.get("prompt_config"),
+    )
+    prompt_overrides = query_param.prompt_overrides if query_param else None
+    if prompt_overrides is not None:
+        effective_config = merge_prompt_config(
+            effective_config,
+            prompt_overrides,
+            allowed_families=QUERY_TIME_PROMPT_OVERRIDE_FAMILIES,
+        )
+    return effective_config
+
+
+def _get_prompt_family_fingerprint(
+    prompt_config: dict[str, Any], family: str
+) -> str:
+    return get_prompt_fingerprint({family: prompt_config.get(family, {})})
+
+
+def _get_prompt_fingerprint_for_families(
+    prompt_config: dict[str, Any], families: set[str]
+) -> str:
+    return get_prompt_fingerprint(
+        {family: prompt_config.get(family, {}) for family in sorted(families)}
+    )
+
+
+def _resolve_indexing_time_prompt_config(global_config: dict[str, Any]) -> dict[str, Any]:
+    """Resolve effective indexing-time prompt config and warn on impactful changes."""
+    default_prompt_config = get_default_prompt_config()
+    effective_config = merge_prompt_config(
+        default_prompt_config,
+        global_config.get("prompt_config"),
+    )
+
+    default_fingerprint = _get_prompt_fingerprint_for_families(
+        default_prompt_config, INDEXING_TIME_PROMPT_FAMILIES
+    )
+    effective_fingerprint = _get_prompt_fingerprint_for_families(
+        effective_config, INDEXING_TIME_PROMPT_FAMILIES
+    )
+    if (
+        default_fingerprint != effective_fingerprint
+        and effective_fingerprint not in _INDEXING_PROMPT_WARNED_FINGERPRINTS
+    ):
+        logger.warning(
+            "Indexing-time prompt_config has changed from defaults; entity extraction/summary cache identity will change and may trigger additional LLM reprocessing costs."
+        )
+        _INDEXING_PROMPT_WARNED_FINGERPRINTS.add(effective_fingerprint)
+    return effective_config
+
+
+async def _use_llm_func_with_prompt_cache_identity(
+    user_prompt: str,
+    use_llm_func: callable,
+    *,
+    llm_response_cache: BaseKVStorage | None = None,
+    system_prompt: str | None = None,
+    max_tokens: int | None = None,
+    history_messages: list[dict[str, str]] | None = None,
+    cache_type: str = "extract",
+    chunk_id: str | None = None,
+    cache_keys_collector: list | None = None,
+    prompt_fingerprint: str | None = None,
+    cache_queryparam: dict[str, Any] | None = None,
+) -> tuple[str, int]:
+    """LLM call wrapper that salts cache identity with prompt fingerprint.
+
+    The fingerprint participates in cache hashing, but is not injected into prompt text.
+    """
+    if llm_response_cache is None or not prompt_fingerprint:
+        return await use_llm_func_with_cache(
+            user_prompt,
+            use_llm_func,
+            llm_response_cache=llm_response_cache,
+            system_prompt=system_prompt,
+            max_tokens=max_tokens,
+            history_messages=history_messages,
+            cache_type=cache_type,
+            chunk_id=chunk_id,
+            cache_keys_collector=cache_keys_collector,
+        )
+
+    safe_user_prompt = sanitize_text_for_encoding(user_prompt)
+    safe_system_prompt = (
+        sanitize_text_for_encoding(system_prompt) if system_prompt else None
+    )
+
+    safe_history_messages = None
+    if history_messages:
+        safe_history_messages = []
+        for msg in history_messages:
+            safe_msg = msg.copy()
+            if "content" in safe_msg:
+                safe_msg["content"] = sanitize_text_for_encoding(safe_msg["content"])
+            safe_history_messages.append(safe_msg)
+        history = json.dumps(safe_history_messages, ensure_ascii=False)
+    else:
+        history = None
+
+    prompt_parts = []
+    if safe_user_prompt:
+        prompt_parts.append(safe_user_prompt)
+    if safe_system_prompt:
+        prompt_parts.append(safe_system_prompt)
+    if history:
+        prompt_parts.append(history)
+    _prompt = "\n".join(prompt_parts)
+
+    arg_hash = compute_args_hash(_prompt, prompt_fingerprint)
+    cache_key = f"default:{cache_type}:{arg_hash}"
+    cached_result = await handle_cache(
+        llm_response_cache,
+        arg_hash,
+        _prompt,
+        "default",
+        cache_type=cache_type,
+    )
+    if cached_result:
+        content, timestamp = cached_result
+        if cache_keys_collector is not None:
+            cache_keys_collector.append(cache_key)
+        return content, timestamp
+
+    kwargs = {}
+    if safe_history_messages:
+        kwargs["history_messages"] = safe_history_messages
+    if max_tokens is not None:
+        kwargs["max_tokens"] = max_tokens
+
+    res: str = await use_llm_func(
+        safe_user_prompt, system_prompt=safe_system_prompt, **kwargs
+    )
+    res = remove_think_tags(res)
+    current_timestamp = int(time.time())
+
+    if llm_response_cache.global_config.get("enable_llm_cache_for_entity_extract"):
+        await save_to_cache(
+            llm_response_cache,
+            CacheData(
+                args_hash=arg_hash,
+                content=res,
+                prompt=_prompt,
+                cache_type=cache_type,
+                chunk_id=chunk_id,
+                queryparam=cache_queryparam,
+            ),
+        )
+        if cache_keys_collector is not None:
+            cache_keys_collector.append(cache_key)
+
+    return res, current_timestamp
+
+
+def _format_query_response_prompt(
+    template: str,
+    *,
+    response_type: str,
+    user_prompt: str | None,
+    context_placeholder: str,
+    context_value: str,
+) -> str:
+    """Format query response prompt and append user instructions fallback if needed."""
+    prompt_user_value = f"\n\n{user_prompt}" if user_prompt else "n/a"
+    formatted = template.format(
+        response_type=response_type,
+        user_prompt=prompt_user_value,
+        **{context_placeholder: context_value},
+    )
+    if user_prompt and "{user_prompt}" not in template:
+        formatted = f"{formatted}\n\n---Additional Instructions---\n{user_prompt}"
+    return formatted
 
 
 def _truncate_entity_identifier(
@@ -320,7 +509,11 @@ async def _summarize_descriptions(
 
     summary_length_recommended = global_config["summary_length_recommended"]
 
-    prompt_template = PROMPTS["summarize_entity_descriptions"]
+    prompt_config = _resolve_indexing_time_prompt_config(global_config)
+    prompt_template = prompt_config["summary"]["summarize_entity_descriptions"]
+    summary_prompt_fingerprint = _get_prompt_fingerprint_for_families(
+        prompt_config, {"summary", "shared"}
+    )
 
     # Convert descriptions to JSONL format and apply token-based truncation
     tokenizer = global_config["tokenizer"]
@@ -353,11 +546,12 @@ async def _summarize_descriptions(
     use_prompt = prompt_template.format(**context_base)
 
     # Use LLM function with cache (higher priority for summary generation)
-    summary, _ = await use_llm_func_with_cache(
+    summary, _ = await _use_llm_func_with_prompt_cache_identity(
         use_prompt,
         use_llm_func,
         llm_response_cache=llm_response_cache,
         cache_type="summary",
+        prompt_fingerprint=summary_prompt_fingerprint,
     )
 
     # Check summary token length against embedding limit
@@ -587,6 +781,13 @@ async def rebuild_knowledge_from_chunks(
     if not entities_to_rebuild and not relationships_to_rebuild:
         return
 
+    _resolve_indexing_time_prompt_config(global_config)
+    # Historical compatibility rule:
+    # legacy extract caches (pre-metadata) were generated with defaults.
+    # So when per-entry metadata is absent, always fall back to historical defaults.
+    legacy_default_tuple_delimiter = PROMPTS["DEFAULT_TUPLE_DELIMITER"]
+    legacy_default_completion_delimiter = PROMPTS["DEFAULT_COMPLETION_DELIMITER"]
+
     # Get all referenced chunk IDs
     all_referenced_chunk_ids = set()
     for chunk_ids in entities_to_rebuild.values():
@@ -630,11 +831,26 @@ async def rebuild_knowledge_from_chunks(
 
             # process multiple LLM extraction results for a single chunk_id
             for result in results:
+                delimiter_meta = (
+                    result[2] if len(result) > 2 and isinstance(result[2], dict) else {}
+                )
+                tuple_delimiter = delimiter_meta.get("tuple_delimiter")
+                completion_delimiter = delimiter_meta.get("completion_delimiter")
+                if not isinstance(tuple_delimiter, str) or not tuple_delimiter:
+                    tuple_delimiter = legacy_default_tuple_delimiter
+                if (
+                    not isinstance(completion_delimiter, str)
+                    or not completion_delimiter
+                ):
+                    completion_delimiter = legacy_default_completion_delimiter
+
                 entities, relationships = await _rebuild_from_extraction_result(
                     text_chunks_storage=text_chunks_storage,
                     chunk_id=chunk_id,
                     extraction_result=result[0],
                     timestamp=result[1],
+                    tuple_delimiter=tuple_delimiter,
+                    completion_delimiter=completion_delimiter,
                 )
 
                 # Merge entities and relationships from this extraction result
@@ -841,7 +1057,7 @@ async def _get_cached_extraction_results(
     llm_response_cache: BaseKVStorage,
     chunk_ids: set[str],
     text_chunks_storage: BaseKVStorage,
-) -> dict[str, list[str]]:
+) -> dict[str, list[tuple[str, int, dict[str, Any]]]]:
     """Get cached extraction results for specific chunk IDs
 
     This function retrieves cached LLM extraction results for the given chunk IDs and returns
@@ -900,8 +1116,20 @@ async def _get_cached_extraction_results(
             # Support multiple LLM caches per chunk
             if chunk_id not in cached_results:
                 cached_results[chunk_id] = []
-            # Store tuple with extraction result and creation time for sorting
-            cached_results[chunk_id].append((extraction_result, create_time))
+            queryparam = cache_entry.get("queryparam")
+            delimiter_meta: dict[str, Any] = {}
+            if isinstance(queryparam, dict):
+                tuple_delimiter = queryparam.get("tuple_delimiter")
+                completion_delimiter = queryparam.get("completion_delimiter")
+                if isinstance(tuple_delimiter, str):
+                    delimiter_meta["tuple_delimiter"] = tuple_delimiter
+                if isinstance(completion_delimiter, str):
+                    delimiter_meta["completion_delimiter"] = completion_delimiter
+
+            # Store tuple with extraction result, creation time, and optional delimiter metadata for rebuild compatibility
+            cached_results[chunk_id].append(
+                (extraction_result, create_time, delimiter_meta)
+            )
 
     # Sort extraction results by create_time for each chunk and collect earliest times
     chunk_earliest_times = {}
@@ -924,7 +1152,7 @@ async def _get_cached_extraction_results(
     logger.info(
         f"Found {valid_entries} valid cache entries, {len(sorted_cached_results)} chunks with results"
     )
-    return sorted_cached_results  # each item: list(extraction_result, create_time)
+    return sorted_cached_results  # each item: list(extraction_result, create_time, delimiter_meta)
 
 
 async def _process_extraction_result(
@@ -1057,6 +1285,8 @@ async def _rebuild_from_extraction_result(
     extraction_result: str,
     chunk_id: str,
     timestamp: int,
+    tuple_delimiter: str = "<|#|>",
+    completion_delimiter: str = "<|COMPLETE|>",
 ) -> tuple[dict, dict]:
     """Parse cached extraction result using the same logic as extract_entities
 
@@ -1083,8 +1313,8 @@ async def _rebuild_from_extraction_result(
         chunk_id,
         timestamp,
         file_path,
-        tuple_delimiter=PROMPTS["DEFAULT_TUPLE_DELIMITER"],
-        completion_delimiter=PROMPTS["DEFAULT_COMPLETION_DELIMITER"],
+        tuple_delimiter=tuple_delimiter,
+        completion_delimiter=completion_delimiter,
     )
 
 
@@ -2836,11 +3066,18 @@ async def extract_entities(
         "entity_types", DEFAULT_ENTITY_TYPES
     )
 
-    examples = "\n".join(PROMPTS["entity_extraction_examples"])
+    prompt_config = _resolve_indexing_time_prompt_config(global_config)
+    shared_prompt_config = prompt_config["shared"]
+    entity_prompt_config = prompt_config["entity_extraction"]
+    extract_prompt_fingerprint = _get_prompt_fingerprint_for_families(
+        prompt_config, {"entity_extraction", "shared"}
+    )
+
+    examples = "\n".join(entity_prompt_config["examples"])
 
     example_context_base = dict(
-        tuple_delimiter=PROMPTS["DEFAULT_TUPLE_DELIMITER"],
-        completion_delimiter=PROMPTS["DEFAULT_COMPLETION_DELIMITER"],
+        tuple_delimiter=shared_prompt_config["tuple_delimiter"],
+        completion_delimiter=shared_prompt_config["completion_delimiter"],
         entity_types=", ".join(entity_types),
         language=language,
     )
@@ -2848,12 +3085,21 @@ async def extract_entities(
     examples = examples.format(**example_context_base)
 
     context_base = dict(
-        tuple_delimiter=PROMPTS["DEFAULT_TUPLE_DELIMITER"],
-        completion_delimiter=PROMPTS["DEFAULT_COMPLETION_DELIMITER"],
+        tuple_delimiter=shared_prompt_config["tuple_delimiter"],
+        completion_delimiter=shared_prompt_config["completion_delimiter"],
         entity_types=",".join(entity_types),
         examples=examples,
         language=language,
     )
+    extract_cache_queryparam = {
+        "tuple_delimiter": context_base["tuple_delimiter"],
+        "completion_delimiter": context_base["completion_delimiter"],
+    }
+    entity_extraction_system_prompt_template = entity_prompt_config["system_prompt"]
+    entity_extraction_user_prompt_template = entity_prompt_config["user_prompt"]
+    entity_continue_extraction_user_prompt_template = entity_prompt_config[
+        "continue_prompt"
+    ]
 
     processed_chunks = 0
     total_chunks = len(ordered_chunks)
@@ -2878,18 +3124,20 @@ async def extract_entities(
 
         # Get initial extraction
         # Format system prompt without input_text for each chunk (enables OpenAI prompt caching across chunks)
-        entity_extraction_system_prompt = PROMPTS[
-            "entity_extraction_system_prompt"
-        ].format(**context_base)
+        entity_extraction_system_prompt = entity_extraction_system_prompt_template.format(
+            **context_base
+        )
         # Format user prompts with input_text for each chunk
-        entity_extraction_user_prompt = PROMPTS["entity_extraction_user_prompt"].format(
+        entity_extraction_user_prompt = entity_extraction_user_prompt_template.format(
             **{**context_base, "input_text": content}
         )
-        entity_continue_extraction_user_prompt = PROMPTS[
-            "entity_continue_extraction_user_prompt"
-        ].format(**{**context_base, "input_text": content})
+        entity_continue_extraction_user_prompt = (
+            entity_continue_extraction_user_prompt_template.format(
+                **{**context_base, "input_text": content}
+            )
+        )
 
-        final_result, timestamp = await use_llm_func_with_cache(
+        final_result, timestamp = await _use_llm_func_with_prompt_cache_identity(
             entity_extraction_user_prompt,
             use_llm_func,
             system_prompt=entity_extraction_system_prompt,
@@ -2897,6 +3145,8 @@ async def extract_entities(
             cache_type="extract",
             chunk_id=chunk_key,
             cache_keys_collector=cache_keys_collector,
+            prompt_fingerprint=extract_prompt_fingerprint,
+            cache_queryparam=extract_cache_queryparam,
         )
 
         history = pack_user_ass_to_openai_messages(
@@ -2935,7 +3185,7 @@ async def extract_entities(
                     f"Gleaning stopped for chunk {chunk_key}: Input tokens ({token_count}) exceeded limit ({max_input_tokens})."
                 )
             else:
-                glean_result, timestamp = await use_llm_func_with_cache(
+                glean_result, timestamp = await _use_llm_func_with_prompt_cache_identity(
                     entity_continue_extraction_user_prompt,
                     use_llm_func,
                     system_prompt=entity_extraction_system_prompt,
@@ -2944,6 +3194,8 @@ async def extract_entities(
                     cache_type="extract",
                     chunk_id=chunk_key,
                     cache_keys_collector=cache_keys_collector,
+                    prompt_fingerprint=extract_prompt_fingerprint,
+                    cache_queryparam=extract_cache_queryparam,
                 )
 
                 # Process gleaning result separately with file path
@@ -3133,6 +3385,10 @@ async def kg_query(
         # Apply higher priority (5) to query relation LLM function
         use_model_func = partial(use_model_func, _priority=5)
 
+    prompt_config = _resolve_query_time_prompt_config(global_config, query_param)
+    query_prompt_fingerprint = _get_prompt_family_fingerprint(prompt_config, "query")
+    rag_response_template = prompt_config["query"]["rag_response"]
+
     hl_keywords, ll_keywords = await get_keywords_from_query(
         query, query_param, global_config, hashing_kv
     )
@@ -3178,7 +3434,6 @@ async def kg_query(
             content=context_result.context, raw_data=context_result.raw_data
         )
 
-    user_prompt = f"\n\n{query_param.user_prompt}" if query_param.user_prompt else "n/a"
     response_type = (
         query_param.response_type
         if query_param.response_type
@@ -3186,11 +3441,13 @@ async def kg_query(
     )
 
     # Build system prompt
-    sys_prompt_temp = system_prompt if system_prompt else PROMPTS["rag_response"]
-    sys_prompt = sys_prompt_temp.format(
+    sys_prompt_template = system_prompt if system_prompt else rag_response_template
+    sys_prompt = _format_query_response_prompt(
+        sys_prompt_template,
         response_type=response_type,
-        user_prompt=user_prompt,
-        context_data=context_result.context,
+        user_prompt=query_param.user_prompt,
+        context_placeholder="context_data",
+        context_value=context_result.context,
     )
 
     user_query = query
@@ -3220,6 +3477,8 @@ async def kg_query(
         ll_keywords_str,
         query_param.user_prompt or "",
         query_param.enable_rerank,
+        query_prompt_fingerprint,
+        sys_prompt_template,
     )
 
     cached_result = await handle_cache(
@@ -3254,6 +3513,7 @@ async def kg_query(
                 "ll_keywords": ll_keywords_str,
                 "user_prompt": query_param.user_prompt or "",
                 "enable_rerank": query_param.enable_rerank,
+                "query_prompt_fingerprint": query_prompt_fingerprint,
             }
             await save_to_cache(
                 hashing_kv,
@@ -3335,8 +3595,13 @@ async def extract_keywords_only(
     It ONLY extracts keywords (hl_keywords, ll_keywords).
     """
 
+    prompt_config = _resolve_query_time_prompt_config(global_config, param)
+    keywords_prompt_fingerprint = _get_prompt_family_fingerprint(
+        prompt_config, "keywords"
+    )
+
     # 1. Build the examples
-    examples = "\n".join(PROMPTS["keywords_extraction_examples"])
+    examples = "\n".join(prompt_config["keywords"]["keywords_extraction_examples"])
 
     language = global_config["addon_params"].get("language", DEFAULT_SUMMARY_LANGUAGE)
 
@@ -3345,6 +3610,7 @@ async def extract_keywords_only(
         param.mode,
         text,
         language,
+        keywords_prompt_fingerprint,
     )
     cached_result = await handle_cache(
         hashing_kv, args_hash, text, param.mode, cache_type="keywords"
@@ -3362,7 +3628,7 @@ async def extract_keywords_only(
             )
 
     # 3. Build the keyword-extraction prompt
-    kw_prompt = PROMPTS["keywords_extraction"].format(
+    kw_prompt = prompt_config["keywords"]["keywords_extraction"].format(
         query=text,
         examples=examples,
         language=language,
@@ -3417,6 +3683,7 @@ async def extract_keywords_only(
                 "max_total_tokens": param.max_total_tokens,
                 "user_prompt": param.user_prompt or "",
                 "enable_rerank": param.enable_rerank,
+                "keywords_prompt_fingerprint": keywords_prompt_fingerprint,
             }
             await save_to_cache(
                 hashing_kv,
@@ -4010,13 +4277,10 @@ async def _build_context_str(
         global_config.get("max_total_tokens", DEFAULT_MAX_TOTAL_TOKENS),
     )
 
-    # Get the system prompt template from PROMPTS or global_config
-    sys_prompt_template = global_config.get(
-        "system_prompt_template", PROMPTS["rag_response"]
-    )
-
-    kg_context_template = PROMPTS["kg_query_context"]
-    user_prompt = query_param.user_prompt if query_param.user_prompt else ""
+    prompt_config = _resolve_query_time_prompt_config(global_config, query_param)
+    sys_prompt_template = prompt_config["query"]["rag_response"]
+    kg_context_template = prompt_config["query"]["kg_query_context"]
+    user_prompt = query_param.user_prompt
     response_type = (
         query_param.response_type
         if query_param.response_type
@@ -4040,10 +4304,12 @@ async def _build_context_str(
     kg_context_tokens = len(tokenizer.encode(pre_kg_context))
 
     # Calculate preliminary system prompt tokens
-    pre_sys_prompt = sys_prompt_template.format(
-        context_data="",  # Empty for overhead calculation
+    pre_sys_prompt = _format_query_response_prompt(
+        sys_prompt_template,
         response_type=response_type,
         user_prompt=user_prompt,
+        context_placeholder="context_data",
+        context_value="",  # Empty for overhead calculation
     )
     sys_prompt_tokens = len(tokenizer.encode(pre_sys_prompt))
 
@@ -4909,6 +5175,11 @@ async def naive_query(
         # Apply higher priority (5) to query relation LLM function
         use_model_func = partial(use_model_func, _priority=5)
 
+    prompt_config = _resolve_query_time_prompt_config(global_config, query_param)
+    query_prompt_fingerprint = _get_prompt_family_fingerprint(prompt_config, "query")
+    naive_response_template = prompt_config["query"]["naive_rag_response"]
+    naive_context_template = prompt_config["query"]["naive_query_context"]
+
     tokenizer: Tokenizer = global_config["tokenizer"]
     if not tokenizer:
         logger.error("Tokenizer not found in global configuration.")
@@ -4930,23 +5201,23 @@ async def naive_query(
     )
 
     # Calculate system prompt template tokens (excluding content_data)
-    user_prompt = f"\n\n{query_param.user_prompt}" if query_param.user_prompt else "n/a"
+    user_prompt = query_param.user_prompt
     response_type = (
         query_param.response_type
         if query_param.response_type
         else "Multiple Paragraphs"
     )
 
-    # Use the provided system prompt or default
-    sys_prompt_template = (
-        system_prompt if system_prompt else PROMPTS["naive_rag_response"]
-    )
+    # Use the provided system prompt or resolved prompt config
+    sys_prompt_template = system_prompt if system_prompt else naive_response_template
 
     # Create a preliminary system prompt with empty content_data to calculate overhead
-    pre_sys_prompt = sys_prompt_template.format(
+    pre_sys_prompt = _format_query_response_prompt(
+        sys_prompt_template,
         response_type=response_type,
         user_prompt=user_prompt,
-        content_data="",  # Empty for overhead calculation
+        context_placeholder="content_data",
+        context_value="",  # Empty for overhead calculation
     )
 
     # Calculate available tokens for chunks
@@ -5018,7 +5289,6 @@ async def naive_query(
         if ref["reference_id"]
     )
 
-    naive_context_template = PROMPTS["naive_query_context"]
     context_content = naive_context_template.format(
         text_chunks_str=text_units_str,
         reference_list_str=reference_list_str,
@@ -5027,10 +5297,12 @@ async def naive_query(
     if query_param.only_need_context and not query_param.only_need_prompt:
         return QueryResult(content=context_content, raw_data=raw_data)
 
-    sys_prompt = sys_prompt_template.format(
-        response_type=query_param.response_type,
+    sys_prompt = _format_query_response_prompt(
+        sys_prompt_template,
+        response_type=response_type,
         user_prompt=user_prompt,
-        content_data=context_content,
+        context_placeholder="content_data",
+        context_value=context_content,
     )
 
     user_query = query
@@ -5051,6 +5323,8 @@ async def naive_query(
         query_param.max_total_tokens,
         query_param.user_prompt or "",
         query_param.enable_rerank,
+        query_prompt_fingerprint,
+        sys_prompt_template,
     )
     cached_result = await handle_cache(
         hashing_kv, args_hash, user_query, query_param.mode, cache_type="query"
@@ -5081,6 +5355,7 @@ async def naive_query(
                 "max_total_tokens": query_param.max_total_tokens,
                 "user_prompt": query_param.user_prompt or "",
                 "enable_rerank": query_param.enable_rerank,
+                "query_prompt_fingerprint": query_prompt_fingerprint,
             }
             await save_to_cache(
                 hashing_kv,

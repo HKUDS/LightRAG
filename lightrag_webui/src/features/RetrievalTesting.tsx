@@ -6,6 +6,7 @@ import { throttle } from '@/lib/utils'
 import { queryText, queryTextStream } from '@/api/lightrag'
 import { errorMessage } from '@/lib/utils'
 import { useSettingsStore } from '@/stores/settings'
+import { useBackendState } from '@/stores/state'
 import { useDebounce } from '@/hooks/useDebounce'
 import QuerySettings from '@/components/retrieval/QuerySettings'
 import { ChatMessage, MessageWithError } from '@/components/retrieval/ChatMessage'
@@ -14,6 +15,7 @@ import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 import { copyToClipboard } from '@/utils/clipboard'
 import type { QueryMode } from '@/api/lightrag'
+import { pruneEmptyPromptOverrides } from '@/utils/promptOverrides'
 
 // Helper function to generate unique IDs with browser compatibility
 const generateUniqueId = () => {
@@ -106,6 +108,7 @@ export default function RetrievalTesting() {
   // Get current tab to determine if this tab is active (for performance optimization)
   const currentTab = useSettingsStore.use.currentTab()
   const isRetrievalTabActive = currentTab === 'retrieval'
+  const allowPromptOverridesViaApi = useBackendState.use.allowPromptOverridesViaApi()
 
   const [messages, setMessages] = useState<MessageWithError[]>(() => {
     try {
@@ -367,6 +370,12 @@ export default function RetrievalTesting() {
         ...(modeOverride ? { mode: modeOverride } : {})
       }
 
+      if (allowPromptOverridesViaApi && effectiveMode !== 'bypass') {
+        queryParams.prompt_overrides = pruneEmptyPromptOverrides(state.querySettings.prompt_overrides)
+      } else {
+        delete queryParams.prompt_overrides
+      }
+
       try {
         // Run query
         if (state.querySettings.stream) {
@@ -430,7 +439,7 @@ export default function RetrievalTesting() {
         }
       }
     },
-    [inputValue, isLoading, messages, setMessages, t, scrollToBottom]
+    [allowPromptOverridesViaApi, inputValue, isLoading, messages, setMessages, t, scrollToBottom]
   )
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLInputElement | HTMLTextAreaElement>) => {

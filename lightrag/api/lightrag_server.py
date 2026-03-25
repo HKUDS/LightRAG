@@ -1108,7 +1108,14 @@ def create_app(args):
             api_key,
         )
     )
-    app.include_router(create_query_routes(rag, api_key, args.top_k))
+    app.include_router(
+        create_query_routes(
+            rag,
+            api_key,
+            args.top_k,
+            args.allow_prompt_overrides_via_api,
+        )
+    )
     app.include_router(create_graph_routes(rag, api_key))
 
     # Add Ollama API routes
@@ -1229,6 +1236,7 @@ def create_app(args):
                                 "embedding_binding": "openai",
                                 "embedding_model": "text-embedding-ada-002",
                                 "workspace": "default",
+                                "allow_prompt_overrides_via_api": False,
                             },
                             "auth_mode": "enabled",
                             "pipeline_busy": False,
@@ -1300,6 +1308,7 @@ def create_app(args):
                     "max_async": args.max_async,
                     "embedding_func_max_async": args.embedding_func_max_async,
                     "embedding_batch_num": args.embedding_batch_num,
+                    "allow_prompt_overrides_via_api": args.allow_prompt_overrides_via_api,
                 },
                 "auth_mode": auth_mode,
                 "pipeline_busy": pipeline_status.get("busy", False),

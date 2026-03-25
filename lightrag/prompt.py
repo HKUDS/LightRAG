@@ -1,4 +1,9 @@
 from __future__ import annotations
+from copy import deepcopy
+from dataclasses import dataclass, field
+import hashlib
+import json
+from string import Formatter
 from typing import Any
 
 
@@ -428,5 +433,270 @@ Output:
   "low_level_keywords": ["School access", "Literacy rates", "Job training", "Income inequality"]
 }
 
-""",
+    """,
 ]
+
+
+@dataclass(frozen=True)
+class PromptRule:
+    required: frozenset[str] = field(default_factory=frozenset)
+    at_least_one_required: frozenset[str] = field(default_factory=frozenset)
+    recommended: frozenset[str] = field(default_factory=frozenset)
+    value_type: type = str
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "required", frozenset(self.required))
+        object.__setattr__(
+            self, "at_least_one_required", frozenset(self.at_least_one_required)
+        )
+        object.__setattr__(self, "recommended", frozenset(self.recommended))
+
+
+@dataclass
+class PromptValidationResult:
+    errors: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+
+
+PROMPT_SCHEMA: dict[str, dict[str, PromptRule]] = {
+    "shared": {
+        "tuple_delimiter": PromptRule(),
+        "completion_delimiter": PromptRule(),
+    },
+    "query": {
+        "rag_response": PromptRule(
+            required={"context_data"}, recommended={"response_type", "user_prompt"}
+        ),
+        "naive_rag_response": PromptRule(
+            required={"content_data"}, recommended={"response_type", "user_prompt"}
+        ),
+        "kg_query_context": PromptRule(
+            at_least_one_required={
+                "entities_str",
+                "relations_str",
+                "text_chunks_str",
+                "reference_list_str",
+            },
+            recommended={
+                "entities_str",
+                "relations_str",
+                "text_chunks_str",
+                "reference_list_str",
+            },
+        ),
+        "naive_query_context": PromptRule(
+            required={"text_chunks_str"}, recommended={"reference_list_str"}
+        ),
+    },
+    "keywords": {
+        "keywords_extraction": PromptRule(
+            required={"query"}, recommended={"examples", "language"}
+        ),
+        "keywords_extraction_examples": PromptRule(value_type=list),
+    },
+    "entity_extraction": {
+        "system_prompt": PromptRule(
+            required={"tuple_delimiter", "completion_delimiter"},
+            recommended={"entity_types", "language", "examples"},
+        ),
+        "user_prompt": PromptRule(
+            required={"input_text"},
+            recommended={"completion_delimiter", "language", "entity_types"},
+        ),
+        "continue_prompt": PromptRule(
+            required={"completion_delimiter", "tuple_delimiter"},
+            recommended={"language"},
+        ),
+        "examples": PromptRule(value_type=list),
+    },
+    "summary": {
+        "summarize_entity_descriptions": PromptRule(
+            required={"description_list"},
+            recommended={
+                "description_type",
+                "description_name",
+                "summary_length",
+                "language",
+            },
+        ),
+    },
+}
+
+
+def get_default_prompt_config() -> dict[str, Any]:
+    return {
+        "shared": {
+            "tuple_delimiter": PROMPTS["DEFAULT_TUPLE_DELIMITER"],
+            "completion_delimiter": PROMPTS["DEFAULT_COMPLETION_DELIMITER"],
+        },
+        "query": {
+            "rag_response": PROMPTS["rag_response"],
+            "naive_rag_response": PROMPTS["naive_rag_response"],
+            "kg_query_context": PROMPTS["kg_query_context"],
+            "naive_query_context": PROMPTS["naive_query_context"],
+        },
+        "keywords": {
+            "keywords_extraction": PROMPTS["keywords_extraction"],
+            "keywords_extraction_examples": deepcopy(
+                PROMPTS["keywords_extraction_examples"]
+            ),
+        },
+        "entity_extraction": {
+            "system_prompt": PROMPTS["entity_extraction_system_prompt"],
+            "user_prompt": PROMPTS["entity_extraction_user_prompt"],
+            "continue_prompt": PROMPTS["entity_continue_extraction_user_prompt"],
+            "examples": deepcopy(PROMPTS["entity_extraction_examples"]),
+        },
+        "summary": {
+            "summarize_entity_descriptions": PROMPTS["summarize_entity_descriptions"],
+        },
+    }
+
+
+def merge_prompt_config(
+    base: dict[str, Any],
+    override: dict[str, Any] | None,
+    *,
+    allowed_families: set[str] | None = None,
+) -> dict[str, Any]:
+    if not isinstance(base, dict):
+        raise ValueError("Prompt config base must be a dict")
+    merged = deepcopy(base)
+    if override is None:
+        return merged
+    if not isinstance(override, dict):
+        raise ValueError("Prompt config override must be a dict or None")
+    validate_prompt_config(override, allowed_families=allowed_families)
+
+    for family, family_value in override.items():
+        if family in merged and not isinstance(merged[family], dict):
+            raise ValueError(f"Prompt family '{family}' must be a dict")
+        if family not in merged:
+            merged[family] = {}
+        for prompt_name in family_value:
+            if prompt_name not in PROMPT_SCHEMA.get(family, {}):
+                raise ValueError(
+                    f"Unknown prompt key '{prompt_name}' in family '{family}'"
+                )
+        merged[family].update(deepcopy(family_value))
+    return merged
+
+
+def _extract_placeholders(template: str) -> set[str]:
+    placeholders: set[str] = set()
+    for _, field_name, _, _ in Formatter().parse(template):
+        if field_name:
+            placeholders.add(field_name)
+    return placeholders
+
+
+def _allowed_placeholders(rule: PromptRule) -> set[str]:
+    return set(rule.required | rule.at_least_one_required | rule.recommended)
+
+
+def validate_prompt_config(
+    config: dict[str, Any] | Any,
+    *,
+    allowed_families: set[str] | None = None,
+    raise_on_error: bool = True,
+) -> PromptValidationResult:
+    result = PromptValidationResult()
+    if not isinstance(config, dict):
+        result.errors.append("Prompt config must be a dict")
+        if raise_on_error:
+            raise ValueError("; ".join(result.errors))
+        return result
+
+    for family, family_value in config.items():
+        if allowed_families is not None and family not in allowed_families:
+            result.errors.append(f"Prompt family '{family}' is not allowed")
+            continue
+        family_schema = PROMPT_SCHEMA.get(family)
+        if family_schema is None:
+            result.errors.append(f"Unknown prompt family '{family}'")
+            continue
+        if not isinstance(family_value, dict):
+            result.errors.append(f"Prompt family '{family}' must be a dict")
+            continue
+
+        for prompt_name, prompt_value in family_value.items():
+            rule = family_schema.get(prompt_name)
+            if rule is None:
+                result.errors.append(
+                    f"Unknown prompt key '{prompt_name}' in family '{family}'"
+                )
+                continue
+            if rule.value_type is list:
+                if not isinstance(prompt_value, list) or not all(
+                    isinstance(item, str) for item in prompt_value
+                ):
+                    result.errors.append(
+                        f"Prompt '{family}.{prompt_name}' must be of type list[str]"
+                    )
+                continue
+            elif rule.value_type is str:
+                if not isinstance(prompt_value, str):
+                    result.errors.append(
+                        f"Prompt '{family}.{prompt_name}' must be of type str"
+                    )
+                    continue
+                if (
+                    family == "shared"
+                    and prompt_name in {"tuple_delimiter", "completion_delimiter"}
+                    and prompt_value.strip() == ""
+                ):
+                    result.errors.append(
+                        f"Prompt '{family}.{prompt_name}' cannot be empty"
+                    )
+                    continue
+            elif not isinstance(prompt_value, rule.value_type):
+                result.errors.append(
+                    f"Prompt '{family}.{prompt_name}' must be of type {rule.value_type.__name__}"
+                )
+                continue
+
+            try:
+                placeholders = _extract_placeholders(prompt_value)
+            except ValueError as exc:
+                result.errors.append(
+                    f"Prompt '{family}.{prompt_name}' has invalid format string: {exc}"
+                )
+                continue
+
+            unknown_placeholders = sorted(
+                placeholders - _allowed_placeholders(rule)
+            )
+            if unknown_placeholders:
+                result.errors.append(
+                    f"Prompt '{family}.{prompt_name}' contains unknown placeholders: "
+                    + ", ".join(unknown_placeholders)
+                )
+            missing_required = sorted(rule.required - placeholders)
+            if missing_required:
+                result.errors.append(
+                    f"Prompt '{family}.{prompt_name}' missing required placeholders: "
+                    + ", ".join(missing_required)
+                )
+            if rule.at_least_one_required and not (
+                rule.at_least_one_required & placeholders
+            ):
+                result.errors.append(
+                    f"Prompt '{family}.{prompt_name}' must include at least one placeholder from: "
+                    + ", ".join(sorted(rule.at_least_one_required))
+                )
+            missing_recommended = sorted(rule.recommended - placeholders)
+            if missing_recommended:
+                result.warnings.append(
+                    f"Prompt '{family}.{prompt_name}' missing recommended placeholders: "
+                    + ", ".join(missing_recommended)
+                )
+
+    if raise_on_error and result.errors:
+        raise ValueError("; ".join(result.errors))
+    return result
+
+
+def get_prompt_fingerprint(config: dict[str, Any]) -> str:
+    effective_config = merge_prompt_config(get_default_prompt_config(), config)
+    payload = json.dumps(effective_config, ensure_ascii=True, sort_keys=True)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()

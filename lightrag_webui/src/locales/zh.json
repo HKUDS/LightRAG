@@ -440,6 +440,20 @@
       "userPrompt": "附加输出提示词",
       "userPromptTooltip": "向LLM提供额外的响应要求（与查询内容无关，仅用于处理输出）。",
       "userPromptPlaceholder": "输入自定义提示词（可选）",
+      "promptOverrides": {
+        "title": "Prompt 自定义",
+        "description": "为检索测试覆盖 query-time 提示词模板。",
+        "disabledHint": "当前后端未开启通过 API 进行 query-time prompt override。",
+        "bypassHint": "bypass 模式下不支持 prompt override。",
+        "queryRagResponse": "query.rag_response",
+        "queryNaiveRagResponse": "query.naive_rag_response",
+        "queryKgQueryContext": "query.kg_query_context",
+        "queryNaiveQueryContext": "query.naive_query_context",
+        "keywordsExtraction": "keywords.keywords_extraction",
+        "keywordsExtractionExamples": "keywords.keywords_extraction_examples",
+        "examplePlaceholder": "示例 {{index}}",
+        "removeExample": "删除"
+      },
       "enableRerank": "启用重排",
       "enableRerankTooltip": "为检索到的文本块启用重排。如果为True但未配置重排模型，将发出警告。默认为True。"
     }

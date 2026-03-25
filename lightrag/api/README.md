@@ -351,6 +351,37 @@ When using LightRAG for content queries, avoid combining the search process with
 /mix[Use mermaid format for diagrams] Please draw a character relationship diagram for Scrooge
 ```
 
+### Structured prompt overrides (query-time)
+
+`user_prompt` is an additive instruction for answer formatting. Structured prompt overrides are different: they override prompt templates used during query execution. If a custom answer template includes `{user_prompt}`, the value is injected there; otherwise LightRAG appends a standard additional-instructions block automatically.
+
+- SDK instance defaults: `LightRAG(prompt_config=...)`
+- SDK per-request overrides: `QueryParam(prompt_overrides=...)`
+- API request field: `prompt_overrides`
+
+API security gate:
+
+- `ALLOW_PROMPT_OVERRIDES_VIA_API` is `false` by default
+- set `ALLOW_PROMPT_OVERRIDES_VIA_API=true` to allow request-level `prompt_overrides`
+- `/health` exposes `configuration.allow_prompt_overrides_via_api`, which clients can use for capability discovery
+
+Example API request:
+
+```json
+{
+  "query": "What is LightRAG?",
+  "mode": "mix",
+  "user_prompt": "Use short bullet points",
+  "prompt_overrides": {
+    "query": {
+      "rag_response": "Answer in numbered steps.\n\n{context_data}\n\n{response_type}"
+    }
+  }
+}
+```
+
+WebUI only supports query-time prompt overrides. It does not edit server instance defaults (`prompt_config`).
+
 ## API Key and Authentication
 
 By default, the LightRAG Server can be accessed without any authentication. We can configure the server with an API Key or account credentials to secure it.

@@ -832,6 +832,35 @@ response_default = rag.query(
 print(response_default)
 ```
 
+### Prompt 自定义
+
+如果你需要修改提示词模板本身，而不只是追加检索后的输出要求，建议使用结构化 Prompt 自定义：
+
+```python
+rag = LightRAG(
+    working_dir=WORKING_DIR,
+    prompt_config={
+        "query": {
+            "rag_response": "请用简洁要点回答。\n\n{context_data}\n\n{response_type}"
+        }
+    },
+)
+
+param = QueryParam(
+    mode="hybrid",
+    user_prompt="请把最终答案整理成清单",
+    prompt_overrides={
+        "query": {
+            "rag_response": "请用编号步骤回答。\n\n{context_data}\n\n{response_type}"
+        }
+    },
+)
+```
+
+`user_prompt` 仍是答案阶段的附加指令；`prompt_config` 与 `prompt_overrides` 属于结构化模板覆盖，分别作用于实例级默认值与单次查询。如果你的自定义答案模板包含 `{user_prompt}`，系统会直接在该占位符处注入；否则 LightRAG 会自动追加一段标准的附加指令块。
+
+对于 API 请求，只有在 `ALLOW_PROMPT_OVERRIDES_VIA_API=true` 时才接受 `prompt_overrides`（默认关闭）。WebUI 仅支持查询时（query-time）`prompt_overrides`。
+
 ### 插入
 
 <details>

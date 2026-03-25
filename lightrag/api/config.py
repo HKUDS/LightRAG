@@ -436,6 +436,9 @@ def parse_args() -> argparse.Namespace:
     args.related_chunk_number = get_env_value(
         "RELATED_CHUNK_NUMBER", DEFAULT_RELATED_CHUNK_NUMBER, int
     )
+    args.allow_prompt_overrides_via_api = get_env_value(
+        "ALLOW_PROMPT_OVERRIDES_VIA_API", False, bool
+    )
 
     # Add missing environment variables for health endpoint
     args.force_llm_summary_on_merge = get_env_value(

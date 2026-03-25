@@ -832,6 +832,35 @@ response_default = rag.query(
 print(response_default)
 ```
 
+### Prompt Customization
+
+Use structured prompt customization when you need to change prompt templates, not only add post-retrieval instructions:
+
+```python
+rag = LightRAG(
+    working_dir=WORKING_DIR,
+    prompt_config={
+        "query": {
+            "rag_response": "Answer with concise bullets.\n\n{context_data}\n\n{response_type}"
+        }
+    },
+)
+
+param = QueryParam(
+    mode="hybrid",
+    user_prompt="Format the final answer as a checklist",
+    prompt_overrides={
+        "query": {
+            "rag_response": "Use numbered steps.\n\n{context_data}\n\n{response_type}"
+        }
+    },
+)
+```
+
+`user_prompt` remains an answer-stage additive instruction. `prompt_config` and `prompt_overrides` are structured template overrides, and take effect at instance-level and query-time respectively. If your custom answer template contains `{user_prompt}`, the value is injected there; otherwise LightRAG appends a standard additional-instructions block automatically.
+
+For API requests, `prompt_overrides` is accepted only when `ALLOW_PROMPT_OVERRIDES_VIA_API=true` (default: disabled). The WebUI only supports query-time prompt overrides.
+
 ### Insert
 
 <details>
