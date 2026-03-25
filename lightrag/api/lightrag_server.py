@@ -50,6 +50,7 @@ from lightrag.api.routers.document_routes import (
     DocumentManager,
     create_document_routes,
 )
+from lightrag.api.routers.prompt_config_routes import create_prompt_config_routes
 from lightrag.api.routers.query_routes import create_query_routes
 from lightrag.api.routers.graph_routes import create_graph_routes
 from lightrag.api.routers.ollama_api import OllamaAPI
@@ -1116,6 +1117,7 @@ def create_app(args):
             args.allow_prompt_overrides_via_api,
         )
     )
+    app.include_router(create_prompt_config_routes(rag, api_key))
     app.include_router(create_graph_routes(rag, api_key))
 
     # Add Ollama API routes
@@ -1266,6 +1268,29 @@ def create_app(args):
 
             # Cleanup expired keyed locks and get status
             keyed_lock_info = cleanup_keyed_lock()
+            active_prompt_versions = {
+                "indexing": {
+                    "active_version_id": None,
+                    "active_version_name": None,
+                },
+                "retrieval": {
+                    "active_version_id": None,
+                    "active_version_name": None,
+                },
+            }
+            if hasattr(rag, "prompt_version_store"):
+                for group_type in ("indexing", "retrieval"):
+                    group_registry = rag.prompt_version_store.list_versions(group_type)
+                    active_version_id = group_registry.get("active_version_id")
+                    if not active_version_id:
+                        continue
+                    active_version = rag.prompt_version_store.get_version(
+                        group_type, active_version_id
+                    )
+                    active_prompt_versions[group_type] = {
+                        "active_version_id": active_version_id,
+                        "active_version_name": active_version["version_name"],
+                    }
 
             return {
                 "status": "healthy",
@@ -1309,6 +1334,7 @@ def create_app(args):
                     "embedding_func_max_async": args.embedding_func_max_async,
                     "embedding_batch_num": args.embedding_batch_num,
                     "allow_prompt_overrides_via_api": args.allow_prompt_overrides_via_api,
+                    "active_prompt_versions": active_prompt_versions,
                 },
                 "auth_mode": auth_mode,
                 "pipeline_busy": pipeline_status.get("busy", False),
