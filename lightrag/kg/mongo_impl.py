@@ -64,7 +64,7 @@ class ClientManager:
                 )
                 client = AsyncMongoClient(
 					uri,
-					driver=DriverInfo(name="LightRAG", version=version("lightrag")),
+					driver=DriverInfo(name="LightRAG", version=version("lightrag-hku")),
 				)
                 db = client.get_database(database_name)
                 cls._instances["db"] = db
