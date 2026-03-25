@@ -21,7 +21,6 @@ from ..utils import logger, compute_mdhash_id
 from ..types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
 from ..constants import GRAPH_FIELD_SEP
 from ..kg.shared_storage import get_data_init_lock
-from ... import __version__ 
 
 import pipmaster as pm
 
@@ -33,7 +32,9 @@ from pymongo import UpdateOne  # type: ignore
 from pymongo.asynchronous.database import AsyncDatabase  # type: ignore
 from pymongo.asynchronous.collection import AsyncCollection  # type: ignore
 from pymongo.operations import SearchIndexModel  # type: ignore
+from pymongo.driver_info import DriverInfo # type: ignore
 from pymongo.errors import PyMongoError  # type: ignore
+from pymongo.operations import SearchIndexModel  # type: ignore
 
 config = configparser.ConfigParser()
 config.read("config.ini", "utf-8")
@@ -63,7 +64,7 @@ class ClientManager:
                 )
                 client = AsyncMongoClient(
 					uri,
-					driver=DriverInfo(name="LightRAG", version=__version__),
+					driver=DriverInfo(name="LightRAG", version=version("lightrag")),
 				)
                 db = client.get_database(database_name)
                 cls._instances["db"] = db
