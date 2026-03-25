@@ -137,6 +137,9 @@ async def safe_vdb_operation_with_exception(
     max_retries: int = 3,
     retry_delay: float = 0.2,
     logger_func: Optional[Callable] = None,
+    timeout_seconds: float | None = None,
+    log_start: bool = False,
+    success_log_threshold_seconds: float = 10.0,
 ) -> None:
     """
     Safely execute vector database operations with retry mechanism and exception handling.
@@ -151,6 +154,9 @@ async def safe_vdb_operation_with_exception(
         max_retries: Maximum number of retry attempts
         retry_delay: Delay between retries in seconds
         logger_func: Logger function to use for error messages
+        timeout_seconds: Optional timeout for a single operation attempt
+        log_start: Whether to emit start/success logs for each attempt
+        success_log_threshold_seconds: Log successful attempts when duration exceeds this threshold
 
     Raises:
         Exception: When operation fails after all retry attempts
@@ -158,17 +164,60 @@ async def safe_vdb_operation_with_exception(
     log_func = logger_func or logger.warning
 
     for attempt in range(max_retries):
+        start_ts = time.perf_counter()
+        attempt_label = f"{attempt + 1}/{max_retries}"
         try:
-            await operation()
+            if log_start:
+                logger.info(
+                    "VDB %s start for %s (attempt %s, timeout=%s)",
+                    operation_name,
+                    entity_name or "<unknown>",
+                    attempt_label,
+                    f"{timeout_seconds:.1f}s"
+                    if timeout_seconds is not None
+                    else "none",
+                )
+
+            if timeout_seconds is not None and timeout_seconds > 0:
+                await asyncio.wait_for(operation(), timeout=timeout_seconds)
+            else:
+                await operation()
+
+            elapsed = time.perf_counter() - start_ts
+            if log_start or elapsed >= success_log_threshold_seconds:
+                logger.info(
+                    "VDB %s success for %s in %.2fs (attempt %s)",
+                    operation_name,
+                    entity_name or "<unknown>",
+                    elapsed,
+                    attempt_label,
+                )
             return  # Success, return immediately
-        except Exception as e:
+        except asyncio.TimeoutError as e:
+            elapsed = time.perf_counter() - start_ts
+            timeout_msg = (
+                f"VDB {operation_name} timeout for {entity_name or '<unknown>'} "
+                f"after {elapsed:.2f}s (attempt {attempt_label}, timeout={timeout_seconds}s)"
+            )
             if attempt >= max_retries - 1:
-                error_msg = f"VDB {operation_name} failed for {entity_name} after {max_retries} attempts: {e}"
+                log_func(timeout_msg)
+                raise TimeoutError(timeout_msg) from e
+            log_func(f"{timeout_msg}, retrying...")
+            if retry_delay > 0:
+                await asyncio.sleep(retry_delay)
+        except Exception as e:
+            elapsed = time.perf_counter() - start_ts
+            if attempt >= max_retries - 1:
+                error_msg = (
+                    f"VDB {operation_name} failed for {entity_name or '<unknown>'} "
+                    f"after {max_retries} attempts in {elapsed:.2f}s: {e}"
+                )
                 log_func(error_msg)
                 raise Exception(error_msg) from e
             else:
                 log_func(
-                    f"VDB {operation_name} attempt {attempt + 1} failed for {entity_name}: {e}, retrying..."
+                    f"VDB {operation_name} attempt {attempt + 1} failed for "
+                    f"{entity_name or '<unknown>'} after {elapsed:.2f}s: {e}, retrying..."
                 )
                 if retry_delay > 0:
                     await asyncio.sleep(retry_delay)
@@ -1944,6 +1993,7 @@ async def use_llm_func_with_cache(
     cache_type: str = "extract",
     chunk_id: str | None = None,
     cache_keys_collector: list = None,
+    entity_extraction: bool = False,
 ) -> tuple[str, int]:
     """Call LLM function with cache support and text sanitization
 
@@ -1962,6 +2012,9 @@ async def use_llm_func_with_cache(
         chunk_id: Chunk identifier to store in cache
         text_chunks_storage: Text chunks storage to update llm_cache_list
         cache_keys_collector: Optional list to collect cache keys for batch processing
+        entity_extraction: Whether to enable JSON structured output for entity extraction.
+            When True, passes entity_extraction=True to the LLM provider to trigger
+            native structured output (e.g., response_format for OpenAI, format for Ollama).
 
     Returns:
         tuple[str, int]: (LLM response text, timestamp)
@@ -2026,6 +2079,8 @@ async def use_llm_func_with_cache(
             kwargs["history_messages"] = safe_history_messages
         if max_tokens is not None:
             kwargs["max_tokens"] = max_tokens
+        if entity_extraction:
+            kwargs["entity_extraction"] = True
 
         res: str = await use_llm_func(
             safe_user_prompt, system_prompt=safe_system_prompt, **kwargs
@@ -2060,6 +2115,8 @@ async def use_llm_func_with_cache(
         kwargs["history_messages"] = safe_history_messages
     if max_tokens is not None:
         kwargs["max_tokens"] = max_tokens
+    if entity_extraction:
+        kwargs["entity_extraction"] = True
 
     try:
         res = await use_llm_func(

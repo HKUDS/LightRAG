@@ -342,6 +342,80 @@ class BindingOptions:
 
         return options
 
+    @classmethod
+    def options_dict_for_role(
+        cls, args: Namespace, role: str, is_cross_provider: bool = False
+    ) -> dict[str, Any]:
+        """
+        Extract role-specific provider options with proper inheritance.
+
+        Same provider:
+        - inherit the base binding options from parsed args
+        - overlay any role-specific environment variable overrides
+
+        Cross provider:
+        - start from the provider defaults
+        - overlay any role-specific environment variable overrides
+
+        Role env vars follow the pattern:
+        `{ROLE}_{BINDING_PREFIX}_{FIELD}`
+        e.g. `EXTRACT_OPENAI_LLM_TEMPERATURE`
+        """
+        import dataclasses
+        import os
+
+        if is_cross_provider:
+            if dataclasses.is_dataclass(cls):
+                base: dict[str, Any] = {}
+                for dataclass_field in dataclasses.fields(cls):
+                    if dataclass_field.name.startswith("_"):
+                        continue
+                    if dataclass_field.default is not dataclasses.MISSING:
+                        base[dataclass_field.name] = dataclass_field.default
+                    elif dataclass_field.default_factory is not dataclasses.MISSING:
+                        base[dataclass_field.name] = dataclass_field.default_factory()
+            else:
+                base = dict(cls._all_class_vars(cls))
+        else:
+            base = cls.options_dict(args)
+
+        role_upper = role.upper()
+        env_prefix = cls._binding_name.upper() + "_"
+
+        for arg_item in cls.args_env_name_type_value():
+            original_env = arg_item["env_name"]
+            role_env = f"{role_upper}_{original_env}"
+            field_name = original_env[len(env_prefix) :].lower()
+
+            env_raw = os.getenv(role_env)
+            if env_raw is None:
+                continue
+
+            field_type = _resolve_optional_type(arg_item["type"])
+            try:
+                if field_type is bool:
+                    base[field_name] = env_raw.lower() in (
+                        "true",
+                        "1",
+                        "yes",
+                        "t",
+                        "on",
+                    )
+                elif field_type in (list, List[str]):
+                    base[field_name] = json.loads(env_raw)
+                elif field_type is dict:
+                    base[field_name] = json.loads(env_raw)
+                elif field_type is int:
+                    base[field_name] = int(env_raw)
+                elif field_type is float:
+                    base[field_name] = float(env_raw)
+                else:
+                    base[field_name] = env_raw
+            except (ValueError, json.JSONDecodeError):
+                base[field_name] = env_raw
+
+        return base
+
     def asdict(self) -> dict[str, Any]:
         """
         Convert an instance of binding options to a dictionary.
