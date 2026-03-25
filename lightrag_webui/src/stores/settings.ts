@@ -2,11 +2,11 @@ import { create } from 'zustand'
 import { persist, createJSONStorage } from 'zustand/middleware'
 import { createSelectors } from '@/lib/utils'
 import { defaultQueryLabel } from '@/lib/constants'
-import { Message, QueryRequest } from '@/api/lightrag'
+import { Message, PromptConfigGroup, QueryPromptOverrides, QueryRequest } from '@/api/lightrag'
 
 type Theme = 'dark' | 'light' | 'system'
 type Language = 'en' | 'zh' | 'fr' | 'ar' | 'zh_TW' | 'ru' | 'ja' | 'de' | 'uk' | 'ko' | 'vi'
-type Tab = 'documents' | 'knowledge-graph' | 'retrieval' | 'api'
+type Tab = 'documents' | 'knowledge-graph' | 'prompt-management' | 'retrieval' | 'api'
 
 interface SettingsState {
   // Document manager settings
@@ -61,6 +61,14 @@ interface SettingsState {
 
   querySettings: Omit<QueryRequest, 'query'>
   updateQuerySettings: (settings: Partial<QueryRequest>) => void
+  promptManagementGroup: PromptConfigGroup
+  setPromptManagementGroup: (group: PromptConfigGroup) => void
+  promptManagementSelectedVersionId: string | null
+  setPromptManagementSelectedVersionId: (versionId: string | null) => void
+  retrievalPromptVersionSelection: string
+  setRetrievalPromptVersionSelection: (selection: string) => void
+  retrievalPromptDraft: QueryPromptOverrides | undefined
+  setRetrievalPromptDraft: (draft: QueryPromptOverrides | undefined) => void
 
   // Auth settings
   apiKey: string | null
@@ -120,6 +128,10 @@ const useSettingsStoreBase = create<SettingsState>()(
 
       retrievalHistory: [],
       userPromptHistory: [],
+      promptManagementGroup: 'retrieval',
+      promptManagementSelectedVersionId: null,
+      retrievalPromptVersionSelection: 'active',
+      retrievalPromptDraft: undefined,
 
       querySettings: {
         mode: 'global',
@@ -198,6 +210,18 @@ const useSettingsStoreBase = create<SettingsState>()(
         }))
       },
 
+      setPromptManagementGroup: (promptManagementGroup: PromptConfigGroup) =>
+        set({ promptManagementGroup }),
+
+      setPromptManagementSelectedVersionId: (promptManagementSelectedVersionId: string | null) =>
+        set({ promptManagementSelectedVersionId }),
+
+      setRetrievalPromptVersionSelection: (retrievalPromptVersionSelection: string) =>
+        set({ retrievalPromptVersionSelection }),
+
+      setRetrievalPromptDraft: (retrievalPromptDraft: QueryPromptOverrides | undefined) =>
+        set({ retrievalPromptDraft }),
+
       setShowFileName: (show: boolean) => set({ showFileName: show }),
       setShowLegend: (show: boolean) => set({ showLegend: show }),
       setDocumentsPageSize: (size: number) => set({ documentsPageSize: size }),
@@ -239,7 +263,7 @@ const useSettingsStoreBase = create<SettingsState>()(
     {
       name: 'settings-storage',
       storage: createJSONStorage(() => localStorage),
-      version: 20,
+      version: 21,
       migrate: (state: any, version: number) => {
         if (version < 2) {
           state.showEdgeLabel = false
@@ -346,6 +370,12 @@ const useSettingsStoreBase = create<SettingsState>()(
           if (state.querySettings && !('prompt_overrides' in state.querySettings)) {
             state.querySettings.prompt_overrides = undefined
           }
+        }
+        if (version < 21) {
+          state.promptManagementGroup = 'retrieval'
+          state.promptManagementSelectedVersionId = null
+          state.retrievalPromptVersionSelection = 'active'
+          state.retrievalPromptDraft = undefined
         }
         return state
       }

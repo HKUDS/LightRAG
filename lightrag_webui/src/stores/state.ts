@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 import { createSelectors } from '@/lib/utils'
-import { checkHealth, LightragStatus } from '@/api/lightrag'
+import { ActivePromptVersionSummary, checkHealth, LightragStatus, PromptConfigGroup } from '@/api/lightrag'
 import { useSettingsStore } from './settings'
 import { healthCheckInterval } from '@/lib/constants'
 
@@ -10,6 +10,7 @@ interface BackendState {
   messageTitle: string | null
   status: LightragStatus | null
   allowPromptOverridesViaApi: boolean
+  activePromptVersions: Record<PromptConfigGroup, ActivePromptVersionSummary> | null
   lastCheckTime: number
   pipelineBusy: boolean
   healthCheckIntervalId: ReturnType<typeof setInterval> | null
@@ -51,6 +52,7 @@ const useBackendStateStoreBase = create<BackendState>()((set, get) => ({
   lastCheckTime: Date.now(),
   status: null,
   allowPromptOverridesViaApi: false,
+  activePromptVersions: null,
   pipelineBusy: false,
   healthCheckIntervalId: null,
   healthCheckFunction: null,
@@ -101,6 +103,7 @@ const useBackendStateStoreBase = create<BackendState>()((set, get) => ({
         lastCheckTime: Date.now(),
         status: health,
         allowPromptOverridesViaApi: health.configuration?.allow_prompt_overrides_via_api === true,
+        activePromptVersions: health.configuration?.active_prompt_versions || null,
         pipelineBusy: health.pipeline_busy
       })
       return true
@@ -111,17 +114,18 @@ const useBackendStateStoreBase = create<BackendState>()((set, get) => ({
       messageTitle: 'Backend Health Check Error!',
       lastCheckTime: Date.now(),
       status: null,
-      allowPromptOverridesViaApi: false
+      allowPromptOverridesViaApi: false,
+      activePromptVersions: null
     })
     return false
   },
 
   clear: () => {
-    set({ health: true, message: null, messageTitle: null, allowPromptOverridesViaApi: false })
+    set({ health: true, message: null, messageTitle: null, allowPromptOverridesViaApi: false, activePromptVersions: null })
   },
 
   setErrorMessage: (message: string, messageTitle: string) => {
-    set({ health: false, message, messageTitle, allowPromptOverridesViaApi: false })
+    set({ health: false, message, messageTitle, allowPromptOverridesViaApi: false, activePromptVersions: null })
   },
 
   setPipelineBusy: (busy: boolean) => {

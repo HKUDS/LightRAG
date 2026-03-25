@@ -25,6 +25,35 @@ export type LightragGraphType = {
   edges: LightragEdgeType[]
 }
 
+export type PromptConfigGroup = 'indexing' | 'retrieval'
+
+export type ActivePromptVersionSummary = {
+  active_version_id: string | null
+  active_version_name: string | null
+}
+
+export type PromptVersionRecord = {
+  version_id: string
+  group_type: PromptConfigGroup
+  version_name: string
+  version_number: number
+  comment: string
+  source_version_id?: string | null
+  created_at: string
+  payload: Record<string, unknown>
+}
+
+export type PromptVersionRegistry = {
+  group_type: PromptConfigGroup
+  active_version_id: string | null
+  versions: PromptVersionRecord[]
+}
+
+export type PromptConfigGroupsResponse = {
+  indexing: PromptVersionRegistry
+  retrieval: PromptVersionRegistry
+}
+
 export type LightragStatus = {
   status: 'healthy'
   working_directory: string
@@ -56,6 +85,7 @@ export type LightragStatus = {
     min_rerank_score: number
     related_chunk_number: number
     allow_prompt_overrides_via_api?: boolean
+    active_prompt_versions?: Record<PromptConfigGroup, ActivePromptVersionSummary>
   }
   update_status?: Record<string, any>
   core_version?: string
@@ -502,6 +532,21 @@ export const checkHealth = async (): Promise<
       message: errorMessage(error)
     }
   }
+}
+
+export const initializePromptConfig = async (locale: string = 'zh'): Promise<PromptConfigGroupsResponse> => {
+  const response = await axiosInstance.post(`/prompt-config/initialize?locale=${encodeURIComponent(locale)}`)
+  return response.data
+}
+
+export const getPromptConfigGroups = async (): Promise<PromptConfigGroupsResponse> => {
+  const response = await axiosInstance.get('/prompt-config/groups')
+  return response.data
+}
+
+export const getPromptConfigVersions = async (group: PromptConfigGroup): Promise<PromptVersionRegistry> => {
+  const response = await axiosInstance.get(`/prompt-config/${group}/versions`)
+  return response.data
 }
 
 export const getDocuments = async (): Promise<DocsStatusesResponse> => {

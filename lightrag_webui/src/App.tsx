@@ -210,6 +210,11 @@ function App() {
                 <TabsContent value="knowledge-graph" className="absolute top-0 right-0 bottom-0 left-0 overflow-hidden">
                   <GraphViewer />
                 </TabsContent>
+                <TabsContent value="prompt-management" className="absolute top-0 right-0 bottom-0 left-0 overflow-auto">
+                  <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+                    Prompt Management
+                  </div>
+                </TabsContent>
                 <TabsContent value="retrieval" className="absolute top-0 right-0 bottom-0 left-0 overflow-hidden">
                   <RetrievalTesting />
                 </TabsContent>

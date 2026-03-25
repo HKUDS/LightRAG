@@ -43,6 +43,9 @@ function TabsNavigation() {
         <NavigationTab value="knowledge-graph" currentTab={currentTab}>
           {t('header.knowledgeGraph')}
         </NavigationTab>
+        <NavigationTab value="prompt-management" currentTab={currentTab}>
+          {t('header.promptManagement')}
+        </NavigationTab>
         <NavigationTab value="retrieval" currentTab={currentTab}>
           {t('header.retrieval')}
         </NavigationTab>

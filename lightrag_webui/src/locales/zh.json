@@ -9,6 +9,7 @@
   "header": {
     "documents": "文档",
     "knowledgeGraph": "知识图谱",
+    "promptManagement": "提示词管理",
     "retrieval": "检索",
     "api": "API",
     "projectRepository": "项目仓库",

@@ -9,6 +9,7 @@
   "header": {
     "documents": "Documents",
     "knowledgeGraph": "Knowledge Graph",
+    "promptManagement": "Prompt Management",
     "retrieval": "Retrieval",
     "api": "API",
     "projectRepository": "Project Repository",
