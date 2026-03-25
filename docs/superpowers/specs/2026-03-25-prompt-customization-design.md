@@ -54,7 +54,9 @@ This creates several problems:
 - Use one structured prompt model instead of many ad hoc fields
 - Separate indexing-time prompt configuration from query-time overrides
 - Reject invalid prompt overrides early and explicitly
+- Differentiate hard runtime failures from softer prompt quality regressions
 - Keep WebUI focused on query-time customization only
+- Treat API-exposed prompt overrides as a privileged capability, not a default-safe public feature
 - Leave a clean extension path for future preset/profile support
 
 ## Prompt Taxonomy
@@ -182,56 +184,91 @@ Legacy `user_prompt` behavior:
 
 - stays unchanged
 - remains an answer-stage additive instruction injected into the answer template
+- if a custom answer template omits `{user_prompt}` and `user_prompt` is non-empty, the runtime appends a standard additional-instructions block to preserve compatibility
 
 ## Prompt Validation
 
 Structured prompt overrides must be validated before execution.
 
-### Validation Rules
+### Validation Levels
+
+Validation is split into two layers.
+
+#### Structural Validation
+
+These checks protect runtime correctness and must reject invalid input:
 
 - Unknown top-level family: reject
 - Unknown prompt key inside a family: reject
 - Wrong value type: reject
-- Missing required placeholders in string templates: reject
 - Invalid examples type for list-based templates: reject
 - Empty delimiter values: reject
 
-### Required Placeholder Rules
+#### Semantic Validation
 
-Examples of required placeholders:
+These checks protect prompt quality and feature preservation:
+
+- Missing strictly required placeholders: reject
+- Missing recommended placeholders: warn
+
+Warnings should be surfaced through logs and, for API requests, returned as structured warning metadata where practical.
+
+### Placeholder Rules
+
+#### Strictly Required Placeholders
+
+These placeholders are required because omitting them would remove essential runtime input for the operation:
+
+- `query.rag_response`
+  - `{context_data}`
+- `query.naive_rag_response`
+  - `{content_data}`
+- `keywords.keywords_extraction`
+  - `{query}`
+- `entity_extraction.system_prompt`
+  - `{tuple_delimiter}`
+  - `{completion_delimiter}`
+- `entity_extraction.user_prompt`
+  - `{input_text}`
+- `summary.summarize_entity_descriptions`
+  - `{description_list}`
+
+For `query.kg_query_context`, the template must include at least one context-bearing placeholder from:
+
+- `{entities_str}`
+- `{relations_str}`
+- `{text_chunks_str}`
+- `{reference_list_str}`
+
+#### Recommended Placeholders
+
+These placeholders are recommended because they preserve useful behavior, but their absence should not block advanced customization:
 
 - `query.rag_response`
   - `{response_type}`
   - `{user_prompt}`
-  - `{context_data}`
 - `query.naive_rag_response`
   - `{response_type}`
   - `{user_prompt}`
-  - `{content_data}`
 - `query.kg_query_context`
   - `{entities_str}`
   - `{relations_str}`
   - `{text_chunks_str}`
   - `{reference_list_str}`
 - `keywords.keywords_extraction`
-  - `{query}`
   - `{examples}`
   - `{language}`
 - `entity_extraction.system_prompt`
-  - `{tuple_delimiter}`
-  - `{completion_delimiter}`
   - `{entity_types}`
   - `{examples}`
   - `{language}`
 - `entity_extraction.user_prompt`
   - `{entity_types}`
-  - `{input_text}`
   - `{completion_delimiter}`
   - `{language}`
 - `summary.summarize_entity_descriptions`
   - `{description_type}`
   - `{description_name}`
-  - `{description_list}`
   - `{summary_length}`
   - `{language}`
 
@@ -243,8 +280,12 @@ Validation failures should produce precise errors that are easy to debug:
 - missing placeholders
 - invalid type
 - invalid empty value
+- missing recommended placeholders
 
-At the API layer these should surface as 4xx errors with machine-readable detail.
+At the API layer:
+
+- structural failures and strictly required placeholder failures should surface as 4xx errors with machine-readable detail
+- missing recommended placeholders should surface as warnings, not request rejection
 
 ## Runtime Integration
 
@@ -304,6 +345,23 @@ Recommended granularity:
 
 The fingerprint should be deterministic and normalized so logically identical configs produce the same hash.
 
+### Indexing Cost Note
+
+Prompt fingerprinting affects indexing-time caches too.
+
+Implications:
+
+- changing `LightRAG.prompt_config` for `entity_extraction` or `summary` changes the effective cache identity for future indexing operations
+- re-inserting or reprocessing the same documents under a new indexing prompt config may trigger fresh LLM work and additional API cost
+- existing indexed graph data is not automatically rewritten when prompt config changes
+
+This phase does not add a selective cache-reuse policy. Instead, the system should:
+
+- document this behavior clearly
+- log it clearly when indexing-time prompt config differs from prior runs
+
+Future work may add an explicit policy switch such as "reuse old indexing cache" vs "force prompt-consistent reprocessing", but that is out of scope for this iteration.
+
 ## API Design
 
 `lightrag/api/routers/query_routes.py` will add:
@@ -320,7 +378,36 @@ Accepted families:
 - `query`
 - `keywords`
 
-The request model should convert this directly into `QueryParam.prompt_overrides`.
+The request model should convert this directly into `QueryParam.prompt_overrides`, but only when the API is explicitly allowed to accept prompt overrides.
+
+### API Safety Gate
+
+Because prompt overrides can weaken or bypass system-level prompting constraints, API support must be protected by a server-side capability flag:
+
+```python
+allow_prompt_overrides_via_api: bool = False
+```
+
+Behavior:
+
+- default: disabled
+- when disabled:
+  - API rejects `prompt_overrides`
+  - SDK usage remains unaffected
+  - WebUI should hide or disable the prompt override editor
+- when enabled:
+  - API accepts `prompt_overrides` for trusted deployments
+
+Recommended error when disabled:
+
+- HTTP 403 or equivalent client-visible configuration error
+- clear message that request-level prompt overrides are not enabled on this server
+
+The server should also expose this capability to trusted clients, for example through an existing status/config endpoint, so WebUI can determine whether prompt override editing should be interactive.
+
+### JSON Schema Notes
+
+List-style prompt fields use `List[str]`.
 
 Example request:
 
@@ -334,7 +421,11 @@ Example request:
       "rag_response": "...custom answer template..."
     },
     "keywords": {
-      "keywords_extraction": "...custom keyword extractor..."
+      "keywords_extraction": "...custom keyword extractor...",
+      "keywords_extraction_examples": [
+        "Example 1: ...",
+        "Example 2: ..."
+      ]
     }
   }
 }
@@ -366,6 +457,7 @@ Those remain controlled through SDK usage and service startup configuration.
 - persist `querySettings.prompt_overrides`
 - keep existing `user_prompt`
 - add migration for older stored settings
+- preserve local draft overrides even when the server later disables API-side prompt overrides
 
 ### UI Model
 
@@ -375,6 +467,7 @@ Add a new collapsible section in retrieval query settings:
 
 - section title: Prompt Customization
 - enabled by default only when non-empty overrides exist
+- only interactive when the server advertises that API prompt overrides are enabled
 
 The section should support two levels:
 
@@ -412,6 +505,12 @@ For list-style templates such as `keywords_extraction_examples`, the UI should u
 
 Both `/query` and `/query/stream` request paths must send `querySettings.prompt_overrides` when present.
 
+If the server disables API prompt overrides:
+
+- the editor should be hidden or read-only
+- locally persisted draft data may remain in storage
+- the UI should not attempt to submit those overrides
+
 ### Debug Experience
 
 When `only_need_prompt` is enabled, the response should represent the fully resolved prompt after merging defaults, instance config, request overrides, and legacy fields. This allows the WebUI to act as a reliable prompt-debug surface.
@@ -424,6 +523,7 @@ The following behaviors must remain unchanged for existing users:
 - `QueryParam.user_prompt` continues to work
 - Python callers may still pass `system_prompt` to `query()` / `aquery()` / `aquery_llm()`
 - `PROMPTS` continues to exist as the built-in prompt source
+- when an answer template omits `{user_prompt}`, non-empty `user_prompt` still takes effect via runtime append behavior
 
 Compatibility interpretation:
 
@@ -439,6 +539,8 @@ Invalid `prompt_config` or `prompt_overrides` should raise explicit value errors
 ### API
 
 Invalid request prompt overrides should return a client error response with detailed messages.
+
+If API prompt overrides are disabled by server policy, requests containing `prompt_overrides` should be rejected before prompt merge and validation proceeds.
 
 ### WebUI
 
