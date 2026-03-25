@@ -13,6 +13,7 @@ import { ZapIcon } from 'lucide-react'
 
 import GraphViewer from '@/features/GraphViewer'
 import DocumentManager from '@/features/DocumentManager'
+import PromptManagement from '@/features/PromptManagement'
 import RetrievalTesting from '@/features/RetrievalTesting'
 import ApiSite from '@/features/ApiSite'
 
@@ -211,9 +212,7 @@ function App() {
                   <GraphViewer />
                 </TabsContent>
                 <TabsContent value="prompt-management" className="absolute top-0 right-0 bottom-0 left-0 overflow-auto">
-                  <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
-                    Prompt Management
-                  </div>
+                  <PromptManagement />
                 </TabsContent>
                 <TabsContent value="retrieval" className="absolute top-0 right-0 bottom-0 left-0 overflow-hidden">
                   <RetrievalTesting />

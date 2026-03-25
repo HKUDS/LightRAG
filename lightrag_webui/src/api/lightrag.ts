@@ -54,6 +54,13 @@ export type PromptConfigGroupsResponse = {
   retrieval: PromptVersionRegistry
 }
 
+export type PromptVersionCreateRequest = {
+  version_name: string
+  comment: string
+  payload: Record<string, unknown>
+  source_version_id?: string | null
+}
+
 export type LightragStatus = {
   status: 'healthy'
   working_directory: string
@@ -546,6 +553,58 @@ export const getPromptConfigGroups = async (): Promise<PromptConfigGroupsRespons
 
 export const getPromptConfigVersions = async (group: PromptConfigGroup): Promise<PromptVersionRegistry> => {
   const response = await axiosInstance.get(`/prompt-config/${group}/versions`)
+  return response.data
+}
+
+export const getPromptConfigVersion = async (
+  group: PromptConfigGroup,
+  versionId: string
+): Promise<PromptVersionRecord> => {
+  const response = await axiosInstance.get(`/prompt-config/${group}/versions/${versionId}`)
+  return response.data
+}
+
+export const createPromptConfigVersion = async (
+  group: PromptConfigGroup,
+  payload: PromptVersionCreateRequest
+): Promise<PromptVersionRecord> => {
+  const response = await axiosInstance.post(`/prompt-config/${group}/versions`, payload)
+  return response.data
+}
+
+export const activatePromptConfigVersion = async (
+  group: PromptConfigGroup,
+  versionId: string
+): Promise<{
+  group_type: PromptConfigGroup
+  active_version_id: string
+  active_version: PromptVersionRecord
+  warning?: string | null
+}> => {
+  const response = await axiosInstance.post(`/prompt-config/${group}/versions/${versionId}/activate`)
+  return response.data
+}
+
+export const deletePromptConfigVersion = async (
+  group: PromptConfigGroup,
+  versionId: string
+): Promise<{ status: string; version_id: string }> => {
+  const response = await axiosInstance.delete(`/prompt-config/${group}/versions/${versionId}`)
+  return response.data
+}
+
+export const diffPromptConfigVersion = async (
+  group: PromptConfigGroup,
+  versionId: string,
+  baseVersionId?: string | null
+): Promise<{
+  group_type: PromptConfigGroup
+  base_version_id: string | null
+  version_id: string
+  changes: Record<string, { before: unknown; after: unknown }>
+}> => {
+  const suffix = baseVersionId ? `?base_version_id=${encodeURIComponent(baseVersionId)}` : ''
+  const response = await axiosInstance.get(`/prompt-config/${group}/versions/${versionId}/diff${suffix}`)
   return response.data
 }
 

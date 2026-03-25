@@ -1,6 +1,10 @@
 import { describe, expect, test } from 'vitest'
 
-import { projectRetrievalVersionToOverrides } from './promptVersioning'
+import {
+  buildPromptEditorSections,
+  formatVersionLineageLabel,
+  projectRetrievalVersionToOverrides
+} from './promptVersioning'
 
 describe('promptVersioning', () => {
   test('projects retrieval payload to query-time overrides only', () => {
@@ -12,5 +16,13 @@ describe('promptVersioning', () => {
       query: { rag_response: '{context_data}' },
       keywords: { keywords_extraction: '{query}' }
     })
+  })
+
+  test('formatVersionLineageLabel falls back to Deleted when source metadata is missing', () => {
+    expect(formatVersionLineageLabel({ source_version_id: 'missing' }, {})).toBe('Deleted')
+  })
+
+  test('buildPromptEditorSections returns indexing entity types first', () => {
+    expect(buildPromptEditorSections('indexing')[0].key).toBe('entity_types')
   })
 })

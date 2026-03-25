@@ -5,6 +5,7 @@ import Checkbox from '@/components/ui/Checkbox'
 import Input from '@/components/ui/Input'
 import UserPromptInputWithHistory from '@/components/ui/UserPromptInputWithHistory'
 import PromptOverridesEditor from '@/components/retrieval/PromptOverridesEditor'
+import RetrievalPromptVersionSelector from '@/components/retrieval/RetrievalPromptVersionSelector'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/Card'
 import {
   Select,
@@ -24,6 +25,8 @@ export default function QuerySettings() {
   const { t } = useTranslation()
   const querySettings = useSettingsStore((state) => state.querySettings)
   const userPromptHistory = useSettingsStore((state) => state.userPromptHistory)
+  const retrievalPromptVersionSelection = useSettingsStore((state) => state.retrievalPromptVersionSelection)
+  const retrievalPromptDraft = useSettingsStore((state) => state.retrievalPromptDraft)
   const allowPromptOverridesViaApi = useBackendState.use.allowPromptOverridesViaApi()
   const promptOverridesEnabled = allowPromptOverridesViaApi && querySettings.mode !== 'bypass'
   const promptOverridesDisabledReason = !allowPromptOverridesViaApi
@@ -43,6 +46,14 @@ export default function QuerySettings() {
     newHistory.splice(index, 1)
     useSettingsStore.getState().setUserPromptHistory(newHistory)
   }, [userPromptHistory])
+
+  const handleRetrievalPromptVersionSelection = useCallback((value: string) => {
+    useSettingsStore.getState().setRetrievalPromptVersionSelection(value)
+  }, [])
+
+  const handleRetrievalPromptDraftChange = useCallback((value: any) => {
+    useSettingsStore.getState().setRetrievalPromptDraft(value)
+  }, [])
 
   // Default values for reset functionality
   const defaultValues = useMemo(() => ({
@@ -115,12 +126,32 @@ export default function QuerySettings() {
                 />
               </div>
 
-              <PromptOverridesEditor
+              <TooltipProvider>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <label className="ml-1 cursor-help">
+                      Prompt Version
+                    </label>
+                  </TooltipTrigger>
+                  <TooltipContent side="left">
+                    <p>Use the active retrieval version, a saved version for this request, or a custom draft.</p>
+                  </TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
+              <RetrievalPromptVersionSelector
                 enabled={promptOverridesEnabled}
-                disabledReason={promptOverridesDisabledReason}
-                value={querySettings.prompt_overrides}
-                onChange={(value) => handleChange('prompt_overrides', value)}
+                value={retrievalPromptVersionSelection}
+                onChange={handleRetrievalPromptVersionSelection}
               />
+
+              {retrievalPromptVersionSelection === 'custom' ? (
+                <PromptOverridesEditor
+                  enabled={promptOverridesEnabled}
+                  disabledReason={promptOverridesDisabledReason}
+                  value={retrievalPromptDraft}
+                  onChange={handleRetrievalPromptDraftChange}
+                />
+              ) : null}
             </>
 
             {/* Query Mode */}

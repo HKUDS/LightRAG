@@ -263,7 +263,7 @@ const useSettingsStoreBase = create<SettingsState>()(
     {
       name: 'settings-storage',
       storage: createJSONStorage(() => localStorage),
-      version: 21,
+      version: 22,
       migrate: (state: any, version: number) => {
         if (version < 2) {
           state.showEdgeLabel = false
@@ -376,6 +376,11 @@ const useSettingsStoreBase = create<SettingsState>()(
           state.promptManagementSelectedVersionId = null
           state.retrievalPromptVersionSelection = 'active'
           state.retrievalPromptDraft = undefined
+        }
+        if (version < 22) {
+          if (!state.retrievalPromptDraft && state.querySettings?.prompt_overrides) {
+            state.retrievalPromptDraft = state.querySettings.prompt_overrides
+          }
         }
         return state
       }

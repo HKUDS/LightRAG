@@ -3,7 +3,7 @@ import Input from '@/components/ui/Input'
 import Button from '@/components/ui/Button'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { throttle } from '@/lib/utils'
-import { queryText, queryTextStream } from '@/api/lightrag'
+import { getPromptConfigVersion, queryText, queryTextStream } from '@/api/lightrag'
 import { errorMessage } from '@/lib/utils'
 import { useSettingsStore } from '@/stores/settings'
 import { useBackendState } from '@/stores/state'
@@ -16,6 +16,7 @@ import { toast } from 'sonner'
 import { copyToClipboard } from '@/utils/clipboard'
 import type { QueryMode } from '@/api/lightrag'
 import { pruneEmptyPromptOverrides } from '@/utils/promptOverrides'
+import { projectRetrievalVersionToOverrides } from '@/utils/promptVersioning'
 
 // Helper function to generate unique IDs with browser compatibility
 const generateUniqueId = () => {
@@ -373,13 +374,23 @@ export default function RetrievalTesting() {
         ...(modeOverride ? { mode: modeOverride } : {})
       }
 
-      if (allowPromptOverridesViaApi && effectiveMode !== 'bypass') {
-        queryParams.prompt_overrides = pruneEmptyPromptOverrides(state.querySettings.prompt_overrides)
-      } else {
-        delete queryParams.prompt_overrides
-      }
-
       try {
+        if (allowPromptOverridesViaApi && effectiveMode !== 'bypass') {
+          if (state.retrievalPromptVersionSelection === 'custom') {
+            queryParams.prompt_overrides = pruneEmptyPromptOverrides(state.retrievalPromptDraft)
+          } else if (state.retrievalPromptVersionSelection !== 'active') {
+            const selectedVersion = await getPromptConfigVersion(
+              'retrieval',
+              state.retrievalPromptVersionSelection
+            )
+            queryParams.prompt_overrides = projectRetrievalVersionToOverrides(selectedVersion.payload)
+          } else {
+            delete queryParams.prompt_overrides
+          }
+        } else {
+          delete queryParams.prompt_overrides
+        }
+
         // Run query
         if (state.querySettings.stream) {
           let errorMessage = ''
