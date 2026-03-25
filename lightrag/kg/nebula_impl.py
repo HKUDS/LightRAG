@@ -49,7 +49,9 @@ _EDGE_FIELDS = (
     "target_id",
     "relationship",
     "description",
+    "keywords",
     "weight",
+    "file_path",
 )
 
 
@@ -429,7 +431,7 @@ class NebulaGraphStorage(BaseGraphStorage):
             self._space_prefix or _DEFAULT_SPACE_PREFIX, self.workspace
         )
         self._fulltext_tag_index_name = (
-            f"nebula_entity_name_ft_{_short_hash_suffix(self._space_name, length=8)}"
+            f"nebula_entity_id_ft_{_short_hash_suffix(self._space_name, length=8)}"
         )
         self._fulltext_edge_index_name = (
             f"nebula_relation_rel_ft_{_short_hash_suffix(self._space_name, length=8)}"
@@ -631,9 +633,23 @@ class NebulaGraphStorage(BaseGraphStorage):
             "target_id string, "
             "relationship string, "
             "description string, "
+            "keywords string, "
+            "file_path string, "
             "weight double"
             ");"
         )
+        for field_name, field_type in (
+            ("keywords", "string"),
+            ("file_path", "string"),
+        ):
+            try:
+                await self._execute_in_space(
+                    f"ALTER EDGE relation ADD ({field_name} {field_type});"
+                )
+            except RuntimeError as exc:
+                if self._is_schema_field_exists_error(exc):
+                    continue
+                raise
 
     async def _create_indexes_if_needed(self) -> None:
         await self._execute_in_space(
@@ -661,8 +677,8 @@ class NebulaGraphStorage(BaseGraphStorage):
             await self._ensure_fulltext_ready()
             await self._create_fulltext_index(
                 f"CREATE FULLTEXT TAG INDEX IF NOT EXISTS {self._fulltext_tag_index_name} "
-                "ON entity(name);",
-                f"CREATE FULLTEXT TAG INDEX {self._fulltext_tag_index_name} ON entity(name);",
+                "ON entity(entity_id);",
+                f"CREATE FULLTEXT TAG INDEX {self._fulltext_tag_index_name} ON entity(entity_id);",
             )
             await self._create_fulltext_index(
                 f"CREATE FULLTEXT EDGE INDEX IF NOT EXISTS {self._fulltext_edge_index_name} "
@@ -869,10 +885,23 @@ class NebulaGraphStorage(BaseGraphStorage):
             await self._close_connection_pool()
 
     async def has_node(self, node_id: str) -> bool:
-        return await self.get_node(node_id) is not None
+        result = await self._execute_in_space(
+            "MATCH (v:entity) "
+            f"WHERE id(v) == {_ngql_literal(node_id)} "
+            "RETURN id(v) AS entity_id "
+            "LIMIT 1;"
+        )
+        return _first_row(result) is not None
 
     async def has_edge(self, source_node_id: str, target_node_id: str) -> bool:
-        return await self.get_edge(source_node_id, target_node_id) is not None
+        src_id, tgt_id = _canonical_edge_pair(source_node_id, target_node_id)
+        result = await self._execute_in_space(
+            "MATCH (a:entity)-[e:relation]->(b:entity) "
+            f"WHERE id(a) == {_ngql_literal(src_id)} AND id(b) == {_ngql_literal(tgt_id)} "
+            "RETURN id(a) AS source, id(b) AS target "
+            "LIMIT 1;"
+        )
+        return _first_row(result) is not None
 
     @staticmethod
     def _unique_preserve_order(values: list[str]) -> list[str]:
@@ -894,7 +923,19 @@ class NebulaGraphStorage(BaseGraphStorage):
         conditions: list[str] = []
         for node_id in node_ids:
             literal = _ngql_literal(node_id)
-            conditions.append(f"(src(edge) == {literal} OR dst(edge) == {literal})")
+            conditions.append(f"(id(a) == {literal} OR id(b) == {literal})")
+        return " OR ".join(conditions)
+
+    @staticmethod
+    def _build_relation_pair_clause(pairs: list[tuple[str, str]]) -> str:
+        conditions: list[str] = []
+        for src_id, tgt_id in pairs:
+            conditions.append(
+                "("
+                f"id(a) == {_ngql_literal(src_id)} AND "
+                f"id(b) == {_ngql_literal(tgt_id)}"
+                ")"
+            )
         return " OR ".join(conditions)
 
     @staticmethod
@@ -1006,6 +1047,63 @@ class NebulaGraphStorage(BaseGraphStorage):
         return [label for label, _ in ranked[:limit]]
 
     @staticmethod
+    def _search_match_tier(value: str | None, query_lower: str) -> int | None:
+        if value is None:
+            return None
+        value_lower = str(value).lower()
+        if value_lower == query_lower:
+            return 0
+        if value_lower.startswith(query_lower):
+            return 1
+        if query_lower in value_lower:
+            return 2
+        return None
+
+    @classmethod
+    def _search_candidate_sort_key(
+        cls, entity_id: str, name: str | None, query_lower: str
+    ) -> tuple[int, int, str, str] | None:
+        entity_tier = cls._search_match_tier(entity_id, query_lower)
+        if entity_tier is not None:
+            return (entity_tier, len(entity_id), entity_id.lower(), entity_id)
+
+        name_tier = cls._search_match_tier(name, query_lower)
+        if name_tier is not None:
+            return (3 + name_tier, len(entity_id), entity_id.lower(), entity_id)
+        return None
+
+    @classmethod
+    def _rank_search_candidate_rows(
+        cls, rows: list[dict[str, Any]], query: str, limit: int
+    ) -> list[str]:
+        if limit <= 0:
+            return []
+        query_strip = query.strip()
+        if not query_strip:
+            return []
+
+        query_lower = query_strip.lower()
+        ranked_by_entity_id: dict[str, tuple[int, int, str, str]] = {}
+        for row in rows:
+            entity_id = row.get("entity_id")
+            if entity_id is None:
+                continue
+            entity_id_str = str(entity_id)
+            sort_key = cls._search_candidate_sort_key(
+                entity_id_str,
+                str(row.get("name")) if row.get("name") is not None else None,
+                query_lower,
+            )
+            if sort_key is None:
+                continue
+            existing = ranked_by_entity_id.get(entity_id_str)
+            if existing is None or sort_key < existing:
+                ranked_by_entity_id[entity_id_str] = sort_key
+
+        ranked = sorted(ranked_by_entity_id.items(), key=lambda item: item[1])
+        return [entity_id for entity_id, _ in ranked[:limit]]
+
+    @staticmethod
     def _dedupe_labels_preserve_order(labels: list[str], limit: int) -> list[str]:
         if limit <= 0:
             return []
@@ -1038,57 +1136,50 @@ class NebulaGraphStorage(BaseGraphStorage):
     async def _build_global_knowledge_graph(self, max_nodes: int) -> KnowledgeGraph:
         result = KnowledgeGraph()
         if max_nodes <= 0:
-            all_nodes = await self.get_all_nodes()
-            result.is_truncated = bool(all_nodes)
+            result.is_truncated = bool(await self.get_all_labels())
             return result
 
-        all_nodes = await self.get_all_nodes()
-        all_edges = await self.get_all_edges()
+        candidate_ids = await self.get_popular_labels(limit=max_nodes + 1)
+        if len(candidate_ids) < max_nodes + 1:
+            for label in await self.get_all_labels():
+                if label not in candidate_ids:
+                    candidate_ids.append(label)
 
-        node_map: dict[str, dict[str, Any]] = {}
-        for node in all_nodes:
-            entity_id = node.get("entity_id") or node.get("id")
-            if entity_id is None:
-                continue
-            node_map[str(entity_id)] = dict(node)
-
-        degree_map = {node_id: 0 for node_id in node_map}
-        for edge in all_edges:
-            src = edge.get("source")
-            tgt = edge.get("target")
-            if src is not None and str(src) in degree_map:
-                degree_map[str(src)] += 1
-            if tgt is not None and str(tgt) in degree_map:
-                degree_map[str(tgt)] += 1
-
-        sorted_nodes = sorted(
-            node_map.keys(), key=lambda node_id: (-degree_map[node_id], node_id)
-        )
-        selected_ids = sorted_nodes[:max_nodes]
+        selected_ids = candidate_ids[:max_nodes]
         selected_set = set(selected_ids)
-        result.is_truncated = len(sorted_nodes) > len(selected_ids)
+        result.is_truncated = len(candidate_ids) > max_nodes
+        if not selected_ids:
+            return result
 
+        node_payloads = await self.get_nodes_batch(selected_ids)
         for node_id in selected_ids:
-            result.nodes.append(
-                self._to_knowledge_graph_node(node_id, node_map[node_id])
-            )
+            node_data = node_payloads.get(node_id, {"entity_id": node_id})
+            result.nodes.append(self._to_knowledge_graph_node(node_id, node_data))
 
-        seen_edges: set[tuple[str, str, str]] = set()
-        for edge in all_edges:
-            src = edge.get("source")
-            tgt = edge.get("target")
-            if src is None or tgt is None:
-                continue
-            source = str(src)
-            target = str(tgt)
-            if source not in selected_set or target not in selected_set:
-                continue
-            relation = str(edge.get("relationship", ""))
-            edge_key = (source, target, relation)
-            if edge_key in seen_edges:
-                continue
-            seen_edges.add(edge_key)
-            result.edges.append(self._to_knowledge_graph_edge(source, target, edge))
+        adjacency = await self.get_nodes_edges_batch(selected_ids)
+        edge_pairs: list[dict[str, str]] = []
+        seen_pairs: set[tuple[str, str]] = set()
+        for node_id in selected_ids:
+            for edge in adjacency.get(node_id, []):
+                src, tgt = edge
+                source = str(src)
+                target = str(tgt)
+                if source not in selected_set or target not in selected_set:
+                    continue
+                canonical = _canonical_edge_pair(source, target)
+                if canonical in seen_pairs:
+                    continue
+                seen_pairs.add(canonical)
+                edge_pairs.append({"src": canonical[0], "tgt": canonical[1]})
+
+        edge_payloads = await self.get_edges_batch(edge_pairs) if edge_pairs else {}
+        for pair in edge_pairs:
+            source = pair["src"]
+            target = pair["tgt"]
+            payload = edge_payloads.get((source, target), {})
+            payload.setdefault("source", source)
+            payload.setdefault("target", target)
+            result.edges.append(self._to_knowledge_graph_edge(source, target, payload))
 
         return result
 
@@ -1250,7 +1341,9 @@ class NebulaGraphStorage(BaseGraphStorage):
             "e.target_id AS target_id, "
             "e.relationship AS relationship, "
             "e.description AS description, "
-            "e.weight AS weight "
+            "e.keywords AS keywords, "
+            "e.weight AS weight, "
+            "e.file_path AS file_path "
             "LIMIT 1;"
         )
         row = _first_row(result)
@@ -1273,8 +1366,10 @@ class NebulaGraphStorage(BaseGraphStorage):
         if not unique_ids:
             return {}
 
+        where_clause = self._build_or_equals_clause("id(v)", unique_ids)
         result = await self._execute_in_space(
             "MATCH (v:entity) "
+            f"WHERE {where_clause} "
             "RETURN "
             "id(v) AS entity_id, "
             "v.entity.name AS name, "
@@ -1312,8 +1407,10 @@ class NebulaGraphStorage(BaseGraphStorage):
         if not unique_ids:
             return output
 
+        where_clause = self._build_relation_endpoint_clause(unique_ids)
         result = await self._execute_in_space(
             "MATCH (a:entity)-[e:relation]->(b:entity) "
+            f"WHERE {where_clause} "
             "RETURN "
             "id(a) AS source, "
             "id(b) AS target;"
@@ -1349,8 +1446,10 @@ class NebulaGraphStorage(BaseGraphStorage):
         if not requested_pairs:
             return {}
 
+        where_clause = self._build_relation_pair_clause(list(canonical_to_requested))
         result = await self._execute_in_space(
             "MATCH (a:entity)-[e:relation]->(b:entity) "
+            f"WHERE {where_clause} "
             "RETURN "
             "id(a) AS source, "
             "id(b) AS target, "
@@ -1358,7 +1457,9 @@ class NebulaGraphStorage(BaseGraphStorage):
             "e.target_id AS target_id, "
             "e.relationship AS relationship, "
             "e.description AS description, "
-            "e.weight AS weight;"
+            "e.keywords AS keywords, "
+            "e.weight AS weight, "
+            "e.file_path AS file_path;"
         )
         rows = _result_to_rows(result)
 
@@ -1401,8 +1502,10 @@ class NebulaGraphStorage(BaseGraphStorage):
         if not unique_ids:
             return output
 
+        where_clause = self._build_relation_endpoint_clause(unique_ids)
         result = await self._execute_in_space(
             "MATCH (a:entity)-[e:relation]->(b:entity) "
+            f"WHERE {where_clause} "
             "RETURN "
             "id(a) AS source, "
             "id(b) AS target;"
@@ -1458,17 +1561,21 @@ class NebulaGraphStorage(BaseGraphStorage):
         target_id = str(edge_data.get("target_id", ""))
         relationship = str(edge_data.get("relationship", ""))
         description = str(edge_data.get("description", ""))
+        keywords = str(edge_data.get("keywords", ""))
         weight = _coerce_edge_weight(edge_data.get("weight"))
+        file_path = str(edge_data.get("file_path", ""))
 
         await self._execute_in_space(
-            "INSERT EDGE relation(source_id, target_id, relationship, description, weight) "
+            "INSERT EDGE relation(source_id, target_id, relationship, description, keywords, weight, file_path) "
             f"VALUES {_ngql_quote(src_id)}->{_ngql_quote(tgt_id)}:"
             "("
             f"{_ngql_literal(source_id)}, "
             f"{_ngql_literal(target_id)}, "
             f"{_ngql_literal(relationship)}, "
             f"{_ngql_literal(description)}, "
-            f"{_ngql_literal(weight)}"
+            f"{_ngql_literal(keywords)}, "
+            f"{_ngql_literal(weight)}, "
+            f"{_ngql_literal(file_path)}"
             ");"
         )
 
@@ -1552,7 +1659,9 @@ class NebulaGraphStorage(BaseGraphStorage):
             "e.target_id AS target_id, "
             "e.relationship AS relationship, "
             "e.description AS description, "
-            "e.weight AS weight;"
+            "e.keywords AS keywords, "
+            "e.weight AS weight, "
+            "e.file_path AS file_path;"
         )
         rows = _result_to_rows(result)
         output: list[dict] = []
@@ -1579,23 +1688,20 @@ class NebulaGraphStorage(BaseGraphStorage):
             return []
         result = await self._execute_in_space(
             "MATCH (a:entity)-[e:relation]->(b:entity) "
-            "RETURN "
-            "id(a) AS source, "
-            "id(b) AS target;"
+            "WITH [id(a), id(b)] AS endpoints "
+            "UNWIND endpoints AS label "
+            "RETURN label AS label, count(*) AS degree "
+            "ORDER BY degree DESC, label ASC "
+            f"LIMIT {int(limit)};"
         )
         rows = _result_to_rows(result)
-        degrees: dict[str, int] = {}
+        labels: list[str] = []
         for row in rows:
-            source_id = row.get("source")
-            target_id = row.get("target")
-            if source_id is not None:
-                src = str(source_id)
-                degrees[src] = degrees.get(src, 0) + 1
-            if target_id is not None:
-                tgt = str(target_id)
-                degrees[tgt] = degrees.get(tgt, 0) + 1
-        ranking = sorted(degrees.items(), key=lambda item: (-item[1], item[0]))
-        return [label for label, _ in ranking[:limit]]
+            label = row.get("label")
+            if label is None:
+                continue
+            labels.append(str(label))
+        return labels
 
     async def _search_labels_fulltext(self, query: str, limit: int = 50) -> list[str]:
         if limit <= 0:
@@ -1618,14 +1724,50 @@ class NebulaGraphStorage(BaseGraphStorage):
         ]
         return self._rank_fulltext_labels_stable(labels, query_strip, limit)
 
+    async def _search_labels_name_matches(
+        self, query: str, limit: int = 50
+    ) -> list[dict[str, Any]]:
+        if limit <= 0:
+            return []
+        query_strip = query.strip()
+        if not query_strip:
+            return []
+
+        query_literal = _ngql_literal(query_strip)
+        result = await self._execute_in_space(
+            "MATCH (v:entity) "
+            f"WHERE v.entity.name == {query_literal} "
+            f"OR v.entity.name STARTS WITH {query_literal} "
+            f"OR v.entity.name CONTAINS {query_literal} "
+            "RETURN "
+            "id(v) AS entity_id, "
+            "v.entity.name AS name "
+            f"LIMIT {int(limit)};"
+        )
+        return _result_to_rows(result)
+
     async def _search_labels_contains(self, query: str, limit: int = 50) -> list[str]:
         if limit <= 0:
             return []
         query_strip = query.strip()
         if not query_strip:
             return []
-        labels = await self.get_all_labels()
-        return self._rank_labels(labels, query_strip, limit)
+
+        query_literal = _ngql_literal(query_strip)
+        result = await self._execute_in_space(
+            "MATCH (v:entity) "
+            f"WHERE id(v) == {query_literal} "
+            f"OR id(v) STARTS WITH {query_literal} "
+            f"OR id(v) CONTAINS {query_literal} "
+            f"OR v.entity.name == {query_literal} "
+            f"OR v.entity.name STARTS WITH {query_literal} "
+            f"OR v.entity.name CONTAINS {query_literal} "
+            "RETURN "
+            "id(v) AS entity_id, "
+            "v.entity.name AS name "
+            f"LIMIT {max(int(limit) * 4, int(limit))};"
+        )
+        return self._rank_search_candidate_rows(_result_to_rows(result), query_strip, limit)
 
     async def search_labels(self, query: str, limit: int = 50) -> list[str]:
         if limit <= 0:
@@ -1642,9 +1784,43 @@ class NebulaGraphStorage(BaseGraphStorage):
             return await self._search_labels_contains(query_strip, limit=limit)
 
         try:
-            labels = await self._search_labels_fulltext(query_strip, limit=limit)
-            if labels:
-                return labels
+            fulltext_labels = await self._search_labels_fulltext(query_strip, limit=limit)
+            name_match_rows = await self._search_labels_name_matches(
+                query_strip, limit=limit
+            )
+            candidate_ids = self._dedupe_labels_preserve_order(
+                fulltext_labels
+                + [
+                    str(row["entity_id"])
+                    for row in name_match_rows
+                    if row.get("entity_id") is not None
+                ],
+                len(fulltext_labels) + len(name_match_rows),
+            )
+            if candidate_ids:
+                candidate_rows: dict[str, dict[str, Any]] = {
+                    entity_id: {"entity_id": entity_id} for entity_id in candidate_ids
+                }
+                for row in name_match_rows:
+                    entity_id = row.get("entity_id")
+                    if entity_id is None:
+                        continue
+                    entity_id_str = str(entity_id)
+                    candidate_rows.setdefault(entity_id_str, {"entity_id": entity_id_str})
+                    if row.get("name") is not None:
+                        candidate_rows[entity_id_str]["name"] = str(row.get("name"))
+
+                node_payloads = await self.get_nodes_batch(candidate_ids)
+                for entity_id, node_data in node_payloads.items():
+                    candidate_rows.setdefault(entity_id, {"entity_id": entity_id})
+                    if node_data.get("name") is not None:
+                        candidate_rows[entity_id]["name"] = str(node_data.get("name"))
+
+                labels = self._rank_search_candidate_rows(
+                    list(candidate_rows.values()), query_strip, limit
+                )
+                if labels:
+                    return labels
         except Exception as exc:
             logger.warning(
                 f"[{self.workspace}] Nebula full-text search failed for "

@@ -21,6 +21,39 @@ class DummyGraphStorage:
         self.node = dict(node_data)
 
 
+class DummyRenameGraphStorage:
+    def __init__(self, nodes=None):
+        self.nodes = dict(nodes or {})
+        self.upserted_nodes = []
+
+    async def has_node(self, node_id):
+        return node_id in self.nodes
+
+    async def get_node(self, node_id):
+        node = self.nodes.get(node_id)
+        return dict(node) if node is not None else None
+
+    async def upsert_node(self, node_id, node_data):
+        copied = dict(node_data)
+        self.upserted_nodes.append((node_id, copied))
+        self.nodes[node_id] = copied
+
+    async def get_node_edges(self, source_node_id):
+        return []
+
+    async def get_edge(self, source_node_id, target_node_id):
+        return None
+
+    async def upsert_edge(self, source_node_id, target_node_id, edge_data):
+        return None
+
+    async def delete_node(self, node_id):
+        self.nodes.pop(node_id, None)
+
+    async def index_done_callback(self):
+        return None
+
+
 class DummyVectorStorage:
     def __init__(self):
         self.global_config = {"workspace": "test"}
@@ -135,6 +168,34 @@ async def test_aedit_entity_allows_updates_without_description(monkeypatch):
     )
 
     assert result["operation_summary"]["operation_status"] == "success"
+
+
+@pytest.mark.asyncio
+async def test_edit_entity_rename_syncs_name_to_new_entity_id_by_default():
+    graph = DummyRenameGraphStorage(
+        nodes={
+            "EntityA": {
+                "entity_id": "EntityA",
+                "name": "EntityA",
+                "description": "kept",
+                "source_id": "chunk-1",
+                "entity_type": "ORG",
+            }
+        }
+    )
+
+    result = await utils_graph._edit_entity_impl(
+        chunk_entity_relation_graph=graph,
+        entities_vdb=DummyVectorStorage(),
+        relationships_vdb=DummyVectorStorage(),
+        entity_name="EntityA",
+        updated_data={"entity_name": "EntityB"},
+    )
+
+    assert result["entity_name"] == "EntityB"
+    assert graph.upserted_nodes[0][0] == "EntityB"
+    assert graph.upserted_nodes[0][1]["entity_id"] == "EntityB"
+    assert graph.upserted_nodes[0][1]["name"] == "EntityB"
 
 
 @pytest.mark.asyncio

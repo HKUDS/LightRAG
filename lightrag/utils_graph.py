@@ -305,6 +305,8 @@ async def _edit_entity_impl(
 
     new_node_data = {**node_data, **updated_data}
     new_node_data["entity_id"] = new_entity_name
+    if is_renaming and "name" not in updated_data:
+        new_node_data["name"] = new_entity_name
 
     if "entity_name" in new_node_data:
         del new_node_data[

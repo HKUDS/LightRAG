@@ -49,6 +49,26 @@ def build_storage(workspace: str | None = "finance") -> NebulaGraphStorage:
     )
 
 
+def _normalize_sql_whitespace(sql: str) -> str:
+    return " ".join(str(sql).split())
+
+
+def _assert_bounded_nebula_query(
+    sql: str,
+    *,
+    required_tokens: list[str],
+    forbidden_patterns: list[str],
+) -> None:
+    normalized_sql = _normalize_sql_whitespace(sql)
+    for token in required_tokens:
+        assert token in normalized_sql, f"Expected token {token!r} in SQL: {normalized_sql}"
+    for pattern in forbidden_patterns:
+        normalized_pattern = _normalize_sql_whitespace(pattern)
+        assert (
+            normalized_pattern not in normalized_sql
+        ), f"Unexpected unbounded pattern {normalized_pattern!r} in SQL: {normalized_sql}"
+
+
 def test_nebula_graph_storage_is_registered():
     assert (
         "NebulaGraphStorage"
@@ -248,6 +268,10 @@ async def test_initialize_creates_space_and_schema():
     assert any("ALTER TAG entity ADD (created_at int);" == sql for sql in sql_calls)
     assert any("ALTER TAG entity ADD (truncate string);" == sql for sql in sql_calls)
     assert any("CREATE EDGE IF NOT EXISTS relation" in sql for sql in sql_calls)
+    assert any("keywords string" in sql for sql in sql_calls)
+    assert any("file_path string" in sql for sql in sql_calls)
+    assert any("ALTER EDGE relation ADD (keywords string);" == sql for sql in sql_calls)
+    assert any("ALTER EDGE relation ADD (file_path string);" == sql for sql in sql_calls)
     assert any(
         f"CREATE FULLTEXT TAG INDEX IF NOT EXISTS {storage._fulltext_tag_index_name}"
         in sql
@@ -621,6 +645,38 @@ def test_is_index_status_ready_accepts_empty_status_output():
     assert storage._is_index_status_ready([]) is True
 
 
+def test_rank_search_candidate_rows_prefers_entity_id_before_name_matches():
+    rows = [
+        {"entity_id": "KB-001", "name": "learn"},
+        {"entity_id": "learning", "name": "zzz"},
+        {"entity_id": "learn", "name": "other"},
+    ]
+
+    labels = NebulaGraphStorage._rank_search_candidate_rows(rows, "learn", limit=10)
+
+    assert labels == ["learn", "learning", "KB-001"]
+
+
+def test_rank_search_candidate_rows_returns_entity_id_for_name_only_match():
+    rows = [{"entity_id": "KB-001", "name": "learn-node"}]
+
+    labels = NebulaGraphStorage._rank_search_candidate_rows(rows, "learn", limit=10)
+
+    assert labels == ["KB-001"]
+
+
+def test_rank_search_candidate_rows_deduplicates_entity_id():
+    rows = [
+        {"entity_id": "learn", "name": "learn"},
+        {"entity_id": "learn", "name": "learn-node"},
+        {"entity_id": "learning", "name": "learn-ish"},
+    ]
+
+    labels = NebulaGraphStorage._rank_search_candidate_rows(rows, "learn", limit=10)
+
+    assert labels == ["learn", "learning"]
+
+
 @pytest.mark.asyncio
 async def test_create_indexes_falls_back_when_fulltext_if_not_exists_is_unsupported():
     storage = build_storage(workspace="finance")
@@ -646,7 +702,8 @@ async def test_create_indexes_falls_back_when_fulltext_if_not_exists_is_unsuppor
 
     sql_calls = [call.args[0] for call in execute_in_space.await_args_list]
     assert any(
-        sql == f"CREATE FULLTEXT TAG INDEX {storage._fulltext_tag_index_name} ON entity(name);"
+        sql
+        == f"CREATE FULLTEXT TAG INDEX {storage._fulltext_tag_index_name} ON entity(entity_id);"
         for sql in sql_calls
     )
     assert any(
@@ -798,7 +855,9 @@ async def test_nebula_edge_reads_are_undirected():
                     "target_id": "meta-target",
                     "relationship": "rel",
                     "description": "d",
+                    "keywords": "k1,k2",
                     "weight": 1.0,
+                    "file_path": "doc/a.md",
                 }
             ],
             [
@@ -809,7 +868,9 @@ async def test_nebula_edge_reads_are_undirected():
                     "target_id": "meta-target",
                     "relationship": "rel",
                     "description": "d",
+                    "keywords": "k1,k2",
                     "weight": 1.0,
+                    "file_path": "doc/a.md",
                 }
             ],
         ]
@@ -821,14 +882,20 @@ async def test_nebula_edge_reads_are_undirected():
             {
                 "relationship": "rel",
                 "description": "d",
+                "keywords": "k1,k2",
                 "weight": 1.0,
+                "file_path": "doc/a.md",
             },
         )
         forward = await storage.get_edge("A", "B")
         reverse = await storage.get_edge("B", "A")
 
     assert forward == reverse
+    assert forward["keywords"] == "k1,k2"
+    assert forward["file_path"] == "doc/a.md"
     upsert_sql = execute_in_space.await_args_list[0].args[0]
+    assert "keywords" in upsert_sql
+    assert "file_path" in upsert_sql
     assert 'VALUES "A"->"B"' in upsert_sql
     fetch_sql_1 = execute_in_space.await_args_list[1].args[0]
     fetch_sql_2 = execute_in_space.await_args_list[2].args[0]
@@ -850,7 +917,9 @@ async def test_nebula_upsert_edge_forces_canonical_source_target_properties():
                     "target_id": "meta-target",
                     "relationship": "rel",
                     "description": "d",
+                    "keywords": "k1,k2",
                     "weight": 1.0,
+                    "file_path": "doc/a.md",
                 }
             ],
         ]
@@ -864,7 +933,9 @@ async def test_nebula_upsert_edge_forces_canonical_source_target_properties():
                 "target_id": "meta-target",
                 "relationship": "rel",
                 "description": "d",
+                "keywords": "k1,k2",
                 "weight": 1.0,
+                "file_path": "doc/a.md",
             },
         )
         edge = await storage.get_edge("A", "B")
@@ -874,8 +945,12 @@ async def test_nebula_upsert_edge_forces_canonical_source_target_properties():
     assert edge["target"] == "B"
     assert edge["source_id"] == "chunk1<SEP>chunk2"
     assert edge["target_id"] == "meta-target"
+    assert edge["keywords"] == "k1,k2"
+    assert edge["file_path"] == "doc/a.md"
     upsert_sql = execute_in_space.await_args_list[0].args[0]
     assert 'VALUES "A"->"B":("chunk1<SEP>chunk2", "meta-target"' in upsert_sql
+    assert "keywords" in upsert_sql
+    assert "file_path" in upsert_sql
     fetch_sql = execute_in_space.await_args_list[1].args[0]
     assert "id(a) AS source" in fetch_sql
     assert "id(b) AS target" in fetch_sql
@@ -1006,7 +1081,13 @@ async def test_nebula_get_nodes_batch_uses_single_lookup_query():
     }
     assert execute_in_space.await_count == 1
     sql = execute_in_space.await_args_list[0].args[0]
-    assert "MATCH (v:entity)" in sql
+    _assert_bounded_nebula_query(
+        sql,
+        required_tokens=['"A"', '"B"'],
+        forbidden_patterns=[
+            "MATCH (v:entity) RETURN id(v) AS entity_id",
+        ],
+    )
     assert "v.entity.name AS name" in sql
     assert "v.entity.entity_type AS entity_type" in sql
     assert "v.entity.file_path AS file_path" in sql
@@ -1031,7 +1112,13 @@ async def test_nebula_node_degrees_batch_aggregates_with_single_query():
     assert degrees == {"A": 2, "B": 2, "C": 2, "X": 0}
     assert execute_in_space.await_count == 1
     sql = execute_in_space.await_args_list[0].args[0]
-    assert "MATCH (a:entity)-[e:relation]->(b:entity)" in sql
+    _assert_bounded_nebula_query(
+        sql,
+        required_tokens=['"A"', '"B"', '"C"', '"X"'],
+        forbidden_patterns=[
+            "MATCH (a:entity)-[e:relation]->(b:entity) RETURN id(a) AS source, id(b) AS target;",
+        ],
+    )
     assert "id(a) AS source" in sql
     assert "id(b) AS target" in sql
 
@@ -1048,7 +1135,9 @@ async def test_nebula_get_edges_batch_uses_canonical_pairs_and_preserves_keys():
                 "target_id": "B",
                 "relationship": "rel-ab",
                 "description": "A-B edge",
+                "keywords": "k1,k2",
                 "weight": 2.5,
+                "file_path": "doc/a.md",
             }
         ]
     )
@@ -1068,7 +1157,9 @@ async def test_nebula_get_edges_batch_uses_canonical_pairs_and_preserves_keys():
             "target_id": "B",
             "relationship": "rel-ab",
             "description": "A-B edge",
+            "keywords": "k1,k2",
             "weight": 2.5,
+            "file_path": "doc/a.md",
         },
         ("A", "B"): {
             "source": "A",
@@ -1077,14 +1168,24 @@ async def test_nebula_get_edges_batch_uses_canonical_pairs_and_preserves_keys():
             "target_id": "B",
             "relationship": "rel-ab",
             "description": "A-B edge",
+            "keywords": "k1,k2",
             "weight": 2.5,
+            "file_path": "doc/a.md",
         },
     }
     assert execute_in_space.await_count == 1
     sql = execute_in_space.await_args_list[0].args[0]
-    assert "MATCH (a:entity)-[e:relation]->(b:entity)" in sql
+    _assert_bounded_nebula_query(
+        sql,
+        required_tokens=['"A"', '"B"', '"C"'],
+        forbidden_patterns=[
+            "MATCH (a:entity)-[e:relation]->(b:entity) RETURN id(a) AS source, id(b) AS target, e.source_id AS source_id, e.target_id AS target_id, e.relationship AS relationship, e.description AS description, e.weight AS weight;",
+        ],
+    )
     assert "id(a) AS source" in sql
     assert "id(b) AS target" in sql
+    assert "e.keywords AS keywords" in sql
+    assert "e.file_path AS file_path" in sql
 
 
 @pytest.mark.asyncio
@@ -1106,9 +1207,51 @@ async def test_nebula_get_nodes_edges_batch_returns_adjacency_mapping():
     }
     assert execute_in_space.await_count == 1
     sql = execute_in_space.await_args_list[0].args[0]
-    assert "MATCH (a:entity)-[e:relation]->(b:entity)" in sql
+    _assert_bounded_nebula_query(
+        sql,
+        required_tokens=['"A"', '"B"', '"X"'],
+        forbidden_patterns=[
+            "MATCH (a:entity)-[e:relation]->(b:entity) RETURN id(a) AS source, id(b) AS target;",
+        ],
+    )
     assert "id(a) AS source" in sql
     assert "id(b) AS target" in sql
+
+
+@pytest.mark.asyncio
+async def test_nebula_has_node_uses_lightweight_existence_probe():
+    storage = build_storage(workspace="finance")
+    execute_in_space = AsyncMock(return_value=[{"entity_id": "A"}])
+    with (
+        patch.object(storage, "_execute_in_space", execute_in_space),
+        patch.object(
+            storage,
+            "get_node",
+            AsyncMock(side_effect=AssertionError("has_node should not call get_node")),
+        ),
+    ):
+        assert await storage.has_node("A") is True
+
+    sql = execute_in_space.await_args_list[0].args[0]
+    assert "LIMIT 1" in _normalize_sql_whitespace(sql)
+
+
+@pytest.mark.asyncio
+async def test_nebula_has_edge_uses_lightweight_existence_probe():
+    storage = build_storage(workspace="finance")
+    execute_in_space = AsyncMock(return_value=[{"source": "A", "target": "B"}])
+    with (
+        patch.object(storage, "_execute_in_space", execute_in_space),
+        patch.object(
+            storage,
+            "get_edge",
+            AsyncMock(side_effect=AssertionError("has_edge should not call get_edge")),
+        ),
+    ):
+        assert await storage.has_edge("A", "B") is True
+
+    sql = execute_in_space.await_args_list[0].args[0]
+    assert "LIMIT 1" in _normalize_sql_whitespace(sql)
 
 
 @pytest.mark.asyncio
@@ -1232,7 +1375,9 @@ async def test_nebula_get_all_edges_returns_relation_properties():
                 "target_id": "meta-target",
                 "relationship": "rel-ab",
                 "description": "desc",
+                "keywords": "k1,k2",
                 "weight": 3.0,
+                "file_path": "doc/a.md",
             }
         ]
     )
@@ -1245,7 +1390,9 @@ async def test_nebula_get_all_edges_returns_relation_properties():
             "target_id": "meta-target",
             "relationship": "rel-ab",
             "description": "desc",
+            "keywords": "k1,k2",
             "weight": 3.0,
+            "file_path": "doc/a.md",
             "source": "A",
             "target": "B",
         }
@@ -1253,6 +1400,8 @@ async def test_nebula_get_all_edges_returns_relation_properties():
     assert execute_in_space.await_count == 1
     sql = execute_in_space.await_args_list[0].args[0]
     assert "MATCH (a:entity)-[e:relation]->(b:entity)" in sql
+    assert "e.keywords AS keywords" in sql
+    assert "e.file_path AS file_path" in sql
 
 
 @pytest.mark.asyncio
@@ -1260,10 +1409,9 @@ async def test_nebula_get_popular_labels_orders_by_degree_desc():
     storage = build_storage(workspace="finance")
     execute_in_space = AsyncMock(
         return_value=[
-            {"source": "A", "target": "B"},
-            {"source": "A", "target": "C"},
-            {"source": "B", "target": "C"},
-            {"source": "B", "target": "D"},
+            {"label": "B", "degree": 3},
+            {"label": "A", "degree": 2},
+            {"label": "C", "degree": 2},
         ]
     )
     with patch.object(storage, "_execute_in_space", execute_in_space):
@@ -1273,25 +1421,34 @@ async def test_nebula_get_popular_labels_orders_by_degree_desc():
     assert execute_in_space.await_count == 1
     sql = execute_in_space.await_args_list[0].args[0]
     assert "MATCH (a:entity)-[e:relation]->(b:entity)" in sql
-    assert "id(a) AS source" in sql
-    assert "id(b) AS target" in sql
+    assert "UNWIND" in sql
+    assert "count(*) AS degree" in sql
+    assert "ORDER BY degree DESC, label ASC" in _normalize_sql_whitespace(sql)
+    assert "LIMIT 3" in _normalize_sql_whitespace(sql)
+    assert "RETURN id(a) AS source, id(b) AS target" not in _normalize_sql_whitespace(sql)
 
 
 @pytest.mark.asyncio
 async def test_nebula_get_knowledge_graph_wildcard_returns_truncated_graph():
     storage = build_storage(workspace="finance")
-    all_nodes = [
-        {"entity_id": "A", "name": "A", "description": "node-a"},
-        {"entity_id": "B", "name": "B", "description": "node-b"},
-        {"entity_id": "C", "name": "C", "description": "node-c"},
-    ]
-    all_edges = [
-        {"source": "A", "target": "B", "relationship": "ab"},
-        {"source": "A", "target": "C", "relationship": "ac"},
-    ]
+    node_payloads = {
+        "A": {"entity_id": "A", "name": "A", "description": "node-a"},
+        "B": {"entity_id": "B", "name": "B", "description": "node-b"},
+    }
+    adjacency = {
+        "A": [("A", "B"), ("A", "C")],
+        "B": [("A", "B")],
+    }
+    edge_payloads = {
+        ("A", "B"): {"source": "A", "target": "B", "relationship": "ab"},
+    }
     with (
-        patch.object(storage, "get_all_nodes", AsyncMock(return_value=all_nodes)),
-        patch.object(storage, "get_all_edges", AsyncMock(return_value=all_edges)),
+        patch.object(storage, "get_popular_labels", AsyncMock(return_value=["A", "B", "C"])),
+        patch.object(storage, "get_nodes_batch", AsyncMock(return_value=node_payloads)),
+        patch.object(
+            storage, "get_nodes_edges_batch", AsyncMock(return_value=adjacency)
+        ),
+        patch.object(storage, "get_edges_batch", AsyncMock(return_value=edge_payloads)),
     ):
         graph = await storage.get_knowledge_graph("*", max_depth=2, max_nodes=2)
 
@@ -1303,6 +1460,50 @@ async def test_nebula_get_knowledge_graph_wildcard_returns_truncated_graph():
     assert len(graph.edges) == 1
     assert graph.edges[0].source in node_ids
     assert graph.edges[0].target in node_ids
+
+
+@pytest.mark.asyncio
+async def test_nebula_get_knowledge_graph_wildcard_does_not_depend_on_get_all_lists():
+    storage = build_storage(workspace="finance")
+    with (
+        patch.object(
+            storage,
+            "get_all_nodes",
+            AsyncMock(side_effect=AssertionError("wildcard graph should not call get_all_nodes")),
+        ),
+        patch.object(
+            storage,
+            "get_all_edges",
+            AsyncMock(side_effect=AssertionError("wildcard graph should not call get_all_edges")),
+        ),
+        patch.object(storage, "get_popular_labels", AsyncMock(return_value=["A", "B"])),
+        patch.object(storage, "get_all_labels", AsyncMock(return_value=["A", "B"])),
+        patch.object(
+            storage,
+            "get_nodes_batch",
+            AsyncMock(
+                return_value={
+                    "A": {"entity_id": "A", "name": "A"},
+                    "B": {"entity_id": "B", "name": "B"},
+                }
+            ),
+        ),
+        patch.object(
+            storage,
+            "get_nodes_edges_batch",
+            AsyncMock(return_value={"A": [("A", "B")], "B": [("A", "B")]}),
+        ),
+        patch.object(
+            storage,
+            "get_edges_batch",
+            AsyncMock(return_value={("A", "B"): {"source": "A", "target": "B", "relationship": "ab"}}),
+        ),
+    ):
+        graph = await storage.get_knowledge_graph("*", max_depth=2, max_nodes=2)
+
+    assert isinstance(graph, KnowledgeGraph)
+    assert {node.id for node in graph.nodes} == {"A", "B"}
+    assert len(graph.edges) == 1
 
 
 @pytest.mark.asyncio
@@ -1341,19 +1542,27 @@ async def test_nebula_get_knowledge_graph_entity_returns_bounded_subgraph():
 
 
 @pytest.mark.asyncio
-async def test_search_labels_uses_fulltext_path_when_available():
+async def test_search_labels_uses_fulltext_path_when_available_and_merges_name_matches():
     storage = build_storage(workspace="finance")
     fulltext_mock = AsyncMock(return_value=["learn", "learning"])
-    fallback_mock = AsyncMock(return_value=["learning"])
+    name_matches_mock = AsyncMock(return_value=[])
+    nodes_mock = AsyncMock(
+        return_value={
+            "learn": {"entity_id": "learn", "name": "learn"},
+            "learning": {"entity_id": "learning", "name": "learning"},
+        }
+    )
     with (
         patch.object(storage, "_search_labels_fulltext", fulltext_mock),
-        patch.object(storage, "_search_labels_contains", fallback_mock),
+        patch.object(storage, "_search_labels_name_matches", name_matches_mock, create=True),
+        patch.object(storage, "get_nodes_batch", nodes_mock),
     ):
         labels = await storage.search_labels("learn", limit=10)
 
     assert labels == ["learn", "learning"]
     fulltext_mock.assert_awaited_once_with("learn", limit=10)
-    fallback_mock.assert_not_awaited()
+    name_matches_mock.assert_awaited_once_with("learn", limit=10)
+    nodes_mock.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -1373,19 +1582,22 @@ async def test_search_labels_falls_back_when_fulltext_unavailable():
 
 
 @pytest.mark.asyncio
-async def test_search_labels_fulltext_keeps_hits_even_if_entity_id_not_contains_query():
+async def test_search_labels_name_matches_return_entity_id_even_without_entity_id_hit():
     storage = build_storage(workspace="finance")
-    execute_in_space = AsyncMock(return_value=[{"entity_id": "KB-001"}])
-    fallback_mock = AsyncMock(return_value=["learn-node"])
+    fulltext_mock = AsyncMock(return_value=[])
+    name_matches_mock = AsyncMock(return_value=[{"entity_id": "KB-001", "name": "learn-node"}])
+    nodes_mock = AsyncMock(return_value={"KB-001": {"entity_id": "KB-001", "name": "learn-node"}})
     with (
-        patch.object(storage, "_execute_in_space", execute_in_space),
-        patch.object(storage, "_search_labels_contains", fallback_mock),
+        patch.object(storage, "_search_labels_fulltext", fulltext_mock),
+        patch.object(storage, "_search_labels_name_matches", name_matches_mock, create=True),
+        patch.object(storage, "get_nodes_batch", nodes_mock),
     ):
         labels = await storage.search_labels("learn", limit=10)
 
     assert labels == ["KB-001"]
-    fallback_mock.assert_not_awaited()
-    execute_in_space.assert_awaited_once()
+    fulltext_mock.assert_awaited_once_with("learn", limit=10)
+    name_matches_mock.assert_awaited_once_with("learn", limit=10)
+    nodes_mock.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -1406,37 +1618,50 @@ async def test_search_labels_uses_fallback_when_fulltext_init_error_exists():
 
 
 @pytest.mark.asyncio
-async def test_search_labels_fulltext_deduplicates_and_keeps_ranked_stable_order():
+async def test_search_labels_entity_id_hits_outrank_name_only_hits():
     storage = build_storage(workspace="finance")
-    execute_in_space = AsyncMock(
-        return_value=[
-            {"entity_id": "learn"},
-            {"entity_id": "foo"},
-            {"entity_id": "learn"},
-            {"entity_id": "learning"},
-            {"entity_id": "foo"},
-        ]
+    fulltext_mock = AsyncMock(return_value=["learning"])
+    name_matches_mock = AsyncMock(return_value=[{"entity_id": "KB-001", "name": "learn"}])
+    nodes_mock = AsyncMock(
+        return_value={
+            "learning": {"entity_id": "learning", "name": "zzz"},
+            "KB-001": {"entity_id": "KB-001", "name": "learn"},
+        }
     )
-    with patch.object(storage, "_execute_in_space", execute_in_space):
+    with (
+        patch.object(storage, "_search_labels_fulltext", fulltext_mock),
+        patch.object(storage, "_search_labels_name_matches", name_matches_mock, create=True),
+        patch.object(storage, "get_nodes_batch", nodes_mock),
+    ):
         labels = await storage.search_labels("learn", limit=10)
 
-    assert labels == ["learn", "learning", "foo"]
+    assert labels == ["learning", "KB-001"]
 
 
 @pytest.mark.asyncio
-async def test_search_labels_fulltext_promotes_exact_before_prefix_and_keeps_other_hits():
+async def test_search_labels_deduplicates_candidates_across_fulltext_and_name_matches():
     storage = build_storage(workspace="finance")
-    execute_in_space = AsyncMock(
+    fulltext_mock = AsyncMock(return_value=["learn"])
+    name_matches_mock = AsyncMock(
         return_value=[
-            {"entity_id": "learning"},
-            {"entity_id": "learn"},
-            {"entity_id": "foo"},
+            {"entity_id": "learn", "name": "learn-node"},
+            {"entity_id": "KB-001", "name": "learn"},
         ]
     )
-    with patch.object(storage, "_execute_in_space", execute_in_space):
+    nodes_mock = AsyncMock(
+        return_value={
+            "learn": {"entity_id": "learn", "name": "learn"},
+            "KB-001": {"entity_id": "KB-001", "name": "learn"},
+        }
+    )
+    with (
+        patch.object(storage, "_search_labels_fulltext", fulltext_mock),
+        patch.object(storage, "_search_labels_name_matches", name_matches_mock, create=True),
+        patch.object(storage, "get_nodes_batch", nodes_mock),
+    ):
         labels = await storage.search_labels("learn", limit=10)
 
-    assert labels == ["learn", "learning", "foo"]
+    assert labels == ["learn", "KB-001"]
 
 
 @pytest.mark.asyncio
