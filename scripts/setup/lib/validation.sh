@@ -96,6 +96,70 @@ validate_existing_file() {
   [[ -n "$path" && -f "$path" ]]
 }
 
+validate_nebula_hosts_format() {
+  local hosts="${1:-}"
+  local entry=""
+  local trimmed=""
+  local host_part=""
+  local port_part=""
+  local has_host="no"
+  local -a entries=()
+
+  if [[ -z "$hosts" ]]; then
+    format_error "NEBULA_HOSTS must not be empty." "Use host:port format such as 127.0.0.1:9669."
+    return 1
+  fi
+
+  if [[ "$hosts" == *"://"* ]]; then
+    format_error \
+      "NEBULA_HOSTS must use bare host:port entries, not URIs." \
+      "Set comma-separated host:port values such as 127.0.0.1:9669."
+    return 1
+  fi
+
+  IFS=',' read -r -a entries <<< "$hosts"
+  for entry in "${entries[@]}"; do
+    trimmed="${entry#"${entry%%[![:space:]]*}"}"
+    trimmed="${trimmed%"${trimmed##*[![:space:]]}"}"
+    if [[ -z "$trimmed" ]]; then
+      format_error \
+        "NEBULA_HOSTS must not contain empty entries." \
+        "Use comma-separated host:port values such as 127.0.0.1:9669."
+      return 1
+    fi
+    if [[ "$trimmed" != *:* ]]; then
+      format_error \
+        "NEBULA_HOSTS entry '$trimmed' is missing a port." \
+        "Use host:port format such as 127.0.0.1:9669."
+      return 1
+    fi
+    host_part="${trimmed%:*}"
+    port_part="${trimmed##*:}"
+    if [[ -z "$host_part" ]]; then
+      format_error \
+        "NEBULA_HOSTS entry '$trimmed' has an empty host." \
+        "Use host:port format such as 127.0.0.1:9669."
+      return 1
+    fi
+    if ! validate_port "$port_part"; then
+      format_error \
+        "NEBULA_HOSTS entry '$trimmed' has an invalid port." \
+        "Port must be between 1 and 65535."
+      return 1
+    fi
+    has_host="yes"
+  done
+
+  if [[ "$has_host" != "yes" ]]; then
+    format_error \
+      "NEBULA_HOSTS must include at least one host:port entry." \
+      "Set it to a value such as 127.0.0.1:9669."
+    return 1
+  fi
+
+  return 0
+}
+
 check_storage_compatibility() {
   local kv_storage="$1"
   local vector_storage="$2"
@@ -121,6 +185,10 @@ check_storage_compatibility() {
 
   if [[ "$kv_storage" == "JsonKVStorage" || "$doc_status_storage" == "JsonDocStatusStorage" ]]; then
     warnings+=("JSON-based KV/doc status storage is recommended only for local development.")
+  fi
+
+  if [[ "$graph_storage" == "NebulaGraphStorage" ]]; then
+    warnings+=("Full-text search quality depends on Elasticsearch + Listener. Without them, search_labels falls back to substring matching.")
   fi
 
   if ((${#warnings[@]} > 0)); then

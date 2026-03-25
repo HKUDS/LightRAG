@@ -60,6 +60,7 @@ STORAGE_SERVICES=(
   "milvus"
   "qdrant"
   "memgraph"
+  "nebula"
   "opensearch"
 )
 DEFAULT_RUNTIME_TARGET="host"
@@ -478,6 +479,7 @@ set_managed_service_compose_overrides() {
         set_compose_override "MEMGRAPH_URI" "bolt://memgraph:7687"
       fi
       ;;
+    # nebula: external cluster only, no Docker service or compose overrides
     opensearch)
       if [[ -z "${COMPOSE_ENV_OVERRIDES[OPENSEARCH_HOSTS]+set}" ]]; then
         set_compose_override "OPENSEARCH_HOSTS" "opensearch:9200"
@@ -521,7 +523,7 @@ prepare_compose_runtime_overrides() {
     fi
   fi
 
-  for root_service in postgres neo4j mongodb redis milvus qdrant memgraph opensearch; do
+  for root_service in postgres neo4j mongodb redis milvus qdrant memgraph nebula opensearch; do
     if [[ -n "${DOCKER_SERVICE_SET[$root_service]+set}" ]]; then
       set_managed_service_compose_overrides "$root_service"
     fi
@@ -618,7 +620,7 @@ restore_storage_docker_services_from_env() {
   local db_type
   local marker_key=""
   local service_name=""
-  local db_types=("postgresql" "neo4j" "mongodb" "redis" "milvus" "qdrant" "memgraph" "opensearch")
+  local db_types=("postgresql" "neo4j" "mongodb" "redis" "milvus" "qdrant" "memgraph" "nebula" "opensearch")
 
   for db_type in "${db_types[@]}"; do
     marker_key="$(storage_deployment_marker_key "$db_type")"
@@ -978,7 +980,7 @@ storage_service_name_for_db_type() {
     postgresql)
       printf 'postgres'
       ;;
-    neo4j|mongodb|redis|milvus|qdrant|memgraph|opensearch)
+    neo4j|mongodb|redis|milvus|qdrant|memgraph|nebula|opensearch)
       printf '%s' "$db_type"
       ;;
     *)
@@ -1011,6 +1013,9 @@ storage_deployment_marker_key() {
       ;;
     memgraph)
       printf 'LIGHTRAG_SETUP_MEMGRAPH_DEPLOYMENT'
+      ;;
+    nebula)
+      printf 'LIGHTRAG_SETUP_NEBULA_DEPLOYMENT'
       ;;
     opensearch)
       printf 'LIGHTRAG_SETUP_OPENSEARCH_DEPLOYMENT'
@@ -1059,7 +1064,7 @@ persist_storage_deployment_choice() {
 clear_unused_storage_deployment_markers() {
   local db_type
 
-  for db_type in postgresql neo4j mongodb redis milvus qdrant memgraph opensearch; do
+  for db_type in postgresql neo4j mongodb redis milvus qdrant memgraph nebula opensearch; do
     if [[ -z "${REQUIRED_DB_TYPES[$db_type]+set}" ]]; then
       persist_storage_deployment_choice "$db_type" "no"
     fi
@@ -1102,6 +1107,9 @@ collect_database_config() {
       ;;
     memgraph)
       collect_memgraph_config "$default_docker"
+      ;;
+    nebula)
+      collect_nebula_config
       ;;
     opensearch)
       collect_opensearch_config "$default_docker"
@@ -1454,6 +1462,38 @@ collect_memgraph_config() {
     set_compose_override "MEMGRAPH_URI" "bolt://memgraph:7687"
   else
     set_compose_override "MEMGRAPH_URI" ""
+  fi
+}
+
+collect_nebula_config() {
+  local hosts user password
+  local space_prefix listener_hosts ssl
+
+  hosts="$(prompt_until_valid "Nebula hosts (host:port)" "${ENV_VALUES[NEBULA_HOSTS]:-127.0.0.1:9669}" validate_nebula_hosts_format)"
+  ENV_VALUES["NEBULA_HOSTS"]="$hosts"
+
+  user="$(prompt_until_valid "Nebula username" "${ENV_VALUES[NEBULA_USER]:-root}" validate_non_empty)"
+  ENV_VALUES["NEBULA_USER"]="$user"
+
+  password="$(prompt_secret_with_default "Nebula password (may be empty): " "${ENV_VALUES[NEBULA_PASSWORD]:-nebula}")"
+  ENV_VALUES["NEBULA_PASSWORD"]="$password"
+
+  if confirm_default_no "Configure advanced Nebula settings?"; then
+    space_prefix="$(prompt_with_default "Space prefix" "${ENV_VALUES[NEBULA_SPACE_PREFIX]:-lightrag}")"
+    ENV_VALUES["NEBULA_SPACE_PREFIX"]="$space_prefix"
+
+    listener_hosts="$(prompt_clearable_with_default "Listener hosts for full-text search (host:port)" "${ENV_VALUES[NEBULA_LISTENER_HOSTS]:-}")"
+    if [[ "$listener_hosts" == "$CLEAR_INPUT_SENTINEL" ]]; then
+      ENV_VALUES["NEBULA_LISTENER_HOSTS"]=""
+    elif [[ -n "$listener_hosts" ]]; then
+      ENV_VALUES["NEBULA_LISTENER_HOSTS"]="$listener_hosts"
+    fi
+
+    if confirm_default_no "Enable SSL for Nebula connections?"; then
+      ENV_VALUES["NEBULA_SSL"]="true"
+    else
+      ENV_VALUES["NEBULA_SSL"]="false"
+    fi
   fi
 }
 
@@ -2426,7 +2466,7 @@ finalize_base_setup() {
 env_storage_flow() {
   local env_file="${REPO_ROOT}/.env"
   local db_type
-  local db_order=("postgresql" "neo4j" "mongodb" "redis" "milvus" "qdrant" "memgraph" "opensearch")
+  local db_order=("postgresql" "neo4j" "mongodb" "redis" "milvus" "qdrant" "memgraph" "nebula" "opensearch")
 
   if [[ ! -f "$env_file" ]]; then
     format_error "No .env file found." "Run 'make env-base' first to configure LLM and embedding."
@@ -2828,6 +2868,9 @@ validate_env_file() {
   fi
   if [[ -n "${referenced_db_types[memgraph]+set}" ]] && [[ -n "${ENV_VALUES[MEMGRAPH_URI]:-}" ]] && ! validate_uri "${ENV_VALUES[MEMGRAPH_URI]}" memgraph; then
     format_error "Invalid MEMGRAPH_URI" "Use bolt://host:port format."
+    errors=1
+  fi
+  if [[ -n "${referenced_db_types[nebula]+set}" ]] && [[ -n "${ENV_VALUES[NEBULA_HOSTS]:-}" ]] && ! validate_nebula_hosts_format "${ENV_VALUES[NEBULA_HOSTS]}"; then
     errors=1
   fi
   if [[ -n "${referenced_db_types[postgresql]+set}" ]] && [[ -n "${ENV_VALUES[POSTGRES_PORT]:-}" ]] && ! validate_port "${ENV_VALUES[POSTGRES_PORT]}"; then
