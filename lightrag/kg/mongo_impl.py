@@ -2,6 +2,7 @@ import os
 import re
 import time
 from dataclasses import dataclass, field
+from importlib.metadata import version
 import numpy as np
 import configparser
 import asyncio
