@@ -80,7 +80,7 @@ async def jina_embed(
     base_url: str = None,
     api_key: str = None,
     context: str | None = None,
-    task: str | None = None,
+    task: str | None = "text-matching",
 ) -> np.ndarray:
     """Generate embeddings for a list of texts using Jina AI's API.
 
@@ -99,12 +99,16 @@ async def jina_embed(
         api_key: Optional Jina API key. If None, uses the JINA_API_KEY environment variable.
         context: The embedding context - "query" for search queries, "document" for indexed content.
             **IMPORTANT**: This parameter is automatically injected by the EmbeddingFunc wrapper
-            when supports_asymmetric=True. If omitted, behavior falls back to "text-matching"
-            for backward compatibility.
-        task: Optional task type override. If not provided, automatically determined from context:
+            when supports_asymmetric=True. To use context-based embeddings, task should be explicitly
+            set to None, other values will override context-based task selection.
+        task: Embedding task mode.
+            If task=None, context is used to determine the task:
             - "retrieval.query" for context="query"
             - "retrieval.passage" for context="document"
-            - "text-matching" for backward compatibility when context not specified
+            - "text-matching" otherwise
+            Default is "text-matching" for backward compatibility.
+            Any explicit task value overrides context-based task selection.
+
 
     Returns:
         A numpy array of embeddings, one per input text.
