@@ -861,6 +861,22 @@ param = QueryParam(
 
 For API requests, `prompt_overrides` is accepted only when `ALLOW_PROMPT_OVERRIDES_VIA_API=true` (default: disabled). The WebUI only supports query-time prompt overrides.
 
+### Workspace Prompt Version Management
+
+LightRAG now supports workspace-scoped prompt version management on the server:
+
+- `indexing` versions manage `ENTITY_TYPES`, `SUMMARY_LANGUAGE`, and indexing-time prompt families
+- `retrieval` versions manage query and keyword prompt families
+- saved versions do not take effect until explicitly activated
+- if no version is activated for a group, LightRAG keeps using the original built-in/default behavior
+
+In the WebUI:
+
+- `Prompt Management` is a top-level page for formal version editing
+- `Retrieval` can temporarily use a saved retrieval version or a `Custom / Draft` override for the current request only
+
+Be careful when activating a new indexing version in a workspace that already contains indexed data. New documents will use the new extraction rules, but existing graph data will not be rewritten automatically.
+
 ### Insert
 
 <details>

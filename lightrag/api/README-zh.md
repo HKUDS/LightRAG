@@ -382,6 +382,34 @@ API 请求示例：
 
 WebUI 仅支持查询时（query-time）的 `prompt_overrides`，不支持修改服务实例级默认值（`prompt_config`）。
 
+### Workspace 提示词版本接口
+
+服务端同时暴露了按 workspace 隔离的提示词版本管理接口：
+
+- `POST /prompt-config/initialize`
+- `GET /prompt-config/groups`
+- `GET /prompt-config/{group_type}/versions`
+- `GET /prompt-config/{group_type}/versions/{version_id}`
+- `POST /prompt-config/{group_type}/versions`
+- `POST /prompt-config/{group_type}/versions/{version_id}/activate`
+- `DELETE /prompt-config/{group_type}/versions/{version_id}`
+- `GET /prompt-config/{group_type}/versions/{version_id}/diff`
+
+版本分组：
+
+- `indexing`：管理 `ENTITY_TYPES`、`SUMMARY_LANGUAGE` 和建库期提示词 family
+- `retrieval`：管理查询回答与关键词提取 family
+
+重要语义：
+
+- 保存版本不会自动激活
+- 当前激活版本不能删除
+- 如果某个分组没有激活版本，服务端会回退到原有内置/默认行为
+- 检索页面的临时版本选择仍然通过请求级 `prompt_overrides` 生效
+- 激活新的 `indexing` 版本不会自动重写已有图谱数据
+
+`/health` 现在还会暴露 `configuration.active_prompt_versions`，客户端可据此显示当前激活的 indexing / retrieval 版本摘要。
+
 ## API 密钥和认证
 
 默认情况下，LightRAG 服务器可以在没有任何认证的情况下访问。我们可以使用 API 密钥或账户凭证配置服务器以确保其安全。

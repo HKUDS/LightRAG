@@ -382,6 +382,34 @@ Example API request:
 
 WebUI only supports query-time prompt overrides. It does not edit server instance defaults (`prompt_config`).
 
+### Workspace Prompt Version APIs
+
+The server also exposes workspace-scoped prompt version management endpoints:
+
+- `POST /prompt-config/initialize`
+- `GET /prompt-config/groups`
+- `GET /prompt-config/{group_type}/versions`
+- `GET /prompt-config/{group_type}/versions/{version_id}`
+- `POST /prompt-config/{group_type}/versions`
+- `POST /prompt-config/{group_type}/versions/{version_id}/activate`
+- `DELETE /prompt-config/{group_type}/versions/{version_id}`
+- `GET /prompt-config/{group_type}/versions/{version_id}/diff`
+
+Version groups:
+
+- `indexing`: manages `ENTITY_TYPES`, `SUMMARY_LANGUAGE`, and indexing-time prompt families
+- `retrieval`: manages query/keyword prompt families
+
+Important semantics:
+
+- saving a version does not activate it
+- deleting the active version is rejected
+- if no group has an active version, the server falls back to the original built-in/default behavior
+- retrieval-page temporary version selection still uses request-scoped `prompt_overrides`
+- activating a new `indexing` version does not rewrite existing graph data
+
+`/health` now also exposes `configuration.active_prompt_versions`, which clients can use to show the current active indexing/retrieval version summary.
+
 ## API Key and Authentication
 
 By default, the LightRAG Server can be accessed without any authentication. We can configure the server with an API Key or account credentials to secure it.

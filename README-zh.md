@@ -861,6 +861,22 @@ param = QueryParam(
 
 对于 API 请求，只有在 `ALLOW_PROMPT_OVERRIDES_VIA_API=true` 时才接受 `prompt_overrides`（默认关闭）。WebUI 仅支持查询时（query-time）`prompt_overrides`。
 
+### Workspace 提示词版本管理
+
+LightRAG 现在支持按 workspace 隔离、服务端持久化的提示词版本管理：
+
+- `indexing` 版本负责管理 `ENTITY_TYPES`、`SUMMARY_LANGUAGE` 以及建库相关提示词 family
+- `retrieval` 版本负责管理查询回答和关键词提取相关 family
+- 保存版本后不会自动生效，只有显式激活后才会影响对应 group
+- 如果某个 group 没有激活版本，LightRAG 会继续使用原有内置/默认行为
+
+在 WebUI 中：
+
+- `提示词管理` 是正式维护版本的主入口
+- `检索` 页面可以对当前请求临时使用已保存的 retrieval 版本，或者使用 `Custom / Draft` 草稿覆盖
+
+注意：如果在已有图谱数据的 workspace 中激活新的 indexing 版本，后续新文档会使用新的抽取规则，但已有图谱数据不会自动重建。
+
 ### 插入
 
 <details>
