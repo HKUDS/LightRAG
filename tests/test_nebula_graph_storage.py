@@ -118,6 +118,24 @@ def test_canonical_edge_pair_is_undirected():
     assert _canonical_edge_pair("B", "A") == ("A", "B")
 
 
+def test_schema_field_exists_error_accepts_nebula_existed_message():
+    assert (
+        NebulaGraphStorage._is_schema_field_exists_error(RuntimeError("Existed!"))
+        is True
+    )
+
+
+def test_schema_field_exists_error_accepts_wrapped_nebula_existed_message():
+    assert (
+        NebulaGraphStorage._is_schema_field_exists_error(
+            RuntimeError(
+                "Nebula query failed: ALTER TAG entity ADD (file_path string); (Existed!)"
+            )
+        )
+        is True
+    )
+
+
 def test_ngql_escape_string_escapes_control_characters():
     raw = 'line1\nline2\tcell\rend "quote" \\ slash'
     escaped = _ngql_escape_string(raw)
@@ -223,6 +241,12 @@ async def test_initialize_creates_space_and_schema():
     assert any("CREATE SPACE IF NOT EXISTS" in sql for sql in sql_calls)
     assert use_space_mock.await_count >= 1
     assert any("CREATE TAG IF NOT EXISTS entity" in sql for sql in sql_calls)
+    assert any("file_path string" in sql for sql in sql_calls)
+    assert any("created_at int" in sql for sql in sql_calls)
+    assert any("truncate string" in sql for sql in sql_calls)
+    assert any("ALTER TAG entity ADD (file_path string);" == sql for sql in sql_calls)
+    assert any("ALTER TAG entity ADD (created_at int);" == sql for sql in sql_calls)
+    assert any("ALTER TAG entity ADD (truncate string);" == sql for sql in sql_calls)
     assert any("CREATE EDGE IF NOT EXISTS relation" in sql for sql in sql_calls)
     assert any(
         f"CREATE FULLTEXT TAG INDEX IF NOT EXISTS {storage._fulltext_tag_index_name}"
@@ -710,10 +734,14 @@ async def test_nebula_upsert_and_get_node_roundtrip():
             [
                 {
                     "entity_id": "A",
+                    "name": "A",
                     "entity_type": "TypeX",
                     "description": "desc",
                     "keywords": "k1,k2",
                     "source_id": "src-1",
+                    "file_path": "doc/a.md",
+                    "created_at": 123,
+                    "truncate": "FIFO 1/2",
                 }
             ],
         ]
@@ -723,21 +751,32 @@ async def test_nebula_upsert_and_get_node_roundtrip():
             "A",
             {
                 "entity_id": "A",
+                "name": "A",
                 "entity_type": "TypeX",
                 "description": "desc",
                 "keywords": "k1,k2",
                 "source_id": "src-1",
+                "file_path": "doc/a.md",
+                "created_at": 123,
+                "truncate": "FIFO 1/2",
             },
         )
         node = await storage.get_node("A")
 
     assert node is not None
     assert node["entity_id"] == "A"
+    assert node["name"] == "A"
     assert node["entity_type"] == "TypeX"
     assert node["description"] == "desc"
     assert node["keywords"] == "k1,k2"
     assert node["source_id"] == "src-1"
+    assert node["file_path"] == "doc/a.md"
+    assert node["created_at"] == "123"
+    assert node["truncate"] == "FIFO 1/2"
     upsert_sql = execute_in_space.await_args_list[0].args[0]
+    assert "file_path" in upsert_sql
+    assert "created_at" in upsert_sql
+    assert "truncate" in upsert_sql
     assert "INSERT VERTEX entity" in upsert_sql
     assert 'VALUES "A"' in upsert_sql
     get_sql = execute_in_space.await_args_list[1].args[0]
@@ -921,6 +960,9 @@ async def test_nebula_get_nodes_batch_uses_single_lookup_query():
                 "description": "node-a",
                 "keywords": "k1",
                 "source_id": "s1",
+                "file_path": "doc/a.md",
+                "created_at": 100,
+                "truncate": "",
             },
             {
                 "entity_id": "B",
@@ -929,6 +971,9 @@ async def test_nebula_get_nodes_batch_uses_single_lookup_query():
                 "description": "node-b",
                 "keywords": "k2",
                 "source_id": "s2",
+                "file_path": "doc/b.md",
+                "created_at": 200,
+                "truncate": "KEEP 1/2",
             },
         ]
     )
@@ -943,6 +988,9 @@ async def test_nebula_get_nodes_batch_uses_single_lookup_query():
             "description": "node-a",
             "keywords": "k1",
             "source_id": "s1",
+            "file_path": "doc/a.md",
+            "created_at": "100",
+            "truncate": "",
         },
         "B": {
             "entity_id": "B",
@@ -951,11 +999,19 @@ async def test_nebula_get_nodes_batch_uses_single_lookup_query():
             "description": "node-b",
             "keywords": "k2",
             "source_id": "s2",
+            "file_path": "doc/b.md",
+            "created_at": "200",
+            "truncate": "KEEP 1/2",
         },
     }
     assert execute_in_space.await_count == 1
     sql = execute_in_space.await_args_list[0].args[0]
     assert "MATCH (v:entity)" in sql
+    assert "v.entity.name AS name" in sql
+    assert "v.entity.entity_type AS entity_type" in sql
+    assert "v.entity.file_path AS file_path" in sql
+    assert "v.entity.created_at AS created_at" in sql
+    assert "v.entity.truncate AS truncate" in sql
     assert "id(v) AS entity_id" in sql
 
 
@@ -1110,6 +1166,9 @@ async def test_nebula_get_all_nodes_returns_node_property_dicts():
                 "description": "desc-a",
                 "keywords": "k1",
                 "source_id": "src-a",
+                "file_path": "doc/a.md",
+                "created_at": 100,
+                "truncate": "",
             },
             {
                 "entity_id": "B",
@@ -1118,6 +1177,9 @@ async def test_nebula_get_all_nodes_returns_node_property_dicts():
                 "description": "desc-b",
                 "keywords": "k2",
                 "source_id": "src-b",
+                "file_path": "doc/b.md",
+                "created_at": 200,
+                "truncate": "KEEP 1/2",
             },
         ]
     )
@@ -1132,6 +1194,9 @@ async def test_nebula_get_all_nodes_returns_node_property_dicts():
             "description": "desc-a",
             "keywords": "k1",
             "source_id": "src-a",
+            "file_path": "doc/a.md",
+            "created_at": "100",
+            "truncate": "",
             "id": "A",
         },
         {
@@ -1141,12 +1206,18 @@ async def test_nebula_get_all_nodes_returns_node_property_dicts():
             "description": "desc-b",
             "keywords": "k2",
             "source_id": "src-b",
+            "file_path": "doc/b.md",
+            "created_at": "200",
+            "truncate": "KEEP 1/2",
             "id": "B",
         },
     ]
     assert execute_in_space.await_count == 1
     sql = execute_in_space.await_args_list[0].args[0]
     assert "MATCH (v:entity)" in sql
+    assert "v.entity.file_path AS file_path" in sql
+    assert "v.entity.created_at AS created_at" in sql
+    assert "v.entity.truncate AS truncate" in sql
 
 
 @pytest.mark.asyncio

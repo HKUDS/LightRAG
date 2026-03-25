@@ -40,6 +40,9 @@ _NODE_FIELDS = (
     "description",
     "keywords",
     "source_id",
+    "file_path",
+    "created_at",
+    "truncate",
 )
 _EDGE_FIELDS = (
     "source_id",
@@ -603,9 +606,25 @@ class NebulaGraphStorage(BaseGraphStorage):
             "entity_type string, "
             "description string, "
             "keywords string, "
-            "source_id string"
+            "source_id string, "
+            "file_path string, "
+            "created_at int, "
+            "truncate string"
             ");"
         )
+        for field_name, field_type in (
+            ("file_path", "string"),
+            ("created_at", "int"),
+            ("truncate", "string"),
+        ):
+            try:
+                await self._execute_in_space(
+                    f"ALTER TAG entity ADD ({field_name} {field_type});"
+                )
+            except RuntimeError as exc:
+                if self._is_schema_field_exists_error(exc):
+                    continue
+                raise
         await self._execute_in_space(
             "CREATE EDGE IF NOT EXISTS relation("
             "source_id string, "
@@ -813,6 +832,17 @@ class NebulaGraphStorage(BaseGraphStorage):
         if any(token in status_text for token in _INDEX_STATUS_PENDING_TOKENS):
             return False
         return any(token in status_text for token in _INDEX_STATUS_DONE_TOKENS)
+
+    @staticmethod
+    def _is_schema_field_exists_error(exc: RuntimeError) -> bool:
+        message = str(exc).lower()
+        if "existed!" in message:
+            return True
+        duplicate_tokens = ("exist", "already", "duplicate", "duplicated", "conflict")
+        schema_tokens = ("column", "field", "prop")
+        return any(token in message for token in duplicate_tokens) and any(
+            token in message for token in schema_tokens
+        )
 
     async def index_done_callback(self) -> None:
         return None
@@ -1196,7 +1226,10 @@ class NebulaGraphStorage(BaseGraphStorage):
             "properties(vertex).entity_type AS entity_type, "
             "properties(vertex).description AS description, "
             "properties(vertex).keywords AS keywords, "
-            "properties(vertex).source_id AS source_id;"
+            "properties(vertex).source_id AS source_id, "
+            "properties(vertex).file_path AS file_path, "
+            "properties(vertex).created_at AS created_at, "
+            "properties(vertex).truncate AS truncate;"
         )
         row = _first_row(result)
         if row is None:
@@ -1244,11 +1277,14 @@ class NebulaGraphStorage(BaseGraphStorage):
             "MATCH (v:entity) "
             "RETURN "
             "id(v) AS entity_id, "
-            "v.name AS name, "
-            "v.entity_type AS entity_type, "
-            "v.description AS description, "
-            "v.keywords AS keywords, "
-            "v.source_id AS source_id;"
+            "v.entity.name AS name, "
+            "v.entity.entity_type AS entity_type, "
+            "v.entity.description AS description, "
+            "v.entity.keywords AS keywords, "
+            "v.entity.source_id AS source_id, "
+            "v.entity.file_path AS file_path, "
+            "v.entity.created_at AS created_at, "
+            "v.entity.truncate AS truncate;"
         )
         rows = _result_to_rows(result)
 
@@ -1394,9 +1430,12 @@ class NebulaGraphStorage(BaseGraphStorage):
         description = str(node_data.get("description", ""))
         keywords = str(node_data.get("keywords", ""))
         source_id = str(node_data.get("source_id", ""))
+        file_path = str(node_data.get("file_path", ""))
+        created_at = node_data.get("created_at")
+        truncate = str(node_data.get("truncate", ""))
 
         await self._execute_in_space(
-            "INSERT VERTEX entity(entity_id, name, entity_type, description, keywords, source_id) "
+            "INSERT VERTEX entity(entity_id, name, entity_type, description, keywords, source_id, file_path, created_at, truncate) "
             f"VALUES {_ngql_quote(entity_id)}:"
             "("
             f"{_ngql_literal(entity_id)}, "
@@ -1404,7 +1443,10 @@ class NebulaGraphStorage(BaseGraphStorage):
             f"{_ngql_literal(entity_type)}, "
             f"{_ngql_literal(description)}, "
             f"{_ngql_literal(keywords)}, "
-            f"{_ngql_literal(source_id)}"
+            f"{_ngql_literal(source_id)}, "
+            f"{_ngql_literal(file_path)}, "
+            f"{_ngql_literal(created_at)}, "
+            f"{_ngql_literal(truncate)}"
             ");"
         )
 
@@ -1479,11 +1521,14 @@ class NebulaGraphStorage(BaseGraphStorage):
             "MATCH (v:entity) "
             "RETURN "
             "id(v) AS entity_id, "
-            "v.name AS name, "
-            "v.entity_type AS entity_type, "
-            "v.description AS description, "
-            "v.keywords AS keywords, "
-            "v.source_id AS source_id;"
+            "v.entity.name AS name, "
+            "v.entity.entity_type AS entity_type, "
+            "v.entity.description AS description, "
+            "v.entity.keywords AS keywords, "
+            "v.entity.source_id AS source_id, "
+            "v.entity.file_path AS file_path, "
+            "v.entity.created_at AS created_at, "
+            "v.entity.truncate AS truncate;"
         )
         rows = _result_to_rows(result)
         output: list[dict] = []

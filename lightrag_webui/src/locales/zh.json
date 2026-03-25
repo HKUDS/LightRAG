@@ -339,7 +339,8 @@
         "noNewNodes": "没有发现可以扩展的节点",
         "propertyNames": {
           "description": "描述",
-          "entity_id": "名称",
+          "entity_id": "实体ID",
+          "name": "名称",
           "entity_type": "类型",
           "source_id": "C-ID",
           "Neighbour": "邻接",
@@ -391,6 +392,7 @@
       "startPrompt": "输入查询开始检索",
       "clear": "清空",
       "send": "发送",
+      "stop": "停止",
       "placeholder": "输入查询内容 (支持模式前缀: /<Query Mode>)",
       "error": "错误：获取响应失败",
       "queryModeError": "仅支持以下查询模式：{{modes}}",

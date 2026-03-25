@@ -524,15 +524,16 @@ export const getDocumentsScanProgress = async (): Promise<LightragDocumentsScanP
   return response.data
 }
 
-export const queryText = async (request: QueryRequest): Promise<QueryResponse> => {
-  const response = await axiosInstance.post('/query', request)
+export const queryText = async (request: QueryRequest, signal?: AbortSignal): Promise<QueryResponse> => {
+  const response = await axiosInstance.post('/query', request, { signal })
   return response.data
 }
 
 export const queryTextStream = async (
   request: QueryRequest,
   onChunk: (chunk: string) => void,
-  onError?: (error: string) => void
+  onError?: (error: string) => void,
+  signal?: AbortSignal
 ) => {
   const apiKey = useSettingsStore.getState().apiKey;
   const token = localStorage.getItem('LIGHTRAG-API-TOKEN');
@@ -552,6 +553,7 @@ export const queryTextStream = async (
       method: 'POST',
       headers: headers,
       body: JSON.stringify(request),
+      signal,
     });
 
     if (!response.ok) {
@@ -575,6 +577,7 @@ export const queryTextStream = async (
               method: 'POST',
               headers: retryHeaders,
               body: JSON.stringify(request),
+              signal,
             });
 
             if (!retryResponse.ok) {
@@ -715,6 +718,11 @@ export const queryTextStream = async (
     }
 
   } catch (error) {
+    // Silently handle abort
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      return;
+    }
+
     const message = errorMessage(error);
 
     // Check if this is an authentication error

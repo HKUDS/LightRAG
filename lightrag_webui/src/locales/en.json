@@ -339,7 +339,8 @@
         "noNewNodes": "No expandable nodes found",
         "propertyNames": {
           "description": "Description",
-          "entity_id": "Name",
+          "entity_id": "Entity ID",
+          "name": "Name",
           "entity_type": "Type",
           "source_id": "C-ID",
           "Neighbour": "Neigh",
@@ -391,6 +392,7 @@
       "startPrompt": "Start a retrieval by typing your query below",
       "clear": "Clear",
       "send": "Send",
+      "stop": "Stop",
       "placeholder": "Enter your query (Support prefix: /<Query Mode>)",
       "error": "Error: Failed to get response",
       "queryModeError": "Only supports the following query modes: {{modes}}",

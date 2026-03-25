@@ -10,7 +10,7 @@ import { useBackendState } from '@/stores/state'
 import { useDebounce } from '@/hooks/useDebounce'
 import QuerySettings from '@/components/retrieval/QuerySettings'
 import { ChatMessage, MessageWithError } from '@/components/retrieval/ChatMessage'
-import { EraserIcon, SendIcon, CopyIcon } from 'lucide-react'
+import { EraserIcon, SendIcon, CopyIcon, SquareIcon } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 import { copyToClipboard } from '@/utils/clipboard'
@@ -144,6 +144,7 @@ export default function RetrievalTesting() {
   const [isLoading, setIsLoading] = useState(false)
   const [inputError, setInputError] = useState('') // Error message for input
   const inputRef = useRef<HTMLInputElement | HTMLTextAreaElement>(null)
+  const abortControllerRef = useRef<AbortController | null>(null)
 
   // Smart switching logic: use Input for single line, Textarea for multi-line
   const hasMultipleLines = inputValue.includes('\n')
@@ -251,6 +252,8 @@ export default function RetrievalTesting() {
 
       // Clear input and set loading
       setInputValue('')
+      const controller = new AbortController()
+      abortControllerRef.current = controller
       setIsLoading(true)
 
       // Reset input height to minimum after clearing input
@@ -382,7 +385,7 @@ export default function RetrievalTesting() {
           let errorMessage = ''
           await queryTextStream(queryParams, updateAssistantMessage, (error) => {
             errorMessage += error
-          })
+          }, controller.signal)
           if (errorMessage) {
             if (assistantMessage.content) {
               errorMessage = assistantMessage.content + '\n' + errorMessage
@@ -390,14 +393,20 @@ export default function RetrievalTesting() {
             updateAssistantMessage(errorMessage, true)
           }
         } else {
-          const response = await queryText(queryParams)
+          const response = await queryText(queryParams, controller.signal)
           updateAssistantMessage(response.response)
         }
       } catch (err) {
-        // Handle error
-        updateAssistantMessage(`${t('retrievePanel.retrieval.error')}\n${errorMessage(err)}`, true)
+        // Silently handle abort — keep partial content as-is
+        if (err instanceof DOMException && err.name === 'AbortError') {
+          // no-op
+        } else {
+          // Handle error
+          updateAssistantMessage(`${t('retrievePanel.retrieval.error')}\n${errorMessage(err)}`, true)
+        }
       } finally {
         // Clear loading and add messages to state
+        abortControllerRef.current = null
         setIsLoading(false)
         isReceivingResponseRef.current = false
 
@@ -821,10 +830,22 @@ export default function RetrievalTesting() {
               <div className="absolute left-0 top-full mt-1 text-xs text-red-500">{inputError}</div>
             )}
           </div>
-          <Button type="submit" variant="default" disabled={isLoading} size="sm">
-            <SendIcon />
-            {t('retrievePanel.retrieval.send')}
-          </Button>
+          {isLoading ? (
+            <Button
+              type="button"
+              variant="destructive"
+              size="sm"
+              onClick={() => abortControllerRef.current?.abort()}
+            >
+              <SquareIcon className="size-4 fill-current" />
+              {t('retrievePanel.retrieval.stop')}
+            </Button>
+          ) : (
+            <Button type="submit" variant="default" size="sm">
+              <SendIcon />
+              {t('retrievePanel.retrieval.send')}
+            </Button>
+          )}
         </form>
       </div>
       <QuerySettings />

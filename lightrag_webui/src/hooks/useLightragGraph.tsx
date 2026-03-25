@@ -11,6 +11,7 @@ import { useSettingsStore } from '@/stores/settings'
 
 import seedrandom from 'seedrandom'
 import { resolveNodeColor, DEFAULT_NODE_COLOR } from '@/utils/graphColor'
+import { resolveNodeDisplayName } from '@/utils/graphLabel'
 
 // Select color based on node type
 const getNodeColorByType = (nodeType: string | undefined): string => {
@@ -204,7 +205,7 @@ const createSigmaGraph = (rawGraph: RawGraph | null) => {
     const y = Math.random()
 
     graph.addNode(rawNode.id, {
-      label: rawNode.labels.join(', '),
+      label: resolveNodeDisplayName(rawNode),
       color: rawNode.color,
       x: x,
       y: y,
@@ -723,7 +724,7 @@ const useLightrangeGraph = () => {
 
           // Add the new node to the sigma graph with calculated position
           sigmaGraph.addNode(nodeId, {
-            label: newNode.labels.join(', '),
+            label: resolveNodeDisplayName(newNode),
             color: newNode.color,
             x: x,
             y: y,

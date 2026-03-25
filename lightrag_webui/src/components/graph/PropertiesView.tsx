@@ -6,6 +6,8 @@ import useLightragGraph from '@/hooks/useLightragGraph'
 import { useTranslation } from 'react-i18next'
 import { GitBranchPlus, Scissors } from 'lucide-react'
 import EditablePropertyRow from './EditablePropertyRow'
+import { resolveNodeDisplayName } from '@/utils/graphLabel'
+import { getVisibleGraphPropertyKeys } from '@/utils/graphProperties'
 
 /**
  * Component that view properties of elements in graph.
@@ -120,7 +122,7 @@ const refineNodeProperties = (node: RawNodeType): NodeType => {
             relationships.push({
               type: 'Neighbour',
               id: neighbourId,
-              label: neighbour.properties['entity_id'] ? neighbour.properties['entity_id'] : neighbour.labels.join(', ')
+              label: resolveNodeDisplayName(neighbour)
             })
           }
         }
@@ -304,7 +306,7 @@ const NodePropertiesView = ({ node }: { node: NodeType }) => {
         <PropertyRow name={t('graphPanel.propertiesView.node.id')} value={String(node.id)} />
         <PropertyRow
           name={t('graphPanel.propertiesView.node.labels')}
-          value={node.labels.join(', ')}
+          value={resolveNodeDisplayName(node)}
           onClick={() => {
             useGraphStore.getState().setSelectedNode(node.id, true)
           }}
@@ -313,10 +315,8 @@ const NodePropertiesView = ({ node }: { node: NodeType }) => {
       </div>
       <h3 className="text-md pl-1 font-bold tracking-wide text-amber-700">{t('graphPanel.propertiesView.node.properties')}</h3>
       <div className="bg-primary/5 max-h-96 overflow-auto rounded p-1">
-        {Object.keys(node.properties)
-          .sort()
+        {getVisibleGraphPropertyKeys(node.properties, 'node')
           .map((name) => {
-            if (name === 'created_at' || name === 'truncate') return null; // Hide created_at and truncate properties
             return (
               <PropertyRow
                 key={name}
@@ -358,22 +358,31 @@ const NodePropertiesView = ({ node }: { node: NodeType }) => {
 
 const EdgePropertiesView = ({ edge }: { edge: EdgeType }) => {
   const { t } = useTranslation()
+  const relationshipName =
+    edge.type ||
+    (typeof edge.properties?.keywords === 'string' ? edge.properties.keywords : undefined)
+
   return (
     <div className="flex flex-col gap-2">
       <h3 className="text-md pl-1 font-bold tracking-wide text-violet-700">{t('graphPanel.propertiesView.edge.title')}</h3>
       <div className="bg-primary/5 max-h-96 overflow-auto rounded p-1">
         <PropertyRow name={t('graphPanel.propertiesView.edge.id')} value={edge.id} />
-        {edge.type && <PropertyRow name={t('graphPanel.propertiesView.edge.type')} value={edge.type} />}
+        {relationshipName && (
+          <PropertyRow
+            name={t('graphPanel.propertiesView.edge.type')}
+            value={relationshipName}
+          />
+        )}
         <PropertyRow
           name={t('graphPanel.propertiesView.edge.source')}
-          value={edge.sourceNode ? edge.sourceNode.labels.join(', ') : edge.source}
+          value={edge.sourceNode ? resolveNodeDisplayName(edge.sourceNode) : edge.source}
           onClick={() => {
             useGraphStore.getState().setSelectedNode(edge.source, true)
           }}
         />
         <PropertyRow
           name={t('graphPanel.propertiesView.edge.target')}
-          value={edge.targetNode ? edge.targetNode.labels.join(', ') : edge.target}
+          value={edge.targetNode ? resolveNodeDisplayName(edge.targetNode) : edge.target}
           onClick={() => {
             useGraphStore.getState().setSelectedNode(edge.target, true)
           }}
@@ -381,10 +390,10 @@ const EdgePropertiesView = ({ edge }: { edge: EdgeType }) => {
       </div>
       <h3 className="text-md pl-1 font-bold tracking-wide text-amber-700">{t('graphPanel.propertiesView.edge.properties')}</h3>
       <div className="bg-primary/5 max-h-96 overflow-auto rounded p-1">
-        {Object.keys(edge.properties)
-          .sort()
+        {getVisibleGraphPropertyKeys(edge.properties, 'edge', {
+          hideKeywords: !edge.type && typeof relationshipName === 'string'
+        })
           .map((name) => {
-            if (name === 'created_at' || name === 'truncate') return null; // Hide created_at and truncate properties
             return (
               <PropertyRow
                 key={name}
