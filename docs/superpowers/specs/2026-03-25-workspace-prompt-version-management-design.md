@@ -19,8 +19,10 @@ This design covers:
 - WebUI prompt management as a top-level page between Knowledge Graph and Retrieval
 - Version metadata, activation, copy, diff, deletion, and comments
 - Retrieval-page temporary version selection built on existing `prompt_overrides`
+- Retrieval-page `Custom / Draft` quick testing for one-off prompt edits
 - Versioned management of `ENTITY_TYPES`
 - Versioned management of indexing prompt families and retrieval prompt families
+- Activation guardrails for indexing configuration changes that can create schema drift
 - Safe fallback to existing LightRAG behavior when no version is activated
 
 This design does not cover:
@@ -66,6 +68,10 @@ The current WebUI only exposes query-time prompt override editing inside Retriev
 - Keep initial persistence simple and file-based
 - Use full snapshots for each saved version, not patch-only records
 - Treat version activation and version saving as separate actions
+- Warn aggressively before users activate indexing configurations that can fragment graph semantics
+- Keep retrieval experimentation fast even after formal version management is introduced
+- Keep seed-version strategy locale-aware rather than hard-coding a single language forever
+- Require a single consistent resolution path for versioned fields such as `ENTITY_TYPES`
 
 ## Configuration Groups
 
@@ -92,6 +98,11 @@ Behavioral notes:
 - Activation affects future indexing and summarization work
 - Activation does not rewrite already indexed data
 - Retrieval-page temporary override does not apply to this group
+- Activation must surface a warning that changing indexing configuration can create inconsistent graph/entity data across old and new documents
+- The warning should recommend one of:
+  - use the configuration in an empty workspace
+  - clear and rebuild the workspace
+  - accept the risk of mixed-schema data explicitly
 
 ### Retrieval Configuration
 
@@ -111,6 +122,7 @@ Behavioral notes:
 - Activation affects future retrieval calls for the workspace
 - Retrieval-page temporary override may select a saved retrieval version for a single request
 - Temporary selection must project only this group into `prompt_overrides`
+- Retrieval-page temporary testing may also use a `Custom / Draft` mode for one-off edits without creating a formal version first
 
 ## Version Model
 
@@ -153,6 +165,17 @@ Each version should store the full effective payload for its group, not just a d
 - copying cheap
 - future migration safer
 
+### Version lineage and deletion
+
+Because versions are full snapshots, runtime must not depend on `source_version_id` being resolvable forever.
+
+Deletion rule:
+
+- deleting an inactive version is allowed
+- if that version is referenced by another version's `source_version_id`, the referencing version remains valid
+- UI should degrade gracefully and render the source as `Deleted` or `Unknown`
+- first iteration does not require soft delete as long as lineage display is resilient
+
 ## Fallback Rules
 
 Fallback behavior is mandatory and must preserve current LightRAG semantics.
@@ -180,14 +203,14 @@ Even if saved versions exist, if `active_version_id` is empty for a group:
 
 Retrieval-page temporary version selection must never mutate the active retrieval version pointer.
 
-## Chinese Seed Versions
+## Seed Versions and Localization
 
 When a workspace first opens Prompt Management and no version registry exists yet, the server should generate two seed version chains:
 
 - one indexing seed version
 - one retrieval seed version
 
-These seed versions must be populated from curated Chinese prompt templates, not from the English built-in defaults shown directly to the user.
+These seed versions must not be tied permanently to Chinese only. The system should support localized seed packs.
 
 Requirements:
 
@@ -195,15 +218,23 @@ Requirements:
 - List fields must remain list fields
 - The seed versions are saved but not automatically activated
 - If the user never activates any version, runtime still uses original LightRAG behavior
+- First iteration should ship at least:
+  - Chinese seed versions
+  - English seed versions
+- If locale detection is available, the UI may default to the current language's seed versions
+- If locale detection is unavailable, creating both English and Chinese seeds is acceptable
 
 Suggested seed names:
 
 - `indexing-zh-default`
 - `retrieval-zh-default`
+- `indexing-en-default`
+- `retrieval-en-default`
 
 Suggested seed comments:
 
 - `中文初始版本`
+- `English initial version`
 
 ## Persistence Strategy
 
@@ -234,6 +265,14 @@ Selection criteria:
 - easy manual inspection
 - minimal coupling to a specific storage backend
 
+Implementation requirement:
+
+- writes must be atomic
+- write to a temporary file first
+- fsync or equivalent flush if practical
+- replace the target file via rename/move only after the temp write succeeds
+- readers should never observe a partially written registry
+
 ## Runtime Resolution
 
 ### Indexing runtime
@@ -253,6 +292,11 @@ The indexing version payload should override:
 - `SUMMARY_LANGUAGE`
 
 If no indexing version is active, runtime remains unchanged.
+
+Implementation note:
+
+- resolution for `ENTITY_TYPES`, `SUMMARY_LANGUAGE`, and indexing prompt families should come from one shared resolver path
+- avoid split precedence where some fields still read directly from env while others read version payload
 
 ### Retrieval runtime
 
@@ -328,6 +372,7 @@ Behavior:
 
 - set active version pointer for that workspace and group
 - return resulting active metadata
+- for `indexing`, return warning metadata describing schema-drift risk
 
 ### Delete a version
 
@@ -451,6 +496,7 @@ Instead it exposes a retrieval-version temporary selector:
 
 - default option: use active retrieval version
 - saved options: retrieval versions for current workspace
+- `Custom / Draft` option: start from the active retrieval version or selected saved version, then apply one-off edits
 - label must clearly state:
   - `Only applies to this request`
 
@@ -459,6 +505,8 @@ Behavior:
 - selecting a saved retrieval version does not activate it
 - the selected version is projected to request `prompt_overrides`
 - only `query` and `keywords` are sent
+- `Custom / Draft` edits are also request-scoped only unless the user explicitly saves them as a new retrieval version
+- the Retrieval page should expose a fast `Save as new version` shortcut when a draft proves useful
 
 The page should also keep a text link or subtle entry point to Prompt Management for formal editing, but it is not the primary control.
 
@@ -475,7 +523,9 @@ Required guidance:
 - indexing activation affects future indexing only
 - retrieval activation affects subsequent retrievals for the workspace
 - retrieval temporary override affects only the current request
+- retrieval `Custom / Draft` edits affect only the current request unless saved
 - if no active version exists, the system is using original built-in behavior
+- activating a new indexing configuration may create mixed-schema graph data inside one workspace
 
 ## Compatibility and Migration
 
