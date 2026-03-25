@@ -395,7 +395,7 @@ Returns grouped differences by field.
 
 Behavior:
 
-- create Chinese seed versions if no registry exists yet
+- create localized seed versions if no registry exists yet
 - no-op if already initialized
 
 This endpoint can also be triggered lazily by the first read request.
