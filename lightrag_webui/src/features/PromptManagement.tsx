@@ -32,6 +32,7 @@ export default function PromptManagement() {
   const [loading, setLoading] = useState(true)
   const [diffOpen, setDiffOpen] = useState(false)
   const [diffData, setDiffData] = useState<{ changes: Record<string, { before: unknown; after: unknown }> } | null>(null)
+  const locale = language.startsWith('zh') ? 'zh' : 'en'
 
   const loadVersions = useCallback(async () => {
     setLoading(true)
@@ -61,8 +62,6 @@ export default function PromptManagement() {
     () => Object.fromEntries(versions.map((version) => [version.version_id, version])),
     [versions]
   )
-
-  const locale = language.startsWith('zh') ? 'zh' : 'en'
 
   if (!loading && versions.length === 0) {
     return (
