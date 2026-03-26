@@ -61,6 +61,12 @@ export type PromptVersionCreateRequest = {
   source_version_id?: string | null
 }
 
+export type PromptVersionUpdateRequest = {
+  version_name: string
+  comment: string
+  payload: Record<string, unknown>
+}
+
 export type LightragStatus = {
   status: 'healthy'
   working_directory: string
@@ -226,6 +232,12 @@ export type ScanResponse = {
 
 export type ReprocessFailedResponse = {
   status: 'reprocessing_started'
+  message: string
+  track_id: string
+}
+
+export type RebuildDocumentsResponse = {
+  status: 'rebuild_started' | 'busy'
   message: string
   track_id: string
 }
@@ -572,6 +584,15 @@ export const createPromptConfigVersion = async (
   return response.data
 }
 
+export const updatePromptConfigVersion = async (
+  group: PromptConfigGroup,
+  versionId: string,
+  payload: PromptVersionUpdateRequest
+): Promise<PromptVersionRecord> => {
+  const response = await axiosInstance.patch(`/prompt-config/${group}/versions/${versionId}`, payload)
+  return response.data
+}
+
 export const activatePromptConfigVersion = async (
   group: PromptConfigGroup,
   versionId: string
@@ -620,6 +641,15 @@ export const scanNewDocuments = async (): Promise<ScanResponse> => {
 
 export const reprocessFailedDocuments = async (): Promise<ReprocessFailedResponse> => {
   const response = await axiosInstance.post('/documents/reprocess_failed')
+  return response.data
+}
+
+export const rebuildDocumentsFromIndexingVersion = async (
+  versionId: string
+): Promise<RebuildDocumentsResponse> => {
+  const response = await axiosInstance.post('/documents/rebuild_from_indexing_version', {
+    version_id: versionId
+  })
   return response.data
 }
 

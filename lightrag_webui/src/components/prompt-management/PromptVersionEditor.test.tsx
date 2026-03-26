@@ -35,10 +35,12 @@ describe('PromptVersionEditor', () => {
         }}
         versionsById={{}}
         activeVersionId={null}
-        onSaveVersion={async () => {}}
+        onSaveCurrentVersion={async () => {}}
+        onSaveAsNewVersion={async () => {}}
         onActivateVersion={async () => {}}
         onDeleteVersion={async () => {}}
         onShowDiff={async () => {}}
+        onRebuildFromVersion={async () => {}}
       />
     )
 
@@ -76,15 +78,51 @@ describe('PromptVersionEditor', () => {
         }}
         versionsById={{}}
         activeVersionId={null}
-        onSaveVersion={async () => {}}
+        onSaveCurrentVersion={async () => {}}
+        onSaveAsNewVersion={async () => {}}
         onActivateVersion={async () => {}}
         onDeleteVersion={async () => {}}
         onShowDiff={async () => {}}
+        onRebuildFromVersion={async () => {}}
       />
     )
 
     expect(html).toContain('<textarea')
     expect(html).toContain('Person,Organization')
     expect(html).toContain('min-h-[120px]')
+  })
+
+  test('renders save current, save as new, and indexing rebuild actions', async () => {
+    const module = await import('./PromptVersionEditor')
+    const PromptVersionEditor = module.default
+
+    const html = renderToString(
+      <PromptVersionEditor
+        groupType="indexing"
+        version={{
+          version_id: 'indexing-seed',
+          group_type: 'indexing',
+          version_name: 'indexing-seed',
+          version_number: 1,
+          comment: 'seed',
+          created_at: '2026-03-26T00:00:00Z',
+          payload: {
+            entity_types: ['Person']
+          }
+        }}
+        versionsById={{}}
+        activeVersionId={null}
+        onSaveCurrentVersion={async () => {}}
+        onSaveAsNewVersion={async () => {}}
+        onActivateVersion={async () => {}}
+        onDeleteVersion={async () => {}}
+        onShowDiff={async () => {}}
+        onRebuildFromVersion={async () => {}}
+      />
+    )
+
+    expect(html).toContain('promptManagement.saveCurrentVersion')
+    expect(html).toContain('promptManagement.saveAsNewVersion')
+    expect(html).toContain('promptManagement.rebuildFromSelectedVersion')
   })
 })

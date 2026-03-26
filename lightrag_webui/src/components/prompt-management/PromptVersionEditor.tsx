@@ -1,4 +1,9 @@
-import { PromptConfigGroup, PromptVersionCreateRequest, PromptVersionRecord } from '@/api/lightrag'
+import {
+  PromptConfigGroup,
+  PromptVersionCreateRequest,
+  PromptVersionRecord,
+  PromptVersionUpdateRequest
+} from '@/api/lightrag'
 import Button from '@/components/ui/Button'
 import Input from '@/components/ui/Input'
 import Textarea from '@/components/ui/Textarea'
@@ -18,10 +23,12 @@ type PromptVersionEditorProps = {
   version: PromptVersionRecord | null
   versionsById: Record<string, PromptVersionRecord>
   activeVersionId: string | null
-  onSaveVersion: (payload: PromptVersionCreateRequest) => Promise<void>
+  onSaveCurrentVersion: (version: PromptVersionRecord, payload: PromptVersionUpdateRequest) => Promise<void>
+  onSaveAsNewVersion: (payload: PromptVersionCreateRequest) => Promise<void>
   onActivateVersion: (version: PromptVersionRecord) => Promise<void>
   onDeleteVersion: (version: PromptVersionRecord) => Promise<void>
   onShowDiff: (version: PromptVersionRecord) => Promise<void>
+  onRebuildFromVersion: (version: PromptVersionRecord) => Promise<void>
 }
 
 const getValueAtPath = (payload: Record<string, unknown>, path: string): unknown => {
@@ -67,17 +74,19 @@ export default function PromptVersionEditor({
   version,
   versionsById,
   activeVersionId,
-  onSaveVersion,
+  onSaveCurrentVersion,
+  onSaveAsNewVersion,
   onActivateVersion,
   onDeleteVersion,
-  onShowDiff
+  onShowDiff,
+  onRebuildFromVersion
 }: PromptVersionEditorProps) {
   const { t } = useTranslation()
   const sections = useMemo(() => buildPromptEditorSections(groupType), [groupType])
-  const [versionName, setVersionName] = useState('')
-  const [comment, setComment] = useState('')
-  const [payload, setPayload] = useState<Record<string, unknown>>({})
-  const [saving, setSaving] = useState(false)
+  const [versionName, setVersionName] = useState(() => version?.version_name ?? '')
+  const [comment, setComment] = useState(() => version?.comment ?? '')
+  const [payload, setPayload] = useState<Record<string, unknown>>(() => version ? structuredClone(version.payload) : {})
+  const [savingAction, setSavingAction] = useState<'save' | 'saveAs' | 'rebuild' | null>(null)
   const [expandedSectionKey, setExpandedSectionKey] = useState<string | null>(null)
 
   const resizeTextarea = (element: HTMLTextAreaElement | null) => {
@@ -87,8 +96,8 @@ export default function PromptVersionEditor({
   }
 
   useEffect(() => {
-    setVersionName(version ? `${version.version_name}-copy` : '')
-    setComment('')
+    setVersionName(version?.version_name ?? '')
+    setComment(version?.comment ?? '')
     setPayload(version ? structuredClone(version.payload) : {})
     setExpandedSectionKey(null)
   }, [version])
@@ -112,7 +121,7 @@ export default function PromptVersionEditor({
         <CardTitle>{version.version_name}</CardTitle>
         <div className="grid gap-3 md:grid-cols-2">
           <div className="space-y-1">
-            <label className="text-xs font-medium">{t('promptManagement.saveAsVersionName')}</label>
+            <label className="text-xs font-medium">{t('promptManagement.versionName')}</label>
             <Input value={versionName} onChange={(event) => setVersionName(event.target.value)} />
           </div>
           <div className="space-y-1">
@@ -138,23 +147,59 @@ export default function PromptVersionEditor({
         <div className="flex flex-wrap gap-2">
           <Button
             type="button"
-            disabled={!versionName.trim() || saving}
+            disabled={!versionName.trim() || savingAction !== null}
             onClick={async () => {
-              setSaving(true)
+              setSavingAction('save')
               try {
-                await onSaveVersion({
+                await onSaveCurrentVersion(version, {
+                  version_name: versionName.trim(),
+                  comment: comment.trim(),
+                  payload
+                })
+              } finally {
+                setSavingAction(null)
+              }
+            }}
+          >
+            {t('promptManagement.saveCurrentVersion')}
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            disabled={!versionName.trim() || savingAction !== null}
+            onClick={async () => {
+              setSavingAction('saveAs')
+              try {
+                await onSaveAsNewVersion({
                   version_name: versionName.trim(),
                   comment: comment.trim(),
                   payload,
                   source_version_id: version.version_id
                 })
               } finally {
-                setSaving(false)
+                setSavingAction(null)
               }
             }}
           >
             {t('promptManagement.saveAsNewVersion')}
           </Button>
+          {groupType === 'indexing' ? (
+            <Button
+              type="button"
+              variant="outline"
+              disabled={savingAction !== null}
+              onClick={async () => {
+                setSavingAction('rebuild')
+                try {
+                  await onRebuildFromVersion(version)
+                } finally {
+                  setSavingAction(null)
+                }
+              }}
+            >
+              {t('promptManagement.rebuildFromSelectedVersion')}
+            </Button>
+          ) : null}
           <Button type="button" variant="outline" onClick={() => onShowDiff(version)}>
             {t('promptManagement.viewDiff')}
           </Button>

@@ -115,6 +115,30 @@ def test_delete_active_version_is_rejected(test_client):
     assert response.status_code == 400
 
 
+def test_update_prompt_version_updates_selected_record(test_client):
+    seeded = test_client.post("/prompt-config/initialize").json()
+    version_id = seeded["retrieval"]["versions"][0]["version_id"]
+
+    response = test_client.patch(
+        f"/prompt-config/retrieval/versions/{version_id}",
+        json={
+            "version_name": "retrieval-inline",
+            "comment": "edited",
+            "payload": {
+                "query": {"rag_response": "INLINE {context_data}"},
+                "keywords": {"keywords_extraction": "INLINE {query} {examples}"},
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["version_id"] == version_id
+    assert body["version_name"] == "retrieval-inline"
+    assert body["comment"] == "edited"
+    assert body["payload"]["query"]["rag_response"] == "INLINE {context_data}"
+
+
 def test_health_exposes_active_prompt_version_summary(test_client):
     seeded = test_client.post("/prompt-config/initialize").json()
     active_id = seeded["retrieval"]["versions"][0]["version_id"]

@@ -169,6 +169,32 @@ class PromptVersionStore:
             version_id,
         )
 
+    def update_version(
+        self,
+        group_type: str,
+        version_id: str,
+        payload: dict[str, Any],
+        version_name: str,
+        comment: str,
+    ) -> dict[str, Any]:
+        if group_type not in PROMPT_VERSION_GROUPS:
+            raise ValueError(f"Unknown prompt version group '{group_type}'")
+
+        normalized_payload = normalize_prompt_group_payload(group_type, payload)
+        validate_prompt_group_payload(group_type, normalized_payload)
+        registry = self._read_or_default()
+        for version in registry[group_type]["versions"]:
+            if version["version_id"] == version_id:
+                version["version_name"] = version_name
+                version["comment"] = comment
+                version["payload"] = deepcopy(normalized_payload)
+                self._atomic_write(registry)
+                return deepcopy(version)
+
+        raise ValueError(
+            f"Prompt version '{version_id}' not found in group '{group_type}'"
+        )
+
     def activate_version(self, group_type: str, version_id: str) -> dict[str, Any]:
         registry = self._read_or_default()
         self.get_version(group_type, version_id)

@@ -116,3 +116,27 @@ def test_initialize_refreshes_stale_localized_seed_payloads(tmp_path: Path):
     assert actual_prompt == expected_prompt
     assert "---任务---" in actual_prompt
     assert "Extract entities and relationships from the input text" not in actual_prompt
+
+
+def test_update_version_reuses_version_identity_and_updates_payload(tmp_path: Path):
+    store = PromptVersionStore(tmp_path, workspace="demo")
+    registry = store.initialize(locale="en")
+    version = registry["retrieval"]["versions"][0]
+
+    updated = store.update_version(
+        "retrieval",
+        version["version_id"],
+        {
+            "query": {"rag_response": "UPDATED {context_data}"},
+            "keywords": {"keywords_extraction": "UPDATED {query} {examples}"},
+        },
+        "retrieval-inline",
+        "edited",
+    )
+
+    assert updated["version_id"] == version["version_id"]
+    assert updated["version_number"] == version["version_number"]
+    assert updated["created_at"] == version["created_at"]
+    assert updated["version_name"] == "retrieval-inline"
+    assert updated["comment"] == "edited"
+    assert updated["payload"]["query"]["rag_response"] == "UPDATED {context_data}"

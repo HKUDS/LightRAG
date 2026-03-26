@@ -7,7 +7,10 @@ import {
   initializePromptConfig,
   PromptConfigGroup,
   PromptVersionCreateRequest,
-  PromptVersionRecord
+  PromptVersionUpdateRequest,
+  PromptVersionRecord,
+  rebuildDocumentsFromIndexingVersion,
+  updatePromptConfigVersion
 } from '@/api/lightrag'
 import PromptGroupSwitcher from '@/components/prompt-management/PromptGroupSwitcher'
 import PromptVersionDiffDialog from '@/components/prompt-management/PromptVersionDiffDialog'
@@ -92,7 +95,18 @@ export default function PromptManagement() {
     )
   }
 
-  const handleSaveVersion = async (payload: PromptVersionCreateRequest) => {
+  const handleSaveCurrentVersion = async (
+    version: PromptVersionRecord,
+    payload: PromptVersionUpdateRequest
+  ) => {
+    const savedVersion = await updatePromptConfigVersion(groupType, version.version_id, payload)
+    toast.success(t('promptManagement.saved', { name: savedVersion.version_name }))
+    await loadVersions()
+    selectionModeRef.current = 'manual'
+    setSelectedVersionId(savedVersion.version_id)
+  }
+
+  const handleSaveAsNewVersion = async (payload: PromptVersionCreateRequest) => {
     const savedVersion = await createPromptConfigVersion(groupType, payload)
     toast.success(t('promptManagement.saved', { name: savedVersion.version_name }))
     await loadVersions()
@@ -142,6 +156,24 @@ export default function PromptManagement() {
     setDiffOpen(true)
   }
 
+  const handleRebuildFromVersion = async (version: PromptVersionRecord) => {
+    if (
+      !window.confirm(t('promptManagement.rebuildConfirm', { name: version.version_name }))
+    ) {
+      return
+    }
+
+    const response = await rebuildDocumentsFromIndexingVersion(version.version_id)
+    if (response.status === 'busy') {
+      toast.warning(t('promptManagement.rebuildBusy'))
+      return
+    }
+    toast.success(t('promptManagement.rebuildStarted', { name: version.version_name }))
+    await loadVersions()
+    selectionModeRef.current = 'manual'
+    setSelectedVersionId(version.version_id)
+  }
+
   return (
     <div className="grid h-full grid-cols-[320px_1fr] gap-4 p-4">
       <div className="space-y-4">
@@ -169,10 +201,12 @@ export default function PromptManagement() {
         version={selectedVersion}
         versionsById={versionsById}
         activeVersionId={activeVersionId}
-        onSaveVersion={handleSaveVersion}
+        onSaveCurrentVersion={handleSaveCurrentVersion}
+        onSaveAsNewVersion={handleSaveAsNewVersion}
         onActivateVersion={handleActivateVersion}
         onDeleteVersion={handleDeleteVersion}
         onShowDiff={handleShowDiff}
+        onRebuildFromVersion={handleRebuildFromVersion}
       />
 
       <PromptVersionDiffDialog open={diffOpen} onOpenChange={setDiffOpen} diffData={diffData} />

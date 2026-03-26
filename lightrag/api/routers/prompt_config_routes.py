@@ -22,6 +22,14 @@ class PromptVersionCreateRequest(BaseModel):
     source_version_id: str | None = Field(default=None)
 
 
+class PromptVersionUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    version_name: str = Field(min_length=1)
+    comment: str = Field(default="")
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
 def create_prompt_config_routes(rag, api_key: str | None = None) -> APIRouter:
     router = APIRouter(prefix="/prompt-config", tags=["prompt-config"])
 
@@ -36,6 +44,10 @@ def create_prompt_config_routes(rag, api_key: str | None = None) -> APIRouter:
         if group_type not in {"indexing", "retrieval"}:
             raise HTTPException(status_code=404, detail="Unknown prompt config group")
         return group_type  # type: ignore[return-value]
+
+    def _rethrow_prompt_version_error(exc: ValueError) -> None:
+        status_code = 404 if "not found" in str(exc).lower() else 400
+        raise HTTPException(status_code=status_code, detail=str(exc)) from exc
 
     @router.post("/initialize")
     async def initialize_prompt_config(locale: str = "zh") -> dict[str, Any]:
@@ -76,7 +88,23 @@ def create_prompt_config_routes(rag, api_key: str | None = None) -> APIRouter:
                 request.source_version_id,
             )
         except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+            _rethrow_prompt_version_error(exc)
+
+    @router.patch("/{group_type}/versions/{version_id}")
+    async def update_version(
+        group_type: str, version_id: str, request: PromptVersionUpdateRequest
+    ) -> dict[str, Any]:
+        validated_group = _validate_group_type(group_type)
+        try:
+            return _store().update_version(
+                validated_group,
+                version_id,
+                request.payload,
+                request.version_name,
+                request.comment,
+            )
+        except ValueError as exc:
+            _rethrow_prompt_version_error(exc)
 
     @router.post("/{group_type}/versions/{version_id}/activate")
     async def activate_version(group_type: str, version_id: str) -> dict[str, Any]:
@@ -84,7 +112,7 @@ def create_prompt_config_routes(rag, api_key: str | None = None) -> APIRouter:
         try:
             active_version = _store().activate_version(validated_group, version_id)
         except ValueError as exc:
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
+            _rethrow_prompt_version_error(exc)
 
         return {
             "group_type": validated_group,
@@ -101,7 +129,7 @@ def create_prompt_config_routes(rag, api_key: str | None = None) -> APIRouter:
         try:
             _store().delete_version(validated_group, version_id)
         except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+            _rethrow_prompt_version_error(exc)
         return {"status": "success", "version_id": version_id}
 
     @router.get("/{group_type}/versions/{version_id}/diff")
@@ -112,6 +140,6 @@ def create_prompt_config_routes(rag, api_key: str | None = None) -> APIRouter:
         try:
             return _store().diff_versions(validated_group, version_id, base_version_id)
         except ValueError as exc:
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
+            _rethrow_prompt_version_error(exc)
 
     return router

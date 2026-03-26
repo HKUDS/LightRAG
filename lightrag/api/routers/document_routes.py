@@ -223,6 +223,41 @@ class CancelPipelineResponse(BaseModel):
     )
 
 
+class RebuildFromIndexingVersionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    version_id: str = Field(min_length=1, description="Selected indexing version ID")
+
+    @field_validator("version_id", mode="after")
+    @classmethod
+    def validate_version_id(cls, version_id: str) -> str:
+        normalized = version_id.strip()
+        if not normalized:
+            raise ValueError("version_id cannot be empty")
+        return normalized
+
+
+class RebuildDocumentsResponse(BaseModel):
+    status: Literal["rebuild_started", "busy"] = Field(
+        description="Status of the rebuild operation"
+    )
+    message: str = Field(description="Human-readable message describing the operation")
+    track_id: str = Field(
+        default="",
+        description="Tracking ID for the rebuild pipeline, empty when not started",
+    )
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "status": "rebuild_started",
+                "message": "Workspace rebuild has been initiated in the background.",
+                "track_id": "rebuild_20260326_abc123",
+            }
+        }
+    )
+
+
 class InsertTextRequest(BaseModel):
     """Request model for inserting a single text document
 
@@ -871,6 +906,9 @@ class DocumentManager:
     def mark_as_indexed(self, file_path: Path):
         self.indexed_files.add(file_path)
 
+    def reset_indexed_files(self):
+        self.indexed_files.clear()
+
     def is_supported_file(self, filename: str) -> bool:
         return any(filename.lower().endswith(ext) for ext in self.supported_extensions)
 
@@ -959,6 +997,129 @@ def get_unique_filename_in_enqueued(target_dir: Path, original_name: str) -> str
     # Fallback with timestamp if all 999 slots are taken
     timestamp = int(time.time())
     return f"{base_name}_{timestamp}{extension}"
+
+
+def restore_enqueued_files_to_input_dir(doc_manager: DocumentManager) -> list[str]:
+    """Move archived source files back to the scan directory before a rebuild."""
+    restored_files: list[str] = []
+    enqueued_dir = doc_manager.input_dir / "__enqueued__"
+    if not enqueued_dir.exists():
+        return restored_files
+
+    for file_path in sorted(enqueued_dir.iterdir()):
+        if not file_path.is_file():
+            continue
+        target_name = get_unique_filename_in_enqueued(
+            doc_manager.input_dir, file_path.name
+        )
+        target_path = doc_manager.input_dir / target_name
+        file_path.rename(target_path)
+        restored_files.append(target_name)
+
+    return restored_files
+
+
+def get_rebuild_storages(rag: LightRAG) -> list[Any]:
+    return [
+        rag.text_chunks,
+        rag.full_docs,
+        rag.full_entities,
+        rag.full_relations,
+        rag.entity_chunks,
+        rag.relation_chunks,
+        rag.entities_vdb,
+        rag.relationships_vdb,
+        rag.chunks_vdb,
+        rag.chunk_entity_relation_graph,
+        rag.llm_response_cache,
+        rag.doc_status,
+    ]
+
+
+async def background_rebuild_documents_from_indexing_version(
+    rag: LightRAG,
+    doc_manager: DocumentManager,
+    version_id: str,
+    track_id: str,
+):
+    from lightrag.kg.shared_storage import (
+        get_namespace_data,
+        get_namespace_lock,
+    )
+
+    pipeline_status = await get_namespace_data(
+        "pipeline_status", workspace=rag.workspace
+    )
+    pipeline_status_lock = get_namespace_lock(
+        "pipeline_status", workspace=rag.workspace
+    )
+
+    async with pipeline_status_lock:
+        if pipeline_status.get("busy", False):
+            logger.warning("Rebuild aborted because pipeline became busy")
+            return
+        pipeline_status.update(
+            {
+                "busy": True,
+                "job_name": "Rebuilding Workspace",
+                "job_start": datetime.now().isoformat(),
+                "docs": 0,
+                "batchs": 0,
+                "cur_batch": 0,
+                "request_pending": False,
+                "cancellation_requested": False,
+                "latest_message": "Starting workspace rebuild",
+            }
+        )
+        del pipeline_status["history_messages"][:]
+        pipeline_status["history_messages"].append(
+            f"Starting workspace rebuild from indexing version {version_id}"
+        )
+
+    try:
+        drop_tasks = [storage.drop() for storage in get_rebuild_storages(rag) if storage]
+        drop_results = await asyncio.gather(*drop_tasks, return_exceptions=True)
+        drop_errors = [result for result in drop_results if isinstance(result, Exception)]
+        if drop_errors:
+            error_message = (
+                f"Workspace rebuild aborted because {len(drop_errors)} storage reset operations failed."
+            )
+            logger.error(error_message)
+            async with pipeline_status_lock:
+                pipeline_status["latest_message"] = error_message
+                pipeline_status["history_messages"].append(error_message)
+                pipeline_status["busy"] = False
+            return
+
+        restored_files = restore_enqueued_files_to_input_dir(doc_manager)
+        doc_manager.reset_indexed_files()
+        async with pipeline_status_lock:
+            handoff_message = (
+                f"Reset completed. Restored {len(restored_files)} archived source files. Starting scan."
+            )
+            pipeline_status["latest_message"] = handoff_message
+            pipeline_status["history_messages"].append(handoff_message)
+            pipeline_status["busy"] = False
+            pipeline_status["job_name"] = "Default Job"
+            pipeline_status["docs"] = 0
+            pipeline_status["batchs"] = 0
+            pipeline_status["cur_batch"] = 0
+            pipeline_status["request_pending"] = False
+            pipeline_status["cancellation_requested"] = False
+
+        await run_scanning_process(rag, doc_manager, track_id)
+
+    except Exception as e:
+        logger.error(f"Error rebuilding workspace from indexing version: {str(e)}")
+        logger.error(traceback.format_exc())
+        async with pipeline_status_lock:
+            pipeline_status["latest_message"] = (
+                f"Workspace rebuild failed: {str(e)}"
+            )
+            pipeline_status["history_messages"].append(
+                f"Workspace rebuild failed: {str(e)}"
+            )
+            pipeline_status["busy"] = False
 
 
 # Document processing helper functions (synchronous)
@@ -2086,6 +2247,53 @@ def create_document_routes(
 ):
     # Create combined auth dependency for document routes
     combined_auth = get_combined_auth_dependency(api_key)
+
+    @router.post(
+        "/rebuild_from_indexing_version",
+        response_model=RebuildDocumentsResponse,
+        dependencies=[Depends(combined_auth)],
+    )
+    async def rebuild_from_indexing_version(
+        request: RebuildFromIndexingVersionRequest, background_tasks: BackgroundTasks
+    ):
+        from lightrag.kg.shared_storage import (
+            get_namespace_data,
+            get_namespace_lock,
+        )
+
+        pipeline_status = await get_namespace_data(
+            "pipeline_status", workspace=rag.workspace
+        )
+        pipeline_status_lock = get_namespace_lock(
+            "pipeline_status", workspace=rag.workspace
+        )
+
+        async with pipeline_status_lock:
+            if pipeline_status.get("busy", False):
+                return RebuildDocumentsResponse(
+                    status="busy",
+                    message="Cannot rebuild documents while pipeline is busy",
+                    track_id="",
+                )
+
+        try:
+            rag.prompt_version_store.activate_version("indexing", request.version_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+        track_id = generate_track_id("rebuild")
+        background_tasks.add_task(
+            background_rebuild_documents_from_indexing_version,
+            rag,
+            doc_manager,
+            request.version_id,
+            track_id,
+        )
+        return RebuildDocumentsResponse(
+            status="rebuild_started",
+            message="Workspace rebuild has been initiated in the background.",
+            track_id=track_id,
+        )
 
     @router.post(
         "/scan", response_model=ScanResponse, dependencies=[Depends(combined_auth)]

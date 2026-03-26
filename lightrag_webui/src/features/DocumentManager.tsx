@@ -16,6 +16,7 @@ import EmptyCard from '@/components/ui/EmptyCard'
 import Checkbox from '@/components/ui/Checkbox'
 import UploadDocumentsDialog from '@/components/documents/UploadDocumentsDialog'
 import ClearDocumentsDialog from '@/components/documents/ClearDocumentsDialog'
+import CancelPipelineButton from '@/components/documents/CancelPipelineButton'
 import DeleteDocumentsDialog from '@/components/documents/DeleteDocumentsDialog'
 import PaginationControls from '@/components/ui/PaginationControls'
 
@@ -1145,6 +1146,7 @@ export default function DocumentManager() {
             >
               <ActivityIcon /> {t('documentPanel.documentManager.pipelineStatusButton')}
             </Button>
+            <CancelPipelineButton busy={pipelineBusy} />
           </div>
 
           {/* Pagination Controls in the middle */}
