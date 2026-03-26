@@ -1,6 +1,6 @@
 {
   "$schema": "nexus-mapper/concept-model/v1",
-  "generated_at": "2026-03-24T13:52:27Z",
+  "generated_at": "2026-03-25T15:35:58Z",
   "repo_path": "/root/project/LightRAG",
   "generator": "nexus-mapper v2",
   "nodes": [
@@ -8,12 +8,15 @@
       "id": "lightrag-core-runtime",
       "type": "System",
       "label": "LightRAG Core Runtime",
-      "responsibility": "协调工作目录、文档摄取、查询流程、实体关系抽取与运行时生命周期。",
+      "responsibility": "协调工作目录、插入查询流程、实体关系抽取、active_prompt_groups 解析与运行时生命周期。",
       "implementation_status": "implemented",
       "code_path": "lightrag/",
       "evidence_path": null,
       "evidence_gap": null,
-      "tech_stack": ["python", "asyncio"],
+      "tech_stack": [
+        "python",
+        "asyncio"
+      ],
       "related_reqs": [],
       "complexity": "high",
       "hotspot": true
@@ -27,7 +30,18 @@
       "code_path": "lightrag/kg/",
       "evidence_path": null,
       "evidence_gap": null,
-      "tech_stack": ["python", "postgres", "neo4j", "milvus", "qdrant", "mongodb", "redis", "opensearch", "nebula", "memgraph"],
+      "tech_stack": [
+        "python",
+        "postgres",
+        "neo4j",
+        "milvus",
+        "qdrant",
+        "mongodb",
+        "redis",
+        "opensearch",
+        "nebula",
+        "memgraph"
+      ],
       "related_reqs": [],
       "complexity": "high",
       "hotspot": true
@@ -41,7 +55,13 @@
       "code_path": "lightrag/llm/",
       "evidence_path": null,
       "evidence_gap": null,
-      "tech_stack": ["python", "openai", "ollama", "gemini", "bedrock"],
+      "tech_stack": [
+        "python",
+        "openai",
+        "ollama",
+        "gemini",
+        "bedrock"
+      ],
       "related_reqs": [],
       "complexity": "medium",
       "hotspot": false
@@ -50,12 +70,17 @@
       "id": "lightrag-api-server",
       "type": "System",
       "label": "API Server",
-      "responsibility": "组装 FastAPI 应用、鉴权、路由、服务启动与 WebUI 静态托管。",
+      "responsibility": "组装 FastAPI 应用、鉴权、路由、服务启动、prompt-config 接口与 WebUI 静态托管。",
       "implementation_status": "implemented",
       "code_path": "lightrag/api/",
       "evidence_path": null,
       "evidence_gap": null,
-      "tech_stack": ["python", "fastapi", "uvicorn", "gunicorn"],
+      "tech_stack": [
+        "python",
+        "fastapi",
+        "uvicorn",
+        "gunicorn"
+      ],
       "related_reqs": [],
       "complexity": "high",
       "hotspot": true
@@ -64,14 +89,20 @@
       "id": "lightrag-webui",
       "type": "System",
       "label": "WebUI",
-      "responsibility": "提供文档管理、图谱浏览、检索调试与 API 浏览的前端界面。",
+      "responsibility": "提供文档管理、图谱浏览、检索调试与 prompt 版本管理的前端界面。",
       "implementation_status": "implemented",
       "code_path": "lightrag_webui/",
       "evidence_path": null,
       "evidence_gap": null,
-      "tech_stack": ["typescript", "react", "vite", "bun"],
+      "tech_stack": [
+        "typescript",
+        "react",
+        "vite",
+        "bun",
+        "vitest"
+      ],
       "related_reqs": [],
-      "complexity": "medium",
+      "complexity": "high",
       "hotspot": true
     },
     {
@@ -83,7 +114,11 @@
       "code_path": "scripts/setup/",
       "evidence_path": null,
       "evidence_gap": null,
-      "tech_stack": ["bash", "make", "docker-compose"],
+      "tech_stack": [
+        "bash",
+        "make",
+        "docker-compose"
+      ],
       "related_reqs": [],
       "complexity": "high",
       "hotspot": true
@@ -92,12 +127,16 @@
       "id": "lightrag-test-suite",
       "type": "System",
       "label": "Test Suite",
-      "responsibility": "为核心运行时、存储后端、API 与配置向导提供离线和集成回归保护。",
+      "responsibility": "为核心运行时、prompt versioning、存储后端、API 与配置向导提供回归保护。",
       "implementation_status": "implemented",
       "code_path": "tests/",
       "evidence_path": null,
       "evidence_gap": null,
-      "tech_stack": ["pytest", "bash"],
+      "tech_stack": [
+        "pytest",
+        "vitest",
+        "bash"
+      ],
       "related_reqs": [],
       "complexity": "medium",
       "hotspot": true
@@ -111,7 +150,9 @@
       "code_path": "lightrag/kg/",
       "evidence_path": null,
       "evidence_gap": null,
-      "tech_stack": ["python"],
+      "tech_stack": [
+        "python"
+      ],
       "related_reqs": [],
       "complexity": "medium",
       "hotspot": false
@@ -122,10 +163,13 @@
       "label": "Query Modes",
       "responsibility": "定义 local、global、hybrid、naive、mix 与 bypass 等检索查询策略。",
       "implementation_status": "implemented",
-      "code_path": "lightrag/api/routers/",
+      "code_path": "lightrag/base.py",
       "evidence_path": null,
       "evidence_gap": null,
-      "tech_stack": ["python", "fastapi"],
+      "tech_stack": [
+        "python",
+        "fastapi"
+      ],
       "related_reqs": [],
       "complexity": "medium",
       "hotspot": false
@@ -139,7 +183,9 @@
       "code_path": "lightrag/llm/",
       "evidence_path": null,
       "evidence_gap": null,
-      "tech_stack": ["python"],
+      "tech_stack": [
+        "python"
+      ],
       "related_reqs": [],
       "complexity": "medium",
       "hotspot": false
@@ -153,7 +199,27 @@
       "code_path": "scripts/setup/",
       "evidence_path": null,
       "evidence_gap": null,
-      "tech_stack": ["bash", "python"],
+      "tech_stack": [
+        "bash",
+        "python"
+      ],
+      "related_reqs": [],
+      "complexity": "medium",
+      "hotspot": false
+    },
+    {
+      "id": "domain-prompt-version-management",
+      "type": "Domain",
+      "label": "Prompt Version Management",
+      "responsibility": "按 workspace 管理 indexing 与 retrieval 提示词版本、seed、激活语义、diff 与 registry 持久化。",
+      "implementation_status": "implemented",
+      "code_path": "lightrag/prompt_version_store.py",
+      "evidence_path": null,
+      "evidence_gap": null,
+      "tech_stack": [
+        "python",
+        "json"
+      ],
       "related_reqs": [],
       "complexity": "medium",
       "hotspot": false
@@ -182,7 +248,7 @@
       "source": "lightrag-api-server",
       "target": "lightrag-core-runtime",
       "type": "depends_on",
-      "description": "API 服务实例化 LightRAG 并调用其存储初始化、迁移与查询能力。"
+      "description": "API 服务实例化 LightRAG 并调用其存储初始化、迁移、查询与 prompt 生效能力。"
     },
     {
       "source": "lightrag-api-server",
@@ -200,7 +266,7 @@
       "source": "lightrag-webui",
       "target": "lightrag-api-server",
       "type": "depends_on",
-      "description": "前端通过 HTTP 调用服务端文档、图谱、检索和状态接口。"
+      "description": "前端通过 HTTP 调用服务端文档、图谱、检索、健康状态与 prompt-config 接口。"
     },
     {
       "source": "lightrag-setup-wizard",
@@ -218,13 +284,13 @@
       "source": "lightrag-test-suite",
       "target": "lightrag-core-runtime",
       "type": "depends_on",
-      "description": "测试覆盖 chunking、抽取、工作区隔离和状态保留等核心能力。"
+      "description": "测试覆盖 chunking、抽取、工作区隔离、prompt 生效顺序与状态保留等核心能力。"
     },
     {
       "source": "lightrag-test-suite",
       "target": "lightrag-api-server",
       "type": "depends_on",
-      "description": "测试覆盖查询接口、鉴权、文档接口与 Ollama 兼容行为。"
+      "description": "测试覆盖查询接口、鉴权、prompt-config 路由、健康摘要与 Ollama 兼容行为。"
     },
     {
       "source": "lightrag-test-suite",
@@ -260,20 +326,44 @@
       "source": "domain-workspace-runtime-targets",
       "target": "lightrag-core-runtime",
       "type": "depends_on",
-      "description": "workspace 由运行时数据模型和命名空间实现。"
+      "description": "workspace 由运行时数据模型、命名空间与 prompt version registry 共同实现。"
     },
     {
       "source": "domain-workspace-runtime-targets",
       "target": "lightrag-setup-wizard",
       "type": "depends_on",
       "description": "LIGHTRAG_RUNTIME_TARGET 的 host 或 compose 语义由配置向导固化。"
+    },
+    {
+      "source": "domain-prompt-version-management",
+      "target": "lightrag-core-runtime",
+      "type": "depends_on",
+      "description": "LightRAG 与 operate.py 在运行时解析 active_prompt_groups 并应用版本 payload。"
+    },
+    {
+      "source": "domain-prompt-version-management",
+      "target": "lightrag-api-server",
+      "type": "depends_on",
+      "description": "服务层通过 /prompt-config/* 与 /health 暴露版本管理与摘要。"
+    },
+    {
+      "source": "domain-prompt-version-management",
+      "target": "lightrag-webui",
+      "type": "depends_on",
+      "description": "WebUI 提供 Prompt Management 页面与 Retrieval 临时版本选择。"
     }
   ],
   "metadata": {
-    "total_files": 316,
-    "total_lines": 121967,
-    "languages": ["bash", "javascript", "python", "tsx", "typescript"],
-    "git_commits_analyzed": 665,
+    "total_files": 343,
+    "total_lines": 127578,
+    "languages": [
+      "bash",
+      "javascript",
+      "python",
+      "tsx",
+      "typescript"
+    ],
+    "git_commits_analyzed": 683,
     "analysis_days": 90
   }
 }

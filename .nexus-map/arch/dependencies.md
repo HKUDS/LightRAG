@@ -1,6 +1,6 @@
 > generated_by: nexus-mapper v2
-> verified_at: 2026-03-24
-> provenance: Mixed evidence. AST-backed for Python/TypeScript imports and hub analysis; setup-wizard relations are inferred from `Makefile`, API README, file tree, and Git coupling because Bash only has module-level coverage.
+> verified_at: 2026-03-25
+> provenance: AST-backed for Python/JavaScript/TypeScript/TSX/Bash; Bash files have module-only coverage, and WebUI internal import relations under `@/...` are supplemented by manual reading because current raw import edges treat those aliases as external.
 
 # 系统依赖
 
@@ -8,19 +8,30 @@
 
 ```mermaid
 graph LR
-  WebUI[WebUI\nlightrag_webui/src] --> API[API Server\nlightrag/api]
-  Setup[Setup Wizard\nscripts/setup] --> API
-  Setup --> Storage[Storage Adapters\nlightrag/kg]
-  API --> Core[Core Runtime\nlightrag/]
-  API --> LLM[LLM Bindings\nlightrag/llm]
+  WebUI[WebUI
+lightrag_webui/src] --> API[API Server
+lightrag/api]
+  Setup[Setup Wizard
+scripts/setup] --> API
+  Setup --> Storage[Storage Adapters
+lightrag/kg]
+  API --> Core[Core Runtime
+lightrag/]
+  API --> Prompt[Prompt Version Domain
+lightrag/prompt*.py]
+  Prompt --> Core
+  API --> LLM[LLM Bindings
+lightrag/llm]
   API --> Storage
   Storage --> Core
   LLM --> Core
   LLM -.version hook.-> API
-  Tests[Tests\ntests/] --> API
+  Tests[Tests
+tests/ + WebUI *.test.*] --> API
   Tests --> Core
   Tests --> Storage
   Tests --> Setup
+  Tests --> WebUI
 ```
 
 ## 典型运行时序
@@ -30,13 +41,15 @@ sequenceDiagram
   participant U as User
   participant W as WebUI / Client
   participant A as FastAPI Server
-  participant R as LightRAG Core
+  participant R as LightRAG / operate.py
+  participant P as PromptVersionStore
   participant S as Storages
   participant M as LLM/Embedding/Rerank
 
   U->>W: 上传文档 / 发起查询
   W->>A: REST 请求
   A->>R: 调用 LightRAG 与路由逻辑
+  R->>P: 解析 active_prompt_groups
   R->>S: 读写 KV / Vector / Graph / DocStatus
   R->>M: 调用模型补全、嵌入或重排
   S-->>R: 返回图谱、向量和状态
@@ -45,45 +58,55 @@ sequenceDiagram
   A-->>W: JSON / 流式响应
 ```
 
+## Prompt Version 管理时序
+
+```mermaid
+sequenceDiagram
+  participant U as User
+  participant W as WebUI
+  participant A as API /prompt-config
+  participant P as PromptVersionStore
+  participant R as LightRAG / health / query
+
+  U->>W: 初始化 / 保存 / 激活版本
+  W->>A: 调用 /prompt-config/*
+  A->>P: 读写 workspace 下的 registry.json
+  P-->>A: 返回版本列表 / active_version_id
+  A-->>W: 返回版本数据与 warning
+
+  U->>W: 发起检索或刷新状态
+  W->>A: /query 或 /health
+  A->>R: 构建运行时配置
+  R->>P: 读取 active_prompt_groups
+  R-->>A: 生效后的 prompt 配置与 active_prompt_versions 摘要
+  A-->>W: 查询结果 / 当前激活版本
+```
+
 ## 关键证据
 
-- `lightrag/api/lightrag_server.py` 影响半径显示其直接依赖：
-  - `lightrag`
-  - `lightrag.api.auth`
-  - `lightrag.api.config`
-  - `lightrag.api.routers.*`
-  - `lightrag.api.utils_api`
-  - `lightrag.kg.shared_storage`
-  - `lightrag.llm.*`
-  - `lightrag.rerank`
-  - `lightrag.utils`
-- `lightrag/lightrag.py` 直接依赖：
-  - `lightrag.base`
-  - `lightrag.constants`
-  - `lightrag.kg.*`
-  - `lightrag.namespace`
-  - `lightrag.operate`
-  - `lightrag.utils`
-- `lightrag/api/run_with_gunicorn.py` 下游依赖 `lightrag/api/lightrag_server.py`，说明 Gunicorn 模式是服务启动包装层，而不是另一套独立 API。
-- `lightrag/kg/__init__.py` 明确把 `NebulaGraphStorage` 注册进 graph storage 实现映射。
-- `tests/test_nebula_graph_storage.py` 直接导入 `lightrag.kg.nebula_impl`，说明 Nebula 支持已进入受测范围。
+- `lightrag/api/lightrag_server.py` 的影响半径现在明确包含 `lightrag.api.routers.prompt_config_routes`，说明 prompt 版本管理已经接入服务主入口。
+- `lightrag/prompt_version_store.py` 的下游依赖目前是 `lightrag.lightrag`、`tests/test_prompt_config_routes.py`、`tests/test_prompt_version_store.py`；这说明它是核心运行时的直接依赖，而不是纯 API 辅助脚本。
+- `lightrag/operate.py` 会先合并激活 retrieval 版本，再合并单次请求 `prompt_overrides`；因此“激活版本 > 默认模板，但 < request override”是当前真实生效顺序。
+- `App.tsx`、`SiteHeader.tsx`、`PromptManagement.tsx`、`RetrievalTesting.tsx` 共同证明 prompt versioning 已经是可见的 WebUI 一级工作流，而不只是隐藏 API。
 
 ## 层次判断
 
 - 可以确信：
-  - API 层依赖核心运行时、模型绑定和共享存储。
-  - WebUI 通过 HTTP 依赖 API 暴露的文档、图谱、检索与状态接口。
-  - 存储适配层通过核心抽象和命名空间接入运行时。
-  - Gunicorn 启动面复用同一 API 应用工厂，而不是复制一套服务逻辑。
+  - API 层依赖核心运行时、prompt 版本域、模型绑定和共享存储。
+  - 核心运行时现在承担 prompt 版本的读取与生效语义。
+  - WebUI 通过 HTTP 依赖 API 暴露的文档、图谱、检索、状态以及 `/prompt-config/*` 接口。
+  - Gunicorn 启动面仍然复用同一 API 应用工厂，而不是另一套服务实现。
 - 需要牢记的例外：
-  - `lightrag/llm/openai.py`、`anthropic.py`、`ollama.py` 导入 `lightrag.api.__api_version__`。
-  - 这意味着“LLM 绑定层完全独立于 API 层”的假设不成立。
+  - `lightrag/llm/openai.py`、`anthropic.py`、`ollama.py` 仍导入 `lightrag.api.__api_version__`。
+  - TS / TSX 中的 `@/` 别名导入不会被当前 `query_graph.py` 解析为内部边，所以前端内部依赖仍要用人工阅读兜底。
 - inferred from file tree/manual inspection：
   - `scripts/setup/` 与其他系统的关系主要通过 `.env`、`docker-compose.final.yml`、`LIGHTRAG_RUNTIME_TARGET` 和 `make env-*` 流程表达，而不是通过 Python import。
+  - `PromptManagement` 页面与检索页临时版本选择的组合关系主要来自 `App.tsx`、`SiteHeader.tsx`、`RetrievalTesting.tsx` 和相关组件的直接阅读。
 
 ## 修改建议
 
-- 改 `lightrag/api/lightrag_server.py` 前，先跑 `query_graph.py --impact lightrag/api/lightrag_server.py`，因为它同时连接路由、模型绑定、共享存储和应用启动。
-- 改 `lightrag/lightrag.py` 前，至少同时检查 `tests/test_doc_status_chunk_preservation.py` 及所触达的存储实现。
-- 改 `lightrag/kg/nebula_impl.py` 前，必须同步看 `tests/test_nebula_graph_storage.py`。
+- 改 `lightrag/api/lightrag_server.py` 前，先跑 `query_graph.py --impact lightrag/api/lightrag_server.py`，因为它同时连接路由、模型绑定、共享存储、健康摘要和 prompt 版本接口。
+- 改 prompt 版本化核心文件前，至少连看：`lightrag/prompt.py`、`lightrag/prompt_versions.py`、`lightrag/prompt_version_store.py`、`lightrag/lightrag.py`、`lightrag/operate.py`。
+- 改 prompt 版本 API 前，至少同步检查：`tests/test_prompt_config_routes.py`、`tests/test_query_prompt_overrides_api.py`、`lightrag/api/README.md`、`lightrag/api/README-zh.md`。
+- 改 WebUI prompt 管理或 retrieval 版本选择前，至少同步检查：`lightrag_webui/src/features/PromptManagement.tsx`、`lightrag_webui/src/components/prompt-management/`、`lightrag_webui/src/features/RetrievalTesting.tsx`、`lightrag_webui/src/stores/settings.ts` 及相关 Vitest 文件。
 - 改 `scripts/setup/setup.sh` 前，不要只看脚本本体；需要连看 `Makefile`、`docs/InteractiveSetup.md` 与 `tests/test_interactive_setup_outputs.py`。

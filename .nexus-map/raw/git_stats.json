@@ -1,13 +1,13 @@
 {
   "analysis_period_days": 90,
   "stats": {
-    "total_commits": 665,
+    "total_commits": 683,
     "total_authors": 32
   },
   "hotspots": [
     {
       "path": "scripts/setup/setup.sh",
-      "changes": 132,
+      "changes": 133,
       "risk": "high"
     },
     {
@@ -17,7 +17,7 @@
     },
     {
       "path": "env.example",
-      "changes": 63,
+      "changes": 64,
       "risk": "high"
     },
     {
@@ -37,22 +37,32 @@
     },
     {
       "path": "README.md",
-      "changes": 36,
+      "changes": 37,
       "risk": "high"
     },
     {
       "path": "README-zh.md",
-      "changes": 29,
-      "risk": "high"
-    },
-    {
-      "path": "scripts/setup/lib/validation.sh",
-      "changes": 26,
+      "changes": 31,
       "risk": "high"
     },
     {
       "path": "tests/test_nebula_graph_storage.py",
-      "changes": 25,
+      "changes": 28,
+      "risk": "high"
+    },
+    {
+      "path": "scripts/setup/lib/validation.sh",
+      "changes": 27,
+      "risk": "high"
+    },
+    {
+      "path": "lightrag/kg/nebula_impl.py",
+      "changes": 23,
+      "risk": "high"
+    },
+    {
+      "path": "lightrag/lightrag.py",
+      "changes": 22,
       "risk": "high"
     },
     {
@@ -61,13 +71,8 @@
       "risk": "high"
     },
     {
-      "path": "lightrag/kg/nebula_impl.py",
-      "changes": 20,
-      "risk": "high"
-    },
-    {
-      "path": "lightrag/lightrag.py",
-      "changes": 20,
+      "path": "lightrag/operate.py",
+      "changes": 17,
       "risk": "high"
     },
     {
@@ -92,11 +97,6 @@
     },
     {
       "path": "lightrag/api/routers/document_routes.py",
-      "changes": 15,
-      "risk": "high"
-    },
-    {
-      "path": "lightrag/operate.py",
       "changes": 15,
       "risk": "high"
     },
@@ -134,38 +134,38 @@
     {
       "file_a": "env.example",
       "file_b": "scripts/setup/setup.sh",
-      "co_changes": 29,
-      "coupling_score": 0.46
+      "co_changes": 30,
+      "coupling_score": 0.469
     },
     {
       "file_a": "README-zh.md",
       "file_b": "README.md",
-      "co_changes": 27,
-      "coupling_score": 0.931
+      "co_changes": 29,
+      "coupling_score": 0.935
     },
     {
       "file_a": "scripts/setup/lib/validation.sh",
       "file_b": "scripts/setup/setup.sh",
-      "co_changes": 24,
-      "coupling_score": 0.923
+      "co_changes": 25,
+      "coupling_score": 0.926
     },
     {
       "file_a": "lightrag/kg/nebula_impl.py",
       "file_b": "tests/test_nebula_graph_storage.py",
-      "co_changes": 20,
+      "co_changes": 23,
       "coupling_score": 1.0
     },
     {
       "file_a": "scripts/setup/lib/validation.sh",
       "file_b": "tests/test_interactive_setup_outputs.py",
       "co_changes": 18,
-      "coupling_score": 0.692
+      "coupling_score": 0.667
     },
     {
       "file_a": "env.example",
       "file_b": "tests/test_interactive_setup_outputs.py",
       "co_changes": 17,
-      "coupling_score": 0.27
+      "coupling_score": 0.266
     },
     {
       "file_a": "docs/InteractiveSetup.md",
@@ -198,6 +198,12 @@
       "coupling_score": 0.8
     },
     {
+      "file_a": "lightrag/api/README-zh.md",
+      "file_b": "lightrag/api/README.md",
+      "co_changes": 11,
+      "coupling_score": 0.917
+    },
+    {
       "file_a": "docs/InteractiveSetup.md",
       "file_b": "scripts/setup/lib/file_ops.sh",
       "co_changes": 11,
@@ -220,12 +226,6 @@
       "file_b": "tests/test_milvus_index_config.py",
       "co_changes": 10,
       "coupling_score": 0.909
-    },
-    {
-      "file_a": "lightrag/lightrag.py",
-      "file_b": "tests/test_doc_status_chunk_preservation.py",
-      "co_changes": 9,
-      "coupling_score": 1.0
     }
   ]
 }
