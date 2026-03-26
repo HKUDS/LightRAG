@@ -398,6 +398,39 @@ async def test_keywords_prompt_and_examples_overrides_are_applied():
 
 
 @pytest.mark.asyncio
+async def test_extract_keywords_uses_conversation_history():
+    captured_kwargs: list[dict] = []
+
+    async def _fake_model_func(prompt: str, **kwargs) -> str:
+        captured_kwargs.append(kwargs)
+        return '{"high_level_keywords":["A"],"low_level_keywords":["B"]}'
+
+    param = QueryParam(
+        mode="mix",
+        model_func=_fake_model_func,
+        conversation_history=[
+            {"role": "user", "content": "What is LightRAG?"},
+            {"role": "assistant", "content": "LightRAG is a graph-based RAG framework."},
+        ],
+    )
+
+    await operate_module.extract_keywords_only(
+        "Who created it?",
+        param,
+        global_config={
+            "llm_model_func": _dummy_llm,
+            "tokenizer": _DummyTokenizer(),
+            "prompt_config": {},
+            "addon_params": {},
+        },
+        hashing_kv=_DummyHashingKV(enable_llm_cache=False),
+    )
+
+    assert len(captured_kwargs) == 1
+    assert captured_kwargs[0]["history_messages"] == param.conversation_history
+
+
+@pytest.mark.asyncio
 async def test_keywords_cache_hash_changes_with_prompt_override(monkeypatch):
     captured_hashes: list[str] = []
 
@@ -424,6 +457,48 @@ async def test_keywords_cache_hash_changes_with_prompt_override(monkeypatch):
 
     await operate_module.extract_keywords_only("hello", p1, config, hashing_kv=None)
     await operate_module.extract_keywords_only("hello", p2, config, hashing_kv=None)
+
+    assert len(captured_hashes) == 2
+    assert captured_hashes[0] != captured_hashes[1]
+
+
+@pytest.mark.asyncio
+async def test_keywords_cache_hash_changes_with_conversation_history(monkeypatch):
+    captured_hashes: list[str] = []
+
+    async def _fake_handle_cache(hashing_kv, args_hash, *args, **kwargs):
+        captured_hashes.append(args_hash)
+        return '{"high_level_keywords":["A"],"low_level_keywords":["B"]}', 0
+
+    monkeypatch.setattr(operate_module, "handle_cache", _fake_handle_cache)
+
+    config = {
+        "llm_model_func": _dummy_llm,
+        "tokenizer": _DummyTokenizer(),
+        "prompt_config": {},
+        "addon_params": {},
+    }
+    p1 = QueryParam(
+        mode="mix",
+        conversation_history=[
+            {"role": "user", "content": "Tell me about LightRAG"},
+            {"role": "assistant", "content": "It is a RAG framework."},
+        ],
+    )
+    p2 = QueryParam(
+        mode="mix",
+        conversation_history=[
+            {"role": "user", "content": "Tell me about OpenAI"},
+            {"role": "assistant", "content": "It is an AI company."},
+        ],
+    )
+
+    await operate_module.extract_keywords_only(
+        "Who created it?", p1, config, hashing_kv=None
+    )
+    await operate_module.extract_keywords_only(
+        "Who created it?", p2, config, hashing_kv=None
+    )
 
     assert len(captured_hashes) == 2
     assert captured_hashes[0] != captured_hashes[1]

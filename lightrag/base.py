@@ -135,7 +135,8 @@ class QueryParam:
     ll_keywords: list[str] = field(default_factory=list)
     """List of low-level keywords to refine retrieval focus."""
 
-    # History mesages is only send to LLM for context, not used for retrieval
+    # Conversation history is sent to the LLM for answer generation and can also
+    # help keyword extraction when retrieval keywords are generated automatically.
     conversation_history: list[dict[str, str]] = field(default_factory=list)
     """Stores past conversation history to maintain context.
     Format: [{"role": "user/assistant", "content": "message"}].

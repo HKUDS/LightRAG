@@ -399,7 +399,7 @@ def create_query_routes(
         - **mix**: Integrates knowledge graph retrieval with vector search (recommended)
         - **bypass**: Direct LLM query without knowledge retrieval
 
-        conversation_history parameteris sent to LLM only, does not affect retrieval results.
+        conversation_history is sent to the LLM and can also inform automatic keyword extraction.
 
         **Usage Examples:**
 
@@ -626,7 +626,7 @@ def create_query_routes(
         - **mix**: Integrated knowledge graph + vector retrieval (recommended)
         - **bypass**: Direct LLM query without knowledge retrieval
 
-        conversation_history parameteris sent to LLM only, does not affect retrieval results.
+        conversation_history is sent to the LLM and can also inform automatic keyword extraction.
 
         **Usage Examples**
 

@@ -3670,11 +3670,17 @@ async def extract_keywords_only(
     language = resolved_addon_params["language"]
 
     # 2. Handle cache if needed - add cache type for keywords
+    conversation_history_payload = (
+        json.dumps(param.conversation_history, ensure_ascii=False, sort_keys=True)
+        if param.conversation_history
+        else ""
+    )
     args_hash = compute_args_hash(
         param.mode,
         text,
         language,
         keywords_prompt_fingerprint,
+        conversation_history_payload,
     )
     cached_result = await handle_cache(
         hashing_kv, args_hash, text, param.mode, cache_type="keywords"
@@ -3712,7 +3718,11 @@ async def extract_keywords_only(
         # Apply higher priority (5) to query relation LLM function
         use_model_func = partial(use_model_func, _priority=5)
 
-    result = await use_model_func(kw_prompt, keyword_extraction=True)
+    llm_kwargs: dict[str, Any] = {"keyword_extraction": True}
+    if param.conversation_history:
+        llm_kwargs["history_messages"] = param.conversation_history
+
+    result = await use_model_func(kw_prompt, **llm_kwargs)
 
     # 5. Parse out JSON from the LLM response
     result = remove_think_tags(result)
@@ -3746,6 +3756,7 @@ async def extract_keywords_only(
                 "max_relation_tokens": param.max_relation_tokens,
                 "max_total_tokens": param.max_total_tokens,
                 "user_prompt": param.user_prompt or "",
+                "conversation_history": param.conversation_history,
                 "enable_rerank": param.enable_rerank,
                 "keywords_prompt_fingerprint": keywords_prompt_fingerprint,
             }
