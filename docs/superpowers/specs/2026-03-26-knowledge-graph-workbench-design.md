@@ -77,6 +77,10 @@ The goal of this design is to turn the graph page into a true workbench for grap
 
 The design should avoid forcing every `BaseGraphStorage` implementation to grow a backend-specific advanced filter engine. The current graph storage abstraction is suitable for base graph retrieval and CRUD primitives, but not for a broad new filtering contract across all backends.
 
+### Scale and Safety Constraint
+
+The repository already has `max_graph_nodes` protections across runtime, API config, storage backends, and WebUI settings. However, once advanced filtering is performed after base graph retrieval, those existing limits need to be treated as an explicit design boundary rather than an implicit implementation detail. Query-size protection, mutation concurrency, and destructive-operation safeguards must therefore be part of the workbench contract.
+
 ## High-Level Design
 
 The knowledge-graph page becomes a three-column workbench built on top of the current graph viewer:
@@ -243,11 +247,56 @@ Recommended request shape:
 }
 ```
 
+Semantics for v1 must be explicit:
+
+- filter groups are combined with **AND**
+- different fields inside a group are combined with **AND**
+- array values inside a single field are combined with **OR**
+
+Examples:
+
+- `entity_types: ["PERSON", "ORGANIZATION"]` means `PERSON OR ORGANIZATION`
+- `entity_types + name_query` means `(PERSON OR ORGANIZATION) AND name_query`
+
+The first version does not attempt to model arbitrary nested boolean expressions, but the request contract should remain future-extensible rather than implying the current flat shape is the permanent upper bound.
+
 Implementation principle:
 
 - Graph storage backends continue to provide the base graph via the existing retrieval contract.
 - Advanced filtering happens in the API/workbench layer after base graph retrieval.
 - This minimizes cross-backend disruption and keeps the first implementation practical.
+
+### 1a. Performance Guardrails
+
+The structured query path must include explicit protection against oversized in-memory filtering:
+
+- the API must always apply a hard node cap before in-process filtering
+- the effective cap must never exceed backend/runtime `max_graph_nodes`
+- structured query responses should report the effective cap and truncation metadata
+- if the safe base graph must be truncated before filtering, that fact must be visible to the client
+
+Recommended metadata shape:
+
+```json
+{
+  "meta": {
+    "requested_max_nodes": 800,
+    "effective_max_nodes": 800,
+    "was_truncated_before_filtering": true,
+    "was_truncated_after_filtering": false
+  }
+}
+```
+
+### 1b. Optional Filter Pushdown
+
+The default implementation remains API-layer filtering, but the design should leave room for capable backends to optimize:
+
+- graph storage backends are not required to implement advanced filters for correctness
+- backends may optionally expose pushdown helpers for selected predicates
+- the API layer may use those helpers when available to reduce memory pressure and latency
+
+This preserves compatibility while allowing storage-specific optimization for large graphs.
 
 ### 2. Compatibility Route Preservation
 
@@ -312,6 +361,29 @@ The first implementation should use explainable heuristics instead of opaque mod
 
 The system should recommend candidates but never auto-execute a merge.
 
+### 5. Concurrency Control for Mutations
+
+Graph mutations should include optimistic concurrency protection.
+
+Problem:
+
+- multiple users may inspect the same node or relation in parallel
+- a later mutation may silently overwrite an earlier one
+- merge/delete actions are especially sensitive because they can remove graph structure
+
+Design requirement:
+
+- read responses for editable graph objects should expose a concurrency token
+- mutation routes should accept that token back on edit/delete/merge requests
+- the server should reject stale writes when the token no longer matches
+
+Preferred token shape:
+
+- `updated_at` if graph mutation timestamps are standardized across stores
+- otherwise a dedicated `version` or opaque `revision_token`
+
+This is a deliberate extension to the current graph contract rather than an already-existing capability.
+
 ## Frontend State Design
 
 Do not overload `settings.ts` with workbench runtime state.
@@ -373,6 +445,8 @@ Update policy:
   - large delete operations
   - anything that may alter current result membership
 
+All mutating flows should also propagate concurrency-token validation failures back to the frontend so the workbench can prompt the user to refresh rather than silently overwriting newer changes.
+
 ## Merge and Disambiguation Design
 
 ### Manual Merge
@@ -401,6 +475,23 @@ User flow:
 - the UI must show why the suggestion exists
 - users must be able to reject or skip candidates
 - merge failure states must be classified and rendered clearly
+
+### Alias Preservation Requirement
+
+Merge must preserve recall for historical and alternate names.
+
+Problem:
+
+- source entity names may still be the lexical form used in indexed source documents
+- hard-removing the source label after merge can reduce future retrieval and graph lookup quality
+
+Design requirement:
+
+- each merged source entity name should be retained on the target entity as alias data
+- aliases should live in a structured field such as `aliases`, or another canonical multi-value representation that does not lose the original names
+- entity detail and merge-review UIs should surface retained aliases
+
+This requirement applies to both manual merge and suggested merge flows.
 
 ## Internationalization and Multi-Language Requirements
 
@@ -463,6 +554,16 @@ The frontend maps these to localized human-readable descriptions.
 
 Where the workbench displays numbers, counts, dates, or time ranges, formatting should follow the current UI locale instead of assuming a single language or regional style.
 
+### Locale Loading Strategy
+
+The current frontend i18n bootstrap eagerly imports all locale JSON files into the main bundle. The graph workbench should not make that cost worse without an optimization path.
+
+Design requirement:
+
+- graph workbench implementation must remain compatible with the current i18n setup
+- the design should preserve a follow-up path to lazy-load locale payloads instead of always bundling every language into the initial load
+- if lazy-loading is implemented during this work, it should be done at the shared `i18n.ts` layer rather than as a graph-only special case
+
 ### Translation Completeness Rule
 
 Before merging implementation, all new graph workbench translation keys must exist in every currently supported locale file. Fallback behavior is acceptable for imperfect wording, but missing-key UI should not ship.
@@ -498,6 +599,16 @@ Merge failures should distinguish:
 
 These should not collapse into a single generic error.
 
+### Destructive Operation Safeguards
+
+The first version still excludes true undo/rollback, but destructive actions need a clear safety envelope:
+
+- delete and merge flows must have explicit confirmation steps
+- the API should return enough structured detail for the UI to preview impact before final submission
+- implementation should preserve operational recovery paths such as export/log evidence and forward compatibility with tombstone-style recovery
+
+Soft delete across graph storage and vector storage is a reasonable future direction, but it is intentionally deferred because it would require broader schema and query-contract changes across multiple storage backends.
+
 ## Testing Design
 
 ### Backend
@@ -512,6 +623,8 @@ Cover at least:
 - graph-domain delete routes
 - merge suggestion route
 - legacy compatibility route behavior
+- conflict detection for stale concurrency tokens
+- hard-limit and truncation metadata behavior
 
 Also expand graph-operation coverage around `utils_graph.py`:
 
@@ -519,18 +632,21 @@ Also expand graph-operation coverage around `utils_graph.py`:
 - merge suggestion scoring logic
 - delete response structure
 - merge response structure
+- alias preservation after merge
 
 ### Frontend
 
 Add graph workbench tests covering at least:
 
 - filter payload assembly
+- AND/OR semantics projection for flat filter groups
 - workbench tab switching
 - merge suggestion selection into merge form
 - delete confirmation behavior
 - create form prefill behavior
 - graph refetch trigger behavior after invalidating mutations
 - i18n key coverage for new workbench UI
+- stale-write conflict handling in edit/delete/merge flows
 
 ## Proposed File Impact
 
