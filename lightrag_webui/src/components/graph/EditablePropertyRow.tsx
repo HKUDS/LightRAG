@@ -3,6 +3,10 @@ import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 import { updateEntity, updateRelation, checkEntityNameExists } from '@/api/lightrag'
 import { useGraphStore } from '@/stores/graph'
+import {
+  normalizeWorkbenchMutationError,
+  useGraphWorkbenchStore
+} from '@/stores/graphWorkbench'
 import { useSettingsStore } from '@/stores/settings'
 import { SearchHistoryManager } from '@/utils/SearchHistoryManager'
 import { PropertyName, EditIcon, PropertyValue } from './PropertyRowComponents'
@@ -23,6 +27,7 @@ interface EditablePropertyRowProps {
   entityType?: 'node' | 'edge'  // Type of graph entity
   sourceId?: string            // Source node ID (for edge type)
   targetId?: string            // Target node ID (for edge type)
+  revisionToken?: string
   onValueChange?: (newValue: any) => void  // Optional callback when value changes
   isEditable?: boolean         // Whether this property can be edited
   tooltip?: string             // Optional tooltip to display on hover
@@ -43,6 +48,7 @@ const EditablePropertyRow = ({
   entityType,
   sourceId,
   targetId,
+  revisionToken,
   onValueChange,
   isEditable = false,
   tooltip
@@ -57,6 +63,8 @@ const EditablePropertyRow = ({
     targetEntity: string
     sourceEntity: string
   } | null>(null)
+  const setMutationError = useGraphWorkbenchStore.use.setMutationError()
+  const clearMutationError = useGraphWorkbenchStore.use.clearMutationError()
 
   useEffect(() => {
     setCurrentValue(initialValue)
@@ -83,6 +91,7 @@ const EditablePropertyRow = ({
 
     setIsSubmitting(true)
     setErrorMessage(null)
+    clearMutationError()
 
     try {
       if (entityType === 'node' && entityId && nodeId) {
@@ -95,6 +104,7 @@ const EditablePropertyRow = ({
             if (exists) {
               const errorMsg = t('graphPanel.propertiesView.errors.duplicateName')
               setErrorMessage(errorMsg)
+              setMutationError(errorMsg, false)
               toast.error(errorMsg)
               return
             }
@@ -102,7 +112,13 @@ const EditablePropertyRow = ({
           updatedData = { 'entity_name': value }
         }
 
-        const response = await updateEntity(entityId, updatedData, true, allowMerge)
+        const response = await updateEntity(
+          entityId,
+          updatedData,
+          true,
+          allowMerge,
+          revisionToken
+        )
         const operationSummary = response.operation_summary
         const operationStatus = operationSummary?.operation_status || 'complete_success'
         const finalValue = operationSummary?.final_entity ?? value
@@ -166,13 +182,14 @@ const EditablePropertyRow = ({
           // Do NOT update graph data to keep frontend in sync with backend
           const mergeError = operationSummary?.merge_error || 'Unknown error'
 
-          const errorMsg = t('graphPanel.propertiesView.errors.updateSuccessButMergeFailed', {
-            error: mergeError
-          })
-          setErrorMessage(errorMsg)
-          toast.error(errorMsg)
-          // Do not update currentValue or call onValueChange
-          return
+            const errorMsg = t('graphPanel.propertiesView.errors.updateSuccessButMergeFailed', {
+              error: mergeError
+            })
+            setErrorMessage(errorMsg)
+            setMutationError(errorMsg, false)
+            toast.error(errorMsg)
+            // Do not update currentValue or call onValueChange
+            return
 
         } else {
           // Complete failure or unknown status
@@ -184,11 +201,13 @@ const EditablePropertyRow = ({
               error: mergeError
             })
             setErrorMessage(errorMsg)
+            setMutationError(errorMsg, false)
             toast.error(errorMsg)
           } else {
             // Regular update failed (no merge involved)
             const errorMsg = t('graphPanel.propertiesView.errors.updateFailed')
             setErrorMessage(errorMsg)
+            setMutationError(errorMsg, false)
             toast.error(errorMsg)
           }
           // Do not update currentValue or call onValueChange
@@ -196,7 +215,7 @@ const EditablePropertyRow = ({
         }
       } else if (entityType === 'edge' && sourceId && targetId && edgeId && dynamicId) {
         const updatedData = { [name]: value }
-        await updateRelation(sourceId, targetId, updatedData)
+        await updateRelation(sourceId, targetId, updatedData, revisionToken)
         try {
           await useGraphStore.getState().updateEdgeAndSelect(edgeId, dynamicId, sourceId, targetId, name, value)
         } catch (error) {
@@ -208,12 +227,17 @@ const EditablePropertyRow = ({
         onValueChange?.(value)
       }
 
+      clearMutationError()
       setIsEditing(false)
     } catch (error) {
       console.error('Error updating property:', error)
-      const errorMsg = error instanceof Error ? error.message : t('graphPanel.propertiesView.errors.updateFailed')
-      setErrorMessage(errorMsg)
-      toast.error(errorMsg)
+      const normalizedError = normalizeWorkbenchMutationError(
+        error,
+        t('graphPanel.propertiesView.errors.updateFailed')
+      )
+      setErrorMessage(normalizedError.message)
+      setMutationError(normalizedError.message, normalizedError.isConflict)
+      toast.error(normalizedError.message)
       return
     } finally {
       setIsSubmitting(false)

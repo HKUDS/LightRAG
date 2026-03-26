@@ -6,6 +6,72 @@ import type {
 } from '@/api/lightrag'
 import { createSelectors } from '@/lib/utils'
 
+export type GraphMergeDraft = {
+  sourceEntities: string[]
+  targetEntity: string
+}
+
+export type GraphMergeFollowUpState = {
+  targetEntity: string
+  sourceEntities: string[]
+  mergedAt: number
+}
+
+export type GraphWorkbenchMutationError = {
+  message: string
+  isConflict: boolean
+}
+
+const isRevisionConflictMessage = (message: string): boolean => {
+  const normalized = message.toLowerCase()
+  return normalized.includes('revision token') || normalized.includes('stale')
+}
+
+const extractErrorMessage = (error: unknown, fallback: string): string => {
+  if (error && typeof error === 'object') {
+    const response = (error as { response?: { data?: { detail?: unknown } } }).response
+    const detail = response?.data?.detail
+    if (typeof detail === 'string' && detail.trim()) {
+      return detail
+    }
+  }
+
+  if (error instanceof Error) {
+    const detailMatch = error.message.match(/"detail"\s*:\s*"([^"]+)"/)
+    if (detailMatch?.[1]) {
+      return detailMatch[1]
+    }
+    return error.message
+  }
+
+  return fallback
+}
+
+export const normalizeWorkbenchMutationError = (
+  error: unknown,
+  fallbackMessage: string
+): GraphWorkbenchMutationError => {
+  const message = extractErrorMessage(error, fallbackMessage)
+  const isConflict =
+    (error &&
+      typeof error === 'object' &&
+      (error as { response?: { status?: number } }).response?.status === 409) ||
+    (message.includes('409') && isRevisionConflictMessage(message)) ||
+    isRevisionConflictMessage(message)
+
+  if (isConflict) {
+    return {
+      message: `Stale revision conflict: ${message}. Please refresh and retry.`,
+      isConflict: true
+    }
+  }
+
+  return {
+    message,
+    isConflict: false
+  }
+}
+
 const cloneQuery = (query: GraphWorkbenchQueryRequest): GraphWorkbenchQueryRequest => {
   return {
     scope: { ...query.scope },
@@ -65,11 +131,18 @@ export const getDefaultGraphWorkbenchFilterDraft = (): GraphWorkbenchQueryReques
   }
 })
 
+export const getDefaultMergeDraft = (): GraphMergeDraft => ({
+  sourceEntities: [],
+  targetEntity: ''
+})
+
 interface GraphWorkbenchState {
   filterDraft: GraphWorkbenchQueryRequest
   appliedQuery: GraphWorkbenchQueryRequest | null
   mergeCandidates: GraphMergeSuggestionCandidate[]
   selectedMergeCandidateTargets: string[]
+  mergeDraft: GraphMergeDraft
+  mergeFollowUp: GraphMergeFollowUpState | null
   mutationError: string | null
   conflictError: string | null
   queryVersion: number
@@ -79,7 +152,12 @@ interface GraphWorkbenchState {
   applyScopeLabel: (label: string) => void
   setMergeCandidates: (candidates: GraphMergeSuggestionCandidate[]) => void
   selectMergeCandidate: (targetEntity: string) => void
+  setMergeDraft: (draft: GraphMergeDraft) => void
+  importMergeCandidate: (candidate: GraphMergeSuggestionCandidate) => void
+  clearMergeDraft: () => void
   clearSelection: () => void
+  setMergeFollowUp: (targetEntity: string, sourceEntities: string[]) => void
+  clearMergeFollowUp: () => void
   setMutationError: (message: string | null, isConflict?: boolean) => void
   clearMutationError: () => void
   requestRefresh: () => void
@@ -91,6 +169,8 @@ const useGraphWorkbenchStoreBase = create<GraphWorkbenchState>()((set, get) => (
   appliedQuery: null,
   mergeCandidates: [],
   selectedMergeCandidateTargets: [],
+  mergeDraft: getDefaultMergeDraft(),
+  mergeFollowUp: null,
   mutationError: null,
   conflictError: null,
   queryVersion: 0,
@@ -130,7 +210,32 @@ const useGraphWorkbenchStoreBase = create<GraphWorkbenchState>()((set, get) => (
         ]
       }
     }),
+  setMergeDraft: (draft) =>
+    set({
+      mergeDraft: {
+        sourceEntities: [...draft.sourceEntities],
+        targetEntity: draft.targetEntity
+      }
+    }),
+  importMergeCandidate: (candidate) =>
+    set({
+      mergeDraft: {
+        sourceEntities: [...candidate.source_entities],
+        targetEntity: candidate.target_entity
+      },
+      selectedMergeCandidateTargets: [candidate.target_entity]
+    }),
+  clearMergeDraft: () => set({ mergeDraft: getDefaultMergeDraft() }),
   clearSelection: () => set({ selectedMergeCandidateTargets: [] }),
+  setMergeFollowUp: (targetEntity, sourceEntities) =>
+    set({
+      mergeFollowUp: {
+        targetEntity,
+        sourceEntities: [...sourceEntities],
+        mergedAt: Date.now()
+      }
+    }),
+  clearMergeFollowUp: () => set({ mergeFollowUp: null }),
   setMutationError: (message, isConflict = false) =>
     set({
       mutationError: message,
@@ -144,6 +249,8 @@ const useGraphWorkbenchStoreBase = create<GraphWorkbenchState>()((set, get) => (
       appliedQuery: null,
       mergeCandidates: [],
       selectedMergeCandidateTargets: [],
+      mergeDraft: getDefaultMergeDraft(),
+      mergeFollowUp: null,
       mutationError: null,
       conflictError: null,
       queryVersion: 0

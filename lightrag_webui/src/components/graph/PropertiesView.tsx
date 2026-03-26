@@ -2,7 +2,6 @@ import { useEffect, useState } from 'react'
 import { useGraphStore, RawNodeType, RawEdgeType } from '@/stores/graph'
 import Text from '@/components/ui/Text'
 import Button from '@/components/ui/Button'
-import useLightragGraph from '@/hooks/useLightragGraph'
 import { useTranslation } from 'react-i18next'
 import { GitBranchPlus, Scissors } from 'lucide-react'
 import EditablePropertyRow from './EditablePropertyRow'
@@ -12,13 +11,21 @@ import { getVisibleGraphPropertyKeys } from '@/utils/graphProperties'
 /**
  * Component that view properties of elements in graph.
  */
-const PropertiesView = () => {
-  const { getNode, getEdge } = useLightragGraph()
+type PropertiesViewProps = {
+  panelClassName?: string
+}
+
+const PropertiesView = ({ panelClassName }: PropertiesViewProps) => {
+  const rawGraph = useGraphStore.use.rawGraph()
   const selectedNode = useGraphStore.use.selectedNode()
   const focusedNode = useGraphStore.use.focusedNode()
   const selectedEdge = useGraphStore.use.selectedEdge()
   const focusedEdge = useGraphStore.use.focusedEdge()
   const graphDataVersion = useGraphStore.use.graphDataVersion()
+
+  const getNode = (nodeId: string) => rawGraph?.getNode(nodeId) || null
+  const getEdge = (edgeId: string, dynamicId: boolean = true) =>
+    rawGraph?.getEdge(edgeId, dynamicId) || null
 
   const [currentElement, setCurrentElement] = useState<NodeType | EdgeType | null>(null)
   const [currentType, setCurrentType] = useState<'node' | 'edge' | null>(null)
@@ -60,15 +67,26 @@ const PropertiesView = () => {
     graphDataVersion, // Add dependency on graphDataVersion to refresh when data changes
     setCurrentElement,
     setCurrentType,
+    rawGraph,
     getNode,
     getEdge
   ])
 
   if (!currentElement) {
-    return <></>
+    return panelClassName ? (
+      <div className={panelClassName}>
+        <p className="text-muted-foreground p-2 text-xs">Select a node or relation to inspect.</p>
+      </div>
+    ) : (
+      <></>
+    )
   }
+
+  const containerClassName =
+    panelClassName ?? 'bg-background/80 max-w-xs rounded-lg border-2 p-2 text-xs backdrop-blur-lg'
+
   return (
-    <div className="bg-background/80 max-w-xs rounded-lg border-2 p-2 text-xs backdrop-blur-lg">
+    <div className={containerClassName}>
       {currentType == 'node' ? (
         <NodePropertiesView node={currentElement as any} />
       ) : (
@@ -186,7 +204,8 @@ const PropertyRow = ({
   sourceId,
   targetId,
   isEditable = false,
-  truncate
+  truncate,
+  revisionToken
 }: {
   name: string
   value: any
@@ -201,6 +220,7 @@ const PropertyRow = ({
   targetId?: string
   isEditable?: boolean
   truncate?: string
+  revisionToken?: string
 }) => {
   const { t } = useTranslation()
 
@@ -241,6 +261,7 @@ const PropertyRow = ({
         entityType={entityType}
         sourceId={sourceId}
         targetId={targetId}
+        revisionToken={revisionToken}
         isEditable={true}
         tooltip={tooltip || (typeof value === 'string' ? value : JSON.stringify(value, null, 2))}
       />
@@ -327,6 +348,7 @@ const NodePropertiesView = ({ node }: { node: NodeType }) => {
                 entityType="node"
                 isEditable={name === 'description' || name === 'entity_id' || name === 'entity_type'}
                 truncate={node.properties['truncate']}
+                revisionToken={(node as any).revision_token}
               />
             )
           })}
@@ -406,6 +428,7 @@ const EdgePropertiesView = ({ edge }: { edge: EdgeType }) => {
                 targetId={edge.targetNode?.properties['entity_id'] || edge.target}
                 isEditable={name === 'description' || name === 'keywords'}
                 truncate={edge.properties['truncate']}
+                revisionToken={(edge as any).revision_token}
               />
             )
           })}

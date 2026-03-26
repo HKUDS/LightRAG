@@ -16,10 +16,12 @@ import FullScreenControl from '@/components/graph/FullScreenControl'
 import Settings from '@/components/graph/Settings'
 import GraphSearch from '@/components/graph/GraphSearch'
 import GraphLabels from '@/components/graph/GraphLabels'
-import PropertiesView from '@/components/graph/PropertiesView'
+import ActionInspector from '@/components/graph/ActionInspector'
 import SettingsDisplay from '@/components/graph/SettingsDisplay'
 import Legend from '@/components/graph/Legend'
 import LegendButton from '@/components/graph/LegendButton'
+import FilterWorkbench from '@/components/graph/FilterWorkbench'
+import useLightragGraph from '@/hooks/useLightragGraph'
 
 import { useSettingsStore } from '@/stores/settings'
 import { useGraphStore } from '@/stores/graph'
@@ -108,6 +110,8 @@ const GraphEvents = () => {
 }
 
 const GraphViewer = () => {
+  useLightragGraph()
+
   const [isThemeSwitching, setIsThemeSwitching] = useState(false)
   const sigmaRef = useRef<any>(null)
   const prevTheme = useRef<string>('')
@@ -191,58 +195,65 @@ const GraphViewer = () => {
     [selectedNode]
   )
 
-  // Always render SigmaContainer but control its visibility with CSS
   return (
-    <div className="relative h-full w-full overflow-hidden">
-      <SigmaContainer
-        settings={memoizedSigmaSettings}
-        className="!bg-background !size-full overflow-hidden"
-        ref={sigmaRef}
-      >
-        <GraphControl />
+    <div className="relative h-full w-full overflow-hidden p-2">
+      <div className="flex h-full w-full flex-col gap-2 lg:flex-row">
+        <aside className="min-h-[240px] max-h-[42%] lg:max-h-none lg:min-h-0 lg:w-[340px] lg:shrink-0">
+          <FilterWorkbench />
+        </aside>
 
-        {enableNodeDrag && <GraphEvents />}
+        <div className="relative min-h-0 flex-1 overflow-hidden rounded-xl border">
+          <SigmaContainer
+            settings={memoizedSigmaSettings}
+            className="!bg-background !size-full overflow-hidden"
+            ref={sigmaRef}
+          >
+            <GraphControl />
 
-        <FocusOnNode node={autoFocusedNode} move={moveToSelectedNode} />
+            {enableNodeDrag && <GraphEvents />}
 
-        <div className="absolute top-2 left-2 flex items-start gap-2">
-          <GraphLabels />
-          {showNodeSearchBar && !isThemeSwitching && (
-            <GraphSearch
-              value={searchInitSelectedNode}
-              onFocus={onSearchFocus}
-              onChange={onSearchSelect}
-            />
-          )}
-        </div>
+            <FocusOnNode node={autoFocusedNode} move={moveToSelectedNode} />
 
-        <div className="bg-background/60 absolute bottom-2 left-2 flex flex-col rounded-xl border-2 backdrop-blur-lg">
-          <LayoutsControl />
-          <ZoomControl />
-          <FullScreenControl />
-          <LegendButton />
-          <Settings />
-          {/* <ThemeToggle /> */}
+            <div className="absolute top-2 left-2 right-2 flex flex-wrap items-start gap-2">
+              <GraphLabels />
+              {showNodeSearchBar && !isThemeSwitching && (
+                <GraphSearch
+                  value={searchInitSelectedNode}
+                  onFocus={onSearchFocus}
+                  onChange={onSearchSelect}
+                />
+              )}
+            </div>
+
+            <div className="bg-background/60 absolute bottom-2 left-2 flex flex-col rounded-xl border-2 backdrop-blur-lg">
+              <LayoutsControl />
+              <ZoomControl />
+              <FullScreenControl />
+              <LegendButton />
+              <Settings />
+              {/* <ThemeToggle /> */}
+            </div>
+
+            {showLegend && (
+              <div className="absolute bottom-10 right-2 z-0">
+                <Legend className="bg-background/60 backdrop-blur-lg" />
+              </div>
+            )}
+
+            {/* <div className="absolute bottom-2 right-2 flex flex-col rounded-xl border-2">
+              <MiniMap width="100px" height="100px" />
+            </div> */}
+
+            <SettingsDisplay />
+          </SigmaContainer>
         </div>
 
         {showPropertyPanel && (
-          <div className="absolute top-2 right-2 z-10">
-            <PropertiesView />
-          </div>
+          <aside className="min-h-[240px] max-h-[42%] lg:max-h-none lg:min-h-0 lg:w-[380px] lg:shrink-0">
+            <ActionInspector />
+          </aside>
         )}
-
-        {showLegend && (
-          <div className="absolute bottom-10 right-2 z-0">
-            <Legend className="bg-background/60 backdrop-blur-lg" />
-          </div>
-        )}
-
-        {/* <div className="absolute bottom-2 right-2 flex flex-col rounded-xl border-2">
-          <MiniMap width="100px" height="100px" />
-        </div> */}
-
-        <SettingsDisplay />
-      </SigmaContainer>
+      </div>
 
       {/* Loading overlay - shown when data is loading or theme is switching */}
       {(isFetching || isThemeSwitching) && (
