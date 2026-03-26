@@ -2602,10 +2602,8 @@ finalize_server_setup() {
     return 1
   fi
 
-  if ! validate_security_config \
-    "${ENV_VALUES[AUTH_ACCOUNTS]:-}" \
-    "${ENV_VALUES[TOKEN_SECRET]:-}" \
-    "${ENV_VALUES[LIGHTRAG_API_KEY]:-}"; then
+  if ! validate_auth_accounts_runtime_config \
+    "${ENV_VALUES[AUTH_ACCOUNTS]:-}"; then
     return 1
   fi
 
@@ -2784,10 +2782,8 @@ validate_env_file() {
     errors=1
   fi
 
-  if ! validate_security_config \
-    "${ENV_VALUES[AUTH_ACCOUNTS]:-}" \
-    "${ENV_VALUES[TOKEN_SECRET]:-}" \
-    "${ENV_VALUES[LIGHTRAG_API_KEY]:-}"; then
+  if ! validate_auth_accounts_runtime_config \
+    "${ENV_VALUES[AUTH_ACCOUNTS]:-}"; then
     errors=1
   fi
 

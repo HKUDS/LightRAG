@@ -6238,6 +6238,69 @@ security_check_env_file
     assert "WHITELIST_PATHS exposes /api routes" in result.stdout
 
 
+def test_finalize_server_setup_allows_predictable_auth_passwords_and_security_check_reports_it(
+    tmp_path: Path,
+) -> None:
+    """Server setup should not block on weak password prefixes that belong to security audit."""
+
+    write_text_lines(
+        tmp_path / ".env",
+        [
+            "AUTH_ACCOUNTS=admin:Passw0rd!",
+            "TOKEN_SECRET=jwt-secret",
+            "WHITELIST_PATHS=/health",
+        ],
+    )
+    write_text_lines(
+        tmp_path / "env.example",
+        (REPO_ROOT / "env.example").read_text(encoding="utf-8").splitlines(),
+    )
+
+    output = run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+load_existing_env_if_present
+
+show_summary() {{ :; }}
+confirm_default_yes() {{ return 0; }}
+confirm_required_yes_no() {{ return 0; }}
+
+if finalize_server_setup; then
+  printf 'RESULT=success\\n'
+else
+  printf 'RESULT=failure\\n'
+fi
+""",
+    )
+    values = parse_lines(output)
+
+    assert values["RESULT"] == "success"
+
+    result = subprocess.run(
+        [
+            "bash",
+            "--norc",
+            "--noprofile",
+            "-c",
+            f"""
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+security_check_env_file
+""",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    assert "AUTH_ACCOUNTS uses a predictable password prefix." in result.stdout
+
+
 def test_finalize_server_setup_rejects_malformed_auth_accounts(tmp_path: Path) -> None:
     """Server setup should fail fast instead of persisting invalid AUTH_ACCOUNTS syntax."""
 
@@ -6276,6 +6339,72 @@ printf 'ENV=%s\\n' "$(cat "$REPO_ROOT/.env")"
 
     assert values["RESULT"] == "failure"
     assert values["ENV"] == "HOST=0.0.0.0"
+
+
+def test_validate_env_file_allows_predictable_auth_passwords_and_leaves_them_to_audit(
+    tmp_path: Path,
+) -> None:
+    """validate_env_file should allow risky-but-runnable auth settings."""
+
+    write_text_lines(
+        tmp_path / ".env",
+        [
+            "AUTH_ACCOUNTS=admin:Passw0rd!",
+            "TOKEN_SECRET=jwt-secret",
+            "LIGHTRAG_KV_STORAGE=JsonKVStorage",
+            "LIGHTRAG_VECTOR_STORAGE=NanoVectorDBStorage",
+            "LIGHTRAG_GRAPH_STORAGE=NetworkXStorage",
+            "LIGHTRAG_DOC_STATUS_STORAGE=JsonDocStatusStorage",
+        ],
+    )
+    write_text_lines(tmp_path / "env.example", ["LLM_BINDING=openai"])
+
+    result = subprocess.run(
+        [
+            "bash",
+            "--norc",
+            "--noprofile",
+            "-c",
+            f"""
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+if validate_env_file; then
+  printf 'VALID=yes\\n'
+else
+  printf 'VALID=no\\n'
+fi
+""",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    values = parse_lines(result.stdout)
+    assert values["VALID"] == "yes"
+
+    audit_result = subprocess.run(
+        [
+            "bash",
+            "--norc",
+            "--noprofile",
+            "-c",
+            f"""
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+security_check_env_file
+""",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert audit_result.returncode == 1
+    assert "AUTH_ACCOUNTS uses a predictable password prefix." in audit_result.stdout
 
 
 def test_validate_uri_accepts_neo4j_self_signed_tls_scheme() -> None:
