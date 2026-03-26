@@ -17,7 +17,6 @@ venv/
 
 # Generated Docker Compose files (output of setup wizard)
 docker-compose.*.yml
-!docker-compose.source.yml
 
 # Build / Distribution
 dist/
