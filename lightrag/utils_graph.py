@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import time
 import asyncio
+import hashlib
+import json
+from collections.abc import Mapping, Sequence
 from typing import Any, cast
 
 from .base import DeletionResult
@@ -9,6 +12,150 @@ from .kg.shared_storage import get_storage_keyed_lock
 from .constants import GRAPH_FIELD_SEP
 from .utils import compute_mdhash_id, logger
 from .base import StorageNameSpace
+
+
+_REVISION_TOKEN_EXCLUDED_FIELDS = frozenset(
+    {"operation_summary", "revision_token", "vector_data"}
+)
+
+
+class StaleRevisionTokenError(ValueError):
+    """Raised when an optimistic concurrency token no longer matches."""
+
+
+def _stable_json_dumps(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=True, separators=(",", ":"), sort_keys=True)
+
+
+def _canonicalize_revision_value(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {
+            str(key): _canonicalize_revision_value(value[key])
+            for key in sorted(value.keys(), key=str)
+        }
+
+    if isinstance(value, set):
+        value = list(value)
+
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        canonical_items = [_canonicalize_revision_value(item) for item in value]
+        return sorted(canonical_items, key=_stable_json_dumps)
+
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+
+    return value
+
+
+def _extract_revision_core_payload(
+    payload: Mapping[str, Any] | dict[str, Any],
+) -> dict[str, Any]:
+    core_keys = ("entity_name", "graph_data", "src_entity", "tgt_entity")
+    core_payload = {key: payload[key] for key in core_keys if key in payload}
+    if core_payload:
+        return core_payload
+
+    return {
+        str(key): value
+        for key, value in payload.items()
+        if key not in _REVISION_TOKEN_EXCLUDED_FIELDS
+    }
+
+
+def build_revision_token(payload: Mapping[str, Any] | dict[str, Any]) -> str:
+    """Build a stable optimistic-concurrency token from entity/relation payloads."""
+
+    core_payload = _extract_revision_core_payload(payload)
+    canonical_payload = _canonicalize_revision_value(core_payload)
+    serialized = _stable_json_dumps(canonical_payload)
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
+def _build_entity_revision_payload(
+    entity_name: str, node_data: Mapping[str, Any] | None
+) -> dict[str, Any]:
+    return {"entity_name": entity_name, "graph_data": dict(node_data or {})}
+
+
+def _build_relation_revision_payload(
+    source_entity: str,
+    target_entity: str,
+    edge_data: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    normalized_source, normalized_target = _normalize_relation_endpoints(
+        source_entity, target_entity
+    )
+    return {
+        "src_entity": normalized_source,
+        "tgt_entity": normalized_target,
+        "graph_data": dict(edge_data or {}),
+    }
+
+
+def _validate_expected_revision_token(
+    *,
+    current_payload: Mapping[str, Any] | dict[str, Any],
+    expected_revision_token: str | None,
+    object_type: str,
+) -> None:
+    if not expected_revision_token:
+        return
+
+    current_revision_token = build_revision_token(current_payload)
+    if current_revision_token != expected_revision_token:
+        raise StaleRevisionTokenError(f"Stale {object_type} revision token")
+
+
+def _normalize_relation_endpoints(
+    source_entity: str, target_entity: str
+) -> tuple[str, str]:
+    if source_entity <= target_entity:
+        return source_entity, target_entity
+    return target_entity, source_entity
+
+
+def _normalize_aliases(raw_aliases: Any) -> list[str]:
+    if raw_aliases is None:
+        return []
+
+    if isinstance(raw_aliases, str):
+        candidates = [raw_aliases]
+    elif isinstance(raw_aliases, Sequence) and not isinstance(
+        raw_aliases, (str, bytes, bytearray)
+    ):
+        candidates = list(raw_aliases)
+    elif isinstance(raw_aliases, set):
+        candidates = list(raw_aliases)
+    else:
+        return []
+
+    normalized_aliases: list[str] = []
+    seen_aliases: set[str] = set()
+
+    for candidate in candidates:
+        if not isinstance(candidate, str):
+            continue
+        alias = candidate.strip()
+        if alias and alias not in seen_aliases:
+            seen_aliases.add(alias)
+            normalized_aliases.append(alias)
+
+    return normalized_aliases
+
+
+def _merge_alias_groups(*alias_groups: Any, exclude: set[str] | None = None) -> list[str]:
+    excluded_aliases = exclude or set()
+    merged_aliases: list[str] = []
+    seen_aliases: set[str] = set()
+
+    for alias_group in alias_groups:
+        for alias in _normalize_aliases(alias_group):
+            if alias in excluded_aliases or alias in seen_aliases:
+                continue
+            seen_aliases.add(alias)
+            merged_aliases.append(alias)
+
+    return merged_aliases
 
 
 def _require_non_empty_description(
@@ -166,6 +313,7 @@ async def adelete_by_relation(
     source_entity: str,
     target_entity: str,
     relation_chunks_storage=None,
+    expected_revision_token: str | None = None,
 ) -> DeletionResult:
     """Asynchronously delete a relation between two entities.
 
@@ -180,8 +328,9 @@ async def adelete_by_relation(
     """
     relation_str = f"{source_entity} -> {target_entity}"
     # Normalize entity order for undirected graph (ensures consistent key generation)
-    if source_entity > target_entity:
-        source_entity, target_entity = target_entity, source_entity
+    source_entity, target_entity = _normalize_relation_endpoints(
+        source_entity, target_entity
+    )
 
     # Use keyed lock for relation to ensure atomic graph and vector db operations
     workspace = relationships_vdb.global_config.get("workspace", "")
@@ -204,6 +353,16 @@ async def adelete_by_relation(
                     message=message,
                     status_code=404,
                 )
+            edge_data = await chunk_entity_relation_graph.get_edge(
+                source_entity, target_entity
+            )
+            _validate_expected_revision_token(
+                current_payload=_build_relation_revision_payload(
+                    source_entity, target_entity, edge_data
+                ),
+                expected_revision_token=expected_revision_token,
+                object_type="relation",
+            )
 
             # Clean up chunk tracking storage before deletion
             if relation_chunks_storage is not None:
@@ -243,6 +402,18 @@ async def adelete_by_relation(
                 doc_id=relation_str,
                 message=message,
                 status_code=200,
+            )
+        except StaleRevisionTokenError as e:
+            logger.warning(
+                "Relation Delete: stale revision token for `%s`~`%s`",
+                source_entity,
+                target_entity,
+            )
+            return DeletionResult(
+                status="not_allowed",
+                doc_id=relation_str,
+                message=str(e),
+                status_code=409,
             )
         except Exception as e:
             error_message = f"Error while deleting relation from '{source_entity}' to '{target_entity}': {e}"
@@ -533,6 +704,7 @@ async def aedit_entity(
     allow_merge: bool = False,
     entity_chunks_storage=None,
     relation_chunks_storage=None,
+    expected_revision_token: str | None = None,
 ) -> dict[str, Any]:
     """Asynchronously edit entity information.
 
@@ -605,6 +777,20 @@ async def aedit_entity(
         lock_keys, namespace=namespace, enable_logging=False
     ):
         try:
+            if expected_revision_token:
+                current_node_data = await chunk_entity_relation_graph.get_node(
+                    entity_name
+                )
+                if current_node_data is None:
+                    raise ValueError(f"Entity '{entity_name}' does not exist")
+                _validate_expected_revision_token(
+                    current_payload=_build_entity_revision_payload(
+                        entity_name, current_node_data
+                    ),
+                    expected_revision_token=expected_revision_token,
+                    object_type="entity",
+                )
+
             if is_renaming and not allow_rename:
                 raise ValueError(
                     "Entity renaming is not allowed. Set allow_rename=True to enable this feature"
@@ -735,6 +921,7 @@ async def aedit_relation(
     target_entity: str,
     updated_data: dict[str, Any],
     relation_chunks_storage=None,
+    expected_revision_token: str | None = None,
 ) -> dict[str, Any]:
     """Asynchronously edit relation information.
 
@@ -759,8 +946,9 @@ async def aedit_relation(
         )
 
     # Normalize entity order for undirected graph (ensures consistent key generation)
-    if source_entity > target_entity:
-        source_entity, target_entity = target_entity, source_entity
+    source_entity, target_entity = _normalize_relation_endpoints(
+        source_entity, target_entity
+    )
 
     # Use keyed lock for relation to ensure atomic graph and vector db operations
     workspace = relationships_vdb.global_config.get("workspace", "")
@@ -780,6 +968,13 @@ async def aedit_relation(
                 )
             edge_data = await chunk_entity_relation_graph.get_edge(
                 source_entity, target_entity
+            )
+            _validate_expected_revision_token(
+                current_payload=_build_relation_revision_payload(
+                    source_entity, target_entity, edge_data
+                ),
+                expected_revision_token=expected_revision_token,
+                object_type="relation",
             )
             # Important: First delete the old relation record from the vector database
             # Delete both permutations to handle relationships created before normalization
@@ -1270,6 +1465,19 @@ async def _merge_entities_impl(
     for key, value in target_entity_data.items():
         merged_entity_data[key] = value
 
+    merged_aliases = _merge_alias_groups(
+        existing_target_entity_data.get("aliases"),
+        target_entity_data.get("aliases"),
+        source_entities,
+        *(
+            source_entity_data.get("aliases")
+            for source_entity_data in source_entities_data.values()
+        ),
+        exclude={target_entity},
+    )
+    if merged_aliases:
+        merged_entity_data["aliases"] = merged_aliases
+
     # 4. Get all relationships of the source entities and target entity (if exists)
     all_relations = []
     entities_to_collect = source_entities.copy()
@@ -1290,6 +1498,8 @@ async def _merge_entities_impl(
 
     # 5. Create or update the target entity
     merged_entity_data["entity_id"] = target_entity
+    if "name" not in target_entity_data:
+        merged_entity_data["name"] = target_entity
     if not target_exists:
         await chunk_entity_relation_graph.upsert_node(target_entity, merged_entity_data)
         logger.info(f"Entity Merge: created target '{target_entity}'")
@@ -1564,6 +1774,7 @@ async def amerge_entities(
     target_entity_data: dict[str, Any] = None,
     entity_chunks_storage=None,
     relation_chunks_storage=None,
+    expected_revision_tokens: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Asynchronously merge multiple entities into one entity.
 
@@ -1598,6 +1809,32 @@ async def amerge_entities(
         lock_keys, namespace=namespace, enable_logging=False
     ):
         try:
+            if expected_revision_tokens:
+                valid_entity_names = set(lock_keys)
+                unexpected_entities = sorted(
+                    set(expected_revision_tokens) - valid_entity_names
+                )
+                if unexpected_entities:
+                    unexpected_entity_names = ", ".join(unexpected_entities)
+                    raise ValueError(
+                        "Unexpected revision token keys for merge: "
+                        f"{unexpected_entity_names}"
+                    )
+
+                for entity_name, expected_revision_token in expected_revision_tokens.items():
+                    node_data = await chunk_entity_relation_graph.get_node(entity_name)
+                    if node_data is None:
+                        raise ValueError(
+                            f"Cannot validate revision token for missing entity '{entity_name}'"
+                        )
+                    _validate_expected_revision_token(
+                        current_payload=_build_entity_revision_payload(
+                            entity_name, node_data
+                        ),
+                        expected_revision_token=expected_revision_token,
+                        object_type="entity",
+                    )
+
             return await _merge_entities_impl(
                 chunk_entity_relation_graph,
                 entities_vdb,
@@ -1668,11 +1905,16 @@ def _merge_attributes(
         elif strategy == "keep_last":
             merged_data[key] = values[-1]
         elif strategy == "join_unique":
-            # Handle fields separated by GRAPH_FIELD_SEP
-            unique_items = set()
+            # Preserve first-seen order while removing duplicates.
+            unique_items: list[str] = []
+            seen_items: set[str] = set()
             for value in values:
                 items = str(value).split(GRAPH_FIELD_SEP)
-                unique_items.update(items)
+                for item in items:
+                    if not item or item in seen_items:
+                        continue
+                    seen_items.add(item)
+                    unique_items.append(item)
             merged_data[key] = GRAPH_FIELD_SEP.join(unique_items)
         elif strategy == "join_unique_comma":
             # Handle fields separated by comma, join unique items with comma
@@ -1700,16 +1942,18 @@ async def get_entity_info(
     entities_vdb,
     entity_name: str,
     include_vector_data: bool = False,
-) -> dict[str, str | None | dict[str, str]]:
+) -> dict[str, Any]:
     """Get detailed information of an entity"""
 
     # Get information from the graph
     node_data = await chunk_entity_relation_graph.get_node(entity_name)
     source_id = node_data.get("source_id") if node_data else None
+    aliases = _normalize_aliases(node_data.get("aliases") if node_data else None)
 
     result: dict[str, str | None | dict[str, str]] = {
         "entity_name": entity_name,
         "source_id": source_id,
+        "aliases": aliases,
         "graph_data": node_data,
     }
 
@@ -1718,6 +1962,10 @@ async def get_entity_info(
         entity_id = compute_mdhash_id(entity_name, prefix="ent-")
         vector_data = await entities_vdb.get_by_id(entity_id)
         result["vector_data"] = vector_data
+
+    result["revision_token"] = build_revision_token(
+        _build_entity_revision_payload(entity_name, node_data)
+    )
 
     return result
 
@@ -1728,7 +1976,7 @@ async def get_relation_info(
     src_entity: str,
     tgt_entity: str,
     include_vector_data: bool = False,
-) -> dict[str, str | None | dict[str, str]]:
+) -> dict[str, Any]:
     """
     Get detailed information of a relationship between two entities.
     Relationship is unidirectional, swap src_entity and tgt_entity does not change the relationship.
@@ -1743,6 +1991,8 @@ async def get_relation_info(
     """
 
     # Get information from the graph
+    src_entity, tgt_entity = _normalize_relation_endpoints(src_entity, tgt_entity)
+
     edge_data = await chunk_entity_relation_graph.get_edge(src_entity, tgt_entity)
     source_id = edge_data.get("source_id") if edge_data else None
 
@@ -1758,5 +2008,9 @@ async def get_relation_info(
         rel_id = compute_mdhash_id(src_entity + tgt_entity, prefix="rel-")
         vector_data = await relationships_vdb.get_by_id(rel_id)
         result["vector_data"] = vector_data
+
+    result["revision_token"] = build_revision_token(
+        _build_relation_revision_payload(src_entity, tgt_entity, edge_data)
+    )
 
     return result

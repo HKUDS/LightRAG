@@ -4,6 +4,8 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from datetime import datetime, timezone
 from typing import Any
 
+from lightrag.utils_graph import build_revision_token
+
 
 GraphRequestPayload = Mapping[str, Any] | dict[str, Any]
 GraphBackendQueryHook = Callable[
@@ -33,6 +35,66 @@ def _normalize_item(value: Any) -> dict[str, Any]:
     if isinstance(value, Mapping):
         return dict(value)
     return {}
+
+
+def _record_graph_data(record: dict[str, Any]) -> dict[str, Any]:
+    graph_data = _model_dump_or_dict(record.get("graph_data"))
+    if graph_data:
+        return graph_data
+    return _model_dump_or_dict(record.get("properties"))
+
+
+def _canonical_node_entity_id(node: dict[str, Any]) -> str:
+    graph_data = _record_graph_data(node)
+    entity_id = _normalize_text(graph_data.get("entity_id"))
+    if entity_id:
+        return entity_id
+
+    labels = _normalize_list(node.get("labels"))
+    if labels:
+        return labels[0]
+
+    return _normalize_text(node.get("id"))
+
+
+def _build_node_revision_token(node: dict[str, Any]) -> str | None:
+    entity_id = _canonical_node_entity_id(node)
+    if not entity_id:
+        return None
+    return build_revision_token(
+        {"entity_name": entity_id, "graph_data": _record_graph_data(node)}
+    )
+
+
+def _build_edge_revision_token(
+    edge: dict[str, Any],
+    canonical_node_ids: Mapping[str, str] | None = None,
+) -> str | None:
+    edge_graph_data = _record_graph_data(edge)
+    source = _normalize_text(edge_graph_data.get("src_id"))
+    target = _normalize_text(edge_graph_data.get("tgt_id"))
+
+    if not source and canonical_node_ids is not None:
+        source = canonical_node_ids.get(_normalize_text(edge.get("source")), "")
+    if not target and canonical_node_ids is not None:
+        target = canonical_node_ids.get(_normalize_text(edge.get("target")), "")
+
+    if not source:
+        source = _normalize_text(edge.get("source"))
+    if not target:
+        target = _normalize_text(edge.get("target"))
+
+    if not source or not target:
+        return None
+
+    normalized_source, normalized_target = sorted([source, target])
+    return build_revision_token(
+        {
+            "src_entity": normalized_source,
+            "tgt_entity": normalized_target,
+            "graph_data": _record_graph_data(edge),
+        }
+    )
 
 
 def _normalize_graph_data(raw_graph: Any) -> tuple[list[dict[str, Any]], list[dict[str, Any]], bool]:
@@ -138,14 +200,14 @@ def _extract_entity_types(node: dict[str, Any]) -> set[str]:
     labels = _normalize_list(node.get("labels"))
     entity_types.update(label.lower() for label in labels)
 
-    properties = _model_dump_or_dict(node.get("properties"))
+    properties = _record_graph_data(node)
     property_entity_types = _normalize_list(properties.get("entity_type"))
     entity_types.update(entity_type.lower() for entity_type in property_entity_types)
     return entity_types
 
 
 def _extract_source_values(record: dict[str, Any]) -> tuple[list[str], list[str], list[datetime]]:
-    properties = _model_dump_or_dict(record.get("properties"))
+    properties = _record_graph_data(record)
 
     source_ids = _normalize_list(properties.get("source_id"))
     file_paths = _normalize_list(properties.get("file_path")) + _normalize_list(
@@ -274,7 +336,7 @@ def _matches_node_filters(
     degree_map: dict[str, int],
 ) -> bool:
     node_id = str(node.get("id", "")).strip()
-    properties = _model_dump_or_dict(node.get("properties"))
+    properties = _record_graph_data(node)
 
     entity_types = [item.lower() for item in _normalize_list(node_filters.get("entity_types"))]
     if entity_types:
@@ -308,7 +370,7 @@ def _matches_node_filters(
 
 
 def _extract_edge_weight(edge: dict[str, Any]) -> float | None:
-    properties = _model_dump_or_dict(edge.get("properties"))
+    properties = _record_graph_data(edge)
     weight = properties.get("weight", edge.get("weight"))
     return _to_float_or_none(weight)
 
@@ -318,7 +380,7 @@ def _matches_edge_filters(
     edge_filters: dict[str, Any],
     node_by_id: dict[str, dict[str, Any]],
 ) -> bool:
-    properties = _model_dump_or_dict(edge.get("properties"))
+    properties = _record_graph_data(edge)
 
     relation_types = [item.lower() for item in _normalize_list(edge_filters.get("relation_types"))]
     if relation_types:
@@ -387,7 +449,7 @@ def _apply_view_options(
         next_nodes = [
             node
             for node in next_nodes
-            if _normalize_text(_model_dump_or_dict(node.get("properties")).get("description"))
+            if _normalize_text(_record_graph_data(node).get("description"))
         ]
         allowed_ids = {str(node.get("id", "")).strip() for node in next_nodes}
         next_edges = [
@@ -395,7 +457,7 @@ def _apply_view_options(
             for edge in next_edges
             if str(edge.get("source", "")).strip() in allowed_ids
             and str(edge.get("target", "")).strip() in allowed_ids
-            and _normalize_text(_model_dump_or_dict(edge.get("properties")).get("description"))
+            and _normalize_text(_record_graph_data(edge).get("description"))
         ]
 
     if bool(view_options.get("show_nodes_only")):
@@ -477,6 +539,7 @@ async def query_graph_workbench(
 
     normalized_nodes: list[dict[str, Any]] = []
     node_by_id: dict[str, dict[str, Any]] = {}
+    canonical_node_ids: dict[str, str] = {}
     for node in nodes:
         node_id = str(node.get("id", "")).strip()
         if not node_id:
@@ -485,6 +548,12 @@ async def query_graph_workbench(
             continue
         normalized_node = dict(node)
         normalized_node["id"] = node_id
+        canonical_node_id = _canonical_node_entity_id(normalized_node)
+        if canonical_node_id:
+            canonical_node_ids[node_id] = canonical_node_id
+        revision_token = _build_node_revision_token(normalized_node)
+        if revision_token is not None:
+            normalized_node["revision_token"] = revision_token
         normalized_nodes.append(normalized_node)
         node_by_id[node_id] = normalized_node
 
@@ -499,6 +568,11 @@ async def query_graph_workbench(
         normalized_edge["target"] = target
         if not _normalize_text(normalized_edge.get("id")):
             normalized_edge["id"] = f"edge-{index}"
+        revision_token = _build_edge_revision_token(
+            normalized_edge, canonical_node_ids=canonical_node_ids
+        )
+        if revision_token is not None:
+            normalized_edge["revision_token"] = revision_token
         normalized_edges.append(normalized_edge)
 
     degree_map = _build_degree_map(

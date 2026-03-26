@@ -7,8 +7,10 @@ import pytest
 
 from lightrag.api.graph_workbench import (
     LOW_WEIGHT_EDGE_THRESHOLD,
+    get_legacy_graph_payload,
     query_graph_workbench,
 )
+from lightrag import utils_graph
 
 pytestmark = pytest.mark.offline
 
@@ -307,3 +309,186 @@ async def test_query_hide_low_weight_edges_uses_explicit_threshold_semantics():
     )
 
     assert [edge["id"] for edge in result["data"]["edges"]] == ["e-high"]
+
+
+def test_revision_token_is_stable_for_equivalent_payloads():
+    payload_a = {
+        "entity_name": "Target",
+        "graph_data": {
+            "description": "desc",
+            "entity_type": "ORG",
+            "aliases": ["Legacy Target", "SourceA"],
+        },
+    }
+    payload_b = {
+        "graph_data": {
+            "aliases": ["SourceA", "Legacy Target"],
+            "entity_type": "ORG",
+            "description": "desc",
+        },
+        "entity_name": "Target",
+    }
+
+    token_a = utils_graph.build_revision_token(payload_a)
+    token_b = utils_graph.build_revision_token(payload_b)
+
+    assert token_a == token_b
+
+
+def test_revision_token_changes_when_aliases_change():
+    base_payload = {
+        "entity_name": "Target",
+        "graph_data": {
+            "description": "desc",
+            "entity_type": "ORG",
+            "aliases": ["Legacy Target", "SourceA"],
+        },
+    }
+    changed_payload = {
+        "entity_name": "Target",
+        "graph_data": {
+            "description": "desc",
+            "entity_type": "ORG",
+            "aliases": ["Legacy Target", "SourceA", "SourceB"],
+        },
+    }
+
+    base_token = utils_graph.build_revision_token(base_payload)
+    changed_token = utils_graph.build_revision_token(changed_payload)
+
+    assert base_token != changed_token
+
+
+@pytest.mark.asyncio
+async def test_query_result_includes_revision_tokens_and_aliases_from_graph_data():
+    node_graph_data = {
+        "entity_id": "Target",
+        "description": "target-desc",
+        "entity_type": "ORG",
+        "aliases": ["Legacy Target", "SourceA"],
+    }
+    peer_graph_data = {
+        "entity_id": "Peer",
+        "description": "peer",
+        "entity_type": "ORG",
+    }
+    edge_graph_data = {
+        "description": "works with",
+        "keywords": "partnership",
+        "weight": 0.9,
+    }
+    rag = _DummyRAG(
+        graph_payload={
+            "nodes": [
+                {
+                    "id": "node-1",
+                    "labels": ["Target"],
+                    "graph_data": node_graph_data,
+                },
+                {
+                    "id": "node-2",
+                    "labels": ["Peer"],
+                    "graph_data": peer_graph_data,
+                },
+            ],
+            "edges": [
+                {
+                    "id": "edge-target-peer",
+                    "source": "node-1",
+                    "target": "node-2",
+                    "type": "works_with",
+                    "graph_data": edge_graph_data,
+                }
+            ],
+            "is_truncated": False,
+        }
+    )
+
+    result = await query_graph_workbench(
+        rag,
+        {"scope": {"label": "*", "max_depth": 1, "max_nodes": 10}},
+    )
+
+    nodes = result["data"]["nodes"]
+    edges = result["data"]["edges"]
+    target_node = next(node for node in nodes if node["id"] == "node-1")
+    relation = edges[0]
+
+    assert target_node["graph_data"]["aliases"] == ["Legacy Target", "SourceA"]
+    assert "revision_token" in target_node
+    assert "revision_token" in relation
+    assert target_node["revision_token"] == utils_graph.build_revision_token(
+        {"entity_name": "Target", "graph_data": node_graph_data}
+    )
+    assert relation["revision_token"] == utils_graph.build_revision_token(
+        {
+            "src_entity": "Peer",
+            "tgt_entity": "Target",
+            "graph_data": edge_graph_data,
+        }
+    )
+
+
+@pytest.mark.asyncio
+async def test_legacy_graph_payload_includes_node_and_edge_revision_tokens():
+    rag = _DummyRAG(
+        graph_payload={
+            "nodes": [
+                {
+                    "id": "101",
+                    "labels": ["EntityA"],
+                    "graph_data": {
+                        "entity_id": "EntityA",
+                        "description": "A",
+                        "entity_type": "ORG",
+                    },
+                },
+                {
+                    "id": "202",
+                    "labels": ["EntityB"],
+                    "graph_data": {
+                        "entity_id": "EntityB",
+                        "description": "B",
+                        "entity_type": "ORG",
+                    },
+                },
+            ],
+            "edges": [
+                {
+                    "id": "edge-a-b",
+                    "source": "101",
+                    "target": "202",
+                    "type": "related_to",
+                    "graph_data": {"description": "A to B", "keywords": "rel", "weight": 1.0},
+                }
+            ],
+            "is_truncated": False,
+        }
+    )
+
+    payload = await get_legacy_graph_payload(
+        rag=rag,
+        label="EntityA",
+        max_depth=1,
+        max_nodes=10,
+    )
+
+    assert "revision_token" in payload["nodes"][0]
+    assert "revision_token" in payload["edges"][0]
+    assert payload["nodes"][0]["revision_token"] == utils_graph.build_revision_token(
+        {
+            "entity_name": "EntityA",
+            "graph_data": {
+                "entity_id": "EntityA",
+                "description": "A",
+                "entity_type": "ORG",
+            },
+        }
+    )
+    assert payload["edges"][0]["revision_token"] == utils_graph.build_revision_token(
+        {
+            "src_entity": "EntityA",
+            "tgt_entity": "EntityB",
+            "graph_data": {"description": "A to B", "keywords": "rel", "weight": 1.0},
+        }
+    )

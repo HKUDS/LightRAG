@@ -22,12 +22,14 @@ class EntityUpdateRequest(BaseModel):
     updated_data: Dict[str, Any]
     allow_rename: bool = False
     allow_merge: bool = False
+    expected_revision_token: Optional[str] = None
 
 
 class RelationUpdateRequest(BaseModel):
     source_id: str
     target_id: str
     updated_data: Dict[str, Any]
+    expected_revision_token: Optional[str] = None
 
 
 class EntityMergeRequest(BaseModel):
@@ -43,6 +45,7 @@ class EntityMergeRequest(BaseModel):
         min_length=1,
         examples=["Elon Musk"],
     )
+    expected_revision_tokens: Dict[str, str] | None = None
 
 
 class EntityCreateRequest(BaseModel):
@@ -223,6 +226,7 @@ class GraphDeleteRelationRequest(BaseModel):
 
     source_entity: str = Field(..., min_length=1)
     target_entity: str = Field(..., min_length=1)
+    expected_revision_token: Optional[str] = None
 
     @field_validator("source_entity", "target_entity", mode="after")
     @classmethod
@@ -283,6 +287,28 @@ def _normalize_deletion_response(raw_result: Any) -> GraphDeletionResponse:
     deletion = GraphDeletionResponse.model_validate(raw_result, from_attributes=True)
     deletion.doc_id = ""
     return deletion
+
+
+def _is_revision_token_conflict(detail: Any, *, status_code: int | None = None) -> bool:
+    if status_code == 409:
+        return True
+    return "revision token" in str(detail).lower()
+
+
+def _raise_for_deletion_response(result: GraphDeletionResponse) -> None:
+    if result.status == "not_found":
+        raise HTTPException(status_code=404, detail=result.message)
+    if result.status == "not_allowed":
+        status_code = (
+            409
+            if _is_revision_token_conflict(
+                result.message, status_code=result.status_code
+            )
+            else 403
+        )
+        raise HTTPException(status_code=status_code, detail=result.message)
+    if result.status == "fail":
+        raise HTTPException(status_code=500, detail=result.message)
 
 
 def create_graph_routes(rag, api_key: Optional[str] = None):
@@ -429,12 +455,7 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
         try:
             raw_result = await rag.adelete_by_entity(entity_name=request.entity_name)
             result = _normalize_deletion_response(raw_result)
-            if result.status == "not_found":
-                raise HTTPException(status_code=404, detail=result.message)
-            if result.status == "not_allowed":
-                raise HTTPException(status_code=403, detail=result.message)
-            if result.status == "fail":
-                raise HTTPException(status_code=500, detail=result.message)
+            _raise_for_deletion_response(result)
             return result
         except HTTPException:
             raise
@@ -454,14 +475,10 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
             raw_result = await rag.adelete_by_relation(
                 source_entity=request.source_entity,
                 target_entity=request.target_entity,
+                expected_revision_token=request.expected_revision_token,
             )
             result = _normalize_deletion_response(raw_result)
-            if result.status == "not_found":
-                raise HTTPException(status_code=404, detail=result.message)
-            if result.status == "not_allowed":
-                raise HTTPException(status_code=403, detail=result.message)
-            if result.status == "fail":
-                raise HTTPException(status_code=500, detail=result.message)
+            _raise_for_deletion_response(result)
             return result
         except HTTPException:
             raise
@@ -688,6 +705,7 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
                 updated_data=request.updated_data,
                 allow_rename=request.allow_rename,
                 allow_merge=request.allow_merge,
+                expected_revision_token=request.expected_revision_token,
             )
 
             # Extract operation_summary from result, with fallback for backward compatibility
@@ -729,7 +747,8 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
             logger.error(
                 f"Validation error updating entity '{request.entity_name}': {str(ve)}"
             )
-            raise HTTPException(status_code=400, detail=str(ve))
+            status_code = 409 if _is_revision_token_conflict(str(ve)) else 400
+            raise HTTPException(status_code=status_code, detail=str(ve))
         except Exception as e:
             logger.error(f"Error updating entity '{request.entity_name}': {str(e)}")
             logger.error(traceback.format_exc())
@@ -752,6 +771,7 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
                 source_entity=request.source_id,
                 target_entity=request.target_id,
                 updated_data=request.updated_data,
+                expected_revision_token=request.expected_revision_token,
             )
             return {
                 "status": "success",
@@ -762,7 +782,8 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
             logger.error(
                 f"Validation error updating relation between '{request.source_id}' and '{request.target_id}': {str(ve)}"
             )
-            raise HTTPException(status_code=400, detail=str(ve))
+            status_code = 409 if _is_revision_token_conflict(str(ve)) else 400
+            raise HTTPException(status_code=status_code, detail=str(ve))
         except Exception as e:
             logger.error(
                 f"Error updating relation between '{request.source_id}' and '{request.target_id}': {str(e)}"
@@ -995,6 +1016,7 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
             result = await rag.amerge_entities(
                 source_entities=request.entities_to_change,
                 target_entity=request.entity_to_change_into,
+                expected_revision_tokens=request.expected_revision_tokens,
             )
             return {
                 "status": "success",
@@ -1005,7 +1027,8 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
             logger.error(
                 f"Validation error merging entities {request.entities_to_change} into '{request.entity_to_change_into}': {str(ve)}"
             )
-            raise HTTPException(status_code=400, detail=str(ve))
+            status_code = 409 if _is_revision_token_conflict(str(ve)) else 400
+            raise HTTPException(status_code=status_code, detail=str(ve))
         except Exception as e:
             logger.error(
                 f"Error merging entities {request.entities_to_change} into '{request.entity_to_change_into}': {str(e)}"

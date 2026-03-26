@@ -4114,7 +4114,10 @@ class LightRAG:
         return loop.run_until_complete(self.adelete_by_entity(entity_name))
 
     async def adelete_by_relation(
-        self, source_entity: str, target_entity: str
+        self,
+        source_entity: str,
+        target_entity: str,
+        expected_revision_token: str | None = None,
     ) -> DeletionResult:
         """Asynchronously delete a relation between two entities.
 
@@ -4132,10 +4135,14 @@ class LightRAG:
             self.relationships_vdb,
             source_entity,
             target_entity,
+            expected_revision_token=expected_revision_token,
         )
 
     def delete_by_relation(
-        self, source_entity: str, target_entity: str
+        self,
+        source_entity: str,
+        target_entity: str,
+        expected_revision_token: str | None = None,
     ) -> DeletionResult:
         """Synchronously delete a relation between two entities.
 
@@ -4148,7 +4155,9 @@ class LightRAG:
         """
         loop = always_get_an_event_loop()
         return loop.run_until_complete(
-            self.adelete_by_relation(source_entity, target_entity)
+            self.adelete_by_relation(
+                source_entity, target_entity, expected_revision_token
+            )
         )
 
     async def get_processing_status(self) -> dict[str, int]:
@@ -4174,7 +4183,7 @@ class LightRAG:
 
     async def get_entity_info(
         self, entity_name: str, include_vector_data: bool = False
-    ) -> dict[str, str | None | dict[str, str]]:
+    ) -> dict[str, Any]:
         """Get detailed information of an entity"""
         from lightrag.utils_graph import get_entity_info
 
@@ -4187,7 +4196,7 @@ class LightRAG:
 
     async def get_relation_info(
         self, src_entity: str, tgt_entity: str, include_vector_data: bool = False
-    ) -> dict[str, str | None | dict[str, str]]:
+    ) -> dict[str, Any]:
         """Get detailed information of a relationship"""
         from lightrag.utils_graph import get_relation_info
 
@@ -4205,6 +4214,7 @@ class LightRAG:
         updated_data: dict[str, str],
         allow_rename: bool = True,
         allow_merge: bool = False,
+        expected_revision_token: str | None = None,
     ) -> dict[str, Any]:
         """Asynchronously edit entity information.
 
@@ -4232,6 +4242,7 @@ class LightRAG:
             allow_merge,
             self.entity_chunks,
             self.relation_chunks,
+            expected_revision_token=expected_revision_token,
         )
 
     def edit_entity(
@@ -4240,14 +4251,25 @@ class LightRAG:
         updated_data: dict[str, str],
         allow_rename: bool = True,
         allow_merge: bool = False,
+        expected_revision_token: str | None = None,
     ) -> dict[str, Any]:
         loop = always_get_an_event_loop()
         return loop.run_until_complete(
-            self.aedit_entity(entity_name, updated_data, allow_rename, allow_merge)
+            self.aedit_entity(
+                entity_name,
+                updated_data,
+                allow_rename,
+                allow_merge,
+                expected_revision_token,
+            )
         )
 
     async def aedit_relation(
-        self, source_entity: str, target_entity: str, updated_data: dict[str, Any]
+        self,
+        source_entity: str,
+        target_entity: str,
+        updated_data: dict[str, Any],
+        expected_revision_token: str | None = None,
     ) -> dict[str, Any]:
         """Asynchronously edit relation information.
 
@@ -4272,14 +4294,24 @@ class LightRAG:
             target_entity,
             updated_data,
             self.relation_chunks,
+            expected_revision_token=expected_revision_token,
         )
 
     def edit_relation(
-        self, source_entity: str, target_entity: str, updated_data: dict[str, Any]
+        self,
+        source_entity: str,
+        target_entity: str,
+        updated_data: dict[str, Any],
+        expected_revision_token: str | None = None,
     ) -> dict[str, Any]:
         loop = always_get_an_event_loop()
         return loop.run_until_complete(
-            self.aedit_relation(source_entity, target_entity, updated_data)
+            self.aedit_relation(
+                source_entity,
+                target_entity,
+                updated_data,
+                expected_revision_token,
+            )
         )
 
     async def acreate_entity(
@@ -4352,6 +4384,7 @@ class LightRAG:
         target_entity: str,
         merge_strategy: dict[str, str] = None,
         target_entity_data: dict[str, Any] = None,
+        expected_revision_tokens: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         """Asynchronously merge multiple entities into one entity.
 
@@ -4385,6 +4418,7 @@ class LightRAG:
             target_entity_data,
             self.entity_chunks,
             self.relation_chunks,
+            expected_revision_tokens=expected_revision_tokens,
         )
 
     def merge_entities(
@@ -4393,11 +4427,16 @@ class LightRAG:
         target_entity: str,
         merge_strategy: dict[str, str] = None,
         target_entity_data: dict[str, Any] = None,
+        expected_revision_tokens: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         loop = always_get_an_event_loop()
         return loop.run_until_complete(
             self.amerge_entities(
-                source_entities, target_entity, merge_strategy, target_entity_data
+                source_entities,
+                target_entity,
+                merge_strategy,
+                target_entity_data,
+                expected_revision_tokens,
             )
         )
 
