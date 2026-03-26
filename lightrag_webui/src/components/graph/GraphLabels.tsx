@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState, useRef } from 'react'
 import { AsyncSelect } from '@/components/ui/AsyncSelect'
 import { useSettingsStore } from '@/stores/settings'
 import { useGraphStore } from '@/stores/graph'
+import { useGraphWorkbenchStore } from '@/stores/graphWorkbench'
 import { useBackendState } from '@/stores/state'
 import {
   dropdownDisplayLimit,
@@ -17,7 +18,9 @@ import { getPopularLabels, searchLabels } from '@/api/lightrag'
 
 const GraphLabels = () => {
   const { t } = useTranslation()
-  const label = useSettingsStore.use.queryLabel()
+  const settingsLabel = useSettingsStore.use.queryLabel()
+  const appliedWorkbenchQuery = useGraphWorkbenchStore.use.appliedQuery()
+  const label = appliedWorkbenchQuery?.scope.label ?? settingsLabel
   const dropdownRefreshTrigger = useSettingsStore.use.searchLabelDropdownRefreshTrigger()
   const [isRefreshing, setIsRefreshing] = useState(false)
   const [refreshTrigger, setRefreshTrigger] = useState(0)
@@ -279,7 +282,7 @@ const GraphLabels = () => {
           noResultsMessage={t('graphPanel.graphLabels.noLabels')}
           value={label !== null ? label : '*'}
           onChange={(newLabel) => {
-            const currentLabel = useSettingsStore.getState().queryLabel;
+            const currentLabel = appliedWorkbenchQuery?.scope.label ?? useSettingsStore.getState().queryLabel;
 
             // select the last item means query all
             if (newLabel === '...') {
@@ -296,14 +299,18 @@ const GraphLabels = () => {
               SearchHistoryManager.addToHistory(newLabel);
             }
 
-            // Reset graphDataFetchAttempted flag to ensure data fetch is triggered
-            useGraphStore.getState().setGraphDataFetchAttempted(false);
+            if (appliedWorkbenchQuery) {
+              useGraphWorkbenchStore.getState().applyScopeLabel(newLabel || '*')
+            } else {
+              // Reset graphDataFetchAttempted flag to ensure data fetch is triggered
+              useGraphStore.getState().setGraphDataFetchAttempted(false);
 
-            // Update the label to trigger data loading
-            useSettingsStore.getState().setQueryLabel(newLabel);
+              // Update the label to trigger data loading
+              useSettingsStore.getState().setQueryLabel(newLabel);
 
-            // Force graph re-render and reset zoom/scale (must be AFTER setQueryLabel)
-            useGraphStore.getState().incrementGraphDataVersion();
+              // Force graph re-render and reset zoom/scale (must be AFTER setQueryLabel)
+              useGraphStore.getState().incrementGraphDataVersion();
+            }
           }}
           clearable={false}  // Prevent clearing value on reselect
           debounceTime={500}

@@ -4,8 +4,9 @@ import { useTranslation } from 'react-i18next'
 import { errorMessage } from '@/lib/utils'
 import * as Constants from '@/lib/constants'
 import { useGraphStore, RawGraph, RawNodeType, RawEdgeType } from '@/stores/graph'
+import { useGraphWorkbenchStore } from '@/stores/graphWorkbench'
 import { toast } from 'sonner'
-import { queryGraphs } from '@/api/lightrag'
+import { queryGraphs, queryGraphWorkbench } from '@/api/lightrag'
 import { useBackendState } from '@/stores/state'
 import { useSettingsStore } from '@/stores/settings'
 
@@ -91,8 +92,14 @@ export type EdgeType = {
   hidden?: boolean
 }
 
-const fetchGraph = async (label: string, maxDepth: number, maxNodes: number) => {
+const fetchGraph = async (
+  label: string,
+  maxDepth: number,
+  maxNodes: number,
+  appliedStructuredQuery?: Parameters<typeof queryGraphWorkbench>[0] | null
+) => {
   let rawData: any = null;
+  let isTruncated = false;
 
   // Trigger GraphLabels component to check if the label is valid
   // console.log('Setting labelsFetchAttempted to true');
@@ -102,8 +109,19 @@ const fetchGraph = async (label: string, maxDepth: number, maxNodes: number) => 
   const queryLabel = label || '*';
 
   try {
-    console.log(`Fetching graph label: ${queryLabel}, depth: ${maxDepth}, nodes: ${maxNodes}`);
-    rawData = await queryGraphs(queryLabel, maxDepth, maxNodes);
+    if (appliedStructuredQuery) {
+      console.log('Fetching graph with structured query payload')
+      const structuredResponse = await queryGraphWorkbench(appliedStructuredQuery)
+      rawData = structuredResponse.data
+      isTruncated =
+        !!structuredResponse.data?.is_truncated ||
+        structuredResponse.truncation.was_truncated_before_filtering ||
+        structuredResponse.truncation.was_truncated_after_filtering
+    } else {
+      console.log(`Fetching graph label: ${queryLabel}, depth: ${maxDepth}, nodes: ${maxNodes}`);
+      rawData = await queryGraphs(queryLabel, maxDepth, maxNodes);
+      isTruncated = !!rawData?.is_truncated
+    }
   } catch (e) {
     useBackendState.getState().setErrorMessage(errorMessage(e), 'Query Graphs Error!');
     return null;
@@ -180,7 +198,7 @@ const fetchGraph = async (label: string, maxDepth: number, maxNodes: number) => 
   }
 
   // console.debug({ data: JSON.parse(JSON.stringify(rawData)) })
-  return { rawGraph, is_truncated: rawData.is_truncated }
+  return { rawGraph, is_truncated: isTruncated }
 }
 
 // Create a new graph instance with the raw graph data
@@ -262,6 +280,8 @@ const createSigmaGraph = (rawGraph: RawGraph | null) => {
 const useLightrangeGraph = () => {
   const { t } = useTranslation()
   const queryLabel = useSettingsStore.use.queryLabel()
+  const appliedWorkbenchQuery = useGraphWorkbenchStore.use.appliedQuery()
+  const workbenchQueryVersion = useGraphWorkbenchStore.use.queryVersion()
   const rawGraph = useGraphStore.use.rawGraph()
   const sigmaGraph = useGraphStore.use.sigmaGraph()
   const maxQueryDepth = useSettingsStore.use.graphQueryMaxDepth()
@@ -295,17 +315,16 @@ const useLightrangeGraph = () => {
   // Track if a fetch is in progress to prevent multiple simultaneous fetches
   const fetchInProgressRef = useRef(false)
 
-  // Reset graph when query label is cleared
   useEffect(() => {
-    if (!queryLabel && (rawGraph !== null || sigmaGraph !== null)) {
-      const state = useGraphStore.getState()
-      state.reset()
-      state.setGraphDataFetchAttempted(false)
-      state.setLabelsFetchAttempted(false)
-      dataLoadedRef.current = false
-      initialLoadRef.current = false
+    if (!appliedWorkbenchQuery) {
+      return
     }
-  }, [queryLabel, rawGraph, sigmaGraph])
+
+    const state = useGraphStore.getState()
+    state.setGraphDataFetchAttempted(false)
+    fetchInProgressRef.current = false
+    emptyDataHandledRef.current = false
+  }, [appliedWorkbenchQuery, workbenchQueryVersion])
 
   // Graph data fetching logic
   useEffect(() => {
@@ -315,7 +334,7 @@ const useLightrangeGraph = () => {
     }
 
     // Empty queryLabel should be only handle once(avoid infinite loop)
-    if (!queryLabel && emptyDataHandledRef.current) {
+    if (!appliedWorkbenchQuery && !queryLabel && emptyDataHandledRef.current) {
       return;
     }
 
@@ -340,18 +359,27 @@ const useLightrangeGraph = () => {
       console.log('Preparing graph data...')
 
       // Use a local copy of the parameters
-      const currentQueryLabel = queryLabel
-      const currentMaxQueryDepth = maxQueryDepth
-      const currentMaxNodes = maxNodes
+      const currentQueryLabel = appliedWorkbenchQuery?.scope.label ?? queryLabel
+      const currentMaxQueryDepth = appliedWorkbenchQuery?.scope.max_depth ?? maxQueryDepth
+      const currentMaxNodes = appliedWorkbenchQuery?.scope.max_nodes ?? maxNodes
+      const useStructuredQuery = !!appliedWorkbenchQuery
 
       // Declare a variable to store data promise
       let dataPromise: Promise<{ rawGraph: RawGraph | null; is_truncated: boolean | undefined } | null>;
 
-      // 1. If query label is not empty, use fetchGraph
-      if (currentQueryLabel) {
+      // 1. If applied structured query exists, prefer queryGraphWorkbench
+      if (useStructuredQuery) {
+        dataPromise = fetchGraph(
+          currentQueryLabel || '*',
+          currentMaxQueryDepth,
+          currentMaxNodes,
+          appliedWorkbenchQuery
+        );
+      } else if (currentQueryLabel) {
+        // 2. fallback legacy query
         dataPromise = fetchGraph(currentQueryLabel, currentMaxQueryDepth, currentMaxNodes);
       } else {
-        // 2. If query label is empty, set data to null
+        // 3. If query label is empty, set data to null
         console.log('Query label is empty, show empty graph')
         dataPromise = Promise.resolve({ rawGraph: null, is_truncated: false });
       }
@@ -404,11 +432,6 @@ const useLightrangeGraph = () => {
           const errorMessage = useBackendState.getState().message;
           const isAuthError = errorMessage && errorMessage.includes('Authentication required');
 
-          // Only clear queryLabel if it's not an auth error and current label is not empty
-          if (!isAuthError && currentQueryLabel) {
-            useSettingsStore.getState().setQueryLabel('');
-          }
-
           // Only clear last successful query label if it's not an auth error
           if (!isAuthError) {
             state.setLastSuccessfulQueryLabel('');
@@ -456,7 +479,16 @@ const useLightrangeGraph = () => {
         state.setLastSuccessfulQueryLabel('') // Clear last successful query label on error
       })
     }
-  }, [queryLabel, maxQueryDepth, maxNodes, isFetching, t, graphDataVersion])
+  }, [
+    queryLabel,
+    appliedWorkbenchQuery,
+    workbenchQueryVersion,
+    maxQueryDepth,
+    maxNodes,
+    isFetching,
+    t,
+    graphDataVersion
+  ])
 
   // Handle node expansion
   useEffect(() => {

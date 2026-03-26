@@ -25,6 +25,119 @@ export type LightragGraphType = {
   edges: LightragEdgeType[]
 }
 
+export type GraphQueryScope = {
+  label: string
+  max_depth: number
+  max_nodes: number
+  only_matched_neighborhood: boolean
+}
+
+export type GraphNodeFiltersV1 = {
+  entity_types: string[]
+  name_query: string
+  description_query: string
+  degree_min: number | null
+  degree_max: number | null
+  isolated_only: boolean
+}
+
+export type GraphEdgeFiltersV1 = {
+  relation_types: string[]
+  keyword_query: string
+  weight_min: number | null
+  weight_max: number | null
+  source_entity_types: string[]
+  target_entity_types: string[]
+}
+
+export type GraphSourceFiltersV1 = {
+  source_id_query: string
+  file_paths: string[]
+  time_from: string | null
+  time_to: string | null
+}
+
+export type GraphViewOptionsV1 = {
+  show_nodes_only: boolean
+  show_edges_only: boolean
+  hide_low_weight_edges: boolean
+  hide_empty_description: boolean
+  highlight_matches: boolean
+}
+
+export type GraphWorkbenchQueryRequest = {
+  scope: GraphQueryScope
+  node_filters: GraphNodeFiltersV1
+  edge_filters: GraphEdgeFiltersV1
+  source_filters: GraphSourceFiltersV1
+  view_options: GraphViewOptionsV1
+}
+
+export type GraphQueryFilterSemantics = {
+  group_operator: 'AND'
+  field_operator: 'AND'
+  array_operator: 'OR'
+  version: 'v1'
+}
+
+export type GraphQueryMeta = {
+  filter_semantics: GraphQueryFilterSemantics
+  execution_mode: string
+  filtering_applied: boolean
+  ignored_filter_groups: string[]
+}
+
+export type GraphQueryTruncation = {
+  requested_max_nodes: number
+  effective_max_nodes: number
+  was_truncated_before_filtering: boolean
+  was_truncated_after_filtering: boolean
+}
+
+export type GraphWorkbenchQueryResponse = {
+  data: LightragGraphType & {
+    is_truncated?: boolean
+  }
+  truncation: GraphQueryTruncation
+  meta: GraphQueryMeta
+}
+
+export type GraphDeletionResponse = {
+  status: 'success' | 'not_found' | 'not_allowed' | 'fail'
+  doc_id: string
+  message: string
+  status_code: number
+  file_path?: string | null
+}
+
+export type GraphMergeSuggestionReason = {
+  code: string
+  score: number
+}
+
+export type GraphMergeSuggestionCandidate = {
+  target_entity: string
+  source_entities: string[]
+  score: number
+  reasons: GraphMergeSuggestionReason[]
+}
+
+export type GraphMergeSuggestionsRequest = {
+  scope: GraphQueryScope
+  limit?: number
+  min_score?: number
+}
+
+export type GraphMergeSuggestionsResponse = {
+  candidates: GraphMergeSuggestionCandidate[]
+  meta: {
+    strategy: string
+    requested_limit: number
+    min_score: number
+    returned_candidates: number
+  }
+}
+
 export type PromptConfigGroup = 'indexing' | 'retrieval'
 
 export type ActivePromptVersionSummary = {
@@ -216,6 +329,12 @@ export type EntityUpdateResponse = {
     final_entity?: string | null
     renamed?: boolean
   }
+}
+
+export type GraphMutationResponse = {
+  status: string
+  message: string
+  data: Record<string, any>
 }
 
 export type DocActionResponse = {
@@ -521,6 +640,46 @@ export const queryGraphs = async (
   maxNodes: number
 ): Promise<LightragGraphType> => {
   const response = await axiosInstance.get(`/graphs?label=${encodeURIComponent(label)}&max_depth=${maxDepth}&max_nodes=${maxNodes}`)
+  return response.data
+}
+
+export const queryGraphWorkbench = async (
+  request: GraphWorkbenchQueryRequest
+): Promise<GraphWorkbenchQueryResponse> => {
+  const response = await axiosInstance.post('/graph/query', request)
+  return response.data
+}
+
+export const deleteGraphEntity = async (
+  entityName: string
+): Promise<GraphDeletionResponse> => {
+  const response = await axiosInstance.delete('/graph/entity', {
+    data: {
+      entity_name: entityName
+    }
+  })
+  return response.data
+}
+
+export const deleteGraphRelation = async (
+  sourceEntity: string,
+  targetEntity: string,
+  expectedRevisionToken?: string
+): Promise<GraphDeletionResponse> => {
+  const response = await axiosInstance.delete('/graph/relation', {
+    data: {
+      source_entity: sourceEntity,
+      target_entity: targetEntity,
+      ...(expectedRevisionToken ? { expected_revision_token: expectedRevisionToken } : {})
+    }
+  })
+  return response.data
+}
+
+export const fetchMergeSuggestions = async (
+  request: GraphMergeSuggestionsRequest
+): Promise<GraphMergeSuggestionsResponse> => {
+  const response = await axiosInstance.post('/graph/merge/suggestions', request)
   return response.data
 }
 
@@ -1096,19 +1255,22 @@ export const loginToServer = async (username: string, password: string): Promise
  * @param updatedData Dictionary containing updated attributes
  * @param allowRename Whether to allow renaming the entity (default: false)
  * @param allowMerge Whether to merge into an existing entity when renaming to a duplicate name
+ * @param expectedRevisionToken Expected revision token for optimistic concurrency control
  * @returns Promise with the updated entity information
  */
 export const updateEntity = async (
   entityName: string,
   updatedData: Record<string, any>,
   allowRename: boolean = false,
-  allowMerge: boolean = false
+  allowMerge: boolean = false,
+  expectedRevisionToken?: string
 ): Promise<EntityUpdateResponse> => {
   const response = await axiosInstance.post('/graph/entity/edit', {
     entity_name: entityName,
     updated_data: updatedData,
     allow_rename: allowRename,
-    allow_merge: allowMerge
+    allow_merge: allowMerge,
+    ...(expectedRevisionToken ? { expected_revision_token: expectedRevisionToken } : {})
   })
   return response.data
 }
@@ -1118,17 +1280,57 @@ export const updateEntity = async (
  * @param sourceEntity The source entity name
  * @param targetEntity The target entity name
  * @param updatedData Dictionary containing updated attributes
+ * @param expectedRevisionToken Expected revision token for optimistic concurrency control
  * @returns Promise with the updated relation information
  */
 export const updateRelation = async (
   sourceEntity: string,
   targetEntity: string,
-  updatedData: Record<string, any>
-): Promise<DocActionResponse> => {
+  updatedData: Record<string, any>,
+  expectedRevisionToken?: string
+): Promise<GraphMutationResponse> => {
   const response = await axiosInstance.post('/graph/relation/edit', {
     source_id: sourceEntity,
     target_id: targetEntity,
-    updated_data: updatedData
+    updated_data: updatedData,
+    ...(expectedRevisionToken ? { expected_revision_token: expectedRevisionToken } : {})
+  })
+  return response.data
+}
+
+export const createGraphEntity = async (
+  entityName: string,
+  entityData: Record<string, any>
+): Promise<GraphMutationResponse> => {
+  const response = await axiosInstance.post('/graph/entity/create', {
+    entity_name: entityName,
+    entity_data: entityData
+  })
+  return response.data
+}
+
+export const createGraphRelation = async (
+  sourceEntity: string,
+  targetEntity: string,
+  relationData: Record<string, any>
+): Promise<GraphMutationResponse> => {
+  const response = await axiosInstance.post('/graph/relation/create', {
+    source_entity: sourceEntity,
+    target_entity: targetEntity,
+    relation_data: relationData
+  })
+  return response.data
+}
+
+export const mergeGraphEntities = async (
+  entitiesToChange: string[],
+  entityToChangeInto: string,
+  expectedRevisionTokens?: Record<string, string>
+): Promise<GraphMutationResponse> => {
+  const response = await axiosInstance.post('/graph/entities/merge', {
+    entities_to_change: entitiesToChange,
+    entity_to_change_into: entityToChangeInto,
+    ...(expectedRevisionTokens ? { expected_revision_tokens: expectedRevisionTokens } : {})
   })
   return response.data
 }
