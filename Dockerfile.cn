@@ -37,7 +37,6 @@ ARG CARGO_REGISTRY_INDEX=sparse+https://rsproxy.cn/index/
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV UV_SYSTEM_PYTHON=1
-ENV UV_COMPILE_BYTECODE=1
 ENV UV_DEFAULT_INDEX=${UV_DEFAULT_INDEX}
 ENV PIP_INDEX_URL=${PYTHON_INDEX_URL}
 ENV RUSTUP_DIST_SERVER=${RUSTUP_DIST_SERVER}
@@ -79,7 +78,10 @@ COPY pyproject.toml .
 COPY setup.py .
 COPY uv.lock .
 
-# Install base, API, and offline extras without the project to improve caching
+# Install base, API, and offline extras without the project to improve caching.
+# Bytecode compilation is intentionally left disabled in this variant because
+# some Docker builders expose a low file-descriptor limit, which can cause uv's
+# compile workers to fail with "No file descriptors available".
 RUN --mount=type=cache,target=/root/.local/share/uv \
     uv sync --frozen --no-dev --extra api --extra offline --no-install-project --no-editable
 
