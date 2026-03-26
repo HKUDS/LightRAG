@@ -9,6 +9,7 @@ import pytest
 import lightrag.lightrag as lightrag_module
 from lightrag.base import DocStatus
 from lightrag.constants import GRAPH_FIELD_SEP
+from lightrag.kg.shared_storage import get_namespace_data, get_namespace_lock
 from lightrag.lightrag import LightRAG
 from lightrag.utils import (
     EmbeddingFunc,
@@ -67,7 +68,13 @@ def _status_to_text(status: object) -> str:
     return str(status).replace("DocStatus.", "").lower()
 
 
-async def _build_rag(tmp_path, test_name: str, chunking_func) -> LightRAG:
+async def _build_rag(
+    tmp_path,
+    test_name: str,
+    chunking_func,
+    *,
+    max_parallel_insert: int = 1,
+) -> LightRAG:
     workspace = f"{test_name}_{uuid4().hex[:8]}"
     rag = LightRAG(
         working_dir=str(tmp_path / test_name),
@@ -80,7 +87,7 @@ async def _build_rag(tmp_path, test_name: str, chunking_func) -> LightRAG:
         ),
         tokenizer=Tokenizer("test-tokenizer", _SimpleTokenizerImpl()),
         chunking_func=chunking_func,
-        max_parallel_insert=1,
+        max_parallel_insert=max_parallel_insert,
     )
     await rag.initialize_storages()
     return rag
@@ -1100,6 +1107,173 @@ async def test_validate_and_fix_consistency_preserves_chunks_on_reset(tmp_path):
         assert _status_to_text(inferred_count_reset["status"]) == "pending"
         assert inferred_count_reset.get("chunks_list") == ["i-1", "i-2", "i-3"]
         assert inferred_count_reset.get("chunks_count") == 3
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_validate_and_fix_consistency_repairs_unknown_file_path_from_full_docs(
+    tmp_path,
+):
+    rag = await _build_rag(tmp_path, "repair_reset_file_path", _deterministic_chunking)
+    try:
+        doc_id = "doc-repair-reset"
+        now = datetime.now(timezone.utc).isoformat()
+        await rag.full_docs.upsert(
+            {
+                doc_id: {
+                    "content": "repair path doc",
+                    "file_path": "repaired-from-full-docs.md",
+                }
+            }
+        )
+        await rag.doc_status.upsert(
+            {
+                doc_id: {
+                    "status": DocStatus.FAILED,
+                    "content_summary": "repair path",
+                    "content_length": 15,
+                    "chunks_count": 0,
+                    "chunks_list": [],
+                    "created_at": now,
+                    "updated_at": now,
+                    "file_path": "unknown_source",
+                    "track_id": "track-repair",
+                    "error_msg": "old error",
+                    "metadata": {"old": True},
+                }
+            }
+        )
+
+        failed_docs = await rag.doc_status.get_docs_by_status(DocStatus.FAILED)
+        pipeline_status = {"latest_message": "", "history_messages": []}
+        await rag._validate_and_fix_document_consistency(
+            to_process_docs=failed_docs,
+            pipeline_status=pipeline_status,
+            pipeline_status_lock=asyncio.Lock(),
+        )
+
+        repaired_status = await rag.doc_status.get_by_id(doc_id)
+        assert repaired_status is not None
+        assert _status_to_text(repaired_status["status"]) == "pending"
+        assert repaired_status["file_path"] == "repaired-from-full-docs.md"
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_pipeline_cancellation_preserves_file_path_for_queued_docs(
+    tmp_path, monkeypatch
+):
+    rag = await _build_rag(
+        tmp_path,
+        "cancel_preserve_file_path",
+        _deterministic_chunking,
+        max_parallel_insert=1,
+    )
+    try:
+        contents = ["first queued content", "second queued content"]
+        file_paths = ["first.md", "second.md"]
+        await rag.apipeline_enqueue_documents(input=contents, file_paths=file_paths)
+
+        extraction_started = asyncio.Event()
+        release_first_doc = asyncio.Event()
+
+        async def _blocking_extract(
+            self, chunks, pipeline_status, pipeline_status_lock
+        ):
+            extraction_started.set()
+            await release_first_doc.wait()
+            return []
+
+        monkeypatch.setattr(
+            rag,
+            "_process_extract_entities",
+            MethodType(_blocking_extract, rag),
+        )
+
+        pipeline_task = asyncio.create_task(rag.apipeline_process_enqueue_documents())
+        await asyncio.wait_for(extraction_started.wait(), timeout=5)
+
+        pipeline_status = await get_namespace_data(
+            "pipeline_status", workspace=rag.workspace
+        )
+        pipeline_status_lock = get_namespace_lock(
+            "pipeline_status", workspace=rag.workspace
+        )
+        async with pipeline_status_lock:
+            pipeline_status["cancellation_requested"] = True
+
+        release_first_doc.set()
+        await asyncio.wait_for(pipeline_task, timeout=5)
+
+        second_doc_id = compute_mdhash_id(contents[1], prefix="doc-")
+        second_status = await rag.doc_status.get_by_id(second_doc_id)
+        assert second_status is not None
+        assert _status_to_text(second_status["status"]) == "failed"
+        assert second_status["file_path"] == "second.md"
+        assert second_status["error_msg"] == "User cancelled"
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_pipeline_cancellation_repairs_placeholder_file_path_for_queued_docs(
+    tmp_path, monkeypatch
+):
+    rag = await _build_rag(
+        tmp_path,
+        "cancel_repair_placeholder_file_path",
+        _deterministic_chunking,
+        max_parallel_insert=1,
+    )
+    try:
+        contents = ["first queued content", "second queued content"]
+        file_paths = ["first.md", "second.md"]
+        await rag.apipeline_enqueue_documents(input=contents, file_paths=file_paths)
+
+        second_doc_id = compute_mdhash_id(contents[1], prefix="doc-")
+        second_status = await rag.doc_status.get_by_id(second_doc_id)
+        assert second_status is not None
+        second_status["file_path"] = "unknown_source"
+        await rag.doc_status.upsert({second_doc_id: second_status})
+
+        extraction_started = asyncio.Event()
+        release_first_doc = asyncio.Event()
+
+        async def _blocking_extract(
+            self, chunks, pipeline_status, pipeline_status_lock
+        ):
+            extraction_started.set()
+            await release_first_doc.wait()
+            return []
+
+        monkeypatch.setattr(
+            rag,
+            "_process_extract_entities",
+            MethodType(_blocking_extract, rag),
+        )
+
+        pipeline_task = asyncio.create_task(rag.apipeline_process_enqueue_documents())
+        await asyncio.wait_for(extraction_started.wait(), timeout=5)
+
+        pipeline_status = await get_namespace_data(
+            "pipeline_status", workspace=rag.workspace
+        )
+        pipeline_status_lock = get_namespace_lock(
+            "pipeline_status", workspace=rag.workspace
+        )
+        async with pipeline_status_lock:
+            pipeline_status["cancellation_requested"] = True
+
+        release_first_doc.set()
+        await asyncio.wait_for(pipeline_task, timeout=5)
+
+        repaired_status = await rag.doc_status.get_by_id(second_doc_id)
+        assert repaired_status is not None
+        assert _status_to_text(repaired_status["status"]) == "failed"
+        assert repaired_status["file_path"] == "second.md"
+        assert repaired_status["error_msg"] == "User cancelled"
     finally:
         await rag.finalize_storages()
 
