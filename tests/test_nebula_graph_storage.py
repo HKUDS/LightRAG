@@ -1097,6 +1097,58 @@ async def test_nebula_get_nodes_batch_uses_single_lookup_query():
 
 
 @pytest.mark.asyncio
+async def test_nebula_get_nodes_batch_splits_large_id_filters():
+    storage = build_storage(workspace="finance")
+    node_ids = [f"node-{i:03d}" for i in range(600)]
+
+    async def fake_execute(sql: str):
+        normalized_sql = _normalize_sql_whitespace(sql)
+        has_first = '"node-000"' in normalized_sql
+        has_last = '"node-599"' in normalized_sql
+        assert not (
+            has_first and has_last
+        ), "large node filter should be split across multiple Nebula queries"
+        rows: list[dict[str, object]] = []
+        if has_first:
+            rows.append(
+                {
+                    "entity_id": "node-000",
+                    "name": "Node 0",
+                    "entity_type": "TypeA",
+                    "description": "first node",
+                    "keywords": "k0",
+                    "source_id": "s0",
+                    "file_path": "doc/0.md",
+                    "created_at": 100,
+                    "truncate": "",
+                }
+            )
+        if has_last:
+            rows.append(
+                {
+                    "entity_id": "node-599",
+                    "name": "Node 599",
+                    "entity_type": "TypeZ",
+                    "description": "last node",
+                    "keywords": "k599",
+                    "source_id": "s599",
+                    "file_path": "doc/599.md",
+                    "created_at": 599,
+                    "truncate": "",
+                }
+            )
+        return rows
+
+    execute_in_space = AsyncMock(side_effect=fake_execute)
+    with patch.object(storage, "_execute_in_space", execute_in_space):
+        nodes = await storage.get_nodes_batch(node_ids)
+
+    assert nodes["node-000"]["name"] == "Node 0"
+    assert nodes["node-599"]["name"] == "Node 599"
+    assert execute_in_space.await_count > 1
+
+
+@pytest.mark.asyncio
 async def test_nebula_node_degrees_batch_aggregates_with_single_query():
     storage = build_storage(workspace="finance")
     execute_in_space = AsyncMock(
@@ -1121,6 +1173,34 @@ async def test_nebula_node_degrees_batch_aggregates_with_single_query():
     )
     assert "id(a) AS source" in sql
     assert "id(b) AS target" in sql
+
+
+@pytest.mark.asyncio
+async def test_nebula_node_degrees_batch_splits_large_endpoint_filters():
+    storage = build_storage(workspace="finance")
+    node_ids = [f"node-{i:03d}" for i in range(600)]
+
+    async def fake_execute(sql: str):
+        normalized_sql = _normalize_sql_whitespace(sql)
+        has_first = '"node-000"' in normalized_sql
+        has_last = '"node-599"' in normalized_sql
+        assert not (
+            has_first and has_last
+        ), "large degree filter should be split across multiple Nebula queries"
+        rows: list[dict[str, str]] = []
+        if has_first:
+            rows.append({"source": "node-000", "target": "neighbor-000"})
+        if has_last:
+            rows.append({"source": "neighbor-599", "target": "node-599"})
+        return rows
+
+    execute_in_space = AsyncMock(side_effect=fake_execute)
+    with patch.object(storage, "_execute_in_space", execute_in_space):
+        degrees = await storage.node_degrees_batch(node_ids)
+
+    assert degrees["node-000"] == 1
+    assert degrees["node-599"] == 1
+    assert execute_in_space.await_count > 1
 
 
 @pytest.mark.asyncio
@@ -1189,6 +1269,58 @@ async def test_nebula_get_edges_batch_uses_canonical_pairs_and_preserves_keys():
 
 
 @pytest.mark.asyncio
+async def test_nebula_get_edges_batch_splits_large_pair_filters():
+    storage = build_storage(workspace="finance")
+    pairs = [{"src": f"left-{i:03d}", "tgt": f"right-{i:03d}"} for i in range(600)]
+
+    async def fake_execute(sql: str):
+        normalized_sql = _normalize_sql_whitespace(sql)
+        has_first = '"left-000"' in normalized_sql and '"right-000"' in normalized_sql
+        has_last = '"left-599"' in normalized_sql and '"right-599"' in normalized_sql
+        assert not (
+            has_first and has_last
+        ), "large edge pair filter should be split across multiple Nebula queries"
+        rows: list[dict[str, object]] = []
+        if has_first:
+            rows.append(
+                {
+                    "source": "left-000",
+                    "target": "right-000",
+                    "source_id": "left-000",
+                    "target_id": "right-000",
+                    "relationship": "first-edge",
+                    "description": "first chunk",
+                    "keywords": "k0",
+                    "weight": 1.0,
+                    "file_path": "doc/0.md",
+                }
+            )
+        if has_last:
+            rows.append(
+                {
+                    "source": "left-599",
+                    "target": "right-599",
+                    "source_id": "left-599",
+                    "target_id": "right-599",
+                    "relationship": "last-edge",
+                    "description": "last chunk",
+                    "keywords": "k599",
+                    "weight": 2.0,
+                    "file_path": "doc/599.md",
+                }
+            )
+        return rows
+
+    execute_in_space = AsyncMock(side_effect=fake_execute)
+    with patch.object(storage, "_execute_in_space", execute_in_space):
+        edges = await storage.get_edges_batch(pairs)
+
+    assert edges[("left-000", "right-000")]["relationship"] == "first-edge"
+    assert edges[("left-599", "right-599")]["relationship"] == "last-edge"
+    assert execute_in_space.await_count > 1
+
+
+@pytest.mark.asyncio
 async def test_nebula_get_nodes_edges_batch_returns_adjacency_mapping():
     storage = build_storage(workspace="finance")
     execute_in_space = AsyncMock(
@@ -1216,6 +1348,34 @@ async def test_nebula_get_nodes_edges_batch_returns_adjacency_mapping():
     )
     assert "id(a) AS source" in sql
     assert "id(b) AS target" in sql
+
+
+@pytest.mark.asyncio
+async def test_nebula_get_nodes_edges_batch_splits_large_endpoint_filters():
+    storage = build_storage(workspace="finance")
+    node_ids = [f"node-{i:03d}" for i in range(600)]
+
+    async def fake_execute(sql: str):
+        normalized_sql = _normalize_sql_whitespace(sql)
+        has_first = '"node-000"' in normalized_sql
+        has_last = '"node-599"' in normalized_sql
+        assert not (
+            has_first and has_last
+        ), "large endpoint filter should be split across multiple Nebula queries"
+        rows: list[dict[str, str]] = []
+        if has_first:
+            rows.append({"source": "node-000", "target": "neighbor-000"})
+        if has_last:
+            rows.append({"source": "neighbor-599", "target": "node-599"})
+        return rows
+
+    execute_in_space = AsyncMock(side_effect=fake_execute)
+    with patch.object(storage, "_execute_in_space", execute_in_space):
+        nodes_edges = await storage.get_nodes_edges_batch(node_ids)
+
+    assert nodes_edges["node-000"] == [("node-000", "neighbor-000")]
+    assert nodes_edges["node-599"] == [("neighbor-599", "node-599")]
+    assert execute_in_space.await_count > 1
 
 
 @pytest.mark.asyncio

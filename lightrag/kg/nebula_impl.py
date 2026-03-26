@@ -22,6 +22,9 @@ _DEFAULT_REPLICA_FACTOR = 1
 # Live Nebula clusters can take >10s to surface new spaces/tags to graphd.
 _DEFAULT_SCHEMA_RETRY_TIMES = 60
 _DEFAULT_SCHEMA_RETRY_DELAY_MS = 200
+# Nebula rejects very long OR chains once expression depth grows beyond 512.
+# Keep a healthy safety margin because some predicates add nested ORs.
+_MAX_BATCH_FILTER_ITEMS = 200
 _INDEX_STATUS_DONE_TOKENS = ("FINISHED", "SUCCEEDED", "SUCCESS", "DONE", "COMPLETED")
 _INDEX_STATUS_PENDING_TOKENS = (
     "RUNNING",
@@ -268,6 +271,12 @@ def _coerce_edge_weight(value: Any) -> float:
         return float(str(value))
     except (TypeError, ValueError):
         return 1.0
+
+
+def _chunk_items(values: list[Any], chunk_size: int) -> list[list[Any]]:
+    if chunk_size <= 0:
+        raise ValueError("chunk_size must be positive")
+    return [values[index : index + chunk_size] for index in range(0, len(values), chunk_size)]
 
 
 def _decode_if_bytes(value: Any) -> Any:
@@ -1366,22 +1375,24 @@ class NebulaGraphStorage(BaseGraphStorage):
         if not unique_ids:
             return {}
 
-        where_clause = self._build_or_equals_clause("id(v)", unique_ids)
-        result = await self._execute_in_space(
-            "MATCH (v:entity) "
-            f"WHERE {where_clause} "
-            "RETURN "
-            "id(v) AS entity_id, "
-            "v.entity.name AS name, "
-            "v.entity.entity_type AS entity_type, "
-            "v.entity.description AS description, "
-            "v.entity.keywords AS keywords, "
-            "v.entity.source_id AS source_id, "
-            "v.entity.file_path AS file_path, "
-            "v.entity.created_at AS created_at, "
-            "v.entity.truncate AS truncate;"
-        )
-        rows = _result_to_rows(result)
+        rows: list[dict[str, Any]] = []
+        for id_chunk in _chunk_items(unique_ids, _MAX_BATCH_FILTER_ITEMS):
+            where_clause = self._build_or_equals_clause("id(v)", id_chunk)
+            result = await self._execute_in_space(
+                "MATCH (v:entity) "
+                f"WHERE {where_clause} "
+                "RETURN "
+                "id(v) AS entity_id, "
+                "v.entity.name AS name, "
+                "v.entity.entity_type AS entity_type, "
+                "v.entity.description AS description, "
+                "v.entity.keywords AS keywords, "
+                "v.entity.source_id AS source_id, "
+                "v.entity.file_path AS file_path, "
+                "v.entity.created_at AS created_at, "
+                "v.entity.truncate AS truncate;"
+            )
+            rows.extend(_result_to_rows(result))
 
         found_by_entity_id: dict[str, dict[str, Any]] = {}
         for row in rows:
@@ -1407,27 +1418,28 @@ class NebulaGraphStorage(BaseGraphStorage):
         if not unique_ids:
             return output
 
-        where_clause = self._build_relation_endpoint_clause(unique_ids)
-        result = await self._execute_in_space(
-            "MATCH (a:entity)-[e:relation]->(b:entity) "
-            f"WHERE {where_clause} "
-            "RETURN "
-            "id(a) AS source, "
-            "id(b) AS target;"
-        )
-        rows = _result_to_rows(result)
         requested_set = set(output)
-        for row in rows:
-            src = row.get("source")
-            tgt = row.get("target")
-            if src is not None:
-                src_id = str(src)
-                if src_id in requested_set:
-                    output[src_id] += 1
-            if tgt is not None:
-                tgt_id = str(tgt)
-                if tgt_id in requested_set:
-                    output[tgt_id] += 1
+        for id_chunk in _chunk_items(unique_ids, _MAX_BATCH_FILTER_ITEMS):
+            where_clause = self._build_relation_endpoint_clause(id_chunk)
+            result = await self._execute_in_space(
+                "MATCH (a:entity)-[e:relation]->(b:entity) "
+                f"WHERE {where_clause} "
+                "RETURN "
+                "id(a) AS source, "
+                "id(b) AS target;"
+            )
+            rows = _result_to_rows(result)
+            for row in rows:
+                src = row.get("source")
+                tgt = row.get("target")
+                if src is not None:
+                    src_id = str(src)
+                    if src_id in requested_set:
+                        output[src_id] += 1
+                if tgt is not None:
+                    tgt_id = str(tgt)
+                    if tgt_id in requested_set:
+                        output[tgt_id] += 1
         return output
 
     async def get_edges_batch(self, pairs: list[dict[str, str]]) -> dict[tuple[str, str], dict]:
@@ -1446,34 +1458,36 @@ class NebulaGraphStorage(BaseGraphStorage):
         if not requested_pairs:
             return {}
 
-        where_clause = self._build_relation_pair_clause(list(canonical_to_requested))
-        result = await self._execute_in_space(
-            "MATCH (a:entity)-[e:relation]->(b:entity) "
-            f"WHERE {where_clause} "
-            "RETURN "
-            "id(a) AS source, "
-            "id(b) AS target, "
-            "e.source_id AS source_id, "
-            "e.target_id AS target_id, "
-            "e.relationship AS relationship, "
-            "e.description AS description, "
-            "e.keywords AS keywords, "
-            "e.weight AS weight, "
-            "e.file_path AS file_path;"
-        )
-        rows = _result_to_rows(result)
-
         by_canonical: dict[tuple[str, str], dict[str, Any]] = {}
-        for row in rows:
-            src = row.get("source")
-            tgt = row.get("target")
-            if src is None or tgt is None:
-                continue
-            canonical = _canonical_edge_pair(str(src), str(tgt))
-            props = self._extract_edge_props(row)
-            props["source"] = str(src)
-            props["target"] = str(tgt)
-            by_canonical[canonical] = props
+        for pair_chunk in _chunk_items(
+            list(canonical_to_requested), _MAX_BATCH_FILTER_ITEMS
+        ):
+            where_clause = self._build_relation_pair_clause(pair_chunk)
+            result = await self._execute_in_space(
+                "MATCH (a:entity)-[e:relation]->(b:entity) "
+                f"WHERE {where_clause} "
+                "RETURN "
+                "id(a) AS source, "
+                "id(b) AS target, "
+                "e.source_id AS source_id, "
+                "e.target_id AS target_id, "
+                "e.relationship AS relationship, "
+                "e.description AS description, "
+                "e.keywords AS keywords, "
+                "e.weight AS weight, "
+                "e.file_path AS file_path;"
+            )
+            rows = _result_to_rows(result)
+            for row in rows:
+                src = row.get("source")
+                tgt = row.get("target")
+                if src is None or tgt is None:
+                    continue
+                canonical = _canonical_edge_pair(str(src), str(tgt))
+                props = self._extract_edge_props(row)
+                props["source"] = str(src)
+                props["target"] = str(tgt)
+                by_canonical[canonical] = props
 
         output: dict[tuple[str, str], dict] = {}
         for canonical, request_keys in canonical_to_requested.items():
@@ -1502,28 +1516,29 @@ class NebulaGraphStorage(BaseGraphStorage):
         if not unique_ids:
             return output
 
-        where_clause = self._build_relation_endpoint_clause(unique_ids)
-        result = await self._execute_in_space(
-            "MATCH (a:entity)-[e:relation]->(b:entity) "
-            f"WHERE {where_clause} "
-            "RETURN "
-            "id(a) AS source, "
-            "id(b) AS target;"
-        )
-        rows = _result_to_rows(result)
         requested_set = set(output)
-        for row in rows:
-            src = row.get("source")
-            tgt = row.get("target")
-            if src is None or tgt is None:
-                continue
-            src_id = str(src)
-            tgt_id = str(tgt)
-            edge = (src_id, tgt_id)
-            if src_id in requested_set:
-                output[src_id].append(edge)
-            if tgt_id in requested_set and tgt_id != src_id:
-                output[tgt_id].append(edge)
+        for id_chunk in _chunk_items(unique_ids, _MAX_BATCH_FILTER_ITEMS):
+            where_clause = self._build_relation_endpoint_clause(id_chunk)
+            result = await self._execute_in_space(
+                "MATCH (a:entity)-[e:relation]->(b:entity) "
+                f"WHERE {where_clause} "
+                "RETURN "
+                "id(a) AS source, "
+                "id(b) AS target;"
+            )
+            rows = _result_to_rows(result)
+            for row in rows:
+                src = row.get("source")
+                tgt = row.get("target")
+                if src is None or tgt is None:
+                    continue
+                src_id = str(src)
+                tgt_id = str(tgt)
+                edge = (src_id, tgt_id)
+                if src_id in requested_set:
+                    output[src_id].append(edge)
+                if tgt_id in requested_set and tgt_id != src_id:
+                    output[tgt_id].append(edge)
         return output
 
     async def upsert_node(self, node_id: str, node_data: dict[str, str]) -> None:
