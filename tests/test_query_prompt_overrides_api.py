@@ -1,3 +1,4 @@
+import json
 import sys
 import types
 from types import SimpleNamespace
@@ -180,6 +181,26 @@ def test_query_stream_endpoint_rejects_empty_prompt_overrides_when_capability_di
         json={"query": "hello world", "mode": "mix", "prompt_overrides": {}},
     )
     assert response.status_code == 403
+
+
+def test_query_stream_endpoint_accepts_short_cjk_query(test_client):
+    response = test_client.post(
+        "/query/stream",
+        json={"query": "你好", "mode": "mix"},
+    )
+    assert response.status_code == 200
+    payload = json.loads(response.text)
+    assert payload["response"] == "echo:你好"
+
+
+def test_query_stream_endpoint_rejects_whitespace_only_query(test_client):
+    response = test_client.post(
+        "/query/stream",
+        json={"query": "   ", "mode": "mix"},
+    )
+    assert response.status_code == 422
+    detail = response.json()["detail"]
+    assert any(item["loc"][-1] == "query" for item in detail)
 
 
 def test_query_data_endpoint_rejects_empty_prompt_overrides_when_capability_disabled(

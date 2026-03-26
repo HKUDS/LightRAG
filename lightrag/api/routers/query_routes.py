@@ -40,8 +40,8 @@ class QueryPromptOverridesPayload(BaseModel):
 
 class QueryRequest(BaseModel):
     query: str = Field(
-        min_length=3,
-        description="The query text",
+        min_length=1,
+        description="The query text. Must contain at least one non-whitespace character.",
     )
 
     mode: Literal["local", "global", "hybrid", "naive", "mix", "bypass"] = Field(
@@ -139,10 +139,12 @@ class QueryRequest(BaseModel):
         description="If True, enables streaming output for real-time responses. Only affects /query/stream endpoint.",
     )
 
-    @field_validator("query", mode="after")
+    @field_validator("query", mode="before")
     @classmethod
-    def query_strip_after(cls, query: str) -> str:
-        return query.strip()
+    def query_strip_before(cls, query: Any) -> Any:
+        if isinstance(query, str):
+            return query.strip()
+        return query
 
     @field_validator("conversation_history", mode="after")
     @classmethod
@@ -362,9 +364,7 @@ def create_query_routes(
                             "type": "object",
                             "properties": {"detail": {"type": "string"}},
                         },
-                        "example": {
-                            "detail": "Query text must be at least 3 characters long"
-                        },
+                        "example": {"detail": "Query text must not be empty"},
                     }
                 },
             },
@@ -445,7 +445,7 @@ def create_query_routes(
 
         Args:
             request (QueryRequest): The request object containing query parameters:
-                - **query**: The question or prompt to process (min 3 characters)
+                - **query**: The question or prompt to process (must not be blank)
                 - **mode**: Query strategy - "mix" recommended for best results
                 - **include_references**: Whether to include source citations
                 - **response_type**: Format preference (e.g., "Multiple Paragraphs")
@@ -460,7 +460,7 @@ def create_query_routes(
 
         Raises:
             HTTPException:
-                - 400: Invalid input parameters (e.g., query too short)
+                - 400: Invalid input parameters (e.g., query is blank)
                 - 500: Internal processing error (e.g., LLM service unavailable)
         """
         try:
@@ -576,9 +576,7 @@ def create_query_routes(
                             "type": "object",
                             "properties": {"detail": {"type": "string"}},
                         },
-                        "example": {
-                            "detail": "Query text must be at least 3 characters long"
-                        },
+                        "example": {"detail": "Query text must not be empty"},
                     }
                 },
             },
@@ -698,7 +696,7 @@ def create_query_routes(
 
         Args:
             request (QueryRequest): The request object containing query parameters:
-                - **query**: The question or prompt to process (min 3 characters)
+                - **query**: The question or prompt to process (must not be blank)
                 - **mode**: Query strategy - "mix" recommended for best results
                 - **stream**: Enable streaming (True) or complete response (False)
                 - **include_references**: Whether to include source citations
@@ -718,7 +716,7 @@ def create_query_routes(
 
         Raises:
             HTTPException:
-                - 400: Invalid input parameters (e.g., query too short, invalid mode)
+                - 400: Invalid input parameters (e.g., query is blank, invalid mode)
                 - 500: Internal processing error (e.g., LLM service unavailable)
 
         Note:
@@ -1083,9 +1081,7 @@ def create_query_routes(
                             "type": "object",
                             "properties": {"detail": {"type": "string"}},
                         },
-                        "example": {
-                            "detail": "Query text must be at least 3 characters long"
-                        },
+                        "example": {"detail": "Query text must not be empty"},
                     }
                 },
             },
@@ -1184,7 +1180,7 @@ def create_query_routes(
 
         Args:
             request (QueryRequest): The request object containing query parameters:
-                - **query**: The search query to analyze (min 3 characters)
+                - **query**: The search query to analyze (must not be blank)
                 - **mode**: Retrieval strategy affecting data types returned
                 - **top_k**: Number of top entities/relationships to retrieve
                 - **chunk_top_k**: Number of text chunks to retrieve
@@ -1201,7 +1197,7 @@ def create_query_routes(
 
         Raises:
             HTTPException:
-                - 400: Invalid input parameters (e.g., query too short, invalid mode)
+                - 400: Invalid input parameters (e.g., query is blank, invalid mode)
                 - 500: Internal processing error (e.g., knowledge graph unavailable)
 
         Note:
