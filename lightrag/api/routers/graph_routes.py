@@ -2,11 +2,15 @@
 This module contains all graph-related routes for the LightRAG API.
 """
 
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Literal
 import traceback
 from fastapi import APIRouter, Depends, Query, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from lightrag.api.graph_workbench import (
+    get_legacy_graph_payload,
+    query_graph_workbench,
+)
 from lightrag.utils import logger
 from ..utils_api import get_combined_auth_dependency
 
@@ -84,6 +88,201 @@ class RelationCreateRequest(BaseModel):
             }
         ],
     )
+
+
+class GraphQueryScope(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    label: str = Field(default="*", min_length=1)
+    max_depth: int = Field(default=3, ge=1)
+    max_nodes: int = Field(default=1000, ge=1)
+    only_matched_neighborhood: bool = False
+
+    @field_validator("label", mode="after")
+    @classmethod
+    def validate_label(cls, label: str) -> str:
+        normalized = label.strip()
+        if not normalized:
+            raise ValueError("label cannot be empty")
+        return normalized
+
+
+class GraphNodeFiltersV1(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    entity_types: list[str] = Field(default_factory=list)
+    name_query: str = ""
+    description_query: str = ""
+    degree_min: Optional[int] = Field(default=None, ge=0)
+    degree_max: Optional[int] = Field(default=None, ge=0)
+    isolated_only: bool = False
+
+
+class GraphEdgeFiltersV1(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    relation_types: list[str] = Field(default_factory=list)
+    keyword_query: str = ""
+    weight_min: Optional[float] = Field(default=None, ge=0)
+    weight_max: Optional[float] = Field(default=None, ge=0)
+    source_entity_types: list[str] = Field(default_factory=list)
+    target_entity_types: list[str] = Field(default_factory=list)
+
+
+class GraphSourceFiltersV1(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source_id_query: str = ""
+    file_paths: list[str] = Field(default_factory=list)
+    time_from: Optional[str] = None
+    time_to: Optional[str] = None
+
+
+class GraphViewOptionsV1(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    show_nodes_only: bool = False
+    show_edges_only: bool = False
+    hide_low_weight_edges: bool = False
+    hide_empty_description: bool = False
+    highlight_matches: bool = False
+
+
+class GraphQueryRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    scope: GraphQueryScope
+    node_filters: GraphNodeFiltersV1 = Field(default_factory=GraphNodeFiltersV1)
+    edge_filters: GraphEdgeFiltersV1 = Field(default_factory=GraphEdgeFiltersV1)
+    source_filters: GraphSourceFiltersV1 = Field(default_factory=GraphSourceFiltersV1)
+    view_options: GraphViewOptionsV1 = Field(default_factory=GraphViewOptionsV1)
+
+
+class GraphQueryData(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    nodes: list[dict[str, Any]] = Field(default_factory=list)
+    edges: list[dict[str, Any]] = Field(default_factory=list)
+    is_truncated: bool = False
+
+
+class GraphQueryTruncation(BaseModel):
+    requested_max_nodes: int
+    effective_max_nodes: int
+    was_truncated_before_filtering: bool
+    was_truncated_after_filtering: bool
+
+
+class GraphQueryFilterSemantics(BaseModel):
+    group_operator: Literal["AND"] = "AND"
+    field_operator: Literal["AND"] = "AND"
+    array_operator: Literal["OR"] = "OR"
+    version: Literal["v1"] = "v1"
+
+
+class GraphQueryMeta(BaseModel):
+    filter_semantics: GraphQueryFilterSemantics = Field(
+        default_factory=GraphQueryFilterSemantics
+    )
+    execution_mode: Literal["base_graph_only_placeholder"] = (
+        "base_graph_only_placeholder"
+    )
+    filtering_applied: bool = False
+    ignored_filter_groups: list[str] = Field(
+        default_factory=lambda: [
+            "node_filters",
+            "edge_filters",
+            "source_filters",
+            "view_options",
+        ]
+    )
+
+
+class GraphQueryResponse(BaseModel):
+    data: GraphQueryData
+    truncation: GraphQueryTruncation
+    meta: GraphQueryMeta = Field(default_factory=GraphQueryMeta)
+
+
+class GraphDeleteEntityRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    entity_name: str = Field(..., min_length=1)
+
+    @field_validator("entity_name", mode="after")
+    @classmethod
+    def validate_entity_name(cls, entity_name: str) -> str:
+        normalized = entity_name.strip()
+        if not normalized:
+            raise ValueError("entity_name cannot be empty")
+        return normalized
+
+
+class GraphDeleteRelationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source_entity: str = Field(..., min_length=1)
+    target_entity: str = Field(..., min_length=1)
+
+    @field_validator("source_entity", "target_entity", mode="after")
+    @classmethod
+    def validate_relation_entity_name(cls, entity_name: str) -> str:
+        normalized = entity_name.strip()
+        if not normalized:
+            raise ValueError("entity_name cannot be empty")
+        return normalized
+
+
+class GraphDeletionResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    status: Literal["success", "not_found", "not_allowed", "fail"]
+    doc_id: str
+    message: str
+    status_code: int = 200
+    file_path: Optional[str] = None
+
+
+class GraphMergeSuggestionReason(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    code: str
+    score: float
+
+
+class GraphMergeSuggestionCandidate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    target_entity: str
+    source_entities: list[str] = Field(min_length=1)
+    score: float
+    reasons: list[GraphMergeSuggestionReason] = Field(default_factory=list)
+
+
+class GraphMergeSuggestionsRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    scope: GraphQueryScope
+    limit: int = Field(default=20, ge=1, le=200)
+    min_score: float = Field(default=0.0, ge=0.0, le=1.0)
+
+
+class GraphMergeSuggestionsMeta(BaseModel):
+    strategy: str = "placeholder_v1"
+    requested_limit: int
+    min_score: float
+    returned_candidates: int
+
+
+class GraphMergeSuggestionsResponse(BaseModel):
+    candidates: list[GraphMergeSuggestionCandidate] = Field(default_factory=list)
+    meta: GraphMergeSuggestionsMeta
+
+
+def _normalize_deletion_response(raw_result: Any) -> GraphDeletionResponse:
+    deletion = GraphDeletionResponse.model_validate(raw_result, from_attributes=True)
+    deletion.doc_id = ""
+    return deletion
 
 
 def create_graph_routes(rag, api_key: Optional[str] = None):
@@ -177,21 +376,152 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
             Dict[str, List[str]]: Knowledge graph for label
         """
         try:
+            normalized_label = label.strip()
+            if not normalized_label:
+                raise HTTPException(status_code=422, detail="label cannot be empty")
+
             # Log the label parameter to check for leading spaces
             logger.debug(
                 f"get_knowledge_graph called with label: '{label}' (length: {len(label)}, repr: {repr(label)})"
             )
 
-            return await rag.get_knowledge_graph(
-                node_label=label,
+            return await get_legacy_graph_payload(
+                rag=rag,
+                label=normalized_label,
                 max_depth=max_depth,
                 max_nodes=max_nodes,
             )
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error(f"Error getting knowledge graph for label '{label}': {str(e)}")
             logger.error(traceback.format_exc())
             raise HTTPException(
                 status_code=500, detail=f"Error getting knowledge graph: {str(e)}"
+            )
+
+    @router.post(
+        "/graph/query",
+        response_model=GraphQueryResponse,
+        dependencies=[Depends(combined_auth)],
+    )
+    async def query_graph(request: GraphQueryRequest):
+        """Structured graph query contract (v1)."""
+        try:
+            response_payload = await query_graph_workbench(
+                rag=rag,
+                request=request.model_dump(),
+            )
+            return GraphQueryResponse.model_validate(response_payload)
+        except Exception as e:
+            logger.error(f"Error querying graph with structured request: {str(e)}")
+            logger.error(traceback.format_exc())
+            raise HTTPException(
+                status_code=500, detail=f"Error querying graph: {str(e)}"
+            )
+
+    @router.delete(
+        "/graph/entity",
+        response_model=GraphDeletionResponse,
+        dependencies=[Depends(combined_auth)],
+    )
+    async def delete_graph_entity(request: GraphDeleteEntityRequest):
+        try:
+            raw_result = await rag.adelete_by_entity(entity_name=request.entity_name)
+            result = _normalize_deletion_response(raw_result)
+            if result.status == "not_found":
+                raise HTTPException(status_code=404, detail=result.message)
+            if result.status == "not_allowed":
+                raise HTTPException(status_code=403, detail=result.message)
+            if result.status == "fail":
+                raise HTTPException(status_code=500, detail=result.message)
+            return result
+        except HTTPException:
+            raise
+        except Exception as e:
+            error_msg = f"Error deleting graph entity '{request.entity_name}': {str(e)}"
+            logger.error(error_msg)
+            logger.error(traceback.format_exc())
+            raise HTTPException(status_code=500, detail=error_msg)
+
+    @router.delete(
+        "/graph/relation",
+        response_model=GraphDeletionResponse,
+        dependencies=[Depends(combined_auth)],
+    )
+    async def delete_graph_relation(request: GraphDeleteRelationRequest):
+        try:
+            raw_result = await rag.adelete_by_relation(
+                source_entity=request.source_entity,
+                target_entity=request.target_entity,
+            )
+            result = _normalize_deletion_response(raw_result)
+            if result.status == "not_found":
+                raise HTTPException(status_code=404, detail=result.message)
+            if result.status == "not_allowed":
+                raise HTTPException(status_code=403, detail=result.message)
+            if result.status == "fail":
+                raise HTTPException(status_code=500, detail=result.message)
+            return result
+        except HTTPException:
+            raise
+        except Exception as e:
+            error_msg = (
+                f"Error deleting graph relation from '{request.source_entity}' to "
+                f"'{request.target_entity}': {str(e)}"
+            )
+            logger.error(error_msg)
+            logger.error(traceback.format_exc())
+            raise HTTPException(status_code=500, detail=error_msg)
+
+    @router.post(
+        "/graph/merge/suggestions",
+        response_model=GraphMergeSuggestionsResponse,
+        dependencies=[Depends(combined_auth)],
+    )
+    async def graph_merge_suggestions(request: GraphMergeSuggestionsRequest):
+        try:
+            if not hasattr(rag, "aget_merge_suggestions"):
+                raise HTTPException(
+                    status_code=501,
+                    detail="Merge suggestions not implemented by current backend",
+                )
+
+            request_payload = request.model_dump()
+            raw_candidates: list[dict[str, Any]] = await rag.aget_merge_suggestions(
+                request_payload
+            )
+
+            candidates = [
+                GraphMergeSuggestionCandidate.model_validate(candidate)
+                for candidate in raw_candidates
+            ]
+            filtered_candidates = [
+                candidate
+                for candidate in candidates
+                if candidate.score >= request.min_score
+            ][: request.limit]
+
+            return GraphMergeSuggestionsResponse(
+                candidates=filtered_candidates,
+                meta=GraphMergeSuggestionsMeta(
+                    requested_limit=request.limit,
+                    min_score=request.min_score,
+                    returned_candidates=len(filtered_candidates),
+                ),
+            )
+        except NotImplementedError as e:
+            raise HTTPException(
+                status_code=501,
+                detail=f"Merge suggestions not implemented: {str(e)}",
+            ) from e
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error generating merge suggestions: {str(e)}")
+            logger.error(traceback.format_exc())
+            raise HTTPException(
+                status_code=500, detail=f"Error generating merge suggestions: {str(e)}"
             )
 
     @router.get("/graph/entity/exists", dependencies=[Depends(combined_auth)])
