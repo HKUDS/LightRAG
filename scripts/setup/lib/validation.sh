@@ -407,6 +407,23 @@ validate_auth_accounts_password_safety() {
   return 0
 }
 
+validate_auth_accounts_runtime_config() {
+  local auth_accounts="$1"
+
+  if [[ -z "$auth_accounts" ]]; then
+    return 0
+  fi
+
+  if ! validate_auth_accounts_format "$auth_accounts"; then
+    format_error \
+      "AUTH_ACCOUNTS must use comma-separated user:password pairs." \
+      "Use entries like admin:{bcrypt}<hash> or admin:secret,reader:another-secret."
+    return 1
+  fi
+
+  return 0
+}
+
 whitelist_exposes_api_routes() {
   local whitelist_paths="$1"
   local entry trimmed_entry normalized_entry

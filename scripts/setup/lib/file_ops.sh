@@ -13,12 +13,8 @@ _file_ops_cleanup() {
 }
 trap '_file_ops_cleanup' EXIT INT TERM
 
-# Keys whose values are always written with double quotes (e.g. may contain spaces).
-_ALWAYS_QUOTED_KEYS="|WEBUI_TITLE|WEBUI_DESCRIPTION|"
-
 format_env_value() {
   local value="$1"
-  local key="${2:-}"
   local escaped
 
   if [[ -z "$value" ]]; then
@@ -26,8 +22,15 @@ format_env_value() {
     return
   fi
 
-  if [[ -n "$key" && "$_ALWAYS_QUOTED_KEYS" == *"|${key}|"* ]] || \
-     [[ "$value" =~ [[:space:]] || "$value" == *"\""* || "$value" == *"$"* || "$value" == *"#"* ]]; then
+  if [[ "$value" =~ [[:space:]] || "$value" == *"\""* || "$value" == *"$"* || "$value" == *"#"* ]]; then
+    # Prefer single quotes when quoting is required so generated .env values
+    # match env.example style and remain Compose-friendly. Fall back to
+    # double quotes only when the value itself contains a single quote.
+    if [[ "$value" != *"'"* ]]; then
+      printf "'%s'" "$value"
+      return
+    fi
+
     # Double-quoted .env values only need escaping for backslash and double quote.
     # Do not escape '$': python-dotenv preserves plain '$' literally, while '\$'
     # changes the loaded value.

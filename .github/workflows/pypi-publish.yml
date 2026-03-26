@@ -44,19 +44,28 @@ jobs:
         with:
           python-version: "3.x"
 
-      - name: Get version from tag
+      - name: Resolve release version
         id: get_version
         run: |
-          TAG=$(git describe --tags --abbrev=0)
+          if [ "${{ github.event_name }}" = "release" ] && [ -n "${{ github.event.release.tag_name }}" ]; then
+            TAG="${{ github.event.release.tag_name }}"
+          else
+            TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+          fi
+          if [ -z "$TAG" ]; then
+            echo "No git tag found for release build"
+            exit 1
+          fi
+          PACKAGE_VERSION="${TAG#v}"
           echo "Found tag: $TAG"
-          echo "Extracted version: $TAG"
+          echo "Package version: $PACKAGE_VERSION"
           echo "version=$TAG" >> $GITHUB_OUTPUT
+          echo "package_version=$PACKAGE_VERSION" >> $GITHUB_OUTPUT
 
-      - name: Update version in __init__.py
+      - name: Update version definitions
         run: |
-          sed -i "s/__version__ = \".*\"/__version__ = \"${{ steps.get_version.outputs.version }}\"/" lightrag/__init__.py
-          echo "Updated __init__.py with version ${{ steps.get_version.outputs.version }}"
-          cat lightrag/__init__.py | grep __version__
+          python scripts/release/set_version.py --core-version "${{ steps.get_version.outputs.package_version }}"
+          grep '__version__ = ' lightrag/_version.py
 
       - name: Build release distributions
         run: |

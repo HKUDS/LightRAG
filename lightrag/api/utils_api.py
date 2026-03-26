@@ -9,8 +9,8 @@ import sys
 import time
 import logging
 from ascii_colors import ASCIIColors
-from lightrag.api import __api_version__ as api_version
-from lightrag import __version__ as core_version
+from .._version import __api_version__ as api_version
+from .._version import __version__ as core_version
 from lightrag.constants import (
     DEFAULT_FORCE_LLM_SUMMARY_ON_MERGE,
 )
