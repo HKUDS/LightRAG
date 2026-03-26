@@ -1,4 +1,5 @@
 import { FormEvent, useEffect, useMemo, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 import {
   fetchMergeSuggestions,
@@ -196,6 +197,7 @@ type MergeEntityPanelProps = {
 }
 
 const MergeEntityPanel = ({ selection = null }: MergeEntityPanelProps) => {
+  const { t } = useTranslation()
   const [sourceEntitiesInput, setSourceEntitiesInput] = useState('')
   const [targetEntityInput, setTargetEntityInput] = useState('')
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
@@ -255,10 +257,13 @@ const MergeEntityPanel = ({ selection = null }: MergeEntityPanelProps) => {
       const response = await fetchMergeSuggestions(request)
       setMergeCandidates(response.candidates)
       if (!response.candidates.length) {
-        toast.info('No merge suggestions found for current scope.')
+        toast.info(t('graphPanel.workbench.merge.messages.noSuggestions'))
       }
     } catch (error) {
-      const normalized = normalizeWorkbenchMutationError(error, 'Load merge suggestions failed')
+      const normalized = normalizeWorkbenchMutationError(
+        error,
+        t('graphPanel.workbench.merge.errors.loadSuggestionsFailed')
+      )
       setSuggestionError(normalized.message)
       setMutationError(normalized.message, normalized.isConflict)
       toast.error(normalized.message)
@@ -282,14 +287,14 @@ const MergeEntityPanel = ({ selection = null }: MergeEntityPanelProps) => {
     setMergeDraft(draft)
 
     if (!draft.targetEntity) {
-      const message = 'Target entity is required.'
+      const message = t('graphPanel.workbench.merge.errors.targetRequired')
       setErrorMessage(message)
       setMutationError(message, false)
       return
     }
 
     if (!draft.sourceEntities.length) {
-      const message = 'At least one source entity is required.'
+      const message = t('graphPanel.workbench.merge.errors.sourceRequired')
       setErrorMessage(message)
       setMutationError(message, false)
       return
@@ -311,10 +316,16 @@ const MergeEntityPanel = ({ selection = null }: MergeEntityPanelProps) => {
       )
       setMergeFollowUp(draft.targetEntity, draft.sourceEntities)
       toast.success(
-        `Merged ${draft.sourceEntities.length} source entities into "${draft.targetEntity}".`
+        t('graphPanel.workbench.merge.messages.merged', {
+          count: draft.sourceEntities.length,
+          target: draft.targetEntity
+        })
       )
     } catch (error) {
-      const normalized = normalizeWorkbenchMutationError(error, 'Merge entities failed')
+      const normalized = normalizeWorkbenchMutationError(
+        error,
+        t('graphPanel.workbench.merge.errors.mergeFailed')
+      )
       setErrorMessage(normalized.message)
       setMutationError(normalized.message, normalized.isConflict)
       toast.error(normalized.message)
@@ -354,40 +365,43 @@ const MergeEntityPanel = ({ selection = null }: MergeEntityPanelProps) => {
     <div className="space-y-3">
       <form onSubmit={handleSubmitMerge} className="bg-background/60 space-y-3 rounded-lg border p-3">
         <div>
-          <h3 className="text-sm font-semibold">Manual Merge</h3>
+          <h3 className="text-sm font-semibold">{t('graphPanel.workbench.merge.manual.title')}</h3>
           <p className="text-muted-foreground mt-1 text-xs">
-            Provide source entities and one target entity, then submit merge.
+            {t('graphPanel.workbench.merge.manual.description')}
           </p>
         </div>
 
         <div className="space-y-1">
           <label className="text-muted-foreground block text-[11px] font-medium tracking-wide uppercase">
-            Source Entities
+            {t('graphPanel.workbench.merge.manual.fields.sourceEntities')}
           </label>
           <Input
             value={sourceEntitiesInput}
             onChange={(event) => setSourceEntitiesInput(event.target.value)}
-            placeholder="Elon Msk, Ellon Musk"
+            placeholder={t('graphPanel.workbench.merge.manual.placeholders.sourceEntities')}
           />
           <p className="text-muted-foreground text-[11px]">
-            Comma/newline separated. Target entity will be excluded automatically.
+            {t('graphPanel.workbench.merge.manual.help.sourceEntities')}
           </p>
         </div>
 
         <div className="space-y-1">
           <label className="text-muted-foreground block text-[11px] font-medium tracking-wide uppercase">
-            Target Entity
+            {t('graphPanel.workbench.merge.manual.fields.targetEntity')}
           </label>
           <Input
             value={targetEntityInput}
             onChange={(event) => setTargetEntityInput(event.target.value)}
-            placeholder="Elon Musk"
+            placeholder={t('graphPanel.workbench.merge.manual.placeholders.targetEntity')}
           />
         </div>
 
         <div className="text-muted-foreground rounded-md border border-dashed px-2 py-2 text-[11px]">
-          Draft preview: [{draftPreview.sourceEntities.join(', ')}] →{' '}
-          {draftPreview.targetEntity || '(target required)'}
+          {t('graphPanel.workbench.merge.manual.preview', {
+            sourceEntities: draftPreview.sourceEntities.join(', '),
+            targetEntity:
+              draftPreview.targetEntity || t('graphPanel.workbench.merge.manual.targetRequired')
+          })}
         </div>
 
         {errorMessage && <p className="text-xs text-red-600 dark:text-red-300">{errorMessage}</p>}
@@ -400,10 +414,14 @@ const MergeEntityPanel = ({ selection = null }: MergeEntityPanelProps) => {
             onClick={handleLoadSuggestions}
             disabled={isLoadingSuggestions}
           >
-            {isLoadingSuggestions ? 'Loading...' : 'Load Suggestions'}
+            {isLoadingSuggestions
+              ? t('graphPanel.workbench.merge.actions.loading')
+              : t('graphPanel.workbench.merge.actions.loadSuggestions')}
           </Button>
           <Button type="submit" size="sm" disabled={!canSubmitMerge || isSubmittingMerge}>
-            {isSubmittingMerge ? 'Merging...' : 'Merge Entities'}
+            {isSubmittingMerge
+              ? t('graphPanel.workbench.merge.actions.merging')
+              : t('graphPanel.workbench.merge.actions.mergeEntities')}
           </Button>
         </div>
       </form>
@@ -419,10 +437,13 @@ const MergeEntityPanel = ({ selection = null }: MergeEntityPanelProps) => {
       {mergeFollowUp && (
         <section className="space-y-2 rounded-lg border border-emerald-500/40 bg-emerald-500/10 p-3">
           <p className="text-xs font-medium text-emerald-700 dark:text-emerald-300">
-            Merge completed: {mergeFollowUp.sourceEntities.join(', ')} → {mergeFollowUp.targetEntity}
+            {t('graphPanel.workbench.merge.followUp.title', {
+              sourceEntities: mergeFollowUp.sourceEntities.join(', '),
+              targetEntity: mergeFollowUp.targetEntity
+            })}
           </p>
           <p className="text-muted-foreground text-[11px]">
-            Next actions: focus merged target, refresh result graph, or continue review.
+            {t('graphPanel.workbench.merge.followUp.description')}
           </p>
           <div className="flex flex-wrap gap-2">
             <Button
@@ -432,7 +453,7 @@ const MergeEntityPanel = ({ selection = null }: MergeEntityPanelProps) => {
               className="h-7 px-2 text-[11px]"
               onClick={() => handlePostMergeAction('focus_target')}
             >
-              Focus merged target
+              {t('graphPanel.workbench.merge.followUp.actions.focusTarget')}
             </Button>
             <Button
               type="button"
@@ -441,7 +462,7 @@ const MergeEntityPanel = ({ selection = null }: MergeEntityPanelProps) => {
               className="h-7 px-2 text-[11px]"
               onClick={() => handlePostMergeAction('refresh_results')}
             >
-              Refresh results
+              {t('graphPanel.workbench.merge.followUp.actions.refreshResults')}
             </Button>
             <Button
               type="button"
@@ -449,7 +470,7 @@ const MergeEntityPanel = ({ selection = null }: MergeEntityPanelProps) => {
               className="h-7 px-2 text-[11px]"
               onClick={() => handlePostMergeAction('continue_review')}
             >
-              Continue review
+              {t('graphPanel.workbench.merge.followUp.actions.continueReview')}
             </Button>
           </div>
         </section>

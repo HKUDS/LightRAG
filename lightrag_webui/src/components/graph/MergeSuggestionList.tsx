@@ -1,4 +1,5 @@
 import Button from '@/components/ui/Button'
+import { useTranslation } from 'react-i18next'
 import type { GraphMergeSuggestionCandidate, GraphMergeSuggestionReason } from '@/api/lightrag'
 
 type MergeSuggestionListProps = {
@@ -9,17 +10,35 @@ type MergeSuggestionListProps = {
   onImportCandidate: (candidate: GraphMergeSuggestionCandidate) => void
 }
 
-const formatReason = (reason: GraphMergeSuggestionReason): string => {
-  return `${reason.code} (${reason.score.toFixed(2)})`
+type MergeSuggestionTranslator = (key: string, options?: Record<string, unknown>) => string
+
+const formatReason = (
+  reason: GraphMergeSuggestionReason,
+  t?: MergeSuggestionTranslator
+): string => {
+  if (!t) {
+    return `${reason.code} (${reason.score.toFixed(2)})`
+  }
+
+  const reasonCodeKey = `graphPanel.workbench.merge.suggestions.reasonCodes.${reason.code}`
+  const localizedReasonCode = t(reasonCodeKey)
+  const reasonLabel = localizedReasonCode === reasonCodeKey ? reason.code : localizedReasonCode
+  return t('graphPanel.workbench.merge.suggestions.reasonScore', {
+    reason: reasonLabel,
+    score: reason.score.toFixed(2)
+  })
 }
 
 export const buildMergeCandidateEvidence = (
-  candidate: GraphMergeSuggestionCandidate
+  candidate: GraphMergeSuggestionCandidate,
+  t?: MergeSuggestionTranslator
 ): string => {
   if (!candidate.reasons.length) {
-    return 'No explicit evidence provided.'
+    return t
+      ? t('graphPanel.workbench.merge.suggestions.noEvidence')
+      : 'No explicit evidence provided.'
   }
-  return candidate.reasons.map(formatReason).join(', ')
+  return candidate.reasons.map((reason) => formatReason(reason, t)).join(', ')
 }
 
 const MergeSuggestionList = ({
@@ -29,21 +48,26 @@ const MergeSuggestionList = ({
   errorMessage = null,
   onImportCandidate
 }: MergeSuggestionListProps) => {
+  const { t } = useTranslation()
   return (
     <section className="bg-background/60 space-y-3 rounded-lg border p-3">
       <div>
-        <h3 className="text-sm font-semibold">Merge Suggestions</h3>
+        <h3 className="text-sm font-semibold">{t('graphPanel.workbench.merge.suggestions.title')}</h3>
         <p className="text-muted-foreground mt-1 text-xs">
-          Candidate list from current query scope. Import once to prefill merge form.
+          {t('graphPanel.workbench.merge.suggestions.description')}
         </p>
       </div>
 
       {errorMessage && <p className="text-xs text-red-600 dark:text-red-300">{errorMessage}</p>}
-      {isLoading && <p className="text-muted-foreground text-xs">Loading suggestions...</p>}
+      {isLoading && (
+        <p className="text-muted-foreground text-xs">
+          {t('graphPanel.workbench.merge.suggestions.loading')}
+        </p>
+      )}
 
       {!isLoading && !candidates.length && !errorMessage && (
         <p className="text-muted-foreground text-xs">
-          No candidates loaded yet. Click &quot;Load Suggestions&quot; to fetch candidates.
+          {t('graphPanel.workbench.merge.suggestions.empty')}
         </p>
       )}
 
@@ -62,7 +86,9 @@ const MergeSuggestionList = ({
                       {candidate.source_entities.join(', ')} → {candidate.target_entity}
                     </p>
                     <p className="text-muted-foreground mt-1 text-[11px]">
-                      Score: {candidate.score.toFixed(2)}
+                      {t('graphPanel.workbench.merge.suggestions.score', {
+                        score: candidate.score.toFixed(2)
+                      })}
                     </p>
                   </div>
                   <Button
@@ -72,11 +98,14 @@ const MergeSuggestionList = ({
                     className="h-7 px-2 text-[11px]"
                     onClick={() => onImportCandidate(candidate)}
                   >
-                    {isSelected ? 'Imported' : 'Import'}
+                    {isSelected
+                      ? t('graphPanel.workbench.merge.suggestions.actions.imported')
+                      : t('graphPanel.workbench.merge.suggestions.actions.import')}
                   </Button>
                 </div>
                 <p className="text-muted-foreground mt-2 text-[11px]">
-                  Evidence: {buildMergeCandidateEvidence(candidate)}
+                  {t('graphPanel.workbench.merge.suggestions.evidence')}{' '}
+                  {buildMergeCandidateEvidence(candidate, t)}
                 </p>
               </article>
             )

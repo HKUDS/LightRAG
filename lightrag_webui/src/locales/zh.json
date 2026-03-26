@@ -488,7 +488,214 @@
       "refreshCurrentLabelTooltip": "刷新当前页面图数据",
       "refreshingTooltip": "正在刷新数据..."
     },
-    "emptyGraph": "无数据(请重载图形数据)"
+    "emptyGraph": "无数据(请重载图形数据)",
+    "workbench": {
+      "summary": {
+        "draftStatus": "草稿",
+        "appliedStatus": "已应用",
+        "version": "版本 {{queryVersion}}",
+        "scope": "范围 {{label}} · 深度{{maxDepth}} · 节点{{maxNodes}}",
+        "result": "结果 {{nodeCount}} 个节点 / {{edgeCount}} 条边",
+        "activeGroups": "已激活分组 {{activeGroups}}"
+      },
+      "filter": {
+        "sections": {
+          "nodeFilters": "节点筛选",
+          "edgeFilters": "边筛选",
+          "scopeFilters": "范围筛选",
+          "sourceFilters": "来源筛选",
+          "viewControls": "视图控制"
+        },
+        "fields": {
+          "entityTypes": "实体类型",
+          "nameQuery": "名称查询",
+          "descriptionQuery": "描述查询",
+          "degreeMin": "最小度数",
+          "degreeMax": "最大度数",
+          "isolatedOnly": "仅孤立节点",
+          "relationTypes": "关系类型",
+          "keywordQuery": "关键词查询",
+          "weightMin": "最小权重",
+          "weightMax": "最大权重",
+          "sourceEntityTypes": "源实体类型",
+          "targetEntityTypes": "目标实体类型",
+          "startLabel": "起始标签",
+          "maxDepth": "最大深度",
+          "maxNodes": "最大节点数",
+          "onlyMatchedNeighborhood": "仅匹配邻域",
+          "sourceIdQuery": "来源 ID 查询",
+          "filePaths": "文件路径",
+          "timeFrom": "起始时间",
+          "timeTo": "结束时间",
+          "showNodesOnly": "仅显示节点",
+          "showEdgesOnly": "仅显示边",
+          "hideLowWeightEdges": "隐藏低权重边",
+          "hideEmptyDescription": "隐藏空描述",
+          "highlightMatches": "高亮匹配项"
+        },
+        "placeholders": {
+          "entityTypes": "PERSON, ORGANIZATION",
+          "relationTypes": "owns, partner_of",
+          "filePaths": "/inputs/a.md, /inputs/b.md"
+        },
+        "actions": {
+          "apply": "应用",
+          "reset": "重置"
+        }
+      },
+      "actionInspector": {
+        "title": "操作检查器",
+        "description": "无需离开工作台即可检查、修改并校验图对象。",
+        "clearError": "清除",
+        "tabs": {
+          "inspect": "查看",
+          "create": "创建",
+          "delete": "删除",
+          "merge": "合并"
+        }
+      },
+      "createNode": {
+        "title": "创建节点",
+        "description": "最小载荷：实体名称 + 描述。",
+        "fields": {
+          "entityName": "实体名称",
+          "description": "描述"
+        },
+        "placeholders": {
+          "entityName": "Tesla",
+          "description": "电动汽车制造商"
+        },
+        "errors": {
+          "required": "实体名称和描述为必填项。",
+          "createFailed": "创建节点失败"
+        },
+        "actions": {
+          "creating": "创建中...",
+          "create": "创建节点"
+        },
+        "messages": {
+          "created": "实体“{{entity}}”已创建。"
+        }
+      },
+      "createRelation": {
+        "title": "创建关系",
+        "description": "源/目标默认优先使用当前选中项，也可手动覆盖。",
+        "fields": {
+          "source": "源",
+          "target": "目标",
+          "description": "描述",
+          "keywords": "关键词",
+          "weight": "权重"
+        },
+        "placeholders": {
+          "source": "Elon Musk",
+          "target": "Tesla",
+          "description": "Elon Musk works for Tesla",
+          "keywords": "works_for"
+        },
+        "errors": {
+          "required": "源实体和目标实体为必填项。",
+          "sameEntity": "源实体和目标实体不能相同。",
+          "createFailed": "创建关系失败"
+        },
+        "actions": {
+          "creating": "创建中...",
+          "create": "创建关系"
+        },
+        "messages": {
+          "created": "关系“{{source}} -> {{target}}”已创建。"
+        }
+      },
+      "deleteObject": {
+        "title": "删除当前选择",
+        "confirmation": {
+          "emptySelection": "请先选择节点或关系。",
+          "node": "你将删除实体“{{entity}}”。相关关系也会被一并删除。",
+          "relationWithSummary": "你将删除关系“{{source}} -> {{target}}”（{{summary}}）。",
+          "relation": "你将删除关系“{{source}} -> {{target}}”。",
+          "inputLabel": "输入 {{keyword}} 以确认",
+          "inputPlaceholder": "{{keyword}}"
+        },
+        "errors": {
+          "deleteFailed": "删除失败"
+        },
+        "actions": {
+          "deleting": "删除中...",
+          "delete": "删除"
+        },
+        "messages": {
+          "entityDeleted": "实体“{{entity}}”已删除。",
+          "relationDeleted": "关系“{{source}} -> {{target}}”已删除。"
+        }
+      },
+      "merge": {
+        "manual": {
+          "title": "手动合并",
+          "description": "填写源实体和目标实体后提交合并。",
+          "fields": {
+            "sourceEntities": "源实体",
+            "targetEntity": "目标实体"
+          },
+          "placeholders": {
+            "sourceEntities": "Elon Msk, Ellon Musk",
+            "targetEntity": "Elon Musk"
+          },
+          "help": {
+            "sourceEntities": "支持逗号或换行分隔，系统会自动排除目标实体。"
+          },
+          "preview": "草稿预览：[{{sourceEntities}}] -> {{targetEntity}}",
+          "targetRequired": "（需填写目标实体）"
+        },
+        "errors": {
+          "loadSuggestionsFailed": "加载合并建议失败",
+          "targetRequired": "目标实体为必填项。",
+          "sourceRequired": "至少需要一个源实体。",
+          "mergeFailed": "实体合并失败"
+        },
+        "actions": {
+          "loading": "加载中...",
+          "loadSuggestions": "加载建议",
+          "merging": "合并中...",
+          "mergeEntities": "合并实体"
+        },
+        "messages": {
+          "noSuggestions": "当前范围内未找到合并建议。",
+          "merged": "已将 {{count}} 个源实体合并到“{{target}}”。"
+        },
+        "suggestions": {
+          "title": "合并建议",
+          "description": "基于当前查询范围的候选列表，点击导入可自动回填表单。",
+          "loading": "正在加载建议...",
+          "empty": "尚未加载候选项。点击“加载建议”获取候选。",
+          "score": "评分：{{score}}",
+          "evidence": "证据：",
+          "noEvidence": "未提供明确证据。",
+          "reasonScore": "{{reason}}（{{score}}）",
+          "reasonCodes": {
+            "name_similarity": "名称相似",
+            "shared_neighbors": "共享邻居",
+            "shared_sources": "共享来源",
+            "shared_file_paths": "共享文件路径",
+            "same_entity_type": "实体类型一致",
+            "description_overlap": "描述重叠",
+            "alias_overlap": "别名重叠"
+          },
+          "actions": {
+            "import": "导入",
+            "imported": "已导入"
+          }
+        },
+        "followUp": {
+          "title": "合并完成：{{sourceEntities}} -> {{targetEntity}}",
+          "description": "后续操作：聚焦目标实体、刷新结果图谱，或继续审查。",
+          "actions": {
+            "focusTarget": "聚焦合并目标",
+            "refreshResults": "刷新结果",
+            "continueReview": "继续审查"
+          }
+        }
+      }
+    }
   },
   "retrievePanel": {
     "chatMessage": {

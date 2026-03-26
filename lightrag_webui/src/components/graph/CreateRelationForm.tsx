@@ -1,4 +1,5 @@
 import { FormEvent, useEffect, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 import Button from '@/components/ui/Button'
 import Input from '@/components/ui/Input'
@@ -60,6 +61,7 @@ type CreateRelationFormProps = {
 }
 
 const CreateRelationForm = ({ selection = null }: CreateRelationFormProps) => {
+  const { t } = useTranslation()
   const initialDraft = deriveCreateRelationDraftFromSelection(selection)
   const [sourceEntity, setSourceEntity] = useState(initialDraft.sourceEntity)
   const [targetEntity, setTargetEntity] = useState(initialDraft.targetEntity)
@@ -89,14 +91,14 @@ const CreateRelationForm = ({ selection = null }: CreateRelationFormProps) => {
     const source = sourceEntity.trim()
     const target = targetEntity.trim()
     if (!source || !target) {
-      const message = 'Source and target entity are required.'
+      const message = t('graphPanel.workbench.createRelation.errors.required')
       setErrorMessage(message)
       setMutationError(message, false)
       return
     }
 
     if (source === target) {
-      const message = 'Source and target cannot be the same entity.'
+      const message = t('graphPanel.workbench.createRelation.errors.sameEntity')
       setErrorMessage(message)
       setMutationError(message, false)
       return
@@ -117,7 +119,7 @@ const CreateRelationForm = ({ selection = null }: CreateRelationFormProps) => {
 
     try {
       await createGraphRelation(source, target, relationData)
-      toast.success(`Relation "${source} -> ${target}" created.`)
+      toast.success(t('graphPanel.workbench.createRelation.messages.created', { source, target }))
       setDescription('')
       setKeywords('')
       setWeight('1')
@@ -125,7 +127,10 @@ const CreateRelationForm = ({ selection = null }: CreateRelationFormProps) => {
       requestRefresh()
       useGraphStore.getState().incrementGraphDataVersion()
     } catch (error) {
-      const normalized = normalizeWorkbenchMutationError(error, 'Create relation failed')
+      const normalized = normalizeWorkbenchMutationError(
+        error,
+        t('graphPanel.workbench.createRelation.errors.createFailed')
+      )
       setErrorMessage(normalized.message)
       setMutationError(normalized.message, normalized.isConflict)
       toast.error(normalized.message)
@@ -137,43 +142,43 @@ const CreateRelationForm = ({ selection = null }: CreateRelationFormProps) => {
   return (
     <form onSubmit={handleSubmit} className="bg-background/60 space-y-3 rounded-lg border p-3">
       <div>
-        <h3 className="text-sm font-semibold">Create Relation</h3>
+        <h3 className="text-sm font-semibold">{t('graphPanel.workbench.createRelation.title')}</h3>
         <p className="text-muted-foreground mt-1 text-xs">
-          Source/target prefer current selection and can be overridden manually.
+          {t('graphPanel.workbench.createRelation.description')}
         </p>
       </div>
 
       <div className="grid grid-cols-2 gap-2">
         <div className="space-y-1">
           <label className="text-muted-foreground block text-[11px] font-medium tracking-wide uppercase">
-            Source
+            {t('graphPanel.workbench.createRelation.fields.source')}
           </label>
           <Input
             value={sourceEntity}
             onChange={(event) => setSourceEntity(event.target.value)}
-            placeholder="Elon Musk"
+            placeholder={t('graphPanel.workbench.createRelation.placeholders.source')}
           />
         </div>
         <div className="space-y-1">
           <label className="text-muted-foreground block text-[11px] font-medium tracking-wide uppercase">
-            Target
+            {t('graphPanel.workbench.createRelation.fields.target')}
           </label>
           <Input
             value={targetEntity}
             onChange={(event) => setTargetEntity(event.target.value)}
-            placeholder="Tesla"
+            placeholder={t('graphPanel.workbench.createRelation.placeholders.target')}
           />
         </div>
       </div>
 
       <div className="space-y-1">
         <label className="text-muted-foreground block text-[11px] font-medium tracking-wide uppercase">
-          Description
+          {t('graphPanel.workbench.createRelation.fields.description')}
         </label>
         <Textarea
           value={description}
           onChange={(event) => setDescription(event.target.value)}
-          placeholder="Elon Musk works for Tesla"
+          placeholder={t('graphPanel.workbench.createRelation.placeholders.description')}
           rows={2}
         />
       </div>
@@ -181,17 +186,17 @@ const CreateRelationForm = ({ selection = null }: CreateRelationFormProps) => {
       <div className="grid grid-cols-2 gap-2">
         <div className="space-y-1">
           <label className="text-muted-foreground block text-[11px] font-medium tracking-wide uppercase">
-            Keywords
+            {t('graphPanel.workbench.createRelation.fields.keywords')}
           </label>
           <Input
             value={keywords}
             onChange={(event) => setKeywords(event.target.value)}
-            placeholder="works_for"
+            placeholder={t('graphPanel.workbench.createRelation.placeholders.keywords')}
           />
         </div>
         <div className="space-y-1">
           <label className="text-muted-foreground block text-[11px] font-medium tracking-wide uppercase">
-            Weight
+            {t('graphPanel.workbench.createRelation.fields.weight')}
           </label>
           <Input value={weight} onChange={(event) => setWeight(event.target.value)} type="number" step="0.1" />
         </div>
@@ -201,7 +206,9 @@ const CreateRelationForm = ({ selection = null }: CreateRelationFormProps) => {
 
       <div className="flex justify-end">
         <Button type="submit" size="sm" disabled={isSubmitting}>
-          {isSubmitting ? 'Creating...' : 'Create Relation'}
+          {isSubmitting
+            ? t('graphPanel.workbench.createRelation.actions.creating')
+            : t('graphPanel.workbench.createRelation.actions.create')}
         </Button>
       </div>
     </form>

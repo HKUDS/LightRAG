@@ -1,4 +1,5 @@
 import { FormEvent, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 import Button from '@/components/ui/Button'
 import Input from '@/components/ui/Input'
@@ -11,6 +12,7 @@ import {
 } from '@/stores/graphWorkbench'
 
 const CreateNodeForm = () => {
+  const { t } = useTranslation()
   const [entityName, setEntityName] = useState('')
   const [description, setDescription] = useState('')
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
@@ -26,7 +28,7 @@ const CreateNodeForm = () => {
     const trimmedEntity = entityName.trim()
     const trimmedDescription = description.trim()
     if (!trimmedEntity || !trimmedDescription) {
-      const message = 'Entity name and description are required.'
+      const message = t('graphPanel.workbench.createNode.errors.required')
       setErrorMessage(message)
       setMutationError(message, false)
       return
@@ -38,14 +40,17 @@ const CreateNodeForm = () => {
 
     try {
       await createGraphEntity(trimmedEntity, { description: trimmedDescription })
-      toast.success(`Entity "${trimmedEntity}" created.`)
+      toast.success(t('graphPanel.workbench.createNode.messages.created', { entity: trimmedEntity }))
       setEntityName('')
       setDescription('')
       useGraphStore.getState().setGraphDataFetchAttempted(false)
       requestRefresh()
       useGraphStore.getState().incrementGraphDataVersion()
     } catch (error) {
-      const normalized = normalizeWorkbenchMutationError(error, 'Create node failed')
+      const normalized = normalizeWorkbenchMutationError(
+        error,
+        t('graphPanel.workbench.createNode.errors.createFailed')
+      )
       setErrorMessage(normalized.message)
       setMutationError(normalized.message, normalized.isConflict)
       toast.error(normalized.message)
@@ -57,25 +62,31 @@ const CreateNodeForm = () => {
   return (
     <form onSubmit={handleSubmit} className="bg-background/60 space-y-3 rounded-lg border p-3">
       <div>
-        <h3 className="text-sm font-semibold">Create Node</h3>
-        <p className="text-muted-foreground mt-1 text-xs">Minimal payload: entity name + description.</p>
+        <h3 className="text-sm font-semibold">{t('graphPanel.workbench.createNode.title')}</h3>
+        <p className="text-muted-foreground mt-1 text-xs">
+          {t('graphPanel.workbench.createNode.description')}
+        </p>
       </div>
 
       <div className="space-y-1">
         <label className="text-muted-foreground block text-[11px] font-medium tracking-wide uppercase">
-          Entity Name
+          {t('graphPanel.workbench.createNode.fields.entityName')}
         </label>
-        <Input value={entityName} onChange={(event) => setEntityName(event.target.value)} placeholder="Tesla" />
+        <Input
+          value={entityName}
+          onChange={(event) => setEntityName(event.target.value)}
+          placeholder={t('graphPanel.workbench.createNode.placeholders.entityName')}
+        />
       </div>
 
       <div className="space-y-1">
         <label className="text-muted-foreground block text-[11px] font-medium tracking-wide uppercase">
-          Description
+          {t('graphPanel.workbench.createNode.fields.description')}
         </label>
         <Textarea
           value={description}
           onChange={(event) => setDescription(event.target.value)}
-          placeholder="Electric vehicle manufacturer"
+          placeholder={t('graphPanel.workbench.createNode.placeholders.description')}
           rows={3}
         />
       </div>
@@ -84,7 +95,9 @@ const CreateNodeForm = () => {
 
       <div className="flex justify-end">
         <Button type="submit" size="sm" disabled={isSubmitting}>
-          {isSubmitting ? 'Creating...' : 'Create Node'}
+          {isSubmitting
+            ? t('graphPanel.workbench.createNode.actions.creating')
+            : t('graphPanel.workbench.createNode.actions.create')}
         </Button>
       </div>
     </form>

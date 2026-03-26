@@ -2,7 +2,10 @@ import React from 'react'
 import { beforeEach, describe, expect, test } from 'vitest'
 import { renderToString } from 'react-dom/server'
 
+import i18n from '@/i18n'
 import type { GraphWorkbenchQueryRequest } from '@/api/lightrag'
+import en from '@/locales/en.json'
+import zh from '@/locales/zh.json'
 import { useGraphWorkbenchStore, getDefaultGraphWorkbenchFilterDraft } from '@/stores/graphWorkbench'
 import {
   FilterWorkbench,
@@ -15,8 +18,18 @@ import GraphWorkbenchSummary from './GraphWorkbenchSummary'
 const cloneDraft = (draft: GraphWorkbenchQueryRequest): GraphWorkbenchQueryRequest =>
   JSON.parse(JSON.stringify(draft))
 
+const getValueAtPath = (obj: Record<string, unknown>, path: string): unknown => {
+  return path.split('.').reduce<unknown>((current, segment) => {
+    if (current && typeof current === 'object') {
+      return (current as Record<string, unknown>)[segment]
+    }
+    return undefined
+  }, obj)
+}
+
 describe('FilterWorkbench', () => {
   beforeEach(() => {
+    void i18n.changeLanguage('en')
     useGraphWorkbenchStore.getState().reset()
   })
 
@@ -118,5 +131,23 @@ describe('FilterWorkbench', () => {
 
     const clampedNodes = updateDraftFromInput(withToggle, 'scope', 'max_nodes', '-1')
     expect(clampedNodes.scope.max_nodes).toBe(1)
+  })
+
+  test('graph workbench 关键 i18n key 在 en 与 zh 中存在', () => {
+    const keyPaths = [
+      'graphPanel.workbench.summary.draftStatus',
+      'graphPanel.workbench.summary.appliedStatus',
+      'graphPanel.workbench.filter.sections.nodeFilters',
+      'graphPanel.workbench.filter.actions.apply',
+      'graphPanel.workbench.actionInspector.title',
+      'graphPanel.workbench.actionInspector.tabs.merge',
+      'graphPanel.workbench.merge.manual.title',
+      'graphPanel.workbench.merge.suggestions.title'
+    ]
+
+    keyPaths.forEach((path) => {
+      expect(getValueAtPath(en as Record<string, unknown>, path)).toBeTruthy()
+      expect(getValueAtPath(zh as Record<string, unknown>, path)).toBeTruthy()
+    })
   })
 })

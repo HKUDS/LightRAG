@@ -1,4 +1,5 @@
 import type { GraphWorkbenchQueryRequest } from '@/api/lightrag'
+import { useTranslation } from 'react-i18next'
 
 type GraphWorkbenchSummaryProps = {
   draft: GraphWorkbenchQueryRequest
@@ -54,17 +55,28 @@ const GraphWorkbenchSummary = ({
   nodeCount,
   edgeCount
 }: GraphWorkbenchSummaryProps) => {
+  const { t } = useTranslation()
   const summaryQuery = appliedQuery ?? draft
-  const status = appliedQuery ? 'Applied' : 'Draft'
+  const status = appliedQuery
+    ? t('graphPanel.workbench.summary.appliedStatus')
+    : t('graphPanel.workbench.summary.draftStatus')
   const activeGroups = countActiveFilterGroups(summaryQuery)
 
   return (
     <div className="bg-muted/40 rounded-lg border px-3 py-2 text-xs">
       <p className="font-semibold">{status}</p>
-      <p className="text-muted-foreground">Version {queryVersion}</p>
-      <p className="mt-1">Scope {summaryQuery.scope.label} · D{summaryQuery.scope.max_depth} · N{summaryQuery.scope.max_nodes}</p>
-      <p>Result {nodeCount} nodes / {edgeCount} edges</p>
-      <p>Active Groups {activeGroups}</p>
+      <p className="text-muted-foreground">
+        {t('graphPanel.workbench.summary.version', { queryVersion })}
+      </p>
+      <p className="mt-1">
+        {t('graphPanel.workbench.summary.scope', {
+          label: summaryQuery.scope.label,
+          maxDepth: summaryQuery.scope.max_depth,
+          maxNodes: summaryQuery.scope.max_nodes
+        })}
+      </p>
+      <p>{t('graphPanel.workbench.summary.result', { nodeCount, edgeCount })}</p>
+      <p>{t('graphPanel.workbench.summary.activeGroups', { activeGroups })}</p>
     </div>
   )
 }

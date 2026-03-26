@@ -371,7 +371,214 @@
       "refreshCurrentLabelTooltip": "現在のページのグラフデータを更新",
       "refreshingTooltip": "データを更新中..."
     },
-    "emptyGraph": "空（再読み込みをお試しください）"
+    "emptyGraph": "空（再読み込みをお試しください）",
+    "workbench": {
+      "summary": {
+        "draftStatus": "Draft",
+        "appliedStatus": "Applied",
+        "version": "Version {{queryVersion}}",
+        "scope": "Scope {{label}} · D{{maxDepth}} · N{{maxNodes}}",
+        "result": "Result {{nodeCount}} nodes / {{edgeCount}} edges",
+        "activeGroups": "Active Groups {{activeGroups}}"
+      },
+      "filter": {
+        "sections": {
+          "nodeFilters": "Node Filters",
+          "edgeFilters": "Edge Filters",
+          "scopeFilters": "Scope Filters",
+          "sourceFilters": "Source Filters",
+          "viewControls": "View Controls"
+        },
+        "fields": {
+          "entityTypes": "Entity Types",
+          "nameQuery": "Name Query",
+          "descriptionQuery": "Description Query",
+          "degreeMin": "Degree Min",
+          "degreeMax": "Degree Max",
+          "isolatedOnly": "Isolated Only",
+          "relationTypes": "Relation Types",
+          "keywordQuery": "Keyword Query",
+          "weightMin": "Weight Min",
+          "weightMax": "Weight Max",
+          "sourceEntityTypes": "Source Entity Types",
+          "targetEntityTypes": "Target Entity Types",
+          "startLabel": "Start Label",
+          "maxDepth": "Max Depth",
+          "maxNodes": "Max Nodes",
+          "onlyMatchedNeighborhood": "Only Matched Neighborhood",
+          "sourceIdQuery": "Source ID Query",
+          "filePaths": "File Paths",
+          "timeFrom": "Time From",
+          "timeTo": "Time To",
+          "showNodesOnly": "Show Nodes Only",
+          "showEdgesOnly": "Show Edges Only",
+          "hideLowWeightEdges": "Hide Low Weight Edges",
+          "hideEmptyDescription": "Hide Empty Description",
+          "highlightMatches": "Highlight Matches"
+        },
+        "placeholders": {
+          "entityTypes": "PERSON, ORGANIZATION",
+          "relationTypes": "owns, partner_of",
+          "filePaths": "/inputs/a.md, /inputs/b.md"
+        },
+        "actions": {
+          "apply": "Apply",
+          "reset": "Reset"
+        }
+      },
+      "actionInspector": {
+        "title": "Action Inspector",
+        "description": "Inspect, mutate, and validate graph objects without leaving this workbench.",
+        "clearError": "Clear",
+        "tabs": {
+          "inspect": "Inspect",
+          "create": "Create",
+          "delete": "Delete",
+          "merge": "Merge"
+        }
+      },
+      "createNode": {
+        "title": "Create Node",
+        "description": "Minimal payload: entity name + description.",
+        "fields": {
+          "entityName": "Entity Name",
+          "description": "Description"
+        },
+        "placeholders": {
+          "entityName": "Tesla",
+          "description": "Electric vehicle manufacturer"
+        },
+        "errors": {
+          "required": "Entity name and description are required.",
+          "createFailed": "Create node failed"
+        },
+        "actions": {
+          "creating": "Creating...",
+          "create": "Create Node"
+        },
+        "messages": {
+          "created": "Entity \"{{entity}}\" created."
+        }
+      },
+      "createRelation": {
+        "title": "Create Relation",
+        "description": "Source/target prefer current selection and can be overridden manually.",
+        "fields": {
+          "source": "Source",
+          "target": "Target",
+          "description": "Description",
+          "keywords": "Keywords",
+          "weight": "Weight"
+        },
+        "placeholders": {
+          "source": "Elon Musk",
+          "target": "Tesla",
+          "description": "Elon Musk works for Tesla",
+          "keywords": "works_for"
+        },
+        "errors": {
+          "required": "Source and target entity are required.",
+          "sameEntity": "Source and target cannot be the same entity.",
+          "createFailed": "Create relation failed"
+        },
+        "actions": {
+          "creating": "Creating...",
+          "create": "Create Relation"
+        },
+        "messages": {
+          "created": "Relation \"{{source}} -> {{target}}\" created."
+        }
+      },
+      "deleteObject": {
+        "title": "Delete Selection",
+        "confirmation": {
+          "emptySelection": "Select a node or relation first.",
+          "node": "You are deleting entity \"{{entity}}\". Related relations will also be removed.",
+          "relationWithSummary": "You are deleting relation \"{{source}} -> {{target}}\" ({{summary}}).",
+          "relation": "You are deleting relation \"{{source}} -> {{target}}\".",
+          "inputLabel": "Type {{keyword}} to confirm",
+          "inputPlaceholder": "{{keyword}}"
+        },
+        "errors": {
+          "deleteFailed": "Delete failed"
+        },
+        "actions": {
+          "deleting": "Deleting...",
+          "delete": "Delete"
+        },
+        "messages": {
+          "entityDeleted": "Entity \"{{entity}}\" deleted.",
+          "relationDeleted": "Relation \"{{source}} -> {{target}}\" deleted."
+        }
+      },
+      "merge": {
+        "manual": {
+          "title": "Manual Merge",
+          "description": "Provide source entities and one target entity, then submit merge.",
+          "fields": {
+            "sourceEntities": "Source Entities",
+            "targetEntity": "Target Entity"
+          },
+          "placeholders": {
+            "sourceEntities": "Elon Msk, Ellon Musk",
+            "targetEntity": "Elon Musk"
+          },
+          "help": {
+            "sourceEntities": "Comma/newline separated. Target entity will be excluded automatically."
+          },
+          "preview": "Draft preview: [{{sourceEntities}}] -> {{targetEntity}}",
+          "targetRequired": "(target required)"
+        },
+        "errors": {
+          "loadSuggestionsFailed": "Load merge suggestions failed",
+          "targetRequired": "Target entity is required.",
+          "sourceRequired": "At least one source entity is required.",
+          "mergeFailed": "Merge entities failed"
+        },
+        "actions": {
+          "loading": "Loading...",
+          "loadSuggestions": "Load Suggestions",
+          "merging": "Merging...",
+          "mergeEntities": "Merge Entities"
+        },
+        "messages": {
+          "noSuggestions": "No merge suggestions found for current scope.",
+          "merged": "Merged {{count}} source entities into \"{{target}}\"."
+        },
+        "suggestions": {
+          "title": "Merge Suggestions",
+          "description": "Candidate list from current query scope. Import once to prefill merge form.",
+          "loading": "Loading suggestions...",
+          "empty": "No candidates loaded yet. Click \"Load Suggestions\" to fetch candidates.",
+          "score": "Score: {{score}}",
+          "evidence": "Evidence:",
+          "noEvidence": "No explicit evidence provided.",
+          "reasonScore": "{{reason}} ({{score}})",
+          "reasonCodes": {
+            "name_similarity": "Name similarity",
+            "shared_neighbors": "Shared neighbors",
+            "shared_sources": "Shared sources",
+            "shared_file_paths": "Shared file paths",
+            "same_entity_type": "Same entity type",
+            "description_overlap": "Description overlap",
+            "alias_overlap": "Alias overlap"
+          },
+          "actions": {
+            "import": "Import",
+            "imported": "Imported"
+          }
+        },
+        "followUp": {
+          "title": "Merge completed: {{sourceEntities}} -> {{targetEntity}}",
+          "description": "Next actions: focus merged target, refresh result graph, or continue review.",
+          "actions": {
+            "focusTarget": "Focus merged target",
+            "refreshResults": "Refresh results",
+            "continueReview": "Continue review"
+          }
+        }
+      }
+    }
   },
   "retrievePanel": {
     "chatMessage": {

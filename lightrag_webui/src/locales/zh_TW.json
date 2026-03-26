@@ -371,7 +371,214 @@
       "refreshCurrentLabelTooltip": "重新整理目前頁面圖形資料",
       "refreshingTooltip": "正在重新整理資料..."
     },
-    "emptyGraph": "無數據(請重載圖形數據)"
+    "emptyGraph": "無數據(請重載圖形數據)",
+    "workbench": {
+      "summary": {
+        "draftStatus": "草稿",
+        "appliedStatus": "已套用",
+        "version": "版本 {{queryVersion}}",
+        "scope": "範圍 {{label}} · 深度{{maxDepth}} · 節點{{maxNodes}}",
+        "result": "結果 {{nodeCount}} 個節點 / {{edgeCount}} 條邊",
+        "activeGroups": "已啟用群組 {{activeGroups}}"
+      },
+      "filter": {
+        "sections": {
+          "nodeFilters": "節點篩選",
+          "edgeFilters": "邊篩選",
+          "scopeFilters": "範圍篩選",
+          "sourceFilters": "來源篩選",
+          "viewControls": "視圖控制"
+        },
+        "fields": {
+          "entityTypes": "实体类型",
+          "nameQuery": "名称查询",
+          "descriptionQuery": "描述查询",
+          "degreeMin": "最小度數",
+          "degreeMax": "最大度數",
+          "isolatedOnly": "仅孤立节点",
+          "relationTypes": "关系类型",
+          "keywordQuery": "关键词查询",
+          "weightMin": "最小权重",
+          "weightMax": "最大权重",
+          "sourceEntityTypes": "源实体类型",
+          "targetEntityTypes": "目标实体类型",
+          "startLabel": "起始标签",
+          "maxDepth": "最大深度",
+          "maxNodes": "最大節點數",
+          "onlyMatchedNeighborhood": "仅匹配邻域",
+          "sourceIdQuery": "来源 ID 查询",
+          "filePaths": "檔案路徑",
+          "timeFrom": "起始時間",
+          "timeTo": "結束時間",
+          "showNodesOnly": "仅显示节点",
+          "showEdgesOnly": "仅显示边",
+          "hideLowWeightEdges": "隐藏低权重边",
+          "hideEmptyDescription": "隐藏空描述",
+          "highlightMatches": "高亮匹配项"
+        },
+        "placeholders": {
+          "entityTypes": "PERSON, ORGANIZATION",
+          "relationTypes": "owns, partner_of",
+          "filePaths": "/inputs/a.md, /inputs/b.md"
+        },
+        "actions": {
+          "apply": "套用",
+          "reset": "重設"
+        }
+      },
+      "actionInspector": {
+        "title": "操作檢視器",
+        "description": "不離開工作台即可檢視、修改並驗證圖物件。",
+        "clearError": "清除",
+        "tabs": {
+          "inspect": "檢視",
+          "create": "建立",
+          "delete": "刪除",
+          "merge": "合併"
+        }
+      },
+      "createNode": {
+        "title": "建立節點",
+        "description": "最小載荷：實體名稱 + 描述。",
+        "fields": {
+          "entityName": "實體名稱",
+          "description": "描述"
+        },
+        "placeholders": {
+          "entityName": "Tesla",
+          "description": "电动汽车制造商"
+        },
+        "errors": {
+          "required": "實體名稱與描述為必填。",
+          "createFailed": "建立節點失敗"
+        },
+        "actions": {
+          "creating": "建立中...",
+          "create": "建立節點"
+        },
+        "messages": {
+          "created": "實體「{{entity}}」已建立。"
+        }
+      },
+      "createRelation": {
+        "title": "建立關係",
+        "description": "來源/目標預設優先使用目前選取，也可手動覆寫。",
+        "fields": {
+          "source": "來源",
+          "target": "目標",
+          "description": "描述",
+          "keywords": "關鍵詞",
+          "weight": "權重"
+        },
+        "placeholders": {
+          "source": "Elon Musk",
+          "target": "Tesla",
+          "description": "Elon Musk works for Tesla",
+          "keywords": "works_for"
+        },
+        "errors": {
+          "required": "來源與目標實體為必填。",
+          "sameEntity": "來源與目標實體不可相同。",
+          "createFailed": "建立關係失敗"
+        },
+        "actions": {
+          "creating": "建立中...",
+          "create": "建立關係"
+        },
+        "messages": {
+          "created": "關係「{{source}} -> {{target}}」已建立。"
+        }
+      },
+      "deleteObject": {
+        "title": "刪除目前選取",
+        "confirmation": {
+          "emptySelection": "請先選取節點或關係。",
+          "node": "你將刪除實體「{{entity}}」，相關關係也會一併刪除。",
+          "relationWithSummary": "你將刪除關係「{{source}} -> {{target}}」（{{summary}}）。",
+          "relation": "你將刪除關係「{{source}} -> {{target}}」。",
+          "inputLabel": "輸入 {{keyword}} 以確認",
+          "inputPlaceholder": "{{keyword}}"
+        },
+        "errors": {
+          "deleteFailed": "刪除失敗"
+        },
+        "actions": {
+          "deleting": "刪除中...",
+          "delete": "刪除"
+        },
+        "messages": {
+          "entityDeleted": "實體「{{entity}}」已刪除。",
+          "relationDeleted": "關係「{{source}} -> {{target}}」已刪除。"
+        }
+      },
+      "merge": {
+        "manual": {
+          "title": "手動合併",
+          "description": "填入來源實體與目標實體後提交合併。",
+          "fields": {
+            "sourceEntities": "來源實體",
+            "targetEntity": "目標實體"
+          },
+          "placeholders": {
+            "sourceEntities": "Elon Msk, Ellon Musk",
+            "targetEntity": "Elon Musk"
+          },
+          "help": {
+            "sourceEntities": "可用逗號或換行分隔，系統會自動排除目標實體。"
+          },
+          "preview": "草稿預覽：[{{sourceEntities}}] -> {{targetEntity}}",
+          "targetRequired": "（需填寫目標實體）"
+        },
+        "errors": {
+          "loadSuggestionsFailed": "載入合併建議失敗",
+          "targetRequired": "目標實體為必填。",
+          "sourceRequired": "至少需要一個來源實體。",
+          "mergeFailed": "實體合併失敗"
+        },
+        "actions": {
+          "loading": "載入中...",
+          "loadSuggestions": "載入建議",
+          "merging": "合併中...",
+          "mergeEntities": "合併實體"
+        },
+        "messages": {
+          "noSuggestions": "目前範圍找不到合併建議。",
+          "merged": "已將 {{count}} 個來源實體合併到「{{target}}」。"
+        },
+        "suggestions": {
+          "title": "合併建議",
+          "description": "根據目前查詢範圍提供候選清單，匯入後可預填合併表單。",
+          "loading": "載入建議中...",
+          "empty": "尚未載入候選。點擊「載入建議」以取得候選。",
+          "score": "分數：{{score}}",
+          "evidence": "證據：",
+          "noEvidence": "未提供明確證據。",
+          "reasonScore": "{{reason}}（{{score}}）",
+          "reasonCodes": {
+            "name_similarity": "名稱相似",
+            "shared_neighbors": "共享鄰居",
+            "shared_sources": "共享來源",
+            "shared_file_paths": "共享檔案路徑",
+            "same_entity_type": "實體類型一致",
+            "description_overlap": "描述重疊",
+            "alias_overlap": "別名重疊"
+          },
+          "actions": {
+            "import": "匯入",
+            "imported": "已匯入"
+          }
+        },
+        "followUp": {
+          "title": "合併完成：{{sourceEntities}} -> {{targetEntity}}",
+          "description": "後續操作：聚焦目標實體、刷新結果圖，或繼續檢視。",
+          "actions": {
+            "focusTarget": "聚焦合併目標",
+            "refreshResults": "刷新結果",
+            "continueReview": "繼續檢視"
+          }
+        }
+      }
+    }
   },
   "retrievePanel": {
     "chatMessage": {

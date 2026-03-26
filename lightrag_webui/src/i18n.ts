@@ -15,6 +15,9 @@ import ko from './locales/ko.json'
 import vi from './locales/vi.json'
 
 const getStoredLanguage = () => {
+  if (typeof localStorage === 'undefined') {
+    return 'en'
+  }
   try {
     const settingsString = localStorage.getItem('settings-storage')
     if (settingsString) {

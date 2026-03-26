@@ -1,4 +1,5 @@
 import { ReactNode, useMemo, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { RawEdgeType, RawNodeType, useGraphStore } from '@/stores/graph'
 import { useGraphWorkbenchStore } from '@/stores/graphWorkbench'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/Tabs'
@@ -90,6 +91,7 @@ const ActionInspector = ({
   selection,
   inspectPane
 }: ActionInspectorProps) => {
+  const { t } = useTranslation()
   const [activeTab, setActiveTab] = useState<ActionInspectorTab>(initialTab)
   const selectedNode = useGraphStore.use.selectedNode()
   const focusedNode = useGraphStore.use.focusedNode()
@@ -138,9 +140,11 @@ const ActionInspector = ({
     <div className="bg-background/80 h-full rounded-xl border backdrop-blur-sm">
       <div className="flex h-full flex-col gap-3 p-3">
         <div>
-          <h2 className="text-sm font-semibold tracking-wide uppercase">Action Inspector</h2>
+          <h2 className="text-sm font-semibold tracking-wide uppercase">
+            {t('graphPanel.workbench.actionInspector.title')}
+          </h2>
           <p className="text-muted-foreground mt-1 text-xs">
-            Inspect, mutate, and validate graph objects without leaving this workbench.
+            {t('graphPanel.workbench.actionInspector.description')}
           </p>
         </div>
 
@@ -149,7 +153,7 @@ const ActionInspector = ({
             <div className="flex items-start justify-between gap-2">
               <p>{errorText}</p>
               <Button size="sm" variant="ghost" className="h-6 px-2 text-xs" onClick={clearMutationError}>
-                Clear
+                {t('graphPanel.workbench.actionInspector.clearError')}
               </Button>
             </div>
           </div>
@@ -162,16 +166,16 @@ const ActionInspector = ({
         >
           <TabsList className="grid h-auto grid-cols-4">
             <TabsTrigger value="inspect" className="text-xs">
-              Inspect
+              {t('graphPanel.workbench.actionInspector.tabs.inspect')}
             </TabsTrigger>
             <TabsTrigger value="create" className="text-xs">
-              Create
+              {t('graphPanel.workbench.actionInspector.tabs.create')}
             </TabsTrigger>
             <TabsTrigger value="delete" className="text-xs">
-              Delete
+              {t('graphPanel.workbench.actionInspector.tabs.delete')}
             </TabsTrigger>
             <TabsTrigger value="merge" className="text-xs">
-              Merge
+              {t('graphPanel.workbench.actionInspector.tabs.merge')}
             </TabsTrigger>
           </TabsList>
 

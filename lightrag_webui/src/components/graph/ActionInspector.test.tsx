@@ -1,6 +1,7 @@
 import React from 'react'
 import { beforeEach, describe, expect, test, vi } from 'vitest'
 import { renderToString } from 'react-dom/server'
+import i18n from '@/i18n'
 import {
   getDefaultGraphWorkbenchFilterDraft,
   normalizeWorkbenchMutationError,
@@ -69,6 +70,7 @@ const relationSelection: ActionInspectorSelection = {
 
 describe('ActionInspector', () => {
   beforeEach(() => {
+    void i18n.changeLanguage('en')
     useGraphWorkbenchStore.getState().reset()
   })
 
