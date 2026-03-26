@@ -1,0 +1,26 @@
+# Source-build variant of docker-compose.yml.
+# Builds the LightRAG application image from the local checkout instead of
+# pulling the published ghcr.io/hkuds/lightrag image.
+services:
+  lightrag:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "${HOST:-0.0.0.0}:${PORT:-9621}:9621"
+    volumes:
+      - ./data/rag_storage:/app/data/rag_storage
+      - ./data/inputs:/app/data/inputs
+      - ./config.ini:/app/config.ini
+      - ./.env:/app/.env
+    deploy:
+      restart_policy:
+        condition: on-failure
+        max_attempts: 10
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      WORKING_DIR: "/app/data/rag_storage"
+      INPUT_DIR: "/app/data/inputs"
+      HOST: "0.0.0.0"
+      PORT: "9621"

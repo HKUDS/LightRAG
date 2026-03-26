@@ -74,6 +74,13 @@ The Dockerfile uses BuildKit cache mounts to significantly improve build perform
 docker compose up -d
 ```
 
+To build the LightRAG application image from the local source tree instead of
+using the published container image, run:
+
+```bash
+docker compose -f docker-compose.source.yml up --build -d
+```
+
 If you used the interactive setup, start the generated stack with:
 
 ```bash
@@ -254,6 +261,9 @@ Software packages requiring `transformers`, `torch`, or `cuda` will is not prein
 ```bash
 # Build and run with Docker Compose (BuildKit automatically enabled)
 docker compose up --build
+
+# Build from the local source checkout without using the published app image
+docker compose -f docker-compose.source.yml up --build
 
 # Or explicitly enable BuildKit if needed
 DOCKER_BUILDKIT=1 docker compose up --build
