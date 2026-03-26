@@ -2,7 +2,6 @@ import os
 import re
 import time
 from dataclasses import dataclass, field
-from importlib.metadata import version
 import numpy as np
 import configparser
 import asyncio
@@ -20,6 +19,7 @@ from ..base import (
 from ..utils import logger, compute_mdhash_id
 from ..types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
 from ..constants import GRAPH_FIELD_SEP
+from .._version import __version__
 from ..kg.shared_storage import get_data_init_lock
 
 import pipmaster as pm
@@ -32,9 +32,8 @@ from pymongo import UpdateOne  # type: ignore
 from pymongo.asynchronous.database import AsyncDatabase  # type: ignore
 from pymongo.asynchronous.collection import AsyncCollection  # type: ignore
 from pymongo.operations import SearchIndexModel  # type: ignore
-from pymongo.driver_info import DriverInfo # type: ignore
+from pymongo.driver_info import DriverInfo  # type: ignore
 from pymongo.errors import PyMongoError  # type: ignore
-from pymongo.operations import SearchIndexModel  # type: ignore
 
 config = configparser.ConfigParser()
 config.read("config.ini", "utf-8")
@@ -63,9 +62,9 @@ class ClientManager:
                     config.get("mongodb", "database", fallback="LightRAG"),
                 )
                 client = AsyncMongoClient(
-					uri,
-					driver=DriverInfo(name="LightRAG", version=version("lightrag-hku")),
-				)
+                    uri,
+                    driver=DriverInfo(name="LightRAG", version=__version__),
+                )
                 db = client.get_database(database_name)
                 cls._instances["db"] = db
                 cls._instances["ref_count"] = 0

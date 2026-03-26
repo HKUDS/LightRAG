@@ -173,7 +173,7 @@ exclude = ["data*", "tests*", "scripts*", "examples*", "dickens*", "reproduce*",
 include-package-data = true
 
 [tool.setuptools.dynamic]
-version = {attr = "lightrag.__version__"}
+version = {attr = "lightrag._version.__version__"}
 
 [tool.setuptools.package-data]
 lightrag = ["api/webui/**/*", "api/static/**/*"]

@@ -18,6 +18,11 @@ jobs:
         with:
           fetch-depth: 0  # Fetch all history for tags
 
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.x"
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
 
@@ -31,9 +36,19 @@ jobs:
       - name: Get latest tag
         id: get_tag
         run: |
-          TAG=$(git describe --tags --abbrev=0)
+          if [ "${{ github.event_name }}" = "release" ] && [ -n "${{ github.event.release.tag_name }}" ]; then
+            TAG="${{ github.event.release.tag_name }}"
+          else
+            TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+          fi
+          if [ -z "$TAG" ]; then
+            echo "No git tag found for docker publish"
+            exit 1
+          fi
+          PACKAGE_VERSION="${TAG#v}"
           echo "Found tag: $TAG"
           echo "tag=$TAG" >> $GITHUB_OUTPUT
+          echo "package_version=$PACKAGE_VERSION" >> $GITHUB_OUTPUT
 
       - name: Check if pre-release
         id: check_prerelease
@@ -47,11 +62,11 @@ jobs:
             echo "This is a stable release: $TAG"
           fi
 
-      - name: Update version in __init__.py
+      - name: Update version definitions
         run: |
-          sed -i "s/__version__ = \".*\"/__version__ = \"${{ steps.get_tag.outputs.tag }}\"/" lightrag/__init__.py
-          echo "Updated __init__.py with version ${{ steps.get_tag.outputs.tag }}"
-          cat lightrag/__init__.py | grep __version__
+          python scripts/release/set_version.py --core-version "${{ steps.get_tag.outputs.package_version }}"
+          echo "Updated version definitions with ${{ steps.get_tag.outputs.package_version }}"
+          grep '__version__ = ' lightrag/_version.py
 
       - name: Extract metadata for Docker
         id: meta
