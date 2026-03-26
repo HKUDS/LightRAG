@@ -1751,7 +1751,7 @@ generate_env_file "{REPO_ROOT}/env.example" "$REPO_ROOT/.env"
     assert "# EMBEDDING_BINDING=openai" in generated_env
 
 
-def test_generate_env_file_round_trips_dollar_signs_in_quoted_values(
+def test_generate_env_file_round_trips_dollar_signs_in_single_quoted_values(
     tmp_path: Path,
 ) -> None:
     """Quoted values containing `$` should survive generate/load cycles unchanged."""
@@ -1792,12 +1792,72 @@ printf 'WEBUI_DESCRIPTION=%s\\n' "${{ENV_VALUES[WEBUI_DESCRIPTION]}}"
     values = parse_lines(output)
     generated_env = (tmp_path / ".env").read_text(encoding="utf-8")
 
-    assert 'TOKEN_SECRET="abc$HOME"' in generated_env
-    assert 'LIGHTRAG_API_KEY="plain$token"' in generated_env
-    assert 'WEBUI_DESCRIPTION="value with \\"$PATH\\" and $HOME"' in generated_env
+    assert "TOKEN_SECRET='abc$HOME'" in generated_env
+    assert "LIGHTRAG_API_KEY='plain$token'" in generated_env
+    assert "WEBUI_DESCRIPTION='value with \"$PATH\" and $HOME'" in generated_env
     assert values["TOKEN_SECRET"] == "abc$HOME"
     assert values["LIGHTRAG_API_KEY"] == "plain$token"
     assert values["WEBUI_DESCRIPTION"] == 'value with "$PATH" and $HOME'
+
+
+def test_generate_env_file_avoids_double_quotes_for_compose_sensitive_strings(
+    tmp_path: Path,
+) -> None:
+    """Setup output should avoid double quotes for affected string variables."""
+
+    env_example = tmp_path / "env.example"
+    env_example.write_text(
+        "\n".join(
+            [
+                "WEBUI_TITLE='My Graph KB'",
+                "WEBUI_DESCRIPTION='Simple and Fast Graph Based RAG System'",
+                "# AUTH_ACCOUNTS='admin:admin123,user1:{bcrypt}$2b$12$hash'",
+                "# LANGFUSE_SECRET_KEY=''",
+                "# LANGFUSE_PUBLIC_KEY=''",
+                "# LANGFUSE_HOST='https://cloud.langfuse.com'",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+
+ENV_VALUES[WEBUI_TITLE]='My Graph KB'
+ENV_VALUES[WEBUI_DESCRIPTION]='Simple and Fast Graph Based RAG System'
+ENV_VALUES[AUTH_ACCOUNTS]='admin:admin123,user1:pa$$word'
+ENV_VALUES[LANGFUSE_SECRET_KEY]='sk-lf-secret'
+ENV_VALUES[LANGFUSE_PUBLIC_KEY]='pk-lf-public'
+ENV_VALUES[LANGFUSE_HOST]='https://langfuse.example'
+
+generate_env_file "$REPO_ROOT/env.example" "$REPO_ROOT/.env"
+"""
+    )
+
+    generated_lines = (tmp_path / ".env").read_text(encoding="utf-8").splitlines()
+
+    assert "WEBUI_TITLE='My Graph KB'" in generated_lines
+    assert (
+        "WEBUI_DESCRIPTION='Simple and Fast Graph Based RAG System'" in generated_lines
+    )
+    assert "AUTH_ACCOUNTS='admin:admin123,user1:pa$$word'" in generated_lines
+    assert "LANGFUSE_SECRET_KEY=sk-lf-secret" in generated_lines
+    assert "LANGFUSE_PUBLIC_KEY=pk-lf-public" in generated_lines
+    assert "LANGFUSE_HOST=https://langfuse.example" in generated_lines
+    assert not any(
+        line.startswith('WEBUI_TITLE="')
+        or line.startswith('WEBUI_DESCRIPTION="')
+        or line.startswith('AUTH_ACCOUNTS="')
+        or line.startswith('LANGFUSE_SECRET_KEY="')
+        or line.startswith('LANGFUSE_PUBLIC_KEY="')
+        or line.startswith('LANGFUSE_HOST="')
+        for line in generated_lines
+    )
 
 
 def test_validate_sensitive_env_literals_rejects_interpolation_syntax() -> None:
