@@ -842,6 +842,33 @@ async def test_nebula_upsert_and_get_node_roundtrip():
 
 
 @pytest.mark.asyncio
+async def test_nebula_upsert_node_coerces_numeric_created_at_string():
+    storage = build_storage(workspace="finance")
+    execute_in_space = AsyncMock(return_value=object())
+
+    with patch.object(storage, "_execute_in_space", execute_in_space):
+        await storage.upsert_node(
+            "A",
+            {
+                "entity_id": "A",
+                "name": "A",
+                "entity_type": "TypeX",
+                "description": "desc",
+                "keywords": "k1,k2",
+                "source_id": "src-1",
+                "file_path": "doc/a.md",
+                "created_at": "123",
+                "truncate": "",
+            },
+        )
+
+    upsert_sql = execute_in_space.await_args_list[0].args[0]
+    assert "INSERT VERTEX entity" in upsert_sql
+    assert ', 123, ""' in upsert_sql
+    assert '"123"' not in upsert_sql
+
+
+@pytest.mark.asyncio
 async def test_nebula_edge_reads_are_undirected():
     storage = build_storage(workspace="finance")
     execute_in_space = AsyncMock(

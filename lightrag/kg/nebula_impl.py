@@ -1550,6 +1550,13 @@ class NebulaGraphStorage(BaseGraphStorage):
         source_id = str(node_data.get("source_id", ""))
         file_path = str(node_data.get("file_path", ""))
         created_at = node_data.get("created_at")
+        if isinstance(created_at, str):
+            stripped_created_at = created_at.strip()
+            if stripped_created_at:
+                try:
+                    created_at = int(stripped_created_at)
+                except ValueError:
+                    pass
         truncate = str(node_data.get("truncate", ""))
 
         await self._execute_in_space(
