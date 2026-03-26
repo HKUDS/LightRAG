@@ -53,7 +53,80 @@
     "deletedMessage": "已删除 {{name}}",
     "deleteConfirm": "确定删除 {{name}} 吗？",
     "indexingActivateWarning": "切换建库配置后，后续新文档会使用新的抽取规则，但已有图谱不会自动重建。是否继续？",
-    "remove": "删除"
+    "remove": "删除",
+    "sectionNotes": "用途说明",
+    "sectionVariables": "变量解释",
+    "variables": {
+      "entityTypes": "当前 workspace 允许的实体类型列表，会注入需要限制实体分类范围的模板。",
+      "language": "当前运行时选择的输出语言，通常来自 workspace 配置或请求上下文。",
+      "tupleDelimiter": "实体或关系记录内部各字段之间使用的分隔符。",
+      "completionDelimiter": "模型完成全部抽取后必须输出的结束标记。",
+      "examples": "当前字段维护的示例集合，会整体拼接后注入上层模板中的 {examples}。",
+      "inputText": "本轮送入抽取模型的原始文本片段。",
+      "descriptionList": "待合并的实体或关系描述 JSON 列表。",
+      "descriptionType": "当前要汇总的对象类型，例如 Entity 或 Relation。",
+      "descriptionName": "当前要汇总的对象名称，用于保持结果指代清晰。",
+      "summaryLength": "运行时建议的摘要长度，通常由 token 预算推导而来。",
+      "contextData": "组装后的检索上下文，通常包含图谱数据、文本块和引用列表。",
+      "contentData": "仅包含文档块的简化上下文，供 naive 检索模式使用。",
+      "responseType": "回答组织形式，例如多段、单段或列表。",
+      "userPrompt": "用户在查询时追加的补充指令。",
+      "entitiesStr": "检索到的实体 JSON 列表。",
+      "relationsStr": "检索到的关系 JSON 列表。",
+      "textChunksStr": "召回到的文档片段 JSON 列表。",
+      "referenceListStr": "reference_id 对应的参考文档标题列表。",
+      "query": "用户的原始查询文本。"
+    },
+    "fieldHelp": {
+      "entityTypes": {
+        "description": "定义建库阶段优先使用的实体类型集合，会影响实体抽取时的分类边界和图谱 schema 的稳定性。请使用逗号分隔填写，例如 Person,Organization,Event。",
+        "itemPlaceholder": "实体类型，使用逗号分隔"
+      },
+      "summaryLanguage": {
+        "description": "定义实体或关系描述合并后的输出语言，也会作为 {language} 注入部分建库 prompt。"
+      },
+      "tupleDelimiter": {
+        "description": "定义实体抽取输出中每个字段之间的分隔符，system/continue prompt 会要求模型严格使用它。"
+      },
+      "completionDelimiter": {
+        "description": "定义抽取流程结束时的字面量结束标记，LightRAG 会据此判断本轮输出是否完整。"
+      },
+      "entitySystemPrompt": {
+        "description": "建库阶段的核心系统 prompt，负责约束实体/关系识别规则、输出格式、语言和 few-shot 示例。"
+      },
+      "entityUserPrompt": {
+        "description": "每次文档片段送入抽取模型时的用户 prompt，主要负责注入输入文本和本轮补充约束。"
+      },
+      "entityContinuePrompt": {
+        "description": "当第一轮抽取不完整时用于续抽，要求模型补充遗漏项并保持与首轮一致的输出格式。"
+      },
+      "entityExamples": {
+        "description": "实体抽取的 few-shot 示例列表，会整体注入 system prompt，帮助模型学习期望的抽取粒度与格式。",
+        "itemPlaceholder": "示例"
+      },
+      "summaryDescriptions": {
+        "description": "在合并重复实体或关系描述时使用，要求模型将多条描述整合成统一、客观的摘要。"
+      },
+      "ragResponse": {
+        "description": "标准 RAG 回答模板，基于图谱上下文、文档块和引用列表生成最终答案。"
+      },
+      "naiveRagResponse": {
+        "description": "naive 检索模式的回答模板，只使用文档块上下文来组织答案与引用。"
+      },
+      "kgQueryContext": {
+        "description": "将实体、关系、文本块和 reference list 组装成统一上下文，供图谱/混合检索回答模板引用。"
+      },
+      "naiveQueryContext": {
+        "description": "将文档块和 reference list 组装成简化上下文，供 naive 检索回答模板引用。"
+      },
+      "keywordsExtraction": {
+        "description": "查询前的关键词抽取模板，用于从用户问题中拆分高层和低层检索关键词。"
+      },
+      "keywordsExtractionExamples": {
+        "description": "关键词抽取的 few-shot 示例列表，会整体注入关键词抽取模板，帮助模型学习 JSON 输出格式。",
+        "itemPlaceholder": "示例"
+      }
+    }
   },
   "login": {
     "description": "请输入您的账号和密码登录系统",

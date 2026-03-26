@@ -42,6 +42,16 @@ def test_validate_indexing_payload_accepts_entity_types_and_summary_language():
     )
 
 
+def test_validate_indexing_payload_accepts_entity_types_csv_string():
+    validate_prompt_group_payload(
+        "indexing",
+        {
+            "entity_types": "Person, Organization，Event",
+            "summary_language": "Chinese",
+        },
+    )
+
+
 def test_validate_indexing_payload_rejects_empty_entity_types():
     with pytest.raises(ValueError):
         validate_prompt_group_payload(

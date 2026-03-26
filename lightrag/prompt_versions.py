@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from datetime import datetime, timezone
+import re
 from typing import Any
 
 from lightrag.constants import DEFAULT_ENTITY_TYPES, DEFAULT_SUMMARY_LANGUAGE
@@ -44,15 +45,49 @@ def _get_group(group_type: str) -> dict[str, set[str]]:
     return group
 
 
-def _validate_indexing_extras(payload: dict[str, Any]) -> None:
-    if "entity_types" in payload:
-        entity_types = payload["entity_types"]
-        if not isinstance(entity_types, list) or not entity_types:
-            raise ValueError("Indexing payload 'entity_types' must be a non-empty list[str]")
-        if not all(isinstance(item, str) and item.strip() for item in entity_types):
+def _normalize_entity_types_value(entity_types: Any) -> list[str]:
+    if isinstance(entity_types, str):
+        parsed = [
+            item.strip()
+            for item in re.split(r"[,，\n]+", entity_types)
+            if item.strip()
+        ]
+        if not parsed:
             raise ValueError(
                 "Indexing payload 'entity_types' must be a non-empty list[str]"
             )
+        return parsed
+
+    if not isinstance(entity_types, list) or not entity_types:
+        raise ValueError("Indexing payload 'entity_types' must be a non-empty list[str]")
+    if not all(isinstance(item, str) and item.strip() for item in entity_types):
+        raise ValueError("Indexing payload 'entity_types' must be a non-empty list[str]")
+    return [item.strip() for item in entity_types]
+
+
+def normalize_prompt_group_payload(group_type: str, payload: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise ValueError("Prompt version payload must be a dict")
+
+    _get_group(group_type)
+    normalized_payload = deepcopy(payload)
+
+    if group_type == "indexing" and "entity_types" in normalized_payload:
+        normalized_payload["entity_types"] = _normalize_entity_types_value(
+            normalized_payload["entity_types"]
+        )
+
+    if group_type == "indexing" and "summary_language" in normalized_payload:
+        summary_language = normalized_payload["summary_language"]
+        if isinstance(summary_language, str):
+            normalized_payload["summary_language"] = summary_language.strip()
+
+    return normalized_payload
+
+
+def _validate_indexing_extras(payload: dict[str, Any]) -> None:
+    if "entity_types" in payload:
+        _normalize_entity_types_value(payload["entity_types"])
 
     if "summary_language" in payload:
         summary_language = payload["summary_language"]
@@ -63,24 +98,22 @@ def _validate_indexing_extras(payload: dict[str, Any]) -> None:
 
 
 def validate_prompt_group_payload(group_type: str, payload: dict[str, Any]) -> None:
-    if not isinstance(payload, dict):
-        raise ValueError("Prompt version payload must be a dict")
-
+    normalized_payload = normalize_prompt_group_payload(group_type, payload)
     group = _get_group(group_type)
     allowed_keys = group["families"] | group["extra_fields"]
-    unknown_keys = sorted(set(payload) - allowed_keys)
+    unknown_keys = sorted(set(normalized_payload) - allowed_keys)
     if unknown_keys:
         raise ValueError(
             f"Prompt version payload for '{group_type}' contains unknown keys: "
             + ", ".join(unknown_keys)
         )
 
-    prompt_subset = project_group_prompt_config(group_type, payload)
+    prompt_subset = project_group_prompt_config(group_type, normalized_payload)
     if prompt_subset:
         validate_prompt_config(prompt_subset, allowed_families=group["families"])
 
     if group_type == "indexing":
-        _validate_indexing_extras(payload)
+        _validate_indexing_extras(normalized_payload)
 
 
 def project_group_prompt_config(group_type: str, payload: dict[str, Any]) -> dict[str, Any]:

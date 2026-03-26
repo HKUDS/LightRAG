@@ -53,7 +53,80 @@
     "deletedMessage": "Deleted {{name}}",
     "deleteConfirm": "Delete {{name}}?",
     "indexingActivateWarning": "Changing indexing configuration can create mixed-schema graph data unless you rebuild the workspace. Continue?",
-    "remove": "Remove"
+    "remove": "Remove",
+    "sectionNotes": "Usage Notes",
+    "sectionVariables": "Variable Guide",
+    "variables": {
+      "entityTypes": "The entity type list allowed in the current workspace. It is injected into prompts that constrain classification.",
+      "language": "The target output language resolved from workspace settings or runtime configuration.",
+      "tupleDelimiter": "The delimiter used between fields in extracted entity and relation rows.",
+      "completionDelimiter": "The literal marker appended after extraction has fully completed.",
+      "examples": "The current example collection joined together and injected into the parent template through {examples}.",
+      "inputText": "The source text chunk being processed in the current extraction call.",
+      "descriptionList": "The JSON list of descriptions that should be merged into one summary.",
+      "descriptionType": "The object type currently being summarized, such as Entity or Relation.",
+      "descriptionName": "The name of the entity or relation currently being summarized.",
+      "summaryLength": "The recommended summary length derived from runtime token budgeting.",
+      "contextData": "The assembled retrieval context, usually containing graph data, text chunks, and references.",
+      "contentData": "The simplified document-chunk-only context used by naive retrieval mode.",
+      "responseType": "The requested answer format, such as multiple paragraphs or bullet points.",
+      "userPrompt": "Additional instructions appended by the user at query time.",
+      "entitiesStr": "The retrieved entity list formatted as JSON.",
+      "relationsStr": "The retrieved relation list formatted as JSON.",
+      "textChunksStr": "The retrieved document chunk list formatted as JSON.",
+      "referenceListStr": "The reference document titles keyed by reference_id.",
+      "query": "The user's raw query text."
+    },
+    "fieldHelp": {
+      "entityTypes": {
+        "description": "Defines the preferred entity type set for indexing. It shapes the extraction boundary and keeps the graph schema stable. Enter values as a comma-separated list such as Person,Organization,Event.",
+        "itemPlaceholder": "Entity types, comma separated"
+      },
+      "summaryLanguage": {
+        "description": "Defines the output language for merged entity or relation descriptions and is reused as {language} in indexing prompts."
+      },
+      "tupleDelimiter": {
+        "description": "Defines the delimiter placed between fields in extraction output rows. The system and continuation prompts require the model to use it exactly."
+      },
+      "completionDelimiter": {
+        "description": "Defines the literal completion marker that signals the extraction run has fully finished."
+      },
+      "entitySystemPrompt": {
+        "description": "The core indexing system prompt. It governs entity and relation extraction rules, output shape, language, and few-shot guidance."
+      },
+      "entityUserPrompt": {
+        "description": "The user-side extraction prompt injected for each text chunk. It mainly carries the input text and per-call constraints."
+      },
+      "entityContinuePrompt": {
+        "description": "Used for continuation passes when the first extraction is incomplete, keeping the same output structure while filling missed items."
+      },
+      "entityExamples": {
+        "description": "The few-shot example list for entity extraction. The whole list is injected into the system prompt to teach the expected format and granularity.",
+        "itemPlaceholder": "Example"
+      },
+      "summaryDescriptions": {
+        "description": "Used when merging repeated entity or relation descriptions into one coherent and objective summary."
+      },
+      "ragResponse": {
+        "description": "The standard RAG answer template, combining graph context, document chunks, and references into the final response."
+      },
+      "naiveRagResponse": {
+        "description": "The answer template for naive retrieval mode, using only document chunk context and references."
+      },
+      "kgQueryContext": {
+        "description": "Formats entities, relations, text chunks, and the reference list into the unified context consumed by graph-aware answer prompts."
+      },
+      "naiveQueryContext": {
+        "description": "Formats document chunks and the reference list into the simplified context consumed by naive answer prompts."
+      },
+      "keywordsExtraction": {
+        "description": "The pre-retrieval keyword extraction template that splits the user query into high-level and low-level retrieval terms."
+      },
+      "keywordsExtractionExamples": {
+        "description": "The few-shot example list for keyword extraction. The whole list is injected to teach the expected JSON output format.",
+        "itemPlaceholder": "Example"
+      }
+    }
   },
   "login": {
     "description": "Please enter your account and password to log in to the system",

@@ -6,22 +6,41 @@ type PromptListFieldEditorProps = {
   value: string[]
   onChange: (value: string[]) => void
   placeholder: string
+  itemLabel: string
 }
 
 export default function PromptListFieldEditor({
   value,
   onChange,
-  placeholder
+  placeholder,
+  itemLabel
 }: PromptListFieldEditorProps) {
   const { t } = useTranslation()
   const items = [...value, '']
 
+  const pruneItems = (itemsToPrune: string[]) => itemsToPrune.filter((entry) => entry.trim().length > 0)
+
   return (
-    <div className="space-y-2">
+    <div className="space-y-3">
       {items.map((item, index) => {
         const isPersisted = index < value.length
         return (
-          <div key={`list-item-${index}`} className="flex items-start gap-2">
+          <div key={`list-item-${index}`} className="rounded-lg border border-border/60 bg-muted/20 p-3">
+            <div className="mb-2 flex items-center justify-between gap-2">
+              <div className="text-xs font-medium text-muted-foreground">
+                {itemLabel} {index + 1}
+              </div>
+              {isPersisted ? (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => onChange(value.filter((_, itemIndex) => itemIndex !== index))}
+                >
+                  {t('promptManagement.remove')}
+                </Button>
+              ) : null}
+            </div>
             <Textarea
               value={item}
               onChange={(event) => {
@@ -29,26 +48,16 @@ export default function PromptListFieldEditor({
                 if (isPersisted) {
                   const nextItems = [...value]
                   nextItems[index] = nextValue
-                  onChange(nextItems.map((entry) => entry.trim()).filter(Boolean))
+                  onChange(pruneItems(nextItems))
                   return
                 }
                 if (nextValue.trim()) {
-                  onChange([...value, nextValue.trim()])
+                  onChange([...value, nextValue])
                 }
               }}
               placeholder={`${placeholder} ${index + 1}`}
-              className="min-h-[56px] text-xs"
+              className="min-h-[160px] resize-y text-xs leading-5"
             />
-            {isPersisted ? (
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={() => onChange(value.filter((_, itemIndex) => itemIndex !== index))}
-              >
-                {t('promptManagement.remove')}
-              </Button>
-            ) : null}
           </div>
         )
       })}

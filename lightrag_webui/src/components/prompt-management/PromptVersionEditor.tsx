@@ -6,6 +6,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card'
 import {
   formatVersionLineageLabel,
   buildPromptEditorSections,
+  getPromptFieldEditorValue,
   getPromptFieldPreview
 } from '@/utils/promptVersioning'
 import PromptListFieldEditor from './PromptListFieldEditor'
@@ -78,6 +79,12 @@ export default function PromptVersionEditor({
   const [payload, setPayload] = useState<Record<string, unknown>>({})
   const [saving, setSaving] = useState(false)
   const [expandedSectionKey, setExpandedSectionKey] = useState<string | null>(null)
+
+  const resizeTextarea = (element: HTMLTextAreaElement | null) => {
+    if (!element) return
+    element.style.height = '0px'
+    element.style.height = `${element.scrollHeight}px`
+  }
 
   useEffect(() => {
     setVersionName(version ? `${version.version_name}-copy` : '')
@@ -174,6 +181,7 @@ export default function PromptVersionEditor({
           const value = getValueAtPath(payload, section.key)
           const preview = getPromptFieldPreview(value)
           const expanded = expandedSectionKey === section.key
+          const sectionDescription = t(section.descriptionKey)
           return (
             <div key={section.key} className="rounded-lg border">
               <button
@@ -187,6 +195,19 @@ export default function PromptVersionEditor({
               >
                 <div className="min-w-0 flex-1">
                   <div className="text-xs font-medium">{section.title}</div>
+                  <div className="mt-1 text-xs leading-5 text-muted-foreground">
+                    {sectionDescription}
+                  </div>
+                  <div className="mt-2 flex flex-wrap gap-1.5">
+                    {section.variables.map((variable) => (
+                      <span
+                        key={`${section.key}-${variable.label}`}
+                        className="rounded-full border border-border/70 bg-muted/30 px-2 py-0.5 font-mono text-[11px] text-muted-foreground"
+                      >
+                        {variable.label}
+                      </span>
+                    ))}
+                  </div>
                   <div className="mt-1 line-clamp-2 text-xs text-muted-foreground break-all">
                     {preview || t('promptManagement.emptyPreview')}
                   </div>
@@ -197,15 +218,56 @@ export default function PromptVersionEditor({
               </button>
               {expanded ? (
                 <div className="border-t p-3">
+                  <div className="mb-3 rounded-md border border-border/60 bg-muted/20 p-3">
+                    <div className="text-xs font-medium">
+                      {t('promptManagement.sectionNotes')}
+                    </div>
+                    <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                      {sectionDescription}
+                    </p>
+                    <div className="mt-3 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                      {t('promptManagement.sectionVariables')}
+                    </div>
+                    <div className="mt-2 space-y-2">
+                      {section.variables.map((variable) => (
+                        <div
+                          key={`${section.key}-${variable.label}-detail`}
+                          className="rounded-md border border-border/60 bg-background/80 p-2"
+                        >
+                          <div className="font-mono text-[11px] text-emerald-600 dark:text-emerald-400">
+                            {variable.label}
+                          </div>
+                          <div className="mt-1 text-xs leading-5 text-muted-foreground">
+                            {t(variable.descriptionKey)}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
                   {section.type === 'list' ? (
                     <PromptListFieldEditor
                       value={Array.isArray(value) ? (value as string[]) : []}
                       onChange={(nextValue) => setPayload((current) => setValueAtPath(current, section.key, nextValue))}
-                      placeholder={section.title}
+                      placeholder={t(section.itemPlaceholderKey || section.descriptionKey)}
+                      itemLabel={t(section.itemPlaceholderKey || section.descriptionKey)}
+                    />
+                  ) : section.type === 'csv' ? (
+                    <Textarea
+                      rows={3}
+                      value={getPromptFieldEditorValue(section, value)}
+                      placeholder={section.itemPlaceholderKey ? t(section.itemPlaceholderKey) : undefined}
+                      className="min-h-[120px] resize-none overflow-hidden leading-5"
+                      ref={resizeTextarea}
+                      onInput={(event) => resizeTextarea(event.currentTarget)}
+                      onChange={(event) => {
+                        resizeTextarea(event.currentTarget)
+                        setPayload((current) => setValueAtPath(current, section.key, event.target.value))
+                      }}
                     />
                   ) : section.type === 'input' ? (
                     <Input
-                      value={typeof value === 'string' ? value : ''}
+                      value={getPromptFieldEditorValue(section, value)}
+                      placeholder={section.itemPlaceholderKey ? t(section.itemPlaceholderKey) : undefined}
                       onChange={(event) =>
                         setPayload((current) => setValueAtPath(current, section.key, event.target.value))
                       }

@@ -11,12 +11,25 @@ from uuid import uuid4
 from lightrag.prompt_versions import (
     PROMPT_VERSION_GROUPS,
     build_localized_seed_versions,
+    normalize_prompt_group_payload,
     validate_prompt_group_payload,
 )
 
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _seed_record_needs_refresh(existing: dict[str, Any], seed: dict[str, Any]) -> bool:
+    fields_to_compare = (
+        "group_type",
+        "version_name",
+        "version_number",
+        "comment",
+        "source_version_id",
+        "payload",
+    )
+    return any(existing.get(field) != seed.get(field) for field in fields_to_compare)
 
 
 class PromptVersionStore:
@@ -63,12 +76,32 @@ class PromptVersionStore:
         seeds = build_localized_seed_versions(locale)
         changed = False
         for group_type in ("indexing", "retrieval"):
-            existing_ids = {
-                version["version_id"] for version in registry[group_type]["versions"]
-            }
             seed = seeds[group_type]
-            if seed["version_id"] not in existing_ids:
-                registry[group_type]["versions"].append(seed)
+            existing_versions = registry[group_type]["versions"]
+            existing_seed = next(
+                (
+                    version
+                    for version in existing_versions
+                    if version["version_id"] == seed["version_id"]
+                ),
+                None,
+            )
+            if existing_seed is None:
+                existing_versions.append(seed)
+                changed = True
+                continue
+
+            if _seed_record_needs_refresh(existing_seed, seed):
+                existing_seed.update(
+                    {
+                        "group_type": seed["group_type"],
+                        "version_name": seed["version_name"],
+                        "version_number": seed["version_number"],
+                        "comment": seed["comment"],
+                        "source_version_id": seed["source_version_id"],
+                        "payload": deepcopy(seed["payload"]),
+                    }
+                )
                 changed = True
         if changed:
             self._atomic_write(registry)
@@ -103,7 +136,8 @@ class PromptVersionStore:
         if group_type not in PROMPT_VERSION_GROUPS:
             raise ValueError(f"Unknown prompt version group '{group_type}'")
 
-        validate_prompt_group_payload(group_type, payload)
+        normalized_payload = normalize_prompt_group_payload(group_type, payload)
+        validate_prompt_group_payload(group_type, normalized_payload)
         registry = self._read_or_default()
         record = {
             "version_id": str(uuid4()),
@@ -113,7 +147,7 @@ class PromptVersionStore:
             "comment": comment,
             "source_version_id": source_version_id,
             "created_at": _utc_now(),
-            "payload": deepcopy(payload),
+            "payload": deepcopy(normalized_payload),
         }
         registry[group_type]["versions"].append(record)
         self._atomic_write(registry)

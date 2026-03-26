@@ -16,7 +16,8 @@ import PromptVersionList from '@/components/prompt-management/PromptVersionList'
 import EmptyCard from '@/components/ui/EmptyCard'
 import Button from '@/components/ui/Button'
 import { useSettingsStore } from '@/stores/settings'
-import { useMemo, useEffect, useState, useCallback } from 'react'
+import { getPreferredPromptVersionId } from '@/utils/promptVersioning'
+import { useMemo, useEffect, useState, useCallback, useRef } from 'react'
 import { toast } from 'sonner'
 import { useTranslation } from 'react-i18next'
 
@@ -32,6 +33,7 @@ export default function PromptManagement() {
   const [loading, setLoading] = useState(true)
   const [diffOpen, setDiffOpen] = useState(false)
   const [diffData, setDiffData] = useState<{ changes: Record<string, { before: unknown; after: unknown }> } | null>(null)
+  const selectionModeRef = useRef<'automatic' | 'manual'>('automatic')
   const locale = language.startsWith('zh') ? 'zh' : 'en'
 
   const loadVersions = useCallback(async () => {
@@ -40,13 +42,19 @@ export default function PromptManagement() {
       await initializePromptConfig(locale)
       const nextRegistry = await getPromptConfigVersions(groupType)
       setRegistry(nextRegistry)
-      const nextSelectedVersionId = nextRegistry.versions.some((version) => version.version_id === selectedVersionId)
-        ? selectedVersionId
-        : nextRegistry.active_version_id || nextRegistry.versions[0]?.version_id || null
+      const nextSelectedVersionId = getPreferredPromptVersionId({
+        versions: nextRegistry.versions,
+        activeVersionId: nextRegistry.active_version_id,
+        selectedVersionId,
+        groupType,
+        locale,
+        selectionMode: selectionModeRef.current
+      })
       setSelectedVersionId(nextSelectedVersionId)
     } catch (error) {
       toast.error(String(error))
     } finally {
+      selectionModeRef.current = 'automatic'
       setLoading(false)
     }
   }, [groupType, locale, selectedVersionId, setSelectedVersionId])
@@ -88,6 +96,7 @@ export default function PromptManagement() {
     const savedVersion = await createPromptConfigVersion(groupType, payload)
     toast.success(t('promptManagement.saved', { name: savedVersion.version_name }))
     await loadVersions()
+    selectionModeRef.current = 'manual'
     setSelectedVersionId(savedVersion.version_id)
   }
 
@@ -110,6 +119,8 @@ export default function PromptManagement() {
       toast.success(t('promptManagement.activated', { name: version.version_name }))
     }
     await loadVersions()
+    selectionModeRef.current = 'manual'
+    setSelectedVersionId(version.version_id)
   }
 
   const handleDeleteVersion = async (version: PromptVersionRecord) => {
@@ -137,6 +148,7 @@ export default function PromptManagement() {
         <PromptGroupSwitcher
           value={groupType}
           onChange={(nextGroup: PromptConfigGroup) => {
+            selectionModeRef.current = 'automatic'
             setGroupType(nextGroup)
             setSelectedVersionId(null)
           }}
@@ -145,7 +157,10 @@ export default function PromptManagement() {
           versions={versions}
           activeVersionId={activeVersionId}
           selectedVersionId={selectedVersionId}
-          onSelectVersion={setSelectedVersionId}
+          onSelectVersion={(versionId) => {
+            selectionModeRef.current = 'manual'
+            setSelectedVersionId(versionId)
+          }}
         />
       </div>
 

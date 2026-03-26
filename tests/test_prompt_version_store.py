@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 
 from lightrag.prompt_version_store import PromptVersionStore
+from lightrag.prompt_versions import build_localized_seed_versions
 
 
 def test_initialize_registry_creates_localized_seed_versions(tmp_path: Path):
@@ -72,3 +73,46 @@ def test_delete_active_version_is_rejected(tmp_path: Path):
 
     with pytest.raises(ValueError):
         store.delete_version("retrieval", active_id)
+
+
+def test_create_version_normalizes_entity_types_csv_string(tmp_path: Path):
+    store = PromptVersionStore(tmp_path, workspace="demo")
+    store.initialize(locale="en")
+
+    created = store.create_version(
+        "indexing",
+        {
+            "entity_types": "Person, Organization，Event",
+            "summary_language": "Chinese",
+        },
+        "indexing-csv",
+        "csv input",
+        None,
+    )
+
+    assert created["payload"]["entity_types"] == ["Person", "Organization", "Event"]
+
+
+def test_initialize_refreshes_stale_localized_seed_payloads(tmp_path: Path):
+    store = PromptVersionStore(tmp_path, workspace="demo")
+    store.initialize(locale="zh")
+
+    registry = store._read_or_default()
+    stale_version = registry["indexing"]["versions"][0]
+    stale_version["payload"]["entity_extraction"]["user_prompt"] = (
+        "请使用中文输出提取结果。\n\n---Task---\n"
+        "Extract entities and relationships from the input text in Data to be Processed below."
+    )
+    store._atomic_write(registry)
+
+    refreshed = store.initialize(locale="zh")
+    expected_prompt = build_localized_seed_versions("zh")["indexing"]["payload"][
+        "entity_extraction"
+    ]["user_prompt"]
+    actual_prompt = refreshed["indexing"]["versions"][0]["payload"]["entity_extraction"][
+        "user_prompt"
+    ]
+
+    assert actual_prompt == expected_prompt
+    assert "---任务---" in actual_prompt
+    assert "Extract entities and relationships from the input text" not in actual_prompt
