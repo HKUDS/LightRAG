@@ -148,6 +148,45 @@ def _chunk_fields_from_status_doc(
     return chunks_list, len(chunks_list)
 
 
+def _resolve_doc_file_path(
+    status_doc: "DocProcessingStatus" | None = None,
+    content_data: dict[str, Any] | None = None,
+) -> str:
+    """Resolve the best available document file path.
+
+    Prefer a non-placeholder path from doc_status, then fall back to full_docs.
+    This avoids overwriting historical file paths with placeholder values during
+    retries or early-cancellation paths.
+    """
+
+    placeholder_paths = {"", "no-file-path", "unknown_source"}
+
+    def _normalize_path(candidate: Any) -> str | None:
+        if not isinstance(candidate, str):
+            return None
+
+        normalized = candidate.strip()
+        if not normalized:
+            return None
+
+        return normalized
+
+    candidates = [
+        _normalize_path(getattr(status_doc, "file_path", None)),
+        _normalize_path(content_data.get("file_path") if content_data else None),
+    ]
+
+    for candidate in candidates:
+        if candidate and candidate not in placeholder_paths:
+            return candidate
+
+    for candidate in candidates:
+        if candidate:
+            return "unknown_source" if candidate == "no-file-path" else candidate
+
+    return "unknown_source"
+
+
 def _normalize_string_list(raw_values: Any, context: str = "") -> list[str]:
     """Return a list of non-empty strings from raw_values.
 
@@ -1616,9 +1655,7 @@ class LightRAG:
             for doc_id in inconsistent_docs:
                 try:
                     status_doc = to_process_docs[doc_id]
-                    file_path = (
-                        getattr(status_doc, "file_path", None) or "unknown_source"
-                    )
+                    file_path = _resolve_doc_file_path(status_doc=status_doc)
 
                     # Delete doc_status entry
                     await self.doc_status.delete([doc_id])
@@ -1667,6 +1704,10 @@ class LightRAG:
                     preserved_chunks_list, preserved_chunks_count = (
                         _chunk_fields_from_status_doc(status_doc)
                     )
+                    resolved_file_path = _resolve_doc_file_path(
+                        status_doc=status_doc,
+                        content_data=content_data,
+                    )
                     # Prepare document for status reset to PENDING
                     docs_to_reset[doc_id] = {
                         "status": DocStatus.PENDING,
@@ -1676,8 +1717,7 @@ class LightRAG:
                         "chunks_list": preserved_chunks_list,
                         "created_at": status_doc.created_at,
                         "updated_at": datetime.now(timezone.utc).isoformat(),
-                        "file_path": getattr(status_doc, "file_path", None)
-                        or "unknown_source",
+                        "file_path": resolved_file_path,
                         "track_id": getattr(status_doc, "track_id", ""),
                         # Clear any error messages and processing metadata
                         "error_msg": "",
@@ -1686,6 +1726,7 @@ class LightRAG:
 
                     # Update the status in to_process_docs as well
                     status_doc.status = DocStatus.PENDING
+                    status_doc.file_path = resolved_file_path
                     reset_count += 1
 
         # Update doc_status storage if there are documents to reset
@@ -1849,13 +1890,14 @@ class LightRAG:
                 ) -> None:
                     """Process single document"""
                     # Initialize variables at the start to prevent UnboundLocalError in error handling
-                    file_path = "unknown_source"
+                    file_path = _resolve_doc_file_path(status_doc=status_doc)
                     current_file_number = 0
                     file_extraction_stage_ok = False
                     processing_start_time = int(time.time())
                     first_stage_tasks = []
                     entity_relation_task = None
                     chunks: dict[str, Any] = {}
+                    content_data: dict[str, Any] | None = None
 
                     def get_failed_chunk_snapshot() -> tuple[list[str], int]:
                         if chunks:
@@ -1869,16 +1911,23 @@ class LightRAG:
                         first_stage_tasks = []
                         entity_relation_task = None
                         try:
-                            # Check for cancellation before starting document processing
+                            # Resolve file_path from full_docs before honoring a queued
+                            # cancellation so corrupted doc_status placeholders do not
+                            # get written back again during retry/cancel flows.
+                            content_data = await self.full_docs.get_by_id(doc_id)
+                            if content_data:
+                                file_path = _resolve_doc_file_path(
+                                    status_doc=status_doc,
+                                    content_data=content_data,
+                                )
+                                status_doc.file_path = file_path
+
+                            # Check for cancellation before starting document processing.
+                            # file_path is resolved before this check so queued documents
+                            # do not lose their source path on early cancellation.
                             async with pipeline_status_lock:
                                 if pipeline_status.get("cancellation_requested", False):
                                     raise PipelineCancelledException("User cancelled")
-
-                            # Get file path from status document
-                            file_path = (
-                                getattr(status_doc, "file_path", None)
-                                or "unknown_source"
-                            )
 
                             async with pipeline_status_lock:
                                 # Update processed file count and save current file number
@@ -1906,7 +1955,6 @@ class LightRAG:
                                     )
 
                             # Get document content from full_docs
-                            content_data = await self.full_docs.get_by_id(doc_id)
                             if not content_data:
                                 raise Exception(
                                     f"Document content not found in full_docs for doc_id: {doc_id}"
