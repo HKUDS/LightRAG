@@ -1,0 +1,152 @@
+# syntax=docker/dockerfile:1
+
+ARG BUN_IMAGE=oven/bun:1
+ARG UV_IMAGE=ghcr.io/astral-sh/uv:python3.12-bookworm-slim
+ARG UV_BINARY_IMAGE=ghcr.io/astral-sh/uv:latest
+ARG PYTHON_IMAGE=python:3.12-slim
+
+# Frontend build stage
+# Build frontend assets on the native build platform to avoid
+# cross-architecture emulation issues during multi-platform builds.
+FROM --platform=$BUILDPLATFORM ${BUN_IMAGE} AS frontend-builder
+
+ARG BUN_REGISTRY=https://registry.npmmirror.com/
+
+WORKDIR /app
+
+# Copy frontend source code
+COPY lightrag_webui/ ./lightrag_webui/
+
+# Build frontend assets for inclusion in the API package
+RUN --mount=type=cache,target=/root/.bun/install/cache \
+    printf 'registry=%s\n' "$BUN_REGISTRY" > /root/.npmrc \
+    && cd lightrag_webui \
+    && bun install --frozen-lockfile \
+    && bun run build
+
+# Python build stage - using uv for faster package installation
+FROM ${UV_IMAGE} AS builder
+
+ARG DEBIAN_MIRROR=https://mirrors.tuna.tsinghua.edu.cn/debian
+ARG DEBIAN_SECURITY_MIRROR=https://mirrors.tuna.tsinghua.edu.cn/debian-security
+ARG PYTHON_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
+ARG UV_DEFAULT_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple
+ARG RUSTUP_DIST_SERVER=https://rsproxy.cn
+ARG RUSTUP_UPDATE_ROOT=https://rsproxy.cn/rustup
+ARG CARGO_REGISTRY_INDEX=sparse+https://rsproxy.cn/index/
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV UV_SYSTEM_PYTHON=1
+ENV UV_COMPILE_BYTECODE=1
+ENV UV_DEFAULT_INDEX=${UV_DEFAULT_INDEX}
+ENV PIP_INDEX_URL=${PYTHON_INDEX_URL}
+ENV RUSTUP_DIST_SERVER=${RUSTUP_DIST_SERVER}
+ENV RUSTUP_UPDATE_ROOT=${RUSTUP_UPDATE_ROOT}
+
+WORKDIR /app
+
+# Install system deps (Rust is required by some wheels)
+RUN set -eux; \
+    for sources_file in /etc/apt/sources.list /etc/apt/sources.list.d/debian.sources; do \
+      if [ -f "$sources_file" ]; then \
+        sed -i \
+          -e "s|http://deb.debian.org/debian|${DEBIAN_MIRROR}|g" \
+          -e "s|https://deb.debian.org/debian|${DEBIAN_MIRROR}|g" \
+          -e "s|http://deb.debian.org/debian-security|${DEBIAN_SECURITY_MIRROR}|g" \
+          -e "s|https://deb.debian.org/debian-security|${DEBIAN_SECURITY_MIRROR}|g" \
+          -e "s|http://security.debian.org/debian-security|${DEBIAN_SECURITY_MIRROR}|g" \
+          -e "s|https://security.debian.org/debian-security|${DEBIAN_SECURITY_MIRROR}|g" \
+          "$sources_file"; \
+      fi; \
+    done; \
+    mkdir -p /root/.cargo; \
+    printf '[source.crates-io]\nreplace-with = "rsproxy"\n\n[source.rsproxy]\nregistry = "%s"\n' "$CARGO_REGISTRY_INDEX" > /root/.cargo/config.toml; \
+    apt-get update \
+    && apt-get install -y --no-install-recommends \
+        curl \
+        build-essential \
+        pkg-config \
+    && rm -rf /var/lib/apt/lists/* \
+    && curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+
+ENV PATH="/root/.cargo/bin:/root/.local/bin:${PATH}"
+
+# Ensure shared data directory exists for uv caches
+RUN mkdir -p /root/.local/share/uv
+
+# Copy project metadata and sources
+COPY pyproject.toml .
+COPY setup.py .
+COPY uv.lock .
+
+# Install base, API, and offline extras without the project to improve caching
+RUN --mount=type=cache,target=/root/.local/share/uv \
+    uv sync --frozen --no-dev --extra api --extra offline --no-install-project --no-editable
+
+# Copy project sources after dependency layer
+COPY lightrag/ ./lightrag/
+
+# Include pre-built frontend assets from the previous stage
+COPY --from=frontend-builder /app/lightrag/api/webui ./lightrag/api/webui
+
+# Sync project in non-editable mode and ensure pip is available for runtime installs
+RUN --mount=type=cache,target=/root/.local/share/uv \
+    uv sync --frozen --no-dev --extra api --extra offline --no-editable \
+    && /app/.venv/bin/python -m ensurepip --upgrade
+
+# Prepare offline cache directory and pre-populate tiktoken data
+# Use uv run to execute commands from the virtual environment
+RUN mkdir -p /app/data/tiktoken \
+    && uv run lightrag-download-cache --cache-dir /app/data/tiktoken || status=$?; \
+    if [ -n "${status:-}" ] && [ "$status" -ne 0 ] && [ "$status" -ne 2 ]; then exit "$status"; fi
+
+# uv binary stage
+FROM ${UV_BINARY_IMAGE} AS uv-binary
+
+# Final stage
+FROM ${PYTHON_IMAGE}
+
+ARG PYTHON_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
+ARG UV_DEFAULT_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple
+
+WORKDIR /app
+
+# Install uv for package management
+COPY --from=uv-binary /uv /usr/local/bin/uv
+
+ENV UV_SYSTEM_PYTHON=1
+ENV UV_DEFAULT_INDEX=${UV_DEFAULT_INDEX}
+ENV PIP_INDEX_URL=${PYTHON_INDEX_URL}
+
+# Copy installed packages and application code
+COPY --from=builder /root/.local /root/.local
+COPY --from=builder /app/.venv /app/.venv
+COPY --from=builder /app/lightrag ./lightrag
+COPY pyproject.toml .
+COPY setup.py .
+COPY uv.lock .
+
+# Ensure the installed scripts are on PATH
+ENV PATH=/app/.venv/bin:/root/.local/bin:$PATH
+
+# Install dependencies with uv sync (uses locked versions from uv.lock)
+# And ensure pip is available for runtime installs
+RUN --mount=type=cache,target=/root/.local/share/uv \
+    uv sync --frozen --no-dev --extra api --extra offline --no-editable \
+    && /app/.venv/bin/python -m ensurepip --upgrade
+
+# Create persistent data directories AFTER package installation
+RUN mkdir -p /app/data/rag_storage /app/data/inputs /app/data/tiktoken
+
+# Copy offline cache into the newly created directory
+COPY --from=builder /app/data/tiktoken /app/data/tiktoken
+
+# Point to the prepared cache
+ENV TIKTOKEN_CACHE_DIR=/app/data/tiktoken
+ENV WORKING_DIR=/app/data/rag_storage
+ENV INPUT_DIR=/app/data/inputs
+
+# Expose API port
+EXPOSE 9621
+
+ENTRYPOINT ["python", "-m", "lightrag.api.lightrag_server"]

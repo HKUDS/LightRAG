@@ -81,6 +81,13 @@ using the published container image, run:
 docker compose -f docker-compose.source.yml up --build -d
 ```
 
+To use the dedicated China-friendly Dockerfile variant with mainland package
+mirrors, run:
+
+```bash
+LIGHTRAG_DOCKERFILE=Dockerfile.cn docker compose -f docker-compose.source.yml up --build -d
+```
+
 If you used the interactive setup, start the generated stack with:
 
 ```bash
@@ -265,11 +272,20 @@ docker compose up --build
 # Build from the local source checkout without using the published app image
 docker compose -f docker-compose.source.yml up --build
 
+# Build from the China-friendly Dockerfile variant
+LIGHTRAG_DOCKERFILE=Dockerfile.cn docker compose -f docker-compose.source.yml up --build
+
 # Or explicitly enable BuildKit if needed
 DOCKER_BUILDKIT=1 docker compose up --build
 ```
 
 **Note**: BuildKit is automatically enabled by the `# syntax=docker/dockerfile:1` directive in the Dockerfile, ensuring optimal caching performance.
+
+The `docker-compose.source.yml` build definition also forwards optional
+`LIGHTRAG_*` environment variables such as `LIGHTRAG_BUN_IMAGE`,
+`LIGHTRAG_UV_IMAGE`, `LIGHTRAG_PYTHON_IMAGE`, `LIGHTRAG_PYTHON_INDEX_URL`, and
+`LIGHTRAG_BUN_REGISTRY`, so you can replace the default mainland mirrors or
+point base images at your own registry mirror without editing the compose file.
 
 ### For production release
 

@@ -5,7 +5,20 @@ services:
   lightrag:
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: ${LIGHTRAG_DOCKERFILE:-Dockerfile}
+      args:
+        BUN_IMAGE: ${LIGHTRAG_BUN_IMAGE:-oven/bun:1}
+        UV_IMAGE: ${LIGHTRAG_UV_IMAGE:-ghcr.io/astral-sh/uv:python3.12-bookworm-slim}
+        UV_BINARY_IMAGE: ${LIGHTRAG_UV_BINARY_IMAGE:-ghcr.io/astral-sh/uv:latest}
+        PYTHON_IMAGE: ${LIGHTRAG_PYTHON_IMAGE:-python:3.12-slim}
+        DEBIAN_MIRROR: ${LIGHTRAG_DEBIAN_MIRROR:-https://mirrors.tuna.tsinghua.edu.cn/debian}
+        DEBIAN_SECURITY_MIRROR: ${LIGHTRAG_DEBIAN_SECURITY_MIRROR:-https://mirrors.tuna.tsinghua.edu.cn/debian-security}
+        PYTHON_INDEX_URL: ${LIGHTRAG_PYTHON_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}
+        UV_DEFAULT_INDEX: ${LIGHTRAG_UV_DEFAULT_INDEX:-https://pypi.tuna.tsinghua.edu.cn/simple}
+        BUN_REGISTRY: ${LIGHTRAG_BUN_REGISTRY:-https://registry.npmmirror.com/}
+        RUSTUP_DIST_SERVER: ${LIGHTRAG_RUSTUP_DIST_SERVER:-https://rsproxy.cn}
+        RUSTUP_UPDATE_ROOT: ${LIGHTRAG_RUSTUP_UPDATE_ROOT:-https://rsproxy.cn/rustup}
+        CARGO_REGISTRY_INDEX: ${LIGHTRAG_CARGO_REGISTRY_INDEX:-sparse+https://rsproxy.cn/index/}
     ports:
       - "${HOST:-0.0.0.0}:${PORT:-9621}:9621"
     volumes:
