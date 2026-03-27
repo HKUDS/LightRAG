@@ -140,6 +140,8 @@
         "all": "Tất cả",
         "completed": "Hoàn thành",
         "preprocessed": "Đã tiền xử lý",
+        "parsing": "Đang phân tích cú pháp",
+        "analyzing": "Đang phân tích",
         "processing": "Đang xử lý",
         "pending": "Đang chờ",
         "failed": "Thất bại"

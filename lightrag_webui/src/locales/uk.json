@@ -140,6 +140,8 @@
         "all": "Всі",
         "completed": "Завершено",
         "preprocessed": "Попередньо оброблено",
+        "parsing": "Розбір",
+        "analyzing": "Аналіз",
         "processing": "Обробка",
         "pending": "Очікування",
         "failed": "Невдало"

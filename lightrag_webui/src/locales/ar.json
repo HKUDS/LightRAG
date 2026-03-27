@@ -140,6 +140,8 @@
         "all": "الكل",
         "completed": "مكتمل",
         "preprocessed": "مُعالج مسبقًا",
+        "parsing": "جارٍ التحليل الأولي",
+        "analyzing": "جارٍ التحليل",
         "processing": "قيد المعالجة",
         "pending": "معلق",
         "failed": "فشل"

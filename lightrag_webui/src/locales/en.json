@@ -140,6 +140,8 @@
         "all": "All",
         "completed": "Completed",
         "preprocessed": "Preprocessed",
+        "parsing": "Parsing",
+        "analyzing": "Analyzing",
         "processing": "Processing",
         "pending": "Pending",
         "failed": "Failed"
