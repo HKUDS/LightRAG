@@ -35,7 +35,7 @@ import { useBackendState } from '@/stores/state'
 import { RefreshCwIcon, ActivityIcon, ArrowUpIcon, ArrowDownIcon, RotateCcwIcon, CheckSquareIcon, XIcon, AlertTriangle, Info } from 'lucide-react'
 import PipelineStatusDialog from '@/components/documents/PipelineStatusDialog'
 
-type StatusBucket = Exclude<DocStatus, 'parsing' | 'analyzing'>
+type StatusBucket = 'processed' | 'analyzing' | 'processing' | 'pending' | 'failed'
 type StatusFilter = StatusBucket | 'all'
 type StatusDisplayConfig = {
   labelKey: string
@@ -43,7 +43,7 @@ type StatusDisplayConfig = {
 }
 
 const PROCESSING_LIKE_STATUSES: DocStatus[] = ['parsing', 'analyzing', 'processing']
-const STATUS_BUCKETS: StatusBucket[] = ['processed', 'preprocessed', 'processing', 'pending', 'failed']
+const STATUS_BUCKETS: StatusBucket[] = ['processed', 'analyzing', 'processing', 'pending', 'failed']
 
 // Utility functions defined outside component for better performance and to avoid dependency issues
 const getCountValue = (counts: Record<string, number>, ...keys: string[]): number => {
@@ -60,10 +60,13 @@ const getAggregateCount = (counts: Record<string, number>, ...keys: string[]): n
   keys.reduce((total, key) => total + getCountValue(counts, key), 0)
 
 const getStatusBucket = (status: DocStatus): StatusBucket => {
+  if (status === 'preprocessed' || status === 'analyzing') {
+    return 'analyzing'
+  }
   if (PROCESSING_LIKE_STATUSES.includes(status)) {
     return 'processing'
   }
-  return status as Exclude<DocStatus, 'parsing' | 'analyzing'>
+  return status as Exclude<DocStatus, 'parsing' | 'analyzing' | 'preprocessed'>
 }
 
 const hasActiveDocumentsStatus = (counts: Record<string, number>): boolean =>
@@ -288,7 +291,7 @@ export default function DocumentManager() {
   const [pageByStatus, setPageByStatus] = useState<Record<StatusFilter, number>>({
     all: 1,
     processed: 1,
-    preprocessed: 1,
+    analyzing: 1,
     processing: 1,
     pending: 1,
     failed: 1,
@@ -355,7 +358,7 @@ export default function DocumentManager() {
     setPageByStatus({
       all: 1,
       processed: 1,
-      preprocessed: 1,
+      analyzing: 1,
       processing: 1,
       pending: 1,
       failed: 1,
@@ -397,42 +400,42 @@ export default function DocumentManager() {
 
   const getStatusDisplay = useCallback((status: DocStatus): StatusDisplayConfig => {
     switch (status) {
-      case 'processed':
-        return {
-          labelKey: 'documentPanel.documentManager.status.completed',
-          className: 'text-green-600'
-        }
-      case 'preprocessed':
-        return {
-          labelKey: 'documentPanel.documentManager.status.preprocessed',
-          className: 'text-purple-600'
-        }
-      case 'parsing':
-        return {
-          labelKey: 'documentPanel.documentManager.status.parsing',
-          className: 'text-cyan-600'
-        }
-      case 'analyzing':
-        return {
-          labelKey: 'documentPanel.documentManager.status.analyzing',
-          className: 'text-indigo-600'
-        }
-      case 'processing':
-        return {
-          labelKey: 'documentPanel.documentManager.status.processing',
-          className: 'text-blue-600'
-        }
-      case 'pending':
-        return {
-          labelKey: 'documentPanel.documentManager.status.pending',
-          className: 'text-yellow-600'
-        }
-      case 'failed':
-      default:
-        return {
-          labelKey: 'documentPanel.documentManager.status.failed',
-          className: 'text-red-600'
-        }
+    case 'processed':
+      return {
+        labelKey: 'documentPanel.documentManager.status.completed',
+        className: 'text-green-600'
+      }
+    case 'preprocessed':
+      return {
+        labelKey: 'documentPanel.documentManager.status.preprocessed',
+        className: 'text-purple-600'
+      }
+    case 'parsing':
+      return {
+        labelKey: 'documentPanel.documentManager.status.parsing',
+        className: 'text-cyan-600'
+      }
+    case 'analyzing':
+      return {
+        labelKey: 'documentPanel.documentManager.status.analyzing',
+        className: 'text-indigo-600'
+      }
+    case 'processing':
+      return {
+        labelKey: 'documentPanel.documentManager.status.processing',
+        className: 'text-blue-600'
+      }
+    case 'pending':
+      return {
+        labelKey: 'documentPanel.documentManager.status.pending',
+        className: 'text-yellow-600'
+      }
+    case 'failed':
+    default:
+      return {
+        labelKey: 'documentPanel.documentManager.status.failed',
+        className: 'text-red-600'
+      }
     }
   }, [])
 
@@ -542,9 +545,9 @@ export default function DocumentManager() {
   }, [docs]);
 
   const processedCount = getCountValue(statusCounts, 'PROCESSED', 'processed') || documentCounts.processed || 0;
-  const preprocessedCount =
-    getCountValue(statusCounts, 'PREPROCESSED', 'preprocessed') ||
-    documentCounts.preprocessed ||
+  const analyzingCount =
+    getAggregateCount(statusCounts, 'ANALYZING', 'analyzing', 'PREPROCESSED', 'preprocessed') ||
+    documentCounts.analyzing ||
     0;
   const processingCount =
     getAggregateCount(statusCounts, 'PROCESSING', 'processing', 'PARSING', 'parsing', 'ANALYZING', 'analyzing') ||
@@ -556,7 +559,7 @@ export default function DocumentManager() {
   // Store previous status counts
   const prevStatusCounts = useRef({
     processed: 0,
-    preprocessed: 0,
+    analyzing: 0,
     processing: 0,
     pending: 0,
     failed: 0
@@ -950,7 +953,7 @@ export default function DocumentManager() {
     setPageByStatus({
       all: 1,
       processed: 1,
-      preprocessed: 1,
+      analyzing: 1,
       processing: 1,
       pending: 1,
       failed: 1,
@@ -1054,7 +1057,7 @@ export default function DocumentManager() {
     // Get new status counts
     const newStatusCounts = {
       processed: docs?.statuses?.processed?.length || 0,
-      preprocessed: docs?.statuses?.preprocessed?.length || 0,
+      analyzing: docs?.statuses?.analyzing?.length || 0,
       processing: docs?.statuses?.processing?.length || 0,
       pending: docs?.statuses?.pending?.length || 0,
       failed: docs?.statuses?.failed?.length || 0
@@ -1285,15 +1288,15 @@ export default function DocumentManager() {
                   </Button>
                   <Button
                     size="sm"
-                    variant={statusFilter === 'preprocessed' ? 'secondary' : 'outline'}
-                    onClick={() => handleStatusFilterChange('preprocessed')}
+                    variant={statusFilter === 'analyzing' ? 'secondary' : 'outline'}
+                    onClick={() => handleStatusFilterChange('analyzing')}
                     disabled={isRefreshing}
                     className={cn(
-                      preprocessedCount > 0 ? 'text-purple-600' : 'text-gray-500',
-                      statusFilter === 'preprocessed' && 'bg-purple-100 dark:bg-purple-900/30 font-medium border border-purple-400 dark:border-purple-600 shadow-sm'
+                      analyzingCount > 0 ? 'text-indigo-600' : 'text-gray-500',
+                      statusFilter === 'analyzing' && 'bg-indigo-100 dark:bg-indigo-900/30 font-medium border border-indigo-400 dark:border-indigo-600 shadow-sm'
                     )}
                   >
-                    {t('documentPanel.documentManager.status.preprocessed')} ({preprocessedCount})
+                    {t('documentPanel.documentManager.status.analyzing')} ({analyzingCount})
                   </Button>
                   <Button
                     size="sm"
