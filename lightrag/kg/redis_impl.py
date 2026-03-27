@@ -13,7 +13,7 @@ if not pm.is_installed("redis"):
 # aioredis is a depricated library, replaced with redis
 from redis.asyncio import Redis, ConnectionPool  # type: ignore
 from redis.exceptions import RedisError, ConnectionError, TimeoutError  # type: ignore
-from lightrag.utils import logger, get_pinyin_sort_key
+from lightrag.utils import logger, get_pinyin_sort_key, _cooperative_yield
 
 from lightrag.base import (
     BaseKVStorage,
@@ -328,30 +328,33 @@ class RedisKVStorage(BaseKVStorage):
             try:
                 # Check which keys already exist to determine create vs update
                 pipe = redis.pipeline()
-                for k in data.keys():
+                for i, k in enumerate(data.keys(), start=1):
                     pipe.exists(f"{self.final_namespace}:{k}")
+                    await _cooperative_yield(i)
                 exists_results = await pipe.execute()
 
                 # Add timestamps to data
-                for i, (k, v) in enumerate(data.items()):
+                for i, (k, v) in enumerate(data.items(), start=1):
                     # For text_chunks namespace, ensure llm_cache_list field exists
                     if self.namespace.endswith("text_chunks"):
                         if "llm_cache_list" not in v:
                             v["llm_cache_list"] = []
 
                     # Add timestamps based on whether key exists
-                    if exists_results[i]:  # Key exists, only update update_time
+                    if exists_results[i - 1]:  # Key exists, only update update_time
                         v["update_time"] = current_time
                     else:  # New key, set both create_time and update_time
                         v["create_time"] = current_time
                         v["update_time"] = current_time
 
                     v["_id"] = k
+                    await _cooperative_yield(i)
 
                 # Store the data
                 pipe = redis.pipeline()
-                for k, v in data.items():
+                for i, (k, v) in enumerate(data.items(), start=1):
                     pipe.set(f"{self.final_namespace}:{k}", json.dumps(v))
+                    await _cooperative_yield(i)
                 await pipe.execute()
 
             except json.JSONDecodeError as e:
@@ -867,13 +870,15 @@ class RedisDocStatusStorage(DocStatusStorage):
         async with self._get_redis_connection() as redis:
             try:
                 # Ensure chunks_list field exists for new documents
-                for doc_id, doc_data in data.items():
+                for i, (doc_id, doc_data) in enumerate(data.items(), start=1):
                     if "chunks_list" not in doc_data:
                         doc_data["chunks_list"] = []
+                    await _cooperative_yield(i)
 
                 pipe = redis.pipeline()
-                for k, v in data.items():
+                for i, (k, v) in enumerate(data.items(), start=1):
                     pipe.set(f"{self.final_namespace}:{k}", json.dumps(v))
+                    await _cooperative_yield(i)
                 await pipe.execute()
             except json.JSONDecodeError as e:
                 logger.error(f"[{self.workspace}] JSON decode error during upsert: {e}")
