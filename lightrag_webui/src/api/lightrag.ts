@@ -183,7 +183,14 @@ export type DeleteDocResponse = {
   doc_id: string
 }
 
-export type DocStatus = 'pending' | 'processing' | 'preprocessed' | 'processed' | 'failed'
+export type DocStatus =
+  | 'pending'
+  | 'parsing'
+  | 'analyzing'
+  | 'processing'
+  | 'preprocessed'
+  | 'processed'
+  | 'failed'
 
 export type DocStatusResponse = {
   id: string
@@ -200,7 +207,7 @@ export type DocStatusResponse = {
 }
 
 export type DocsStatusesResponse = {
-  statuses: Record<DocStatus, DocStatusResponse[]>
+  statuses: Partial<Record<DocStatus, DocStatusResponse[]>>
 }
 
 export type TrackStatusResponse = {
