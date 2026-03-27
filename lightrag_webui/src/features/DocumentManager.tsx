@@ -35,7 +35,15 @@ import { useBackendState } from '@/stores/state'
 import { RefreshCwIcon, ActivityIcon, ArrowUpIcon, ArrowDownIcon, RotateCcwIcon, CheckSquareIcon, XIcon, AlertTriangle, Info } from 'lucide-react'
 import PipelineStatusDialog from '@/components/documents/PipelineStatusDialog'
 
-type StatusFilter = DocStatus | 'all';
+type StatusBucket = Exclude<DocStatus, 'parsing' | 'analyzing'>
+type StatusFilter = StatusBucket | 'all'
+type StatusDisplayConfig = {
+  labelKey: string
+  className: string
+}
+
+const PROCESSING_LIKE_STATUSES: DocStatus[] = ['parsing', 'analyzing', 'processing']
+const STATUS_BUCKETS: StatusBucket[] = ['processed', 'preprocessed', 'processing', 'pending', 'failed']
 
 // Utility functions defined outside component for better performance and to avoid dependency issues
 const getCountValue = (counts: Record<string, number>, ...keys: string[]): number => {
@@ -48,10 +56,33 @@ const getCountValue = (counts: Record<string, number>, ...keys: string[]): numbe
   return 0
 }
 
+const getAggregateCount = (counts: Record<string, number>, ...keys: string[]): number =>
+  keys.reduce((total, key) => total + getCountValue(counts, key), 0)
+
+const getStatusBucket = (status: DocStatus): StatusBucket => {
+  if (PROCESSING_LIKE_STATUSES.includes(status)) {
+    return 'processing'
+  }
+  return status as Exclude<DocStatus, 'parsing' | 'analyzing'>
+}
+
 const hasActiveDocumentsStatus = (counts: Record<string, number>): boolean =>
-  getCountValue(counts, 'PROCESSING', 'processing') > 0 ||
+  getAggregateCount(counts, 'PROCESSING', 'processing', 'PARSING', 'parsing', 'ANALYZING', 'analyzing') > 0 ||
   getCountValue(counts, 'PENDING', 'pending') > 0 ||
   getCountValue(counts, 'PREPROCESSED', 'preprocessed') > 0
+
+const buildLegacyDocs = (documents: DocStatusResponse[]): DocsStatusesResponse => {
+  const statuses = STATUS_BUCKETS.reduce<Record<StatusBucket, DocStatusResponse[]>>((acc, status) => {
+    acc[status] = []
+    return acc
+  }, {} as Record<StatusBucket, DocStatusResponse[]>)
+
+  documents.forEach((doc) => {
+    statuses[getStatusBucket(doc.status)].push(doc)
+  })
+
+  return { statuses }
+}
 
 const getDisplayFileName = (doc: DocStatusResponse, maxLength: number = 20): string => {
   // Check if file_path exists and is a non-empty string
@@ -200,6 +231,7 @@ type SortDirection = 'asc' | 'desc';
 export default function DocumentManager() {
   // Track component mount status
   const isMountedRef = useRef(true);
+  const latestRequestIdRef = useRef(0);
 
   // Set up mount/unmount status tracking
   useEffect(() => {
@@ -363,6 +395,47 @@ export default function DocumentManager() {
   // Define a new type that includes status information
   type DocStatusWithStatus = DocStatusResponse & { status: DocStatus };
 
+  const getStatusDisplay = useCallback((status: DocStatus): StatusDisplayConfig => {
+    switch (status) {
+      case 'processed':
+        return {
+          labelKey: 'documentPanel.documentManager.status.completed',
+          className: 'text-green-600'
+        }
+      case 'preprocessed':
+        return {
+          labelKey: 'documentPanel.documentManager.status.preprocessed',
+          className: 'text-purple-600'
+        }
+      case 'parsing':
+        return {
+          labelKey: 'documentPanel.documentManager.status.parsing',
+          className: 'text-cyan-600'
+        }
+      case 'analyzing':
+        return {
+          labelKey: 'documentPanel.documentManager.status.analyzing',
+          className: 'text-indigo-600'
+        }
+      case 'processing':
+        return {
+          labelKey: 'documentPanel.documentManager.status.processing',
+          className: 'text-blue-600'
+        }
+      case 'pending':
+        return {
+          labelKey: 'documentPanel.documentManager.status.pending',
+          className: 'text-yellow-600'
+        }
+      case 'failed':
+      default:
+        return {
+          labelKey: 'documentPanel.documentManager.status.failed',
+          className: 'text-red-600'
+        }
+    }
+  }, [])
+
   const filteredAndSortedDocs = useMemo(() => {
     // Use currentPageDocs directly if available (from paginated API)
     // This preserves the backend's sort order and prevents status grouping
@@ -382,7 +455,7 @@ export default function DocumentManager() {
     if (statusFilter === 'all') {
       // When filter is 'all', include documents from all statuses
       Object.entries(docs.statuses).forEach(([status, documents]) => {
-        documents.forEach(doc => {
+        (documents ?? []).forEach(doc => {
           allDocuments.push({
             ...doc,
             status: status as DocStatus
@@ -461,7 +534,7 @@ export default function DocumentManager() {
     const counts: Record<string, number> = { all: 0 };
 
     Object.entries(docs.statuses).forEach(([status, documents]) => {
-      counts[status as DocStatus] = documents.length;
+      counts[status] = documents.length;
       counts.all += documents.length;
     });
 
@@ -473,7 +546,10 @@ export default function DocumentManager() {
     getCountValue(statusCounts, 'PREPROCESSED', 'preprocessed') ||
     documentCounts.preprocessed ||
     0;
-  const processingCount = getCountValue(statusCounts, 'PROCESSING', 'processing') || documentCounts.processing || 0;
+  const processingCount =
+    getAggregateCount(statusCounts, 'PROCESSING', 'processing', 'PARSING', 'parsing', 'ANALYZING', 'analyzing') ||
+    documentCounts.processing ||
+    0;
   const pendingCount = getCountValue(statusCounts, 'PENDING', 'pending') || documentCounts.pending || 0;
   const failedCount = getCountValue(statusCounts, 'FAILED', 'failed') || documentCounts.failed || 0;
 
@@ -567,18 +643,7 @@ export default function DocumentManager() {
     setCurrentPageDocs(response.documents);
     setStatusCounts(response.status_counts);
 
-    // Update legacy docs state for backward compatibility
-    const legacyDocs: DocsStatusesResponse = {
-      statuses: {
-        processed: response.documents.filter((doc: DocStatusResponse) => doc.status === 'processed'),
-        preprocessed: response.documents.filter((doc: DocStatusResponse) => doc.status === 'preprocessed'),
-        processing: response.documents.filter((doc: DocStatusResponse) => doc.status === 'processing'),
-        pending: response.documents.filter((doc: DocStatusResponse) => doc.status === 'pending'),
-        failed: response.documents.filter((doc: DocStatusResponse) => doc.status === 'failed')
-      }
-    };
-
-    setDocs(response.pagination.total_count > 0 ? legacyDocs : null);
+    setDocs(response.pagination.total_count > 0 ? buildLegacyDocs(response.documents) : null);
   }, []);
 
   // Utility function to create timeout wrapper for API calls
@@ -679,6 +744,9 @@ export default function DocumentManager() {
     resetToFirst?: boolean, // Whether to force reset to first page
     customTimeout?: number // Optional custom timeout in milliseconds (uses withTimeout default if not provided)
   ) => {
+    const requestId = ++latestRequestIdRef.current
+    const isLatestRequest = () => isMountedRef.current && requestId === latestRequestIdRef.current
+
     try {
       if (!isMountedRef.current) return;
 
@@ -702,7 +770,7 @@ export default function DocumentManager() {
         'Document fetch timeout'
       );
 
-      if (!isMountedRef.current) return;
+      if (!isLatestRequest()) return;
 
       // Boundary case handling: if target page has no data but total count > 0
       if (response.documents.length === 0 && response.pagination.total_count > 0) {
@@ -722,7 +790,7 @@ export default function DocumentManager() {
             'Document fetch timeout'
           );
 
-          if (!isMountedRef.current) return;
+          if (!isLatestRequest()) return;
 
           // Update page state to last page
           setPageByStatus(prev => ({ ...prev, [statusFilter]: lastPage }));
@@ -738,7 +806,7 @@ export default function DocumentManager() {
       updateComponentState(response);
 
     } catch (err) {
-      if (isMountedRef.current) {
+      if (isLatestRequest()) {
         const errorClassification = classifyError(err);
 
         if (errorClassification.shouldShowToast) {
@@ -750,7 +818,7 @@ export default function DocumentManager() {
         }
       }
     } finally {
-      if (isMountedRef.current) {
+      if (isLatestRequest()) {
         setIsRefreshing(false);
       }
     }
@@ -893,6 +961,9 @@ export default function DocumentManager() {
 
   // Handle manual refresh with pagination reset logic
   const handleManualRefresh = useCallback(async () => {
+    const requestId = ++latestRequestIdRef.current
+    const isLatestRequest = () => isMountedRef.current && requestId === latestRequestIdRef.current
+
     try {
       setIsRefreshing(true);
 
@@ -907,7 +978,7 @@ export default function DocumentManager() {
 
       const response = await getDocumentsPaginated(request);
 
-      if (!isMountedRef.current) return;
+      if (!isLatestRequest()) return;
 
       // Check if total count is less than current page size and page size is not already 10
       if (response.pagination.total_count < pagination.page_size && pagination.page_size !== 10) {
@@ -918,31 +989,15 @@ export default function DocumentManager() {
         setPagination(response.pagination);
         setCurrentPageDocs(response.documents);
         setStatusCounts(response.status_counts);
-
-        // Update legacy docs state for backward compatibility
-        const legacyDocs: DocsStatusesResponse = {
-          statuses: {
-            processed: response.documents.filter(doc => doc.status === 'processed'),
-            preprocessed: response.documents.filter(doc => doc.status === 'preprocessed'),
-            processing: response.documents.filter(doc => doc.status === 'processing'),
-            pending: response.documents.filter(doc => doc.status === 'pending'),
-            failed: response.documents.filter(doc => doc.status === 'failed')
-          }
-        };
-
-        if (response.pagination.total_count > 0) {
-          setDocs(legacyDocs);
-        } else {
-          setDocs(null);
-        }
+        setDocs(response.pagination.total_count > 0 ? buildLegacyDocs(response.documents) : null);
       }
 
     } catch (err) {
-      if (isMountedRef.current) {
+      if (isLatestRequest()) {
         toast.error(t('documentPanel.documentManager.errors.loadFailed', { error: errorMessage(err) }));
       }
     } finally {
-      if (isMountedRef.current) {
+      if (isLatestRequest()) {
         setIsRefreshing(false);
       }
     }
@@ -1063,6 +1118,9 @@ export default function DocumentManager() {
     setStatusCounts({
       all: 0,
       processed: 0,
+      preprocessed: 0,
+      parsing: 0,
+      analyzing: 0,
       processing: 0,
       pending: 0,
       failed: 0
@@ -1414,21 +1472,14 @@ export default function DocumentManager() {
                           </TableCell>
                           <TableCell>
                             <div className="group relative flex items-center overflow-visible tooltip-container">
-                              {doc.status === 'processed' && (
-                                <span className="text-green-600">{t('documentPanel.documentManager.status.completed')}</span>
-                              )}
-                              {doc.status === 'preprocessed' && (
-                                <span className="text-purple-600">{t('documentPanel.documentManager.status.preprocessed')}</span>
-                              )}
-                              {doc.status === 'processing' && (
-                                <span className="text-blue-600">{t('documentPanel.documentManager.status.processing')}</span>
-                              )}
-                              {doc.status === 'pending' && (
-                                <span className="text-yellow-600">{t('documentPanel.documentManager.status.pending')}</span>
-                              )}
-                              {doc.status === 'failed' && (
-                                <span className="text-red-600">{t('documentPanel.documentManager.status.failed')}</span>
-                              )}
+                              {(() => {
+                                const statusDisplay = getStatusDisplay(doc.status)
+                                return (
+                                  <span className={statusDisplay.className}>
+                                    {t(statusDisplay.labelKey)}
+                                  </span>
+                                )
+                              })()}
 
                               {/* Icon rendering logic */}
                               {doc.error_msg ? (

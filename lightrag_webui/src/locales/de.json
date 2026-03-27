@@ -140,6 +140,8 @@
         "all": "Alle",
         "completed": "Abgeschlossen",
         "preprocessed": "Vorverarbeitet",
+        "parsing": "Wird geparst",
+        "analyzing": "Wird analysiert",
         "processing": "Verarbeitung",
         "pending": "Ausstehend",
         "failed": "Fehlgeschlagen"
