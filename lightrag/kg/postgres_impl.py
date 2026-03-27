@@ -34,7 +34,7 @@ from ..base import (
 )
 from ..exceptions import DataMigrationError
 from ..namespace import NameSpace, is_namespace
-from ..utils import logger
+from ..utils import logger, _cooperative_yield
 from ..kg.shared_storage import get_data_init_lock
 
 import pipmaster as pm
@@ -67,11 +67,6 @@ _VECTOR_INDEX_SUFFIXES = [
     "ivfflat_cosine",
     "vchordrq_cosine",
 ]
-
-
-async def _cooperative_yield(iteration: int, every: int = 64) -> None:
-    if iteration > 0 and iteration % every == 0:
-        await asyncio.sleep(0)
 
 
 def _safe_index_name(table_name: str, index_suffix: str) -> str:
@@ -3103,6 +3098,9 @@ class PGVectorStorage(BaseVectorStorage):
         embeddings_list = await asyncio.gather(*embedding_tasks)
 
         embeddings = np.concatenate(embeddings_list)
+        assert len(embeddings) == len(list_data), (
+            f"Embedding count mismatch: expected {len(list_data)}, got {len(embeddings)}"
+        )
         for i, d in enumerate(list_data, start=1):
             d["__vector__"] = embeddings[i - 1]
             await _cooperative_yield(i)

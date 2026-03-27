@@ -16,7 +16,7 @@ from ..base import (
     DocStatus,
     DocStatusStorage,
 )
-from ..utils import logger, compute_mdhash_id
+from ..utils import logger, compute_mdhash_id, _cooperative_yield
 from ..types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
 from ..constants import GRAPH_FIELD_SEP
 from .._version import __version__
@@ -39,11 +39,6 @@ config = configparser.ConfigParser()
 config.read("config.ini", "utf-8")
 
 GRAPH_BFS_MODE = os.getenv("MONGO_GRAPH_BFS_MODE", "bidirectional")
-
-
-async def _cooperative_yield(iteration: int, every: int = 64) -> None:
-    if iteration > 0 and iteration % every == 0:
-        await asyncio.sleep(0)
 
 
 class ClientManager:
@@ -2228,6 +2223,9 @@ class MongoVectorDBStorage(BaseVectorStorage):
         embedding_tasks = [self.embedding_func(batch) for batch in batches]
         embeddings_list = await asyncio.gather(*embedding_tasks)
         embeddings = np.concatenate(embeddings_list)
+        assert len(embeddings) == len(list_data), (
+            f"Embedding count mismatch: expected {len(list_data)}, got {len(embeddings)}"
+        )
         for i, d in enumerate(list_data, start=1):
             d["vector"] = np.array(embeddings[i - 1], dtype=np.float32).tolist()
             await _cooperative_yield(i)

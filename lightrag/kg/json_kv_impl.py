@@ -1,4 +1,3 @@
-import asyncio
 import os
 from dataclasses import dataclass
 from typing import Any, final
@@ -7,6 +6,7 @@ from lightrag.base import (
     BaseKVStorage,
 )
 from lightrag.utils import (
+    _cooperative_yield,
     load_json,
     logger,
     write_json,
@@ -21,11 +21,6 @@ from .shared_storage import (
     clear_all_update_flags,
     try_initialize_namespace,
 )
-
-
-async def _cooperative_yield(iteration: int, every: int = 64) -> None:
-    if iteration > 0 and iteration % every == 0:
-        await asyncio.sleep(0)
 
 
 @final
@@ -162,7 +157,11 @@ class JsonKVStorage(BaseKVStorage):
         if self._storage_lock is None:
             raise StorageNotInitializedError("JsonKVStorage")
         async with self._storage_lock:
-            # Add timestamps to data based on whether key exists
+            # Add timestamps to data based on whether key exists.
+            # The loop reads self._data (k in self._data) so it must stay inside
+            # the lock. _cooperative_yield is safe here: NamespaceLock is
+            # non-reentrant, so other coroutines waiting on this lock will block
+            # until we release it; the yield only benefits unrelated coroutines.
             for i, (k, v) in enumerate(data.items(), start=1):
                 # For text_chunks namespace, ensure llm_cache_list field exists
                 if self.namespace.endswith("text_chunks"):

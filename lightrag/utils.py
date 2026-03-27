@@ -1496,6 +1496,16 @@ def exists_func(obj, func_name: str) -> bool:
         return False
 
 
+async def _cooperative_yield(iteration: int, every: int = 64) -> None:
+    """Periodically yield control to the event loop during CPU-heavy async loops.
+
+    Call inside long synchronous-style loops to prevent event loop starvation
+    in single-worker deployments. Yields every `every` iterations.
+    """
+    if iteration > 0 and iteration % every == 0:
+        await asyncio.sleep(0)
+
+
 def always_get_an_event_loop() -> asyncio.AbstractEventLoop:
     """
     Ensure that there is always an event loop available.

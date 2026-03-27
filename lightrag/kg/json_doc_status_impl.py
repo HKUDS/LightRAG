@@ -1,4 +1,3 @@
-import asyncio
 from dataclasses import dataclass
 import os
 from typing import Any, Union, final
@@ -9,6 +8,7 @@ from lightrag.base import (
     DocStatusStorage,
 )
 from lightrag.utils import (
+    _cooperative_yield,
     load_json,
     logger,
     write_json,
@@ -25,10 +25,6 @@ from .shared_storage import (
     try_initialize_namespace,
 )
 
-
-async def _cooperative_yield(iteration: int, every: int = 64) -> None:
-    if iteration > 0 and iteration % every == 0:
-        await asyncio.sleep(0)
 
 
 @final
@@ -202,12 +198,13 @@ class JsonDocStatusStorage(DocStatusStorage):
         )
         if self._storage_lock is None:
             raise StorageNotInitializedError("JsonDocStatusStorage")
+        # Prepare data outside the lock: this only mutates the caller-supplied
+        # dict values, not shared storage state, so no lock needed here.
+        for i, (doc_id, doc_data) in enumerate(data.items(), start=1):
+            if "chunks_list" not in doc_data:
+                doc_data["chunks_list"] = []
+            await _cooperative_yield(i)
         async with self._storage_lock:
-            # Ensure chunks_list field exists for new documents
-            for i, (doc_id, doc_data) in enumerate(data.items(), start=1):
-                if "chunks_list" not in doc_data:
-                    doc_data["chunks_list"] = []
-                await _cooperative_yield(i)
             self._data.update(data)
             await set_all_update_flags(self.namespace, workspace=self.workspace)
 

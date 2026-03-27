@@ -1,6 +1,5 @@
 import os
 import logging
-import asyncio
 from typing import Any, final, Union
 from dataclasses import dataclass
 import pipmaster as pm
@@ -14,7 +13,7 @@ if not pm.is_installed("redis"):
 # aioredis is a depricated library, replaced with redis
 from redis.asyncio import Redis, ConnectionPool  # type: ignore
 from redis.exceptions import RedisError, ConnectionError, TimeoutError  # type: ignore
-from lightrag.utils import logger, get_pinyin_sort_key
+from lightrag.utils import logger, get_pinyin_sort_key, _cooperative_yield
 
 from lightrag.base import (
     BaseKVStorage,
@@ -54,11 +53,6 @@ redis_retry = retry(
     ),
     before_sleep=before_sleep_log(logger, logging.WARNING),
 )
-
-
-async def _cooperative_yield(iteration: int, every: int = 64) -> None:
-    if iteration > 0 and iteration % every == 0:
-        await asyncio.sleep(0)
 
 
 class RedisConnectionManager:
@@ -347,7 +341,7 @@ class RedisKVStorage(BaseKVStorage):
                             v["llm_cache_list"] = []
 
                     # Add timestamps based on whether key exists
-                    if exists_results[i]:  # Key exists, only update update_time
+                    if exists_results[i - 1]:  # Key exists, only update update_time
                         v["update_time"] = current_time
                     else:  # New key, set both create_time and update_time
                         v["create_time"] = current_time

@@ -27,7 +27,7 @@ from ..base import (
     DocStatus,
     DocStatusStorage,
 )
-from ..utils import logger, compute_mdhash_id
+from ..utils import logger, compute_mdhash_id, _cooperative_yield
 from ..types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
 from ..constants import GRAPH_FIELD_SEP
 from ..kg.shared_storage import get_data_init_lock
@@ -42,11 +42,6 @@ from opensearchpy.exceptions import OpenSearchException, NotFoundError, RequestE
 
 config = configparser.ConfigParser()
 config.read("config.ini", "utf-8")
-
-
-async def _cooperative_yield(iteration: int, every: int = 64) -> None:
-    if iteration > 0 and iteration % every == 0:
-        await asyncio.sleep(0)
 
 
 def _get_opensearch_env(key, fallback):
@@ -2502,7 +2497,9 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
             *[self.embedding_func(batch) for batch in batches]
         )
         embeddings = np.concatenate(embeddings_list)
-
+        assert len(embeddings) == len(list_data), (
+            f"Embedding count mismatch: expected {len(list_data)}, got {len(embeddings)}"
+        )
         for i, doc in enumerate(list_data, start=1):
             doc["vector"] = embeddings[i - 1].tolist()
             await _cooperative_yield(i)
