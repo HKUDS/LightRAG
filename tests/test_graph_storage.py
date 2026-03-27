@@ -52,7 +52,7 @@ def check_env_file():
 
         # Check if running in an interactive terminal
         if sys.stdin.isatty():
-            response = input("Do you want to continue? (yes/no): ")
+            response = input("Do you want to continue? (yes/NO): ")
             if response.lower() != "yes":
                 ASCIIColors.red("Test program cancelled.")
                 return False

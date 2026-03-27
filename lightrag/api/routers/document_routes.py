@@ -1251,7 +1251,8 @@ async def pipeline_enqueue_file(
 
         # Get file size for error reporting
         try:
-            file_size = file_path.stat().st_size
+            stat = await asyncio.to_thread(file_path.stat)
+            file_size = stat.st_size
         except Exception:
             file_size = 0
 
@@ -1342,8 +1343,8 @@ async def pipeline_enqueue_file(
                     | ".less"
                 ):
                     try:
-                        # Try to decode as UTF-8
-                        content = file.decode("utf-8")
+                        # Try to decode as UTF-8 (offloaded to thread to avoid blocking the event loop)
+                        content = await asyncio.to_thread(file.decode, "utf-8")
 
                         # Validate content
                         if not content or len(content.strip()) == 0:
@@ -1607,7 +1608,7 @@ async def pipeline_enqueue_file(
                 # Move file to __parsed__ directory after enqueuing (LR2-PRD: parsed output dir)
                 try:
                     enqueued_dir = file_path.parent / PARSED_DIR_NAME
-                    enqueued_dir.mkdir(exist_ok=True)
+                    await asyncio.to_thread(enqueued_dir.mkdir, exist_ok=True)
 
                     # Generate unique filename to avoid conflicts
                     unique_filename = get_unique_filename_in_enqueued(
@@ -1616,7 +1617,7 @@ async def pipeline_enqueue_file(
                     target_path = enqueued_dir / unique_filename
 
                     # Move the file
-                    file_path.rename(target_path)
+                    await asyncio.to_thread(file_path.rename, target_path)
                     logger.debug(
                         f"Moved file to enqueued directory: {file_path.name} -> {unique_filename}"
                     )

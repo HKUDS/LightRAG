@@ -34,7 +34,7 @@ from ..base import (
 )
 from ..exceptions import DataMigrationError
 from ..namespace import NameSpace, is_namespace
-from ..utils import logger
+from ..utils import logger, _cooperative_yield
 from ..kg.shared_storage import get_data_init_lock
 
 import pipmaster as pm
@@ -2251,7 +2251,7 @@ class PGKVStorage(BaseKVStorage):
             upsert_sql = SQL_TEMPLATES["upsert_text_chunk"]
             # Get current UTC time and convert to naive datetime for database storage
             current_time = datetime.datetime.now(timezone.utc).replace(tzinfo=None)
-            for k, v in data.items():
+            for i, (k, v) in enumerate(data.items(), start=1):
                 # Tuple order must match SQL: (workspace, id, tokens, chunk_order_index,
                 #   full_doc_id, content, file_path, llm_cache_list, create_time, update_time)
                 batch_values.append(
@@ -2268,16 +2268,18 @@ class PGKVStorage(BaseKVStorage):
                         current_time,
                     )
                 )
+                await _cooperative_yield(i)
         elif is_namespace(self.namespace, NameSpace.KV_STORE_FULL_DOCS):
             upsert_sql = SQL_TEMPLATES["upsert_doc_full"]
-            for k, v in data.items():
+            for i, (k, v) in enumerate(data.items(), start=1):
                 # Tuple order must match SQL: (id, content, doc_name, workspace)
                 batch_values.append(
                     (k, v["content"], v.get("file_path", ""), self.workspace)
                 )
+                await _cooperative_yield(i)
         elif is_namespace(self.namespace, NameSpace.KV_STORE_LLM_RESPONSE_CACHE):
             upsert_sql = SQL_TEMPLATES["upsert_llm_response_cache"]
-            for k, v in data.items():
+            for i, (k, v) in enumerate(data.items(), start=1):
                 # Tuple order must match SQL: (workspace, id, original_prompt, return_value,
                 #   chunk_id, cache_type, queryparam)
                 batch_values.append(
@@ -2293,11 +2295,12 @@ class PGKVStorage(BaseKVStorage):
                         else None,
                     )
                 )
+                await _cooperative_yield(i)
         elif is_namespace(self.namespace, NameSpace.KV_STORE_FULL_ENTITIES):
             upsert_sql = SQL_TEMPLATES["upsert_full_entities"]
             # Get current UTC time and convert to naive datetime for database storage
             current_time = datetime.datetime.now(timezone.utc).replace(tzinfo=None)
-            for k, v in data.items():
+            for i, (k, v) in enumerate(data.items(), start=1):
                 # Tuple order must match SQL: (workspace, id, entity_names, count,
                 #   create_time, update_time)
                 batch_values.append(
@@ -2310,11 +2313,12 @@ class PGKVStorage(BaseKVStorage):
                         current_time,
                     )
                 )
+                await _cooperative_yield(i)
         elif is_namespace(self.namespace, NameSpace.KV_STORE_FULL_RELATIONS):
             upsert_sql = SQL_TEMPLATES["upsert_full_relations"]
             # Get current UTC time and convert to naive datetime for database storage
             current_time = datetime.datetime.now(timezone.utc).replace(tzinfo=None)
-            for k, v in data.items():
+            for i, (k, v) in enumerate(data.items(), start=1):
                 # Tuple order must match SQL: (workspace, id, relation_pairs, count,
                 #   create_time, update_time)
                 batch_values.append(
@@ -2327,11 +2331,12 @@ class PGKVStorage(BaseKVStorage):
                         current_time,
                     )
                 )
+                await _cooperative_yield(i)
         elif is_namespace(self.namespace, NameSpace.KV_STORE_ENTITY_CHUNKS):
             upsert_sql = SQL_TEMPLATES["upsert_entity_chunks"]
             # Get current UTC time and convert to naive datetime for database storage
             current_time = datetime.datetime.now(timezone.utc).replace(tzinfo=None)
-            for k, v in data.items():
+            for i, (k, v) in enumerate(data.items(), start=1):
                 # Tuple order must match SQL: (workspace, id, chunk_ids, count,
                 #   create_time, update_time)
                 batch_values.append(
@@ -2344,11 +2349,12 @@ class PGKVStorage(BaseKVStorage):
                         current_time,
                     )
                 )
+                await _cooperative_yield(i)
         elif is_namespace(self.namespace, NameSpace.KV_STORE_RELATION_CHUNKS):
             upsert_sql = SQL_TEMPLATES["upsert_relation_chunks"]
             # Get current UTC time and convert to naive datetime for database storage
             current_time = datetime.datetime.now(timezone.utc).replace(tzinfo=None)
-            for k, v in data.items():
+            for i, (k, v) in enumerate(data.items(), start=1):
                 # Tuple order must match SQL: (workspace, id, chunk_ids, count,
                 #   create_time, update_time)
                 batch_values.append(
@@ -2361,6 +2367,7 @@ class PGKVStorage(BaseKVStorage):
                         current_time,
                     )
                 )
+                await _cooperative_yield(i)
         else:
             logger.error(f"Unknown namespace: {self.namespace}")
             raise ValueError(f"Unknown namespace: {self.namespace}")
@@ -3072,13 +3079,15 @@ class PGVectorStorage(BaseVectorStorage):
 
         # Get current UTC time and convert to naive datetime for database storage
         current_time = datetime.datetime.now(timezone.utc).replace(tzinfo=None)
-        list_data = [
-            {
-                "__id__": k,
-                **{k1: v1 for k1, v1 in v.items()},
-            }
-            for k, v in data.items()
-        ]
+        list_data = []
+        for i, (k, v) in enumerate(data.items(), start=1):
+            list_data.append(
+                {
+                    "__id__": k,
+                    **{k1: v1 for k1, v1 in v.items()},
+                }
+            )
+            await _cooperative_yield(i)
         contents = [v["content"] for v in data.values()]
         batches = [
             contents[i : i + self._max_batch_size]
@@ -3089,14 +3098,18 @@ class PGVectorStorage(BaseVectorStorage):
         embeddings_list = await asyncio.gather(*embedding_tasks)
 
         embeddings = np.concatenate(embeddings_list)
-        for i, d in enumerate(list_data):
-            d["__vector__"] = embeddings[i]
+        assert len(embeddings) == len(
+            list_data
+        ), f"Embedding count mismatch: expected {len(list_data)}, got {len(embeddings)}"
+        for i, d in enumerate(list_data, start=1):
+            d["__vector__"] = embeddings[i - 1]
+            await _cooperative_yield(i)
 
         # Prepare batch values for executemany
         batch_values: list[tuple[Any, ...]] = []
         upsert_sql = None
 
-        for item in list_data:
+        for i, item in enumerate(list_data, start=1):
             if is_namespace(self.namespace, NameSpace.VECTOR_STORE_CHUNKS):
                 upsert_sql, values = self._upsert_chunks(item, current_time)
             elif is_namespace(self.namespace, NameSpace.VECTOR_STORE_ENTITIES):
@@ -3107,6 +3120,7 @@ class PGVectorStorage(BaseVectorStorage):
                 raise ValueError(f"{self.namespace} is not supported")
 
             batch_values.append(values)
+            await _cooperative_yield(i)
 
         # Use executemany for batch execution - significantly reduces DB round-trips
         # Note: register_vector is already called on pool init, no need to call it again
@@ -3935,7 +3949,7 @@ class PGDocStatusStorage(DocStatusStorage):
                   error_msg = EXCLUDED.error_msg,
                   created_at = EXCLUDED.created_at,
                   updated_at = EXCLUDED.updated_at"""
-        for k, v in data.items():
+        for i, (k, v) in enumerate(data.items(), start=1):
             # Remove timezone information, store utc time in db
             created_at = parse_datetime(v.get("created_at"))
             updated_at = parse_datetime(v.get("updated_at"))
@@ -3961,6 +3975,7 @@ class PGDocStatusStorage(DocStatusStorage):
                     "updated_at": updated_at,  # Use the converted datetime object
                 },
             )
+            await _cooperative_yield(i)
 
     async def drop(self) -> dict[str, str]:
         """Drop the storage"""
