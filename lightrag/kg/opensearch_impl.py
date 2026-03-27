@@ -2497,9 +2497,9 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
             *[self.embedding_func(batch) for batch in batches]
         )
         embeddings = np.concatenate(embeddings_list)
-        assert len(embeddings) == len(list_data), (
-            f"Embedding count mismatch: expected {len(list_data)}, got {len(embeddings)}"
-        )
+        assert len(embeddings) == len(
+            list_data
+        ), f"Embedding count mismatch: expected {len(list_data)}, got {len(embeddings)}"
         for i, doc in enumerate(list_data, start=1):
             doc["vector"] = embeddings[i - 1].tolist()
             await _cooperative_yield(i)

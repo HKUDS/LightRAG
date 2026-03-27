@@ -2223,9 +2223,9 @@ class MongoVectorDBStorage(BaseVectorStorage):
         embedding_tasks = [self.embedding_func(batch) for batch in batches]
         embeddings_list = await asyncio.gather(*embedding_tasks)
         embeddings = np.concatenate(embeddings_list)
-        assert len(embeddings) == len(list_data), (
-            f"Embedding count mismatch: expected {len(list_data)}, got {len(embeddings)}"
-        )
+        assert len(embeddings) == len(
+            list_data
+        ), f"Embedding count mismatch: expected {len(list_data)}, got {len(embeddings)}"
         for i, d in enumerate(list_data, start=1):
             d["vector"] = np.array(embeddings[i - 1], dtype=np.float32).tolist()
             await _cooperative_yield(i)

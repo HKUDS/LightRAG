@@ -3098,9 +3098,9 @@ class PGVectorStorage(BaseVectorStorage):
         embeddings_list = await asyncio.gather(*embedding_tasks)
 
         embeddings = np.concatenate(embeddings_list)
-        assert len(embeddings) == len(list_data), (
-            f"Embedding count mismatch: expected {len(list_data)}, got {len(embeddings)}"
-        )
+        assert len(embeddings) == len(
+            list_data
+        ), f"Embedding count mismatch: expected {len(list_data)}, got {len(embeddings)}"
         for i, d in enumerate(list_data, start=1):
             d["__vector__"] = embeddings[i - 1]
             await _cooperative_yield(i)

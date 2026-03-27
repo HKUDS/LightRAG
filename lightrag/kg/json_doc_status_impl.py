@@ -26,7 +26,6 @@ from .shared_storage import (
 )
 
 
-
 @final
 @dataclass
 class JsonDocStatusStorage(DocStatusStorage):
