@@ -1,5 +1,6 @@
 import os
 import logging
+import asyncio
 from typing import Any, final, Union
 from dataclasses import dataclass
 import pipmaster as pm
@@ -53,6 +54,11 @@ redis_retry = retry(
     ),
     before_sleep=before_sleep_log(logger, logging.WARNING),
 )
+
+
+async def _cooperative_yield(iteration: int, every: int = 64) -> None:
+    if iteration > 0 and iteration % every == 0:
+        await asyncio.sleep(0)
 
 
 class RedisConnectionManager:
@@ -328,12 +334,13 @@ class RedisKVStorage(BaseKVStorage):
             try:
                 # Check which keys already exist to determine create vs update
                 pipe = redis.pipeline()
-                for k in data.keys():
+                for i, k in enumerate(data.keys(), start=1):
                     pipe.exists(f"{self.final_namespace}:{k}")
+                    await _cooperative_yield(i)
                 exists_results = await pipe.execute()
 
                 # Add timestamps to data
-                for i, (k, v) in enumerate(data.items()):
+                for i, (k, v) in enumerate(data.items(), start=1):
                     # For text_chunks namespace, ensure llm_cache_list field exists
                     if self.namespace.endswith("text_chunks"):
                         if "llm_cache_list" not in v:
@@ -347,11 +354,13 @@ class RedisKVStorage(BaseKVStorage):
                         v["update_time"] = current_time
 
                     v["_id"] = k
+                    await _cooperative_yield(i)
 
                 # Store the data
                 pipe = redis.pipeline()
-                for k, v in data.items():
+                for i, (k, v) in enumerate(data.items(), start=1):
                     pipe.set(f"{self.final_namespace}:{k}", json.dumps(v))
+                    await _cooperative_yield(i)
                 await pipe.execute()
 
             except json.JSONDecodeError as e:
@@ -867,13 +876,15 @@ class RedisDocStatusStorage(DocStatusStorage):
         async with self._get_redis_connection() as redis:
             try:
                 # Ensure chunks_list field exists for new documents
-                for doc_id, doc_data in data.items():
+                for i, (doc_id, doc_data) in enumerate(data.items(), start=1):
                     if "chunks_list" not in doc_data:
                         doc_data["chunks_list"] = []
+                    await _cooperative_yield(i)
 
                 pipe = redis.pipeline()
-                for k, v in data.items():
+                for i, (k, v) in enumerate(data.items(), start=1):
                     pipe.set(f"{self.final_namespace}:{k}", json.dumps(v))
+                    await _cooperative_yield(i)
                 await pipe.execute()
             except json.JSONDecodeError as e:
                 logger.error(f"[{self.workspace}] JSON decode error during upsert: {e}")

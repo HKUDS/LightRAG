@@ -1,3 +1,4 @@
+import asyncio
 import os
 from dataclasses import dataclass
 from typing import Any, final
@@ -22,6 +23,11 @@ from .shared_storage import (
 )
 
 
+async def _cooperative_yield(iteration: int, every: int = 64) -> None:
+    if iteration > 0 and iteration % every == 0:
+        await asyncio.sleep(0)
+
+
 @final
 @dataclass
 class JsonKVStorage(BaseKVStorage):
@@ -37,7 +43,6 @@ class JsonKVStorage(BaseKVStorage):
 
         os.makedirs(workspace_dir, exist_ok=True)
         self._file_name = os.path.join(workspace_dir, f"kv_store_{self.namespace}.json")
-
         self._data = None
         self._storage_lock = None
         self.storage_updated = None
@@ -158,7 +163,7 @@ class JsonKVStorage(BaseKVStorage):
             raise StorageNotInitializedError("JsonKVStorage")
         async with self._storage_lock:
             # Add timestamps to data based on whether key exists
-            for k, v in data.items():
+            for i, (k, v) in enumerate(data.items(), start=1):
                 # For text_chunks namespace, ensure llm_cache_list field exists
                 if self.namespace.endswith("text_chunks"):
                     if "llm_cache_list" not in v:
@@ -172,6 +177,7 @@ class JsonKVStorage(BaseKVStorage):
                     v["update_time"] = current_time
 
                 v["_id"] = k
+                await _cooperative_yield(i)
 
             self._data.update(data)
             await set_all_update_flags(self.namespace, workspace=self.workspace)

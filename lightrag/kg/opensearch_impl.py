@@ -44,6 +44,11 @@ config = configparser.ConfigParser()
 config.read("config.ini", "utf-8")
 
 
+async def _cooperative_yield(iteration: int, every: int = 64) -> None:
+    if iteration > 0 and iteration % every == 0:
+        await asyncio.sleep(0)
+
+
 def _get_opensearch_env(key, fallback):
     cfg_key = key.replace("OPENSEARCH_", "").lower()
     return os.environ.get(key, config.get("opensearch", cfg_key, fallback=fallback))
@@ -366,7 +371,7 @@ class OpenSearchKVStorage(BaseKVStorage):
         )
         current_time = int(time.time())
         actions = []
-        for doc_id, doc_data in data.items():
+        for i, (doc_id, doc_data) in enumerate(data.items(), start=1):
             doc_data["update_time"] = current_time
             doc_data.setdefault("create_time", current_time)
             actions.append(
@@ -377,6 +382,7 @@ class OpenSearchKVStorage(BaseKVStorage):
                     "_source": {k: v for k, v in doc_data.items() if k != "_id"},
                 }
             )
+            await _cooperative_yield(i)
         try:
             # No per-operation refresh: immediate reads use ID-based mget (translog),
             # search visibility is guaranteed after index_done_callback() batch refresh.
@@ -629,7 +635,7 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
         await self._ensure_index_ready()
         logger.debug(f"[{self.workspace}] Upserting {len(data)} doc statuses")
         actions = []
-        for k, v in data.items():
+        for i, (k, v) in enumerate(data.items(), start=1):
             v.setdefault("chunks_list", [])
             actions.append(
                 {
@@ -639,6 +645,7 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
                     "_source": {fk: fv for fk, fv in v.items() if fk != "_id"},
                 }
             )
+            await _cooperative_yield(i)
         try:
             # DocStatus needs refresh="wait_for" because get_docs_by_status
             # (search-based) is called immediately after enqueue upserts.
@@ -2475,14 +2482,16 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
         )
         current_time = int(time.time())
 
-        list_data = [
-            {
-                "_id": k,
-                "created_at": current_time,
-                **{k1: v1 for k1, v1 in v.items() if k1 in self.meta_fields},
-            }
-            for k, v in data.items()
-        ]
+        list_data = []
+        for i, (k, v) in enumerate(data.items(), start=1):
+            list_data.append(
+                {
+                    "_id": k,
+                    "created_at": current_time,
+                    **{k1: v1 for k1, v1 in v.items() if k1 in self.meta_fields},
+                }
+            )
+            await _cooperative_yield(i)
         contents = [v["content"] for v in data.values()]
 
         batches = [
@@ -2494,18 +2503,21 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
         )
         embeddings = np.concatenate(embeddings_list)
 
-        for i, doc in enumerate(list_data):
-            doc["vector"] = embeddings[i].tolist()
+        for i, doc in enumerate(list_data, start=1):
+            doc["vector"] = embeddings[i - 1].tolist()
+            await _cooperative_yield(i)
 
-        actions = [
-            {
-                "_op_type": "index",
-                "_index": self._index_name,
-                "_id": doc["_id"],
-                "_source": {k: v for k, v in doc.items() if k != "_id"},
-            }
-            for doc in list_data
-        ]
+        actions = []
+        for i, doc in enumerate(list_data, start=1):
+            actions.append(
+                {
+                    "_op_type": "index",
+                    "_index": self._index_name,
+                    "_id": doc["_id"],
+                    "_source": {k: v for k, v in doc.items() if k != "_id"},
+                }
+            )
+            await _cooperative_yield(i)
         try:
             # No per-operation refresh: immediate reads use ID-based mget (translog),
             # k-NN search visibility is guaranteed after index_done_callback() batch refresh.

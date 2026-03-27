@@ -41,6 +41,11 @@ config.read("config.ini", "utf-8")
 GRAPH_BFS_MODE = os.getenv("MONGO_GRAPH_BFS_MODE", "bidirectional")
 
 
+async def _cooperative_yield(iteration: int, every: int = 64) -> None:
+    if iteration > 0 and iteration % every == 0:
+        await asyncio.sleep(0)
+
+
 class ClientManager:
     _instances = {"db": None, "ref_count": 0}
     _lock = asyncio.Lock()
@@ -190,7 +195,7 @@ class MongoKVStorage(BaseKVStorage):
         operations = []
         current_time = int(time.time())  # Get current Unix timestamp
 
-        for k, v in data.items():
+        for i, (k, v) in enumerate(data.items(), start=1):
             # For text_chunks namespace, ensure llm_cache_list field exists
             if self.namespace.endswith("text_chunks"):
                 if "llm_cache_list" not in v:
@@ -216,6 +221,7 @@ class MongoKVStorage(BaseKVStorage):
                     upsert=True,
                 )
             )
+            await _cooperative_yield(i)
 
         if operations:
             await self._data.bulk_write(operations)
@@ -406,7 +412,7 @@ class MongoDocStatusStorage(DocStatusStorage):
         if not data:
             return
         update_tasks: list[Any] = []
-        for k, v in data.items():
+        for i, (k, v) in enumerate(data.items(), start=1):
             # Ensure chunks_list field exists and is an array
             if "chunks_list" not in v:
                 v["chunks_list"] = []
@@ -414,6 +420,7 @@ class MongoDocStatusStorage(DocStatusStorage):
             update_tasks.append(
                 self._data.update_one({"_id": k}, {"$set": v}, upsert=True)
             )
+            await _cooperative_yield(i)
         await asyncio.gather(*update_tasks)
 
     async def get_status_counts(self) -> dict[str, int]:
@@ -2202,14 +2209,16 @@ class MongoVectorDBStorage(BaseVectorStorage):
         # Add current time as Unix timestamp
         current_time = int(time.time())
 
-        list_data = [
-            {
-                "_id": k,
-                "created_at": current_time,  # Add created_at field as Unix timestamp
-                **{k1: v1 for k1, v1 in v.items() if k1 in self.meta_fields},
-            }
-            for k, v in data.items()
-        ]
+        list_data = []
+        for i, (k, v) in enumerate(data.items(), start=1):
+            list_data.append(
+                {
+                    "_id": k,
+                    "created_at": current_time,  # Add created_at field as Unix timestamp
+                    **{k1: v1 for k1, v1 in v.items() if k1 in self.meta_fields},
+                }
+            )
+            await _cooperative_yield(i)
         contents = [v["content"] for v in data.values()]
         batches = [
             contents[i : i + self._max_batch_size]
@@ -2219,14 +2228,16 @@ class MongoVectorDBStorage(BaseVectorStorage):
         embedding_tasks = [self.embedding_func(batch) for batch in batches]
         embeddings_list = await asyncio.gather(*embedding_tasks)
         embeddings = np.concatenate(embeddings_list)
-        for i, d in enumerate(list_data):
-            d["vector"] = np.array(embeddings[i], dtype=np.float32).tolist()
+        for i, d in enumerate(list_data, start=1):
+            d["vector"] = np.array(embeddings[i - 1], dtype=np.float32).tolist()
+            await _cooperative_yield(i)
 
         update_tasks = []
-        for doc in list_data:
+        for i, doc in enumerate(list_data, start=1):
             update_tasks.append(
                 self._data.update_one({"_id": doc["_id"]}, {"$set": doc}, upsert=True)
             )
+            await _cooperative_yield(i)
         await asyncio.gather(*update_tasks)
 
         return list_data

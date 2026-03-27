@@ -75,6 +75,12 @@ from dotenv import load_dotenv
 load_dotenv(dotenv_path=Path(__file__).resolve().parent / ".env", override=False)
 
 
+async def _cooperative_yield(iteration: int, every: int = 32) -> None:
+    """Periodically yield control during CPU-heavy async workflows."""
+    if iteration > 0 and iteration % every == 0:
+        await asyncio.sleep(0)
+
+
 def _truncate_entity_identifier(
     identifier: str, limit: int, chunk_key: str, identifier_role: str
 ) -> str:
@@ -207,8 +213,12 @@ async def _handle_entity_relation_summary(
 
     # Iterative map-reduce process
     while True:
-        # Calculate total tokens in current list
-        total_tokens = sum(len(tokenizer.encode(desc)) for desc in current_list)
+        # Calculate total tokens in current list while periodically yielding so
+        # a large merge does not monopolize the event loop in single-worker mode.
+        total_tokens = 0
+        for i, desc in enumerate(current_list, start=1):
+            total_tokens += len(tokenizer.encode(desc))
+            await _cooperative_yield(i)
 
         # If total length is within limits, perform final summarization
         if total_tokens <= summary_context_size or len(current_list) <= 2:
@@ -241,8 +251,9 @@ async def _handle_entity_relation_summary(
         current_tokens = 0
 
         # Currently least 3 descriptions in current_list
-        for i, desc in enumerate(current_list):
+        for i, desc in enumerate(current_list, start=1):
             desc_tokens = len(tokenizer.encode(desc))
+            await _cooperative_yield(i)
 
             # If adding current description would exceed limit, finalize current chunk
             if current_tokens + desc_tokens > summary_context_size and current_chunk:
@@ -274,7 +285,8 @@ async def _handle_entity_relation_summary(
 
         # Reduce phase: summarize each group from chunks
         new_summaries = []
-        for chunk in chunks:
+        for i, chunk in enumerate(chunks, start=1):
+            await _cooperative_yield(i)
             if len(chunk) == 1:
                 # Optimization: single description chunks don't need LLM summarization
                 new_summaries.append(chunk[0])
@@ -1747,12 +1759,13 @@ async def _merge_nodes_then_upsert(
 
     # 7. Deduplicate nodes by description, keeping first occurrence in the same document
     unique_nodes = {}
-    for dp in nodes_data:
+    for i, dp in enumerate(nodes_data, start=1):
         desc = dp.get("description")
         if not desc:
             continue
         if desc not in unique_nodes:
             unique_nodes[desc] = dp
+        await _cooperative_yield(i)
 
     # Sort description by timestamp, then by description length when timestamps are the same
     sorted_nodes = sorted(
@@ -1806,11 +1819,12 @@ async def _merge_nodes_then_upsert(
             seen_paths.add(fp)
 
     # Collect from new data
-    for dp in nodes_data:
+    for i, dp in enumerate(nodes_data, start=1):
         file_path_item = dp.get("file_path")
         if file_path_item and file_path_item not in seen_paths:
             file_paths_list.append(file_path_item)
             seen_paths.add(file_path_item)
+        await _cooperative_yield(i)
 
     # Apply count limit
     if len(file_paths_list) > max_file_paths:
@@ -2063,26 +2077,29 @@ async def _merge_edges_then_upsert(
     # 6.2 Finalize keywords by merging existing and new keywords
     all_keywords = set()
     # Process already_keywords (which are comma-separated)
-    for keyword_str in already_keywords:
+    for i, keyword_str in enumerate(already_keywords, start=1):
         if keyword_str:  # Skip empty strings
             all_keywords.update(k.strip() for k in keyword_str.split(",") if k.strip())
+        await _cooperative_yield(i)
     # Process new keywords from edges_data
-    for edge in edges_data:
+    for i, edge in enumerate(edges_data, start=1):
         if edge.get("keywords"):
             all_keywords.update(
                 k.strip() for k in edge["keywords"].split(",") if k.strip()
             )
+        await _cooperative_yield(i)
     # Join all unique keywords with commas
     keywords = ",".join(sorted(all_keywords))
 
     # 7. Deduplicate by description, keeping first occurrence in the same document
     unique_edges = {}
-    for dp in edges_data:
+    for i, dp in enumerate(edges_data, start=1):
         description_value = dp.get("description")
         if not description_value:
             continue
         if description_value not in unique_edges:
             unique_edges[description_value] = dp
+        await _cooperative_yield(i)
 
     # Sort description by timestamp, then by description length (largest to smallest) when timestamps are the same
     sorted_edges = sorted(
@@ -2136,11 +2153,12 @@ async def _merge_edges_then_upsert(
             seen_paths.add(fp)
 
     # Collect from new data
-    for dp in edges_data:
+    for i, dp in enumerate(edges_data, start=1):
         file_path_item = dp.get("file_path")
         if file_path_item and file_path_item not in seen_paths:
             file_paths_list.append(file_path_item)
             seen_paths.add(file_path_item)
+        await _cooperative_yield(i)
 
     # Apply count limit
     if len(file_paths_list) > max_file_paths:
@@ -2494,7 +2512,7 @@ async def merge_nodes_and_edges(
     all_nodes = defaultdict(list)
     all_edges = defaultdict(list)
 
-    for maybe_nodes, maybe_edges in chunk_results:
+    for i, (maybe_nodes, maybe_edges) in enumerate(chunk_results, start=1):
         # Collect nodes
         for entity_name, entities in maybe_nodes.items():
             all_nodes[entity_name].extend(entities)
@@ -2503,6 +2521,7 @@ async def merge_nodes_and_edges(
         for edge_key, edges in maybe_edges.items():
             sorted_edge_key = tuple(sorted(edge_key))
             all_edges[sorted_edge_key].extend(edges)
+        await _cooperative_yield(i)
 
     total_entities_count = len(all_nodes)
     total_relations_count = len(all_edges)
@@ -2581,9 +2600,10 @@ async def merge_nodes_and_edges(
 
     # Create entity processing tasks
     entity_tasks = []
-    for entity_name, entities in all_nodes.items():
+    for i, (entity_name, entities) in enumerate(all_nodes.items(), start=1):
         task = asyncio.create_task(_locked_process_entity_name(entity_name, entities))
         entity_tasks.append(task)
+        await _cooperative_yield(i)
 
     # Execute entity tasks with error handling
     processed_entities = []
@@ -2695,9 +2715,10 @@ async def merge_nodes_and_edges(
 
     # Create relationship processing tasks
     edge_tasks = []
-    for edge_key, edges in all_edges.items():
+    for i, (edge_key, edges) in enumerate(all_edges.items(), start=1):
         task = asyncio.create_task(_locked_process_edges(edge_key, edges))
         edge_tasks.append(task)
+        await _cooperative_yield(i)
 
     # Execute relationship tasks with error handling
     processed_edges = []
@@ -2745,24 +2766,27 @@ async def merge_nodes_and_edges(
             final_entity_names = set()
 
             # Add original processed entities
-            for entity_data in processed_entities:
+            for i, entity_data in enumerate(processed_entities, start=1):
                 if entity_data and entity_data.get("entity_name"):
                     final_entity_names.add(entity_data["entity_name"])
+                await _cooperative_yield(i)
 
             # Add entities that were added during relationship processing
-            for added_entity in all_added_entities:
+            for i, added_entity in enumerate(all_added_entities, start=1):
                 if added_entity and added_entity.get("entity_name"):
                     final_entity_names.add(added_entity["entity_name"])
+                await _cooperative_yield(i)
 
             # Collect all relation pairs
             final_relation_pairs = set()
-            for edge_data in processed_edges:
+            for i, edge_data in enumerate(processed_edges, start=1):
                 if edge_data:
                     src_id = edge_data.get("src_id")
                     tgt_id = edge_data.get("tgt_id")
                     if src_id and tgt_id:
                         relation_pair = tuple(sorted([src_id, tgt_id]))
                         final_relation_pairs.add(relation_pair)
+                await _cooperative_yield(i)
 
             log_message = f"Phase 3: Updating final {len(final_entity_names)}({len(processed_entities)}+{len(all_added_entities)}) entities and  {len(final_relation_pairs)} relations from {doc_id}"
             logger.info(log_message)
