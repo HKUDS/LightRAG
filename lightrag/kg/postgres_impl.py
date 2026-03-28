@@ -339,19 +339,30 @@ class PostgreSQLDB:
         )
 
         async def _init_connection(connection: asyncpg.Connection) -> None:
-            """Initialize each connection with pgvector codec and VCHORDRQ session params.
+            """Initialize each new connection with pgvector codec and VCHORDRQ session params.
 
-            This callback is invoked by asyncpg for every new connection in the pool.
-            Registering the vector codec here ensures ALL connections can properly
-            encode/decode vector columns, eliminating non-deterministic behavior
-            where some connections have the codec and others don't.
-
-            VCHORDRQ session parameters (probes, epsilon) are SET once here because
-            they are session-scoped GUC parameters that persist for the connection
-            lifetime and are not reset by asyncpg's pool release logic.
+            Called once per physical connection creation (not on pool reuse).
+            register_vector is a Python-level codec registration that survives
+            asyncpg's RESET ALL; VCHORDRQ GUCs do not — they are re-applied in
+            _reset_connection after each pool release.
             """
             if self.enable_vector:
                 await register_vector(connection)
+            if self.enable_vector and self.vector_index_type == "VCHORDRQ":
+                await self.configure_vchordrq(connection)
+
+        async def _reset_connection(connection: asyncpg.Connection) -> None:
+            """Re-apply VCHORDRQ session GUCs after asyncpg's RESET ALL on pool release.
+
+            asyncpg executes a reset sequence that includes RESET ALL whenever a
+            connection is returned to the pool. This clears session-level GUC
+            parameters such as vchordrq.probes and vchordrq.epsilon. This callback
+            is called by asyncpg immediately after that reset, restoring the values
+            before the connection is handed out again.
+
+            register_vector is NOT repeated here: it registers a Python codec on
+            the asyncpg Connection object and is unaffected by RESET ALL.
+            """
             if self.enable_vector and self.vector_index_type == "VCHORDRQ":
                 await self.configure_vchordrq(connection)
 
@@ -380,7 +391,8 @@ class PostgreSQLDB:
             # The vector extension is guaranteed to exist at this point (if enabled).
             pool = await asyncpg.create_pool(
                 **connection_params,
-                init=_init_connection,  # Register pgvector codec on every connection (if enabled)
+                init=_init_connection,  # register pgvector codec on new connections
+                reset=_reset_connection,  # re-apply VCHORDRQ GUCs after RESET ALL
             )  # type: ignore
             self.pool = pool
 
@@ -3841,25 +3853,40 @@ class PGDocStatusStorage(DocStatusStorage):
         # Build ORDER BY clause using validated whitelist values
         order_clause = f"ORDER BY {sort_field} {sort_direction.upper()}"
 
-        # Single CTE query: compute COUNT(*) and fetch the page in one round-trip.
-        # The window function COUNT(*) OVER () avoids a separate SELECT COUNT(*) query,
-        # eliminating one connection acquire/release and one network round-trip.
+        # Two-CTE query: total count + page data in a single round-trip.
+        #
+        # COUNT(*) OVER () was replaced because it only appears on rows that land
+        # inside the LIMIT/OFFSET window.  When the caller requests a page whose
+        # offset is past the end of the result set the window CTE returns no rows,
+        # so total_count would be reported as 0 even though matching documents exist.
+        #
+        # The LEFT JOIN pattern fixes this: the `total` CTE always produces exactly
+        # one row (the aggregate count over the full WHERE clause), and the outer
+        # LEFT JOIN emits that one row even when `paged` is empty.  Python then
+        # skips rows where id IS NULL (the empty-page sentinel).
+        #
         # chunks_list is intentionally excluded: DocStatusResponse does not expose it,
         # so transferring the full JSONB array would be pure overhead.
         params["limit"] = page_size
         params["offset"] = offset
         cte_sql = f"""
-            WITH paged AS (
+            WITH total AS (
+                SELECT COUNT(*) AS _total_count
+                FROM LIGHTRAG_DOC_STATUS
+                {where_clause}
+            ),
+            paged AS (
                 SELECT id, workspace, content_summary, content_length, chunks_count,
                        status, file_path, track_id, metadata, error_msg,
-                       created_at, updated_at,
-                       COUNT(*) OVER () AS _total_count
+                       created_at, updated_at
                 FROM LIGHTRAG_DOC_STATUS
                 {where_clause}
                 {order_clause}
                 LIMIT ${param_count + 1} OFFSET ${param_count + 2}
             )
-            SELECT * FROM paged
+            SELECT p.*, t._total_count
+            FROM total t
+            LEFT JOIN paged p ON true
         """
         result = await self.db.query(cte_sql, list(params.values()), True)
         total_count = result[0]["_total_count"] if result else 0
@@ -3867,6 +3894,9 @@ class PGDocStatusStorage(DocStatusStorage):
         # Convert to (doc_id, DocProcessingStatus) tuples
         documents = []
         for element in result:
+            if element["id"] is None:
+                # Empty-page sentinel row from LEFT JOIN when paged has no rows.
+                continue
             doc_id = element["id"]
 
             # Parse metadata JSON string back to dict
