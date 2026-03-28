@@ -3887,6 +3887,7 @@ class PGDocStatusStorage(DocStatusStorage):
             SELECT p.*, t._total_count
             FROM total t
             LEFT JOIN paged p ON true
+            ORDER BY p.{sort_field} {sort_direction.upper()} NULLS LAST
         """
         result = await self.db.query(cte_sql, list(params.values()), True)
         total_count = result[0]["_total_count"] if result else 0
