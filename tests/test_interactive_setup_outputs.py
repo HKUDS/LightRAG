@@ -11,6 +11,12 @@ import pytest
 pytestmark = pytest.mark.offline
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+PRESERVED_HEADER = (
+    "### ----- Preserved custom environment variables from previous .env  -----"
+)
+PRESERVED_NOTICE = (
+    "### ----- Comments in this session will persist across regenerations -----"
+)
 
 
 def run_bash_process(
@@ -1800,9 +1806,7 @@ generate_env_file "$REPO_ROOT/env.example" "$REPO_ROOT/.env"
 
     assert "HOST=0.0.0.0" in generated_env
     assert "PORT=9621" in generated_env
-    assert (
-        "### Preserved custom environment variables from previous .env" in generated_env
-    )
+    assert PRESERVED_HEADER in generated_env
     assert "# Custom integration settings" not in generated_env
     assert "EXTRA_API_BASE='https://example.com/api'" in generated_env
     assert "# EXTRA_API_TOKEN=secret" in generated_env
@@ -1825,7 +1829,7 @@ def test_generate_env_file_keeps_preserved_section_idempotent_across_reruns(
         [
             "HOST=127.0.0.1",
             "",
-            "### Preserved custom environment variables from previous .env",
+            PRESERVED_HEADER,
             "",
             "# Custom integration settings",
             "EXTRA_API_BASE='https://example.com/api'",
@@ -1849,8 +1853,8 @@ generate_env_file "$REPO_ROOT/env.example" "$REPO_ROOT/.env"
     )
 
     generated_lines = (tmp_path / ".env").read_text(encoding="utf-8").splitlines()
-    marker = "### Preserved custom environment variables from previous .env"
-    notice = "### Comments in this session will persist across regenerations"
+    marker = PRESERVED_HEADER
+    notice = PRESERVED_NOTICE
     marker_indexes = [idx for idx, line in enumerate(generated_lines) if line == marker]
 
     assert marker_indexes == [3]
@@ -1880,7 +1884,7 @@ def test_generate_env_file_preserves_multi_line_comments_inside_preserved_sectio
             "HOST=127.0.0.1",
             "",
             "# External note that should not migrate",
-            "### Preserved custom environment variables from previous .env",
+            PRESERVED_HEADER,
             "",
             "# Group A",
             "# Shared settings",
@@ -1907,8 +1911,8 @@ generate_env_file "$REPO_ROOT/env.example" "$REPO_ROOT/.env"
     )
 
     generated_lines = (tmp_path / ".env").read_text(encoding="utf-8").splitlines()
-    marker = "### Preserved custom environment variables from previous .env"
-    notice = "### Comments in this session will persist across regenerations"
+    marker = PRESERVED_HEADER
+    notice = PRESERVED_NOTICE
     marker_index = generated_lines.index(marker)
 
     assert generated_lines.count(marker) == 1
@@ -1943,8 +1947,8 @@ def test_generate_env_file_preserves_trailing_comments_at_end_of_preserved_secti
         [
             "HOST=127.0.0.1",
             "",
-            "### Preserved custom environment variables from previous .env",
-            "### Comments in this session will persist across regenerations",
+            PRESERVED_HEADER,
+            PRESERVED_NOTICE,
             "",
             "EXTRA_API_BASE='https://example.com/api'",
             "# Free-form note",
@@ -1991,8 +1995,8 @@ def test_generate_env_file_appends_new_external_entries_after_existing_preserved
         [
             "HOST=127.0.0.1",
             "EXTRA_EARLY=alpha",
-            "### Preserved custom environment variables from previous .env",
-            "### Comments in this session will persist across regenerations",
+            PRESERVED_HEADER,
+            PRESERVED_NOTICE,
             "",
             "# Existing note",
             "EXTRA_EXISTING=omega",
@@ -2015,11 +2019,11 @@ generate_env_file "$REPO_ROOT/env.example" "$REPO_ROOT/.env"
 
     generated_lines = (tmp_path / ".env").read_text(encoding="utf-8").splitlines()
     marker_index = generated_lines.index(
-        "### Preserved custom environment variables from previous .env"
+        PRESERVED_HEADER
     )
 
     assert generated_lines[marker_index + 1] == (
-        "### Comments in this session will persist across regenerations"
+        PRESERVED_NOTICE
     )
     assert generated_lines[marker_index + 2] == ""
     assert generated_lines[marker_index + 3] == "# Existing note"
@@ -2046,8 +2050,8 @@ def test_generate_env_file_appends_multiple_new_external_entries_in_discovery_or
             "EXTRA_FIRST=one",
             "# Outside comment should not migrate",
             "EXTRA_SECOND=two",
-            "### Preserved custom environment variables from previous .env",
-            "### Comments in this session will persist across regenerations",
+            PRESERVED_HEADER,
+            PRESERVED_NOTICE,
             "",
             "EXTRA_EXISTING=existing",
         ],
@@ -2069,7 +2073,7 @@ generate_env_file "$REPO_ROOT/env.example" "$REPO_ROOT/.env"
 
     generated_lines = (tmp_path / ".env").read_text(encoding="utf-8").splitlines()
     marker_index = generated_lines.index(
-        "### Preserved custom environment variables from previous .env"
+        PRESERVED_HEADER
     )
 
     assert "# Outside comment should not migrate" not in generated_lines
@@ -2095,8 +2099,8 @@ def test_generate_env_file_keeps_commented_template_keys_inside_preserved_sectio
         tmp_path / ".env",
         [
             "HOST=127.0.0.1",
-            "### Preserved custom environment variables from previous .env",
-            "### Comments in this session will persist across regenerations",
+            PRESERVED_HEADER,
+            PRESERVED_NOTICE,
             "",
             "# ENTITY_EXTRACTION_USE_JSON=true",
         ],
@@ -2119,7 +2123,7 @@ generate_env_file "$REPO_ROOT/env.example" "$REPO_ROOT/.env"
 
     generated_lines = (tmp_path / ".env").read_text(encoding="utf-8").splitlines()
     marker_index = generated_lines.index(
-        "### Preserved custom environment variables from previous .env"
+        PRESERVED_HEADER
     )
 
     assert generated_lines.count("# ENTITY_EXTRACTION_USE_JSON=true") == 2
@@ -2162,7 +2166,7 @@ generate_env_file "$REPO_ROOT/env.example" "$REPO_ROOT/.env"
 
     generated_lines = (tmp_path / ".env").read_text(encoding="utf-8").splitlines()
 
-    assert "### Preserved custom environment variables from previous .env" in generated_lines
+    assert PRESERVED_HEADER in generated_lines
     assert "workspace_name=demo" in generated_lines
 
 
@@ -2202,7 +2206,7 @@ generate_env_file "$REPO_ROOT/env.example" "$REPO_ROOT/.env"
 
     generated_lines = (tmp_path / ".env").read_text(encoding="utf-8").splitlines()
 
-    assert "### Preserved custom environment variables from previous .env" in generated_lines
+    assert PRESERVED_HEADER in generated_lines
     assert "# workspace_name=demo" in generated_lines
 
 

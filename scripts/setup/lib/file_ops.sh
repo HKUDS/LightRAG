@@ -159,8 +159,8 @@ append_preserved_non_template_env_lines() {
   local line key
   local in_preserved_section="no"
   local line_is_commented_env="no"
-  local preserved_header="### Preserved custom environment variables from previous .env"
-  local preserved_notice="### Comments in this session will persist across regenerations"
+  local preserved_header="### ----- Preserved custom environment variables from previous .env  -----"
+  local preserved_notice="### ----- Comments in this session will persist across regenerations -----"
   local -a pending_lines=()
   local -a preserved_payload=()
   local -a discovered_payload=()
