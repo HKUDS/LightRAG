@@ -3110,6 +3110,7 @@ async def kg_query(
     hashing_kv: BaseKVStorage | None = None,
     system_prompt: str | None = None,
     chunks_vdb: BaseVectorStorage = None,
+    doc_status_storage: BaseKVStorage | None = None,
 ) -> QueryResult | None:
     """
     Execute knowledge graph query and return unified QueryResult object.
@@ -3125,6 +3126,7 @@ async def kg_query(
         hashing_kv: Cache storage
         system_prompt: System prompt
         chunks_vdb: Document chunks vector database
+        doc_status_storage: Document status storage for metadata retrieval (optional)
 
     Returns:
         QueryResult | None: Unified query result object containing:
@@ -3184,6 +3186,7 @@ async def kg_query(
         text_chunks_db,
         query_param,
         chunks_vdb,
+        doc_status_storage,
     )
 
     if context_result is None:
@@ -3493,6 +3496,7 @@ async def _get_vector_context(
                     "content": result["content"],
                     "created_at": result.get("created_at", None),
                     "file_path": result.get("file_path", "unknown_source"),
+                    "full_doc_id": result.get("full_doc_id"),
                     "source_type": "vector",  # Mark the source type
                     "chunk_id": result.get("id"),  # Add chunk_id for deduplication
                 }
@@ -4001,21 +4005,36 @@ async def _build_context_str(
     chunk_tracking: dict = None,
     entity_id_to_original: dict = None,
     relation_id_to_original: dict = None,
+    doc_status_storage: BaseKVStorage | None = None,
 ) -> tuple[str, dict[str, Any]]:
     """
     Build the final LLM context string with token processing.
     This includes dynamic token calculation and final chunk truncation.
+
+    Args:
+        entities_context: List of entity context dicts
+        relations_context: List of relation context dicts
+        merged_chunks: List of merged chunk dicts
+        query: Query string
+        query_param: Query parameters (includes include_metadata flag)
+        global_config: Global configuration
+        chunk_tracking: Chunk tracking information
+        entity_id_to_original: Mapping from entity IDs to original data
+        relation_id_to_original: Mapping from relation IDs to original data
+        doc_status_storage: Document status storage for metadata lookup
     """
     tokenizer = global_config.get("tokenizer")
     if not tokenizer:
         logger.error("Missing tokenizer, cannot build LLM context")
         # Return empty raw data structure when no tokenizer
-        empty_raw_data = convert_to_user_format(
+        empty_raw_data = await convert_to_user_format(
             [],
             [],
             [],
             [],
             query_param.mode,
+            doc_status_storage=doc_status_storage,
+            include_metadata=query_param.include_metadata,
         )
         empty_raw_data["status"] = "failure"
         empty_raw_data["message"] = "Missing tokenizer, cannot build LLM context."
@@ -4118,12 +4137,14 @@ async def _build_context_str(
     # not necessary to use LLM to generate a response
     if not entities_context and not relations_context and not chunks_context:
         # Return empty raw data structure when no entities/relations
-        empty_raw_data = convert_to_user_format(
+        empty_raw_data = await convert_to_user_format(
             [],
             [],
             [],
             [],
             query_param.mode,
+            doc_status_storage=doc_status_storage,
+            include_metadata=query_param.include_metadata,
         )
         empty_raw_data["status"] = "failure"
         empty_raw_data["message"] = "Query returned empty dataset."
@@ -4158,7 +4179,7 @@ async def _build_context_str(
     logger.debug(
         f"[_build_context_str] Converting to user format: {len(entities_context)} entities, {len(relations_context)} relations, {len(truncated_chunks)} chunks"
     )
-    final_data = convert_to_user_format(
+    final_data = await convert_to_user_format(
         entities_context,
         relations_context,
         truncated_chunks,
@@ -4166,6 +4187,8 @@ async def _build_context_str(
         query_param.mode,
         entity_id_to_original,
         relation_id_to_original,
+        doc_status_storage=doc_status_storage,
+        include_metadata=query_param.include_metadata,
     )
     logger.debug(
         f"[_build_context_str] Final data after conversion: {len(final_data.get('entities', []))} entities, {len(final_data.get('relationships', []))} relationships, {len(final_data.get('chunks', []))} chunks"
@@ -4184,12 +4207,25 @@ async def _build_query_context(
     text_chunks_db: BaseKVStorage,
     query_param: QueryParam,
     chunks_vdb: BaseVectorStorage = None,
+    doc_status_storage: BaseKVStorage | None = None,
 ) -> QueryContextResult | None:
     """
     Main query context building function using the new 4-stage architecture:
     1. Search -> 2. Truncate -> 3. Merge chunks -> 4. Build LLM context
 
     Returns unified QueryContextResult containing both context and raw_data.
+
+    Args:
+        query: Query string
+        ll_keywords: Low-level keywords
+        hl_keywords: High-level keywords
+        knowledge_graph_inst: Knowledge graph storage
+        entities_vdb: Entity vector database
+        relationships_vdb: Relationship vector database
+        text_chunks_db: Text chunks storage
+        query_param: Query parameters (includes include_metadata flag)
+        chunks_vdb: Document chunks vector database
+        doc_status_storage: Document status storage for metadata lookup
     """
 
     if not query:
@@ -4256,6 +4292,7 @@ async def _build_query_context(
         chunk_tracking=search_result["chunk_tracking"],
         entity_id_to_original=truncation_result["entity_id_to_original"],
         relation_id_to_original=truncation_result["relation_id_to_original"],
+        doc_status_storage=doc_status_storage,
     )
 
     # Convert keywords strings to lists and add complete metadata to raw_data
@@ -4895,6 +4932,7 @@ async def naive_query(
     global_config: dict[str, str],
     hashing_kv: BaseKVStorage | None = None,
     system_prompt: str | None = None,
+    doc_status_storage: BaseKVStorage | None = None,
 ) -> QueryResult | None:
     """
     Execute naive query and return unified QueryResult object.
@@ -4902,10 +4940,11 @@ async def naive_query(
     Args:
         query: Query string
         chunks_vdb: Document chunks vector database
-        query_param: Query parameters
+        query_param: Query parameters (includes include_metadata flag)
         global_config: Global configuration
         hashing_kv: Cache storage
         system_prompt: System prompt
+        doc_status_storage: Document status storage for metadata lookup (optional)
 
     Returns:
         QueryResult | None: Unified query result object containing:
@@ -4997,12 +5036,14 @@ async def naive_query(
     logger.info(f"Final context: {len(processed_chunks_with_ref_ids)} chunks")
 
     # Build raw data structure for naive mode using processed chunks with reference IDs
-    raw_data = convert_to_user_format(
+    raw_data = await convert_to_user_format(
         [],  # naive mode has no entities
         [],  # naive mode has no relationships
         processed_chunks_with_ref_ids,
         reference_list,
         "naive",
+        doc_status_storage=doc_status_storage,
+        include_metadata=query_param.include_metadata,
     )
 
     # Add complete metadata for naive mode

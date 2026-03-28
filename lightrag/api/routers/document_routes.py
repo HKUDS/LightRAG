@@ -3,6 +3,7 @@ This module contains all document-related routes for the LightRAG API.
 """
 
 import asyncio
+import json
 from functools import lru_cache
 from lightrag.utils import logger, get_pinyin_sort_key
 import aiofiles
@@ -229,6 +230,7 @@ class InsertTextRequest(BaseModel):
     Attributes:
         text: The text content to be inserted into the RAG system
         file_source: Source of the text (optional)
+        metadata: Additional metadata about the document (optional)
     """
 
     text: str = Field(
@@ -237,6 +239,9 @@ class InsertTextRequest(BaseModel):
     )
     file_source: Optional[str] = Field(
         default=None, min_length=0, description="File Source"
+    )
+    metadata: Optional[dict[str, Any]] = Field(
+        default=None, description="Additional metadata about the document"
     )
 
     @field_validator("text", mode="after")
@@ -254,6 +259,7 @@ class InsertTextRequest(BaseModel):
             "example": {
                 "text": "This is a sample text to be inserted into the RAG system.",
                 "file_source": "Source of the text (optional)",
+                "metadata": {"author": "John Doe", "category": "research"},
             }
         }
     )
@@ -265,6 +271,7 @@ class InsertTextsRequest(BaseModel):
     Attributes:
         texts: List of text contents to be inserted into the RAG system
         file_sources: Sources of the texts (optional)
+        metadata: Single metadata dict (applied to all texts) or list of metadata dicts (one per text)
     """
 
     texts: list[str] = Field(
@@ -273,6 +280,10 @@ class InsertTextsRequest(BaseModel):
     )
     file_sources: Optional[list[str]] = Field(
         default=None, min_length=0, description="Sources of the texts"
+    )
+    metadata: Optional[dict[str, Any] | list[dict[str, Any]]] = Field(
+        default=None,
+        description="Single metadata dict (applied to all texts) or list of metadata dicts (one per text)",
     )
 
     @field_validator("texts", mode="after")
@@ -300,6 +311,7 @@ class InsertTextsRequest(BaseModel):
                 "file_sources": [
                     "First file source (optional)",
                 ],
+                "metadata": {"author": "John Doe", "year": 2026},
             }
         }
     )
@@ -311,14 +323,17 @@ class InsertResponse(BaseModel):
     Attributes:
         status: Status of the operation (success, duplicated, partial_success, failure)
         message: Detailed message describing the operation result
-        track_id: Tracking ID for monitoring processing status
+        track_id: Tracking ID for monitoring processing status (optional for non-processing operations like metadata update)
     """
 
     status: Literal["success", "duplicated", "partial_success", "failure"] = Field(
         description="Status of the operation"
     )
     message: str = Field(description="Message describing the operation result")
-    track_id: str = Field(description="Tracking ID for monitoring processing status")
+    track_id: Optional[str] = Field(
+        default=None,
+        description="Tracking ID for monitoring processing status (None for operations that don't require tracking)",
+    )
 
     model_config = ConfigDict(
         json_schema_extra={
@@ -329,6 +344,23 @@ class InsertResponse(BaseModel):
             }
         }
     )
+
+
+class UpdateMetadataRequest(BaseModel):
+    """Request model for updating document metadata
+
+    Attributes:
+        metadata: New metadata dictionary to replace existing metadata
+    """
+
+    metadata: dict[str, Any] = Field(
+        description="New metadata to replace existing document metadata"
+    )
+
+    class Config:
+        json_schema_extra = {
+            "example": {"metadata": {"author": "John Doe", "year": 2026}}
+        }
 
 
 class ClearDocumentsResponse(BaseModel):
@@ -489,7 +521,7 @@ class DocStatusResponse(BaseModel):
                 "track_id": "upload_20250729_170612_abc123",
                 "chunks_count": 12,
                 "error": None,
-                "metadata": {"author": "John Doe", "year": 2025},
+                "metadata": {"author": "John Doe", "year": 2026},
                 "file_path": "research_paper.pdf",
             }
         }
@@ -595,7 +627,7 @@ class TrackStatusResponse(BaseModel):
                         "track_id": "upload_20250729_170612_abc123",
                         "chunks_count": 12,
                         "error": None,
-                        "metadata": {"author": "John Doe", "year": 2025},
+                        "metadata": {"author": "John Doe", "year": 2026},
                         "file_path": "research_paper.pdf",
                     }
                 ],
@@ -708,7 +740,7 @@ class PaginatedDocsResponse(BaseModel):
                         "track_id": "upload_20250729_170612_abc123",
                         "chunks_count": 12,
                         "error_msg": None,
-                        "metadata": {"author": "John Doe", "year": 2025},
+                        "metadata": {"author": "John Doe", "year": 2026},
                         "file_path": "research_paper.pdf",
                     }
                 ],
@@ -1226,8 +1258,46 @@ def _extract_xlsx(file_bytes: bytes) -> str:
     return "\n".join(content_parts)
 
 
+# System-reserved metadata fields that cannot be modified by users
+RESERVED_METADATA_FIELDS = {
+    "is_duplicate",
+    "original_doc_id",
+    "original_track_id",
+    "error_type",
+    "processing_start_time",
+    "processing_end_time",
+}
+
+
+def reorder_metadata(metadata: dict[str, Any] | None) -> dict[str, Any]:
+    """Reorder metadata to show system fields first, then user fields.
+
+    Args:
+        metadata: Metadata dictionary (can be None)
+
+    Returns:
+        Reordered metadata dictionary with system fields first
+    """
+    if not metadata:
+        return metadata or {}
+
+    # Separate reserved and user fields
+    reserved_fields = {
+        k: v for k, v in metadata.items() if k in RESERVED_METADATA_FIELDS
+    }
+    user_fields = {
+        k: v for k, v in metadata.items() if k not in RESERVED_METADATA_FIELDS
+    }
+
+    # Return with system fields first, then user fields
+    return {**reserved_fields, **user_fields}
+
+
 async def pipeline_enqueue_file(
-    rag: LightRAG, file_path: Path, track_id: str = None
+    rag: LightRAG,
+    file_path: Path,
+    track_id: str = None,
+    metadata: dict[str, Any] = None,
 ) -> tuple[bool, str]:
     """Add a file to the queue for processing
 
@@ -1235,6 +1305,7 @@ async def pipeline_enqueue_file(
         rag: LightRAG instance
         file_path: Path to the saved file
         track_id: Optional tracking ID, if not provided will be generated
+        metadata: Optional metadata to attach to the document
     Returns:
         tuple: (success: bool, track_id: str)
     """
@@ -1600,7 +1671,10 @@ async def pipeline_enqueue_file(
 
             try:
                 await rag.apipeline_enqueue_documents(
-                    content, file_paths=file_path.name, track_id=track_id
+                    content,
+                    file_paths=file_path.name,
+                    track_id=track_id,
+                    metadata=metadata,
                 )
 
                 logger.info(
@@ -1684,17 +1758,23 @@ async def pipeline_enqueue_file(
                 logger.error(f"Error deleting file {file_path}: {str(e)}")
 
 
-async def pipeline_index_file(rag: LightRAG, file_path: Path, track_id: str = None):
+async def pipeline_index_file(
+    rag: LightRAG,
+    file_path: Path,
+    track_id: str = None,
+    metadata: dict[str, Any] = None,
+):
     """Index a file with track_id
 
     Args:
         rag: LightRAG instance
         file_path: Path to the saved file
         track_id: Optional tracking ID
+        metadata: Optional metadata to attach to the document
     """
     try:
         success, returned_track_id = await pipeline_enqueue_file(
-            rag, file_path, track_id
+            rag, file_path, track_id, metadata
         )
         if success:
             await rag.apipeline_process_enqueue_documents()
@@ -1743,6 +1823,7 @@ async def pipeline_index_texts(
     texts: List[str],
     file_sources: List[str] = None,
     track_id: str = None,
+    metadata: dict[str, Any] | list[dict[str, Any]] | None = None,
 ):
     """Index a list of texts with track_id
 
@@ -1751,6 +1832,7 @@ async def pipeline_index_texts(
         texts: The texts to index
         file_sources: Sources of the texts
         track_id: Optional tracking ID
+        metadata: Single metadata dict (applied to all texts) or list of metadata dicts (one per text)
     """
     if not texts:
         return
@@ -1768,7 +1850,10 @@ async def pipeline_index_texts(
             )
 
     await rag.apipeline_enqueue_documents(
-        input=texts, file_paths=normalized_file_sources, track_id=track_id
+        input=texts,
+        file_paths=normalized_file_sources,
+        track_id=track_id,
+        metadata=metadata,
     )
     await rag.apipeline_process_enqueue_documents()
 
@@ -2117,7 +2202,9 @@ def create_document_routes(
         "/upload", response_model=InsertResponse, dependencies=[Depends(combined_auth)]
     )
     async def upload_to_input_dir(
-        background_tasks: BackgroundTasks, file: UploadFile = File(...)
+        background_tasks: BackgroundTasks,
+        file: UploadFile = File(...),
+        metadata: str | None = None,
     ):
         """
         Upload a file to the input directory and index it.
@@ -2130,6 +2217,11 @@ def create_document_routes(
         - Configurable via `MAX_UPLOAD_SIZE` environment variable (default: 100MB)
         - Set to `None` or `0` for unlimited upload size
         - Returns HTTP 413 (Request Entity Too Large) if file exceeds limit
+
+        **Metadata Support:**
+        - Optional `metadata` form field accepts a JSON string
+        - Example: `{"author": "John Doe", "year": 2026}`
+        - Metadata is stored with the document and can be retrieved later
 
         **Duplicate Detection Behavior:**
 
@@ -2161,6 +2253,7 @@ def create_document_routes(
         Args:
             background_tasks: FastAPI BackgroundTasks for async processing
             file (UploadFile): The file to be uploaded. It must have an allowed extension.
+            metadata (str): Optional JSON string containing metadata for the document
 
         Returns:
             InsertResponse: A response object containing the upload status and a message.
@@ -2168,9 +2261,26 @@ def create_document_routes(
                 - status="duplicated": Filename already exists (see track_id for existing document)
 
         Raises:
-            HTTPException: If the file type is not supported (400), file too large (413), or other errors occur (500).
+            HTTPException: If the file type is not supported (400), file too large (413),
+                          invalid metadata JSON (400), or other errors occur (500).
         """
         try:
+            # Parse metadata if provided
+            parsed_metadata = None
+            if metadata:
+                try:
+                    parsed_metadata = json.loads(metadata)
+                    if not isinstance(parsed_metadata, dict):
+                        raise HTTPException(
+                            status_code=400,
+                            detail="Metadata must be a JSON object (dict)",
+                        )
+                except json.JSONDecodeError as e:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Invalid metadata JSON: {str(e)}",
+                    )
+
             # Sanitize filename to prevent Path Traversal attacks
             safe_filename = sanitize_filename(file.filename, doc_manager.input_dir)
 
@@ -2265,7 +2375,9 @@ def create_document_routes(
             track_id = generate_track_id("upload")
 
             # Add to background tasks and get track_id
-            background_tasks.add_task(pipeline_index_file, rag, file_path, track_id)
+            background_tasks.add_task(
+                pipeline_index_file, rag, file_path, track_id, parsed_metadata
+            )
 
             return InsertResponse(
                 status="success",
@@ -2347,6 +2459,7 @@ def create_document_routes(
                 [request.text],
                 file_sources=[request.file_source],
                 track_id=track_id,
+                metadata=request.metadata,
             )
 
             return InsertResponse(
@@ -2430,6 +2543,7 @@ def create_document_routes(
                 request.texts,
                 file_sources=request.file_sources,
                 track_id=track_id,
+                metadata=request.metadata,
             )
 
             return InsertResponse(
@@ -3218,6 +3332,147 @@ def create_document_routes(
 
         except Exception as e:
             logger.error(f"Error getting document status counts: {str(e)}")
+            logger.error(traceback.format_exc())
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @router.get(
+        "/{document_id}",
+        response_model=DocStatusResponse,
+        dependencies=[Depends(combined_auth)],
+    )
+    async def get_document_by_id(document_id: str) -> DocStatusResponse:
+        """
+        Get a single document by ID.
+
+        This endpoint retrieves the processing status and details of a specific document
+        using its document ID.
+
+        Args:
+            document_id: The unique identifier for the document
+
+        Returns:
+            DocStatusResponse: A response object containing the document details
+
+        Raises:
+            HTTPException: If document is not found (404) or an error occurs (500).
+        """
+        try:
+            doc = await rag.doc_status.get_by_id(document_id)
+            if doc is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Document with ID '{document_id}' not found",
+                )
+
+            # Convert DocProcessingStatus to DocStatusResponse format
+            # Reorder metadata to ensure system fields appear first
+            return DocStatusResponse(
+                id=document_id,
+                content_summary=doc.get("content_summary"),
+                content_length=doc.get("content_length"),
+                file_path=doc.get("file_path"),
+                status=doc.get("status"),
+                created_at=doc.get("created_at"),
+                updated_at=doc.get("updated_at"),
+                track_id=doc.get("track_id"),
+                chunks_count=doc.get("chunks_count"),
+                error_msg=doc.get("error_msg"),
+                metadata=reorder_metadata(doc.get("metadata")),
+            )
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error retrieving document {document_id}: {str(e)}")
+            logger.error(traceback.format_exc())
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @router.patch(
+        "/{document_id}/metadata",
+        response_model=InsertResponse,
+        dependencies=[Depends(combined_auth)],
+    )
+    async def update_document_metadata(
+        document_id: str, request: UpdateMetadataRequest
+    ) -> InsertResponse:
+        """
+        Update metadata for a specific document.
+
+        This endpoint allows updating the metadata of an existing document without
+        reprocessing the document content. User metadata can be updated, but system-reserved
+        fields are protected and will be preserved.
+
+        **Reserved System Fields (cannot be modified):**
+        - `is_duplicate` - System flag for duplicate documents
+        - `original_doc_id` - Original document ID for duplicates
+        - `original_track_id` - Original tracking ID for duplicates
+        - `processing_start_time` - Processing start timestamp
+        - `processing_end_time` - Processing end timestamp
+
+        Args:
+            document_id: The unique identifier for the document
+            request: Request body containing the new metadata dictionary
+
+        Returns:
+            InsertResponse: A response indicating success or failure
+
+        Raises:
+            HTTPException: If document is not found (404), metadata is invalid (400),
+                         attempts to modify reserved fields (400), or an error occurs (500).
+        """
+        try:
+            # Validate metadata is a dict
+            if not isinstance(request.metadata, dict):
+                raise HTTPException(
+                    status_code=400, detail="Metadata must be a dictionary"
+                )
+
+            # Check for attempts to modify reserved fields
+            reserved_fields_in_request = (
+                set(request.metadata.keys()) & RESERVED_METADATA_FIELDS
+            )
+            if reserved_fields_in_request:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Cannot modify reserved system fields: {', '.join(sorted(reserved_fields_in_request))}. "
+                    f"Reserved fields: {', '.join(sorted(RESERVED_METADATA_FIELDS))}",
+                )
+
+            # Check if document exists
+            doc = await rag.doc_status.get_by_id(document_id)
+            if doc is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Document with ID '{document_id}' not found",
+                )
+
+            # Get existing metadata and preserve reserved fields
+            existing_metadata = doc.get("metadata", {})
+            reserved_metadata = {
+                key: existing_metadata[key]
+                for key in RESERVED_METADATA_FIELDS
+                if key in existing_metadata
+            }
+
+            # Merge preserved reserved fields and user metadata
+            merged_metadata = {**reserved_metadata, **request.metadata}
+
+            # Update metadata (doc is a dict, not an object) via upsert
+            doc["metadata"] = merged_metadata
+            await rag.doc_status.upsert({document_id: doc})
+
+            return InsertResponse(
+                status="success",
+                message=f"Metadata updated for document '{document_id}'",
+                track_id=None,
+            )
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(
+                f"Error updating metadata for document {document_id}: {str(e)}"
+            )
             logger.error(traceback.format_exc())
             raise HTTPException(status_code=500, detail=str(e))
 

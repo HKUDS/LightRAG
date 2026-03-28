@@ -3124,7 +3124,7 @@ def create_prefixed_exception(original_exception: Exception, prefix: str) -> Exc
         )
 
 
-def convert_to_user_format(
+async def convert_to_user_format(
     entities_context: list[dict],
     relations_context: list[dict],
     chunks: list[dict],
@@ -3132,8 +3132,25 @@ def convert_to_user_format(
     query_mode: str,
     entity_id_to_original: dict = None,
     relation_id_to_original: dict = None,
+    doc_status_storage=None,
+    include_metadata: bool = False,
 ) -> dict[str, Any]:
-    """Convert internal data format to user-friendly format using original database data"""
+    """Convert internal data format to user-friendly format using original database data
+
+    Args:
+        entities_context: List of entity context dicts
+        relations_context: List of relation context dicts
+        chunks: List of chunk dicts (with full_doc_id)
+        references: List of reference dicts
+        query_mode: Query mode string
+        entity_id_to_original: Mapping of entity IDs to original data
+        relation_id_to_original: Mapping of relation IDs to original data
+        doc_status_storage: Document status storage for metadata lookup (optional)
+        include_metadata: If True, retrieves metadata for each chunk using full_doc_id
+
+    Returns:
+        dict containing formatted data with optional metadata
+    """
 
     # Convert entities format using original data when available
     formatted_entities = []
@@ -3211,6 +3228,28 @@ def convert_to_user_format(
                 }
             )
 
+    # Fetch metadata if requested and doc_status_storage is provided
+    doc_id_to_metadata = {}
+    if include_metadata and doc_status_storage is not None:
+        # Collect unique full_doc_ids from chunks
+        unique_doc_ids = set()
+        for chunk in chunks:
+            full_doc_id = chunk.get("full_doc_id")
+            if full_doc_id:
+                unique_doc_ids.add(full_doc_id)
+
+        # Batch lookup metadata for all unique document IDs
+        if unique_doc_ids:
+            for doc_id in unique_doc_ids:
+                try:
+                    doc_data = await doc_status_storage.get_by_id(doc_id)
+                    if doc_data and "metadata" in doc_data:
+                        doc_id_to_metadata[doc_id] = doc_data.get("metadata")
+                except Exception as e:
+                    logger.warning(
+                        f"[convert_to_user_format] Failed to fetch metadata for doc_id {doc_id}: {e}"
+                    )
+
     # Convert chunks format (chunks already contain complete data)
     formatted_chunks = []
     for i, chunk in enumerate(chunks):
@@ -3220,6 +3259,15 @@ def convert_to_user_format(
             "file_path": chunk.get("file_path", "unknown_source"),
             "chunk_id": chunk.get("chunk_id", ""),
         }
+
+        # Add metadata if requested and available
+        if include_metadata:
+            full_doc_id = chunk.get("full_doc_id")
+            if full_doc_id and full_doc_id in doc_id_to_metadata:
+                chunk_data["metadata"] = doc_id_to_metadata[full_doc_id]
+            else:
+                chunk_data["metadata"] = None
+
         formatted_chunks.append(chunk_data)
 
     logger.debug(

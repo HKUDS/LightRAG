@@ -162,6 +162,12 @@ class QueryParam:
     Default is True to enable reranking when rerank model is available.
     """
 
+    include_metadata: bool = False
+    """If True, retrieves document metadata for each chunk using the full_doc_id.
+    Metadata is looked up on-demand from document storage. This allows queries to
+    include document-level metadata without storing it with every chunk.
+    """
+
     include_references: bool = False
     """If True, includes reference list in the response for supported endpoints.
     This parameter controls whether the API response includes a references field
