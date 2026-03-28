@@ -339,15 +339,21 @@ class PostgreSQLDB:
         )
 
         async def _init_connection(connection: asyncpg.Connection) -> None:
-            """Initialize each connection with pgvector codec.
+            """Initialize each connection with pgvector codec and VCHORDRQ session params.
 
             This callback is invoked by asyncpg for every new connection in the pool.
             Registering the vector codec here ensures ALL connections can properly
             encode/decode vector columns, eliminating non-deterministic behavior
             where some connections have the codec and others don't.
+
+            VCHORDRQ session parameters (probes, epsilon) are SET once here because
+            they are session-scoped GUC parameters that persist for the connection
+            lifetime and are not reset by asyncpg's pool release logic.
             """
             if self.enable_vector:
                 await register_vector(connection)
+            if self.enable_vector and self.vector_index_type == "VCHORDRQ":
+                await self.configure_vchordrq(connection)
 
         async def _create_pool_once() -> None:
             # STEP 1: Bootstrap - ensure vector extension exists BEFORE pool creation.
@@ -481,8 +487,6 @@ class PostgreSQLDB:
                         await self.configure_age(connection, graph_name)
                     elif with_age and not graph_name:
                         raise ValueError("Graph name is required when with_age is True")
-                    if self.enable_vector and self.vector_index_type == "VCHORDRQ":
-                        await self.configure_vchordrq(connection)
                     return await operation(connection)
 
     async def configure_vector_extension(self, connection: asyncpg.Connection) -> None:
