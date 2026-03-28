@@ -446,7 +446,7 @@ class MongoDocStatusStorage(DocStatusStorage):
             return {}
         status_values = [s.value for s in statuses]
         cursor = self._data.find({"status": {"$in": status_values}})
-        docs = await cursor.to_list()
+        docs = await cursor.to_list(length=None)
         result = {}
         for doc in docs:
             try:
