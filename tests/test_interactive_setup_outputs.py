@@ -2376,6 +2376,58 @@ generate_env_file "$REPO_ROOT/env.example" "$REPO_ROOT/.env"
     assert "EXTRA_OLD=1" in generated_lines
 
 
+def test_generate_env_file_preserves_comments_before_active_template_keys_in_preserved(
+    tmp_path: Path,
+) -> None:
+    """Comments in preserved should survive even when followed by active template-managed keys."""
+
+    write_text_lines(
+        tmp_path / "env.example",
+        [
+            "HOST=0.0.0.0",
+            "# PORT=9621",
+        ],
+    )
+    write_text_lines(
+        tmp_path / ".env",
+        [
+            "HOST=127.0.0.1",
+            PRESERVED_HEADER,
+            PRESERVED_NOTICE,
+            "",
+            "# Preserved note before active template key",
+            "# Another note",
+            "PORT=9999",
+            "EXTRA_AFTER=1",
+        ],
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+
+load_env_file "$REPO_ROOT/.env"
+ENV_VALUES[HOST]="0.0.0.0"
+ENV_VALUES[PORT]="9621"
+generate_env_file "$REPO_ROOT/env.example" "$REPO_ROOT/.env"
+"""
+    )
+
+    generated_lines = (tmp_path / ".env").read_text(encoding="utf-8").splitlines()
+    marker_index = generated_lines.index(PRESERVED_HEADER)
+
+    assert (
+        generated_lines[marker_index + 3]
+        == "# Preserved note before active template key"
+    )
+    assert generated_lines[marker_index + 4] == "# Another note"
+    assert "PORT=9999" not in generated_lines[marker_index + 1 :]
+    assert "EXTRA_AFTER=1" in generated_lines
+
+
 def test_generate_env_file_appends_extra_variables_after_template_preserved_block(
     tmp_path: Path,
 ) -> None:

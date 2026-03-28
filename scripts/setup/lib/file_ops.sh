@@ -227,6 +227,9 @@ append_preserved_non_template_env_lines() {
       fi
 
       if [[ -n "${ignored_keys[$key]+set}" ]]; then
+        if [[ "$in_preserved_section" == "yes" ]] && ((${#pending_lines[@]} > 0)); then
+          preserved_payload+=("${pending_lines[@]}")
+        fi
         pending_lines=()
         continue
       fi
@@ -244,6 +247,8 @@ append_preserved_non_template_env_lines() {
         else
           discovered_payload+=("$line")
         fi
+      elif [[ "$in_preserved_section" == "yes" && ${#pending_lines[@]} -gt 0 ]]; then
+        preserved_payload+=("${pending_lines[@]}")
       fi
 
       pending_lines=()
