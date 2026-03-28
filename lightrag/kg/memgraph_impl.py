@@ -510,6 +510,27 @@ class MemgraphStorage(BaseGraphStorage):
                 "Memgraph: node properties must contain an 'entity_id' field"
             )
 
+        # Coerce to str first so membership checks below never raise TypeError
+        # regardless of what upstream callers (e.g. API payloads) pass in.
+        entity_type = (
+            str(entity_type) if not isinstance(entity_type, str) else entity_type
+        )
+
+        # Sanitize entity_type: strip backticks and handle comma-separated values.
+        # This guards against dirty data from LLM extraction or database read-back.
+        if "`" in entity_type or "," in entity_type or not entity_type.strip():
+            original = entity_type
+            entity_type = entity_type.replace("`", "").strip()
+            if "," in entity_type:
+                entity_type = entity_type.split(",")[0].strip()
+            if not entity_type:
+                entity_type = "UNKNOWN"
+            logger.warning(
+                f"[{self.workspace}] Entity type sanitized in upsert_node: '{original}' -> '{entity_type}'"
+            )
+            properties = dict(properties)
+            properties["entity_type"] = entity_type
+
         # Manual transaction-level retry following official Memgraph documentation
         max_retries = 100
         initial_wait_time = 0.2
