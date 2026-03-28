@@ -774,6 +774,12 @@ class DocStatusStorage(BaseKVStorage, ABC):
         """Get all documents with a specific status"""
 
     @abstractmethod
+    async def get_docs_by_statuses(
+        self, statuses: list[DocStatus]
+    ) -> dict[str, DocProcessingStatus]:
+        """Get all documents matching any of the given statuses"""
+
+    @abstractmethod
     async def get_docs_by_track_id(
         self, track_id: str
     ) -> dict[str, DocProcessingStatus]:
