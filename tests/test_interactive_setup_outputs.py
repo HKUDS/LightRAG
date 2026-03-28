@@ -1974,6 +1974,110 @@ generate_env_file "$REPO_ROOT/env.example" "$REPO_ROOT/.env"
     assert generated_lines[-1] == "# This should stay at EOF"
 
 
+def test_generate_env_file_appends_new_external_entries_after_existing_preserved_block(
+    tmp_path: Path,
+) -> None:
+    """New template-external entries should be appended after the existing preserved payload."""
+
+    write_text_lines(
+        tmp_path / "env.example",
+        [
+            "HOST=0.0.0.0",
+            "# PORT=9621",
+        ],
+    )
+    write_text_lines(
+        tmp_path / ".env",
+        [
+            "HOST=127.0.0.1",
+            "EXTRA_EARLY=alpha",
+            "### Preserved custom environment variables from previous .env",
+            "### Comments in this session will persist across regenerations",
+            "",
+            "# Existing note",
+            "EXTRA_EXISTING=omega",
+        ],
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+
+load_env_file "$REPO_ROOT/.env"
+ENV_VALUES[HOST]="0.0.0.0"
+ENV_VALUES[PORT]="9621"
+generate_env_file "$REPO_ROOT/env.example" "$REPO_ROOT/.env"
+"""
+    )
+
+    generated_lines = (tmp_path / ".env").read_text(encoding="utf-8").splitlines()
+    marker_index = generated_lines.index(
+        "### Preserved custom environment variables from previous .env"
+    )
+
+    assert generated_lines[marker_index + 1] == (
+        "### Comments in this session will persist across regenerations"
+    )
+    assert generated_lines[marker_index + 2] == ""
+    assert generated_lines[marker_index + 3] == "# Existing note"
+    assert generated_lines[marker_index + 4] == "EXTRA_EXISTING=omega"
+    assert generated_lines[marker_index + 5] == "EXTRA_EARLY=alpha"
+
+
+def test_generate_env_file_appends_multiple_new_external_entries_in_discovery_order(
+    tmp_path: Path,
+) -> None:
+    """Multiple new external entries should append after preserved payload in source order."""
+
+    write_text_lines(
+        tmp_path / "env.example",
+        [
+            "HOST=0.0.0.0",
+            "# PORT=9621",
+        ],
+    )
+    write_text_lines(
+        tmp_path / ".env",
+        [
+            "HOST=127.0.0.1",
+            "EXTRA_FIRST=one",
+            "# Outside comment should not migrate",
+            "EXTRA_SECOND=two",
+            "### Preserved custom environment variables from previous .env",
+            "### Comments in this session will persist across regenerations",
+            "",
+            "EXTRA_EXISTING=existing",
+        ],
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+
+load_env_file "$REPO_ROOT/.env"
+ENV_VALUES[HOST]="0.0.0.0"
+ENV_VALUES[PORT]="9621"
+generate_env_file "$REPO_ROOT/env.example" "$REPO_ROOT/.env"
+"""
+    )
+
+    generated_lines = (tmp_path / ".env").read_text(encoding="utf-8").splitlines()
+    marker_index = generated_lines.index(
+        "### Preserved custom environment variables from previous .env"
+    )
+
+    assert "# Outside comment should not migrate" not in generated_lines
+    assert generated_lines[marker_index + 3] == "EXTRA_EXISTING=existing"
+    assert generated_lines[marker_index + 4] == "EXTRA_FIRST=one"
+    assert generated_lines[marker_index + 5] == "EXTRA_SECOND=two"
+
+
 def test_generate_env_file_round_trips_dollar_signs_in_single_quoted_values(
     tmp_path: Path,
 ) -> None:

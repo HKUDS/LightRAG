@@ -157,11 +157,12 @@ append_preserved_non_template_env_lines() {
   local existing_env_file="$2"
   local output_file="$3"
   local line key
-  local emitted_header="no"
   local in_preserved_section="no"
   local preserved_header="### Preserved custom environment variables from previous .env"
   local preserved_notice="### Comments in this session will persist across regenerations"
   local -a pending_lines=()
+  local -a preserved_payload=()
+  local -a discovered_payload=()
   local -A ignored_keys=(
     ["LIGHTRAG_SETUP_PROFILE"]=1
   )
@@ -211,25 +212,38 @@ append_preserved_non_template_env_lines() {
     fi
 
     if [[ -z "${template_keys[$key]+set}" ]]; then
-      if [[ "$emitted_header" == "no" ]]; then
-        printf '\n%s\n%s\n' "$preserved_header" "$preserved_notice" >> "$output_file"
-        emitted_header="yes"
+      if ((${#pending_lines[@]} > 0)); then
+        if [[ "$in_preserved_section" == "yes" ]]; then
+          preserved_payload+=("${pending_lines[@]}")
+        fi
       fi
 
-      if ((${#pending_lines[@]} > 0)); then
-        printf '%s\n' "${pending_lines[@]}" >> "$output_file"
+      if [[ "$in_preserved_section" == "yes" ]]; then
+        preserved_payload+=("$line")
+      else
+        discovered_payload+=("$line")
       fi
-      printf '%s\n' "$line" >> "$output_file"
     fi
 
     pending_lines=()
   done < "$existing_env_file"
 
   if ((${#pending_lines[@]} > 0)); then
-    if [[ "$emitted_header" == "no" ]]; then
-      printf '\n%s\n%s\n' "$preserved_header" "$preserved_notice" >> "$output_file"
-    fi
-    printf '%s\n' "${pending_lines[@]}" >> "$output_file"
+    preserved_payload+=("${pending_lines[@]}")
+  fi
+
+  if ((${#preserved_payload[@]} == 0 && ${#discovered_payload[@]} == 0)); then
+    return 0
+  fi
+
+  printf '\n%s\n%s\n' "$preserved_header" "$preserved_notice" >> "$output_file"
+
+  if ((${#preserved_payload[@]} > 0)); then
+    printf '%s\n' "${preserved_payload[@]}" >> "$output_file"
+  fi
+
+  if ((${#discovered_payload[@]} > 0)); then
+    printf '%s\n' "${discovered_payload[@]}" >> "$output_file"
   fi
 }
 
