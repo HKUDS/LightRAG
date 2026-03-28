@@ -34,9 +34,14 @@ import { useBackendState } from '@/stores/state'
 
 import { RefreshCwIcon, ActivityIcon, ArrowUpIcon, ArrowDownIcon, RotateCcwIcon, CheckSquareIcon, XIcon, AlertTriangle, Info } from 'lucide-react'
 import PipelineStatusDialog from '@/components/documents/PipelineStatusDialog'
+import {
+  getStatusBucket,
+  getStatusRequestFilters,
+  matchesStatusFilter,
+  type StatusBucket,
+  type StatusFilter
+} from '@/features/documentStatusFilters'
 
-type StatusBucket = 'processed' | 'analyzing' | 'processing' | 'pending' | 'failed'
-type StatusFilter = StatusBucket | 'all'
 type StatusDisplayConfig = {
   labelKey: string
   className: string
@@ -57,16 +62,6 @@ const getCountValue = (counts: Record<string, number>, ...keys: string[]): numbe
 
 const getAggregateCount = (counts: Record<string, number>, ...keys: string[]): number =>
   keys.reduce((total, key) => total + getCountValue(counts, key), 0)
-
-const getStatusBucket = (status: DocStatus): StatusBucket => {
-  if (status === 'preprocessed' || status === 'parsing' || status === 'analyzing') {
-    return 'analyzing'
-  }
-  if (status === 'processing') {
-    return 'processing'
-  }
-  return status as Exclude<DocStatus, 'parsing' | 'analyzing' | 'preprocessed'>
-}
 
 const hasActiveDocumentsStatus = (counts: Record<string, number>): boolean =>
   getAggregateCount(counts, 'PROCESSING', 'processing', 'PARSING', 'parsing', 'ANALYZING', 'analyzing') > 0 ||
@@ -454,26 +449,20 @@ export default function DocumentManager() {
     // Create a flat array of documents with status information
     const allDocuments: DocStatusWithStatus[] = [];
 
-    if (statusFilter === 'all') {
-      // When filter is 'all', include documents from all statuses
-      Object.entries(docs.statuses).forEach(([status, documents]) => {
-        (documents ?? []).forEach(doc => {
+    Object.entries(docs.statuses).forEach(([status, documents]) => {
+      const fallbackStatus = status as DocStatus
+
+      for (const doc of documents ?? []) {
+        const documentStatus = doc.status ?? fallbackStatus
+
+        if (matchesStatusFilter(documentStatus, statusFilter)) {
           allDocuments.push({
             ...doc,
-            status: status as DocStatus
-          });
-        });
-      });
-    } else {
-      // When filter is specific status, only include documents from that status
-      const documents = docs.statuses[statusFilter] || [];
-      documents.forEach(doc => {
-        allDocuments.push({
-          ...doc,
-          status: statusFilter
-        });
-      });
-    }
+            status: documentStatus
+          })
+        }
+      }
+    })
 
     // Sort all documents together if sort field and direction are specified
     if (sortField && sortDirection) {
@@ -756,9 +745,10 @@ export default function DocumentManager() {
 
       // Determine target page
       const pageToFetch = resetToFirst ? 1 : (targetPage || pagination.page);
+      const statusRequestFilters = getStatusRequestFilters(statusFilter)
 
       const request: DocumentsRequest = {
-        status_filter: statusFilter === 'all' ? null : statusFilter,
+        ...statusRequestFilters,
         page: pageToFetch,
         page_size: pagination.page_size,
         sort_field: sortField,
@@ -968,10 +958,11 @@ export default function DocumentManager() {
 
     try {
       setIsRefreshing(true);
+      const statusRequestFilters = getStatusRequestFilters(statusFilter)
 
       // Fetch documents from the first page
       const request: DocumentsRequest = {
-        status_filter: statusFilter === 'all' ? null : statusFilter,
+        ...statusRequestFilters,
         page: 1,
         page_size: pagination.page_size,
         sort_field: sortField,
