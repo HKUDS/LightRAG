@@ -2254,26 +2254,18 @@ class LightRAG:
         async with pipeline_status_lock:
             # Ensure only one worker is processing documents
             if not pipeline_status.get("busy", False):
-                (
-                    processing_docs,
-                    failed_docs,
-                    pending_docs,
-                    parsing_docs,
-                    analyzing_docs,
-                ) = await asyncio.gather(
-                    self.doc_status.get_docs_by_status(DocStatus.PROCESSING),
-                    self.doc_status.get_docs_by_status(DocStatus.FAILED),
-                    self.doc_status.get_docs_by_status(DocStatus.PENDING),
-                    self.doc_status.get_docs_by_status(DocStatus.PARSING),
-                    self.doc_status.get_docs_by_status(DocStatus.ANALYZING),
+                to_process_docs: dict[
+                    str, DocProcessingStatus
+                ] = await self.doc_status.get_docs_by_statuses(
+                    [
+                        DocStatus.PROCESSING,
+                        DocStatus.FAILED,
+                        DocStatus.PENDING,
+                        DocStatus.PARSING,
+                        DocStatus.ANALYZING,
+                    ]
                 )
 
-                to_process_docs: dict[str, DocProcessingStatus] = {}
-                to_process_docs.update(processing_docs)
-                to_process_docs.update(failed_docs)
-                to_process_docs.update(pending_docs)
-                to_process_docs.update(parsing_docs)
-                to_process_docs.update(analyzing_docs)
 
                 if not to_process_docs:
                     logger.info("No documents to process")
@@ -3138,26 +3130,16 @@ class LightRAG:
                 pipeline_status["history_messages"].append(log_message)
 
                 # Check for pending documents again
-                (
-                    processing_docs,
-                    failed_docs,
-                    pending_docs,
-                    parsing_docs,
-                    analyzing_docs,
-                ) = await asyncio.gather(
-                    self.doc_status.get_docs_by_status(DocStatus.PROCESSING),
-                    self.doc_status.get_docs_by_status(DocStatus.FAILED),
-                    self.doc_status.get_docs_by_status(DocStatus.PENDING),
-                    self.doc_status.get_docs_by_status(DocStatus.PARSING),
-                    self.doc_status.get_docs_by_status(DocStatus.ANALYZING),
+                to_process_docs = await self.doc_status.get_docs_by_statuses(
+                    [
+                        DocStatus.PROCESSING,
+                        DocStatus.FAILED,
+                        DocStatus.PENDING,
+                        DocStatus.PARSING,
+                        DocStatus.ANALYZING,
+                    ]
                 )
 
-                to_process_docs = {}
-                to_process_docs.update(processing_docs)
-                to_process_docs.update(failed_docs)
-                to_process_docs.update(pending_docs)
-                to_process_docs.update(parsing_docs)
-                to_process_docs.update(analyzing_docs)
 
         finally:
             log_message = "Enqueued document processing pipeline stopped"
