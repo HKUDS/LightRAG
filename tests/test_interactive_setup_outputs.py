@@ -2078,6 +2078,54 @@ generate_env_file "$REPO_ROOT/env.example" "$REPO_ROOT/.env"
     assert generated_lines[marker_index + 5] == "EXTRA_SECOND=two"
 
 
+def test_generate_env_file_keeps_commented_template_keys_inside_preserved_section(
+    tmp_path: Path,
+) -> None:
+    """Commented env vars already placed in preserved should survive even if the template declares them."""
+
+    write_text_lines(
+        tmp_path / "env.example",
+        [
+            "HOST=0.0.0.0",
+            "# PORT=9621",
+            "# ENTITY_EXTRACTION_USE_JSON=true",
+        ],
+    )
+    write_text_lines(
+        tmp_path / ".env",
+        [
+            "HOST=127.0.0.1",
+            "### Preserved custom environment variables from previous .env",
+            "### Comments in this session will persist across regenerations",
+            "",
+            "# ENTITY_EXTRACTION_USE_JSON=true",
+        ],
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+
+load_env_file "$REPO_ROOT/.env"
+ENV_VALUES[HOST]="0.0.0.0"
+ENV_VALUES[PORT]="9621"
+generate_env_file "$REPO_ROOT/env.example" "$REPO_ROOT/.env"
+generate_env_file "$REPO_ROOT/env.example" "$REPO_ROOT/.env"
+"""
+    )
+
+    generated_lines = (tmp_path / ".env").read_text(encoding="utf-8").splitlines()
+    marker_index = generated_lines.index(
+        "### Preserved custom environment variables from previous .env"
+    )
+
+    assert generated_lines.count("# ENTITY_EXTRACTION_USE_JSON=true") == 2
+    assert generated_lines[marker_index + 3] == "# ENTITY_EXTRACTION_USE_JSON=true"
+
+
 def test_generate_env_file_round_trips_dollar_signs_in_single_quoted_values(
     tmp_path: Path,
 ) -> None:

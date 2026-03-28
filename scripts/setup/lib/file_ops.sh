@@ -158,6 +158,7 @@ append_preserved_non_template_env_lines() {
   local output_file="$3"
   local line key
   local in_preserved_section="no"
+  local line_is_commented_env="no"
   local preserved_header="### Preserved custom environment variables from previous .env"
   local preserved_notice="### Comments in this session will persist across regenerations"
   local -a pending_lines=()
@@ -192,11 +193,13 @@ append_preserved_non_template_env_lines() {
     fi
 
     key=""
+    line_is_commented_env="no"
 
     if [[ "$line" =~ ^([A-Z0-9_]+)= ]]; then
       key="${BASH_REMATCH[1]}"
     elif [[ "$line" =~ ^#[[:space:]]*([A-Z0-9_]+)=(.*)$ ]]; then
       key="${BASH_REMATCH[1]}"
+      line_is_commented_env="yes"
     fi
 
     if [[ -z "$key" ]]; then
@@ -211,7 +214,8 @@ append_preserved_non_template_env_lines() {
       continue
     fi
 
-    if [[ -z "${template_keys[$key]+set}" ]]; then
+    if [[ -z "${template_keys[$key]+set}" || \
+      ("$in_preserved_section" == "yes" && "$line_is_commented_env" == "yes") ]]; then
       if ((${#pending_lines[@]} > 0)); then
         if [[ "$in_preserved_section" == "yes" ]]; then
           preserved_payload+=("${pending_lines[@]}")
