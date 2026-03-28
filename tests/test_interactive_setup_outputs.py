@@ -1926,6 +1926,54 @@ generate_env_file "$REPO_ROOT/env.example" "$REPO_ROOT/.env"
     assert generated_lines[marker_index + 8] == "EXTRA_API_TOKEN=secret"
 
 
+def test_generate_env_file_preserves_trailing_comments_at_end_of_preserved_section(
+    tmp_path: Path,
+) -> None:
+    """Free-form comments after the last preserved variable should survive reruns."""
+
+    write_text_lines(
+        tmp_path / "env.example",
+        [
+            "HOST=0.0.0.0",
+            "# PORT=9621",
+        ],
+    )
+    write_text_lines(
+        tmp_path / ".env",
+        [
+            "HOST=127.0.0.1",
+            "",
+            "### Preserved custom environment variables from previous .env",
+            "### Comments in this session will persist across regenerations",
+            "",
+            "EXTRA_API_BASE='https://example.com/api'",
+            "# Free-form note",
+            "# This should stay at EOF",
+        ],
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+
+load_env_file "$REPO_ROOT/.env"
+ENV_VALUES[HOST]="0.0.0.0"
+ENV_VALUES[PORT]="9621"
+generate_env_file "$REPO_ROOT/env.example" "$REPO_ROOT/.env"
+generate_env_file "$REPO_ROOT/env.example" "$REPO_ROOT/.env"
+"""
+    )
+
+    generated_lines = (tmp_path / ".env").read_text(encoding="utf-8").splitlines()
+
+    assert generated_lines[-3] == "EXTRA_API_BASE='https://example.com/api'"
+    assert generated_lines[-2] == "# Free-form note"
+    assert generated_lines[-1] == "# This should stay at EOF"
+
+
 def test_generate_env_file_round_trips_dollar_signs_in_single_quoted_values(
     tmp_path: Path,
 ) -> None:

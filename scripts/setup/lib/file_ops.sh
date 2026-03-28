@@ -224,6 +224,13 @@ append_preserved_non_template_env_lines() {
 
     pending_lines=()
   done < "$existing_env_file"
+
+  if ((${#pending_lines[@]} > 0)); then
+    if [[ "$emitted_header" == "no" ]]; then
+      printf '\n%s\n%s\n' "$preserved_header" "$preserved_notice" >> "$output_file"
+    fi
+    printf '%s\n' "${pending_lines[@]}" >> "$output_file"
+  fi
 }
 
 generate_env_file() {
