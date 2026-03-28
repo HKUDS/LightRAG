@@ -2018,13 +2018,9 @@ generate_env_file "$REPO_ROOT/env.example" "$REPO_ROOT/.env"
     )
 
     generated_lines = (tmp_path / ".env").read_text(encoding="utf-8").splitlines()
-    marker_index = generated_lines.index(
-        PRESERVED_HEADER
-    )
+    marker_index = generated_lines.index(PRESERVED_HEADER)
 
-    assert generated_lines[marker_index + 1] == (
-        PRESERVED_NOTICE
-    )
+    assert generated_lines[marker_index + 1] == (PRESERVED_NOTICE)
     assert generated_lines[marker_index + 2] == ""
     assert generated_lines[marker_index + 3] == "# Existing note"
     assert generated_lines[marker_index + 4] == "EXTRA_EXISTING=omega"
@@ -2072,9 +2068,7 @@ generate_env_file "$REPO_ROOT/env.example" "$REPO_ROOT/.env"
     )
 
     generated_lines = (tmp_path / ".env").read_text(encoding="utf-8").splitlines()
-    marker_index = generated_lines.index(
-        PRESERVED_HEADER
-    )
+    marker_index = generated_lines.index(PRESERVED_HEADER)
 
     assert "# Outside comment should not migrate" not in generated_lines
     assert generated_lines[marker_index + 3] == "EXTRA_EXISTING=existing"
@@ -2122,9 +2116,7 @@ generate_env_file "$REPO_ROOT/env.example" "$REPO_ROOT/.env"
     )
 
     generated_lines = (tmp_path / ".env").read_text(encoding="utf-8").splitlines()
-    marker_index = generated_lines.index(
-        PRESERVED_HEADER
-    )
+    marker_index = generated_lines.index(PRESERVED_HEADER)
 
     assert generated_lines.count("# ENTITY_EXTRACTION_USE_JSON=true") == 2
     assert generated_lines[marker_index + 3] == "# ENTITY_EXTRACTION_USE_JSON=true"
@@ -2208,6 +2200,266 @@ generate_env_file "$REPO_ROOT/env.example" "$REPO_ROOT/.env"
 
     assert PRESERVED_HEADER in generated_lines
     assert "# workspace_name=demo" in generated_lines
+
+
+def test_generate_env_file_uses_template_preserved_block_when_env_missing(
+    tmp_path: Path,
+) -> None:
+    """Missing `.env` should still produce the preserved block from env.example."""
+
+    write_text_lines(
+        tmp_path / "env.example",
+        [
+            "HOST=0.0.0.0",
+            PRESERVED_HEADER,
+            PRESERVED_NOTICE,
+            "### Template preserved comment",
+            "# template_example=true",
+        ],
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+
+ENV_VALUES[HOST]="0.0.0.0"
+generate_env_file "$REPO_ROOT/env.example" "$REPO_ROOT/.env"
+"""
+    )
+
+    generated_lines = (tmp_path / ".env").read_text(encoding="utf-8").splitlines()
+
+    assert PRESERVED_HEADER in generated_lines
+    assert PRESERVED_NOTICE in generated_lines
+    assert generated_lines.count(PRESERVED_HEADER) == 1
+    assert generated_lines.count(PRESERVED_NOTICE) == 1
+    assert "### Template preserved comment" in generated_lines
+    assert "# template_example=true" in generated_lines
+
+
+def test_generate_env_file_keeps_template_separator_adjacent_to_preserved_header(
+    tmp_path: Path,
+) -> None:
+    """Injected template preserved blocks should not add a blank line after the copied separator."""
+
+    write_text_lines(
+        tmp_path / "env.example",
+        [
+            "HOST=0.0.0.0",
+            "##########################################################################",
+            PRESERVED_HEADER,
+            PRESERVED_NOTICE,
+            "### Template preserved comment",
+        ],
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+
+ENV_VALUES[HOST]="0.0.0.0"
+generate_env_file "$REPO_ROOT/env.example" "$REPO_ROOT/.env"
+"""
+    )
+
+    generated_lines = (tmp_path / ".env").read_text(encoding="utf-8").splitlines()
+    header_index = generated_lines.index(PRESERVED_HEADER)
+
+    assert (
+        generated_lines[header_index - 1]
+        == "##########################################################################"
+    )
+
+
+def test_generate_env_file_does_not_inject_template_payload_when_old_preserved_exists(
+    tmp_path: Path,
+) -> None:
+    """Existing preserved blocks should stay authoritative over template preserved payload."""
+
+    write_text_lines(
+        tmp_path / "env.example",
+        [
+            "HOST=0.0.0.0",
+            PRESERVED_HEADER,
+            PRESERVED_NOTICE,
+            "### Template preserved comment",
+            "# template_example=true",
+        ],
+    )
+    write_text_lines(
+        tmp_path / ".env",
+        [
+            "HOST=127.0.0.1",
+            "",
+            PRESERVED_HEADER,
+            "",
+            "# Existing preserved comment",
+            "EXTRA_OLD=1",
+        ],
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+
+load_env_file "$REPO_ROOT/.env"
+ENV_VALUES[HOST]="0.0.0.0"
+generate_env_file "$REPO_ROOT/env.example" "$REPO_ROOT/.env"
+"""
+    )
+
+    generated_lines = (tmp_path / ".env").read_text(encoding="utf-8").splitlines()
+
+    assert PRESERVED_HEADER in generated_lines
+    assert PRESERVED_NOTICE in generated_lines
+    assert "### Template preserved comment" not in generated_lines
+    assert "# template_example=true" not in generated_lines
+    assert "# Existing preserved comment" in generated_lines
+    assert "EXTRA_OLD=1" in generated_lines
+
+
+def test_generate_env_file_keeps_old_preserved_lines_even_when_they_match_template(
+    tmp_path: Path,
+) -> None:
+    """Old preserved content should not be removed just because it matches env.example."""
+
+    write_text_lines(
+        tmp_path / "env.example",
+        [
+            "HOST=0.0.0.0",
+            PRESERVED_HEADER,
+            PRESERVED_NOTICE,
+            "### Template preserved comment",
+            "# template_example=true",
+        ],
+    )
+    write_text_lines(
+        tmp_path / ".env",
+        [
+            "HOST=127.0.0.1",
+            "",
+            PRESERVED_HEADER,
+            "### Template preserved comment",
+            "# template_example=true",
+            "EXTRA_OLD=1",
+        ],
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+
+load_env_file "$REPO_ROOT/.env"
+ENV_VALUES[HOST]="0.0.0.0"
+generate_env_file "$REPO_ROOT/env.example" "$REPO_ROOT/.env"
+"""
+    )
+
+    generated_lines = (tmp_path / ".env").read_text(encoding="utf-8").splitlines()
+
+    assert PRESERVED_HEADER in generated_lines
+    assert PRESERVED_NOTICE in generated_lines
+    assert "### Template preserved comment" in generated_lines
+    assert "# template_example=true" in generated_lines
+    assert "EXTRA_OLD=1" in generated_lines
+
+
+def test_generate_env_file_appends_extra_variables_after_template_preserved_block(
+    tmp_path: Path,
+) -> None:
+    """Extras from old `.env` should append after the template preserved block when none existed before."""
+
+    write_text_lines(
+        tmp_path / "env.example",
+        [
+            "HOST=0.0.0.0",
+            PRESERVED_HEADER,
+            PRESERVED_NOTICE,
+            "### Template preserved comment",
+            "# template_example=true",
+        ],
+    )
+    write_text_lines(
+        tmp_path / ".env",
+        [
+            "HOST=127.0.0.1",
+            "EXTRA_NEW=1",
+        ],
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+
+load_env_file "$REPO_ROOT/.env"
+ENV_VALUES[HOST]="0.0.0.0"
+generate_env_file "$REPO_ROOT/env.example" "$REPO_ROOT/.env"
+"""
+    )
+
+    generated_lines = (tmp_path / ".env").read_text(encoding="utf-8").splitlines()
+
+    assert generated_lines[-3] == "### Template preserved comment"
+    assert generated_lines[-2] == "# template_example=true"
+    assert generated_lines[-1] == "EXTRA_NEW=1"
+
+
+def test_generate_env_file_appends_commented_env_vars_after_template_preserved_block(
+    tmp_path: Path,
+) -> None:
+    """Commented env vars from old `.env` should append after the template preserved block when none existed before."""
+
+    write_text_lines(
+        tmp_path / "env.example",
+        [
+            "HOST=0.0.0.0",
+            PRESERVED_HEADER,
+            PRESERVED_NOTICE,
+            "### Template preserved comment",
+            "# template_example=true",
+        ],
+    )
+    write_text_lines(
+        tmp_path / ".env",
+        [
+            "HOST=127.0.0.1",
+            "# EXTRA_COMMENTED=1",
+        ],
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+
+load_env_file "$REPO_ROOT/.env"
+ENV_VALUES[HOST]="0.0.0.0"
+generate_env_file "$REPO_ROOT/env.example" "$REPO_ROOT/.env"
+"""
+    )
+
+    generated_lines = (tmp_path / ".env").read_text(encoding="utf-8").splitlines()
+
+    assert generated_lines[-3] == "### Template preserved comment"
+    assert generated_lines[-2] == "# template_example=true"
+    assert generated_lines[-1] == "# EXTRA_COMMENTED=1"
 
 
 def test_generate_env_file_round_trips_dollar_signs_in_single_quoted_values(

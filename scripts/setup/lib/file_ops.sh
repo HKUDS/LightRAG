@@ -159,21 +159,36 @@ append_preserved_non_template_env_lines() {
   local line key
   local in_preserved_section="no"
   local line_is_commented_env="no"
+  local template_in_preserved_section="no"
+  local template_has_preserved_section="no"
+  local old_has_preserved_section="no"
   local preserved_header="### ----- Preserved custom environment variables from previous .env  -----"
   local preserved_notice="### ----- Comments in this session will persist across regenerations -----"
   local -a pending_lines=()
   local -a preserved_payload=()
   local -a discovered_payload=()
+  local -a template_preserved_payload=()
+  local -a effective_preserved_payload=()
   local -A ignored_keys=(
     ["LIGHTRAG_SETUP_PROFILE"]=1
   )
   local -A template_keys=()
 
-  if [[ ! -f "$existing_env_file" ]]; then
-    return 0
-  fi
-
   while IFS= read -r line || [[ -n "$line" ]]; do
+    if [[ "$line" == "$preserved_header" ]]; then
+      template_has_preserved_section="yes"
+      template_in_preserved_section="yes"
+      continue
+    fi
+
+    if [[ "$template_in_preserved_section" == "yes" && "$line" == "$preserved_notice" ]]; then
+      continue
+    fi
+
+    if [[ "$template_in_preserved_section" == "yes" ]]; then
+      template_preserved_payload+=("$line")
+    fi
+
     if [[ "$line" =~ ^[A-Za-z0-9_]+= ]]; then
       template_keys["${line%%=*}"]=1
     elif [[ "$line" =~ ^#[[:space:]]*([A-Za-z0-9_]+)=(.*)$ ]]; then
@@ -181,69 +196,91 @@ append_preserved_non_template_env_lines() {
     fi
   done < "$template_file"
 
-  while IFS= read -r line || [[ -n "$line" ]]; do
-    if [[ "$line" == "$preserved_header" ]]; then
-      in_preserved_section="yes"
-      pending_lines=()
-      continue
-    fi
-
-    if [[ "$in_preserved_section" == "yes" && "$line" == "$preserved_notice" ]]; then
-      continue
-    fi
-
-    key=""
-    line_is_commented_env="no"
-
-    if [[ "$line" =~ ^([A-Za-z0-9_]+)= ]]; then
-      key="${BASH_REMATCH[1]}"
-    elif [[ "$line" =~ ^#[[:space:]]*([A-Za-z0-9_]+)=(.*)$ ]]; then
-      key="${BASH_REMATCH[1]}"
-      line_is_commented_env="yes"
-    fi
-
-    if [[ -z "$key" ]]; then
-      if [[ "$in_preserved_section" == "yes" ]]; then
-        pending_lines+=("$line")
+  if [[ -f "$existing_env_file" ]]; then
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      if [[ "$line" == "$preserved_header" ]]; then
+        in_preserved_section="yes"
+        old_has_preserved_section="yes"
+        pending_lines=()
+        continue
       fi
-      continue
-    fi
 
-    if [[ -n "${ignored_keys[$key]+set}" ]]; then
-      pending_lines=()
-      continue
-    fi
+      if [[ "$in_preserved_section" == "yes" && "$line" == "$preserved_notice" ]]; then
+        continue
+      fi
 
-    if [[ -z "${template_keys[$key]+set}" || \
-      ("$in_preserved_section" == "yes" && "$line_is_commented_env" == "yes") ]]; then
-      if ((${#pending_lines[@]} > 0)); then
+      key=""
+      line_is_commented_env="no"
+
+      if [[ "$line" =~ ^([A-Za-z0-9_]+)= ]]; then
+        key="${BASH_REMATCH[1]}"
+      elif [[ "$line" =~ ^#[[:space:]]*([A-Za-z0-9_]+)=(.*)$ ]]; then
+        key="${BASH_REMATCH[1]}"
+        line_is_commented_env="yes"
+      fi
+
+      if [[ -z "$key" ]]; then
         if [[ "$in_preserved_section" == "yes" ]]; then
-          preserved_payload+=("${pending_lines[@]}")
+          pending_lines+=("$line")
+        fi
+        continue
+      fi
+
+      if [[ -n "${ignored_keys[$key]+set}" ]]; then
+        pending_lines=()
+        continue
+      fi
+
+      if [[ -z "${template_keys[$key]+set}" || \
+        ("$in_preserved_section" == "yes" && "$line_is_commented_env" == "yes") ]]; then
+        if ((${#pending_lines[@]} > 0)); then
+          if [[ "$in_preserved_section" == "yes" ]]; then
+            preserved_payload+=("${pending_lines[@]}")
+          fi
+        fi
+
+        if [[ "$in_preserved_section" == "yes" ]]; then
+          preserved_payload+=("$line")
+        else
+          discovered_payload+=("$line")
         fi
       fi
 
-      if [[ "$in_preserved_section" == "yes" ]]; then
-        preserved_payload+=("$line")
-      else
-        discovered_payload+=("$line")
-      fi
+      pending_lines=()
+    done < "$existing_env_file"
+
+    if ((${#pending_lines[@]} > 0)); then
+      preserved_payload+=("${pending_lines[@]}")
     fi
-
-    pending_lines=()
-  done < "$existing_env_file"
-
-  if ((${#pending_lines[@]} > 0)); then
-    preserved_payload+=("${pending_lines[@]}")
   fi
 
-  if ((${#preserved_payload[@]} == 0 && ${#discovered_payload[@]} == 0)); then
+  effective_preserved_payload=("${preserved_payload[@]}")
+
+  if [[ "$template_has_preserved_section" == "yes" ]]; then
+    printf '%s\n%s\n' "$preserved_header" "$preserved_notice" >> "$output_file"
+
+    if [[ "$old_has_preserved_section" != "yes" ]] && ((${#template_preserved_payload[@]} > 0)); then
+      printf '%s\n' "${template_preserved_payload[@]}" >> "$output_file"
+    fi
+
+    if ((${#effective_preserved_payload[@]} > 0)); then
+      printf '%s\n' "${effective_preserved_payload[@]}" >> "$output_file"
+    fi
+
+    if ((${#discovered_payload[@]} > 0)); then
+      printf '%s\n' "${discovered_payload[@]}" >> "$output_file"
+    fi
+    return 0
+  fi
+
+  if ((${#effective_preserved_payload[@]} == 0 && ${#discovered_payload[@]} == 0)); then
     return 0
   fi
 
   printf '\n%s\n%s\n' "$preserved_header" "$preserved_notice" >> "$output_file"
 
-  if ((${#preserved_payload[@]} > 0)); then
-    printf '%s\n' "${preserved_payload[@]}" >> "$output_file"
+  if ((${#effective_preserved_payload[@]} > 0)); then
+    printf '%s\n' "${effective_preserved_payload[@]}" >> "$output_file"
   fi
 
   if ((${#discovered_payload[@]} > 0)); then
@@ -257,6 +294,8 @@ generate_env_file() {
   local tmp_file="${output_file}.tmp"
   _FILE_OPS_CLEANUP_TMP+=("$tmp_file")
   local line key value
+  local preserved_header="### ----- Preserved custom environment variables from previous .env  -----"
+  local in_template_preserved_section="no"
   local -A written_keys=()
   local -A match_write_keys=()
 
@@ -270,6 +309,15 @@ generate_env_file() {
   # leaving all other commented examples intact.
   local _prescan_key _prescan_val _prescan_env_val _prescan_fmt
   while IFS= read -r line || [[ -n "$line" ]]; do
+    if [[ "$line" == "$preserved_header" ]]; then
+      in_template_preserved_section="yes"
+      continue
+    fi
+
+    if [[ "$in_template_preserved_section" == "yes" ]]; then
+      continue
+    fi
+
     if [[ "$line" =~ ^#[[:space:]]*([A-Za-z0-9_]+)=(.*)$ ]]; then
       _prescan_key="${BASH_REMATCH[1]}"
       _prescan_val="${BASH_REMATCH[2]}"
@@ -285,7 +333,17 @@ generate_env_file() {
 
   : > "$tmp_file"
 
+  in_template_preserved_section="no"
   while IFS= read -r line || [[ -n "$line" ]]; do
+    if [[ "$line" == "$preserved_header" ]]; then
+      in_template_preserved_section="yes"
+      continue
+    fi
+
+    if [[ "$in_template_preserved_section" == "yes" ]]; then
+      continue
+    fi
+
     if [[ "$line" =~ ^[A-Za-z0-9_]+= ]]; then
       key="${line%%=*}"
       if [[ -z "${written_keys[$key]+set}" ]]; then
