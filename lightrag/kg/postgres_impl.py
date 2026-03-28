@@ -352,17 +352,27 @@ class PostgreSQLDB:
                 await self.configure_vchordrq(connection)
 
         async def _reset_connection(connection: asyncpg.Connection) -> None:
-            """Re-apply VCHORDRQ session GUCs after asyncpg's RESET ALL on pool release.
+            """Run the default asyncpg cleanup, then re-apply VCHORDRQ session GUCs.
 
-            asyncpg executes a reset sequence that includes RESET ALL whenever a
-            connection is returned to the pool. This clears session-level GUC
-            parameters such as vchordrq.probes and vchordrq.epsilon. This callback
-            is called by asyncpg immediately after that reset, restoring the values
-            before the connection is handed out again.
+            When a custom reset= callback is registered with create_pool(), asyncpg
+            calls Connection._reset() (private — rolls back open transactions only)
+            and then this function.  It does NOT call the public Connection.reset(),
+            which is the method that executes the full cleanup query:
+              SELECT pg_advisory_unlock_all(); CLOSE ALL; UNLISTEN *; RESET ALL;
+
+            We must therefore run that cleanup ourselves via get_reset_query() before
+            restoring VCHORDRQ GUCs.  Skipping this step leaks session state across
+            pool checkouts — for example configure_age() sets search_path and that
+            modified path would persist into the next non-AGE connection checkout.
 
             register_vector is NOT repeated here: it registers a Python codec on
             the asyncpg Connection object and is unaffected by RESET ALL.
             """
+            # Run the default cleanup that asyncpg would otherwise handle.
+            reset_query = connection.get_reset_query()
+            if reset_query:
+                await connection.execute(reset_query)
+            # RESET ALL clears session GUCs; restore VCHORDRQ values afterward.
             if self.enable_vector and self.vector_index_type == "VCHORDRQ":
                 await self.configure_vchordrq(connection)
 
