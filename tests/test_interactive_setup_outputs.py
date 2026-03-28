@@ -1800,7 +1800,9 @@ generate_env_file "$REPO_ROOT/env.example" "$REPO_ROOT/.env"
 
     assert "HOST=0.0.0.0" in generated_env
     assert "PORT=9621" in generated_env
-    assert "### Preserved custom environment variables from previous .env" in generated_env
+    assert (
+        "### Preserved custom environment variables from previous .env" in generated_env
+    )
     assert "# Custom integration settings" not in generated_env
     assert "EXTRA_API_BASE='https://example.com/api'" in generated_env
     assert "# EXTRA_API_TOKEN=secret" in generated_env
@@ -1916,7 +1918,9 @@ generate_env_file "$REPO_ROOT/env.example" "$REPO_ROOT/.env"
     assert generated_lines[marker_index + 2] == ""
     assert generated_lines[marker_index + 3] == "# Group A"
     assert generated_lines[marker_index + 4] == "# Shared settings"
-    assert generated_lines[marker_index + 5] == "EXTRA_API_BASE='https://example.com/api'"
+    assert (
+        generated_lines[marker_index + 5] == "EXTRA_API_BASE='https://example.com/api'"
+    )
     assert generated_lines[marker_index + 6] == ""
     assert generated_lines[marker_index + 7] == "# Group B"
     assert generated_lines[marker_index + 8] == "EXTRA_API_TOKEN=secret"
