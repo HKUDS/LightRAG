@@ -34,15 +34,19 @@ import { useBackendState } from '@/stores/state'
 
 import { RefreshCwIcon, ActivityIcon, ArrowUpIcon, ArrowDownIcon, RotateCcwIcon, CheckSquareIcon, XIcon, AlertTriangle, Info } from 'lucide-react'
 import PipelineStatusDialog from '@/components/documents/PipelineStatusDialog'
+import {
+  getStatusBucket,
+  getStatusRequestFilters,
+  matchesStatusFilter,
+  type StatusBucket,
+  type StatusFilter
+} from '@/features/documentStatusFilters'
 
-type StatusBucket = 'processed' | 'analyzing' | 'processing' | 'pending' | 'failed'
-type StatusFilter = StatusBucket | 'all'
 type StatusDisplayConfig = {
   labelKey: string
   className: string
 }
 
-const PROCESSING_LIKE_STATUSES: DocStatus[] = ['parsing', 'analyzing', 'processing']
 const STATUS_BUCKETS: StatusBucket[] = ['processed', 'analyzing', 'processing', 'pending', 'failed']
 
 // Utility functions defined outside component for better performance and to avoid dependency issues
@@ -58,16 +62,6 @@ const getCountValue = (counts: Record<string, number>, ...keys: string[]): numbe
 
 const getAggregateCount = (counts: Record<string, number>, ...keys: string[]): number =>
   keys.reduce((total, key) => total + getCountValue(counts, key), 0)
-
-const getStatusBucket = (status: DocStatus): StatusBucket => {
-  if (status === 'preprocessed' || status === 'analyzing') {
-    return 'analyzing'
-  }
-  if (PROCESSING_LIKE_STATUSES.includes(status)) {
-    return 'processing'
-  }
-  return status as Exclude<DocStatus, 'parsing' | 'analyzing' | 'preprocessed'>
-}
 
 const hasActiveDocumentsStatus = (counts: Record<string, number>): boolean =>
   getAggregateCount(counts, 'PROCESSING', 'processing', 'PARSING', 'parsing', 'ANALYZING', 'analyzing') > 0 ||
@@ -455,26 +449,20 @@ export default function DocumentManager() {
     // Create a flat array of documents with status information
     const allDocuments: DocStatusWithStatus[] = [];
 
-    if (statusFilter === 'all') {
-      // When filter is 'all', include documents from all statuses
-      Object.entries(docs.statuses).forEach(([status, documents]) => {
-        (documents ?? []).forEach(doc => {
+    Object.entries(docs.statuses).forEach(([status, documents]) => {
+      const fallbackStatus = status as DocStatus
+
+      for (const doc of documents ?? []) {
+        const documentStatus = doc.status ?? fallbackStatus
+
+        if (matchesStatusFilter(documentStatus, statusFilter)) {
           allDocuments.push({
             ...doc,
-            status: status as DocStatus
-          });
-        });
-      });
-    } else {
-      // When filter is specific status, only include documents from that status
-      const documents = docs.statuses[statusFilter] || [];
-      documents.forEach(doc => {
-        allDocuments.push({
-          ...doc,
-          status: statusFilter
-        });
-      });
-    }
+            status: documentStatus
+          })
+        }
+      }
+    })
 
     // Sort all documents together if sort field and direction are specified
     if (sortField && sortDirection) {
@@ -546,11 +534,11 @@ export default function DocumentManager() {
 
   const processedCount = getCountValue(statusCounts, 'PROCESSED', 'processed') || documentCounts.processed || 0;
   const analyzingCount =
-    getAggregateCount(statusCounts, 'ANALYZING', 'analyzing', 'PREPROCESSED', 'preprocessed') ||
+    getAggregateCount(statusCounts, 'PARSING', 'parsing', 'ANALYZING', 'analyzing', 'PREPROCESSED', 'preprocessed') ||
     documentCounts.analyzing ||
     0;
   const processingCount =
-    getAggregateCount(statusCounts, 'PROCESSING', 'processing', 'PARSING', 'parsing', 'ANALYZING', 'analyzing') ||
+    getAggregateCount(statusCounts, 'PROCESSING', 'processing') ||
     documentCounts.processing ||
     0;
   const pendingCount = getCountValue(statusCounts, 'PENDING', 'pending') || documentCounts.pending || 0;
@@ -757,9 +745,10 @@ export default function DocumentManager() {
 
       // Determine target page
       const pageToFetch = resetToFirst ? 1 : (targetPage || pagination.page);
+      const statusRequestFilters = getStatusRequestFilters(statusFilter)
 
       const request: DocumentsRequest = {
-        status_filter: statusFilter === 'all' ? null : statusFilter,
+        ...statusRequestFilters,
         page: pageToFetch,
         page_size: pagination.page_size,
         sort_field: sortField,
@@ -969,10 +958,11 @@ export default function DocumentManager() {
 
     try {
       setIsRefreshing(true);
+      const statusRequestFilters = getStatusRequestFilters(statusFilter)
 
       // Fetch documents from the first page
       const request: DocumentsRequest = {
-        status_filter: statusFilter === 'all' ? null : statusFilter,
+        ...statusRequestFilters,
         page: 1,
         page_size: pagination.page_size,
         sort_field: sortField,
@@ -1272,7 +1262,7 @@ export default function DocumentManager() {
                       statusFilter === 'all' && 'bg-gray-100 dark:bg-gray-900 font-medium border border-gray-400 dark:border-gray-500 shadow-sm'
                     )}
                   >
-                    {t('documentPanel.documentManager.status.all')} ({statusCounts.all || documentCounts.all})
+                    {t('documentPanel.documentManager.filters.all')} ({statusCounts.all || documentCounts.all})
                   </Button>
                   <Button
                     size="sm"
@@ -1284,7 +1274,7 @@ export default function DocumentManager() {
                       statusFilter === 'processed' && 'bg-green-100 dark:bg-green-900/30 font-medium border border-green-400 dark:border-green-600 shadow-sm'
                     )}
                   >
-                    {t('documentPanel.documentManager.status.completed')} ({processedCount})
+                    {t('documentPanel.documentManager.filters.completed')} ({processedCount})
                   </Button>
                   <Button
                     size="sm"
@@ -1296,7 +1286,7 @@ export default function DocumentManager() {
                       statusFilter === 'analyzing' && 'bg-indigo-100 dark:bg-indigo-900/30 font-medium border border-indigo-400 dark:border-indigo-600 shadow-sm'
                     )}
                   >
-                    {t('documentPanel.documentManager.status.analyzing')} ({analyzingCount})
+                    {t('documentPanel.documentManager.filters.analyzing')} ({analyzingCount})
                   </Button>
                   <Button
                     size="sm"
@@ -1308,7 +1298,7 @@ export default function DocumentManager() {
                       statusFilter === 'processing' && 'bg-blue-100 dark:bg-blue-900/30 font-medium border border-blue-400 dark:border-blue-600 shadow-sm'
                     )}
                   >
-                    {t('documentPanel.documentManager.status.processing')} ({processingCount})
+                    {t('documentPanel.documentManager.filters.processing')} ({processingCount})
                   </Button>
                   <Button
                     size="sm"
@@ -1320,7 +1310,7 @@ export default function DocumentManager() {
                       statusFilter === 'pending' && 'bg-yellow-100 dark:bg-yellow-900/30 font-medium border border-yellow-400 dark:border-yellow-600 shadow-sm'
                     )}
                   >
-                    {t('documentPanel.documentManager.status.pending')} ({pendingCount})
+                    {t('documentPanel.documentManager.filters.pending')} ({pendingCount})
                   </Button>
                   <Button
                     size="sm"
@@ -1332,7 +1322,7 @@ export default function DocumentManager() {
                       statusFilter === 'failed' && 'bg-red-100 dark:bg-red-900/30 font-medium border border-red-400 dark:border-red-600 shadow-sm'
                     )}
                   >
-                    {t('documentPanel.documentManager.status.failed')} ({failedCount})
+                    {t('documentPanel.documentManager.filters.failed')} ({failedCount})
                   </Button>
                 </div>
                 <Button

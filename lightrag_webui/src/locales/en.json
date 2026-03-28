@@ -136,6 +136,14 @@
         "metadata": "Metadata",
         "select": "Select"
       },
+      "filters": {
+        "all": "All",
+        "completed": "Completed",
+        "analyzing": "Analyzing",
+        "processing": "Processing",
+        "pending": "Pending",
+        "failed": "Failed"
+      },
       "status": {
         "all": "All",
         "completed": "Completed",

@@ -612,6 +612,7 @@ class MongoDocStatusStorage(DocStatusStorage):
     async def get_docs_paginated(
         self,
         status_filter: DocStatus | None = None,
+        status_filters: list[DocStatus] | None = None,
         page: int = 1,
         page_size: int = 50,
         sort_field: str = "updated_at",
@@ -629,6 +630,11 @@ class MongoDocStatusStorage(DocStatusStorage):
         Returns:
             Tuple of (list of (doc_id, DocProcessingStatus) tuples, total_count)
         """
+        status_filter_values = self.resolve_status_filter_values(
+            status_filter=status_filter,
+            status_filters=status_filters,
+        )
+
         # Validate parameters
         if page < 1:
             page = 1
@@ -645,8 +651,8 @@ class MongoDocStatusStorage(DocStatusStorage):
 
         # Build query filter
         query_filter = {}
-        if status_filter is not None:
-            query_filter["status"] = status_filter.value
+        if status_filter_values is not None:
+            query_filter["status"] = {"$in": sorted(status_filter_values)}
 
         # Get total count
         total_count = await self._data.count_documents(query_filter)

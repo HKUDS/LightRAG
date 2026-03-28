@@ -611,7 +611,8 @@ class DocumentsRequest(BaseModel):
     """Request model for paginated document queries
 
     Attributes:
-        status_filter: Filter by document status, None for all statuses
+        status_filter: Legacy single-status filter, ignored when status_filters is set
+        status_filters: Filter by multiple document statuses, None for all statuses
         page: Page number (1-based)
         page_size: Number of documents per page (10-200)
         sort_field: Field to sort by ('created_at', 'updated_at', 'id', 'file_path')
@@ -619,7 +620,11 @@ class DocumentsRequest(BaseModel):
     """
 
     status_filter: Optional[DocStatus] = Field(
-        default=None, description="Filter by document status, None for all statuses"
+        default=None,
+        description="Legacy single-status filter, ignored when status_filters is set",
+    )
+    status_filters: Optional[List[DocStatus]] = Field(
+        default=None, description="Filter by multiple document statuses"
     )
     page: int = Field(default=1, ge=1, description="Page number (1-based)")
     page_size: int = Field(
@@ -635,7 +640,7 @@ class DocumentsRequest(BaseModel):
     model_config = ConfigDict(
         json_schema_extra={
             "example": {
-                "status_filter": "PROCESSED",
+                "status_filters": ["PREPROCESSED", "PARSING", "ANALYZING"],
                 "page": 1,
                 "page_size": 50,
                 "sort_field": "updated_at",
@@ -3138,6 +3143,7 @@ def create_document_routes(
             # Get paginated documents and status counts in parallel
             docs_task = rag.doc_status.get_docs_paginated(
                 status_filter=request.status_filter,
+                status_filters=request.status_filters,
                 page=request.page,
                 page_size=request.page_size,
                 sort_field=request.sort_field,

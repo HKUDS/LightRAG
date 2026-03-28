@@ -136,6 +136,14 @@
         "metadata": "메타데이터",
         "select": "선택"
       },
+      "filters": {
+        "all": "전체",
+        "completed": "완료",
+        "analyzing": "분석 중",
+        "processing": "처리 중",
+        "pending": "대기 중",
+        "failed": "실패"
+      },
       "status": {
         "all": "전체",
         "completed": "완료",

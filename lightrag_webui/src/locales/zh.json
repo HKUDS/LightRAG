@@ -136,11 +136,19 @@
         "metadata": "元数据",
         "select": "选择"
       },
+      "filters": {
+        "all": "全部",
+        "completed": "已完成",
+        "analyzing": "分析中",
+        "processing": "处理中",
+        "pending": "等待中",
+        "failed": "失败"
+      },
       "status": {
         "all": "全部",
         "completed": "已完成",
         "preprocessed": "预处理",
-        "parsing": "解析中",
+        "parsing": "内容提取",
         "analyzing": "分析中",
         "processing": "处理中",
         "pending": "等待中",

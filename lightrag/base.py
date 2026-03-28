@@ -768,6 +768,22 @@ class DocProcessingStatus:
 class DocStatusStorage(BaseKVStorage, ABC):
     """Base class for document status storage"""
 
+    @staticmethod
+    def resolve_status_filter_values(
+        status_filter: DocStatus | None = None,
+        status_filters: list[DocStatus] | None = None,
+    ) -> set[str] | None:
+        """Normalize single- and multi-status filters into comparable values.
+
+        `status_filters` takes precedence over `status_filter`. Empty multi-status
+        filters are treated as no filter for backward-compatible request handling.
+        """
+        if status_filters:
+            return {status.value for status in status_filters}
+        if status_filter is not None:
+            return {status_filter.value}
+        return None
+
     @abstractmethod
     async def get_status_counts(self) -> dict[str, int]:
         """Get counts of documents in each status"""
@@ -788,6 +804,7 @@ class DocStatusStorage(BaseKVStorage, ABC):
     async def get_docs_paginated(
         self,
         status_filter: DocStatus | None = None,
+        status_filters: list[DocStatus] | None = None,
         page: int = 1,
         page_size: int = 50,
         sort_field: str = "updated_at",
@@ -796,7 +813,8 @@ class DocStatusStorage(BaseKVStorage, ABC):
         """Get documents with pagination support
 
         Args:
-            status_filter: Filter by document status, None for all statuses
+            status_filter: Legacy single-status filter, ignored when status_filters is set
+            status_filters: Filter by multiple document statuses, None for all statuses
             page: Page number (1-based)
             page_size: Number of documents per page (10-200)
             sort_field: Field to sort by ('created_at', 'updated_at', 'id')
