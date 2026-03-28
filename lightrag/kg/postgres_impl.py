@@ -368,13 +368,20 @@ class PostgreSQLDB:
             register_vector is NOT repeated here: it registers a Python codec on
             the asyncpg Connection object and is unaffected by RESET ALL.
             """
-            # Run the default cleanup that asyncpg would otherwise handle.
-            reset_query = connection.get_reset_query()
-            if reset_query:
-                await connection.execute(reset_query)
-            # RESET ALL clears session GUCs; restore VCHORDRQ values afterward.
-            if self.enable_vector and self.vector_index_type == "VCHORDRQ":
-                await self.configure_vchordrq(connection)
+            try:
+                # Run the default cleanup that asyncpg would otherwise handle.
+                reset_query = connection.get_reset_query()
+                if reset_query:
+                    await connection.execute(reset_query)
+                # RESET ALL clears session GUCs; restore VCHORDRQ values afterward.
+                if self.enable_vector and self.vector_index_type == "VCHORDRQ":
+                    await self.configure_vchordrq(connection)
+            except Exception as e:
+                logger.error(
+                    f"[{self.workspace}] Pool reset failed — connection will be "
+                    f"terminated and removed from pool: {e}"
+                )
+                raise
 
         async def _create_pool_once() -> None:
             # STEP 1: Bootstrap - ensure vector extension exists BEFORE pool creation.
@@ -1592,8 +1599,11 @@ class PostgreSQLDB:
         try:
             rows = await self.query(check_sql, [index_names], multirows=True)
             existing_names = {row["indexname"] for row in (rows or [])}
-        except Exception as e:
-            logger.warning(f"Failed to query existing pagination indexes: {e}")
+        except asyncpg.PostgresError as e:
+            logger.warning(
+                f"[{self.workspace}] Failed to query existing pagination indexes, "
+                f"will attempt to create all: {e}"
+            )
             existing_names = set()
 
         for index in indexes:
@@ -3393,10 +3403,13 @@ class PGVectorStorage(BaseVectorStorage):
 
 def _parse_doc_status_datetime(
     dt_str: Any,
+    context: str = "",
 ) -> datetime.datetime | None:
     """Convert a datetime value to a naive UTC datetime for database storage.
 
     Accepts datetime objects or ISO-format strings. Returns None on failure.
+    The optional context string (e.g. "[workspace] doc <id> created_at") is
+    included in the warning log to help locate the offending record.
     """
     if dt_str is None:
         return None
@@ -3405,14 +3418,19 @@ def _parse_doc_status_datetime(
             dt_str = dt_str.replace(tzinfo=timezone.utc)
         return dt_str.astimezone(timezone.utc).replace(tzinfo=None)
     if isinstance(dt_str, datetime.date):
-        return dt_str  # type: ignore[return-value]
+        return datetime.datetime(
+            dt_str.year, dt_str.month, dt_str.day, tzinfo=timezone.utc
+        ).replace(tzinfo=None)
     try:
         dt = datetime.datetime.fromisoformat(dt_str)
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
         return dt.astimezone(timezone.utc).replace(tzinfo=None)
     except (ValueError, TypeError):
-        logger.warning(f"Unable to parse doc status datetime string: {dt_str!r}")
+        logger.warning(
+            f"Unable to parse doc status datetime string"
+            f"{f' ({context})' if context else ''}: {dt_str!r}"
+        )
         return None
 
 
@@ -3718,37 +3736,47 @@ class PGDocStatusStorage(DocStatusStorage):
 
         docs: dict[str, DocProcessingStatus] = {}
         for element in result or []:
-            chunks_list = element.get("chunks_list", [])
-            if isinstance(chunks_list, str):
-                try:
-                    chunks_list = json.loads(chunks_list)
-                except json.JSONDecodeError:
-                    chunks_list = []
+            try:
+                chunks_list = element.get("chunks_list", [])
+                if isinstance(chunks_list, str):
+                    try:
+                        chunks_list = json.loads(chunks_list)
+                    except json.JSONDecodeError:
+                        chunks_list = []
 
-            metadata = element.get("metadata", {})
-            if isinstance(metadata, str):
-                try:
-                    metadata = json.loads(metadata)
-                except json.JSONDecodeError:
+                metadata = element.get("metadata", {})
+                if isinstance(metadata, str):
+                    try:
+                        metadata = json.loads(metadata)
+                    except json.JSONDecodeError:
+                        metadata = {}
+                if not isinstance(metadata, dict):
                     metadata = {}
-            if not isinstance(metadata, dict):
-                metadata = {}
 
-            file_path = element.get("file_path") or "no-file-path"
+                file_path = element.get("file_path") or "no-file-path"
 
-            docs[element["id"]] = DocProcessingStatus(
-                content_summary=element["content_summary"],
-                content_length=element["content_length"],
-                status=element["status"],
-                created_at=self._format_datetime_with_timezone(element["created_at"]),
-                updated_at=self._format_datetime_with_timezone(element["updated_at"]),
-                chunks_count=element["chunks_count"],
-                file_path=file_path,
-                chunks_list=chunks_list,
-                metadata=metadata,
-                error_msg=element.get("error_msg"),
-                track_id=element.get("track_id"),
-            )
+                docs[element["id"]] = DocProcessingStatus(
+                    content_summary=element["content_summary"],
+                    content_length=element["content_length"],
+                    status=element["status"],
+                    created_at=self._format_datetime_with_timezone(
+                        element["created_at"]
+                    ),
+                    updated_at=self._format_datetime_with_timezone(
+                        element["updated_at"]
+                    ),
+                    chunks_count=element["chunks_count"],
+                    file_path=file_path,
+                    chunks_list=chunks_list,
+                    metadata=metadata,
+                    error_msg=element.get("error_msg"),
+                    track_id=element.get("track_id"),
+                )
+            except (KeyError, TypeError) as e:
+                logger.error(
+                    f"[{self.workspace}] Missing required field parsing document row: {e}"
+                )
+                continue
 
         return docs
 
@@ -4069,8 +4097,14 @@ class PGDocStatusStorage(DocStatusStorage):
                     v.get("track_id"),
                     json.dumps(v.get("metadata", {})),
                     v.get("error_msg"),
-                    _parse_doc_status_datetime(v.get("created_at")),
-                    _parse_doc_status_datetime(v.get("updated_at")),
+                    _parse_doc_status_datetime(
+                        v.get("created_at"),
+                        f"[{self.workspace}] doc {k} created_at",
+                    ),
+                    _parse_doc_status_datetime(
+                        v.get("updated_at"),
+                        f"[{self.workspace}] doc {k} updated_at",
+                    ),
                 )
             )
             await _cooperative_yield(i)
@@ -4080,7 +4114,8 @@ class PGDocStatusStorage(DocStatusStorage):
             _sql: str = sql,
             _data: list[tuple] = batch,
         ) -> None:
-            await connection.executemany(_sql, _data)
+            async with connection.transaction():
+                await connection.executemany(_sql, _data)
 
         await self.db._run_with_retry(_batch_upsert)
         logger.debug(
