@@ -355,33 +355,59 @@ class PostgreSQLDB:
             """Run the default asyncpg cleanup, then re-apply VCHORDRQ session GUCs.
 
             When a custom reset= callback is registered with create_pool(), asyncpg
-            calls Connection._reset() (private — rolls back open transactions only)
-            and then this function.  It does NOT call the public Connection.reset(),
-            which is the method that executes the full cleanup query:
-              SELECT pg_advisory_unlock_all(); CLOSE ALL; UNLISTEN *; RESET ALL;
+            calls Connection._reset() (private — clears listeners and rolls back open
+            transactions if any) and then this function.  It does NOT call the public
+            Connection.reset(), which is the method that calls _reset() and then
+            executes the cleanup query returned by get_reset_query() — the exact SQL
+            depends on detected server capabilities and typically includes
+            pg_advisory_unlock_all(), CLOSE ALL, UNLISTEN *, and RESET ALL.
 
             We must therefore run that cleanup ourselves via get_reset_query() before
             restoring VCHORDRQ GUCs.  Skipping this step leaks session state across
             pool checkouts — for example configure_age() sets search_path and that
             modified path would persist into the next non-AGE connection checkout.
 
-            register_vector is NOT repeated here: it registers a Python codec on
-            the asyncpg Connection object and is unaffected by RESET ALL.
+            register_vector is NOT repeated here: it is a Python-side encoder/decoder
+            registration on the asyncpg Connection object and is unaffected by RESET ALL.
+            Note that set_type_codec() clears the statement cache, which is naturally
+            repopulated on subsequent queries.
             """
             try:
                 # Run the default cleanup that asyncpg would otherwise handle.
                 reset_query = connection.get_reset_query()
                 if reset_query:
                     await connection.execute(reset_query)
-                # RESET ALL clears session GUCs; restore VCHORDRQ values afterward.
-                if self.enable_vector and self.vector_index_type == "VCHORDRQ":
-                    await self.configure_vchordrq(connection)
             except Exception as e:
                 logger.error(
-                    f"[{self.workspace}] Pool reset failed — connection will be "
-                    f"terminated and removed from pool: {e}"
+                    f"[{self.workspace}] Pool reset cleanup query failed — connection "
+                    f"will be terminated and removed from pool: {e}"
                 )
                 raise
+
+            # RESET ALL clears session GUCs; restore VCHORDRQ values afterward.
+            if self.enable_vector and self.vector_index_type == "VCHORDRQ":
+                try:
+                    await self.configure_vchordrq(connection)
+                except asyncpg.exceptions.UndefinedObjectError:
+                    logger.error(
+                        f"[{self.workspace}] VCHORDRQ extension is not installed. "
+                        "Install the extension or set vector_index_type to a supported value. "
+                        "Connection will be terminated and removed from pool."
+                    )
+                    raise
+                except asyncpg.exceptions.InvalidParameterValueError as e:
+                    logger.error(
+                        f"[{self.workspace}] Invalid VCHORDRQ GUC parameter — "
+                        f"check vchordrq_probes and vchordrq_epsilon config. "
+                        f"Connection will be terminated: {e}"
+                    )
+                    raise
+                except Exception as e:
+                    logger.error(
+                        f"[{self.workspace}] VCHORDRQ session configuration failed "
+                        f"after pool reset — connection will be terminated: {e}"
+                    )
+                    raise
 
         async def _create_pool_once() -> None:
             # STEP 1: Bootstrap - ensure vector extension exists BEFORE pool creation.
@@ -1601,8 +1627,8 @@ class PostgreSQLDB:
             existing_names = {row["indexname"] for row in (rows or [])}
         except asyncpg.PostgresError as e:
             logger.warning(
-                f"[{self.workspace}] Failed to query existing pagination indexes, "
-                f"will attempt to create all: {e}"
+                f"[{self.workspace}] Failed to query existing pagination indexes "
+                f"({type(e).__name__}), will attempt to create all: {e}"
             )
             existing_names = set()
 
@@ -1614,8 +1640,10 @@ class PostgreSQLDB:
                 logger.info(f"Creating pagination index: {index['description']}")
                 await self.execute(index["sql"])
                 logger.info(f"Successfully created index: {index['name']}")
-            except Exception as e:
-                logger.warning(f"Failed to create index {index['name']}: {e}")
+            except asyncpg.PostgresError as e:
+                logger.warning(
+                    f"Failed to create index {index['name']} ({type(e).__name__}): {e}"
+                )
 
     async def _create_vector_index(self, table_name: str, embedding_dim: int):
         """
@@ -3407,9 +3435,11 @@ def _parse_doc_status_datetime(
 ) -> datetime.datetime | None:
     """Convert a datetime value to a naive UTC datetime for database storage.
 
-    Accepts datetime objects or ISO-format strings. Returns None on failure.
+    Accepts `datetime.datetime` objects, `datetime.date` objects, or ISO-format
+    strings. Returns None on failure (which may trigger a NOT NULL constraint
+    violation if the column does not allow nulls).
     The optional context string (e.g. "[workspace] doc <id> created_at") is
-    included in the warning log to help locate the offending record.
+    included in the error log to help locate the offending record.
     """
     if dt_str is None:
         return None
@@ -3427,7 +3457,7 @@ def _parse_doc_status_datetime(
             dt = dt.replace(tzinfo=timezone.utc)
         return dt.astimezone(timezone.utc).replace(tzinfo=None)
     except (ValueError, TypeError):
-        logger.warning(
+        logger.error(
             f"Unable to parse doc status datetime string"
             f"{f' ({context})' if context else ''}: {dt_str!r}"
         )
@@ -3773,8 +3803,10 @@ class PGDocStatusStorage(DocStatusStorage):
                     track_id=element.get("track_id"),
                 )
             except (KeyError, TypeError) as e:
+                doc_id_hint = element.get("id", "<unknown>") if element else "<unknown>"
                 logger.error(
-                    f"[{self.workspace}] Missing required field parsing document row: {e}"
+                    f"[{self.workspace}] Skipping document '{doc_id_hint}' — "
+                    f"required field missing or wrong type while parsing DB row: {e!r}"
                 )
                 continue
 
@@ -3897,18 +3929,21 @@ class PGDocStatusStorage(DocStatusStorage):
 
         # Two-CTE query: total count + page data in a single round-trip.
         #
-        # COUNT(*) OVER () was replaced because it only appears on rows that land
-        # inside the LIMIT/OFFSET window.  When the caller requests a page whose
-        # offset is past the end of the result set the window CTE returns no rows,
-        # so total_count would be reported as 0 even though matching documents exist.
+        # COUNT(*) OVER () was replaced because when the LIMIT/OFFSET clause yields
+        # no rows (out-of-range page), there are no result rows to carry the window
+        # function value — so total_count would not appear in the output at all,
+        # making it impossible to distinguish "0 matching documents" from "non-empty
+        # result set, page is past the end".
         #
         # The LEFT JOIN pattern fixes this: the `total` CTE always produces exactly
         # one row (the aggregate count over the full WHERE clause), and the outer
         # LEFT JOIN emits that one row even when `paged` is empty.  Python then
         # skips rows where id IS NULL (the empty-page sentinel).
         #
-        # chunks_list is intentionally excluded: DocStatusResponse does not expose it,
-        # so transferring the full JSONB array would be pure overhead.
+        # chunks_list is intentionally excluded from the paged CTE SELECT list:
+        # DocStatusResponse does not expose it, so transferring the full JSONB array
+        # would be pure overhead.  The chunks_list=[] in the constructor below is
+        # intentional — see the paged CTE column list above.
         params["limit"] = page_size
         params["offset"] = offset
         cte_sql = f"""
@@ -4083,31 +4118,44 @@ class PGDocStatusStorage(DocStatusStorage):
         #   chunks_count, status, file_path, chunks_list, track_id, metadata,
         #   error_msg, created_at, updated_at)
         batch: list[tuple] = []
+        skipped: list[str] = []
         for i, (k, v) in enumerate(data.items(), start=1):
-            batch.append(
-                (
-                    self.workspace,
-                    k,
-                    v["content_summary"],
-                    v["content_length"],
-                    v.get("chunks_count", -1),
-                    v["status"],
-                    v["file_path"],
-                    json.dumps(v.get("chunks_list", [])),
-                    v.get("track_id"),
-                    json.dumps(v.get("metadata", {})),
-                    v.get("error_msg"),
-                    _parse_doc_status_datetime(
-                        v.get("created_at"),
-                        f"[{self.workspace}] doc {k} created_at",
-                    ),
-                    _parse_doc_status_datetime(
-                        v.get("updated_at"),
-                        f"[{self.workspace}] doc {k} updated_at",
-                    ),
+            try:
+                batch.append(
+                    (
+                        self.workspace,
+                        k,
+                        v["content_summary"],
+                        v["content_length"],
+                        v.get("chunks_count", -1),
+                        v["status"],
+                        v["file_path"],
+                        json.dumps(v.get("chunks_list", [])),
+                        v.get("track_id"),
+                        json.dumps(v.get("metadata", {})),
+                        v.get("error_msg"),
+                        _parse_doc_status_datetime(
+                            v.get("created_at"),
+                            f"[{self.workspace}] doc {k} created_at",
+                        ),
+                        _parse_doc_status_datetime(
+                            v.get("updated_at"),
+                            f"[{self.workspace}] doc {k} updated_at",
+                        ),
+                    )
                 )
-            )
+            except (KeyError, TypeError, ValueError) as e:
+                logger.error(
+                    f"[{self.workspace}] Skipping document '{k}' in batch upsert — "
+                    f"invalid or missing field: {e!r}"
+                )
+                skipped.append(k)
             await _cooperative_yield(i)
+
+        if skipped:
+            logger.warning(
+                f"[{self.workspace}] {len(skipped)} document(s) skipped in batch upsert: {skipped}"
+            )
 
         async def _batch_upsert(
             connection: asyncpg.Connection,

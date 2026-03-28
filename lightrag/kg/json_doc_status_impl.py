@@ -113,9 +113,9 @@ class JsonDocStatusStorage(DocStatusStorage):
         """Get all documents matching any of the given statuses in a single pass.
 
         Acquires the storage lock once and scans the in-memory dict once,
-        filtering against a set of status values.  This is more efficient than
-        the base-class asyncio.gather() fallback, which would acquire the lock
-        once per status and scan the data once per status.
+        filtering against a set of status values.  More efficient than N separate
+        get_docs_by_status() calls, which would acquire the lock N times and scan
+        the data N times.
         """
         if not statuses:
             return {}
@@ -135,7 +135,7 @@ class JsonDocStatusStorage(DocStatusStorage):
                     if "error_msg" not in data:
                         data["error_msg"] = None
                     result[k] = DocProcessingStatus(**data)
-                except KeyError as e:
+                except (KeyError, TypeError) as e:
                     logger.error(
                         f"[{self.workspace}] Missing required field for document {k}: {e}"
                     )

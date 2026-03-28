@@ -739,8 +739,8 @@ class RedisDocStatusStorage(DocStatusStorage):
         Redis has no server-side multi-value filter, so documents must be fetched
         and filtered in Python.  This override performs a single SCAN + pipeline
         GET over the keyspace, filtering against a set of status values.  The
-        base-class asyncio.gather() fallback would do N full SCANs (one per
-        status), so this reduces keyspace traversal from N passes to one.
+        previous pattern of N separate get_docs_by_status() calls would do N full
+        SCANs (one per status), so this reduces keyspace traversal from N passes to one.
         """
         if not statuses:
             return {}
@@ -785,7 +785,11 @@ class RedisDocStatusStorage(DocStatusStorage):
                     if cursor == 0:
                         break
             except Exception as e:
-                logger.error(f"[{self.workspace}] Error getting docs by statuses: {e}")
+                logger.error(
+                    f"[{self.workspace}] SCAN interrupted while fetching docs by statuses "
+                    f"— result is incomplete ({len(result)} documents collected): {e!r}"
+                )
+                raise
 
         return result
 
