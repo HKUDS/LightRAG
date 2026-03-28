@@ -136,6 +136,14 @@
         "metadata": "メタデータ",
         "select": "選択"
       },
+      "filters": {
+        "all": "すべて",
+        "completed": "完了",
+        "analyzing": "分析中",
+        "processing": "処理中",
+        "pending": "保留中",
+        "failed": "失敗"
+      },
       "status": {
         "all": "すべて",
         "completed": "完了",

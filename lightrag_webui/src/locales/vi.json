@@ -136,6 +136,14 @@
         "metadata": "Siêu Dữ Liệu",
         "select": "Chọn"
       },
+      "filters": {
+        "all": "Tất cả",
+        "completed": "Hoàn tất",
+        "analyzing": "Đang phân tích",
+        "processing": "Đang xử lý",
+        "pending": "Đang chờ",
+        "failed": "Thất bại"
+      },
       "status": {
         "all": "Tất cả",
         "completed": "Hoàn thành",

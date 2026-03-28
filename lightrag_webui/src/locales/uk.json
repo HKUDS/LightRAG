@@ -136,6 +136,14 @@
         "metadata": "Метадані",
         "select": "Вибрати"
       },
+      "filters": {
+        "all": "Усі",
+        "completed": "Завершено",
+        "analyzing": "Аналіз",
+        "processing": "Обробка",
+        "pending": "Очікування",
+        "failed": "Помилка"
+      },
       "status": {
         "all": "Всі",
         "completed": "Завершено",

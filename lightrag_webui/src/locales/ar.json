@@ -136,6 +136,14 @@
         "metadata": "البيانات الوصفية",
         "select": "اختيار"
       },
+      "filters": {
+        "all": "الكل",
+        "completed": "مكتمل",
+        "analyzing": "جارٍ التحليل",
+        "processing": "قيد المعالجة",
+        "pending": "معلق",
+        "failed": "فشل"
+      },
       "status": {
         "all": "الكل",
         "completed": "مكتمل",

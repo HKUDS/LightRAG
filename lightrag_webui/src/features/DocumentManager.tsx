@@ -42,7 +42,6 @@ type StatusDisplayConfig = {
   className: string
 }
 
-const PROCESSING_LIKE_STATUSES: DocStatus[] = ['parsing', 'analyzing', 'processing']
 const STATUS_BUCKETS: StatusBucket[] = ['processed', 'analyzing', 'processing', 'pending', 'failed']
 
 // Utility functions defined outside component for better performance and to avoid dependency issues
@@ -60,10 +59,10 @@ const getAggregateCount = (counts: Record<string, number>, ...keys: string[]): n
   keys.reduce((total, key) => total + getCountValue(counts, key), 0)
 
 const getStatusBucket = (status: DocStatus): StatusBucket => {
-  if (status === 'preprocessed' || status === 'analyzing') {
+  if (status === 'preprocessed' || status === 'parsing' || status === 'analyzing') {
     return 'analyzing'
   }
-  if (PROCESSING_LIKE_STATUSES.includes(status)) {
+  if (status === 'processing') {
     return 'processing'
   }
   return status as Exclude<DocStatus, 'parsing' | 'analyzing' | 'preprocessed'>
@@ -546,11 +545,11 @@ export default function DocumentManager() {
 
   const processedCount = getCountValue(statusCounts, 'PROCESSED', 'processed') || documentCounts.processed || 0;
   const analyzingCount =
-    getAggregateCount(statusCounts, 'ANALYZING', 'analyzing', 'PREPROCESSED', 'preprocessed') ||
+    getAggregateCount(statusCounts, 'PARSING', 'parsing', 'ANALYZING', 'analyzing', 'PREPROCESSED', 'preprocessed') ||
     documentCounts.analyzing ||
     0;
   const processingCount =
-    getAggregateCount(statusCounts, 'PROCESSING', 'processing', 'PARSING', 'parsing', 'ANALYZING', 'analyzing') ||
+    getAggregateCount(statusCounts, 'PROCESSING', 'processing') ||
     documentCounts.processing ||
     0;
   const pendingCount = getCountValue(statusCounts, 'PENDING', 'pending') || documentCounts.pending || 0;
@@ -1272,7 +1271,7 @@ export default function DocumentManager() {
                       statusFilter === 'all' && 'bg-gray-100 dark:bg-gray-900 font-medium border border-gray-400 dark:border-gray-500 shadow-sm'
                     )}
                   >
-                    {t('documentPanel.documentManager.status.all')} ({statusCounts.all || documentCounts.all})
+                    {t('documentPanel.documentManager.filters.all')} ({statusCounts.all || documentCounts.all})
                   </Button>
                   <Button
                     size="sm"
@@ -1284,7 +1283,7 @@ export default function DocumentManager() {
                       statusFilter === 'processed' && 'bg-green-100 dark:bg-green-900/30 font-medium border border-green-400 dark:border-green-600 shadow-sm'
                     )}
                   >
-                    {t('documentPanel.documentManager.status.completed')} ({processedCount})
+                    {t('documentPanel.documentManager.filters.completed')} ({processedCount})
                   </Button>
                   <Button
                     size="sm"
@@ -1296,7 +1295,7 @@ export default function DocumentManager() {
                       statusFilter === 'analyzing' && 'bg-indigo-100 dark:bg-indigo-900/30 font-medium border border-indigo-400 dark:border-indigo-600 shadow-sm'
                     )}
                   >
-                    {t('documentPanel.documentManager.status.analyzing')} ({analyzingCount})
+                    {t('documentPanel.documentManager.filters.analyzing')} ({analyzingCount})
                   </Button>
                   <Button
                     size="sm"
@@ -1308,7 +1307,7 @@ export default function DocumentManager() {
                       statusFilter === 'processing' && 'bg-blue-100 dark:bg-blue-900/30 font-medium border border-blue-400 dark:border-blue-600 shadow-sm'
                     )}
                   >
-                    {t('documentPanel.documentManager.status.processing')} ({processingCount})
+                    {t('documentPanel.documentManager.filters.processing')} ({processingCount})
                   </Button>
                   <Button
                     size="sm"
@@ -1320,7 +1319,7 @@ export default function DocumentManager() {
                       statusFilter === 'pending' && 'bg-yellow-100 dark:bg-yellow-900/30 font-medium border border-yellow-400 dark:border-yellow-600 shadow-sm'
                     )}
                   >
-                    {t('documentPanel.documentManager.status.pending')} ({pendingCount})
+                    {t('documentPanel.documentManager.filters.pending')} ({pendingCount})
                   </Button>
                   <Button
                     size="sm"
@@ -1332,7 +1331,7 @@ export default function DocumentManager() {
                       statusFilter === 'failed' && 'bg-red-100 dark:bg-red-900/30 font-medium border border-red-400 dark:border-red-600 shadow-sm'
                     )}
                   >
-                    {t('documentPanel.documentManager.status.failed')} ({failedCount})
+                    {t('documentPanel.documentManager.filters.failed')} ({failedCount})
                   </Button>
                 </div>
                 <Button
