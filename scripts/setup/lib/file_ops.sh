@@ -152,6 +152,80 @@ resolve_staged_ssl_basename() {
   printf '%s' "$basename_value"
 }
 
+append_preserved_non_template_env_lines() {
+  local template_file="$1"
+  local existing_env_file="$2"
+  local output_file="$3"
+  local line key
+  local emitted_header="no"
+  local in_preserved_section="no"
+  local preserved_header="### Preserved custom environment variables from previous .env"
+  local preserved_notice="### Comments in this session will persist across regenerations"
+  local -a pending_lines=()
+  local -A ignored_keys=(
+    ["LIGHTRAG_SETUP_PROFILE"]=1
+  )
+  local -A template_keys=()
+
+  if [[ ! -f "$existing_env_file" ]]; then
+    return 0
+  fi
+
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    if [[ "$line" =~ ^[A-Z0-9_]+= ]]; then
+      template_keys["${line%%=*}"]=1
+    elif [[ "$line" =~ ^#[[:space:]]*([A-Z0-9_]+)=(.*)$ ]]; then
+      template_keys["${BASH_REMATCH[1]}"]=1
+    fi
+  done < "$template_file"
+
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    if [[ "$line" == "$preserved_header" ]]; then
+      in_preserved_section="yes"
+      pending_lines=()
+      continue
+    fi
+
+    if [[ "$in_preserved_section" == "yes" && "$line" == "$preserved_notice" ]]; then
+      continue
+    fi
+
+    key=""
+
+    if [[ "$line" =~ ^([A-Z0-9_]+)= ]]; then
+      key="${BASH_REMATCH[1]}"
+    elif [[ "$line" =~ ^#[[:space:]]*([A-Z0-9_]+)=(.*)$ ]]; then
+      key="${BASH_REMATCH[1]}"
+    fi
+
+    if [[ -z "$key" ]]; then
+      if [[ "$in_preserved_section" == "yes" ]]; then
+        pending_lines+=("$line")
+      fi
+      continue
+    fi
+
+    if [[ -n "${ignored_keys[$key]+set}" ]]; then
+      pending_lines=()
+      continue
+    fi
+
+    if [[ -z "${template_keys[$key]+set}" ]]; then
+      if [[ "$emitted_header" == "no" ]]; then
+        printf '\n%s\n%s\n' "$preserved_header" "$preserved_notice" >> "$output_file"
+        emitted_header="yes"
+      fi
+
+      if ((${#pending_lines[@]} > 0)); then
+        printf '%s\n' "${pending_lines[@]}" >> "$output_file"
+      fi
+      printf '%s\n' "$line" >> "$output_file"
+    fi
+
+    pending_lines=()
+  done < "$existing_env_file"
+}
+
 generate_env_file() {
   local template_file="${1:-${REPO_ROOT:-.}/env.example}"
   local output_file="${2:-${REPO_ROOT:-.}/.env}"
@@ -237,6 +311,8 @@ generate_env_file() {
       printf '%s\n' "$line" >> "$tmp_file"
     fi
   done < "$template_file"
+
+  append_preserved_non_template_env_lines "$template_file" "$output_file" "$tmp_file"
 
   mv "$tmp_file" "$output_file"
 }
@@ -1989,8 +2065,6 @@ inject_lightrag_depends_on() {
 # Prints the path if found, empty string if not.
 find_generated_compose_file() {
   local repo_root="${REPO_ROOT:-.}"
-  local preferred_profile=""
-  local preferred_candidate=""
   local candidates=(
     "final:$repo_root/docker-compose.final.yml"
     "development:$repo_root/docker-compose.development.yml"
@@ -1998,19 +2072,7 @@ find_generated_compose_file() {
     "custom:$repo_root/docker-compose.custom.yml"
     "local:$repo_root/docker-compose.local.yml"
   )
-  local candidate profile f
-
-  preferred_profile="$(_read_legacy_setup_profile_from_env "$repo_root/.env")"
-  if [[ -n "$preferred_profile" ]]; then
-    for candidate in "${candidates[@]}"; do
-      profile="${candidate%%:*}"
-      f="${candidate#*:}"
-      if [[ "$profile" == "$preferred_profile" && -f "$f" ]]; then
-        printf '%s' "$f"
-        return 0
-      fi
-    done
-  fi
+  local candidate f
 
   for candidate in "${candidates[@]}"; do
     f="${candidate#*:}"
@@ -2020,34 +2082,6 @@ find_generated_compose_file() {
     fi
   done
   printf ''
-}
-
-_read_legacy_setup_profile_from_env() {
-  local env_file="$1"
-  local line value
-
-  if [[ ! -f "$env_file" ]]; then
-    return 0
-  fi
-
-  while IFS= read -r line || [[ -n "$line" ]]; do
-    if [[ "$line" =~ ^LIGHTRAG_SETUP_PROFILE=(.*)$ ]]; then
-      value="${BASH_REMATCH[1]}"
-      if [[ "$value" =~ ^\".*\"$ ]]; then
-        value="${value:1:${#value}-2}"
-      elif [[ "$value" =~ ^\'.*\'$ ]]; then
-        value="${value:1:${#value}-2}"
-      fi
-      case "$value" in
-        development|production|custom|local)
-          printf '%s' "$value"
-          ;;
-      esac
-      return 0
-    fi
-  done < "$env_file"
-
-  return 0
 }
 
 # Detect service names in a compose file's services: block (excluding lightrag).

@@ -1399,16 +1399,23 @@ generate_docker_compose "$REPO_ROOT/docker-compose.final.yml"
     assert "\n\n\nvolumes:\n" not in result
 
 
-def test_find_generated_compose_file_prefers_legacy_profile_match(
+def test_find_generated_compose_file_prefers_final_compose_file(
     tmp_path: Path,
 ) -> None:
-    """Legacy setup profile metadata should steer compose migration when available."""
+    """Compose discovery should prefer docker-compose.final.yml over legacy files."""
 
     write_text_lines(
         tmp_path / ".env",
         [
-            "LIGHTRAG_SETUP_PROFILE=production",
             "HOST=0.0.0.0",
+        ],
+    )
+    write_text_lines(
+        tmp_path / "docker-compose.final.yml",
+        [
+            "services:",
+            "  lightrag:",
+            "    image: final/lightrag",
         ],
     )
     write_text_lines(
@@ -1439,7 +1446,7 @@ printf 'COMPOSE=%s\\n' "$(find_generated_compose_file)"
     )
     values = parse_lines(output)
 
-    assert values["COMPOSE"] == str(tmp_path / "docker-compose.production.yml")
+    assert values["COMPOSE"] == str(tmp_path / "docker-compose.final.yml")
 
 
 def test_find_generated_compose_file_falls_back_to_order_without_profile(
@@ -1749,6 +1756,170 @@ generate_env_file "{REPO_ROOT}/env.example" "$REPO_ROOT/.env"
     assert active_model_lines == ["EMBEDDING_MODEL=bge-m3:latest"]
     assert active_host_lines == ["EMBEDDING_BINDING_HOST=http://localhost:11434"]
     assert "# EMBEDDING_BINDING=openai" in generated_env
+
+
+def test_generate_env_file_preserves_custom_variables_not_declared_in_template(
+    tmp_path: Path,
+) -> None:
+    """Reruns should keep custom `.env` variables that are not declared in env.example."""
+
+    write_text_lines(
+        tmp_path / "env.example",
+        [
+            "HOST=0.0.0.0",
+            "# PORT=9621",
+        ],
+    )
+    write_text_lines(
+        tmp_path / ".env",
+        [
+            "HOST=127.0.0.1",
+            "",
+            "# Custom integration settings",
+            "EXTRA_API_BASE='https://example.com/api'",
+            "# EXTRA_API_TOKEN=secret",
+        ],
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+
+load_env_file "$REPO_ROOT/.env"
+ENV_VALUES[HOST]="0.0.0.0"
+ENV_VALUES[PORT]="9621"
+
+generate_env_file "$REPO_ROOT/env.example" "$REPO_ROOT/.env"
+"""
+    )
+
+    generated_env = (tmp_path / ".env").read_text(encoding="utf-8")
+
+    assert "HOST=0.0.0.0" in generated_env
+    assert "PORT=9621" in generated_env
+    assert "### Preserved custom environment variables from previous .env" in generated_env
+    assert "# Custom integration settings" not in generated_env
+    assert "EXTRA_API_BASE='https://example.com/api'" in generated_env
+    assert "# EXTRA_API_TOKEN=secret" in generated_env
+
+
+def test_generate_env_file_keeps_preserved_section_idempotent_across_reruns(
+    tmp_path: Path,
+) -> None:
+    """Repeated reruns should keep a single preserved marker and its leading blank line."""
+
+    write_text_lines(
+        tmp_path / "env.example",
+        [
+            "HOST=0.0.0.0",
+            "# PORT=9621",
+        ],
+    )
+    write_text_lines(
+        tmp_path / ".env",
+        [
+            "HOST=127.0.0.1",
+            "",
+            "### Preserved custom environment variables from previous .env",
+            "",
+            "# Custom integration settings",
+            "EXTRA_API_BASE='https://example.com/api'",
+            "# EXTRA_API_TOKEN=secret",
+        ],
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+
+load_env_file "$REPO_ROOT/.env"
+ENV_VALUES[HOST]="0.0.0.0"
+ENV_VALUES[PORT]="9621"
+generate_env_file "$REPO_ROOT/env.example" "$REPO_ROOT/.env"
+generate_env_file "$REPO_ROOT/env.example" "$REPO_ROOT/.env"
+"""
+    )
+
+    generated_lines = (tmp_path / ".env").read_text(encoding="utf-8").splitlines()
+    marker = "### Preserved custom environment variables from previous .env"
+    notice = "### Comments in this session will persist across regenerations"
+    marker_indexes = [idx for idx, line in enumerate(generated_lines) if line == marker]
+
+    assert marker_indexes == [3]
+    assert generated_lines[2] == ""
+    assert generated_lines[4] == notice
+    assert generated_lines[5] == ""
+    assert generated_lines[6] == "# Custom integration settings"
+    assert generated_lines[7] == "EXTRA_API_BASE='https://example.com/api'"
+    assert generated_lines[8] == "# EXTRA_API_TOKEN=secret"
+
+
+def test_generate_env_file_preserves_multi_line_comments_inside_preserved_section(
+    tmp_path: Path,
+) -> None:
+    """Only comments already inside the preserved section should survive reruns."""
+
+    write_text_lines(
+        tmp_path / "env.example",
+        [
+            "HOST=0.0.0.0",
+            "# PORT=9621",
+        ],
+    )
+    write_text_lines(
+        tmp_path / ".env",
+        [
+            "HOST=127.0.0.1",
+            "",
+            "# External note that should not migrate",
+            "### Preserved custom environment variables from previous .env",
+            "",
+            "# Group A",
+            "# Shared settings",
+            "EXTRA_API_BASE='https://example.com/api'",
+            "",
+            "# Group B",
+            "EXTRA_API_TOKEN=secret",
+        ],
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+
+load_env_file "$REPO_ROOT/.env"
+ENV_VALUES[HOST]="0.0.0.0"
+ENV_VALUES[PORT]="9621"
+generate_env_file "$REPO_ROOT/env.example" "$REPO_ROOT/.env"
+generate_env_file "$REPO_ROOT/env.example" "$REPO_ROOT/.env"
+"""
+    )
+
+    generated_lines = (tmp_path / ".env").read_text(encoding="utf-8").splitlines()
+    marker = "### Preserved custom environment variables from previous .env"
+    notice = "### Comments in this session will persist across regenerations"
+    marker_index = generated_lines.index(marker)
+
+    assert generated_lines.count(marker) == 1
+    assert generated_lines.count(notice) == 1
+    assert "# External note that should not migrate" not in generated_lines
+    assert generated_lines[marker_index + 1] == notice
+    assert generated_lines[marker_index + 2] == ""
+    assert generated_lines[marker_index + 3] == "# Group A"
+    assert generated_lines[marker_index + 4] == "# Shared settings"
+    assert generated_lines[marker_index + 5] == "EXTRA_API_BASE='https://example.com/api'"
+    assert generated_lines[marker_index + 6] == ""
+    assert generated_lines[marker_index + 7] == "# Group B"
+    assert generated_lines[marker_index + 8] == "EXTRA_API_TOKEN=secret"
 
 
 def test_generate_env_file_round_trips_dollar_signs_in_single_quoted_values(
@@ -3255,7 +3426,6 @@ def test_env_base_flow_backs_up_legacy_generated_compose_before_rewrite(
     write_text_lines(
         tmp_path / ".env",
         [
-            "LIGHTRAG_SETUP_PROFILE=production",
             "LLM_BINDING=openai",
             "LLM_MODEL=gpt-4o-mini",
             "LLM_BINDING_HOST=https://api.openai.com/v1",
