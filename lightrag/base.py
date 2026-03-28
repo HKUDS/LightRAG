@@ -773,6 +773,19 @@ class DocStatusStorage(BaseKVStorage, ABC):
     ) -> dict[str, DocProcessingStatus]:
         """Get all documents with a specific status"""
 
+    async def get_docs_by_statuses(
+        self, statuses: list[DocStatus]
+    ) -> dict[str, DocProcessingStatus]:
+        """Get all documents matching any of the given statuses in a single query.
+
+        Default implementation falls back to sequential get_docs_by_status() calls.
+        Storage backends may override this with a single ANY($2) query for efficiency.
+        """
+        result: dict[str, DocProcessingStatus] = {}
+        for status in statuses:
+            result.update(await self.get_docs_by_status(status))
+        return result
+
     @abstractmethod
     async def get_docs_by_track_id(
         self, track_id: str
