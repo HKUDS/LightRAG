@@ -174,9 +174,9 @@ append_preserved_non_template_env_lines() {
   fi
 
   while IFS= read -r line || [[ -n "$line" ]]; do
-    if [[ "$line" =~ ^[A-Z0-9_]+= ]]; then
+    if [[ "$line" =~ ^[A-Za-z0-9_]+= ]]; then
       template_keys["${line%%=*}"]=1
-    elif [[ "$line" =~ ^#[[:space:]]*([A-Z0-9_]+)=(.*)$ ]]; then
+    elif [[ "$line" =~ ^#[[:space:]]*([A-Za-z0-9_]+)=(.*)$ ]]; then
       template_keys["${BASH_REMATCH[1]}"]=1
     fi
   done < "$template_file"
@@ -195,9 +195,9 @@ append_preserved_non_template_env_lines() {
     key=""
     line_is_commented_env="no"
 
-    if [[ "$line" =~ ^([A-Z0-9_]+)= ]]; then
+    if [[ "$line" =~ ^([A-Za-z0-9_]+)= ]]; then
       key="${BASH_REMATCH[1]}"
-    elif [[ "$line" =~ ^#[[:space:]]*([A-Z0-9_]+)=(.*)$ ]]; then
+    elif [[ "$line" =~ ^#[[:space:]]*([A-Za-z0-9_]+)=(.*)$ ]]; then
       key="${BASH_REMATCH[1]}"
       line_is_commented_env="yes"
     fi
@@ -270,7 +270,7 @@ generate_env_file() {
   # leaving all other commented examples intact.
   local _prescan_key _prescan_val _prescan_env_val _prescan_fmt
   while IFS= read -r line || [[ -n "$line" ]]; do
-    if [[ "$line" =~ ^#[[:space:]]*([A-Z0-9_]+)=(.*)$ ]]; then
+    if [[ "$line" =~ ^#[[:space:]]*([A-Za-z0-9_]+)=(.*)$ ]]; then
       _prescan_key="${BASH_REMATCH[1]}"
       _prescan_val="${BASH_REMATCH[2]}"
       if [[ -z "${match_write_keys[$_prescan_key]+set}" && -n "${ENV_VALUES[$_prescan_key]+set}" ]]; then
@@ -286,7 +286,7 @@ generate_env_file() {
   : > "$tmp_file"
 
   while IFS= read -r line || [[ -n "$line" ]]; do
-    if [[ "$line" =~ ^[A-Z0-9_]+= ]]; then
+    if [[ "$line" =~ ^[A-Za-z0-9_]+= ]]; then
       key="${line%%=*}"
       if [[ -z "${written_keys[$key]+set}" ]]; then
         if [[ -n "${ENV_VALUES[$key]+set}" ]]; then
@@ -309,7 +309,7 @@ generate_env_file() {
           printf '%s\n' "$line" >> "$tmp_file"
         fi
       fi
-    elif [[ "$line" =~ ^#[[:space:]]*([A-Z0-9_]+)=(.*)$ ]]; then
+    elif [[ "$line" =~ ^#[[:space:]]*([A-Za-z0-9_]+)=(.*)$ ]]; then
       key="${BASH_REMATCH[1]}"
       local _commented_val="${BASH_REMATCH[2]}"
       if [[ -z "${written_keys[$key]+set}" && -n "${ENV_VALUES[$key]+set}" ]]; then

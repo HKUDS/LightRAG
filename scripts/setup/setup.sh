@@ -2698,7 +2698,7 @@ load_env_file() {
   fi
 
   while IFS= read -r line || [[ -n "$line" ]]; do
-    if [[ "$line" =~ ^[A-Z0-9_]+= ]]; then
+    if [[ "$line" =~ ^[A-Za-z0-9_]+= ]]; then
       key="${line%%=*}"
       value="${line#*=}"
       if [[ "$value" =~ ^\".*\"$ ]]; then
