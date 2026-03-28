@@ -724,7 +724,21 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
         self, status: DocStatus
     ) -> dict[str, DocProcessingStatus]:
         """Get all documents matching a specific processing status."""
-        return await self._search_all_docs({"term": {"status": status.value}})
+        return await self.get_docs_by_statuses([status])
+
+    async def get_docs_by_statuses(
+        self, statuses: list[DocStatus]
+    ) -> dict[str, DocProcessingStatus]:
+        """Get all documents matching any of the given statuses in a single query.
+
+        Uses OpenSearch's terms query (multi-value equivalent of term) to fetch
+        all matching statuses in one PIT + search_after pass instead of one
+        full scan per status.
+        """
+        if not statuses:
+            return {}
+        status_values = [s.value for s in statuses]
+        return await self._search_all_docs({"terms": {"status": status_values}})
 
     async def get_docs_by_track_id(
         self, track_id: str

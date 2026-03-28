@@ -432,19 +432,32 @@ class MongoDocStatusStorage(DocStatusStorage):
         self, status: DocStatus
     ) -> dict[str, DocProcessingStatus]:
         """Get all documents with a specific status"""
-        cursor = self._data.find({"status": status.value})
-        result = await cursor.to_list()
-        processed_result = {}
-        for doc in result:
+        return await self.get_docs_by_statuses([status])
+
+    async def get_docs_by_statuses(
+        self, statuses: list[DocStatus]
+    ) -> dict[str, DocProcessingStatus]:
+        """Get all documents matching any of the given statuses in a single query.
+
+        Uses MongoDB's $in operator to fetch all matching statuses in one
+        round-trip instead of one find() call per status.
+        """
+        if not statuses:
+            return {}
+        status_values = [s.value for s in statuses]
+        cursor = self._data.find({"status": {"$in": status_values}})
+        docs = await cursor.to_list()
+        result = {}
+        for doc in docs:
             try:
                 data = self._prepare_doc_status_data(doc)
-                processed_result[doc["_id"]] = DocProcessingStatus(**data)
+                result[doc["_id"]] = DocProcessingStatus(**data)
             except KeyError as e:
                 logger.error(
                     f"[{self.workspace}] Missing required field for document {doc['_id']}: {e}"
                 )
                 continue
-        return processed_result
+        return result
 
     async def get_docs_by_track_id(
         self, track_id: str

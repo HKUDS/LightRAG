@@ -105,29 +105,41 @@ class JsonDocStatusStorage(DocStatusStorage):
         self, status: DocStatus
     ) -> dict[str, DocProcessingStatus]:
         """Get all documents with a specific status"""
+        return await self.get_docs_by_statuses([status])
+
+    async def get_docs_by_statuses(
+        self, statuses: list[DocStatus]
+    ) -> dict[str, DocProcessingStatus]:
+        """Get all documents matching any of the given statuses in a single pass.
+
+        Acquires the storage lock once and scans the in-memory dict once,
+        filtering against a set of status values.  This is more efficient than
+        the base-class asyncio.gather() fallback, which would acquire the lock
+        once per status and scan the data once per status.
+        """
+        if not statuses:
+            return {}
+        status_values = {s.value for s in statuses}
         result = {}
         async with self._storage_lock:
             for k, v in self._data.items():
-                if v["status"] == status.value:
-                    try:
-                        # Make a copy of the data to avoid modifying the original
-                        data = v.copy()
-                        # Remove deprecated content field if it exists
-                        data.pop("content", None)
-                        # Normalize missing or null file_path
-                        if not data.get("file_path"):
-                            data["file_path"] = "no-file-path"
-                        # Ensure new fields exist with default values
-                        if "metadata" not in data:
-                            data["metadata"] = {}
-                        if "error_msg" not in data:
-                            data["error_msg"] = None
-                        result[k] = DocProcessingStatus(**data)
-                    except KeyError as e:
-                        logger.error(
-                            f"[{self.workspace}] Missing required field for document {k}: {e}"
-                        )
-                        continue
+                if v["status"] not in status_values:
+                    continue
+                try:
+                    data = v.copy()
+                    data.pop("content", None)
+                    if not data.get("file_path"):
+                        data["file_path"] = "no-file-path"
+                    if "metadata" not in data:
+                        data["metadata"] = {}
+                    if "error_msg" not in data:
+                        data["error_msg"] = None
+                    result[k] = DocProcessingStatus(**data)
+                except KeyError as e:
+                    logger.error(
+                        f"[{self.workspace}] Missing required field for document {k}: {e}"
+                    )
+                    continue
         return result
 
     async def get_docs_by_track_id(
