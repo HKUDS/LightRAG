@@ -854,7 +854,7 @@ export default function DocumentManager() {
       }
 
     } catch (err) {
-      if (isLatestRequest()) {
+      if (isMountedRef.current) {
         const errorClassification = classifyError(err);
 
         if (errorClassification.shouldShowToast) {
@@ -866,7 +866,7 @@ export default function DocumentManager() {
         }
       }
     } finally {
-      if (isLatestRequest()) {
+      if (isMountedRef.current) {
         setIsRefreshing(false);
       }
     }
