@@ -137,9 +137,8 @@ async def test_aedit_entity_allows_updates_without_description(monkeypatch):
     assert result["operation_summary"]["operation_status"] == "success"
 
 
-@pytest.mark.asyncio
-async def test_handle_single_relationship_extraction_ignores_empty_description():
-    relation = await _handle_single_relationship_extraction(
+def test_handle_single_relationship_extraction_ignores_empty_description():
+    relation = _handle_single_relationship_extraction(
         ["relation", "Alice", "Bob", "works_with", "   "],
         chunk_key="chunk-1",
         timestamp=1,

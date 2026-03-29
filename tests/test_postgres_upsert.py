@@ -11,9 +11,11 @@ Verifies:
 
 import json
 import pytest
+import numpy as np
 from unittest.mock import AsyncMock, MagicMock
-from lightrag.kg.postgres_impl import PGKVStorage
+from lightrag.kg.postgres_impl import PGDocStatusStorage, PGKVStorage, PGVectorStorage
 from lightrag.namespace import NameSpace
+from lightrag.utils import EmbeddingFunc
 
 
 # ---------------------------------------------------------------------------
@@ -27,9 +29,11 @@ def make_storage(namespace: str) -> PGKVStorage:
     """Construct a PGKVStorage instance with a mocked db."""
     db = MagicMock()
     captured: list[tuple] = []
+    retry_kwargs: list[dict] = []
 
     async def fake_run_with_retry(operation, **kwargs):
         """Call the closure with a mock connection to capture executemany args."""
+        retry_kwargs.append(kwargs)
         mock_conn = AsyncMock()
         await operation(mock_conn)
         # Store (sql, data) from each executemany call
@@ -47,6 +51,78 @@ def make_storage(namespace: str) -> PGKVStorage:
     storage.__post_init__()
 
     storage._captured = captured
+    storage._retry_kwargs = retry_kwargs
+    return storage
+
+
+def make_doc_status_storage() -> PGDocStatusStorage:
+    """Construct a PGDocStatusStorage instance with a mocked db."""
+    db = MagicMock()
+    captured: list[tuple] = []
+    retry_kwargs: list[dict] = []
+
+    async def fake_run_with_retry(operation, **kwargs):
+        retry_kwargs.append(kwargs)
+        mock_conn = AsyncMock()
+        tx = AsyncMock()
+        tx.__aenter__.return_value = tx
+        tx.__aexit__.return_value = False
+        mock_conn.transaction = MagicMock(return_value=tx)
+        await operation(mock_conn)
+        for call in mock_conn.executemany.call_args_list:
+            captured.append((call.args[0], call.args[1]))
+
+    db._run_with_retry = AsyncMock(side_effect=fake_run_with_retry)
+    db.workspace = "test_ws"
+
+    storage = PGDocStatusStorage.__new__(PGDocStatusStorage)
+    storage.namespace = NameSpace.DOC_STATUS
+    storage.workspace = "test_ws"
+    storage.global_config = GLOBAL_CONFIG
+    storage.db = db
+    storage._captured = captured
+    storage._retry_kwargs = retry_kwargs
+    return storage
+
+
+def make_vector_storage(namespace: str) -> PGVectorStorage:
+    """Construct a PGVectorStorage instance with a mocked db and embedding func."""
+    db = MagicMock()
+    captured: list[tuple] = []
+    retry_kwargs: list[dict] = []
+
+    async def fake_run_with_retry(operation, **kwargs):
+        retry_kwargs.append(kwargs)
+        mock_conn = AsyncMock()
+        await operation(mock_conn)
+        for call in mock_conn.executemany.call_args_list:
+            captured.append((call.args[0], call.args[1]))
+
+    db._run_with_retry = AsyncMock(side_effect=fake_run_with_retry)
+    db.workspace = "test_ws"
+
+    async def embed_func(texts, **kwargs):
+        return np.array([[0.1, 0.2, 0.3] for _ in texts], dtype=np.float32)
+
+    embedding = EmbeddingFunc(
+        embedding_dim=3,
+        func=embed_func,
+        model_name="test_model",
+    )
+    storage = PGVectorStorage(
+        namespace=namespace,
+        workspace="test_ws",
+        global_config={
+            "embedding_batch_num": 10,
+            "vector_db_storage_cls_kwargs": {
+                "cosine_better_than_threshold": 0.5,
+            },
+        },
+        embedding_func=embedding,
+    )
+    storage.db = db
+    storage._captured = captured
+    storage._retry_kwargs = retry_kwargs
     return storage
 
 
@@ -319,3 +395,57 @@ async def test_multiple_records_single_batch():
     assert len(rows) == 3
     ids = {row[0] for row in rows}  # id is $1 for FULL_DOCS
     assert ids == {"doc-1", "doc-2", "doc-3"}
+
+
+@pytest.mark.asyncio
+async def test_kv_upsert_passes_timing_label():
+    storage = make_storage(NameSpace.KV_STORE_FULL_DOCS)
+    await storage.upsert({"doc-1": {"content": "text 1", "file_path": "/a"}})
+
+    assert storage._retry_kwargs[0]["timing_label"] == (
+        f"test_ws PGKVStorage.upsert[{NameSpace.KV_STORE_FULL_DOCS}]"
+    )
+
+
+@pytest.mark.asyncio
+async def test_doc_status_upsert_passes_timing_label():
+    storage = make_doc_status_storage()
+    await storage.upsert(
+        {
+            "doc-1": {
+                "content_summary": "summary",
+                "content_length": 12,
+                "chunks_count": 1,
+                "status": "processed",
+                "file_path": "/a.txt",
+                "chunks_list": ["chunk-1"],
+                "metadata": {"source": "test"},
+                "created_at": "2024-01-01T00:00:00+00:00",
+                "updated_at": "2024-01-01T00:00:00+00:00",
+            }
+        }
+    )
+
+    assert storage._retry_kwargs[0]["timing_label"] == (
+        "test_ws PGDocStatusStorage.upsert"
+    )
+
+
+@pytest.mark.asyncio
+async def test_vector_upsert_passes_timing_label():
+    storage = make_vector_storage(NameSpace.VECTOR_STORE_CHUNKS)
+    await storage.upsert(
+        {
+            "chunk-1": {
+                "tokens": 42,
+                "chunk_order_index": 0,
+                "full_doc_id": "doc-1",
+                "content": "hello world",
+                "file_path": "/a/b.txt",
+            }
+        }
+    )
+
+    assert storage._retry_kwargs[0]["timing_label"] == (
+        f"test_ws PGVectorStorage.upsert[{NameSpace.VECTOR_STORE_CHUNKS}]"
+    )
