@@ -152,12 +152,155 @@ resolve_staged_ssl_basename() {
   printf '%s' "$basename_value"
 }
 
+append_preserved_non_template_env_lines() {
+  local template_file="$1"
+  local existing_env_file="$2"
+  local output_file="$3"
+  local line key
+  local in_preserved_section="no"
+  local line_is_commented_env="no"
+  local template_in_preserved_section="no"
+  local template_has_preserved_section="no"
+  local old_has_preserved_section="no"
+  local preserved_header="### ----- Preserved custom environment variables from previous .env  -----"
+  local preserved_notice="### ----- Comments in this session will persist across regenerations -----"
+  local -a pending_lines=()
+  local -a preserved_payload=()
+  local -a discovered_payload=()
+  local -a template_preserved_payload=()
+  local -a effective_preserved_payload=()
+  local -A ignored_keys=(
+    ["LIGHTRAG_SETUP_PROFILE"]=1
+  )
+  local -A template_keys=()
+
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    if [[ "$line" == "$preserved_header" ]]; then
+      template_has_preserved_section="yes"
+      template_in_preserved_section="yes"
+      continue
+    fi
+
+    if [[ "$template_in_preserved_section" == "yes" && "$line" == "$preserved_notice" ]]; then
+      continue
+    fi
+
+    if [[ "$template_in_preserved_section" == "yes" ]]; then
+      template_preserved_payload+=("$line")
+    fi
+
+    if [[ "$line" =~ ^[A-Za-z0-9_]+= ]]; then
+      template_keys["${line%%=*}"]=1
+    elif [[ "$line" =~ ^#[[:space:]]*([A-Za-z0-9_]+)=(.*)$ ]]; then
+      template_keys["${BASH_REMATCH[1]}"]=1
+    fi
+  done < "$template_file"
+
+  if [[ -f "$existing_env_file" ]]; then
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      if [[ "$line" == "$preserved_header" ]]; then
+        in_preserved_section="yes"
+        old_has_preserved_section="yes"
+        pending_lines=()
+        continue
+      fi
+
+      if [[ "$in_preserved_section" == "yes" && "$line" == "$preserved_notice" ]]; then
+        continue
+      fi
+
+      key=""
+      line_is_commented_env="no"
+
+      if [[ "$line" =~ ^([A-Za-z0-9_]+)= ]]; then
+        key="${BASH_REMATCH[1]}"
+      elif [[ "$line" =~ ^#[[:space:]]*([A-Za-z0-9_]+)=(.*)$ ]]; then
+        key="${BASH_REMATCH[1]}"
+        line_is_commented_env="yes"
+      fi
+
+      if [[ -z "$key" ]]; then
+        if [[ "$in_preserved_section" == "yes" ]]; then
+          pending_lines+=("$line")
+        fi
+        continue
+      fi
+
+      if [[ -n "${ignored_keys[$key]+set}" ]]; then
+        if [[ "$in_preserved_section" == "yes" ]] && ((${#pending_lines[@]} > 0)); then
+          preserved_payload+=("${pending_lines[@]}")
+        fi
+        pending_lines=()
+        continue
+      fi
+
+      if [[ -z "${template_keys[$key]+set}" || \
+        ("$in_preserved_section" == "yes" && "$line_is_commented_env" == "yes") ]]; then
+        if ((${#pending_lines[@]} > 0)); then
+          if [[ "$in_preserved_section" == "yes" ]]; then
+            preserved_payload+=("${pending_lines[@]}")
+          fi
+        fi
+
+        if [[ "$in_preserved_section" == "yes" ]]; then
+          preserved_payload+=("$line")
+        else
+          discovered_payload+=("$line")
+        fi
+      elif [[ "$in_preserved_section" == "yes" && ${#pending_lines[@]} -gt 0 ]]; then
+        preserved_payload+=("${pending_lines[@]}")
+      fi
+
+      pending_lines=()
+    done < "$existing_env_file"
+
+    if ((${#pending_lines[@]} > 0)); then
+      preserved_payload+=("${pending_lines[@]}")
+    fi
+  fi
+
+  effective_preserved_payload=("${preserved_payload[@]}")
+
+  if [[ "$template_has_preserved_section" == "yes" ]]; then
+    printf '%s\n%s\n' "$preserved_header" "$preserved_notice" >> "$output_file"
+
+    if [[ "$old_has_preserved_section" != "yes" ]] && ((${#template_preserved_payload[@]} > 0)); then
+      printf '%s\n' "${template_preserved_payload[@]}" >> "$output_file"
+    fi
+
+    if ((${#effective_preserved_payload[@]} > 0)); then
+      printf '%s\n' "${effective_preserved_payload[@]}" >> "$output_file"
+    fi
+
+    if ((${#discovered_payload[@]} > 0)); then
+      printf '%s\n' "${discovered_payload[@]}" >> "$output_file"
+    fi
+    return 0
+  fi
+
+  if ((${#effective_preserved_payload[@]} == 0 && ${#discovered_payload[@]} == 0)); then
+    return 0
+  fi
+
+  printf '\n%s\n%s\n' "$preserved_header" "$preserved_notice" >> "$output_file"
+
+  if ((${#effective_preserved_payload[@]} > 0)); then
+    printf '%s\n' "${effective_preserved_payload[@]}" >> "$output_file"
+  fi
+
+  if ((${#discovered_payload[@]} > 0)); then
+    printf '%s\n' "${discovered_payload[@]}" >> "$output_file"
+  fi
+}
+
 generate_env_file() {
   local template_file="${1:-${REPO_ROOT:-.}/env.example}"
   local output_file="${2:-${REPO_ROOT:-.}/.env}"
   local tmp_file="${output_file}.tmp"
   _FILE_OPS_CLEANUP_TMP+=("$tmp_file")
   local line key value
+  local preserved_header="### ----- Preserved custom environment variables from previous .env  -----"
+  local in_template_preserved_section="no"
   local -A written_keys=()
   local -A match_write_keys=()
 
@@ -171,7 +314,16 @@ generate_env_file() {
   # leaving all other commented examples intact.
   local _prescan_key _prescan_val _prescan_env_val _prescan_fmt
   while IFS= read -r line || [[ -n "$line" ]]; do
-    if [[ "$line" =~ ^#[[:space:]]*([A-Z0-9_]+)=(.*)$ ]]; then
+    if [[ "$line" == "$preserved_header" ]]; then
+      in_template_preserved_section="yes"
+      continue
+    fi
+
+    if [[ "$in_template_preserved_section" == "yes" ]]; then
+      continue
+    fi
+
+    if [[ "$line" =~ ^#[[:space:]]*([A-Za-z0-9_]+)=(.*)$ ]]; then
       _prescan_key="${BASH_REMATCH[1]}"
       _prescan_val="${BASH_REMATCH[2]}"
       if [[ -z "${match_write_keys[$_prescan_key]+set}" && -n "${ENV_VALUES[$_prescan_key]+set}" ]]; then
@@ -186,8 +338,18 @@ generate_env_file() {
 
   : > "$tmp_file"
 
+  in_template_preserved_section="no"
   while IFS= read -r line || [[ -n "$line" ]]; do
-    if [[ "$line" =~ ^[A-Z0-9_]+= ]]; then
+    if [[ "$line" == "$preserved_header" ]]; then
+      in_template_preserved_section="yes"
+      continue
+    fi
+
+    if [[ "$in_template_preserved_section" == "yes" ]]; then
+      continue
+    fi
+
+    if [[ "$line" =~ ^[A-Za-z0-9_]+= ]]; then
       key="${line%%=*}"
       if [[ -z "${written_keys[$key]+set}" ]]; then
         if [[ -n "${ENV_VALUES[$key]+set}" ]]; then
@@ -210,7 +372,7 @@ generate_env_file() {
           printf '%s\n' "$line" >> "$tmp_file"
         fi
       fi
-    elif [[ "$line" =~ ^#[[:space:]]*([A-Z0-9_]+)=(.*)$ ]]; then
+    elif [[ "$line" =~ ^#[[:space:]]*([A-Za-z0-9_]+)=(.*)$ ]]; then
       key="${BASH_REMATCH[1]}"
       local _commented_val="${BASH_REMATCH[2]}"
       if [[ -z "${written_keys[$key]+set}" && -n "${ENV_VALUES[$key]+set}" ]]; then
@@ -237,6 +399,8 @@ generate_env_file() {
       printf '%s\n' "$line" >> "$tmp_file"
     fi
   done < "$template_file"
+
+  append_preserved_non_template_env_lines "$template_file" "$output_file" "$tmp_file"
 
   mv "$tmp_file" "$output_file"
 }
@@ -1989,8 +2153,6 @@ inject_lightrag_depends_on() {
 # Prints the path if found, empty string if not.
 find_generated_compose_file() {
   local repo_root="${REPO_ROOT:-.}"
-  local preferred_profile=""
-  local preferred_candidate=""
   local candidates=(
     "final:$repo_root/docker-compose.final.yml"
     "development:$repo_root/docker-compose.development.yml"
@@ -1998,19 +2160,7 @@ find_generated_compose_file() {
     "custom:$repo_root/docker-compose.custom.yml"
     "local:$repo_root/docker-compose.local.yml"
   )
-  local candidate profile f
-
-  preferred_profile="$(_read_legacy_setup_profile_from_env "$repo_root/.env")"
-  if [[ -n "$preferred_profile" ]]; then
-    for candidate in "${candidates[@]}"; do
-      profile="${candidate%%:*}"
-      f="${candidate#*:}"
-      if [[ "$profile" == "$preferred_profile" && -f "$f" ]]; then
-        printf '%s' "$f"
-        return 0
-      fi
-    done
-  fi
+  local candidate f
 
   for candidate in "${candidates[@]}"; do
     f="${candidate#*:}"
@@ -2020,34 +2170,6 @@ find_generated_compose_file() {
     fi
   done
   printf ''
-}
-
-_read_legacy_setup_profile_from_env() {
-  local env_file="$1"
-  local line value
-
-  if [[ ! -f "$env_file" ]]; then
-    return 0
-  fi
-
-  while IFS= read -r line || [[ -n "$line" ]]; do
-    if [[ "$line" =~ ^LIGHTRAG_SETUP_PROFILE=(.*)$ ]]; then
-      value="${BASH_REMATCH[1]}"
-      if [[ "$value" =~ ^\".*\"$ ]]; then
-        value="${value:1:${#value}-2}"
-      elif [[ "$value" =~ ^\'.*\'$ ]]; then
-        value="${value:1:${#value}-2}"
-      fi
-      case "$value" in
-        development|production|custom|local)
-          printf '%s' "$value"
-          ;;
-      esac
-      return 0
-    fi
-  done < "$env_file"
-
-  return 0
 }
 
 # Detect service names in a compose file's services: block (excluding lightrag).

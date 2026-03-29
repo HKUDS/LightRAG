@@ -11,6 +11,12 @@ import pytest
 pytestmark = pytest.mark.offline
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+PRESERVED_HEADER = (
+    "### ----- Preserved custom environment variables from previous .env  -----"
+)
+PRESERVED_NOTICE = (
+    "### ----- Comments in this session will persist across regenerations -----"
+)
 
 
 def run_bash_process(
@@ -1399,16 +1405,23 @@ generate_docker_compose "$REPO_ROOT/docker-compose.final.yml"
     assert "\n\n\nvolumes:\n" not in result
 
 
-def test_find_generated_compose_file_prefers_legacy_profile_match(
+def test_find_generated_compose_file_prefers_final_compose_file(
     tmp_path: Path,
 ) -> None:
-    """Legacy setup profile metadata should steer compose migration when available."""
+    """Compose discovery should prefer docker-compose.final.yml over legacy files."""
 
     write_text_lines(
         tmp_path / ".env",
         [
-            "LIGHTRAG_SETUP_PROFILE=production",
             "HOST=0.0.0.0",
+        ],
+    )
+    write_text_lines(
+        tmp_path / "docker-compose.final.yml",
+        [
+            "services:",
+            "  lightrag:",
+            "    image: final/lightrag",
         ],
     )
     write_text_lines(
@@ -1439,7 +1452,7 @@ printf 'COMPOSE=%s\\n' "$(find_generated_compose_file)"
     )
     values = parse_lines(output)
 
-    assert values["COMPOSE"] == str(tmp_path / "docker-compose.production.yml")
+    assert values["COMPOSE"] == str(tmp_path / "docker-compose.final.yml")
 
 
 def test_find_generated_compose_file_falls_back_to_order_without_profile(
@@ -1749,6 +1762,756 @@ generate_env_file "{REPO_ROOT}/env.example" "$REPO_ROOT/.env"
     assert active_model_lines == ["EMBEDDING_MODEL=bge-m3:latest"]
     assert active_host_lines == ["EMBEDDING_BINDING_HOST=http://localhost:11434"]
     assert "# EMBEDDING_BINDING=openai" in generated_env
+
+
+def test_generate_env_file_preserves_custom_variables_not_declared_in_template(
+    tmp_path: Path,
+) -> None:
+    """Reruns should keep custom `.env` variables that are not declared in env.example."""
+
+    write_text_lines(
+        tmp_path / "env.example",
+        [
+            "HOST=0.0.0.0",
+            "# PORT=9621",
+        ],
+    )
+    write_text_lines(
+        tmp_path / ".env",
+        [
+            "HOST=127.0.0.1",
+            "",
+            "# Custom integration settings",
+            "EXTRA_API_BASE='https://example.com/api'",
+            "# EXTRA_API_TOKEN=secret",
+        ],
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+
+load_env_file "$REPO_ROOT/.env"
+ENV_VALUES[HOST]="0.0.0.0"
+ENV_VALUES[PORT]="9621"
+
+generate_env_file "$REPO_ROOT/env.example" "$REPO_ROOT/.env"
+"""
+    )
+
+    generated_env = (tmp_path / ".env").read_text(encoding="utf-8")
+
+    assert "HOST=0.0.0.0" in generated_env
+    assert "PORT=9621" in generated_env
+    assert PRESERVED_HEADER in generated_env
+    assert "# Custom integration settings" not in generated_env
+    assert "EXTRA_API_BASE='https://example.com/api'" in generated_env
+    assert "# EXTRA_API_TOKEN=secret" in generated_env
+
+
+def test_generate_env_file_keeps_preserved_section_idempotent_across_reruns(
+    tmp_path: Path,
+) -> None:
+    """Repeated reruns should keep a single preserved marker and its leading blank line."""
+
+    write_text_lines(
+        tmp_path / "env.example",
+        [
+            "HOST=0.0.0.0",
+            "# PORT=9621",
+        ],
+    )
+    write_text_lines(
+        tmp_path / ".env",
+        [
+            "HOST=127.0.0.1",
+            "",
+            PRESERVED_HEADER,
+            "",
+            "# Custom integration settings",
+            "EXTRA_API_BASE='https://example.com/api'",
+            "# EXTRA_API_TOKEN=secret",
+        ],
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+
+load_env_file "$REPO_ROOT/.env"
+ENV_VALUES[HOST]="0.0.0.0"
+ENV_VALUES[PORT]="9621"
+generate_env_file "$REPO_ROOT/env.example" "$REPO_ROOT/.env"
+generate_env_file "$REPO_ROOT/env.example" "$REPO_ROOT/.env"
+"""
+    )
+
+    generated_lines = (tmp_path / ".env").read_text(encoding="utf-8").splitlines()
+    marker = PRESERVED_HEADER
+    notice = PRESERVED_NOTICE
+    marker_indexes = [idx for idx, line in enumerate(generated_lines) if line == marker]
+
+    assert marker_indexes == [3]
+    assert generated_lines[2] == ""
+    assert generated_lines[4] == notice
+    assert generated_lines[5] == ""
+    assert generated_lines[6] == "# Custom integration settings"
+    assert generated_lines[7] == "EXTRA_API_BASE='https://example.com/api'"
+    assert generated_lines[8] == "# EXTRA_API_TOKEN=secret"
+
+
+def test_generate_env_file_preserves_multi_line_comments_inside_preserved_section(
+    tmp_path: Path,
+) -> None:
+    """Only comments already inside the preserved section should survive reruns."""
+
+    write_text_lines(
+        tmp_path / "env.example",
+        [
+            "HOST=0.0.0.0",
+            "# PORT=9621",
+        ],
+    )
+    write_text_lines(
+        tmp_path / ".env",
+        [
+            "HOST=127.0.0.1",
+            "",
+            "# External note that should not migrate",
+            PRESERVED_HEADER,
+            "",
+            "# Group A",
+            "# Shared settings",
+            "EXTRA_API_BASE='https://example.com/api'",
+            "",
+            "# Group B",
+            "EXTRA_API_TOKEN=secret",
+        ],
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+
+load_env_file "$REPO_ROOT/.env"
+ENV_VALUES[HOST]="0.0.0.0"
+ENV_VALUES[PORT]="9621"
+generate_env_file "$REPO_ROOT/env.example" "$REPO_ROOT/.env"
+generate_env_file "$REPO_ROOT/env.example" "$REPO_ROOT/.env"
+"""
+    )
+
+    generated_lines = (tmp_path / ".env").read_text(encoding="utf-8").splitlines()
+    marker = PRESERVED_HEADER
+    notice = PRESERVED_NOTICE
+    marker_index = generated_lines.index(marker)
+
+    assert generated_lines.count(marker) == 1
+    assert generated_lines.count(notice) == 1
+    assert "# External note that should not migrate" not in generated_lines
+    assert generated_lines[marker_index + 1] == notice
+    assert generated_lines[marker_index + 2] == ""
+    assert generated_lines[marker_index + 3] == "# Group A"
+    assert generated_lines[marker_index + 4] == "# Shared settings"
+    assert (
+        generated_lines[marker_index + 5] == "EXTRA_API_BASE='https://example.com/api'"
+    )
+    assert generated_lines[marker_index + 6] == ""
+    assert generated_lines[marker_index + 7] == "# Group B"
+    assert generated_lines[marker_index + 8] == "EXTRA_API_TOKEN=secret"
+
+
+def test_generate_env_file_preserves_trailing_comments_at_end_of_preserved_section(
+    tmp_path: Path,
+) -> None:
+    """Free-form comments after the last preserved variable should survive reruns."""
+
+    write_text_lines(
+        tmp_path / "env.example",
+        [
+            "HOST=0.0.0.0",
+            "# PORT=9621",
+        ],
+    )
+    write_text_lines(
+        tmp_path / ".env",
+        [
+            "HOST=127.0.0.1",
+            "",
+            PRESERVED_HEADER,
+            PRESERVED_NOTICE,
+            "",
+            "EXTRA_API_BASE='https://example.com/api'",
+            "# Free-form note",
+            "# This should stay at EOF",
+        ],
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+
+load_env_file "$REPO_ROOT/.env"
+ENV_VALUES[HOST]="0.0.0.0"
+ENV_VALUES[PORT]="9621"
+generate_env_file "$REPO_ROOT/env.example" "$REPO_ROOT/.env"
+generate_env_file "$REPO_ROOT/env.example" "$REPO_ROOT/.env"
+"""
+    )
+
+    generated_lines = (tmp_path / ".env").read_text(encoding="utf-8").splitlines()
+
+    assert generated_lines[-3] == "EXTRA_API_BASE='https://example.com/api'"
+    assert generated_lines[-2] == "# Free-form note"
+    assert generated_lines[-1] == "# This should stay at EOF"
+
+
+def test_generate_env_file_appends_new_external_entries_after_existing_preserved_block(
+    tmp_path: Path,
+) -> None:
+    """New template-external entries should be appended after the existing preserved payload."""
+
+    write_text_lines(
+        tmp_path / "env.example",
+        [
+            "HOST=0.0.0.0",
+            "# PORT=9621",
+        ],
+    )
+    write_text_lines(
+        tmp_path / ".env",
+        [
+            "HOST=127.0.0.1",
+            "EXTRA_EARLY=alpha",
+            PRESERVED_HEADER,
+            PRESERVED_NOTICE,
+            "",
+            "# Existing note",
+            "EXTRA_EXISTING=omega",
+        ],
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+
+load_env_file "$REPO_ROOT/.env"
+ENV_VALUES[HOST]="0.0.0.0"
+ENV_VALUES[PORT]="9621"
+generate_env_file "$REPO_ROOT/env.example" "$REPO_ROOT/.env"
+"""
+    )
+
+    generated_lines = (tmp_path / ".env").read_text(encoding="utf-8").splitlines()
+    marker_index = generated_lines.index(PRESERVED_HEADER)
+
+    assert generated_lines[marker_index + 1] == (PRESERVED_NOTICE)
+    assert generated_lines[marker_index + 2] == ""
+    assert generated_lines[marker_index + 3] == "# Existing note"
+    assert generated_lines[marker_index + 4] == "EXTRA_EXISTING=omega"
+    assert generated_lines[marker_index + 5] == "EXTRA_EARLY=alpha"
+
+
+def test_generate_env_file_appends_multiple_new_external_entries_in_discovery_order(
+    tmp_path: Path,
+) -> None:
+    """Multiple new external entries should append after preserved payload in source order."""
+
+    write_text_lines(
+        tmp_path / "env.example",
+        [
+            "HOST=0.0.0.0",
+            "# PORT=9621",
+        ],
+    )
+    write_text_lines(
+        tmp_path / ".env",
+        [
+            "HOST=127.0.0.1",
+            "EXTRA_FIRST=one",
+            "# Outside comment should not migrate",
+            "EXTRA_SECOND=two",
+            PRESERVED_HEADER,
+            PRESERVED_NOTICE,
+            "",
+            "EXTRA_EXISTING=existing",
+        ],
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+
+load_env_file "$REPO_ROOT/.env"
+ENV_VALUES[HOST]="0.0.0.0"
+ENV_VALUES[PORT]="9621"
+generate_env_file "$REPO_ROOT/env.example" "$REPO_ROOT/.env"
+"""
+    )
+
+    generated_lines = (tmp_path / ".env").read_text(encoding="utf-8").splitlines()
+    marker_index = generated_lines.index(PRESERVED_HEADER)
+
+    assert "# Outside comment should not migrate" not in generated_lines
+    assert generated_lines[marker_index + 3] == "EXTRA_EXISTING=existing"
+    assert generated_lines[marker_index + 4] == "EXTRA_FIRST=one"
+    assert generated_lines[marker_index + 5] == "EXTRA_SECOND=two"
+
+
+def test_generate_env_file_keeps_commented_template_keys_inside_preserved_section(
+    tmp_path: Path,
+) -> None:
+    """Commented env vars already placed in preserved should survive even if the template declares them."""
+
+    write_text_lines(
+        tmp_path / "env.example",
+        [
+            "HOST=0.0.0.0",
+            "# PORT=9621",
+            "# ENTITY_EXTRACTION_USE_JSON=true",
+        ],
+    )
+    write_text_lines(
+        tmp_path / ".env",
+        [
+            "HOST=127.0.0.1",
+            PRESERVED_HEADER,
+            PRESERVED_NOTICE,
+            "",
+            "# ENTITY_EXTRACTION_USE_JSON=true",
+        ],
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+
+load_env_file "$REPO_ROOT/.env"
+ENV_VALUES[HOST]="0.0.0.0"
+ENV_VALUES[PORT]="9621"
+generate_env_file "$REPO_ROOT/env.example" "$REPO_ROOT/.env"
+generate_env_file "$REPO_ROOT/env.example" "$REPO_ROOT/.env"
+"""
+    )
+
+    generated_lines = (tmp_path / ".env").read_text(encoding="utf-8").splitlines()
+    marker_index = generated_lines.index(PRESERVED_HEADER)
+
+    assert generated_lines.count("# ENTITY_EXTRACTION_USE_JSON=true") == 2
+    assert generated_lines[marker_index + 3] == "# ENTITY_EXTRACTION_USE_JSON=true"
+
+
+def test_generate_env_file_recognizes_lowercase_extra_variables(
+    tmp_path: Path,
+) -> None:
+    """Lowercase template-external variables should be preserved like uppercase ones."""
+
+    write_text_lines(
+        tmp_path / "env.example",
+        [
+            "HOST=0.0.0.0",
+            "# PORT=9621",
+        ],
+    )
+    write_text_lines(
+        tmp_path / ".env",
+        [
+            "HOST=127.0.0.1",
+            "workspace_name=demo",
+        ],
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+
+load_env_file "$REPO_ROOT/.env"
+ENV_VALUES[HOST]="0.0.0.0"
+ENV_VALUES[PORT]="9621"
+generate_env_file "$REPO_ROOT/env.example" "$REPO_ROOT/.env"
+"""
+    )
+
+    generated_lines = (tmp_path / ".env").read_text(encoding="utf-8").splitlines()
+
+    assert PRESERVED_HEADER in generated_lines
+    assert "workspace_name=demo" in generated_lines
+
+
+def test_generate_env_file_recognizes_lowercase_commented_extra_variables(
+    tmp_path: Path,
+) -> None:
+    """Lowercase commented env vars should create and survive in the preserved section."""
+
+    write_text_lines(
+        tmp_path / "env.example",
+        [
+            "HOST=0.0.0.0",
+            "# PORT=9621",
+        ],
+    )
+    write_text_lines(
+        tmp_path / ".env",
+        [
+            "HOST=127.0.0.1",
+            "# workspace_name=demo",
+        ],
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+
+load_env_file "$REPO_ROOT/.env"
+ENV_VALUES[HOST]="0.0.0.0"
+ENV_VALUES[PORT]="9621"
+generate_env_file "$REPO_ROOT/env.example" "$REPO_ROOT/.env"
+"""
+    )
+
+    generated_lines = (tmp_path / ".env").read_text(encoding="utf-8").splitlines()
+
+    assert PRESERVED_HEADER in generated_lines
+    assert "# workspace_name=demo" in generated_lines
+
+
+def test_generate_env_file_uses_template_preserved_block_when_env_missing(
+    tmp_path: Path,
+) -> None:
+    """Missing `.env` should still produce the preserved block from env.example."""
+
+    write_text_lines(
+        tmp_path / "env.example",
+        [
+            "HOST=0.0.0.0",
+            PRESERVED_HEADER,
+            PRESERVED_NOTICE,
+            "### Template preserved comment",
+            "# template_example=true",
+        ],
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+
+ENV_VALUES[HOST]="0.0.0.0"
+generate_env_file "$REPO_ROOT/env.example" "$REPO_ROOT/.env"
+"""
+    )
+
+    generated_lines = (tmp_path / ".env").read_text(encoding="utf-8").splitlines()
+
+    assert PRESERVED_HEADER in generated_lines
+    assert PRESERVED_NOTICE in generated_lines
+    assert generated_lines.count(PRESERVED_HEADER) == 1
+    assert generated_lines.count(PRESERVED_NOTICE) == 1
+    assert "### Template preserved comment" in generated_lines
+    assert "# template_example=true" in generated_lines
+
+
+def test_generate_env_file_keeps_template_separator_adjacent_to_preserved_header(
+    tmp_path: Path,
+) -> None:
+    """Injected template preserved blocks should not add a blank line after the copied separator."""
+
+    write_text_lines(
+        tmp_path / "env.example",
+        [
+            "HOST=0.0.0.0",
+            "##########################################################################",
+            PRESERVED_HEADER,
+            PRESERVED_NOTICE,
+            "### Template preserved comment",
+        ],
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+
+ENV_VALUES[HOST]="0.0.0.0"
+generate_env_file "$REPO_ROOT/env.example" "$REPO_ROOT/.env"
+"""
+    )
+
+    generated_lines = (tmp_path / ".env").read_text(encoding="utf-8").splitlines()
+    header_index = generated_lines.index(PRESERVED_HEADER)
+
+    assert (
+        generated_lines[header_index - 1]
+        == "##########################################################################"
+    )
+
+
+def test_generate_env_file_does_not_inject_template_payload_when_old_preserved_exists(
+    tmp_path: Path,
+) -> None:
+    """Existing preserved blocks should stay authoritative over template preserved payload."""
+
+    write_text_lines(
+        tmp_path / "env.example",
+        [
+            "HOST=0.0.0.0",
+            PRESERVED_HEADER,
+            PRESERVED_NOTICE,
+            "### Template preserved comment",
+            "# template_example=true",
+        ],
+    )
+    write_text_lines(
+        tmp_path / ".env",
+        [
+            "HOST=127.0.0.1",
+            "",
+            PRESERVED_HEADER,
+            "",
+            "# Existing preserved comment",
+            "EXTRA_OLD=1",
+        ],
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+
+load_env_file "$REPO_ROOT/.env"
+ENV_VALUES[HOST]="0.0.0.0"
+generate_env_file "$REPO_ROOT/env.example" "$REPO_ROOT/.env"
+"""
+    )
+
+    generated_lines = (tmp_path / ".env").read_text(encoding="utf-8").splitlines()
+
+    assert PRESERVED_HEADER in generated_lines
+    assert PRESERVED_NOTICE in generated_lines
+    assert "### Template preserved comment" not in generated_lines
+    assert "# template_example=true" not in generated_lines
+    assert "# Existing preserved comment" in generated_lines
+    assert "EXTRA_OLD=1" in generated_lines
+
+
+def test_generate_env_file_keeps_old_preserved_lines_even_when_they_match_template(
+    tmp_path: Path,
+) -> None:
+    """Old preserved content should not be removed just because it matches env.example."""
+
+    write_text_lines(
+        tmp_path / "env.example",
+        [
+            "HOST=0.0.0.0",
+            PRESERVED_HEADER,
+            PRESERVED_NOTICE,
+            "### Template preserved comment",
+            "# template_example=true",
+        ],
+    )
+    write_text_lines(
+        tmp_path / ".env",
+        [
+            "HOST=127.0.0.1",
+            "",
+            PRESERVED_HEADER,
+            "### Template preserved comment",
+            "# template_example=true",
+            "EXTRA_OLD=1",
+        ],
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+
+load_env_file "$REPO_ROOT/.env"
+ENV_VALUES[HOST]="0.0.0.0"
+generate_env_file "$REPO_ROOT/env.example" "$REPO_ROOT/.env"
+"""
+    )
+
+    generated_lines = (tmp_path / ".env").read_text(encoding="utf-8").splitlines()
+
+    assert PRESERVED_HEADER in generated_lines
+    assert PRESERVED_NOTICE in generated_lines
+    assert "### Template preserved comment" in generated_lines
+    assert "# template_example=true" in generated_lines
+    assert "EXTRA_OLD=1" in generated_lines
+
+
+def test_generate_env_file_preserves_comments_before_active_template_keys_in_preserved(
+    tmp_path: Path,
+) -> None:
+    """Comments in preserved should survive even when followed by active template-managed keys."""
+
+    write_text_lines(
+        tmp_path / "env.example",
+        [
+            "HOST=0.0.0.0",
+            "# PORT=9621",
+        ],
+    )
+    write_text_lines(
+        tmp_path / ".env",
+        [
+            "HOST=127.0.0.1",
+            PRESERVED_HEADER,
+            PRESERVED_NOTICE,
+            "",
+            "# Preserved note before active template key",
+            "# Another note",
+            "PORT=9999",
+            "EXTRA_AFTER=1",
+        ],
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+
+load_env_file "$REPO_ROOT/.env"
+ENV_VALUES[HOST]="0.0.0.0"
+ENV_VALUES[PORT]="9621"
+generate_env_file "$REPO_ROOT/env.example" "$REPO_ROOT/.env"
+"""
+    )
+
+    generated_lines = (tmp_path / ".env").read_text(encoding="utf-8").splitlines()
+    marker_index = generated_lines.index(PRESERVED_HEADER)
+
+    assert (
+        generated_lines[marker_index + 3]
+        == "# Preserved note before active template key"
+    )
+    assert generated_lines[marker_index + 4] == "# Another note"
+    assert "PORT=9999" not in generated_lines[marker_index + 1 :]
+    assert "EXTRA_AFTER=1" in generated_lines
+
+
+def test_generate_env_file_appends_extra_variables_after_template_preserved_block(
+    tmp_path: Path,
+) -> None:
+    """Extras from old `.env` should append after the template preserved block when none existed before."""
+
+    write_text_lines(
+        tmp_path / "env.example",
+        [
+            "HOST=0.0.0.0",
+            PRESERVED_HEADER,
+            PRESERVED_NOTICE,
+            "### Template preserved comment",
+            "# template_example=true",
+        ],
+    )
+    write_text_lines(
+        tmp_path / ".env",
+        [
+            "HOST=127.0.0.1",
+            "EXTRA_NEW=1",
+        ],
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+
+load_env_file "$REPO_ROOT/.env"
+ENV_VALUES[HOST]="0.0.0.0"
+generate_env_file "$REPO_ROOT/env.example" "$REPO_ROOT/.env"
+"""
+    )
+
+    generated_lines = (tmp_path / ".env").read_text(encoding="utf-8").splitlines()
+
+    assert generated_lines[-3] == "### Template preserved comment"
+    assert generated_lines[-2] == "# template_example=true"
+    assert generated_lines[-1] == "EXTRA_NEW=1"
+
+
+def test_generate_env_file_appends_commented_env_vars_after_template_preserved_block(
+    tmp_path: Path,
+) -> None:
+    """Commented env vars from old `.env` should append after the template preserved block when none existed before."""
+
+    write_text_lines(
+        tmp_path / "env.example",
+        [
+            "HOST=0.0.0.0",
+            PRESERVED_HEADER,
+            PRESERVED_NOTICE,
+            "### Template preserved comment",
+            "# template_example=true",
+        ],
+    )
+    write_text_lines(
+        tmp_path / ".env",
+        [
+            "HOST=127.0.0.1",
+            "# EXTRA_COMMENTED=1",
+        ],
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+
+load_env_file "$REPO_ROOT/.env"
+ENV_VALUES[HOST]="0.0.0.0"
+generate_env_file "$REPO_ROOT/env.example" "$REPO_ROOT/.env"
+"""
+    )
+
+    generated_lines = (tmp_path / ".env").read_text(encoding="utf-8").splitlines()
+
+    assert generated_lines[-3] == "### Template preserved comment"
+    assert generated_lines[-2] == "# template_example=true"
+    assert generated_lines[-1] == "# EXTRA_COMMENTED=1"
 
 
 def test_generate_env_file_round_trips_dollar_signs_in_single_quoted_values(
@@ -3255,7 +4018,6 @@ def test_env_base_flow_backs_up_legacy_generated_compose_before_rewrite(
     write_text_lines(
         tmp_path / ".env",
         [
-            "LIGHTRAG_SETUP_PROFILE=production",
             "LLM_BINDING=openai",
             "LLM_MODEL=gpt-4o-mini",
             "LLM_BINDING_HOST=https://api.openai.com/v1",
