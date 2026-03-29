@@ -197,15 +197,24 @@ const pulseStyle = `
 // Type definitions for sort field and direction
 type SortField = 'created_at' | 'updated_at' | 'id' | 'file_path';
 type SortDirection = 'asc' | 'desc';
+type QuerySnapshot = {
+  statusFilter: StatusFilter
+  page: number
+  pageSize: number
+  sortField: SortField
+  sortDirection: SortDirection
+}
 type RefreshRequest =
   | {
       type: 'intelligent';
-      targetPage?: number;
-      resetToFirst?: boolean;
+      query: QuerySnapshot;
       customTimeout?: number;
+      requestVersion: number;
     }
   | {
       type: 'manual';
+      query: QuerySnapshot;
+      requestVersion: number;
     };
 
 export default function DocumentManager() {
@@ -282,6 +291,7 @@ export default function DocumentManager() {
   const pollingIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const activeRefreshPromiseRef = useRef<Promise<void> | null>(null);
   const pendingRefreshRequestRef = useRef<RefreshRequest | null>(null);
+  const latestRefreshRequestVersionRef = useRef(0);
 
   // Add retry mechanism state
   const [retryState, setRetryState] = useState({
@@ -574,6 +584,16 @@ export default function DocumentManager() {
     };
   }, [docs]);
 
+  const buildQuerySnapshot = useCallback((
+    overrides: Partial<QuerySnapshot> = {}
+  ): QuerySnapshot => ({
+    statusFilter: overrides.statusFilter ?? statusFilter,
+    page: overrides.page ?? pagination.page,
+    pageSize: overrides.pageSize ?? pagination.page_size,
+    sortField: overrides.sortField ?? sortField,
+    sortDirection: overrides.sortDirection ?? sortDirection
+  }), [pagination.page, pagination.page_size, sortField, sortDirection, statusFilter])
+
   // Utility function to update component state
   const updateComponentState = useCallback((response: any) => {
     setPagination(response.pagination);
@@ -725,20 +745,23 @@ export default function DocumentManager() {
 
       setIsRefreshing(true);
 
+      const { query, requestVersion } = refreshRequest
+      const isStaleRequest = () => requestVersion !== latestRefreshRequestVersionRef.current
+
       if (refreshRequest.type === 'manual') {
         const request: DocumentsRequest = {
-          status_filter: statusFilter === 'all' ? null : statusFilter,
+          status_filter: query.statusFilter === 'all' ? null : query.statusFilter,
           page: 1,
-          page_size: pagination.page_size,
-          sort_field: sortField,
-          sort_direction: sortDirection
+          page_size: query.pageSize,
+          sort_field: query.sortField,
+          sort_direction: query.sortDirection
         };
 
         const response = await getDocumentsPaginated(request);
 
-        if (!isMountedRef.current) return;
+        if (!isMountedRef.current || isStaleRequest()) return;
 
-        if (response.pagination.total_count < pagination.page_size && pagination.page_size !== 10) {
+        if (response.pagination.total_count < query.pageSize && query.pageSize !== 10) {
           handlePageSizeChange(10);
         } else {
           setPagination(response.pagination);
@@ -762,17 +785,15 @@ export default function DocumentManager() {
           }
         }
       } else {
-        const { targetPage, resetToFirst, customTimeout } = refreshRequest;
-
-        // Determine target page
-        const pageToFetch = resetToFirst ? 1 : (targetPage || pagination.page);
+        const { customTimeout } = refreshRequest;
+        const pageToFetch = query.page;
 
         const request: DocumentsRequest = {
-          status_filter: statusFilter === 'all' ? null : statusFilter,
+          status_filter: query.statusFilter === 'all' ? null : query.statusFilter,
           page: pageToFetch,
-          page_size: pagination.page_size,
-          sort_field: sortField,
-          sort_direction: sortDirection
+          page_size: query.pageSize,
+          sort_field: query.sortField,
+          sort_direction: query.sortDirection
         };
 
         // Use timeout wrapper for the API call (uses customTimeout if provided, otherwise withTimeout default)
@@ -783,7 +804,7 @@ export default function DocumentManager() {
           () => abortDocumentsPaginated(request)
         );
 
-        if (!isMountedRef.current) return;
+        if (!isMountedRef.current || isStaleRequest()) return;
 
         // Boundary case handling: if target page has no data but total count > 0
         if (response.documents.length === 0 && response.pagination.total_count > 0) {
@@ -802,17 +823,19 @@ export default function DocumentManager() {
               () => abortDocumentsPaginated(lastPageRequest)
             );
 
-            if (!isMountedRef.current) return;
+            if (!isMountedRef.current || isStaleRequest()) return;
 
-            setPageByStatus(prev => ({ ...prev, [statusFilter]: lastPage }));
+            setPageByStatus(prev => ({ ...prev, [query.statusFilter]: lastPage }));
             updateComponentState(lastPageResponse);
             return;
           }
         }
 
-        if (pageToFetch !== pagination.page) {
-          setPageByStatus(prev => ({ ...prev, [statusFilter]: pageToFetch }));
-        }
+        setPageByStatus(prev => (
+          prev[query.statusFilter] === pageToFetch
+            ? prev
+            : { ...prev, [query.statusFilter]: pageToFetch }
+        ));
         updateComponentState(response);
       }
 
@@ -834,11 +857,6 @@ export default function DocumentManager() {
       }
     }
   }, [
-    statusFilter,
-    pagination.page,
-    pagination.page_size,
-    sortField,
-    sortDirection,
     t,
     updateComponentState,
     withTimeout,
@@ -882,26 +900,38 @@ export default function DocumentManager() {
     resetToFirst?: boolean,
     customTimeout?: number
   ) => {
+    const page = resetToFirst ? 1 : (targetPage || pagination.page)
+    const query = buildQuerySnapshot({ page })
+    const requestVersion = latestRefreshRequestVersionRef.current
+
     await enqueueRefresh({
       type: 'intelligent',
-      targetPage,
-      resetToFirst,
-      customTimeout
+      query,
+      customTimeout,
+      requestVersion
     });
-  }, [enqueueRefresh]);
+  }, [buildQuerySnapshot, enqueueRefresh, pagination.page]);
 
   // New paginated data fetching function
   const fetchPaginatedDocuments = useCallback(async (
     page: number,
     pageSize: number,
-    _statusFilter: StatusFilter // eslint-disable-line @typescript-eslint/no-unused-vars
+    currentStatusFilter: StatusFilter
   ) => {
     // Update pagination state
     setPagination(prev => ({ ...prev, page, page_size: pageSize }));
 
     // Use intelligent refresh
-    await handleIntelligentRefresh(page);
-  }, [handleIntelligentRefresh]);
+    await enqueueRefresh({
+      type: 'intelligent',
+      query: buildQuerySnapshot({
+        page,
+        pageSize,
+        statusFilter: currentStatusFilter
+      }),
+      requestVersion: latestRefreshRequestVersionRef.current
+    });
+  }, [buildQuerySnapshot, enqueueRefresh]);
 
   // Legacy fetchDocuments function for backward compatibility
   const fetchDocuments = useCallback(async () => {
@@ -1007,8 +1037,16 @@ export default function DocumentManager() {
 
   // Handle manual refresh with pagination reset logic
   const handleManualRefresh = useCallback(async () => {
-    await enqueueRefresh({ type: 'manual' });
-  }, [enqueueRefresh]);
+    await enqueueRefresh({
+      type: 'manual',
+      query: buildQuerySnapshot(),
+      requestVersion: latestRefreshRequestVersionRef.current
+    });
+  }, [buildQuerySnapshot, enqueueRefresh]);
+
+  useEffect(() => {
+    latestRefreshRequestVersionRef.current += 1
+  }, [pagination.page, pagination.page_size, statusFilter, sortField, sortDirection])
 
   // Monitor pipelineBusy changes and trigger immediate refresh with timer reset
   useEffect(() => {
