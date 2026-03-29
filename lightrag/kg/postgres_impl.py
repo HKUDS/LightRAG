@@ -18,6 +18,8 @@ from lightrag.types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdg
 from tenacity import (
     AsyncRetrying,
     RetryCallState,
+    retry,
+    retry_if_exception,
     retry_if_exception_type,
     stop_after_attempt,
     wait_exponential,
@@ -4513,6 +4515,31 @@ class PGGraphQueryException(Exception):
         return self.details
 
 
+def _is_transient_graph_write_error(exc: BaseException) -> bool:
+    """Return True when a PGGraphQueryException wraps a transient write-time error.
+
+    The inner _run_with_retry already handles connection-level transient errors
+    (pool reset, TCP failures, etc.).  This predicate covers query-level transient
+    errors that survive the connection layer and surface as PGGraphQueryException:
+    deadlocks, serialization conflicts, and lock-acquisition timeouts that can
+    occur under concurrent document ingestion.
+    """
+    if not isinstance(exc, PGGraphQueryException):
+        return False
+    cause = exc.__cause__
+    if cause is None:
+        return False
+    return isinstance(
+        cause,
+        (
+            asyncpg.exceptions.DeadlockDetectedError,
+            asyncpg.exceptions.SerializationFailure,
+            asyncpg.exceptions.LockNotAvailableError,
+            asyncpg.exceptions.QueryCanceledError,
+        ),
+    )
+
+
 @final
 @dataclass
 class PGGraphStorage(BaseGraphStorage):
@@ -4955,6 +4982,12 @@ class PGGraphStorage(BaseGraphStorage):
 
         return edges
 
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=4, max=10),
+        retry=retry_if_exception(_is_transient_graph_write_error),
+        reraise=True,
+    )
     async def upsert_node(self, node_id: str, node_data: dict[str, str]) -> None:
         """
         Upsert a node in the Neo4j database.
@@ -5012,6 +5045,12 @@ class PGGraphStorage(BaseGraphStorage):
             )
             raise
 
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=4, max=10),
+        retry=retry_if_exception(_is_transient_graph_write_error),
+        reraise=True,
+    )
     async def upsert_edge(
         self, source_node_id: str, target_node_id: str, edge_data: dict[str, str]
     ) -> None:
