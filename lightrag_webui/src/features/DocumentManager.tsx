@@ -36,7 +36,6 @@ import { RefreshCwIcon, ActivityIcon, ArrowUpIcon, ArrowDownIcon, RotateCcwIcon,
 import PipelineStatusDialog from '@/components/documents/PipelineStatusDialog'
 import {
   getStatusBucket,
-  getStatusRequestFilters,
   matchesStatusFilter,
   type StatusBucket,
   type StatusFilter
@@ -247,7 +246,6 @@ type RefreshRequest =
 export default function DocumentManager() {
   // Track component mount status
   const isMountedRef = useRef(true);
-  const latestRequestIdRef = useRef(0);
 
   // Set up mount/unmount status tracking
   useEffect(() => {
