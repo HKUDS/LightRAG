@@ -3,8 +3,10 @@ This module contains all document-related routes for the LightRAG API.
 """
 
 import asyncio
+import time
+from uuid import uuid4
 from functools import lru_cache
-from lightrag.utils import logger, get_pinyin_sort_key
+from lightrag.utils import logger, get_pinyin_sort_key, performance_timing_log
 import aiofiles
 import traceback
 from datetime import datetime, timezone
@@ -3134,23 +3136,92 @@ def create_document_routes(
         Raises:
             HTTPException: If an error occurs while retrieving documents (500).
         """
-        try:
-            # Get paginated documents and status counts in parallel
-            docs_task = rag.doc_status.get_docs_paginated(
-                status_filter=request.status_filter,
-                page=request.page,
-                page_size=request.page_size,
-                sort_field=request.sort_field,
-                sort_direction=request.sort_direction,
-            )
-            status_counts_task = rag.doc_status.get_all_status_counts()
+        trace_id = uuid4().hex[:8]
+        request_start = time.perf_counter()
+        status_filter_value = (
+            request.status_filter.value if request.status_filter is not None else None
+        )
 
-            # Execute both queries in parallel
+        performance_timing_log(
+            "[documents/paginated][%s] Request start workspace=%s status_filter=%s page=%s page_size=%s sort_field=%s sort_direction=%s",
+            trace_id,
+            rag.workspace,
+            status_filter_value,
+            request.page,
+            request.page_size,
+            request.sort_field,
+            request.sort_direction,
+        )
+
+        try:
+
+            async def _timed_call(operation_name: str, operation):
+                operation_start = time.perf_counter()
+                performance_timing_log(
+                    "[documents/paginated][%s] %s started",
+                    trace_id,
+                    operation_name,
+                )
+                try:
+                    result = await operation
+                except Exception:
+                    elapsed = time.perf_counter() - operation_start
+                    performance_timing_log(
+                        "[documents/paginated][%s] %s failed after %.4fs",
+                        trace_id,
+                        operation_name,
+                        elapsed,
+                    )
+                    raise
+
+                elapsed = time.perf_counter() - operation_start
+                performance_timing_log(
+                    "[documents/paginated][%s] %s completed in %.4fs",
+                    trace_id,
+                    operation_name,
+                    elapsed,
+                )
+                return result
+
+            query_task_create_start = time.perf_counter()
+            docs_task = asyncio.create_task(
+                _timed_call(
+                    "get_docs_paginated",
+                    rag.doc_status.get_docs_paginated(
+                        status_filter=request.status_filter,
+                        page=request.page,
+                        page_size=request.page_size,
+                        sort_field=request.sort_field,
+                        sort_direction=request.sort_direction,
+                    ),
+                )
+            )
+            status_counts_task = asyncio.create_task(
+                _timed_call(
+                    "get_all_status_counts",
+                    rag.doc_status.get_all_status_counts(),
+                )
+            )
+            query_task_create_elapsed = time.perf_counter() - query_task_create_start
+            performance_timing_log(
+                "[documents/paginated][%s] Query tasks created in %.4fs",
+                trace_id,
+                query_task_create_elapsed,
+            )
+
+            query_await_start = time.perf_counter()
             (documents_with_ids, total_count), status_counts = await asyncio.gather(
                 docs_task, status_counts_task
             )
+            query_await_elapsed = time.perf_counter() - query_await_start
+            performance_timing_log(
+                "[documents/paginated][%s] Query tasks awaited in %.4fs",
+                trace_id,
+                query_await_elapsed,
+            )
 
             # Convert documents to response format
+            response_assembly_start = time.perf_counter()
             doc_responses = []
             for doc_id, doc in documents_with_ids:
                 doc_responses.append(
@@ -3182,14 +3253,37 @@ def create_document_routes(
                 has_next=has_next,
                 has_prev=has_prev,
             )
-
-            return PaginatedDocsResponse(
+            response = PaginatedDocsResponse(
                 documents=doc_responses,
                 pagination=pagination,
                 status_counts=status_counts,
             )
+            response_assembly_elapsed = time.perf_counter() - response_assembly_start
+            total_elapsed = time.perf_counter() - request_start
+
+            performance_timing_log(
+                "[documents/paginated][%s] Response assembled in %.4fs",
+                trace_id,
+                response_assembly_elapsed,
+            )
+            performance_timing_log(
+                "[documents/paginated][%s] Request completed in %.4fs returned_rows=%s total_count=%s status_count_keys=%s",
+                trace_id,
+                total_elapsed,
+                len(doc_responses),
+                total_count,
+                sorted(status_counts.keys()),
+            )
+
+            return response
 
         except Exception as e:
+            total_elapsed = time.perf_counter() - request_start
+            performance_timing_log(
+                "[documents/paginated][%s] Request failed after %.4fs",
+                trace_id,
+                total_elapsed,
+            )
             logger.error(f"Error getting paginated documents: {str(e)}")
             logger.error(traceback.format_exc())
             raise HTTPException(status_code=500, detail=str(e))

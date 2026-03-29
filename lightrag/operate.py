@@ -382,7 +382,7 @@ async def _summarize_descriptions(
     return summary
 
 
-async def _handle_single_entity_extraction(
+def _handle_single_entity_extraction(
     record_attributes: list[str],
     chunk_key: str,
     timestamp: int,
@@ -469,7 +469,7 @@ async def _handle_single_entity_extraction(
         return None
 
 
-async def _handle_single_relationship_extraction(
+def _handle_single_relationship_extraction(
     record_attributes: list[str],
     chunk_key: str,
     timestamp: int,
@@ -968,7 +968,7 @@ async def _process_extraction_result(
 
     # Fix LLM output format error which use tuple_delimiter to separate record instead of "\n"
     fixed_records = []
-    for record in records:
+    for i, record in enumerate(records, start=1):
         record = record.strip()
         if record is None:
             continue
@@ -995,32 +995,33 @@ async def _process_extraction_result(
                     entity_relation_record = (
                         f"relation{tuple_delimiter}{entity_relation_record}"
                     )
-                fixed_records = fixed_records + [entity_relation_record]
+                fixed_records.append(entity_relation_record)
+        await _cooperative_yield(i, every=8)
 
     if len(fixed_records) != len(records):
         logger.warning(
             f"{chunk_key}: LLM output format error; find LLM use {tuple_delimiter} as record separators instead new-line"
         )
 
-    for record in fixed_records:
+    delimiter_core = tuple_delimiter[2:-2]  # Extract "#" from "<|#|>"
+    delimiter_core_lower = delimiter_core.lower()
+    for i, record in enumerate(fixed_records, start=1):
         record = record.strip()
         if record is None:
             continue
 
         # Fix various forms of tuple_delimiter corruption from the LLM output using the dedicated function
-        delimiter_core = tuple_delimiter[2:-2]  # Extract "#" from "<|#|>"
         record = fix_tuple_delimiter_corruption(record, delimiter_core, tuple_delimiter)
-        if delimiter_core != delimiter_core.lower():
+        if delimiter_core != delimiter_core_lower:
             # change delimiter_core to lower case, and fix again
-            delimiter_core = delimiter_core.lower()
             record = fix_tuple_delimiter_corruption(
-                record, delimiter_core, tuple_delimiter
+                record, delimiter_core_lower, tuple_delimiter
             )
 
         record_attributes = split_string_by_multi_markers(record, [tuple_delimiter])
 
         # Try to parse as entity
-        entity_data = await _handle_single_entity_extraction(
+        entity_data = _handle_single_entity_extraction(
             record_attributes, chunk_key, timestamp, file_path
         )
         if entity_data is not None:
@@ -1032,10 +1033,11 @@ async def _process_extraction_result(
             )
             entity_data["entity_name"] = truncated_name
             maybe_nodes[truncated_name].append(entity_data)
+            await _cooperative_yield(i, every=8)
             continue
 
         # Try to parse as relationship
-        relationship_data = await _handle_single_relationship_extraction(
+        relationship_data = _handle_single_relationship_extraction(
             record_attributes, chunk_key, timestamp, file_path
         )
         if relationship_data is not None:
@@ -1054,6 +1056,7 @@ async def _process_extraction_result(
             relationship_data["src_id"] = truncated_source
             relationship_data["tgt_id"] = truncated_target
             maybe_edges[(truncated_source, truncated_target)].append(relationship_data)
+        await _cooperative_yield(i, every=8)
 
     return dict(maybe_nodes), dict(maybe_edges)
 
@@ -2975,7 +2978,9 @@ async def extract_entities(
                 )
 
                 # Merge results - compare description lengths to choose better version
-                for entity_name, glean_entities in glean_nodes.items():
+                for i, (entity_name, glean_entities) in enumerate(
+                    glean_nodes.items(), start=1
+                ):
                     if entity_name in maybe_nodes:
                         # Compare description lengths and keep the better one
                         original_desc_len = len(
@@ -2991,8 +2996,11 @@ async def extract_entities(
                     else:
                         # New entity from gleaning stage
                         maybe_nodes[entity_name] = list(glean_entities)
+                    await _cooperative_yield(i, every=8)
 
-                for edge_key, glean_edge_list in glean_edges.items():
+                for i, (edge_key, glean_edge_list) in enumerate(
+                    glean_edges.items(), start=1
+                ):
                     if edge_key in maybe_edges:
                         # Compare description lengths and keep the better one
                         original_desc_len = len(
@@ -3008,6 +3016,7 @@ async def extract_entities(
                     else:
                         # New edge from gleaning stage
                         maybe_edges[edge_key] = list(glean_edge_list)
+                    await _cooperative_yield(i, every=8)
 
         # Batch update chunk's llm_cache_list with all collected cache keys
         if cache_keys_collector and text_chunks_storage:
@@ -3046,7 +3055,11 @@ async def extract_entities(
                         )
 
             try:
-                return await _process_single_content(chunk)
+                result = await _process_single_content(chunk)
+                # Yield once between chunk completions so API coroutines can resume
+                # even when many chunk tasks are hitting cache and finishing quickly.
+                await asyncio.sleep(0)
+                return result
             except Exception as e:
                 chunk_id = chunk[0]  # Extract chunk_id from chunk[0]
                 prefixed_exception = create_prefixed_exception(e, chunk_id)
