@@ -1000,10 +1000,59 @@ export const getTrackStatus = async (trackId: string): Promise<TrackStatusRespon
   return response.data
 }
 
+type InFlightPaginatedDocumentRequest = {
+  controller: AbortController
+  promise: Promise<PaginatedDocsResponse>
+}
+
+const getPaginatedDocumentsRequestKey = (request: DocumentsRequest): string =>
+  JSON.stringify(request)
+
 // Deduplicate in-flight paginated document requests with identical parameters.
 // This prevents duplicate backend calls caused by overlapping timers/effects or
 // React StrictMode double-mount behavior in development.
-const inFlightPaginatedDocumentRequests = new Map<string, Promise<PaginatedDocsResponse>>()
+const inFlightPaginatedDocumentRequests = new Map<
+  string,
+  InFlightPaginatedDocumentRequest
+>()
+
+const defaultPaginatedDocumentsPost = async (
+  request: DocumentsRequest,
+  controller: AbortController
+): Promise<PaginatedDocsResponse> => {
+  const response = await axiosInstance.post('/documents/paginated', request, {
+    signal: controller.signal
+  })
+  return response.data
+}
+
+let paginatedDocumentsPost = defaultPaginatedDocumentsPost
+
+export const abortDocumentsPaginated = (request: DocumentsRequest): void => {
+  const requestKey = getPaginatedDocumentsRequestKey(request)
+  const inFlightRequest = inFlightPaginatedDocumentRequests.get(requestKey)
+
+  if (!inFlightRequest) {
+    return
+  }
+
+  inFlightPaginatedDocumentRequests.delete(requestKey)
+  inFlightRequest.controller.abort()
+}
+
+export const __resetPaginatedDocumentRequestsForTests = (): void => {
+  for (const { controller } of inFlightPaginatedDocumentRequests.values()) {
+    controller.abort()
+  }
+  inFlightPaginatedDocumentRequests.clear()
+  paginatedDocumentsPost = defaultPaginatedDocumentsPost
+}
+
+export const __setPaginatedDocumentsPostForTests = (
+  post: typeof defaultPaginatedDocumentsPost
+): void => {
+  paginatedDocumentsPost = post
+}
 
 /**
  * Get documents with pagination support
@@ -1011,23 +1060,25 @@ const inFlightPaginatedDocumentRequests = new Map<string, Promise<PaginatedDocsR
  * @returns Promise with paginated documents response
  */
 export const getDocumentsPaginated = async (request: DocumentsRequest): Promise<PaginatedDocsResponse> => {
-  const requestKey = JSON.stringify(request)
+  const requestKey = getPaginatedDocumentsRequestKey(request)
   const existingRequest = inFlightPaginatedDocumentRequests.get(requestKey)
 
   if (existingRequest) {
-    return existingRequest
+    return existingRequest.promise
   }
 
-  const requestPromise = axiosInstance
-    .post('/documents/paginated', request)
-    .then(response => response.data)
+  const controller = new AbortController()
+  const requestPromise = paginatedDocumentsPost(request, controller)
     .finally(() => {
-      if (inFlightPaginatedDocumentRequests.get(requestKey) === requestPromise) {
+      if (inFlightPaginatedDocumentRequests.get(requestKey)?.promise === requestPromise) {
         inFlightPaginatedDocumentRequests.delete(requestKey)
       }
     })
 
-  inFlightPaginatedDocumentRequests.set(requestKey, requestPromise)
+  inFlightPaginatedDocumentRequests.set(requestKey, {
+    controller,
+    promise: requestPromise
+  })
   return requestPromise
 }
 

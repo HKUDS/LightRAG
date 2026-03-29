@@ -20,6 +20,7 @@ import DeleteDocumentsDialog from '@/components/documents/DeleteDocumentsDialog'
 import PaginationControls from '@/components/ui/PaginationControls'
 
 import {
+  abortDocumentsPaginated,
   scanNewDocuments,
   getDocumentsPaginated,
   DocsStatusesResponse,
@@ -594,15 +595,28 @@ export default function DocumentManager() {
   }, []);
 
   // Utility function to create timeout wrapper for API calls
-  const withTimeout = useCallback((
-    promise: Promise<any>,
+  const withTimeout = useCallback(<T,>(
+    promise: Promise<T>,
     timeoutMs: number = 30000, // Default 30s timeout for normal operations
-    errorMsg: string = 'Request timeout'
-  ): Promise<any> => {
-    const timeoutPromise = new Promise((_, reject) => {
-      setTimeout(() => reject(new Error(errorMsg)), timeoutMs)
-    });
-    return Promise.race([promise, timeoutPromise]);
+    errorMsg: string = 'Request timeout',
+    onTimeout?: () => void
+  ): Promise<T> => {
+    return new Promise<T>((resolve, reject) => {
+      const timeoutId = setTimeout(() => {
+        onTimeout?.()
+        reject(new Error(errorMsg))
+      }, timeoutMs)
+
+      promise
+        .then(value => {
+          clearTimeout(timeoutId)
+          resolve(value)
+        })
+        .catch(error => {
+          clearTimeout(timeoutId)
+          reject(error)
+        })
+    })
   }, []);
 
 
@@ -765,7 +779,8 @@ export default function DocumentManager() {
         const response = await withTimeout(
           getDocumentsPaginated(request),
           customTimeout,
-          'Document fetch timeout'
+          'Document fetch timeout',
+          () => abortDocumentsPaginated(request)
         );
 
         if (!isMountedRef.current) return;
@@ -783,7 +798,8 @@ export default function DocumentManager() {
             const lastPageResponse = await withTimeout(
               getDocumentsPaginated(lastPageRequest),
               customTimeout,
-              'Document fetch timeout'
+              'Document fetch timeout',
+              () => abortDocumentsPaginated(lastPageRequest)
             );
 
             if (!isMountedRef.current) return;
