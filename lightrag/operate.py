@@ -2600,7 +2600,7 @@ async def merge_nodes_and_edges(
     for i, (entity_name, entities) in enumerate(all_nodes.items(), start=1):
         task = asyncio.create_task(_locked_process_entity_name(entity_name, entities))
         entity_tasks.append(task)
-        await _cooperative_yield(i, every=32)
+        await _cooperative_yield(i, every=16)
 
     # Execute entity tasks with error handling
     processed_entities = []
@@ -2612,7 +2612,7 @@ async def merge_nodes_and_edges(
         first_exception = None
         processed_entities = []
 
-        for task in done:
+        for i, task in enumerate(done, start=1):
             try:
                 result = task.result()
             except BaseException as e:
@@ -2620,6 +2620,7 @@ async def merge_nodes_and_edges(
                     first_exception = e
             else:
                 processed_entities.append(result)
+            await _cooperative_yield(i, every=32)
 
         if pending:
             for task in pending:
@@ -2634,6 +2635,8 @@ async def merge_nodes_and_edges(
 
         if first_exception is not None:
             raise first_exception
+
+        await asyncio.sleep(0)
 
     # ===== Phase 2: Process all relationships concurrently =====
     log_message = f"Phase 2: Processing {total_relations_count} relations from {doc_id} (async: {graph_max_async})"
@@ -2715,7 +2718,7 @@ async def merge_nodes_and_edges(
     for i, (edge_key, edges) in enumerate(all_edges.items(), start=1):
         task = asyncio.create_task(_locked_process_edges(edge_key, edges))
         edge_tasks.append(task)
-        await _cooperative_yield(i, every=32)
+        await _cooperative_yield(i, every=16)
 
     # Execute relationship tasks with error handling
     processed_edges = []
@@ -2728,7 +2731,7 @@ async def merge_nodes_and_edges(
 
         first_exception = None
 
-        for task in done:
+        for i, task in enumerate(done, start=1):
             try:
                 edge_data, added_entities = task.result()
             except BaseException as e:
@@ -2738,6 +2741,7 @@ async def merge_nodes_and_edges(
                 if edge_data is not None:
                     processed_edges.append(edge_data)
                 all_added_entities.extend(added_entities)
+            await _cooperative_yield(i, every=32)
 
         if pending:
             for task in pending:
@@ -2755,6 +2759,8 @@ async def merge_nodes_and_edges(
 
         if first_exception is not None:
             raise first_exception
+
+        await asyncio.sleep(0)
 
     # ===== Phase 3: Update full_entities and full_relations storage =====
     if full_entities_storage and full_relations_storage and doc_id:
