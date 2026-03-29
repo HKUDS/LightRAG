@@ -35,7 +35,7 @@ from ..base import (
 )
 from ..exceptions import DataMigrationError
 from ..namespace import NameSpace, is_namespace
-from ..utils import logger, _cooperative_yield, doc_query_timing_log
+from ..utils import logger, _cooperative_yield, performance_timing_log
 from ..kg.shared_storage import get_data_init_lock
 
 import pipmaster as pm
@@ -101,6 +101,11 @@ def _safe_index_name(table_name: str, index_suffix: str) -> str:
     shortened_name = f"idx_{table_hash}_{index_suffix}"
 
     return shortened_name
+
+
+def _timing_details_suffix(**details: Any) -> str:
+    parts = [f"{key}={value}" for key, value in details.items()]
+    return f" {' '.join(parts)}" if parts else ""
 
 
 def _dollar_quote(s: str, tag_prefix: str = "AGE") -> str:
@@ -541,7 +546,7 @@ class PostgreSQLDB:
                 assert self.pool is not None
                 if timing_label:
                     pool_snapshot_before = self._get_pool_snapshot()
-                    doc_query_timing_log(
+                    performance_timing_log(
                         "[%s] pool.acquire waiting %s",
                         timing_label,
                         pool_snapshot_before,
@@ -551,7 +556,7 @@ class PostgreSQLDB:
                     acquire_elapsed = time.perf_counter() - acquire_start
                     if timing_label:
                         pool_snapshot_after = self._get_pool_snapshot()
-                        doc_query_timing_log(
+                        performance_timing_log(
                             "[%s] pool.acquire completed in %.4fs %s",
                             timing_label,
                             acquire_elapsed,
@@ -1806,7 +1811,7 @@ class PostgreSQLDB:
             fetch_elapsed = time.perf_counter() - fetch_start
 
             if timing_label:
-                doc_query_timing_log(
+                performance_timing_log(
                     "[%s] connection.fetch completed in %.4fs row_count=%s",
                     timing_label,
                     fetch_elapsed,
@@ -1824,7 +1829,7 @@ class PostgreSQLDB:
 
                 if timing_label:
                     conversion_elapsed = time.perf_counter() - conversion_start
-                    doc_query_timing_log(
+                    performance_timing_log(
                         "[%s] result conversion completed in %.4fs multirows=%s",
                         timing_label,
                         conversion_elapsed,
@@ -1840,7 +1845,7 @@ class PostgreSQLDB:
 
             if timing_label:
                 conversion_elapsed = time.perf_counter() - conversion_start
-                doc_query_timing_log(
+                performance_timing_log(
                     "[%s] result conversion completed in %.4fs multirows=%s",
                     timing_label,
                     conversion_elapsed,
@@ -1887,13 +1892,16 @@ class PostgreSQLDB:
         ignore_if_exists: bool = False,
         with_age: bool = False,
         graph_name: str | None = None,
+        timing_label: str | None = None,
     ):
         async def _operation(connection: asyncpg.Connection) -> Any:
             prepared_values = tuple(data.values()) if data else ()
+            execute_start = time.perf_counter()
             try:
                 if not data:
-                    return await connection.execute(sql)
-                return await connection.execute(sql, *prepared_values)
+                    result = await connection.execute(sql)
+                else:
+                    result = await connection.execute(sql, *prepared_values)
             except (
                 asyncpg.exceptions.UniqueViolationError,
                 asyncpg.exceptions.DuplicateTableError,
@@ -1902,18 +1910,38 @@ class PostgreSQLDB:
             ) as e:
                 if ignore_if_exists:
                     logger.debug("PostgreSQL, ignoring duplicate during execute: %r", e)
-                    return None
-                if upsert:
+                    result = None
+                elif upsert:
                     logger.info(
                         "PostgreSQL, duplicate detected but treated as upsert success: %r",
                         e,
                     )
-                    return None
+                    result = None
+                else:
+                    raise
+            except Exception:
+                if timing_label:
+                    performance_timing_log(
+                        "[%s] connection.execute failed after %.4fs",
+                        timing_label,
+                        time.perf_counter() - execute_start,
+                    )
                 raise
+            if timing_label:
+                performance_timing_log(
+                    "[%s] connection.execute completed in %.4fs result=%s",
+                    timing_label,
+                    time.perf_counter() - execute_start,
+                    result,
+                )
+            return result
 
         try:
             await self._run_with_retry(
-                _operation, with_age=with_age, graph_name=graph_name
+                _operation,
+                with_age=with_age,
+                graph_name=graph_name,
+                timing_label=timing_label,
             )
         except Exception as e:
             logger.error(f"PostgreSQL database,\nsql:{sql},\ndata:{data},\nerror:{e}")
@@ -2410,8 +2438,18 @@ class PGKVStorage(BaseKVStorage):
         if not data:
             return
 
+        timing_label = f"{self.workspace} PGKVStorage.upsert[{self.namespace}]"
+        total_start = time.perf_counter()
+        performance_timing_log(
+            "[%s] start records=%s max_batch_size=%s",
+            timing_label,
+            len(data),
+            self._max_batch_size,
+        )
+
         batch_values: list[tuple] = []
         upsert_sql = ""
+        batch_values_build_start = time.perf_counter()
 
         if is_namespace(self.namespace, NameSpace.KV_STORE_TEXT_CHUNKS):
             upsert_sql = SQL_TEMPLATES["upsert_text_chunk"]
@@ -2539,27 +2577,53 @@ class PGKVStorage(BaseKVStorage):
             raise ValueError(f"Unknown namespace: {self.namespace}")
 
         # upsert_sql is always set here; unknown namespace raises ValueError above
+        performance_timing_log(
+            "[%s] batch_values build completed in %.4fs records=%s%s",
+            timing_label,
+            time.perf_counter() - batch_values_build_start,
+            len(batch_values),
+            _timing_details_suffix(namespace=self.namespace),
+        )
         if batch_values:
             # Split into sub-batches to prevent database overload
-            for i in range(0, len(batch_values), self._max_batch_size):
+            num_batches = (
+                len(batch_values) + self._max_batch_size - 1
+            ) // self._max_batch_size
+            for batch_index, i in enumerate(
+                range(0, len(batch_values), self._max_batch_size), start=1
+            ):
                 sub_batch = batch_values[i : i + self._max_batch_size]
 
                 async def _batch_upsert(
                     connection: asyncpg.Connection,
                     _sql: str = upsert_sql,
                     _data: list[tuple] = sub_batch,
+                    _batch_index: int = batch_index,
+                    _num_batches: int = num_batches,
                 ) -> None:
+                    execute_start = time.perf_counter()
                     await connection.executemany(_sql, _data)
+                    performance_timing_log(
+                        "[%s] sub-batch %s/%s executemany completed in %.4fs batch_size=%s",
+                        timing_label,
+                        _batch_index,
+                        _num_batches,
+                        time.perf_counter() - execute_start,
+                        len(_data),
+                    )
 
-                await self.db._run_with_retry(_batch_upsert)
+                await self.db._run_with_retry(_batch_upsert, timing_label=timing_label)
 
-            num_batches = (
-                len(batch_values) + self._max_batch_size - 1
-            ) // self._max_batch_size
             logger.debug(
                 f"[{self.workspace}] Batch upserted {len(batch_values)} records to {self.namespace} "
                 f"in {num_batches} sub-batches"
             )
+        performance_timing_log(
+            "[%s] total complete in %.4fs records=%s",
+            timing_label,
+            time.perf_counter() - total_start,
+            len(batch_values),
+        )
 
     async def index_done_callback(self) -> None:
         # PG handles persistence automatically
@@ -3243,9 +3307,19 @@ class PGVectorStorage(BaseVectorStorage):
         if not data:
             return
 
+        timing_label = f"{self.workspace} PGVectorStorage.upsert[{self.namespace}]"
+        total_start = time.perf_counter()
+        performance_timing_log(
+            "[%s] start records=%s max_batch_size=%s",
+            timing_label,
+            len(data),
+            self._max_batch_size,
+        )
+
         # Get current UTC time and convert to naive datetime for database storage
         current_time = datetime.datetime.now(timezone.utc).replace(tzinfo=None)
         list_data = []
+        list_data_build_start = time.perf_counter()
         for i, (k, v) in enumerate(data.items(), start=1):
             list_data.append(
                 {
@@ -3254,26 +3328,54 @@ class PGVectorStorage(BaseVectorStorage):
                 }
             )
             await _cooperative_yield(i)
+        performance_timing_log(
+            "[%s] list_data build completed in %.4fs records=%s",
+            timing_label,
+            time.perf_counter() - list_data_build_start,
+            len(list_data),
+        )
         contents = [v["content"] for v in data.values()]
+        embedding_split_start = time.perf_counter()
         batches = [
             contents[i : i + self._max_batch_size]
             for i in range(0, len(contents), self._max_batch_size)
         ]
+        performance_timing_log(
+            "[%s] embedding batch split completed in %.4fs batches=%s",
+            timing_label,
+            time.perf_counter() - embedding_split_start,
+            len(batches),
+        )
 
         embedding_tasks = [self.embedding_func(batch) for batch in batches]
+        embedding_generation_start = time.perf_counter()
         embeddings_list = await asyncio.gather(*embedding_tasks)
+        performance_timing_log(
+            "[%s] embedding generation completed in %.4fs batches=%s",
+            timing_label,
+            time.perf_counter() - embedding_generation_start,
+            len(embeddings_list),
+        )
 
         embeddings = np.concatenate(embeddings_list)
         assert len(embeddings) == len(
             list_data
         ), f"Embedding count mismatch: expected {len(list_data)}, got {len(embeddings)}"
+        embedding_fill_start = time.perf_counter()
         for i, d in enumerate(list_data, start=1):
             d["__vector__"] = embeddings[i - 1]
             await _cooperative_yield(i)
+        performance_timing_log(
+            "[%s] vector backfill completed in %.4fs records=%s",
+            timing_label,
+            time.perf_counter() - embedding_fill_start,
+            len(list_data),
+        )
 
         # Prepare batch values for executemany
         batch_values: list[tuple[Any, ...]] = []
         upsert_sql = None
+        tuple_build_start = time.perf_counter()
 
         for i, item in enumerate(list_data, start=1):
             if is_namespace(self.namespace, NameSpace.VECTOR_STORE_CHUNKS):
@@ -3287,18 +3389,37 @@ class PGVectorStorage(BaseVectorStorage):
 
             batch_values.append(values)
             await _cooperative_yield(i)
+        performance_timing_log(
+            "[%s] upsert tuple build completed in %.4fs records=%s",
+            timing_label,
+            time.perf_counter() - tuple_build_start,
+            len(batch_values),
+        )
 
         # Use executemany for batch execution - significantly reduces DB round-trips
         # Note: register_vector is already called on pool init, no need to call it again
         if batch_values and upsert_sql:
 
             async def _batch_upsert(connection: asyncpg.Connection) -> None:
+                execute_start = time.perf_counter()
                 await connection.executemany(upsert_sql, batch_values)
+                performance_timing_log(
+                    "[%s] executemany completed in %.4fs batch_size=%s",
+                    timing_label,
+                    time.perf_counter() - execute_start,
+                    len(batch_values),
+                )
 
-            await self.db._run_with_retry(_batch_upsert)
+            await self.db._run_with_retry(_batch_upsert, timing_label=timing_label)
             logger.debug(
                 f"[{self.workspace}] Batch upserted {len(batch_values)} records to {self.namespace}"
             )
+        performance_timing_log(
+            "[%s] total complete in %.4fs records=%s",
+            timing_label,
+            time.perf_counter() - total_start,
+            len(data),
+        )
 
     #################### query method ###############
     async def query(
@@ -3989,7 +4110,7 @@ class PGDocStatusStorage(DocStatusStorage):
         start = time.perf_counter()
         status_filter_value = status_filter.value if status_filter is not None else None
 
-        doc_query_timing_log(
+        performance_timing_log(
             "[%s] PGDocStatusStorage.get_docs_paginated start status_filter=%s page=%s page_size=%s sort_field=%s sort_direction=%s",
             self.workspace,
             status_filter_value,
@@ -4124,7 +4245,7 @@ class PGDocStatusStorage(DocStatusStorage):
             documents.append((doc_id, doc_status))
 
         elapsed = time.perf_counter() - start
-        doc_query_timing_log(
+        performance_timing_log(
             "[%s] PGDocStatusStorage.get_docs_paginated completed in %.4fs returned_rows=%s total_count=%s status_filter=%s page=%s page_size=%s sort_field=%s sort_direction=%s",
             self.workspace,
             elapsed,
@@ -4146,7 +4267,7 @@ class PGDocStatusStorage(DocStatusStorage):
             Dictionary mapping status names to counts, including 'all' field
         """
         start = time.perf_counter()
-        doc_query_timing_log(
+        performance_timing_log(
             "[%s] PGDocStatusStorage.get_all_status_counts start", self.workspace
         )
 
@@ -4177,7 +4298,7 @@ class PGDocStatusStorage(DocStatusStorage):
         counts["all"] = total_count
 
         elapsed = time.perf_counter() - start
-        doc_query_timing_log(
+        performance_timing_log(
             "[%s] PGDocStatusStorage.get_all_status_counts completed in %.4fs counts=%s",
             self.workspace,
             elapsed,
@@ -4253,6 +4374,14 @@ class PGDocStatusStorage(DocStatusStorage):
         if not data:
             return
 
+        timing_label = f"{self.workspace} PGDocStatusStorage.upsert"
+        total_start = time.perf_counter()
+        performance_timing_log(
+            "[%s] start records=%s",
+            timing_label,
+            len(data),
+        )
+
         sql = """insert into LIGHTRAG_DOC_STATUS(workspace,id,content_summary,content_length,chunks_count,status,file_path,chunks_list,track_id,metadata,error_msg,created_at,updated_at)
                  values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
                   on conflict(id,workspace) do update set
@@ -4273,6 +4402,7 @@ class PGDocStatusStorage(DocStatusStorage):
         #   error_msg, created_at, updated_at)
         batch: list[tuple] = []
         skipped: list[str] = []
+        batch_build_start = time.perf_counter()
         for i, (k, v) in enumerate(data.items(), start=1):
             try:
                 batch.append(
@@ -4310,18 +4440,39 @@ class PGDocStatusStorage(DocStatusStorage):
             logger.warning(
                 f"[{self.workspace}] {len(skipped)} document(s) skipped in batch upsert: {skipped}"
             )
+        performance_timing_log(
+            "[%s] batch validation/assembly completed in %.4fs valid_count=%s skipped_count=%s",
+            timing_label,
+            time.perf_counter() - batch_build_start,
+            len(batch),
+            len(skipped),
+        )
 
         async def _batch_upsert(
             connection: asyncpg.Connection,
             _sql: str = sql,
             _data: list[tuple] = batch,
         ) -> None:
+            execute_start = time.perf_counter()
             async with connection.transaction():
                 await connection.executemany(_sql, _data)
+            performance_timing_log(
+                "[%s] transaction + executemany completed in %.4fs batch_size=%s",
+                timing_label,
+                time.perf_counter() - execute_start,
+                len(_data),
+            )
 
-        await self.db._run_with_retry(_batch_upsert)
+        await self.db._run_with_retry(_batch_upsert, timing_label=timing_label)
         logger.debug(
             f"[{self.workspace}] Batch upserted {len(batch)} records to {self.namespace}"
+        )
+        performance_timing_log(
+            "[%s] total complete in %.4fs valid_count=%s skipped_count=%s",
+            timing_label,
+            time.perf_counter() - total_start,
+            len(batch),
+            len(skipped),
         )
 
     async def drop(self) -> dict[str, str]:
@@ -4628,6 +4779,7 @@ class PGGraphStorage(BaseGraphStorage):
         readonly: bool = True,
         upsert: bool = False,
         params: dict[str, Any] | None = None,
+        timing_label: str | None = None,
     ) -> list[dict[str, Any]]:
         """
         Query the graph by taking a cypher query, converting it to an
@@ -4647,16 +4799,31 @@ class PGGraphStorage(BaseGraphStorage):
                     multirows=True,
                     with_age=True,
                     graph_name=self.graph_name,
+                    timing_label=timing_label,
                 )
             else:
+                age_execute_start = time.perf_counter()
                 data = await self.db.execute(
                     query,
                     upsert=upsert,
                     with_age=True,
                     graph_name=self.graph_name,
+                    timing_label=timing_label,
                 )
+                if timing_label:
+                    performance_timing_log(
+                        "[%s] AGE execute completed in %.4fs",
+                        timing_label,
+                        time.perf_counter() - age_execute_start,
+                    )
 
         except Exception as e:
+            if timing_label and not readonly:
+                performance_timing_log(
+                    "[%s] AGE execute failed after %.4fs",
+                    timing_label,
+                    time.perf_counter() - age_execute_start,
+                )
             raise PGGraphQueryException(
                 {
                     "message": f"Error executing graph query: {query}",
@@ -4810,11 +4977,35 @@ class PGGraphStorage(BaseGraphStorage):
                      RETURN n"""
 
         query = f"SELECT * FROM cypher({_dollar_quote(self.graph_name)}, {_dollar_quote(cypher_query)}) AS (n agtype)"
+        timing_label = f"{self.workspace} PGGraphStorage.upsert_node"
+        total_start = time.perf_counter()
+        performance_timing_log(
+            "[%s] start node_id=%s",
+            timing_label,
+            node_id,
+        )
 
         try:
-            await self._query(query, readonly=False, upsert=True)
+            await self._query(
+                query,
+                readonly=False,
+                upsert=True,
+                timing_label=timing_label,
+            )
+            performance_timing_log(
+                "[%s] total complete in %.4fs node_id=%s",
+                timing_label,
+                time.perf_counter() - total_start,
+                node_id,
+            )
 
         except Exception:
+            performance_timing_log(
+                "[%s] total failed after %.4fs node_id=%s",
+                timing_label,
+                time.perf_counter() - total_start,
+                node_id,
+            )
             logger.error(
                 f"[{self.workspace}] POSTGRES, upsert_node error on node_id: `{node_id}`"
             )
@@ -4852,11 +5043,38 @@ class PGGraphStorage(BaseGraphStorage):
                      RETURN r"""
 
         query = f"SELECT * FROM cypher({_dollar_quote(self.graph_name)}, {_dollar_quote(cypher_query)}) AS (r agtype)"
+        timing_label = f"{self.workspace} PGGraphStorage.upsert_edge"
+        total_start = time.perf_counter()
+        performance_timing_log(
+            "[%s] start source_node_id=%s target_node_id=%s",
+            timing_label,
+            source_node_id,
+            target_node_id,
+        )
 
         try:
-            await self._query(query, readonly=False, upsert=True)
+            await self._query(
+                query,
+                readonly=False,
+                upsert=True,
+                timing_label=timing_label,
+            )
+            performance_timing_log(
+                "[%s] total complete in %.4fs source_node_id=%s target_node_id=%s",
+                timing_label,
+                time.perf_counter() - total_start,
+                source_node_id,
+                target_node_id,
+            )
 
         except Exception:
+            performance_timing_log(
+                "[%s] total failed after %.4fs source_node_id=%s target_node_id=%s",
+                timing_label,
+                time.perf_counter() - total_start,
+                source_node_id,
+                target_node_id,
+            )
             logger.error(
                 f"[{self.workspace}] POSTGRES, upsert_edge error on edge: `{source_node_id}`-`{target_node_id}`"
             )

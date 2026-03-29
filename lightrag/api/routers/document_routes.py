@@ -6,7 +6,7 @@ import asyncio
 import time
 from uuid import uuid4
 from functools import lru_cache
-from lightrag.utils import logger, get_pinyin_sort_key, doc_query_timing_log
+from lightrag.utils import logger, get_pinyin_sort_key, performance_timing_log
 import aiofiles
 import traceback
 from datetime import datetime, timezone
@@ -3142,7 +3142,7 @@ def create_document_routes(
             request.status_filter.value if request.status_filter is not None else None
         )
 
-        doc_query_timing_log(
+        performance_timing_log(
             "[documents/paginated][%s] Request start workspace=%s status_filter=%s page=%s page_size=%s sort_field=%s sort_direction=%s",
             trace_id,
             rag.workspace,
@@ -3157,7 +3157,7 @@ def create_document_routes(
 
             async def _timed_call(operation_name: str, operation):
                 operation_start = time.perf_counter()
-                doc_query_timing_log(
+                performance_timing_log(
                     "[documents/paginated][%s] %s started",
                     trace_id,
                     operation_name,
@@ -3166,7 +3166,7 @@ def create_document_routes(
                     result = await operation
                 except Exception:
                     elapsed = time.perf_counter() - operation_start
-                    doc_query_timing_log(
+                    performance_timing_log(
                         "[documents/paginated][%s] %s failed after %.4fs",
                         trace_id,
                         operation_name,
@@ -3175,7 +3175,7 @@ def create_document_routes(
                     raise
 
                 elapsed = time.perf_counter() - operation_start
-                doc_query_timing_log(
+                performance_timing_log(
                     "[documents/paginated][%s] %s completed in %.4fs",
                     trace_id,
                     operation_name,
@@ -3203,7 +3203,7 @@ def create_document_routes(
                 )
             )
             query_task_create_elapsed = time.perf_counter() - query_task_create_start
-            doc_query_timing_log(
+            performance_timing_log(
                 "[documents/paginated][%s] Query tasks created in %.4fs",
                 trace_id,
                 query_task_create_elapsed,
@@ -3214,7 +3214,7 @@ def create_document_routes(
                 docs_task, status_counts_task
             )
             query_await_elapsed = time.perf_counter() - query_await_start
-            doc_query_timing_log(
+            performance_timing_log(
                 "[documents/paginated][%s] Query tasks awaited in %.4fs",
                 trace_id,
                 query_await_elapsed,
@@ -3261,12 +3261,12 @@ def create_document_routes(
             response_assembly_elapsed = time.perf_counter() - response_assembly_start
             total_elapsed = time.perf_counter() - request_start
 
-            doc_query_timing_log(
+            performance_timing_log(
                 "[documents/paginated][%s] Response assembled in %.4fs",
                 trace_id,
                 response_assembly_elapsed,
             )
-            doc_query_timing_log(
+            performance_timing_log(
                 "[documents/paginated][%s] Request completed in %.4fs returned_rows=%s total_count=%s status_count_keys=%s",
                 trace_id,
                 total_elapsed,
@@ -3279,7 +3279,7 @@ def create_document_routes(
 
         except Exception as e:
             total_elapsed = time.perf_counter() - request_start
-            doc_query_timing_log(
+            performance_timing_log(
                 "[documents/paginated][%s] Request failed after %.4fs",
                 trace_id,
                 total_elapsed,
