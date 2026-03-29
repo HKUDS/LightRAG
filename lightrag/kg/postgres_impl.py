@@ -4533,7 +4533,7 @@ def _is_transient_graph_write_error(exc: BaseException) -> bool:
         cause,
         (
             asyncpg.exceptions.DeadlockDetectedError,
-            asyncpg.exceptions.SerializationFailure,
+            asyncpg.exceptions.SerializationError,
             asyncpg.exceptions.LockNotAvailableError,
             asyncpg.exceptions.QueryCanceledError,
         ),
