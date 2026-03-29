@@ -3146,11 +3146,12 @@ def create_document_routes(
         status_filter_value = (
             request.status_filter.value if request.status_filter is not None else None
         )
+        workspace = getattr(rag, "workspace", None)
 
         performance_timing_log(
             "[documents/paginated][%s] Request start workspace=%s status_filter=%s page=%s page_size=%s sort_field=%s sort_direction=%s",
             trace_id,
-            rag.workspace,
+            workspace,
             status_filter_value,
             request.page,
             request.page_size,
