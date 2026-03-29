@@ -18,7 +18,6 @@ from lightrag.types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdg
 from tenacity import (
     AsyncRetrying,
     RetryCallState,
-    retry,
     retry_if_exception_type,
     stop_after_attempt,
     wait_exponential,
@@ -2121,11 +2120,13 @@ class ClientManager:
                 if db is cls._instances["db"]:
                     cls._instances["ref_count"] -= 1
                     if cls._instances["ref_count"] == 0:
-                        await db.pool.close()
+                        if db.pool is not None:
+                            await db.pool.close()
                         logger.info("Closed PostgreSQL database connection pool")
                         cls._instances["db"] = None
                 else:
-                    await db.pool.close()
+                    if db.pool is not None:
+                        await db.pool.close()
 
 
 @final
@@ -4589,9 +4590,14 @@ class PGGraphStorage(BaseGraphStorage):
             )
 
             # Create AGE extension and configure graph environment once at initialization
-            async with self.db.pool.acquire() as connection:
-                # First ensure AGE extension is created
+            # Use _run_with_retry so transient connection errors are retried and pool=None
+            # is handled safely (unlike a bare pool.acquire() call).
+            async def _do_configure_age_extension(
+                connection: asyncpg.Connection,
+            ) -> None:
                 await PostgreSQLDB.configure_age_extension(connection)
+
+            await self.db._run_with_retry(_do_configure_age_extension)
 
             # Execute each statement separately and ignore errors
             queries = [
@@ -4949,11 +4955,6 @@ class PGGraphStorage(BaseGraphStorage):
 
         return edges
 
-    @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=4, max=10),
-        retry=retry_if_exception_type((PGGraphQueryException,)),
-    )
     async def upsert_node(self, node_id: str, node_data: dict[str, str]) -> None:
         """
         Upsert a node in the Neo4j database.
@@ -5011,11 +5012,6 @@ class PGGraphStorage(BaseGraphStorage):
             )
             raise
 
-    @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=4, max=10),
-        retry=retry_if_exception_type((PGGraphQueryException,)),
-    )
     async def upsert_edge(
         self, source_node_id: str, target_node_id: str, edge_data: dict[str, str]
     ) -> None:
