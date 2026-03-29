@@ -1003,6 +1003,7 @@ export const getTrackStatus = async (trackId: string): Promise<TrackStatusRespon
 type InFlightPaginatedDocumentRequest = {
   controller: AbortController
   promise: Promise<PaginatedDocsResponse>
+  subscriberCount: number
 }
 
 const getPaginatedDocumentsRequestKey = (request: DocumentsRequest): string =>
@@ -1015,6 +1016,73 @@ const inFlightPaginatedDocumentRequests = new Map<
   string,
   InFlightPaginatedDocumentRequest
 >()
+
+const releasePaginatedDocumentSubscriber = (
+  requestKey: string,
+  requestEntry: InFlightPaginatedDocumentRequest,
+  abortIfLastSubscriber: boolean
+): void => {
+  requestEntry.subscriberCount = Math.max(0, requestEntry.subscriberCount - 1)
+
+  if (requestEntry.subscriberCount !== 0) {
+    return
+  }
+
+  if (inFlightPaginatedDocumentRequests.get(requestKey) === requestEntry) {
+    inFlightPaginatedDocumentRequests.delete(requestKey)
+  }
+
+  if (abortIfLastSubscriber) {
+    requestEntry.controller.abort()
+  }
+}
+
+const subscribeToPaginatedDocumentsRequest = (
+  request: DocumentsRequest
+): {
+  requestKey: string
+  requestEntry: InFlightPaginatedDocumentRequest
+  release: (abortIfLastSubscriber: boolean) => void
+} => {
+  const requestKey = getPaginatedDocumentsRequestKey(request)
+  let requestEntry = inFlightPaginatedDocumentRequests.get(requestKey)
+
+  if (!requestEntry) {
+    const controller = new AbortController()
+    requestEntry = {
+      controller,
+      subscriberCount: 0,
+      promise: paginatedDocumentsPost(request, controller)
+        .finally(() => {
+          if (inFlightPaginatedDocumentRequests.get(requestKey) === requestEntry) {
+            inFlightPaginatedDocumentRequests.delete(requestKey)
+          }
+        })
+    }
+    inFlightPaginatedDocumentRequests.set(requestKey, requestEntry)
+  }
+
+  requestEntry.subscriberCount += 1
+
+  let released = false
+  const release = (abortIfLastSubscriber: boolean): void => {
+    if (released) {
+      return
+    }
+    released = true
+    releasePaginatedDocumentSubscriber(
+      requestKey,
+      requestEntry,
+      abortIfLastSubscriber
+    )
+  }
+
+  return {
+    requestKey,
+    requestEntry,
+    release
+  }
+}
 
 const defaultPaginatedDocumentsPost = async (
   request: DocumentsRequest,
@@ -1060,26 +1128,13 @@ export const __setPaginatedDocumentsPostForTests = (
  * @returns Promise with paginated documents response
  */
 export const getDocumentsPaginated = async (request: DocumentsRequest): Promise<PaginatedDocsResponse> => {
-  const requestKey = getPaginatedDocumentsRequestKey(request)
-  const existingRequest = inFlightPaginatedDocumentRequests.get(requestKey)
+  const { requestEntry, release } = subscribeToPaginatedDocumentsRequest(request)
 
-  if (existingRequest) {
-    return existingRequest.promise
+  try {
+    return await requestEntry.promise
+  } finally {
+    release(false)
   }
-
-  const controller = new AbortController()
-  const requestPromise = paginatedDocumentsPost(request, controller)
-    .finally(() => {
-      if (inFlightPaginatedDocumentRequests.get(requestKey)?.promise === requestPromise) {
-        inFlightPaginatedDocumentRequests.delete(requestKey)
-      }
-    })
-
-  inFlightPaginatedDocumentRequests.set(requestKey, {
-    controller,
-    promise: requestPromise
-  })
-  return requestPromise
 }
 
 export const getDocumentsPaginatedWithTimeout = (
@@ -1087,19 +1142,31 @@ export const getDocumentsPaginatedWithTimeout = (
   timeoutMs: number = 30000,
   errorMsg: string = 'Document fetch timeout'
 ): Promise<PaginatedDocsResponse> => {
+  const { requestEntry, release } = subscribeToPaginatedDocumentsRequest(request)
+
   return new Promise<PaginatedDocsResponse>((resolve, reject) => {
+    let timedOut = false
     const timeoutId = setTimeout(() => {
-      abortDocumentsPaginated(request)
+      timedOut = true
+      release(true)
       reject(new Error(errorMsg))
     }, timeoutMs)
 
-    getDocumentsPaginated(request)
+    requestEntry.promise
       .then(response => {
+        if (timedOut) {
+          return
+        }
         clearTimeout(timeoutId)
+        release(false)
         resolve(response)
       })
       .catch(error => {
+        if (timedOut) {
+          return
+        }
         clearTimeout(timeoutId)
+        release(false)
         reject(error)
       })
   })

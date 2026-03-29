@@ -175,4 +175,68 @@ describe('getDocumentsPaginated', () => {
       status_counts: { all: 0 }
     })
   })
+
+  test('does not abort a shared request when only one timeout subscriber expires', async () => {
+    const request: DocumentsRequest = {
+      status_filter: null,
+      page: 1,
+      page_size: 20,
+      sort_field: 'updated_at',
+      sort_direction: 'desc'
+    }
+
+    let callCount = 0
+    let resolveSharedRequest: ((value: any) => void) | null = null
+    let abortCount = 0
+
+    apiModule.__setPaginatedDocumentsPostForTests((_request, controller) => {
+      callCount += 1
+
+      return new Promise((resolve, reject) => {
+        resolveSharedRequest = resolve
+        controller.signal.addEventListener(
+          'abort',
+          () => {
+            abortCount += 1
+            reject(new DOMException('Aborted', 'AbortError'))
+          },
+          { once: true }
+        )
+      })
+    })
+
+    const shortTimeoutRequest = apiModule.getDocumentsPaginatedWithTimeout(request, 1)
+    const longTimeoutRequest = apiModule.getDocumentsPaginatedWithTimeout(request, 100)
+
+    await expect(shortTimeoutRequest).rejects.toThrow('Document fetch timeout')
+
+    expect(callCount).toBe(1)
+    expect(abortCount).toBe(0)
+
+    resolveSharedRequest?.({
+      documents: [],
+      pagination: {
+        page: 1,
+        page_size: 20,
+        total_count: 0,
+        total_pages: 0,
+        has_next: false,
+        has_prev: false
+      },
+      status_counts: { all: 0 }
+    })
+
+    await expect(longTimeoutRequest).resolves.toEqual({
+      documents: [],
+      pagination: {
+        page: 1,
+        page_size: 20,
+        total_count: 0,
+        total_pages: 0,
+        has_next: false,
+        has_prev: false
+      },
+      status_counts: { all: 0 }
+    })
+  })
 })
