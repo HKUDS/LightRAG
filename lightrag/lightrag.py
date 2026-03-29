@@ -2266,7 +2266,6 @@ class LightRAG:
                     ]
                 )
 
-
                 if not to_process_docs:
                     logger.info("No documents to process")
                     return
@@ -3139,7 +3138,6 @@ class LightRAG:
                         DocStatus.ANALYZING,
                     ]
                 )
-
 
         finally:
             log_message = "Enqueued document processing pipeline stopped"
