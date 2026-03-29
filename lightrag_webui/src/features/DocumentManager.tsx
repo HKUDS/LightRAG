@@ -20,9 +20,8 @@ import DeleteDocumentsDialog from '@/components/documents/DeleteDocumentsDialog'
 import PaginationControls from '@/components/ui/PaginationControls'
 
 import {
-  abortDocumentsPaginated,
   scanNewDocuments,
-  getDocumentsPaginated,
+  getDocumentsPaginatedWithTimeout,
   DocsStatusesResponse,
   DocStatus,
   DocStatusResponse,
@@ -594,6 +593,17 @@ export default function DocumentManager() {
     sortDirection: overrides.sortDirection ?? sortDirection
   }), [pagination.page, pagination.page_size, sortField, sortDirection, statusFilter])
 
+  const buildDocumentsRequest = useCallback((
+    query: QuerySnapshot,
+    page: number = query.page
+  ): DocumentsRequest => ({
+    status_filter: query.statusFilter === 'all' ? null : query.statusFilter,
+    page,
+    page_size: query.pageSize,
+    sort_field: query.sortField,
+    sort_direction: query.sortDirection
+  }), [])
+
   // Utility function to update component state
   const updateComponentState = useCallback((response: any) => {
     setPagination(response.pagination);
@@ -612,31 +622,6 @@ export default function DocumentManager() {
     };
 
     setDocs(response.pagination.total_count > 0 ? legacyDocs : null);
-  }, []);
-
-  // Utility function to create timeout wrapper for API calls
-  const withTimeout = useCallback(<T,>(
-    promise: Promise<T>,
-    timeoutMs: number = 30000, // Default 30s timeout for normal operations
-    errorMsg: string = 'Request timeout',
-    onTimeout?: () => void
-  ): Promise<T> => {
-    return new Promise<T>((resolve, reject) => {
-      const timeoutId = setTimeout(() => {
-        onTimeout?.()
-        reject(new Error(errorMsg))
-      }, timeoutMs)
-
-      promise
-        .then(value => {
-          clearTimeout(timeoutId)
-          resolve(value)
-        })
-        .catch(error => {
-          clearTimeout(timeoutId)
-          reject(error)
-        })
-    })
   }, []);
 
 
@@ -749,15 +734,8 @@ export default function DocumentManager() {
       const isStaleRequest = () => requestVersion !== latestRefreshRequestVersionRef.current
 
       if (refreshRequest.type === 'manual') {
-        const request: DocumentsRequest = {
-          status_filter: query.statusFilter === 'all' ? null : query.statusFilter,
-          page: 1,
-          page_size: query.pageSize,
-          sort_field: query.sortField,
-          sort_direction: query.sortDirection
-        };
-
-        const response = await getDocumentsPaginated(request);
+        const request = buildDocumentsRequest(query, 1)
+        const response = await getDocumentsPaginatedWithTimeout(request)
 
         if (!isMountedRef.current || isStaleRequest()) return;
 
@@ -787,22 +765,8 @@ export default function DocumentManager() {
       } else {
         const { customTimeout } = refreshRequest;
         const pageToFetch = query.page;
-
-        const request: DocumentsRequest = {
-          status_filter: query.statusFilter === 'all' ? null : query.statusFilter,
-          page: pageToFetch,
-          page_size: query.pageSize,
-          sort_field: query.sortField,
-          sort_direction: query.sortDirection
-        };
-
-        // Use timeout wrapper for the API call (uses customTimeout if provided, otherwise withTimeout default)
-        const response = await withTimeout(
-          getDocumentsPaginated(request),
-          customTimeout,
-          'Document fetch timeout',
-          () => abortDocumentsPaginated(request)
-        );
+        const request = buildDocumentsRequest(query, pageToFetch)
+        const response = await getDocumentsPaginatedWithTimeout(request, customTimeout)
 
         if (!isMountedRef.current || isStaleRequest()) return;
 
@@ -811,17 +775,11 @@ export default function DocumentManager() {
           const lastPage = Math.max(1, response.pagination.total_pages);
 
           if (pageToFetch !== lastPage) {
-            const lastPageRequest: DocumentsRequest = {
-              ...request,
-              page: lastPage
-            };
-
-            const lastPageResponse = await withTimeout(
-              getDocumentsPaginated(lastPageRequest),
-              customTimeout,
-              'Document fetch timeout',
-              () => abortDocumentsPaginated(lastPageRequest)
-            );
+            const lastPageRequest = buildDocumentsRequest(query, lastPage)
+            const lastPageResponse = await getDocumentsPaginatedWithTimeout(
+              lastPageRequest,
+              customTimeout
+            )
 
             if (!isMountedRef.current || isStaleRequest()) return;
 
@@ -859,10 +817,10 @@ export default function DocumentManager() {
   }, [
     t,
     updateComponentState,
-    withTimeout,
     classifyError,
     recordFailure,
-    handlePageSizeChange
+    handlePageSizeChange,
+    buildDocumentsRequest
   ]);
 
   const enqueueRefresh = useCallback(async (refreshRequest: RefreshRequest) => {

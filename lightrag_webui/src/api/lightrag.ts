@@ -1082,6 +1082,29 @@ export const getDocumentsPaginated = async (request: DocumentsRequest): Promise<
   return requestPromise
 }
 
+export const getDocumentsPaginatedWithTimeout = (
+  request: DocumentsRequest,
+  timeoutMs: number = 30000,
+  errorMsg: string = 'Document fetch timeout'
+): Promise<PaginatedDocsResponse> => {
+  return new Promise<PaginatedDocsResponse>((resolve, reject) => {
+    const timeoutId = setTimeout(() => {
+      abortDocumentsPaginated(request)
+      reject(new Error(errorMsg))
+    }, timeoutMs)
+
+    getDocumentsPaginated(request)
+      .then(response => {
+        clearTimeout(timeoutId)
+        resolve(response)
+      })
+      .catch(error => {
+        clearTimeout(timeoutId)
+        reject(error)
+      })
+  })
+}
+
 /**
  * Get counts of documents by status
  * @returns Promise with status counts response
