@@ -196,6 +196,16 @@ const pulseStyle = `
 // Type definitions for sort field and direction
 type SortField = 'created_at' | 'updated_at' | 'id' | 'file_path';
 type SortDirection = 'asc' | 'desc';
+type RefreshRequest =
+  | {
+      type: 'intelligent';
+      targetPage?: number;
+      resetToFirst?: boolean;
+      customTimeout?: number;
+    }
+  | {
+      type: 'manual';
+    };
 
 export default function DocumentManager() {
   // Track component mount status
@@ -269,6 +279,8 @@ export default function DocumentManager() {
   // Add refs to track previous pipelineBusy state and current interval
   const prevPipelineBusyRef = useRef<boolean | undefined>(undefined);
   const pollingIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const activeRefreshPromiseRef = useRef<Promise<void> | null>(null);
+  const pendingRefreshRequestRef = useRef<RefreshRequest | null>(null);
 
   // Add retry mechanism state
   const [retryState, setRetryState] = useState({
@@ -673,69 +685,120 @@ export default function DocumentManager() {
     });
   }, []);
 
-  // Intelligent refresh function: handles all boundary cases
-  const handleIntelligentRefresh = useCallback(async (
-    targetPage?: number, // Optional target page, defaults to current page
-    resetToFirst?: boolean, // Whether to force reset to first page
-    customTimeout?: number // Optional custom timeout in milliseconds (uses withTimeout default if not provided)
-  ) => {
+  // Handle page size change - update state and save to store
+  const handlePageSizeChange = useCallback((newPageSize: number) => {
+    if (newPageSize === pagination.page_size) return;
+
+    // Save the new page size to the store
+    setDocumentsPageSize(newPageSize);
+
+    // Reset all status filters to page 1 when page size changes
+    setPageByStatus({
+      all: 1,
+      processed: 1,
+      preprocessed: 1,
+      processing: 1,
+      pending: 1,
+      failed: 1,
+    });
+
+    setPagination(prev => ({ ...prev, page: 1, page_size: newPageSize }));
+  }, [pagination.page_size, setDocumentsPageSize]);
+
+  const runRefreshRequest = useCallback(async (refreshRequest: RefreshRequest) => {
     try {
       if (!isMountedRef.current) return;
 
       setIsRefreshing(true);
 
-      // Determine target page
-      const pageToFetch = resetToFirst ? 1 : (targetPage || pagination.page);
+      if (refreshRequest.type === 'manual') {
+        const request: DocumentsRequest = {
+          status_filter: statusFilter === 'all' ? null : statusFilter,
+          page: 1,
+          page_size: pagination.page_size,
+          sort_field: sortField,
+          sort_direction: sortDirection
+        };
 
-      const request: DocumentsRequest = {
-        status_filter: statusFilter === 'all' ? null : statusFilter,
-        page: pageToFetch,
-        page_size: pagination.page_size,
-        sort_field: sortField,
-        sort_direction: sortDirection
-      };
+        const response = await getDocumentsPaginated(request);
 
-      // Use timeout wrapper for the API call (uses customTimeout if provided, otherwise withTimeout default)
-      const response = await withTimeout(
-        getDocumentsPaginated(request),
-        customTimeout, // Pass undefined to use default 30s, or explicit timeout for special cases
-        'Document fetch timeout'
-      );
+        if (!isMountedRef.current) return;
 
-      if (!isMountedRef.current) return;
+        if (response.pagination.total_count < pagination.page_size && pagination.page_size !== 10) {
+          handlePageSizeChange(10);
+        } else {
+          setPagination(response.pagination);
+          setCurrentPageDocs(response.documents);
+          setStatusCounts(response.status_counts);
 
-      // Boundary case handling: if target page has no data but total count > 0
-      if (response.documents.length === 0 && response.pagination.total_count > 0) {
-        // Calculate last page
-        const lastPage = Math.max(1, response.pagination.total_pages);
-
-        if (pageToFetch !== lastPage) {
-          // Re-request last page
-          const lastPageRequest: DocumentsRequest = {
-            ...request,
-            page: lastPage
+          const legacyDocs: DocsStatusesResponse = {
+            statuses: {
+              processed: response.documents.filter(doc => doc.status === 'processed'),
+              preprocessed: response.documents.filter(doc => doc.status === 'preprocessed'),
+              processing: response.documents.filter(doc => doc.status === 'processing'),
+              pending: response.documents.filter(doc => doc.status === 'pending'),
+              failed: response.documents.filter(doc => doc.status === 'failed')
+            }
           };
 
-          const lastPageResponse = await withTimeout(
-            getDocumentsPaginated(lastPageRequest),
-            customTimeout, // Use same timeout for consistency
-            'Document fetch timeout'
-          );
-
-          if (!isMountedRef.current) return;
-
-          // Update page state to last page
-          setPageByStatus(prev => ({ ...prev, [statusFilter]: lastPage }));
-          updateComponentState(lastPageResponse);
-          return;
+          if (response.pagination.total_count > 0) {
+            setDocs(legacyDocs);
+          } else {
+            setDocs(null);
+          }
         }
-      }
+      } else {
+        const { targetPage, resetToFirst, customTimeout } = refreshRequest;
 
-      // Normal case: update state
-      if (pageToFetch !== pagination.page) {
-        setPageByStatus(prev => ({ ...prev, [statusFilter]: pageToFetch }));
+        // Determine target page
+        const pageToFetch = resetToFirst ? 1 : (targetPage || pagination.page);
+
+        const request: DocumentsRequest = {
+          status_filter: statusFilter === 'all' ? null : statusFilter,
+          page: pageToFetch,
+          page_size: pagination.page_size,
+          sort_field: sortField,
+          sort_direction: sortDirection
+        };
+
+        // Use timeout wrapper for the API call (uses customTimeout if provided, otherwise withTimeout default)
+        const response = await withTimeout(
+          getDocumentsPaginated(request),
+          customTimeout,
+          'Document fetch timeout'
+        );
+
+        if (!isMountedRef.current) return;
+
+        // Boundary case handling: if target page has no data but total count > 0
+        if (response.documents.length === 0 && response.pagination.total_count > 0) {
+          const lastPage = Math.max(1, response.pagination.total_pages);
+
+          if (pageToFetch !== lastPage) {
+            const lastPageRequest: DocumentsRequest = {
+              ...request,
+              page: lastPage
+            };
+
+            const lastPageResponse = await withTimeout(
+              getDocumentsPaginated(lastPageRequest),
+              customTimeout,
+              'Document fetch timeout'
+            );
+
+            if (!isMountedRef.current) return;
+
+            setPageByStatus(prev => ({ ...prev, [statusFilter]: lastPage }));
+            updateComponentState(lastPageResponse);
+            return;
+          }
+        }
+
+        if (pageToFetch !== pagination.page) {
+          setPageByStatus(prev => ({ ...prev, [statusFilter]: pageToFetch }));
+        }
+        updateComponentState(response);
       }
-      updateComponentState(response);
 
     } catch (err) {
       if (isMountedRef.current) {
@@ -754,7 +817,62 @@ export default function DocumentManager() {
         setIsRefreshing(false);
       }
     }
-  }, [statusFilter, pagination.page, pagination.page_size, sortField, sortDirection, t, updateComponentState, withTimeout, classifyError, recordFailure]);
+  }, [
+    statusFilter,
+    pagination.page,
+    pagination.page_size,
+    sortField,
+    sortDirection,
+    t,
+    updateComponentState,
+    withTimeout,
+    classifyError,
+    recordFailure,
+    handlePageSizeChange
+  ]);
+
+  const enqueueRefresh = useCallback(async (refreshRequest: RefreshRequest) => {
+    if (activeRefreshPromiseRef.current) {
+      pendingRefreshRequestRef.current = refreshRequest;
+      await activeRefreshPromiseRef.current;
+      return;
+    }
+
+    const refreshLoopPromise = (async () => {
+      let nextRequest: RefreshRequest | null = refreshRequest;
+
+      while (nextRequest) {
+        pendingRefreshRequestRef.current = null;
+        await runRefreshRequest(nextRequest);
+        nextRequest = pendingRefreshRequestRef.current;
+      }
+    })();
+
+    activeRefreshPromiseRef.current = refreshLoopPromise;
+
+    try {
+      await refreshLoopPromise;
+    } finally {
+      if (activeRefreshPromiseRef.current === refreshLoopPromise) {
+        activeRefreshPromiseRef.current = null;
+      }
+      pendingRefreshRequestRef.current = null;
+    }
+  }, [runRefreshRequest]);
+
+  // Intelligent refresh function: handles all boundary cases
+  const handleIntelligentRefresh = useCallback(async (
+    targetPage?: number,
+    resetToFirst?: boolean,
+    customTimeout?: number
+  ) => {
+    await enqueueRefresh({
+      type: 'intelligent',
+      targetPage,
+      resetToFirst,
+      customTimeout
+    });
+  }, [enqueueRefresh]);
 
   // New paginated data fetching function
   const fetchPaginatedDocuments = useCallback(async (
@@ -871,82 +989,10 @@ export default function DocumentManager() {
     }
   }, [t, startPollingInterval, currentTab, health, statusCounts, handleIntelligentRefresh])
 
-  // Handle page size change - update state and save to store
-  const handlePageSizeChange = useCallback((newPageSize: number) => {
-    if (newPageSize === pagination.page_size) return;
-
-    // Save the new page size to the store
-    setDocumentsPageSize(newPageSize);
-
-    // Reset all status filters to page 1 when page size changes
-    setPageByStatus({
-      all: 1,
-      processed: 1,
-      preprocessed: 1,
-      processing: 1,
-      pending: 1,
-      failed: 1,
-    });
-
-    setPagination(prev => ({ ...prev, page: 1, page_size: newPageSize }));
-  }, [pagination.page_size, setDocumentsPageSize]);
-
   // Handle manual refresh with pagination reset logic
   const handleManualRefresh = useCallback(async () => {
-    try {
-      setIsRefreshing(true);
-
-      // Fetch documents from the first page
-      const request: DocumentsRequest = {
-        status_filter: statusFilter === 'all' ? null : statusFilter,
-        page: 1,
-        page_size: pagination.page_size,
-        sort_field: sortField,
-        sort_direction: sortDirection
-      };
-
-      const response = await getDocumentsPaginated(request);
-
-      if (!isMountedRef.current) return;
-
-      // Check if total count is less than current page size and page size is not already 10
-      if (response.pagination.total_count < pagination.page_size && pagination.page_size !== 10) {
-        // Reset page size to 10 which will trigger a new fetch
-        handlePageSizeChange(10);
-      } else {
-        // Update pagination state
-        setPagination(response.pagination);
-        setCurrentPageDocs(response.documents);
-        setStatusCounts(response.status_counts);
-
-        // Update legacy docs state for backward compatibility
-        const legacyDocs: DocsStatusesResponse = {
-          statuses: {
-            processed: response.documents.filter(doc => doc.status === 'processed'),
-            preprocessed: response.documents.filter(doc => doc.status === 'preprocessed'),
-            processing: response.documents.filter(doc => doc.status === 'processing'),
-            pending: response.documents.filter(doc => doc.status === 'pending'),
-            failed: response.documents.filter(doc => doc.status === 'failed')
-          }
-        };
-
-        if (response.pagination.total_count > 0) {
-          setDocs(legacyDocs);
-        } else {
-          setDocs(null);
-        }
-      }
-
-    } catch (err) {
-      if (isMountedRef.current) {
-        toast.error(t('documentPanel.documentManager.errors.loadFailed', { error: errorMessage(err) }));
-      }
-    } finally {
-      if (isMountedRef.current) {
-        setIsRefreshing(false);
-      }
-    }
-  }, [statusFilter, pagination.page_size, sortField, sortDirection, handlePageSizeChange, t]);
+    await enqueueRefresh({ type: 'manual' });
+  }, [enqueueRefresh]);
 
   // Monitor pipelineBusy changes and trigger immediate refresh with timer reset
   useEffect(() => {

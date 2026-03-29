@@ -236,6 +236,9 @@ if TYPE_CHECKING:
 load_dotenv(dotenv_path=".env", override=False)
 
 VERBOSE_DEBUG = os.getenv("VERBOSE", "false").lower() == "true"
+DOC_QUERY_TIMING_LOGS = (
+    os.getenv("LIGHTRAG_DOC_QUERY_TIMING_LOGS", "false").lower() == "true"
+)
 
 
 def verbose_debug(msg: str, *args, **kwargs):
@@ -269,6 +272,15 @@ def set_verbose_debug(enabled: bool):
     """Enable or disable verbose debug output"""
     global VERBOSE_DEBUG
     VERBOSE_DEBUG = enabled
+
+
+def doc_query_timing_log(msg: str, *args, **kwargs):
+    """Emit document query timing logs only when explicitly enabled.
+
+    This allows targeted latency diagnostics without enabling global DEBUG logs.
+    """
+    if DOC_QUERY_TIMING_LOGS:
+        logger.info(msg, *args, **kwargs)
 
 
 statistic_data = {"llm_call": 0, "llm_cache": 0, "embed_call": 0}

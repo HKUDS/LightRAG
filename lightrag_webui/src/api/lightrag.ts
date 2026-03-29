@@ -1000,14 +1000,35 @@ export const getTrackStatus = async (trackId: string): Promise<TrackStatusRespon
   return response.data
 }
 
+// Deduplicate in-flight paginated document requests with identical parameters.
+// This prevents duplicate backend calls caused by overlapping timers/effects or
+// React StrictMode double-mount behavior in development.
+const inFlightPaginatedDocumentRequests = new Map<string, Promise<PaginatedDocsResponse>>()
+
 /**
  * Get documents with pagination support
  * @param request The pagination request parameters
  * @returns Promise with paginated documents response
  */
 export const getDocumentsPaginated = async (request: DocumentsRequest): Promise<PaginatedDocsResponse> => {
-  const response = await axiosInstance.post('/documents/paginated', request)
-  return response.data
+  const requestKey = JSON.stringify(request)
+  const existingRequest = inFlightPaginatedDocumentRequests.get(requestKey)
+
+  if (existingRequest) {
+    return existingRequest
+  }
+
+  const requestPromise = axiosInstance
+    .post('/documents/paginated', request)
+    .then(response => response.data)
+    .finally(() => {
+      if (inFlightPaginatedDocumentRequests.get(requestKey) === requestPromise) {
+        inFlightPaginatedDocumentRequests.delete(requestKey)
+      }
+    })
+
+  inFlightPaginatedDocumentRequests.set(requestKey, requestPromise)
+  return requestPromise
 }
 
 /**

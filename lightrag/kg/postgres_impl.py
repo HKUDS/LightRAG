@@ -1,4 +1,5 @@
 import asyncio
+import time
 import hashlib
 import json
 import os
@@ -34,7 +35,7 @@ from ..base import (
 )
 from ..exceptions import DataMigrationError
 from ..namespace import NameSpace, is_namespace
-from ..utils import logger, _cooperative_yield
+from ..utils import logger, _cooperative_yield, doc_query_timing_log
 from ..kg.shared_storage import get_data_init_lock
 
 import pipmaster as pm
@@ -502,6 +503,7 @@ class PostgreSQLDB:
         *,
         with_age: bool = False,
         graph_name: str | None = None,
+        timing_label: str | None = None,
     ) -> T:
         """
         Execute a database operation with automatic retry for transient failures.
@@ -537,12 +539,70 @@ class PostgreSQLDB:
             with attempt:
                 await self._ensure_pool()
                 assert self.pool is not None
+                if timing_label:
+                    pool_snapshot_before = self._get_pool_snapshot()
+                    doc_query_timing_log(
+                        "[%s] pool.acquire waiting %s",
+                        timing_label,
+                        pool_snapshot_before,
+                    )
+                acquire_start = time.perf_counter()
                 async with self.pool.acquire() as connection:  # type: ignore[arg-type]
+                    acquire_elapsed = time.perf_counter() - acquire_start
+                    if timing_label:
+                        pool_snapshot_after = self._get_pool_snapshot()
+                        doc_query_timing_log(
+                            "[%s] pool.acquire completed in %.4fs %s",
+                            timing_label,
+                            acquire_elapsed,
+                            pool_snapshot_after,
+                        )
                     if with_age and graph_name:
                         await self.configure_age(connection, graph_name)
                     elif with_age and not graph_name:
                         raise ValueError("Graph name is required when with_age is True")
                     return await operation(connection)
+
+    def _get_pool_snapshot(self) -> str:
+        """Best-effort snapshot of asyncpg pool state for diagnostics.
+
+        Uses asyncpg private attributes defensively; if a field is unavailable in the
+        installed asyncpg version, return '?' for that metric instead of failing.
+        """
+        pool = self.pool
+        if pool is None:
+            return "pool_state=uninitialized"
+
+        holders = getattr(pool, "_holders", None)
+        queue = getattr(pool, "_queue", None)
+        max_size = getattr(pool, "_maxsize", None)
+        min_size = getattr(pool, "_minsize", None)
+
+        total_holders = len(holders) if holders is not None else "?"
+        idle_count: int | str = "?"
+        acquired_count: int | str = "?"
+
+        if holders is not None:
+            idle_count = 0
+            acquired_count = 0
+            for holder in holders:
+                # asyncpg holder uses _in_use Future/Event-like marker; treat present value as acquired
+                in_use_marker = getattr(holder, "_in_use", None)
+                if in_use_marker:
+                    acquired_count += 1
+                else:
+                    idle_count += 1
+
+        waiting_count: int | str = "?"
+        if queue is not None:
+            getters = getattr(queue, "_getters", None)
+            if getters is not None:
+                waiting_count = len(getters)
+
+        return (
+            f"pool_state[min={min_size}, max={max_size}, holders={total_holders}, "
+            f"acquired={acquired_count}, idle={idle_count}, waiting={waiting_count}]"
+        )
 
     async def configure_vector_extension(self, connection: asyncpg.Connection) -> None:
         """Create VECTOR extension if it doesn't exist for vector similarity operations.
@@ -1734,28 +1794,68 @@ class PostgreSQLDB:
         multirows: bool = False,
         with_age: bool = False,
         graph_name: str | None = None,
+        timing_label: str | None = None,
     ) -> dict[str, Any] | None | list[dict[str, Any]]:
         async def _operation(connection: asyncpg.Connection) -> Any:
             prepared_params = tuple(params) if params else ()
+            fetch_start = time.perf_counter()
             if prepared_params:
                 rows = await connection.fetch(sql, *prepared_params)
             else:
                 rows = await connection.fetch(sql)
+            fetch_elapsed = time.perf_counter() - fetch_start
+
+            if timing_label:
+                doc_query_timing_log(
+                    "[%s] connection.fetch completed in %.4fs row_count=%s",
+                    timing_label,
+                    fetch_elapsed,
+                    len(rows),
+                )
+
+            conversion_start = time.perf_counter()
 
             if multirows:
                 if rows:
                     columns = [col for col in rows[0].keys()]
-                    return [dict(zip(columns, row)) for row in rows]
-                return []
+                    converted_rows = [dict(zip(columns, row)) for row in rows]
+                else:
+                    converted_rows = []
+
+                if timing_label:
+                    conversion_elapsed = time.perf_counter() - conversion_start
+                    doc_query_timing_log(
+                        "[%s] result conversion completed in %.4fs multirows=%s",
+                        timing_label,
+                        conversion_elapsed,
+                        True,
+                    )
+                return converted_rows
 
             if rows:
                 columns = rows[0].keys()
-                return dict(zip(columns, rows[0]))
+                converted_row = dict(zip(columns, rows[0]))
+            else:
+                converted_row = None
+
+            if timing_label:
+                conversion_elapsed = time.perf_counter() - conversion_start
+                doc_query_timing_log(
+                    "[%s] result conversion completed in %.4fs multirows=%s",
+                    timing_label,
+                    conversion_elapsed,
+                    False,
+                )
+            if converted_row is not None:
+                return converted_row
             return None
 
         try:
             return await self._run_with_retry(
-                _operation, with_age=with_age, graph_name=graph_name
+                _operation,
+                with_age=with_age,
+                graph_name=graph_name,
+                timing_label=timing_label,
             )
         except Exception as e:
             logger.error(f"PostgreSQL database, error:{e}")
@@ -3886,6 +3986,19 @@ class PGDocStatusStorage(DocStatusStorage):
         Returns:
             Tuple of (list of (doc_id, DocProcessingStatus) tuples, total_count)
         """
+        start = time.perf_counter()
+        status_filter_value = status_filter.value if status_filter is not None else None
+
+        doc_query_timing_log(
+            "[%s] PGDocStatusStorage.get_docs_paginated start status_filter=%s page=%s page_size=%s sort_field=%s sort_direction=%s",
+            self.workspace,
+            status_filter_value,
+            page,
+            page_size,
+            sort_field,
+            sort_direction,
+        )
+
         # Validate parameters
         if page < 1:
             page = 1
@@ -3966,7 +4079,13 @@ class PGDocStatusStorage(DocStatusStorage):
             LEFT JOIN paged p ON true
             ORDER BY p.{sort_field} {sort_direction.upper()} NULLS LAST
         """
-        result = await self.db.query(cte_sql, list(params.values()), True)
+        query_timing_label = f"{self.workspace} PGDocStatusStorage.get_docs_paginated"
+        result = await self.db.query(
+            cte_sql,
+            list(params.values()),
+            True,
+            timing_label=query_timing_label,
+        )
         total_count = result[0]["_total_count"] if result else 0
 
         # Convert to (doc_id, DocProcessingStatus) tuples
@@ -4004,6 +4123,20 @@ class PGDocStatusStorage(DocStatusStorage):
             )
             documents.append((doc_id, doc_status))
 
+        elapsed = time.perf_counter() - start
+        doc_query_timing_log(
+            "[%s] PGDocStatusStorage.get_docs_paginated completed in %.4fs returned_rows=%s total_count=%s status_filter=%s page=%s page_size=%s sort_field=%s sort_direction=%s",
+            self.workspace,
+            elapsed,
+            len(documents),
+            total_count,
+            status_filter_value,
+            page,
+            page_size,
+            sort_field,
+            sort_direction,
+        )
+
         return documents, total_count
 
     async def get_all_status_counts(self) -> dict[str, int]:
@@ -4012,6 +4145,11 @@ class PGDocStatusStorage(DocStatusStorage):
         Returns:
             Dictionary mapping status names to counts, including 'all' field
         """
+        start = time.perf_counter()
+        doc_query_timing_log(
+            "[%s] PGDocStatusStorage.get_all_status_counts start", self.workspace
+        )
+
         sql = """
             SELECT status, COUNT(*) as count
             FROM LIGHTRAG_DOC_STATUS
@@ -4019,7 +4157,15 @@ class PGDocStatusStorage(DocStatusStorage):
             GROUP BY status
         """
         params = {"workspace": self.workspace}
-        result = await self.db.query(sql, list(params.values()), True)
+        query_timing_label = (
+            f"{self.workspace} PGDocStatusStorage.get_all_status_counts"
+        )
+        result = await self.db.query(
+            sql,
+            list(params.values()),
+            True,
+            timing_label=query_timing_label,
+        )
 
         counts = {}
         total_count = 0
@@ -4029,6 +4175,14 @@ class PGDocStatusStorage(DocStatusStorage):
 
         # Add 'all' field with total count
         counts["all"] = total_count
+
+        elapsed = time.perf_counter() - start
+        doc_query_timing_log(
+            "[%s] PGDocStatusStorage.get_all_status_counts completed in %.4fs counts=%s",
+            self.workspace,
+            elapsed,
+            counts,
+        )
 
         return counts
 
