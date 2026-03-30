@@ -1,6 +1,7 @@
 import pytest
 
 from lightrag.constants import SOURCE_IDS_LIMIT_METHOD_KEEP
+from lightrag.constants import GRAPH_FIELD_SEP
 from lightrag.operate import (
     _merge_nodes_then_upsert,
     _handle_single_relationship_extraction,
@@ -24,11 +25,15 @@ class DummyGraphStorage:
 class DummyVectorStorage:
     def __init__(self):
         self.global_config = {"workspace": "test"}
+        self.upserts = []
+        self.deletes = []
 
     async def upsert(self, data):
+        self.upserts.append(data)
         return None
 
     async def delete(self, ids):
+        self.deletes.append(ids)
         return None
 
     async def get_by_id(self, id_):
@@ -44,6 +49,75 @@ class DummyAsyncContext:
 
     async def __aexit__(self, exc_type, exc, tb):
         return False
+
+
+class DummyMergeGraphStorage:
+    def __init__(self):
+        self.nodes = {
+            "Canonical": {
+                "entity_id": "Canonical",
+                "description": "canonical desc",
+                "entity_type": "ORG",
+                "source_id": "chunk-1",
+                "file_path": "canonical.md",
+            },
+            "Alias": {
+                "entity_id": "Alias",
+                "description": "alias desc",
+                "entity_type": "ORG",
+                "source_id": "chunk-2",
+                "file_path": "alias.md",
+            },
+            "Neighbor": {
+                "entity_id": "Neighbor",
+                "description": "neighbor desc",
+                "entity_type": "ORG",
+                "source_id": "chunk-3",
+                "file_path": "neighbor.md",
+            },
+        }
+        self.edges = {
+            ("Alias", "Neighbor"): {
+                "description": "rel desc",
+                "keywords": "alias",
+                "source_id": "chunk-rel",
+                "weight": 1.0,
+                "file_path": "rel.md",
+            }
+        }
+
+    async def has_node(self, node_id):
+        return node_id in self.nodes
+
+    async def get_node(self, node_id):
+        return self.nodes[node_id]
+
+    async def upsert_node(self, node_id, node_data):
+        self.nodes[node_id] = dict(node_data)
+
+    async def get_node_edges(self, node_id):
+        results = []
+        for src, tgt in self.edges:
+            if src == node_id or tgt == node_id:
+                results.append((src, tgt))
+        return results
+
+    async def get_edge(self, src, tgt):
+        return self.edges.get((src, tgt)) or self.edges.get((tgt, src))
+
+    async def upsert_edge(self, src, tgt, edge_data):
+        self.edges[(src, tgt)] = dict(edge_data)
+
+    async def delete_node(self, node_id):
+        self.nodes.pop(node_id, None)
+        self.edges = {
+            (src, tgt): data
+            for (src, tgt), data in self.edges.items()
+            if src != node_id and tgt != node_id
+        }
+
+    async def index_done_callback(self):
+        return True
 
 
 @pytest.mark.asyncio
@@ -145,3 +219,34 @@ def test_handle_single_relationship_extraction_ignores_empty_description():
     )
 
     assert relation is None
+
+
+@pytest.mark.asyncio
+async def test_merge_entities_preserves_file_path_in_vector_updates(monkeypatch):
+    graph = DummyMergeGraphStorage()
+    entities_vdb = DummyVectorStorage()
+    relationships_vdb = DummyVectorStorage()
+
+    async def fake_get_entity_info(*args, **kwargs):
+        return {"entity_name": "Canonical"}
+
+    monkeypatch.setattr(utils_graph, "get_entity_info", fake_get_entity_info)
+
+    await utils_graph._merge_entities_impl(
+        chunk_entity_relation_graph=graph,
+        entities_vdb=entities_vdb,
+        relationships_vdb=relationships_vdb,
+        source_entities=["Alias", "Canonical"],
+        target_entity="Canonical",
+    )
+
+    relationship_payload = relationships_vdb.upserts[-1]
+    entity_payload = entities_vdb.upserts[-1]
+
+    assert next(iter(relationship_payload.values()))["file_path"] == "rel.md"
+    assert set(
+        next(iter(entity_payload.values()))["file_path"].split(GRAPH_FIELD_SEP)
+    ) == {
+        "alias.md",
+        "canonical.md",
+    }
