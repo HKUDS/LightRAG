@@ -219,7 +219,9 @@ relation{tuple_delimiter}Noah Carter{tuple_delimiter}World Athletics Championshi
 """,
 ]
 
-PROMPTS["DEFAULT_ENTITY_TYPES_GUIDANCE"] = """Use the following entity types to classify extracted entities:
+PROMPTS[
+    "DEFAULT_ENTITY_TYPES_GUIDANCE"
+] = """Use the following entity types to classify extracted entities:
 - Person: Individual human beings, real or fictional
 - Creature: Non-human animals, mythological beings, or other living organisms
 - Organization: Companies, institutions, government bodies, groups, or associations

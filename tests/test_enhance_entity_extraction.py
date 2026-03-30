@@ -133,26 +133,32 @@ async def run_test():
         f"Expected fragment: {expected_fragment!r}\n"
         f"System prompt snippet: {system_prompt_sent[:500]!r}"
     )
-    print("  PASS: DEFAULT_ENTITY_TYPES_GUIDANCE correctly injected into system prompt.")
+    print(
+        "  PASS: DEFAULT_ENTITY_TYPES_GUIDANCE correctly injected into system prompt."
+    )
 
     print("\n--- System Prompt Sent to LLM ---")
     print(system_prompt_sent)
 
     # ── Check 2: entities and relations extracted ─────────────────────────────
     print("\n[3/3] Verifying extracted entities and relations ...")
-    assert maybe_nodes, (
-        "FAIL: No entities extracted — JSON parsing or conversion likely failed."
+    assert (
+        maybe_nodes
+    ), "FAIL: No entities extracted — JSON parsing or conversion likely failed."
+    assert (
+        maybe_edges
+    ), "FAIL: No relations extracted — JSON parsing or conversion likely failed."
+    print(
+        f"  PASS: {len(maybe_nodes)} entities and {len(maybe_edges)} relations extracted."
     )
-    assert maybe_edges, (
-        "FAIL: No relations extracted — JSON parsing or conversion likely failed."
-    )
-    print(f"  PASS: {len(maybe_nodes)} entities and {len(maybe_edges)} relations extracted.")
 
     # ── Print results for manual inspection ──────────────────────────────────
     print("\n--- Extracted Entities (first 20) ---")
     for name, data_list in list(maybe_nodes.items())[:20]:
         d = data_list[0]
-        print(f"  [{d.get('entity_type', '?')}] {name}: {d.get('description', '')[:80]}")
+        print(
+            f"  [{d.get('entity_type', '?')}] {name}: {d.get('description', '')[:80]}"
+        )
     if len(maybe_nodes) > 20:
         print(f"  ... and {len(maybe_nodes) - 20} more")
 
