@@ -9,6 +9,24 @@ class GPTKeywordExtractionFormat(BaseModel):
     low_level_keywords: list[str]
 
 
+class EntityExtractionItem(BaseModel):
+    entity_name: str
+    entity_type: str
+    entity_description: str
+
+
+class RelationshipExtractionItem(BaseModel):
+    source_entity: str
+    target_entity: str
+    relationship_keywords: str
+    relationship_description: str
+
+
+class GPTEntityExtractionFormat(BaseModel):
+    entities: list[EntityExtractionItem]
+    relationships: list[RelationshipExtractionItem]
+
+
 class KnowledgeGraphNode(BaseModel):
     id: str
     labels: list[str]

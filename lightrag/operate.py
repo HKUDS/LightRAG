@@ -50,6 +50,7 @@ from lightrag.base import (
     QueryContextResult,
 )
 from lightrag.prompt import PROMPTS
+from lightrag.types import GPTEntityExtractionFormat
 from lightrag.constants import (
     GRAPH_FIELD_SEP,
     DEFAULT_MAX_ENTITY_TOKENS,
@@ -57,7 +58,6 @@ from lightrag.constants import (
     DEFAULT_MAX_TOTAL_TOKENS,
     DEFAULT_RELATED_CHUNK_NUMBER,
     DEFAULT_KG_CHUNK_PICK_METHOD,
-    DEFAULT_ENTITY_TYPES,
     DEFAULT_SUMMARY_LANGUAGE,
     SOURCE_IDS_LIMIT_METHOD_KEEP,
     SOURCE_IDS_LIMIT_METHOD_FIFO,
@@ -925,6 +925,42 @@ async def _get_cached_extraction_results(
         f"Found {valid_entries} valid cache entries, {len(sorted_cached_results)} chunks with results"
     )
     return sorted_cached_results  # each item: list(extraction_result, create_time)
+
+
+def _convert_entity_extraction_json_to_delimited(
+    json_result: str,
+    tuple_delimiter: str,
+    completion_delimiter: str,
+) -> str:
+    """Convert GPTEntityExtractionFormat JSON to delimiter-based extraction string.
+
+    Converts the structured JSON output from schema-based entity extraction into
+    the delimiter-based text format expected by _process_extraction_result.
+    """
+    try:
+        parsed = GPTEntityExtractionFormat.model_validate_json(json_result)
+    except Exception:
+        # Fallback: try json_repair then validate
+        try:
+            data = json_repair.loads(json_result)
+            parsed = GPTEntityExtractionFormat.model_validate(data)
+        except Exception:
+            return json_result  # Return as-is; _process_extraction_result will handle gracefully
+
+    lines = []
+    for entity in parsed.entities:
+        lines.append(
+            f"entity{tuple_delimiter}{entity.entity_name}{tuple_delimiter}"
+            f"{entity.entity_type}{tuple_delimiter}{entity.entity_description}"
+        )
+    for rel in parsed.relationships:
+        lines.append(
+            f"relation{tuple_delimiter}{rel.source_entity}{tuple_delimiter}"
+            f"{rel.target_entity}{tuple_delimiter}{rel.relationship_keywords}"
+            f"{tuple_delimiter}{rel.relationship_description}"
+        )
+    lines.append(completion_delimiter)
+    return "\n".join(lines)
 
 
 async def _process_extraction_result(
@@ -2828,12 +2864,16 @@ async def extract_entities(
 
     use_llm_func: callable = global_config["llm_model_func"]
     entity_extract_max_gleaning = global_config["entity_extract_max_gleaning"]
+    entity_extraction_use_json = global_config.get("entity_extraction_use_json", False)
+
+    if entity_extraction_use_json:
+        use_llm_func = partial(use_llm_func, entity_extraction=True)
 
     ordered_chunks = list(chunks.items())
     # add language and example number params to prompt
     language = global_config["addon_params"].get("language", DEFAULT_SUMMARY_LANGUAGE)
-    entity_types = global_config["addon_params"].get(
-        "entity_types", DEFAULT_ENTITY_TYPES
+    entity_types_guidance = global_config["addon_params"].get(
+        "entity_types_guidance", PROMPTS["DEFAULT_ENTITY_TYPES_GUIDANCE"]
     )
 
     examples = "\n".join(PROMPTS["entity_extraction_examples"])
@@ -2841,7 +2881,6 @@ async def extract_entities(
     example_context_base = dict(
         tuple_delimiter=PROMPTS["DEFAULT_TUPLE_DELIMITER"],
         completion_delimiter=PROMPTS["DEFAULT_COMPLETION_DELIMITER"],
-        entity_types=", ".join(entity_types),
         language=language,
     )
     # add example's format
@@ -2850,7 +2889,7 @@ async def extract_entities(
     context_base = dict(
         tuple_delimiter=PROMPTS["DEFAULT_TUPLE_DELIMITER"],
         completion_delimiter=PROMPTS["DEFAULT_COMPLETION_DELIMITER"],
-        entity_types=",".join(entity_types),
+        entity_types_guidance=entity_types_guidance,
         examples=examples,
         language=language,
     )
@@ -2898,6 +2937,13 @@ async def extract_entities(
             chunk_id=chunk_key,
             cache_keys_collector=cache_keys_collector,
         )
+
+        if entity_extraction_use_json:
+            final_result = _convert_entity_extraction_json_to_delimited(
+                final_result,
+                context_base["tuple_delimiter"],
+                context_base["completion_delimiter"],
+            )
 
         history = pack_user_ass_to_openai_messages(
             entity_extraction_user_prompt, final_result

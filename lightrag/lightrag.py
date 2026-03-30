@@ -47,7 +47,6 @@ from lightrag.constants import (
     DEFAULT_MAX_GRAPH_NODES,
     DEFAULT_MAX_SOURCE_IDS_PER_ENTITY,
     DEFAULT_MAX_SOURCE_IDS_PER_RELATION,
-    DEFAULT_ENTITY_TYPES,
     DEFAULT_SUMMARY_LANGUAGE,
     DEFAULT_LLM_TIMEOUT,
     DEFAULT_EMBEDDING_TIMEOUT,
@@ -255,6 +254,11 @@ class LightRAG:
         default=get_env_value("MAX_GLEANING", DEFAULT_MAX_GLEANING, int)
     )
     """Maximum number of entity extraction attempts for ambiguous content."""
+
+    entity_extraction_use_json: bool = field(
+        default=get_env_value("ENTITY_EXTRACTION_USE_JSON", False, bool)
+    )
+    """When True, use Pydantic schema-based structured output for entity extraction instead of delimiter-based text format."""
 
     max_extract_input_tokens: int = field(
         default=get_env_value(
@@ -473,7 +477,6 @@ class LightRAG:
             "language": get_env_value(
                 "SUMMARY_LANGUAGE", DEFAULT_SUMMARY_LANGUAGE, str
             ),
-            "entity_types": get_env_value("ENTITY_TYPES", DEFAULT_ENTITY_TYPES, list),
         }
     )
 
@@ -557,6 +560,12 @@ class LightRAG:
             self.ollama_server_infos = OllamaServerInfos()
 
         # Validate config
+        if os.getenv("ENTITY_TYPES") is not None:
+            raise ValueError(
+                "ENTITY_TYPES has been removed and is no longer supported. "
+                "Please customize entity type guidance by editing the entity extraction "
+                "prompt template (the `---Entity Types---` section) instead."
+            )
         if self.force_llm_summary_on_merge < 3:
             logger.warning(
                 f"force_llm_summary_on_merge should be at least 3, got {self.force_llm_summary_on_merge}"

@@ -1092,7 +1092,6 @@ def create_app(args):
             max_graph_nodes=args.max_graph_nodes,
             addon_params={
                 "language": args.summary_language,
-                "entity_types": args.entity_types,
             },
             ollama_server_infos=ollama_server_infos,
         )

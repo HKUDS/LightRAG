@@ -8,13 +8,12 @@ Key Concepts:
 - Workspace Isolation: Each RAG instance is assigned a unique workspace name,
   which ensures that Knowledge Graphs, Vector Databases, and Chunks are
   stored in separate, non-conflicting directories.
-- Independent Configuration: Different workspaces can utilize different
-  ENTITY_TYPES and document sets simultaneously.
+- Independent Configuration: Different workspaces can use different document
+  sets simultaneously. Entity type guidance is customized via the prompt template.
 
 Prerequisites:
 1. Set the following environment variables:
    - GEMINI_API_KEY: Your Google Gemini API key.
-   - ENTITY_TYPES: A JSON string of entity categories (e.g., '["Person", "Organization"]').
 2. Ensure your data directory contains:
    - Data/book-small.txt
    - Data/HR_policies.txt
@@ -25,12 +24,10 @@ Usage:
 
 import os
 import asyncio
-import json
 import numpy as np
 from lightrag import LightRAG, QueryParam
 from lightrag.llm.gemini import gemini_model_complete, gemini_embed
 from lightrag.utils import wrap_embedding_func_with_attrs
-from lightrag.constants import DEFAULT_ENTITY_TYPES
 
 
 async def llm_model_func(
@@ -59,24 +56,13 @@ async def embedding_func(texts: list[str]) -> np.ndarray:
 
 async def initialize_rag(
     workspace: str = "default_workspace",
-    entities=None,
 ) -> LightRAG:
     """
     Initializes a LightRAG instance with data isolation.
 
-    - entities (if provided) overrides everything
-    - else ENTITY_TYPES env var is used
-    - else DEFAULT_ENTITY_TYPES is used
+    Entity type guidance is controlled via the prompt template
+    (the `---Entity Types---` section), not via environment variables.
     """
-
-    if entities is not None:
-        entity_types = entities
-    else:
-        env_entities = os.getenv("ENTITY_TYPES")
-        if env_entities:
-            entity_types = json.loads(env_entities)
-        else:
-            entity_types = DEFAULT_ENTITY_TYPES
 
     rag = LightRAG(
         workspace=workspace,
@@ -86,7 +72,6 @@ async def initialize_rag(
         embedding_func_max_async=4,
         embedding_batch_num=8,
         llm_model_max_async=2,
-        addon_params={"entity_types": entity_types},
     )
 
     await rag.initialize_storages()
