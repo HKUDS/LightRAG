@@ -559,13 +559,6 @@ class LightRAG:
         if self.ollama_server_infos is None:
             self.ollama_server_infos = OllamaServerInfos()
 
-        # Validate config
-        if os.getenv("ENTITY_TYPES") is not None:
-            raise ValueError(
-                "ENTITY_TYPES has been removed and is no longer supported. "
-                "Please customize entity type guidance by editing the entity extraction "
-                "prompt template (the `---Entity Types---` section) instead."
-            )
         if self.force_llm_summary_on_merge < 3:
             logger.warning(
                 f"force_llm_summary_on_merge should be at least 3, got {self.force_llm_summary_on_merge}"
