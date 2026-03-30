@@ -56,13 +56,28 @@ async def embedding_func(texts: list[str]) -> np.ndarray:
 
 async def initialize_rag(
     workspace: str = "default_workspace",
+    entity_types_guidance: str | None = None,
 ) -> LightRAG:
     """
     Initializes a LightRAG instance with data isolation.
 
-    Entity type guidance is controlled via the prompt template
-    (the `---Entity Types---` section), not via environment variables.
+    Entity type guidance is controlled via addon_params['entity_types_guidance'].
+    If not provided, the default entity types defined in the prompt template are used.
+
+    Example — custom entity types for a medical knowledge base:
+        entity_types_guidance = \"\"\"
+        Use the following entity types to classify extracted entities:
+        - Disease: Medical conditions or illnesses
+        - Drug: Pharmaceutical substances or treatments
+        - Symptom: Clinical signs or patient-reported complaints
+        - Anatomy: Body parts, organs, or biological structures
+        - Procedure: Medical or surgical procedures
+        \"\"\"
+        rag = await initialize_rag("rag_workspace_medical", entity_types_guidance)
     """
+    addon_params = {"language": "English"}
+    if entity_types_guidance is not None:
+        addon_params["entity_types_guidance"] = entity_types_guidance
 
     rag = LightRAG(
         workspace=workspace,
@@ -72,6 +87,7 @@ async def initialize_rag(
         embedding_func_max_async=4,
         embedding_batch_num=8,
         llm_model_max_async=2,
+        addon_params=addon_params,
     )
 
     await rag.initialize_storages()
@@ -86,8 +102,26 @@ async def main():
         # Instance 1: Dedicated to literary analysis
         # Instance 2: Dedicated to corporate HR documentation
         print("Initializing isolated LightRAG workspaces...")
-        rag_1 = await initialize_rag("rag_workspace_book")
-        rag_2 = await initialize_rag("rag_workspace_hr")
+        rag_1 = await initialize_rag(
+            "rag_workspace_book",
+            entity_types_guidance="""Use the following entity types to classify extracted entities:
+- Person: Individual human beings, real or fictional characters in the story
+- Location: Physical places such as cities, countries, buildings, or fictional settings
+- Event: Significant occurrences or plot points in the narrative
+- Organization: Groups, factions, guilds, or institutions within the story
+- Artifact: Important objects, weapons, tools, or items with narrative significance
+- Concept: Abstract ideas, themes, beliefs, or philosophies explored in the text""",
+        )
+        rag_2 = await initialize_rag(
+            "rag_workspace_hr",
+            entity_types_guidance="""Use the following entity types to classify extracted entities:
+- Policy: HR rules, regulations, guidelines, or procedures
+- Role: Job titles, positions, or employee classifications
+- Benefit: Compensation, insurance, leave entitlements, or perks
+- Department: Organizational units or teams within the company
+- Process: Workflows, approval chains, or operational procedures
+- Regulation: Legal requirements, compliance standards, or labor laws""",
+        )
 
         # 2. Populate Workspace 1 (Literature)
         book_path = "Data/book-small.txt"
