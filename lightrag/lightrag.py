@@ -60,7 +60,6 @@ from lightrag.constants import (
     DEFAULT_MAX_GRAPH_NODES,
     DEFAULT_MAX_SOURCE_IDS_PER_ENTITY,
     DEFAULT_MAX_SOURCE_IDS_PER_RELATION,
-    DEFAULT_ENTITY_TYPES,
     DEFAULT_SUMMARY_LANGUAGE,
     DEFAULT_LLM_TIMEOUT,
     DEFAULT_EMBEDDING_TIMEOUT,
@@ -734,7 +733,6 @@ class LightRAG:
             "language": get_env_value(
                 "SUMMARY_LANGUAGE", DEFAULT_SUMMARY_LANGUAGE, str
             ),
-            "entity_types": get_env_value("ENTITY_TYPES", DEFAULT_ENTITY_TYPES, list),
         }
     )
 
@@ -964,6 +962,14 @@ class LightRAG:
         from lightrag.kg.shared_storage import (
             initialize_share_data,
         )
+
+        # Fail fast if deprecated ENTITY_TYPES env var is set
+        if os.getenv("ENTITY_TYPES") is not None:
+            raise SystemExit(
+                "ERROR: ENTITY_TYPES environment variable is no longer supported. "
+                "Please customize entity type guidance through the prompt template instead. "
+                "Set addon_params={'entity_types_guidance': '...'} or replace the prompt template."
+            )
 
         # Handle deprecated parameters
         if self.log_level is not None:
