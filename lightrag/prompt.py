@@ -311,8 +311,8 @@ It was a small transformation, barely perceptible, but one that Alex noted with 
 ```
 
 <Output>
-
-{, "entity_description": "Alex is a character who experiences frustration and is observant of the dynamics among other characters."},
+{
+  "entities": [
     {"entity_name": "Taylor", "entity_type": "Person", "entity_description": "Taylor is portrayed with authoritarian certainty and shows a moment of reverence towards a device, indicating a change in perspective."},
     {"entity_name": "Jordan", "entity_type": "Person", "entity_description": "Jordan shares a commitment to discovery and has a significant interaction with Taylor regarding a device."},
     {"entity_name": "Cruz", "entity_type": "Person", "entity_description": "Cruz is associated with a vision of control and order, influencing the dynamics among other characters."},
