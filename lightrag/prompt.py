@@ -11,7 +11,9 @@ PROMPTS["DEFAULT_COMPLETION_DELIMITER"] = "<|COMPLETE|>"
 # Default entity type guidance injected into extraction prompts via {entity_types_guidance}.
 # Users can override this by passing entity_types_guidance in addon_params, or by
 # replacing the full prompt template string in PROMPTS.
-PROMPTS["default_entity_types_guidance"] = """Classify each entity using one of the following types. If no type fits, use `Other`.
+PROMPTS[
+    "default_entity_types_guidance"
+] = """Classify each entity using one of the following types. If no type fits, use `Other`.
 
 - Person: Human individuals, real or fictional
 - Creature: Non-human living beings (animals, mythical beings, etc.)

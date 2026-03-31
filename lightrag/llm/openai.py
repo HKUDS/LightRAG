@@ -285,6 +285,7 @@ async def openai_complete_if_cache(
     entity_extraction = kwargs.pop("entity_extraction", False)
     if entity_extraction:
         from lightrag.types import EntityExtractionResult
+
         kwargs["response_format"] = EntityExtractionResult
 
     # Handle keyword extraction mode
