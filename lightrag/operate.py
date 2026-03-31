@@ -59,7 +59,6 @@ from lightrag.constants import (
     DEFAULT_MAX_TOTAL_TOKENS,
     DEFAULT_RELATED_CHUNK_NUMBER,
     DEFAULT_KG_CHUNK_PICK_METHOD,
-    DEFAULT_ENTITY_TYPES,
     DEFAULT_SUMMARY_LANGUAGE,
     SOURCE_IDS_LIMIT_METHOD_KEEP,
     SOURCE_IDS_LIMIT_METHOD_FIFO,
@@ -3268,15 +3267,15 @@ async def extract_entities(
     ordered_chunks = list(chunks.items())
     # add language and example number params to prompt
     language = global_config["addon_params"].get("language", DEFAULT_SUMMARY_LANGUAGE)
-    entity_types = global_config["addon_params"].get(
-        "entity_types", DEFAULT_ENTITY_TYPES
+    entity_types_guidance = global_config["addon_params"].get(
+        "entity_types_guidance", PROMPTS["default_entity_types_guidance"]
     )
 
     if use_json_extraction:
         # JSON mode: use JSON-specific prompts without delimiters
         examples = "\n".join(PROMPTS["entity_extraction_json_examples"])
         context_base = dict(
-            entity_types=",".join(entity_types),
+            entity_types_guidance=entity_types_guidance,
             examples=examples,
             language=language,
         )
@@ -3287,7 +3286,7 @@ async def extract_entities(
         example_context_base = dict(
             tuple_delimiter=PROMPTS["DEFAULT_TUPLE_DELIMITER"],
             completion_delimiter=PROMPTS["DEFAULT_COMPLETION_DELIMITER"],
-            entity_types=", ".join(entity_types),
+            entity_types_guidance=entity_types_guidance,
             language=language,
         )
         # add example's format
@@ -3296,7 +3295,7 @@ async def extract_entities(
         context_base = dict(
             tuple_delimiter=PROMPTS["DEFAULT_TUPLE_DELIMITER"],
             completion_delimiter=PROMPTS["DEFAULT_COMPLETION_DELIMITER"],
-            entity_types=",".join(entity_types),
+            entity_types_guidance=entity_types_guidance,
             examples=examples,
             language=language,
         )

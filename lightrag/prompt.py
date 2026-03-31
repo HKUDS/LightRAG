@@ -8,6 +8,23 @@ PROMPTS: dict[str, Any] = {}
 PROMPTS["DEFAULT_TUPLE_DELIMITER"] = "<|#|>"
 PROMPTS["DEFAULT_COMPLETION_DELIMITER"] = "<|COMPLETE|>"
 
+# Default entity type guidance injected into extraction prompts via {entity_types_guidance}.
+# Users can override this by passing entity_types_guidance in addon_params, or by
+# replacing the full prompt template string in PROMPTS.
+PROMPTS["default_entity_types_guidance"] = """Classify each entity using one of the following types. If no type fits, use `Other`.
+
+- Person: Human individuals, real or fictional
+- Creature: Non-human living beings (animals, mythical beings, etc.)
+- Organization: Companies, institutions, government bodies, groups
+- Location: Geographic places (cities, countries, buildings, regions)
+- Event: Occurrences, incidents, ceremonies, meetings
+- Concept: Abstract ideas, theories, principles, beliefs
+- Method: Procedures, techniques, algorithms, workflows
+- Content: Creative or informational works (books, articles, films, reports)
+- Data: Quantitative or structured information (statistics, datasets, measurements)
+- Artifact: Physical or digital objects created by humans (tools, software, devices)
+- NaturalObject: Natural non-living objects (minerals, celestial bodies, chemical compounds)"""
+
 PROMPTS["entity_extraction_system_prompt"] = """---Role---
 You are a Knowledge Graph Specialist responsible for extracting entities and relationships from the input text.
 
@@ -16,7 +33,7 @@ You are a Knowledge Graph Specialist responsible for extracting entities and rel
     *   **Identification:** Identify clearly defined and meaningful entities in the input text.
     *   **Entity Details:** For each identified entity, extract the following information:
         *   `entity_name`: The name of the entity. If the entity name is case-insensitive, capitalize the first letter of each significant word (title case). Ensure **consistent naming** across the entire extraction process.
-        *   `entity_type`: Categorize the entity using one of the following types: `{entity_types}`. If none of the provided entity types apply, do not add new entity type and classify it as `Other`.
+        *   `entity_type`: Categorize the entity using the type guidance provided in the `---Entity Types---` section below. If none of the provided entity types apply, classify it as `Other`.
         *   `entity_description`: Provide a concise yet comprehensive description of the entity's attributes and activities, based *solely* on the information present in the input text.
     *   **Output Format - Entities:** Output a total of 4 fields for each entity, delimited by `{tuple_delimiter}`, on a single line. The first field *must* be the literal string `entity`.
         *   Format: `entity{tuple_delimiter}entity_name{tuple_delimiter}entity_type{tuple_delimiter}entity_description`
@@ -56,6 +73,9 @@ You are a Knowledge Graph Specialist responsible for extracting entities and rel
 
 8.  **Completion Signal:** Output the literal string `{completion_delimiter}` only after all entities and relationships, following all criteria, have been completely extracted and outputted.
 
+---Entity Types---
+{entity_types_guidance}
+
 ---Examples---
 {examples}
 """
@@ -70,9 +90,6 @@ Extract entities and relationships from the input text in Data to be Processed b
 4.  **Output Language:** Ensure the output language is {language}. Proper nouns (e.g., personal names, place names, organization names) must be kept in their original language and not translated.
 
 ---Data to be Processed---
-<Entity_types>
-[{entity_types}]
-
 <Input Text>
 ```
 {input_text}
@@ -100,9 +117,10 @@ Based on the last extraction task, identify and extract any **missed or incorrec
 """
 
 PROMPTS["entity_extraction_examples"] = [
-    """<Entity_types>
-["Person","Creature","Organization","Location","Event","Concept","Method","Content","Data","Artifact","NaturalObject"]
-
+    """---Entity Types---
+- Person: Human individuals, real or fictional
+- Artifact: Physical or digital objects created by humans (tools, software, devices)
+- Concept: Abstract ideas, theories, principles, beliefs
 <Input Text>
 ```
 while Alex clenched his jaw, the buzz of frustration dull against the backdrop of Taylor's authoritarian certainty. It was this competitive undercurrent that kept him alert, the sense that his and Jordan's shared commitment to discovery was an unspoken rebellion against Cruz's narrowing vision of control and order.
@@ -115,11 +133,12 @@ It was a small transformation, barely perceptible, but one that Alex noted with 
 ```
 
 <Output>
-entity{tuple_delimiter}Alex{tuple_delimiter}person{tuple_delimiter}Alex is a character who experiences frustration and is observant of the dynamics among other characters.
-entity{tuple_delimiter}Taylor{tuple_delimiter}person{tuple_delimiter}Taylor is portrayed with authoritarian certainty and shows a moment of reverence towards a device, indicating a change in perspective.
-entity{tuple_delimiter}Jordan{tuple_delimiter}person{tuple_delimiter}Jordan shares a commitment to discovery and has a significant interaction with Taylor regarding a device.
-entity{tuple_delimiter}Cruz{tuple_delimiter}person{tuple_delimiter}Cruz is associated with a vision of control and order, influencing the dynamics among other characters.
-entity{tuple_delimiter}The Device{tuple_delimiter}equipment{tuple_delimiter}The Device is central to the story, with potential game-changing implications, and is revered by Taylor.
+entity{tuple_delimiter}Alex{tuple_delimiter}Person{tuple_delimiter}Alex is a character who experiences frustration and is observant of the dynamics among other characters.
+entity{tuple_delimiter}Taylor{tuple_delimiter}Person{tuple_delimiter}Taylor is portrayed with authoritarian certainty and shows a moment of reverence towards a device, indicating a change in perspective.
+entity{tuple_delimiter}Jordan{tuple_delimiter}Person{tuple_delimiter}Jordan shares a commitment to discovery and has a significant interaction with Taylor regarding a device.
+entity{tuple_delimiter}Cruz{tuple_delimiter}Person{tuple_delimiter}Cruz is associated with a vision of control and order, influencing the dynamics among other characters.
+entity{tuple_delimiter}The Device{tuple_delimiter}Artifact{tuple_delimiter}The Device is central to the story, with potential game-changing implications, and is revered by Taylor.
+entity{tuple_delimiter}Discovery{tuple_delimiter}Concept{tuple_delimiter}Discovery represents the shared intellectual pursuit that unites Jordan and Alex in opposition to Cruz's controlling worldview.
 relation{tuple_delimiter}Alex{tuple_delimiter}Taylor{tuple_delimiter}power dynamics, observation{tuple_delimiter}Alex observes Taylor's authoritarian behavior and notes changes in Taylor's attitude toward the device.
 relation{tuple_delimiter}Alex{tuple_delimiter}Jordan{tuple_delimiter}shared goals, rebellion{tuple_delimiter}Alex and Jordan share a commitment to discovery, which contrasts with Cruz's vision.)
 relation{tuple_delimiter}Taylor{tuple_delimiter}Jordan{tuple_delimiter}conflict resolution, mutual respect{tuple_delimiter}Taylor and Jordan interact directly regarding the device, leading to a moment of mutual respect and an uneasy truce.
@@ -128,55 +147,67 @@ relation{tuple_delimiter}Taylor{tuple_delimiter}The Device{tuple_delimiter}rever
 {completion_delimiter}
 
 """,
-    """<Entity_types>
-["Person","Creature","Organization","Location","Event","Concept","Method","Content","Data","Artifact","NaturalObject"]
-
+    """---Entity Types---
+- Person: Human individuals, real or fictional
+- Location: Geographic places (cities, countries, buildings, regions)
+- Creature: Non-human living beings (animals, mythical beings, etc.)
+- Method: Procedures, techniques, algorithms, workflows
+- Organization: Companies, institutions, government bodies, groups
+- Content: Creative or informational works (books, articles, films, reports)
+- NaturalObject: Natural non-living objects (minerals, celestial bodies, chemical compounds)
 <Input Text>
 ```
-Stock markets faced a sharp downturn today as tech giants saw significant declines, with the global tech index dropping by 3.4% in midday trading. Analysts attribute the selloff to investor concerns over rising interest rates and regulatory uncertainty.
+Dr. Elena Vasquez led a field expedition to the Borneo rainforest to document the population decline of the Bornean orangutan. Using transect sampling — a method where researchers walk predetermined line paths and record every animal sighting within a fixed distance — her team estimated that fewer than 1,500 individuals remained in the surveyed region.
 
-Among the hardest hit, nexon technologies saw its stock plummet by 7.8% after reporting lower-than-expected quarterly earnings. In contrast, Omega Energy posted a modest 2.1% gain, driven by rising oil prices.
-
-Meanwhile, commodity markets reflected a mixed sentiment. Gold futures rose by 1.5%, reaching $2,080 per ounce, as investors sought safe-haven assets. Crude oil prices continued their rally, climbing to $87.60 per barrel, supported by supply constraints and strong demand.
-
-Financial experts are closely watching the Federal Reserve's next move, as speculation grows over potential rate hikes. The upcoming policy announcement is expected to influence investor confidence and overall market stability.
+The expedition was funded by the Global Wildlife Conservation Institute and produced a landmark report titled "Primate Decline in Insular Southeast Asia." Vasquez attributed the collapse primarily to peat-soil destruction caused by palm oil plantation expansion, which had converted over 40% of the surveyed forest area within a decade.
 ```
 
 <Output>
-entity{tuple_delimiter}Global Tech Index{tuple_delimiter}category{tuple_delimiter}The Global Tech Index tracks the performance of major technology stocks and experienced a 3.4% decline today.
-entity{tuple_delimiter}Nexon Technologies{tuple_delimiter}organization{tuple_delimiter}Nexon Technologies is a tech company that saw its stock decline by 7.8% after disappointing earnings.
-entity{tuple_delimiter}Omega Energy{tuple_delimiter}organization{tuple_delimiter}Omega Energy is an energy company that gained 2.1% in stock value due to rising oil prices.
-entity{tuple_delimiter}Gold Futures{tuple_delimiter}product{tuple_delimiter}Gold futures rose by 1.5%, indicating increased investor interest in safe-haven assets.
-entity{tuple_delimiter}Crude Oil{tuple_delimiter}product{tuple_delimiter}Crude oil prices rose to $87.60 per barrel due to supply constraints and strong demand.
-entity{tuple_delimiter}Market Selloff{tuple_delimiter}category{tuple_delimiter}Market selloff refers to the significant decline in stock values due to investor concerns over interest rates and regulations.
-entity{tuple_delimiter}Federal Reserve Policy Announcement{tuple_delimiter}category{tuple_delimiter}The Federal Reserve's upcoming policy announcement is expected to impact investor confidence and market stability.
-entity{tuple_delimiter}3.4% Decline{tuple_delimiter}category{tuple_delimiter}The Global Tech Index experienced a 3.4% decline in midday trading.
-relation{tuple_delimiter}Global Tech Index{tuple_delimiter}Market Selloff{tuple_delimiter}market performance, investor sentiment{tuple_delimiter}The decline in the Global Tech Index is part of the broader market selloff driven by investor concerns.
-relation{tuple_delimiter}Nexon Technologies{tuple_delimiter}Global Tech Index{tuple_delimiter}company impact, index movement{tuple_delimiter}Nexon Technologies' stock decline contributed to the overall drop in the Global Tech Index.
-relation{tuple_delimiter}Gold Futures{tuple_delimiter}Market Selloff{tuple_delimiter}market reaction, safe-haven investment{tuple_delimiter}Gold prices rose as investors sought safe-haven assets during the market selloff.
-relation{tuple_delimiter}Federal Reserve Policy Announcement{tuple_delimiter}Market Selloff{tuple_delimiter}interest rate impact, financial regulation{tuple_delimiter}Speculation over Federal Reserve policy changes contributed to market volatility and investor selloff.
+entity{tuple_delimiter}Dr. Elena Vasquez{tuple_delimiter}Person{tuple_delimiter}Dr. Elena Vasquez is a field researcher who led an expedition to document orangutan population decline in Borneo.
+entity{tuple_delimiter}Borneo Rainforest{tuple_delimiter}Location{tuple_delimiter}The Borneo rainforest is the field site of the expedition and the primary habitat of the Bornean orangutan.
+entity{tuple_delimiter}Bornean Orangutan{tuple_delimiter}Creature{tuple_delimiter}The Bornean orangutan is a primate species whose population was found to have declined to fewer than 1,500 individuals in the surveyed region.
+entity{tuple_delimiter}Transect Sampling{tuple_delimiter}Method{tuple_delimiter}Transect sampling is a wildlife survey technique where researchers walk predetermined paths and record animal sightings within a fixed lateral distance.
+entity{tuple_delimiter}Global Wildlife Conservation Institute{tuple_delimiter}Organization{tuple_delimiter}The Global Wildlife Conservation Institute funded the expedition led by Dr. Vasquez.
+entity{tuple_delimiter}Primate Decline in Insular Southeast Asia{tuple_delimiter}Content{tuple_delimiter}A landmark research report produced by Vasquez's expedition documenting primate population decline in the region.
+entity{tuple_delimiter}Peat Soil{tuple_delimiter}NaturalObject{tuple_delimiter}Peat soil is a natural substrate in the Borneo rainforest that has been destroyed by palm oil plantation expansion.
+relation{tuple_delimiter}Dr. Elena Vasquez{tuple_delimiter}Bornean Orangutan{tuple_delimiter}field research, population survey{tuple_delimiter}Dr. Vasquez led the expedition that documented the population decline of the Bornean orangutan.
+relation{tuple_delimiter}Dr. Elena Vasquez{tuple_delimiter}Transect Sampling{tuple_delimiter}methodology, research application{tuple_delimiter}Dr. Vasquez's team used transect sampling to estimate the orangutan population.
+relation{tuple_delimiter}Global Wildlife Conservation Institute{tuple_delimiter}Dr. Elena Vasquez{tuple_delimiter}funding, research support{tuple_delimiter}The institute funded the expedition led by Dr. Vasquez.
+relation{tuple_delimiter}Dr. Elena Vasquez{tuple_delimiter}Primate Decline in Insular Southeast Asia{tuple_delimiter}authorship, research output{tuple_delimiter}Dr. Vasquez's expedition produced the landmark report on primate decline.
+relation{tuple_delimiter}Peat Soil{tuple_delimiter}Borneo Rainforest{tuple_delimiter}habitat composition, ecological destruction{tuple_delimiter}Peat soil destruction in the Borneo rainforest was caused by palm oil plantation expansion and is a primary driver of orangutan decline.
 {completion_delimiter}
 
 """,
-    """<Entity_types>
-["Person","Creature","Organization","Location","Event","Concept","Method","Content","Data","Artifact","NaturalObject"]
-
+    """---Entity Types---
+- Content: Creative or informational works (books, articles, films, reports)
+- Artifact: Physical or digital objects created by humans (tools, software, devices)
+- Person: Human individuals, real or fictional
+- Organization: Companies, institutions, government bodies, groups
+- Method: Procedures, techniques, algorithms, workflows
+- Data: Quantitative or structured information (statistics, datasets, measurements)
+- Concept: Abstract ideas, theories, principles, beliefs
 <Input Text>
 ```
-At the World Athletics Championship in Tokyo, Noah Carter broke the 100m sprint record using cutting-edge carbon-fiber spikes.
+The 2023 edition of "Advances in Neural Architecture Search" synthesized findings from over 200 peer-reviewed papers and introduced a new benchmarking framework called NASBench-360, designed to evaluate search algorithms across diverse task domains. The publication was co-authored by Dr. Priya Nair and Dr. Luca Ferretti of the DeepSystems Research Lab.
+
+NASBench-360 measures three key metrics: search efficiency (time-to-solution), model accuracy on held-out test sets, and computational cost in GPU-hours. Early results showed that evolutionary search algorithms outperformed gradient-based methods by 12% on accuracy while consuming 30% fewer GPU-hours on vision tasks.
 ```
 
 <Output>
-entity{tuple_delimiter}World Athletics Championship{tuple_delimiter}event{tuple_delimiter}The World Athletics Championship is a global sports competition featuring top athletes in track and field.
-entity{tuple_delimiter}Tokyo{tuple_delimiter}location{tuple_delimiter}Tokyo is the host city of the World Athletics Championship.
-entity{tuple_delimiter}Noah Carter{tuple_delimiter}person{tuple_delimiter}Noah Carter is a sprinter who set a new record in the 100m sprint at the World Athletics Championship.
-entity{tuple_delimiter}100m Sprint Record{tuple_delimiter}category{tuple_delimiter}The 100m sprint record is a benchmark in athletics, recently broken by Noah Carter.
-entity{tuple_delimiter}Carbon-Fiber Spikes{tuple_delimiter}equipment{tuple_delimiter}Carbon-fiber spikes are advanced sprinting shoes that provide enhanced speed and traction.
-entity{tuple_delimiter}World Athletics Federation{tuple_delimiter}organization{tuple_delimiter}The World Athletics Federation is the governing body overseeing the World Athletics Championship and record validations.
-relation{tuple_delimiter}World Athletics Championship{tuple_delimiter}Tokyo{tuple_delimiter}event location, international competition{tuple_delimiter}The World Athletics Championship is being hosted in Tokyo.
-relation{tuple_delimiter}Noah Carter{tuple_delimiter}100m Sprint Record{tuple_delimiter}athlete achievement, record-breaking{tuple_delimiter}Noah Carter set a new 100m sprint record at the championship.
-relation{tuple_delimiter}Noah Carter{tuple_delimiter}Carbon-Fiber Spikes{tuple_delimiter}athletic equipment, performance boost{tuple_delimiter}Noah Carter used carbon-fiber spikes to enhance performance during the race.
-relation{tuple_delimiter}Noah Carter{tuple_delimiter}World Athletics Championship{tuple_delimiter}athlete participation, competition{tuple_delimiter}Noah Carter is competing at the World Athletics Championship.
+entity{tuple_delimiter}Advances in Neural Architecture Search{tuple_delimiter}Content{tuple_delimiter}A 2023 publication that synthesizes findings from over 200 papers and introduces the NASBench-360 benchmarking framework.
+entity{tuple_delimiter}NASBench-360{tuple_delimiter}Artifact{tuple_delimiter}NASBench-360 is a benchmarking framework introduced to evaluate neural architecture search algorithms across diverse task domains.
+entity{tuple_delimiter}Dr. Priya Nair{tuple_delimiter}Person{tuple_delimiter}Dr. Priya Nair is a co-author of the publication and a researcher at the DeepSystems Research Lab.
+entity{tuple_delimiter}Dr. Luca Ferretti{tuple_delimiter}Person{tuple_delimiter}Dr. Luca Ferretti is a co-author of the publication and a researcher at the DeepSystems Research Lab.
+entity{tuple_delimiter}DeepSystems Research Lab{tuple_delimiter}Organization{tuple_delimiter}The DeepSystems Research Lab is the institution where the co-authors of the publication are affiliated.
+entity{tuple_delimiter}Evolutionary Search{tuple_delimiter}Method{tuple_delimiter}Evolutionary search is a class of neural architecture search algorithms that outperformed gradient-based methods in the NASBench-360 evaluation.
+entity{tuple_delimiter}Gradient-Based Search{tuple_delimiter}Method{tuple_delimiter}Gradient-based search is a class of neural architecture search algorithms that was benchmarked against evolutionary search in NASBench-360.
+entity{tuple_delimiter}GPU-Hours{tuple_delimiter}Data{tuple_delimiter}GPU-hours is a metric used in NASBench-360 to measure the computational cost of neural architecture search algorithms.
+entity{tuple_delimiter}Neural Architecture Search{tuple_delimiter}Concept{tuple_delimiter}Neural architecture search is the automated process of designing optimal neural network architectures, the central topic of the publication.
+relation{tuple_delimiter}Dr. Priya Nair{tuple_delimiter}Advances in Neural Architecture Search{tuple_delimiter}authorship{tuple_delimiter}Dr. Priya Nair co-authored the publication.
+relation{tuple_delimiter}Dr. Luca Ferretti{tuple_delimiter}Advances in Neural Architecture Search{tuple_delimiter}authorship{tuple_delimiter}Dr. Luca Ferretti co-authored the publication.
+relation{tuple_delimiter}Advances in Neural Architecture Search{tuple_delimiter}NASBench-360{tuple_delimiter}introduces, benchmarking{tuple_delimiter}The publication introduced the NASBench-360 framework.
+relation{tuple_delimiter}Evolutionary Search{tuple_delimiter}Gradient-Based Search{tuple_delimiter}performance comparison{tuple_delimiter}Evolutionary search outperformed gradient-based methods by 12% on accuracy and used 30% fewer GPU-hours on vision tasks.
+relation{tuple_delimiter}NASBench-360{tuple_delimiter}GPU-Hours{tuple_delimiter}evaluation metric{tuple_delimiter}NASBench-360 uses GPU-hours as one of three key metrics to measure computational cost.
 {completion_delimiter}
 
 """,
@@ -195,7 +226,7 @@ You are a Knowledge Graph Specialist responsible for extracting entities and rel
     *   **Identification:** Identify clearly defined and meaningful entities in the input text.
     *   **Entity Details:** For each identified entity, extract the following information:
         *   `entity_name`: The name of the entity. If the entity name is case-insensitive, capitalize the first letter of each significant word (title case). Ensure **consistent naming** across the entire extraction process.
-        *   `entity_type`: Categorize the entity using one of the following types: `{entity_types}`. If none of the provided entity types apply, do not add new entity type and classify it as `Other`.
+        *   `entity_type`: Categorize the entity using the type guidance provided in the `---Entity Types---` section below. If none of the provided entity types apply, classify it as `Other`.
         *   `entity_description`: Provide a concise yet comprehensive description of the entity's attributes and activities, based *solely* on the information present in the input text.
 
 2.  **Relationship Extraction:**
@@ -223,27 +254,8 @@ You are a Knowledge Graph Specialist responsible for extracting entities and rel
     *   The entire output (entity names, keywords, and descriptions) must be written in `{language}`.
     *   Proper nouns (e.g., personal names, place names, organization names) should be retained in their original language if a proper, widely accepted translation is not available or would cause ambiguity.
 
-7.  **Output Format:** Your output MUST be a valid JSON object with the following structure:
-
-```json
-{{
-  "entities": [
-    {{
-      "entity_name": "Entity Name",
-      "entity_type": "entity_type",
-      "entity_description": "Description of the entity."
-    }}
-  ],
-  "relationships": [
-    {{
-      "source_entity": "Source Entity Name",
-      "target_entity": "Target Entity Name",
-      "relationship_keywords": "keyword1, keyword2",
-      "relationship_description": "Description of the relationship."
-    }}
-  ]
-}}
-```
+---Entity Types---
+{entity_types_guidance}
 
 ---Examples---
 {examples}
@@ -257,9 +269,6 @@ Extract entities and relationships from the input text in Data to be Processed b
 2.  **Output Language:** Ensure the output language is {language}. Proper nouns (e.g., personal names, place names, organization names) must be kept in their original language and not translated.
 
 ---Data to be Processed---
-<Entity_types>
-[{entity_types}]
-
 <Input Text>
 ```
 {input_text}
@@ -284,9 +293,10 @@ Based on the last extraction task, identify and extract any **missed or incorrec
 """
 
 PROMPTS["entity_extraction_json_examples"] = [
-    """<Entity_types>
-["Person","Creature","Organization","Location","Event","Concept","Method","Content","Data","Artifact","NaturalObject"]
-
+    """---Entity Types---
+- Person: Human individuals, real or fictional
+- Artifact: Physical or digital objects created by humans (tools, software, devices)
+- Concept: Abstract ideas, theories, principles, beliefs
 <Input Text>
 ```
 while Alex clenched his jaw, the buzz of frustration dull against the backdrop of Taylor's authoritarian certainty. It was this competitive undercurrent that kept him alert, the sense that his and Jordan's shared commitment to discovery was an unspoken rebellion against Cruz's narrowing vision of control and order.
@@ -299,13 +309,13 @@ It was a small transformation, barely perceptible, but one that Alex noted with 
 ```
 
 <Output>
-{
-  "entities": [
-    {"entity_name": "Alex", "entity_type": "person", "entity_description": "Alex is a character who experiences frustration and is observant of the dynamics among other characters."},
-    {"entity_name": "Taylor", "entity_type": "person", "entity_description": "Taylor is portrayed with authoritarian certainty and shows a moment of reverence towards a device, indicating a change in perspective."},
-    {"entity_name": "Jordan", "entity_type": "person", "entity_description": "Jordan shares a commitment to discovery and has a significant interaction with Taylor regarding a device."},
-    {"entity_name": "Cruz", "entity_type": "person", "entity_description": "Cruz is associated with a vision of control and order, influencing the dynamics among other characters."},
-    {"entity_name": "The Device", "entity_type": "equipment", "entity_description": "The Device is central to the story, with potential game-changing implications, and is revered by Taylor."}
+
+{, "entity_description": "Alex is a character who experiences frustration and is observant of the dynamics among other characters."},
+    {"entity_name": "Taylor", "entity_type": "Person", "entity_description": "Taylor is portrayed with authoritarian certainty and shows a moment of reverence towards a device, indicating a change in perspective."},
+    {"entity_name": "Jordan", "entity_type": "Person", "entity_description": "Jordan shares a commitment to discovery and has a significant interaction with Taylor regarding a device."},
+    {"entity_name": "Cruz", "entity_type": "Person", "entity_description": "Cruz is associated with a vision of control and order, influencing the dynamics among other characters."},
+    {"entity_name": "The Device", "entity_type": "Artifact", "entity_description": "The Device is central to the story, with potential game-changing implications, and is revered by Taylor."},
+    {"entity_name": "Discovery", "entity_type": "Concept", "entity_description": "Discovery represents the shared intellectual pursuit that unites Jordan and Alex in opposition to Cruz's controlling worldview."}
   ],
   "relationships": [
     {"source_entity": "Alex", "target_entity": "Taylor", "relationship_keywords": "power dynamics, observation", "relationship_description": "Alex observes Taylor's authoritarian behavior and notes changes in Taylor's attitude toward the device."},
@@ -317,64 +327,76 @@ It was a small transformation, barely perceptible, but one that Alex noted with 
 }
 
 """,
-    """<Entity_types>
-["Person","Creature","Organization","Location","Event","Concept","Method","Content","Data","Artifact","NaturalObject"]
-
+    """---Entity Types---
+- Person: Human individuals, real or fictional
+- Location: Geographic places (cities, countries, buildings, regions)
+- Creature: Non-human living beings (animals, mythical beings, etc.)
+- Method: Procedures, techniques, algorithms, workflows
+- Organization: Companies, institutions, government bodies, groups
+- Content: Creative or informational works (books, articles, films, reports)
+- NaturalObject: Natural non-living objects (minerals, celestial bodies, chemical compounds)
 <Input Text>
 ```
-Stock markets faced a sharp downturn today as tech giants saw significant declines, with the global tech index dropping by 3.4% in midday trading. Analysts attribute the selloff to investor concerns over rising interest rates and regulatory uncertainty.
+Dr. Elena Vasquez led a field expedition to the Borneo rainforest to document the population decline of the Bornean orangutan. Using transect sampling — a method where researchers walk predetermined line paths and record every animal sighting within a fixed distance — her team estimated that fewer than 1,500 individuals remained in the surveyed region.
 
-Among the hardest hit, nexon technologies saw its stock plummet by 7.8% after reporting lower-than-expected quarterly earnings. In contrast, Omega Energy posted a modest 2.1% gain, driven by rising oil prices.
-
-Meanwhile, commodity markets reflected a mixed sentiment. Gold futures rose by 1.5%, reaching $2,080 per ounce, as investors sought safe-haven assets. Crude oil prices continued their rally, climbing to $87.60 per barrel, supported by supply constraints and strong demand.
-
-Financial experts are closely watching the Federal Reserve's next move, as speculation grows over potential rate hikes. The upcoming policy announcement is expected to influence investor confidence and overall market stability.
+The expedition was funded by the Global Wildlife Conservation Institute and produced a landmark report titled "Primate Decline in Insular Southeast Asia." Vasquez attributed the collapse primarily to peat-soil destruction caused by palm oil plantation expansion, which had converted over 40% of the surveyed forest area within a decade.
 ```
 
 <Output>
 {
   "entities": [
-    {"entity_name": "Global Tech Index", "entity_type": "category", "entity_description": "The Global Tech Index tracks the performance of major technology stocks and experienced a 3.4% decline today."},
-    {"entity_name": "Nexon Technologies", "entity_type": "organization", "entity_description": "Nexon Technologies is a tech company that saw its stock decline by 7.8% after disappointing earnings."},
-    {"entity_name": "Omega Energy", "entity_type": "organization", "entity_description": "Omega Energy is an energy company that gained 2.1% in stock value due to rising oil prices."},
-    {"entity_name": "Gold Futures", "entity_type": "product", "entity_description": "Gold futures rose by 1.5%, indicating increased investor interest in safe-haven assets."},
-    {"entity_name": "Crude Oil", "entity_type": "product", "entity_description": "Crude oil prices rose to $87.60 per barrel due to supply constraints and strong demand."},
-    {"entity_name": "Market Selloff", "entity_type": "category", "entity_description": "Market selloff refers to the significant decline in stock values due to investor concerns over interest rates and regulations."},
-    {"entity_name": "Federal Reserve Policy Announcement", "entity_type": "category", "entity_description": "The Federal Reserve's upcoming policy announcement is expected to impact investor confidence and market stability."},
-    {"entity_name": "3.4% Decline", "entity_type": "category", "entity_description": "The Global Tech Index experienced a 3.4% decline in midday trading."}
+    {"entity_name": "Dr. Elena Vasquez", "entity_type": "Person", "entity_description": "Dr. Elena Vasquez is a field researcher who led an expedition to document orangutan population decline in Borneo."},
+    {"entity_name": "Borneo Rainforest", "entity_type": "Location", "entity_description": "The Borneo rainforest is the field site of the expedition and the primary habitat of the Bornean orangutan."},
+    {"entity_name": "Bornean Orangutan", "entity_type": "Creature", "entity_description": "The Bornean orangutan is a primate species whose population was found to have declined to fewer than 1,500 individuals in the surveyed region."},
+    {"entity_name": "Transect Sampling", "entity_type": "Method", "entity_description": "Transect sampling is a wildlife survey technique where researchers walk predetermined paths and record animal sightings within a fixed lateral distance."},
+    {"entity_name": "Global Wildlife Conservation Institute", "entity_type": "Organization", "entity_description": "The Global Wildlife Conservation Institute funded the expedition led by Dr. Vasquez."},
+    {"entity_name": "Primate Decline in Insular Southeast Asia", "entity_type": "Content", "entity_description": "A landmark research report produced by Vasquez's expedition documenting primate population decline in the region."},
+    {"entity_name": "Peat Soil", "entity_type": "NaturalObject", "entity_description": "Peat soil is a natural substrate in the Borneo rainforest that has been destroyed by palm oil plantation expansion."}
   ],
   "relationships": [
-    {"source_entity": "Global Tech Index", "target_entity": "Market Selloff", "relationship_keywords": "market performance, investor sentiment", "relationship_description": "The decline in the Global Tech Index is part of the broader market selloff driven by investor concerns."},
-    {"source_entity": "Nexon Technologies", "target_entity": "Global Tech Index", "relationship_keywords": "company impact, index movement", "relationship_description": "Nexon Technologies' stock decline contributed to the overall drop in the Global Tech Index."},
-    {"source_entity": "Gold Futures", "target_entity": "Market Selloff", "relationship_keywords": "market reaction, safe-haven investment", "relationship_description": "Gold prices rose as investors sought safe-haven assets during the market selloff."},
-    {"source_entity": "Federal Reserve Policy Announcement", "target_entity": "Market Selloff", "relationship_keywords": "interest rate impact, financial regulation", "relationship_description": "Speculation over Federal Reserve policy changes contributed to market volatility and investor selloff."}
+    {"source_entity": "Dr. Elena Vasquez", "target_entity": "Bornean Orangutan", "relationship_keywords": "field research, population survey", "relationship_description": "Dr. Vasquez led the expedition that documented the population decline of the Bornean orangutan."},
+    {"source_entity": "Dr. Elena Vasquez", "target_entity": "Transect Sampling", "relationship_keywords": "methodology, research application", "relationship_description": "Dr. Vasquez's team used transect sampling to estimate the orangutan population."},
+    {"source_entity": "Global Wildlife Conservation Institute", "target_entity": "Dr. Elena Vasquez", "relationship_keywords": "funding, research support", "relationship_description": "The institute funded the expedition led by Dr. Vasquez."},
+    {"source_entity": "Dr. Elena Vasquez", "target_entity": "Primate Decline in Insular Southeast Asia", "relationship_keywords": "authorship, research output", "relationship_description": "Dr. Vasquez's expedition produced the landmark report on primate decline."},
+    {"source_entity": "Peat Soil", "target_entity": "Borneo Rainforest", "relationship_keywords": "habitat composition, ecological destruction", "relationship_description": "Peat soil destruction in the Borneo rainforest was caused by palm oil plantation expansion and is a primary driver of orangutan decline."}
   ]
 }
 
 """,
-    """<Entity_types>
-["Person","Creature","Organization","Location","Event","Concept","Method","Content","Data","Artifact","NaturalObject"]
-
+    """---Entity Types---
+- Content: Creative or informational works (books, articles, films, reports)
+- Artifact: Physical or digital objects created by humans (tools, software, devices)
+- Person: Human individuals, real or fictional
+- Organization: Companies, institutions, government bodies, groups
+- Method: Procedures, techniques, algorithms, workflows
+- Data: Quantitative or structured information (statistics, datasets, measurements)
+- Concept: Abstract ideas, theories, principles, beliefs
 <Input Text>
 ```
-At the World Athletics Championship in Tokyo, Noah Carter broke the 100m sprint record using cutting-edge carbon-fiber spikes.
+The 2023 edition of "Advances in Neural Architecture Search" synthesized findings from over 200 peer-reviewed papers and introduced a new benchmarking framework called NASBench-360, designed to evaluate search algorithms across diverse task domains. The publication was co-authored by Dr. Priya Nair and Dr. Luca Ferretti of the DeepSystems Research Lab.
+
+NASBench-360 measures three key metrics: search efficiency (time-to-solution), model accuracy on held-out test sets, and computational cost in GPU-hours. Early results showed that evolutionary search algorithms outperformed gradient-based methods by 12% on accuracy while consuming 30% fewer GPU-hours on vision tasks.
 ```
 
 <Output>
 {
   "entities": [
-    {"entity_name": "World Athletics Championship", "entity_type": "event", "entity_description": "The World Athletics Championship is a global sports competition featuring top athletes in track and field."},
-    {"entity_name": "Tokyo", "entity_type": "location", "entity_description": "Tokyo is the host city of the World Athletics Championship."},
-    {"entity_name": "Noah Carter", "entity_type": "person", "entity_description": "Noah Carter is a sprinter who set a new record in the 100m sprint at the World Athletics Championship."},
-    {"entity_name": "100m Sprint Record", "entity_type": "category", "entity_description": "The 100m sprint record is a benchmark in athletics, recently broken by Noah Carter."},
-    {"entity_name": "Carbon-Fiber Spikes", "entity_type": "equipment", "entity_description": "Carbon-fiber spikes are advanced sprinting shoes that provide enhanced speed and traction."},
-    {"entity_name": "World Athletics Federation", "entity_type": "organization", "entity_description": "The World Athletics Federation is the governing body overseeing the World Athletics Championship and record validations."}
+    {"entity_name": "Advances in Neural Architecture Search", "entity_type": "Content", "entity_description": "A 2023 publication that synthesizes findings from over 200 papers and introduces the NASBench-360 benchmarking framework."},
+    {"entity_name": "NASBench-360", "entity_type": "Artifact", "entity_description": "NASBench-360 is a benchmarking framework introduced to evaluate neural architecture search algorithms across diverse task domains."},
+    {"entity_name": "Dr. Priya Nair", "entity_type": "Person", "entity_description": "Dr. Priya Nair is a co-author of the publication and a researcher at the DeepSystems Research Lab."},
+    {"entity_name": "Dr. Luca Ferretti", "entity_type": "Person", "entity_description": "Dr. Luca Ferretti is a co-author of the publication and a researcher at the DeepSystems Research Lab."},
+    {"entity_name": "DeepSystems Research Lab", "entity_type": "Organization", "entity_description": "The DeepSystems Research Lab is the institution where the co-authors of the publication are affiliated."},
+    {"entity_name": "Evolutionary Search", "entity_type": "Method", "entity_description": "Evolutionary search is a class of neural architecture search algorithms that outperformed gradient-based methods in the NASBench-360 evaluation."},
+    {"entity_name": "Gradient-Based Search", "entity_type": "Method", "entity_description": "Gradient-based search is a class of neural architecture search algorithms that was benchmarked against evolutionary search in NASBench-360."},
+    {"entity_name": "GPU-Hours", "entity_type": "Data", "entity_description": "GPU-hours is a metric used in NASBench-360 to measure the computational cost of neural architecture search algorithms."},
+    {"entity_name": "Neural Architecture Search", "entity_type": "Concept", "entity_description": "Neural architecture search is the automated process of designing optimal neural network architectures, the central topic of the publication."}
   ],
   "relationships": [
-    {"source_entity": "World Athletics Championship", "target_entity": "Tokyo", "relationship_keywords": "event location, international competition", "relationship_description": "The World Athletics Championship is being hosted in Tokyo."},
-    {"source_entity": "Noah Carter", "target_entity": "100m Sprint Record", "relationship_keywords": "athlete achievement, record-breaking", "relationship_description": "Noah Carter set a new 100m sprint record at the championship."},
-    {"source_entity": "Noah Carter", "target_entity": "Carbon-Fiber Spikes", "relationship_keywords": "athletic equipment, performance boost", "relationship_description": "Noah Carter used carbon-fiber spikes to enhance performance during the race."},
-    {"source_entity": "Noah Carter", "target_entity": "World Athletics Championship", "relationship_keywords": "athlete participation, competition", "relationship_description": "Noah Carter is competing at the World Athletics Championship."}
+    {"source_entity": "Dr. Priya Nair", "target_entity": "Advances in Neural Architecture Search", "relationship_keywords": "authorship", "relationship_description": "Dr. Priya Nair co-authored the publication."},
+    {"source_entity": "Dr. Luca Ferretti", "target_entity": "Advances in Neural Architecture Search", "relationship_keywords": "authorship", "relationship_description": "Dr. Luca Ferretti co-authored the publication."},
+    {"source_entity": "Advances in Neural Architecture Search", "target_entity": "NASBench-360", "relationship_keywords": "introduces, benchmarking", "relationship_description": "The publication introduced the NASBench-360 framework."},
+    {"source_entity": "Evolutionary Search", "target_entity": "Gradient-Based Search", "relationship_keywords": "performance comparison", "relationship_description": "Evolutionary search outperformed gradient-based methods by 12% on accuracy and used 30% fewer GPU-hours on vision tasks."},
+    {"source_entity": "NASBench-360", "target_entity": "GPU-Hours", "relationship_keywords": "evaluation metric", "relationship_description": "NASBench-360 uses GPU-hours as one of three key metrics to measure computational cost."}
   ]
 }
 
