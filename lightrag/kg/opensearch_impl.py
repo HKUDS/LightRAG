@@ -439,9 +439,7 @@ class OpenSearchKVStorage(BaseKVStorage):
                 logger.warning(
                     f"[{self.workspace}] {len(failed)} documents failed to upsert"
                 )
-            logger.debug(
-                f"[{self.workspace}] Flushed {success} KV docs via bulk"
-            )
+            logger.debug(f"[{self.workspace}] Flushed {success} KV docs via bulk")
         except OpenSearchException as e:
             # Buffer is preserved so next index_done_callback() or finalize() retries
             logger.error(f"[{self.workspace}] Error flushing KV upserts: {e}")
@@ -1596,9 +1594,7 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                 edge_id = reverse_id
             else:
                 try:
-                    if await self.client.exists(
-                        index=self._edges_index, id=reverse_id
-                    ):
+                    if await self.client.exists(index=self._edges_index, id=reverse_id):
                         edge_id = reverse_id
                 except OpenSearchException:
                     pass
@@ -2561,9 +2557,7 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                 logger.warning(
                     f"[{self.workspace}] {len(failed)} graph ops failed during bulk flush"
                 )
-            logger.debug(
-                f"[{self.workspace}] Flushed {success} graph ops via bulk"
-            )
+            logger.debug(f"[{self.workspace}] Flushed {success} graph ops via bulk")
         except OpenSearchException as e:
             # Buffer is preserved so next index_done_callback() or finalize() retries
             logger.error(f"[{self.workspace}] Error flushing graph ops: {e}")
