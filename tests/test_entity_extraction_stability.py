@@ -64,24 +64,36 @@ _TEXT_MODE_RESPONSE = (
     "\n<|COMPLETE|>"
 )
 
-_JSON_MODE_RESPONSE = json.dumps({
-    "entities": [
-        {"entity_name": "Alice", "entity_type": "Person",
-         "entity_description": "Alice is the founder of Acme Corp."},
-        {"entity_name": "Acme Corp", "entity_type": "Organization",
-         "entity_description": "Acme Corp is a company founded by Alice."},
-    ],
-    "relationships": [
-        {"source_entity": "Alice", "target_entity": "Acme Corp",
-         "relationship_keywords": "founded",
-         "relationship_description": "Alice founded Acme Corp."},
-    ],
-})
+_JSON_MODE_RESPONSE = json.dumps(
+    {
+        "entities": [
+            {
+                "entity_name": "Alice",
+                "entity_type": "Person",
+                "entity_description": "Alice is the founder of Acme Corp.",
+            },
+            {
+                "entity_name": "Acme Corp",
+                "entity_type": "Organization",
+                "entity_description": "Acme Corp is a company founded by Alice.",
+            },
+        ],
+        "relationships": [
+            {
+                "source_entity": "Alice",
+                "target_entity": "Acme Corp",
+                "relationship_keywords": "founded",
+                "relationship_description": "Alice founded Acme Corp.",
+            },
+        ],
+    }
+)
 
 
 # ---------------------------------------------------------------------------
 # 1. Default entity_types_guidance constant
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.offline
 def test_default_entity_types_guidance_exists():
@@ -100,37 +112,50 @@ def test_default_entity_types_guidance_covers_all_types():
 
     guidance = PROMPTS["default_entity_types_guidance"]
     expected_types = [
-        "Person", "Creature", "Organization", "Location", "Event",
-        "Concept", "Method", "Content", "Data", "Artifact", "NaturalObject",
+        "Person",
+        "Creature",
+        "Organization",
+        "Location",
+        "Event",
+        "Concept",
+        "Method",
+        "Content",
+        "Data",
+        "Artifact",
+        "NaturalObject",
     ]
     for t in expected_types:
-        assert t in guidance, f"Expected entity type '{t}' missing from default_entity_types_guidance"
+        assert (
+            t in guidance
+        ), f"Expected entity type '{t}' missing from default_entity_types_guidance"
 
 
 # ---------------------------------------------------------------------------
 # 2. DEFAULT_ENTITY_TYPES is gone from constants
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.offline
 def test_default_entity_types_removed_from_constants():
     """DEFAULT_ENTITY_TYPES must no longer exist in lightrag.constants."""
     import lightrag.constants as constants
 
-    assert not hasattr(constants, "DEFAULT_ENTITY_TYPES"), (
-        "DEFAULT_ENTITY_TYPES should have been removed from constants.py"
-    )
+    assert not hasattr(
+        constants, "DEFAULT_ENTITY_TYPES"
+    ), "DEFAULT_ENTITY_TYPES should have been removed from constants.py"
 
 
 # ---------------------------------------------------------------------------
 # 3. ENTITY_TYPES env var raises SystemExit
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.offline
 def test_entity_types_env_var_raises_system_exit(tmp_path):
     """LightRAG.__post_init__ must raise SystemExit when ENTITY_TYPES env var is set."""
     from lightrag import LightRAG
 
-    with patch.dict(os.environ, {"ENTITY_TYPES": "[\"Person\"]"}):
+    with patch.dict(os.environ, {"ENTITY_TYPES": '["Person"]'}):
         with pytest.raises(SystemExit) as exc_info:
             LightRAG(
                 working_dir=str(tmp_path),
@@ -143,6 +168,7 @@ def test_entity_types_env_var_raises_system_exit(tmp_path):
 # ---------------------------------------------------------------------------
 # 4. Text mode: entity_types_guidance injected into prompt
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.offline
 @pytest.mark.asyncio
@@ -196,6 +222,7 @@ async def test_text_mode_custom_guidance_overrides_default():
 # ---------------------------------------------------------------------------
 # 5. JSON mode: entity_types_guidance injected + entity_extraction kwarg set
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.offline
 @pytest.mark.asyncio
@@ -269,6 +296,7 @@ async def test_json_mode_custom_guidance_overrides_default():
 # ---------------------------------------------------------------------------
 # 6. Text mode: entity_extraction kwarg NOT passed (only JSON mode uses it)
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.offline
 @pytest.mark.asyncio
