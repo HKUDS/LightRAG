@@ -933,7 +933,7 @@ async def _get_cached_extraction_results(
     )
     return sorted_cached_results  # each item: list(extraction_result, create_time)
 
-
+# FXL _process_extraction_result() 会把 LLM 输出逐行解析
 async def _process_extraction_result(
     result: str,
     chunk_key: str,
@@ -2883,6 +2883,7 @@ async def merge_nodes_and_edges(
         pipeline_status["history_messages"].append(log_message)
 
 
+# 实体抽取的核心代码
 async def extract_entities(
     chunks: dict[str, TextChunkSchema],
     global_config: dict[str, str],
@@ -2905,10 +2906,11 @@ async def extract_entities(
     ordered_chunks = list(chunks.items())
     # add language and example number params to prompt
     language = global_config["addon_params"].get("language", DEFAULT_SUMMARY_LANGUAGE)
+    # FXL实体类型：constants.py
     entity_types = global_config["addon_params"].get(
         "entity_types", DEFAULT_ENTITY_TYPES
     )
-
+    # FXL提示词examples
     examples = "\n".join(PROMPTS["entity_extraction_examples"])
 
     example_context_base = dict(
@@ -2930,7 +2932,7 @@ async def extract_entities(
 
     processed_chunks = 0
     total_chunks = len(ordered_chunks)
-
+    # FXL处理单个内容
     async def _process_single_content(chunk_key_dp: tuple[str, TextChunkSchema]):
         """Process a single chunk
         Args:
@@ -2977,6 +2979,7 @@ async def extract_entities(
         )
 
         # Process initial extraction with file path
+        # FXL处理初步提取出来的结果,maybe_nodes, maybe_edges 是“单个 chunk 抽取后得到的候选结果池
         maybe_nodes, maybe_edges = await _process_extraction_result(
             final_result,
             chunk_key,
@@ -2987,6 +2990,7 @@ async def extract_entities(
         )
 
         # Process additional gleaning results only 1 time when entity_extract_max_gleaning is greater than zero.
+        # FXL 当 entity_extract_max_gleaning 大于零时，仅处理一次额外的聚合结果。
         if entity_extract_max_gleaning > 0:
             # Calculate total tokens for the gleaning request to prevent context window overflow
             tokenizer = global_config["tokenizer"]
@@ -3020,6 +3024,7 @@ async def extract_entities(
                 )
 
                 # Process gleaning result separately with file path
+                # FXL聚合
                 glean_nodes, glean_edges = await _process_extraction_result(
                     glean_result,
                     chunk_key,
@@ -3041,12 +3046,13 @@ async def extract_entities(
                         glean_desc_len = len(
                             glean_entities[0].get("description", "") or ""
                         )
-
+                        # FXL如果同一个实体或关系在 glean 里给出了更长的描述，就用 glean 版本替换，否则保留原版
                         if glean_desc_len > original_desc_len:
                             maybe_nodes[entity_name] = list(glean_entities)
                         # Otherwise keep original version
                     else:
                         # New entity from gleaning stage
+                        # FXL 新的实体和关系则直接追加
                         maybe_nodes[entity_name] = list(glean_entities)
                     await _cooperative_yield(i, every=8)
 

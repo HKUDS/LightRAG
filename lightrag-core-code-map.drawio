@@ -1,0 +1,427 @@
+<mxfile host="app.diagrams.net" agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36" version="29.6.6">
+  <diagram id="lightrag-core-code-map" name="LightRAG Core Code Map Annotated">
+    <mxGraphModel dx="983" dy="543" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="3600" pageHeight="2400" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="10" parent="1" style="swimlane;startSize=36;horizontal=0;rounded=0;whiteSpace=wrap;html=1;container=1;collapsible=0;fillColor=#f8f9fa;strokeColor=#666666;fontStyle=1;fontSize=16;" value="Offline Ingestion / KG Build" vertex="1">
+          <mxGeometry height="1720" width="1080" x="20" y="20" as="geometry" />
+        </mxCell>
+        <mxCell id="101" parent="10" style="shape=mxgraph.flowchart.document;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=12;" value="LightRAG.ainsert()&#xa;apipeline_enqueue_documents()" vertex="1">
+          <mxGeometry height="70" width="300" x="30" y="40" as="geometry" />
+        </mxCell>
+        <mxCell id="151" parent="10" style="shape=note;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;spacingTop=6;" value="模块作用&#xa;接收原始文档，生成或校验 doc_id，登记 track_id，并把文档放入后续处理流水线。&#xa;关键变量&#xa;input, ids, file_paths, track_id, doc_id" vertex="1">
+          <mxGeometry height="86" width="680" x="360" y="35" as="geometry" />
+        </mxCell>
+        <mxCell id="102" parent="10" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=12;" value="chunking_by_token_size()&#xa;build chunks: dict[chunk_id -&gt; {content, full_doc_id, file_path, llm_cache_list}]" vertex="1">
+          <mxGeometry height="90" width="350" x="30" y="145" as="geometry" />
+        </mxCell>
+        <mxCell id="152" parent="10" style="shape=note;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;spacingTop=6;" value="模块作用&#xa;把文档切成 token 级 chunk，并在每个 chunk 上附加 full_doc_id、file_path、chunk_order_index 等元数据。&#xa;关键变量&#xa;chunks, chunk_key, chunk_order_index, file_path" vertex="1">
+          <mxGeometry height="90" width="620" x="410" y="145" as="geometry" />
+        </mxCell>
+        <mxCell id="104" parent="10" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=12;" value="Stage 1 storage writes&#xa;text_chunks.upsert(chunks)&#xa;chunks_vdb.upsert(chunks)" vertex="1">
+          <mxGeometry height="80" width="350" x="30" y="280" as="geometry" />
+        </mxCell>
+        <mxCell id="153" parent="10" style="shape=note;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;spacingTop=6;" value="模块作用&#xa;先把 chunk 文本和 chunk 向量写入存储，使后续 KG 抽取与查询都能访问 chunk 内容。&#xa;关键变量&#xa;chunks, text_chunks, chunks_vdb" vertex="1">
+          <mxGeometry height="90" width="620" x="410" y="275" as="geometry" />
+        </mxCell>
+        <mxCell id="105" parent="10" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=12;" value="self._process_extract_entities()&#xa;extract_entities(chunks, llm_response_cache, text_chunks_storage)" vertex="1">
+          <mxGeometry height="95" width="370" x="30" y="395" as="geometry" />
+        </mxCell>
+        <mxCell id="154" parent="10" style="shape=note;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;spacingTop=6;" value="模块作用&#xa;并发遍历所有 chunk，调用实体关系抽取 prompt，并把抽取结果组织成 chunk_results。&#xa;关键变量&#xa;ordered_chunks, total_chunks, use_llm_func, entity_types, language" vertex="1">
+          <mxGeometry height="95" width="600" x="430" y="395" as="geometry" />
+        </mxCell>
+        <mxCell id="106" parent="10" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#999999;dashed=1;fontSize=11;" value="PROMPTS[&quot;entity_extraction_system_prompt&quot;]&#xa;PROMPTS[&quot;entity_extraction_user_prompt&quot;]&#xa;use_llm_func_with_cache(..., cache_type=&quot;extract&quot;)" vertex="1">
+          <mxGeometry height="85" width="370" x="30" y="520" as="geometry" />
+        </mxCell>
+        <mxCell id="155" parent="10" style="shape=note;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;spacingTop=6;" value="模块作用&#xa;构造抽取 prompt，并通过 llm_response_cache 复用已有 extract 结果，减少重复调用。&#xa;关键变量&#xa;entity_extraction_system_prompt, entity_extraction_user_prompt, cache_keys_collector" vertex="1">
+          <mxGeometry height="95" width="600" x="430" y="515" as="geometry" />
+        </mxCell>
+        <mxCell id="107" parent="10" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=12;" value="_process_extraction_result()&#xa;parse chunk result -&gt;&#xa;maybe_nodes: dict[entity_name -&gt; list[entity_data]]&#xa;maybe_edges: dict[(src,tgt) -&gt; list[rel_data]]" vertex="1">
+          <mxGeometry height="100" width="370" x="30" y="640" as="geometry" />
+        </mxCell>
+        <mxCell id="156" parent="10" style="shape=note;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;spacingTop=6;" value="模块作用&#xa;把 LLM 原始文本解析成结构化实体和关系，附加 source_id、file_path、timestamp。&#xa;关键变量&#xa;maybe_nodes, maybe_edges, entity_name, src_id, tgt_id, description, keywords" vertex="1">
+          <mxGeometry height="100" width="600" x="430" y="640" as="geometry" />
+        </mxCell>
+        <mxCell id="108" parent="10" style="rhombus;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=12;" value="glean?&#xa;entity_extract_max_gleaning &gt; 0&#xa;and token_count &lt;= max_extract_input_tokens" vertex="1">
+          <mxGeometry height="115" width="220" x="190" y="775" as="geometry" />
+        </mxCell>
+        <mxCell id="157" parent="10" style="shape=note;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;spacingTop=6;" value="模块作用&#xa;判断是否执行第二轮 glean。只有允许 glean 且上下文 token 未超限时才继续。&#xa;关键变量&#xa;entity_extract_max_gleaning, token_count, max_extract_input_tokens" vertex="1">
+          <mxGeometry height="95" width="600" x="430" y="785" as="geometry" />
+        </mxCell>
+        <mxCell id="109" parent="10" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=12;" value="glean LLM call&#xa;PROMPTS[&quot;entity_continue_extraction_user_prompt&quot;]&#xa;history = pack_user_ass_to_openai_messages(...)&#xa;use_llm_func_with_cache(... history_messages=history)" vertex="1">
+          <mxGeometry height="100" width="370" x="30" y="930" as="geometry" />
+        </mxCell>
+        <mxCell id="158" parent="10" style="shape=note;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;spacingTop=6;" value="模块作用&#xa;对第一次抽取做补抽或纠错，补回遗漏的 entity/relation，仍然走缓存层。&#xa;关键变量&#xa;entity_continue_extraction_user_prompt, history, glean_result" vertex="1">
+          <mxGeometry height="95" width="600" x="430" y="930" as="geometry" />
+        </mxCell>
+        <mxCell id="110" parent="10" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=12;" value="glean merge&#xa;compare description length&#xa;overwrite better entity/relation fragment" vertex="1">
+          <mxGeometry height="80" width="370" x="30" y="1065" as="geometry" />
+        </mxCell>
+        <mxCell id="159" parent="10" style="shape=note;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;spacingTop=6;" value="模块作用&#xa;把第一轮和 glean 结果合并；当前策略是同一实体或关系保留描述更长的版本。&#xa;关键变量&#xa;glean_nodes, glean_edges, original_desc_len, glean_desc_len" vertex="1">
+          <mxGeometry height="95" width="600" x="430" y="1060" as="geometry" />
+        </mxCell>
+        <mxCell id="111" parent="10" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=12;" value="chunk_results: list[(maybe_nodes, maybe_edges)]" vertex="1">
+          <mxGeometry height="70" width="370" x="30" y="1185" as="geometry" />
+        </mxCell>
+        <mxCell id="160" parent="10" style="shape=note;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;spacingTop=6;" value="模块作用&#xa;汇总所有 chunk 的抽取结果，作为后续跨 chunk 合并的输入。&#xa;关键变量&#xa;chunk_results, maybe_nodes, maybe_edges" vertex="1">
+          <mxGeometry height="80" width="600" x="430" y="1180" as="geometry" />
+        </mxCell>
+        <mxCell id="112" parent="10" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=12;" value="merge_nodes_and_edges(chunk_results,&#xa;knowledge_graph_inst, entity_vdb, relationships_vdb,&#xa;full_entities_storage, full_relations_storage,&#xa;entity_chunks_storage, relation_chunks_storage)" vertex="1">
+          <mxGeometry height="110" width="390" x="30" y="1295" as="geometry" />
+        </mxCell>
+        <mxCell id="161" parent="10" style="shape=note;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;spacingTop=6;" value="模块作用&#xa;把 chunk 级实体和关系，合并成图级 canonical 表示；流程分两阶段：先实体，再关系。&#xa;关键变量&#xa;all_nodes, all_edges, processed_entities, processed_edges, all_added_entities" vertex="1">
+          <mxGeometry height="110" width="590" x="440" y="1295" as="geometry" />
+        </mxCell>
+        <mxCell id="113" parent="10" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=12;" value="_merge_nodes_then_upsert(entity_name, nodes_data)&#xa;merge_source_ids() / apply_source_ids_limit()&#xa;description_list -&gt; _handle_entity_relation_summary()&#xa;entity_content = entity_name + description" vertex="1">
+          <mxGeometry height="135" width="390" x="30" y="1445" as="geometry" />
+        </mxCell>
+        <mxCell id="162" parent="10" style="shape=note;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;spacingTop=6;" value="模块作用&#xa;生成实体的最终单一表示：整合 entity_type、source_id、description、file_path，并写回 graph + entities_vdb。&#xa;关键变量&#xa;entity_name, nodes_data, full_source_ids, source_ids, description_list, entity_content" vertex="1">
+          <mxGeometry height="135" width="590" x="440" y="1445" as="geometry" />
+        </mxCell>
+        <mxCell id="114" parent="10" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=12;" value="_merge_edges_then_upsert(src_id, tgt_id, edges_data)&#xa;merge keywords + weight + source_ids&#xa;description_list -&gt; _handle_entity_relation_summary()&#xa;rel_content = keywords + src_id + tgt_id + description" vertex="1">
+          <mxGeometry height="135" width="390" x="30" y="1610" as="geometry" />
+        </mxCell>
+        <mxCell id="163" parent="10" style="shape=note;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;spacingTop=6;" value="模块作用&#xa;生成关系的最终单一表示：整合 keywords、weight、source_id、description，并写回 graph + relationships_vdb。&#xa;关键变量&#xa;src_id, tgt_id, edges_data, keywords, weight, rel_content, relation_chunks_storage" vertex="1">
+          <mxGeometry height="135" width="590" x="440" y="1610" as="geometry" />
+        </mxCell>
+        <mxCell id="20" parent="1" style="swimlane;startSize=36;horizontal=0;rounded=0;whiteSpace=wrap;html=1;container=1;collapsible=0;fillColor=#f8f9fa;strokeColor=#666666;fontStyle=1;fontSize=16;" value="Shared Objects / Storages" vertex="1">
+          <mxGeometry height="1720" width="920" x="1120" y="20" as="geometry" />
+        </mxCell>
+        <mxCell id="201" parent="20" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#999999;dashed=1;fontSize=11;" value="LightRAG core objects&#xa;chunk_entity_relation_graph&#xa;entities_vdb / relationships_vdb / chunks_vdb" vertex="1">
+          <mxGeometry height="70" width="820" x="40" y="40" as="geometry" />
+        </mxCell>
+        <mxCell id="251" parent="20" style="shape=note;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;spacingTop=6;" value="模块作用&#xa;这些对象在 LightRAG.__init__ 中创建，离线插入和在线查询都共享它们。&#xa;关键对象&#xa;text_chunks, chunks_vdb, entities_vdb, relationships_vdb, chunk_entity_relation_graph" vertex="1">
+          <mxGeometry height="70" width="820" x="40" y="125" as="geometry" />
+        </mxCell>
+        <mxCell id="202" parent="20" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=12;" value="full_docs" vertex="1">
+          <mxGeometry height="70" width="220" x="40" y="230" as="geometry" />
+        </mxCell>
+        <mxCell id="252" parent="20" style="shape=note;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;spacingTop=6;" value="模块内容&#xa;保存完整文档内容和 file_path。主要用于文档状态管理与删除流程。" vertex="1">
+          <mxGeometry height="80" width="580" x="290" y="225" as="geometry" />
+        </mxCell>
+        <mxCell id="203" parent="20" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=12;" value="text_chunks" vertex="1">
+          <mxGeometry height="70" width="220" x="40" y="335" as="geometry" />
+        </mxCell>
+        <mxCell id="253" parent="20" style="shape=note;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;spacingTop=6;" value="模块内容&#xa;保存 chunk 文本和元数据，也是根据 chunk_id 回查正文与 file_path 的关键存储。&#xa;关键字段&#xa;content, full_doc_id, file_path, llm_cache_list" vertex="1">
+          <mxGeometry height="80" width="580" x="290" y="330" as="geometry" />
+        </mxCell>
+        <mxCell id="204" parent="20" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=12;" value="chunks_vdb" vertex="1">
+          <mxGeometry height="70" width="220" x="40" y="440" as="geometry" />
+        </mxCell>
+        <mxCell id="254" parent="20" style="shape=note;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;spacingTop=6;" value="模块内容&#xa;保存 chunk 向量。naive/mix 查询会直接检索它，KG 相关 chunk 的 VECTOR 选取也会用到它。" vertex="1">
+          <mxGeometry height="80" width="580" x="290" y="435" as="geometry" />
+        </mxCell>
+        <mxCell id="205" parent="20" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=12;" value="llm_response_cache" vertex="1">
+          <mxGeometry height="70" width="220" x="40" y="545" as="geometry" />
+        </mxCell>
+        <mxCell id="255" parent="20" style="shape=note;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;spacingTop=6;" value="模块内容&#xa;缓存 extract / keywords / query 三类 LLM 调用；删除或重建时还能复用 extract 缓存。" vertex="1">
+          <mxGeometry height="80" width="580" x="290" y="540" as="geometry" />
+        </mxCell>
+        <mxCell id="206" parent="20" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=12;" value="chunk_entity_relation_graph" vertex="1">
+          <mxGeometry height="80" width="220" x="40" y="650" as="geometry" />
+        </mxCell>
+        <mxCell id="256" parent="20" style="shape=note;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;spacingTop=6;" value="模块内容&#xa;保存最终图结构。节点代表实体，边代表关系；查询时用来做 batch node/edge lookup 和邻接扩展。&#xa;关键字段&#xa;node: entity_type, description, source_id&#xa;edge: keywords, weight, description, source_id" vertex="1">
+          <mxGeometry height="92" width="580" x="290" y="645" as="geometry" />
+        </mxCell>
+        <mxCell id="207" parent="20" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=12;" value="entity_chunks" vertex="1">
+          <mxGeometry height="70" width="220" x="40" y="770" as="geometry" />
+        </mxCell>
+        <mxCell id="257" parent="20" style="shape=note;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;spacingTop=6;" value="模块内容&#xa;保存 entity_name -&gt; 全量 chunk_ids 的血缘信息。删除文档和 rebuild_knowledge_from_chunks() 依赖它。" vertex="1">
+          <mxGeometry height="80" width="580" x="290" y="765" as="geometry" />
+        </mxCell>
+        <mxCell id="208" parent="20" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=12;" value="relation_chunks" vertex="1">
+          <mxGeometry height="70" width="220" x="40" y="875" as="geometry" />
+        </mxCell>
+        <mxCell id="258" parent="20" style="shape=note;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;spacingTop=6;" value="模块内容&#xa;保存 relation_key -&gt; 全量 chunk_ids 的血缘信息，作用与 entity_chunks 对关系侧对应。" vertex="1">
+          <mxGeometry height="80" width="580" x="290" y="870" as="geometry" />
+        </mxCell>
+        <mxCell id="209" parent="20" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=12;" value="entities_vdb" vertex="1">
+          <mxGeometry height="70" width="220" x="40" y="980" as="geometry" />
+        </mxCell>
+        <mxCell id="259" parent="20" style="shape=note;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;spacingTop=6;" value="模块内容&#xa;实体检索索引。当前向量内容是 entity_name + description，因此每个实体只有一份通用表示。" vertex="1">
+          <mxGeometry height="80" width="580" x="290" y="975" as="geometry" />
+        </mxCell>
+        <mxCell id="210" parent="20" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=12;" value="relationships_vdb" vertex="1">
+          <mxGeometry height="70" width="220" x="40" y="1085" as="geometry" />
+        </mxCell>
+        <mxCell id="260" parent="20" style="shape=note;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;spacingTop=6;" value="模块内容&#xa;关系检索索引。当前向量内容是 keywords + src/tgt + description，因此每个关系也只有一份通用表示。" vertex="1">
+          <mxGeometry height="80" width="580" x="290" y="1080" as="geometry" />
+        </mxCell>
+        <mxCell id="215" parent="20" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=12;" value="full_entities" vertex="1">
+          <mxGeometry height="70" width="220" x="40" y="1190" as="geometry" />
+        </mxCell>
+        <mxCell id="261" parent="20" style="shape=note;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;spacingTop=6;" value="模块内容&#xa;doc_id -&gt; entity_names 的反向索引。删除文档时用于找出受影响实体。" vertex="1">
+          <mxGeometry height="80" width="580" x="290" y="1185" as="geometry" />
+        </mxCell>
+        <mxCell id="216" parent="20" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=12;" value="full_relations" vertex="1">
+          <mxGeometry height="70" width="220" x="40" y="1295" as="geometry" />
+        </mxCell>
+        <mxCell id="262" parent="20" style="shape=note;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;spacingTop=6;" value="模块内容&#xa;doc_id -&gt; relation_pairs 的反向索引。删除文档时用于找出受影响关系。" vertex="1">
+          <mxGeometry height="80" width="580" x="290" y="1290" as="geometry" />
+        </mxCell>
+        <mxCell id="214" parent="20" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#999999;dashed=1;fontSize=11;" value="Default backend&#xa;NetworkXStorage&#xa;graph_*.graphml" vertex="1">
+          <mxGeometry height="80" width="220" x="40" y="1410" as="geometry" />
+        </mxCell>
+        <mxCell id="263" parent="20" style="shape=note;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;spacingTop=6;" value="模块内容&#xa;默认图后端是 NetworkX + GraphML 文件。也存在其他后端实现，但核心接口一致。" vertex="1">
+          <mxGeometry height="90" width="580" x="290" y="1405" as="geometry" />
+        </mxCell>
+        <mxCell id="217" parent="20" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#999999;dashed=1;fontSize=11;" value="Current limitation&#xa;Entity: one generic summary&#xa;Relation: one generic summary" vertex="1">
+          <mxGeometry height="80" width="220" x="40" y="1525" as="geometry" />
+        </mxCell>
+        <mxCell id="264" parent="20" style="shape=note;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;spacingTop=6;" value="说明&#xa;当前实现不是 multi-view / query-conditioned profiling，而是“每个图元素一份通用摘要，再被 query 检索”。" vertex="1">
+          <mxGeometry height="90" width="580" x="290" y="1520" as="geometry" />
+        </mxCell>
+        <mxCell id="30" parent="1" style="swimlane;startSize=36;horizontal=0;rounded=0;whiteSpace=wrap;html=1;container=1;collapsible=0;fillColor=#f8f9fa;strokeColor=#666666;fontStyle=1;fontSize=16;" value="Online Query / Retrieval" vertex="1">
+          <mxGeometry height="1720" width="1200" x="2060" y="20" as="geometry" />
+        </mxCell>
+        <mxCell id="301" parent="30" style="shape=mxgraph.flowchart.document;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=12;" value="Query input&#xa;aquery_data() / aquery_llm()" vertex="1">
+          <mxGeometry height="70" width="340" x="40" y="40" as="geometry" />
+        </mxCell>
+        <mxCell id="351" parent="30" style="shape=note;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;spacingTop=6;" value="模块作用&#xa;同步或异步接收用户 query，并按 mode 决定走 kg_query() 还是 naive_query()。&#xa;关键变量&#xa;query, param.mode, only_need_context, stream" vertex="1">
+          <mxGeometry height="86" width="720" x="430" y="35" as="geometry" />
+        </mxCell>
+        <mxCell id="302" parent="30" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=12;" value="kg_query(query, query_param,&#xa;knowledge_graph_inst, entities_vdb, relationships_vdb, text_chunks_db, chunks_vdb)" vertex="1">
+          <mxGeometry height="90" width="360" x="40" y="145" as="geometry" />
+        </mxCell>
+        <mxCell id="352" parent="30" style="shape=note;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;spacingTop=6;" value="模块作用&#xa;KG 模式主入口。local/global/hybrid/mix 都会进入这里；naive 模式则走 naive_query()。&#xa;关键变量&#xa;query_param.mode, use_model_func, context_result, raw_data" vertex="1">
+          <mxGeometry height="90" width="720" x="430" y="145" as="geometry" />
+        </mxCell>
+        <mxCell id="303" parent="30" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=12;" value="get_keywords_from_query()&#xa;extract_keywords_only()&#xa;-&gt; hl_keywords / ll_keywords" vertex="1">
+          <mxGeometry height="80" width="360" x="40" y="270" as="geometry" />
+        </mxCell>
+        <mxCell id="353" parent="30" style="shape=note;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;spacingTop=6;" value="模块作用&#xa;把 query 分成 high-level 和 low-level 检索意图；本模块本身也可走缓存。&#xa;关键变量&#xa;hl_keywords, ll_keywords, language, args_hash" vertex="1">
+          <mxGeometry height="80" width="720" x="430" y="270" as="geometry" />
+        </mxCell>
+        <mxCell id="305" parent="30" style="rhombus;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=12;" value="mode?&#xa;local / global / hybrid / mix / naive" vertex="1">
+          <mxGeometry height="110" width="230" x="90" y="390" as="geometry" />
+        </mxCell>
+        <mxCell id="354" parent="30" style="shape=note;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;spacingTop=6;" value="模块作用&#xa;根据检索模式选择路径。&#xa;local: 实体优先&#xa;global: 关系优先&#xa;hybrid/mix: 双路融合&#xa;naive: 直接查 chunks_vdb" vertex="1">
+          <mxGeometry height="100" width="720" x="430" y="395" as="geometry" />
+        </mxCell>
+        <mxCell id="306" parent="30" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=12;" value="_get_node_data(ll_keywords, entities_vdb)&#xa;get_nodes_batch()&#xa;_find_most_related_edges_from_entities()" vertex="1">
+          <mxGeometry height="95" width="300" x="40" y="545" as="geometry" />
+        </mxCell>
+        <mxCell id="355" parent="30" style="shape=note;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;spacingTop=6;" value="模块作用&#xa;local 分支：先按 ll_keywords 查实体向量，再去图中补该实体最相关的邻接关系。&#xa;关键变量&#xa;node_ids, node_datas, node_degrees, use_relations" vertex="1">
+          <mxGeometry height="95" width="720" x="430" y="545" as="geometry" />
+        </mxCell>
+        <mxCell id="307" parent="30" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=12;" value="_get_edge_data(hl_keywords, relationships_vdb)&#xa;get_edges_batch()&#xa;_find_most_related_entities_from_relationships()" vertex="1">
+          <mxGeometry height="95" width="300" x="40" y="675" as="geometry" />
+        </mxCell>
+        <mxCell id="356" parent="30" style="shape=note;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;spacingTop=6;" value="模块作用&#xa;global 分支：先按 hl_keywords 查关系向量，再去图中补这些关系的端点实体。&#xa;关键变量&#xa;edge_pairs_dicts, edge_datas, use_entities" vertex="1">
+          <mxGeometry height="95" width="720" x="430" y="675" as="geometry" />
+        </mxCell>
+        <mxCell id="308" parent="30" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=12;" value="_get_vector_context(query, chunks_vdb)&#xa;vector chunk recall" vertex="1">
+          <mxGeometry height="85" width="300" x="40" y="805" as="geometry" />
+        </mxCell>
+        <mxCell id="357" parent="30" style="shape=note;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;spacingTop=6;" value="模块作用&#xa;直接从 chunks_vdb 做 chunk 检索。mix 模式会把它作为额外上下文；naive 模式则主要依赖这一路。&#xa;关键变量&#xa;search_top_k, query_embedding, valid_chunks" vertex="1">
+          <mxGeometry height="90" width="720" x="430" y="800" as="geometry" />
+        </mxCell>
+        <mxCell id="309" parent="30" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=12;" value="_perform_kg_search()&#xa;merge local/global entities + relations&#xa;collect vector_chunks + chunk_tracking" vertex="1">
+          <mxGeometry height="90" width="360" x="40" y="935" as="geometry" />
+        </mxCell>
+        <mxCell id="358" parent="30" style="shape=note;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;spacingTop=6;" value="模块作用&#xa;统一执行多路检索，预计算 query/ll/hl embedding，并把实体、关系、向量 chunk 合并成 raw search result。&#xa;关键变量&#xa;local_entities, global_relations, vector_chunks, chunk_tracking, query_embedding" vertex="1">
+          <mxGeometry height="90" width="720" x="430" y="935" as="geometry" />
+        </mxCell>
+        <mxCell id="310" parent="30" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=12;" value="_apply_token_truncation()&#xa;entities_context / relations_context&#xa;max_entity_tokens / max_relation_tokens" vertex="1">
+          <mxGeometry height="90" width="360" x="40" y="1065" as="geometry" />
+        </mxCell>
+        <mxCell id="359" parent="30" style="shape=note;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;spacingTop=6;" value="模块作用&#xa;按实体和关系各自 token budget 截断，保留能进入最终 prompt 的 graph elements。&#xa;关键变量&#xa;entities_context, relations_context, filtered_entities, filtered_relations" vertex="1">
+          <mxGeometry height="90" width="720" x="430" y="1065" as="geometry" />
+        </mxCell>
+        <mxCell id="311" parent="30" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=12;" value="_find_related_text_unit_from_entities()&#xa;split source_id -&gt; chunk_ids&#xa;WEIGHT or VECTOR chunk pick" vertex="1">
+          <mxGeometry height="95" width="300" x="40" y="1195" as="geometry" />
+        </mxCell>
+        <mxCell id="360" parent="30" style="shape=note;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;spacingTop=6;" value="模块作用&#xa;从实体的 source_id 反查候选 chunk，再按 occurrence weight 或向量相似度选 chunk。&#xa;关键变量&#xa;entities_with_chunks, chunk_occurrence_count, selected_chunk_ids, kg_chunk_pick_method" vertex="1">
+          <mxGeometry height="95" width="720" x="430" y="1195" as="geometry" />
+        </mxCell>
+        <mxCell id="312" parent="30" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=12;" value="_find_related_text_unit_from_relations()&#xa;split source_id -&gt; chunk_ids&#xa;dedup against entity chunks" vertex="1">
+          <mxGeometry height="95" width="300" x="40" y="1325" as="geometry" />
+        </mxCell>
+        <mxCell id="361" parent="30" style="shape=note;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;spacingTop=6;" value="模块作用&#xa;从关系的 source_id 反查候选 chunk，并去掉已经被实体链路选中的 chunk，减少重复上下文。&#xa;关键变量&#xa;relations_with_chunks, entity_chunk_ids, chunk_occurrence_count, selected_chunk_ids" vertex="1">
+          <mxGeometry height="95" width="720" x="430" y="1325" as="geometry" />
+        </mxCell>
+        <mxCell id="313" parent="30" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=12;" value="_merge_all_chunks()&#xa;vector_chunks + entity_chunks + relation_chunks&#xa;round-robin + dedup by chunk_id" vertex="1">
+          <mxGeometry height="85" width="360" x="40" y="1455" as="geometry" />
+        </mxCell>
+        <mxCell id="362" parent="30" style="shape=note;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;spacingTop=6;" value="模块作用&#xa;把向量召回、实体链路召回、关系链路召回的 chunk 合并成统一列表，并做 chunk_id 去重。&#xa;关键变量&#xa;merged_chunks, seen_chunk_ids, vector_chunks, entity_chunks, relation_chunks" vertex="1">
+          <mxGeometry height="85" width="720" x="430" y="1455" as="geometry" />
+        </mxCell>
+        <mxCell id="314" parent="30" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=12;" value="process_chunks_unified(query, unique_chunks, query_param)&#xa;rerank -&gt; min_rerank_score -&gt; chunk_top_k -&gt; token truncation" vertex="1">
+          <mxGeometry height="95" width="360" x="40" y="1575" as="geometry" />
+        </mxCell>
+        <mxCell id="363" parent="30" style="shape=note;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;spacingTop=6;" value="模块作用&#xa;对最终 chunk 列表做统一后处理：rerank、阈值过滤、top-k 控制、按 token 截断。&#xa;关键变量&#xa;rerank_score, chunk_top_k, chunk_token_limit, final_chunks" vertex="1">
+          <mxGeometry height="95" width="720" x="430" y="1575" as="geometry" />
+        </mxCell>
+        <mxCell id="315" parent="30" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=12;" value="_build_context_str()&#xa;kg_query_context + reference_list&#xa;convert_to_user_format()&#xa;-&gt; context_result / raw_data" vertex="1">
+          <mxGeometry height="100" width="360" x="40" y="1705" as="geometry" />
+        </mxCell>
+        <mxCell id="364" parent="30" style="shape=note;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;spacingTop=6;" value="模块作用&#xa;把实体 JSON、关系 JSON、chunk JSON 和 reference list 组装成最终 prompt context，并产出结构化 raw_data。&#xa;关键变量&#xa;entities_str, relations_str, text_units_str, reference_list_str, raw_data" vertex="1">
+          <mxGeometry height="100" width="720" x="430" y="1705" as="geometry" />
+        </mxCell>
+        <mxCell id="1001" edge="1" parent="1" source="101" style="edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;html=1;strokeColor=#666666;endArrow=block;endFill=1;" target="102" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="1002" edge="1" parent="1" source="102" style="edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;html=1;strokeColor=#666666;endArrow=block;endFill=1;" target="104" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="1003" edge="1" parent="1" source="104" style="edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;html=1;strokeColor=#666666;endArrow=block;endFill=1;" target="105" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="1004" edge="1" parent="1" source="105" style="edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;html=1;strokeColor=#666666;endArrow=block;endFill=1;" target="106" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="1005" edge="1" parent="1" source="106" style="edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;html=1;strokeColor=#666666;endArrow=block;endFill=1;" target="107" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="1006" edge="1" parent="1" source="107" style="edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;html=1;strokeColor=#666666;endArrow=block;endFill=1;" target="108" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="1007" edge="1" parent="1" source="108" style="edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;html=1;strokeColor=#666666;endArrow=block;endFill=1;fontSize=11;" target="109" value="yes">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="1008" edge="1" parent="1" source="108" style="edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;html=1;strokeColor=#666666;endArrow=block;endFill=1;fontSize=11;" target="111" value="no">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="360" y="1057" />
+              <mxPoint x="290" y="1057" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="1009" edge="1" parent="1" source="109" style="edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;html=1;strokeColor=#666666;endArrow=block;endFill=1;" target="110" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="1010" edge="1" parent="1" source="110" style="edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;html=1;strokeColor=#666666;endArrow=block;endFill=1;" target="111" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="1011" edge="1" parent="1" source="111" style="edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;html=1;strokeColor=#666666;endArrow=block;endFill=1;" target="112" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="1012" edge="1" parent="1" source="112" style="edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;html=1;strokeColor=#666666;endArrow=block;endFill=1;fontSize=11;" target="113" value="entity merge">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="1013" edge="1" parent="1" source="112" style="edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;html=1;strokeColor=#666666;endArrow=block;endFill=1;fontSize=11;" target="114" value="relation merge">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="1020" edge="1" parent="1" source="101" style="edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;html=1;strokeColor=#4d7f4d;dashed=1;endArrow=block;endFill=1;fontSize=11;" target="202" value="store doc">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="1021" edge="1" parent="1" source="104" style="edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;html=1;strokeColor=#4d7f4d;dashed=1;endArrow=block;endFill=1;fontSize=11;" target="203" value="upsert text">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="1022" edge="1" parent="1" source="104" style="edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;html=1;strokeColor=#4d7f4d;dashed=1;endArrow=block;endFill=1;fontSize=11;" target="204" value="upsert vectors">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="1023" edge="1" parent="1" source="106" style="edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;html=1;strokeColor=#4d7f4d;dashed=1;endArrow=block;endFill=1;fontSize=11;" target="205" value="extract cache">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="1024" edge="1" parent="1" source="109" style="edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;html=1;strokeColor=#4d7f4d;dashed=1;endArrow=block;endFill=1;fontSize=11;" target="205" value="glean cache">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="1025" edge="1" parent="1" source="113" style="edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;html=1;strokeColor=#4d7f4d;dashed=1;endArrow=block;endFill=1;fontSize=11;" target="206" value="node write">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="1026" edge="1" parent="1" source="113" style="edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;html=1;strokeColor=#4d7f4d;dashed=1;endArrow=block;endFill=1;fontSize=11;" target="207" value="entity lineage">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="245" y="1610" />
+              <mxPoint x="1270" y="1610" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="1027" edge="1" parent="1" source="113" style="edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;html=1;strokeColor=#4d7f4d;dashed=1;endArrow=block;endFill=1;fontSize=11;" target="209" value="entity vector">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="245" y="1460" />
+              <mxPoint x="1270" y="1460" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="1028" edge="1" parent="1" source="114" style="edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;html=1;strokeColor=#4d7f4d;dashed=1;endArrow=block;endFill=1;fontSize=11;" target="206" value="edge write">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="1029" edge="1" parent="1" source="114" style="edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;html=1;strokeColor=#4d7f4d;dashed=1;endArrow=block;endFill=1;fontSize=11;" target="208" value="relation lineage">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="1030" edge="1" parent="1" source="114" style="edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;html=1;strokeColor=#4d7f4d;dashed=1;endArrow=block;endFill=1;fontSize=11;" target="210" value="relation vector">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="1301" edge="1" parent="1" source="301" style="edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;html=1;strokeColor=#666666;endArrow=block;endFill=1;" target="302" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="1302" edge="1" parent="1" source="302" style="edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;html=1;strokeColor=#666666;endArrow=block;endFill=1;" target="303" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="1303" edge="1" parent="1" source="303" style="edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;html=1;strokeColor=#666666;endArrow=block;endFill=1;" target="305" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="1304" edge="1" parent="1" source="305" style="edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;html=1;strokeColor=#666666;endArrow=block;endFill=1;fontSize=11;" target="306" value="local / hybrid / mix">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="1305" edge="1" parent="1" source="305" style="edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;html=1;strokeColor=#666666;endArrow=block;endFill=1;fontSize=11;" target="307" value="global / hybrid / mix">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="1306" edge="1" parent="1" source="305" style="edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;html=1;strokeColor=#666666;endArrow=block;endFill=1;fontSize=11;" target="308" value="mix / naive vector path">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="1307" edge="1" parent="1" source="306" style="edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;html=1;strokeColor=#666666;endArrow=block;endFill=1;" target="309" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="1308" edge="1" parent="1" source="307" style="edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;html=1;strokeColor=#666666;endArrow=block;endFill=1;" target="309" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="1309" edge="1" parent="1" source="308" style="edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;html=1;strokeColor=#666666;endArrow=block;endFill=1;" target="309" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="1310" edge="1" parent="1" source="309" style="edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;html=1;strokeColor=#666666;endArrow=block;endFill=1;" target="310" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="1311" edge="1" parent="1" source="310" style="edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;html=1;strokeColor=#666666;endArrow=block;endFill=1;fontSize=11;" target="311" value="entity chunks">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="1312" edge="1" parent="1" source="310" style="edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;html=1;strokeColor=#666666;endArrow=block;endFill=1;fontSize=11;" target="312" value="relation chunks">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="1313" edge="1" parent="1" source="311" style="edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;html=1;strokeColor=#666666;endArrow=block;endFill=1;fontSize=11;" target="313" value="merge">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="1314" edge="1" parent="1" source="312" style="edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;html=1;strokeColor=#666666;endArrow=block;endFill=1;fontSize=11;" target="313" value="merge">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="1315" edge="1" parent="1" source="309" style="edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;html=1;strokeColor=#666666;endArrow=block;endFill=1;fontSize=11;" target="313" value="vector chunks">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="1316" edge="1" parent="1" source="313" style="edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;html=1;strokeColor=#666666;endArrow=block;endFill=1;" target="314" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="1317" edge="1" parent="1" source="314" style="edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;html=1;strokeColor=#666666;endArrow=block;endFill=1;" target="315" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="1321" edge="1" parent="1" source="209" style="edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;html=1;strokeColor=#4d7f4d;dashed=1;endArrow=block;endFill=1;fontSize=11;" target="306" value="entity query">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="1322" edge="1" parent="1" source="206" style="edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;html=1;strokeColor=#4d7f4d;dashed=1;endArrow=block;endFill=1;fontSize=11;" target="306" value="graph lookup">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="1323" edge="1" parent="1" source="210" style="edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;html=1;strokeColor=#4d7f4d;dashed=1;endArrow=block;endFill=1;fontSize=11;" target="307" value="relation query">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="1324" edge="1" parent="1" source="206" style="edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;html=1;strokeColor=#4d7f4d;dashed=1;endArrow=block;endFill=1;fontSize=11;" target="307" value="graph lookup">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="1325" edge="1" parent="1" source="204" style="edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;html=1;strokeColor=#4d7f4d;dashed=1;endArrow=block;endFill=1;fontSize=11;" target="308" value="chunk query">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="1326" edge="1" parent="1" source="203" style="edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;html=1;strokeColor=#4d7f4d;dashed=1;endArrow=block;endFill=1;fontSize=11;" target="311" value="chunk fetch">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="1327" edge="1" parent="1" source="203" style="edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;html=1;strokeColor=#4d7f4d;dashed=1;endArrow=block;endFill=1;fontSize=11;" target="312" value="chunk fetch">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="1328" edge="1" parent="1" source="205" style="edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;html=1;strokeColor=#4d7f4d;dashed=1;endArrow=block;endFill=1;fontSize=11;" target="303" value="keyword cache">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

@@ -2382,3 +2382,64 @@ primaryClass={cs.IR}
     </div>
   </div>
 </div>
+
+
+  cd /mnt/data_nvme/code/LightRAG
+  source .venv/bin/activate.fish
+  uvicorn dev_server_app:app --reload --host 0.0.0.0 --port 9621
+
+  然后访问：
+
+  - http://localhost:9621/webui/
+  - http://localhost:9621/docs
+
+  逐题回答
+
+  1. 为什么 chunk 要存两份，text_chunks 一份，chunks_vdb 一份？
+     不是“同一份数据白白复制两次”，而是“同一份 chunk 用两种索引形态存”。text_chunks 是 KV/原文存储，负责保留 chunk 的原始 content/full_doc_id/file_path/...，供后续按 chunk_id 回查正文、引用、重建、更新
+     llm_cache_list 使用；chunks_vdb 是向量索引，负责语义检索。lightrag/lightrag.py:700 lightrag/lightrag.py:730 lightrag/lightrag.py:2033 README-zh.md:932
+     所以这是“原文库 + 检索库”的分工，不是逻辑重复。
+  2. LLM 抽取实体和关系时，基于哪一种 chunk？vector 格式的 chunk 有什么用？
+     LLM 抽取基于文本 chunk，不是基于向量 chunk。extract_entities() 接收的是 chunks: dict[str, TextChunkSchema]，实际送进 prompt 的是 chunk_dp["content"]，也就是原始文本内容。lightrag/operate.py:2887
+     lightrag/operate.py:2947 lightrag/operate.py:2960
+     chunks_vdb 的作用在查询阶段，不在抽取阶段。它主要有三类用途：naive 模式直接按 query 检索 chunk；mix 模式把向量召回的 chunk 和 KG 召回的 chunk 一起合并；以及在 KG 召回到实体/关系后，如果 chunk 选择
+     策略设成 VECTOR，会对候选 chunk 再按向量相似度挑一遍。lightrag/operate.py:3524 lightrag/operate.py:3703 lightrag/operate.py:4566
+  3. 第一轮是 LLM 抽取吗？第二轮是 glean 吗？glean 的作用、触发条件、策略是什么？
+     是。第一轮是常规 LLM 抽取：entity_extraction_user_prompt 让模型从当前 chunk 抽实体和关系。lightrag/operate.py:2967 lightrag/prompt.py:63
+     第二轮如果开启，就是 glean，本质上还是一次 LLM 调用，但 prompt 变成“继续抽取遗漏或格式错误的项”，不要重复已经正确抽出的内容。lightrag/operate.py:2994 lightrag/prompt.py:84
+     glean 的作用是补漏和纠错，不是重新做一遍完整抽取。触发条件有两个：entity_extract_max_gleaning > 0，并且“第一轮抽取历史 + 继续抽取 prompt”的总 token 不能超过 max_extract_input_tokens；超了就直接停掉
+     glean。lightrag/operate.py:2904 lightrag/operate.py:3010
+     策略也很明确：先保留第一轮结果，再把 glean 结果按实体名/关系对合进来；如果同一个实体或关系在 glean 里给出了更长的描述，就用 glean 版本替换，否则保留原版；新项则直接追加。lightrag/operate.py:3037
+     一个很重要的细节是：虽然配置名叫 entity_extract_max_gleaning，但当前实现实际上只额外处理 1 次 glean，不是多轮迭代。lightrag/operate.py:2992
+  4. 该项目做的 profile 其实就是描述吗？是实体和关系分别有一段描述，还是整体只有一段描述？
+     如果严格按源码说，当前它不是真正的“profile system”，而是“每个实体一段最终描述、每个关系一段最终描述”。实体侧，多个 chunk 抽出来的 description 会先聚合成 description_list，再通过
+     _handle_entity_relation_summary() 变成该实体唯一的一份 description；最后写入图节点和 entities_vdb。lightrag/operate.py:1782 lightrag/operate.py:1799 lightrag/operate.py:1906
+     关系侧也是同样逻辑：同一对实体的多个关系描述先汇总，再压成该关系唯一的一份 description，同时保留一份合并后的 keywords。lightrag/operate.py:2135 lightrag/operate.py:2148 lightrag/operate.py:2438
+     所以结论是：不是整张图只有一段描述；而是“每个实体各一段，每个关系各一段”。但它也不是你想做的多视角 profile，因为每个图元素最后只有一份通用描述。
+  5. maybe_nodes、maybe_edges 是什么意思？什么叫跨 chunk 合并？
+     maybe_nodes / maybe_edges 是“单个 chunk 抽取后得到的候选结果池”。_process_extraction_result() 会把 LLM 输出逐行解析，凡是能成功解析成实体的，就塞进 maybe_nodes[entity_name]；凡是能成功解析成关系
+     的，就塞进 maybe_edges[(src_id, tgt_id)]。lightrag/operate.py:937 lightrag/operate.py:1036 lightrag/operate.py:1059
+     它们里面放的不是最终图节点/图边，而是“抽取片段”。实体片段字段包括 entity_name/entity_type/description/source_id/file_path/timestamp；关系片段字段包括 src_id/tgt_id/weight/description/keywords/
+     source_id/file_path/timestamp。lightrag/operate.py:452 lightrag/operate.py:537
+     “跨 chunk 合并”指的是：一个文档被切成很多 chunk 后，同一个实体或同一对关系可能在多个 chunk 里都被抽到。merge_nodes_and_edges() 会把所有 chunk 的 maybe_nodes/maybe_edges 汇总成 all_nodes/all_edges，
+     按实体名或关系对归并，再统一做去重、合并 source_id、合并描述、生成最终摘要。lightrag/operate.py:2504 lightrag/operate.py:2558 lightrag/operate.py:2565
+     关系这里还会先把边 key 排序，所以默认把关系当成无向关系处理。lightrag/prompt.py:41
+  6. 为什么还要把实体和关系转成向量？
+     因为查询输入是自然语言，而图里的主键是实体名和关系对。如果没有向量库，你必须先“精确知道图里有哪些名字”，否则很难从 query 直接进入图。LightRAG 的做法是把实体和关系先投影成可嵌入的文本，再做语义检
+     索：实体向量内容是 entity_name + description，关系向量内容是 keywords + src + tgt + description。lightrag/operate.py:1922 lightrag/operate.py:2474
+     查询时，local 模式会查 entities_vdb，把 query 的低层关键词映射到相关实体；global 模式会查 relationships_vdb，把 query 的高层关键词映射到相关关系。lightrag/operate.py:4378 lightrag/operate.py:4653
+     所以实体/关系向量化的本质，是“用语义检索把自然语言 query 接到图元素上”，而不是为了再生成一份描述。
+  7. LightRAG 的核心是什么？为什么它比 GraphRAG 更快且更强？
+     先说核心。按源码看，LightRAG 的核心不是“先做重型图全局摘要，再查询”，而是“LLM 抽取实体/关系图 + 为实体/关系/chunk 各建向量索引 + 按 query mode 走 local/global/hybrid/mix 四种检索路径，再把图元素和
+     chunk 拼成上下文”。lightrag/lightrag.py:2719 lightrag/lightrag.py:718 lightrag/operate.py:3581 lightrag/operate.py:4247
+     “更快”这件事，源码能支持的原因主要有四个。第一，它的索引路径相对轻：核心是抽取、合并、写图和三类向量库，没有在主链路里看到重型社区发现/社区报告这类步骤。第二，它大量做并发，文档级、chunk 级、图级和
+     LLM 请求级都有控制，官方文档也明确把这当成核心策略。docs/LightRAG_concurrent_explain.md:3 第三，查询前会批量预计算 embedding，避免 2 到 3 次串行调用。lightrag/operate.py:3610 第四，它有
+     llm_response_cache、token truncation、round-robin chunk merge，这些都在控延迟和控成本。lightrag/lightrag.py:669 lightrag/operate.py:4290 lightrag/operate.py:4008
+     “更强”这件事，源码只能支持“为什么它有可能更强”，不能直接证明“它一定更强”。从机制上看，它的优势是把实体侧、关系侧、chunk 侧三路都纳进来了，local/global/hybrid/mix 的设计让不同类型 query 可以走不同入
+     口，而不是只靠一种检索视角。lightrag/lightrag.py:2720 lightrag/operate.py:3666
+     如果你问“仓库自己是否声称比 GraphRAG 更强”，答案是“是，README 里有 benchmark 表”；但那是实验结果 claim，不是源码本身能证明的结论。README-zh.md:2115
+
+  如果你愿意，下一步我可以继续做两件事中的一个：
+
+  1. 把这 7 个问题整理成“源码阅读笔记版”，变成你后面写论文时可直接引用的技术说明
+  2. 直接接着往下，帮你把这些结论映射成你的创新点切入位：主创新 / 副创新1 / 副创新2 应该分别插到 LightRAG 的哪几个函数里

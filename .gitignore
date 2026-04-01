@@ -78,9 +78,12 @@ download_models_hf.py
 memory-bank
 .claude/CLAUDE.md
 .claude/
+.codex
 
 # Claude Code
 CLAUDE.md
 
 # Google Jules
 .jules/
+
+.vscode

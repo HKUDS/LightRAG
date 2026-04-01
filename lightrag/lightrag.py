@@ -126,6 +126,7 @@ config = configparser.ConfigParser()
 config.read("config.ini", "utf-8")
 
 
+# FXL从文件处理状态中获取chunklist
 def _chunk_fields_from_status_doc(
     status_doc: "DocProcessingStatus",
 ) -> tuple[list[str], int]:
@@ -147,7 +148,7 @@ def _chunk_fields_from_status_doc(
 
     return chunks_list, len(chunks_list)
 
-
+# FXL文件路径处理
 def _resolve_doc_file_path(
     status_doc: "DocProcessingStatus" | None = None,
     content_data: dict[str, Any] | None = None,
@@ -186,7 +187,7 @@ def _resolve_doc_file_path(
 
     return "unknown_source"
 
-
+# FXL处理raw_values，返回一个非空文本列表
 def _normalize_string_list(raw_values: Any, context: str = "") -> list[str]:
     """Return a list of non-empty strings from raw_values.
 
@@ -248,7 +249,7 @@ class LightRAG:
 
     # Query parameters
     # ---
-
+    # FXL每个问题检索的实体和关系的数量
     top_k: int = field(default=get_env_value("TOP_K", DEFAULT_TOP_K, int))
     """Number of entities/relations to retrieve for each query."""
 
@@ -289,7 +290,7 @@ class LightRAG:
 
     # Entity extraction
     # ---
-
+    # FXL针对含糊内容的实体提取尝试次数上限。
     entity_extract_max_gleaning: int = field(
         default=get_env_value("MAX_GLEANING", DEFAULT_MAX_GLEANING, int)
     )
@@ -302,6 +303,7 @@ class LightRAG:
     )
     """Maximum tokens allowed for entity extraction input context."""
 
+    # FXL在实体/关系合并时触发 LLM 摘要所需的摘要片段或令牌数量
     force_llm_summary_on_merge: int = field(
         default=get_env_value(
             "FORCE_LLM_SUMMARY_ON_MERGE", DEFAULT_FORCE_LLM_SUMMARY_ON_MERGE, int
@@ -846,6 +848,7 @@ class LightRAG:
 
             self._storages_status = StoragesStatus.FINALIZED
 
+    # FXL检查kg的实体和关系是否需要合并
     async def check_and_migrate_data(self):
         """Check if data migration is needed and perform migration if necessary"""
         async with get_data_init_lock():
@@ -916,6 +919,7 @@ class LightRAG:
                 logger.error(f"Error in data migration check: {e}")
                 raise e
 
+    # FXL合并数据
     async def _migrate_entity_relation_data(self, processed_docs: dict):
         """Migrate existing entity and relation data to full_entities and full_relations storage"""
         logger.info(f"Starting data migration for {len(processed_docs)} documents")
@@ -1345,6 +1349,7 @@ class LightRAG:
             if update_storage:
                 await self._insert_done()
 
+    # FXL文档处理流程
     async def apipeline_enqueue_documents(
         self,
         input: str | list[str],
@@ -2319,6 +2324,7 @@ class LightRAG:
                 pipeline_status["latest_message"] = log_message
                 pipeline_status["history_messages"].append(log_message)
 
+    # FXL实体关系抽取流程
     async def _process_extract_entities(
         self, chunk: dict[str, Any], pipeline_status=None, pipeline_status_lock=None
     ) -> list:
@@ -2377,6 +2383,7 @@ class LightRAG:
         loop = always_get_an_event_loop()
         loop.run_until_complete(self.ainsert_custom_kg(custom_kg, full_doc_id))
 
+    # FXL实体向量的相关数据插入向量库以及知识图谱
     async def ainsert_custom_kg(
         self,
         custom_kg: dict[str, Any],
@@ -2551,7 +2558,7 @@ class LightRAG:
         finally:
             if update_storage:
                 await self._insert_done()
-
+    # FXL问题查询
     def query(
         self,
         query: str,
