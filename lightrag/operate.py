@@ -46,6 +46,9 @@ from lightrag.base import (
     BaseGraphStorage,
     BaseKVStorage,
     BaseVectorStorage,
+    EntityFacetSchemaItem,
+    EntityProfileSchema,
+    EntityProfilesRecordSchema,
     TextChunkSchema,
     QueryParam,
     QueryResult,
@@ -54,6 +57,8 @@ from lightrag.base import (
 from lightrag.prompt import PROMPTS
 from lightrag.constants import (
     GRAPH_FIELD_SEP,
+    DEFAULT_ENTITY_PROFILE_SCHEMA_ID,
+    DEFAULT_ENTITY_PROFILE_SCHEMA_VERSION,
     DEFAULT_MAX_ENTITY_TOKENS,
     DEFAULT_MAX_RELATION_TOKENS,
     DEFAULT_MAX_TOTAL_TOKENS,
@@ -381,6 +386,331 @@ async def _summarize_descriptions(
             )
 
     return summary
+
+
+def _build_entity_profile_record(
+    entity_name: str,
+    facet_item: EntityFacetSchemaItem,
+    profile_text: str,
+    source_ids: list[str],
+    created_at: int,
+    grounding_status: str,
+) -> EntityProfileSchema:
+    return {
+        "profile_id": compute_mdhash_id(
+            f"{entity_name}:{facet_item['facet_id']}", prefix="epf-"
+        ),
+        "facet_id": facet_item["facet_id"],
+        "facet_name": facet_item["facet_name"],
+        "facet_definition": facet_item["definition"],
+        "profile_text": profile_text,
+        "support_chunk_ids": list(source_ids),
+        "support_fragment_ids": [],
+        "grounding_status": grounding_status,
+        "created_at": created_at,
+    }
+
+
+def _parse_entity_profile_generation_result(
+    result: str,
+    entity_name: str,
+    facet_catalog: list[EntityFacetSchemaItem],
+    created_at: int,
+    tuple_delimiter: str = "<|#|>",
+    completion_delimiter: str = "<|COMPLETE|>",
+) -> list[EntityProfileSchema]:
+    facet_map = {facet["facet_id"]: facet for facet in facet_catalog}
+    records = split_string_by_multi_markers(
+        result,
+        ["\n", completion_delimiter, completion_delimiter.lower()],
+    )
+
+    fixed_records: list[str] = []
+    profile_marker = f"{tuple_delimiter}profile{tuple_delimiter}"
+    for record in records:
+        stripped_record = record.strip()
+        if not stripped_record:
+            continue
+        if not stripped_record.startswith("profile") and profile_marker in stripped_record:
+            split_records = split_string_by_multi_markers(stripped_record, [profile_marker])
+            for split_record in split_records:
+                candidate = split_record.strip()
+                if not candidate:
+                    continue
+                if not candidate.startswith("profile"):
+                    candidate = f"profile{tuple_delimiter}{candidate}"
+                fixed_records.append(candidate)
+        else:
+            fixed_records.append(stripped_record)
+
+    delimiter_core = tuple_delimiter[2:-2]
+    delimiter_core_lower = delimiter_core.lower()
+    parsed_profiles: dict[str, EntityProfileSchema] = {}
+
+    for record in fixed_records:
+        record = fix_tuple_delimiter_corruption(record, delimiter_core, tuple_delimiter)
+        if delimiter_core != delimiter_core_lower:
+            record = fix_tuple_delimiter_corruption(
+                record, delimiter_core_lower, tuple_delimiter
+            )
+
+        record_attributes = split_string_by_multi_markers(record, [tuple_delimiter])
+        if len(record_attributes) != 4 or record_attributes[0].strip().lower() != "profile":
+            logger.warning(
+                "Entity profile generation output format error for `%s`: %s",
+                entity_name,
+                record_attributes,
+            )
+            continue
+
+        facet_id = sanitize_and_normalize_extracted_text(
+            record_attributes[1], remove_inner_quotes=True
+        )
+        facet_name = sanitize_and_normalize_extracted_text(
+            record_attributes[2], remove_inner_quotes=True
+        )
+        profile_text = sanitize_and_normalize_extracted_text(record_attributes[3])
+
+        if not facet_id or facet_id not in facet_map:
+            logger.warning(
+                "Ignoring entity profile with unknown facet_id `%s` for `%s`",
+                facet_id,
+                entity_name,
+            )
+            continue
+        if not profile_text:
+            logger.warning(
+                "Ignoring empty entity profile for `%s` facet `%s`",
+                entity_name,
+                facet_id,
+            )
+            continue
+
+        facet_item = facet_map[facet_id]
+        if facet_name and facet_name != facet_item["facet_name"]:
+            logger.warning(
+                "Entity profile facet name mismatch for `%s` facet `%s`: `%s` != `%s`",
+                entity_name,
+                facet_id,
+                facet_name,
+                facet_item["facet_name"],
+            )
+
+        profile_record = _build_entity_profile_record(
+            entity_name=entity_name,
+            facet_item=facet_item,
+            profile_text=profile_text,
+            source_ids=[],
+            created_at=created_at,
+            grounding_status="chunk_level",
+        )
+
+        existing_profile = parsed_profiles.get(facet_id)
+        if existing_profile is None or len(profile_text) > len(
+            existing_profile["profile_text"]
+        ):
+            parsed_profiles[facet_id] = profile_record
+
+    return [
+        parsed_profiles[facet["facet_id"]]
+        for facet in facet_catalog
+        if facet["facet_id"] in parsed_profiles
+    ]
+
+
+async def _generate_entity_profiles(
+    entity_name: str,
+    entity_type: str,
+    facet_catalog: list[EntityFacetSchemaItem],
+    description_list: list[str],
+    base_description: str,
+    source_ids: list[str],
+    file_path: str,
+    global_config: dict,
+    llm_response_cache: BaseKVStorage | None = None,
+) -> list[EntityProfileSchema]:
+    normalized_source_ids = [chunk_id for chunk_id in source_ids if chunk_id]
+    tokenizer: Tokenizer = global_config["tokenizer"]
+    summary_context_size = global_config["summary_context_size"]
+    summary_max_tokens = global_config["summary_max_tokens"]
+    language = global_config["addon_params"].get("language", DEFAULT_SUMMARY_LANGUAGE)
+
+    raw_descriptions = description_list or [base_description]
+    truncated_descriptions = truncate_list_by_token_size(
+        raw_descriptions,
+        key=lambda item: json.dumps({"description": item}, ensure_ascii=False),
+        max_token_size=summary_context_size,
+        tokenizer=tokenizer,
+    )
+    description_lines = "\n".join(
+        json.dumps({"description": description}, ensure_ascii=False)
+        for description in truncated_descriptions
+    )
+    facet_catalog_text = json.dumps(facet_catalog, ensure_ascii=False, indent=2)
+
+    system_prompt = PROMPTS["entity_profile_generation_system_prompt"].format(
+        tuple_delimiter=PROMPTS["DEFAULT_TUPLE_DELIMITER"],
+        completion_delimiter=PROMPTS["DEFAULT_COMPLETION_DELIMITER"],
+        language=language,
+    )
+    user_prompt = PROMPTS["entity_profile_generation_user_prompt"].format(
+        entity_name=entity_name,
+        entity_type=entity_type,
+        facet_catalog=facet_catalog_text,
+        base_description=base_description,
+        description_list=description_lines,
+        completion_delimiter=PROMPTS["DEFAULT_COMPLETION_DELIMITER"],
+    )
+
+    use_llm_func = partial(global_config["llm_model_func"], _priority=8)
+    profile_result, _ = await use_llm_func_with_cache(
+        user_prompt,
+        use_llm_func,
+        llm_response_cache=llm_response_cache,
+        system_prompt=system_prompt,
+        max_tokens=summary_max_tokens,
+        cache_type="entity_profile",
+    )
+
+    created_at = int(time.time())
+    generated_profiles = _parse_entity_profile_generation_result(
+        profile_result,
+        entity_name=entity_name,
+        facet_catalog=facet_catalog,
+        created_at=created_at,
+        tuple_delimiter=PROMPTS["DEFAULT_TUPLE_DELIMITER"],
+        completion_delimiter=PROMPTS["DEFAULT_COMPLETION_DELIMITER"],
+    )
+
+    profiles_by_facet: dict[str, EntityProfileSchema] = {}
+    for profile in generated_profiles:
+        profile["support_chunk_ids"] = list(normalized_source_ids)
+        profile["support_fragment_ids"] = []
+        profile["grounding_status"] = "chunk_level"
+        profiles_by_facet[profile["facet_id"]] = profile
+
+    if not profiles_by_facet:
+        logger.warning(
+            "Entity profile generation returned no usable profiles for `%s`; using base description fallback",
+            entity_name,
+        )
+
+    final_profiles: list[EntityProfileSchema] = []
+    for facet in facet_catalog:
+        facet_id = facet["facet_id"]
+        profile = profiles_by_facet.get(facet_id)
+        if profile is None:
+            profile = _build_entity_profile_record(
+                entity_name=entity_name,
+                facet_item=facet,
+                profile_text=base_description,
+                source_ids=normalized_source_ids,
+                created_at=created_at,
+                grounding_status="fallback",
+            )
+        final_profiles.append(profile)
+
+    return final_profiles
+
+
+async def _upsert_entity_profiles(
+    entity_name: str,
+    entity_type: str,
+    facet_catalog: list[EntityFacetSchemaItem],
+    description_list: list[str],
+    base_description: str,
+    full_source_ids: list[str],
+    source_id: str,
+    file_path: str,
+    entity_profiles_storage: BaseKVStorage,
+    entity_profiles_vdb: BaseVectorStorage,
+    global_config: dict,
+    llm_response_cache: BaseKVStorage | None = None,
+) -> EntityProfilesRecordSchema:
+    existing_record = await entity_profiles_storage.get_by_id(entity_name)
+    old_profile_ids = [
+        profile_id
+        for profile_id in (existing_record or {}).get("profile_ids", [])
+        if isinstance(profile_id, str) and profile_id
+    ]
+
+    profiles = await _generate_entity_profiles(
+        entity_name=entity_name,
+        entity_type=entity_type,
+        facet_catalog=facet_catalog,
+        description_list=description_list,
+        base_description=base_description,
+        source_ids=full_source_ids,
+        file_path=file_path,
+        global_config=global_config,
+        llm_response_cache=llm_response_cache,
+    )
+
+    vdb_payload: dict[str, dict[str, Any]] = {}
+    for profile in profiles:
+        vdb_payload[profile["profile_id"]] = {
+            "profile_id": profile["profile_id"],
+            "entity_name": entity_name,
+            "entity_type": entity_type,
+            "facet_id": profile["facet_id"],
+            "facet_name": profile["facet_name"],
+            "source_id": source_id,
+            "file_path": file_path,
+            "content": "\n".join(
+                [
+                    entity_name,
+                    entity_type,
+                    profile["facet_id"],
+                    profile["facet_name"],
+                    profile["facet_definition"],
+                    profile["profile_text"],
+                ]
+            ),
+        }
+
+    if vdb_payload:
+        await safe_vdb_operation_with_exception(
+            operation=lambda payload=vdb_payload: entity_profiles_vdb.upsert(payload),
+            operation_name="entity_profile_upsert",
+            entity_name=entity_name,
+            max_retries=3,
+            retry_delay=0.1,
+        )
+
+    record: EntityProfilesRecordSchema = {
+        "entity_name": entity_name,
+        "entity_type": entity_type,
+        "base_description": base_description,
+        "source_ids": list(full_source_ids),
+        "source_id": source_id,
+        "file_path": file_path,
+        "facet_schema_id": global_config.get(
+            "entity_profile_schema_id", DEFAULT_ENTITY_PROFILE_SCHEMA_ID
+        ),
+        "facet_schema_version": global_config.get(
+            "entity_profile_schema_version",
+            DEFAULT_ENTITY_PROFILE_SCHEMA_VERSION,
+        ),
+        "default_facet_id": global_config.get(
+            "entity_profile_default_facet_id", "identity_definition"
+        ),
+        "facet_catalog": [dict(facet) for facet in facet_catalog],
+        "facet_ids": [facet["facet_id"] for facet in facet_catalog],
+        "profile_ids": [profile["profile_id"] for profile in profiles],
+        "profiles": profiles,
+        "count": len(profiles),
+    }
+    await entity_profiles_storage.upsert({entity_name: record})
+
+    stale_profile_ids = [
+        profile_id
+        for profile_id in old_profile_ids
+        if profile_id not in set(record["profile_ids"])
+    ]
+    if stale_profile_ids:
+        await entity_profiles_vdb.delete(stale_profile_ids)
+
+    return record
 
 
 def _handle_single_entity_extraction(
@@ -1630,6 +1960,8 @@ async def _merge_nodes_then_upsert(
     pipeline_status_lock=None,
     llm_response_cache: BaseKVStorage | None = None,
     entity_chunks_storage: BaseKVStorage | None = None,
+    entity_profiles_storage: BaseKVStorage | None = None,
+    entity_profiles_vdb: BaseVectorStorage | None = None,
 ):
     """Get existing nodes from knowledge graph use name,if exists, merge data, else create, then upsert."""
     timing_start = time.perf_counter()
@@ -1935,6 +2267,26 @@ async def _merge_nodes_then_upsert(
                 entity_name=entity_name,
                 max_retries=3,
                 retry_delay=0.1,
+            )
+
+        if (
+            global_config.get("enable_entity_profiles")
+            and entity_profiles_storage is not None
+            and entity_profiles_vdb is not None
+        ):
+            await _upsert_entity_profiles(
+                entity_name=entity_name,
+                entity_type=entity_type,
+                facet_catalog=global_config.get("entity_profile_facets", []),
+                description_list=description_list,
+                base_description=description,
+                full_source_ids=full_source_ids,
+                source_id=source_id,
+                file_path=file_path,
+                entity_profiles_storage=entity_profiles_storage,
+                entity_profiles_vdb=entity_profiles_vdb,
+                global_config=global_config,
+                llm_response_cache=llm_response_cache,
             )
         return node_data
     finally:
@@ -2509,6 +2861,8 @@ async def merge_nodes_and_edges(
     global_config: dict[str, str],
     full_entities_storage: BaseKVStorage = None,
     full_relations_storage: BaseKVStorage = None,
+    entity_profiles_storage: BaseKVStorage = None,
+    entity_profiles_vdb: BaseVectorStorage = None,
     doc_id: str = None,
     pipeline_status: dict = None,
     pipeline_status_lock=None,
@@ -2534,6 +2888,8 @@ async def merge_nodes_and_edges(
         global_config: Global configuration
         full_entities_storage: Storage for document entity lists
         full_relations_storage: Storage for document relation lists
+        entity_profiles_storage: Storage for entity profile records
+        entity_profiles_vdb: Vector storage for entity profiles
         doc_id: Document ID for storage indexing
         pipeline_status: Pipeline status dictionary
         pipeline_status_lock: Lock for pipeline status
@@ -2613,6 +2969,8 @@ async def merge_nodes_and_edges(
                         pipeline_status_lock,
                         llm_response_cache,
                         entity_chunks_storage,
+                        entity_profiles_storage,
+                        entity_profiles_vdb,
                     )
 
                     return entity_data

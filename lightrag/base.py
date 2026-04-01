@@ -21,6 +21,8 @@ from .types import KnowledgeGraph
 from .constants import (
     DEFAULT_TOP_K,
     DEFAULT_CHUNK_TOP_K,
+    DEFAULT_ENTITY_PROFILE_TOP_K,
+    DEFAULT_ENTITY_PROFILE_MAX_PER_ENTITY,
     DEFAULT_MAX_ENTITY_TOKENS,
     DEFAULT_MAX_RELATION_TOKENS,
     DEFAULT_MAX_TOTAL_TOKENS,
@@ -78,6 +80,43 @@ class TextChunkSchema(TypedDict):
     chunk_order_index: int
 
 
+class EntityFacetSchemaItem(TypedDict):
+    facet_id: str
+    facet_name: str
+    definition: str
+    include: list[str]
+    exclude: list[str]
+
+
+class EntityProfileSchema(TypedDict):
+    profile_id: str
+    facet_id: str
+    facet_name: str
+    facet_definition: str
+    profile_text: str
+    support_chunk_ids: list[str]
+    support_fragment_ids: list[str]
+    grounding_status: str
+    created_at: int
+
+
+class EntityProfilesRecordSchema(TypedDict):
+    entity_name: str
+    entity_type: str
+    base_description: str
+    source_ids: list[str]
+    source_id: str
+    file_path: str
+    facet_schema_id: str
+    facet_schema_version: int
+    default_facet_id: str
+    facet_catalog: list[EntityFacetSchemaItem]
+    facet_ids: list[str]
+    profile_ids: list[str]
+    profiles: list[EntityProfileSchema]
+    count: int
+
+
 T = TypeVar("T")
 
 
@@ -128,6 +167,22 @@ class QueryParam:
         os.getenv("MAX_TOTAL_TOKENS", str(DEFAULT_MAX_TOTAL_TOKENS))
     )
     """Maximum total tokens budget for the entire query context (entities + relations + chunks + system prompt)."""
+
+    enable_entity_profiles: bool = False
+    """If True, enables query-conditioned entity profile selection in supported query modes."""
+
+    entity_profile_top_k: int = int(
+        os.getenv("ENTITY_PROFILE_TOP_K", str(DEFAULT_ENTITY_PROFILE_TOP_K))
+    )
+    """Number of profile candidates to retrieve from profile vector storage."""
+
+    entity_profile_max_per_entity: int = int(
+        os.getenv(
+            "ENTITY_PROFILE_MAX_PER_ENTITY",
+            str(DEFAULT_ENTITY_PROFILE_MAX_PER_ENTITY),
+        )
+    )
+    """Maximum number of selected profiles to keep for a single entity."""
 
     hl_keywords: list[str] = field(default_factory=list)
     """List of high-level keywords to prioritize in retrieval."""

@@ -1421,6 +1421,7 @@ class PostgreSQLDB:
         vector_tables_to_skip = {
             "LIGHTRAG_VDB_CHUNKS",
             "LIGHTRAG_VDB_ENTITY",
+            "LIGHTRAG_VDB_ENTITY_PROFILE",
             "LIGHTRAG_VDB_RELATION",
         }
 
@@ -2239,6 +2240,27 @@ class PGKVStorage(BaseKVStorage):
             response["create_time"] = create_time
             response["update_time"] = create_time if update_time == 0 else update_time
 
+        # Special handling for ENTITY_PROFILES namespace
+        if response and is_namespace(self.namespace, NameSpace.KV_STORE_ENTITY_PROFILES):
+            for field_name, fallback_value in (
+                ("source_ids", []),
+                ("facet_catalog", []),
+                ("facet_ids", []),
+                ("profile_ids", []),
+                ("profiles", []),
+            ):
+                field_value = response.get(field_name, fallback_value)
+                if isinstance(field_value, str):
+                    try:
+                        field_value = json.loads(field_value)
+                    except json.JSONDecodeError:
+                        field_value = fallback_value
+                response[field_name] = field_value
+            create_time = response.get("create_time", 0)
+            update_time = response.get("update_time", 0)
+            response["create_time"] = create_time
+            response["update_time"] = create_time if update_time == 0 else update_time
+
         # Special handling for ENTITY_CHUNKS namespace
         if response and is_namespace(self.namespace, NameSpace.KV_STORE_ENTITY_CHUNKS):
             # Parse chunk_ids JSON string back to list
@@ -2374,6 +2396,28 @@ class PGKVStorage(BaseKVStorage):
                     except json.JSONDecodeError:
                         relation_pairs = []
                 result["relation_pairs"] = relation_pairs
+                create_time = result.get("create_time", 0)
+                update_time = result.get("update_time", 0)
+                result["create_time"] = create_time
+                result["update_time"] = create_time if update_time == 0 else update_time
+
+        # Special handling for ENTITY_PROFILES namespace
+        if results and is_namespace(self.namespace, NameSpace.KV_STORE_ENTITY_PROFILES):
+            for result in results:
+                for field_name, fallback_value in (
+                    ("source_ids", []),
+                    ("facet_catalog", []),
+                    ("facet_ids", []),
+                    ("profile_ids", []),
+                    ("profiles", []),
+                ):
+                    field_value = result.get(field_name, fallback_value)
+                    if isinstance(field_value, str):
+                        try:
+                            field_value = json.loads(field_value)
+                        except json.JSONDecodeError:
+                            field_value = fallback_value
+                    result[field_name] = field_value
                 create_time = result.get("create_time", 0)
                 update_time = result.get("update_time", 0)
                 result["create_time"] = create_time
@@ -2533,6 +2577,33 @@ class PGKVStorage(BaseKVStorage):
                         self.workspace,
                         k,
                         json.dumps(v["relation_pairs"]),
+                        v["count"],
+                        current_time,
+                        current_time,
+                    )
+                )
+                await _cooperative_yield(i)
+        elif is_namespace(self.namespace, NameSpace.KV_STORE_ENTITY_PROFILES):
+            upsert_sql = SQL_TEMPLATES["upsert_entity_profiles"]
+            current_time = datetime.datetime.now(timezone.utc).replace(tzinfo=None)
+            for i, (k, v) in enumerate(data.items(), start=1):
+                batch_values.append(
+                    (
+                        self.workspace,
+                        k,
+                        v["entity_name"],
+                        v["entity_type"],
+                        v["base_description"],
+                        json.dumps(v["source_ids"]),
+                        v["source_id"],
+                        v.get("file_path"),
+                        v["facet_schema_id"],
+                        v["facet_schema_version"],
+                        v["default_facet_id"],
+                        json.dumps(v["facet_catalog"]),
+                        json.dumps(v["facet_ids"]),
+                        json.dumps(v["profile_ids"]),
+                        json.dumps(v["profiles"]),
                         v["count"],
                         current_time,
                         current_time,
@@ -3305,6 +3376,30 @@ class PGVectorStorage(BaseVectorStorage):
         )
         return upsert_sql, values
 
+    def _upsert_entity_profile_vectors(
+        self, item: dict[str, Any], current_time: datetime.datetime
+    ) -> tuple[str, tuple[Any, ...]]:
+        """Prepare upsert data for entity profile vectors."""
+        upsert_sql = SQL_TEMPLATES["upsert_entity_profile_vector"].format(
+            table_name=self.table_name
+        )
+        values: tuple[Any, ...] = (
+            self.workspace,
+            item["__id__"],
+            item["profile_id"],
+            item["entity_name"],
+            item["entity_type"],
+            item["facet_id"],
+            item["facet_name"],
+            item["content"],
+            item["__vector__"],
+            item.get("source_id"),
+            item.get("file_path", None),
+            current_time,
+            current_time,
+        )
+        return upsert_sql, values
+
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
         logger.debug(f"[{self.workspace}] Inserting {len(data)} to {self.namespace}")
         if not data:
@@ -3383,6 +3478,10 @@ class PGVectorStorage(BaseVectorStorage):
         for i, item in enumerate(list_data, start=1):
             if is_namespace(self.namespace, NameSpace.VECTOR_STORE_CHUNKS):
                 upsert_sql, values = self._upsert_chunks(item, current_time)
+            elif is_namespace(self.namespace, NameSpace.VECTOR_STORE_ENTITY_PROFILE):
+                upsert_sql, values = self._upsert_entity_profile_vectors(
+                    item, current_time
+                )
             elif is_namespace(self.namespace, NameSpace.VECTOR_STORE_ENTITIES):
                 upsert_sql, values = self._upsert_entities(item, current_time)
             elif is_namespace(self.namespace, NameSpace.VECTOR_STORE_RELATIONSHIPS):
@@ -6134,10 +6233,12 @@ NAMESPACE_TABLE_MAP = {
     NameSpace.KV_STORE_TEXT_CHUNKS: "LIGHTRAG_DOC_CHUNKS",
     NameSpace.KV_STORE_FULL_ENTITIES: "LIGHTRAG_FULL_ENTITIES",
     NameSpace.KV_STORE_FULL_RELATIONS: "LIGHTRAG_FULL_RELATIONS",
+    NameSpace.KV_STORE_ENTITY_PROFILES: "LIGHTRAG_ENTITY_PROFILES",
     NameSpace.KV_STORE_ENTITY_CHUNKS: "LIGHTRAG_ENTITY_CHUNKS",
     NameSpace.KV_STORE_RELATION_CHUNKS: "LIGHTRAG_RELATION_CHUNKS",
     NameSpace.KV_STORE_LLM_RESPONSE_CACHE: "LIGHTRAG_LLM_CACHE",
     NameSpace.VECTOR_STORE_CHUNKS: "LIGHTRAG_VDB_CHUNKS",
+    NameSpace.VECTOR_STORE_ENTITY_PROFILE: "LIGHTRAG_VDB_ENTITY_PROFILE",
     NameSpace.VECTOR_STORE_ENTITIES: "LIGHTRAG_VDB_ENTITY",
     NameSpace.VECTOR_STORE_RELATIONSHIPS: "LIGHTRAG_VDB_RELATION",
     NameSpace.DOC_STATUS: "LIGHTRAG_DOC_STATUS",
@@ -6205,6 +6306,24 @@ TABLES = {
                     chunk_ids VARCHAR(255)[] NULL,
                     file_path TEXT NULL,
 	                CONSTRAINT LIGHTRAG_VDB_ENTITY_PK PRIMARY KEY (workspace, id)
+                    )"""
+    },
+    "LIGHTRAG_VDB_ENTITY_PROFILE": {
+        "ddl": """CREATE TABLE LIGHTRAG_VDB_ENTITY_PROFILE (
+                    id VARCHAR(255),
+                    workspace VARCHAR(255),
+                    profile_id VARCHAR(255),
+                    entity_name VARCHAR(512),
+                    entity_type VARCHAR(255),
+                    facet_id VARCHAR(255),
+                    facet_name TEXT,
+                    content TEXT,
+                    content_vector VECTOR(dimension),
+                    source_id TEXT NULL,
+                    file_path TEXT NULL,
+                    create_time TIMESTAMP(0) DEFAULT CURRENT_TIMESTAMP,
+                    update_time TIMESTAMP(0) DEFAULT CURRENT_TIMESTAMP,
+	                CONSTRAINT LIGHTRAG_VDB_ENTITY_PROFILE_PK PRIMARY KEY (workspace, id)
                     )"""
     },
     "LIGHTRAG_VDB_RELATION": {
@@ -6276,6 +6395,29 @@ TABLES = {
                     CONSTRAINT LIGHTRAG_FULL_RELATIONS_PK PRIMARY KEY (workspace, id)
                     )"""
     },
+    "LIGHTRAG_ENTITY_PROFILES": {
+        "ddl": """CREATE TABLE LIGHTRAG_ENTITY_PROFILES (
+                    id VARCHAR(512),
+                    workspace VARCHAR(255),
+                    entity_name VARCHAR(512),
+                    entity_type VARCHAR(255),
+                    base_description TEXT,
+                    source_ids JSONB,
+                    source_id TEXT,
+                    file_path TEXT NULL,
+                    facet_schema_id VARCHAR(255),
+                    facet_schema_version INTEGER,
+                    default_facet_id VARCHAR(255),
+                    facet_catalog JSONB,
+                    facet_ids JSONB,
+                    profile_ids JSONB,
+                    profiles JSONB,
+                    count INTEGER,
+                    create_time TIMESTAMP(0) DEFAULT CURRENT_TIMESTAMP,
+                    update_time TIMESTAMP(0) DEFAULT CURRENT_TIMESTAMP,
+                    CONSTRAINT LIGHTRAG_ENTITY_PROFILES_PK PRIMARY KEY (workspace, id)
+                    )"""
+    },
     "LIGHTRAG_ENTITY_CHUNKS": {
         "ddl": """CREATE TABLE LIGHTRAG_ENTITY_CHUNKS (
                     id VARCHAR(512),
@@ -6345,6 +6487,14 @@ SQL_TEMPLATES = {
                                 EXTRACT(EPOCH FROM update_time)::BIGINT as update_time
                                 FROM LIGHTRAG_FULL_RELATIONS WHERE workspace=$1 AND id=$2
                                """,
+    "get_by_id_entity_profiles": """SELECT id, entity_name, entity_type, base_description,
+                                source_ids, source_id, file_path, facet_schema_id,
+                                facet_schema_version, default_facet_id, facet_catalog,
+                                facet_ids, profile_ids, profiles, count,
+                                EXTRACT(EPOCH FROM create_time)::BIGINT as create_time,
+                                EXTRACT(EPOCH FROM update_time)::BIGINT as update_time
+                                FROM LIGHTRAG_ENTITY_PROFILES WHERE workspace=$1 AND id=$2
+                               """,
     "get_by_ids_full_entities": """SELECT id, entity_names, count,
                                  EXTRACT(EPOCH FROM create_time)::BIGINT as create_time,
                                  EXTRACT(EPOCH FROM update_time)::BIGINT as update_time
@@ -6354,6 +6504,14 @@ SQL_TEMPLATES = {
                                  EXTRACT(EPOCH FROM create_time)::BIGINT as create_time,
                                  EXTRACT(EPOCH FROM update_time)::BIGINT as update_time
                                  FROM LIGHTRAG_FULL_RELATIONS WHERE workspace=$1 AND id = ANY($2)
+                                """,
+    "get_by_ids_entity_profiles": """SELECT id, entity_name, entity_type, base_description,
+                                 source_ids, source_id, file_path, facet_schema_id,
+                                 facet_schema_version, default_facet_id, facet_catalog,
+                                 facet_ids, profile_ids, profiles, count,
+                                 EXTRACT(EPOCH FROM create_time)::BIGINT as create_time,
+                                 EXTRACT(EPOCH FROM update_time)::BIGINT as update_time
+                                 FROM LIGHTRAG_ENTITY_PROFILES WHERE workspace=$1 AND id = ANY($2)
                                 """,
     "get_by_id_entity_chunks": """SELECT id, chunk_ids, count,
                                 EXTRACT(EPOCH FROM create_time)::BIGINT as create_time,
@@ -6422,6 +6580,28 @@ SQL_TEMPLATES = {
                       count=EXCLUDED.count,
                       update_time = EXCLUDED.update_time
                      """,
+    "upsert_entity_profiles": """INSERT INTO LIGHTRAG_ENTITY_PROFILES (workspace, id, entity_name, entity_type,
+                      base_description, source_ids, source_id, file_path, facet_schema_id,
+                      facet_schema_version, default_facet_id, facet_catalog, facet_ids,
+                      profile_ids, profiles, count, create_time, update_time)
+                      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+                      ON CONFLICT (workspace,id) DO UPDATE
+                      SET entity_name=EXCLUDED.entity_name,
+                      entity_type=EXCLUDED.entity_type,
+                      base_description=EXCLUDED.base_description,
+                      source_ids=EXCLUDED.source_ids,
+                      source_id=EXCLUDED.source_id,
+                      file_path=EXCLUDED.file_path,
+                      facet_schema_id=EXCLUDED.facet_schema_id,
+                      facet_schema_version=EXCLUDED.facet_schema_version,
+                      default_facet_id=EXCLUDED.default_facet_id,
+                      facet_catalog=EXCLUDED.facet_catalog,
+                      facet_ids=EXCLUDED.facet_ids,
+                      profile_ids=EXCLUDED.profile_ids,
+                      profiles=EXCLUDED.profiles,
+                      count=EXCLUDED.count,
+                      update_time = EXCLUDED.update_time
+                     """,
     "upsert_entity_chunks": """INSERT INTO LIGHTRAG_ENTITY_CHUNKS (workspace, id, chunk_ids, count,
                       create_time, update_time)
                       VALUES ($1, $2, $3, $4, $5, $6)
@@ -6463,6 +6643,22 @@ SQL_TEMPLATES = {
                       file_path=EXCLUDED.file_path,
                       update_time=EXCLUDED.update_time
                      """,
+    "upsert_entity_profile_vector": """INSERT INTO {table_name} (workspace, id, profile_id, entity_name,
+                      entity_type, facet_id, facet_name, content, content_vector, source_id,
+                      file_path, create_time, update_time)
+                      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+                      ON CONFLICT (workspace,id) DO UPDATE
+                      SET profile_id=EXCLUDED.profile_id,
+                      entity_name=EXCLUDED.entity_name,
+                      entity_type=EXCLUDED.entity_type,
+                      facet_id=EXCLUDED.facet_id,
+                      facet_name=EXCLUDED.facet_name,
+                      content=EXCLUDED.content,
+                      content_vector=EXCLUDED.content_vector,
+                      source_id=EXCLUDED.source_id,
+                      file_path=EXCLUDED.file_path,
+                      update_time=EXCLUDED.update_time
+                     """,
     "upsert_relationship": """INSERT INTO {table_name} (workspace, id, source_id,
                       target_id, content, content_vector, chunk_ids, file_path, create_time, update_time)
                       VALUES ($1, $2, $3, $4, $5, $6, $7::varchar[], $8, $9, $10)
@@ -6492,6 +6688,21 @@ SQL_TEMPLATES = {
                 WHERE e.workspace = $1
                   AND e.content_vector <=> '[{embedding_string}]'::{vector_cast} < $2
                 ORDER BY e.content_vector <=> '[{embedding_string}]'::{vector_cast}
+                LIMIT $3;
+                """,
+    "entity_profile_vectors": """
+                SELECT p.profile_id,
+                       p.entity_name,
+                       p.entity_type,
+                       p.facet_id,
+                       p.facet_name,
+                       p.source_id,
+                       p.file_path,
+                       EXTRACT(EPOCH FROM p.create_time)::BIGINT AS created_at
+                FROM {table_name} p
+                WHERE p.workspace = $1
+                  AND p.content_vector <=> '[{embedding_string}]'::{vector_cast} < $2
+                ORDER BY p.content_vector <=> '[{embedding_string}]'::{vector_cast}
                 LIMIT $3;
                 """,
     "chunks": """

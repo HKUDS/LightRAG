@@ -40,6 +40,41 @@ DEFAULT_ENTITY_TYPES = [
     "NaturalObject",
 ]
 
+DEFAULT_ENTITY_PROFILE_SCHEMA_ID = "entity_general_v1"
+DEFAULT_ENTITY_PROFILE_FACETS = [
+    {
+        "facet_id": "identity_definition",
+        "facet_name": "Identity / Definition",
+        "definition": "What the entity is, its category, boundary, and essential identity.",
+        "include": ["definition", "category", "scope", "canonical identity"],
+        "exclude": ["dynamic behavior", "causal process", "governance issues"],
+    },
+    {
+        "facet_id": "attributes_composition",
+        "facet_name": "Attributes / Composition",
+        "definition": "What stable attributes, properties, parts, or components characterize the entity.",
+        "include": ["properties", "components", "features", "specifications"],
+        "exclude": ["responsibilities", "mechanisms", "temporal states"],
+    },
+    {
+        "facet_id": "role_function",
+        "facet_name": "Role / Function",
+        "definition": "What role the entity plays, what function it serves, or what purpose it fulfills.",
+        "include": ["responsibility", "purpose", "function", "use"],
+        "exclude": ["identity definition", "internal mechanism", "momentary state"],
+    },
+    {
+        "facet_id": "state_behavior",
+        "facet_name": "State / Behavior",
+        "definition": "How the entity behaves, changes, operates, or appears dynamically over time or in context.",
+        "include": ["behavior", "operation", "state", "change"],
+        "exclude": ["static category", "stable composition", "governance policy"],
+    },
+]
+DEFAULT_ENTITY_PROFILE_SCHEMA_VERSION = 1
+DEFAULT_ENTITY_PROFILE_TOP_K = 24
+DEFAULT_ENTITY_PROFILE_MAX_PER_ENTITY = 2
+
 # Separator for: description, source_id and relation-key fields(Can not be changed after data inserted)
 GRAPH_FIELD_SEP = "<SEP>"
 

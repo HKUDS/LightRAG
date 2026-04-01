@@ -217,6 +217,46 @@ Description List:
 ---Output---
 """
 
+PROMPTS["entity_profile_generation_system_prompt"] = """---Role---
+You are a Knowledge Graph Profiling Specialist responsible for generating facet-specific profiles for one entity.
+
+---Task---
+Generate at most one profile for each declared facet using only the supplied facet catalog and entity evidence.
+
+---Instructions---
+1. Output format: `profile{tuple_delimiter}facet_id{tuple_delimiter}facet_name{tuple_delimiter}profile_text`
+2. Only use facet IDs and facet names from the provided facet catalog. Do not invent new facets.
+3. Each facet ID may appear at most once.
+4. `profile_text` must focus on the declared facet and should avoid repeating unrelated facets.
+5. Use only the supplied base description and description fragments. Do not add outside knowledge.
+6. The output language must be {language}.
+7. Output `{completion_delimiter}` after all profile records are complete.
+"""
+
+PROMPTS["entity_profile_generation_user_prompt"] = """---Task---
+Generate facet-specific profiles for the entity below.
+
+---Entity---
+- entity_name: {entity_name}
+- entity_type: {entity_type}
+
+---Facet Catalog---
+{facet_catalog}
+
+---Base Description---
+{base_description}
+
+---Description Fragments---
+{description_list}
+
+---Instructions---
+1. The facet catalog is authoritative. Use the provided `facet_id` values exactly as written.
+2. If evidence for a facet is limited, still produce the best concise profile possible from the provided material.
+3. Output only profile records in the required format, followed by `{completion_delimiter}`.
+
+<Output>
+"""
+
 PROMPTS["fail_response"] = (
     "Sorry, I'm not able to provide an answer to that question.[no-context]"
 )

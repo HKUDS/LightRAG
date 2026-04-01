@@ -7,6 +7,7 @@ import inspect
 import os
 import time
 import warnings
+from copy import deepcopy
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 from functools import partial
@@ -48,6 +49,9 @@ from lightrag.constants import (
     DEFAULT_MAX_SOURCE_IDS_PER_ENTITY,
     DEFAULT_MAX_SOURCE_IDS_PER_RELATION,
     DEFAULT_ENTITY_TYPES,
+    DEFAULT_ENTITY_PROFILE_SCHEMA_ID,
+    DEFAULT_ENTITY_PROFILE_FACETS,
+    DEFAULT_ENTITY_PROFILE_SCHEMA_VERSION,
     DEFAULT_SUMMARY_LANGUAGE,
     DEFAULT_LLM_TIMEOUT,
     DEFAULT_EMBEDDING_TIMEOUT,
@@ -210,6 +214,60 @@ def _normalize_string_list(raw_values: Any, context: str = "") -> list[str]:
     return result
 
 
+def _normalize_entity_profile_facets(
+    raw_facets: Any,
+) -> list[dict[str, Any]]:
+    """Validate and normalize the configured entity profile facet catalog."""
+    if not isinstance(raw_facets, list):
+        raise ValueError("entity_profile_facets must be a list of facet definitions")
+
+    normalized_facets: list[dict[str, Any]] = []
+    seen_facet_ids: set[str] = set()
+    required_keys = ("facet_id", "facet_name", "definition")
+
+    for index, facet in enumerate(raw_facets, start=1):
+        if not isinstance(facet, dict):
+            raise ValueError(
+                f"entity_profile_facets[{index}] must be an object, got {type(facet).__name__}"
+            )
+
+        missing_keys = [key for key in required_keys if not str(facet.get(key, "")).strip()]
+        if missing_keys:
+            raise ValueError(
+                f"entity_profile_facets[{index}] is missing required keys: {', '.join(missing_keys)}"
+            )
+
+        facet_id = str(facet["facet_id"]).strip()
+        if facet_id in seen_facet_ids:
+            raise ValueError(f"Duplicate entity profile facet_id: {facet_id}")
+
+        include_values = facet.get("include", [])
+        exclude_values = facet.get("exclude", [])
+
+        if include_values is None:
+            include_values = []
+        if exclude_values is None:
+            exclude_values = []
+
+        if not isinstance(include_values, list) or not isinstance(exclude_values, list):
+            raise ValueError(
+                f"entity_profile_facets[{index}] include/exclude must be lists when provided"
+            )
+
+        normalized_facets.append(
+            {
+                "facet_id": facet_id,
+                "facet_name": str(facet["facet_name"]).strip(),
+                "definition": str(facet["definition"]).strip(),
+                "include": [str(item).strip() for item in include_values if str(item).strip()],
+                "exclude": [str(item).strip() for item in exclude_values if str(item).strip()],
+            }
+        )
+        seen_facet_ids.add(facet_id)
+
+    return normalized_facets
+
+
 @final
 @dataclass
 class LightRAG:
@@ -309,6 +367,49 @@ class LightRAG:
             "FORCE_LLM_SUMMARY_ON_MERGE", DEFAULT_FORCE_LLM_SUMMARY_ON_MERGE, int
         )
     )
+
+    enable_entity_profiles: bool = field(
+        default=get_env_value("ENABLE_ENTITY_PROFILES", False, bool)
+    )
+    """If True, persist facet-constrained entity profiles alongside entity summaries."""
+
+    entity_profile_schema_id: str = field(
+        default=get_env_value(
+            "ENTITY_PROFILE_SCHEMA_ID",
+            DEFAULT_ENTITY_PROFILE_SCHEMA_ID,
+            str,
+        )
+    )
+    """Identifier for the active entity profile facet schema."""
+
+    entity_profile_facets: list[dict[str, Any]] = field(
+        default_factory=lambda: deepcopy(
+            get_env_value(
+                "ENTITY_PROFILE_FACETS",
+                DEFAULT_ENTITY_PROFILE_FACETS,
+                list,
+            )
+        )
+    )
+    """Facet catalog used to constrain offline entity profile generation."""
+
+    entity_profile_schema_version: int = field(
+        default=get_env_value(
+            "ENTITY_PROFILE_SCHEMA_VERSION",
+            DEFAULT_ENTITY_PROFILE_SCHEMA_VERSION,
+            int,
+        )
+    )
+    """Version number for the configured entity profile schema."""
+
+    entity_profile_default_facet_id: str = field(
+        default=get_env_value(
+            "ENTITY_PROFILE_DEFAULT_FACET_ID",
+            "identity_definition",
+            str,
+        )
+    )
+    """Default facet identifier used by entity profile records."""
 
     # Text chunking
     # ---
@@ -610,6 +711,21 @@ class LightRAG:
             logger.warning(
                 f"max_total_tokens({self.summary_max_tokens}) should greater than summary_length_recommended({self.summary_length_recommended})"
             )
+        if self.enable_entity_profiles:
+            normalized_facets = _normalize_entity_profile_facets(
+                self.entity_profile_facets
+            )
+            if not normalized_facets:
+                raise ValueError(
+                    "entity_profile_facets must not be empty when enable_entity_profiles=True"
+                )
+            if self.entity_profile_default_facet_id not in {
+                facet["facet_id"] for facet in normalized_facets
+            }:
+                raise ValueError(
+                    "entity_profile_default_facet_id must exist in entity_profile_facets"
+                )
+            self.entity_profile_facets = normalized_facets
 
         # Init Embedding
         # Step 1: Capture embedding_func and max_token_size before applying rate_limit decorator
@@ -697,6 +813,12 @@ class LightRAG:
             embedding_func=self.embedding_func,
         )
 
+        self.entity_profiles: BaseKVStorage = self.key_string_value_json_storage_cls(  # type: ignore
+            namespace=NameSpace.KV_STORE_ENTITY_PROFILES,
+            workspace=self.workspace,
+            embedding_func=self.embedding_func,
+        )
+
         self.entity_chunks: BaseKVStorage = self.key_string_value_json_storage_cls(  # type: ignore
             namespace=NameSpace.KV_STORE_ENTITY_CHUNKS,
             workspace=self.workspace,
@@ -720,6 +842,21 @@ class LightRAG:
             workspace=self.workspace,
             embedding_func=self.embedding_func,
             meta_fields={"entity_name", "source_id", "content", "file_path"},
+        )
+        self.entity_profiles_vdb: BaseVectorStorage = self.vector_db_storage_cls(  # type: ignore
+            namespace=NameSpace.VECTOR_STORE_ENTITY_PROFILE,
+            workspace=self.workspace,
+            embedding_func=self.embedding_func,
+            meta_fields={
+                "profile_id",
+                "entity_name",
+                "entity_type",
+                "facet_id",
+                "facet_name",
+                "source_id",
+                "content",
+                "file_path",
+            },
         )
         self.relationships_vdb: BaseVectorStorage = self.vector_db_storage_cls(  # type: ignore
             namespace=NameSpace.VECTOR_STORE_RELATIONSHIPS,
@@ -784,9 +921,11 @@ class LightRAG:
                 self.text_chunks,
                 self.full_entities,
                 self.full_relations,
+                self.entity_profiles,
                 self.entity_chunks,
                 self.relation_chunks,
                 self.entities_vdb,
+                self.entity_profiles_vdb,
                 self.relationships_vdb,
                 self.chunks_vdb,
                 self.chunk_entity_relation_graph,
@@ -808,9 +947,11 @@ class LightRAG:
                 ("text_chunks", self.text_chunks),
                 ("full_entities", self.full_entities),
                 ("full_relations", self.full_relations),
+                ("entity_profiles", self.entity_profiles),
                 ("entity_chunks", self.entity_chunks),
                 ("relation_chunks", self.relation_chunks),
                 ("entities_vdb", self.entities_vdb),
+                ("entity_profiles_vdb", self.entity_profiles_vdb),
                 ("relationships_vdb", self.relationships_vdb),
                 ("chunks_vdb", self.chunks_vdb),
                 ("chunk_entity_relation_graph", self.chunk_entity_relation_graph),
@@ -2150,6 +2291,8 @@ class LightRAG:
                                     global_config=asdict(self),
                                     full_entities_storage=self.full_entities,
                                     full_relations_storage=self.full_relations,
+                                    entity_profiles_storage=self.entity_profiles,
+                                    entity_profiles_vdb=self.entity_profiles_vdb,
                                     doc_id=doc_id,
                                     pipeline_status=pipeline_status,
                                     pipeline_status_lock=pipeline_status_lock,
@@ -2357,10 +2500,12 @@ class LightRAG:
                 self.text_chunks,
                 self.full_entities,
                 self.full_relations,
+                self.entity_profiles,
                 self.entity_chunks,
                 self.relation_chunks,
                 self.llm_response_cache,
                 self.entities_vdb,
+                self.entity_profiles_vdb,
                 self.relationships_vdb,
                 self.chunks_vdb,
                 self.chunk_entity_relation_graph,
