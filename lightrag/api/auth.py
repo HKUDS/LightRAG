@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta
+import secrets
 
 import jwt
 from dotenv import load_dotenv
@@ -24,16 +25,21 @@ class TokenPayload(BaseModel):
 
 class AuthHandler:
     def __init__(self):
+        auth_accounts = global_args.auth_accounts
         self.secret = global_args.token_secret
-        if self.secret == "lightrag-jwt-default-secret-key!":
-            logger.warning(
-                "Using default TOKEN_SECRET. Please set a unique TOKEN_SECRET in your .env file for better security."
+        if not self.secret:
+            if auth_accounts:
+                raise ValueError(
+                    "TOKEN_SECRET must be explicitly set to a non-default value when AUTH_ACCOUNTS is configured."
+                )
+            self.secret = secrets.token_urlsafe(32)
+            logger.info(
+                "TOKEN_SECRET not set; generated an ephemeral secret for guest tokens because AUTH_ACCOUNTS is not configured."
             )
         self.algorithm = global_args.jwt_algorithm
         self.expire_hours = global_args.token_expire_hours
         self.guest_expire_hours = global_args.guest_token_expire_hours
         self.accounts = {}
-        auth_accounts = global_args.auth_accounts
         invalid_accounts = []
         if auth_accounts:
             for account in auth_accounts.split(","):

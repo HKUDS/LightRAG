@@ -25,7 +25,7 @@ def auth_module(monkeypatch):
     config = import_real_api_module("lightrag.api.config")
 
     mock_global_args = SimpleNamespace(
-        token_secret="lightrag-jwt-default-secret-key!",
+        token_secret="test-jwt-secret",
         jwt_algorithm="HS256",
         token_expire_hours=48,
         guest_token_expire_hours=24,
@@ -73,7 +73,7 @@ def test_invalid_auth_accounts_raises(monkeypatch):
     config = import_real_api_module("lightrag.api.config")
 
     mock_global_args = SimpleNamespace(
-        token_secret="lightrag-jwt-default-secret-key!",
+        token_secret="test-jwt-secret",
         jwt_algorithm="HS256",
         token_expire_hours=48,
         guest_token_expire_hours=24,
@@ -84,6 +84,58 @@ def test_invalid_auth_accounts_raises(monkeypatch):
 
     with pytest.raises(ValueError, match="AUTH_ACCOUNTS must use"):
         import_real_api_module("lightrag.api.auth")
+
+    sys.modules.pop("lightrag.api.auth", None)
+
+
+def test_initialize_config_rejects_default_token_secret_with_auth_accounts():
+    config = import_real_api_module("lightrag.api.config")
+
+    insecure_args = SimpleNamespace(
+        auth_accounts="admin:admin_pass",
+        token_secret=config.DEFAULT_TOKEN_SECRET,
+    )
+
+    with pytest.raises(ValueError, match="TOKEN_SECRET must be explicitly set"):
+        config.initialize_config(insecure_args, force=True)
+
+
+def test_initialize_config_allows_custom_token_secret_with_auth_accounts():
+    config = import_real_api_module("lightrag.api.config")
+
+    secure_args = SimpleNamespace(
+        auth_accounts="admin:admin_pass",
+        token_secret="custom-jwt-secret",
+    )
+
+    initialized = config.initialize_config(secure_args, force=True)
+
+    assert initialized is secure_args
+
+
+def test_guest_tokens_use_ephemeral_secret_when_token_secret_missing(monkeypatch):
+    config = import_real_api_module("lightrag.api.config")
+
+    mock_global_args = SimpleNamespace(
+        token_secret=None,
+        jwt_algorithm="HS256",
+        token_expire_hours=48,
+        guest_token_expire_hours=24,
+        auth_accounts="",
+    )
+
+    monkeypatch.setattr(config, "global_args", mock_global_args)
+
+    module = import_real_api_module("lightrag.api.auth")
+    module = importlib.reload(module)
+    handler = module.AuthHandler()
+
+    token = handler.create_token("guest", role="guest")
+    token_info = handler.validate_token(token)
+
+    assert handler.secret
+    assert token_info["username"] == "guest"
+    assert token_info["role"] == "guest"
 
     sys.modules.pop("lightrag.api.auth", None)
 
