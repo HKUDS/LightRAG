@@ -510,6 +510,7 @@ def create_app(args):
             keyword_extraction = kwargs.pop("keyword_extraction", None)
             if keyword_extraction:
                 kwargs["response_format"] = GPTKeywordExtractionFormat
+            # entity_extraction and entity_types passed through for dynamic schema when entity_types provided
             if history_messages is None:
                 history_messages = []
 
@@ -547,6 +548,7 @@ def create_app(args):
             keyword_extraction = kwargs.pop("keyword_extraction", None)
             if keyword_extraction:
                 kwargs["response_format"] = GPTKeywordExtractionFormat
+            # entity_extraction and entity_types passed through for dynamic schema when entity_types provided
             if history_messages is None:
                 history_messages = []
 
@@ -582,6 +584,7 @@ def create_app(args):
         ) -> str:
             from lightrag.llm.gemini import gemini_complete_if_cache
 
+            entity_extraction = kwargs.pop("entity_extraction", False)
             if history_messages is None:
                 history_messages = []
 
@@ -601,6 +604,7 @@ def create_app(args):
                 api_key=args.llm_binding_api_key,
                 base_url=args.llm_binding_host,
                 keyword_extraction=keyword_extraction,
+                entity_extraction=entity_extraction,
                 **kwargs,
             )
 
@@ -1094,6 +1098,7 @@ def create_app(args):
                 "language": args.summary_language,
                 "entity_types": args.entity_types,
             },
+            use_structured_extraction=args.use_structured_extraction,
             ollama_server_infos=ollama_server_infos,
         )
     except Exception as e:

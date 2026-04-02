@@ -295,6 +295,11 @@ class LightRAG:
     )
     """Maximum number of entity extraction attempts for ambiguous content."""
 
+    use_structured_extraction: bool = field(
+        default=get_env_value("USE_STRUCTURED_EXTRACTION", True, bool)
+    )
+    """Use structured JSON output for entity/relationship extraction when supported by LLM provider."""
+
     max_extract_input_tokens: int = field(
         default=get_env_value(
             "MAX_EXTRACT_INPUT_TOKENS", DEFAULT_MAX_EXTRACT_INPUT_TOKENS, int

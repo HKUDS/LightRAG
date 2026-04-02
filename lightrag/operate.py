@@ -52,6 +52,7 @@ from lightrag.base import (
     QueryContextResult,
 )
 from lightrag.prompt import PROMPTS
+from lightrag.types import GraphExtraction
 from lightrag.constants import (
     GRAPH_FIELD_SEP,
     DEFAULT_MAX_ENTITY_TOKENS,
@@ -934,7 +935,116 @@ async def _get_cached_extraction_results(
     return sorted_cached_results  # each item: list(extraction_result, create_time)
 
 
-async def _process_extraction_result(
+def _is_structured_extraction_result(result: str) -> bool:
+    """Detect if extraction result is JSON (structured) format vs delimiter format."""
+    stripped = result.strip()
+    if not stripped:
+        return False
+    if stripped.startswith("{") and (
+        "entities" in stripped or '"entities"' in stripped
+    ):
+        return True
+    return False
+
+
+async def _process_extraction_result_json(
+    result: str,
+    chunk_key: str,
+    timestamp: int,
+    file_path: str = "unknown_source",
+) -> tuple[dict, dict]:
+    """Process extraction result when LLM returns structured JSON output.
+
+    Parses JSON with json_repair, validates with GraphExtraction schema,
+    and maps to the same (nodes_dict, edges_dict) format as delimiter parsing.
+    """
+    maybe_nodes = defaultdict(list)
+    maybe_edges = defaultdict(list)
+
+    try:
+        parsed = json_repair.loads(result)
+        data = GraphExtraction.model_validate(parsed)
+    except (json.JSONDecodeError, ValueError) as e:
+        logger.warning(
+            f"{chunk_key}: Failed to parse structured extraction JSON: {e}"
+        )
+        return dict(maybe_nodes), dict(maybe_edges)
+
+    for ent in data.entities:
+        entity_name = sanitize_and_normalize_extracted_text(
+            ent.entity_name, remove_inner_quotes=True
+        )
+        if not entity_name or not entity_name.strip():
+            continue
+        entity_type = sanitize_and_normalize_extracted_text(
+            ent.entity_type, remove_inner_quotes=True
+        )
+        entity_type = entity_type.replace(" ", "").lower()
+        if not entity_type.strip() or any(
+            c in entity_type for c in ["'", "(", ")", "<", ">", "|", "/", "\\"]
+        ):
+            continue
+        if "," in entity_type:
+            entity_type = entity_type.split(",")[0].strip() or entity_type
+        description = sanitize_and_normalize_extracted_text(
+            ent.entity_description
+        )
+        if not description.strip():
+            continue
+        truncated_name = _truncate_entity_identifier(
+            entity_name, DEFAULT_ENTITY_NAME_MAX_LENGTH, chunk_key, "Entity name"
+        )
+        maybe_nodes[truncated_name].append(
+            dict(
+                entity_name=truncated_name,
+                entity_type=entity_type,
+                description=description,
+                source_id=chunk_key,
+                file_path=file_path,
+                timestamp=timestamp,
+            )
+        )
+
+    for rel in data.relationships:
+        source = sanitize_and_normalize_extracted_text(
+            rel.source_entity, remove_inner_quotes=True
+        )
+        target = sanitize_and_normalize_extracted_text(
+            rel.target_entity, remove_inner_quotes=True
+        )
+        if not source or not target or source == target:
+            continue
+        keywords = sanitize_and_normalize_extracted_text(
+            rel.relationship_keywords, remove_inner_quotes=True
+        ).replace("，", ",")
+        description = sanitize_and_normalize_extracted_text(
+            rel.relationship_description
+        )
+        if not description.strip():
+            continue
+        truncated_source = _truncate_entity_identifier(
+            source, DEFAULT_ENTITY_NAME_MAX_LENGTH, chunk_key, "Relation entity"
+        )
+        truncated_target = _truncate_entity_identifier(
+            target, DEFAULT_ENTITY_NAME_MAX_LENGTH, chunk_key, "Relation entity"
+        )
+        maybe_edges[(truncated_source, truncated_target)].append(
+            dict(
+                src_id=truncated_source,
+                tgt_id=truncated_target,
+                weight=1.0,
+                description=description,
+                keywords=keywords,
+                source_id=chunk_key,
+                file_path=file_path,
+                timestamp=timestamp,
+            )
+        )
+
+    return dict(maybe_nodes), dict(maybe_edges)
+
+
+async def _process_extraction_result_delimited(
     result: str,
     chunk_key: str,
     timestamp: int,
@@ -942,16 +1052,9 @@ async def _process_extraction_result(
     tuple_delimiter: str = "<|#|>",
     completion_delimiter: str = "<|COMPLETE|>",
 ) -> tuple[dict, dict]:
-    """Process a single extraction result (either initial or gleaning)
-    Args:
-        result (str): The extraction result to process
-        chunk_key (str): The chunk key for source tracking
-        file_path (str): The file path for citation
-        tuple_delimiter (str): Delimiter for tuple fields
-        record_delimiter (str): Delimiter for records
-        completion_delimiter (str): Delimiter for completion
-    Returns:
-        tuple: (nodes_dict, edges_dict) containing the extracted entities and relationships
+    """Process extraction result when LLM returns delimiter-based text format.
+
+    Legacy parser for cached results and providers without structured output.
     """
     maybe_nodes = defaultdict(list)
     maybe_edges = defaultdict(list)
@@ -961,7 +1064,7 @@ async def _process_extraction_result(
             f"{chunk_key}: Complete delimiter can not be found in extraction result"
         )
 
-    # Split LLL output result to records by "\n"
+    # Split LLM output result to records by "\n"
     records = split_string_by_multi_markers(
         result,
         ["\n", completion_delimiter, completion_delimiter.lower()],
@@ -1060,6 +1163,33 @@ async def _process_extraction_result(
         await _cooperative_yield(i, every=8)
 
     return dict(maybe_nodes), dict(maybe_edges)
+
+
+async def _process_extraction_result(
+    result: str,
+    chunk_key: str,
+    timestamp: int,
+    file_path: str = "unknown_source",
+    tuple_delimiter: str = "<|#|>",
+    completion_delimiter: str = "<|COMPLETE|>",
+) -> tuple[dict, dict]:
+    """Process a single extraction result (initial or gleaning).
+
+    Dispatches to JSON or delimiter parser based on response format detection.
+    Supports both structured outputs (JSON) and legacy delimiter-based text.
+    """
+    if _is_structured_extraction_result(result):
+        return await _process_extraction_result_json(
+            result, chunk_key, timestamp, file_path
+        )
+    return await _process_extraction_result_delimited(
+        result,
+        chunk_key,
+        timestamp,
+        file_path,
+        tuple_delimiter=tuple_delimiter,
+        completion_delimiter=completion_delimiter,
+    )
 
 
 async def _rebuild_from_extraction_result(
@@ -2901,6 +3031,7 @@ async def extract_entities(
 
     use_llm_func: callable = global_config["llm_model_func"]
     entity_extract_max_gleaning = global_config["entity_extract_max_gleaning"]
+    use_structured_extraction = global_config.get("use_structured_extraction", True)
 
     ordered_chunks = list(chunks.items())
     # add language and example number params to prompt
@@ -2908,25 +3039,32 @@ async def extract_entities(
     entity_types = global_config["addon_params"].get(
         "entity_types", DEFAULT_ENTITY_TYPES
     )
+    entity_types_str = ",".join(entity_types)
+    entity_types_display = ", ".join(entity_types)
 
-    examples = "\n".join(PROMPTS["entity_extraction_examples"])
-
-    example_context_base = dict(
-        tuple_delimiter=PROMPTS["DEFAULT_TUPLE_DELIMITER"],
-        completion_delimiter=PROMPTS["DEFAULT_COMPLETION_DELIMITER"],
-        entity_types=", ".join(entity_types),
-        language=language,
-    )
-    # add example's format
-    examples = examples.format(**example_context_base)
-
-    context_base = dict(
-        tuple_delimiter=PROMPTS["DEFAULT_TUPLE_DELIMITER"],
-        completion_delimiter=PROMPTS["DEFAULT_COMPLETION_DELIMITER"],
-        entity_types=",".join(entity_types),
-        examples=examples,
-        language=language,
-    )
+    if use_structured_extraction:
+        examples = "\n".join(PROMPTS["entity_extraction_structured_examples"])
+        context_base = dict(
+            entity_types=entity_types_display,
+            examples=examples,
+            language=language,
+        )
+    else:
+        example_context_base = dict(
+            tuple_delimiter=PROMPTS["DEFAULT_TUPLE_DELIMITER"],
+            completion_delimiter=PROMPTS["DEFAULT_COMPLETION_DELIMITER"],
+            entity_types=entity_types_display,
+            language=language,
+        )
+        examples = "\n".join(PROMPTS["entity_extraction_examples"])
+        examples = examples.format(**example_context_base)
+        context_base = dict(
+            tuple_delimiter=PROMPTS["DEFAULT_TUPLE_DELIMITER"],
+            completion_delimiter=PROMPTS["DEFAULT_COMPLETION_DELIMITER"],
+            entity_types=entity_types_str,
+            examples=examples,
+            language=language,
+        )
 
     processed_chunks = 0
     total_chunks = len(ordered_chunks)
@@ -2951,16 +3089,26 @@ async def extract_entities(
 
         # Get initial extraction
         # Format system prompt without input_text for each chunk (enables OpenAI prompt caching across chunks)
-        entity_extraction_system_prompt = PROMPTS[
-            "entity_extraction_system_prompt"
-        ].format(**context_base)
-        # Format user prompts with input_text for each chunk
-        entity_extraction_user_prompt = PROMPTS["entity_extraction_user_prompt"].format(
-            **{**context_base, "input_text": content}
-        )
-        entity_continue_extraction_user_prompt = PROMPTS[
-            "entity_continue_extraction_user_prompt"
-        ].format(**{**context_base, "input_text": content})
+        if use_structured_extraction:
+            entity_extraction_system_prompt = PROMPTS[
+                "entity_extraction_structured_system_prompt"
+            ].format(**context_base)
+            entity_extraction_user_prompt = PROMPTS[
+                "entity_extraction_structured_user_prompt"
+            ].format(**{**context_base, "input_text": content})
+            entity_continue_extraction_user_prompt = PROMPTS[
+                "entity_continue_extraction_structured_user_prompt"
+            ].format(**context_base)
+        else:
+            entity_extraction_system_prompt = PROMPTS[
+                "entity_extraction_system_prompt"
+            ].format(**context_base)
+            entity_extraction_user_prompt = PROMPTS[
+                "entity_extraction_user_prompt"
+            ].format(**{**context_base, "input_text": content})
+            entity_continue_extraction_user_prompt = PROMPTS[
+                "entity_continue_extraction_user_prompt"
+            ].format(**{**context_base, "input_text": content})
 
         final_result, timestamp = await use_llm_func_with_cache(
             entity_extraction_user_prompt,
@@ -2970,6 +3118,8 @@ async def extract_entities(
             cache_type="extract",
             chunk_id=chunk_key,
             cache_keys_collector=cache_keys_collector,
+            entity_extraction=use_structured_extraction,
+            entity_types=entity_types if use_structured_extraction else None,
         )
 
         history = pack_user_ass_to_openai_messages(
@@ -2977,14 +3127,11 @@ async def extract_entities(
         )
 
         # Process initial extraction with file path
-        maybe_nodes, maybe_edges = await _process_extraction_result(
-            final_result,
-            chunk_key,
-            timestamp,
-            file_path,
-            tuple_delimiter=context_base["tuple_delimiter"],
-            completion_delimiter=context_base["completion_delimiter"],
-        )
+        process_kwargs = {"result": final_result, "chunk_key": chunk_key, "timestamp": timestamp, "file_path": file_path}
+        if not use_structured_extraction:
+            process_kwargs["tuple_delimiter"] = context_base["tuple_delimiter"]
+            process_kwargs["completion_delimiter"] = context_base["completion_delimiter"]
+        maybe_nodes, maybe_edges = await _process_extraction_result(**process_kwargs)
 
         # Process additional gleaning results only 1 time when entity_extract_max_gleaning is greater than zero.
         if entity_extract_max_gleaning > 0:
@@ -3017,16 +3164,22 @@ async def extract_entities(
                     cache_type="extract",
                     chunk_id=chunk_key,
                     cache_keys_collector=cache_keys_collector,
+                    entity_extraction=use_structured_extraction,
+                    entity_types=entity_types if use_structured_extraction else None,
                 )
 
                 # Process gleaning result separately with file path
+                glean_process_kwargs = {
+                    "result": glean_result,
+                    "chunk_key": chunk_key,
+                    "timestamp": timestamp,
+                    "file_path": file_path,
+                }
+                if not use_structured_extraction:
+                    glean_process_kwargs["tuple_delimiter"] = context_base["tuple_delimiter"]
+                    glean_process_kwargs["completion_delimiter"] = context_base["completion_delimiter"]
                 glean_nodes, glean_edges = await _process_extraction_result(
-                    glean_result,
-                    chunk_key,
-                    timestamp,
-                    file_path,
-                    tuple_delimiter=context_base["tuple_delimiter"],
-                    completion_delimiter=context_base["completion_delimiter"],
+                    **glean_process_kwargs
                 )
 
                 # Merge results - compare description lengths to choose better version

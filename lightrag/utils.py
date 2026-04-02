@@ -1963,6 +1963,8 @@ async def use_llm_func_with_cache(
     cache_type: str = "extract",
     chunk_id: str | None = None,
     cache_keys_collector: list = None,
+    entity_extraction: bool = False,
+    entity_types: list[str] | None = None,
 ) -> tuple[str, int]:
     """Call LLM function with cache support and text sanitization
 
@@ -2045,6 +2047,10 @@ async def use_llm_func_with_cache(
             kwargs["history_messages"] = safe_history_messages
         if max_tokens is not None:
             kwargs["max_tokens"] = max_tokens
+        if entity_extraction:
+            kwargs["entity_extraction"] = True
+        if entity_types is not None:
+            kwargs["entity_types"] = entity_types
 
         res: str = await use_llm_func(
             safe_user_prompt, system_prompt=safe_system_prompt, **kwargs
@@ -2079,6 +2085,10 @@ async def use_llm_func_with_cache(
         kwargs["history_messages"] = safe_history_messages
     if max_tokens is not None:
         kwargs["max_tokens"] = max_tokens
+    if entity_extraction:
+        kwargs["entity_extraction"] = True
+    if entity_types is not None:
+        kwargs["entity_types"] = entity_types
 
     try:
         res = await use_llm_func(
