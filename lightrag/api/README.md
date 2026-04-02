@@ -33,16 +33,25 @@ git clone https://github.com/HKUDS/lightrag.git
 # Change to the repository directory
 cd lightrag
 
-# Using uv (recommended)
+# Bootstrap the development environment (recommended)
+make dev
+source .venv/bin/activate  # Activate the virtual environment (Linux/macOS)
+# Or on Windows: .venv\Scripts\activate
+
+# make dev installs the test toolchain plus the full offline stack
+# (API, storage backends, and provider integrations), then builds the frontend.
+# Run make env-base or copy env.example to .env before starting the server.
+
+# Equivalent manual steps with uv
 # Note: uv sync automatically creates a virtual environment in .venv/
-uv sync --extra api
+uv sync --extra test --extra offline
 source .venv/bin/activate  # Activate the virtual environment (Linux/macOS)
 # Or on Windows: .venv\Scripts\activate
 
 # Or using pip with virtual environment
 # python -m venv .venv
 # source .venv/bin/activate  # Windows: .venv\Scripts\activate
-# pip install -e ".[api]"
+# pip install -e ".[test,offline]"
 
 # Build front-end artifacts
 cd lightrag_webui

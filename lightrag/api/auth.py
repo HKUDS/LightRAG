@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import jwt
 from dotenv import load_dotenv
@@ -6,7 +6,7 @@ from fastapi import HTTPException, status
 from pydantic import BaseModel
 
 from ..utils import logger
-from .config import global_args
+from .config import DEFAULT_TOKEN_SECRET, global_args
 from .passwords import verify_password
 
 # use the .env that is inside the current folder
@@ -24,16 +24,22 @@ class TokenPayload(BaseModel):
 
 class AuthHandler:
     def __init__(self):
+        auth_accounts = global_args.auth_accounts
         self.secret = global_args.token_secret
-        if self.secret == "lightrag-jwt-default-secret-key!":
+        if not self.secret:
+            if auth_accounts:
+                raise ValueError(
+                    "TOKEN_SECRET must be explicitly set to a non-default value when AUTH_ACCOUNTS is configured."
+                )
+            self.secret = DEFAULT_TOKEN_SECRET
             logger.warning(
-                "Using default TOKEN_SECRET. Please set a unique TOKEN_SECRET in your .env file for better security."
+                "TOKEN_SECRET not set and AUTH_ACCOUNTS is not configured. "
+                "Falling back to the default guest-mode JWT secret. "
             )
         self.algorithm = global_args.jwt_algorithm
         self.expire_hours = global_args.token_expire_hours
         self.guest_expire_hours = global_args.guest_token_expire_hours
         self.accounts = {}
-        auth_accounts = global_args.auth_accounts
         invalid_accounts = []
         if auth_accounts:
             for account in auth_accounts.split(","):
@@ -96,14 +102,14 @@ class AuthHandler:
         else:
             expire_hours = custom_expire_hours
 
-        expire = datetime.utcnow() + timedelta(hours=expire_hours)
+        expire = datetime.now(timezone.utc) + timedelta(hours=expire_hours)
 
         # Create payload
         payload = TokenPayload(
             sub=username, exp=expire, role=role, metadata=metadata or {}
         )
 
-        return jwt.encode(payload.dict(), self.secret, algorithm=self.algorithm)
+        return jwt.encode(payload.model_dump(), self.secret, algorithm=self.algorithm)
 
     def validate_token(self, token: str) -> dict:
         """
@@ -121,9 +127,9 @@ class AuthHandler:
         try:
             payload = jwt.decode(token, self.secret, algorithms=[self.algorithm])
             expire_timestamp = payload["exp"]
-            expire_time = datetime.utcfromtimestamp(expire_timestamp)
+            expire_time = datetime.fromtimestamp(expire_timestamp, timezone.utc)
 
-            if datetime.utcnow() > expire_time:
+            if datetime.now(timezone.utc) > expire_time:
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED, detail="Token expired"
                 )

@@ -925,24 +925,25 @@ class MemgraphStorage(BaseGraphStorage):
                     MATCH (start:`{workspace_label}`)
                     WHERE start.entity_id = $entity_id
 
-                    MATCH path = (start)-[*BFS 0..{max_depth}]-(end:`{workspace_label}`)
-                    WHERE ALL(n IN nodes(path) WHERE '{workspace_label}' IN labels(n))
-                    WITH collect(DISTINCT end) + start AS all_nodes_unlimited
+                    OPTIONAL MATCH path = (start)-[*BFS 0..{max_depth}]-(end:`{workspace_label}`)
+                    WHERE path IS NULL OR ALL(n IN nodes(path) WHERE '{workspace_label}' IN labels(n))
+                    WITH start, collect(DISTINCT end) AS discovered_nodes
+                    WITH start, [node IN discovered_nodes WHERE node IS NOT NULL AND node <> start] AS other_nodes
                     WITH
                     CASE
-                        WHEN size(all_nodes_unlimited) <= $max_nodes THEN all_nodes_unlimited
-                        ELSE all_nodes_unlimited[0..$max_nodes]
+                        WHEN 1 + size(other_nodes) <= $max_nodes THEN [start] + other_nodes
+                        ELSE [start] + other_nodes[0..$max_other_nodes]
                     END AS limited_nodes,
-                    size(all_nodes_unlimited) > $max_nodes AS is_truncated
+                    1 + size(other_nodes) > $max_nodes AS is_truncated
 
                     UNWIND limited_nodes AS n
-                    MATCH (n)-[r]-(m)
+                    OPTIONAL MATCH (n)-[r]-(m)
                     WHERE m IN limited_nodes
-                    WITH collect(DISTINCT n) AS limited_nodes, collect(DISTINCT r) AS relationships, is_truncated
+                    WITH limited_nodes, collect(DISTINCT r) AS relationships, is_truncated
 
                     RETURN
                     [node IN limited_nodes | {{node: node}}] AS node_info,
-                    relationships,
+                    [rel IN relationships WHERE rel IS NOT NULL] AS relationships,
                     is_truncated
                     """
 
@@ -953,6 +954,7 @@ class MemgraphStorage(BaseGraphStorage):
                             {
                                 "entity_id": node_label,
                                 "max_nodes": max_nodes,
+                                "max_other_nodes": max(max_nodes - 1, 0),
                             },
                         )
                         record = await result_set.single()

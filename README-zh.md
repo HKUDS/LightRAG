@@ -149,16 +149,25 @@ lightrag-server
 git clone https://github.com/HKUDS/LightRAG.git
 cd LightRAG
 
-# 使用 uv (推荐)
+# 一键初始化开发环境（推荐）
+make dev
+source .venv/bin/activate  # 激活虚拟环境 (Linux/macOS)
+# Windows 系统: .venv\Scripts\activate
+
+# make dev 会安装测试工具链以及完整的离线依赖栈
+# （API、存储后端与各类 Provider 集成），并构建前端；不会生成 .env。
+# 启动服务前请先运行 make env-base，或手动从 env.example 复制并配置 .env。
+
+# 使用 uv 的等价手动步骤
 # 注意: uv sync 会自动在 .venv/ 目录创建虚拟环境
-uv sync --extra api
+uv sync --extra test --extra offline
 source .venv/bin/activate  # 激活虚拟环境 (Linux/macOS)
 # Windows 系统: .venv\Scripts\activate
 
 ### 或使用 pip 和虚拟环境
 # python -m venv .venv
 # source .venv/bin/activate  # Windows: .venv\Scripts\activate
-# pip install -e ".[api]"
+# pip install -e ".[test,offline]"
 
 # 构建前端代码
 cd lightrag_webui
@@ -167,7 +176,7 @@ bun run build
 cd ..
 
 # 配置 env 文件
-cp env.example .env  # 使用你的LLM和Embedding模型访问参数更新.env文件
+make env-base  # 或: cp env.example .env 后手动修改
 # 启动API-WebUI服务
 lightrag-server
 ```
