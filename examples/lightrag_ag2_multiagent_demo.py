@@ -133,10 +133,12 @@ def create_agents():
     analyst = AssistantAgent(
         name="Analyst",
         system_message=(
-            "You are a knowledge graph analyst. Use the lightrag_query tool with "
-            "'naive' mode to find complementary results through direct vector search. "
-            "Identify connections that the Researcher may have missed. "
-            "Always call the tool -- do NOT answer from your own knowledge."
+            "You are a knowledge graph analyst. Your FIRST action MUST be calling "
+            "the lightrag_query tool with mode='naive' to run a direct vector search. "
+            "This gives different results from the Researcher's hybrid search. "
+            "After receiving the naive search results, compare them with the "
+            "Researcher's findings and highlight any additional insights. "
+            "You MUST call the tool before writing any analysis."
         ),
         llm_config=llm_config,
     )
@@ -202,20 +204,21 @@ def create_agents():
 
 def run_multiagent_query(user_proxy, researcher, analyst, writer, question: str):
     """Run a multi-agent GroupChat to answer a question using LightRAG."""
-    # Enforce speaker order: Researcher -> Analyst -> Writer.
-    # User (proxy) can follow any agent to execute tool calls,
-    # but each agent can only hand off to the next in the pipeline.
+    # Enforce pipeline: Researcher -> Analyst -> Writer.
+    # - Researcher and Analyst hand off to User for tool execution
+    # - User returns results to the same agent or advances to the next
+    # - Writer has no tool access, so it only follows Analyst
     allowed_transitions = {
-        user_proxy: [researcher, analyst, writer],
-        researcher: [user_proxy],
+        user_proxy: [researcher, analyst],
+        researcher: [user_proxy, analyst],
         analyst: [user_proxy, writer],
-        writer: [user_proxy],
+        writer: [],
     }
 
     group_chat = GroupChat(
         agents=[user_proxy, researcher, analyst, writer],
         messages=[],
-        max_round=10,
+        max_round=12,
         allowed_or_disallowed_speaker_transitions=allowed_transitions,
         speaker_transitions_type="allowed",
     )
