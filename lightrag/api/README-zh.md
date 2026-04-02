@@ -33,9 +33,17 @@ git clone https://github.com/HKUDS/lightrag.git
 # 进入仓库目录
 cd lightrag
 
-# 使用 uv (推荐)
+# 一键初始化开发环境（推荐）
+make dev
+source .venv/bin/activate  # 激活虚拟环境 (Linux/macOS)
+# Windows 系统: .venv\Scripts\activate
+
+# make dev 会安装 API 与测试依赖，并构建前端，不会生成 .env。
+# 启动服务前请先运行 make env-base，或手动从 env.example 复制并配置 .env。
+
+# 使用 uv 的等价手动步骤
 # 注意: uv sync 会自动在 .venv/ 目录创建虚拟环境
-uv sync --extra api
+uv sync --extra test
 source .venv/bin/activate  # 激活虚拟环境 (Linux/macOS)
 # Windows 系统: .venv\Scripts\activate
 

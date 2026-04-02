@@ -33,9 +33,17 @@ git clone https://github.com/HKUDS/lightrag.git
 # Change to the repository directory
 cd lightrag
 
-# Using uv (recommended)
+# Bootstrap the development environment (recommended)
+make dev
+source .venv/bin/activate  # Activate the virtual environment (Linux/macOS)
+# Or on Windows: .venv\Scripts\activate
+
+# make dev installs API and test dependencies, then builds the frontend.
+# Run make env-base or copy env.example to .env before starting the server.
+
+# Equivalent manual steps with uv
 # Note: uv sync automatically creates a virtual environment in .venv/
-uv sync --extra api
+uv sync --extra test
 source .venv/bin/activate  # Activate the virtual environment (Linux/macOS)
 # Or on Windows: .venv\Scripts\activate
 

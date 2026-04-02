@@ -16,10 +16,11 @@ COLOR_GREEN :=
 COLOR_YELLOW :=
 endif
 
-.PHONY: help configure env-base env-storage env-server env-validate env-backup env-security-check env-base-rewrite env-storage-rewrite env base storage server validate backup security security-check base-rewrite storage-rewrite
+.PHONY: help dev configure env-base env-storage env-server env-validate env-backup env-security-check env-base-rewrite env-storage-rewrite env base storage server validate backup security security-check base-rewrite storage-rewrite
 
 help:
 	@printf "$(COLOR_BOLD)Interactive setup targets$(COLOR_RESET)\n"
+	@printf "  $(COLOR_GREEN)make dev$(COLOR_RESET)                    Bootstrap local dev + test env with uv + bun\n"
 	@printf "  $(COLOR_GREEN)make env-base$(COLOR_RESET)               Configure LLM, embedding, and reranker (run first)\n"
 	@printf "  $(COLOR_GREEN)make env-storage$(COLOR_RESET)            Configure storage backends and databases\n"
 	@printf "  $(COLOR_GREEN)make env-server$(COLOR_RESET)             Configure server, security, and SSL\n"
@@ -31,10 +32,12 @@ help:
 	@printf "  $(COLOR_GREEN)make base$(COLOR_RESET)                   Short form of make env-base (all env prefix can be stripped)\n"
 	@printf "\n"
 	@printf "$(COLOR_BOLD)Typical workflow$(COLOR_RESET)\n"
-	@printf "  1. make env-base       # set LLM/embedding/reranker\n"
-	@printf "  2. make env-storage    # set storage backends (optional)\n"
-	@printf "  3. make env-server     # set port/security/SSL (optional)\n\n"
+	@printf "  1. make dev            # install backend/test deps and build frontend\n"
+	@printf "  2. make env-base       # set LLM/embedding/reranker\n"
+	@printf "  3. make env-storage    # set storage backends (optional)\n"
+	@printf "  4. make env-server     # set port/security/SSL (optional)\n\n"
 	@printf "$(COLOR_BOLD)Examples$(COLOR_RESET)\n"
+	@printf "  make dev\n"
 	@printf "  make env-base\n"
 	@printf "  make env-storage SETUP_OPTS=--debug\n"
 	@printf "  make env-server\n\n"
@@ -43,6 +46,33 @@ help:
 	@printf "$(COLOR_BOLD)Compose Output$(COLOR_RESET)\n"
 	@printf "  Bundled service images are defined in scripts/setup/templates/*.yml.\n"
 	@printf "  Compose file output: docker-compose.final.yml\n"
+
+dev:
+	@if ! command -v uv >/dev/null 2>&1; then \
+		printf "$(COLOR_YELLOW)uv is required for make dev.$(COLOR_RESET)\n"; \
+		printf "Install uv first: https://docs.astral.sh/uv/getting-started/installation/\n"; \
+		printf "Unix/macOS: curl -LsSf https://astral.sh/uv/install.sh | sh\n"; \
+		printf "Windows: powershell -c \"irm https://astral.sh/uv/install.ps1 | iex\"\n"; \
+		exit 1; \
+	fi
+	@if ! command -v bun >/dev/null 2>&1; then \
+		printf "$(COLOR_YELLOW)bun is required for make dev.$(COLOR_RESET)\n"; \
+		printf "Install Bun first: https://bun.sh/docs/installation\n"; \
+		printf "macOS/Linux: curl -fsSL https://bun.sh/install | bash\n"; \
+		printf "Windows: powershell -c \"irm bun.sh/install.ps1 | iex\"\n"; \
+		exit 1; \
+	fi
+	@printf "$(COLOR_BLUE)Syncing backend and test dependencies with uv...$(COLOR_RESET)\n"
+	@uv sync --extra test
+	@printf "$(COLOR_BLUE)Installing frontend dependencies with Bun...$(COLOR_RESET)\n"
+	@cd lightrag_webui && bun install --frozen-lockfile
+	@printf "$(COLOR_BLUE)Building frontend assets...$(COLOR_RESET)\n"
+	@cd lightrag_webui && bun run build
+	@printf "$(COLOR_GREEN)Development environment is ready.$(COLOR_RESET)\n"
+	@printf "Next steps:\n"
+	@printf "  source .venv/bin/activate\n"
+	@printf "  make env-base\n"
+	@printf "  lightrag-server\n"
 
 env-base env base configure:
 	@$(SETUP_BASH) $(SETUP_SCRIPT) --base $(SETUP_OPTS)

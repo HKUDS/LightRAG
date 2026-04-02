@@ -149,9 +149,17 @@ lightrag-server
 git clone https://github.com/HKUDS/LightRAG.git
 cd LightRAG
 
-# Using uv (recommended)
+# Bootstrap the development environment (recommended)
+make dev
+source .venv/bin/activate  # Activate the virtual environment (Linux/macOS)
+# Or on Windows: .venv\Scripts\activate
+
+# make dev installs API and test dependencies, then builds the frontend.
+# Run make env-base or copy env.example to .env before starting the server.
+
+# Equivalent manual steps with uv
 # Note: uv sync automatically creates a virtual environment in .venv/
-uv sync --extra api
+uv sync --extra test
 source .venv/bin/activate  # Activate the virtual environment (Linux/macOS)
 # Or on Windows: .venv\Scripts\activate
 
@@ -167,7 +175,7 @@ bun run build
 cd ..
 
 # setup env file
-cp env.example .env  # Update the .env with your LLM and embedding configurations
+make env-base  # Or: cp env.example .env and update it manually
 # Launch API-WebUI server
 lightrag-server
 ```
