@@ -1,11 +1,18 @@
 """
-Unit tests for PGGraphStorage.get_nodes_edges_batch with special characters in entity names.
+Unit tests for PGGraphStorage.get_nodes_edges_batch and get_node_edges
+with special characters in entity names.
 
-Verifies the fix for KeyError when entity names contain double quotes (PR #2871).
+Verifies the fix for KeyError when entity names contain double quotes (PR #2871)
+and the follow-up Option C refactor to parameterized Cypher queries.
+
 The root cause: AGE returns the original un-escaped entity_id, but the edges_norm
 dict was previously keyed with the normalized (escaped) ID, causing a KeyError on lookup.
+
+The Option C fix: use $node_ids / $entity_id parameters instead of string interpolation,
+eliminating the need for _normalize_node_id in these read paths entirely.
 """
 
+import json
 import pytest
 from unittest.mock import MagicMock, patch
 
@@ -28,7 +35,7 @@ def make_graph_storage() -> PGGraphStorage:
 
 
 # ---------------------------------------------------------------------------
-# _normalize_node_id
+# _normalize_node_id (still used by write paths: remove_nodes, upsert_node, etc.)
 # ---------------------------------------------------------------------------
 
 
@@ -52,28 +59,126 @@ def test_normalize_both_special_chars():
 
 
 # ---------------------------------------------------------------------------
-# get_nodes_edges_batch — entity names with double quotes
+# get_node_edges — parameterized query (Option C)
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_node_edges_passes_original_id_as_parameter():
+    """entity_id must be passed as a JSON parameter, not interpolated into Cypher."""
+    storage = make_graph_storage()
+    entity = 'John "Smith"'
+    captured_params: list[dict] = []
+
+    async def fake_query(sql, **kwargs):
+        if kwargs.get("params"):
+            captured_params.append(json.loads(list(kwargs["params"].values())[0]))
+        return []
+
+    with patch.object(storage, "_query", side_effect=fake_query):
+        await storage.get_node_edges(entity)
+
+    assert len(captured_params) == 1
+    assert captured_params[0]["entity_id"] == entity
+
+
+@pytest.mark.asyncio
+async def test_get_node_edges_cypher_uses_parameter_syntax():
+    """The SQL sent to _query must use $1::agtype, not a hardcoded escaped string."""
+    storage = make_graph_storage()
+    entity = 'John "Smith"'
+    captured_sql: list[str] = []
+
+    async def fake_query(sql, **kwargs):
+        captured_sql.append(sql)
+        return []
+
+    with patch.object(storage, "_query", side_effect=fake_query):
+        await storage.get_node_edges(entity)
+
+    assert len(captured_sql) == 1
+    assert "$1::agtype" in captured_sql[0]
+    # Entity name must NOT appear literally in the SQL string
+    assert entity not in captured_sql[0]
+    assert '\\"' not in captured_sql[0]
+
+
+@pytest.mark.asyncio
+async def test_get_node_edges_returns_edges():
+    storage = make_graph_storage()
+
+    async def fake_query(_sql, **_kwargs):
+        return [
+            {"source_id": "Alice", "connected_id": "Bob"},
+            {"source_id": "Alice", "connected_id": None},
+        ]
+
+    with patch.object(storage, "_query", side_effect=fake_query):
+        result = await storage.get_node_edges("Alice")
+
+    assert result == [("Alice", "Bob")]
+
+
+# ---------------------------------------------------------------------------
+# get_nodes_edges_batch — parameterized query (Option C)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_nodes_edges_batch_passes_original_ids_as_parameter():
+    """node_ids batch must be passed as a JSON parameter, not interpolated."""
+    storage = make_graph_storage()
+    entities = ['John "Smith"', "Alice", 'O\\Brien']
+    captured_params: list[dict] = []
+
+    async def fake_query(_sql, **kwargs):
+        if kwargs.get("params"):
+            captured_params.append(json.loads(list(kwargs["params"].values())[0]))
+        return []
+
+    with patch.object(storage, "_query", side_effect=fake_query):
+        await storage.get_nodes_edges_batch(entities)
+
+    assert len(captured_params) == 2  # outgoing + incoming
+    assert captured_params[0]["node_ids"] == entities
+    assert captured_params[1]["node_ids"] == entities
+
+
+@pytest.mark.asyncio
+async def test_get_nodes_edges_batch_cypher_uses_parameter_syntax():
+    """The SQL must use $1::agtype, not hardcoded escaped entity names."""
+    storage = make_graph_storage()
+    entity = 'John "Smith"'
+    captured_sql: list[str] = []
+
+    async def fake_query(sql, **_kwargs):
+        captured_sql.append(sql)
+        return []
+
+    with patch.object(storage, "_query", side_effect=fake_query):
+        await storage.get_nodes_edges_batch([entity])
+
+    assert len(captured_sql) == 2
+    for sql in captured_sql:
+        assert "$1::agtype" in sql
+        assert entity not in sql
+        assert '\\"' not in sql
 
 
 @pytest.mark.asyncio
 async def test_get_nodes_edges_batch_with_quoted_entity():
     """
     AGE returns the original un-escaped node_id in query results.
-    edges_norm must be keyed with the original ID so the result lookup succeeds.
+    The result dict must be keyed by the original ID.
     """
     storage = make_graph_storage()
     entity = 'John "Smith"'
 
-    # Simulate AGE returning the original (un-escaped) node_id
-    outgoing_row = {"node_id": entity, "connected_id": "Alice"}
-    incoming_row = {"node_id": entity, "connected_id": "Bob"}
-
-    async def fake_query(sql, *args, **kwargs):
+    async def fake_query(sql, **_kwargs):
         if "OPTIONAL MATCH (n:base)-[]->" in sql:
-            return [outgoing_row]
+            return [{"node_id": entity, "connected_id": "Alice"}]
         if "OPTIONAL MATCH (n:base)<-[]-" in sql:
-            return [incoming_row]
+            return [{"node_id": entity, "connected_id": "Bob"}]
         return []
 
     with patch.object(storage, "_query", side_effect=fake_query):
@@ -90,7 +195,7 @@ async def test_get_nodes_edges_batch_plain_entity():
     storage = make_graph_storage()
     entity = "Alice"
 
-    async def fake_query(sql, *args, **kwargs):
+    async def fake_query(sql, **_kwargs):
         if "OPTIONAL MATCH (n:base)-[]->" in sql:
             return [{"node_id": entity, "connected_id": "Bob"}]
         return []
@@ -108,7 +213,7 @@ async def test_get_nodes_edges_batch_no_results():
     storage = make_graph_storage()
     entity = 'Entity "X"'
 
-    async def fake_query(sql, *args, **kwargs):
+    async def fake_query(_sql, **_kwargs):
         return []
 
     with patch.object(storage, "_query", side_effect=fake_query):
@@ -124,7 +229,7 @@ async def test_get_nodes_edges_batch_deduplication():
     storage = make_graph_storage()
     entity = 'Dup "Entity"'
 
-    async def fake_query(sql, *args, **kwargs):
+    async def fake_query(sql, **_kwargs):
         if "OPTIONAL MATCH (n:base)-[]->" in sql:
             return [{"node_id": entity, "connected_id": "Other"}]
         return []
@@ -145,23 +250,3 @@ async def test_get_nodes_edges_batch_empty_input():
 
     assert result == {}
     mock_q.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_normalized_id_used_in_cypher_query():
-    """The Cypher query string must contain the normalized (escaped) entity ID."""
-    storage = make_graph_storage()
-    entity = 'John "Smith"'
-    captured_queries: list[str] = []
-
-    async def fake_query(sql, *args, **kwargs):
-        captured_queries.append(sql)
-        return []
-
-    with patch.object(storage, "_query", side_effect=fake_query):
-        await storage.get_nodes_edges_batch([entity])
-
-    normalized = PGGraphStorage._normalize_node_id(entity)
-    assert any(normalized in q for q in captured_queries), (
-        f"Expected normalized ID '{normalized}' in Cypher query, got: {captured_queries}"
-    )

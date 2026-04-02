@@ -4962,16 +4962,14 @@ class PGGraphStorage(BaseGraphStorage):
         Retrieves all edges (relationships) for a particular node identified by its label.
         :return: list of dictionaries containing edge information
         """
-        label = self._normalize_node_id(source_node_id)
-
-        # Build Cypher query with dynamic dollar-quoting to handle entity_id containing $ sequences
-        cypher_query = f"""MATCH (n:base {{entity_id: "{label}"}})
+        cypher_query = """MATCH (n:base {entity_id: $entity_id})
                       OPTIONAL MATCH (n)-[]-(connected:base)
                       RETURN n.entity_id AS source_id, connected.entity_id AS connected_id"""
 
-        query = f"SELECT * FROM cypher({_dollar_quote(self.graph_name)}, {_dollar_quote(cypher_query)}) AS (source_id text, connected_id text)"
+        query = f"SELECT * FROM cypher({_dollar_quote(self.graph_name)}::name, {_dollar_quote(cypher_query)}::cstring, $1::agtype) AS (source_id text, connected_id text)"
+        pg_params = {"params": json.dumps({"entity_id": source_node_id}, ensure_ascii=False)}
 
-        results = await self._query(query)
+        results = await self._query(query, params=pg_params)
         edges = []
         for record in results:
             source_id = record["source_id"]
@@ -5527,27 +5525,23 @@ class PGGraphStorage(BaseGraphStorage):
 
         for i in range(0, len(unique_ids), batch_size):
             batch = unique_ids[i : i + batch_size]
-            # Format node IDs for the query using normalized IDs
-            formatted_ids = ", ".join(
-                [f'"{self._normalize_node_id(n)}"' for n in batch]
-            )
+            pg_params = {"params": json.dumps({"node_ids": batch}, ensure_ascii=False)}
 
-            # Build Cypher queries with dynamic dollar-quoting to handle entity_id containing $ sequences
-            outgoing_cypher = f"""UNWIND [{formatted_ids}] AS node_id
-                         MATCH (n:base {{entity_id: node_id}})
+            outgoing_cypher = """UNWIND $node_ids AS node_id
+                         MATCH (n:base {entity_id: node_id})
                          OPTIONAL MATCH (n:base)-[]->(connected:base)
                          RETURN node_id, connected.entity_id AS connected_id"""
 
-            incoming_cypher = f"""UNWIND [{formatted_ids}] AS node_id
-                         MATCH (n:base {{entity_id: node_id}})
+            incoming_cypher = """UNWIND $node_ids AS node_id
+                         MATCH (n:base {entity_id: node_id})
                          OPTIONAL MATCH (n:base)<-[]-(connected:base)
                          RETURN node_id, connected.entity_id AS connected_id"""
 
-            outgoing_query = f"SELECT * FROM cypher({_dollar_quote(self.graph_name)}, {_dollar_quote(outgoing_cypher)}) AS (node_id text, connected_id text)"
-            incoming_query = f"SELECT * FROM cypher({_dollar_quote(self.graph_name)}, {_dollar_quote(incoming_cypher)}) AS (node_id text, connected_id text)"
+            outgoing_query = f"SELECT * FROM cypher({_dollar_quote(self.graph_name)}::name, {_dollar_quote(outgoing_cypher)}::cstring, $1::agtype) AS (node_id text, connected_id text)"
+            incoming_query = f"SELECT * FROM cypher({_dollar_quote(self.graph_name)}::name, {_dollar_quote(incoming_cypher)}::cstring, $1::agtype) AS (node_id text, connected_id text)"
 
-            outgoing_results = await self._query(outgoing_query)
-            incoming_results = await self._query(incoming_query)
+            outgoing_results = await self._query(outgoing_query, params=pg_params)
+            incoming_results = await self._query(incoming_query, params=pg_params)
 
             for result in outgoing_results:
                 if result["node_id"] and result["connected_id"]:
