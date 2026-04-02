@@ -162,6 +162,6 @@ async def test_normalized_id_used_in_cypher_query():
         await storage.get_nodes_edges_batch([entity])
 
     normalized = PGGraphStorage._normalize_node_id(entity)
-    assert any(normalized in q for q in captured_queries), (
-        f"Expected normalized ID '{normalized}' in Cypher query, got: {captured_queries}"
-    )
+    assert any(
+        normalized in q for q in captured_queries
+    ), f"Expected normalized ID '{normalized}' in Cypher query, got: {captured_queries}"
