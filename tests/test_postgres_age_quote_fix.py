@@ -2,7 +2,7 @@
 Unit tests for PGGraphStorage.get_nodes_edges_batch and get_node_edges
 with special characters in entity names.
 
-Verifies the fix for KeyError when entity names contain double quotes (PR #2871)
+Verifies the fix for KeyError when entity names contain double quotes (PR #2872)
 and the follow-up Option C refactor to parameterized Cypher queries.
 
 The root cause: AGE returns the original un-escaped entity_id, but the edges_norm
