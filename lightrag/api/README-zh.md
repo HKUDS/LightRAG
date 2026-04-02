@@ -38,7 +38,8 @@ make dev
 source .venv/bin/activate  # 激活虚拟环境 (Linux/macOS)
 # Windows 系统: .venv\Scripts\activate
 
-# make dev 会安装 API 与测试依赖，并构建前端，不会生成 .env。
+# make dev 会安装测试工具链以及完整的离线依赖栈
+# （API、存储后端与各类 Provider 集成），并构建前端；不会生成 .env。
 # 启动服务前请先运行 make env-base，或手动从 env.example 复制并配置 .env。
 
 # 使用 uv 的等价手动步骤
@@ -50,7 +51,7 @@ source .venv/bin/activate  # 激活虚拟环境 (Linux/macOS)
 # 或使用 pip 与虚拟环境
 # python -m venv .venv
 # source .venv/bin/activate  # Windows: .venv\Scripts\activate
-# pip install -e ".[api]"
+# pip install -e ".[test,offline]"
 
 # 构建前端代码
 cd lightrag_webui
