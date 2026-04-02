@@ -63,7 +63,7 @@ dev:
 		exit 1; \
 	fi
 	@printf "$(COLOR_BLUE)Syncing backend and test dependencies with uv...$(COLOR_RESET)\n"
-	@uv sync --extra test
+	@uv sync --extra test --extra offline
 	@printf "$(COLOR_BLUE)Installing frontend dependencies with Bun...$(COLOR_RESET)\n"
 	@cd lightrag_webui && bun install --frozen-lockfile
 	@printf "$(COLOR_BLUE)Building frontend assets...$(COLOR_RESET)\n"
