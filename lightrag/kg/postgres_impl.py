@@ -5143,6 +5143,8 @@ class PGGraphStorage(BaseGraphStorage):
         Args:
             node_ids (list[str]): A list of node IDs to remove.
         """
+        # For parameterized queries in Cypher within Age, we should use parameters
+        # but the current implementation uses string interpolation with normalized IDs.
         node_ids_normalized = [self._normalize_node_id(node_id) for node_id in node_ids]
         node_id_list = ", ".join([f'"{node_id}"' for node_id in node_ids_normalized])
 
@@ -5519,17 +5521,16 @@ class PGGraphStorage(BaseGraphStorage):
         seen = set()
         unique_ids: list[str] = []
         for nid in node_ids:
-            n = self._normalize_node_id(nid)
-            if n and n not in seen:
-                seen.add(n)
-                unique_ids.append(n)
+            if nid and nid not in seen:
+                seen.add(nid)
+                unique_ids.append(nid)
 
         edges_norm: dict[str, list[tuple[str, str]]] = {n: [] for n in unique_ids}
 
         for i in range(0, len(unique_ids), batch_size):
             batch = unique_ids[i : i + batch_size]
-            # Format node IDs for the query
-            formatted_ids = ", ".join([f'"{n}"' for n in batch])
+            # Format node IDs for the query using normalized IDs
+            formatted_ids = ", ".join([f'"{self._normalize_node_id(n)}"' for n in batch])
 
             # Build Cypher queries with dynamic dollar-quoting to handle entity_id containing $ sequences
             outgoing_cypher = f"""UNWIND [{formatted_ids}] AS node_id
@@ -5562,8 +5563,7 @@ class PGGraphStorage(BaseGraphStorage):
 
         out: dict[str, list[tuple[str, str]]] = {}
         for orig in node_ids:
-            n = self._normalize_node_id(orig)
-            out[orig] = edges_norm.get(n, [])
+            out[orig] = edges_norm.get(orig, [])
 
         return out
 
