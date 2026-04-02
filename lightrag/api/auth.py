@@ -1,4 +1,4 @@
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import jwt
 from dotenv import load_dotenv
@@ -102,7 +102,7 @@ class AuthHandler:
         else:
             expire_hours = custom_expire_hours
 
-        expire = datetime.now(UTC) + timedelta(hours=expire_hours)
+        expire = datetime.now(timezone.utc) + timedelta(hours=expire_hours)
 
         # Create payload
         payload = TokenPayload(
@@ -127,9 +127,9 @@ class AuthHandler:
         try:
             payload = jwt.decode(token, self.secret, algorithms=[self.algorithm])
             expire_timestamp = payload["exp"]
-            expire_time = datetime.fromtimestamp(expire_timestamp, UTC)
+            expire_time = datetime.fromtimestamp(expire_timestamp, timezone.utc)
 
-            if datetime.now(UTC) > expire_time:
+            if datetime.now(timezone.utc) > expire_time:
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED, detail="Token expired"
                 )
