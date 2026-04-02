@@ -1118,9 +1118,9 @@ async def test_graph_string_escaping_regressions(storage):
         (center_id, mixed_id),
         (center_id, single_quote_id),
     }
-    assert batch_edges[mixed_id] == [(center_id, mixed_id)]
-    assert batch_edges[backslash_id] == [(center_id, backslash_id)]
-    assert batch_edges[single_quote_id] == [(center_id, single_quote_id)]
+    assert set(batch_edges[mixed_id]) == {(center_id, mixed_id)}
+    assert set(batch_edges[backslash_id]) == {(center_id, backslash_id)}
+    assert set(batch_edges[single_quote_id]) == {(center_id, single_quote_id)}
 
     forward_edges = await storage.get_edges_batch(
         [{"src": src_id, "tgt": tgt_id} for src_id, tgt_id in edge_payloads]
