@@ -7,6 +7,7 @@ import pytest
 
 from lightrag.api.passwords import BCRYPT_PASSWORD_PREFIX, hash_password
 from lightrag.tools.hash_password import main as hash_password_main
+from lightrag.utils import logger as lightrag_logger
 
 
 def import_real_api_module(module_name: str):
@@ -113,7 +114,9 @@ def test_initialize_config_allows_custom_token_secret_with_auth_accounts():
     assert initialized is secure_args
 
 
-def test_guest_tokens_use_ephemeral_secret_when_token_secret_missing(monkeypatch):
+def test_guest_tokens_fall_back_to_default_secret_when_token_secret_missing(
+    monkeypatch,
+):
     config = import_real_api_module("lightrag.api.config")
 
     mock_global_args = SimpleNamespace(
@@ -125,6 +128,12 @@ def test_guest_tokens_use_ephemeral_secret_when_token_secret_missing(monkeypatch
     )
 
     monkeypatch.setattr(config, "global_args", mock_global_args)
+    warning_messages = []
+
+    def capture_warning(message):
+        warning_messages.append(message)
+
+    monkeypatch.setattr(lightrag_logger, "warning", capture_warning)
 
     module = import_real_api_module("lightrag.api.auth")
     module = importlib.reload(module)
@@ -133,9 +142,13 @@ def test_guest_tokens_use_ephemeral_secret_when_token_secret_missing(monkeypatch
     token = handler.create_token("guest", role="guest")
     token_info = handler.validate_token(token)
 
-    assert handler.secret
+    assert handler.secret == config.DEFAULT_TOKEN_SECRET
     assert token_info["username"] == "guest"
     assert token_info["role"] == "guest"
+    assert any(
+        "Falling back to the default guest-mode JWT secret" in msg
+        for msg in warning_messages
+    )
 
     sys.modules.pop("lightrag.api.auth", None)
 
