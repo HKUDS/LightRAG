@@ -128,7 +128,7 @@ async def test_get_node_edges_returns_edges():
 async def test_get_nodes_edges_batch_passes_original_ids_as_parameter():
     """node_ids batch must be passed as a JSON parameter, not interpolated."""
     storage = make_graph_storage()
-    entities = ['John "Smith"', "Alice", 'O\\Brien']
+    entities = ['John "Smith"', "Alice", "O\\Brien"]
     captured_params: list[dict] = []
 
     async def fake_query(_sql, **kwargs):

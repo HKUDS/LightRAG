@@ -4967,7 +4967,9 @@ class PGGraphStorage(BaseGraphStorage):
                       RETURN n.entity_id AS source_id, connected.entity_id AS connected_id"""
 
         query = f"SELECT * FROM cypher({_dollar_quote(self.graph_name)}::name, {_dollar_quote(cypher_query)}::cstring, $1::agtype) AS (source_id text, connected_id text)"
-        pg_params = {"params": json.dumps({"entity_id": source_node_id}, ensure_ascii=False)}
+        pg_params = {
+            "params": json.dumps({"entity_id": source_node_id}, ensure_ascii=False)
+        }
 
         results = await self._query(query, params=pg_params)
         edges = []
