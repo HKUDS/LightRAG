@@ -5530,7 +5530,9 @@ class PGGraphStorage(BaseGraphStorage):
         for i in range(0, len(unique_ids), batch_size):
             batch = unique_ids[i : i + batch_size]
             # Format node IDs for the query using normalized IDs
-            formatted_ids = ", ".join([f'"{self._normalize_node_id(n)}"' for n in batch])
+            formatted_ids = ", ".join(
+                [f'"{self._normalize_node_id(n)}"' for n in batch]
+            )
 
             # Build Cypher queries with dynamic dollar-quoting to handle entity_id containing $ sequences
             outgoing_cypher = f"""UNWIND [{formatted_ids}] AS node_id
