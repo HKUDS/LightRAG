@@ -4820,6 +4820,16 @@ class PGGraphStorage(BaseGraphStorage):
 
         Args:
             query (str): a cypher query to be executed
+            readonly (bool): if True, uses db.query (supports params); if False,
+                uses db.execute (write path) which does not yet support params.
+            upsert (bool): passed through to db.execute for write operations.
+            params (dict | None): AGE agtype parameters for parameterized Cypher
+                (e.g. ``{"params": json.dumps({"entity_id": "..."})}``).
+                Only honoured when ``readonly=True``. Write paths (upsert_node,
+                upsert_edge, delete_node, remove_nodes, remove_edges) still
+                interpolate entity IDs via _normalize_node_id; extending
+                parameterization to those paths is tracked as a follow-up task.
+            timing_label (str | None): optional label for performance logging.
 
         Returns:
             list[dict[str, Any]]: a list of dictionaries containing the result set
