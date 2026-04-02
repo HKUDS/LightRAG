@@ -5143,8 +5143,6 @@ class PGGraphStorage(BaseGraphStorage):
         Args:
             node_ids (list[str]): A list of node IDs to remove.
         """
-        # For parameterized queries in Cypher within Age, we should use parameters
-        # but the current implementation uses string interpolation with normalized IDs.
         node_ids_normalized = [self._normalize_node_id(node_id) for node_id in node_ids]
         node_id_list = ", ".join([f'"{node_id}"' for node_id in node_ids_normalized])
 
