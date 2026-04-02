@@ -6,8 +6,8 @@ questions over indexed documents.
 
 Architecture:
     User -> AG2 GroupChat (Researcher + Analyst + Writer) -> LightRAG queries
-    - Researcher: uses LightRAG hybrid/local search to gather facts
-    - Analyst: examines entity relationships via global search
+    - Researcher: uses LightRAG hybrid search to gather facts
+    - Analyst: uses LightRAG naive (vector) search for complementary results
     - Writer: synthesizes findings into a final answer
 
 Requires:
@@ -37,7 +37,7 @@ from lightrag.llm.openai import gpt_4o_mini_complete, openai_embed
 
 # --- Configuration ---
 
-WORKING_DIR = "./lightrag_ag2_demo_workdir"
+WORKING_DIR = "./ag2_demo_workdir"
 
 SAMPLE_TEXT = """
 Artificial intelligence has transformed multiple industries. Machine learning,
@@ -134,8 +134,8 @@ def create_agents():
         name="Analyst",
         system_message=(
             "You are a knowledge graph analyst. Use the lightrag_query tool with "
-            "'global' mode to find high-level themes and relationships between "
-            "concepts. Identify connections that the Researcher may have missed. "
+            "'naive' mode to find complementary results through direct vector search. "
+            "Identify connections that the Researcher may have missed. "
             "Always call the tool -- do NOT answer from your own knowledge."
         ),
         llm_config=llm_config,
@@ -152,12 +152,15 @@ def create_agents():
         llm_config=llm_config,
     )
 
+    def is_termination(msg):
+        return "TERMINATE" in (msg.get("content") or "")
+
     user_proxy = UserProxyAgent(
         name="User",
         human_input_mode="NEVER",
         max_consecutive_auto_reply=10,
         code_execution_config=False,
-        is_termination_msg=lambda msg: "TERMINATE" in (msg.get("content") or ""),
+        is_termination_msg=is_termination,
     )
 
     # --- Register LightRAG as a tool ---
@@ -199,11 +202,22 @@ def create_agents():
 
 def run_multiagent_query(user_proxy, researcher, analyst, writer, question: str):
     """Run a multi-agent GroupChat to answer a question using LightRAG."""
+    # Enforce speaker order: Researcher -> Analyst -> Writer.
+    # User (proxy) can follow any agent to execute tool calls,
+    # but each agent can only hand off to the next in the pipeline.
+    allowed_transitions = {
+        user_proxy: [researcher, analyst, writer],
+        researcher: [user_proxy],
+        analyst: [user_proxy, writer],
+        writer: [user_proxy],
+    }
+
     group_chat = GroupChat(
         agents=[user_proxy, researcher, analyst, writer],
         messages=[],
         max_round=10,
-        speaker_selection_method="auto",
+        allowed_or_disallowed_speaker_transitions=allowed_transitions,
+        speaker_transitions_type="allowed",
     )
 
     manager = GroupChatManager(
@@ -215,6 +229,7 @@ def run_multiagent_query(user_proxy, researcher, analyst, writer, question: str)
                 "api_type": "openai",
             }
         ),
+        is_termination_msg=lambda msg: "TERMINATE" in (msg.get("content") or ""),
     )
 
     print(f"Question: {question}\n{'=' * 60}\n")
