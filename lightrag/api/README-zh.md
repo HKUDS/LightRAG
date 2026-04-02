@@ -43,7 +43,7 @@ source .venv/bin/activate  # 激活虚拟环境 (Linux/macOS)
 
 # 使用 uv 的等价手动步骤
 # 注意: uv sync 会自动在 .venv/ 目录创建虚拟环境
-uv sync --extra test
+uv sync --extra test --extra offline
 source .venv/bin/activate  # 激活虚拟环境 (Linux/macOS)
 # Windows 系统: .venv\Scripts\activate
 

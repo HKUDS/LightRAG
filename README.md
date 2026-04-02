@@ -159,7 +159,7 @@ source .venv/bin/activate  # Activate the virtual environment (Linux/macOS)
 
 # Equivalent manual steps with uv
 # Note: uv sync automatically creates a virtual environment in .venv/
-uv sync --extra test
+uv sync --extra test --extra offline
 source .venv/bin/activate  # Activate the virtual environment (Linux/macOS)
 # Or on Windows: .venv\Scripts\activate
 

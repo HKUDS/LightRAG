@@ -20,7 +20,7 @@ endif
 
 help:
 	@printf "$(COLOR_BOLD)Interactive setup targets$(COLOR_RESET)\n"
-	@printf "  $(COLOR_GREEN)make dev$(COLOR_RESET)                    Bootstrap local dev + test env with uv + bun\n"
+	@printf "  $(COLOR_GREEN)make dev$(COLOR_RESET)                    Bootstrap local dev+test+offline env with uv + bun\n"
 	@printf "  $(COLOR_GREEN)make env-base$(COLOR_RESET)               Configure LLM, embedding, and reranker (run first)\n"
 	@printf "  $(COLOR_GREEN)make env-storage$(COLOR_RESET)            Configure storage backends and databases\n"
 	@printf "  $(COLOR_GREEN)make env-server$(COLOR_RESET)             Configure server, security, and SSL\n"
