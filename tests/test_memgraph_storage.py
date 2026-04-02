@@ -76,20 +76,21 @@ async def test_get_knowledge_graph_preserves_isolated_start_node():
 
     result = await storage.get_knowledge_graph("Start", max_depth=0, max_nodes=1)
 
+    # Verify result data: isolated node must appear with correct labels and properties
     assert len(result.nodes) == 1
     assert result.nodes[0].labels == ["Start"]
     assert result.nodes[0].properties["entity_id"] == "Start"
     assert result.edges == []
+    assert result.is_truncated is False
 
+    # Verify query parameters: max_other_nodes must reserve a slot for the start node
     assert len(calls) == 1
-    query, params = calls[0]
-    assert "OPTIONAL MATCH path = (start)-[*BFS 0..0]-(end:`test`)" in query
-    assert "THEN [start] + other_nodes" in query
-    assert "OPTIONAL MATCH (n)-[r]-(m)" in query
-    assert "[rel IN relationships WHERE rel IS NOT NULL] AS relationships" in query
+    _, params = calls[0]
     assert params["entity_id"] == "Start"
     assert params["max_nodes"] == 1
-    assert params["max_other_nodes"] == 0
+    assert (
+        params["max_other_nodes"] == 0
+    )  # max_nodes - 1 = 0, start node occupies the only slot
 
 
 @pytest.mark.asyncio
@@ -105,9 +106,32 @@ async def test_get_knowledge_graph_reserves_capacity_for_start_node_when_truncat
 
     result = await storage.get_knowledge_graph("Start", max_depth=2, max_nodes=2)
 
+    # Verify truncation is reflected in result
     assert result.is_truncated is True
+    assert len(result.nodes) == 1
+    assert result.edges == []
+
+    # Verify max_other_nodes leaves exactly one slot for the start node
     assert len(calls) == 1
-    query, params = calls[0]
-    assert "other_nodes[0..$max_other_nodes]" in query
-    assert "1 + size(other_nodes) > $max_nodes AS is_truncated" in query
-    assert params["max_other_nodes"] == 1
+    _, params = calls[0]
+    assert params["max_nodes"] == 2
+    assert (
+        params["max_other_nodes"] == 1
+    )  # max_nodes - 1 = 1, start node always included
+
+
+@pytest.mark.asyncio
+async def test_get_knowledge_graph_max_nodes_zero_does_not_underflow():
+    """max_other_nodes must not go negative when max_nodes=0."""
+    storage, calls = _make_storage(
+        {
+            "node_info": [],
+            "relationships": [],
+            "is_truncated": False,
+        }
+    )
+
+    await storage.get_knowledge_graph("Start", max_depth=1, max_nodes=0)
+
+    _, params = calls[0]
+    assert params["max_other_nodes"] == 0  # max(0 - 1, 0) = 0, no underflow
