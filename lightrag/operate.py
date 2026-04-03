@@ -2465,9 +2465,6 @@ async def _merge_edges_then_upsert(
             limit_method = global_config.get(
                 "source_ids_limit_method", SOURCE_IDS_LIMIT_METHOD_KEEP
             )
-            file_path_placeholder = global_config.get(
-                "file_path_more_placeholder", DEFAULT_FILE_PATH_MORE_PLACEHOLDER
-            )
 
             # Add + sign to indicate actual file count is higher
             original_count_str = (

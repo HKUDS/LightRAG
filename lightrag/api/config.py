@@ -356,9 +356,6 @@ def parse_args() -> argparse.Namespace:
         args.llm_binding = "openai"
         args.embedding_binding = "ollama"
 
-    # Ollama ctx_num
-    args.ollama_num_ctx = get_env_value("OLLAMA_NUM_CTX", 32768, int)
-
     args.llm_binding_host = get_env_value(
         "LLM_BINDING_HOST", get_default_host(args.llm_binding)
     )

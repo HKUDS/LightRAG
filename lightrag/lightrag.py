@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import traceback
 import asyncio
-import configparser
 import inspect
 import os
 import json
@@ -139,10 +138,6 @@ from lightrag.extraction.interchange import parse_interchange_jsonl
 # allows to use different .env file for each lightrag instance
 # the OS environment variables take precedence over the .env file
 load_dotenv(dotenv_path=".env", override=False)
-
-# TODO: TO REMOVE @Yannick
-config = configparser.ConfigParser()
-config.read("config.ini", "utf-8")
 
 
 def _chunk_fields_from_status_doc(
