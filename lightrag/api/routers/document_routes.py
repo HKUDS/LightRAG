@@ -2897,14 +2897,34 @@ def create_document_routes(
                 "pipeline_status", workspace=rag.workspace
             )
 
-            # Check if pipeline is busy with proper lock
+            # Check if pipeline is busy with proper lock.
+            # Documents that are actively PROCESSING or PREPROCESSED must not be
+            # deleted while the pipeline is working on them.  Documents that are
+            # PENDING, PROCESSED, or FAILED are safe to delete at any time.
             async with pipeline_status_lock:
                 if pipeline_status.get("busy", False):
-                    return DeleteDocByIdResponse(
-                        status="busy",
-                        message="Cannot delete documents while pipeline is busy",
-                        doc_id=", ".join(doc_ids),
-                    )
+                    # Fetch the current status of each requested document so we
+                    # can selectively reject only the actively-processed ones.
+                    from lightrag.base import DocStatus
+
+                    active_statuses = {DocStatus.PROCESSING, DocStatus.PREPROCESSED}
+                    blocked_ids = []
+                    for doc_id in doc_ids:
+                        doc = await rag.doc_status.get_by_id(doc_id)
+                        if doc and DocStatus(doc.get("status", "")) in active_statuses:
+                            blocked_ids.append(doc_id)
+
+                    if blocked_ids:
+                        return DeleteDocByIdResponse(
+                            status="busy",
+                            message=(
+                                "Cannot delete documents that are currently being processed. "
+                                f"Active doc_ids: {', '.join(blocked_ids)}"
+                            ),
+                            doc_id=", ".join(blocked_ids),
+                        )
+                    # All requested docs are in a stable state — allow deletion
+                    # to proceed even though the pipeline is running.
 
             # Add deletion task to background tasks
             background_tasks.add_task(
