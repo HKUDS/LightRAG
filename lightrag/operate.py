@@ -16,6 +16,7 @@ from lightrag.utils import (
     logger,
     compute_mdhash_id,
     Tokenizer,
+    TokenTracker,
     is_float_regex,
     sanitize_and_normalize_extracted_text,
     pack_user_ass_to_openai_messages,
@@ -3309,6 +3310,7 @@ async def kg_query(
         hashing_kv, args_hash, user_query, query_param.mode, cache_type="query"
     )
 
+    kg_token_usage: dict = {}
     if cached_result is not None:
         cached_response, _ = cached_result  # Extract content, ignore timestamp
         logger.info(
@@ -3316,13 +3318,16 @@ async def kg_query(
         )
         response = cached_response
     else:
+        tracker = TokenTracker()
         response = await use_model_func(
             user_query,
             system_prompt=sys_prompt,
             history_messages=query_param.conversation_history,
             enable_cot=True,
             stream=query_param.stream,
+            token_tracker=tracker,
         )
+        kg_token_usage = tracker.get_usage()
 
         if hashing_kv and hashing_kv.global_config.get("enable_llm_cache"):
             queryparam_dict = {
@@ -3350,6 +3355,11 @@ async def kg_query(
                 ),
             )
 
+    # Attach token usage to metadata so callers can surface it
+    kg_raw_data = context_result.raw_data or {}
+    if kg_token_usage:
+        kg_raw_data.setdefault("metadata", {})["token_usage"] = kg_token_usage
+
     # Return unified result based on actual response type
     if isinstance(response, str):
         # Non-streaming response (string)
@@ -3364,12 +3374,12 @@ async def kg_query(
                 .strip()
             )
 
-        return QueryResult(content=response, raw_data=context_result.raw_data)
+        return QueryResult(content=response, raw_data=kg_raw_data)
     else:
         # Streaming response (AsyncIterator)
         return QueryResult(
             response_iterator=response,
-            raw_data=context_result.raw_data,
+            raw_data=kg_raw_data,
             is_streaming=True,
         )
 
@@ -5138,6 +5148,7 @@ async def naive_query(
     cached_result = await handle_cache(
         hashing_kv, args_hash, user_query, query_param.mode, cache_type="query"
     )
+    token_usage: dict = {}
     if cached_result is not None:
         cached_response, _ = cached_result  # Extract content, ignore timestamp
         logger.info(
@@ -5145,13 +5156,16 @@ async def naive_query(
         )
         response = cached_response
     else:
+        tracker = TokenTracker()
         response = await use_model_func(
             user_query,
             system_prompt=sys_prompt,
             history_messages=query_param.conversation_history,
             enable_cot=True,
             stream=query_param.stream,
+            token_tracker=tracker,
         )
+        token_usage = tracker.get_usage()
 
         if hashing_kv and hashing_kv.global_config.get("enable_llm_cache"):
             queryparam_dict = {
@@ -5176,6 +5190,10 @@ async def naive_query(
                     queryparam=queryparam_dict,
                 ),
             )
+
+    # Attach token usage to metadata so callers can surface it
+    if token_usage:
+        raw_data.setdefault("metadata", {})["token_usage"] = token_usage
 
     # Return unified result based on actual response type
     if isinstance(response, str):

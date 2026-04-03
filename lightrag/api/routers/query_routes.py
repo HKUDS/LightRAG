@@ -162,6 +162,10 @@ class QueryResponse(BaseModel):
         default=None,
         description="Reference list (Disabled when include_references=False, /query/data always includes references.)",
     )
+    token_usage: Optional[Dict[str, int]] = Field(
+        default=None,
+        description="LLM token usage for this query (prompt_tokens, completion_tokens, total_tokens, call_count). Absent on cache hits.",
+    )
 
 
 class QueryDataResponse(BaseModel):
@@ -414,7 +418,9 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
             # Extract LLM response and references from unified result
             llm_response = result.get("llm_response", {})
             data = result.get("data", {})
+            metadata = result.get("metadata", {})
             references = data.get("references", [])
+            token_usage = metadata.get("token_usage") or None
 
             # Get the non-streaming response content
             response_content = llm_response.get("content", "")
@@ -446,9 +452,17 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
 
             # Return response with or without references based on request
             if request.include_references:
-                return QueryResponse(response=response_content, references=references)
+                return QueryResponse(
+                    response=response_content,
+                    references=references,
+                    token_usage=token_usage,
+                )
             else:
-                return QueryResponse(response=response_content, references=None)
+                return QueryResponse(
+                    response=response_content,
+                    references=None,
+                    token_usage=token_usage,
+                )
         except Exception as e:
             logger.error(f"Error processing query: {str(e)}", exc_info=True)
             raise HTTPException(status_code=500, detail=str(e))
