@@ -2210,9 +2210,13 @@ def create_document_routes(
                 status = existing_doc_data.get("status", "unknown")
                 # Use `or ""` to handle both missing key and None value (e.g., legacy rows without track_id)
                 existing_track_id = existing_doc_data.get("track_id") or ""
+                existing_doc_id = existing_doc_data.get("id") or existing_doc_data.get("doc_id") or ""
+                base_msg = f"File '{safe_filename}' already exists in document storage (Status: {status})."
+                if not existing_track_id and existing_doc_id:
+                    base_msg += f" Use doc_id '{existing_doc_id}' to query the document status directly."
                 return InsertResponse(
                     status="duplicated",
-                    message=f"File '{safe_filename}' already exists in document storage (Status: {status}).",
+                    message=base_msg,
                     track_id=existing_track_id,
                 )
 
@@ -2320,9 +2324,13 @@ def create_document_routes(
                     status = existing_doc_data.get("status", "unknown")
                     # Use `or ""` to handle both missing key and None value (e.g., legacy rows without track_id)
                     existing_track_id = existing_doc_data.get("track_id") or ""
+                    existing_doc_id = existing_doc_data.get("id") or existing_doc_data.get("doc_id") or ""
+                    base_msg = f"File source '{request.file_source}' already exists in document storage (Status: {status})."
+                    if not existing_track_id and existing_doc_id:
+                        base_msg += f" Use doc_id '{existing_doc_id}' to query the document status directly."
                     return InsertResponse(
                         status="duplicated",
-                        message=f"File source '{request.file_source}' already exists in document storage (Status: {status}).",
+                        message=base_msg,
                         track_id=existing_track_id,
                     )
 
@@ -2334,9 +2342,12 @@ def create_document_routes(
                 # Content already exists, return duplicated with existing track_id
                 status = existing_doc.get("status", "unknown")
                 existing_track_id = existing_doc.get("track_id") or ""
+                base_msg = f"Identical content already exists in document storage (doc_id: {content_doc_id}, Status: {status})."
+                if not existing_track_id:
+                    base_msg += f" Use doc_id '{content_doc_id}' to query the document status directly."
                 return InsertResponse(
                     status="duplicated",
-                    message=f"Identical content already exists in document storage (doc_id: {content_doc_id}, Status: {status}).",
+                    message=base_msg,
                     track_id=existing_track_id,
                 )
 
@@ -2402,9 +2413,13 @@ def create_document_routes(
                             status = existing_doc_data.get("status", "unknown")
                             # Use `or ""` to handle both missing key and None value (e.g., legacy rows without track_id)
                             existing_track_id = existing_doc_data.get("track_id") or ""
+                            existing_doc_id = existing_doc_data.get("id") or existing_doc_data.get("doc_id") or ""
+                            base_msg = f"File source '{file_source}' already exists in document storage (Status: {status})."
+                            if not existing_track_id and existing_doc_id:
+                                base_msg += f" Use doc_id '{existing_doc_id}' to query the document status directly."
                             return InsertResponse(
                                 status="duplicated",
-                                message=f"File source '{file_source}' already exists in document storage (Status: {status}).",
+                                message=base_msg,
                                 track_id=existing_track_id,
                             )
 
@@ -2417,9 +2432,12 @@ def create_document_routes(
                     # Content already exists, return duplicated with existing track_id
                     status = existing_doc.get("status", "unknown")
                     existing_track_id = existing_doc.get("track_id") or ""
+                    base_msg = f"Identical content already exists in document storage (doc_id: {content_doc_id}, Status: {status})."
+                    if not existing_track_id:
+                        base_msg += f" Use doc_id '{content_doc_id}' to query the document status directly."
                     return InsertResponse(
                         status="duplicated",
-                        message=f"Identical content already exists in document storage (doc_id: {content_doc_id}, Status: {status}).",
+                        message=base_msg,
                         track_id=existing_track_id,
                     )
 
