@@ -4170,11 +4170,18 @@ async def _build_context_str(
     text_units_str = "\n".join(
         json.dumps(text_unit, ensure_ascii=False) for text_unit in chunks_context
     )
-    reference_list_str = "\n".join(
-        f"[{ref['reference_id']}] {ref['file_path']}"
-        for ref in reference_list
-        if ref["reference_id"]
-    )
+    # Only expose the reference list to the LLM when the caller wants references
+    # included in the response.  When include_references=False the reference block
+    # is omitted from the prompt so the model does not append a "### References"
+    # section to its answer (fixes #2832).
+    if query_param.include_references:
+        reference_list_str = "\n".join(
+            f"[{ref['reference_id']}] {ref['file_path']}"
+            for ref in reference_list
+            if ref["reference_id"]
+        )
+    else:
+        reference_list_str = ""
 
     logger.info(
         f"Final context: {len(entities_context)} entities, {len(relations_context)} relations, {len(chunks_context)} chunks"
@@ -5095,11 +5102,17 @@ async def naive_query(
     text_units_str = "\n".join(
         json.dumps(text_unit, ensure_ascii=False) for text_unit in chunks_context
     )
-    reference_list_str = "\n".join(
-        f"[{ref['reference_id']}] {ref['file_path']}"
-        for ref in reference_list
-        if ref["reference_id"]
-    )
+    # Omit the reference list from the LLM prompt when the caller has disabled
+    # references, so the model does not append a "### References" section to its
+    # answer (fixes #2832).
+    if query_param.include_references:
+        reference_list_str = "\n".join(
+            f"[{ref['reference_id']}] {ref['file_path']}"
+            for ref in reference_list
+            if ref["reference_id"]
+        )
+    else:
+        reference_list_str = ""
 
     naive_context_template = PROMPTS["naive_query_context"]
     context_content = naive_context_template.format(
