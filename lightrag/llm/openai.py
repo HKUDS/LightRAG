@@ -13,6 +13,7 @@ if not pm.is_installed("openai"):
 
 from openai import (
     APIConnectionError,
+    BadRequestError,
     RateLimitError,
     APITimeoutError,
 )
@@ -71,6 +72,14 @@ load_dotenv(dotenv_path=".env", override=False)
 
 class InvalidResponseError(Exception):
     """Custom exception class for triggering retry mechanism"""
+
+    pass
+
+
+class TransientBadRequestError(Exception):
+    """Wraps a transient OpenAI 400 error (e.g. JSON-body parse failure) so that
+    the @retry decorator can catch and retry it.  Regular 400s (content policy,
+    invalid model, …) are NOT wrapped and will still propagate immediately."""
 
     pass
 
@@ -192,6 +201,7 @@ def create_openai_async_client(
         | retry_if_exception_type(APIConnectionError)
         | retry_if_exception_type(APITimeoutError)
         | retry_if_exception_type(InvalidResponseError)
+        | retry_if_exception_type(TransientBadRequestError)
     ),
 )
 async def openai_complete_if_cache(
@@ -345,6 +355,18 @@ async def openai_complete_if_cache(
     except RateLimitError as e:
         logger.error(f"OpenAI API Rate Limit Error: {e}")
         await openai_async_client.close()  # Ensure client is closed
+        raise
+    except BadRequestError as e:
+        # HTTP 400 "could not parse the JSON body" is a transient network/proxy
+        # corruption that the OpenAI API occasionally returns instead of a 5xx.
+        # Wrap it so that the @retry decorator will retry it; all other 400s
+        # (content policy, invalid model, …) are re-raised as-is.
+        if "could not parse" in str(e).lower():
+            logger.warning(f"Transient OpenAI 400 JSON-parse error (will retry): {e}")
+            await openai_async_client.close()
+            raise TransientBadRequestError(str(e)) from e
+        logger.error(f"OpenAI API Bad Request Error: {e}")
+        await openai_async_client.close()
         raise
     except Exception as e:
         logger.error(

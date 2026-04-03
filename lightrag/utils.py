@@ -3123,14 +3123,20 @@ def create_prefixed_exception(original_exception: Exception, prefix: str) -> Exc
         else:
             # Method 2: If no args, try single parameter construction.
             return type(original_exception)(f"{prefix}: {str(original_exception)}")
-    except (TypeError, ValueError, AttributeError) as construct_error:
+    except Exception as construct_error:
         # Method 3: If reconstruction fails, wrap it in a RuntimeError.
         # This is the safest fallback, as attempting to create the same type
-        # with a single string can fail if the constructor requires multiple arguments.
-        return RuntimeError(
+        # with a single string can fail if the constructor requires multiple
+        # positional or keyword-only arguments (e.g. openai.BadRequestError
+        # requires `response` and `body` kwargs).
+        # Preserve the original exception as __cause__ so callers can still
+        # inspect the real error type and status code.
+        fallback = RuntimeError(
             f"{prefix}: {type(original_exception).__name__}: {str(original_exception)} "
             f"(Original exception could not be reconstructed: {construct_error})"
         )
+        fallback.__cause__ = original_exception
+        return fallback
 
 
 def convert_to_user_format(
