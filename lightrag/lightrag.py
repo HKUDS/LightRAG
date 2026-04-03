@@ -2436,8 +2436,17 @@ class LightRAG:
                         f"Entity '{entity_name}' has an UNKNOWN source_id. Please check the source mapping."
                     )
 
-                # Prepare node data
-                node_data: dict[str, str] = {
+                # Prepare node data — start with known fields, then merge any
+                # extra fields the caller provided so they are stored as-is.
+                _ENTITY_KNOWN_FIELDS = {
+                    "entity_name", "entity_type", "description",
+                    "source_id", "file_path",
+                }
+                extra_entity_fields = {
+                    k: v for k, v in entity_data.items()
+                    if k not in _ENTITY_KNOWN_FIELDS
+                }
+                node_data: dict[str, Any] = {
                     "entity_id": entity_name,
                     "entity_type": entity_type,
                     "description": description,
@@ -2445,6 +2454,7 @@ class LightRAG:
                     "file_path": file_path,
                     "created_at": int(time.time()),
                 }
+                node_data.update(extra_entity_fields)
                 # Insert node data into the knowledge graph
                 await self.chunk_entity_relation_graph.upsert_node(
                     entity_name, node_data=node_data
@@ -2488,29 +2498,37 @@ class LightRAG:
                             },
                         )
 
+                # Prepare edge data — start with known fields, then merge any
+                # extra fields the caller provided so they are stored as-is.
+                _RELATIONSHIP_KNOWN_FIELDS = {
+                    "src_id", "tgt_id", "description", "keywords",
+                    "weight", "source_id", "file_path",
+                }
+                extra_edge_fields = {
+                    k: v for k, v in relationship_data.items()
+                    if k not in _RELATIONSHIP_KNOWN_FIELDS
+                }
+                edge_data: dict[str, Any] = {
+                    "weight": weight,
+                    "description": description,
+                    "keywords": keywords,
+                    "source_id": source_id,
+                    "file_path": file_path,
+                    "created_at": int(time.time()),
+                }
+                edge_data.update(extra_edge_fields)
+
                 # Insert edge into the knowledge graph
                 await self.chunk_entity_relation_graph.upsert_edge(
                     src_id,
                     tgt_id,
-                    edge_data={
-                        "weight": weight,
-                        "description": description,
-                        "keywords": keywords,
-                        "source_id": source_id,
-                        "file_path": file_path,
-                        "created_at": int(time.time()),
-                    },
+                    edge_data=edge_data,
                 )
 
-                edge_data: dict[str, str] = {
+                edge_data = {
+                    **edge_data,
                     "src_id": src_id,
                     "tgt_id": tgt_id,
-                    "description": description,
-                    "keywords": keywords,
-                    "source_id": source_id,
-                    "weight": weight,
-                    "file_path": file_path,
-                    "created_at": int(time.time()),
                 }
                 all_relationships_data.append(edge_data)
                 update_storage = True
