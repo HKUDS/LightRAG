@@ -846,6 +846,9 @@ class DeletionResult:
     message: str
     status_code: int = 200
     file_path: str | None = None
+    # Populated when skip_rebuild=True so callers can aggregate and rebuild once
+    entities_to_rebuild: dict = field(default_factory=dict)
+    relationships_to_rebuild: dict = field(default_factory=dict)
 
 
 # Unified Query Result Data Structures for Reference List Support

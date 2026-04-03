@@ -1857,6 +1857,10 @@ async def background_delete_documents(
     total_docs = len(doc_ids)
     successful_deletions = []
     failed_deletions = []
+    # Aggregated rebuild targets collected across all per-doc deletions.
+    # A single rebuild pass is performed after the loop instead of N rebuilds.
+    all_entities_to_rebuild: dict = {}
+    all_relationships_to_rebuild: dict = {}
 
     # Double-check pipeline status before proceeding
     async with pipeline_status_lock:
@@ -1909,12 +1913,19 @@ async def background_delete_documents(
             file_path = "#"
             try:
                 result = await rag.adelete_by_doc_id(
-                    doc_id, delete_llm_cache=delete_llm_cache
+                    doc_id,
+                    delete_llm_cache=delete_llm_cache,
+                    skip_rebuild=True,
                 )
                 file_path = (
                     getattr(result, "file_path", "-") if "result" in locals() else "-"
                 )
                 if result.status == "success":
+                    # Merge this document's rebuild targets into the batch accumulator
+                    all_entities_to_rebuild.update(result.entities_to_rebuild)
+                    all_relationships_to_rebuild.update(
+                        result.relationships_to_rebuild
+                    )
                     successful_deletions.append(doc_id)
                     success_msg = (
                         f"Document deleted {i}/{total_docs}: {doc_id}[{file_path}]"
@@ -2051,6 +2062,32 @@ async def background_delete_documents(
                 async with pipeline_status_lock:
                     pipeline_status["latest_message"] = error_msg
                     pipeline_status["history_messages"].append(error_msg)
+
+        # Single consolidated knowledge-graph rebuild for all successfully deleted docs.
+        # This replaces the N per-document rebuilds that would otherwise be triggered.
+        if all_entities_to_rebuild or all_relationships_to_rebuild:
+            rebuild_msg = (
+                f"Rebuilding knowledge graph for {len(all_entities_to_rebuild)} entities "
+                f"and {len(all_relationships_to_rebuild)} relationships "
+                f"(deferred from {len(successful_deletions)} deletions)"
+            )
+            logger.info(rebuild_msg)
+            async with pipeline_status_lock:
+                pipeline_status["latest_message"] = rebuild_msg
+                pipeline_status["history_messages"].append(rebuild_msg)
+            try:
+                await rag._arebuild_knowledge(
+                    entities_to_rebuild=all_entities_to_rebuild,
+                    relationships_to_rebuild=all_relationships_to_rebuild,
+                    pipeline_status=pipeline_status,
+                    pipeline_status_lock=pipeline_status_lock,
+                )
+            except Exception as rebuild_error:
+                rebuild_error_msg = f"Knowledge graph rebuild failed after batch deletion: {rebuild_error}"
+                logger.error(rebuild_error_msg)
+                logger.error(traceback.format_exc())
+                async with pipeline_status_lock:
+                    pipeline_status["history_messages"].append(rebuild_error_msg)
 
     except Exception as e:
         error_msg = f"Critical error during batch deletion: {str(e)}"

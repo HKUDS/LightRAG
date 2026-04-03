@@ -3175,7 +3175,10 @@ class LightRAG:
         return found_statuses
 
     async def adelete_by_doc_id(
-        self, doc_id: str, delete_llm_cache: bool = False
+        self,
+        doc_id: str,
+        delete_llm_cache: bool = False,
+        skip_rebuild: bool = False,
     ) -> DeletionResult:
         """Delete a document and all its related data, including chunks, graph elements.
 
@@ -3208,6 +3211,12 @@ class LightRAG:
             doc_id (str): The unique identifier of the document to be deleted.
             delete_llm_cache (bool): Whether to delete cached LLM extraction results
                 associated with the document. Defaults to False.
+            skip_rebuild (bool): When True, skip the knowledge-graph rebuild step and
+                instead return the rebuild targets in ``DeletionResult.entities_to_rebuild``
+                and ``DeletionResult.relationships_to_rebuild``.  The caller is then
+                responsible for performing a single consolidated rebuild via
+                ``_arebuild_knowledge()``.  Useful for batch deletions where rebuilding
+                after every document would repeat the same work N times.  Defaults to False.
 
         Returns:
             DeletionResult: An object containing the outcome of the deletion process.
@@ -3216,6 +3225,8 @@ class LightRAG:
                 - `message` (str): A summary of the operation's result.
                 - `status_code` (int): HTTP status code (e.g., 200, 404, 403, 500).
                 - `file_path` (str | None): The file path of the deleted document, if available.
+                - `entities_to_rebuild` (dict): Populated when skip_rebuild=True.
+                - `relationships_to_rebuild` (dict): Populated when skip_rebuild=True.
         """
         # Get pipeline status shared data and lock for validation
         pipeline_status = await get_namespace_data(
@@ -3897,8 +3908,10 @@ class LightRAG:
                 logger.error(f"Failed to persist pre-rebuild changes: {e}")
                 raise Exception(f"Failed to persist pre-rebuild changes: {e}") from e
 
-            # 8. Rebuild entities and relationships from remaining chunks
-            if entities_to_rebuild or relationships_to_rebuild:
+            # 8. Rebuild entities and relationships from remaining chunks.
+            # When skip_rebuild=True the caller (e.g. background_delete_documents)
+            # will aggregate targets across all documents and do a single rebuild.
+            if not skip_rebuild and (entities_to_rebuild or relationships_to_rebuild):
                 try:
                     deletion_stage = "rebuild_knowledge_graph"
                     await rebuild_knowledge_from_chunks(
@@ -3997,6 +4010,8 @@ class LightRAG:
                 message=log_message,
                 status_code=200,
                 file_path=file_path,
+                entities_to_rebuild=entities_to_rebuild if skip_rebuild else {},
+                relationships_to_rebuild=relationships_to_rebuild if skip_rebuild else {},
             )
 
         except Exception as e:
@@ -4084,6 +4099,35 @@ class LightRAG:
                     pipeline_status["latest_message"] = completion_msg
                     pipeline_status["history_messages"].append(completion_msg)
                     logger.info(completion_msg)
+
+    async def _arebuild_knowledge(
+        self,
+        entities_to_rebuild: dict,
+        relationships_to_rebuild: dict,
+        pipeline_status: dict,
+        pipeline_status_lock,
+    ) -> None:
+        """Run a single knowledge-graph rebuild pass for the given targets.
+
+        Intended to be called once after a batch deletion where individual
+        ``adelete_by_doc_id(skip_rebuild=True)`` calls deferred their rebuilds.
+        """
+        if not entities_to_rebuild and not relationships_to_rebuild:
+            return
+        await rebuild_knowledge_from_chunks(
+            entities_to_rebuild=entities_to_rebuild,
+            relationships_to_rebuild=relationships_to_rebuild,
+            knowledge_graph_inst=self.chunk_entity_relation_graph,
+            entities_vdb=self.entities_vdb,
+            relationships_vdb=self.relationships_vdb,
+            text_chunks_storage=self.text_chunks,
+            llm_response_cache=self.llm_response_cache,
+            global_config=asdict(self),
+            pipeline_status=pipeline_status,
+            pipeline_status_lock=pipeline_status_lock,
+            entity_chunks_storage=self.entity_chunks,
+            relation_chunks_storage=self.relation_chunks,
+        )
 
     async def adelete_by_entity(self, entity_name: str) -> DeletionResult:
         """Asynchronously delete an entity and all its relationships.
