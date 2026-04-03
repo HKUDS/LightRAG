@@ -3290,6 +3290,9 @@ async def kg_query(
     )
 
     # Handle cache
+    # Include a hash of the retrieved context so the cache is automatically
+    # invalidated when the document corpus changes (new entities/chunks retrieved).
+    context_hash = compute_args_hash(sys_prompt)
     args_hash = compute_args_hash(
         query_param.mode,
         query,
@@ -3303,6 +3306,7 @@ async def kg_query(
         ll_keywords_str,
         query_param.user_prompt or "",
         query_param.enable_rerank,
+        context_hash,
     )
 
     cached_result = await handle_cache(
@@ -5123,6 +5127,11 @@ async def naive_query(
         return QueryResult(content=prompt_content, raw_data=raw_data)
 
     # Handle cache
+    # Include a hash of the retrieved context so the cache is automatically
+    # invalidated when the document corpus changes (new chunks retrieved).
+    # Without this, a query cached before documents were inserted would keep
+    # returning the stale "no context" response even after ingestion.
+    context_hash = compute_args_hash(text_units_str)
     args_hash = compute_args_hash(
         query_param.mode,
         query,
@@ -5134,6 +5143,7 @@ async def naive_query(
         query_param.max_total_tokens,
         query_param.user_prompt or "",
         query_param.enable_rerank,
+        context_hash,
     )
     cached_result = await handle_cache(
         hashing_kv, args_hash, user_query, query_param.mode, cache_type="query"
