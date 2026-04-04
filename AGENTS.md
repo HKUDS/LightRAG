@@ -40,6 +40,10 @@ LightRAG is an advanced Retrieval-Augmented Generation (RAG) framework designed 
 - PRs should include a summary, operational impact, linked issues, and screenshots or API samples for user-facing work.
 - Verify `ruff check .`, `python -m pytest`, and affected front-end commands such as `cd lightrag_webui && bun run lint`, `cd lightrag_webui && bun run build`, and `cd lightrag_webui && bun test` succeed before requesting review; note the runs in the PR text.
 - This repo is a fork of `HKUDS/LightRAG`. Always target **`HKUDS/LightRAG:main`** (upstream) when creating PRs, not the fork's own main.
+- Create PR work from a dedicated branch, not `main`. If the CLI sandbox blocks writes under `.git/refs`, request escalation for branch creation or other ref updates instead of retrying blindly.
+- If `gh auth status` is invalid but the GitHub plugin is available, prefer the plugin to create the upstream PR after pushing the branch to the fork; `gh` login state and plugin auth can differ.
+- For `gh` commands that require GitHub network/auth access, prefer running them with escalation from the start instead of first trying the sandboxed path. Use an escalated `gh auth status` check as the source of truth for Codex, not the VSCode terminal. Only abandon the `gh` path when the escalated check still fails; otherwise treat sandbox-only failures as an expected limitation.
+- For lightweight Python validation in fresh shells, prefer `python3` over `python` unless the active environment has already exposed `python`.
 
 ## Security & Configuration Tips
 - Copy `.env.example` and `config.ini.example`; never commit secrets or real connection strings.
