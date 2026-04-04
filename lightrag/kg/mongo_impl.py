@@ -2203,7 +2203,25 @@ class MongoVectorDBStorage(BaseVectorStorage):
             )
 
         except PyMongoError as e:
-            error_msg = f"[{self.workspace}] Error creating vector index {self._index_name}: {e}"
+            # Handle specific cases where Atlas Search is not enabled or reachable
+            error_code = getattr(e, "code", None)
+            is_search_error = (
+                error_code in [31082, 125]
+                or "SearchNotEnabled" in str(e)
+                or "Error connecting to Search Index Management service" in str(e)
+            )
+            
+            if is_search_error:
+                logger.warning(
+                    f"[{self.workspace}] MongoDB Atlas Search/Vector search is not fully available or reachable. "
+                    f"Vector search and hybrid search features will be disabled. "
+                    f"Error: {e}"
+                )
+                return
+
+            error_msg = (
+                f"[{self.workspace}] Error creating vector index {self._index_name}: {e}"
+            )
             logger.error(error_msg)
             raise SystemExit(
                 f"Failed to create MongoDB vector index. Program cannot continue. {error_msg}"
