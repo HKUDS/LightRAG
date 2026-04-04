@@ -1976,6 +1976,48 @@ When switching between different embedding models, you must clear the data direc
 
 The LightRAG Server is designed to provide Web UI and API support.  **For more information about LightRAG Server, please refer to [LightRAG Server](./lightrag/api/README.md).**
 
+## Using Live Directories as Input (`--no-move-files`)
+
+By default, LightRAG moves each processed input file into an `__enqueued__/` subdirectory so it is not re-processed on the next scan. This is fine for one-off ingestion, but it is not suitable for **live directories** — such as an Obsidian vault, an NFS-mounted folder, or any read-only source you want to keep intact.
+
+The `--no-move-files` flag (or `NO_MOVE_FILES` environment variable) disables this behaviour:
+
+```bash
+# Point directly at an Obsidian vault — files are never moved or copied
+python3 -m lightrag.api.lightrag_server \
+  --input-dir ~/SyncthingVault \
+  --no-move-files \
+  --working-dir ./lightrag-storage
+
+# Or via environment variable
+NO_MOVE_FILES=true lightrag-server --input-dir /path/to/vault
+```
+
+### How it works
+
+| Behaviour | Default (`--no-move-files` absent) | With `--no-move-files` |
+|---|---|---|
+| Processed files | Moved to `__enqueued__/` | Stay in original location |
+| `__enqueued__/` created | Yes | No |
+| Re-scan deduplication | N/A (file is gone) | Files already in `doc_status` are skipped |
+| Source directory modified by LightRAG | Yes | No |
+
+### When to use it
+
+- **Obsidian / Syncthing vaults** — index your notes without disturbing the vault layout.
+- **NFS / read-only mounts** — LightRAG cannot move files from read-only filesystems; this flag avoids the error.
+- **Continuous ingestion pipelines** — drop files into a watched folder and re-trigger scans; already-indexed files are skipped automatically.
+- **Shared source directories** — other tools or users own the directory and expect files to stay put.
+
+### Deduplication on re-scan
+
+Even without moving files, LightRAG will not double-index documents. Every file that has been successfully processed is recorded in `doc_status`. When the same file appears again on a subsequent scan, its status is checked and the file is skipped.
+
+### Caveats
+
+- **Deleted or renamed files** are not automatically removed from the index. If a source file is deleted, its vectors and graph nodes remain until you manually remove them via the API.
+- **Modified files** are treated as already-indexed if the file path/name has not changed. If you update a note and want LightRAG to re-process it, delete its entry from `doc_status` first (or use the `/documents` DELETE API endpoint).
+
 ## Graph Visualization
 
 The LightRAG Server offers a comprehensive knowledge graph visualization feature. It supports various gravity layouts, node queries, subgraph filtering, and more. **For more information about LightRAG Server, please refer to [LightRAG Server](./lightrag/api/README.md).**
