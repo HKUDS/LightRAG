@@ -24,6 +24,12 @@ const ApiKeyAlert = ({ open: opened, onOpenChange: setOpened }: ApiKeyAlertProps
   const [tempApiKey, setTempApiKey] = useState<string>(apiKey || '')
   const message = useBackendState.use.message()
 
+  // Sync draft input with latest store value whenever the dialog opens or apiKey changes
+  useEffect(() => {
+    const timer = setTimeout(() => setTempApiKey(apiKey || ''), 0)
+    return () => clearTimeout(timer)
+  }, [apiKey, opened])
+
   useEffect(() => {
     if (message) {
       if (message.includes(InvalidApiKeyError) || message.includes(RequireApiKeError)) {
