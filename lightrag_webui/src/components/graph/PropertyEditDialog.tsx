@@ -48,34 +48,34 @@ const PropertyEditDialog = ({
   // Get textarea configuration based on property name
   const getTextareaConfig = (propertyName: string) => {
     switch (propertyName) {
-    case 'description':
-      return {
+      case 'description':
+        return {
         // No rows attribute for description to allow auto-sizing
-        className: 'max-h-[50vh] min-h-[10em] resize-y', // Maximum height 70% of viewport, minimum height ~20 lines, allow vertical resizing
-        style: {
-          height: '70vh', // Set initial height to 70% of viewport
-          minHeight: '20em', // Minimum height ~20 lines
-          resize: 'vertical' as const // Allow vertical resizing, using 'as const' to fix type
-        }
-      };
-    case 'entity_id':
-      return {
-        rows: 2,
-        className: '',
-        style: {}
-      };
-    case 'keywords':
-      return {
-        rows: 4,
-        className: '',
-        style: {}
-      };
-    default:
-      return {
-        rows: 5,
-        className: '',
-        style: {}
-      };
+          className: 'max-h-[50vh] min-h-[10em] resize-y', // Maximum height 70% of viewport, minimum height ~20 lines, allow vertical resizing
+          style: {
+            height: '70vh', // Set initial height to 70% of viewport
+            minHeight: '20em', // Minimum height ~20 lines
+            resize: 'vertical' as const // Allow vertical resizing, using 'as const' to fix type
+          }
+        };
+      case 'entity_id':
+        return {
+          rows: 2,
+          className: '',
+          style: {}
+        };
+      case 'keywords':
+        return {
+          rows: 4,
+          className: '',
+          style: {}
+        };
+      default:
+        return {
+          rows: 5,
+          className: '',
+          style: {}
+        };
     }
   };
 
