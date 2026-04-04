@@ -18,6 +18,26 @@ import { useSettingsStore } from '@/stores/settings'
 import { useTranslation } from 'react-i18next'
 import { RotateCcw } from 'lucide-react'
 
+const ResetButton = ({ onClick, title }: { onClick: () => void; title: string }) => (
+  <TooltipProvider>
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button
+          type="button"
+          onClick={onClick}
+          className="mr-1 p-1 rounded hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+          title={title}
+        >
+          <RotateCcw className="h-3 w-3 text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200" />
+        </button>
+      </TooltipTrigger>
+      <TooltipContent side="left">
+        <p>{title}</p>
+      </TooltipContent>
+    </Tooltip>
+  </TooltipProvider>
+)
+
 export default function QuerySettings() {
   const { t } = useTranslation()
   const querySettings = useSettingsStore((state) => state.querySettings)
@@ -50,27 +70,6 @@ export default function QuerySettings() {
   const handleReset = useCallback((key: keyof typeof defaultValues) => {
     handleChange(key, defaultValues[key])
   }, [handleChange, defaultValues])
-
-  // Reset button component
-  const ResetButton = ({ onClick, title }: { onClick: () => void; title: string }) => (
-    <TooltipProvider>
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <button
-            type="button"
-            onClick={onClick}
-            className="mr-1 p-1 rounded hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
-            title={title}
-          >
-            <RotateCcw className="h-3 w-3 text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200" />
-          </button>
-        </TooltipTrigger>
-        <TooltipContent side="left">
-          <p>{title}</p>
-        </TooltipContent>
-      </Tooltip>
-    </TooltipProvider>
-  )
 
   return (
     <Card className="flex shrink-0 flex-col w-[280px]">

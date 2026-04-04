@@ -33,15 +33,17 @@ export default function PipelineStatusDialog({
   const [showCancelConfirm, setShowCancelConfirm] = useState(false)
   const historyRef = useRef<HTMLDivElement>(null)
 
-  // Reset position when dialog opens
+  // Reset UI state whenever the controlling open prop changes.
   useEffect(() => {
     if (open) {
+      // Resetting local dialog UI when the controlling prop changes is intentional.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setPosition('center')
       setIsUserScrolled(false)
-    } else {
-      // Reset confirmation dialog state when main dialog closes
-      setShowCancelConfirm(false)
+      return
     }
+
+    setShowCancelConfirm(false)
   }, [open])
 
   // Handle scroll position

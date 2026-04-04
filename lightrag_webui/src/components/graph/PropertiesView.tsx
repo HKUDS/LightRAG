@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useMemo } from 'react'
 import { useGraphStore, RawNodeType, RawEdgeType } from '@/stores/graph'
 import Text from '@/components/ui/Text'
 import Button from '@/components/ui/Button'
@@ -18,11 +18,7 @@ const PropertiesView = () => {
   const focusedEdge = useGraphStore.use.focusedEdge()
   const graphDataVersion = useGraphStore.use.graphDataVersion()
 
-  const [currentElement, setCurrentElement] = useState<NodeType | EdgeType | null>(null)
-  const [currentType, setCurrentType] = useState<'node' | 'edge' | null>(null)
-
-  // This effect will run when selection changes or when graph data is updated
-  useEffect(() => {
+  const { currentElement, currentType } = useMemo(() => {
     let type: 'node' | 'edge' | null = null
     let element: RawNodeType | RawEdgeType | null = null
     if (focusedNode) {
@@ -40,27 +36,16 @@ const PropertiesView = () => {
     }
 
     if (element) {
-      if (type == 'node') {
-        setCurrentElement(refineNodeProperties(element as any))
-      } else {
-        setCurrentElement(refineEdgeProperties(element as any))
+      return {
+        currentElement: type === 'node'
+          ? refineNodeProperties(element as any)
+          : refineEdgeProperties(element as any),
+        currentType: type
       }
-      setCurrentType(type)
-    } else {
-      setCurrentElement(null)
-      setCurrentType(null)
     }
-  }, [
-    focusedNode,
-    selectedNode,
-    focusedEdge,
-    selectedEdge,
-    graphDataVersion, // Add dependency on graphDataVersion to refresh when data changes
-    setCurrentElement,
-    setCurrentType,
-    getNode,
-    getEdge
-  ])
+    return { currentElement: null, currentType: null }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusedNode, selectedNode, focusedEdge, selectedEdge, graphDataVersion, getNode, getEdge])
 
   if (!currentElement) {
     return <></>
