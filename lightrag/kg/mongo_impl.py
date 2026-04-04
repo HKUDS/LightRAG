@@ -2257,6 +2257,8 @@ class MongoVectorDBStorage(BaseVectorStorage):
         self, query: str, top_k: int, query_embedding: list[float] = None
     ) -> list[dict[str, Any]]:
         """Queries the vector database using Atlas Vector Search."""
+        enable_hybrid = os.getenv("ENABLE_HYBRID_SEARCH", "false").lower() == "true"
+
         if query_embedding is not None:
             # Convert numpy array to list if needed for MongoDB compatibility
             if hasattr(query_embedding, "tolist"):
@@ -2270,6 +2272,37 @@ class MongoVectorDBStorage(BaseVectorStorage):
             )  # higher priority for query
             # Convert numpy array to a list to ensure compatibility with MongoDB
             query_vector = embedding[0].tolist()
+
+        if enable_hybrid and query:
+            pipeline = [
+                {
+                    "$search": {
+                        "index": "default",
+                        "text": {"query": query, "path": {"wildcard": "*"}},
+                    }
+                },
+                {
+                    "$vectorSearch": {
+                        "index": self._index_name,
+                        "path": "vector",
+                        "queryVector": query_vector,
+                        "numCandidates": top_k * 10,
+                        "limit": top_k,
+                    }
+                },
+            ]
+
+            cursor = await self._data.aggregate(pipeline)
+            results = await cursor.to_list(length=top_k)
+            return [
+                {
+                    **doc,
+                    "id": doc["_id"],
+                    "distance": doc.get("score", None),
+                    "created_at": doc.get("created_at"),  # Include created_at field
+                }
+                for doc in results
+            ]
 
         # Define the aggregation pipeline with the converted query vector
         pipeline = [
