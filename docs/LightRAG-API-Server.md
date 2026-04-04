@@ -2,11 +2,11 @@
 
 The LightRAG Server is designed to provide a Web UI and API support. The Web UI facilitates document indexing, knowledge graph exploration, and a simple RAG query interface. LightRAG Server also provides an Ollama-compatible interface, aiming to emulate LightRAG as an Ollama chat model. This allows AI chat bots, such as Open WebUI, to access LightRAG easily.
 
-![image-20250323122538997](./README.assets/image-20250323122538997.png)
+![image-20250323122538997](./LightRAG-API-Server.assets/image-20250323122538997.png)
 
-![image-20250323122754387](./README.assets/image-20250323122754387.png)
+![image-20250323122754387](./LightRAG-API-Server.assets/image-20250323122754387.png)
 
-![image-20250323123011220](./README.assets/image-20250323123011220.png)
+![image-20250323123011220](./LightRAG-API-Server.assets/image-20250323123011220.png)
 
 ## Getting Started
 
@@ -124,7 +124,7 @@ make env-server         # Optional: server port, auth, and SSL
 make env-security-check # Optional: audit the current .env for security risks
 ```
 
-For a full description of every target and what each flow does, see [docs/InteractiveSetup.md](../../docs/InteractiveSetup.md).
+For a full description of every target and what each flow does, see [docs/InteractiveSetup.md](./InteractiveSetup.md).
 The setup wizards update configuration only; run `make env-security-check` separately to audit the
 current `.env` for security risks before deployment.
 
@@ -168,7 +168,7 @@ docker compose up
 # If you want the program to run in the background after startup, add the -d parameter at the end of the command.
 ```
 
-You can get the official docker compose file from here: [docker-compose.yml](https://raw.githubusercontent.com/HKUDS/LightRAG/refs/heads/main/docker-compose.yml). For historical versions of LightRAG docker images, visit this link: [LightRAG Docker Images](https://github.com/HKUDS/LightRAG/pkgs/container/lightrag). For more details about docker deployment, please refer to [DockerDeployment.md](./../../docs/DockerDeployment.md).
+You can get the official docker compose file from here: [docker-compose.yml](https://raw.githubusercontent.com/HKUDS/LightRAG/refs/heads/main/docker-compose.yml). For historical versions of LightRAG docker images, visit this link: [LightRAG Docker Images](https://github.com/HKUDS/LightRAG/pkgs/container/lightrag). For more details about docker deployment, please refer to [DockerDeployment.md](./DockerDeployment.md).
 
 ### Nginx Reverse Proxy Configuration
 
@@ -237,7 +237,7 @@ server {
 
 ### Offline Deployment
 
-Official LightRAG Docker images are fully compatible with offline or air-gapped environments. If you want to build up you own  offline enviroment, please refer to [Offline Deployment Guide](./../../docs/OfflineDeployment.md).
+Official LightRAG Docker images are fully compatible with offline or air-gapped environments. If you want to build up you own  offline enviroment, please refer to [Offline Deployment Guide](./OfflineDeployment.md).
 
 ### Starting Multiple LightRAG Instances
 
@@ -321,7 +321,7 @@ After starting the lightrag-server, you can add an Ollama-type connection in the
 
 Open WebUI uses an LLM to do the session title and session keyword generation task. So the Ollama chat completion API detects and forwards OpenWebUI session-related requests directly to the underlying LLM. Screenshot from Open WebUI:
 
-![image-20250323194750379](./README.assets/image-20250323194750379.png)
+![image-20250323194750379](./LightRAG-API-Server.assets/image-20250323194750379.png)
 
 ### Choose Query mode in chat
 
@@ -518,7 +518,7 @@ You cannot change storage implementation selection after adding documents to Lig
 
 ### LLM Cache Migration Between Storage Types
 
-When switching the storage implementation in LightRAG, the LLM cache can be migrated from the existing storage to the new one. Subsequently, when re-uploading files to the new storage, the pre-existing LLM cache will significantly accelerate file processing. For detailed instructions on using the LLM cache migration tool, please refer to[README_MIGRATE_LLM_CACHE.md](../tools/README_MIGRATE_LLM_CACHE.md)
+When switching the storage implementation in LightRAG, the LLM cache can be migrated from the existing storage to the new one. Subsequently, when re-uploading files to the new storage, the pre-existing LLM cache will significantly accelerate file processing. For detailed instructions on using the LLM cache migration tool, please refer to [README_MIGRATE_LLM_CACHE.md](../lightrag/tools/README_MIGRATE_LLM_CACHE.md)
 
 ### LightRAG API Server Command Line Options
 

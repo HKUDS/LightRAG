@@ -254,7 +254,7 @@ LightRAG对大型语言模型（LLM）的能力要求远高于传统RAG，因为
 
 ### 使用LightRAG服务器
 
-LightRAG 服务器旨在提供 Web UI 和 API 支持，同时提供了全面的知识图谱可视化功能，支持各种重力布局、节点查询、子图过滤等。有关LightRAG服务器的更多信息，请参阅[LightRAG服务器](./lightrag/api/README.md)。
+LightRAG 服务器旨在提供 Web UI 和 API 支持，同时提供了全面的知识图谱可视化功能，支持各种重力布局、节点查询、子图过滤等。有关LightRAG服务器的更多信息，请参阅[LightRAG服务器](./docs/LightRAG-API-Server-zh.md)。
 
 ![iShot_2025-03-23_12.40.08](./README.assets/iShot_2025-03-23_12.40.08.png)
 
