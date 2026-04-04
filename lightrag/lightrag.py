@@ -1940,9 +1940,9 @@ class LightRAG:
                                     logger.info(
                                         f"Trimming pipeline history from {len(pipeline_status['history_messages'])} to 5000 messages"
                                     )
-                                    pipeline_status["history_messages"] = (
-                                        pipeline_status["history_messages"][-5000:]
-                                    )
+                                    # Trim in place so Manager.list-backed shared state
+                                    # remains appendable and visible across processes.
+                                    del pipeline_status["history_messages"][:-5000]
 
                             # Get document content from full_docs
                             if not content_data:
