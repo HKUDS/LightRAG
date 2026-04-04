@@ -4,6 +4,12 @@ import { DirectedGraph } from 'graphology'
 import MiniSearch from 'minisearch'
 import { resolveNodeColor, DEFAULT_NODE_COLOR } from '@/utils/graphColor'
 
+const createErrorWithCause = (message: string, cause: unknown): Error => {
+  const error = new Error(message) as Error & { cause?: unknown }
+  error.cause = cause
+  return error
+}
+
 export type RawNodeType = {
   // for NetworkX: id is identical to properties['entity_id']
   // for Neo4j: id is unique identifier for each node
@@ -342,7 +348,7 @@ const useGraphStoreBase = create<GraphState>()((set, get) => ({
       }
     } catch (error) {
       console.error('Error updating node in graph:', error)
-      throw new Error('Failed to update node in graph', { cause: error })
+      throw createErrorWithCause('Failed to update node in graph', error)
     }
   },
 
@@ -372,7 +378,7 @@ const useGraphStoreBase = create<GraphState>()((set, get) => ({
       set({ selectedEdge: dynamicId })
     } catch (error) {
       console.error(`Error updating edge ${sourceId}->${targetId} in graph:`, error)
-      throw new Error('Failed to update edge in graph', { cause: error })
+      throw createErrorWithCause('Failed to update edge in graph', error)
     }
   }
 }))
