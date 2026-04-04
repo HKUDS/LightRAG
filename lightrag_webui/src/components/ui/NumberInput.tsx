@@ -42,6 +42,14 @@ const NumberInput = forwardRef<HTMLInputElement, NumberInputProps>(
   ) => {
     const [value, setValue] = useState<number | undefined>(controlledValue ?? defaultValue)
 
+    // Sync local state when the controlled value changes (e.g. parent resets the field).
+    // Synchronous setState in useEffect is intentional here: we want the displayed value
+    // to update in the same paint as the prop change, with no visible flicker.
+    useEffect(() => {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      if (controlledValue !== undefined) setValue(controlledValue)
+    }, [controlledValue])
+
     const handleIncrement = useCallback(() => {
       setValue((prev) =>
         prev === undefined ? (stepper ?? 1) : Math.min(prev + (stepper ?? 1), max)
@@ -53,13 +61,6 @@ const NumberInput = forwardRef<HTMLInputElement, NumberInputProps>(
         prev === undefined ? -(stepper ?? 1) : Math.max(prev - (stepper ?? 1), min)
       )
     }, [stepper, min])
-
-    useEffect(() => {
-      if (controlledValue !== undefined) {
-        const timer = setTimeout(() => setValue(controlledValue), 0)
-        return () => clearTimeout(timer)
-      }
-    }, [controlledValue])
 
     const handleChange = (values: { value: string; floatValue: number | undefined }) => {
       const newValue = values.floatValue === undefined ? undefined : values.floatValue
