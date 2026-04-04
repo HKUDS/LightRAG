@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import {
   Dialog,
@@ -35,16 +35,8 @@ const PropertyEditDialog = ({
   errorMessage = null
 }: PropertyEditDialogProps) => {
   const { t } = useTranslation()
-  const [value, setValue] = useState('')
+  const [value, setValue] = useState(initialValue)
   const [allowMerge, setAllowMerge] = useState(false)
-
-  // Initialize value when dialog opens
-  useEffect(() => {
-    if (isOpen) {
-      setValue(initialValue)
-      setAllowMerge(false)
-    }
-  }, [isOpen, initialValue])
 
   // Get translated property name
   const getPropertyNameTranslation = (name: string) => {

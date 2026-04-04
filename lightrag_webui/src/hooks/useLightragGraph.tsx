@@ -91,7 +91,7 @@ export type EdgeType = {
 }
 
 const fetchGraph = async (label: string, maxDepth: number, maxNodes: number) => {
-  let rawData: any = null;
+  let rawData: any;
 
   // Trigger GraphLabels component to check if the label is valid
   // console.log('Setting labelsFetchAttempted to true');
@@ -459,8 +459,12 @@ const useLightrangeGraph = () => {
 
   // Handle node expansion
   useEffect(() => {
-    const handleNodeExpand = async (nodeId: string | null) => {
-      if (!nodeId || !sigmaGraph || !rawGraph) return;
+    const nodeId = useGraphStore.getState().nodeToExpand;
+    if (!nodeId) return;
+
+    const handleNodeExpand = async () => {
+      const { sigmaGraph, rawGraph } = useGraphStore.getState();
+      if (!sigmaGraph || !rawGraph) return;
 
       try {
         // Get the node to expand
@@ -811,15 +815,12 @@ const useLightrangeGraph = () => {
       }
     };
 
-    // If there's a node to expand, handle it
-    if (nodeToExpand) {
-      handleNodeExpand(nodeToExpand);
-      // Reset the nodeToExpand state after handling
-      window.setTimeout(() => {
-        useGraphStore.getState().triggerNodeExpand(null);
-      }, 0);
-    }
-  }, [nodeToExpand, sigmaGraph, rawGraph, t]);
+    handleNodeExpand();
+    // Reset the nodeToExpand state after handling
+    window.setTimeout(() => {
+      useGraphStore.getState().triggerNodeExpand(null);
+    }, 0);
+  }, [nodeToExpand, t]);
 
   // Helper function to get all nodes that will be deleted
   const getNodesThatWillBeDeleted = useCallback((nodeId: string, graph: UndirectedGraph) => {
@@ -844,11 +845,15 @@ const useLightrangeGraph = () => {
 
   // Handle node pruning
   useEffect(() => {
-    const handleNodePrune = (nodeId: string | null) => {
-      if (!nodeId || !sigmaGraph || !rawGraph) return;
+    const nodeId = useGraphStore.getState().nodeToPrune;
+    if (!nodeId) return;
+
+    const handleNodePrune = () => {
+      const state = useGraphStore.getState();
+      const { sigmaGraph, rawGraph } = state;
+      if (!sigmaGraph || !rawGraph) return;
 
       try {
-        const state = useGraphStore.getState();
 
         // 1. Check if node exists
         if (!sigmaGraph.hasNode(nodeId)) {
@@ -932,15 +937,12 @@ const useLightrangeGraph = () => {
       }
     };
 
-    // If there's a node to prune, handle it
-    if (nodeToPrune) {
-      handleNodePrune(nodeToPrune);
-      // Reset the nodeToPrune state after handling
-      window.setTimeout(() => {
-        useGraphStore.getState().triggerNodePrune(null);
-      }, 0);
-    }
-  }, [nodeToPrune, sigmaGraph, rawGraph, getNodesThatWillBeDeleted, t]);
+    handleNodePrune();
+    // Reset the nodeToPrune state after handling
+    window.setTimeout(() => {
+      useGraphStore.getState().triggerNodePrune(null);
+    }, 0);
+  }, [nodeToPrune, getNodesThatWillBeDeleted, t]);
 
   const lightrageGraph = useCallback(() => {
     // If we already have a graph instance, return it

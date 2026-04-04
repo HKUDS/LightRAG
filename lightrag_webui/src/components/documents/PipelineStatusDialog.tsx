@@ -33,16 +33,15 @@ export default function PipelineStatusDialog({
   const [showCancelConfirm, setShowCancelConfirm] = useState(false)
   const historyRef = useRef<HTMLDivElement>(null)
 
-  // Reset position when dialog opens
-  useEffect(() => {
-    if (open) {
+  const handleOpenChange = (newOpen: boolean) => {
+    if (newOpen) {
       setPosition('center')
       setIsUserScrolled(false)
     } else {
-      // Reset confirmation dialog state when main dialog closes
       setShowCancelConfirm(false)
     }
-  }, [open])
+    onOpenChange(newOpen)
+  }
 
   // Handle scroll position
   useEffect(() => {
@@ -104,7 +103,7 @@ export default function PipelineStatusDialog({
   const canCancel = status?.busy === true && !status?.cancellation_requested
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent
         className={cn(
           'sm:max-w-[800px] transition-all duration-200 fixed',

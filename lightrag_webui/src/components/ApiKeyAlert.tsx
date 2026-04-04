@@ -21,12 +21,8 @@ interface ApiKeyAlertProps {
 const ApiKeyAlert = ({ open: opened, onOpenChange: setOpened }: ApiKeyAlertProps) => {
   const { t } = useTranslation()
   const apiKey = useSettingsStore.use.apiKey()
-  const [tempApiKey, setTempApiKey] = useState<string>('')
+  const [tempApiKey, setTempApiKey] = useState<string>(apiKey || '')
   const message = useBackendState.use.message()
-
-  useEffect(() => {
-    setTempApiKey(apiKey || '')
-  }, [apiKey, opened])
 
   useEffect(() => {
     if (message) {

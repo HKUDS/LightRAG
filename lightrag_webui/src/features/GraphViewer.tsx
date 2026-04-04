@@ -134,16 +134,18 @@ const GraphViewer = () => {
     // Detect theme change
     const isThemeChange = prevTheme.current && prevTheme.current !== theme
     if (isThemeChange) {
-      setIsThemeSwitching(true)
       console.log('Theme switching detected:', prevTheme.current, '->', theme)
 
-      // Reset theme switching state after a short delay
+      const switchTimer = setTimeout(() => setIsThemeSwitching(true), 0)
       const timer = setTimeout(() => {
         setIsThemeSwitching(false)
         console.log('Theme switching completed')
       }, 150)
 
-      return () => clearTimeout(timer)
+      return () => {
+        clearTimeout(switchTimer)
+        clearTimeout(timer)
+      }
     }
     prevTheme.current = theme
     console.log('Initialized sigma settings for theme:', theme)

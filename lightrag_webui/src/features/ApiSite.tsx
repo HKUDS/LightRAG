@@ -11,10 +11,9 @@ export default function ApiSite() {
 
   // Load the iframe once on component mount
   useEffect(() => {
-    if (!iframeLoaded) {
-      setIframeLoaded(true)
-    }
-  }, [iframeLoaded])
+    const timer = setTimeout(() => setIframeLoaded(true), 0)
+    return () => clearTimeout(timer)
+  }, [])
 
   // Use CSS to hide content when tab is not visible
   return (

@@ -132,7 +132,7 @@ const EditablePropertyRow = ({
                 .updateNodeAndSelect(nodeId, entityId, name, graphValue)
             } catch (error) {
               console.error('Error updating node in graph:', error)
-              throw new Error('Failed to update node in graph')
+              throw new Error('Failed to update node in graph', { cause: error })
             }
 
             // Update search history: remove old name, add new name
@@ -201,7 +201,7 @@ const EditablePropertyRow = ({
           await useGraphStore.getState().updateEdgeAndSelect(edgeId, dynamicId, sourceId, targetId, name, value)
         } catch (error) {
           console.error(`Error updating edge ${sourceId}->${targetId} in graph:`, error)
-          throw new Error('Failed to update edge in graph')
+          throw new Error('Failed to update edge in graph', { cause: error })
         }
         toast.success(t('graphPanel.propertiesView.success.relationUpdated'))
         setCurrentValue(value)
@@ -261,6 +261,7 @@ const EditablePropertyRow = ({
         tooltip={tooltip || (typeof currentValue === 'string' ? currentValue : JSON.stringify(currentValue, null, 2))}
       />
       <PropertyEditDialog
+        key={String(isEditing)}
         isOpen={isEditing}
         onClose={handleCancel}
         onSave={handleSave}
