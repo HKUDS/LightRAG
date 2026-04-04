@@ -535,6 +535,7 @@ When switching the storage implementation in LightRAG, the LLM cache can be migr
 | --ssl                 | False         | Enable HTTPS                                                                                                                    |
 | --ssl-certfile        | None          | Path to SSL certificate file (required if --ssl is enabled)                                                                     |
 | --ssl-keyfile         | None          | Path to SSL private key file (required if --ssl is enabled)                                                                     |
+| --no-move-files       | False         | Do not move input files to `__enqueued__/` after processing. Enables using live directories (e.g. Obsidian vault) as input sources. Files already indexed are skipped on re-scan via doc_status tracking. (env: `NO_MOVE_FILES`) |
 | --llm-binding         | ollama        | LLM binding type (lollms, ollama, openai, openai-ollama, azure_openai, aws_bedrock)                                                          |
 | --embedding-binding   | ollama        | Embedding binding type (lollms, ollama, openai, azure_openai, aws_bedrock)                                                                   |
 

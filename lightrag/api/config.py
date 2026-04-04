@@ -126,6 +126,16 @@ def parse_args() -> argparse.Namespace:
     )
 
     parser.add_argument(
+        "--no-move-files",
+        action="store_true",
+        default=os.getenv("NO_MOVE_FILES", "false").lower() == "true",
+        help="Do not move input files to __enqueued__ after processing. "
+             "Enables using live directories (e.g. Obsidian vault) as input sources. "
+             "Files already tracked in doc_status are skipped on re-scan. "
+             "(default: False, env: NO_MOVE_FILES)",
+    )
+
+    parser.add_argument(
         "--timeout",
         default=get_env_value("TIMEOUT", DEFAULT_TIMEOUT, int, special_none=True),
         type=int,
