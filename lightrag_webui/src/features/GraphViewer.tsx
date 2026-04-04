@@ -135,6 +135,7 @@ const GraphViewer = () => {
     const isThemeChange = prevTheme.current && prevTheme.current !== theme
     if (isThemeChange) {
       console.log('Theme switching detected:', prevTheme.current, '->', theme)
+      prevTheme.current = theme
 
       const switchTimer = setTimeout(() => setIsThemeSwitching(true), 0)
       const timer = setTimeout(() => {
