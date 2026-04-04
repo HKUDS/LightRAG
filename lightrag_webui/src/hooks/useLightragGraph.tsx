@@ -820,7 +820,7 @@ const useLightrangeGraph = () => {
     window.setTimeout(() => {
       useGraphStore.getState().triggerNodeExpand(null);
     }, 0);
-  }, [nodeToExpand, t]);
+  }, [nodeToExpand, sigmaGraph, rawGraph, t]);
 
   // Helper function to get all nodes that will be deleted
   const getNodesThatWillBeDeleted = useCallback((nodeId: string, graph: UndirectedGraph) => {
@@ -942,7 +942,7 @@ const useLightrangeGraph = () => {
     window.setTimeout(() => {
       useGraphStore.getState().triggerNodePrune(null);
     }, 0);
-  }, [nodeToPrune, getNodesThatWillBeDeleted, t]);
+  }, [nodeToPrune, sigmaGraph, rawGraph, getNodesThatWillBeDeleted, t]);
 
   const lightrageGraph = useCallback(() => {
     // If we already have a graph instance, return it

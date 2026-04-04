@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
 import {
   Dialog,
@@ -37,6 +37,17 @@ const PropertyEditDialog = ({
   const { t } = useTranslation()
   const [value, setValue] = useState(initialValue)
   const [allowMerge, setAllowMerge] = useState(false)
+
+  // Reset form state on every open so stale input/checkbox never persists
+  useEffect(() => {
+    if (isOpen) {
+      const timer = setTimeout(() => {
+        setValue(initialValue)
+        setAllowMerge(false)
+      }, 0)
+      return () => clearTimeout(timer)
+    }
+  }, [isOpen, initialValue])
 
   // Get translated property name
   const getPropertyNameTranslation = (name: string) => {
