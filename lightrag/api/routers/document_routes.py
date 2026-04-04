@@ -1788,6 +1788,18 @@ async def run_scanning_process(
         doc_manager: DocumentManager instance
         track_id: Optional tracking ID to pass to all scanned files
     """
+    from lightrag.kg.shared_storage import (
+        get_namespace_data,
+        get_namespace_lock,
+    )
+
+    pipeline_status = await get_namespace_data(
+        "pipeline_status", workspace=rag.workspace
+    )
+    pipeline_status_lock = get_namespace_lock(
+        "pipeline_status", workspace=rag.workspace
+    )
+
     try:
         new_files = doc_manager.scan_directory_for_new_files()
         total_files = len(new_files)
@@ -1812,7 +1824,31 @@ async def run_scanning_process(
 
             # Process valid files (new files + non-PROCESSED status files)
             if valid_files:
+                # Update pipeline_status to reflect the scan job starting
+                async with pipeline_status_lock:
+                    if not pipeline_status.get("busy", False):
+                        scan_start_msg = (
+                            f"Document scan started: {len(valid_files)} file(s) to index"
+                        )
+                        pipeline_status.update(
+                            {
+                                "busy": True,
+                                "job_name": "Document Scan",
+                                "job_start": datetime.now(timezone.utc).isoformat(),
+                                "docs": len(valid_files),
+                                "batchs": len(valid_files),
+                                "cur_batch": 0,
+                                "request_pending": False,
+                                "cancellation_requested": False,
+                                "latest_message": scan_start_msg,
+                            }
+                        )
+                        del pipeline_status["history_messages"][:]
+                        pipeline_status["history_messages"].append(scan_start_msg)
+                        logger.info(scan_start_msg)
+
                 await pipeline_index_files(rag, valid_files, track_id)
+
                 if processed_files:
                     logger.info(
                         f"Scanning process completed: {len(valid_files)} files Processed {len(processed_files)} skipped."
@@ -1835,6 +1871,11 @@ async def run_scanning_process(
     except Exception as e:
         logger.error(f"Error during scanning process: {str(e)}")
         logger.error(traceback.format_exc())
+        async with pipeline_status_lock:
+            error_msg = f"Scan failed: {str(e)}"
+            pipeline_status["latest_message"] = error_msg
+            pipeline_status["history_messages"].append(error_msg)
+            pipeline_status["busy"] = False
 
 
 async def background_delete_documents(
