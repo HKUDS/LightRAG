@@ -19,7 +19,7 @@ LightRAG is an advanced Retrieval-Augmented Generation (RAG) framework designed 
 - `lightrag-server` or `uvicorn lightrag.api.lightrag_server:app --reload`: start the API locally; ensure `.env` is present.
 - `python -m pytest tests` (offline markers apply by default) or `python -m pytest tests --run-integration` / `python test_graph_storage.py`: run the full suite, opt into integration coverage, or target an individual script.
 - `ruff check .`: lint Python sources before committing.
-- `bun install`, `bun run dev`, `bun run build`, `bun test`: manage the web UI workflow (Bun is mandatory).
+- Front-end workflow uses Bun from `lightrag_webui/`; run UI commands from the repo root as `cd lightrag_webui && bun install`, `cd lightrag_webui && bun run dev`, `cd lightrag_webui && bun run build`, `cd lightrag_webui && bun run lint`, and `cd lightrag_webui && bun test`.
 
 ## Coding Style & Naming Conventions
 - Backend code follow PEP 8 with four-space indentation, annotate functions, and reach for dataclasses when modelling state.
@@ -33,12 +33,12 @@ LightRAG is an advanced Retrieval-Augmented Generation (RAG) framework designed 
 - Follow `tests/pytest.ini`: markers include `offline`, `integration`, `requires_db`, and `requires_api`, and the suite runs with `-m "not integration"` by default—pass `--run-integration` (or set `LIGHTRAG_RUN_INTEGRATION=true`) when external services are available.
 - Use the custom CLI toggles from `tests/conftest.py`: `--keep-artifacts`/`LIGHTRAG_KEEP_ARTIFACTS=true`, `--stress-test`/`LIGHTRAG_STRESS_TEST=true`, and `--test-workers N`/`LIGHTRAG_TEST_WORKERS` to dial up workloads or preserve temp files during investigations.
 - Export other required `LIGHTRAG_*` environment variables before running integration or storage tests so adapters can reach configured backends.
-- For UI updates, pair changes with Vitest specs and run `bun test`.
+- For UI updates, pair changes with Bun test coverage using `bun:test`; run `cd lightrag_webui && bun test`, and use `cd lightrag_webui && bun test --watch` or `cd lightrag_webui && bun test --coverage` when needed.
 
 ## Commit & Pull Request Guidelines
 - Use concise, imperative commit subjects (e.g., `Fix lock key normalization`) and add body context only when necessary.
 - PRs should include a summary, operational impact, linked issues, and screenshots or API samples for user-facing work.
-- Verify `ruff check .`, `python -m pytest`, and affected Bun commands succeed before requesting review; note the runs in the PR text.
+- Verify `ruff check .`, `python -m pytest`, and affected front-end commands such as `cd lightrag_webui && bun run lint`, `cd lightrag_webui && bun run build`, and `cd lightrag_webui && bun test` succeed before requesting review; note the runs in the PR text.
 - This repo is a fork of `HKUDS/LightRAG`. Always target **`HKUDS/LightRAG:main`** (upstream) when creating PRs, not the fork's own main.
 
 ## Security & Configuration Tips
