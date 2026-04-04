@@ -343,7 +343,7 @@
         "properties": "Propriétés",
         "relationships": "Relations(dans le sous-graphe)",
         "expandNode": "Développer le nœud",
-        "pruneNode": "Élaguer le nœud",
+        "pruneNode": "Masquer le nœud",
         "deleteAllNodesError": "Refus de supprimer tous les nœuds du graphe",
         "nodesRemoved": "{{count}} nœuds supprimés, y compris les nœuds orphelins",
         "noNewNodes": "Aucun nœud développable trouvé",

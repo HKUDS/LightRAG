@@ -343,7 +343,7 @@
         "properties": "속성",
         "relationships": "관계(하위 그래프 내)",
         "expandNode": "노드 확장",
-        "pruneNode": "노드 가지치기",
+        "pruneNode": "노드 숨기기",
         "deleteAllNodesError": "그래프의 모든 노드 삭제 실패",
         "nodesRemoved": "고아 노드를 포함하여 {{count}}개의 노드가 제거되었습니다",
         "noNewNodes": "확장 가능한 노드를 찾을 수 없습니다",
