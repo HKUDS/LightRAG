@@ -56,7 +56,8 @@ const NumberInput = forwardRef<HTMLInputElement, NumberInputProps>(
 
     useEffect(() => {
       if (controlledValue !== undefined) {
-        setValue(controlledValue)
+        const timer = setTimeout(() => setValue(controlledValue), 0)
+        return () => clearTimeout(timer)
       }
     }, [controlledValue])
 

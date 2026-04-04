@@ -624,18 +624,9 @@ export default function RetrievalTesting() {
 
   // Handle copying message content with robust clipboard support
   const handleCopyMessage = useCallback(async (message: MessageWithError) => {
-    let contentToCopy = '';
-
-    if (message.role === 'user') {
-      // User messages: copy original content
-      contentToCopy = message.content || '';
-    } else {
-      // Assistant messages: prefer processed display content, fallback to original content
-      const finalDisplayContent = message.displayContent !== undefined
-        ? message.displayContent
-        : (message.content || '');
-      contentToCopy = finalDisplayContent;
-    }
+    const contentToCopy = message.role === 'user'
+      ? (message.content || '')
+      : (message.displayContent !== undefined ? message.displayContent : (message.content || ''));
 
     if (!contentToCopy.trim()) {
       toast.error(t('retrievePanel.chatMessage.copyEmpty', 'No content to copy'));

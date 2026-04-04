@@ -60,7 +60,7 @@ const WorkerLayoutControl = ({ layout, autoRunFor, mainLayout }: ExtendedWorkerL
       if (animationTimerRef.current) {
         window.clearInterval(animationTimerRef.current)
         animationTimerRef.current = null
-        setIsRunning(false)
+        setTimeout(() => setIsRunning(false), 0)
       }
     }
   }, [sigma, mainLayout])
@@ -148,7 +148,7 @@ const WorkerLayoutControl = ({ layout, autoRunFor, mainLayout }: ExtendedWorkerL
         updatePositions()
       }, 200) // Reduced interval to create overlapping animations for smoother transitions
 
-      setIsRunning(true)
+      setTimeout(() => setIsRunning(true), 0)
 
       // Set a timeout to stop it if autoRunFor > 0
       if (autoRunFor > 0) {

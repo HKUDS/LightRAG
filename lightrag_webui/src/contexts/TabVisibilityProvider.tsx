@@ -25,13 +25,14 @@ export const TabVisibilityProvider: React.FC<TabVisibilityProviderProps> = ({ ch
 
   // Keep all tabs visible because we use CSS to control TAB visibility instead of React
   useEffect(() => {
-    setVisibleTabs((prev) => ({
+    const timer = setTimeout(() => setVisibleTabs((prev) => ({
       ...prev,
       'documents': true,
       'knowledge-graph': true,
       'retrieval': true,
       'api': true
-    }));
+    })), 0)
+    return () => clearTimeout(timer)
   }, [currentTab]);
 
   // Create the context value with memoization to prevent unnecessary re-renders

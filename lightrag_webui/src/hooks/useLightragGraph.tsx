@@ -91,7 +91,7 @@ export type EdgeType = {
 }
 
 const fetchGraph = async (label: string, maxDepth: number, maxNodes: number) => {
-  let rawData: any = null;
+  let rawData: any;
 
   // Trigger GraphLabels component to check if the label is valid
   // console.log('Setting labelsFetchAttempted to true');
@@ -459,12 +459,15 @@ const useLightrangeGraph = () => {
 
   // Handle node expansion
   useEffect(() => {
+    const expandId = nodeToExpand ? `${nodeToExpand}` : null;
+
     const handleNodeExpand = async (nodeId: string | null) => {
-      if (!nodeId || !sigmaGraph || !rawGraph) return;
+      if (!nodeId || !useGraphStore.getState().sigmaGraph || !useGraphStore.getState().rawGraph) return;
 
       try {
         // Get the node to expand
-        const nodeToExpand = rawGraph.getNode(nodeId);
+        const { rawGraph: currentRawGraph } = useGraphStore.getState();
+        const nodeToExpand = currentRawGraph?.getNode(nodeId);
         if (!nodeToExpand) {
           console.error('Node not found:', nodeId);
           return;
@@ -690,14 +693,19 @@ const useLightrangeGraph = () => {
         // SAdd nodes and edges to the graph
         // Calculate camera ratio and spread factor once before the loop
         const cameraRatio = useGraphStore.getState().sigmaInstance?.getCamera().ratio || 1;
+        const nodeToExpandData = currentRawGraph?.getNode(nodeId);
+        const nodeSize = nodeToExpandData?.size || 5;
+        const nodeX = nodeToExpandData?.x || 0;
+        const nodeY = nodeToExpandData?.y || 0;
+
         const spreadFactor = Math.max(
-          Math.sqrt(nodeToExpand.size) * 4, // Base on node size
+          Math.sqrt(nodeSize) * 4, // Base on node size
           Math.sqrt(nodesToAdd.size) * 3 // Scale with number of nodes
         ) / cameraRatio; // Adjust for zoom level
         seedrandom(Date.now().toString(), { global: true });
         const randomAngle = Math.random() * 2 * Math.PI
 
-        console.log('nodeSize:', nodeToExpand.size, 'nodesToAdd:', nodesToAdd.size);
+        console.log('nodeSize:', nodeSize, 'nodesToAdd:', nodesToAdd.size);
         console.log('cameraRatio:', Math.round(cameraRatio*100)/100, 'spreadFactor:', Math.round(spreadFactor*100)/100);
 
         // Add new nodes
@@ -717,9 +725,9 @@ const useLightrangeGraph = () => {
 
           // Calculate final position
           const x = nodePositions[nodeId]?.x ||
-                    (nodePositions[nodeToExpand.id].x + Math.cos(randomAngle + angle) * spreadFactor);
+                    (nodeX + Math.cos(randomAngle + angle) * spreadFactor);
           const y = nodePositions[nodeId]?.y ||
-                    (nodePositions[nodeToExpand.id].y + Math.sin(randomAngle + angle) * spreadFactor);
+                    (nodeY + Math.sin(randomAngle + angle) * spreadFactor);
 
           // Add the new node to the sigma graph with calculated position
           sigmaGraph.addNode(nodeId, {
@@ -733,7 +741,8 @@ const useLightrangeGraph = () => {
           });
 
           // Add the node to the raw graph
-          if (!rawGraph.getNode(nodeId)) {
+          const currentRawGraph = useGraphStore.getState().rawGraph;
+          if (!currentRawGraph?.getNode(nodeId)) {
             // Update node properties
             newNode.size = nodeSize;
             newNode.x = x;
@@ -741,9 +750,9 @@ const useLightrangeGraph = () => {
             newNode.degree = nodeDegree;
 
             // Add to nodes array
-            rawGraph.nodes.push(newNode);
+            currentRawGraph!.nodes.push(newNode);
             // Update nodeIdMap
-            rawGraph.nodeIdMap[nodeId] = rawGraph.nodes.length - 1;
+            currentRawGraph!.nodeIdMap[nodeId] = currentRawGraph!.nodes.length - 1;
           }
         }
 
@@ -772,13 +781,14 @@ const useLightrangeGraph = () => {
           });
 
           // Add the edge to the raw graph
-          if (!rawGraph.getEdge(newEdge.id, false)) {
+          const currentRawGraph = useGraphStore.getState().rawGraph;
+          if (!currentRawGraph?.getEdge(newEdge.id, false)) {
             // Add to edges array
-            rawGraph.edges.push(newEdge);
+            currentRawGraph!.edges.push(newEdge);
             // Update edgeIdMap
-            rawGraph.edgeIdMap[newEdge.id] = rawGraph.edges.length - 1;
+            currentRawGraph!.edgeIdMap[newEdge.id] = currentRawGraph!.edges.length - 1;
             // Update dynamic edge map
-            rawGraph.edgeDynamicIdMap[newEdge.dynamicId] = rawGraph.edges.length - 1;
+            currentRawGraph!.edgeDynamicIdMap[newEdge.dynamicId] = currentRawGraph!.edges.length - 1;
           } else {
             console.error('Edge already exists in rawGraph:', newEdge.id);
           }
@@ -802,8 +812,12 @@ const useLightrangeGraph = () => {
             Constants.minNodeSize + scale * Math.pow((limitedDegree - minDegree) / range, 0.5)
           );
           sigmaGraph.setNodeAttribute(nodeId, 'size', newSize);
-          nodeToExpand.size = newSize;
-          nodeToExpand.degree = finalDegree;
+          // Don't mutate the react state variable directly
+          const rawNode = currentRawGraph?.getNode(nodeId);
+          if (rawNode) {
+            rawNode.size = newSize;
+            rawNode.degree = finalDegree;
+          }
         }
 
       } catch (error) {
@@ -811,15 +825,14 @@ const useLightrangeGraph = () => {
       }
     };
 
-    // If there's a node to expand, handle it
-    if (nodeToExpand) {
-      handleNodeExpand(nodeToExpand);
+    if (expandId) {
+      handleNodeExpand(expandId);
       // Reset the nodeToExpand state after handling
       window.setTimeout(() => {
         useGraphStore.getState().triggerNodeExpand(null);
       }, 0);
     }
-  }, [nodeToExpand, sigmaGraph, rawGraph, t]);
+  }, [nodeToExpand, t, sigmaGraph, rawGraph]);
 
   // Helper function to get all nodes that will be deleted
   const getNodesThatWillBeDeleted = useCallback((nodeId: string, graph: UndirectedGraph) => {
@@ -844,11 +857,12 @@ const useLightrangeGraph = () => {
 
   // Handle node pruning
   useEffect(() => {
+    const pruneId = nodeToPrune ? `${nodeToPrune}` : null;
+
     const handleNodePrune = (nodeId: string | null) => {
-      if (!nodeId || !sigmaGraph || !rawGraph) return;
+      if (!nodeId || !useGraphStore.getState().sigmaGraph || !useGraphStore.getState().rawGraph) return;
 
       try {
-        const state = useGraphStore.getState();
 
         // 1. Check if node exists
         if (!sigmaGraph.hasNode(nodeId)) {
@@ -874,49 +888,53 @@ const useLightrangeGraph = () => {
           sigmaGraph.dropNode(nodeToDelete);
 
           // Remove the node from the raw graph
-          const nodeIndex = rawGraph.nodeIdMap[nodeToDelete];
+          const currentRawGraph = useGraphStore.getState().rawGraph as any;
+          const nodeIndex = currentRawGraph?.nodeIdMap?.[nodeToDelete];
           if (nodeIndex !== undefined) {
             // Find all edges connected to this node
-            const edgesToRemove = rawGraph.edges.filter(
-              edge => edge.source === nodeToDelete || edge.target === nodeToDelete
-            );
+            const edgesToRemove = currentRawGraph?.edges?.filter(
+              (edge: any) => edge.source === nodeToDelete || edge.target === nodeToDelete
+            ) || [];
 
             // Remove edges from raw graph
             for (const edge of edgesToRemove) {
-              const edgeIndex = rawGraph.edgeIdMap[edge.id];
+              const edgeIndex = currentRawGraph?.edgeIdMap?.[edge.id];
               if (edgeIndex !== undefined) {
                 // Remove from edges array
-                rawGraph.edges.splice(edgeIndex, 1);
+                currentRawGraph.edges.splice(edgeIndex, 1);
                 // Update edgeIdMap for all edges after this one
-                for (const [id, idx] of Object.entries(rawGraph.edgeIdMap)) {
-                  if (idx > edgeIndex) {
-                    rawGraph.edgeIdMap[id] = idx - 1;
+                for (const [id, idx] of Object.entries(currentRawGraph.edgeIdMap)) {
+                  if ((idx as number) > edgeIndex) {
+                    currentRawGraph.edgeIdMap[id] = (idx as number) - 1;
                   }
                 }
                 // Remove from edgeIdMap
-                delete rawGraph.edgeIdMap[edge.id];
+                delete currentRawGraph.edgeIdMap[edge.id];
                 // Remove from edgeDynamicIdMap
-                delete rawGraph.edgeDynamicIdMap[edge.dynamicId];
+                delete currentRawGraph.edgeDynamicIdMap[edge.dynamicId];
               }
             }
 
             // Remove node from nodes array
-            rawGraph.nodes.splice(nodeIndex, 1);
+            currentRawGraph.nodes.splice(nodeIndex, 1);
 
             // Update nodeIdMap for all nodes after this one
-            for (const [id, idx] of Object.entries(rawGraph.nodeIdMap)) {
-              if (idx > nodeIndex) {
-                rawGraph.nodeIdMap[id] = idx - 1;
+            for (const [id, idx] of Object.entries(currentRawGraph.nodeIdMap)) {
+              if ((idx as number) > nodeIndex) {
+                currentRawGraph.nodeIdMap[id] = (idx as number) - 1;
               }
             }
 
             // Remove from nodeIdMap
-            delete rawGraph.nodeIdMap[nodeToDelete];
+            delete currentRawGraph.nodeIdMap[nodeToDelete];
           }
         }
 
         // Rebuild the dynamic edge map and invalidate search cache
-        rawGraph.buildDynamicMap();
+        const currentRawGraph = useGraphStore.getState().rawGraph as any;
+        if (currentRawGraph) {
+          currentRawGraph.buildDynamicMap();
+        }
 
         // Reset search engine to force rebuild
         useGraphStore.getState().resetSearchEngine();
@@ -932,7 +950,6 @@ const useLightrangeGraph = () => {
       }
     };
 
-    // If there's a node to prune, handle it
     if (nodeToPrune) {
       handleNodePrune(nodeToPrune);
       // Reset the nodeToPrune state after handling
@@ -940,7 +957,7 @@ const useLightrangeGraph = () => {
         useGraphStore.getState().triggerNodePrune(null);
       }, 0);
     }
-  }, [nodeToPrune, sigmaGraph, rawGraph, getNodesThatWillBeDeleted, t]);
+  }, [nodeToPrune, getNodesThatWillBeDeleted, t, sigmaGraph]);
 
   const lightrageGraph = useCallback(() => {
     // If we already have a graph instance, return it

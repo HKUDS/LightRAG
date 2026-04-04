@@ -35,14 +35,17 @@ const PropertyEditDialog = ({
   errorMessage = null
 }: PropertyEditDialogProps) => {
   const { t } = useTranslation()
-  const [value, setValue] = useState('')
+  const [value, setValue] = useState(initialValue)
   const [allowMerge, setAllowMerge] = useState(false)
 
-  // Initialize value when dialog opens
+  // Reset form state on every open so stale input/checkbox never persists
   useEffect(() => {
     if (isOpen) {
-      setValue(initialValue)
-      setAllowMerge(false)
+      const timer = setTimeout(() => {
+        setValue(initialValue)
+        setAllowMerge(false)
+      }, 0)
+      return () => clearTimeout(timer)
     }
   }, [isOpen, initialValue])
 

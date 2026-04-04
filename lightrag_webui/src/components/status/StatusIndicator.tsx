@@ -14,9 +14,12 @@ const StatusIndicator = () => {
 
   // listen to health change
   useEffect(() => {
-    setAnimate(true)
+    const animTimer = setTimeout(() => setAnimate(true), 0)
     const timer = setTimeout(() => setAnimate(false), 300)
-    return () => clearTimeout(timer)
+    return () => {
+      clearTimeout(animTimer)
+      clearTimeout(timer)
+    }
   }, [lastCheckTime])
 
   return (
