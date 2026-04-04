@@ -51,6 +51,8 @@ const EditablePropertyRow = ({
   const [isEditing, setIsEditing] = useState(false)
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [currentValue, setCurrentValue] = useState(initialValue)
+  const [draftValue, setDraftValue] = useState(String(initialValue))
+  const [draftAllowMerge, setDraftAllowMerge] = useState(false)
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const [mergeDialogOpen, setMergeDialogOpen] = useState(false)
   const [mergeDialogInfo, setMergeDialogInfo] = useState<{
@@ -64,6 +66,8 @@ const EditablePropertyRow = ({
 
   const handleEditClick = () => {
     if (isEditable && !isEditing) {
+      setDraftValue(String(currentValue))
+      setDraftAllowMerge(false)
       setIsEditing(true)
       setErrorMessage(null)
     }
@@ -74,7 +78,14 @@ const EditablePropertyRow = ({
     setErrorMessage(null)
   }
 
-  const handleSave = async (value: string, options?: { allowMerge?: boolean }) => {
+  const handleSave = async () => {
+    const value = draftValue.trim()
+    const allowMerge = draftAllowMerge
+
+    if (value === '') {
+      return
+    }
+
     if (isSubmitting || value === String(currentValue)) {
       setIsEditing(false)
       setErrorMessage(null)
@@ -87,7 +98,6 @@ const EditablePropertyRow = ({
     try {
       if (entityType === 'node' && entityId && nodeId) {
         let updatedData = { [name]: value }
-        const allowMerge = options?.allowMerge ?? false
 
         if (name === 'entity_id') {
           if (!allowMerge) {
@@ -261,12 +271,14 @@ const EditablePropertyRow = ({
         tooltip={tooltip || (typeof currentValue === 'string' ? currentValue : JSON.stringify(currentValue, null, 2))}
       />
       <PropertyEditDialog
-        key={String(isEditing)}
         isOpen={isEditing}
         onClose={handleCancel}
         onSave={handleSave}
         propertyName={name}
-        initialValue={String(currentValue)}
+        value={draftValue}
+        allowMerge={draftAllowMerge}
+        onValueChange={setDraftValue}
+        onAllowMergeChange={setDraftAllowMerge}
         isSubmitting={isSubmitting}
         errorMessage={errorMessage}
       />

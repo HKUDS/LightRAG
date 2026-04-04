@@ -108,7 +108,6 @@ const GraphEvents = () => {
 }
 
 const GraphViewer = () => {
-  const [isThemeSwitching, setIsThemeSwitching] = useState(false)
   const sigmaRef = useRef<any>(null)
   const prevTheme = useRef<string>('')
 
@@ -123,18 +122,22 @@ const GraphViewer = () => {
   const showLegend = useSettingsStore.use.showLegend()
   const theme = useSettingsStore.use.theme()
 
+  const [isThemeSwitching, setIsThemeSwitching] = useState(false)
+
   // Memoize sigma settings to prevent unnecessary re-creation
   const memoizedSigmaSettings = useMemo(() => {
     const isDarkTheme = theme === 'dark'
     return createSigmaSettings(isDarkTheme)
   }, [theme])
 
-  // Initialize sigma settings based on theme with theme switching protection
+  // Detect theme changes and briefly show a loading overlay to avoid flash of
+  // unstyled content. setState is inside setTimeout (async), not synchronously
+  // in the effect body, so react-hooks/set-state-in-effect is not triggered.
   useEffect(() => {
-    // Detect theme change
     const isThemeChange = prevTheme.current && prevTheme.current !== theme
     if (isThemeChange) {
       console.log('Theme switching detected:', prevTheme.current, '->', theme)
+      prevTheme.current = theme
 
       const switchTimer = setTimeout(() => setIsThemeSwitching(true), 0)
       const timer = setTimeout(() => {

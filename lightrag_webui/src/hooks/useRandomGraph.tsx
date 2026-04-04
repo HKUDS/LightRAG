@@ -1,7 +1,7 @@
 import { Faker, en, faker as fak } from '@faker-js/faker'
 import Graph, { UndirectedGraph } from 'graphology'
 import erdosRenyi from 'graphology-generators/random/erdos-renyi'
-import { useCallback, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import seedrandom from 'seedrandom'
 import { randomColor } from '@/lib/utils'
 import * as Constants from '@/lib/constants'
@@ -21,18 +21,23 @@ export type EdgeType = { label: string }
  * The goal of this file is to seed random generators if the query params 'seed' is present.
  */
 const useRandomGraph = () => {
-  const [faker] = useState<Faker>(() => {
-    // Globally seed the Math.random
+  const [faker, setFaker] = useState<Faker>(fak)
+
+  // Seed global Math.random after commit to avoid polluting the RNG
+  // during render (StrictMode double-invoke, Concurrent Mode aborts)
+  useEffect(() => {
     const params = new URLSearchParams(document.location.search)
     const seed = params.get('seed')
-    if (seed) {
-      seedrandom(seed, { global: true })
-      const f = new Faker({ locale: en })
-      f.seed(Math.random())
-      return f
-    }
-    return fak
-  })
+    if (!seed) return
+
+    // Global side effect — intentionally in effect, not render
+    seedrandom(seed, { global: true })
+    const f = new Faker({ locale: en })
+    f.seed(Math.random())
+
+    const timer = setTimeout(() => setFaker(f), 0)
+    return () => clearTimeout(timer)
+  }, [])
 
   const randomGraph = useCallback(() => {
     useGraphStore.getState().reset()

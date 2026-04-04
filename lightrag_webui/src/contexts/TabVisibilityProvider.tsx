@@ -23,7 +23,9 @@ export const TabVisibilityProvider: React.FC<TabVisibilityProviderProps> = ({ ch
     'api': true
   }));
 
-  // Keep all tabs visible because we use CSS to control TAB visibility instead of React
+  // Keep all tabs visible because we use CSS to control TAB visibility instead of React.
+  // TabContent sets its tab to false on unmount (cleanup); this effect resets them to true
+  // whenever the current tab changes, acting as a safety net against stale false values.
   useEffect(() => {
     const timer = setTimeout(() => setVisibleTabs((prev) => ({
       ...prev,

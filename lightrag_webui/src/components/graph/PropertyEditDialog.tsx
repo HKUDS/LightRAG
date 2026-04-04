@@ -1,4 +1,3 @@
-import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import {
   Dialog,
@@ -14,9 +13,12 @@ import Checkbox from '@/components/ui/Checkbox'
 interface PropertyEditDialogProps {
   isOpen: boolean
   onClose: () => void
-  onSave: (value: string, options?: { allowMerge?: boolean }) => void
+  onSave: () => void | Promise<void>
   propertyName: string
-  initialValue: string
+  value: string
+  allowMerge: boolean
+  onValueChange: (value: string) => void
+  onAllowMergeChange: (allowMerge: boolean) => void
   isSubmitting?: boolean
   errorMessage?: string | null
 }
@@ -30,13 +32,14 @@ const PropertyEditDialog = ({
   onClose,
   onSave,
   propertyName,
-  initialValue,
+  value,
+  allowMerge,
+  onValueChange,
+  onAllowMergeChange,
   isSubmitting = false,
   errorMessage = null
 }: PropertyEditDialogProps) => {
   const { t } = useTranslation()
-  const [value, setValue] = useState(initialValue)
-  const [allowMerge, setAllowMerge] = useState(false)
 
   // Get translated property name
   const getPropertyNameTranslation = (name: string) => {
@@ -82,8 +85,7 @@ const PropertyEditDialog = ({
   const handleSave = async () => {
     const trimmedValue = value.trim()
     if (trimmedValue !== '') {
-      const options = propertyName === 'entity_id' ? { allowMerge } : undefined
-      await onSave(trimmedValue, options)
+      await onSave()
     }
   }
 
@@ -115,7 +117,7 @@ const PropertyEditDialog = ({
             return propertyName === 'description' ? (
               <textarea
                 value={value}
-                onChange={(e) => setValue(e.target.value)}
+                onChange={(e) => onValueChange(e.target.value)}
                 className={`border-input focus-visible:ring-ring flex w-full rounded-md border bg-transparent px-3 py-2 text-sm shadow-sm transition-colors focus-visible:ring-1 focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50 ${config.className}`}
                 style={config.style}
                 disabled={isSubmitting}
@@ -123,7 +125,7 @@ const PropertyEditDialog = ({
             ) : (
               <textarea
                 value={value}
-                onChange={(e) => setValue(e.target.value)}
+                onChange={(e) => onValueChange(e.target.value)}
                 rows={config.rows}
                 className={`border-input focus-visible:ring-ring flex w-full rounded-md border bg-transparent px-3 py-2 text-sm shadow-sm transition-colors focus-visible:ring-1 focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50 ${config.className}`}
                 disabled={isSubmitting}
@@ -139,7 +141,7 @@ const PropertyEditDialog = ({
                 id="allow-merge"
                 checked={allowMerge}
                 disabled={isSubmitting}
-                onCheckedChange={(checked) => setAllowMerge(checked === true)}
+                onCheckedChange={(checked) => onAllowMergeChange(checked === true)}
               />
               <div>
                 <span>{t('graphPanel.propertiesView.mergeOptionLabel')}</span>
