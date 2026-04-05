@@ -97,7 +97,7 @@ class LLMConfigCache:
             self.openai_llm_options = OpenAILLMOptions.options_dict(args)
             logger.info(f"OpenAI LLM Options: {self.openai_llm_options}")
 
-        if args.llm_binding == "gemini":
+        if args.llm_binding in ["gemini", "gemini_batch"]:
             from lightrag.llm.binding_options import GeminiLLMOptions
 
             self.gemini_llm_options = GeminiLLMOptions.options_dict(args)
@@ -134,7 +134,7 @@ class LLMConfigCache:
                 self.ollama_embedding_options = {}
 
         # Only initialize and log Gemini Embedding options when using Gemini Embedding binding
-        if args.embedding_binding == "gemini":
+        if args.embedding_binding in ["gemini", "gemini_batch"]:
             try:
                 from lightrag.llm.binding_options import GeminiEmbeddingOptions
 
@@ -304,6 +304,7 @@ def create_app(args):
         "azure_openai",
         "aws_bedrock",
         "gemini",
+        "gemini_batch",
     ]:
         raise Exception("llm binding not supported")
 
@@ -315,6 +316,7 @@ def create_app(args):
         "aws_bedrock",
         "jina",
         "gemini",
+        "gemini_batch",
     ]:
         raise Exception("embedding binding not supported")
 
@@ -622,7 +624,7 @@ def create_app(args):
                 return create_optimized_azure_openai_llm_func(
                     config_cache, args, llm_timeout
                 )
-            elif binding == "gemini":
+            elif binding in ["gemini", "gemini_batch"]:
                 return create_optimized_gemini_llm_func(config_cache, args, llm_timeout)
             else:  # openai and compatible
                 # Use optimized function with pre-processed configuration
@@ -688,7 +690,7 @@ def create_app(args):
                 from lightrag.llm.ollama import ollama_embed
 
                 provider_func = ollama_embed
-            elif binding == "gemini":
+            elif binding in ["gemini", "gemini_batch"]:
                 from lightrag.llm.gemini import gemini_embed
 
                 provider_func = gemini_embed
@@ -822,7 +824,7 @@ def create_app(args):
                     if model:
                         kwargs["model"] = model
                     return await actual_func(**kwargs)
-                elif binding == "gemini":
+                elif binding in ["gemini", "gemini_batch"]:
                     from lightrag.llm.gemini import gemini_embed
 
                     actual_func = (
@@ -945,7 +947,7 @@ def create_app(args):
     # Determine send_dimensions value based on binding type
     # Jina and Gemini REQUIRE dimension parameter (forced to True)
     # OpenAI and others: controlled by EMBEDDING_SEND_DIM environment variable
-    if args.embedding_binding in ["jina", "gemini"]:
+    if args.embedding_binding in ["jina", "gemini", "gemini_batch"]:
         # Jina and Gemini APIs require dimension parameter - always send it
         send_dimensions = has_embedding_dim_param
         dimension_control = f"forced by {args.embedding_binding.title()} API"
@@ -1055,6 +1057,17 @@ def create_app(args):
         name=args.simulated_model_name, tag=args.simulated_model_tag
     )
 
+    # Create batch provider if using gemini_batch binding
+    batch_provider = None
+    if args.llm_binding == "gemini_batch":
+        from lightrag.llm.gemini_batch import GeminiBatchProvider
+
+        batch_provider = GeminiBatchProvider(
+            api_key=args.llm_binding_api_key,
+            base_url=args.llm_binding_host,
+        )
+        logger.info("Gemini batch provider enabled for entity extraction")
+
     # Initialize RAG with unified configuration
     try:
         rag = LightRAG(
@@ -1090,6 +1103,11 @@ def create_app(args):
                 "entity_types": args.entity_types,
             },
             ollama_server_infos=ollama_server_infos,
+            batch_provider=batch_provider,
+            llm_batch_timeout=get_env_value("LLM_BATCH_TIMEOUT", 3600.0, float),
+            llm_batch_poll_interval=get_env_value(
+                "LLM_BATCH_POLL_INTERVAL", 30.0, float
+            ),
         )
     except Exception as e:
         logger.error(f"Failed to initialize LightRAG: {e}")
