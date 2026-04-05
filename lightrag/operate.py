@@ -3216,7 +3216,6 @@ async def _extract_entities_batch(
                 status.state == BatchJobState.FAILED
                 and status.error_code
                 and "limit" in status.error_code.lower()
-                and status.total > 1
             ):
                 # Token limit exceeded — resubmit in smaller halves
                 # Find the requests that were in this batch (not yet resolved)
@@ -3225,6 +3224,14 @@ async def _extract_entities_batch(
                     for r in cache_misses
                     if r.key not in batch_results and r.key not in failed_keys
                 ]
+                if len(unresolved) <= 1:
+                    # Can't split further — fall back to live API
+                    logger.warning(
+                        f"{batch_label} failed with {status.error_code} "
+                        f"and cannot split further, falling back to live API"
+                    )
+                    failed_keys.extend(r.key for r in unresolved)
+                    continue
                 half = max(1, len(unresolved) // 2)
                 logger.warning(
                     f"{batch_label} failed with {status.error_code}, "

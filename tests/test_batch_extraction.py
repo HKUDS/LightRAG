@@ -400,10 +400,11 @@ async def test_batch_token_limit_auto_split():
         async def get_job_status(self, job_id):
             # First job fails with token limit, subsequent succeed
             if job_id == "job-1":
+                # total=0 matches real OpenAI behavior (counts not populated on rejection)
                 return BatchJobStatus(
                     job_id=job_id,
                     state=BatchJobState.FAILED,
-                    total=4,
+                    total=0,
                     error_code="token_limit_exceeded",
                 )
             return BatchJobStatus(job_id=job_id, state=BatchJobState.SUCCEEDED, total=2)
