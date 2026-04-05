@@ -1946,11 +1946,19 @@ async def update_chunk_cache_list(
 
 
 def remove_think_tags(text: str) -> str:
-    """Remove <think>...</think> tags from the text
-    Remove  orphon ...</think> tags from the text also"""
-    return re.sub(
-        r"^(<think>.*?</think>|.*</think>)", "", text, flags=re.DOTALL
-    ).strip()
+    """Remove <think>...</think> tags and their content from the text.
+
+    Handles two cases:
+    1. Complete <think>...</think> blocks anywhere in the text.
+    2. Orphaned </think> at the very start (e.g., from streaming that begins
+       mid-think-block), removing everything before and including it.
+    """
+    # First, remove orphaned </think> prefix (content before first </think>
+    # when there is no preceding <think> tag)
+    text = re.sub(r"^[^<]*</think>", "", text, flags=re.DOTALL)
+    # Then remove all complete <think>...</think> blocks
+    text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
+    return text.strip()
 
 
 async def use_llm_func_with_cache(
