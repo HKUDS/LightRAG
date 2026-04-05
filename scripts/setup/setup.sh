@@ -1634,7 +1634,7 @@ default_llm_model_for_binding() {
   local binding="$1"
 
   case "$binding" in
-    openai|azure_openai)
+    openai|openai_batch|azure_openai)
       printf 'gpt-5-mini'
       ;;
     ollama|lollms|openai-ollama)
@@ -1656,7 +1656,7 @@ default_embedding_model_for_binding() {
   local binding="$1"
 
   case "$binding" in
-    openai|azure_openai)
+    openai|openai_batch|azure_openai)
       printf 'text-embedding-3-large'
       ;;
     ollama)
@@ -1684,7 +1684,7 @@ default_embedding_dim_for_binding() {
   local binding="$1"
 
   case "$binding" in
-    openai|azure_openai)
+    openai|openai_batch|azure_openai)
       printf '3072'
       ;;
     ollama|aws_bedrock|lollms)
@@ -1703,7 +1703,7 @@ default_embedding_dim_for_binding() {
 }
 
 collect_llm_config() {
-  local options=("openai" "azure_openai" "ollama" "openai-ollama" "lollms" "gemini" "gemini_batch" "aws_bedrock")
+  local options=("openai" "openai_batch" "azure_openai" "ollama" "openai-ollama" "lollms" "gemini" "gemini_batch" "aws_bedrock")
   local current_binding="${ENV_VALUES[LLM_BINDING]:-openai}"
   local binding model model_default host host_default api_key
 
@@ -1757,7 +1757,7 @@ collect_llm_config() {
 }
 
 collect_embedding_config() {
-  local options=("openai" "azure_openai" "ollama" "jina" "lollms" "gemini" "gemini_batch" "aws_bedrock")
+  local options=("openai" "openai_batch" "azure_openai" "ollama" "jina" "lollms" "gemini" "gemini_batch" "aws_bedrock")
   local current_binding="${ENV_VALUES[EMBEDDING_BINDING]:-openai}"
   local binding model model_default host host_default api_key dim dim_default
 

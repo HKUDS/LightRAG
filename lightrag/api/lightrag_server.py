@@ -91,7 +91,7 @@ class LLMConfigCache:
         self.ollama_embedding_options = None
 
         # Only initialize and log OpenAI options when using OpenAI-related bindings
-        if args.llm_binding in ["openai", "azure_openai"]:
+        if args.llm_binding in ["openai", "azure_openai", "openai_batch"]:
             from lightrag.llm.binding_options import OpenAILLMOptions
 
             self.openai_llm_options = OpenAILLMOptions.options_dict(args)
@@ -301,6 +301,7 @@ def create_app(args):
         "lollms",
         "ollama",
         "openai",
+        "openai_batch",
         "azure_openai",
         "aws_bedrock",
         "gemini",
@@ -312,6 +313,7 @@ def create_app(args):
         "lollms",
         "ollama",
         "openai",
+        "openai_batch",
         "azure_openai",
         "aws_bedrock",
         "jina",
@@ -682,7 +684,7 @@ def create_app(args):
         provider_embedding_dim = None
 
         try:
-            if binding == "openai":
+            if binding in ["openai", "openai_batch"]:
                 from lightrag.llm.openai import openai_embed
 
                 provider_func = openai_embed
@@ -1057,7 +1059,7 @@ def create_app(args):
         name=args.simulated_model_name, tag=args.simulated_model_tag
     )
 
-    # Create batch provider if using gemini_batch binding
+    # Create batch provider if using a batch binding
     batch_provider = None
     if args.llm_binding == "gemini_batch":
         from lightrag.llm.gemini_batch import GeminiBatchProvider
@@ -1067,6 +1069,15 @@ def create_app(args):
             base_url=args.llm_binding_host,
         )
         logger.info("Gemini batch provider enabled for entity extraction")
+    elif args.llm_binding == "openai_batch":
+        from lightrag.llm.openai_batch import OpenAIBatchProvider
+
+        batch_provider = OpenAIBatchProvider(
+            api_key=args.llm_binding_api_key,
+            base_url=args.llm_binding_host,
+            extra_params=config_cache.openai_llm_options or {},
+        )
+        logger.info("OpenAI batch provider enabled for entity extraction")
 
     # Initialize RAG with unified configuration
     try:
