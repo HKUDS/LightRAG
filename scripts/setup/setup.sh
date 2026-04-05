@@ -1640,7 +1640,7 @@ default_llm_model_for_binding() {
     ollama|lollms|openai-ollama)
       printf 'mistral-nemo:latest'
       ;;
-    gemini)
+    gemini|gemini_batch)
       printf 'gemini-flash-latest'
       ;;
     aws_bedrock)
@@ -1665,7 +1665,7 @@ default_embedding_model_for_binding() {
     jina)
       printf 'jina-embeddings-v4'
       ;;
-    gemini)
+    gemini|gemini_batch)
       printf 'gemini-embedding-001'
       ;;
     aws_bedrock)
@@ -1693,7 +1693,7 @@ default_embedding_dim_for_binding() {
     jina)
       printf '2048'
       ;;
-    gemini)
+    gemini|gemini_batch)
       printf '1536'
       ;;
     *)
@@ -1703,7 +1703,7 @@ default_embedding_dim_for_binding() {
 }
 
 collect_llm_config() {
-  local options=("openai" "azure_openai" "ollama" "openai-ollama" "lollms" "gemini" "aws_bedrock")
+  local options=("openai" "azure_openai" "ollama" "openai-ollama" "lollms" "gemini" "gemini_batch" "aws_bedrock")
   local current_binding="${ENV_VALUES[LLM_BINDING]:-openai}"
   local binding model model_default host host_default api_key
 
@@ -1732,7 +1732,7 @@ collect_llm_config() {
       host="$(prompt_with_default "Azure OpenAI endpoint" "$host_default")"
       api_key="$(prompt_secret_until_valid_with_default "Azure OpenAI API key: " "${ENV_VALUES[LLM_BINDING_API_KEY]:-}" validate_api_key azure_openai)"
       ;;
-    gemini)
+    gemini|gemini_batch)
       host_default="$(provider_default_or_existing "$binding" "$current_binding" "${ENV_VALUES[LLM_BINDING_HOST]:-}" "https://generativelanguage.googleapis.com")"
       host="$(prompt_with_default "Gemini endpoint" "$host_default")"
       api_key="$(prompt_secret_until_valid_with_default "Gemini API key: " "${ENV_VALUES[LLM_BINDING_API_KEY]:-}" validate_api_key gemini)"
@@ -1757,7 +1757,7 @@ collect_llm_config() {
 }
 
 collect_embedding_config() {
-  local options=("openai" "azure_openai" "ollama" "jina" "lollms" "gemini" "aws_bedrock")
+  local options=("openai" "azure_openai" "ollama" "jina" "lollms" "gemini" "gemini_batch" "aws_bedrock")
   local current_binding="${ENV_VALUES[EMBEDDING_BINDING]:-openai}"
   local binding model model_default host host_default api_key dim dim_default
 
@@ -1796,7 +1796,7 @@ collect_embedding_config() {
       host="$(prompt_with_default "Azure OpenAI endpoint" "$host_default")"
       api_key="$(prompt_secret_until_valid_with_default "Azure OpenAI API key: " "${ENV_VALUES[EMBEDDING_BINDING_API_KEY]:-$llm_api_key_default}" validate_api_key azure_openai)"
       ;;
-    gemini)
+    gemini|gemini_batch)
       host_default="$(provider_default_or_existing "$binding" "$current_binding" "${ENV_VALUES[EMBEDDING_BINDING_HOST]:-}" "${llm_host_fallback:-https://generativelanguage.googleapis.com}")"
       host="$(prompt_with_default "Gemini endpoint" "$host_default")"
       api_key="$(prompt_secret_until_valid_with_default "Gemini API key: " "${ENV_VALUES[EMBEDDING_BINDING_API_KEY]:-$llm_api_key_default}" validate_api_key gemini)"
