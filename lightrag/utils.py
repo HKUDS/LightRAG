@@ -1955,7 +1955,7 @@ def remove_think_tags(text: str) -> str:
     """
     # First, remove orphaned </think> prefix (content before first </think>
     # when there is no preceding <think> tag)
-    text = re.sub(r"^[^<]*</think>", "", text, flags=re.DOTALL)
+    text = re.sub(r"^((?!<think>).)*?</think>", "", text, flags=re.DOTALL)
     # Then remove all complete <think>...</think> blocks
     text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
     return text.strip()

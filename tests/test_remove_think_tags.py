@@ -16,7 +16,7 @@ def remove_think_tags(text: str) -> str:
     httpx, etc.).  The canonical implementation lives in lightrag/utils.py;
     keep both in sync.
     """
-    text = re.sub(r"^[^<]*</think>", "", text, flags=re.DOTALL)
+    text = re.sub(r"^((?!<think>).)*?</think>", "", text, flags=re.DOTALL)
     text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
     return text.strip()
 
@@ -80,3 +80,13 @@ class TestRemoveThinkTags:
             remove_think_tags(text)
             == "The path is .//postTransactionAmounts/sharesOwnedFollowingTransaction/value"
         )
+
+    def test_orphaned_close_tag_with_angle_brackets_in_content(self):
+        """Orphaned </think> prefix containing '<' chars is still removed."""
+        text = "2 < 3 reasoning</think>final answer"
+        assert remove_think_tags(text) == "final answer"
+
+    def test_orphaned_close_tag_with_html_in_content(self):
+        """Orphaned prefix with HTML/XML-like content is fully removed."""
+        text = "check <b>bold</b> reasoning</think>The answer."
+        assert remove_think_tags(text) == "The answer."
