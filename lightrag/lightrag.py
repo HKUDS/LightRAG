@@ -402,6 +402,23 @@ class LightRAG:
     llm_model_name: str = field(default="gpt-4o-mini")
     """Name of the LLM model used for generating responses."""
 
+    # Batch API Configuration
+    # ---
+
+    batch_provider: Any = field(default=None)
+    """Optional BatchProvider instance for batch API ingestion. When set, entity
+    extraction uses batch submission instead of per-chunk concurrent calls."""
+
+    llm_batch_timeout: float = field(
+        default=float(os.getenv("LLM_BATCH_TIMEOUT", "3600"))
+    )
+    """Maximum time (seconds) to wait for a batch job to complete."""
+
+    llm_batch_poll_interval: float = field(
+        default=float(os.getenv("LLM_BATCH_POLL_INTERVAL", "30"))
+    )
+    """Polling interval (seconds) for batch job status checks."""
+
     summary_max_tokens: int = field(
         default=int(os.getenv("SUMMARY_MAX_TOKENS", DEFAULT_SUMMARY_MAX_TOKENS))
     )
@@ -616,9 +633,15 @@ class LightRAG:
         self.embedding_token_limit = embedding_max_token_size
 
         # Fix global_config now
+        # Temporarily remove batch_provider before asdict() — it contains
+        # unpicklable objects (e.g., Gemini client with thread locks)
+        original_batch_provider = self.batch_provider
+        self.batch_provider = None
         global_config = asdict(self)
-        # Restore original EmbeddingFunc object (asdict converts it to dict)
+        self.batch_provider = original_batch_provider
+        # Restore objects that asdict converts/deepcopies incorrectly
         global_config["embedding_func"] = original_embedding_func
+        global_config["batch_provider"] = original_batch_provider
 
         _print_config = ",\n  ".join([f"{k} = {v}" for k, v in global_config.items()])
         logger.debug(f"LightRAG init with param:\n  {_print_config}\n")
@@ -2137,7 +2160,7 @@ class LightRAG:
                                     knowledge_graph_inst=self.chunk_entity_relation_graph,
                                     entity_vdb=self.entities_vdb,
                                     relationships_vdb=self.relationships_vdb,
-                                    global_config=asdict(self),
+                                    global_config=self._build_global_config(),
                                     full_entities_storage=self.full_entities,
                                     full_relations_storage=self.full_relations,
                                     doc_id=doc_id,
@@ -2314,13 +2337,23 @@ class LightRAG:
                 pipeline_status["latest_message"] = log_message
                 pipeline_status["history_messages"].append(log_message)
 
+    def _build_global_config(self) -> dict[str, Any]:
+        """Build global_config dict, handling unpicklable fields."""
+        original_batch_provider = self.batch_provider
+        self.batch_provider = None
+        config = asdict(self)
+        self.batch_provider = original_batch_provider
+        config["embedding_func"] = self.embedding_func
+        config["batch_provider"] = original_batch_provider
+        return config
+
     async def _process_extract_entities(
         self, chunk: dict[str, Any], pipeline_status=None, pipeline_status_lock=None
     ) -> list:
         try:
             chunk_results = await extract_entities(
                 chunk,
-                global_config=asdict(self),
+                global_config=self._build_global_config(),
                 pipeline_status=pipeline_status,
                 pipeline_status_lock=pipeline_status_lock,
                 llm_response_cache=self.llm_response_cache,
@@ -2734,7 +2767,7 @@ class LightRAG:
             actual data is nested under the 'data' field, with 'status' and 'message'
             fields at the top level.
         """
-        global_config = asdict(self)
+        global_config = self._build_global_config()
 
         # Create a copy of param to avoid modifying the original
         data_param = QueryParam(
@@ -2852,7 +2885,7 @@ class LightRAG:
         """
         logger.debug(f"[aquery_llm] Query param: {param}")
 
-        global_config = asdict(self)
+        global_config = self._build_global_config()
 
         try:
             query_result = None
@@ -3904,7 +3937,7 @@ class LightRAG:
                         relationships_vdb=self.relationships_vdb,
                         text_chunks_storage=self.text_chunks,
                         llm_response_cache=self.llm_response_cache,
-                        global_config=asdict(self),
+                        global_config=self._build_global_config(),
                         pipeline_status=pipeline_status,
                         pipeline_status_lock=pipeline_status_lock,
                         entity_chunks_storage=self.entity_chunks,
