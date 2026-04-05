@@ -76,6 +76,7 @@ class BatchJobStatus:
     total: int = 0
     succeeded: int = 0
     failed: int = 0
+    error_code: str | None = None
 
 
 class BatchProvider(ABC):

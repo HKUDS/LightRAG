@@ -3080,18 +3080,22 @@ async def _extract_entities_batch(
 
     if cache_misses:
         current_miss_keys = sorted(r.key for r in cache_misses)
-        job_id = None
 
-        # Check for a persisted batch job from a previous run
+        # Check for persisted batch jobs from a previous run
+        persisted_job_ids: list[str] | None = None
         if llm_response_cache:
             raw = await llm_response_cache.get_by_id(BATCH_JOB_STATE_KEY)
             saved = _unpack_batch_state(raw)
             if saved:
                 saved_keys = saved.get("submitted_keys", [])
                 if sorted(saved_keys) == current_miss_keys:
-                    job_id = saved["job_id"]
+                    # Support both old format (job_id) and new format (job_ids)
+                    if "job_ids" in saved:
+                        persisted_job_ids = saved["job_ids"]
+                    elif "job_id" in saved:
+                        persisted_job_ids = [saved["job_id"]]
                     logger.info(
-                        f"Resuming persisted batch job {job_id} "
+                        f"Resuming {len(persisted_job_ids)} persisted batch job(s) "
                         f"({len(current_miss_keys)} requests)"
                     )
                 else:
@@ -3101,7 +3105,7 @@ async def _extract_entities_batch(
                     )
                     await llm_response_cache.delete([BATCH_JOB_STATE_KEY])
 
-        if job_id is None:
+        if persisted_job_ids is None:
             if pipeline_status is not None and pipeline_status_lock is not None:
                 msg = (
                     f"Submitting batch of {len(cache_misses)} extraction requests "
@@ -3111,73 +3115,146 @@ async def _extract_entities_batch(
                     pipeline_status["latest_message"] = msg
                     pipeline_status["history_messages"].append(msg)
 
-            job_id = await batch_provider.submit_completion_batch(
-                cache_misses, model=model_name
-            )
+            # Submit in sub-batches, splitting on token limit errors
+            max_sub_batch = len(cache_misses)
+            remaining = list(cache_misses)
+            job_ids: list[str] = []
+
+            while remaining:
+                chunk_size = min(max_sub_batch, len(remaining))
+                sub_batch = remaining[:chunk_size]
+
+                try:
+                    job_id = await batch_provider.submit_completion_batch(
+                        sub_batch, model=model_name
+                    )
+                    job_ids.append(job_id)
+                    remaining = remaining[chunk_size:]
+                    logger.info(
+                        f"Sub-batch {len(job_ids)} submitted: {len(sub_batch)} requests "
+                        f"({len(remaining)} remaining)"
+                    )
+                except Exception as e:
+                    error_msg = str(e).lower()
+                    if "limit" in error_msg and chunk_size > 1:
+                        max_sub_batch = max(1, chunk_size // 2)
+                        logger.warning(
+                            f"Batch submission rejected ({e}), "
+                            f"reducing sub-batch size to {max_sub_batch}"
+                        )
+                    else:
+                        logger.error(f"Batch submission failed: {e}")
+                        failed_keys.extend(r.key for r in remaining)
+                        remaining = []
 
             # Persist job state for recovery across restarts
-            if llm_response_cache:
+            if job_ids and llm_response_cache:
                 await llm_response_cache.upsert(
                     {
                         BATCH_JOB_STATE_KEY: _pack_batch_state(
                             {
-                                "job_id": job_id,
+                                "job_ids": job_ids,
                                 "submitted_keys": current_miss_keys,
                                 "submitted_at": int(time.time()),
                             }
                         )
                     }
                 )
+        else:
+            job_ids = persisted_job_ids
 
-        status = await _await_batch_with_cancellation(
-            batch_provider,
-            job_id,
-            batch_poll_interval,
-            batch_timeout,
-            pipeline_status,
-            pipeline_status_lock,
-        )
+        # Poll and collect results from all sub-batches
+        pending_jobs = list(job_ids)
 
-        # Job reached terminal state — clear persisted state
+        while pending_jobs:
+            job_id = pending_jobs.pop(0)
+            batch_label = f"batch {job_id}"
+            logger.info(f"Waiting for {batch_label}")
+
+            status = await _await_batch_with_cancellation(
+                batch_provider,
+                job_id,
+                batch_poll_interval,
+                batch_timeout,
+                pipeline_status,
+                pipeline_status_lock,
+            )
+
+            if status.state == BatchJobState.SUCCEEDED:
+                responses = await batch_provider.get_results(job_id)
+                current_ts = int(time.time())
+
+                for resp in responses:
+                    if resp.content and not resp.error:
+                        content = remove_think_tags(resp.content)
+                        batch_results[resp.key] = (content, current_ts)
+
+                        # Save to cache
+                        if llm_response_cache and llm_response_cache.global_config.get(
+                            "enable_llm_cache_for_entity_extract"
+                        ):
+                            prompts = chunk_prompts[resp.key]
+                            safe_user = sanitize_text_for_encoding(
+                                prompts["user_prompt"]
+                            )
+                            _prompt = "\n".join([safe_user, safe_system])
+                            arg_hash = compute_args_hash(_prompt)
+                            await save_to_cache(
+                                llm_response_cache,
+                                CacheData(
+                                    args_hash=arg_hash,
+                                    content=content,
+                                    prompt=_prompt,
+                                    cache_type="extract",
+                                    chunk_id=resp.key,
+                                ),
+                            )
+                    else:
+                        failed_keys.append(resp.key)
+
+            elif (
+                status.state == BatchJobState.FAILED
+                and status.error_code
+                and "limit" in status.error_code.lower()
+                and status.total > 1
+            ):
+                # Token limit exceeded — resubmit in smaller halves
+                # Find the requests that were in this batch (not yet resolved)
+                unresolved = [
+                    r
+                    for r in cache_misses
+                    if r.key not in batch_results and r.key not in failed_keys
+                ]
+                half = max(1, len(unresolved) // 2)
+                logger.warning(
+                    f"{batch_label} failed with {status.error_code}, "
+                    f"splitting {len(unresolved)} requests into sub-batches of ~{half}"
+                )
+                for i in range(0, len(unresolved), half):
+                    sub = unresolved[i : i + half]
+                    try:
+                        new_job_id = await batch_provider.submit_completion_batch(
+                            sub, model=model_name
+                        )
+                        pending_jobs.append(new_job_id)
+                        logger.info(f"Resubmitted {len(sub)} requests as {new_job_id}")
+                    except Exception as e:
+                        logger.error(f"Resubmission failed: {e}")
+                        failed_keys.extend(r.key for r in sub)
+            else:
+                logger.warning(
+                    f"{batch_label} ended with state {status.state}, "
+                    f"falling back to live API for its requests"
+                )
+
+        # Any cache miss key not yet resolved is a failed key
+        for r in cache_misses:
+            if r.key not in batch_results and r.key not in failed_keys:
+                failed_keys.append(r.key)
+
+        # Clear persisted state now that all sub-batches are done
         if llm_response_cache:
             await llm_response_cache.delete([BATCH_JOB_STATE_KEY])
-
-        if status.state == BatchJobState.SUCCEEDED:
-            responses = await batch_provider.get_results(job_id)
-            current_ts = int(time.time())
-
-            for resp in responses:
-                if resp.content and not resp.error:
-                    content = remove_think_tags(resp.content)
-                    batch_results[resp.key] = (content, current_ts)
-
-                    # Save to cache
-                    if llm_response_cache and llm_response_cache.global_config.get(
-                        "enable_llm_cache_for_entity_extract"
-                    ):
-                        prompts = chunk_prompts[resp.key]
-                        safe_user = sanitize_text_for_encoding(prompts["user_prompt"])
-                        _prompt = "\n".join([safe_user, safe_system])
-                        arg_hash = compute_args_hash(_prompt)
-                        await save_to_cache(
-                            llm_response_cache,
-                            CacheData(
-                                args_hash=arg_hash,
-                                content=content,
-                                prompt=_prompt,
-                                cache_type="extract",
-                                chunk_id=resp.key,
-                            ),
-                        )
-                else:
-                    failed_keys.append(resp.key)
-        else:
-            # Entire batch failed — fall back to live API for all
-            logger.warning(
-                f"Batch job {job_id} ended with state {status.state}, "
-                f"falling back to live API for {len(cache_misses)} requests"
-            )
-            failed_keys = [r.key for r in cache_misses]
 
     # ── Step 4: Fallback for failed rows ──────────────────────────
     if failed_keys:

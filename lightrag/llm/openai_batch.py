@@ -143,10 +143,13 @@ class OpenAIBatchProvider(BatchProvider):
 
         state = _OPENAI_STATE_MAP.get(batch.status or "", BatchJobState.PENDING)
 
-        # Log errors when batch reaches a failed state
+        # Log errors and capture error code when batch fails
+        error_code = None
         if state == BatchJobState.FAILED:
             errors = getattr(batch, "errors", None)
-            if errors and hasattr(errors, "data"):
+            if errors and hasattr(errors, "data") and errors.data:
+                first_err = errors.data[0]
+                error_code = getattr(first_err, "code", None)
                 for err in errors.data:
                     logger.error(
                         f"Batch {job_id} error: "
@@ -170,6 +173,7 @@ class OpenAIBatchProvider(BatchProvider):
             total=total,
             succeeded=succeeded,
             failed=failed,
+            error_code=error_code,
         )
 
     async def get_results(self, job_id: str) -> list[BatchResponse]:
