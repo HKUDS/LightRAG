@@ -3163,13 +3163,32 @@ async def _extract_entities_batch(
         else:
             job_ids = persisted_job_ids
 
-        # Poll and collect results from all sub-batches
-        pending_jobs = list(job_ids)
+        # Poll and collect results from all sub-batches.
+        # Track which requests belong to each job for accurate splitting.
+        job_requests: dict[str, list[BatchRequest]] = {}
+        pending_jobs: list[str] = []
+        for idx, jid in enumerate(job_ids):
+            # Distribute original cache_misses across the initial job_ids
+            # (initial submission sends all in one job unless split at submit time)
+            if len(job_ids) == 1:
+                job_requests[jid] = list(cache_misses)
+            else:
+                # Multiple initial jobs from submit-time splitting
+                chunk_size = len(cache_misses) // len(job_ids)
+                start = idx * chunk_size
+                end = (
+                    start + chunk_size if idx < len(job_ids) - 1 else len(cache_misses)
+                )
+                job_requests[jid] = cache_misses[start:end]
+            pending_jobs.append(jid)
 
         while pending_jobs:
             job_id = pending_jobs.pop(0)
             batch_label = f"batch {job_id}"
-            logger.info(f"Waiting for {batch_label}")
+            this_batch_requests = job_requests.get(job_id, [])
+            logger.info(
+                f"Waiting for {batch_label} ({len(this_batch_requests)} requests)"
+            )
 
             status = await _await_batch_with_cancellation(
                 batch_provider,
@@ -3217,32 +3236,27 @@ async def _extract_entities_batch(
                 and status.error_code
                 and "limit" in status.error_code.lower()
             ):
-                # Token limit exceeded — resubmit in smaller halves
-                # Find the requests that were in this batch (not yet resolved)
-                unresolved = [
-                    r
-                    for r in cache_misses
-                    if r.key not in batch_results and r.key not in failed_keys
-                ]
-                if len(unresolved) <= 1:
-                    # Can't split further — fall back to live API
+                # Token limit exceeded — split THIS batch's requests in half
+                if len(this_batch_requests) <= 1:
                     logger.warning(
                         f"{batch_label} failed with {status.error_code} "
                         f"and cannot split further, falling back to live API"
                     )
-                    failed_keys.extend(r.key for r in unresolved)
+                    failed_keys.extend(r.key for r in this_batch_requests)
                     continue
-                half = max(1, len(unresolved) // 2)
+                half = max(1, len(this_batch_requests) // 2)
                 logger.warning(
                     f"{batch_label} failed with {status.error_code}, "
-                    f"splitting {len(unresolved)} requests into sub-batches of ~{half}"
+                    f"splitting {len(this_batch_requests)} requests "
+                    f"into sub-batches of ~{half}"
                 )
-                for i in range(0, len(unresolved), half):
-                    sub = unresolved[i : i + half]
+                for i in range(0, len(this_batch_requests), half):
+                    sub = this_batch_requests[i : i + half]
                     try:
                         new_job_id = await batch_provider.submit_completion_batch(
                             sub, model=model_name
                         )
+                        job_requests[new_job_id] = sub
                         pending_jobs.append(new_job_id)
                         logger.info(f"Resubmitted {len(sub)} requests as {new_job_id}")
                     except Exception as e:
@@ -3253,6 +3267,7 @@ async def _extract_entities_batch(
                     f"{batch_label} ended with state {status.state}, "
                     f"falling back to live API for its requests"
                 )
+                failed_keys.extend(r.key for r in this_batch_requests)
 
         # Any cache miss key not yet resolved is a failed key
         for r in cache_misses:
