@@ -3236,32 +3236,30 @@ async def _extract_entities_batch(
                 and status.error_code
                 and "limit" in status.error_code.lower()
             ):
-                # Token limit exceeded — split THIS batch's requests in half
-                if len(this_batch_requests) <= 1:
-                    logger.warning(
-                        f"{batch_label} failed with {status.error_code} "
-                        f"and cannot split further, falling back to live API"
-                    )
-                    failed_keys.extend(r.key for r in this_batch_requests)
-                    continue
-                half = max(1, len(this_batch_requests) // 2)
+                # Token/enqueue limit exceeded — wait for queue to drain,
+                # then resubmit the same batch. The error "Enqueued token
+                # limit reached" means the org-wide queue is full, not that
+                # the individual batch is too large.
+                retry_delay = batch_poll_interval * 2
                 logger.warning(
                     f"{batch_label} failed with {status.error_code}, "
-                    f"splitting {len(this_batch_requests)} requests "
-                    f"into sub-batches of ~{half}"
+                    f"waiting {retry_delay:.0f}s before resubmitting "
+                    f"{len(this_batch_requests)} requests"
                 )
-                for i in range(0, len(this_batch_requests), half):
-                    sub = this_batch_requests[i : i + half]
-                    try:
-                        new_job_id = await batch_provider.submit_completion_batch(
-                            sub, model=model_name
-                        )
-                        job_requests[new_job_id] = sub
-                        pending_jobs.append(new_job_id)
-                        logger.info(f"Resubmitted {len(sub)} requests as {new_job_id}")
-                    except Exception as e:
-                        logger.error(f"Resubmission failed: {e}")
-                        failed_keys.extend(r.key for r in sub)
+                await asyncio.sleep(retry_delay)
+                try:
+                    new_job_id = await batch_provider.submit_completion_batch(
+                        this_batch_requests, model=model_name
+                    )
+                    job_requests[new_job_id] = this_batch_requests
+                    pending_jobs.append(new_job_id)
+                    logger.info(
+                        f"Resubmitted {len(this_batch_requests)} requests "
+                        f"as {new_job_id}"
+                    )
+                except Exception as e:
+                    logger.error(f"Resubmission failed: {e}")
+                    failed_keys.extend(r.key for r in this_batch_requests)
             else:
                 logger.warning(
                     f"{batch_label} ended with state {status.state}, "

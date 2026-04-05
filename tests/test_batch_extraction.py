@@ -381,13 +381,13 @@ async def test_batch_entire_failure_fallback():
 
 @pytest.mark.offline
 @pytest.mark.asyncio
-async def test_batch_token_limit_auto_split():
-    """Token limit failure triggers auto-split and resubmission."""
+async def test_batch_token_limit_retry():
+    """Token limit failure waits and resubmits the same batch."""
     from lightrag.operate import extract_entities
 
     chunks = _make_chunks(4)
 
-    class SplittingProvider(BatchProvider):
+    class RetryProvider(BatchProvider):
         def __init__(self):
             self.submitted = []
             self.job_counter = 0
@@ -398,19 +398,17 @@ async def test_batch_token_limit_auto_split():
             return f"job-{self.job_counter}"
 
         async def get_job_status(self, job_id):
-            # First job fails with token limit, subsequent succeed
+            # First job fails with token limit, retry succeeds
             if job_id == "job-1":
-                # total=0 matches real OpenAI behavior (counts not populated on rejection)
                 return BatchJobStatus(
                     job_id=job_id,
                     state=BatchJobState.FAILED,
                     total=0,
                     error_code="token_limit_exceeded",
                 )
-            return BatchJobStatus(job_id=job_id, state=BatchJobState.SUCCEEDED, total=2)
+            return BatchJobStatus(job_id=job_id, state=BatchJobState.SUCCEEDED, total=4)
 
         async def get_results(self, job_id):
-            # Return results for whichever requests were in this sub-batch
             idx = int(job_id.split("-")[1]) - 1
             if idx < len(self.submitted):
                 return [
@@ -422,7 +420,7 @@ async def test_batch_token_limit_auto_split():
         async def cancel_job(self, job_id):
             pass
 
-    provider = SplittingProvider()
+    provider = RetryProvider()
     config = _make_global_config(batch_provider=provider)
 
     with patch(
@@ -437,11 +435,10 @@ async def test_batch_token_limit_auto_split():
         )
 
     assert len(results) == 4
-    # First submission (4 requests), then two halves (2+2)
-    assert len(provider.submitted) == 3
+    # First submission (4 requests), then same 4 resubmitted
+    assert len(provider.submitted) == 2
     assert len(provider.submitted[0]) == 4
-    assert len(provider.submitted[1]) == 2
-    assert len(provider.submitted[2]) == 2
+    assert len(provider.submitted[1]) == 4
 
 
 @pytest.mark.offline
