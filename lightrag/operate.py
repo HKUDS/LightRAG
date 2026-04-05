@@ -18,16 +18,19 @@ from lightrag.utils import (
     Tokenizer,
     is_float_regex,
     sanitize_and_normalize_extracted_text,
+    sanitize_text_for_encoding,
     pack_user_ass_to_openai_messages,
     split_string_by_multi_markers,
     truncate_list_by_token_size,
     compute_args_hash,
+    generate_cache_key,
     handle_cache,
     save_to_cache,
     CacheData,
     use_llm_func_with_cache,
     update_chunk_cache_list,
     remove_think_tags,
+    statistic_data,
     pick_by_weighted_polling,
     pick_by_vector_similarity,
     process_chunks_unified,
@@ -2880,6 +2883,445 @@ async def merge_nodes_and_edges(
         pipeline_status["history_messages"].append(log_message)
 
 
+def _merge_gleaning_results(maybe_nodes, maybe_edges, glean_nodes, glean_edges):
+    """Merge gleaning results into initial extraction by description length comparison.
+
+    For each entity/edge, keeps whichever version has the longer description.
+    New entities/edges from gleaning are added directly.
+    """
+    for entity_name, glean_entities in glean_nodes.items():
+        if entity_name in maybe_nodes:
+            original_desc_len = len(
+                maybe_nodes[entity_name][0].get("description", "") or ""
+            )
+            glean_desc_len = len(glean_entities[0].get("description", "") or "")
+            if glean_desc_len > original_desc_len:
+                maybe_nodes[entity_name] = list(glean_entities)
+        else:
+            maybe_nodes[entity_name] = list(glean_entities)
+
+    for edge_key, glean_edge_list in glean_edges.items():
+        if edge_key in maybe_edges:
+            original_desc_len = len(
+                maybe_edges[edge_key][0].get("description", "") or ""
+            )
+            glean_desc_len = len(glean_edge_list[0].get("description", "") or "")
+            if glean_desc_len > original_desc_len:
+                maybe_edges[edge_key] = list(glean_edge_list)
+        else:
+            maybe_edges[edge_key] = list(glean_edge_list)
+
+
+async def _await_batch_with_cancellation(
+    batch_provider,
+    job_id: str,
+    poll_interval: float,
+    timeout: float,
+    pipeline_status: dict | None,
+    pipeline_status_lock,
+):
+    """Poll batch job status with pipeline cancellation checks."""
+    from lightrag.llm.batch_provider import BatchJobState
+
+    start = time.time()
+    while True:
+        if pipeline_status is not None and pipeline_status_lock is not None:
+            async with pipeline_status_lock:
+                if pipeline_status.get("cancellation_requested", False):
+                    await batch_provider.cancel_job(job_id)
+                    raise PipelineCancelledException("User cancelled during batch wait")
+
+        status = await batch_provider.get_job_status(job_id)
+        if status.state in (
+            BatchJobState.SUCCEEDED,
+            BatchJobState.FAILED,
+            BatchJobState.CANCELLED,
+        ):
+            return status
+
+        if time.time() - start > timeout:
+            await batch_provider.cancel_job(job_id)
+            raise TimeoutError(f"Batch job {job_id} timed out after {timeout}s")
+
+        # Update pipeline status with polling info
+        elapsed = int(time.time() - start)
+        msg = (
+            f"Waiting for batch {job_id} "
+            f"({elapsed}s elapsed, state={status.state.value}, "
+            f"{status.succeeded}/{status.total} done)"
+        )
+        logger.info(msg)
+        if pipeline_status is not None and pipeline_status_lock is not None:
+            async with pipeline_status_lock:
+                pipeline_status["latest_message"] = msg
+                pipeline_status["history_messages"].append(msg)
+
+        await asyncio.sleep(poll_interval)
+
+
+async def _extract_entities_batch(
+    ordered_chunks: list[tuple[str, TextChunkSchema]],
+    context_base: dict,
+    global_config: dict,
+    pipeline_status: dict | None,
+    pipeline_status_lock,
+    llm_response_cache: BaseKVStorage | None,
+    text_chunks_storage: BaseKVStorage | None,
+    batch_provider,
+) -> list[tuple[dict, dict]]:
+    """Batch extraction path: pre-generates all prompts, checks cache,
+    submits cache misses as a single batch, then optionally runs gleaning.
+
+    Returns the same list[tuple[dict, dict]] as the live extraction path.
+    """
+    from lightrag.llm.batch_provider import BatchJobState, BatchRequest
+
+    use_llm_func: callable = global_config["llm_model_func"]
+    entity_extract_max_gleaning = global_config["entity_extract_max_gleaning"]
+    batch_timeout = global_config.get("llm_batch_timeout", 3600.0)
+    batch_poll_interval = global_config.get("llm_batch_poll_interval", 30.0)
+    model_name = global_config.get("llm_model_name", "")
+    total_chunks = len(ordered_chunks)
+
+    # ── Step 1: Pre-generate all prompts ──────────────────────────
+    system_prompt = PROMPTS["entity_extraction_system_prompt"].format(**context_base)
+
+    chunk_prompts: dict[str, dict] = {}
+    for chunk_key, chunk_dp in ordered_chunks:
+        content = chunk_dp["content"]
+        file_path = chunk_dp.get("file_path", "unknown_source")
+        user_prompt = PROMPTS["entity_extraction_user_prompt"].format(
+            **{**context_base, "input_text": content}
+        )
+        continue_prompt = PROMPTS["entity_continue_extraction_user_prompt"].format(
+            **{**context_base, "input_text": content}
+        )
+        chunk_prompts[chunk_key] = {
+            "user_prompt": user_prompt,
+            "continue_prompt": continue_prompt,
+            "file_path": file_path,
+        }
+
+    # ── Step 2: Check cache for each prompt ───────────────────────
+    cache_misses: list[BatchRequest] = []
+    cached_results: dict[str, tuple[str, int]] = {}
+    all_cache_keys: dict[str, list[str]] = {}
+    failed_keys: list[str] = []
+
+    safe_system = sanitize_text_for_encoding(system_prompt)
+
+    for chunk_key, prompts in chunk_prompts.items():
+        safe_user = sanitize_text_for_encoding(prompts["user_prompt"])
+        _prompt = "\n".join([safe_user, safe_system])
+        arg_hash = compute_args_hash(_prompt)
+        cache_key = generate_cache_key("default", "extract", arg_hash)
+        all_cache_keys[chunk_key] = [cache_key]
+
+        if llm_response_cache:
+            hit = await handle_cache(
+                llm_response_cache,
+                arg_hash,
+                _prompt,
+                "default",
+                cache_type="extract",
+            )
+            if hit:
+                cached_results[chunk_key] = hit
+                statistic_data["llm_cache"] += 1
+                continue
+
+        statistic_data["llm_call"] += 1
+        cache_misses.append(
+            BatchRequest(key=chunk_key, prompt=safe_user, system_prompt=safe_system)
+        )
+
+    logger.info(
+        f"Batch extraction: {len(cached_results)} cached, "
+        f"{len(cache_misses)} to submit for {total_chunks} chunks"
+    )
+
+    # ── Step 3: Submit batch (skip if all cached) ─────────────────
+    batch_results: dict[str, tuple[str, int]] = {}
+
+    if cache_misses:
+        if pipeline_status is not None and pipeline_status_lock is not None:
+            msg = (
+                f"Submitting batch of {len(cache_misses)} extraction requests "
+                f"({len(cached_results)} cached)"
+            )
+            async with pipeline_status_lock:
+                pipeline_status["latest_message"] = msg
+                pipeline_status["history_messages"].append(msg)
+
+        job_id = await batch_provider.submit_completion_batch(
+            cache_misses, model=model_name
+        )
+
+        status = await _await_batch_with_cancellation(
+            batch_provider,
+            job_id,
+            batch_poll_interval,
+            batch_timeout,
+            pipeline_status,
+            pipeline_status_lock,
+        )
+
+        if status.state == BatchJobState.SUCCEEDED:
+            responses = await batch_provider.get_results(job_id)
+            current_ts = int(time.time())
+
+            for resp in responses:
+                if resp.content and not resp.error:
+                    content = remove_think_tags(resp.content)
+                    batch_results[resp.key] = (content, current_ts)
+
+                    # Save to cache
+                    if llm_response_cache and llm_response_cache.global_config.get(
+                        "enable_llm_cache_for_entity_extract"
+                    ):
+                        prompts = chunk_prompts[resp.key]
+                        safe_user = sanitize_text_for_encoding(prompts["user_prompt"])
+                        _prompt = "\n".join([safe_user, safe_system])
+                        arg_hash = compute_args_hash(_prompt)
+                        await save_to_cache(
+                            llm_response_cache,
+                            CacheData(
+                                args_hash=arg_hash,
+                                content=content,
+                                prompt=_prompt,
+                                cache_type="extract",
+                                chunk_id=resp.key,
+                            ),
+                        )
+                else:
+                    failed_keys.append(resp.key)
+        else:
+            # Entire batch failed — fall back to live API for all
+            logger.warning(
+                f"Batch job {job_id} ended with state {status.state}, "
+                f"falling back to live API for {len(cache_misses)} requests"
+            )
+            failed_keys = [r.key for r in cache_misses]
+
+    # ── Step 4: Fallback for failed rows ──────────────────────────
+    if failed_keys:
+        logger.info(
+            f"Falling back to live API for {len(failed_keys)} failed batch rows"
+        )
+        for chunk_key in failed_keys:
+            prompts = chunk_prompts[chunk_key]
+            collector = all_cache_keys.setdefault(chunk_key, [])
+            result, timestamp = await use_llm_func_with_cache(
+                prompts["user_prompt"],
+                use_llm_func,
+                system_prompt=system_prompt,
+                llm_response_cache=llm_response_cache,
+                cache_type="extract",
+                chunk_id=chunk_key,
+                cache_keys_collector=collector,
+            )
+            batch_results[chunk_key] = (result, timestamp)
+
+    # ── Step 5: Parse all results ─────────────────────────────────
+    all_results = {**cached_results, **batch_results}
+    chunk_results: list[dict] = []
+
+    for i, (chunk_key, chunk_dp) in enumerate(ordered_chunks):
+        content_str, timestamp = all_results[chunk_key]
+        file_path = chunk_prompts[chunk_key]["file_path"]
+
+        maybe_nodes, maybe_edges = await _process_extraction_result(
+            content_str,
+            chunk_key,
+            timestamp,
+            file_path,
+            tuple_delimiter=context_base["tuple_delimiter"],
+            completion_delimiter=context_base["completion_delimiter"],
+        )
+
+        chunk_results.append(
+            {
+                "chunk_key": chunk_key,
+                "content": content_str,
+                "maybe_nodes": maybe_nodes,
+                "maybe_edges": maybe_edges,
+                "timestamp": timestamp,
+            }
+        )
+
+        entities_count = len(maybe_nodes)
+        relations_count = len(maybe_edges)
+        log_message = (
+            f"Chunk {i + 1} of {total_chunks} extracted "
+            f"{entities_count} Ent + {relations_count} Rel {chunk_key}"
+        )
+        logger.info(log_message)
+        if pipeline_status is not None and pipeline_status_lock is not None:
+            async with pipeline_status_lock:
+                pipeline_status["latest_message"] = log_message
+                pipeline_status["history_messages"].append(log_message)
+
+    # ── Step 6: Gleaning batch (if enabled) ───────────────────────
+    if entity_extract_max_gleaning > 0:
+        glean_requests: list[BatchRequest] = []
+        glean_data: dict[str, dict] = {}  # chunk_key -> {history, safe_continue, ...}
+
+        tokenizer = global_config["tokenizer"]
+        max_input_tokens = global_config["max_extract_input_tokens"]
+
+        for cr in chunk_results:
+            chunk_key = cr["chunk_key"]
+            prompts = chunk_prompts[chunk_key]
+            history = pack_user_ass_to_openai_messages(
+                prompts["user_prompt"], cr["content"]
+            )
+
+            # Token budget check
+            history_str = json.dumps(history, ensure_ascii=False)
+            full_context_str = system_prompt + history_str + prompts["continue_prompt"]
+            token_count = len(tokenizer.encode(full_context_str))
+
+            if token_count > max_input_tokens:
+                logger.warning(
+                    f"Gleaning stopped for chunk {chunk_key}: "
+                    f"tokens ({token_count}) > limit ({max_input_tokens})"
+                )
+                continue
+
+            # Check gleaning cache
+            safe_continue = sanitize_text_for_encoding(prompts["continue_prompt"])
+            safe_history_messages = []
+            for msg in history:
+                safe_msg = msg.copy()
+                if "content" in safe_msg:
+                    safe_msg["content"] = sanitize_text_for_encoding(
+                        safe_msg["content"]
+                    )
+                safe_history_messages.append(safe_msg)
+            safe_history_str = json.dumps(safe_history_messages, ensure_ascii=False)
+            _prompt = "\n".join([safe_continue, safe_system, safe_history_str])
+            arg_hash = compute_args_hash(_prompt)
+            cache_key = generate_cache_key("default", "extract", arg_hash)
+            all_cache_keys.setdefault(chunk_key, []).append(cache_key)
+
+            if llm_response_cache:
+                hit = await handle_cache(
+                    llm_response_cache,
+                    arg_hash,
+                    _prompt,
+                    "default",
+                    cache_type="extract",
+                )
+                if hit:
+                    cr["glean_result"] = hit
+                    statistic_data["llm_cache"] += 1
+                    continue
+
+            statistic_data["llm_call"] += 1
+            glean_requests.append(
+                BatchRequest(
+                    key=chunk_key,
+                    prompt=safe_continue,
+                    system_prompt=safe_system,
+                    history_messages=history,
+                )
+            )
+            glean_data[chunk_key] = {
+                "arg_hash": arg_hash,
+                "prompt_str": _prompt,
+            }
+
+        # Submit gleaning batch
+        if glean_requests:
+            logger.info(f"Submitting gleaning batch of {len(glean_requests)} requests")
+            try:
+                job_id = await batch_provider.submit_completion_batch(
+                    glean_requests, model=model_name
+                )
+                status = await _await_batch_with_cancellation(
+                    batch_provider,
+                    job_id,
+                    batch_poll_interval,
+                    batch_timeout,
+                    pipeline_status,
+                    pipeline_status_lock,
+                )
+                if status.state == BatchJobState.SUCCEEDED:
+                    responses = await batch_provider.get_results(job_id)
+                    current_ts = int(time.time())
+                    # Build key->cr lookup
+                    cr_by_key = {cr["chunk_key"]: cr for cr in chunk_results}
+                    for resp in responses:
+                        if resp.content and not resp.error:
+                            content = remove_think_tags(resp.content)
+                            if resp.key in cr_by_key:
+                                cr_by_key[resp.key]["glean_result"] = (
+                                    content,
+                                    current_ts,
+                                )
+                                # Save to cache
+                                if (
+                                    llm_response_cache
+                                    and llm_response_cache.global_config.get(
+                                        "enable_llm_cache_for_entity_extract"
+                                    )
+                                    and resp.key in glean_data
+                                ):
+                                    gd = glean_data[resp.key]
+                                    await save_to_cache(
+                                        llm_response_cache,
+                                        CacheData(
+                                            args_hash=gd["arg_hash"],
+                                            content=content,
+                                            prompt=gd["prompt_str"],
+                                            cache_type="extract",
+                                            chunk_id=resp.key,
+                                        ),
+                                    )
+                        # Per-row gleaning failures are non-fatal — skip silently
+                else:
+                    logger.warning(
+                        f"Gleaning batch ended with state {status.state}, "
+                        f"proceeding without gleaning for batch misses"
+                    )
+            except PipelineCancelledException:
+                raise
+            except Exception as e:
+                logger.warning(
+                    f"Gleaning batch failed, proceeding without gleaning: {e}"
+                )
+
+        # Apply gleaning results
+        for cr in chunk_results:
+            if "glean_result" not in cr:
+                continue
+            glean_content, glean_ts = cr["glean_result"]
+            glean_nodes, glean_edges = await _process_extraction_result(
+                glean_content,
+                cr["chunk_key"],
+                glean_ts,
+                chunk_prompts[cr["chunk_key"]]["file_path"],
+                tuple_delimiter=context_base["tuple_delimiter"],
+                completion_delimiter=context_base["completion_delimiter"],
+            )
+            _merge_gleaning_results(
+                cr["maybe_nodes"],
+                cr["maybe_edges"],
+                glean_nodes,
+                glean_edges,
+            )
+
+    # ── Step 7: Update cache lists & return ───────────────────────
+    for cr in chunk_results:
+        keys = all_cache_keys.get(cr["chunk_key"], [])
+        if keys and text_chunks_storage:
+            await update_chunk_cache_list(
+                cr["chunk_key"], text_chunks_storage, keys, "entity_extraction"
+            )
+
+    return [(cr["maybe_nodes"], cr["maybe_edges"]) for cr in chunk_results]
+
+
 async def extract_entities(
     chunks: dict[str, TextChunkSchema],
     global_config: dict[str, str],
@@ -2924,6 +3366,20 @@ async def extract_entities(
         examples=examples,
         language=language,
     )
+
+    # Batch mode: bypass semaphore, submit all at once
+    batch_provider = global_config.get("batch_provider")
+    if batch_provider is not None:
+        return await _extract_entities_batch(
+            ordered_chunks,
+            context_base,
+            global_config,
+            pipeline_status,
+            pipeline_status_lock,
+            llm_response_cache,
+            text_chunks_storage,
+            batch_provider,
+        )
 
     processed_chunks = 0
     total_chunks = len(ordered_chunks)
