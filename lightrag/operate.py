@@ -3040,22 +3040,94 @@ async def _extract_entities_batch(
         f"{len(cache_misses)} to submit for {total_chunks} chunks"
     )
 
-    # ── Step 3: Submit batch (skip if all cached) ─────────────────
+    # ── Step 3: Submit batch (or resume persisted job) ──────────────
+    BATCH_JOB_STATE_KEY = "__batch_extraction_job__"
     batch_results: dict[str, tuple[str, int]] = {}
 
-    if cache_misses:
-        if pipeline_status is not None and pipeline_status_lock is not None:
-            msg = (
-                f"Submitting batch of {len(cache_misses)} extraction requests "
-                f"({len(cached_results)} cached)"
-            )
-            async with pipeline_status_lock:
-                pipeline_status["latest_message"] = msg
-                pipeline_status["history_messages"].append(msg)
+    def _pack_batch_state(state_dict: dict) -> dict:
+        """Pack batch job state into a format compatible with all KV backends.
 
-        job_id = await batch_provider.submit_completion_batch(
-            cache_misses, model=model_name
-        )
+        The Postgres KV backend expects 'original_prompt' and 'return' fields
+        for the LLM response cache namespace. We store actual state as JSON
+        in the 'return' field.
+        """
+        return {
+            "original_prompt": BATCH_JOB_STATE_KEY,
+            "return": json.dumps(state_dict),
+            "cache_type": "batch_job",
+        }
+
+    def _unpack_batch_state(stored: dict | str | None) -> dict | None:
+        """Unpack batch job state from KV storage."""
+        if stored is None:
+            return None
+        if isinstance(stored, str):
+            try:
+                return json.loads(stored)
+            except (json.JSONDecodeError, TypeError):
+                return None
+        # JSON-based backends store dicts directly
+        if isinstance(stored, dict):
+            # Postgres backend wraps in {original_prompt, return, ...}
+            raw = stored.get("return", stored.get("return_value", ""))
+            if isinstance(raw, str):
+                try:
+                    return json.loads(raw)
+                except (json.JSONDecodeError, TypeError):
+                    return None
+            return raw if isinstance(raw, dict) else None
+        return None
+
+    if cache_misses:
+        current_miss_keys = sorted(r.key for r in cache_misses)
+        job_id = None
+
+        # Check for a persisted batch job from a previous run
+        if llm_response_cache:
+            raw = await llm_response_cache.get_by_id(BATCH_JOB_STATE_KEY)
+            saved = _unpack_batch_state(raw)
+            if saved:
+                saved_keys = saved.get("submitted_keys", [])
+                if sorted(saved_keys) == current_miss_keys:
+                    job_id = saved["job_id"]
+                    logger.info(
+                        f"Resuming persisted batch job {job_id} "
+                        f"({len(current_miss_keys)} requests)"
+                    )
+                else:
+                    logger.info(
+                        "Found persisted batch job but chunk keys differ, "
+                        "submitting new batch"
+                    )
+                    await llm_response_cache.delete([BATCH_JOB_STATE_KEY])
+
+        if job_id is None:
+            if pipeline_status is not None and pipeline_status_lock is not None:
+                msg = (
+                    f"Submitting batch of {len(cache_misses)} extraction requests "
+                    f"({len(cached_results)} cached)"
+                )
+                async with pipeline_status_lock:
+                    pipeline_status["latest_message"] = msg
+                    pipeline_status["history_messages"].append(msg)
+
+            job_id = await batch_provider.submit_completion_batch(
+                cache_misses, model=model_name
+            )
+
+            # Persist job state for recovery across restarts
+            if llm_response_cache:
+                await llm_response_cache.upsert(
+                    {
+                        BATCH_JOB_STATE_KEY: _pack_batch_state(
+                            {
+                                "job_id": job_id,
+                                "submitted_keys": current_miss_keys,
+                                "submitted_at": int(time.time()),
+                            }
+                        )
+                    }
+                )
 
         status = await _await_batch_with_cancellation(
             batch_provider,
@@ -3065,6 +3137,10 @@ async def _extract_entities_batch(
             pipeline_status,
             pipeline_status_lock,
         )
+
+        # Job reached terminal state — clear persisted state
+        if llm_response_cache:
+            await llm_response_cache.delete([BATCH_JOB_STATE_KEY])
 
         if status.state == BatchJobState.SUCCEEDED:
             responses = await batch_provider.get_results(job_id)
