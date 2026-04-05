@@ -4,8 +4,6 @@ Covers the fix for issue #2895: responses truncated when retrieved chunks
 contain <think> tags.
 """
 
-import pytest
-
 try:
     from lightrag.utils import remove_think_tags
 except ImportError:
