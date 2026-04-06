@@ -205,11 +205,12 @@ def create_agents():
 def run_multiagent_query(user_proxy, researcher, analyst, writer, question: str):
     """Run a multi-agent GroupChat to answer a question using LightRAG."""
     # Enforce pipeline: Researcher -> Analyst -> Writer.
-    # - Researcher and Analyst hand off to User for tool execution
-    # - User returns results to the same agent or advances to the next
-    # - Writer has no tool access, so it only follows Analyst
+    # func_call_filter (default True) automatically routes tool calls
+    # to/from user_proxy, so transitions only govern non-tool handoffs.
+    # User can only start with Researcher; Researcher advances to Analyst;
+    # Analyst advances to Writer. Writer terminates the conversation.
     allowed_transitions = {
-        user_proxy: [researcher, analyst],
+        user_proxy: [researcher],
         researcher: [user_proxy, analyst],
         analyst: [user_proxy, writer],
         writer: [],
