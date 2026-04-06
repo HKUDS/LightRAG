@@ -286,13 +286,15 @@ For the complete Core API reference — including init parameters, `QueryParam`,
 
 > ⚠️ **If you would like to integrate LightRAG into your project, we recommend utilizing the REST API provided by the LightRAG Server**. LightRAG Core is typically intended for embedded applications or for researchers who wish to conduct studies and evaluations.
 
-## Multimodal Document Processing (RAG-Anything Integration)
+### Advanced Features
+
+LightRAG provides additional capabilities including token usage tracking, knowledge graph data export, LLM cache management, Langfuse observability integration, and RAGAS-based evaluation. See **[docs/AdvancedFeatures.md](./docs/AdvancedFeatures.md)**.
+
+### Multimodal Document Processing (RAG-Anything Integration)
 
 LightRAG integrates with [RAG-Anything](https://github.com/HKUDS/RAG-Anything) for end-to-end multimodal RAG across PDFs, Office documents, images, tables, and formulas. For setup and usage examples, see **[docs/AdvancedFeatures.md](./docs/AdvancedFeatures.md)**.
 
-## Advanced Features
-
-LightRAG provides additional capabilities including token usage tracking, knowledge graph data export, LLM cache management, Langfuse observability integration, and RAGAS-based evaluation. See **[docs/AdvancedFeatures.md](./docs/AdvancedFeatures.md)**.
+> LightRAG Server will soon integrate RAG-Anything’s multimodal processing capabilities into its file processing pipeline. Stay tuned.
 
 ## Replicating Findings in the Papper
 

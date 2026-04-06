@@ -126,8 +126,19 @@ async def anthropic_complete_if_cache(
         logger.error(f"Anthropic API Timeout Error: {e}")
         raise
     except Exception as e:
+        body = getattr(e, "body", None)
+        request_id = getattr(e, "request_id", None)
+        req = getattr(e, "request", None)
+        extra_parts = []
+        if body:
+            extra_parts.append(f"Response body: {body}")
+        if request_id:
+            extra_parts.append(f"Request ID: {request_id}")
+        if req is not None:
+            extra_parts.append(f"Request URL: {req.url}")
+        extra = ("\n" + "\n".join(extra_parts)) if extra_parts else ""
         logger.error(
-            f"Anthropic API Call Failed,\nModel: {model},\nParams: {kwargs}, Got: {e}"
+            f"Anthropic API Call Failed,\nModel: {model},\nParams: {kwargs}, Got: {e}{extra}"
         )
         raise
 

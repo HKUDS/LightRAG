@@ -286,13 +286,15 @@ python examples/lightrag_openai_demo.py
 
 > ⚠️ **如果您希望将LightRAG集成到您的项目中，建议您使用LightRAG Server提供的REST API**。LightRAG Core通常用于嵌入式应用，或供希望进行研究与评估的学者使用。
 
-## 多模态文档处理（RAG-Anything 集成）
+### 高级功能
+
+LightRAG 提供 Token 用量追踪、知识图谱数据导出、LLM 缓存管理、Langfuse 可观测性集成和基于 RAGAS 的评估框架。详见 **[docs/AdvancedFeatures.md](./docs/AdvancedFeatures.md)**（英文）。
+
+### 多模态文档处理（RAG-Anything 集成）
 
 LightRAG 与 [RAG-Anything](https://github.com/HKUDS/RAG-Anything) 集成，支持对 PDF、Office 文档、图像、表格和公式的端到端多模态 RAG。详见 **[docs/AdvancedFeatures.md](./docs/AdvancedFeatures.md)**（英文）。
 
-## 高级功能
-
-LightRAG 提供 Token 用量追踪、知识图谱数据导出、LLM 缓存管理、Langfuse 可观测性集成和基于 RAGAS 的评估框架。详见 **[docs/AdvancedFeatures.md](./docs/AdvancedFeatures.md)**（英文）。
+> LightRAG Server 将会在不久的将来把 RAG-Anything 的多模态处理能力整合到其文件件处理流水线中。敬请期待。
 
 ## 重现论文结果
 
