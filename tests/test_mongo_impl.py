@@ -5,16 +5,18 @@ import numpy as np
 from lightrag.kg.mongo_impl import MongoVectorDBStorage
 from lightrag.utils import EmbeddingFunc
 
+
 @pytest.fixture
 def mock_embedding_func():
     async def embed_func(texts, **kwargs):
         return np.array([[0.1] * 768 for _ in texts], dtype=np.float32)
-    
+
     return EmbeddingFunc(
         embedding_dim=768,
         func=embed_func,
         model_name="test_model",
     )
+
 
 @pytest.fixture
 def mongo_vector_storage(mock_embedding_func):
@@ -27,11 +29,12 @@ def mongo_vector_storage(mock_embedding_func):
             },
         },
         embedding_func=mock_embedding_func,
-        workspace="test_workspace"
+        workspace="test_workspace",
     )
     storage._data = AsyncMock()
     storage._index_name = "test_index"
     return storage
+
 
 @pytest.mark.asyncio
 async def test_mongo_vector_query_basic(mongo_vector_storage):
@@ -41,7 +44,7 @@ async def test_mongo_vector_query_basic(mongo_vector_storage):
         mock_cursor = AsyncMock()
         mock_cursor.to_list.return_value = [
             {"_id": "doc1", "score": 0.9, "created_at": 12345},
-            {"_id": "doc2", "score": 0.8, "created_at": 67890}
+            {"_id": "doc2", "score": 0.8, "created_at": 67890},
         ]
         mongo_vector_storage._data.aggregate.return_value = mock_cursor
 
@@ -51,13 +54,14 @@ async def test_mongo_vector_query_basic(mongo_vector_storage):
         assert results[0]["id"] == "doc1"
         assert results[0]["distance"] == 0.9
         assert results[0]["created_at"] == 12345
-        
+
         # Verify aggregation pipeline
         args, kwargs = mongo_vector_storage._data.aggregate.call_args
         pipeline = args[0]
         assert "$vectorSearch" in pipeline[0]
         assert pipeline[0]["$vectorSearch"]["index"] == "test_index"
         assert pipeline[0]["$vectorSearch"]["limit"] == 2
+
 
 @pytest.mark.asyncio
 async def test_mongo_vector_query_hybrid(mongo_vector_storage):
@@ -73,13 +77,14 @@ async def test_mongo_vector_query_hybrid(mongo_vector_storage):
 
         assert len(results) == 1
         assert results[0]["id"] == "hybrid1"
-        
+
         # Verify aggregation pipeline has hybrid stages
         args, kwargs = mongo_vector_storage._data.aggregate.call_args
         pipeline = args[0]
         assert "$search" in pipeline[0]
         assert "$vectorSearch" in pipeline[1]
         assert pipeline[0]["$search"]["text"]["query"] == "hybrid query"
+
 
 @pytest.mark.asyncio
 async def test_mongo_vector_query_with_embedding(mongo_vector_storage):
@@ -90,7 +95,9 @@ async def test_mongo_vector_query_with_embedding(mongo_vector_storage):
         mongo_vector_storage._data.aggregate.return_value = mock_cursor
 
         custom_embedding = np.array([0.5] * 768, dtype=np.float32)
-        await mongo_vector_storage.query("ignored", top_k=5, query_embedding=custom_embedding)
+        await mongo_vector_storage.query(
+            "ignored", top_k=5, query_embedding=custom_embedding
+        )
 
         args, kwargs = mongo_vector_storage._data.aggregate.call_args
         pipeline = args[0]

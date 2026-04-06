@@ -2211,7 +2211,7 @@ class MongoVectorDBStorage(BaseVectorStorage):
                 or "Error connecting to Search Index Management service" in str(e)
                 or "message msgLen" in str(e)
             )
-            
+
             if is_search_error:
                 logger.warning(
                     f"[{self.workspace}] MongoDB Atlas Search/Vector search is not fully available or reachable. "
@@ -2220,9 +2220,7 @@ class MongoVectorDBStorage(BaseVectorStorage):
                 )
                 return
 
-            error_msg = (
-                f"[{self.workspace}] Error creating vector index {self._index_name}: {e}"
-            )
+            error_msg = f"[{self.workspace}] Error creating vector index {self._index_name}: {e}"
             logger.error(error_msg)
             raise SystemExit(
                 f"Failed to create MongoDB vector index. Program cannot continue. {error_msg}"
