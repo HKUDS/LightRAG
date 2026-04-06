@@ -1,4 +1,3 @@
-from pymongo import MongoClient
 
 class MongoVectorSearch:
     def __init__(self, collection):

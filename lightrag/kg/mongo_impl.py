@@ -2206,9 +2206,10 @@ class MongoVectorDBStorage(BaseVectorStorage):
             # Handle specific cases where Atlas Search is not enabled or reachable
             error_code = getattr(e, "code", None)
             is_search_error = (
-                error_code in [31082, 125]
+                error_code in [31082, 125, 17]
                 or "SearchNotEnabled" in str(e)
                 or "Error connecting to Search Index Management service" in str(e)
+                or "message msgLen" in str(e)
             )
             
             if is_search_error:
