@@ -333,7 +333,7 @@
         "properties": "Свойства",
         "relationships": "Связи (в подграфе)",
         "expandNode": "Развернуть узел",
-        "pruneNode": "Обрезать узел",
+        "pruneNode": "Скрыть узел",
         "deleteAllNodesError": "Отказ в удалении всех узлов в графе",
         "nodesRemoved": "{{count}} узлов удалено, включая изолированные узлы",
         "noNewNodes": "Расширяемых узлов не найдено",

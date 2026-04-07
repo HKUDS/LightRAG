@@ -118,7 +118,7 @@ const GraphLabels = () => {
 
   const fetchData = useCallback(
     async (query?: string): Promise<string[]> => {
-      let results: string[] = [];
+      let results: string[];
       if (!query || query.trim() === '' || query.trim() === '*') {
         // Empty query: return search history
         results = SearchHistoryManager.getHistoryLabels(dropdownDisplayLimit)

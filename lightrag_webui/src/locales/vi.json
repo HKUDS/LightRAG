@@ -333,7 +333,7 @@
         "properties": "Thuộc Tính",
         "relationships": "Quan Hệ (trong đồ thị con)",
         "expandNode": "Mở Rộng Nút",
-        "pruneNode": "Thu Gọn Nút",
+        "pruneNode": "Ẩn Nút",
         "deleteAllNodesError": "Từ chối xóa tất cả các nút trong đồ thị",
         "nodesRemoved": "Đã xóa {{count}} nút, bao gồm các nút cô lập",
         "noNewNodes": "Không tìm thấy nút có thể mở rộng",

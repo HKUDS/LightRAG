@@ -70,8 +70,7 @@ const GraphControl = ({ disableHoverEffect }: { disableHoverEffect?: boolean }) 
           sigma.setGraph(sigmaGraph as unknown as AbstractGraph<NodeType, EdgeType>);
           console.log('Binding graph to sigma instance');
         } else {
-          (sigma as any).graph = sigmaGraph;
-          console.warn('Simgma missing setGraph function, set graph property directly');
+          console.error('Sigma missing setGraph function — unexpected: sigma v3 should always have setGraph');
         }
       } catch (error) {
         console.error('Error setting graph on sigma instance:', error);

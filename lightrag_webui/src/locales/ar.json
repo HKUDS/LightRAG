@@ -333,7 +333,7 @@
         "properties": "الخصائص",
         "relationships": "العلاقات (داخل الرسم الفرعي)",
         "expandNode": "توسيع العقدة",
-        "pruneNode": "تقليم العقدة",
+        "pruneNode": "إخفاء العقدة",
         "deleteAllNodesError": "رفض حذف جميع العقد في الرسم البياني",
         "nodesRemoved": "تم إزالة {{count}} عقدة، بما في ذلك العقد اليتيمة",
         "noNewNodes": "لم يتم العثور على عقد قابلة للتوسيع",

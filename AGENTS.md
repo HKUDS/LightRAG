@@ -19,7 +19,7 @@ LightRAG is an advanced Retrieval-Augmented Generation (RAG) framework designed 
 - `lightrag-server` or `uvicorn lightrag.api.lightrag_server:app --reload`: start the API locally; ensure `.env` is present.
 - `python -m pytest tests` (offline markers apply by default) or `python -m pytest tests --run-integration` / `python test_graph_storage.py`: run the full suite, opt into integration coverage, or target an individual script.
 - `ruff check .`: lint Python sources before committing.
-- `bun install`, `bun run dev`, `bun run build`, `bun test`: manage the web UI workflow (Bun is mandatory).
+- Front-end workflow uses Bun from `lightrag_webui/`; run UI commands from the repo root as `cd lightrag_webui && bun install`, `cd lightrag_webui && bun run dev`, `cd lightrag_webui && bun run build`, `cd lightrag_webui && bun run lint`, and `cd lightrag_webui && bun test`.
 
 ## Coding Style & Naming Conventions
 - Backend code follow PEP 8 with four-space indentation, annotate functions, and reach for dataclasses when modelling state.
@@ -33,16 +33,20 @@ LightRAG is an advanced Retrieval-Augmented Generation (RAG) framework designed 
 - Follow `tests/pytest.ini`: markers include `offline`, `integration`, `requires_db`, and `requires_api`, and the suite runs with `-m "not integration"` by default—pass `--run-integration` (or set `LIGHTRAG_RUN_INTEGRATION=true`) when external services are available.
 - Use the custom CLI toggles from `tests/conftest.py`: `--keep-artifacts`/`LIGHTRAG_KEEP_ARTIFACTS=true`, `--stress-test`/`LIGHTRAG_STRESS_TEST=true`, and `--test-workers N`/`LIGHTRAG_TEST_WORKERS` to dial up workloads or preserve temp files during investigations.
 - Export other required `LIGHTRAG_*` environment variables before running integration or storage tests so adapters can reach configured backends.
-- For UI updates, pair changes with Vitest specs and run `bun test`.
+- For UI updates, pair changes with Bun test coverage using `bun:test`; run `cd lightrag_webui && bun test`, and use `cd lightrag_webui && bun test --watch` or `cd lightrag_webui && bun test --coverage` when needed.
 
 ## Commit & Pull Request Guidelines
 - Use concise, imperative commit subjects (e.g., `Fix lock key normalization`) and add body context only when necessary.
 - PRs should include a summary, operational impact, linked issues, and screenshots or API samples for user-facing work.
-- Verify `ruff check .`, `python -m pytest`, and affected Bun commands succeed before requesting review; note the runs in the PR text.
+- Verify `ruff check .`, `python -m pytest`, and affected front-end commands such as `cd lightrag_webui && bun run lint`, `cd lightrag_webui && bun run build`, and `cd lightrag_webui && bun test` succeed before requesting review; note the runs in the PR text.
 - This repo is a fork of `HKUDS/LightRAG`. Always target **`HKUDS/LightRAG:main`** (upstream) when creating PRs, not the fork's own main.
+- Create PR work from a dedicated branch, not `main`. If the CLI sandbox blocks writes under `.git/refs`, request escalation for branch creation or other ref updates instead of retrying blindly.
+- If `gh auth status` is invalid but the GitHub plugin is available, prefer the plugin to create the upstream PR after pushing the branch to the fork; `gh` login state and plugin auth can differ.
+- For `gh` commands that require GitHub network/auth access, prefer running them with escalation from the start instead of first trying the sandboxed path. Use an escalated `gh auth status` check as the source of truth for Codex, not the VSCode terminal. Only abandon the `gh` path when the escalated check still fails; otherwise treat sandbox-only failures as an expected limitation.
+- For lightweight Python validation in fresh shells, prefer `python3` over `python` unless the active environment has already exposed `python`.
 
 ## Security & Configuration Tips
-- Copy `.env.example` and `config.ini.example`; never commit secrets or real connection strings.
+- Copy `.env.example`; never commit secrets or real connection strings.
 - Configure storage backends through `LIGHTRAG_*` variables and validate them with `docker-compose` services when needed.
 - Treat `lightrag.log*` as local artefacts; purge sensitive information before sharing logs or outputs.
 

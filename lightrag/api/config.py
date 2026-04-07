@@ -51,6 +51,7 @@ load_dotenv(dotenv_path=".env", override=False)
 
 
 ollama_server_infos = OllamaServerInfos()
+DEFAULT_TOKEN_SECRET = "lightrag-jwt-default-secret-key!"
 
 
 class DefaultRAGStorageConfig:
@@ -73,6 +74,17 @@ def get_default_host(binding_type: str) -> str:
     return default_hosts.get(
         binding_type, os.getenv("LLM_BINDING_HOST", "http://localhost:11434")
     )  # fallback to ollama if unknown
+
+
+def validate_auth_configuration(args: argparse.Namespace) -> None:
+    """Reject insecure JWT auth settings before the API starts."""
+    auth_accounts = (getattr(args, "auth_accounts", "") or "").strip()
+    token_secret = (getattr(args, "token_secret", "") or "").strip()
+
+    if auth_accounts and (not token_secret or token_secret == DEFAULT_TOKEN_SECRET):
+        raise ValueError(
+            "TOKEN_SECRET must be explicitly set to a non-default value when AUTH_ACCOUNTS is configured."
+        )
 
 
 def parse_args() -> argparse.Namespace:
@@ -344,9 +356,6 @@ def parse_args() -> argparse.Namespace:
         args.llm_binding = "openai"
         args.embedding_binding = "ollama"
 
-    # Ollama ctx_num
-    args.ollama_num_ctx = get_env_value("OLLAMA_NUM_CTX", 32768, int)
-
     args.llm_binding_host = get_env_value(
         "LLM_BINDING_HOST", get_default_host(args.llm_binding)
     )
@@ -395,9 +404,7 @@ def parse_args() -> argparse.Namespace:
 
     # For JWT Auth
     args.auth_accounts = get_env_value("AUTH_ACCOUNTS", "")
-    args.token_secret = get_env_value(
-        "TOKEN_SECRET", "lightrag-jwt-default-secret-key!"
-    )
+    args.token_secret = get_env_value("TOKEN_SECRET", None)
     args.token_expire_hours = get_env_value("TOKEN_EXPIRE_HOURS", 48, float)
     args.guest_token_expire_hours = get_env_value("GUEST_TOKEN_EXPIRE_HOURS", 24, float)
     args.jwt_algorithm = get_env_value("JWT_ALGORITHM", "HS256")
@@ -473,6 +480,7 @@ def parse_args() -> argparse.Namespace:
             )
             args.workspace = sanitized
 
+    validate_auth_configuration(args)
     return args
 
 
@@ -524,7 +532,9 @@ def initialize_config(args=None, force=False):
     if _initialized and not force:
         return _global_args
 
-    _global_args = args if args is not None else parse_args()
+    resolved_args = args if args is not None else parse_args()
+    validate_auth_configuration(resolved_args)
+    _global_args = resolved_args
     _initialized = True
     return _global_args
 

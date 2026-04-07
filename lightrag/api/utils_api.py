@@ -140,7 +140,7 @@ def get_combined_auth_dependency(api_key: Optional[str] = None):
 
                 # ========== Token Auto-Renewal Logic ==========
                 from lightrag.api.config import global_args
-                from datetime import datetime
+                from datetime import datetime, timezone
 
                 if global_args.token_auto_renew:
                     # Check if current path should skip token renewal
@@ -156,7 +156,7 @@ def get_combined_auth_dependency(api_key: Optional[str] = None):
                             expire_time = token_info.get("exp")
                             if expire_time:
                                 # Calculate remaining time ratio
-                                now = datetime.utcnow()
+                                now = datetime.now(timezone.utc)
                                 remaining_seconds = (expire_time - now).total_seconds()
 
                                 # Get original token expiration duration

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import traceback
 import asyncio
-import configparser
 import inspect
 import os
 import time
@@ -120,10 +119,6 @@ from dotenv import load_dotenv
 # allows to use different .env file for each lightrag instance
 # the OS environment variables take precedence over the .env file
 load_dotenv(dotenv_path=".env", override=False)
-
-# TODO: TO REMOVE @Yannick
-config = configparser.ConfigParser()
-config.read("config.ini", "utf-8")
 
 
 def _chunk_fields_from_status_doc(
@@ -1945,9 +1940,9 @@ class LightRAG:
                                     logger.info(
                                         f"Trimming pipeline history from {len(pipeline_status['history_messages'])} to 5000 messages"
                                     )
-                                    pipeline_status["history_messages"] = (
-                                        pipeline_status["history_messages"][-5000:]
-                                    )
+                                    # Trim in place so Manager.list-backed shared state
+                                    # remains appendable and visible across processes.
+                                    del pipeline_status["history_messages"][:-5000]
 
                             # Get document content from full_docs
                             if not content_data:
