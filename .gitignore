@@ -66,6 +66,7 @@ ignore_this.txt
 # Project-specific files
 /dickens*/
 /book.txt
+/ag2_demo_workdir/
 
 # Frontend build output (built during PyPI release)
 /lightrag/api/webui/
