@@ -41,7 +41,7 @@ Examples:
 
 ## Prerequisites
 
-- The tool reads storage configuration from environment variables or `config.ini`
+- The tool reads storage configuration from environment variables
 - Ensure the target storage is properly configured and accessible
 - Backup important data before running cleanup operations
 
@@ -428,8 +428,7 @@ After cleanup completes, a detailed report includes:
 The tool supports multiple configuration methods with the following priority:
 
 1. **Environment variables** (highest priority)
-2. **config.ini file** (medium priority)
-3. **Default values** (lowest priority)
+2. **Default values** (lowest priority)
 
 ### Environment Variable Configuration
 
@@ -485,30 +484,7 @@ OPENSEARCH_HOSTS=localhost:9200
 OPENSEARCH_WORKSPACE=search_space
 ```
 
-### config.ini Configuration
-
-Alternatively, create a `config.ini` file in the project root:
-
-```ini
-[redis]
-uri = redis://localhost:6379
-
-[postgres]
-host = localhost
-port = 5432
-user = postgres
-password = yourpassword
-database = lightrag
-
-[mongodb]
-uri = mongodb://root:root@localhost:27017/
-database = LightRAG
-
-[opensearch]
-hosts = localhost:9200
-```
-
-**Note**: Environment variables take precedence over config.ini settings.
+If environment variables are not provided, the tool falls back to built-in defaults where available.
 
 ## Troubleshooting
 
@@ -516,7 +492,7 @@ hosts = localhost:9200
 ```
 ⚠️  Warning: Missing environment variables: POSTGRES_USER, POSTGRES_PASSWORD
 ```
-**Solution**: Add missing variables to your `.env` file or configure in `config.ini`
+**Solution**: Add missing variables to your `.env` file
 
 ### Connection Failed
 ```

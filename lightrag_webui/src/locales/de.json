@@ -343,7 +343,7 @@
         "properties": "Eigenschaften",
         "relationships": "Beziehungen (innerhalb des Teilgraphen)",
         "expandNode": "Knoten erweitern",
-        "pruneNode": "Knoten beschneiden",
+        "pruneNode": "Knoten ausblenden",
         "deleteAllNodesError": "Löschen aller Knoten im Graph verweigert",
         "nodesRemoved": "{{count}} Knoten entfernt, einschließlich verwaister Knoten",
         "noNewNodes": "Keine erweiterbaren Knoten gefunden",

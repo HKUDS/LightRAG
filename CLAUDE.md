@@ -216,10 +216,25 @@ result = await rag.aquery(
 ```bash
 cd lightrag_webui
 bun install --frozen-lockfile  # Install dependencies
-bun run dev                    # Development server
+bun run dev                    # Development server (Node + Vite)
+bun run dev:bun                # Development server (Bun native)
 bun run build                  # Production build
-bun test                       # Run tests
+bun run preview                # Preview production build locally
+
+# Linting (ESLint with TypeScript, React hooks, Stylistic rules)
+bun run lint                   # Run ESLint on all *.ts/tsx/js/jsx files
+
+# Testing (Bun built-in test runner)
+bun test                       # Run all tests
+bun test --watch               # Watch mode
+bun test --coverage            # With coverage report
+bun test src/api/lightrag.test.ts  # Run a single test file
 ```
+
+### Lint Rules
+ESLint is configured with TypeScript-ESLint, React Hooks plugin, Prettier integration, and `@stylistic` rules:
+- 2-space indentation, single quotes enforced
+- `@typescript-eslint/no-explicit-any` is disabled (allowed)
 
 ## Common Issues
 

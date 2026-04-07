@@ -232,16 +232,16 @@ type QuerySnapshot = {
 }
 type RefreshRequest =
   | {
-      type: 'intelligent';
-      query: QuerySnapshot;
-      customTimeout?: number;
-      requestVersion: number;
-    }
+    type: 'intelligent';
+    query: QuerySnapshot;
+    customTimeout?: number;
+    requestVersion: number;
+  }
   | {
-      type: 'manual';
-      query: QuerySnapshot;
-      requestVersion: number;
-    };
+    type: 'manual';
+    query: QuerySnapshot;
+    requestVersion: number;
+  };
 
 export default function DocumentManager() {
   // Track component mount status
