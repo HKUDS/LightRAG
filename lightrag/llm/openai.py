@@ -15,6 +15,7 @@ from openai import (
     APIConnectionError,
     RateLimitError,
     APITimeoutError,
+    LengthFinishReasonError,
 )
 from tenacity import (
     retry,
@@ -334,18 +335,43 @@ async def openai_complete_if_cache(
 
     try:
         # Don't use async with context manager, use client directly
-        # Use parse() for Pydantic schema-based structured output (e.g., keyword_extraction)
-        # Use create() for simple JSON mode {"type": "json_object"} (e.g., entity_extraction)
+        # Use parse() for structured output whenever available so truncated responses can
+        # still surface raw content via LengthFinishReasonError.completion.
+        # For JSON object mode we keep a fallback to create() for broader compatibility
+        # with OpenAI-compatible providers that may not implement parse().
         response_format = kwargs.get("response_format")
         use_parse = (
             "response_format" in kwargs
             and response_format is not None
-            and not isinstance(response_format, dict)
+            and (entity_extraction or not isinstance(response_format, dict))
         )
         if use_parse:
-            response = await openai_async_client.chat.completions.parse(
-                model=api_model, messages=messages, **kwargs
-            )
+            try:
+                response = await openai_async_client.chat.completions.parse(
+                    model=api_model, messages=messages, **kwargs
+                )
+            except (AttributeError, TypeError) as e:
+                if not entity_extraction:
+                    raise
+                logger.debug(
+                    "OpenAI-compatible client does not support parse() for JSON mode; "
+                    "falling back to create(). Model: %s, error: %s",
+                    model,
+                    e,
+                )
+                response = await openai_async_client.chat.completions.create(
+                    model=api_model, messages=messages, **kwargs
+                )
+            except LengthFinishReasonError as e:
+                response = getattr(e, "completion", None)
+                if response is None:
+                    raise
+                logger.warning(
+                    "Structured OpenAI-compatible response hit the length limit; "
+                    "falling back to raw content. Model: %s, max_completion_tokens: %s",
+                    model,
+                    kwargs.get("max_completion_tokens") or kwargs.get("max_tokens"),
+                )
         else:
             response = await openai_async_client.chat.completions.create(
                 model=api_model, messages=messages, **kwargs
