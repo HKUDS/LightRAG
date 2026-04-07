@@ -36,7 +36,13 @@ class AuthHandler:
                 "TOKEN_SECRET not set and AUTH_ACCOUNTS is not configured. "
                 "Falling back to the default guest-mode JWT secret. "
             )
-        self.algorithm = global_args.jwt_algorithm
+        algorithm = global_args.jwt_algorithm
+        if not algorithm or algorithm.lower() == "none":
+            raise ValueError(
+                "JWT_ALGORITHM must be set to a secure algorithm (e.g. HS256). "
+                "The 'none' algorithm is not permitted."
+            )
+        self.algorithm = algorithm
         self.expire_hours = global_args.token_expire_hours
         self.guest_expire_hours = global_args.guest_token_expire_hours
         self.accounts = {}
@@ -125,7 +131,14 @@ class AuthHandler:
             HTTPException: If token is invalid or expired
         """
         try:
-            payload = jwt.decode(token, self.secret, algorithms=[self.algorithm])
+            # Explicitly exclude 'none' to prevent algorithm confusion attacks
+            allowed_algorithms = [self.algorithm]
+            if "none" in (a.lower() for a in allowed_algorithms):
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Insecure JWT algorithm configuration",
+                )
+            payload = jwt.decode(token, self.secret, algorithms=allowed_algorithms)
             expire_timestamp = payload["exp"]
             expire_time = datetime.fromtimestamp(expire_timestamp, timezone.utc)
 
