@@ -160,4 +160,10 @@ class AuthHandler:
             )
 
 
-auth_handler = AuthHandler()
+try:
+    auth_handler = AuthHandler()
+except ValueError as e:
+    import sys
+
+    print(f"\n[Configuration Error] {e}\n", file=sys.stderr)
+    sys.exit(1)
