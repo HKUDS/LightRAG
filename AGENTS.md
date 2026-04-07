@@ -46,7 +46,7 @@ LightRAG is an advanced Retrieval-Augmented Generation (RAG) framework designed 
 - For lightweight Python validation in fresh shells, prefer `python3` over `python` unless the active environment has already exposed `python`.
 
 ## Security & Configuration Tips
-- Copy `.env.example` and `config.ini.example`; never commit secrets or real connection strings.
+- Copy `.env.example`; never commit secrets or real connection strings.
 - Configure storage backends through `LIGHTRAG_*` variables and validate them with `docker-compose` services when needed.
 - Treat `lightrag.log*` as local artefacts; purge sensitive information before sharing logs or outputs.
 
