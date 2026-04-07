@@ -185,6 +185,7 @@ def create_openai_async_client(
         return AsyncOpenAI(**merged_configs)
 
 
+# TODO LengthFinishReasonError should not persist into LLM cache
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=4, max=10),
@@ -217,6 +218,13 @@ async def openai_complete_if_cache(
     This function supports automatic integration of reasoning content from models that provide
     Chain of Thought capabilities. The reasoning content is seamlessly integrated into the response
     using <think>...</think> tags.
+
+    Note on truncated structured output: when the OpenAI SDK raises
+    `LengthFinishReasonError`, callers may still receive partial raw JSON from
+    `completion.choices[0].message.content`. That payload should be treated as
+    best-effort recovery only. If the JSON was truncated or repaired after
+    truncation, it is safer not to persist it into the LLM cache because later
+    runs with a higher token budget could otherwise keep reusing incomplete data.
 
     Note on `reasoning_content`: This feature relies on a Deepseek Style `reasoning_content`
     in the API response, which may be provided by OpenAI-compatible endpoints that support
