@@ -128,14 +128,15 @@ def test_mongo_vector_search_hybrid():
     # Verify the aggregate pipeline has both stages
     args, _ = mock_collection.aggregate.call_args
     pipeline = args[0]
-    assert len(pipeline) == 2
-    assert "$search" in pipeline[0]
-    assert "$vectorSearch" in pipeline[1]
-
-    # Verify search params
-    assert pipeline[0]["$search"]["text"]["query"] == query
-    assert pipeline[0]["$search"]["index"] == "text_index"
+    assert len(pipeline) == 3
+    # $vectorSearch must be first
+    assert "$vectorSearch" in pipeline[0]
+    # $match with regex should be after
+    assert "$match" in pipeline[1]
 
     # Verify vector params
-    assert pipeline[1]["$vectorSearch"]["queryVector"] == embedding
-    assert pipeline[1]["$vectorSearch"]["limit"] == 3
+    assert pipeline[0]["$vectorSearch"]["queryVector"] == embedding
+    assert pipeline[0]["$vectorSearch"]["limit"] == 3 * 2
+
+    # Verify search params
+    assert pipeline[1]["$match"]["$or"][0]["content"]["$regex"] == query

@@ -2213,12 +2213,14 @@ class MongoVectorDBStorage(BaseVectorStorage):
             )
 
             if is_search_error:
-                logger.warning(
+                error_msg = (
                     f"[{self.workspace}] MongoDB Atlas Search/Vector search is not fully available or reachable. "
-                    f"Vector search and hybrid search features will be disabled. "
-                    f"Error: {e}"
+                    f"A valid vector search configuration must be provided. Error: {e}"
                 )
-                return
+                logger.error(error_msg)
+                raise SystemExit(
+                    f"Failed to initialize MongoDB vector search. Program cannot continue. {error_msg}"
+                )
 
             error_msg = f"[{self.workspace}] Error creating vector index {self._index_name}: {e}"
             logger.error(error_msg)
@@ -2291,22 +2293,32 @@ class MongoVectorDBStorage(BaseVectorStorage):
             query_vector = embedding[0].tolist()
 
         if enable_hybrid and query:
+            # MongoDB requires $vectorSearch to be the first stage.
+            # We can follow it with a $match for text filtering or other logic.
+            # Note: $search stage also wants to be first, so they cannot be combined easily
+            # in a single pipeline using separate stages.
+            # Instead, we use $vectorSearch first and then $match with regex for text as a fusion.
             pipeline = [
-                {
-                    "$search": {
-                        "index": "default",
-                        "text": {"query": query, "path": {"wildcard": "*"}},
-                    }
-                },
                 {
                     "$vectorSearch": {
                         "index": self._index_name,
                         "path": "vector",
                         "queryVector": query_vector,
                         "numCandidates": top_k * 10,
-                        "limit": top_k,
+                        "limit": top_k * 2,  # Get more candidates for filtering
                     }
                 },
+                {"$addFields": {"score": {"$meta": "vectorSearchScore"}}},
+                {
+                    "$match": {
+                        "$or": [
+                            {"content": {"$regex": query, "$options": "i"}},
+                            {"_id": {"$regex": query, "$options": "i"}},
+                        ]
+                    }
+                },
+                {"$limit": top_k},
+                {"$project": {"vector": 0}},
             ]
 
             cursor = await self._data.aggregate(pipeline)

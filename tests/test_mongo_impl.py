@@ -81,9 +81,11 @@ async def test_mongo_vector_query_hybrid(mongo_vector_storage):
         # Verify aggregation pipeline has hybrid stages
         args, kwargs = mongo_vector_storage._data.aggregate.call_args
         pipeline = args[0]
-        assert "$search" in pipeline[0]
-        assert "$vectorSearch" in pipeline[1]
-        assert pipeline[0]["$search"]["text"]["query"] == "hybrid query"
+        # $vectorSearch must be first
+        assert "$vectorSearch" in pipeline[0]
+        # $match with regex should be after
+        assert "$match" in pipeline[2]
+        assert pipeline[2]["$match"]["$or"][0]["content"]["$regex"] == "hybrid query"
 
 
 @pytest.mark.asyncio
@@ -103,3 +105,23 @@ async def test_mongo_vector_query_with_embedding(mongo_vector_storage):
         pipeline = args[0]
         # Check if the custom embedding was used
         assert pipeline[0]["$vectorSearch"]["queryVector"] == custom_embedding.tolist()
+
+
+@pytest.mark.asyncio
+async def test_mongo_vector_init_fail(mongo_vector_storage):
+    from pymongo.errors import OperationFailure
+
+    # Mock list_search_indexes to raise an error
+    error_response = {
+        "ok": 0.0,
+        "errmsg": "Error connecting to Search Index Management service",
+        "code": 125,
+    }
+    mongo_vector_storage._data.list_search_indexes.side_effect = OperationFailure(
+        error_response["errmsg"], error_response["code"], error_response
+    )
+
+    with pytest.raises(SystemExit) as excinfo:
+        await mongo_vector_storage.create_vector_index_if_not_exists()
+
+    assert "Failed to initialize MongoDB vector search" in str(excinfo.value)

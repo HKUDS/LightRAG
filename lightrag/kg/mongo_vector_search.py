@@ -24,20 +24,23 @@ class MongoVectorSearch:
             self.collection.aggregate(
                 [
                     {
-                        "$search": {
-                            "index": "text_index",
-                            "text": {"query": query, "path": "content"},
-                        }
-                    },
-                    {
                         "$vectorSearch": {
                             "index": "vector_index",
                             "path": "embedding",
                             "queryVector": embedding,
                             "numCandidates": 100,
-                            "limit": k,
+                            "limit": k * 2,
                         }
                     },
+                    {
+                        "$match": {
+                            "$or": [
+                                {"content": {"$regex": query, "$options": "i"}},
+                                {"_id": {"$regex": query, "$options": "i"}},
+                            ]
+                        }
+                    },
+                    {"$limit": k},
                 ]
             )
         )
