@@ -444,13 +444,12 @@ EMBEDDING_MODEL=your-embedding-deployment-name
 
 ## LightRAG Server Configuration in Detail
 
-The API Server can be configured in three ways (highest priority first):
+The API Server can be configured in two ways (highest priority first):
 
 * Command line arguments
 * Environment variables or .env file
-* Config.ini (Only for storage configuration)
 
-Most of the configurations come with default settings; check out the details in the sample file: `.env.example`. Data storage configuration can also be set by config.ini. A sample file `config.ini.example` is provided for your convenience.
+Most of the configurations come with default settings; check out the details in the sample file: `.env.example`. Storage configuration should also be set through environment variables or the `.env` file.
 
 ### LLM and Embedding Backend Supported
 
@@ -514,7 +513,7 @@ LIGHTRAG_GRAPH_STORAGE=PGGraphStorage
 LIGHTRAG_DOC_STATUS_STORAGE=PGDocStatusStorage
 ```
 
-You cannot change storage implementation selection after adding documents to LightRAG. Data migration from one storage implementation to another is not supported yet. For further information, please read the sample env file or config.ini file.
+You cannot change storage implementation selection after adding documents to LightRAG. Data migration from one storage implementation to another is not supported yet. For further information, please read the sample `.env.example` file.
 
 ### LLM Cache Migration Between Storage Types
 
