@@ -1,3 +1,8 @@
+; DEPRECATION WARNING:
+; `config.ini` support will be removed in a future release.
+; Please move your configuration to `.env` or environment variables.
+; This file is kept only as a temporary compatibility example.
+
 [neo4j]
 uri = neo4j+s://xxxxxxxx.databases.neo4j.io
 username = neo4j

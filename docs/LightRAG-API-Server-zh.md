@@ -443,13 +443,12 @@ EMBEDDING_MODEL=your-embedding-deployment-name
 
 ## LightRAG 服务器详细配置
 
-API 服务器可以通过三种方式配置（优先级从高到低）：
+API 服务器可以通过两种方式配置（优先级从高到低）：
 
 * 命令行参数
 * 环境变量或 .env 文件
-* Config.ini（仅用于存储配置）
 
-大多数配置都有默认设置，详细信息请查看示例文件：`.env.example`。数据存储配置也可以通过 config.ini 设置。为方便起见，提供了示例文件 `config.ini.example`。
+大多数配置都有默认设置，详细信息请查看示例文件：`.env.example`。存储配置也应通过环境变量或 `.env` 文件设置。
 
 ### 支持的 LLM 和嵌入后端
 
@@ -514,7 +513,7 @@ LIGHTRAG_GRAPH_STORAGE=PGGraphStorage
 LIGHTRAG_DOC_STATUS_STORAGE=PGDocStatusStorage
 ```
 
-在向 LightRAG 添加文档后，您不能更改存储实现选择。目前尚不支持从一个存储实现迁移到另一个存储实现。更多配置信息请阅读示例 `env.exampl`e文件。
+在向 LightRAG 添加文档后，您不能更改存储实现选择。目前尚不支持从一个存储实现迁移到另一个存储实现。更多配置信息请阅读示例 `.env.example` 文件。
 
 ### 在不同存储类型之间迁移LLM缓存
 
