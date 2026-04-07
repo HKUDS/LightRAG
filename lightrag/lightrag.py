@@ -2415,8 +2415,9 @@ class LightRAG:
                     self.text_chunks.upsert(all_chunks_data),
                 )
 
-            # Insert entities into knowledge graph
+            # Insert entities into knowledge graph (batch for performance)
             all_entities_data: list[dict[str, str]] = []
+            entity_nodes: list[tuple[str, dict[str, str]]] = []
             for entity_data in custom_kg.get("entities", []):
                 entity_name = entity_data["entity_name"]
                 entity_type = entity_data.get("entity_type", "UNKNOWN")
@@ -2425,13 +2426,11 @@ class LightRAG:
                 source_id = chunk_to_source_map.get(source_chunk_id, "UNKNOWN")
                 file_path = entity_data.get("file_path", "custom_kg")
 
-                # Log if source_id is UNKNOWN
                 if source_id == "UNKNOWN":
                     logger.warning(
                         f"Entity '{entity_name}' has an UNKNOWN source_id. Please check the source mapping."
                     )
 
-                # Prepare node data
                 node_data: dict[str, str] = {
                     "entity_id": entity_name,
                     "entity_type": entity_type,
@@ -2440,78 +2439,112 @@ class LightRAG:
                     "file_path": file_path,
                     "created_at": int(time.time()),
                 }
-                # Insert node data into the knowledge graph
-                await self.chunk_entity_relation_graph.upsert_node(
-                    entity_name, node_data=node_data
-                )
-                node_data["entity_name"] = entity_name
-                all_entities_data.append(node_data)
+                entity_nodes.append((entity_name, node_data))
+                node_data_copy = dict(node_data)
+                node_data_copy["entity_name"] = entity_name
+                all_entities_data.append(node_data_copy)
                 update_storage = True
 
-            # Insert relationships into knowledge graph
+            # Use batch operation if available (reduces N serial awaits to 1)
+            if entity_nodes:
+                if hasattr(self.chunk_entity_relation_graph, "upsert_nodes_batch"):
+                    await self.chunk_entity_relation_graph.upsert_nodes_batch(entity_nodes)
+                else:
+                    for node_id, node_data in entity_nodes:
+                        await self.chunk_entity_relation_graph.upsert_node(
+                            node_id, node_data=node_data
+                        )
+
+            # Insert relationships into knowledge graph (batch for performance)
             all_relationships_data: list[dict[str, str]] = []
+            edge_list: list[tuple[str, str, dict[str, str]]] = []
+
+            # Batch check which relationship endpoints exist (1 await instead of 2M)
+            needed_node_ids: set[str] = set()
+            for relationship_data in custom_kg.get("relationships", []):
+                needed_node_ids.add(relationship_data["src_id"])
+                needed_node_ids.add(relationship_data["tgt_id"])
+
+            if hasattr(self.chunk_entity_relation_graph, "has_nodes_batch"):
+                existing_nodes = await self.chunk_entity_relation_graph.has_nodes_batch(
+                    list(needed_node_ids)
+                )
+            else:
+                existing_nodes = set()
+                for nid in needed_node_ids:
+                    if await self.chunk_entity_relation_graph.has_node(nid):
+                        existing_nodes.add(nid)
+
+            # Create missing nodes in batch
+            missing_nodes: list[tuple[str, dict[str, str]]] = []
             for relationship_data in custom_kg.get("relationships", []):
                 src_id = relationship_data["src_id"]
                 tgt_id = relationship_data["tgt_id"]
-                description = relationship_data["description"]
-                keywords = relationship_data["keywords"]
-                weight = relationship_data.get("weight", 1.0)
                 source_chunk_id = relationship_data.get("source_id", "UNKNOWN")
                 source_id = chunk_to_source_map.get(source_chunk_id, "UNKNOWN")
                 file_path = relationship_data.get("file_path", "custom_kg")
 
-                # Log if source_id is UNKNOWN
                 if source_id == "UNKNOWN":
                     logger.warning(
                         f"Relationship from '{src_id}' to '{tgt_id}' has an UNKNOWN source_id. Please check the source mapping."
                     )
 
-                # Check if nodes exist in the knowledge graph
                 for need_insert_id in [src_id, tgt_id]:
-                    if not (
-                        await self.chunk_entity_relation_graph.has_node(need_insert_id)
-                    ):
-                        await self.chunk_entity_relation_graph.upsert_node(
-                            need_insert_id,
-                            node_data={
-                                "entity_id": need_insert_id,
-                                "source_id": source_id,
-                                "description": "UNKNOWN",
-                                "entity_type": "UNKNOWN",
-                                "file_path": file_path,
-                                "created_at": int(time.time()),
-                            },
-                        )
+                    if need_insert_id not in existing_nodes:
+                        missing_nodes.append((need_insert_id, {
+                            "entity_id": need_insert_id,
+                            "source_id": source_id,
+                            "description": "UNKNOWN",
+                            "entity_type": "UNKNOWN",
+                            "file_path": file_path,
+                            "created_at": int(time.time()),
+                        }))
+                        existing_nodes.add(need_insert_id)
 
-                # Insert edge into the knowledge graph
-                await self.chunk_entity_relation_graph.upsert_edge(
-                    src_id,
-                    tgt_id,
-                    edge_data={
-                        "weight": weight,
-                        "description": description,
-                        "keywords": keywords,
-                        "source_id": source_id,
-                        "file_path": file_path,
-                        "created_at": int(time.time()),
-                    },
-                )
-
-                edge_data: dict[str, str] = {
-                    "src_id": src_id,
-                    "tgt_id": tgt_id,
-                    "description": description,
-                    "keywords": keywords,
+                edge_data = {
+                    "weight": relationship_data.get("weight", 1.0),
+                    "description": relationship_data["description"],
+                    "keywords": relationship_data["keywords"],
                     "source_id": source_id,
-                    "weight": weight,
                     "file_path": file_path,
                     "created_at": int(time.time()),
                 }
-                all_relationships_data.append(edge_data)
+                edge_list.append((src_id, tgt_id, edge_data))
+
+                all_relationships_data.append({
+                    "src_id": src_id,
+                    "tgt_id": tgt_id,
+                    "description": relationship_data["description"],
+                    "keywords": relationship_data["keywords"],
+                    "source_id": source_id,
+                    "weight": relationship_data.get("weight", 1.0),
+                    "file_path": file_path,
+                    "created_at": int(time.time()),
+                })
                 update_storage = True
 
-            # Insert entities into vector storage with consistent format
-            data_for_vdb = {
+            # Batch insert missing nodes
+            if missing_nodes:
+                if hasattr(self.chunk_entity_relation_graph, "upsert_nodes_batch"):
+                    await self.chunk_entity_relation_graph.upsert_nodes_batch(missing_nodes)
+                else:
+                    for node_id, node_data in missing_nodes:
+                        await self.chunk_entity_relation_graph.upsert_node(
+                            node_id, node_data=node_data
+                        )
+
+            # Batch insert edges (1 await instead of M serial awaits)
+            if edge_list:
+                if hasattr(self.chunk_entity_relation_graph, "upsert_edges_batch"):
+                    await self.chunk_entity_relation_graph.upsert_edges_batch(edge_list)
+                else:
+                    for src, tgt, edata in edge_list:
+                        await self.chunk_entity_relation_graph.upsert_edge(
+                            src, tgt, edge_data=edata
+                        )
+
+            # Insert entities and relationships into vector storage (parallel)
+            data_for_entities_vdb = {
                 compute_mdhash_id(dp["entity_name"], prefix="ent-"): {
                     "content": dp["entity_name"] + "\n" + dp["description"],
                     "entity_name": dp["entity_name"],
@@ -2522,10 +2555,8 @@ class LightRAG:
                 }
                 for dp in all_entities_data
             }
-            await self.entities_vdb.upsert(data_for_vdb)
 
-            # Insert relationships into vector storage with consistent format
-            data_for_vdb = {
+            data_for_rels_vdb = {
                 compute_mdhash_id(dp["src_id"] + dp["tgt_id"], prefix="rel-"): {
                     "src_id": dp["src_id"],
                     "tgt_id": dp["tgt_id"],
@@ -2538,7 +2569,12 @@ class LightRAG:
                 }
                 for dp in all_relationships_data
             }
-            await self.relationships_vdb.upsert(data_for_vdb)
+
+            # Parallel VDB upserts (was serial in original)
+            await asyncio.gather(
+                self.entities_vdb.upsert(data_for_entities_vdb),
+                self.relationships_vdb.upsert(data_for_rels_vdb),
+            )
 
         except Exception as e:
             logger.error(f"Error in ainsert_custom_kg: {e}")
