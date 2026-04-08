@@ -271,6 +271,9 @@ Extract entities and relationships from the input text in Data to be Processed b
 2.  **Output Language:** Ensure the output language is {language}. Proper nouns (e.g., personal names, place names, organization names) must be kept in their original language and not translated.
 
 ---Data to be Processed---
+---Entity Types---
+{entity_types_guidance}
+
 <Input Text>
 ```
 {input_text}
