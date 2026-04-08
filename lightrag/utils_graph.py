@@ -1449,7 +1449,23 @@ async def _merge_entities_impl(
     description = merged_entity_data.get("description", "")
     source_id = merged_entity_data.get("source_id", "")
     entity_type = merged_entity_data.get("entity_type", "")
-    content = target_entity + "\n" + description
+    # When merging "central" entities the default `concatenate` strategy
+    # produces a description that is the join of every source entity's
+    # description. For graph hubs this routinely exceeds the embedder
+    # context window (e.g. Ollama nomic-embed-text defaults to 2048
+    # tokens), and the embedding call fails with HTTP 400
+    # "input length exceeds the context length", which aborts the merge.
+    #
+    # Truncate the description that is fed into the embedder to a safe
+    # length. The full, untruncated description is still preserved in
+    # `merged_entity_data["description"]` (and therefore in the graph
+    # node properties below); only the `content` string used for
+    # embedding is shortened. ~1500 characters ≈ 500 tokens, leaving
+    # comfortable headroom for the entity name on top.
+    description_for_embed = (
+        description[:1500] + "..." if len(description) > 1500 else description
+    )
+    content = target_entity + "\n" + description_for_embed
 
     entity_id = compute_mdhash_id(target_entity, prefix="ent-")
     entity_data_for_vdb = {
