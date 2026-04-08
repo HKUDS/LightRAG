@@ -1239,22 +1239,42 @@ async def _merge_entities_impl(
         }
     target_entity_data = {} if target_entity_data is None else target_entity_data
 
+    # Helper: coerce a value returned by `get_node` into a plain dict.
+    # Some graph backends (notably PostgreSQL+Apache AGE through asyncpg)
+    # return a wrapper object whose `.get()` method returns None for every
+    # key — feeding that straight into `_merge_attributes` below silently
+    # produces an empty dict because every value is filtered out as falsy,
+    # and then `upsert_node(target_entity, merged_entity_data)` overwrites
+    # the existing target's description with empty. We saw this in
+    # production: after a merge attempt aborted on a downstream embedder
+    # failure, a hub entity was left with description="" in the graph
+    # store even though the VDB row still had the old description.
+    def _coerce_node(obj):
+        if obj is None or isinstance(obj, dict):
+            return obj or {}
+        try:
+            return dict(obj)
+        except Exception:
+            try:
+                return vars(obj)
+            except Exception:
+                return {}
+
     # 1. Check if all source entities exist
     source_entities_data = {}
     for entity_name in source_entities:
         node_exists = await chunk_entity_relation_graph.has_node(entity_name)
         if not node_exists:
             raise ValueError(f"Source entity '{entity_name}' does not exist")
-        node_data = await chunk_entity_relation_graph.get_node(entity_name)
-        source_entities_data[entity_name] = node_data
+        raw_node_data = await chunk_entity_relation_graph.get_node(entity_name)
+        source_entities_data[entity_name] = _coerce_node(raw_node_data)
 
     # 2. Check if target entity exists and get its data if it does
     target_exists = await chunk_entity_relation_graph.has_node(target_entity)
     existing_target_entity_data = {}
     if target_exists:
-        existing_target_entity_data = await chunk_entity_relation_graph.get_node(
-            target_entity
-        )
+        raw_target_data = await chunk_entity_relation_graph.get_node(target_entity)
+        existing_target_entity_data = _coerce_node(raw_target_data)
 
     # 3. Merge entity data
     merged_entity_data = _merge_attributes(
@@ -1422,8 +1442,27 @@ async def _merge_entities_impl(
         source_id = edge_data.get("source_id", "")
         weight = float(edge_data.get("weight", 1.0))
 
+        # Truncate description for relation embedder content to fit the
+        # embedder's context window. When merging a hub entity with many
+        # neighbours, individual relations may already have descriptions
+        # accumulated from prior merges that exceed the embedder's context
+        # (e.g. Ollama nomic-embed-text default 2048 tokens), and the
+        # whole merge then aborts on a single relation embedding.
+        # The full description is preserved in `edge_data["description"]`
+        # and in the VDB row metadata below — only the embedded `content`
+        # is shortened.
+        description_for_embed = (
+            description[:1500] + "..." if len(description) > 1500 else description
+        )
+        keywords_for_embed = (
+            keywords[:200] + "..." if len(keywords) > 200 else keywords
+        )
+
         # Use normalized order for content and relation ID
-        content = f"{keywords}\t{normalized_src}\n{normalized_tgt}\n{description}"
+        content = (
+            f"{keywords_for_embed}\t{normalized_src}\n{normalized_tgt}\n"
+            f"{description_for_embed}"
+        )
         relation_id = compute_mdhash_id(normalized_src + normalized_tgt, prefix="rel-")
 
         relation_data_for_vdb = {
@@ -1438,10 +1477,23 @@ async def _merge_entities_impl(
                 "file_path": edge_data.get("file_path", ""),
             }
         }
-        await relationships_vdb.upsert(relation_data_for_vdb)
-        logger.debug(
-            f"Entity Merge: updating vdb `{normalized_src}`~`{normalized_tgt}`"
-        )
+        # Wrap individual relation VDB upsert in try/except so that one bad
+        # embedding (transient embedder error, residual context-length issue
+        # on a single relation) does not abort the whole merge and leave
+        # the graph in a half-migrated state. We log the failure and keep
+        # going — relation chunk tracking is still updated below, so the
+        # graph stays consistent even if a single VDB upsert is missed.
+        try:
+            await relationships_vdb.upsert(relation_data_for_vdb)
+            logger.debug(
+                f"Entity Merge: updating vdb `{normalized_src}`~`{normalized_tgt}`"
+            )
+        except Exception as _rel_upsert_exc:
+            logger.warning(
+                f"Entity Merge: skipping vdb upsert for "
+                f"`{normalized_src}`~`{normalized_tgt}` due to "
+                f"{type(_rel_upsert_exc).__name__}: {_rel_upsert_exc}"
+            )
 
     logger.info(f"Entity Merge: {len(relation_updates)} relations in vdb updated")
 
@@ -1478,8 +1530,20 @@ async def _merge_entities_impl(
             "file_path": merged_entity_data.get("file_path", ""),
         }
     }
-    await entities_vdb.upsert(entity_data_for_vdb)
-    logger.info(f"Entity Merge: updating vdb `{target_entity}`")
+    # Protect entity vdb upsert with try/except for the same reason as the
+    # relation upsert above: a transient embedder failure should not abort
+    # the merge mid-flight and leave source entities undeleted. We log and
+    # continue: source entity delete (step 10 below) still happens, and the
+    # next merge attempt or a subsequent reprocess will recreate the VDB row.
+    try:
+        await entities_vdb.upsert(entity_data_for_vdb)
+        logger.info(f"Entity Merge: updating vdb `{target_entity}`")
+    except Exception as _ent_upsert_exc:
+        logger.warning(
+            f"Entity Merge: skipping entity vdb upsert for "
+            f"`{target_entity}` due to {type(_ent_upsert_exc).__name__}: "
+            f"{_ent_upsert_exc}"
+        )
 
     # 9. Merge entity chunk tracking (source entities first, then target entity)
     if entity_chunks_storage is not None:
