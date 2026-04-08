@@ -42,6 +42,7 @@ from lightrag.constants import (
     VALID_SOURCE_IDS_LIMIT_METHODS,
     SOURCE_IDS_LIMIT_METHOD_FIFO,
 )
+from lightrag.tracing import trace_embedding, is_tracing_enabled
 
 # Precompile regex pattern for JSON sanitization (module-level, compiled once)
 _SURROGATE_PATTERN = re.compile(r"[\uD800-\uDFFF\uFFFE\uFFFF]")
@@ -509,8 +510,23 @@ class EmbeddingFunc:
             if "max_token_size" in sig.parameters:
                 kwargs["max_token_size"] = self.max_token_size
 
-        # Call the actual embedding function
-        result = await self.func(*args, **kwargs)
+        # Call the actual embedding function with tracing
+        if is_tracing_enabled():
+            text_count = len(args[0]) if args and isinstance(args[0], (list, tuple)) else 0
+            async with trace_embedding(
+                name="embedding",
+                model=self.model_name,
+                input_data={"text_count": text_count},
+                metadata={"embedding_dim": self.embedding_dim, "text_count": text_count},
+            ) as obs:
+                result = await self.func(*args, **kwargs)
+                if obs is not None:
+                    obs.update(
+                        output=f"{text_count} vectors, dim={self.embedding_dim}",
+                        usage_details={"input_tokens": text_count},
+                    )
+        else:
+            result = await self.func(*args, **kwargs)
 
         # Validate embedding dimensions using total element count
         total_elements = result.size  # Total number of elements in the numpy array
@@ -2031,6 +2047,13 @@ async def use_llm_func_with_cache(
             content, timestamp = cached_result
             logger.debug(f"Found cache for {arg_hash}")
             statistic_data["llm_cache"] += 1
+            if is_tracing_enabled():
+                try:
+                    from langfuse import get_client as _get_langfuse
+                    _lf = _get_langfuse()
+                    _lf.update_current_observation(metadata={"cache_hit": True})
+                except Exception:
+                    pass
 
             # Add cache key to collector if provided
             if cache_keys_collector is not None:
@@ -2049,6 +2072,13 @@ async def use_llm_func_with_cache(
         res: str = await use_llm_func(
             safe_user_prompt, system_prompt=safe_system_prompt, **kwargs
         )
+        if is_tracing_enabled():
+            try:
+                from langfuse import get_client as _get_langfuse
+                _lf = _get_langfuse()
+                _lf.update_current_observation(metadata={"cache_hit": False, "cache_type": cache_type})
+            except Exception:
+                pass
 
         res = remove_think_tags(res)
 
