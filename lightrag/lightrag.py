@@ -132,6 +132,7 @@ from lightrag.utils import (
 from lightrag.tracing import (
     create_traced_llm_wrapper,
     flush as flush_tracing,
+    get_langfuse_client,
     is_tracing_enabled,
     trace_operation,
 )
@@ -1881,6 +1882,18 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             actual data is nested under the 'data' field, with 'status' and 'message'
             fields at the top level.
         """
+        async with trace_operation(
+            "query-data",
+            input_data={"query": query[:200] if query else "", "mode": param.mode},
+            metadata={"workspace": self.workspace},
+        ):
+            return await self._aquery_data_impl(query, param)
+
+    async def _aquery_data_impl(
+        self,
+        query: str,
+        param: QueryParam,
+    ) -> dict[str, Any]:
         global_config = self._build_global_config()
 
         # Create a copy of param to avoid modifying the original
