@@ -1,6 +1,6 @@
 """Langfuse tracing for LightRAG LLM and embedding calls.
 
-Provides provider-agnostic observability by wrapping LLM and embedding calls
+Provides provider-agnostic observability by wrapping LLM and embedding calls.
 
 Enable by setting environment variables:
     LANGFUSE_PUBLIC_KEY=pk-lf-...
@@ -11,12 +11,17 @@ Enable by setting environment variables:
 from __future__ import annotations
 
 import contextlib
+import contextvars
 import logging
 import os
 from typing import Any
 
 logger = logging.getLogger("lightrag")
 
+# Current parent span for nesting child observations under root traces.
+_current_span: contextvars.ContextVar = contextvars.ContextVar(
+    "langfuse_span", default=None
+)
 
 _tracing_available: bool | None = None
 
@@ -84,8 +89,8 @@ async def trace_operation(
 ):
     """Create a root trace span for a high-level operation (insert / query).
 
-    Yields the observation handle so callers can update output or metadata.
-    When tracing is disabled, yields ``None`` with zero overhead.
+    Stores the span in a contextvar so child observations (generations,
+    embeddings) created inside this block are nested under it.
     """
     if not is_tracing_enabled():
         yield None
@@ -102,7 +107,16 @@ async def trace_operation(
             input=input_data,
             metadata=metadata,
         ) as span:
-            yield span
+            token = _current_span.set(span)
+            logger.debug(
+                "trace_operation SET _current_span=%s name=%s",
+                type(span).__name__,
+                name,
+            )
+            try:
+                yield span
+            finally:
+                _current_span.reset(token)
     except Exception as exc:
         logger.warning("Langfuse trace_operation error: %s", exc)
         yield None
@@ -117,9 +131,8 @@ async def trace_generation(
 ):
     """Create a generation observation for an LLM call.
 
-    Yields the generation handle.  Callers should call
-    ``gen.update(output=..., usage_details=...)`` after the underlying call
-    completes.  When tracing is disabled, yields ``None``.
+    If a parent span exists (from ``trace_operation``), the generation is
+    created as a child of that span.  Otherwise falls back to a root trace.
     """
     if not is_tracing_enabled():
         yield None
@@ -130,8 +143,17 @@ async def trace_generation(
         yield None
         return
 
+    parent = _current_span.get(None)
+    owner = parent if parent is not None else client
+    logger.debug(
+        "trace_generation parent=%s owner=%s",
+        type(parent).__name__,
+        type(owner).__name__,
+    )
+
     try:
-        with client.start_as_current_generation(
+        with owner.start_as_current_observation(
+            as_type="generation",
             name=name,
             model=model,
             input=_truncate(input_text),
@@ -152,8 +174,8 @@ async def trace_embedding(
 ):
     """Create an embedding observation for an embedding call.
 
-    Uses Langfuse's dedicated ``embedding`` observation type.
-    Yields the observation handle.  When tracing is disabled, yields ``None``.
+    If a parent span exists (from ``trace_operation``), the embedding is
+    created as a child of that span.  Otherwise falls back to a root trace.
     """
     if not is_tracing_enabled():
         yield None
@@ -164,8 +186,16 @@ async def trace_embedding(
         yield None
         return
 
+    parent = _current_span.get(None)
+    owner = parent if parent is not None else client
+    logger.debug(
+        "trace_embedding parent=%s owner=%s",
+        type(parent).__name__,
+        type(owner).__name__,
+    )
+
     try:
-        with client.start_as_current_observation(
+        with owner.start_as_current_observation(
             as_type="embedding",
             name=name,
             model=model,
@@ -186,13 +216,6 @@ def create_traced_llm_wrapper(
     The wrapper extracts the prompt from positional args and ``system_prompt``
     from kwargs, creates a generation observation, calls the original function,
     and updates the observation with the response.
-
-    Args:
-        llm_func: The LLM function to wrap (already priority-wrapped).
-        model_name: Default model name for the generation observation.
-
-    Returns:
-        A wrapped async callable with the same interface as ``llm_func``.
     """
     if not is_tracing_enabled():
         return llm_func
@@ -218,7 +241,6 @@ def create_traced_llm_wrapper(
                     gen.update(output=_truncate(result))
                 return result
         except Exception:
-            # If tracing setup itself fails, fall through to untraced call
             return await llm_func(*args, **kwargs)
 
     return traced_llm_call
@@ -227,16 +249,7 @@ def create_traced_llm_wrapper(
 def create_traced_embedding_call(
     func: callable, model_name: str | None, embedding_dim: int
 ) -> callable:
-    """Wrap an embedding function to emit a Langfuse embedding observation on every call.
-
-    Args:
-        func: The raw embedding function to wrap.
-        model_name: Embedding model name.
-        embedding_dim: Expected embedding dimension.
-
-    Returns:
-        A wrapped async callable with the same interface as ``func``.
-    """
+    """Wrap an embedding function to emit a Langfuse embedding observation on every call."""
     if not is_tracing_enabled():
         return func
 
