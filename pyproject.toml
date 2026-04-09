@@ -149,7 +149,7 @@ evaluation = [
 
 observability = [
     # LLM observability and tracing dependencies
-    "langfuse>=3.8.1",
+    "langfuse>=4.0.6",
 ]
 
 [project.scripts]
