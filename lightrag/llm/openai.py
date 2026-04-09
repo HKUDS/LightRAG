@@ -433,8 +433,7 @@ async def openai_complete_if_cache(
                     cot_active = False
 
                 # After streaming is complete, track token usage
-                if token_tracker and final_chunk_usage:
-                    # Use actual usage from the API
+                if final_chunk_usage:
                     token_counts = {
                         "prompt_tokens": getattr(final_chunk_usage, "prompt_tokens", 0),
                         "completion_tokens": getattr(
@@ -442,8 +441,16 @@ async def openai_complete_if_cache(
                         ),
                         "total_tokens": getattr(final_chunk_usage, "total_tokens", 0),
                     }
-                    token_tracker.add_usage(token_counts)
+                    if token_tracker:
+                        token_tracker.add_usage(token_counts)
                     logger.debug(f"Streaming token usage (from API): {token_counts}")
+
+                    from lightrag.tracing import is_tracing_enabled, report_token_usage
+                    if is_tracing_enabled():
+                        report_token_usage({
+                            "input": token_counts["prompt_tokens"],
+                            "output": token_counts["completion_tokens"],
+                        })
                 elif token_tracker:
                     logger.debug("No usage information available in streaming response")
             except Exception as e:
@@ -585,7 +592,7 @@ async def openai_complete_if_cache(
             if r"\u" in final_content:
                 final_content = safe_unicode_decode(final_content.encode("utf-8"))
 
-            if token_tracker and hasattr(response, "usage"):
+            if hasattr(response, "usage") and response.usage is not None:
                 token_counts = {
                     "prompt_tokens": getattr(response.usage, "prompt_tokens", 0),
                     "completion_tokens": getattr(
@@ -593,7 +600,15 @@ async def openai_complete_if_cache(
                     ),
                     "total_tokens": getattr(response.usage, "total_tokens", 0),
                 }
-                token_tracker.add_usage(token_counts)
+                if token_tracker:
+                    token_tracker.add_usage(token_counts)
+
+                from lightrag.tracing import is_tracing_enabled, report_token_usage
+                if is_tracing_enabled():
+                    report_token_usage({
+                        "input": token_counts["prompt_tokens"],
+                        "output": token_counts["completion_tokens"],
+                    })
 
             logger.debug(f"Response content len: {len(final_content)}")
             verbose_debug(f"Response: {response}")
