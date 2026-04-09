@@ -1,6 +1,9 @@
 """Langfuse tracing for LightRAG LLM and embedding calls.
 
-Provides provider-agnostic observability by wrapping LLM and embedding calls.
+Provides provider-agnostic observability using the Langfuse ``@observe``
+decorator and SDK helpers.  The ``@observe`` decorator is applied directly
+on LightRAG methods (``ainsert``, ``aquery_llm``, etc.) — this module
+provides only thin wrappers and utilities.
 
 Enable by setting environment variables:
     LANGFUSE_PUBLIC_KEY=pk-lf-...
@@ -11,201 +14,31 @@ Enable by setting environment variables:
 from __future__ import annotations
 
 import contextlib
-import contextvars
 import logging
 import os
 from typing import Any
 
 logger = logging.getLogger("lightrag")
 
-# Current parent span for nesting child observations under root traces.
-_current_span: contextvars.ContextVar = contextvars.ContextVar(
-    "langfuse_span", default=None
-)
-
-_tracing_available: bool | None = None
-
 
 def is_tracing_enabled() -> bool:
     """Check whether Langfuse tracing is enabled and available.
 
-    Evaluates once on first call and caches the result.  Returns True only when
-    both API keys are set AND the ``langfuse`` package is importable.
+    Returns True only when both API keys are set AND the ``langfuse``
+    package is importable.  Re-evaluated on every call so that env var
+    changes take effect without a process restart.
     """
-    global _tracing_available
-    if _tracing_available is not None:
-        return _tracing_available
-
     public_key = os.environ.get("LANGFUSE_PUBLIC_KEY")
     secret_key = os.environ.get("LANGFUSE_SECRET_KEY")
     if not public_key or not secret_key:
-        _tracing_available = False
-        logger.debug("Langfuse tracing disabled: API keys not configured")
         return False
 
     try:
         import langfuse  # noqa: F401
 
-        _tracing_available = True
-        logger.info("Langfuse tracing enabled")
+        return True  # noqa: TRY300
     except ImportError:
-        _tracing_available = False
-        logger.debug(
-            "Langfuse tracing disabled: langfuse package not installed "
-            "(install with: pip install lightrag-hku[observability])"
-        )
-    return _tracing_available
-
-
-def get_langfuse_client():
-    """Return the Langfuse singleton client, or ``None`` when tracing is disabled."""
-    if not is_tracing_enabled():
-        return None
-    try:
-        from langfuse import get_client
-
-        return get_client()
-    except Exception as exc:
-        logger.warning("Failed to get Langfuse client: %s", exc)
-        return None
-
-
-_MAX_TRACE_TEXT_LENGTH = 500
-
-
-def _truncate(text: str | None, max_length: int = _MAX_TRACE_TEXT_LENGTH) -> str | None:
-    if text is None:
-        return None
-    if len(text) <= max_length:
-        return text
-    return text[:max_length] + "..."
-
-
-@contextlib.asynccontextmanager
-async def trace_operation(
-    name: str,
-    input_data: dict[str, Any] | None = None,
-    metadata: dict[str, Any] | None = None,
-):
-    """Create a root trace span for a high-level operation (insert / query).
-
-    Stores the span in a contextvar so child observations (generations,
-    embeddings) created inside this block are nested under it.
-    """
-    if not is_tracing_enabled():
-        yield None
-        return
-
-    client = get_langfuse_client()
-    if client is None:
-        yield None
-        return
-
-    try:
-        with client.start_as_current_span(
-            name=name,
-            input=input_data,
-            metadata=metadata,
-        ) as span:
-            token = _current_span.set(span)
-            logger.debug(
-                "trace_operation SET _current_span=%s name=%s",
-                type(span).__name__,
-                name,
-            )
-            try:
-                yield span
-            finally:
-                _current_span.reset(token)
-    except Exception as exc:
-        logger.warning("Langfuse trace_operation error: %s", exc)
-        yield None
-
-
-@contextlib.asynccontextmanager
-async def trace_generation(
-    name: str,
-    model: str | None = None,
-    input_text: str | None = None,
-    metadata: dict[str, Any] | None = None,
-):
-    """Create a generation observation for an LLM call.
-
-    If a parent span exists (from ``trace_operation``), the generation is
-    created as a child of that span.  Otherwise falls back to a root trace.
-    """
-    if not is_tracing_enabled():
-        yield None
-        return
-
-    client = get_langfuse_client()
-    if client is None:
-        yield None
-        return
-
-    parent = _current_span.get(None)
-    owner = parent if parent is not None else client
-    logger.debug(
-        "trace_generation parent=%s owner=%s",
-        type(parent).__name__,
-        type(owner).__name__,
-    )
-
-    try:
-        with owner.start_as_current_observation(
-            as_type="generation",
-            name=name,
-            model=model,
-            input=_truncate(input_text),
-            metadata=metadata,
-        ) as generation:
-            yield generation
-    except Exception as exc:
-        logger.warning("Langfuse trace_generation error: %s", exc)
-        yield None
-
-
-@contextlib.asynccontextmanager
-async def trace_embedding(
-    name: str,
-    model: str | None = None,
-    input_data: dict[str, Any] | None = None,
-    metadata: dict[str, Any] | None = None,
-):
-    """Create an embedding observation for an embedding call.
-
-    If a parent span exists (from ``trace_operation``), the embedding is
-    created as a child of that span.  Otherwise falls back to a root trace.
-    """
-    if not is_tracing_enabled():
-        yield None
-        return
-
-    client = get_langfuse_client()
-    if client is None:
-        yield None
-        return
-
-    parent = _current_span.get(None)
-    owner = parent if parent is not None else client
-    logger.debug(
-        "trace_embedding parent=%s owner=%s",
-        type(parent).__name__,
-        type(owner).__name__,
-    )
-
-    try:
-        with owner.start_as_current_observation(
-            as_type="embedding",
-            name=name,
-            model=model,
-            input=input_data,
-            metadata=metadata,
-        ) as observation:
-            yield observation
-    except Exception as exc:
-        logger.warning("Langfuse trace_embedding error: %s", exc)
-        yield None
+        return False
 
 
 def create_traced_llm_wrapper(
@@ -213,78 +46,100 @@ def create_traced_llm_wrapper(
 ) -> callable:
     """Wrap an LLM function to emit a Langfuse generation on every call.
 
-    The wrapper extracts the prompt from positional args and ``system_prompt``
-    from kwargs, creates a generation observation, calls the original function,
-    and updates the observation with the response.
+    Uses ``observe()`` functional form to auto-capture input/output.
+    The inner wrapper sets the ``model`` attribute which ``observe()``
+    does not support as a direct parameter.
     """
     if not is_tracing_enabled():
         return llm_func
 
+    from langfuse import get_client, observe
+
     async def traced_llm_call(*args: Any, **kwargs: Any) -> Any:
-        prompt = args[0] if args else kwargs.get("prompt", "")
-        system_prompt = kwargs.get("system_prompt")
+        client = get_client()
+        if client is not None:
+            client.update_current_generation(model=model_name)
+        return await llm_func(*args, **kwargs)
 
-        try:
-            async with trace_generation(
-                name="llm-call",
-                model=model_name,
-                input_text=str(prompt) if prompt else None,
-                metadata={
-                    "has_system_prompt": system_prompt is not None,
-                    "has_history": "history_messages" in kwargs
-                    and bool(kwargs["history_messages"]),
-                    "stream": kwargs.get("stream", False),
-                },
-            ) as gen:
-                result = await llm_func(*args, **kwargs)
-                if gen is not None and isinstance(result, str):
-                    gen.update(output=_truncate(result))
-                return result
-        except Exception:
-            return await llm_func(*args, **kwargs)
-
-    return traced_llm_call
+    return observe(traced_llm_call, name="llm-call", as_type="generation")
 
 
-def create_traced_embedding_call(
-    func: callable, model_name: str | None, embedding_dim: int
-) -> callable:
-    """Wrap an embedding function to emit a Langfuse embedding observation on every call."""
+def report_token_usage(usage_details: dict[str, int]) -> None:
+    """Report token usage to the current Langfuse generation observation.
+
+    Call this from inside an active generation context (e.g. from within
+    an LLM provider function) to attach token counts to the generation.
+    """
     if not is_tracing_enabled():
-        return func
+        return
+    try:
+        from langfuse import get_client
 
-    async def traced_embed_call(*args: Any, **kwargs: Any) -> Any:
-        text_count = len(args[0]) if args and isinstance(args[0], (list, tuple)) else 0
+        client = get_client()
+        if client is not None:
+            client.update_current_generation(usage_details=usage_details)
+    except Exception as exc:
+        logger.warning("Failed to report token usage to Langfuse: %s", exc)
 
-        try:
-            async with trace_embedding(
-                name="embedding",
-                model=model_name,
-                input_data={"text_count": text_count},
-                metadata={
-                    "embedding_dim": embedding_dim,
-                    "text_count": text_count,
-                },
-            ) as obs:
-                result = await func(*args, **kwargs)
-                if obs is not None:
-                    obs.update(
-                        output=f"{text_count} vectors, dim={embedding_dim}",
-                        usage_details={"input_tokens": text_count},
-                    )
-                return result
-        except Exception:
-            return await func(*args, **kwargs)
 
-    return traced_embed_call
+@contextlib.contextmanager
+def propagate_trace_attributes(
+    user_id: str | None = None,
+    session_id: str | None = None,
+    tags: list[str] | None = None,
+    metadata: dict[str, str] | None = None,
+    trace_name: str | None = None,
+):
+    """Set trace-level attributes for all observations created in this context.
+
+    Wraps ``langfuse.propagate_attributes`` with graceful degradation when
+    tracing is disabled.
+    """
+    if not is_tracing_enabled():
+        yield
+        return
+
+    try:
+        from langfuse import propagate_attributes
+
+        with propagate_attributes(
+            user_id=user_id,
+            session_id=session_id,
+            tags=tags,
+            metadata=metadata,
+            trace_name=trace_name,
+        ):
+            yield
+    except Exception as exc:
+        logger.warning("Langfuse propagate_attributes error: %s", exc)
+        yield
 
 
 def flush() -> None:
     """Flush pending Langfuse events."""
-    client = get_langfuse_client()
-    if client is not None:
-        try:
+    if not is_tracing_enabled():
+        return
+    try:
+        from langfuse import get_client
+
+        client = get_client()
+        if client is not None:
             client.flush()
             logger.debug("Langfuse traces flushed")
-        except Exception as exc:
-            logger.warning("Failed to flush Langfuse traces: %s", exc)
+    except Exception as exc:
+        logger.warning("Failed to flush Langfuse traces: %s", exc)
+
+
+def shutdown() -> None:
+    """Gracefully shut down the Langfuse client (flushes + waits for background threads)."""
+    if not is_tracing_enabled():
+        return
+    try:
+        from langfuse import get_client
+
+        client = get_client()
+        if client is not None:
+            client.shutdown()
+            logger.debug("Langfuse client shut down")
+    except Exception as exc:
+        logger.warning("Failed to shut down Langfuse client: %s", exc)

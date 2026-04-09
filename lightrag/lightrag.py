@@ -136,12 +136,23 @@ from lightrag.utils import (
 )
 from lightrag.tracing import (
     create_traced_llm_wrapper,
-    flush as flush_tracing,
-    get_langfuse_client,
     is_tracing_enabled,
-    trace_operation,
+    shutdown as shutdown_tracing,
 )
 from lightrag.types import KnowledgeGraph
+
+try:
+    from langfuse import get_client as langfuse_client, observe as langfuse_observe
+except ImportError:
+
+    def langfuse_observe(**kwargs):  # type: ignore[misc]
+        def _identity(func):
+            return func
+
+        return _identity
+
+    def langfuse_client():  # type: ignore[misc]
+        return None
 from dotenv import load_dotenv
 from lightrag.pipeline import _PipelineMixin
 from lightrag.kg.factory import get_storage_class
@@ -1366,7 +1377,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             else:
                 logger.debug("All storages finalized successfully")
 
-            flush_tracing()
+            shutdown_tracing()
 
             self._storages_status = StoragesStatus.FINALIZED
 
@@ -1439,6 +1450,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             owning_loop=self._owning_loop,
         )
 
+    @langfuse_observe(name="insert", capture_input=False)
     async def ainsert(
         self,
         input: str | list[str],
@@ -1498,19 +1510,20 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             split_by_character_only=split_by_character_only,
         )
         doc_count = len(input) if isinstance(input, list) else 1
-        async with trace_operation(
-            "insert",
-            input_data={"doc_count": doc_count, "track_id": track_id},
-            metadata={"workspace": self.workspace},
-        ):
-            await self.apipeline_enqueue_documents(
-                input,
-                ids,
-                file_paths,
-                track_id,
-                chunk_options=chunk_opts,
+        client = langfuse_client()
+        if client is not None:
+            client.update_current_span(
+                input={"doc_count": doc_count, "track_id": track_id},
+                metadata={"workspace": self.workspace},
             )
-            await self.apipeline_process_enqueue_documents()
+        await self.apipeline_enqueue_documents(
+            input,
+            ids,
+            file_paths,
+            track_id,
+            chunk_options=chunk_opts,
+        )
+        await self.apipeline_process_enqueue_documents()
 
         return track_id
 
@@ -2152,6 +2165,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             owning_loop=self._owning_loop,
         )
 
+    @langfuse_observe(name="query-data", capture_input=False)
     async def aquery_data(
         self,
         query: str,
@@ -2263,12 +2277,13 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             actual data is nested under the 'data' field, with 'status' and 'message'
             fields at the top level.
         """
-        async with trace_operation(
-            "query-data",
-            input_data={"query": query[:200] if query else "", "mode": param.mode},
-            metadata={"workspace": self.workspace},
-        ):
-            return await self._aquery_data_impl(query, param)
+        client = langfuse_client()
+        if client is not None:
+            client.update_current_span(
+                input={"query": query[:200] if query else "", "mode": param.mode},
+                metadata={"workspace": self.workspace},
+            )
+        return await self._aquery_data_impl(query, param)
 
     async def _aquery_data_impl(
         self,
@@ -2370,6 +2385,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         await self._query_done()
         return final_data
 
+    @langfuse_observe(name="query", capture_input=False)
     async def aquery_llm(
         self,
         query: str,
@@ -2392,129 +2408,133 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         """
         logger.debug(f"[aquery_llm] Query param: {param}")
 
-        async with trace_operation(
-            "query",
-            input_data={"query": query if query else "", "mode": param.mode},
-            metadata={"workspace": self.workspace, "stream": param.stream},
-        ):
-            global_config = self._build_global_config()
+        client = langfuse_client()
+        if client is not None:
+            client.update_current_span(
+                input={"query": query if query else "", "mode": param.mode},
+                metadata={"workspace": self.workspace, "stream": param.stream},
+            )
 
-            try:
-                query_result = None
+        global_config = self._build_global_config()
 
-                if param.mode in ["local", "global", "hybrid", "mix"]:
-                    query_result = await kg_query(
-                        query.strip(),
-                        self.chunk_entity_relation_graph,
-                        self.entities_vdb,
-                        self.relationships_vdb,
-                        self.text_chunks,
-                        param,
-                        global_config,
-                        hashing_kv=self.llm_response_cache,
-                        system_prompt=system_prompt,
-                        chunks_vdb=self.chunks_vdb,
-                    )
-                elif param.mode == "naive":
-                    query_result = await naive_query(
-                        query.strip(),
-                        self.chunks_vdb,
-                        param,
-                        global_config,
-                        hashing_kv=self.llm_response_cache,
-                        system_prompt=system_prompt,
-                        text_chunks_db=self.text_chunks,
-                    )
-                elif param.mode == "bypass":
-                    # Bypass mode: directly use LLM without knowledge retrieval
-                    # Apply higher priority to entity/relation summary tasks
-                    use_llm_func = partial(
-                        global_config["role_llm_funcs"]["query"],
-                        _priority=DEFAULT_SUMMARY_PRIORITY,
-                    )
+        try:
+            query_result = None
 
-                    param.stream = True if param.stream is None else param.stream
-                    response = await use_llm_func(
-                        query.strip(),
-                        system_prompt=system_prompt,
-                        history_messages=param.conversation_history,
-                        enable_cot=True,
-                        stream=param.stream,
-                    )
-                    if type(response) is str:
-                        return {
-                            "status": "success",
-                            "message": "Bypass mode LLM non streaming response",
-                            "data": {},
-                            "metadata": {},
-                            "llm_response": {
-                                "content": response,
-                                "response_iterator": None,
-                                "is_streaming": False,
-                            },
-                        }
-                    else:
-                        return {
-                            "status": "success",
-                            "message": "Bypass mode LLM streaming response",
-                            "data": {},
-                            "metadata": {},
-                            "llm_response": {
-                                "content": None,
-                                "response_iterator": response,
-                                "is_streaming": True,
-                            },
-                        }
-                else:
-                    raise ValueError(f"Unknown mode {param.mode}")
+            if param.mode in ["local", "global", "hybrid", "mix"]:
+                query_result = await kg_query(
+                    query.strip(),
+                    self.chunk_entity_relation_graph,
+                    self.entities_vdb,
+                    self.relationships_vdb,
+                    self.text_chunks,
+                    param,
+                    global_config,
+                    hashing_kv=self.llm_response_cache,
+                    system_prompt=system_prompt,
+                    chunks_vdb=self.chunks_vdb,
+                )
+            elif param.mode == "naive":
+                query_result = await naive_query(
+                    query.strip(),
+                    self.chunks_vdb,
+                    param,
+                    global_config,
+                    hashing_kv=self.llm_response_cache,
+                    system_prompt=system_prompt,
+                    text_chunks_db=self.text_chunks,
+                )
+            elif param.mode == "bypass":
+                # Bypass mode: directly use LLM without knowledge retrieval
+                # Apply higher priority to entity/relation summary tasks
+                use_llm_func = partial(
+                    global_config["role_llm_funcs"]["query"],
+                    _priority=DEFAULT_SUMMARY_PRIORITY,
+                )
 
-                await self._query_done()
-
-                # Check if query_result is None
-                if query_result is None:
+                param.stream = True if param.stream is None else param.stream
+                response = await use_llm_func(
+                    query.strip(),
+                    system_prompt=system_prompt,
+                    history_messages=param.conversation_history,
+                    enable_cot=True,
+                    stream=param.stream,
+                )
+                if type(response) is str:
                     return {
-                        "status": "failure",
-                        "message": "Query returned no results",
+                        "status": "success",
+                        "message": "Bypass mode LLM non streaming response",
                         "data": {},
-                        "metadata": {
-                            "failure_reason": "no_results",
-                            "mode": param.mode,
-                        },
+                        "metadata": {},
                         "llm_response": {
-                            "content": PROMPTS["fail_response"],
+                            "content": response,
                             "response_iterator": None,
                             "is_streaming": False,
                         },
                     }
+                else:
+                    return {
+                        "status": "success",
+                        "message": "Bypass mode LLM streaming response",
+                        "data": {},
+                        "metadata": {},
+                        "llm_response": {
+                            "content": None,
+                            "response_iterator": response,
+                            "is_streaming": True,
+                        },
+                    }
+            else:
+                raise ValueError(f"Unknown mode {param.mode}")
 
-                # Extract structured data from query result
-                raw_data = query_result.raw_data or {}
-                raw_data["llm_response"] = {
-                    "content": query_result.content
-                    if not query_result.is_streaming
-                    else None,
-                    "response_iterator": query_result.response_iterator
-                    if query_result.is_streaming
-                    else None,
-                    "is_streaming": query_result.is_streaming,
-                }
+            await self._query_done()
 
-                return raw_data
-
-            except Exception as e:
-                logger.error(f"Query failed: {e}")
-                # Return error response
+            # Check if query_result is None
+            if query_result is None:
                 return {
                     "status": "failure",
-                    "message": f"Query failed: {str(e)}",
+                    "message": "Query returned no results",
                     "data": {},
-                    "metadata": {},
+                    "metadata": {
+                        "failure_reason": "no_results",
+                        "mode": param.mode,
+                    },
                     "llm_response": {
-                        "content": None,
+                        "content": PROMPTS["fail_response"],
                         "response_iterator": None,
                         "is_streaming": False,
                     },
                 }
+
+            # Extract structured data from query result
+            raw_data = query_result.raw_data or {}
+            raw_data["llm_response"] = {
+                "content": query_result.content
+                if not query_result.is_streaming
+                else None,
+                "response_iterator": query_result.response_iterator
+                if query_result.is_streaming
+                else None,
+                "is_streaming": query_result.is_streaming,
+            }
+
+            return raw_data
+
+        except Exception as e:
+            logger.error(f"Query failed: {e}")
+            if client is not None:
+                client.update_current_span(level="ERROR", status_message=str(e))
+            # Return error response
+            return {
+                "status": "failure",
+                "message": f"Query failed: {str(e)}",
+                "data": {},
+                "metadata": {},
+                "llm_response": {
+                    "content": None,
+                    "response_iterator": None,
+                    "is_streaming": False,
+                },
+            }
 
     def query_llm(
         self,
