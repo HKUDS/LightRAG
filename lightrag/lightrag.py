@@ -115,6 +115,7 @@ from lightrag.utils import (
 from lightrag.tracing import (
     create_traced_llm_wrapper,
     flush as flush_tracing,
+    get_langfuse_client,
     is_tracing_enabled,
     trace_operation,
 )
@@ -1771,7 +1772,15 @@ class LightRAG:
         4. Process each chunk for entity and relation extraction
         5. Update the document status
         """
+        await self._apipeline_process_enqueue_documents_impl(
+            split_by_character, split_by_character_only
+        )
 
+    async def _apipeline_process_enqueue_documents_impl(
+        self,
+        split_by_character: str | None = None,
+        split_by_character_only: bool = False,
+    ) -> None:
         # Get pipeline status shared data and lock
         pipeline_status = await get_namespace_data(
             "pipeline_status", workspace=self.workspace
@@ -1816,6 +1825,9 @@ class LightRAG:
                     "Another process is already processing the document queue. Request queued."
                 )
                 return
+
+        # Langfuse client for per-document tracing (may be None)
+        _trace_client = get_langfuse_client() if is_tracing_enabled() else None
 
         try:
             # Process documents until no more documents or requests
@@ -1919,6 +1931,19 @@ class LightRAG:
                         # Initialize to prevent UnboundLocalError in error handling
                         first_stage_tasks = []
                         entity_relation_task = None
+
+                        # Per-file root trace span
+                        _doc_span = None
+                        _doc_token = None
+                        if _trace_client is not None:
+                            from lightrag.tracing import _current_span
+                            _doc_span = _trace_client.start_span(
+                                name="lightrag-insert-doc",
+                                input={"doc_id": doc_id, "file_path": file_path},
+                                metadata={"workspace": self.workspace},
+                            )
+                            _doc_token = _current_span.set(_doc_span)
+
                         try:
                             # Resolve file_path from full_docs before honoring a queued
                             # cancellation so corrupted doc_status placeholders do not
@@ -2269,6 +2294,13 @@ class LightRAG:
                                         }
                                     }
                                 )
+
+                        # End per-file trace span
+                        if _doc_span is not None:
+                            _doc_span.end()
+                        if _doc_token is not None:
+                            from lightrag.tracing import _current_span
+                            _current_span.reset(_doc_token)
 
                 # Create processing tasks for all documents
                 doc_tasks = []
@@ -2753,6 +2785,18 @@ class LightRAG:
             actual data is nested under the 'data' field, with 'status' and 'message'
             fields at the top level.
         """
+        async with trace_operation(
+            "query-data",
+            input_data={"query": query[:200] if query else "", "mode": param.mode},
+            metadata={"workspace": self.workspace},
+        ):
+            return await self._aquery_data_impl(query, param)
+
+    async def _aquery_data_impl(
+        self,
+        query: str,
+        param: QueryParam,
+    ) -> dict[str, Any]:
         global_config = asdict(self)
 
         # Create a copy of param to avoid modifying the original
