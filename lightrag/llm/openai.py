@@ -37,31 +37,7 @@ from typing import Any, Union
 
 from dotenv import load_dotenv
 
-# Try to import Langfuse for LLM observability (optional)
-# Falls back to standard OpenAI client if not available
-# Langfuse requires proper configuration to work correctly
-LANGFUSE_ENABLED = False
-try:
-    # Check if required Langfuse environment variables are set
-    langfuse_public_key = os.environ.get("LANGFUSE_PUBLIC_KEY")
-    langfuse_secret_key = os.environ.get("LANGFUSE_SECRET_KEY")
-
-    # Only enable Langfuse if both keys are configured
-    if langfuse_public_key and langfuse_secret_key:
-        from langfuse.openai import AsyncOpenAI  # type: ignore[import-untyped]
-
-        LANGFUSE_ENABLED = True
-        logger.info("Langfuse observability enabled for OpenAI client")
-    else:
-        from openai import AsyncOpenAI
-
-        logger.debug(
-            "Langfuse environment variables not configured, using standard OpenAI client"
-        )
-except ImportError:
-    from openai import AsyncOpenAI
-
-    logger.debug("Langfuse not available, using standard OpenAI client")
+from openai import AsyncOpenAI
 
 # use the .env that is inside the current folder
 # allows to use different .env file for each lightrag instance
