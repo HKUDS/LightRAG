@@ -1151,6 +1151,7 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                     status="failure",
                     message="Invalid response type",
                     data={},
+                    metadata={},
                 )
         except Exception as e:
             logger.error(f"Error processing data query: {str(e)}", exc_info=True)
