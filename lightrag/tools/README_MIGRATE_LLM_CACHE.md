@@ -300,8 +300,7 @@ After migration completes, a detailed report includes:
 The tool supports multiple configuration methods with the following priority:
 
 1. **Environment variables** (highest priority)
-2. **config.ini file** (medium priority)
-3. **Default values** (lowest priority)
+2. **Default values** (lowest priority)
 
 #### Option A: Environment Variable Configuration
 
@@ -358,30 +357,7 @@ OPENSEARCH_HOSTS=localhost:9200
 OPENSEARCH_WORKSPACE=os_space
 ```
 
-#### Option B: config.ini Configuration
-
-Alternatively, create a `config.ini` file in the project root:
-
-```ini
-[redis]
-uri = redis://localhost:6379
-
-[postgres]
-host = localhost
-port = 5432
-user = postgres
-password = yourpassword
-database = lightrag
-
-[mongodb]
-uri = mongodb://root:root@localhost:27017/
-database = LightRAG
-
-[opensearch]
-hosts = localhost:9200
-```
-
-**Note**: Environment variables take precedence over config.ini settings. JsonKVStorage uses `WORKING_DIR` environment variable or defaults to `./rag_storage`.
+If environment variables are not provided, the tool falls back to built-in defaults where available. JsonKVStorage uses `WORKING_DIR` or defaults to `./rag_storage`.
 
 ## Troubleshooting
 
