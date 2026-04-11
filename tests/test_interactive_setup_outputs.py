@@ -3980,6 +3980,7 @@ finalize_base_setup
 
     assert "image: mongodb/mongodb-atlas-local:" in result
     assert "mongo_config_data:/data/configdb" in result
+    assert "mongo_mongot_data:/data/mongot" in result
     assert "image: mongo:8.2.4" not in result
 
 
@@ -5598,6 +5599,53 @@ fi
     assert values["REWRITE"] == expected_rewrite
 
 
+def test_configure_mongodb_compose_migration_rewrite_repairs_missing_mongot_volume(
+    tmp_path: Path,
+) -> None:
+    """Atlas Local compose rewrites should repair stale MongoDB services missing mongot persistence."""
+
+    write_text_lines(
+        tmp_path / "docker-compose.final.yml",
+        [
+            "services:",
+            "  lightrag:",
+            "    image: example/lightrag:test",
+            "  mongodb:",
+            "    image: mongodb/mongodb-atlas-local:8",
+            "    volumes:",
+            "      - mongo_data:/data/db",
+            "      - mongo_config_data:/data/configdb",
+            "volumes:",
+            "  mongo_data:",
+            "  mongo_config_data:",
+        ],
+    )
+
+    values = run_bash_lines(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+
+ENV_VALUES[LIGHTRAG_VECTOR_STORAGE]="MongoVectorDBStorage"
+ENV_VALUES[LIGHTRAG_SETUP_MONGODB_DEPLOYMENT]="docker"
+EXISTING_MANAGED_ROOT_SERVICE_SET[mongodb]=1
+DOCKER_SERVICE_SET[mongodb]=1
+
+configure_mongodb_compose_migration_rewrite "$REPO_ROOT/docker-compose.final.yml"
+
+if [[ -n "${{COMPOSE_REWRITE_SERVICE_SET[mongodb]+set}}" ]]; then
+  printf 'REWRITE=yes\\n'
+else
+  printf 'REWRITE=no\\n'
+fi
+"""
+    )
+
+    assert values["REWRITE"] == "yes"
+
+
 def test_env_storage_flow_backs_up_existing_compose_before_rewrite(
     tmp_path: Path,
 ) -> None:
@@ -6374,7 +6422,7 @@ generate_docker_compose "$REPO_ROOT/docker-compose.final.yml"
 def test_generate_docker_compose_includes_all_atlas_local_mongodb_volumes(
     tmp_path: Path,
 ) -> None:
-    """MongoDB Atlas Local should emit both data and config named volumes."""
+    """MongoDB Atlas Local should emit data, config, and mongot named volumes."""
 
     write_text_lines(
         tmp_path / "env.example",
@@ -6398,8 +6446,12 @@ generate_docker_compose "$REPO_ROOT/docker-compose.final.yml"
     assert "image: mongodb/mongodb-atlas-local:" in result
     assert "mongo_data:/data/db" in result
     assert "mongo_config_data:/data/configdb" in result
+    assert "mongo_mongot_data:/data/mongot" in result
     assert "healthcheck:" not in result
-    assert "\nvolumes:\n  mongo_data:\n  mongo_config_data:\n" in result
+    assert (
+        "\nvolumes:\n  mongo_data:\n  mongo_config_data:\n  mongo_mongot_data:\n"
+        in result
+    )
 
 
 def test_collect_milvus_config_defaults_to_existing_database_name() -> None:
@@ -7019,6 +7071,7 @@ finalize_server_setup
 
     assert "image: mongodb/mongodb-atlas-local:" in result
     assert "mongo_config_data:/data/configdb" in result
+    assert "mongo_mongot_data:/data/mongot" in result
     assert "image: mongo:8.2.4" not in result
 
 

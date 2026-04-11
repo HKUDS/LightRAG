@@ -6,5 +6,6 @@
     volumes:
       - mongo_data:/data/db
       - mongo_config_data:/data/configdb
+      - mongo_mongot_data:/data/mongot
     stop_grace_period: 30s
     restart: unless-stopped

@@ -902,6 +902,10 @@ mongodb_service_requires_atlas_local_rewrite() {
     return 0
   fi
 
+  if ! compose_service_block_contains_literal "$compose_file" "mongodb" "mongo_mongot_data:/data/mongot"; then
+    return 0
+  fi
+
   return 1
 }
 
