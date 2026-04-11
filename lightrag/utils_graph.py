@@ -1695,19 +1695,75 @@ def _merge_attributes(
     return merged_data
 
 
+def _coerce_to_plain_dict(obj) -> dict[str, Any]:
+    """Coerce a graph/vdb storage value to a plain JSON-serializable dict.
+
+    Some storage backends (notably PostgreSQL + Apache AGE through asyncpg)
+    return node/edge properties as wrapper objects without `__dict__`. When
+    these reach FastAPI's response serializer it falls into a `vars(obj)`
+    code path that crashes with
+    `TypeError: vars() argument must have __dict__ attribute`. Every write
+    endpoint that returns `get_entity_info` / `get_relation_info`
+    (acreate_entity, acreate_relation, aedit_entity, aedit_relation,
+    amerge_entities) ends up surfacing an HTTP 500 even when the
+    underlying database operation has succeeded — which makes write
+    paths look broken even when they completed.
+
+    This helper recursively coerces values into plain dicts/primitives so
+    the response can always be JSON-encoded. We swallow exceptions and
+    return an empty dict on conversion failure: losing a few custom
+    properties is strictly better than HTTP 500 from a successful write.
+    """
+    if obj is None:
+        return {}
+    if isinstance(obj, dict):
+        out: dict[str, Any] = {}
+        for k, v in obj.items():
+            try:
+                if isinstance(v, (str, int, float, bool, type(None))):
+                    out[str(k)] = v
+                elif isinstance(v, (list, tuple)):
+                    out[str(k)] = [
+                        x
+                        if isinstance(x, (str, int, float, bool, type(None)))
+                        else str(x)
+                        for x in v
+                    ]
+                elif isinstance(v, dict):
+                    out[str(k)] = _coerce_to_plain_dict(v)
+                else:
+                    out[str(k)] = str(v)
+            except Exception:
+                out[str(k)] = None
+        return out
+    # Try common conversion paths for non-dict objects
+    for accessor in (
+        lambda o: dict(o) if hasattr(o, "keys") else None,
+        lambda o: vars(o) if hasattr(o, "__dict__") else None,
+    ):
+        try:
+            converted = accessor(obj)
+            if converted is not None:
+                return _coerce_to_plain_dict(converted)
+        except Exception:
+            continue
+    return {}
+
+
 async def get_entity_info(
     chunk_entity_relation_graph,
     entities_vdb,
     entity_name: str,
     include_vector_data: bool = False,
-) -> dict[str, str | None | dict[str, str]]:
+) -> dict[str, Any]:
     """Get detailed information of an entity"""
 
     # Get information from the graph
-    node_data = await chunk_entity_relation_graph.get_node(entity_name)
-    source_id = node_data.get("source_id") if node_data else None
+    raw_node_data = await chunk_entity_relation_graph.get_node(entity_name)
+    node_data = _coerce_to_plain_dict(raw_node_data)
+    source_id = node_data.get("source_id")
 
-    result: dict[str, str | None | dict[str, str]] = {
+    result: dict[str, Any] = {
         "entity_name": entity_name,
         "source_id": source_id,
         "graph_data": node_data,
@@ -1716,8 +1772,8 @@ async def get_entity_info(
     # Optional: Get vector database information
     if include_vector_data:
         entity_id = compute_mdhash_id(entity_name, prefix="ent-")
-        vector_data = await entities_vdb.get_by_id(entity_id)
-        result["vector_data"] = vector_data
+        raw_vector_data = await entities_vdb.get_by_id(entity_id)
+        result["vector_data"] = _coerce_to_plain_dict(raw_vector_data)
 
     return result
 
@@ -1728,7 +1784,7 @@ async def get_relation_info(
     src_entity: str,
     tgt_entity: str,
     include_vector_data: bool = False,
-) -> dict[str, str | None | dict[str, str]]:
+) -> dict[str, Any]:
     """
     Get detailed information of a relationship between two entities.
     Relationship is unidirectional, swap src_entity and tgt_entity does not change the relationship.
@@ -1743,10 +1799,11 @@ async def get_relation_info(
     """
 
     # Get information from the graph
-    edge_data = await chunk_entity_relation_graph.get_edge(src_entity, tgt_entity)
-    source_id = edge_data.get("source_id") if edge_data else None
+    raw_edge_data = await chunk_entity_relation_graph.get_edge(src_entity, tgt_entity)
+    edge_data = _coerce_to_plain_dict(raw_edge_data)
+    source_id = edge_data.get("source_id")
 
-    result: dict[str, str | None | dict[str, str]] = {
+    result: dict[str, Any] = {
         "src_entity": src_entity,
         "tgt_entity": tgt_entity,
         "source_id": source_id,
@@ -1756,7 +1813,7 @@ async def get_relation_info(
     # Optional: Get vector database information
     if include_vector_data:
         rel_id = compute_mdhash_id(src_entity + tgt_entity, prefix="rel-")
-        vector_data = await relationships_vdb.get_by_id(rel_id)
-        result["vector_data"] = vector_data
+        raw_vector_data = await relationships_vdb.get_by_id(rel_id)
+        result["vector_data"] = _coerce_to_plain_dict(raw_vector_data)
 
     return result
