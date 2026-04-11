@@ -4,17 +4,7 @@ Covers the fix for issue #2895: responses truncated when retrieved chunks
 contain <think> tags.
 """
 
-try:
-    from lightrag.utils import remove_think_tags
-except ImportError:
-    # Fallback for environments without full lightrag dependencies (numpy,
-    # httpx, etc.).  CI should always use the real import above.
-    import re
-
-    def remove_think_tags(text: str) -> str:  # type: ignore[misc]
-        text = re.sub(r"^((?!<think>).)*?</think>", "", text, flags=re.DOTALL)
-        text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
-        return text.strip()
+from lightrag.utils import remove_think_tags
 
 
 class TestRemoveThinkTags:
