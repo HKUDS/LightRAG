@@ -1,16 +1,11 @@
   mongodb:
-    image: mongo:8.2.4
+    hostname: mongodb
+    image: mongodb/mongodb-atlas-local:8
     # ports:
     #   - "27017:27017"
     volumes:
       - mongo_data:/data/db
-    healthcheck:
-      test:
-        - CMD-SHELL
-        - 'PORT_HEX="$(printf ''%04X'' 27017)"; cat /proc/net/tcp /proc/net/tcp6 2>/dev/null | grep -q ":$${PORT_HEX} "'
-      interval: 5s
-      timeout: 3s
-      retries: 20
-      start_period: 10s
+      - mongo_config_data:/data/configdb
+      - mongo_mongot_data:/data/mongot
     stop_grace_period: 30s
     restart: unless-stopped

@@ -441,7 +441,7 @@ _managed_volume_root_name() {
     neo4j_data)
       printf 'neo4j'
       ;;
-    mongo_data)
+    mongo_data|mongo_config_data|mongo_mongot_data)
       printf 'mongodb'
       ;;
     redis_data)
