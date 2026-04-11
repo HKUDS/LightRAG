@@ -360,7 +360,7 @@ printf 'PROMPT_LOG=%s\\n' "$(paste -sd '|' "$PROMPT_LOG_FILE")"
             ['ENV_VALUES[MONGO_URI]="mongodb://mongo.example.com:27018/"'],
             "collect_mongodb_config yes",
             "MONGO_URI",
-            "mongodb://localhost:27017/",
+            "mongodb://localhost:27017/?directConnection=true",
         ),
         (
             ['ENV_VALUES[REDIS_URI]="redis://cache.example.com:6380/1"'],
@@ -768,7 +768,7 @@ generate_docker_compose "$REPO_ROOT/docker-compose.final.yml"
             in lightrag_block
         )
 
-    assert generated_compose.count("    healthcheck:") == 11
+    assert generated_compose.count("    healthcheck:") == 10
     assert "  milvus-etcd:" in generated_compose
     assert "  milvus-minio:" in generated_compose
     assert "      milvus-etcd:\n        condition: service_healthy" in generated_compose
@@ -3924,6 +3924,128 @@ finalize_base_setup
     assert "      milvus-minio:\n        condition: service_healthy" not in result
 
 
+def test_finalize_base_setup_migrates_mongodb_to_atlas_local_for_mongo_vector_storage(
+    tmp_path: Path,
+) -> None:
+    """Base reruns should upgrade docker-managed MongoDB to Atlas Local when Mongo vector storage needs it."""
+
+    write_text_lines(
+        tmp_path / ".env",
+        [
+            "LIGHTRAG_RUNTIME_TARGET=compose",
+            "LIGHTRAG_SETUP_MONGODB_DEPLOYMENT=docker",
+            "LIGHTRAG_KV_STORAGE=MongoKVStorage",
+            "LIGHTRAG_VECTOR_STORAGE=MongoVectorDBStorage",
+            "LIGHTRAG_GRAPH_STORAGE=MongoGraphStorage",
+            "LIGHTRAG_DOC_STATUS_STORAGE=MongoDocStatusStorage",
+            "MONGO_URI=mongodb://localhost:27017/?directConnection=true",
+            "MONGO_DATABASE=LightRAG",
+        ],
+    )
+    write_text_lines(
+        tmp_path / "env.example",
+        (REPO_ROOT / "env.example").read_text(encoding="utf-8").splitlines(),
+    )
+    write_text_lines(
+        tmp_path / "docker-compose.final.yml",
+        [
+            "services:",
+            "  lightrag:",
+            "    image: example/lightrag:test",
+            "  mongodb:",
+            "    image: mongo:8.2.4",
+            "    volumes:",
+            "      - mongo_data:/data/db",
+            "volumes:",
+            "  mongo_data:",
+        ],
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+load_existing_env_if_present
+show_summary() {{ :; }}
+confirm_required_yes_no() {{ return 0; }}
+confirm_default_yes() {{ return 0; }}
+validate_sensitive_env_literals() {{ return 0; }}
+finalize_base_setup
+"""
+    )
+
+    result = (tmp_path / "docker-compose.final.yml").read_text(encoding="utf-8")
+
+    assert "image: mongodb/mongodb-atlas-local:" in result
+    assert "mongo_config_data:/data/configdb" in result
+    assert "image: mongo:8.2.4" not in result
+
+
+def test_finalize_base_setup_rejects_invalid_preserved_mongo_vector_config(
+    tmp_path: Path,
+) -> None:
+    """Base reruns should fail before writing when preserved Mongo vector config is invalid."""
+
+    write_text_lines(
+        tmp_path / ".env",
+        [
+            "LIGHTRAG_RUNTIME_TARGET=compose",
+            "LIGHTRAG_SETUP_MONGODB_DEPLOYMENT=docker",
+            "LIGHTRAG_KV_STORAGE=MongoKVStorage",
+            "LIGHTRAG_VECTOR_STORAGE=MongoVectorDBStorage",
+            "LIGHTRAG_GRAPH_STORAGE=MongoGraphStorage",
+            "LIGHTRAG_DOC_STATUS_STORAGE=MongoDocStatusStorage",
+            "MONGO_URI=mongodb://mongo.example.com:27017/?directConnection=true",
+            "MONGO_DATABASE=LightRAG",
+        ],
+    )
+    write_text_lines(
+        tmp_path / "env.example",
+        (REPO_ROOT / "env.example").read_text(encoding="utf-8").splitlines(),
+    )
+    write_text_lines(
+        tmp_path / "docker-compose.final.yml",
+        [
+            "services:",
+            "  lightrag:",
+            "    image: example/lightrag:test",
+            "  mongodb:",
+            "    image: mongo:8.2.4",
+            "    volumes:",
+            "      - mongo_data:/data/db",
+            "volumes:",
+            "  mongo_data:",
+        ],
+    )
+
+    result = run_bash_process(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+load_existing_env_if_present
+show_summary() {{ :; }}
+confirm_required_yes_no() {{ return 0; }}
+confirm_default_yes() {{ return 0; }}
+validate_sensitive_env_literals() {{ return 0; }}
+finalize_base_setup
+""",
+        cwd=tmp_path,
+    )
+
+    assert result.returncode != 0
+    assert (
+        "MongoVectorDBStorage requires the bundled Atlas Local endpoint"
+        in result.stderr
+    )
+    assert "image: mongo:8.2.4" in (
+        tmp_path / "docker-compose.final.yml"
+    ).read_text(encoding="utf-8")
+
+
 def test_finalize_base_setup_drops_stale_storage_services_missing_from_env_markers(
     tmp_path: Path,
 ) -> None:
@@ -5415,6 +5537,67 @@ fi
     assert values["REWRITE"] == expected_rewrite
 
 
+@pytest.mark.parametrize(
+    ("vector_storage", "deployment_marker", "expected_rewrite"),
+    [
+        ("MongoVectorDBStorage", "docker", "yes"),
+        ("NanoVectorDBStorage", "docker", "no"),
+        ("MongoVectorDBStorage", "", "no"),
+    ],
+    ids=[
+        "mongo-vector-with-docker-rewrites",
+        "non-mongo-vector-does-not-rewrite",
+        "mongo-vector-without-docker-does-not-rewrite",
+    ],
+)
+def test_configure_mongodb_compose_migration_rewrite_only_runs_for_atlas_local_vector_path(
+    tmp_path: Path,
+    vector_storage: str,
+    deployment_marker: str,
+    expected_rewrite: str,
+) -> None:
+    """Atlas Local migration should only run for docker-managed MongoDB vector storage."""
+
+    write_text_lines(
+        tmp_path / "docker-compose.final.yml",
+        [
+            "services:",
+            "  lightrag:",
+            "    image: example/lightrag:test",
+            "  mongodb:",
+            "    image: mongo:8.2.4",
+            "    volumes:",
+            "      - mongo_data:/data/db",
+            "volumes:",
+            "  mongo_data:",
+        ],
+    )
+
+    values = run_bash_lines(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+
+ENV_VALUES[LIGHTRAG_VECTOR_STORAGE]="{vector_storage}"
+ENV_VALUES[LIGHTRAG_SETUP_MONGODB_DEPLOYMENT]="{deployment_marker}"
+EXISTING_MANAGED_ROOT_SERVICE_SET[mongodb]=1
+DOCKER_SERVICE_SET[mongodb]=1
+
+configure_mongodb_compose_migration_rewrite "$REPO_ROOT/docker-compose.final.yml"
+
+if [[ -n "${{COMPOSE_REWRITE_SERVICE_SET[mongodb]+set}}" ]]; then
+  printf 'REWRITE=yes\\n'
+else
+  printf 'REWRITE=no\\n'
+fi
+"""
+    )
+
+    assert values["REWRITE"] == expected_rewrite
+
+
 def test_env_storage_flow_backs_up_existing_compose_before_rewrite(
     tmp_path: Path,
 ) -> None:
@@ -5553,10 +5736,10 @@ env_storage_flow
     assert "LIGHTRAG_RUNTIME_TARGET=compose" in generated_env
 
 
-def test_env_storage_flow_clears_mongodb_docker_marker_for_atlas_vector_storage(
+def test_env_storage_flow_preserves_mongodb_docker_marker_for_atlas_local_vector_storage(
     tmp_path: Path,
 ) -> None:
-    """MongoDB Atlas-only vector storage should not preserve a local Docker deployment marker."""
+    """MongoDB Atlas Local vector storage should preserve the bundled Docker deployment marker."""
 
     write_text_lines(
         tmp_path / ".env",
@@ -5600,11 +5783,8 @@ env_storage_flow
     )
 
     generated_env = (tmp_path / ".env").read_text(encoding="utf-8")
-    assert not any(
-        line.startswith("LIGHTRAG_SETUP_MONGODB_DEPLOYMENT=")
-        for line in generated_env.splitlines()
-    )
-    assert "MONGO_URI=mongodb+srv://cluster.example.mongodb.net/" in generated_env
+    assert "LIGHTRAG_SETUP_MONGODB_DEPLOYMENT=docker" in generated_env
+    assert "MONGO_URI=mongodb://localhost:27017/?directConnection=true" in generated_env
 
 
 def test_env_storage_flow_preserves_existing_compose_ssl_when_env_paths_are_stale(
@@ -6191,6 +6371,37 @@ generate_docker_compose "$REPO_ROOT/docker-compose.final.yml"
     assert "\n  source:\n" not in result
 
 
+def test_generate_docker_compose_includes_all_atlas_local_mongodb_volumes(
+    tmp_path: Path,
+) -> None:
+    """MongoDB Atlas Local should emit both data and config named volumes."""
+
+    write_text_lines(
+        tmp_path / "env.example",
+        (REPO_ROOT / "env.example").read_text(encoding="utf-8").splitlines(),
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+add_docker_service mongodb
+generate_docker_compose "$REPO_ROOT/docker-compose.final.yml"
+"""
+    )
+
+    result = (tmp_path / "docker-compose.final.yml").read_text(encoding="utf-8")
+
+    assert "hostname: mongodb" in result
+    assert "image: mongodb/mongodb-atlas-local:" in result
+    assert "mongo_data:/data/db" in result
+    assert "mongo_config_data:/data/configdb" in result
+    assert "healthcheck:" not in result
+    assert "\nvolumes:\n  mongo_data:\n  mongo_config_data:\n" in result
+
+
 def test_collect_milvus_config_defaults_to_existing_database_name() -> None:
     """Milvus database prompt should preserve the documented default database."""
 
@@ -6403,9 +6614,72 @@ printf 'DOCKER_SERVICE=%s\\n' "${{DOCKER_SERVICES[0]}}"
 """
     )
 
-    assert values["MONGO_URI"] == "mongodb://localhost:27017/"
-    assert values["COMPOSE_MONGO_URI"] == "mongodb://mongodb:27017/"
+    assert values["MONGO_URI"] == "mongodb://localhost:27017/?directConnection=true"
+    assert (
+        values["COMPOSE_MONGO_URI"] == "mongodb://mongodb:27017/?directConnection=true"
+    )
     assert values["DOCKER_SERVICE"] == "mongodb"
+
+
+def test_collect_mongodb_config_resets_wizard_managed_local_uri_when_switching_off_docker() -> (
+    None
+):
+    """Switching off bundled MongoDB should not preserve the old wizard-managed local URI."""
+
+    values = run_bash_lines(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+reset_state
+
+ENV_VALUES[LIGHTRAG_VECTOR_STORAGE]="MongoVectorDBStorage"
+ENV_VALUES[MONGO_URI]="mongodb://localhost:27017/?directConnection=true"
+
+confirm_default_yes() {{ return 1; }}
+prompt_until_valid() {{ printf '%s' "$2"; }}
+prompt_with_default() {{ printf '%s' "$2"; }}
+
+collect_mongodb_config yes
+
+printf 'MONGO_URI=%s\\n' "${{ENV_VALUES[MONGO_URI]}}"
+printf 'COMPOSE_MONGO_URI=%s\\n' "${{COMPOSE_ENV_OVERRIDES[MONGO_URI]-}}"
+"""
+    )
+
+    assert values["MONGO_URI"] == "mongodb+srv://cluster.example.mongodb.net/"
+    assert values["COMPOSE_MONGO_URI"] == ""
+
+
+def test_collect_mongodb_config_preserves_external_atlas_local_uri_when_switching_off_docker() -> (
+    None
+):
+    """Switching off bundled MongoDB should keep an explicitly configured external Atlas Local URI."""
+
+    values = run_bash_lines(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+reset_state
+
+ENV_VALUES[LIGHTRAG_VECTOR_STORAGE]="MongoVectorDBStorage"
+ENV_VALUES[MONGO_URI]="mongodb://atlas-local.example.com:27017/LightRAG?replicaSet=rs0&directConnection=true"
+
+confirm_default_yes() {{ return 1; }}
+prompt_until_valid() {{ printf '%s' "$2"; }}
+prompt_with_default() {{ printf '%s' "$2"; }}
+
+collect_mongodb_config yes
+
+printf 'MONGO_URI=%s\\n' "${{ENV_VALUES[MONGO_URI]}}"
+printf 'COMPOSE_MONGO_URI=%s\\n' "${{COMPOSE_ENV_OVERRIDES[MONGO_URI]-}}"
+"""
+    )
+
+    assert (
+        values["MONGO_URI"]
+        == "mongodb://atlas-local.example.com:27017/LightRAG?replicaSet=rs0&directConnection=true"
+    )
+    assert values["COMPOSE_MONGO_URI"] == ""
 
 
 def test_collect_redis_config_local_service_normalizes_custom_host_port() -> None:
@@ -6685,6 +6959,132 @@ finalize_server_setup
 
     assert 'NEO4J_URI: "neo4j://neo4j:7687"' in result
     assert 'NEO4J_URI: "neo4j://host.docker.internal:7687"' not in result
+
+
+def test_finalize_server_setup_migrates_mongodb_to_atlas_local_for_mongo_vector_storage(
+    tmp_path: Path,
+) -> None:
+    """Server reruns should upgrade docker-managed MongoDB to Atlas Local when Mongo vector storage needs it."""
+
+    write_text_lines(
+        tmp_path / ".env",
+        [
+            "LIGHTRAG_RUNTIME_TARGET=compose",
+            "LIGHTRAG_SETUP_MONGODB_DEPLOYMENT=docker",
+            "LIGHTRAG_KV_STORAGE=MongoKVStorage",
+            "LIGHTRAG_VECTOR_STORAGE=MongoVectorDBStorage",
+            "LIGHTRAG_GRAPH_STORAGE=MongoGraphStorage",
+            "LIGHTRAG_DOC_STATUS_STORAGE=MongoDocStatusStorage",
+            "MONGO_URI=mongodb://localhost:27017/?directConnection=true",
+            "MONGO_DATABASE=LightRAG",
+            "HOST=0.0.0.0",
+            "PORT=9621",
+        ],
+    )
+    write_text_lines(
+        tmp_path / "env.example",
+        (REPO_ROOT / "env.example").read_text(encoding="utf-8").splitlines(),
+    )
+    write_text_lines(
+        tmp_path / "docker-compose.final.yml",
+        [
+            "services:",
+            "  lightrag:",
+            "    image: example/lightrag:test",
+            "  mongodb:",
+            "    image: mongo:8.2.4",
+            "    volumes:",
+            "      - mongo_data:/data/db",
+            "volumes:",
+            "  mongo_data:",
+        ],
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+load_existing_env_if_present
+show_summary() {{ :; }}
+confirm_required_yes_no() {{ return 0; }}
+validate_sensitive_env_literals() {{ return 0; }}
+validate_security_config() {{ return 0; }}
+finalize_server_setup
+"""
+    )
+
+    result = (tmp_path / "docker-compose.final.yml").read_text(encoding="utf-8")
+
+    assert "image: mongodb/mongodb-atlas-local:" in result
+    assert "mongo_config_data:/data/configdb" in result
+    assert "image: mongo:8.2.4" not in result
+
+
+def test_finalize_server_setup_rejects_invalid_preserved_mongo_vector_config(
+    tmp_path: Path,
+) -> None:
+    """Server reruns should fail before writing when preserved Mongo vector config is invalid."""
+
+    write_text_lines(
+        tmp_path / ".env",
+        [
+            "LIGHTRAG_RUNTIME_TARGET=compose",
+            "LIGHTRAG_SETUP_MONGODB_DEPLOYMENT=docker",
+            "LIGHTRAG_KV_STORAGE=MongoKVStorage",
+            "LIGHTRAG_VECTOR_STORAGE=MongoVectorDBStorage",
+            "LIGHTRAG_GRAPH_STORAGE=MongoGraphStorage",
+            "LIGHTRAG_DOC_STATUS_STORAGE=MongoDocStatusStorage",
+            "MONGO_URI=mongodb://mongo.example.com:27017/?directConnection=true",
+            "MONGO_DATABASE=LightRAG",
+            "HOST=0.0.0.0",
+            "PORT=9621",
+        ],
+    )
+    write_text_lines(
+        tmp_path / "env.example",
+        (REPO_ROOT / "env.example").read_text(encoding="utf-8").splitlines(),
+    )
+    write_text_lines(
+        tmp_path / "docker-compose.final.yml",
+        [
+            "services:",
+            "  lightrag:",
+            "    image: example/lightrag:test",
+            "  mongodb:",
+            "    image: mongo:8.2.4",
+            "    volumes:",
+            "      - mongo_data:/data/db",
+            "volumes:",
+            "  mongo_data:",
+        ],
+    )
+
+    result = run_bash_process(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+load_existing_env_if_present
+show_summary() {{ :; }}
+confirm_required_yes_no() {{ return 0; }}
+validate_sensitive_env_literals() {{ return 0; }}
+validate_security_config() {{ return 0; }}
+finalize_server_setup
+""",
+        cwd=tmp_path,
+    )
+
+    assert result.returncode != 0
+    assert (
+        "MongoVectorDBStorage requires the bundled Atlas Local endpoint"
+        in result.stderr
+    )
+    assert "image: mongo:8.2.4" in (
+        tmp_path / "docker-compose.final.yml"
+    ).read_text(encoding="utf-8")
 
 
 def test_finalize_server_setup_drops_stale_managed_services_missing_from_env_markers(
@@ -8859,10 +9259,10 @@ fi
     assert values["REPLICAS"] == "valid"
 
 
-def test_validate_env_file_rejects_mongo_vector_storage_without_atlas_uri(
+def test_validate_env_file_rejects_mongo_vector_storage_without_atlas_capable_uri(
     tmp_path: Path,
 ) -> None:
-    """validate_env_file must reject MongoVectorDBStorage when MONGO_URI is not Atlas (mongodb+srv://)."""
+    """validate_env_file must reject MongoVectorDBStorage when the URI is not an Atlas cluster and no Atlas Local marker is set."""
 
     env_file = tmp_path / ".env"
     env_file.write_text(
@@ -8905,7 +9305,268 @@ fi
 
     values = parse_lines(result.stdout)
     assert values["VALID"] == "no"
-    assert "MongoVectorDBStorage requires a MongoDB Atlas URI" in result.stderr
+    assert "MongoVectorDBStorage requires an Atlas-capable MongoDB URI" in result.stderr
+
+
+def test_validate_env_file_allows_mongo_vector_storage_with_wizard_managed_atlas_local(
+    tmp_path: Path,
+) -> None:
+    """validate_env_file should allow MongoVectorDBStorage with the bundled Atlas Local deployment."""
+
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "\n".join(
+            [
+                "LIGHTRAG_SETUP_MONGODB_DEPLOYMENT=docker",
+                "LIGHTRAG_KV_STORAGE=MongoKVStorage",
+                "LIGHTRAG_VECTOR_STORAGE=MongoVectorDBStorage",
+                "LIGHTRAG_GRAPH_STORAGE=MongoGraphStorage",
+                "LIGHTRAG_DOC_STATUS_STORAGE=MongoDocStatusStorage",
+                "MONGO_URI=mongodb://localhost:27017/?directConnection=true",
+                "MONGO_DATABASE=LightRAG",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "env.example").write_text("LLM_BINDING=openai\n", encoding="utf-8")
+
+    result = subprocess.run(
+        [
+            "bash",
+            "--norc",
+            "--noprofile",
+            "-c",
+            f"""
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+if validate_env_file; then
+  printf 'VALID=yes\\n'
+else
+  printf 'VALID=no\\n'
+fi
+""",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    values = parse_lines(result.stdout)
+    assert values["VALID"] == "yes"
+
+
+def test_validate_env_file_allows_external_atlas_local_for_mongo_vector_storage(
+    tmp_path: Path,
+) -> None:
+    """validate_env_file should allow Atlas Local URIs outside the wizard-managed docker path."""
+
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "\n".join(
+            [
+                "LIGHTRAG_KV_STORAGE=MongoKVStorage",
+                "LIGHTRAG_VECTOR_STORAGE=MongoVectorDBStorage",
+                "LIGHTRAG_GRAPH_STORAGE=MongoGraphStorage",
+                "LIGHTRAG_DOC_STATUS_STORAGE=MongoDocStatusStorage",
+                "MONGO_URI=mongodb://atlas-local.example.com:27017/LightRAG?replicaSet=rs0&directConnection=true",
+                "MONGO_DATABASE=LightRAG",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "env.example").write_text("LLM_BINDING=openai\n", encoding="utf-8")
+
+    result = subprocess.run(
+        [
+            "bash",
+            "--norc",
+            "--noprofile",
+            "-c",
+            f"""
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+if validate_env_file; then
+  printf 'VALID=yes\\n'
+else
+  printf 'VALID=no\\n'
+fi
+""",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    values = parse_lines(result.stdout)
+    assert values["VALID"] == "yes"
+
+
+def test_validate_env_file_rejects_remote_mongo_uri_with_docker_marker(
+    tmp_path: Path,
+) -> None:
+    """validate_env_file should reject remote mongodb:// URIs when the docker marker is set."""
+
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "\n".join(
+            [
+                "LIGHTRAG_SETUP_MONGODB_DEPLOYMENT=docker",
+                "LIGHTRAG_KV_STORAGE=MongoKVStorage",
+                "LIGHTRAG_VECTOR_STORAGE=MongoVectorDBStorage",
+                "LIGHTRAG_GRAPH_STORAGE=MongoGraphStorage",
+                "LIGHTRAG_DOC_STATUS_STORAGE=MongoDocStatusStorage",
+                "MONGO_URI=mongodb://mongo.example.com:27017/?directConnection=true",
+                "MONGO_DATABASE=LightRAG",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "env.example").write_text("LLM_BINDING=openai\n", encoding="utf-8")
+
+    result = subprocess.run(
+        [
+            "bash",
+            "--norc",
+            "--noprofile",
+            "-c",
+            f"""
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+if validate_env_file; then
+  printf 'VALID=yes\\n'
+else
+  printf 'VALID=no\\n'
+fi
+""",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    values = parse_lines(result.stdout)
+    assert values["VALID"] == "no"
+    assert (
+        "MongoVectorDBStorage requires the bundled Atlas Local endpoint"
+        in result.stderr
+    )
+
+
+def test_validate_env_file_rejects_stale_local_mongo_uri_without_direct_connection(
+    tmp_path: Path,
+) -> None:
+    """validate_env_file should reject the old local MongoDB URI format when the docker marker is set."""
+
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "\n".join(
+            [
+                "LIGHTRAG_SETUP_MONGODB_DEPLOYMENT=docker",
+                "LIGHTRAG_KV_STORAGE=MongoKVStorage",
+                "LIGHTRAG_VECTOR_STORAGE=MongoVectorDBStorage",
+                "LIGHTRAG_GRAPH_STORAGE=MongoGraphStorage",
+                "LIGHTRAG_DOC_STATUS_STORAGE=MongoDocStatusStorage",
+                "MONGO_URI=mongodb://localhost:27017/",
+                "MONGO_DATABASE=LightRAG",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "env.example").write_text("LLM_BINDING=openai\n", encoding="utf-8")
+
+    result = subprocess.run(
+        [
+            "bash",
+            "--norc",
+            "--noprofile",
+            "-c",
+            f"""
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+if validate_env_file; then
+  printf 'VALID=yes\\n'
+else
+  printf 'VALID=no\\n'
+fi
+""",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    values = parse_lines(result.stdout)
+    assert values["VALID"] == "no"
+    assert (
+        "MongoVectorDBStorage requires the bundled Atlas Local endpoint"
+        in result.stderr
+    )
+
+
+def test_validate_env_file_rejects_wrong_local_mongo_port_with_docker_marker(
+    tmp_path: Path,
+) -> None:
+    """validate_env_file should reject local MongoDB URIs that do not use the managed Atlas Local port."""
+
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "\n".join(
+            [
+                "LIGHTRAG_SETUP_MONGODB_DEPLOYMENT=docker",
+                "LIGHTRAG_KV_STORAGE=MongoKVStorage",
+                "LIGHTRAG_VECTOR_STORAGE=MongoVectorDBStorage",
+                "LIGHTRAG_GRAPH_STORAGE=MongoGraphStorage",
+                "LIGHTRAG_DOC_STATUS_STORAGE=MongoDocStatusStorage",
+                "MONGO_URI=mongodb://localhost:9999/?directConnection=true",
+                "MONGO_DATABASE=LightRAG",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "env.example").write_text("LLM_BINDING=openai\n", encoding="utf-8")
+
+    result = subprocess.run(
+        [
+            "bash",
+            "--norc",
+            "--noprofile",
+            "-c",
+            f"""
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+if validate_env_file; then
+  printf 'VALID=yes\\n'
+else
+  printf 'VALID=no\\n'
+fi
+""",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    values = parse_lines(result.stdout)
+    assert values["VALID"] == "no"
+    assert (
+        "MongoVectorDBStorage requires the bundled Atlas Local endpoint"
+        in result.stderr
+    )
 
 
 def test_validate_env_file_rejects_empty_opensearch_hosts(tmp_path: Path) -> None:

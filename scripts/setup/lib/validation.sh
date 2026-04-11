@@ -104,7 +104,7 @@ check_storage_compatibility() {
   local warnings=()
 
   if [[ "$vector_storage" == "MongoVectorDBStorage" ]]; then
-    warnings+=("MongoDB vector storage requires an Atlas-capable deployment with Atlas Search / Vector Search support.")
+    warnings+=("MongoDB vector storage requires Atlas Search / Vector Search support, such as an Atlas cluster or Atlas Local deployment.")
   fi
 
   if [[ "$graph_storage" == "Neo4JStorage" && "$kv_storage" == "JsonKVStorage" ]]; then
@@ -335,13 +335,6 @@ validate_mongo_vector_storage_config() {
     return 0
   fi
 
-  if [[ "$mongo_deployment" == "docker" ]]; then
-    format_error \
-      "MongoVectorDBStorage cannot use the local Docker MongoDB service managed by this setup wizard." \
-      "That service is MongoDB Community Edition without Atlas Search / Vector Search support. Use an Atlas-capable MongoDB endpoint instead."
-    return 1
-  fi
-
   if ! validate_uri "$mongo_uri" mongodb; then
     format_error \
       "MongoVectorDBStorage requires a valid MongoDB URI." \
@@ -349,14 +342,35 @@ validate_mongo_vector_storage_config() {
     return 1
   fi
 
-  if [[ ! "$mongo_uri" =~ ^mongodb\+srv:// ]]; then
+  if [[ "$mongo_deployment" == "docker" ]]; then
+    if [[ ! "$mongo_uri" =~ ^mongodb://([^/?#]+@)?(mongodb|localhost|127\.0\.0\.1|0\.0\.0\.0):27017([/?#].*)?$ ]] || ! _mongo_uri_has_direct_connection_true "$mongo_uri"; then
+      format_error \
+        "MongoVectorDBStorage requires the bundled Atlas Local endpoint when LIGHTRAG_SETUP_MONGODB_DEPLOYMENT=docker." \
+        "Set MONGO_URI to the wizard-managed local MongoDB URI, or remove the docker deployment marker and use a mongodb+srv:// Atlas cluster URI."
+      return 1
+    fi
+    return 0
+  fi
+
+  if [[ "$mongo_uri" =~ ^mongodb\+srv:// ]]; then
+    return 0
+  fi
+
+  if ! _mongo_uri_has_direct_connection_true "$mongo_uri"; then
     format_error \
-      "MongoVectorDBStorage requires a MongoDB Atlas URI." \
-      "Set MONGO_URI to a mongodb+srv:// endpoint backed by Atlas Search / Vector Search."
+      "MongoVectorDBStorage requires an Atlas-capable MongoDB URI." \
+      "Use a mongodb+srv:// Atlas cluster URI, a mongodb:// Atlas Local URI with ?directConnection=true, or rerun the wizard with the bundled Atlas Local Docker MongoDB service."
     return 1
   fi
 
   return 0
+}
+
+_mongo_uri_has_direct_connection_true() {
+  local uri="$1"
+  local direct_connection_pattern='[?&]directConnection=true([&#]|$)'
+
+  [[ "$uri" =~ ^mongodb:// ]] && [[ "$uri" =~ $direct_connection_pattern ]]
 }
 
 validate_auth_accounts_format() {
