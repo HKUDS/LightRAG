@@ -228,11 +228,73 @@ normalize_loopback_uri_for_compose() {
   printf '%s' "$uri"
 }
 
-normalize_mongodb_uri_for_local_service() {
+ensure_mongodb_direct_connection_suffix() {
+  local suffix="${1:-}"
+  local path query fragment filtered_query=""
+  local part
+  local -a query_parts=()
+
+  if [[ "$suffix" == *"#"* ]]; then
+    fragment="#${suffix#*#}"
+    suffix="${suffix%%#*}"
+  else
+    fragment=""
+  fi
+
+  if [[ "$suffix" == *"?"* ]]; then
+    path="${suffix%%\?*}"
+    query="${suffix#*\?}"
+  else
+    path="$suffix"
+    query=""
+  fi
+
+  if [[ -z "$path" ]]; then
+    path="/"
+  fi
+
+  if [[ -n "$query" ]]; then
+    IFS='&' read -r -a query_parts <<< "$query"
+    for part in "${query_parts[@]}"; do
+      if [[ -z "$part" || "$part" == directConnection=* ]]; then
+        continue
+      fi
+      if [[ -n "$filtered_query" ]]; then
+        filtered_query="${filtered_query}&${part}"
+      else
+        filtered_query="$part"
+      fi
+    done
+  fi
+
+  if [[ -n "$filtered_query" ]]; then
+    printf '%s?%s&directConnection=true%s' "$path" "$filtered_query" "$fragment"
+  else
+    printf '%s?directConnection=true%s' "$path" "$fragment"
+  fi
+}
+
+mongodb_uri_has_direct_connection_true() {
+  local uri="$1"
+  local direct_connection_pattern='[?&]directConnection=true([&#]|$)'
+
+  [[ "$uri" =~ ^mongodb:// ]] && [[ "$uri" =~ $direct_connection_pattern ]]
+}
+
+is_wizard_managed_local_mongodb_uri() {
   local uri="$1"
 
+  [[ "$uri" =~ ^mongodb://([^/?#]+@)?(mongodb|localhost|127\.0\.0\.1|0\.0\.0\.0):27017([/?#].*)?$ ]] && \
+    mongodb_uri_has_direct_connection_true "$uri"
+}
+
+normalize_mongodb_uri_for_local_service() {
+  local uri="$1"
+  local suffix
+
   if [[ "$uri" =~ ^mongodb://([^/?#]+@)?(mongodb|localhost|127\.0\.0\.1|0\.0\.0\.0)(:[0-9]+)?([/?#].*)?$ ]]; then
-    printf 'mongodb://localhost:27017%s' "${BASH_REMATCH[4]:-/}"
+    suffix="$(ensure_mongodb_direct_connection_suffix "${BASH_REMATCH[4]:-/}")"
+    printf 'mongodb://localhost:27017%s' "$suffix"
     return 0
   fi
 
@@ -455,7 +517,7 @@ set_managed_service_compose_overrides() {
       ;;
     mongodb)
       if [[ -z "${COMPOSE_ENV_OVERRIDES[MONGO_URI]+set}" ]]; then
-        set_compose_override "MONGO_URI" "mongodb://mongodb:27017/"
+        set_compose_override "MONGO_URI" "mongodb://mongodb:27017/?directConnection=true"
       fi
       ;;
     redis)
@@ -793,6 +855,70 @@ existing_managed_root_service_present() {
   local root_service="$1"
 
   [[ -n "${EXISTING_MANAGED_ROOT_SERVICE_SET[$root_service]+set}" ]]
+}
+
+compose_service_block_contains_literal() {
+  local compose_file="$1"
+  local service_name="$2"
+  local literal="$3"
+
+  if [[ -z "$compose_file" || ! -f "$compose_file" ]]; then
+    return 1
+  fi
+
+  awk -v header="  ${service_name}:" -v literal="$literal" '
+    $0 == header { in_service = 1; next }
+    in_service && $0 ~ /^  [^[:space:]]/ { exit found ? 0 : 1 }
+    in_service && index($0, literal) { found = 1; exit 0 }
+    END { exit found ? 0 : 1 }
+  ' "$compose_file"
+}
+
+mongodb_service_requires_atlas_local_rewrite() {
+  local compose_file="${1:-}"
+
+  if [[ -z "$compose_file" ]]; then
+    return 1
+  fi
+
+  if [[ "${ENV_VALUES[LIGHTRAG_VECTOR_STORAGE]:-}" != "MongoVectorDBStorage" ]]; then
+    return 1
+  fi
+
+  if [[ "${ENV_VALUES[LIGHTRAG_SETUP_MONGODB_DEPLOYMENT]:-}" != "docker" ]]; then
+    return 1
+  fi
+
+  if [[ -z "${DOCKER_SERVICE_SET[mongodb]+set}" ]] || \
+    ! existing_managed_root_service_present "mongodb"; then
+    return 1
+  fi
+
+  if ! compose_service_block_contains_literal "$compose_file" "mongodb" "image: mongodb/mongodb-atlas-local:"; then
+    return 0
+  fi
+
+  if ! compose_service_block_contains_literal "$compose_file" "mongodb" "mongo_config_data:/data/configdb"; then
+    return 0
+  fi
+
+  if ! compose_service_block_contains_literal "$compose_file" "mongodb" "mongo_mongot_data:/data/mongot"; then
+    return 0
+  fi
+
+  return 1
+}
+
+configure_mongodb_compose_migration_rewrite() {
+  local existing_compose="${1:-}"
+
+  if [[ "$FORCE_REWRITE_COMPOSE" == "yes" ]]; then
+    return 0
+  fi
+
+  if mongodb_service_requires_atlas_local_rewrite "$existing_compose"; then
+    mark_compose_service_for_rewrite "mongodb"
+  fi
 }
 
 env_value_changed_from_original() {
@@ -1247,28 +1373,29 @@ collect_mongodb_config() {
     vector_search_required="yes"
   fi
 
-  if [[ "$vector_search_required" == "yes" ]]; then
-    log_warn "MongoVectorDBStorage cannot use the local Docker MongoDB service from this setup wizard."
-    log_warn "Reason: the bundled local Docker MongoDB service is MongoDB Community Edition, but MongoVectorDBStorage requires Atlas Search / Vector Search support."
-    log_warn "Provide a MongoDB endpoint that supports Atlas Search / Vector Search, such as MongoDB Atlas or Atlas local."
-    uri="${ENV_VALUES[MONGO_URI]:-mongodb+srv://cluster.example.mongodb.net/}"
+  if [[ "$default_docker" == "yes" ]]; then
+    if confirm_default_yes "Run MongoDB locally via Docker?"; then
+      use_docker="yes"
+    fi
   else
-    if [[ "$default_docker" == "yes" ]]; then
-      if confirm_default_yes "Run MongoDB locally via Docker?"; then
-        use_docker="yes"
-      fi
-    else
-      if confirm_default_no "Run MongoDB locally via Docker?"; then
-        use_docker="yes"
-      fi
+    if confirm_default_no "Run MongoDB locally via Docker?"; then
+      use_docker="yes"
     fi
+  fi
 
-    if [[ "$use_docker" == "yes" ]]; then
-      add_docker_service "mongodb"
-      uri="$(prefer_local_service_uri "${ENV_VALUES[MONGO_URI]:-}" "mongodb://localhost:27017/" "mongodb" "localhost" "127.0.0.1" "0.0.0.0")"
-    else
-      uri="${ENV_VALUES[MONGO_URI]:-mongodb://localhost:27017/}"
+  if [[ "$use_docker" == "yes" ]]; then
+    if [[ "$vector_search_required" == "yes" ]]; then
+      log_info "Docker MongoDB uses Atlas Local, so MongoVectorDBStorage can use Atlas Search / Vector Search locally."
     fi
+    add_docker_service "mongodb"
+    uri="$(prefer_local_service_uri "${ENV_VALUES[MONGO_URI]:-}" "mongodb://localhost:27017/?directConnection=true" "mongodb" "localhost" "127.0.0.1" "0.0.0.0")"
+  elif [[ "$vector_search_required" == "yes" ]]; then
+    uri="${ENV_VALUES[MONGO_URI]:-}"
+    if [[ -z "$uri" ]] || is_wizard_managed_local_mongodb_uri "$uri"; then
+      uri="mongodb+srv://cluster.example.mongodb.net/"
+    fi
+  else
+    uri="${ENV_VALUES[MONGO_URI]:-mongodb://localhost:27017/}"
   fi
 
   if [[ "$vector_search_required" == "yes" ]]; then
@@ -1285,7 +1412,7 @@ collect_mongodb_config() {
   ENV_VALUES["MONGO_URI"]="$uri"
   ENV_VALUES["MONGO_DATABASE"]="$database"
   if [[ "$use_docker" == "yes" ]]; then
-    set_compose_override "MONGO_URI" "mongodb://mongodb:27017/"
+    set_compose_override "MONGO_URI" "mongodb://mongodb:27017/?directConnection=true"
   else
     set_compose_override "MONGO_URI" ""
   fi
@@ -2351,6 +2478,13 @@ finalize_base_setup() {
     return 1
   fi
 
+  if ! validate_mongo_vector_storage_config \
+    "${ENV_VALUES[LIGHTRAG_VECTOR_STORAGE]:-}" \
+    "${ENV_VALUES[MONGO_URI]:-}" \
+    "${ENV_VALUES[LIGHTRAG_SETUP_MONGODB_DEPLOYMENT]:-}"; then
+    return 1
+  fi
+
   show_summary
 
   if ! confirm_required_yes_no "${COLOR_YELLOW}Ready to proceed and write .env${COLOR_RESET}"; then
@@ -2362,6 +2496,7 @@ finalize_base_setup() {
   compose_file="${REPO_ROOT}/docker-compose.final.yml"
   record_existing_managed_root_services "$existing_compose"
   restore_storage_docker_services_from_env
+  configure_mongodb_compose_migration_rewrite "$existing_compose"
 
   configure_base_compose_rewrites
 
@@ -2507,6 +2642,7 @@ finalize_storage_setup() {
   record_existing_managed_root_services "$existing_compose"
   restore_vllm_docker_services_from_env
   configure_storage_compose_rewrites
+  configure_mongodb_compose_migration_rewrite "$existing_compose"
   resolve_compose_output_action \
     "$existing_compose" \
     compose_action \
@@ -2607,6 +2743,13 @@ finalize_server_setup() {
     return 1
   fi
 
+  if ! validate_mongo_vector_storage_config \
+    "${ENV_VALUES[LIGHTRAG_VECTOR_STORAGE]:-}" \
+    "${ENV_VALUES[MONGO_URI]:-}" \
+    "${ENV_VALUES[LIGHTRAG_SETUP_MONGODB_DEPLOYMENT]:-}"; then
+    return 1
+  fi
+
   show_summary
 
   if ! confirm_required_yes_no "${COLOR_YELLOW}Ready to proceed and write .env${COLOR_RESET}"; then
@@ -2619,6 +2762,7 @@ finalize_server_setup() {
   record_existing_managed_root_services "$existing_compose"
   restore_storage_docker_services_from_env
   restore_vllm_docker_services_from_env
+  configure_mongodb_compose_migration_rewrite "$existing_compose"
   resolve_compose_output_action \
     "$existing_compose" \
     compose_action \
