@@ -159,4 +159,5 @@ class AuthHandler:
                 status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token"
             )
 
+
 auth_handler = AuthHandler()
