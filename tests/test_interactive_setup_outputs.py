@@ -4042,9 +4042,9 @@ finalize_base_setup
         "MongoVectorDBStorage requires the bundled Atlas Local endpoint"
         in result.stderr
     )
-    assert "image: mongo:8.2.4" in (
-        tmp_path / "docker-compose.final.yml"
-    ).read_text(encoding="utf-8")
+    assert "image: mongo:8.2.4" in (tmp_path / "docker-compose.final.yml").read_text(
+        encoding="utf-8"
+    )
 
 
 def test_finalize_base_setup_drops_stale_storage_services_missing_from_env_markers(
@@ -7135,9 +7135,9 @@ finalize_server_setup
         "MongoVectorDBStorage requires the bundled Atlas Local endpoint"
         in result.stderr
     )
-    assert "image: mongo:8.2.4" in (
-        tmp_path / "docker-compose.final.yml"
-    ).read_text(encoding="utf-8")
+    assert "image: mongo:8.2.4" in (tmp_path / "docker-compose.final.yml").read_text(
+        encoding="utf-8"
+    )
 
 
 def test_finalize_server_setup_drops_stale_managed_services_missing_from_env_markers(
