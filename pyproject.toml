@@ -145,6 +145,8 @@ evaluation = [
     "lightrag-hku[api]",
     "ragas>=0.3.7",
     "datasets>=4.3.0",
+    "langchain-openai>=0.3.0",
+    "tqdm>=4.65.0",
 ]
 
 observability = [

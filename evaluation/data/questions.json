@@ -1,0 +1,38 @@
+{
+  "_schema_version": "1.0",
+  "_description": "Multi-hop evaluation questions for LightRAG. Replace the examples below with your own questions.",
+  "_field_guide": {
+    "id":             "Unique string identifier for the question (required).",
+    "question":       "The natural-language question to ask LightRAG (required).",
+    "ground_truth":   "Reference answer used by RAGAS context_recall and context_precision. Optional but recommended.",
+    "hops":           "Integer — how many reasoning steps / documents are required to answer correctly. Used only for reporting groupings.",
+    "evidence_docs":  "Optional list of document filenames (relative to data/documents/) that contain the answer evidence.",
+    "metadata":       "Free-form dict for any extra info (topic, difficulty, source, etc.)."
+  },
+  "questions": [
+    {
+      "id": "q001",
+      "question": "REPLACE ME — single-hop example: What is the main topic of Document A?",
+      "ground_truth": "REPLACE ME — the correct answer grounded in your corpus.",
+      "hops": 1,
+      "evidence_docs": ["document_a.txt"],
+      "metadata": {"difficulty": "easy", "topic": "example"}
+    },
+    {
+      "id": "q002",
+      "question": "REPLACE ME — two-hop example: How does the concept introduced in Document A relate to the findings in Document B?",
+      "ground_truth": "REPLACE ME — answer that requires connecting both documents.",
+      "hops": 2,
+      "evidence_docs": ["document_a.txt", "document_b.txt"],
+      "metadata": {"difficulty": "medium", "topic": "example"}
+    },
+    {
+      "id": "q003",
+      "question": "REPLACE ME — three-hop example: Given the process described in Document A, the constraints outlined in Document B, and the data from Document C, what conclusion can be drawn?",
+      "ground_truth": "REPLACE ME — answer requiring evidence from three sources.",
+      "hops": 3,
+      "evidence_docs": ["document_a.txt", "document_b.txt", "document_c.txt"],
+      "metadata": {"difficulty": "hard", "topic": "example"}
+    }
+  ]
+}
