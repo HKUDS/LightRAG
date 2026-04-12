@@ -504,32 +504,10 @@ class MemgraphStorage(BaseGraphStorage):
                 "Memgraph driver is not initialized. Call 'await initialize()' first."
             )
         properties = node_data
-        entity_type = properties["entity_type"]
         if "entity_id" not in properties:
             raise ValueError(
                 "Memgraph: node properties must contain an 'entity_id' field"
             )
-
-        # Coerce to str first so membership checks below never raise TypeError
-        # regardless of what upstream callers (e.g. API payloads) pass in.
-        entity_type = (
-            str(entity_type) if not isinstance(entity_type, str) else entity_type
-        )
-
-        # Sanitize entity_type: strip backticks and handle comma-separated values.
-        # This guards against dirty data from LLM extraction or database read-back.
-        if "`" in entity_type or "," in entity_type or not entity_type.strip():
-            original = entity_type
-            entity_type = entity_type.replace("`", "").strip()
-            if "," in entity_type:
-                entity_type = entity_type.split(",")[0].strip()
-            if not entity_type:
-                entity_type = "UNKNOWN"
-            logger.warning(
-                f"[{self.workspace}] Entity type sanitized in upsert_node: '{original}' -> '{entity_type}'"
-            )
-            properties = dict(properties)
-            properties["entity_type"] = entity_type
 
         # Manual transaction-level retry following official Memgraph documentation
         max_retries = 100
@@ -549,7 +527,6 @@ class MemgraphStorage(BaseGraphStorage):
                         query = f"""
                         MERGE (n:`{workspace_label}` {{entity_id: $entity_id}})
                         SET n += $properties
-                        SET n:`{entity_type}`
                         """
                         result = await tx.run(
                             query, entity_id=node_id, properties=properties
@@ -708,9 +685,6 @@ class MemgraphStorage(BaseGraphStorage):
 
         Uses the same transient-error retry logic as upsert_node().
 
-        Note: Dynamic per-node entity_type labels are not applied in batch mode;
-        entity_type is stored as a property and remains queryable.
-
         Args:
             nodes: List of (node_id, node_data) tuples.
         """
@@ -723,24 +697,11 @@ class MemgraphStorage(BaseGraphStorage):
         workspace_label = self._get_workspace_label()
         nodes_data = []
         for node_id, node_data in nodes:
-            props = dict(node_data)
-            entity_type = props.get("entity_type", "UNKNOWN")
-            entity_type = (
-                str(entity_type) if not isinstance(entity_type, str) else entity_type
-            )
-            if "`" in entity_type or "," in entity_type or not entity_type.strip():
-                entity_type = entity_type.replace("`", "").strip()
-                if "," in entity_type:
-                    entity_type = entity_type.split(",")[0].strip()
-                if not entity_type:
-                    entity_type = "UNKNOWN"
-                props = dict(props)
-                props["entity_type"] = entity_type
-            if "entity_id" not in props:
+            if "entity_id" not in node_data:
                 raise ValueError(
                     "Memgraph: node properties must contain an 'entity_id' field"
                 )
-            nodes_data.append({"entity_id": node_id, "props": props})
+            nodes_data.append({"entity_id": node_id, "props": node_data})
 
         max_retries = 100
         initial_wait_time = 0.2
