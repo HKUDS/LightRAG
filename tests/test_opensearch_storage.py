@@ -1080,28 +1080,24 @@ class TestGraphStorage:
 
     @pytest.mark.asyncio
     async def test_get_edge(self, global_config, embed_func, mock_client):
-        mock_client.search = AsyncMock(
+        # get_edge now uses mget (translog real-time) instead of search.
+        mock_client.mget = AsyncMock(
             return_value={
-                "hits": {
-                    "hits": [
-                        {
-                            "_id": "e1",
-                            "_source": {
-                                "source_node_id": "A",
-                                "target_node_id": "B",
-                                "weight": 1.0,
-                            },
+                "docs": [
+                    {
+                        "_id": "e1",
+                        "found": True,
+                        "_source": {
+                            "source_node_id": "A",
+                            "target_node_id": "B",
+                            "weight": 1.0,
                         },
-                    ],
-                    "total": {"value": 1},
-                },
-                "aggregations": {
-                    "status_counts": {"buckets": []},
-                    "src": {"buckets": []},
-                    "tgt": {"buckets": []},
-                    "source_degrees": {"buckets": []},
-                    "target_degrees": {"buckets": []},
-                },
+                    },
+                    {
+                        "_id": "e2",
+                        "found": False,
+                    },
+                ]
             }
         )
         with patch.object(ClientManager, "get_client", return_value=mock_client):
@@ -1329,11 +1325,17 @@ class TestGraphStorage:
 
     @pytest.mark.asyncio
     async def test_remove_edges(self, global_config, embed_func, mock_client):
+        # remove_edges now uses bulk delete with deterministic IDs instead of
+        # delete_by_query, so mock bulk as AsyncMock.
+        mock_client.bulk = AsyncMock(return_value={"errors": False, "items": []})
         with patch.object(ClientManager, "get_client", return_value=mock_client):
             s = self._make(global_config, embed_func)
             await s.initialize()
             await s.remove_edges([("A", "B"), ("C", "D")])
-            mock_client.delete_by_query.assert_awaited_once()
+            # 2 edges × 2 candidate directions = 4 delete actions in one bulk call
+            mock_client.bulk.assert_awaited_once()
+            call_body = mock_client.bulk.call_args.kwargs["body"]
+            assert len(call_body) == 4
 
     @pytest.mark.asyncio
     async def test_get_all_labels(self, global_config, embed_func, mock_client):
