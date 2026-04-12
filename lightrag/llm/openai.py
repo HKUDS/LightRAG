@@ -290,12 +290,10 @@ async def openai_complete_if_cache(
     # Extract client configuration options
     client_configs = kwargs.pop("openai_client_configs", {})
 
-    # Handle entity extraction mode (Pydantic schema structured output)
+    # Handle entity extraction mode with json_object for compatibility
     entity_extraction = kwargs.pop("entity_extraction", False)
     if entity_extraction:
-        from lightrag.types import EntityExtractionResult
-
-        kwargs["response_format"] = EntityExtractionResult
+        kwargs["response_format"] = {"type": "json_object"}
 
     # Handle keyword extraction mode
     if keyword_extraction:
