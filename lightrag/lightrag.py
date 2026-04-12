@@ -108,6 +108,7 @@ from lightrag.utils import (
     generate_track_id,
     convert_to_user_format,
     logger,
+    make_relation_vdb_ids,
     subtract_source_ids,
     make_relation_chunk_key,
     normalize_source_ids_limit_method,
@@ -2415,10 +2416,18 @@ class LightRAG:
                     self.text_chunks.upsert(all_chunks_data),
                 )
 
+            # Keep the last declaration for each entity_name so batch backends
+            # preserve the old serial upsert semantics deterministically.
+            deduped_entities: dict[str, dict[str, Any]] = {}
+            for entity_data in custom_kg.get("entities", []):
+                entity_name = entity_data["entity_name"]
+                deduped_entities.pop(entity_name, None)
+                deduped_entities[entity_name] = entity_data
+
             # Insert entities into knowledge graph (batch for performance)
             all_entities_data: list[dict[str, str]] = []
             entity_nodes: list[tuple[str, dict[str, str]]] = []
-            for entity_data in custom_kg.get("entities", []):
+            for entity_data in deduped_entities.values():
                 entity_name = entity_data["entity_name"]
                 entity_type = entity_data.get("entity_type", "UNKNOWN")
                 description = entity_data.get("description", "No description provided")
@@ -2445,15 +2454,19 @@ class LightRAG:
                 all_entities_data.append(node_data_copy)
                 update_storage = True
 
-            # Use batch operation if available (reduces N serial awaits to 1)
+            # Batch insert entities (reduces N serial awaits to 1)
             if entity_nodes:
-                if hasattr(self.chunk_entity_relation_graph, "upsert_nodes_batch"):
-                    await self.chunk_entity_relation_graph.upsert_nodes_batch(entity_nodes)
-                else:
-                    for node_id, node_data in entity_nodes:
-                        await self.chunk_entity_relation_graph.upsert_node(
-                            node_id, node_data=node_data
-                        )
+                await self.chunk_entity_relation_graph.upsert_nodes_batch(entity_nodes)
+
+            # Relationship storage is undirected, so keep only the last update
+            # for each endpoint pair regardless of order.
+            deduped_relationships: dict[tuple[str, str], dict[str, Any]] = {}
+            for relationship_data in custom_kg.get("relationships", []):
+                src_id = relationship_data["src_id"]
+                tgt_id = relationship_data["tgt_id"]
+                relation_key = tuple(sorted((src_id, tgt_id)))
+                deduped_relationships.pop(relation_key, None)
+                deduped_relationships[relation_key] = relationship_data
 
             # Insert relationships into knowledge graph (batch for performance)
             all_relationships_data: list[dict[str, str]] = []
@@ -2461,23 +2474,17 @@ class LightRAG:
 
             # Batch check which relationship endpoints exist (1 await instead of 2M)
             needed_node_ids: set[str] = set()
-            for relationship_data in custom_kg.get("relationships", []):
+            for relationship_data in deduped_relationships.values():
                 needed_node_ids.add(relationship_data["src_id"])
                 needed_node_ids.add(relationship_data["tgt_id"])
 
-            if hasattr(self.chunk_entity_relation_graph, "has_nodes_batch"):
-                existing_nodes = await self.chunk_entity_relation_graph.has_nodes_batch(
-                    list(needed_node_ids)
-                )
-            else:
-                existing_nodes = set()
-                for nid in needed_node_ids:
-                    if await self.chunk_entity_relation_graph.has_node(nid):
-                        existing_nodes.add(nid)
+            existing_nodes = await self.chunk_entity_relation_graph.has_nodes_batch(
+                list(needed_node_ids)
+            )
 
             # Create missing nodes in batch
             missing_nodes: list[tuple[str, dict[str, str]]] = []
-            for relationship_data in custom_kg.get("relationships", []):
+            for relationship_data in deduped_relationships.values():
                 src_id = relationship_data["src_id"]
                 tgt_id = relationship_data["tgt_id"]
                 source_chunk_id = relationship_data.get("source_id", "UNKNOWN")
@@ -2491,15 +2498,22 @@ class LightRAG:
 
                 for need_insert_id in [src_id, tgt_id]:
                     if need_insert_id not in existing_nodes:
-                        missing_nodes.append((need_insert_id, {
-                            "entity_id": need_insert_id,
-                            "source_id": source_id,
-                            "description": "UNKNOWN",
-                            "entity_type": "UNKNOWN",
-                            "file_path": file_path,
-                            "created_at": int(time.time()),
-                        }))
+                        missing_nodes.append(
+                            (
+                                need_insert_id,
+                                {
+                                    "entity_id": need_insert_id,
+                                    "source_id": source_id,
+                                    "description": "UNKNOWN",
+                                    "entity_type": "UNKNOWN",
+                                    "file_path": file_path,
+                                    "created_at": int(time.time()),
+                                },
+                            )
+                        )
                         existing_nodes.add(need_insert_id)
+
+                normalized_src_id, normalized_tgt_id = sorted((src_id, tgt_id))
 
                 edge_data = {
                     "weight": relationship_data.get("weight", 1.0),
@@ -2511,37 +2525,27 @@ class LightRAG:
                 }
                 edge_list.append((src_id, tgt_id, edge_data))
 
-                all_relationships_data.append({
-                    "src_id": src_id,
-                    "tgt_id": tgt_id,
-                    "description": relationship_data["description"],
-                    "keywords": relationship_data["keywords"],
-                    "source_id": source_id,
-                    "weight": relationship_data.get("weight", 1.0),
-                    "file_path": file_path,
-                    "created_at": int(time.time()),
-                })
+                all_relationships_data.append(
+                    {
+                        "src_id": normalized_src_id,
+                        "tgt_id": normalized_tgt_id,
+                        "description": relationship_data["description"],
+                        "keywords": relationship_data["keywords"],
+                        "source_id": source_id,
+                        "weight": relationship_data.get("weight", 1.0),
+                        "file_path": file_path,
+                        "created_at": int(time.time()),
+                    }
+                )
                 update_storage = True
 
-            # Batch insert missing nodes
+            # Batch insert missing placeholder nodes
             if missing_nodes:
-                if hasattr(self.chunk_entity_relation_graph, "upsert_nodes_batch"):
-                    await self.chunk_entity_relation_graph.upsert_nodes_batch(missing_nodes)
-                else:
-                    for node_id, node_data in missing_nodes:
-                        await self.chunk_entity_relation_graph.upsert_node(
-                            node_id, node_data=node_data
-                        )
+                await self.chunk_entity_relation_graph.upsert_nodes_batch(missing_nodes)
 
-            # Batch insert edges (1 await instead of M serial awaits)
+            # Batch insert edges
             if edge_list:
-                if hasattr(self.chunk_entity_relation_graph, "upsert_edges_batch"):
-                    await self.chunk_entity_relation_graph.upsert_edges_batch(edge_list)
-                else:
-                    for src, tgt, edata in edge_list:
-                        await self.chunk_entity_relation_graph.upsert_edge(
-                            src, tgt, edge_data=edata
-                        )
+                await self.chunk_entity_relation_graph.upsert_edges_batch(edge_list)
 
             # Insert entities and relationships into vector storage (parallel)
             data_for_entities_vdb = {
@@ -2570,11 +2574,22 @@ class LightRAG:
                 for dp in all_relationships_data
             }
 
+            legacy_rel_ids_to_delete = sorted(
+                {
+                    rel_id
+                    for dp in all_relationships_data
+                    for rel_id in make_relation_vdb_ids(dp["src_id"], dp["tgt_id"])[1:]
+                }
+            )
+
             # Parallel VDB upserts (was serial in original)
             await asyncio.gather(
                 self.entities_vdb.upsert(data_for_entities_vdb),
                 self.relationships_vdb.upsert(data_for_rels_vdb),
             )
+
+            if legacy_rel_ids_to_delete:
+                await self.relationships_vdb.delete(legacy_rel_ids_to_delete)
 
         except Exception as e:
             logger.error(f"Error in ainsert_custom_kg: {e}")

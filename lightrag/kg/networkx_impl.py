@@ -152,9 +152,7 @@ class NetworkXStorage(BaseGraphStorage):
         graph = await self._get_graph()
         graph.add_edge(source_node_id, target_node_id, **edge_data)
 
-    async def upsert_nodes_batch(
-        self, nodes: list[tuple[str, dict[str, str]]]
-    ) -> None:
+    async def upsert_nodes_batch(self, nodes: list[tuple[str, dict[str, str]]]) -> None:
         """Batch insert/update multiple nodes in a single call.
 
         Much faster than calling upsert_node() in a loop for large imports
