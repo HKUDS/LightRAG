@@ -108,6 +108,7 @@ from lightrag.utils import (
     generate_track_id,
     convert_to_user_format,
     logger,
+    make_relation_vdb_ids,
     subtract_source_ids,
     make_relation_chunk_key,
     normalize_source_ids_limit_method,
@@ -2415,9 +2416,18 @@ class LightRAG:
                     self.text_chunks.upsert(all_chunks_data),
                 )
 
-            # Insert entities into knowledge graph
-            all_entities_data: list[dict[str, str]] = []
+            # Keep the last declaration for each entity_name so batch backends
+            # preserve the old serial upsert semantics deterministically.
+            deduped_entities: dict[str, dict[str, Any]] = {}
             for entity_data in custom_kg.get("entities", []):
+                entity_name = entity_data["entity_name"]
+                deduped_entities.pop(entity_name, None)
+                deduped_entities[entity_name] = entity_data
+
+            # Insert entities into knowledge graph (batch for performance)
+            all_entities_data: list[dict[str, str]] = []
+            entity_nodes: list[tuple[str, dict[str, str]]] = []
+            for entity_data in deduped_entities.values():
                 entity_name = entity_data["entity_name"]
                 entity_type = entity_data.get("entity_type", "UNKNOWN")
                 description = entity_data.get("description", "No description provided")
@@ -2425,13 +2435,11 @@ class LightRAG:
                 source_id = chunk_to_source_map.get(source_chunk_id, "UNKNOWN")
                 file_path = entity_data.get("file_path", "custom_kg")
 
-                # Log if source_id is UNKNOWN
                 if source_id == "UNKNOWN":
                     logger.warning(
                         f"Entity '{entity_name}' has an UNKNOWN source_id. Please check the source mapping."
                     )
 
-                # Prepare node data
                 node_data: dict[str, str] = {
                     "entity_id": entity_name,
                     "entity_type": entity_type,
@@ -2440,78 +2448,107 @@ class LightRAG:
                     "file_path": file_path,
                     "created_at": int(time.time()),
                 }
-                # Insert node data into the knowledge graph
-                await self.chunk_entity_relation_graph.upsert_node(
-                    entity_name, node_data=node_data
-                )
-                node_data["entity_name"] = entity_name
-                all_entities_data.append(node_data)
+                entity_nodes.append((entity_name, node_data))
+                node_data_copy = dict(node_data)
+                node_data_copy["entity_name"] = entity_name
+                all_entities_data.append(node_data_copy)
                 update_storage = True
 
-            # Insert relationships into knowledge graph
-            all_relationships_data: list[dict[str, str]] = []
+            # Batch insert entities (reduces N serial awaits to 1)
+            if entity_nodes:
+                await self.chunk_entity_relation_graph.upsert_nodes_batch(entity_nodes)
+
+            # Relationship storage is undirected, so keep only the last update
+            # for each endpoint pair regardless of order.
+            deduped_relationships: dict[tuple[str, str], dict[str, Any]] = {}
             for relationship_data in custom_kg.get("relationships", []):
                 src_id = relationship_data["src_id"]
                 tgt_id = relationship_data["tgt_id"]
-                description = relationship_data["description"]
-                keywords = relationship_data["keywords"]
-                weight = relationship_data.get("weight", 1.0)
+                relation_key = tuple(sorted((src_id, tgt_id)))
+                deduped_relationships.pop(relation_key, None)
+                deduped_relationships[relation_key] = relationship_data
+
+            # Insert relationships into knowledge graph (batch for performance)
+            all_relationships_data: list[dict[str, str]] = []
+            edge_list: list[tuple[str, str, dict[str, str]]] = []
+
+            # Batch check which relationship endpoints exist (1 await instead of 2M)
+            needed_node_ids: set[str] = set()
+            for relationship_data in deduped_relationships.values():
+                needed_node_ids.add(relationship_data["src_id"])
+                needed_node_ids.add(relationship_data["tgt_id"])
+
+            existing_nodes = await self.chunk_entity_relation_graph.has_nodes_batch(
+                list(needed_node_ids)
+            )
+
+            # Create missing nodes in batch
+            missing_nodes: list[tuple[str, dict[str, str]]] = []
+            for relationship_data in deduped_relationships.values():
+                src_id = relationship_data["src_id"]
+                tgt_id = relationship_data["tgt_id"]
                 source_chunk_id = relationship_data.get("source_id", "UNKNOWN")
                 source_id = chunk_to_source_map.get(source_chunk_id, "UNKNOWN")
                 file_path = relationship_data.get("file_path", "custom_kg")
 
-                # Log if source_id is UNKNOWN
                 if source_id == "UNKNOWN":
                     logger.warning(
                         f"Relationship from '{src_id}' to '{tgt_id}' has an UNKNOWN source_id. Please check the source mapping."
                     )
 
-                # Check if nodes exist in the knowledge graph
                 for need_insert_id in [src_id, tgt_id]:
-                    if not (
-                        await self.chunk_entity_relation_graph.has_node(need_insert_id)
-                    ):
-                        await self.chunk_entity_relation_graph.upsert_node(
-                            need_insert_id,
-                            node_data={
-                                "entity_id": need_insert_id,
-                                "source_id": source_id,
-                                "description": "UNKNOWN",
-                                "entity_type": "UNKNOWN",
-                                "file_path": file_path,
-                                "created_at": int(time.time()),
-                            },
+                    if need_insert_id not in existing_nodes:
+                        missing_nodes.append(
+                            (
+                                need_insert_id,
+                                {
+                                    "entity_id": need_insert_id,
+                                    "source_id": source_id,
+                                    "description": "UNKNOWN",
+                                    "entity_type": "UNKNOWN",
+                                    "file_path": file_path,
+                                    "created_at": int(time.time()),
+                                },
+                            )
                         )
+                        existing_nodes.add(need_insert_id)
 
-                # Insert edge into the knowledge graph
-                await self.chunk_entity_relation_graph.upsert_edge(
-                    src_id,
-                    tgt_id,
-                    edge_data={
-                        "weight": weight,
-                        "description": description,
-                        "keywords": keywords,
-                        "source_id": source_id,
-                        "file_path": file_path,
-                        "created_at": int(time.time()),
-                    },
-                )
+                normalized_src_id, normalized_tgt_id = sorted((src_id, tgt_id))
 
-                edge_data: dict[str, str] = {
-                    "src_id": src_id,
-                    "tgt_id": tgt_id,
-                    "description": description,
-                    "keywords": keywords,
+                edge_data = {
+                    "weight": relationship_data.get("weight", 1.0),
+                    "description": relationship_data["description"],
+                    "keywords": relationship_data["keywords"],
                     "source_id": source_id,
-                    "weight": weight,
                     "file_path": file_path,
                     "created_at": int(time.time()),
                 }
-                all_relationships_data.append(edge_data)
+                edge_list.append((src_id, tgt_id, edge_data))
+
+                all_relationships_data.append(
+                    {
+                        "src_id": normalized_src_id,
+                        "tgt_id": normalized_tgt_id,
+                        "description": relationship_data["description"],
+                        "keywords": relationship_data["keywords"],
+                        "source_id": source_id,
+                        "weight": relationship_data.get("weight", 1.0),
+                        "file_path": file_path,
+                        "created_at": int(time.time()),
+                    }
+                )
                 update_storage = True
 
-            # Insert entities into vector storage with consistent format
-            data_for_vdb = {
+            # Batch insert missing placeholder nodes
+            if missing_nodes:
+                await self.chunk_entity_relation_graph.upsert_nodes_batch(missing_nodes)
+
+            # Batch insert edges
+            if edge_list:
+                await self.chunk_entity_relation_graph.upsert_edges_batch(edge_list)
+
+            # Insert entities and relationships into vector storage (parallel)
+            data_for_entities_vdb = {
                 compute_mdhash_id(dp["entity_name"], prefix="ent-"): {
                     "content": dp["entity_name"] + "\n" + dp["description"],
                     "entity_name": dp["entity_name"],
@@ -2522,10 +2559,8 @@ class LightRAG:
                 }
                 for dp in all_entities_data
             }
-            await self.entities_vdb.upsert(data_for_vdb)
 
-            # Insert relationships into vector storage with consistent format
-            data_for_vdb = {
+            data_for_rels_vdb = {
                 compute_mdhash_id(dp["src_id"] + dp["tgt_id"], prefix="rel-"): {
                     "src_id": dp["src_id"],
                     "tgt_id": dp["tgt_id"],
@@ -2538,7 +2573,23 @@ class LightRAG:
                 }
                 for dp in all_relationships_data
             }
-            await self.relationships_vdb.upsert(data_for_vdb)
+
+            legacy_rel_ids_to_delete = sorted(
+                {
+                    rel_id
+                    for dp in all_relationships_data
+                    for rel_id in make_relation_vdb_ids(dp["src_id"], dp["tgt_id"])[1:]
+                }
+            )
+
+            # Parallel VDB upserts (was serial in original)
+            await asyncio.gather(
+                self.entities_vdb.upsert(data_for_entities_vdb),
+                self.relationships_vdb.upsert(data_for_rels_vdb),
+            )
+
+            if legacy_rel_ids_to_delete:
+                await self.relationships_vdb.delete(legacy_rel_ids_to_delete)
 
         except Exception as e:
             logger.error(f"Error in ainsert_custom_kg: {e}")

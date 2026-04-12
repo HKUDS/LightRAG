@@ -1028,30 +1028,8 @@ class Neo4JStorage(BaseGraphStorage):
         """
         workspace_label = self._get_workspace_label()
         properties = node_data
-        entity_type = properties["entity_type"]
         if "entity_id" not in properties:
             raise ValueError("Neo4j: node properties must contain an 'entity_id' field")
-
-        # Coerce to str first so membership checks below never raise TypeError
-        # regardless of what upstream callers (e.g. API payloads) pass in.
-        entity_type = (
-            str(entity_type) if not isinstance(entity_type, str) else entity_type
-        )
-
-        # Sanitize entity_type: strip backticks and handle comma-separated values.
-        # This guards against dirty data from LLM extraction or database read-back.
-        if "`" in entity_type or "," in entity_type or not entity_type.strip():
-            original = entity_type
-            entity_type = entity_type.replace("`", "").strip()
-            if "," in entity_type:
-                entity_type = entity_type.split(",")[0].strip()
-            if not entity_type:
-                entity_type = "UNKNOWN"
-            logger.warning(
-                f"[{self.workspace}] Entity type sanitized in upsert_node: '{original}' -> '{entity_type}'"
-            )
-            properties = dict(properties)
-            properties["entity_type"] = entity_type
 
         try:
             async with self._driver.session(database=self._DATABASE) as session:
@@ -1060,7 +1038,6 @@ class Neo4JStorage(BaseGraphStorage):
                     query = f"""
                     MERGE (n:`{workspace_label}` {{entity_id: $entity_id}})
                     SET n += $properties
-                    SET n:`{entity_type}`
                     """
                     result = await tx.run(
                         query, entity_id=node_id, properties=properties
@@ -1070,6 +1047,140 @@ class Neo4JStorage(BaseGraphStorage):
                 await session.execute_write(execute_upsert)
         except Exception as e:
             logger.error(f"[{self.workspace}] Error during upsert: {str(e)}")
+            raise
+
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=4, max=10),
+        retry=retry_if_exception_type(
+            (
+                neo4jExceptions.ServiceUnavailable,
+                neo4jExceptions.TransientError,
+                neo4jExceptions.WriteServiceUnavailable,
+                neo4jExceptions.ClientError,
+                neo4jExceptions.SessionExpired,
+                ConnectionResetError,
+                OSError,
+            )
+        ),
+    )
+    async def upsert_nodes_batch(self, nodes: list[tuple[str, dict[str, str]]]) -> None:
+        """Batch insert/update multiple nodes using a single UNWIND Cypher query.
+
+        Significantly faster than calling upsert_node() in a loop for large imports
+        because it executes all merges in one round-trip to the database.
+
+        Args:
+            nodes: List of (node_id, node_data) tuples.
+        """
+        if not nodes:
+            return
+        workspace_label = self._get_workspace_label()
+        nodes_data = []
+        for node_id, node_data in nodes:
+            if "entity_id" not in node_data:
+                raise ValueError(
+                    "Neo4j: node properties must contain an 'entity_id' field"
+                )
+            nodes_data.append({"entity_id": node_id, "props": node_data})
+
+        try:
+            async with self._driver.session(database=self._DATABASE) as session:
+
+                async def execute_batch(tx: AsyncManagedTransaction):
+                    query = f"""
+                    UNWIND $nodes AS row
+                    MERGE (n:`{workspace_label}` {{entity_id: row.entity_id}})
+                    SET n += row.props
+                    """
+                    result = await tx.run(query, nodes=nodes_data)
+                    await result.consume()
+
+                await session.execute_write(execute_batch)
+        except Exception as e:
+            logger.error(f"[{self.workspace}] Error during batch node upsert: {str(e)}")
+            raise
+
+    @READ_RETRY
+    async def has_nodes_batch(self, node_ids: list[str]) -> set[str]:
+        """Check existence of multiple nodes in a single UNWIND query.
+
+        Args:
+            node_ids: List of node IDs to check.
+
+        Returns:
+            Set of node_ids that exist in the graph.
+        """
+        if not node_ids:
+            return set()
+        workspace_label = self._get_workspace_label()
+        try:
+            async with self._driver.session(
+                database=self._DATABASE, default_access_mode="READ"
+            ) as session:
+                query = f"""
+                UNWIND $ids AS id
+                MATCH (n:`{workspace_label}` {{entity_id: id}})
+                RETURN n.entity_id AS entity_id
+                """
+                result = await session.run(query, ids=node_ids)
+                records = await result.data()
+                await result.consume()
+                return {r["entity_id"] for r in records}
+        except Exception as e:
+            logger.error(
+                f"[{self.workspace}] Error during batch node existence check: {str(e)}"
+            )
+            raise
+
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=4, max=10),
+        retry=retry_if_exception_type(
+            (
+                neo4jExceptions.ServiceUnavailable,
+                neo4jExceptions.TransientError,
+                neo4jExceptions.WriteServiceUnavailable,
+                neo4jExceptions.ClientError,
+                neo4jExceptions.SessionExpired,
+                ConnectionResetError,
+                OSError,
+            )
+        ),
+    )
+    async def upsert_edges_batch(
+        self, edges: list[tuple[str, str, dict[str, str]]]
+    ) -> None:
+        """Batch insert/update multiple edges using a single UNWIND Cypher query.
+
+        Args:
+            edges: List of (source_node_id, target_node_id, edge_data) tuples.
+        """
+        if not edges:
+            return
+        workspace_label = self._get_workspace_label()
+        edges_data = [
+            {"src": src, "tgt": tgt, "props": edge_data}
+            for src, tgt, edge_data in edges
+        ]
+        try:
+            async with self._driver.session(database=self._DATABASE) as session:
+
+                async def execute_batch(tx: AsyncManagedTransaction):
+                    query = f"""
+                    UNWIND $edges AS row
+                    MATCH (source:`{workspace_label}` {{entity_id: row.src}})
+                    WITH source, row
+                    MATCH (target:`{workspace_label}` {{entity_id: row.tgt}})
+                    MERGE (source)-[r:DIRECTED]-(target)
+                    SET r += row.props
+                    """
+                    result = await tx.run(query, edges=edges_data)
+                    await result.consume()
+
+                await session.execute_write(execute_batch)
+        except Exception as e:
+            logger.error(f"[{self.workspace}] Error during batch edge upsert: {str(e)}")
             raise
 
     @retry(

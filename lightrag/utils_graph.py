@@ -7,7 +7,7 @@ from typing import Any, cast
 from .base import DeletionResult
 from .kg.shared_storage import get_storage_keyed_lock
 from .constants import GRAPH_FIELD_SEP
-from .utils import compute_mdhash_id, logger
+from .utils import compute_mdhash_id, logger, make_relation_vdb_ids
 from .base import StorageNameSpace
 
 
@@ -1755,8 +1755,11 @@ async def get_relation_info(
 
     # Optional: Get vector database information
     if include_vector_data:
-        rel_id = compute_mdhash_id(src_entity + tgt_entity, prefix="rel-")
-        vector_data = await relationships_vdb.get_by_id(rel_id)
+        vector_data = None
+        for rel_id in make_relation_vdb_ids(src_entity, tgt_entity):
+            vector_data = await relationships_vdb.get_by_id(rel_id)
+            if vector_data is not None:
+                break
         result["vector_data"] = vector_data
 
     return result

@@ -152,6 +152,40 @@ class NetworkXStorage(BaseGraphStorage):
         graph = await self._get_graph()
         graph.add_edge(source_node_id, target_node_id, **edge_data)
 
+    async def upsert_nodes_batch(self, nodes: list[tuple[str, dict[str, str]]]) -> None:
+        """Batch insert/update multiple nodes in a single call.
+
+        Much faster than calling upsert_node() in a loop for large imports
+        because it avoids per-call async event loop overhead.
+
+        Args:
+            nodes: List of (node_id, node_data) tuples.
+        """
+        graph = await self._get_graph()
+        for node_id, node_data in nodes:
+            graph.add_node(node_id, **node_data)
+
+    async def has_nodes_batch(self, node_ids: list[str]) -> set[str]:
+        """Check existence of multiple nodes in a single call.
+
+        Returns:
+            Set of node_ids that exist in the graph.
+        """
+        graph = await self._get_graph()
+        return {nid for nid in node_ids if graph.has_node(nid)}
+
+    async def upsert_edges_batch(
+        self, edges: list[tuple[str, str, dict[str, str]]]
+    ) -> None:
+        """Batch insert/update multiple edges in a single call.
+
+        Args:
+            edges: List of (source_id, target_id, edge_data) tuples.
+        """
+        graph = await self._get_graph()
+        for src, tgt, edge_data in edges:
+            graph.add_edge(src, tgt, **edge_data)
+
     async def delete_node(self, node_id: str) -> None:
         """
         Importance notes:

@@ -5125,6 +5125,63 @@ class PGGraphStorage(BaseGraphStorage):
             )
             raise
 
+    async def upsert_nodes_batch(self, nodes: list[tuple[str, dict[str, str]]]) -> None:
+        """Batch insert/update multiple nodes while preserving input-order semantics.
+
+        PostgreSQL/AGE write paths embed properties directly in Cypher strings and do not
+        yet support parameterized UNWIND. Deduplicating by node ID first preserves the
+        last-write-wins behaviour of the historical serial fallback.
+
+        Args:
+            nodes: List of (node_id, node_data) tuples.
+        """
+        if not nodes:
+            return
+        deduped_nodes: dict[str, dict[str, str]] = {}
+        for node_id, node_data in nodes:
+            deduped_nodes.pop(node_id, None)
+            deduped_nodes[node_id] = node_data
+
+        for node_id, node_data in deduped_nodes.items():
+            await self.upsert_node(node_id, node_data=node_data)
+
+    async def has_nodes_batch(self, node_ids: list[str]) -> set[str]:
+        """Check existence of multiple nodes using a single array-based SQL query.
+
+        Args:
+            node_ids: List of node IDs to check.
+
+        Returns:
+            Set of node_ids that exist in the graph.
+        """
+        if not node_ids:
+            return set()
+        result = await self.get_nodes_batch(node_ids)
+        return set(result.keys())
+
+    async def upsert_edges_batch(
+        self, edges: list[tuple[str, str, dict[str, str]]]
+    ) -> None:
+        """Batch insert/update multiple edges while preserving input-order semantics.
+
+        PostgreSQL/AGE relationships are undirected (`MERGE (source)-[r:DIRECTED]-(target)`),
+        so batches containing reciprocal duplicates must retain the last update for each
+        endpoint pair to match the historical serial fallback.
+
+        Args:
+            edges: List of (source_node_id, target_node_id, edge_data) tuples.
+        """
+        if not edges:
+            return
+        deduped_edges: dict[tuple[str, str], tuple[str, str, dict[str, str]]] = {}
+        for src, tgt, edge_data in edges:
+            edge_key = tuple(sorted((src, tgt)))
+            deduped_edges.pop(edge_key, None)
+            deduped_edges[edge_key] = (src, tgt, edge_data)
+
+        for src, tgt, edge_data in deduped_edges.values():
+            await self.upsert_edge(src, tgt, edge_data=edge_data)
+
     async def delete_node(self, node_id: str) -> None:
         """
         Delete a node from the graph.

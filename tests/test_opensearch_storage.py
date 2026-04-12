@@ -1208,6 +1208,42 @@ class TestGraphStorage:
             assert mock_client.index.await_count == 2
 
     @pytest.mark.asyncio
+    async def test_upsert_edges_batch_reuses_id_for_reciprocal_edges(
+        self, global_config, embed_func, mock_client
+    ):
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+
+            bulk_calls = []
+
+            async def capture_bulk(_client, actions, *args, **kwargs):
+                bulk_calls.append(list(actions))
+                return (len(bulk_calls[-1]), [])
+
+            mock_client.mget = AsyncMock(
+                side_effect=[
+                    {"docs": []},
+                    {"docs": [{"_id": "edge-ba", "found": False}] * 2},
+                ]
+            )
+
+            with patch(
+                "lightrag.kg.opensearch_impl.helpers.async_bulk",
+                new=AsyncMock(side_effect=capture_bulk),
+            ):
+                await s.upsert_edges_batch(
+                    [
+                        ("A", "B", {"weight": "1.0"}),
+                        ("B", "A", {"weight": "2.0"}),
+                    ]
+                )
+
+            edge_actions = bulk_calls[-1]
+            assert len(edge_actions) == 2
+            assert edge_actions[0]["_id"] == edge_actions[1]["_id"]
+
+    @pytest.mark.asyncio
     async def test_upsert_after_drop_recreates_indices(
         self, global_config, embed_func, mock_client
     ):

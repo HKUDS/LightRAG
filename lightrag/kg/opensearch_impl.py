@@ -1513,6 +1513,130 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                 f"[{self.workspace}] Error upserting edge {source_node_id}->{target_node_id}: {e}"
             )
 
+    async def upsert_nodes_batch(self, nodes: list[tuple[str, dict[str, str]]]) -> None:
+        """Batch insert/update multiple nodes using the OpenSearch bulk API.
+
+        Args:
+            nodes: List of (node_id, node_data) tuples.
+        """
+        if not nodes:
+            return
+        try:
+            await self._ensure_indices_ready()
+            actions = []
+            for node_id, node_data in nodes:
+                doc = {k: v for k, v in node_data.items() if k != "_id"}
+                doc["entity_id"] = node_id
+                if node_data.get("source_id", ""):
+                    doc["source_ids"] = node_data["source_id"].split(GRAPH_FIELD_SEP)
+                actions.append(
+                    {
+                        "_op_type": "index",
+                        "_index": self._nodes_index,
+                        "_id": node_id,
+                        "_source": doc,
+                    }
+                )
+            await helpers.async_bulk(self.client, actions)
+        except OpenSearchException as e:
+            logger.error(f"[{self.workspace}] Error during batch node upsert: {e}")
+
+    async def has_nodes_batch(self, node_ids: list[str]) -> set[str]:
+        """Check existence of multiple nodes using a single mget request.
+
+        Args:
+            node_ids: List of node IDs to check.
+
+        Returns:
+            Set of node_ids that exist in the graph.
+        """
+        if not node_ids:
+            return set()
+        if not self._indices_ready:
+            return set()
+        try:
+            response = await self.client.mget(
+                index=self._nodes_index, body={"ids": node_ids}
+            )
+            return {doc["_id"] for doc in response.get("docs", []) if doc.get("found")}
+        except OpenSearchException as e:
+            if _is_missing_index_error(e):
+                self._mark_indices_missing()
+            return set()
+
+    async def upsert_edges_batch(
+        self, edges: list[tuple[str, str, dict[str, str]]]
+    ) -> None:
+        """Batch insert/update multiple edges using the OpenSearch bulk API.
+
+        Replicates the bidirectional edge-ID logic of upsert_edge(): a canonical
+        forward ID is used unless a reverse-direction document already exists, in
+        which case the reverse ID is used so the update lands on the existing doc.
+        The reverse-ID look-up is done in a single mget call before the bulk write.
+
+        Args:
+            edges: List of (source_node_id, target_node_id, edge_data) tuples.
+        """
+        if not edges:
+            return
+        try:
+            await self._ensure_indices_ready()
+
+            # Ensure all source nodes exist (mirrors upsert_edge behaviour)
+            source_ids = list({src for src, _tgt, _data in edges})
+            existing_sources = await self.has_nodes_batch(source_ids)
+            missing_sources = [
+                (nid, {}) for nid in source_ids if nid not in existing_sources
+            ]
+            if missing_sources:
+                await self.upsert_nodes_batch(missing_sources)
+
+            # Compute forward and reverse edge IDs, then batch-check which
+            # reverse-direction docs already exist (one mget instead of N exists).
+            forward_ids = [
+                compute_mdhash_id(f"{src}-{tgt}", prefix="edge-")
+                for src, tgt, _ in edges
+            ]
+            reverse_ids = [
+                compute_mdhash_id(f"{tgt}-{src}", prefix="edge-")
+                for src, tgt, _ in edges
+            ]
+            try:
+                rev_response = await self.client.mget(
+                    index=self._edges_index, body={"ids": reverse_ids}
+                )
+                existing_reverse = {
+                    doc["_id"]
+                    for doc in rev_response.get("docs", [])
+                    if doc.get("found")
+                }
+            except OpenSearchException:
+                existing_reverse = set()
+
+            actions = []
+            reserved_edge_ids = set(existing_reverse)
+            for (src, tgt, edge_data), fwd_id, rev_id in zip(
+                edges, forward_ids, reverse_ids
+            ):
+                edge_id = rev_id if rev_id in reserved_edge_ids else fwd_id
+                reserved_edge_ids.add(edge_id)
+                doc = {k: v for k, v in edge_data.items() if k != "_id"}
+                doc["source_node_id"] = src
+                doc["target_node_id"] = tgt
+                if edge_data.get("source_id", ""):
+                    doc["source_ids"] = edge_data["source_id"].split(GRAPH_FIELD_SEP)
+                actions.append(
+                    {
+                        "_op_type": "index",
+                        "_index": self._edges_index,
+                        "_id": edge_id,
+                        "_source": doc,
+                    }
+                )
+            await helpers.async_bulk(self.client, actions)
+        except OpenSearchException as e:
+            logger.error(f"[{self.workspace}] Error during batch edge upsert: {e}")
+
     # --- Delete operations ---
 
     async def delete_node(self, node_id: str) -> None:
