@@ -1111,6 +1111,90 @@ class MongoGraphStorage(BaseGraphStorage):
             upsert=True,
         )
 
+    async def upsert_nodes_batch(self, nodes: list[tuple[str, dict[str, str]]]) -> None:
+        """Batch insert/update multiple nodes using a single bulk_write() call.
+
+        Args:
+            nodes: List of (node_id, node_data) tuples.
+        """
+        if not nodes:
+            return
+        ops = []
+        for node_id, node_data in nodes:
+            update_doc: dict = {"$set": {**node_data}}
+            if node_data.get("source_id", ""):
+                update_doc["$set"]["source_ids"] = node_data["source_id"].split(
+                    GRAPH_FIELD_SEP
+                )
+            ops.append(UpdateOne({"_id": node_id}, update_doc, upsert=True))
+        await self.collection.bulk_write(ops, ordered=True)
+
+    async def has_nodes_batch(self, node_ids: list[str]) -> set[str]:
+        """Check existence of multiple nodes using a single $in query.
+
+        Args:
+            node_ids: List of node IDs to check.
+
+        Returns:
+            Set of node_ids that exist in the graph.
+        """
+        if not node_ids:
+            return set()
+        cursor = self.collection.find({"_id": {"$in": node_ids}}, {"_id": 1})
+        return {doc["_id"] async for doc in cursor}
+
+    async def upsert_edges_batch(
+        self, edges: list[tuple[str, str, dict[str, str]]]
+    ) -> None:
+        """Batch insert/update multiple edges using a single bulk_write() call.
+
+        Also ensures source nodes exist (matching upsert_edge() behaviour) via a
+        separate bulk_write on the node collection for any source nodes that need
+        to be created as empty placeholders.
+
+        Args:
+            edges: List of (source_node_id, target_node_id, edge_data) tuples.
+        """
+        if not edges:
+            return
+
+        # Ensure all source nodes exist (mirrors upsert_edge's upsert_node call)
+        source_node_ids = list(dict.fromkeys(src for src, _tgt, _data in edges))
+        node_ops = [
+            UpdateOne({"_id": src}, {"$setOnInsert": {"_id": src}}, upsert=True)
+            for src in source_node_ids
+        ]
+        await self.collection.bulk_write(node_ops, ordered=False)
+
+        edge_ops = []
+        for source_node_id, target_node_id, edge_data in edges:
+            update_doc: dict = {"$set": {**edge_data}}
+            if edge_data.get("source_id", ""):
+                update_doc["$set"]["source_ids"] = edge_data["source_id"].split(
+                    GRAPH_FIELD_SEP
+                )
+            update_doc["$set"]["source_node_id"] = source_node_id
+            update_doc["$set"]["target_node_id"] = target_node_id
+            edge_ops.append(
+                UpdateOne(
+                    {
+                        "$or": [
+                            {
+                                "source_node_id": source_node_id,
+                                "target_node_id": target_node_id,
+                            },
+                            {
+                                "source_node_id": target_node_id,
+                                "target_node_id": source_node_id,
+                            },
+                        ]
+                    },
+                    update_doc,
+                    upsert=True,
+                )
+            )
+        await self.edge_collection.bulk_write(edge_ops, ordered=True)
+
     #
     # -------------------------------------------------------------------------
     # DELETION
@@ -1190,6 +1274,19 @@ class MongoGraphStorage(BaseGraphStorage):
             },
         )
 
+    async def _fetch_nodes_by_ids(
+        self, node_ids: list[str], projection: dict[str, int] | None = None
+    ) -> list[dict[str, Any]]:
+        """Fetch nodes by ID while preserving the requested order."""
+        if not node_ids:
+            return []
+
+        cursor = self.collection.find({"_id": {"$in": node_ids}}, projection)
+        docs_by_id = {}
+        async for doc in cursor:
+            docs_by_id[str(doc["_id"])] = doc
+        return [docs_by_id[node_id] for node_id in node_ids if node_id in docs_by_id]
+
     async def get_knowledge_graph_all_by_degree(
         self, max_depth: int, max_nodes: int
     ) -> KnowledgeGraph:
@@ -1233,8 +1330,17 @@ class MongoGraphStorage(BaseGraphStorage):
                 node_id = str(doc["_id"])
                 node_ids.append(node_id)
 
-            cursor = self.collection.find({"_id": {"$in": node_ids}}, {"source_ids": 0})
-            async for doc in cursor:
+            if len(node_ids) < max_nodes:
+                remaining = max_nodes - len(node_ids)
+                cursor = self.collection.find(
+                    {"_id": {"$nin": node_ids}},
+                    {"source_ids": 0},
+                ).limit(remaining)
+                async for doc in cursor:
+                    node_ids.append(str(doc["_id"]))
+
+            docs = await self._fetch_nodes_by_ids(node_ids, {"source_ids": 0})
+            for doc in docs:
                 result.nodes.append(self._construct_graph_node(doc["_id"], doc))
 
             # As node count reaches the limit, only need to fetch the edges that directly connect to these nodes

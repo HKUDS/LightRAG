@@ -579,6 +579,53 @@ class BaseGraphStorage(StorageNameSpace, ABC):
             node_data: A dictionary of node properties
         """
 
+    async def upsert_nodes_batch(self, nodes: list[tuple[str, dict[str, str]]]) -> None:
+        """Insert or update multiple nodes in a single batch call.
+
+        Default implementation falls back to calling upsert_node() serially.
+        Override in storage backends that support native batch operations for
+        better performance when importing large knowledge graphs.
+
+        Args:
+            nodes: List of (node_id, node_data) tuples.
+        """
+        for node_id, node_data in nodes:
+            await self.upsert_node(node_id, node_data=node_data)
+
+    async def has_nodes_batch(self, node_ids: list[str]) -> set[str]:
+        """Check existence of multiple nodes in a single batch call.
+
+        Default implementation falls back to calling has_node() serially.
+        Override in storage backends that support native batch operations for
+        better performance when importing large knowledge graphs.
+
+        Args:
+            node_ids: List of node IDs to check.
+
+        Returns:
+            Set of node_ids that exist in the graph.
+        """
+        existing: set[str] = set()
+        for node_id in node_ids:
+            if await self.has_node(node_id):
+                existing.add(node_id)
+        return existing
+
+    async def upsert_edges_batch(
+        self, edges: list[tuple[str, str, dict[str, str]]]
+    ) -> None:
+        """Insert or update multiple edges in a single batch call.
+
+        Default implementation falls back to calling upsert_edge() serially.
+        Override in storage backends that support native batch operations for
+        better performance when importing large knowledge graphs.
+
+        Args:
+            edges: List of (source_node_id, target_node_id, edge_data) tuples.
+        """
+        for source_node_id, target_node_id, edge_data in edges:
+            await self.upsert_edge(source_node_id, target_node_id, edge_data=edge_data)
+
     @abstractmethod
     async def upsert_edge(
         self, source_node_id: str, target_node_id: str, edge_data: dict[str, str]
