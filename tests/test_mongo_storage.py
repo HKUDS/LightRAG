@@ -42,11 +42,15 @@ class TestMongoGraphStorage:
         return storage
 
     @pytest.mark.asyncio
-    async def test_get_knowledge_graph_all_backfills_isolated_nodes_when_truncated(self):
+    async def test_get_knowledge_graph_all_backfills_isolated_nodes_when_truncated(
+        self,
+    ):
         storage = self._make_storage()
         storage.collection.count_documents = AsyncMock(return_value=5)
         storage.edge_collection.aggregate = AsyncMock(
-            return_value=_AsyncCursor([{"_id": "A", "degree": 1}, {"_id": "B", "degree": 1}])
+            return_value=_AsyncCursor(
+                [{"_id": "A", "degree": 1}, {"_id": "B", "degree": 1}]
+            )
         )
 
         def collection_find_side_effect(query, projection=None):
@@ -82,7 +86,9 @@ class TestMongoGraphStorage:
             )
         )
 
-        result = await storage.get_knowledge_graph_all_by_degree(max_depth=2, max_nodes=4)
+        result = await storage.get_knowledge_graph_all_by_degree(
+            max_depth=2, max_nodes=4
+        )
 
         assert result.is_truncated is True
         assert [node.id for node in result.nodes] == ["A", "B", "C", "D"]
