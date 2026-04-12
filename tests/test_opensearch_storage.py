@@ -1380,6 +1380,144 @@ class TestGraphStorage:
             assert labels[0] == "A"  # degree 8 > B degree 2
 
     @pytest.mark.asyncio
+    async def test_get_knowledge_graph_all_backfills_isolated_nodes_when_truncated(
+        self, global_config, embed_func, mock_client
+    ):
+        mock_client.count = AsyncMock(return_value={"count": 5})
+        mock_client.search = AsyncMock(
+            side_effect=[
+                {
+                    "hits": {"hits": [], "total": {"value": 1}},
+                    "aggregations": {
+                        "src": {"buckets": [{"key": "A", "doc_count": 1}]},
+                        "tgt": {"buckets": [{"key": "B", "doc_count": 1}]},
+                        "status_counts": {"buckets": []},
+                    },
+                },
+                {
+                    "hits": {
+                        "hits": [
+                            {"_id": "A", "sort": [1]},
+                            {"_id": "B", "sort": [2]},
+                            {"_id": "C", "sort": [3]},
+                            {"_id": "D", "sort": [4]},
+                            {"_id": "E", "sort": [5]},
+                        ],
+                        "total": {"value": 5},
+                    }
+                },
+                {
+                    "hits": {
+                        "hits": [
+                            {
+                                "_id": "edge-ab",
+                                "_source": {
+                                    "source_node_id": "A",
+                                    "target_node_id": "B",
+                                    "relationship": "knows",
+                                },
+                            }
+                        ],
+                        "total": {"value": 1},
+                    }
+                },
+            ]
+        )
+        mock_client.mget = AsyncMock(
+            return_value={
+                "docs": [
+                    {"_id": "A", "found": True, "_source": {"entity_type": "person"}},
+                    {"_id": "B", "found": True, "_source": {"entity_type": "person"}},
+                    {"_id": "C", "found": True, "_source": {"entity_type": "person"}},
+                    {"_id": "D", "found": True, "_source": {"entity_type": "person"}},
+                ]
+            }
+        )
+
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+
+            result = await s.get_knowledge_graph("*", max_nodes=4)
+
+            assert result.is_truncated is True
+            assert [node.id for node in result.nodes] == ["A", "B", "C", "D"]
+            assert len(result.edges) == 1
+            assert result.edges[0].source == "A"
+            assert result.edges[0].target == "B"
+            assert mock_client.create_pit.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_get_knowledge_graph_all_paginates_edges_between_selected_nodes(
+        self, global_config, embed_func, mock_client
+    ):
+        mock_client.count = AsyncMock(return_value={"count": 2})
+        first_edge_page = [
+            {
+                "_id": f"edge-{i}",
+                "_source": {
+                    "source_node_id": "A",
+                    "target_node_id": "B",
+                    "relationship": "knows",
+                },
+                "sort": [i],
+            }
+            for i in range(10000)
+        ]
+        mock_client.search = AsyncMock(
+            side_effect=[
+                {
+                    "hits": {
+                        "hits": [
+                            {"_id": "A"},
+                            {"_id": "B"},
+                        ],
+                        "total": {"value": 2},
+                    }
+                },
+                {"hits": {"hits": first_edge_page, "total": {"value": 10001}}},
+                {
+                    "hits": {
+                        "hits": [
+                            {
+                                "_id": "edge-last",
+                                "_source": {
+                                    "source_node_id": "B",
+                                    "target_node_id": "A",
+                                    "relationship": "knows",
+                                },
+                                "sort": [10000],
+                            }
+                        ],
+                        "total": {"value": 10001},
+                    }
+                },
+            ]
+        )
+        mock_client.mget = AsyncMock(
+            return_value={
+                "docs": [
+                    {"_id": "A", "found": True, "_source": {"entity_type": "person"}},
+                    {"_id": "B", "found": True, "_source": {"entity_type": "person"}},
+                ]
+            }
+        )
+
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+
+            result = await s.get_knowledge_graph("*", max_nodes=2)
+
+            assert len(result.nodes) == 2
+            assert len(result.edges) == 2
+            assert {(edge.source, edge.target) for edge in result.edges} == {
+                ("A", "B"),
+                ("B", "A"),
+            }
+            assert mock_client.search.await_count == 3
+
+    @pytest.mark.asyncio
     async def test_search_labels_empty_query(
         self, global_config, embed_func, mock_client
     ):
@@ -1725,6 +1863,111 @@ class TestGraphPPLDetection:
             result = await s.get_knowledge_graph("A", max_depth=2)
             assert len(result.nodes) == 1
             assert result.nodes[0].id == "A"
+
+    @pytest.mark.asyncio
+    async def test_ppl_bfs_truncates_nodes_by_depth_then_weight(
+        self, global_config, embed_func, mock_client
+    ):
+        mock_client.transport = AsyncMock()
+        ppl_response = {
+            "schema": [
+                {"name": "entity_id", "type": "string"},
+                {"name": "connected_edges", "type": "struct"},
+            ],
+            "datarows": [
+                [
+                    "A",
+                    [
+                        {
+                            "source_node_id": "A",
+                            "target_node_id": "C",
+                            "weight": 1.0,
+                            "_depth": 1,
+                        },
+                        {
+                            "source_node_id": "B",
+                            "target_node_id": "D",
+                            "weight": 10.0,
+                            "_depth": 1,
+                        },
+                        {
+                            "source_node_id": "A",
+                            "target_node_id": "B",
+                            "weight": 1.0,
+                            "_depth": 0,
+                        },
+                    ],
+                ]
+            ],
+        }
+        mock_client.transport.perform_request = AsyncMock(return_value=ppl_response)
+        mock_client.mget = AsyncMock(
+            side_effect=[
+                {
+                    "docs": [
+                        {
+                            "_id": "A",
+                            "found": True,
+                            "_source": {"entity_type": "person"},
+                        }
+                    ]
+                },
+                {
+                    "docs": [
+                        {
+                            "_id": "B",
+                            "found": True,
+                            "_source": {"entity_type": "person"},
+                        },
+                        {
+                            "_id": "D",
+                            "found": True,
+                            "_source": {"entity_type": "person"},
+                        },
+                    ]
+                },
+            ]
+        )
+        mock_client.search = AsyncMock(
+            return_value={
+                "hits": {
+                    "hits": [
+                        {
+                            "_id": "e1",
+                            "_source": {
+                                "source_node_id": "A",
+                                "target_node_id": "B",
+                                "relationship": "knows",
+                            },
+                            "sort": [1],
+                        },
+                        {
+                            "_id": "e2",
+                            "_source": {
+                                "source_node_id": "B",
+                                "target_node_id": "D",
+                                "relationship": "knows",
+                            },
+                            "sort": [2],
+                        },
+                    ],
+                    "total": {"value": 2},
+                }
+            }
+        )
+
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+
+            result = await s.get_knowledge_graph("A", max_depth=2, max_nodes=3)
+
+            assert [node.id for node in result.nodes] == ["A", "B", "D"]
+            assert result.is_truncated is True
+            assert {(edge.source, edge.target) for edge in result.edges} == {
+                ("A", "B"),
+                ("B", "D"),
+            }
 
     @pytest.mark.asyncio
     async def test_upsert_node_adds_entity_id(
