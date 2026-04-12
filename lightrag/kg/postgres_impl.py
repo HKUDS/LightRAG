@@ -4950,11 +4950,13 @@ class PGGraphStorage(BaseGraphStorage):
         result = await self.node_degrees_batch(node_ids=[node_id])
         if result and node_id in result:
             return result[node_id]
+        return 0
 
     async def edge_degree(self, src_id: str, tgt_id: str) -> int:
         result = await self.edge_degrees_batch(edges=[(src_id, tgt_id)])
         if result and (src_id, tgt_id) in result:
             return result[(src_id, tgt_id)]
+        return 0
 
     async def get_edge(
         self, source_node_id: str, target_node_id: str
