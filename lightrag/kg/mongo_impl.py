@@ -1268,6 +1268,19 @@ class MongoGraphStorage(BaseGraphStorage):
             },
         )
 
+    async def _fetch_nodes_by_ids(
+        self, node_ids: list[str], projection: dict[str, int] | None = None
+    ) -> list[dict[str, Any]]:
+        """Fetch nodes by ID while preserving the requested order."""
+        if not node_ids:
+            return []
+
+        cursor = self.collection.find({"_id": {"$in": node_ids}}, projection)
+        docs_by_id = {}
+        async for doc in cursor:
+            docs_by_id[str(doc["_id"])] = doc
+        return [docs_by_id[node_id] for node_id in node_ids if node_id in docs_by_id]
+
     async def get_knowledge_graph_all_by_degree(
         self, max_depth: int, max_nodes: int
     ) -> KnowledgeGraph:
@@ -1311,8 +1324,17 @@ class MongoGraphStorage(BaseGraphStorage):
                 node_id = str(doc["_id"])
                 node_ids.append(node_id)
 
-            cursor = self.collection.find({"_id": {"$in": node_ids}}, {"source_ids": 0})
-            async for doc in cursor:
+            if len(node_ids) < max_nodes:
+                remaining = max_nodes - len(node_ids)
+                cursor = self.collection.find(
+                    {"_id": {"$nin": node_ids}},
+                    {"source_ids": 0},
+                ).limit(remaining)
+                async for doc in cursor:
+                    node_ids.append(str(doc["_id"]))
+
+            docs = await self._fetch_nodes_by_ids(node_ids, {"source_ids": 0})
+            for doc in docs:
                 result.nodes.append(self._construct_graph_node(doc["_id"], doc))
 
             # As node count reaches the limit, only need to fetch the edges that directly connect to these nodes
