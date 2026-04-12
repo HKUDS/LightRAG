@@ -387,31 +387,25 @@ class MemgraphStorage(BaseGraphStorage):
                     query = f"""MATCH (n:`{workspace_label}` {{entity_id: $entity_id}})
                             OPTIONAL MATCH (n)-[r]-(connected:`{workspace_label}`)
                             WHERE connected.entity_id IS NOT NULL
-                            RETURN n, r, connected"""
+                            RETURN n.entity_id AS node_entity_id,
+                                   connected.entity_id AS connected_entity_id,
+                                   startNode(r).entity_id AS start_entity_id"""
                     results = await session.run(query, entity_id=source_node_id)
 
                     edges = []
                     async for record in results:
-                        source_node = record["n"]
-                        connected_node = record["connected"]
+                        node_entity_id = record["node_entity_id"]
+                        connected_entity_id = record["connected_entity_id"]
+                        start_entity_id = record["start_entity_id"]
 
-                        # Skip if either node is None
-                        if not source_node or not connected_node:
+                        if not node_entity_id or not connected_entity_id:
                             continue
 
-                        source_label = (
-                            source_node.get("entity_id")
-                            if source_node.get("entity_id")
-                            else None
-                        )
-                        target_label = (
-                            connected_node.get("entity_id")
-                            if connected_node.get("entity_id")
-                            else None
-                        )
-
-                        if source_label and target_label:
-                            edges.append((source_label, target_label))
+                        # Preserve the original edge direction via startNode(r)
+                        if start_entity_id == node_entity_id:
+                            edges.append((node_entity_id, connected_entity_id))
+                        else:
+                            edges.append((connected_entity_id, node_entity_id))
 
                     await results.consume()  # Ensure results are consumed
                     return edges
