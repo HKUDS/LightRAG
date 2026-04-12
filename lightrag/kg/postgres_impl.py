@@ -5084,7 +5084,6 @@ class PGGraphStorage(BaseGraphStorage):
                      MATCH (target:base {{entity_id: "{tgt_label}"}})
                      MERGE (source)-[r:DIRECTED]-(target)
                      SET r += {edge_properties}
-                     SET r += {edge_properties}
                      RETURN r"""
 
         query = f"SELECT * FROM cypher({_dollar_quote(self.graph_name)}, {_dollar_quote(cypher_query)}) AS (r agtype)"
