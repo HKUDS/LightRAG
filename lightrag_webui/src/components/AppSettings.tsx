@@ -18,6 +18,7 @@ export default function AppSettings({ className }: AppSettingsProps) {
   const [opened, setOpened] = useState<boolean>(false)
   const [knownWorkspaces, setKnownWorkspaces] = useState<LightragWorkspace[]>([])
   const [loadingWorkspaces, setLoadingWorkspaces] = useState<boolean>(false)
+  const [workspaceListLoaded, setWorkspaceListLoaded] = useState<boolean>(false)
   const { t } = useTranslation()
 
   const language = useSettingsStore.use.language()
@@ -42,6 +43,12 @@ export default function AppSettings({ className }: AppSettingsProps) {
     setWorkspace(value)
     useBackendState.getState().resetHealthCheckTimerDelayed(0)
   }, [setWorkspace])
+
+  const handleWorkspaceCandidateSelect = useCallback((value: string) => {
+    setWorkspaceDraft(value)
+    handleWorkspaceChange(value)
+    setOpened(false)
+  }, [handleWorkspaceChange])
 
   const commitWorkspaceDraft = useCallback(() => {
     if (workspaceDraft !== workspace) {
@@ -79,19 +86,21 @@ export default function AppSettings({ className }: AppSettingsProps) {
     try {
       const result = await listWorkspaces()
       setKnownWorkspaces(result.workspaces || [])
+      setWorkspaceListLoaded(true)
     } catch (error) {
       console.error('Failed to load workspaces:', error)
       setKnownWorkspaces([])
+      setWorkspaceListLoaded(false)
     } finally {
       setLoadingWorkspaces(false)
     }
   }, [])
 
   useEffect(() => {
-    if (opened) {
-      refreshWorkspaceList()
+    if (opened && !workspaceListLoaded && !loadingWorkspaces) {
+      void refreshWorkspaceList()
     }
-  }, [opened, refreshWorkspaceList])
+  }, [loadingWorkspaces, opened, refreshWorkspaceList, workspaceListLoaded])
 
   return (
     <Popover open={opened} onOpenChange={handleOpenChange}>
@@ -145,7 +154,7 @@ export default function AppSettings({ className }: AppSettingsProps) {
                   variant={workspaceDraft === candidate.id ? 'default' : 'outline'}
                   size="sm"
                   className="h-7 px-2 text-xs"
-                  onClick={() => setWorkspaceDraft(candidate.id)}
+                  onClick={() => handleWorkspaceCandidateSelect(candidate.id)}
                 >
                   {candidate.label}
                 </Button>
