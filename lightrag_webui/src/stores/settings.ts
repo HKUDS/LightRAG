@@ -9,6 +9,9 @@ type Language = 'en' | 'zh' | 'fr' | 'ar' | 'zh_TW' | 'ru' | 'ja' | 'de' | 'uk' 
 type Tab = 'documents' | 'knowledge-graph' | 'retrieval' | 'api'
 
 interface SettingsState {
+  workspace: string
+  setWorkspace: (workspace: string) => void
+
   // Document manager settings
   showFileName: boolean
   setShowFileName: (show: boolean) => void
@@ -87,6 +90,7 @@ interface SettingsState {
 const useSettingsStoreBase = create<SettingsState>()(
   persist(
     (set) => ({
+      workspace: '',
       theme: 'system',
       language: 'en',
       showPropertyPanel: true,
@@ -137,6 +141,11 @@ const useSettingsStoreBase = create<SettingsState>()(
       },
 
       setTheme: (theme: Theme) => set({ theme }),
+
+      setWorkspace: (workspace: string) =>
+        set({
+          workspace: workspace.trim()
+        }),
 
       setLanguage: (language: Language) => {
         set({ language })
@@ -238,8 +247,11 @@ const useSettingsStoreBase = create<SettingsState>()(
     {
       name: 'settings-storage',
       storage: createJSONStorage(() => localStorage),
-      version: 19,
+      version: 20,
       migrate: (state: any, version: number) => {
+        if (version < 20) {
+          state.workspace = ''
+        }
         if (version < 2) {
           state.showEdgeLabel = false
         }

@@ -3,7 +3,7 @@ import { SiteInfo, webuiPrefix } from '@/lib/constants'
 import AppSettings from '@/components/AppSettings'
 import { TabsList, TabsTrigger } from '@/components/ui/Tabs'
 import { useSettingsStore } from '@/stores/settings'
-import { useAuthStore } from '@/stores/state'
+import { useAuthStore, useBackendState } from '@/stores/state'
 import { cn } from '@/lib/utils'
 import { useTranslation } from 'react-i18next'
 import { navigationService } from '@/services/navigation'
@@ -57,6 +57,9 @@ function TabsNavigation() {
 export default function SiteHeader() {
   const { t } = useTranslation()
   const { isGuestMode, coreVersion, apiVersion, username, webuiTitle, webuiDescription } = useAuthStore()
+  const workspace = useSettingsStore.use.workspace()
+  const backendStatus = useBackendState.use.status()
+  const activeWorkspace = backendStatus?.configuration.workspace || workspace || 'default'
 
   const versionDisplay = (coreVersion && apiVersion)
     ? `${coreVersion}/${apiVersion}`
@@ -107,6 +110,9 @@ export default function SiteHeader() {
             {t('login.guestMode', 'Guest Mode')}
           </div>
         )}
+        <div className="ml-2 max-w-[260px] truncate rounded-md border border-emerald-500/30 bg-emerald-500/10 px-2 py-1 text-xs text-emerald-700 dark:text-emerald-300">
+          {t('settings.workspace', { defaultValue: 'Workspace' })}: {activeWorkspace}
+        </div>
       </div>
 
       <nav className="w-[200px] flex items-center justify-end">

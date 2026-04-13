@@ -41,6 +41,7 @@ export type LightragStatus = {
     graph_storage: string
     vector_storage: string
     workspace?: string
+    default_workspace?: string
     max_graph_nodes?: string
     enable_rerank?: boolean
     rerank_binding?: string | null
@@ -84,6 +85,20 @@ export type LightragDocumentsScanProgress = {
   indexed_count: number
   total_files: number
   progress: number
+}
+
+export type LightragWorkspace = {
+  id: string
+  label: string
+  is_default: boolean
+  is_current: boolean
+  sources: string[]
+}
+
+export type LightragWorkspaceList = {
+  current_workspace: string
+  default_workspace: string
+  workspaces: LightragWorkspace[]
 }
 
 /**
@@ -286,6 +301,11 @@ const axiosInstance = axios.create({
   }
 })
 
+const getWorkspaceHeader = (): string | null => {
+  const workspace = useSettingsStore.getState().workspace?.trim()
+  return workspace ? workspace : null
+}
+
 // ========== Token Management ==========
 // Prevent multiple requests from triggering token refresh simultaneously
 let isRefreshingGuestToken = false;
@@ -351,6 +371,12 @@ axiosInstance.interceptors.request.use((config) => {
   }
   if (apiKey) {
     config.headers['X-API-Key'] = apiKey
+  }
+  const workspace = getWorkspaceHeader()
+  if (workspace) {
+    config.headers['LIGHTRAG-WORKSPACE'] = workspace
+  } else if (config.headers['LIGHTRAG-WORKSPACE']) {
+    delete config.headers['LIGHTRAG-WORKSPACE']
   }
   return config
 })
@@ -488,6 +514,11 @@ export const checkHealth = async (): Promise<
   }
 }
 
+export const listWorkspaces = async (): Promise<LightragWorkspaceList> => {
+  const response = await axiosInstance.get('/workspaces')
+  return response.data
+}
+
 export const getDocuments = async (): Promise<DocsStatusesResponse> => {
   const response = await axiosInstance.get('/documents')
   return response.data
@@ -529,6 +560,10 @@ export const queryTextStream = async (
   }
   if (apiKey) {
     headers['X-API-Key'] = apiKey;
+  }
+  const workspace = getWorkspaceHeader();
+  if (workspace) {
+    headers['LIGHTRAG-WORKSPACE'] = workspace;
   }
 
   try {
