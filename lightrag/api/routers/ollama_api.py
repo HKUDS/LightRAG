@@ -1,6 +1,6 @@
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
-from typing import List, Dict, Any, Optional, Type
+from typing import List, Dict, Any, Optional, Type, Callable, Awaitable
 from lightrag.utils import logger
 import time
 import json
@@ -218,13 +218,40 @@ def parse_query_mode(query: str) -> tuple[str, SearchMode, bool, Optional[str]]:
 
 
 class OllamaAPI:
-    def __init__(self, rag: LightRAG, top_k: int = 60, api_key: Optional[str] = None):
+    def __init__(
+        self,
+        rag: LightRAG,
+        top_k: int = 60,
+        api_key: Optional[str] = None,
+        get_rag_for_workspace: Optional[
+            Callable[[str | None], Awaitable[LightRAG]]
+        ] = None,
+        get_workspace_from_request: Optional[Callable[[Request], str | None]] = None,
+    ):
         self.rag = rag
         self.ollama_server_infos = rag.ollama_server_infos
         self.top_k = top_k
         self.api_key = api_key
+        self.get_rag_for_workspace = get_rag_for_workspace
+        self.get_workspace_from_request = get_workspace_from_request
         self.router = APIRouter(tags=["ollama"])
         self.setup_routes()
+
+    async def resolve_rag(self, raw_request: Request) -> LightRAG:
+        if (
+            self.get_rag_for_workspace is None
+            or self.get_workspace_from_request is None
+        ):
+            return self.rag
+        workspace = self.get_workspace_from_request(raw_request)
+        return await self.get_rag_for_workspace(workspace)
+
+    @staticmethod
+    def build_llm_kwargs(rag: LightRAG, system_prompt: Optional[str]) -> Dict[str, Any]:
+        llm_kwargs = dict(rag.llm_model_kwargs)
+        if system_prompt:
+            llm_kwargs["system_prompt"] = system_prompt
+        return llm_kwargs
 
     def setup_routes(self):
         # Create combined auth dependency for Ollama API routes
@@ -236,21 +263,23 @@ class OllamaAPI:
             return OllamaVersionResponse(version="0.9.3")
 
         @self.router.get("/tags", dependencies=[Depends(combined_auth)])
-        async def get_tags():
+        async def get_tags(raw_request: Request):
             """Return available models acting as an Ollama server"""
+            active_rag = await self.resolve_rag(raw_request)
+            active_infos = active_rag.ollama_server_infos
             return OllamaTagResponse(
                 models=[
                     {
-                        "name": self.ollama_server_infos.LIGHTRAG_MODEL,
-                        "model": self.ollama_server_infos.LIGHTRAG_MODEL,
-                        "modified_at": self.ollama_server_infos.LIGHTRAG_CREATED_AT,
-                        "size": self.ollama_server_infos.LIGHTRAG_SIZE,
-                        "digest": self.ollama_server_infos.LIGHTRAG_DIGEST,
+                        "name": active_infos.LIGHTRAG_MODEL,
+                        "model": active_infos.LIGHTRAG_MODEL,
+                        "modified_at": active_infos.LIGHTRAG_CREATED_AT,
+                        "size": active_infos.LIGHTRAG_SIZE,
+                        "digest": active_infos.LIGHTRAG_DIGEST,
                         "details": {
                             "parent_model": "",
                             "format": "gguf",
-                            "family": self.ollama_server_infos.LIGHTRAG_NAME,
-                            "families": [self.ollama_server_infos.LIGHTRAG_NAME],
+                            "family": active_infos.LIGHTRAG_NAME,
+                            "families": [active_infos.LIGHTRAG_NAME],
                             "parameter_size": "13B",
                             "quantization_level": "Q4_0",
                         },
@@ -259,15 +288,17 @@ class OllamaAPI:
             )
 
         @self.router.get("/ps", dependencies=[Depends(combined_auth)])
-        async def get_running_models():
+        async def get_running_models(raw_request: Request):
             """List Running Models - returns currently running models"""
+            active_rag = await self.resolve_rag(raw_request)
+            active_infos = active_rag.ollama_server_infos
             return OllamaPsResponse(
                 models=[
                     {
-                        "name": self.ollama_server_infos.LIGHTRAG_MODEL,
-                        "model": self.ollama_server_infos.LIGHTRAG_MODEL,
-                        "size": self.ollama_server_infos.LIGHTRAG_SIZE,
-                        "digest": self.ollama_server_infos.LIGHTRAG_DIGEST,
+                        "name": active_infos.LIGHTRAG_MODEL,
+                        "model": active_infos.LIGHTRAG_MODEL,
+                        "size": active_infos.LIGHTRAG_SIZE,
+                        "digest": active_infos.LIGHTRAG_DIGEST,
                         "details": {
                             "parent_model": "",
                             "format": "gguf",
@@ -277,7 +308,7 @@ class OllamaAPI:
                             "quantization_level": "Q4_0",
                         },
                         "expires_at": "2050-12-31T14:38:31.83753-07:00",
-                        "size_vram": self.ollama_server_infos.LIGHTRAG_SIZE,
+                        "size_vram": active_infos.LIGHTRAG_SIZE,
                     }
                 ]
             )
@@ -294,17 +325,17 @@ class OllamaAPI:
             try:
                 # Parse the request body manually
                 request = await parse_request_body(raw_request, OllamaGenerateRequest)
+                active_rag = await self.resolve_rag(raw_request)
+                active_infos = active_rag.ollama_server_infos
 
                 query = request.prompt
                 start_time = time.time_ns()
                 prompt_tokens = estimate_tokens(query)
-
-                if request.system:
-                    self.rag.llm_model_kwargs["system_prompt"] = request.system
+                llm_kwargs = self.build_llm_kwargs(active_rag, request.system)
 
                 if request.stream:
-                    response = await self.rag.llm_model_func(
-                        query, stream=True, **self.rag.llm_model_kwargs
+                    response = await active_rag.llm_model_func(
+                        query, stream=True, **llm_kwargs
                     )
 
                     async def stream_generator():
@@ -320,8 +351,8 @@ class OllamaAPI:
                             total_response = response
 
                             data = {
-                                "model": self.ollama_server_infos.LIGHTRAG_MODEL,
-                                "created_at": self.ollama_server_infos.LIGHTRAG_CREATED_AT,
+                                "model": active_infos.LIGHTRAG_MODEL,
+                                "created_at": active_infos.LIGHTRAG_CREATED_AT,
                                 "response": response,
                                 "done": False,
                             }
@@ -333,8 +364,8 @@ class OllamaAPI:
                             eval_time = last_chunk_time - first_chunk_time
 
                             data = {
-                                "model": self.ollama_server_infos.LIGHTRAG_MODEL,
-                                "created_at": self.ollama_server_infos.LIGHTRAG_CREATED_AT,
+                                "model": active_infos.LIGHTRAG_MODEL,
+                                "created_at": active_infos.LIGHTRAG_CREATED_AT,
                                 "response": "",
                                 "done": True,
                                 "done_reason": "stop",
@@ -358,8 +389,8 @@ class OllamaAPI:
 
                                         total_response += chunk
                                         data = {
-                                            "model": self.ollama_server_infos.LIGHTRAG_MODEL,
-                                            "created_at": self.ollama_server_infos.LIGHTRAG_CREATED_AT,
+                                            "model": active_infos.LIGHTRAG_MODEL,
+                                            "created_at": active_infos.LIGHTRAG_CREATED_AT,
                                             "response": chunk,
                                             "done": False,
                                         }
@@ -375,8 +406,8 @@ class OllamaAPI:
 
                                 # Send error message to client
                                 error_data = {
-                                    "model": self.ollama_server_infos.LIGHTRAG_MODEL,
-                                    "created_at": self.ollama_server_infos.LIGHTRAG_CREATED_AT,
+                                    "model": active_infos.LIGHTRAG_MODEL,
+                                    "created_at": active_infos.LIGHTRAG_CREATED_AT,
                                     "response": f"\n\nError: {error_msg}",
                                     "error": f"\n\nError: {error_msg}",
                                     "done": False,
@@ -385,8 +416,8 @@ class OllamaAPI:
 
                                 # Send final message to close the stream
                                 final_data = {
-                                    "model": self.ollama_server_infos.LIGHTRAG_MODEL,
-                                    "created_at": self.ollama_server_infos.LIGHTRAG_CREATED_AT,
+                                    "model": active_infos.LIGHTRAG_MODEL,
+                                    "created_at": active_infos.LIGHTRAG_CREATED_AT,
                                     "response": "",
                                     "done": True,
                                 }
@@ -400,8 +431,8 @@ class OllamaAPI:
                             eval_time = last_chunk_time - first_chunk_time
 
                             data = {
-                                "model": self.ollama_server_infos.LIGHTRAG_MODEL,
-                                "created_at": self.ollama_server_infos.LIGHTRAG_CREATED_AT,
+                                "model": active_infos.LIGHTRAG_MODEL,
+                                "created_at": active_infos.LIGHTRAG_CREATED_AT,
                                 "response": "",
                                 "done": True,
                                 "done_reason": "stop",
@@ -428,8 +459,8 @@ class OllamaAPI:
                     )
                 else:
                     first_chunk_time = time.time_ns()
-                    response_text = await self.rag.llm_model_func(
-                        query, stream=False, **self.rag.llm_model_kwargs
+                    response_text = await active_rag.llm_model_func(
+                        query, stream=False, **llm_kwargs
                     )
                     last_chunk_time = time.time_ns()
 
@@ -442,8 +473,8 @@ class OllamaAPI:
                     eval_time = last_chunk_time - first_chunk_time
 
                     return {
-                        "model": self.ollama_server_infos.LIGHTRAG_MODEL,
-                        "created_at": self.ollama_server_infos.LIGHTRAG_CREATED_AT,
+                        "model": active_infos.LIGHTRAG_MODEL,
+                        "created_at": active_infos.LIGHTRAG_CREATED_AT,
                         "response": str(response_text),
                         "done": True,
                         "done_reason": "stop",
@@ -471,6 +502,8 @@ class OllamaAPI:
             try:
                 # Parse the request body manually
                 request = await parse_request_body(raw_request, OllamaChatRequest)
+                active_rag = await self.resolve_rag(raw_request)
+                active_infos = active_rag.ollama_server_infos
 
                 # Get all messages
                 messages = request.messages
@@ -511,20 +544,19 @@ class OllamaAPI:
                     param_dict["user_prompt"] = user_prompt
 
                 query_param = QueryParam(**param_dict)
+                llm_kwargs = self.build_llm_kwargs(active_rag, request.system)
 
                 if request.stream:
                     # Determine if the request is prefix with "/bypass"
                     if mode == SearchMode.bypass:
-                        if request.system:
-                            self.rag.llm_model_kwargs["system_prompt"] = request.system
-                        response = await self.rag.llm_model_func(
+                        response = await active_rag.llm_model_func(
                             cleaned_query,
                             stream=True,
                             history_messages=conversation_history,
-                            **self.rag.llm_model_kwargs,
+                            **llm_kwargs,
                         )
                     else:
-                        response = await self.rag.aquery(
+                        response = await active_rag.aquery(
                             cleaned_query, param=query_param
                         )
 
@@ -541,8 +573,8 @@ class OllamaAPI:
                             total_response = response
 
                             data = {
-                                "model": self.ollama_server_infos.LIGHTRAG_MODEL,
-                                "created_at": self.ollama_server_infos.LIGHTRAG_CREATED_AT,
+                                "model": active_infos.LIGHTRAG_MODEL,
+                                "created_at": active_infos.LIGHTRAG_CREATED_AT,
                                 "message": {
                                     "role": "assistant",
                                     "content": response,
@@ -558,8 +590,8 @@ class OllamaAPI:
                             eval_time = last_chunk_time - first_chunk_time
 
                             data = {
-                                "model": self.ollama_server_infos.LIGHTRAG_MODEL,
-                                "created_at": self.ollama_server_infos.LIGHTRAG_CREATED_AT,
+                                "model": active_infos.LIGHTRAG_MODEL,
+                                "created_at": active_infos.LIGHTRAG_CREATED_AT,
                                 "message": {
                                     "role": "assistant",
                                     "content": "",
@@ -586,8 +618,8 @@ class OllamaAPI:
 
                                         total_response += chunk
                                         data = {
-                                            "model": self.ollama_server_infos.LIGHTRAG_MODEL,
-                                            "created_at": self.ollama_server_infos.LIGHTRAG_CREATED_AT,
+                                            "model": active_infos.LIGHTRAG_MODEL,
+                                            "created_at": active_infos.LIGHTRAG_CREATED_AT,
                                             "message": {
                                                 "role": "assistant",
                                                 "content": chunk,
@@ -607,8 +639,8 @@ class OllamaAPI:
 
                                 # Send error message to client
                                 error_data = {
-                                    "model": self.ollama_server_infos.LIGHTRAG_MODEL,
-                                    "created_at": self.ollama_server_infos.LIGHTRAG_CREATED_AT,
+                                    "model": active_infos.LIGHTRAG_MODEL,
+                                    "created_at": active_infos.LIGHTRAG_CREATED_AT,
                                     "message": {
                                         "role": "assistant",
                                         "content": f"\n\nError: {error_msg}",
@@ -621,8 +653,8 @@ class OllamaAPI:
 
                                 # Send final message to close the stream
                                 final_data = {
-                                    "model": self.ollama_server_infos.LIGHTRAG_MODEL,
-                                    "created_at": self.ollama_server_infos.LIGHTRAG_CREATED_AT,
+                                    "model": active_infos.LIGHTRAG_MODEL,
+                                    "created_at": active_infos.LIGHTRAG_CREATED_AT,
                                     "message": {
                                         "role": "assistant",
                                         "content": "",
@@ -641,8 +673,8 @@ class OllamaAPI:
                             eval_time = last_chunk_time - first_chunk_time
 
                             data = {
-                                "model": self.ollama_server_infos.LIGHTRAG_MODEL,
-                                "created_at": self.ollama_server_infos.LIGHTRAG_CREATED_AT,
+                                "model": active_infos.LIGHTRAG_MODEL,
+                                "created_at": active_infos.LIGHTRAG_CREATED_AT,
                                 "message": {
                                     "role": "assistant",
                                     "content": "",
@@ -677,17 +709,14 @@ class OllamaAPI:
                         r"\n<chat_history>\nUSER:", cleaned_query, re.MULTILINE
                     )
                     if match_result or mode == SearchMode.bypass:
-                        if request.system:
-                            self.rag.llm_model_kwargs["system_prompt"] = request.system
-
-                        response_text = await self.rag.llm_model_func(
+                        response_text = await active_rag.llm_model_func(
                             cleaned_query,
                             stream=False,
                             history_messages=conversation_history,
-                            **self.rag.llm_model_kwargs,
+                            **llm_kwargs,
                         )
                     else:
-                        response_text = await self.rag.aquery(
+                        response_text = await active_rag.aquery(
                             cleaned_query, param=query_param
                         )
 
@@ -702,8 +731,8 @@ class OllamaAPI:
                     eval_time = last_chunk_time - first_chunk_time
 
                     return {
-                        "model": self.ollama_server_infos.LIGHTRAG_MODEL,
-                        "created_at": self.ollama_server_infos.LIGHTRAG_CREATED_AT,
+                        "model": active_infos.LIGHTRAG_MODEL,
+                        "created_at": active_infos.LIGHTRAG_CREATED_AT,
                         "message": {
                             "role": "assistant",
                             "content": str(response_text),
