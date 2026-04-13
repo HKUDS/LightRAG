@@ -43,7 +43,9 @@ async def test_upsert_edge_single_set_clause():
         return []
 
     with patch.object(storage, "_query", side_effect=fake_query):
-        await storage.upsert_edge("NodeA", "NodeB", {"weight": "1.0", "description": "test edge"})
+        await storage.upsert_edge(
+            "NodeA", "NodeB", {"weight": "1.0", "description": "test edge"}
+        )
 
     assert len(captured_sql) == 1
     sql = captured_sql[0]
