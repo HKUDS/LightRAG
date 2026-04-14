@@ -905,6 +905,39 @@ read_service_environment_value() {
   return 1
 }
 
+read_service_image_value() {
+  local compose_file="$1"
+  local service_name="$2"
+  local line
+  local service_header="  ${service_name}:"
+  local in_service="no"
+
+  if [[ ! -f "$compose_file" ]]; then
+    return 1
+  fi
+
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    if [[ "$in_service" == "yes" ]]; then
+      if [[ "$line" =~ ^[[:space:]]{4}image:[[:space:]]*(.+)$ ]]; then
+        printf '%s' "${BASH_REMATCH[1]}"
+        return 0
+      fi
+
+      if [[ "$line" =~ ^[[:space:]]{2}[^[:space:]] && "$line" != "$service_header" ]]; then
+        in_service="no"
+      elif [[ "$line" =~ ^[^[:space:]] ]]; then
+        in_service="no"
+      fi
+    fi
+
+    if [[ "$line" == "$service_header" ]]; then
+      in_service="yes"
+    fi
+  done < "$compose_file"
+
+  return 1
+}
+
 _extract_named_volume_name() {
   local mount_spec="$1"
   local source=""
@@ -1263,6 +1296,13 @@ generate_docker_compose() {
       vllm-embed)
         ;;
     esac
+
+    if [[ -n "${COMPOSE_SERVICE_IMAGE_OVERRIDES[$service]+set}" ]]; then
+      inject_service_image_override \
+        "$service_blocks_file" \
+        "$service" \
+        "${COMPOSE_SERVICE_IMAGE_OVERRIDES[$service]}"
+    fi
   done
 
   _merge_managed_service_blocks "$tmp_file" "$service_blocks_file"
@@ -1565,6 +1605,65 @@ inject_service_environment_overrides() {
       printf '    environment:\n' >> "$tmp_file"
     fi
     _write_service_environment_entries "$tmp_file" "$environment_style" "${entries[@]}"
+  fi
+
+  mv "$tmp_file" "$compose_file"
+}
+
+inject_service_image_override() {
+  local compose_file="$1"
+  local service_name="$2"
+  local image_value="$3"
+  local tmp_file="${compose_file}.${service_name}.image"
+  _FILE_OPS_CLEANUP_TMP+=("$tmp_file")
+  local line
+  local in_service="no"
+  local inserted="no"
+  local service_header="  ${service_name}:"
+
+  if [[ -z "$image_value" || ! -f "$compose_file" ]]; then
+    return 0
+  fi
+
+  : > "$tmp_file"
+
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    if [[ "$in_service" == "yes" ]]; then
+      if [[ "$line" =~ ^[[:space:]]{4}image:[[:space:]]*.+$ ]]; then
+        printf '    image: %s\n' "$image_value" >> "$tmp_file"
+        inserted="yes"
+        continue
+      fi
+
+      if [[ "$inserted" == "no" && "$line" =~ ^[[:space:]]{4}[^[:space:]] ]]; then
+        printf '    image: %s\n' "$image_value" >> "$tmp_file"
+        inserted="yes"
+      fi
+
+      if [[ "$line" =~ ^[[:space:]]{2}[^[:space:]] && "$line" != "$service_header" ]]; then
+        if [[ "$inserted" == "no" ]]; then
+          printf '    image: %s\n' "$image_value" >> "$tmp_file"
+          inserted="yes"
+        fi
+        in_service="no"
+      elif [[ "$line" =~ ^[^[:space:]] ]]; then
+        if [[ "$inserted" == "no" ]]; then
+          printf '    image: %s\n' "$image_value" >> "$tmp_file"
+          inserted="yes"
+        fi
+        in_service="no"
+      fi
+    fi
+
+    printf '%s\n' "$line" >> "$tmp_file"
+
+    if [[ "$line" == "$service_header" ]]; then
+      in_service="yes"
+    fi
+  done < "$compose_file"
+
+  if [[ "$in_service" == "yes" && "$inserted" == "no" ]]; then
+    printf '    image: %s\n' "$image_value" >> "$tmp_file"
   fi
 
   mv "$tmp_file" "$compose_file"
