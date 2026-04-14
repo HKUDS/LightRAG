@@ -1950,11 +1950,22 @@ class PostgreSQLDB:
 
 
 class ClientManager:
-    _instances: dict[str, Any] = {"db": None, "ref_count": 0}
+    """Manage the process-wide PostgreSQL client pool shared by PG storages.
+
+    The first successful initialization defines the pool configuration for the
+    lifetime of the shared client. Reusing the pool with a different vector
+    storage setup is not supported and will raise a fail-fast error.
+    """
+
+    _instances: dict[str, Any] = {
+        "db": None,
+        "ref_count": 0,
+        "vector_signature": None,
+    }
     _lock = asyncio.Lock()
 
     @staticmethod
-    def get_config() -> dict[str, Any]:
+    def get_config(vector_storage: str | None = None) -> dict[str, Any]:
         config = configparser.ConfigParser()
         config.read("config.ini", "utf-8")
 
@@ -2006,12 +2017,11 @@ class ClientManager:
                 "POSTGRES_SSL_CRL",
                 config.get("postgres", "ssl_crl", fallback=None),
             ),
-            # Vector configuration
-            "enable_vector": os.environ.get(
-                "POSTGRES_ENABLE_VECTOR",
-                config.get("postgres", "enable_vector", fallback="true"),
-            ).lower()
-            in ("true", "1", "yes", "on"),
+            # Vector configuration: derived from the vector storage backend in use.
+            # PGVectorStorage requires pgvector; all other backends do not.
+            "enable_vector": vector_storage == "PGVectorStorage"
+            if vector_storage is not None
+            else True,
             "vector_index_type": os.environ.get(
                 "POSTGRES_VECTOR_INDEX_TYPE",
                 config.get("postgres", "vector_index_type", fallback="HNSW"),
@@ -2103,15 +2113,62 @@ class ClientManager:
         }
 
     @classmethod
-    async def get_client(cls) -> PostgreSQLDB:
+    def _build_vector_signature(
+        cls, config: dict[str, Any], vector_storage: str | None
+    ) -> dict[str, Any]:
+        signature = {
+            "vector_storage": vector_storage,
+            "enable_vector": config["enable_vector"],
+        }
+        if config["enable_vector"]:
+            signature.update(
+                {
+                    "vector_index_type": config["vector_index_type"],
+                    "hnsw_m": config["hnsw_m"],
+                    "hnsw_ef": config["hnsw_ef"],
+                    "ivfflat_lists": config["ivfflat_lists"],
+                    "vchordrq_build_options": config["vchordrq_build_options"],
+                    "vchordrq_probes": config["vchordrq_probes"],
+                    "vchordrq_epsilon": config["vchordrq_epsilon"],
+                }
+            )
+        return signature
+
+    @classmethod
+    def _assert_compatible_vector_signature(
+        cls, requested_signature: dict[str, Any]
+    ) -> None:
+        active_signature = cls._instances["vector_signature"]
+        if active_signature is None or active_signature == requested_signature:
+            return
+
+        raise RuntimeError(
+            "PostgreSQL client pool is process-wide and already initialized with "
+            f"vector settings {active_signature}. Received incompatible settings "
+            f"{requested_signature}. Multiple LightRAG instances with different "
+            "PostgreSQL/vector storage configurations are not supported in the "
+            "same process."
+        )
+
+    @classmethod
+    async def get_client(cls, vector_storage: str | None = None) -> PostgreSQLDB:
+        """Return the shared PostgreSQL client for all PG storages in this process.
+
+        The first caller fixes the vector-related pool configuration. Later calls
+        must provide a compatible vector storage setup or a RuntimeError is raised.
+        """
         async with cls._lock:
+            config = ClientManager.get_config(vector_storage=vector_storage)
+            requested_signature = cls._build_vector_signature(config, vector_storage)
             if cls._instances["db"] is None:
-                config = ClientManager.get_config()
                 db = PostgreSQLDB(config)
                 await db.initdb()
                 await db.check_tables()
                 cls._instances["db"] = db
                 cls._instances["ref_count"] = 0
+                cls._instances["vector_signature"] = requested_signature
+            else:
+                cls._assert_compatible_vector_signature(requested_signature)
             cls._instances["ref_count"] += 1
             return cls._instances["db"]
 
@@ -2126,6 +2183,7 @@ class ClientManager:
                             await db.pool.close()
                         logger.info("Closed PostgreSQL database connection pool")
                         cls._instances["db"] = None
+                        cls._instances["vector_signature"] = None
                 else:
                     if db.pool is not None:
                         await db.pool.close()
@@ -2142,7 +2200,9 @@ class PGKVStorage(BaseKVStorage):
     async def initialize(self):
         async with get_data_init_lock():
             if self.db is None:
-                self.db = await ClientManager.get_client()
+                self.db = await ClientManager.get_client(
+                    vector_storage=self.global_config.get("vector_storage")
+                )
 
             # Implement workspace priority: PostgreSQLDB.workspace > self.workspace > "default"
             if self.db.workspace:
@@ -3175,7 +3235,9 @@ class PGVectorStorage(BaseVectorStorage):
     async def initialize(self):
         async with get_data_init_lock():
             if self.db is None:
-                self.db = await ClientManager.get_client()
+                self.db = await ClientManager.get_client(
+                    vector_storage=self.global_config.get("vector_storage")
+                )
 
             # Implement workspace priority: PostgreSQLDB.workspace > self.workspace > "default"
             if self.db.workspace:
@@ -3190,11 +3252,6 @@ class PGVectorStorage(BaseVectorStorage):
             else:
                 # Use "default" for compatibility (lowest priority)
                 self.workspace = "default"
-
-            if not self.db.enable_vector:
-                raise ValueError(
-                    "Cannot use PGVectorStorage when POSTGRES_ENABLE_VECTOR=false. Configure an alternative vector backend."
-                )
 
             # Setup table (create if not exists and handle migration)
             await PGVectorStorage.setup_table(
@@ -3706,7 +3763,9 @@ class PGDocStatusStorage(DocStatusStorage):
     async def initialize(self):
         async with get_data_init_lock():
             if self.db is None:
-                self.db = await ClientManager.get_client()
+                self.db = await ClientManager.get_client(
+                    vector_storage=self.global_config.get("vector_storage")
+                )
 
             # Implement workspace priority: PostgreSQLDB.workspace > self.workspace > "default"
             if self.db.workspace:
@@ -4592,7 +4651,9 @@ class PGGraphStorage(BaseGraphStorage):
     async def initialize(self):
         async with get_data_init_lock():
             if self.db is None:
-                self.db = await ClientManager.get_client()
+                self.db = await ClientManager.get_client(
+                    vector_storage=self.global_config.get("vector_storage")
+                )
 
             # Implement workspace priority: PostgreSQLDB.workspace > self.workspace > "default"
             if self.db.workspace:
