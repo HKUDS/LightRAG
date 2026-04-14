@@ -1513,9 +1513,7 @@ collect_milvus_config() {
     if [[ "$milvus_device" == "cuda" ]] && ! host_cuda_available; then
       log_warn "CUDA device selected for Milvus but no NVIDIA driver detected on host."
     fi
-  fi
-  uri="$(prompt_until_valid "Milvus URI" "$uri" validate_uri milvus)"
-  if [[ "$use_docker" == "yes" ]]; then
+    uri="$(prompt_until_valid "Milvus URI" "$uri" validate_uri milvus)"
     uri="$(normalize_milvus_uri_for_local_service "$uri")"
     if [[ -z "${ENV_VALUES[MINIO_ACCESS_KEY_ID]:-}" ]]; then
       ENV_VALUES["MINIO_ACCESS_KEY_ID"]="minioadmin"
@@ -1523,6 +1521,8 @@ collect_milvus_config() {
     if [[ -z "${ENV_VALUES[MINIO_SECRET_ACCESS_KEY]:-}" ]]; then
       ENV_VALUES["MINIO_SECRET_ACCESS_KEY"]="minioadmin"
     fi
+  else
+    uri="$(prompt_until_valid "Milvus URI" "$uri" validate_uri milvus)"
   fi
   db_name="$(prompt_with_default "Milvus database name" "${existing_db_name:-lightrag}")"
 
@@ -1568,10 +1568,10 @@ collect_qdrant_config() {
     if [[ "$qdrant_device" == "cuda" ]] && ! host_cuda_available; then
       log_warn "CUDA device selected for Qdrant but no NVIDIA driver detected on host."
     fi
-  fi
-  url="$(prompt_until_valid "Qdrant URL" "$url" validate_uri qdrant)"
-  if [[ "$use_docker" == "yes" ]]; then
+    url="$(prompt_until_valid "Qdrant URL" "$url" validate_uri qdrant)"
     url="$(normalize_qdrant_uri_for_local_service "$url")"
+  else
+    url="$(prompt_until_valid "Qdrant URL" "$url" validate_uri qdrant)"
   fi
   ENV_VALUES["QDRANT_URL"]="$url"
   if [[ -n "$qdrant_device" ]]; then
