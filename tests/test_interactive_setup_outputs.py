@@ -7396,10 +7396,78 @@ finalize_server_setup
     assert 'NEO4J_URI: "neo4j://host.docker.internal:7687"' not in result
 
 
-def test_env_server_flow_preserves_existing_storage_images_on_rerun(
+def test_env_server_flow_preserves_existing_storage_images_on_compose_rewrite(
     tmp_path: Path,
 ) -> None:
-    """env-server should preserve postgres and neo4j images from an existing compose rerun."""
+    """env-server should preserve postgres and neo4j images when a compose rewrite is triggered."""
+
+    # Changing PORT causes resolve_compose_output_action to return rewrite_compose,
+    # exercising the collect_preserved_storage_service_images call in finalize_server_setup.
+    original_compose_lines = [
+        "services:",
+        "  lightrag:",
+        "    image: example/lightrag:test",
+        "    environment:",
+        '      PORT: "9621"',
+        "  postgres:",
+        "    image: registry.example.com/postgres-for-rag:patched",
+        "  neo4j:",
+        "    image: registry.example.com/neo4j:custom",
+    ]
+    original_compose_content = "\n".join(original_compose_lines) + "\n"
+
+    write_storage_setup_files(
+        tmp_path,
+        [
+            "LLM_BINDING=openai",
+            "EMBEDDING_BINDING=openai",
+            "HOST=0.0.0.0",
+            "PORT=9621",
+            "LIGHTRAG_SETUP_POSTGRES_DEPLOYMENT=docker",
+            "LIGHTRAG_SETUP_NEO4J_DEPLOYMENT=docker",
+        ],
+        original_compose_lines,
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+
+collect_server_config() {{
+  ENV_VALUES[HOST]="0.0.0.0"
+  ENV_VALUES[PORT]="8080"
+}}
+collect_security_config() {{ :; }}
+collect_ssl_config() {{ :; }}
+confirm_default_yes() {{
+  case "$1" in
+    "All wizard-managed services have been removed. Remove LightRAG from Docker and switch to host mode?") return 1 ;;
+    *) return 0 ;;
+  esac
+}}
+confirm_required_yes_no() {{ return 0; }}
+validate_sensitive_env_literals() {{ return 0; }}
+validate_auth_accounts_runtime_config() {{ return 0; }}
+validate_mongo_vector_storage_config() {{ return 0; }}
+
+env_server_flow
+"""
+    )
+
+    result = (tmp_path / "docker-compose.final.yml").read_text(encoding="utf-8")
+
+    # Confirm the compose rewrite path was taken (a backup of the original must exist).
+    assert_single_compose_backup(tmp_path, expected_content=original_compose_content)
+    assert "image: registry.example.com/postgres-for-rag:patched" in result
+    assert "image: registry.example.com/neo4j:custom" in result
+
+
+def test_env_server_flow_preserves_existing_storage_images_on_env_only_rerun(
+    tmp_path: Path,
+) -> None:
+    """env-server write_env_only path should leave custom storage images untouched."""
 
     write_storage_setup_files(
         tmp_path,

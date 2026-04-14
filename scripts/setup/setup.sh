@@ -814,6 +814,9 @@ collect_preserved_storage_service_images() {
     return 0
   fi
 
+  # Only postgres and neo4j are wizard-managed Docker storage services that users
+  # commonly pin to custom registry images. If new storage backends are added as
+  # wizard-managed Docker services, extend this list accordingly.
   for service_name in postgres neo4j; do
     if [[ -z "${COMPOSE_REWRITE_SERVICE_SET[$service_name]+set}" ]] || \
       [[ -z "${DOCKER_SERVICE_SET[$service_name]+set}" ]] || \
@@ -2803,6 +2806,7 @@ finalize_server_setup() {
     if ! prepare_managed_service_assets_for_compose "$existing_compose"; then
       return 1
     fi
+    collect_preserved_storage_service_images "$existing_compose"
     prepare_compose_env_overrides
   elif [[ "$compose_action" == "delete_compose_and_switch_host" ]]; then
     backup_existing_compose_for_action "$compose_action" "$existing_compose" || return 1

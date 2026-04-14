@@ -905,6 +905,8 @@ read_service_environment_value() {
   return 1
 }
 
+# Parse the image: value for a named service from a compose file.
+# Assumes wizard-standard indentation: services at 2 spaces, properties at 4 spaces.
 read_service_image_value() {
   local compose_file="$1"
   local service_name="$2"
