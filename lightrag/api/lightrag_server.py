@@ -32,6 +32,8 @@ from .config import (
     global_args,
     update_uvicorn_mode_config,
     get_default_host,
+    resolve_postgres_enable_vector_setting,
+    validate_postgres_enable_vector_setting,
 )
 from lightrag.utils import get_env_value
 from lightrag import LightRAG, __version__ as core_version
@@ -1053,6 +1055,21 @@ def create_app(args):
 
     ollama_server_infos = OllamaServerInfos(
         name=args.simulated_model_name, tag=args.simulated_model_tag
+    )
+
+    postgres_enable_vector, postgres_enable_vector_source = (
+        resolve_postgres_enable_vector_setting(args.vector_storage)
+    )
+    validate_postgres_enable_vector_setting(
+        args.vector_storage,
+        postgres_enable_vector,
+        postgres_enable_vector_source,
+    )
+    logger.info(
+        "PostgreSQL vector setting resolved: vector_storage=%s POSTGRES_ENABLE_VECTOR=%s (%s)",
+        args.vector_storage,
+        str(postgres_enable_vector).lower(),
+        postgres_enable_vector_source,
     )
 
     # Initialize RAG with unified configuration
