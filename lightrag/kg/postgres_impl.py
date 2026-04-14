@@ -4867,13 +4867,17 @@ class PGGraphStorage(BaseGraphStorage):
             str: the properties dictionary as a properly formatted string
         """
         props = []
-        # wrap property key in backticks to escape
+        # Wrap property keys in backticks and escape embedded backticks to
+        # preserve the Cypher structure when property names contain specials.
         for k, v in properties.items():
-            prop = f"`{k}`: {json.dumps(v)}"
+            safe_key = str(k).replace("`", "``")
+            prop = f"`{safe_key}`: {json.dumps(v, ensure_ascii=False)}"
             props.append(prop)
         if _id is not None and "id" not in properties:
             props.append(
-                f"id: {json.dumps(_id)}" if isinstance(_id, str) else f"id: {_id}"
+                f"id: {json.dumps(_id, ensure_ascii=False)}"
+                if isinstance(_id, str)
+                else f"id: {_id}"
             )
         return "{" + ", ".join(props) + "}"
 
@@ -5080,11 +5084,13 @@ class PGGraphStorage(BaseGraphStorage):
                 "PostgreSQL: node properties must contain an 'entity_id' field"
             )
 
-        # Use parameterized Cypher to prevent injection through crafted entity
-        # names or property values.  The $entity_id and $props references are
-        # resolved by AGE from the agtype parameter map passed as $1.
-        cypher_query = """MERGE (n:base {entity_id: $entity_id})
-                     SET n += $props
+        # AGE supports binding scalar values in Cypher parameters here, but not
+        # using a bound agtype object on ``SET n += $props``. Keep the node ID
+        # parameterized and inline a safely escaped property map literal.
+        node_props = {k: v for k, v in node_data.items() if k != "entity_id"}
+        props_literal = self._format_properties(node_props)
+        cypher_query = f"""MERGE (n:base {{entity_id: $entity_id}})
+                     SET n += {props_literal}
                      RETURN n"""
 
         query = (
@@ -5095,7 +5101,7 @@ class PGGraphStorage(BaseGraphStorage):
         )
         pg_params = {
             "params": json.dumps(
-                {"entity_id": node_id, "props": node_data},
+                {"entity_id": node_id},
                 ensure_ascii=False,
             )
         }
@@ -5151,14 +5157,15 @@ class PGGraphStorage(BaseGraphStorage):
             target_node_id (str): Label of the target node (used as identifier)
             edge_data (dict): dictionary of properties to set on the edge
         """
-        # Use parameterized Cypher to prevent injection through crafted entity
-        # names or property values.  The $src_id, $tgt_id and $props references
-        # are resolved by AGE from the agtype parameter map passed as $1.
-        cypher_query = """MATCH (source:base {entity_id: $src_id})
+        # AGE does not support binding a full agtype map in ``SET r += $props``.
+        # Keep endpoint identifiers parameterized and inline a safely escaped
+        # property map literal for the relationship payload.
+        props_literal = self._format_properties(edge_data)
+        cypher_query = f"""MATCH (source:base {{entity_id: $src_id}})
                      WITH source
-                     MATCH (target:base {entity_id: $tgt_id})
+                     MATCH (target:base {{entity_id: $tgt_id}})
                      MERGE (source)-[r:DIRECTED]-(target)
-                     SET r += $props
+                     SET r += {props_literal}
                      RETURN r"""
 
         query = (
@@ -5172,7 +5179,6 @@ class PGGraphStorage(BaseGraphStorage):
                 {
                     "src_id": source_node_id,
                     "tgt_id": target_node_id,
-                    "props": edge_data,
                 },
                 ensure_ascii=False,
             )

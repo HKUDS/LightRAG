@@ -1,9 +1,9 @@
 """
 Unit tests for Cypher injection prevention in PGGraphStorage write paths.
 
-Verifies that upsert_node and upsert_edge use parameterized Cypher queries
-(via AGE's $1::agtype mechanism) instead of string interpolation, preventing
-injection through crafted entity names or property values.
+Verifies that upsert_node and upsert_edge keep entity IDs parameterized while
+rendering property maps as safely escaped Cypher literals, which is required by
+Apache AGE because ``SET ... += $props`` is not supported.
 """
 
 import json
@@ -50,15 +50,13 @@ async def test_upsert_node_uses_parameterized_cypher():
 
     assert len(captured_calls) == 1
     call = captured_calls[0]
-    # SQL must use $1::agtype parameter binding
     assert "$1::agtype" in call["sql"]
-    # Entity name must NOT appear literally in the SQL
     assert '"Alice"' not in call["sql"].replace("$1::agtype", "")
-    # Params must be passed
     assert "params" in call
     params = json.loads(call["params"]["params"])
     assert params["entity_id"] == "Alice"
-    assert params["props"]["description"] == "A person"
+    assert "props" not in params
+    assert '`description`: "A person"' in call["sql"]
 
 
 @pytest.mark.asyncio
@@ -88,7 +86,7 @@ async def test_upsert_node_injection_payload_in_entity_id():
 
 @pytest.mark.asyncio
 async def test_upsert_node_special_chars_in_properties():
-    """Property values with special characters are safely parameterized."""
+    """Property values with special characters are safely escaped in Cypher."""
     storage = make_graph_storage()
     captured_calls: list[dict] = []
 
@@ -107,10 +105,11 @@ async def test_upsert_node_special_chars_in_properties():
         await storage.upsert_node("test_node", node_data)
 
     call = captured_calls[0]
-    params = json.loads(call["params"]["params"])
-    assert params["props"]["description"] == node_data["description"]
-    assert params["props"]["notes"] == node_data["notes"]
-    assert params["props"]["formula"] == node_data["formula"]
+    assert (
+        '`description`: "He said \\"hello\\" and used a backslash \\\\"' in call["sql"]
+    )
+    assert '`notes`: "Line1\\nLine2\\tTabbed"' in call["sql"]
+    assert '`formula`: "x < 5 && y > 3"' in call["sql"]
 
 
 @pytest.mark.asyncio
@@ -132,7 +131,7 @@ async def test_upsert_node_unicode_entity_id():
     call = captured_calls[0]
     params = json.loads(call["params"]["params"])
     assert params["entity_id"] == unicode_id
-    assert params["props"]["description"] == "\u63cf\u8ff0"
+    assert '`description`: "描述"' in call["sql"]
 
 
 @pytest.mark.asyncio
@@ -155,6 +154,25 @@ async def test_upsert_node_dollar_signs_in_entity_id():
     # The dollar signs are in the params, not the SQL template
     params = json.loads(call["params"]["params"])
     assert params["entity_id"] == dollar_id
+
+
+@pytest.mark.asyncio
+async def test_upsert_node_escapes_backticks_in_property_keys():
+    """Backticks in property keys must be escaped before inlining the map."""
+    storage = make_graph_storage()
+    captured_calls: list[dict] = []
+
+    async def fake_query(sql, **kwargs):
+        captured_calls.append({"sql": sql, **kwargs})
+        return []
+
+    with patch.object(storage, "_query", side_effect=fake_query):
+        await storage.upsert_node(
+            "node",
+            {"entity_id": "node", "danger`key": 'value "quoted"'},
+        )
+
+    assert '`danger``key`: "value \\"quoted\\""' in captured_calls[0]["sql"]
 
 
 @pytest.mark.asyncio
@@ -181,18 +199,21 @@ async def test_upsert_edge_uses_parameterized_cypher():
         return []
 
     with patch.object(storage, "_query", side_effect=fake_query):
-        await storage.upsert_edge("Alice", "Bob", {"weight": "1.0", "description": "knows"})
+        await storage.upsert_edge(
+            "Alice", "Bob", {"weight": "1.0", "description": "knows"}
+        )
 
     assert len(captured_calls) == 1
     call = captured_calls[0]
     assert "$1::agtype" in call["sql"]
-    # Entity names must not appear in SQL
     assert '"Alice"' not in call["sql"].replace("$1::agtype", "")
     assert '"Bob"' not in call["sql"].replace("$1::agtype", "")
     params = json.loads(call["params"]["params"])
     assert params["src_id"] == "Alice"
     assert params["tgt_id"] == "Bob"
-    assert params["props"]["weight"] == "1.0"
+    assert "props" not in params
+    assert '`weight`: "1.0"' in call["sql"]
+    assert '`description`: "knows"' in call["sql"]
 
 
 @pytest.mark.asyncio
@@ -208,9 +229,7 @@ async def test_upsert_edge_injection_payload():
         return []
 
     with patch.object(storage, "_query", side_effect=fake_query):
-        await storage.upsert_edge(
-            injection_src, injection_tgt, {"description": "edge"}
-        )
+        await storage.upsert_edge(injection_src, injection_tgt, {"description": "edge"})
 
     call = captured_calls[0]
     assert "DETACH DELETE" not in call["sql"]
@@ -235,9 +254,11 @@ async def test_upsert_edge_unicode_entity_ids():
             "\u5317\u4eac", "\u4e0a\u6d77", {"description": "\u8def\u7ebf"}
         )
 
-    params = json.loads(captured_calls[0]["params"]["params"])
+    call = captured_calls[0]
+    params = json.loads(call["params"]["params"])
     assert params["src_id"] == "\u5317\u4eac"
     assert params["tgt_id"] == "\u4e0a\u6d77"
+    assert '`description`: "路线"' in call["sql"]
 
 
 # ---------------------------------------------------------------------------
