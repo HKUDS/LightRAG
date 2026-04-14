@@ -3937,6 +3937,60 @@ finalize_base_setup
     assert "      milvus-minio:\n        condition: service_healthy" not in result
 
 
+def test_env_base_flow_preserves_existing_storage_images_on_rerun(
+    tmp_path: Path,
+) -> None:
+    """env-base should preserve postgres and neo4j images from an existing compose rerun."""
+
+    write_storage_setup_files(
+        tmp_path,
+        [
+            "LLM_BINDING=openai",
+            "EMBEDDING_BINDING=openai",
+            "LIGHTRAG_SETUP_POSTGRES_DEPLOYMENT=docker",
+            "LIGHTRAG_SETUP_NEO4J_DEPLOYMENT=docker",
+        ],
+        [
+            "services:",
+            "  lightrag:",
+            "    image: example/lightrag:test",
+            "  postgres:",
+            "    image: registry.example.com/postgres-for-rag:patched",
+            "  neo4j:",
+            "    image: registry.example.com/neo4j:custom",
+        ],
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+
+host_cuda_available() {{ return 1; }}
+collect_llm_config() {{ :; }}
+collect_embedding_config() {{ :; }}
+confirm_default_no() {{ return 1; }}
+confirm_default_yes() {{
+  case "$1" in
+    *"The compose file will be created/updated. Continue?"*) return 0 ;;
+    *) return 1 ;;
+  esac
+}}
+confirm_required_yes_no() {{ return 0; }}
+validate_sensitive_env_literals() {{ return 0; }}
+validate_mongo_vector_storage_config() {{ return 0; }}
+
+env_base_flow
+"""
+    )
+
+    result = (tmp_path / "docker-compose.final.yml").read_text(encoding="utf-8")
+
+    assert "image: registry.example.com/postgres-for-rag:patched" in result
+    assert "image: registry.example.com/neo4j:custom" in result
+
+
 def test_finalize_base_setup_migrates_mongodb_to_atlas_local_for_mongo_vector_storage(
     tmp_path: Path,
 ) -> None:
@@ -7340,6 +7394,54 @@ finalize_server_setup
 
     assert 'NEO4J_URI: "neo4j://neo4j:7687"' in result
     assert 'NEO4J_URI: "neo4j://host.docker.internal:7687"' not in result
+
+
+def test_env_server_flow_preserves_existing_storage_images_on_rerun(
+    tmp_path: Path,
+) -> None:
+    """env-server should preserve postgres and neo4j images from an existing compose rerun."""
+
+    write_storage_setup_files(
+        tmp_path,
+        [
+            "LLM_BINDING=openai",
+            "EMBEDDING_BINDING=openai",
+            "LIGHTRAG_SETUP_POSTGRES_DEPLOYMENT=docker",
+            "LIGHTRAG_SETUP_NEO4J_DEPLOYMENT=docker",
+        ],
+        [
+            "services:",
+            "  lightrag:",
+            "    image: example/lightrag:test",
+            "  postgres:",
+            "    image: registry.example.com/postgres-for-rag:patched",
+            "  neo4j:",
+            "    image: registry.example.com/neo4j:custom",
+        ],
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+
+collect_server_config() {{ :; }}
+collect_security_config() {{ :; }}
+collect_ssl_config() {{ :; }}
+confirm_required_yes_no() {{ return 0; }}
+validate_sensitive_env_literals() {{ return 0; }}
+validate_auth_accounts_runtime_config() {{ return 0; }}
+validate_mongo_vector_storage_config() {{ return 0; }}
+
+env_server_flow
+"""
+    )
+
+    result = (tmp_path / "docker-compose.final.yml").read_text(encoding="utf-8")
+
+    assert "image: registry.example.com/postgres-for-rag:patched" in result
+    assert "image: registry.example.com/neo4j:custom" in result
 
 
 def test_finalize_server_setup_migrates_mongodb_to_atlas_local_for_mongo_vector_storage(
