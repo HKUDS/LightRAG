@@ -59,9 +59,7 @@ def test_explicit_true_conflicting_with_non_pgvector_storage_fails_fast() -> Non
         ValueError,
         match="conflicts with LIGHTRAG_VECTOR_STORAGE.*Remove or comment out POSTGRES_ENABLE_VECTOR",
     ):
-        validate_postgres_enable_vector_setting(
-            "NanoVectorDBStorage", True, "explicit"
-        )
+        validate_postgres_enable_vector_setting("NanoVectorDBStorage", True, "explicit")
 
 
 def test_explicit_false_conflicting_with_pgvector_storage_fails_fast() -> None:
