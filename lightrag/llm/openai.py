@@ -831,8 +831,13 @@ async def openai_embed(
         api_params = {
             "model": api_model,
             "input": texts,
-            "encoding_format": "base64",
         }
+
+        # Add encoding_format parameter (some providers like Yandex don't support base64)
+        # OpenAI client defaults to base64, so we must explicitly set it to "float" if disabled
+        use_base64_env = os.getenv("EMBEDDING_USE_BASE64", "true")
+        use_base64 = use_base64_env.lower() in ("true", "1", "yes")
+        api_params["encoding_format"] = "base64" if use_base64 else "float"
 
         # Add dimensions parameter only if embedding_dim is provided
         if embedding_dim is not None:
