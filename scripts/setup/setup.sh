@@ -17,6 +17,7 @@ declare -A ENV_VALUES
 declare -A ORIGINAL_ENV_VALUES
 declare -A COMPOSE_ENV_OVERRIDES
 declare -A COMPOSE_REWRITE_SERVICE_SET
+declare -A COMPOSE_SERVICE_IMAGE_OVERRIDES
 declare -A REQUIRED_DB_TYPES
 declare -A DOCKER_SERVICE_SET
 declare -A EXISTING_MANAGED_ROOT_SERVICE_SET
@@ -102,6 +103,7 @@ reset_state() {
   ORIGINAL_ENV_VALUES=()
   COMPOSE_ENV_OVERRIDES=()
   COMPOSE_REWRITE_SERVICE_SET=()
+  COMPOSE_SERVICE_IMAGE_OVERRIDES=()
   REQUIRED_DB_TYPES=()
   DOCKER_SERVICE_SET=()
   EXISTING_MANAGED_ROOT_SERVICE_SET=()
@@ -799,6 +801,34 @@ record_existing_managed_root_services() {
       EXISTING_MANAGED_ROOT_SERVICE_SET["$root_service"]=1
     fi
   done < <(detect_managed_root_services "$compose_file")
+}
+
+collect_preserved_storage_service_images() {
+  local compose_file="${1:-}"
+  local service_name=""
+  local image_value=""
+
+  COMPOSE_SERVICE_IMAGE_OVERRIDES=()
+
+  if [[ "$FORCE_REWRITE_COMPOSE" == "yes" || -z "$compose_file" || ! -f "$compose_file" ]]; then
+    return 0
+  fi
+
+  # Only postgres and neo4j are wizard-managed Docker storage services that users
+  # commonly pin to custom registry images. If new storage backends are added as
+  # wizard-managed Docker services, extend this list accordingly.
+  for service_name in postgres neo4j; do
+    if [[ -z "${COMPOSE_REWRITE_SERVICE_SET[$service_name]+set}" ]] || \
+      [[ -z "${DOCKER_SERVICE_SET[$service_name]+set}" ]] || \
+      ! existing_managed_root_service_present "$service_name"; then
+      continue
+    fi
+
+    image_value="$(read_service_image_value "$compose_file" "$service_name" || true)"
+    if [[ -n "$image_value" ]]; then
+      COMPOSE_SERVICE_IMAGE_OVERRIDES["$service_name"]="$image_value"
+    fi
+  done
 }
 
 backup_existing_compose_if_generating() {
@@ -2524,6 +2554,7 @@ finalize_base_setup() {
     if ! prepare_managed_service_assets_for_compose "$existing_compose"; then
       return 1
     fi
+    collect_preserved_storage_service_images "$existing_compose"
     prepare_compose_env_overrides
   elif [[ "$compose_action" == "delete_compose_and_switch_host" ]]; then
     backup_existing_compose_for_action "$compose_action" "$existing_compose" || return 1
@@ -2654,6 +2685,7 @@ finalize_storage_setup() {
     if ! prepare_managed_service_assets_for_compose "$existing_compose"; then
       return 1
     fi
+    collect_preserved_storage_service_images "$existing_compose"
     prepare_compose_env_overrides
   elif [[ "$compose_action" == "delete_compose_and_switch_host" ]]; then
     backup_existing_compose_for_action "$compose_action" "$existing_compose" || return 1
@@ -2774,6 +2806,7 @@ finalize_server_setup() {
     if ! prepare_managed_service_assets_for_compose "$existing_compose"; then
       return 1
     fi
+    collect_preserved_storage_service_images "$existing_compose"
     prepare_compose_env_overrides
   elif [[ "$compose_action" == "delete_compose_and_switch_host" ]]; then
     backup_existing_compose_for_action "$compose_action" "$existing_compose" || return 1

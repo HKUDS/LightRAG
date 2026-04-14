@@ -82,6 +82,19 @@ def assert_single_compose_backup(tmp_path: Path, expected_content: str) -> Path:
     return backups[0]
 
 
+def write_storage_setup_files(
+    tmp_path: Path, env_lines: list[str], compose_lines: list[str]
+) -> None:
+    """Write the minimal env/example/compose fixtures used by storage-flow tests."""
+
+    write_text_lines(tmp_path / ".env", env_lines)
+    write_text_lines(
+        tmp_path / "env.example",
+        (REPO_ROOT / "env.example").read_text(encoding="utf-8").splitlines(),
+    )
+    write_text_lines(tmp_path / "docker-compose.final.yml", compose_lines)
+
+
 def test_collect_postgres_config_uses_fixed_bundled_port_and_compose_overrides() -> (
     None
 ):
@@ -3924,6 +3937,60 @@ finalize_base_setup
     assert "      milvus-minio:\n        condition: service_healthy" not in result
 
 
+def test_env_base_flow_preserves_existing_storage_images_on_rerun(
+    tmp_path: Path,
+) -> None:
+    """env-base should preserve postgres and neo4j images from an existing compose rerun."""
+
+    write_storage_setup_files(
+        tmp_path,
+        [
+            "LLM_BINDING=openai",
+            "EMBEDDING_BINDING=openai",
+            "LIGHTRAG_SETUP_POSTGRES_DEPLOYMENT=docker",
+            "LIGHTRAG_SETUP_NEO4J_DEPLOYMENT=docker",
+        ],
+        [
+            "services:",
+            "  lightrag:",
+            "    image: example/lightrag:test",
+            "  postgres:",
+            "    image: registry.example.com/postgres-for-rag:patched",
+            "  neo4j:",
+            "    image: registry.example.com/neo4j:custom",
+        ],
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+
+host_cuda_available() {{ return 1; }}
+collect_llm_config() {{ :; }}
+collect_embedding_config() {{ :; }}
+confirm_default_no() {{ return 1; }}
+confirm_default_yes() {{
+  case "$1" in
+    *"The compose file will be created/updated. Continue?"*) return 0 ;;
+    *) return 1 ;;
+  esac
+}}
+confirm_required_yes_no() {{ return 0; }}
+validate_sensitive_env_literals() {{ return 0; }}
+validate_mongo_vector_storage_config() {{ return 0; }}
+
+env_base_flow
+"""
+    )
+
+    result = (tmp_path / "docker-compose.final.yml").read_text(encoding="utf-8")
+
+    assert "image: registry.example.com/postgres-for-rag:patched" in result
+    assert "image: registry.example.com/neo4j:custom" in result
+
+
 def test_finalize_base_setup_migrates_mongodb_to_atlas_local_for_mongo_vector_storage(
     tmp_path: Path,
 ) -> None:
@@ -5538,6 +5605,322 @@ fi
     assert values["REWRITE"] == expected_rewrite
 
 
+def test_env_storage_flow_preserves_existing_postgres_image_during_rewrite(
+    tmp_path: Path,
+) -> None:
+    """Postgres env rewrites should keep an existing custom image."""
+
+    write_storage_setup_files(
+        tmp_path,
+        [
+            "LLM_BINDING=openai",
+            "EMBEDDING_BINDING=openai",
+            "POSTGRES_USER=rag",
+            "POSTGRES_PASSWORD=rag",
+            "POSTGRES_DATABASE=rag",
+        ],
+        [
+            "services:",
+            "  lightrag:",
+            "    image: example/lightrag:test",
+            "  postgres:",
+            "    image: registry.example.com/postgres-for-rag:patched",
+        ],
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+
+select_storage_backends() {{
+  REQUIRED_DB_TYPES[postgresql]=1
+  ENV_VALUES[LIGHTRAG_KV_STORAGE]="PGKVStorage"
+  ENV_VALUES[LIGHTRAG_VECTOR_STORAGE]="PGVectorStorage"
+  ENV_VALUES[LIGHTRAG_GRAPH_STORAGE]="PGGraphStorage"
+  ENV_VALUES[LIGHTRAG_DOC_STATUS_STORAGE]="PGDocStatusStorage"
+}}
+collect_database_config() {{
+  if [[ "$1" == "postgresql" ]]; then
+    add_docker_service "postgres"
+    ENV_VALUES[POSTGRES_USER]="updated-user"
+  fi
+}}
+validate_required_variables() {{ return 0; }}
+validate_mongo_vector_storage_config() {{ return 0; }}
+validate_sensitive_env_literals() {{ return 0; }}
+confirm_required_yes_no() {{ return 0; }}
+
+env_storage_flow
+"""
+    )
+
+    result = (tmp_path / "docker-compose.final.yml").read_text(encoding="utf-8")
+
+    assert "image: registry.example.com/postgres-for-rag:patched" in result
+    assert 'POSTGRES_USER: "updated-user"' in result
+    assert 'POSTGRES_DB: "rag"' in result
+
+
+def test_env_storage_flow_preserves_existing_neo4j_image_during_rewrite(
+    tmp_path: Path,
+) -> None:
+    """Neo4j database rewrites should keep an existing custom image."""
+
+    write_storage_setup_files(
+        tmp_path,
+        [
+            "LLM_BINDING=openai",
+            "EMBEDDING_BINDING=openai",
+            "NEO4J_USERNAME=neo4j",
+            "NEO4J_PASSWORD=neo4j-password",
+            "NEO4J_DATABASE=neo4j",
+        ],
+        [
+            "services:",
+            "  lightrag:",
+            "    image: example/lightrag:test",
+            "  neo4j:",
+            "    image: registry.example.com/neo4j:custom",
+        ],
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+
+select_storage_backends() {{
+  REQUIRED_DB_TYPES[neo4j]=1
+  ENV_VALUES[LIGHTRAG_KV_STORAGE]="JsonKVStorage"
+  ENV_VALUES[LIGHTRAG_VECTOR_STORAGE]="NanoVectorDBStorage"
+  ENV_VALUES[LIGHTRAG_GRAPH_STORAGE]="Neo4JStorage"
+  ENV_VALUES[LIGHTRAG_DOC_STATUS_STORAGE]="JsonDocStatusStorage"
+}}
+collect_database_config() {{
+  if [[ "$1" == "neo4j" ]]; then
+    add_docker_service "neo4j"
+    ENV_VALUES[NEO4J_DATABASE]="updated-database"
+  fi
+}}
+validate_required_variables() {{ return 0; }}
+validate_mongo_vector_storage_config() {{ return 0; }}
+validate_sensitive_env_literals() {{ return 0; }}
+confirm_required_yes_no() {{ return 0; }}
+
+env_storage_flow
+"""
+    )
+
+    result = (tmp_path / "docker-compose.final.yml").read_text(encoding="utf-8")
+
+    assert "image: registry.example.com/neo4j:custom" in result
+    assert 'NEO4J_dbms_default__database: "updated-database"' in result
+
+
+def test_env_storage_flow_preserves_existing_postgres_and_neo4j_images_on_rewrite(
+    tmp_path: Path,
+) -> None:
+    """Concurrent postgres and neo4j rewrites should preserve both custom images."""
+
+    write_storage_setup_files(
+        tmp_path,
+        [
+            "LLM_BINDING=openai",
+            "EMBEDDING_BINDING=openai",
+            "POSTGRES_USER=rag",
+            "POSTGRES_PASSWORD=rag",
+            "POSTGRES_DATABASE=rag",
+            "NEO4J_USERNAME=neo4j",
+            "NEO4J_PASSWORD=neo4j-password",
+            "NEO4J_DATABASE=neo4j",
+        ],
+        [
+            "services:",
+            "  lightrag:",
+            "    image: example/lightrag:test",
+            "  postgres:",
+            "    image: registry.example.com/postgres-for-rag:patched",
+            "  neo4j:",
+            "    image: registry.example.com/neo4j:custom",
+        ],
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+
+select_storage_backends() {{
+  REQUIRED_DB_TYPES[postgresql]=1
+  REQUIRED_DB_TYPES[neo4j]=1
+  ENV_VALUES[LIGHTRAG_KV_STORAGE]="PGKVStorage"
+  ENV_VALUES[LIGHTRAG_VECTOR_STORAGE]="PGVectorStorage"
+  ENV_VALUES[LIGHTRAG_GRAPH_STORAGE]="Neo4JStorage"
+  ENV_VALUES[LIGHTRAG_DOC_STATUS_STORAGE]="PGDocStatusStorage"
+}}
+collect_database_config() {{
+  case "$1" in
+    postgresql)
+      add_docker_service "postgres"
+      ENV_VALUES[POSTGRES_USER]="updated-user"
+      ;;
+    neo4j)
+      add_docker_service "neo4j"
+      ENV_VALUES[NEO4J_DATABASE]="updated-database"
+      ;;
+  esac
+}}
+validate_required_variables() {{ return 0; }}
+validate_mongo_vector_storage_config() {{ return 0; }}
+validate_sensitive_env_literals() {{ return 0; }}
+confirm_required_yes_no() {{ return 0; }}
+
+env_storage_flow
+"""
+    )
+
+    result = (tmp_path / "docker-compose.final.yml").read_text(encoding="utf-8")
+
+    assert "image: registry.example.com/postgres-for-rag:patched" in result
+    assert "image: registry.example.com/neo4j:custom" in result
+    assert 'POSTGRES_USER: "updated-user"' in result
+    assert 'NEO4J_dbms_default__database: "updated-database"' in result
+
+
+def test_env_storage_flow_uses_template_image_when_existing_service_has_no_image(
+    tmp_path: Path,
+) -> None:
+    """A rewritten service without an existing image should fall back to the template image."""
+
+    write_storage_setup_files(
+        tmp_path,
+        [
+            "LLM_BINDING=openai",
+            "EMBEDDING_BINDING=openai",
+            "POSTGRES_USER=rag",
+            "POSTGRES_PASSWORD=rag",
+            "POSTGRES_DATABASE=rag",
+        ],
+        [
+            "services:",
+            "  lightrag:",
+            "    image: example/lightrag:test",
+            "  postgres:",
+            "    environment:",
+            '      LEGACY_SETTING: "1"',
+        ],
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+
+select_storage_backends() {{
+  REQUIRED_DB_TYPES[postgresql]=1
+  ENV_VALUES[LIGHTRAG_KV_STORAGE]="PGKVStorage"
+  ENV_VALUES[LIGHTRAG_VECTOR_STORAGE]="PGVectorStorage"
+  ENV_VALUES[LIGHTRAG_GRAPH_STORAGE]="PGGraphStorage"
+  ENV_VALUES[LIGHTRAG_DOC_STATUS_STORAGE]="PGDocStatusStorage"
+}}
+collect_database_config() {{
+  if [[ "$1" == "postgresql" ]]; then
+    add_docker_service "postgres"
+    ENV_VALUES[POSTGRES_USER]="updated-user"
+  fi
+}}
+validate_required_variables() {{ return 0; }}
+validate_mongo_vector_storage_config() {{ return 0; }}
+validate_sensitive_env_literals() {{ return 0; }}
+confirm_required_yes_no() {{ return 0; }}
+
+env_storage_flow
+"""
+    )
+
+    result = (tmp_path / "docker-compose.final.yml").read_text(encoding="utf-8")
+
+    assert "image: gzdaniel/postgres-for-rag:16.6" in result
+    assert 'POSTGRES_USER: "updated-user"' in result
+
+
+def test_env_storage_flow_force_rewrite_drops_preserved_storage_images(
+    tmp_path: Path,
+) -> None:
+    """FORCE_REWRITE_COMPOSE should bypass preserved postgres and neo4j images."""
+
+    write_storage_setup_files(
+        tmp_path,
+        [
+            "LLM_BINDING=openai",
+            "EMBEDDING_BINDING=openai",
+            "POSTGRES_USER=rag",
+            "POSTGRES_PASSWORD=rag",
+            "POSTGRES_DATABASE=rag",
+            "NEO4J_USERNAME=neo4j",
+            "NEO4J_PASSWORD=neo4j-password",
+            "NEO4J_DATABASE=neo4j",
+        ],
+        [
+            "services:",
+            "  lightrag:",
+            "    image: example/lightrag:test",
+            "  postgres:",
+            "    image: registry.example.com/postgres-for-rag:patched",
+            "  neo4j:",
+            "    image: registry.example.com/neo4j:custom",
+        ],
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+FORCE_REWRITE_COMPOSE="yes"
+
+select_storage_backends() {{
+  REQUIRED_DB_TYPES[postgresql]=1
+  REQUIRED_DB_TYPES[neo4j]=1
+  ENV_VALUES[LIGHTRAG_KV_STORAGE]="PGKVStorage"
+  ENV_VALUES[LIGHTRAG_VECTOR_STORAGE]="PGVectorStorage"
+  ENV_VALUES[LIGHTRAG_GRAPH_STORAGE]="Neo4JStorage"
+  ENV_VALUES[LIGHTRAG_DOC_STATUS_STORAGE]="PGDocStatusStorage"
+}}
+collect_database_config() {{
+  case "$1" in
+    postgresql)
+      add_docker_service "postgres"
+      ENV_VALUES[POSTGRES_USER]="updated-user"
+      ;;
+    neo4j)
+      add_docker_service "neo4j"
+      ENV_VALUES[NEO4J_DATABASE]="updated-database"
+      ;;
+  esac
+}}
+validate_required_variables() {{ return 0; }}
+validate_mongo_vector_storage_config() {{ return 0; }}
+validate_sensitive_env_literals() {{ return 0; }}
+confirm_required_yes_no() {{ return 0; }}
+
+env_storage_flow
+"""
+    )
+
+    result = (tmp_path / "docker-compose.final.yml").read_text(encoding="utf-8")
+
+    assert "image: gzdaniel/postgres-for-rag:16.6" in result
+    assert "image: neo4j:5-community" in result
+    assert "registry.example.com/postgres-for-rag:patched" not in result
+    assert "registry.example.com/neo4j:custom" not in result
+
+
 @pytest.mark.parametrize(
     ("vector_storage", "deployment_marker", "expected_rewrite"),
     [
@@ -7011,6 +7394,122 @@ finalize_server_setup
 
     assert 'NEO4J_URI: "neo4j://neo4j:7687"' in result
     assert 'NEO4J_URI: "neo4j://host.docker.internal:7687"' not in result
+
+
+def test_env_server_flow_preserves_existing_storage_images_on_compose_rewrite(
+    tmp_path: Path,
+) -> None:
+    """env-server should preserve postgres and neo4j images when a compose rewrite is triggered."""
+
+    # Changing PORT causes resolve_compose_output_action to return rewrite_compose,
+    # exercising the collect_preserved_storage_service_images call in finalize_server_setup.
+    original_compose_lines = [
+        "services:",
+        "  lightrag:",
+        "    image: example/lightrag:test",
+        "    environment:",
+        '      PORT: "9621"',
+        "  postgres:",
+        "    image: registry.example.com/postgres-for-rag:patched",
+        "  neo4j:",
+        "    image: registry.example.com/neo4j:custom",
+    ]
+    original_compose_content = "\n".join(original_compose_lines) + "\n"
+
+    write_storage_setup_files(
+        tmp_path,
+        [
+            "LLM_BINDING=openai",
+            "EMBEDDING_BINDING=openai",
+            "HOST=0.0.0.0",
+            "PORT=9621",
+            "LIGHTRAG_SETUP_POSTGRES_DEPLOYMENT=docker",
+            "LIGHTRAG_SETUP_NEO4J_DEPLOYMENT=docker",
+        ],
+        original_compose_lines,
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+
+collect_server_config() {{
+  ENV_VALUES[HOST]="0.0.0.0"
+  ENV_VALUES[PORT]="8080"
+}}
+collect_security_config() {{ :; }}
+collect_ssl_config() {{ :; }}
+confirm_default_yes() {{
+  case "$1" in
+    "All wizard-managed services have been removed. Remove LightRAG from Docker and switch to host mode?") return 1 ;;
+    *) return 0 ;;
+  esac
+}}
+confirm_required_yes_no() {{ return 0; }}
+validate_sensitive_env_literals() {{ return 0; }}
+validate_auth_accounts_runtime_config() {{ return 0; }}
+validate_mongo_vector_storage_config() {{ return 0; }}
+
+env_server_flow
+"""
+    )
+
+    result = (tmp_path / "docker-compose.final.yml").read_text(encoding="utf-8")
+
+    # Confirm the compose rewrite path was taken (a backup of the original must exist).
+    assert_single_compose_backup(tmp_path, expected_content=original_compose_content)
+    assert "image: registry.example.com/postgres-for-rag:patched" in result
+    assert "image: registry.example.com/neo4j:custom" in result
+
+
+def test_env_server_flow_preserves_existing_storage_images_on_env_only_rerun(
+    tmp_path: Path,
+) -> None:
+    """env-server write_env_only path should leave custom storage images untouched."""
+
+    write_storage_setup_files(
+        tmp_path,
+        [
+            "LLM_BINDING=openai",
+            "EMBEDDING_BINDING=openai",
+            "LIGHTRAG_SETUP_POSTGRES_DEPLOYMENT=docker",
+            "LIGHTRAG_SETUP_NEO4J_DEPLOYMENT=docker",
+        ],
+        [
+            "services:",
+            "  lightrag:",
+            "    image: example/lightrag:test",
+            "  postgres:",
+            "    image: registry.example.com/postgres-for-rag:patched",
+            "  neo4j:",
+            "    image: registry.example.com/neo4j:custom",
+        ],
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+
+collect_server_config() {{ :; }}
+collect_security_config() {{ :; }}
+collect_ssl_config() {{ :; }}
+confirm_required_yes_no() {{ return 0; }}
+validate_sensitive_env_literals() {{ return 0; }}
+validate_auth_accounts_runtime_config() {{ return 0; }}
+validate_mongo_vector_storage_config() {{ return 0; }}
+
+env_server_flow
+"""
+    )
+
+    result = (tmp_path / "docker-compose.final.yml").read_text(encoding="utf-8")
+
+    assert "image: registry.example.com/postgres-for-rag:patched" in result
+    assert "image: registry.example.com/neo4j:custom" in result
 
 
 def test_finalize_server_setup_migrates_mongodb_to_atlas_local_for_mongo_vector_storage(
