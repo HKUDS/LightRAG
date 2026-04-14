@@ -22,17 +22,17 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     environment:
-      MILVUS_URI: "http://milvus:19530"
-      NEO4J_URI: "neo4j://neo4j:7687"
-      POSTGRES_HOST: "postgres"
-      POSTGRES_PORT: "5432"
-      EMBEDDING_BINDING_HOST: "http://vllm-embed:8001/v1"
-      RERANK_BINDING_HOST: "http://vllm-rerank:8000/rerank"
-      WORKING_DIR: "/app/data/rag_storage"
-      INPUT_DIR: "/app/data/inputs"
-      MEMGRAPH_URI: "bolt://host.docker.internal:7687"
       HOST: "0.0.0.0"
       PORT: "9621"
+      EMBEDDING_BINDING_HOST: "http://vllm-embed:8001/v1"
+      RERANK_BINDING_HOST: "http://vllm-rerank:8000/rerank"
+      POSTGRES_HOST: "postgres"
+      POSTGRES_PORT: "5432"
+      NEO4J_URI: "neo4j://neo4j:7687"
+      WORKING_DIR: "/app/data/rag_storage"
+      MILVUS_URI: "http://milvus:19530"
+      INPUT_DIR: "/app/data/inputs"
+      MEMGRAPH_URI: "bolt://host.docker.internal:7687"
     depends_on:
       vllm-embed:
         condition: service_healthy
@@ -44,6 +44,115 @@ services:
         condition: service_healthy
       milvus:
         condition: service_healthy
+
+  vllm-embed:
+    image: vllm/vllm-openai:latest
+    runtime: nvidia
+    command: >
+      --model ${VLLM_EMBED_MODEL:-BAAI/bge-m3}
+      --port ${VLLM_EMBED_PORT:-8001}
+      --dtype float16
+      --api-key ${VLLM_EMBED_API_KEY}
+      ${VLLM_EMBED_EXTRA_ARGS:-}
+    environment:
+      NVIDIA_VISIBLE_DEVICES: ${NVIDIA_VISIBLE_DEVICES:-all}
+      NVIDIA_DRIVER_CAPABILITIES: ${NVIDIA_DRIVER_CAPABILITIES:-compute,utility}
+    ports:
+      - "${VLLM_EMBED_PORT:-8001}:${VLLM_EMBED_PORT:-8001}"
+    volumes:
+      - vllm_embed_cache:/root/.cache/huggingface
+    ipc: host
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - 'PORT_HEX="$(printf ''%04X'' ${VLLM_EMBED_PORT:-8001})"; cat /proc/net/tcp /proc/net/tcp6 2>/dev/null | grep -q ":$${PORT_HEX} "'
+      interval: 5s
+      timeout: 3s
+      retries: 120
+      start_period: 10s
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: unless-stopped
+
+  vllm-rerank:
+    image: vllm/vllm-openai:latest
+    runtime: nvidia
+    command: >
+      --model ${VLLM_RERANK_MODEL:-BAAI/bge-reranker-v2-m3}
+      --port ${VLLM_RERANK_PORT:-8000}
+      --dtype float16
+      --api-key ${VLLM_RERANK_API_KEY}
+      ${VLLM_RERANK_EXTRA_ARGS:-}
+    environment:
+      NVIDIA_VISIBLE_DEVICES: ${NVIDIA_VISIBLE_DEVICES:-all}
+      NVIDIA_DRIVER_CAPABILITIES: ${NVIDIA_DRIVER_CAPABILITIES:-compute,utility}
+    ports:
+      - "${VLLM_RERANK_PORT:-8000}:${VLLM_RERANK_PORT:-8000}"
+    volumes:
+      - vllm_rerank_cache:/root/.cache/huggingface
+    ipc: host
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - 'PORT_HEX="$(printf ''%04X'' ${VLLM_RERANK_PORT:-8000})"; cat /proc/net/tcp /proc/net/tcp6 2>/dev/null | grep -q ":$${PORT_HEX} "'
+      interval: 5s
+      timeout: 3s
+      retries: 120
+      start_period: 10s
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: unless-stopped
+
+  postgres:
+    # this image does not support PGGraphStorage
+    image: pgvector/pgvector:pg18
+    # ports:
+    #   - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - 'PORT_HEX="$(printf ''%04X'' 5432)"; cat /proc/net/tcp /proc/net/tcp6 2>/dev/null | grep -q ":$${PORT_HEX} "'
+      interval: 5s
+      timeout: 3s
+      retries: 120
+      start_period: 10s
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: "rag"
+      POSTGRES_PASSWORD: "rag"
+      POSTGRES_DB: "rag"
+
+  neo4j:
+    image: neo4j:5-community
+    # ports:
+    #   - "7474:7474"
+    #   - "${NEO4J_BOLT_PORT:-7687}:7687"
+    volumes:
+      - neo4j_data:/data
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - 'PORT_HEX="$(printf ''%04X'' 7687)"; cat /proc/net/tcp /proc/net/tcp6 2>/dev/null | grep -q ":$${PORT_HEX} "'
+      interval: 10s
+      timeout: 3s
+      retries: 120
+      start_period: 10s
+    restart: unless-stopped
+    environment:
+      NEO4J_AUTH: ${NEO4J_USERNAME:?missing}/${NEO4J_PASSWORD:?missing}
+      NEO4J_dbms_default__database: "neo4j"
 
   milvus:
     image: milvusdb/milvus:v2.6.11-gpu
@@ -117,121 +226,11 @@ services:
       retries: 3
     restart: unless-stopped
 
-  neo4j:
-    image: neo4j:5-community
-    # ports:
-    #   - "7474:7474"
-    #   - "${NEO4J_BOLT_PORT:-7687}:7687"
-    volumes:
-      - neo4j_data:/data
-    healthcheck:
-      test:
-        - CMD-SHELL
-        - 'PORT_HEX="$(printf ''%04X'' 7687)"; cat /proc/net/tcp /proc/net/tcp6 2>/dev/null | grep -q ":$${PORT_HEX} "'
-      interval: 10s
-      timeout: 3s
-      retries: 120
-      start_period: 10s
-    restart: unless-stopped
-    environment:
-      NEO4J_AUTH: ${NEO4J_USERNAME:?missing}/${NEO4J_PASSWORD:?missing}
-      NEO4J_dbms_default__database: "neo4j"
-
-  postgres:
-    image: gzdaniel/postgres-for-rag:16.6
-    command: ["sh", "-c", "service postgresql start && sleep infinity"]
-    # ports:
-    #   - "5432:5432"
-    volumes:
-      - postgres_data:/var/lib/postgresql
-    healthcheck:
-      test:
-        - CMD-SHELL
-        - 'PORT_HEX="$(printf ''%04X'' 5432)"; cat /proc/net/tcp /proc/net/tcp6 2>/dev/null | grep -q ":$${PORT_HEX} "'
-      interval: 5s
-      timeout: 3s
-      retries: 120
-      start_period: 10s
-    restart: unless-stopped
-    environment:
-      # The custom image featuring pre-installed AGE and pgvector extensions, including a pre-configured administrator account
-      POSTGRES_USER: "rag"
-      POSTGRES_PASSWORD: "rag"
-      POSTGRES_DB: "rag"
-
-  vllm-embed:
-    image: vllm/vllm-openai:latest
-    runtime: nvidia
-    command: >
-      --model ${VLLM_EMBED_MODEL:-BAAI/bge-m3}
-      --port ${VLLM_EMBED_PORT:-8001}
-      --dtype float16
-      --api-key ${VLLM_EMBED_API_KEY}
-      ${VLLM_EMBED_EXTRA_ARGS:-}
-    environment:
-      NVIDIA_VISIBLE_DEVICES: ${NVIDIA_VISIBLE_DEVICES:-all}
-      NVIDIA_DRIVER_CAPABILITIES: ${NVIDIA_DRIVER_CAPABILITIES:-compute,utility}
-    ports:
-      - "${VLLM_EMBED_PORT:-8001}:${VLLM_EMBED_PORT:-8001}"
-    volumes:
-      - vllm_embed_cache:/root/.cache/huggingface
-    ipc: host
-    healthcheck:
-      test:
-        - CMD-SHELL
-        - 'PORT_HEX="$(printf ''%04X'' ${VLLM_EMBED_PORT:-8001})"; cat /proc/net/tcp /proc/net/tcp6 2>/dev/null | grep -q ":$${PORT_HEX} "'
-      interval: 5s
-      timeout: 3s
-      retries: 120
-      start_period: 10s
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
-    restart: unless-stopped
-
-  vllm-rerank:
-    image: vllm/vllm-openai:latest
-    runtime: nvidia
-    command: >
-      --model ${VLLM_RERANK_MODEL:-BAAI/bge-reranker-v2-m3}
-      --port ${VLLM_RERANK_PORT:-8000}
-      --dtype float16
-      --api-key ${VLLM_RERANK_API_KEY}
-      ${VLLM_RERANK_EXTRA_ARGS:-}
-    environment:
-      NVIDIA_VISIBLE_DEVICES: ${NVIDIA_VISIBLE_DEVICES:-all}
-      NVIDIA_DRIVER_CAPABILITIES: ${NVIDIA_DRIVER_CAPABILITIES:-compute,utility}
-    ports:
-      - "${VLLM_RERANK_PORT:-8000}:${VLLM_RERANK_PORT:-8000}"
-    volumes:
-      - vllm_rerank_cache:/root/.cache/huggingface
-    ipc: host
-    healthcheck:
-      test:
-        - CMD-SHELL
-        - 'PORT_HEX="$(printf ''%04X'' ${VLLM_RERANK_PORT:-8000})"; cat /proc/net/tcp /proc/net/tcp6 2>/dev/null | grep -q ":$${PORT_HEX} "'
-      interval: 5s
-      timeout: 3s
-      retries: 120
-      start_period: 10s
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
-    restart: unless-stopped
-
 volumes:
+  vllm_embed_cache:
+  vllm_rerank_cache:
+  postgres_data:
+  neo4j_data:
   milvus_data:
   milvus-etcd_data:
   milvus-minio_data:
-  neo4j_data:
-  postgres_data:
-  vllm_embed_cache:
-  vllm_rerank_cache:
