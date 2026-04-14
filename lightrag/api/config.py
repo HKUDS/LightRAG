@@ -6,7 +6,6 @@ import os
 import re
 import argparse
 import logging
-from collections.abc import MutableMapping
 from dotenv import load_dotenv
 from lightrag.utils import get_env_value
 from lightrag.llm.binding_options import (
@@ -60,57 +59,6 @@ class DefaultRAGStorageConfig:
     VECTOR_STORAGE = "NanoVectorDBStorage"
     GRAPH_STORAGE = "NetworkXStorage"
     DOC_STATUS_STORAGE = "JsonDocStatusStorage"
-
-
-def parse_env_bool(value: object) -> bool:
-    """Match PostgreSQL enable_vector parsing used by the storage layer."""
-    if isinstance(value, bool):
-        return value
-    return str(value).lower() in ("true", "1", "yes", "on")
-
-
-def resolve_postgres_enable_vector_setting(
-    vector_storage: str,
-    environ: MutableMapping[str, str] | None = None,
-) -> tuple[bool, str]:
-    """Resolve POSTGRES_ENABLE_VECTOR for the LightRAG server process.
-
-    Explicit environment values win. When the variable is absent, derive it from
-    the configured vector storage and persist the derived value into the process
-    environment so downstream PostgreSQL config reads see a consistent result.
-    """
-    env = os.environ if environ is None else environ
-    raw_value = env.get("POSTGRES_ENABLE_VECTOR")
-
-    if raw_value is not None:
-        return parse_env_bool(raw_value), "explicit"
-
-    enable_vector = vector_storage == "PGVectorStorage"
-    env["POSTGRES_ENABLE_VECTOR"] = "true" if enable_vector else "false"
-    return enable_vector, "auto-derived"
-
-
-def validate_postgres_enable_vector_setting(
-    vector_storage: str,
-    enable_vector: bool,
-    source: str,
-) -> None:
-    """Fail fast when explicit vector settings contradict the chosen backend."""
-    if source != "explicit":
-        return
-
-    expected_enable_vector = vector_storage == "PGVectorStorage"
-    if enable_vector == expected_enable_vector:
-        return
-
-    raise ValueError(
-        "POSTGRES_ENABLE_VECTOR conflicts with LIGHTRAG_VECTOR_STORAGE: "
-        f"vector_storage={vector_storage} requires "
-        f"POSTGRES_ENABLE_VECTOR={'true' if expected_enable_vector else 'false'}, "
-        f"but the explicit value resolves to {'true' if enable_vector else 'false'}. "
-        "Remove or comment out POSTGRES_ENABLE_VECTOR in .env to use automatic "
-        "detection, or update it to match the selected vector storage."
-    )
 
 
 def get_default_host(binding_type: str) -> str:

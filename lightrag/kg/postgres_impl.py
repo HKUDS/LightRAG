@@ -1954,7 +1954,7 @@ class ClientManager:
     _lock = asyncio.Lock()
 
     @staticmethod
-    def get_config() -> dict[str, Any]:
+    def get_config(vector_storage: str | None = None) -> dict[str, Any]:
         config = configparser.ConfigParser()
         config.read("config.ini", "utf-8")
 
@@ -2006,12 +2006,11 @@ class ClientManager:
                 "POSTGRES_SSL_CRL",
                 config.get("postgres", "ssl_crl", fallback=None),
             ),
-            # Vector configuration
-            "enable_vector": os.environ.get(
-                "POSTGRES_ENABLE_VECTOR",
-                config.get("postgres", "enable_vector", fallback="true"),
-            ).lower()
-            in ("true", "1", "yes", "on"),
+            # Vector configuration: derived from the vector storage backend in use.
+            # PGVectorStorage requires pgvector; all other backends do not.
+            "enable_vector": vector_storage == "PGVectorStorage"
+            if vector_storage is not None
+            else True,
             "vector_index_type": os.environ.get(
                 "POSTGRES_VECTOR_INDEX_TYPE",
                 config.get("postgres", "vector_index_type", fallback="HNSW"),
@@ -2103,10 +2102,10 @@ class ClientManager:
         }
 
     @classmethod
-    async def get_client(cls) -> PostgreSQLDB:
+    async def get_client(cls, vector_storage: str | None = None) -> PostgreSQLDB:
         async with cls._lock:
             if cls._instances["db"] is None:
-                config = ClientManager.get_config()
+                config = ClientManager.get_config(vector_storage=vector_storage)
                 db = PostgreSQLDB(config)
                 await db.initdb()
                 await db.check_tables()
@@ -2142,7 +2141,9 @@ class PGKVStorage(BaseKVStorage):
     async def initialize(self):
         async with get_data_init_lock():
             if self.db is None:
-                self.db = await ClientManager.get_client()
+                self.db = await ClientManager.get_client(
+                    vector_storage=self.global_config.get("vector_storage")
+                )
 
             # Implement workspace priority: PostgreSQLDB.workspace > self.workspace > "default"
             if self.db.workspace:
@@ -3175,7 +3176,9 @@ class PGVectorStorage(BaseVectorStorage):
     async def initialize(self):
         async with get_data_init_lock():
             if self.db is None:
-                self.db = await ClientManager.get_client()
+                self.db = await ClientManager.get_client(
+                    vector_storage=self.global_config.get("vector_storage")
+                )
 
             # Implement workspace priority: PostgreSQLDB.workspace > self.workspace > "default"
             if self.db.workspace:
@@ -3190,11 +3193,6 @@ class PGVectorStorage(BaseVectorStorage):
             else:
                 # Use "default" for compatibility (lowest priority)
                 self.workspace = "default"
-
-            if not self.db.enable_vector:
-                raise ValueError(
-                    "Cannot use PGVectorStorage when POSTGRES_ENABLE_VECTOR=false. Configure an alternative vector backend."
-                )
 
             # Setup table (create if not exists and handle migration)
             await PGVectorStorage.setup_table(
@@ -3706,7 +3704,9 @@ class PGDocStatusStorage(DocStatusStorage):
     async def initialize(self):
         async with get_data_init_lock():
             if self.db is None:
-                self.db = await ClientManager.get_client()
+                self.db = await ClientManager.get_client(
+                    vector_storage=self.global_config.get("vector_storage")
+                )
 
             # Implement workspace priority: PostgreSQLDB.workspace > self.workspace > "default"
             if self.db.workspace:
@@ -4592,7 +4592,9 @@ class PGGraphStorage(BaseGraphStorage):
     async def initialize(self):
         async with get_data_init_lock():
             if self.db is None:
-                self.db = await ClientManager.get_client()
+                self.db = await ClientManager.get_client(
+                    vector_storage=self.global_config.get("vector_storage")
+                )
 
             # Implement workspace priority: PostgreSQLDB.workspace > self.workspace > "default"
             if self.db.workspace:
