@@ -4895,8 +4895,8 @@ class PGGraphStorage(BaseGraphStorage):
 
         Args:
             query (str): a cypher query to be executed
-            readonly (bool): if True, uses db.query (supports params); if False,
-                uses db.execute (write path) which does not yet support params.
+            readonly (bool): if True, uses db.query; if False, uses db.execute.
+                Both paths support the ``params`` argument.
             upsert (bool): passed through to db.execute for write operations.
             params (dict | None): AGE agtype parameters for parameterized Cypher
                 (e.g. ``{"params": json.dumps({"entity_id": "..."})}``).
@@ -5085,8 +5085,8 @@ class PGGraphStorage(BaseGraphStorage):
             )
 
         # AGE supports binding scalar values in Cypher parameters here, but not
-        # using a bound agtype object on ``SET n += $props``. Keep the node ID
-        # parameterized and inline a safely escaped property map literal.
+        # using a bound agtype object on ``SET n += $props`` (verified on AGE 1.5.0).
+        # Keep the node ID parameterized and inline a safely escaped property map literal.
         node_props = {k: v for k, v in node_data.items() if k != "entity_id"}
         props_literal = self._format_properties(node_props)
         cypher_query = f"""MERGE (n:base {{entity_id: $entity_id}})
@@ -5157,9 +5157,9 @@ class PGGraphStorage(BaseGraphStorage):
             target_node_id (str): Label of the target node (used as identifier)
             edge_data (dict): dictionary of properties to set on the edge
         """
-        # AGE does not support binding a full agtype map in ``SET r += $props``.
-        # Keep endpoint identifiers parameterized and inline a safely escaped
-        # property map literal for the relationship payload.
+        # AGE does not support binding a full agtype map in ``SET r += $props``
+        # (verified on AGE 1.5.0). Keep endpoint identifiers parameterized and
+        # inline a safely escaped property map literal for the relationship payload.
         props_literal = self._format_properties(edge_data)
         cypher_query = f"""MATCH (source:base {{entity_id: $src_id}})
                      WITH source
