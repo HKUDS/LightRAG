@@ -4636,15 +4636,25 @@ class PGGraphStorage(BaseGraphStorage):
         """
         Normalize node ID to ensure special characters are properly handled in Cypher queries.
 
+        Used by write paths that still embed entity IDs in Cypher strings
+        (delete_node, remove_nodes, remove_edges).  The upsert paths now use
+        parameterized Cypher instead.
+
+        Within a Cypher double-quoted string the only recognised escape
+        sequences are ``\\"`` and ``\\\\``.  We also strip null bytes which
+        could truncate the string in some PostgreSQL/AGE code paths.
+
         Args:
             node_id: The original node ID
 
         Returns:
-            Normalized node ID suitable for Cypher queries
+            Normalized node ID suitable for embedding in a Cypher double-quoted string
         """
-        # Escape backslashes
-        normalized_id = node_id
+        # Strip null bytes that could truncate the string
+        normalized_id = node_id.replace("\x00", "")
+        # Escape backslashes first (order matters)
         normalized_id = normalized_id.replace("\\", "\\\\")
+        # Escape double quotes
         normalized_id = normalized_id.replace('"', '\\"')
         return normalized_id
 
@@ -4857,13 +4867,17 @@ class PGGraphStorage(BaseGraphStorage):
             str: the properties dictionary as a properly formatted string
         """
         props = []
-        # wrap property key in backticks to escape
+        # Wrap property keys in backticks and escape embedded backticks to
+        # preserve the Cypher structure when property names contain specials.
         for k, v in properties.items():
-            prop = f"`{k}`: {json.dumps(v)}"
+            safe_key = str(k).replace("`", "``")
+            prop = f"`{safe_key}`: {json.dumps(v, ensure_ascii=False)}"
             props.append(prop)
         if _id is not None and "id" not in properties:
             props.append(
-                f"id: {json.dumps(_id)}" if isinstance(_id, str) else f"id: {_id}"
+                f"id: {json.dumps(_id, ensure_ascii=False)}"
+                if isinstance(_id, str)
+                else f"id: {_id}"
             )
         return "{" + ", ".join(props) + "}"
 
@@ -4881,15 +4895,12 @@ class PGGraphStorage(BaseGraphStorage):
 
         Args:
             query (str): a cypher query to be executed
-            readonly (bool): if True, uses db.query (supports params); if False,
-                uses db.execute (write path) which does not yet support params.
+            readonly (bool): if True, uses db.query; if False, uses db.execute.
+                Both paths support the ``params`` argument.
             upsert (bool): passed through to db.execute for write operations.
             params (dict | None): AGE agtype parameters for parameterized Cypher
                 (e.g. ``{"params": json.dumps({"entity_id": "..."})}``).
-                Only honoured when ``readonly=True``. Write paths (upsert_node,
-                upsert_edge, delete_node, remove_nodes, remove_edges) still
-                interpolate entity IDs via _normalize_node_id; extending
-                parameterization to those paths is tracked as a follow-up task.
+                Honoured for both read and write paths.
             timing_label (str | None): optional label for performance logging.
 
         Returns:
@@ -4909,6 +4920,7 @@ class PGGraphStorage(BaseGraphStorage):
                 age_execute_start = time.perf_counter()
                 data = await self.db.execute(
                     query,
+                    data=params,
                     upsert=upsert,
                     with_age=True,
                     graph_name=self.graph_name,
@@ -5072,16 +5084,27 @@ class PGGraphStorage(BaseGraphStorage):
                 "PostgreSQL: node properties must contain an 'entity_id' field"
             )
 
-        label = self._normalize_node_id(node_id)
-        properties = self._format_properties(node_data)
-
-        # Build Cypher query with dynamic dollar-quoting to handle content containing $$
-        # This prevents syntax errors when LLM-extracted descriptions contain $ sequences
-        cypher_query = f"""MERGE (n:base {{entity_id: "{label}"}})
-                     SET n += {properties}
+        # AGE supports binding scalar values in Cypher parameters here, but not
+        # using a bound agtype object on ``SET n += $props`` (verified on AGE 1.5.0).
+        # Keep the node ID parameterized and inline a safely escaped property map literal.
+        node_props = {k: v for k, v in node_data.items() if k != "entity_id"}
+        props_literal = self._format_properties(node_props)
+        cypher_query = f"""MERGE (n:base {{entity_id: $entity_id}})
+                     SET n += {props_literal}
                      RETURN n"""
 
-        query = f"SELECT * FROM cypher({_dollar_quote(self.graph_name)}, {_dollar_quote(cypher_query)}) AS (n agtype)"
+        query = (
+            f"SELECT * FROM cypher("
+            f"{_dollar_quote(self.graph_name)}::name, "
+            f"{_dollar_quote(cypher_query)}::cstring, "
+            f"$1::agtype) AS (n agtype)"
+        )
+        pg_params = {
+            "params": json.dumps(
+                {"entity_id": node_id},
+                ensure_ascii=False,
+            )
+        }
         timing_label = f"{self.workspace} PGGraphStorage.upsert_node"
         total_start = time.perf_counter()
         performance_timing_log(
@@ -5095,6 +5118,7 @@ class PGGraphStorage(BaseGraphStorage):
                 query,
                 readonly=False,
                 upsert=True,
+                params=pg_params,
                 timing_label=timing_label,
             )
             performance_timing_log(
@@ -5133,21 +5157,32 @@ class PGGraphStorage(BaseGraphStorage):
             target_node_id (str): Label of the target node (used as identifier)
             edge_data (dict): dictionary of properties to set on the edge
         """
-        src_label = self._normalize_node_id(source_node_id)
-        tgt_label = self._normalize_node_id(target_node_id)
-        edge_properties = self._format_properties(edge_data)
-
-        # Build Cypher query with dynamic dollar-quoting to handle content containing $$
-        # This prevents syntax errors when LLM-extracted descriptions contain $ sequences
-        # See: https://github.com/HKUDS/LightRAG/issues/1438#issuecomment-2826000195
-        cypher_query = f"""MATCH (source:base {{entity_id: "{src_label}"}})
+        # AGE does not support binding a full agtype map in ``SET r += $props``
+        # (verified on AGE 1.5.0). Keep endpoint identifiers parameterized and
+        # inline a safely escaped property map literal for the relationship payload.
+        props_literal = self._format_properties(edge_data)
+        cypher_query = f"""MATCH (source:base {{entity_id: $src_id}})
                      WITH source
-                     MATCH (target:base {{entity_id: "{tgt_label}"}})
+                     MATCH (target:base {{entity_id: $tgt_id}})
                      MERGE (source)-[r:DIRECTED]-(target)
-                     SET r += {edge_properties}
+                     SET r += {props_literal}
                      RETURN r"""
 
-        query = f"SELECT * FROM cypher({_dollar_quote(self.graph_name)}, {_dollar_quote(cypher_query)}) AS (r agtype)"
+        query = (
+            f"SELECT * FROM cypher("
+            f"{_dollar_quote(self.graph_name)}::name, "
+            f"{_dollar_quote(cypher_query)}::cstring, "
+            f"$1::agtype) AS (r agtype)"
+        )
+        pg_params = {
+            "params": json.dumps(
+                {
+                    "src_id": source_node_id,
+                    "tgt_id": target_node_id,
+                },
+                ensure_ascii=False,
+            )
+        }
         timing_label = f"{self.workspace} PGGraphStorage.upsert_edge"
         total_start = time.perf_counter()
         performance_timing_log(
@@ -5162,6 +5197,7 @@ class PGGraphStorage(BaseGraphStorage):
                 query,
                 readonly=False,
                 upsert=True,
+                params=pg_params,
                 timing_label=timing_label,
             )
             performance_timing_log(
