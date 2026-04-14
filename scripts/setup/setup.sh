@@ -1505,7 +1505,6 @@ collect_milvus_config() {
     uri="${ENV_VALUES[MILVUS_URI]:-http://localhost:19530}"
   fi
 
-  uri="$(prompt_until_valid "Milvus URI" "$uri" validate_uri milvus)"
   existing_db_name="${ORIGINAL_ENV_VALUES[MILVUS_DB_NAME]-${ENV_VALUES[MILVUS_DB_NAME]:-}}"
   existing_device="${ORIGINAL_ENV_VALUES[MILVUS_DEVICE]-${ENV_VALUES[MILVUS_DEVICE]:-}}"
   if [[ "$use_docker" == "yes" ]]; then
@@ -1514,6 +1513,7 @@ collect_milvus_config() {
     if [[ "$milvus_device" == "cuda" ]] && ! host_cuda_available; then
       log_warn "CUDA device selected for Milvus but no NVIDIA driver detected on host."
     fi
+    uri="$(prompt_until_valid "Milvus URI" "$uri" validate_uri milvus)"
     uri="$(normalize_milvus_uri_for_local_service "$uri")"
     if [[ -z "${ENV_VALUES[MINIO_ACCESS_KEY_ID]:-}" ]]; then
       ENV_VALUES["MINIO_ACCESS_KEY_ID"]="minioadmin"
@@ -1521,6 +1521,8 @@ collect_milvus_config() {
     if [[ -z "${ENV_VALUES[MINIO_SECRET_ACCESS_KEY]:-}" ]]; then
       ENV_VALUES["MINIO_SECRET_ACCESS_KEY"]="minioadmin"
     fi
+  else
+    uri="$(prompt_until_valid "Milvus URI" "$uri" validate_uri milvus)"
   fi
   db_name="$(prompt_with_default "Milvus database name" "${existing_db_name:-lightrag}")"
 
@@ -1559,7 +1561,6 @@ collect_qdrant_config() {
     url="${ENV_VALUES[QDRANT_URL]:-http://localhost:6333}"
   fi
 
-  url="$(prompt_until_valid "Qdrant URL" "$url" validate_uri qdrant)"
   existing_device="${ORIGINAL_ENV_VALUES[QDRANT_DEVICE]-${ENV_VALUES[QDRANT_DEVICE]:-}}"
   if [[ "$use_docker" == "yes" ]]; then
     qdrant_device="$(resolve_local_device_default "$existing_device")"
@@ -1567,7 +1568,10 @@ collect_qdrant_config() {
     if [[ "$qdrant_device" == "cuda" ]] && ! host_cuda_available; then
       log_warn "CUDA device selected for Qdrant but no NVIDIA driver detected on host."
     fi
+    url="$(prompt_until_valid "Qdrant URL" "$url" validate_uri qdrant)"
     url="$(normalize_qdrant_uri_for_local_service "$url")"
+  else
+    url="$(prompt_until_valid "Qdrant URL" "$url" validate_uri qdrant)"
   fi
   ENV_VALUES["QDRANT_URL"]="$url"
   if [[ -n "$qdrant_device" ]]; then
@@ -2369,12 +2373,18 @@ env_base_flow() {
   fi
 
   if [[ "$use_docker_embed" == "yes" ]]; then
-    existing_vllm_embed_model="${ENV_VALUES[VLLM_EMBED_MODEL]:-}"
-    existing_embedding_dim="${ENV_VALUES[EMBEDDING_DIM]:-}"
-    existing_vllm_embed_port="${ENV_VALUES[VLLM_EMBED_PORT]:-}"
-    existing_vllm_embed_host="${ENV_VALUES[EMBEDDING_BINDING_HOST]:-}"
-    existing_vllm_embed_device="${ENV_VALUES[VLLM_EMBED_DEVICE]:-}"
+    existing_vllm_embed_model="${ORIGINAL_ENV_VALUES[VLLM_EMBED_MODEL]-${ENV_VALUES[VLLM_EMBED_MODEL]:-}}"
+    existing_embedding_dim="${ORIGINAL_ENV_VALUES[EMBEDDING_DIM]-${ENV_VALUES[EMBEDDING_DIM]:-}}"
+    existing_vllm_embed_port="${ORIGINAL_ENV_VALUES[VLLM_EMBED_PORT]-${ENV_VALUES[VLLM_EMBED_PORT]:-}}"
+    existing_vllm_embed_host="${ORIGINAL_ENV_VALUES[EMBEDDING_BINDING_HOST]-${ENV_VALUES[EMBEDDING_BINDING_HOST]:-}}"
+    existing_vllm_embed_device="${ORIGINAL_ENV_VALUES[VLLM_EMBED_DEVICE]-${ENV_VALUES[VLLM_EMBED_DEVICE]:-}}"
     apply_preset_overwrite "${PRESET_VLLM_EMBEDDING[@]}"
+    local vllm_embed_device
+    vllm_embed_device="$(resolve_local_device_default "$existing_vllm_embed_device")"
+    vllm_embed_device="$(prompt_choice "Embedding device" "$vllm_embed_device" "cpu" "cuda")"
+    if [[ "$vllm_embed_device" == "cuda" ]] && ! host_cuda_available; then
+      log_warn "CUDA device selected for vLLM embedding but no NVIDIA driver detected on host."
+    fi
     if [[ -n "$existing_vllm_embed_port" ]]; then
       ENV_VALUES["VLLM_EMBED_PORT"]="$existing_vllm_embed_port"
     fi
@@ -2390,9 +2400,6 @@ env_base_flow() {
     embed_model="$(prompt_with_default "Embedding model" "${existing_vllm_embed_model:-${ENV_VALUES[VLLM_EMBED_MODEL]:-BAAI/bge-m3}}")"
     ENV_VALUES["VLLM_EMBED_MODEL"]="$embed_model"
     ENV_VALUES["EMBEDDING_MODEL"]="$embed_model"
-
-    local vllm_embed_device
-    vllm_embed_device="$(resolve_local_device_default "$existing_vllm_embed_device")"
     ENV_VALUES["VLLM_EMBED_DEVICE"]="$vllm_embed_device"
     ENV_VALUES["LIGHTRAG_SETUP_EMBEDDING_PROVIDER"]="vllm"
 
@@ -2439,11 +2446,17 @@ env_base_flow() {
     fi
 
     if [[ "$use_docker_rerank" == "yes" ]]; then
-      existing_vllm_rerank_model="${ENV_VALUES[VLLM_RERANK_MODEL]:-}"
-      existing_vllm_rerank_port="${ENV_VALUES[VLLM_RERANK_PORT]:-}"
-      existing_vllm_rerank_host="${ENV_VALUES[RERANK_BINDING_HOST]:-}"
-      existing_vllm_rerank_device="${ENV_VALUES[VLLM_RERANK_DEVICE]:-}"
+      existing_vllm_rerank_model="${ORIGINAL_ENV_VALUES[VLLM_RERANK_MODEL]-${ENV_VALUES[VLLM_RERANK_MODEL]:-}}"
+      existing_vllm_rerank_port="${ORIGINAL_ENV_VALUES[VLLM_RERANK_PORT]-${ENV_VALUES[VLLM_RERANK_PORT]:-}}"
+      existing_vllm_rerank_host="${ORIGINAL_ENV_VALUES[RERANK_BINDING_HOST]-${ENV_VALUES[RERANK_BINDING_HOST]:-}}"
+      existing_vllm_rerank_device="${ORIGINAL_ENV_VALUES[VLLM_RERANK_DEVICE]-${ENV_VALUES[VLLM_RERANK_DEVICE]:-}}"
       apply_preset_overwrite "${PRESET_VLLM_RERANKER[@]}"
+      local vllm_rerank_device
+      vllm_rerank_device="$(resolve_local_device_default "$existing_vllm_rerank_device")"
+      vllm_rerank_device="$(prompt_choice "Rerank device" "$vllm_rerank_device" "cpu" "cuda")"
+      if [[ "$vllm_rerank_device" == "cuda" ]] && ! host_cuda_available; then
+        log_warn "CUDA device selected for vLLM rerank but no NVIDIA driver detected on host."
+      fi
       local rerank_model rerank_port
       if [[ -n "$existing_vllm_rerank_port" ]]; then
         ENV_VALUES["VLLM_RERANK_PORT"]="$existing_vllm_rerank_port"
@@ -2458,9 +2471,6 @@ env_base_flow() {
       ENV_VALUES["VLLM_RERANK_MODEL"]="$rerank_model"
       ENV_VALUES["RERANK_MODEL"]="$rerank_model"
       ENV_VALUES["VLLM_RERANK_PORT"]="$rerank_port"
-
-      local vllm_rerank_device
-      vllm_rerank_device="$(resolve_local_device_default "$existing_vllm_rerank_device")"
       ENV_VALUES["VLLM_RERANK_DEVICE"]="$vllm_rerank_device"
       ENV_VALUES["LIGHTRAG_SETUP_RERANK_PROVIDER"]="vllm"
 

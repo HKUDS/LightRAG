@@ -942,6 +942,46 @@ printf 'MILVUS_DEVICE=%s\\n' "${{ENV_VALUES[MILVUS_DEVICE]}}\"
     assert values["MILVUS_DEVICE"] == expected_device
 
 
+@pytest.mark.parametrize(
+    ("collector_call", "device_prompt", "endpoint_prompt"),
+    [
+        ("collect_milvus_config yes", "Milvus device", "Milvus URI"),
+        ("collect_qdrant_config yes", "Qdrant device", "Qdrant URL"),
+    ],
+)
+def test_local_vector_db_device_prompt_is_first_follow_up_after_docker_choice(
+    collector_call: str, device_prompt: str, endpoint_prompt: str
+) -> None:
+    """GPU/CPU selection should be the first prompt after choosing local Docker deployment."""
+    values = run_bash_lines(f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+reset_state
+
+PROMPT_LOG_FILE="$(mktemp)"
+: > "$PROMPT_LOG_FILE"
+
+confirm_default_yes() {{ return 0; }}
+prompt_choice() {{
+  printf '%s\\n' "$1" >> "$PROMPT_LOG_FILE"
+  printf '%s' "$2"
+}}
+prompt_with_default() {{
+  printf '%s\\n' "$1" >> "$PROMPT_LOG_FILE"
+  printf '%s' "$2"
+}}
+prompt_until_valid() {{
+  printf '%s\\n' "$1" >> "$PROMPT_LOG_FILE"
+  printf '%s' "$2"
+}}
+
+{collector_call}
+
+printf 'PROMPT_LOG=%s\\n' "$(paste -sd '|' "$PROMPT_LOG_FILE")"
+""")
+    assert values["PROMPT_LOG"].startswith(f"{device_prompt}|{endpoint_prompt}")
+
+
 def test_collect_mongodb_config_local_service_strips_stale_credentials_on_rerun() -> (
     None
 ):

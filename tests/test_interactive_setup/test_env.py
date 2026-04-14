@@ -389,6 +389,208 @@ env_base_flow
     assert values["VLLM_EMBED_DEVICE"] == "cuda"
 
 
+def test_env_base_flow_forced_vllm_cuda_selection_writes_cuda_devices_to_env(
+    tmp_path: Path,
+) -> None:
+    """Forced CUDA selection should drive both .env devices and GPU compose templates."""
+    write_text_lines(
+        tmp_path / "env.example",
+        (REPO_ROOT / "env.example").read_text(encoding="utf-8").splitlines(),
+    )
+    write_text_lines(
+        tmp_path / "docker-compose.yml",
+        (REPO_ROOT / "docker-compose.yml").read_text(encoding="utf-8").splitlines(),
+    )
+
+    result = run_bash_process(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+
+host_cuda_available() {{ return 1; }}
+prompt_choice() {{
+  case "$1" in
+    "LLM provider") printf 'ollama' ;;
+    "Embedding device"|"Rerank device") printf 'cuda' ;;
+    *) printf '%s' "$2" ;;
+  esac
+}}
+prompt_with_default() {{ printf '%s' "$2"; }}
+prompt_until_valid() {{ printf '%s' "$2"; }}
+prompt_secret_with_default() {{ printf '%s' "$2"; }}
+prompt_secret_until_valid_with_default() {{ printf '%s' "$2"; }}
+confirm_default_no() {{
+  case "$1" in
+    "Run embedding model locally via Docker (vLLM)?") return 0 ;;
+    "Enable reranking?") return 0 ;;
+    "Run rerank service locally via Docker?") return 0 ;;
+    *) return 1 ;;
+  esac
+}}
+confirm_default_yes() {{
+  case "$1" in
+    *"The compose file will be created/updated. Continue?"*) return 0 ;;
+    *) return 1 ;;
+  esac
+}}
+confirm_required_yes_no() {{ return 0; }}
+
+env_base_flow
+""",
+        cwd=tmp_path,
+    )
+
+    assert result.returncode == 0, result.stderr
+    generated_env = (tmp_path / ".env").read_text(encoding="utf-8")
+    generated_compose = (tmp_path / "docker-compose.final.yml").read_text(
+        encoding="utf-8"
+    )
+    assert "VLLM_EMBED_DEVICE=cuda" in generated_env
+    assert "VLLM_RERANK_DEVICE=cuda" in generated_env
+    assert generated_compose.count("capabilities: [gpu]") >= 2
+    assert (
+        "CUDA device selected for vLLM embedding but no NVIDIA driver detected on host."
+        in result.stdout
+    )
+    assert (
+        "CUDA device selected for vLLM rerank but no NVIDIA driver detected on host."
+        in result.stdout
+    )
+
+
+def test_env_base_flow_vllm_defaults_prefer_original_env_values_on_rerun(
+    tmp_path: Path,
+) -> None:
+    """vLLM prompt defaults should prefer the loaded `.env` snapshot over later mutations."""
+    write_text_lines(
+        tmp_path / ".env",
+        [
+            "LLM_BINDING=openai",
+            "LLM_MODEL=gpt-4o-mini",
+            "LLM_BINDING_HOST=https://api.openai.com/v1",
+            "LLM_BINDING_API_KEY=sk-existing",
+            "EMBEDDING_BINDING=openai",
+            "EMBEDDING_MODEL=BAAI/original-embed",
+            "EMBEDDING_DIM=1024",
+            "EMBEDDING_BINDING_HOST=http://localhost:9101/v1",
+            "EMBEDDING_BINDING_API_KEY=embed-key",
+            "LIGHTRAG_SETUP_EMBEDDING_PROVIDER=vllm",
+            "VLLM_EMBED_MODEL=BAAI/original-embed",
+            "VLLM_EMBED_PORT=9101",
+            "VLLM_EMBED_DEVICE=cpu",
+            "RERANK_BINDING=cohere",
+            "RERANK_MODEL=BAAI/original-rerank",
+            "RERANK_BINDING_HOST=http://localhost:9200/rerank",
+            "RERANK_BINDING_API_KEY=rerank-key",
+            "LIGHTRAG_SETUP_RERANK_PROVIDER=vllm",
+            "VLLM_RERANK_MODEL=BAAI/original-rerank",
+            "VLLM_RERANK_PORT=9200",
+            "VLLM_RERANK_DEVICE=cpu",
+        ],
+    )
+    values = run_bash_lines(f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+
+nvidia-smi() {{ return 0; }}
+collect_llm_config() {{
+  ENV_VALUES[VLLM_EMBED_MODEL]="BAAI/mutated-embed"
+  ENV_VALUES[EMBEDDING_DIM]="2048"
+  ENV_VALUES[VLLM_EMBED_PORT]="9991"
+  ENV_VALUES[EMBEDDING_BINDING_HOST]="http://localhost:9991/v1"
+  ENV_VALUES[VLLM_EMBED_DEVICE]="cuda"
+  ENV_VALUES[VLLM_RERANK_MODEL]="BAAI/mutated-rerank"
+  ENV_VALUES[VLLM_RERANK_PORT]="9990"
+  ENV_VALUES[RERANK_BINDING_HOST]="http://localhost:9990/rerank"
+  ENV_VALUES[VLLM_RERANK_DEVICE]="cuda"
+}}
+prompt_choice() {{ printf '%s' "$2"; }}
+prompt_with_default() {{ printf '%s' "$2"; }}
+prompt_until_valid() {{ printf '%s' "$2"; }}
+prompt_secret_with_default() {{ printf '%s' "$2"; }}
+prompt_secret_until_valid_with_default() {{ printf '%s' "$2"; }}
+confirm_default_no() {{ return 1; }}
+confirm_default_yes() {{
+  case "$1" in
+    "Enable reranking?") return 0 ;;
+    "Run embedding model locally via Docker (vLLM)?") return 0 ;;
+    "Run rerank service locally via Docker?") return 0 ;;
+    *) return 1 ;;
+  esac
+}}
+
+finalize_base_setup() {{
+  printf 'VLLM_EMBED_MODEL=%s\\n' "${{ENV_VALUES[VLLM_EMBED_MODEL]}}"
+  printf 'EMBEDDING_DIM=%s\\n' "${{ENV_VALUES[EMBEDDING_DIM]}}"
+  printf 'VLLM_EMBED_PORT=%s\\n' "${{ENV_VALUES[VLLM_EMBED_PORT]}}"
+  printf 'EMBEDDING_BINDING_HOST=%s\\n' "${{ENV_VALUES[EMBEDDING_BINDING_HOST]}}"
+  printf 'VLLM_EMBED_DEVICE=%s\\n' "${{ENV_VALUES[VLLM_EMBED_DEVICE]}}"
+  printf 'VLLM_RERANK_MODEL=%s\\n' "${{ENV_VALUES[VLLM_RERANK_MODEL]}}"
+  printf 'VLLM_RERANK_PORT=%s\\n' "${{ENV_VALUES[VLLM_RERANK_PORT]}}"
+  printf 'RERANK_BINDING_HOST=%s\\n' "${{ENV_VALUES[RERANK_BINDING_HOST]}}"
+  printf 'VLLM_RERANK_DEVICE=%s\\n' "${{ENV_VALUES[VLLM_RERANK_DEVICE]}}"
+}}
+
+env_base_flow
+""")
+    assert values["VLLM_EMBED_MODEL"] == "BAAI/original-embed"
+    assert values["EMBEDDING_DIM"] == "1024"
+    assert values["VLLM_EMBED_PORT"] == "9101"
+    assert values["EMBEDDING_BINDING_HOST"] == "http://localhost:9101/v1"
+    assert values["VLLM_EMBED_DEVICE"] == "cpu"
+    assert values["VLLM_RERANK_MODEL"] == "BAAI/original-rerank"
+    assert values["VLLM_RERANK_PORT"] == "9200"
+    assert values["RERANK_BINDING_HOST"] == "http://localhost:9200/rerank"
+    assert values["VLLM_RERANK_DEVICE"] == "cpu"
+
+
+def test_env_base_flow_vllm_device_prompt_is_first_after_docker_choice(
+    tmp_path: Path,
+) -> None:
+    """vLLM should ask for device before model-specific prompts once Docker is selected."""
+    values = run_bash_lines(f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+
+PROMPT_LOG_FILE="$(mktemp)"
+: > "$PROMPT_LOG_FILE"
+
+prompt_choice() {{
+  printf '%s\\n' "$1" >> "$PROMPT_LOG_FILE"
+  printf '%s' "$2"
+}}
+prompt_with_default() {{
+  printf '%s\\n' "$1" >> "$PROMPT_LOG_FILE"
+  printf '%s' "$2"
+}}
+prompt_until_valid() {{ printf '%s' "$2"; }}
+prompt_secret_with_default() {{ printf '%s' "$2"; }}
+prompt_secret_until_valid_with_default() {{ printf '%s' "$2"; }}
+confirm_default_no() {{
+  case "$1" in
+    "Run embedding model locally via Docker (vLLM)?") return 0 ;;
+    "Enable reranking?") return 0 ;;
+    "Run rerank service locally via Docker?") return 0 ;;
+    *) return 1 ;;
+  esac
+}}
+confirm_default_yes() {{
+  return 1
+}}
+finalize_base_setup() {{ :; }}
+
+env_base_flow
+
+printf 'PROMPT_LOG=%s\\n' "$(paste -sd '|' "$PROMPT_LOG_FILE")"
+""")
+    prompt_log = values["PROMPT_LOG"]
+    assert prompt_log.index("Embedding device") < prompt_log.index("Embedding model")
+    assert prompt_log.index("Rerank device") < prompt_log.index("Rerank model")
+
+
 def test_env_base_flow_preserves_ssl_config_on_rerun(tmp_path: Path) -> None:
     """env-base should preserve SSL config on rerun, even when old paths are stale."""
     cases = {
