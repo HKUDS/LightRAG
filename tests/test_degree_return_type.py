@@ -9,7 +9,6 @@ These tests exercise the *real* methods on ``PGGraphStorage`` and
 so they run without a database or heavy import dependencies.
 """
 
-import asyncio
 from unittest.mock import AsyncMock
 
 import networkx as nx
@@ -52,9 +51,7 @@ class TestPGGraphStorageDegree:
 
     @pytest.mark.asyncio
     async def test_node_degree_missing_returns_zero(self):
-        storage = _make_pg_storage(
-            node_degrees_batch=AsyncMock(return_value={})
-        )
+        storage = _make_pg_storage(node_degrees_batch=AsyncMock(return_value={}))
         result = await storage.node_degree("nonexistent_node")
         assert result == 0
         assert isinstance(result, int)
@@ -70,9 +67,7 @@ class TestPGGraphStorageDegree:
 
     @pytest.mark.asyncio
     async def test_edge_degree_missing_returns_zero(self):
-        storage = _make_pg_storage(
-            edge_degrees_batch=AsyncMock(return_value={})
-        )
+        storage = _make_pg_storage(edge_degrees_batch=AsyncMock(return_value={}))
         result = await storage.edge_degree("src", "tgt")
         assert result == 0
         assert isinstance(result, int)
@@ -88,18 +83,14 @@ class TestPGGraphStorageDegree:
 
     @pytest.mark.asyncio
     async def test_node_degree_none_result_returns_zero(self):
-        storage = _make_pg_storage(
-            node_degrees_batch=AsyncMock(return_value=None)
-        )
+        storage = _make_pg_storage(node_degrees_batch=AsyncMock(return_value=None))
         result = await storage.node_degree("any")
         assert result == 0
         assert isinstance(result, int)
 
     @pytest.mark.asyncio
     async def test_edge_degree_none_result_returns_zero(self):
-        storage = _make_pg_storage(
-            edge_degrees_batch=AsyncMock(return_value=None)
-        )
+        storage = _make_pg_storage(edge_degrees_batch=AsyncMock(return_value=None))
         result = await storage.edge_degree("src", "tgt")
         assert result == 0
         assert isinstance(result, int)
