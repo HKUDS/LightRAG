@@ -616,6 +616,23 @@ def compute_mdhash_id(content: str, prefix: str = "") -> str:
     return prefix + compute_args_hash(content)
 
 
+def make_relation_vdb_ids(src_entity: str, tgt_entity: str) -> list[str]:
+    """Return candidate relation VDB IDs for an undirected edge.
+
+    The normalized ID is returned first for all new writes. The reverse-order ID is
+    kept as a compatibility fallback for historical custom-KG imports that hashed
+    the relation using the original endpoint order.
+    """
+    normalized_src, normalized_tgt = sorted((src_entity, tgt_entity))
+    relation_ids = [compute_mdhash_id(normalized_src + normalized_tgt, prefix="rel-")]
+    reverse_relation_id = compute_mdhash_id(
+        normalized_tgt + normalized_src, prefix="rel-"
+    )
+    if reverse_relation_id not in relation_ids:
+        relation_ids.append(reverse_relation_id)
+    return relation_ids
+
+
 def generate_cache_key(mode: str, cache_type: str, hash_value: str) -> str:
     """Generate a flattened cache key in the format {mode}:{cache_type}:{hash}
 
@@ -1669,8 +1686,11 @@ async def aexport_data(
 
                 # Optional: Get vector database information
                 if include_vector_data:
-                    rel_id = compute_mdhash_id(src_entity + tgt_entity, prefix="rel-")
-                    vector_data = await relationships_vdb.get_by_id(rel_id)
+                    vector_data = None
+                    for rel_id in make_relation_vdb_ids(src_entity, tgt_entity):
+                        vector_data = await relationships_vdb.get_by_id(rel_id)
+                        if vector_data is not None:
+                            break
                     relation_info["vector_data"] = vector_data
 
                 relation_row = {
@@ -1995,11 +2015,19 @@ async def update_chunk_cache_list(
 
 
 def remove_think_tags(text: str) -> str:
-    """Remove <think>...</think> tags from the text
-    Remove  orphon ...</think> tags from the text also"""
-    return re.sub(
-        r"^(<think>.*?</think>|.*</think>)", "", text, flags=re.DOTALL
-    ).strip()
+    """Remove <think>...</think> tags and their content from the text.
+
+    Handles two cases:
+    1. Complete <think>...</think> blocks anywhere in the text.
+    2. Orphaned </think> at the very start (e.g., from streaming that begins
+       mid-think-block), removing everything before and including it.
+    """
+    # First, remove orphaned </think> prefix (content before first </think>
+    # when there is no preceding <think> tag)
+    text = re.sub(r"^((?!<think>).)*?</think>", "", text, flags=re.DOTALL)
+    # Then remove all complete <think>...</think> blocks
+    text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
+    return text.strip()
 
 
 async def use_llm_func_with_cache(

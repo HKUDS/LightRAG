@@ -1101,27 +1101,79 @@ async def test_graph_string_escaping_regressions(storage):
     assert degrees[mixed_id] == 1
     assert degrees[single_quote_id] == 1
 
+    # Helper: undirected graph has no canonical direction, so accept either (a,b) or (b,a).
+    def connects(edges, a, b):
+        return any(
+            (src == a and tgt == b) or (src == b and tgt == a) for src, tgt in edges
+        )
+
     center_edges = await storage.get_node_edges(center_id)
     assert center_edges is not None
-    assert set(center_edges) == {
-        (center_id, backslash_id),
-        (center_id, mixed_id),
-        (center_id, single_quote_id),
-    }
+    assert connects(
+        center_edges, center_id, backslash_id
+    ), f"center_edges should contain connection to {backslash_id}"
+    assert connects(
+        center_edges, center_id, mixed_id
+    ), f"center_edges should contain connection to {mixed_id}"
+    assert connects(
+        center_edges, center_id, single_quote_id
+    ), f"center_edges should contain connection to {single_quote_id}"
 
     batch_edges = await storage.get_nodes_edges_batch(
         [center_id, mixed_id, backslash_id, single_quote_id]
     )
     assert set(batch_edges) == {center_id, mixed_id, backslash_id, single_quote_id}
-    assert set(batch_edges[center_id]) == {
-        (center_id, backslash_id),
-        (center_id, mixed_id),
-        (center_id, single_quote_id),
-    }
-    assert set(batch_edges[mixed_id]) == {(center_id, mixed_id)}
-    assert set(batch_edges[backslash_id]) == {(center_id, backslash_id)}
-    assert set(batch_edges[single_quote_id]) == {(center_id, single_quote_id)}
+    assert connects(batch_edges[center_id], center_id, backslash_id)
+    assert connects(batch_edges[center_id], center_id, mixed_id)
+    assert connects(batch_edges[center_id], center_id, single_quote_id)
+    assert connects(batch_edges[mixed_id], center_id, mixed_id)
+    assert connects(batch_edges[backslash_id], center_id, backslash_id)
+    assert connects(batch_edges[single_quote_id], center_id, single_quote_id)
 
+    # --- Undirected property: get_edge in both directions ---
+    print("\n== Verifying undirected property: get_edge forward and reverse")
+    for (src_id, tgt_id), payload in edge_payloads.items():
+        fwd = await storage.get_edge(src_id, tgt_id)
+        rev = await storage.get_edge(tgt_id, src_id)
+        assert (
+            fwd is not None
+        ), f"get_edge({src_id!r}, {tgt_id!r}) returned None after insertion"
+        assert rev is not None, (
+            f"get_edge({tgt_id!r}, {src_id!r}) returned None — "
+            f"storage is not treating the edge as undirected"
+        )
+        assert fwd["relationship"] == payload["relationship"]
+        assert fwd["description"] == payload["description"]
+        assert rev["relationship"] == fwd["relationship"], (
+            f"Reverse get_edge returned different relationship for "
+            f"({src_id!r}, {tgt_id!r})"
+        )
+        assert rev["description"] == fwd["description"], (
+            f"Reverse get_edge returned different description for "
+            f"({src_id!r}, {tgt_id!r})"
+        )
+    print(
+        "Undirected property verification successful: "
+        "get_edge returns consistent data in both directions"
+    )
+
+    # --- Undirected property: has_edge in both directions ---
+    print("\n== Verifying undirected property: has_edge forward and reverse")
+    for src_id, tgt_id in edge_payloads:
+        assert await storage.has_edge(
+            src_id, tgt_id
+        ), f"has_edge({src_id!r}, {tgt_id!r}) returned False after insertion"
+        assert await storage.has_edge(tgt_id, src_id), (
+            f"has_edge({tgt_id!r}, {src_id!r}) returned False — "
+            f"storage is not treating the edge as undirected"
+        )
+    print(
+        "Undirected property verification successful: "
+        "has_edge returns True in both directions"
+    )
+
+    # --- Undirected property: get_edges_batch forward and reverse ---
+    print("\n== Verifying undirected property: get_edges_batch forward and reverse")
     forward_edges = await storage.get_edges_batch(
         [{"src": src_id, "tgt": tgt_id} for src_id, tgt_id in edge_payloads]
     )
@@ -1134,15 +1186,35 @@ async def test_graph_string_escaping_regressions(storage):
         assert forward_edges[pair]["relationship"] == payload["relationship"]
         assert forward_edges[pair]["description"] == payload["description"]
         reverse_pair = (pair[1], pair[0])
-        assert reverse_pair in reverse_edges
+        assert (
+            reverse_pair in reverse_edges
+        ), f"get_edges_batch did not return reverse pair {reverse_pair!r}"
         assert reverse_edges[reverse_pair]["relationship"] == payload["relationship"]
         assert reverse_edges[reverse_pair]["description"] == payload["description"]
+    print(
+        "Undirected property verification successful: "
+        "get_edges_batch returns consistent data in both directions"
+    )
 
+    # --- Undirected property: edge deletion removes both directions ---
+    print("\n== Verifying undirected property: edge deletion removes both directions")
     await storage.remove_edges([(center_id, mixed_id)])
-    assert await storage.get_edge(center_id, mixed_id) is None
+    assert (
+        await storage.get_edge(center_id, mixed_id) is None
+    ), f"Forward edge ({center_id!r} -> {mixed_id!r}) should be deleted"
+    assert await storage.get_edge(mixed_id, center_id) is None, (
+        f"Reverse edge ({mixed_id!r} -> {center_id!r}) should also be deleted "
+        f"— storage is not treating deletion as undirected"
+    )
     remaining_center_edges = await storage.get_node_edges(center_id)
     assert remaining_center_edges is not None
-    assert (center_id, mixed_id) not in remaining_center_edges
+    assert not connects(
+        remaining_center_edges, center_id, mixed_id
+    ), "Edge between center and mixed_id should have been removed"
+    print(
+        "Undirected property verification successful: "
+        "deleting an edge removes it in both directions"
+    )
 
     await storage.delete_node(single_quote_id)
     assert await storage.get_node(single_quote_id) is None

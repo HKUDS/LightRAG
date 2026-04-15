@@ -1048,10 +1048,10 @@ const releasePaginatedDocumentSubscriber = (
 const subscribeToPaginatedDocumentsRequest = (
   request: DocumentsRequest
 ): {
-    requestKey: string
-    requestEntry: InFlightPaginatedDocumentRequest
-    release: (abortIfLastSubscriber: boolean) => void
-  } => {
+  requestKey: string
+  requestEntry: InFlightPaginatedDocumentRequest
+  release: (abortIfLastSubscriber: boolean) => void
+} => {
   const requestKey = getPaginatedDocumentsRequestKey(request)
   let requestEntry = inFlightPaginatedDocumentRequests.get(requestKey)
 

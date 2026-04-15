@@ -144,7 +144,10 @@ make env-storage
 
 **Important rule**
 
-- If you choose `MongoVectorDBStorage` for vector storage, the wizard does not offer the bundled local Docker MongoDB service. You must provide a MongoDB deployment that supports Atlas Search / Vector Search.
+- `MongoVectorDBStorage` requires Atlas Search / Vector Search support.
+- If you choose the wizard-managed Docker MongoDB service, the wizard now provisions MongoDB Atlas Local, so `MongoVectorDBStorage` can run against the local Docker deployment. The generated host-side `MONGO_URI` uses `?directConnection=true`.
+- If you do not use the wizard-managed Docker MongoDB service, provide an external Atlas-capable MongoDB endpoint for `MONGO_URI`, such as a `mongodb+srv://` Atlas cluster URI or an Atlas Local `mongodb://...?...directConnection=true` URI.
+- For external `mongodb://...?...directConnection=true` URIs, the wizard can only validate the URI format. It cannot determine statically whether the target deployment actually provides Atlas Search / Vector Search support.
 
 **What gets written**
 
@@ -245,6 +248,8 @@ In practice, this means:
 The wizard creates or updates `docker-compose.final.yml` only when you choose wizard-managed Docker services or when an existing wizard-generated compose setup needs to stay aligned with new server settings.
 
 When one of the setup flows is about to replace or remove an existing generated compose file, it automatically creates a timestamped backup first.
+
+For MongoDB-backed storage, the wizard-managed Docker path uses MongoDB Atlas Local rather than MongoDB Community Edition so local Atlas Search / Vector Search workflows are available.
 
 Use this file when starting the generated Docker stack:
 
