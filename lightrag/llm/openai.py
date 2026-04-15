@@ -79,6 +79,15 @@ class InvalidResponseError(Exception):
 # Module-level cache for tiktoken encodings
 _TIKTOKEN_ENCODING_CACHE: dict[str, Any] = {}
 
+# Whether to request base64-encoded embeddings from the API.
+# Base64 is more efficient over the wire; set EMBEDDING_USE_BASE64=false for
+# providers that don't support it (e.g. Yandex Cloud).
+EMBEDDING_USE_BASE64: bool = os.getenv("EMBEDDING_USE_BASE64", "true").lower() in (
+    "true",
+    "1",
+    "yes",
+)
+
 
 def _get_tiktoken_encoding_for_model(model: str) -> Any:
     """Get tiktoken encoding for the specified model with caching.
@@ -894,8 +903,11 @@ async def openai_embed(
         api_params = {
             "model": api_model,
             "input": texts,
-            "encoding_format": "base64",
         }
+
+        # Add encoding_format parameter (some providers like Yandex don't support base64)
+        # OpenAI client defaults to base64, so we must explicitly set it to "float" if disabled
+        api_params["encoding_format"] = "base64" if EMBEDDING_USE_BASE64 else "float"
 
         # Add dimensions parameter only if embedding_dim is provided
         if embedding_dim is not None:

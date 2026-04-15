@@ -286,3 +286,17 @@ Before building multi-architecture images, ensure you have:
 - Docker 20.10+ with Buildx support
 - Sufficient disk space (20GB+ recommended for offline image)
 - Registry access credentials (if pushing images)
+
+### Verify official GHCR images with Cosign
+
+Official LightRAG images published to GitHub Container Registry by GitHub Actions are signed with Sigstore Cosign using GitHub OIDC keyless signing.
+
+Install `cosign`, then verify the image tag you want to run:
+
+```bash
+cosign verify ghcr.io/HKUDS/LightRAG:<tag> \
+  --certificate-identity-regexp '^https://github.com/HKUDS/LightRAG/.github/workflows/(docker-publish|docker-build-manual|docker-build-lite)\.yml@refs/.+$' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+```
+
+Replace `<tag>` with the version tag you want to validate, for example a release tag, `latest`, `<tag>-lite`, or `lite`.
