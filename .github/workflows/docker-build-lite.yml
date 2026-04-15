@@ -11,6 +11,7 @@ on:
 
 permissions:
   contents: read
+  id-token: write
   packages: write
 
 jobs:
@@ -63,6 +64,9 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v4.1.1
+
       - name: Extract metadata for Docker
         id: meta
         uses: docker/metadata-action@v6
@@ -73,6 +77,7 @@ jobs:
             type=raw,value=lite
 
       - name: Build and push lite Docker image
+        id: build-and-push
         uses: docker/build-push-action@v7
         with:
           context: .
@@ -84,8 +89,24 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=min
 
+      - name: Sign lite Docker image
+        env:
+          DIGEST: ${{ steps.build-and-push.outputs.digest }}
+          TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          set -euo pipefail
+          echo "Signing manifest digest: $DIGEST"
+          while IFS= read -r tag; do
+            if [ -z "$tag" ]; then
+              continue
+            fi
+            echo "Signing ${tag}@${DIGEST}"
+            cosign sign --yes "${tag}@${DIGEST}"
+          done <<< "$TAGS"
+
       - name: Output image details
         run: |
           echo "Lite Docker image built and pushed successfully!"
           echo "Image tag: ghcr.io/${{ github.repository }}:${{ steps.lite_tag.outputs.lite_tag }}"
+          echo "Signed manifest digest: ${{ steps.build-and-push.outputs.digest }}"
           echo "Base Git tag used: ${{ steps.get_tag.outputs.tag }}"
