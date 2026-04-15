@@ -5,6 +5,7 @@ Verifies the Cypher query sent to AGE contains exactly one SET clause
 (regression test for duplicate SET copy-paste bug).
 """
 
+import json
 import re
 import pytest
 from unittest.mock import MagicMock, patch
@@ -75,19 +76,22 @@ async def test_upsert_edge_contains_merge_and_set():
 
 
 @pytest.mark.asyncio
-async def test_upsert_edge_uses_normalized_ids():
-    """Source and target IDs must be normalized in the Cypher query."""
+async def test_upsert_edge_uses_parameterized_match_ids():
+    """Source and target IDs must flow through Cypher parameters."""
     storage = make_graph_storage()
-    captured_sql: list[str] = []
+    captured_calls: list[dict] = []
 
     async def fake_query(sql, **kwargs):
-        captured_sql.append(sql)
+        captured_calls.append({"sql": sql, **kwargs})
         return []
 
     with patch.object(storage, "_query", side_effect=fake_query):
         await storage.upsert_edge("Node A", "Node B", {"weight": "1.0"})
 
-    sql = captured_sql[0]
-    # The normalized IDs should appear in the MATCH clauses
-    assert 'entity_id: "Node A"' in sql
-    assert 'entity_id: "Node B"' in sql
+    call = captured_calls[0]
+    sql = call["sql"]
+    assert "entity_id: $src_id" in sql
+    assert "entity_id: $tgt_id" in sql
+    params = json.loads(call["params"]["params"])
+    assert params["src_id"] == "Node A"
+    assert params["tgt_id"] == "Node B"

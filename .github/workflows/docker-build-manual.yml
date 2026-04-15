@@ -11,6 +11,7 @@ on:
 
 permissions:
   contents: read
+  id-token: write
   packages: write
 
 jobs:
@@ -59,6 +60,9 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Install cosign
+        uses: sigstore/cosign-installer@cad07c2e89fa2edd6e2d7bab4c1aa38e53f76003  # v4.1.1
+
       - name: Extract metadata for Docker
         id: meta
         uses: docker/metadata-action@v6
@@ -68,6 +72,7 @@ jobs:
             type=raw,value=${{ steps.get_tag.outputs.tag }}
 
       - name: Build and push Docker image
+        id: build-and-push
         uses: docker/build-push-action@v7
         with:
           context: .
@@ -79,9 +84,26 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      - name: Sign Docker image
+        if: steps.build-and-push.outputs.digest != ''
+        env:
+          DIGEST: ${{ steps.build-and-push.outputs.digest }}
+          TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          set -euo pipefail
+          echo "Signing manifest digest: $DIGEST"
+          while IFS= read -r tag; do
+            if [ -z "$tag" ]; then
+              continue
+            fi
+            echo "Signing ${tag}@${DIGEST}"
+            cosign sign --yes "${tag}@${DIGEST}"
+          done <<< "$TAGS"
+
       - name: Output image details
         run: |
           echo "Docker image built and pushed successfully!"
           echo "Image tags:"
           echo "  - ghcr.io/${{ github.repository }}:${{ steps.get_tag.outputs.tag }}"
+          echo "Signed manifest digest: ${{ steps.build-and-push.outputs.digest }}"
           echo "Latest Git tag used: ${{ steps.get_tag.outputs.tag }}"
