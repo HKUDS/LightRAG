@@ -4449,6 +4449,90 @@ class LightRAG:
             )
         )
 
+    async def acheck_graph_consistency(self) -> dict[str, Any]:
+        """Asynchronously check consistency between the graph and the relationships VDB.
+
+        Detects edges that exist in the knowledge graph but have no corresponding
+        entry in the relationships vector database (orphan edges).  These can
+        accumulate after merge or delete operations where the graph write succeeds
+        but the subsequent VDB upsert fails.
+
+        Returns:
+            A dict with keys:
+
+            - ``orphan_graph_edges``: list of ``(src, tgt)`` tuples present in
+              the graph but missing from the VDB.
+            - ``total_graph_edges``: total number of edges in the graph.
+            - ``total_vdb_relations``: number of those edges that have a matching
+              VDB entry.
+
+        Example::
+
+            report = await rag.acheck_graph_consistency()
+            print(report["orphan_graph_edges"])   # [(src, tgt), ...]
+        """
+        from lightrag.utils_graph import check_graph_consistency
+
+        return await check_graph_consistency(
+            self.chunk_entity_relation_graph,
+            self.relationships_vdb,
+        )
+
+    async def arepair_graph_consistency(
+        self, *, dry_run: bool = False
+    ) -> dict[str, Any]:
+        """Asynchronously detect and repair graph ↔ VDB consistency issues.
+
+        Finds edges that exist in the knowledge graph but have no corresponding
+        entry in the relationships VDB (orphan edges), then removes them from
+        the graph so that both stores are back in sync.
+
+        This is safe to run on a live instance: it only removes edges that have
+        no VDB counterpart and could therefore never be retrieved by a query.
+
+        Args:
+            dry_run: When ``True``, report issues without making any changes.
+                Defaults to ``False``.
+
+        Returns:
+            A dict with keys:
+
+            - ``orphan_graph_edges``: list of ``(src, tgt)`` tuples found
+              (and removed when ``dry_run=False``).
+            - ``total_graph_edges``: total number of edges before any repair.
+            - ``total_vdb_relations``: number of edges that had a matching VDB entry.
+            - ``repaired``: ``True`` if orphan edges were removed.
+
+        Example::
+
+            # Inspect first
+            report = await rag.arepair_graph_consistency(dry_run=True)
+            print(f"{len(report['orphan_graph_edges'])} orphan edges found")
+
+            # Then fix
+            report = await rag.arepair_graph_consistency()
+            print(f"Repaired: {report['repaired']}")
+        """
+        from lightrag.utils_graph import repair_graph_consistency
+
+        return await repair_graph_consistency(
+            self.chunk_entity_relation_graph,
+            self.relationships_vdb,
+            dry_run=dry_run,
+        )
+
+    def check_graph_consistency(self) -> dict[str, Any]:
+        """Synchronous wrapper for :meth:`acheck_graph_consistency`."""
+        return always_get_an_event_loop().run_until_complete(
+            self.acheck_graph_consistency()
+        )
+
+    def repair_graph_consistency(self, *, dry_run: bool = False) -> dict[str, Any]:
+        """Synchronous wrapper for :meth:`arepair_graph_consistency`."""
+        return always_get_an_event_loop().run_until_complete(
+            self.arepair_graph_consistency(dry_run=dry_run)
+        )
+
     async def aexport_data(
         self,
         output_path: str,
