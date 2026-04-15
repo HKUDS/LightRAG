@@ -60,6 +60,7 @@ except ImportError:
     def langfuse_client():  # type: ignore[misc]
         return None
 
+
 # Precompile regex pattern for JSON sanitization (module-level, compiled once)
 _SURROGATE_PATTERN = re.compile(r"[\uD800-\uDFFF\uFFFE\uFFFF]")
 _CONTROL_CHAR_PATTERN_ALL = re.compile(r"[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]")
@@ -580,7 +581,9 @@ class EmbeddingFunc:
                 "Consider using .func to access the unwrapped function directly."
             )
 
-    @langfuse_observe(name="embedding", as_type="embedding", capture_input=False, capture_output=False)
+    @langfuse_observe(
+        name="embedding", as_type="embedding", capture_input=False, capture_output=False
+    )
     async def __call__(self, *args, **kwargs) -> np.ndarray:
         # Only inject embedding_dim when send_dimensions is True
         if self.send_dimensions:
@@ -620,7 +623,10 @@ class EmbeddingFunc:
             client.update_current_generation(
                 model=self.model_name,
                 input={"text_count": text_count},
-                metadata={"embedding_dim": self.embedding_dim, "text_count": text_count},
+                metadata={
+                    "embedding_dim": self.embedding_dim,
+                    "text_count": text_count,
+                },
             )
 
         result = await self.func(*args, **kwargs)
@@ -2637,6 +2643,7 @@ async def use_llm_func_with_cache(
             if is_tracing_enabled():
                 try:
                     from langfuse import get_client as _get_langfuse
+
                     _lf = _get_langfuse()
                     _lf.update_current_generation(metadata={"cache_hit": True})
                 except Exception as exc:
@@ -2664,8 +2671,11 @@ async def use_llm_func_with_cache(
         if is_tracing_enabled():
             try:
                 from langfuse import get_client as _get_langfuse
+
                 _lf = _get_langfuse()
-                _lf.update_current_generation(metadata={"cache_hit": False, "cache_type": cache_type})
+                _lf.update_current_generation(
+                    metadata={"cache_hit": False, "cache_type": cache_type}
+                )
             except Exception as exc:
                 logger.warning("Failed to annotate cache miss in Langfuse: %s", exc)
 
