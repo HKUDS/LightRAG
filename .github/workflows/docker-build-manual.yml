@@ -61,7 +61,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Install cosign
-        uses: sigstore/cosign-installer@v4.1.1
+        uses: sigstore/cosign-installer@cad07c2e89fa2edd6e2d7bab4c1aa38e53f76003  # v4.1.1
 
       - name: Extract metadata for Docker
         id: meta
@@ -85,6 +85,7 @@ jobs:
           cache-to: type=gha,mode=max
 
       - name: Sign Docker image
+        if: steps.build-and-push.outputs.digest != ''
         env:
           DIGEST: ${{ steps.build-and-push.outputs.digest }}
           TAGS: ${{ steps.meta.outputs.tags }}

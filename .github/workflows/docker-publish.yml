@@ -35,7 +35,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Install cosign
-        uses: sigstore/cosign-installer@v4.1.1
+        uses: sigstore/cosign-installer@cad07c2e89fa2edd6e2d7bab4c1aa38e53f76003  # v4.1.1
 
       - name: Get latest tag
         id: get_tag
@@ -95,6 +95,7 @@ jobs:
           cache-to: type=gha,mode=max
 
       - name: Sign Docker image
+        if: steps.build-and-push.outputs.digest != ''
         env:
           DIGEST: ${{ steps.build-and-push.outputs.digest }}
           TAGS: ${{ steps.meta.outputs.tags }}
@@ -108,3 +109,12 @@ jobs:
             echo "Signing ${tag}@${DIGEST}"
             cosign sign --yes "${tag}@${DIGEST}"
           done <<< "$TAGS"
+
+      - name: Output image details
+        run: |
+          echo "Docker image built and pushed successfully!"
+          echo "Image tags:"
+          echo "  - ghcr.io/${{ github.repository }}:${{ steps.get_tag.outputs.tag }}"
+          echo "  - ghcr.io/${{ github.repository }}:latest"
+          echo "Signed manifest digest: ${{ steps.build-and-push.outputs.digest }}"
+          echo "Latest Git tag used: ${{ steps.get_tag.outputs.tag }}"
