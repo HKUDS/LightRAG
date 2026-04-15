@@ -115,7 +115,7 @@ from lightrag.utils import (
 from lightrag.tracing import (
     create_traced_llm_wrapper,
     is_tracing_enabled,
-    shutdown as shutdown_tracing,
+    flush as flush_tracing,
 )
 from lightrag.types import KnowledgeGraph
 
@@ -864,7 +864,7 @@ class LightRAG:
             else:
                 logger.debug("All storages finalized successfully")
 
-            shutdown_tracing()
+            flush_tracing()
 
             self._storages_status = StoragesStatus.FINALIZED
 
