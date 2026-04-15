@@ -153,6 +153,8 @@ except ImportError:
 
     def langfuse_client():  # type: ignore[misc]
         return None
+
+
 from dotenv import load_dotenv
 from lightrag.pipeline import _PipelineMixin
 from lightrag.kg.factory import get_storage_class
