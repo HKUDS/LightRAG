@@ -446,11 +446,14 @@ async def openai_complete_if_cache(
                     logger.debug(f"Streaming token usage (from API): {token_counts}")
 
                     from lightrag.tracing import is_tracing_enabled, report_token_usage
+
                     if is_tracing_enabled():
-                        report_token_usage({
-                            "input": token_counts["prompt_tokens"],
-                            "output": token_counts["completion_tokens"],
-                        })
+                        report_token_usage(
+                            {
+                                "input": token_counts["prompt_tokens"],
+                                "output": token_counts["completion_tokens"],
+                            }
+                        )
                 elif token_tracker:
                     logger.debug("No usage information available in streaming response")
             except Exception as e:
@@ -604,11 +607,14 @@ async def openai_complete_if_cache(
                     token_tracker.add_usage(token_counts)
 
                 from lightrag.tracing import is_tracing_enabled, report_token_usage
+
                 if is_tracing_enabled():
-                    report_token_usage({
-                        "input": token_counts["prompt_tokens"],
-                        "output": token_counts["completion_tokens"],
-                    })
+                    report_token_usage(
+                        {
+                            "input": token_counts["prompt_tokens"],
+                            "output": token_counts["completion_tokens"],
+                        }
+                    )
 
             logger.debug(f"Response content len: {len(final_content)}")
             verbose_debug(f"Response: {response}")

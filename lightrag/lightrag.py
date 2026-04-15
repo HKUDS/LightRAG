@@ -131,6 +131,8 @@ except ImportError:
 
     def langfuse_client():  # type: ignore[misc]
         return None
+
+
 from dotenv import load_dotenv
 
 # use the .env that is inside the current folder
@@ -1840,7 +1842,6 @@ class LightRAG:
                 )
                 return
 
-
         try:
             # Process documents until no more documents or requests
             while True:
@@ -1912,7 +1913,11 @@ class LightRAG:
                 # Create a semaphore to limit the number of concurrent file processing
                 semaphore = asyncio.Semaphore(self.max_parallel_insert)
 
-                @langfuse_observe(name="lightrag-insert-doc", capture_input=False, capture_output=False)
+                @langfuse_observe(
+                    name="lightrag-insert-doc",
+                    capture_input=False,
+                    capture_output=False,
+                )
                 async def process_document(
                     doc_id: str,
                     status_doc: DocProcessingStatus,
@@ -2302,7 +2307,6 @@ class LightRAG:
                                         }
                                     }
                                 )
-
 
                 # Create processing tasks for all documents
                 doc_tasks = []
