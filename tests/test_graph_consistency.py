@@ -6,9 +6,8 @@ and a mock VDB — no external services required.
 
 from __future__ import annotations
 
-import asyncio
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 from typing import Any
 
 
@@ -245,7 +244,7 @@ async def test_merge_rolls_back_graph_edge_on_vdb_failure():
     rel_vdb.index_done_callback = AsyncMock(return_value=True)
 
     # Run the merge (A → B, with C as a neighbour of A)
-    result = await _merge_entities_impl(
+    await _merge_entities_impl(
         graph,
         ent_vdb,
         rel_vdb,

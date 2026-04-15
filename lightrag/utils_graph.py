@@ -1380,12 +1380,10 @@ async def _merge_entities_impl(
 
     # Apply relationship updates
     logger.info(f"Entity Merge: updating {len(relation_updates)} relations")
-    graph_written_edges: list[tuple[str, str]] = []
     for rel_data in relation_updates.values():
         await chunk_entity_relation_graph.upsert_edge(
             rel_data["graph_src"], rel_data["graph_tgt"], rel_data["data"]
         )
-        graph_written_edges.append((rel_data["graph_src"], rel_data["graph_tgt"]))
         logger.info(
             f"Entity Merge: updating relation `{rel_data['graph_src']}`~`{rel_data['graph_tgt']}`"
         )
@@ -1839,9 +1837,7 @@ async def check_graph_consistency(
         if not src or not tgt:
             continue
         normalized_src, normalized_tgt = sorted([src, tgt])
-        relation_id = compute_mdhash_id(
-            normalized_src + normalized_tgt, prefix="rel-"
-        )
+        relation_id = compute_mdhash_id(normalized_src + normalized_tgt, prefix="rel-")
         # Keep the original (un-normalized) direction so callers can pass it
         # directly to remove_edges() if needed.
         id_to_pair.setdefault(relation_id, (src, tgt))
@@ -1857,9 +1853,7 @@ async def check_graph_consistency(
     vdb_results = await relationships_vdb.get_by_ids(relation_ids)
 
     found_ids = {
-        relation_ids[i]
-        for i, result in enumerate(vdb_results)
-        if result is not None
+        relation_ids[i] for i, result in enumerate(vdb_results) if result is not None
     }
 
     orphan_graph_edges = [
