@@ -64,6 +64,18 @@ _TEXT_MODE_RESPONSE = (
     "\n<|COMPLETE|>"
 )
 
+_TEXT_MODE_MISPREFIXED_RELATION_RESPONSE = (
+    "entity<|#|>Alice<|#|>Person<|#|>Alice is the founder of Acme Corp."
+    "\nentity<|#|>Acme Corp<|#|>Organization<|#|>Acme Corp is a company founded by Alice."
+    "\nentity<|#|>Alice<|#|>Acme Corp<|#|>founded<|#|>Alice founded Acme Corp."
+    "\n<|COMPLETE|>"
+)
+
+_TEXT_MODE_GLEANED_RELATION_RESPONSES = [
+    _TEXT_MODE_MISPREFIXED_RELATION_RESPONSE,
+    "\nrelation<|#|>Alice<|#|>Acme Corp<|#|>founded<|#|>Alice founded Acme Corp.\n<|COMPLETE|>",
+]
+
 _JSON_MODE_RESPONSE = json.dumps(
     {
         "entities": [
@@ -209,6 +221,8 @@ async def test_text_mode_default_guidance_injected_into_prompt():
     call_kwargs = llm_func.call_args_list[0][1]
     system_prompt = call_kwargs.get("system_prompt", "")
     assert PROMPTS["default_entity_types_guidance"] in system_prompt
+    assert "must start with `relation`, never `entity`" in system_prompt
+    assert "After the last entity row, switch prefixes to `relation`" in system_prompt
 
 
 @pytest.mark.offline
@@ -234,6 +248,17 @@ async def test_text_mode_custom_guidance_overrides_default():
     call_kwargs = llm_func.call_args_list[0][1]
     system_prompt = call_kwargs.get("system_prompt", "")
     assert custom_guidance in system_prompt
+
+
+@pytest.mark.offline
+def test_text_continue_prompt_requires_relation_prefix_for_corrections():
+    from lightrag.prompt import PROMPTS
+
+    prompt = PROMPTS["entity_continue_extraction_user_prompt"]
+    assert (
+        "Any corrected relationship row must be emitted with the literal `relation` prefix"
+        in prompt
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -333,3 +358,47 @@ async def test_text_mode_no_entity_extraction_kwarg():
 
     call_kwargs = llm_func.call_args_list[0][1]
     assert not call_kwargs.get("entity_extraction", False)
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_text_mode_recovers_mis_prefixed_relationship_row():
+    from lightrag.operate import extract_entities
+
+    global_config = _make_global_config(use_json=False)
+    llm_func = global_config["llm_model_func"]
+    llm_func.return_value = _TEXT_MODE_MISPREFIXED_RELATION_RESPONSE
+
+    with patch("lightrag.operate.logger"):
+        chunk_results = await extract_entities(
+            chunks=_make_chunks(),
+            global_config=global_config,
+        )
+
+    entities, relationships = chunk_results[0]
+    assert len(entities) == 2
+    assert len(relationships) == 1
+    assert next(iter(relationships.keys())) == ("Alice", "Acme Corp")
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_text_mode_gleaned_relation_merges_cleanly_after_recovery():
+    from lightrag.operate import extract_entities
+
+    global_config = _make_global_config(use_json=False, max_gleaning=1)
+    llm_func = global_config["llm_model_func"]
+    llm_func.side_effect = _TEXT_MODE_GLEANED_RELATION_RESPONSES
+
+    with patch("lightrag.operate.logger"):
+        chunk_results = await extract_entities(
+            chunks=_make_chunks(),
+            global_config=global_config,
+        )
+
+    entities, relationships = chunk_results[0]
+    assert len(entities) == 2
+    assert len(relationships) == 1
+    relation_data = next(iter(relationships.values()))[0]
+    assert relation_data["src_id"] == "Alice"
+    assert relation_data["tgt_id"] == "Acme Corp"

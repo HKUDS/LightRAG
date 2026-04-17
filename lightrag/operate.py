@@ -615,6 +615,27 @@ def _handle_single_relationship_extraction(
         return None
 
 
+def _normalize_text_extraction_record_attributes(
+    record_attributes: list[str], chunk_key: str
+) -> list[str]:
+    """Recover the known text-mode failure where relation rows use the entity prefix."""
+
+    if len(record_attributes) != 5:
+        return record_attributes
+
+    prefix = record_attributes[0].strip().lower()
+    if "entity" not in prefix or "relation" in prefix:
+        return record_attributes
+
+    logger.warning(
+        "Recovering mis-prefixed relation: `%s` ~ `%s`",
+        record_attributes[1], record_attributes[2],
+    )
+    normalized = list(record_attributes)
+    normalized[0] = "relation"
+    return normalized
+
+
 async def _process_json_extraction_result(
     result: str,
     chunk_key: str,
@@ -1265,6 +1286,9 @@ async def _process_extraction_result(
             )
 
         record_attributes = split_string_by_multi_markers(record, [tuple_delimiter])
+        record_attributes = _normalize_text_extraction_record_attributes(
+            record_attributes, chunk_key
+        )
 
         # Try to parse as entity
         entity_data = _handle_single_entity_extraction(
