@@ -628,13 +628,13 @@ class LightRAG:
     )
 
     entity_extraction_use_json: bool = field(
-        default=os.getenv("ENTITY_EXTRACTION_USE_JSON", "true").lower() == "true"
+        default=os.getenv("ENTITY_EXTRACTION_USE_JSON", "false").lower() == "true"
     )
     """When True, entity extraction uses JSON structured output instead of delimiter-based text.
-    JSON mode significantly improves extraction quality and compatibility with smaller models.
+    JSON mode is slower but significantly improves extraction quality and compatibility with smaller models.
     Providers with native structured output support (OpenAI, Ollama, Gemini) will use their
     native capabilities. Other providers rely on JSON-formatted prompts with json_repair parsing.
-    Default: True. Set ENTITY_EXTRACTION_USE_JSON=false in .env to disable."""
+    Default: False. Set ENTITY_EXTRACTION_USE_JSON=true in .env to enable."""
 
     # Rerank Configuration
     # ---

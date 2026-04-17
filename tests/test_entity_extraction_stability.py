@@ -153,7 +153,9 @@ def test_json_examples_define_all_relationship_endpoints_as_entities():
         else:
             output = example.split("---Output---", 1)[1].strip()
         parsed = json.loads(output)
-        entity_names = {entity["name"] for entity in parsed.get("entities", []) if entity}
+        entity_names = {
+            entity["name"] for entity in parsed.get("entities", []) if entity
+        }
         for relationship in parsed.get("relationships", []):
             assert relationship["source"] in entity_names
             assert relationship["target"] in entity_names

@@ -629,7 +629,8 @@ def _normalize_text_extraction_record_attributes(
 
     logger.warning(
         "Recovering mis-prefixed relation: `%s` ~ `%s`",
-        record_attributes[1], record_attributes[2],
+        record_attributes[1],
+        record_attributes[2],
     )
     normalized = list(record_attributes)
     normalized[0] = "relation"
