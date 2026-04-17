@@ -59,7 +59,6 @@ from lightrag.constants import (
     DEFAULT_MAX_TOTAL_TOKENS,
     DEFAULT_RELATED_CHUNK_NUMBER,
     DEFAULT_KG_CHUNK_PICK_METHOD,
-    DEFAULT_ENTITY_TYPES,
     DEFAULT_SUMMARY_LANGUAGE,
     SOURCE_IDS_LIMIT_METHOD_KEEP,
     SOURCE_IDS_LIMIT_METHOD_FIFO,
@@ -616,6 +615,28 @@ def _handle_single_relationship_extraction(
         return None
 
 
+def _normalize_text_extraction_record_attributes(
+    record_attributes: list[str], chunk_key: str
+) -> list[str]:
+    """Recover the known text-mode failure where relation rows use the entity prefix."""
+
+    if len(record_attributes) != 5:
+        return record_attributes
+
+    prefix = record_attributes[0].strip().lower()
+    if "entity" not in prefix or "relation" in prefix:
+        return record_attributes
+
+    logger.warning(
+        "Recovering mis-prefixed relation: `%s` ~ `%s`",
+        record_attributes[1],
+        record_attributes[2],
+    )
+    normalized = list(record_attributes)
+    normalized[0] = "relation"
+    return normalized
+
+
 async def _process_json_extraction_result(
     result: str,
     chunk_key: str,
@@ -666,7 +687,7 @@ async def _process_json_extraction_result(
 
         try:
             entity_name = sanitize_and_normalize_extracted_text(
-                str(entity_data.get("entity_name", "")), remove_inner_quotes=True
+                str(entity_data.get("name", "")), remove_inner_quotes=True
             )
             if not entity_name or not entity_name.strip():
                 logger.info(
@@ -675,7 +696,7 @@ async def _process_json_extraction_result(
                 continue
 
             entity_type = sanitize_and_normalize_extracted_text(
-                str(entity_data.get("entity_type", "")), remove_inner_quotes=True
+                str(entity_data.get("type", "")), remove_inner_quotes=True
             )
             if not entity_type.strip() or any(
                 char in entity_type
@@ -689,7 +710,7 @@ async def _process_json_extraction_result(
             entity_type = entity_type.replace(" ", "").lower()
 
             entity_description = sanitize_and_normalize_extracted_text(
-                str(entity_data.get("entity_description", ""))
+                str(entity_data.get("description", ""))
             )
             if not entity_description.strip():
                 logger.warning(
@@ -734,10 +755,10 @@ async def _process_json_extraction_result(
 
         try:
             source = sanitize_and_normalize_extracted_text(
-                str(rel_data.get("source_entity", "")), remove_inner_quotes=True
+                str(rel_data.get("source", "")), remove_inner_quotes=True
             )
             target = sanitize_and_normalize_extracted_text(
-                str(rel_data.get("target_entity", "")), remove_inner_quotes=True
+                str(rel_data.get("target", "")), remove_inner_quotes=True
             )
 
             if not source:
@@ -755,12 +776,12 @@ async def _process_json_extraction_result(
                 continue
 
             edge_keywords = sanitize_and_normalize_extracted_text(
-                str(rel_data.get("relationship_keywords", "")), remove_inner_quotes=True
+                str(rel_data.get("keywords", "")), remove_inner_quotes=True
             )
             edge_keywords = edge_keywords.replace("，", ",")
 
             edge_description = sanitize_and_normalize_extracted_text(
-                str(rel_data.get("relationship_description", ""))
+                str(rel_data.get("description", ""))
             )
 
             if not edge_description.strip():
@@ -1266,6 +1287,9 @@ async def _process_extraction_result(
             )
 
         record_attributes = split_string_by_multi_markers(record, [tuple_delimiter])
+        record_attributes = _normalize_text_extraction_record_attributes(
+            record_attributes, chunk_key
+        )
 
         # Try to parse as entity
         entity_data = _handle_single_entity_extraction(
@@ -3265,15 +3289,15 @@ async def extract_entities(
     ordered_chunks = list(chunks.items())
     # add language and example number params to prompt
     language = global_config["addon_params"].get("language", DEFAULT_SUMMARY_LANGUAGE)
-    entity_types = global_config["addon_params"].get(
-        "entity_types", DEFAULT_ENTITY_TYPES
+    entity_types_guidance = global_config["addon_params"].get(
+        "entity_types_guidance", PROMPTS["default_entity_types_guidance"]
     )
 
     if use_json_extraction:
         # JSON mode: use JSON-specific prompts without delimiters
         examples = "\n".join(PROMPTS["entity_extraction_json_examples"])
         context_base = dict(
-            entity_types=",".join(entity_types),
+            entity_types_guidance=entity_types_guidance,
             examples=examples,
             language=language,
         )
@@ -3284,7 +3308,7 @@ async def extract_entities(
         example_context_base = dict(
             tuple_delimiter=PROMPTS["DEFAULT_TUPLE_DELIMITER"],
             completion_delimiter=PROMPTS["DEFAULT_COMPLETION_DELIMITER"],
-            entity_types=", ".join(entity_types),
+            entity_types_guidance=entity_types_guidance,
             language=language,
         )
         # add example's format
@@ -3293,7 +3317,7 @@ async def extract_entities(
         context_base = dict(
             tuple_delimiter=PROMPTS["DEFAULT_TUPLE_DELIMITER"],
             completion_delimiter=PROMPTS["DEFAULT_COMPLETION_DELIMITER"],
-            entity_types=",".join(entity_types),
+            entity_types_guidance=entity_types_guidance,
             examples=examples,
             language=language,
         )

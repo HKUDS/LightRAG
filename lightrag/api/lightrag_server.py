@@ -1318,7 +1318,6 @@ def create_app(args):
     addon_params = {
         **addon_params_defaults,
         "language": args.summary_language,
-        "entity_types": args.entity_types,
     }
 
     role_llm_configs = {

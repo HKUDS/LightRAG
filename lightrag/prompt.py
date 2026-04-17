@@ -8,102 +8,124 @@ PROMPTS: dict[str, Any] = {}
 PROMPTS["DEFAULT_TUPLE_DELIMITER"] = "<|#|>"
 PROMPTS["DEFAULT_COMPLETION_DELIMITER"] = "<|COMPLETE|>"
 
+# Default entity type guidance injected into extraction prompts via {entity_types_guidance}.
+# Users can override this by passing entity_types_guidance in addon_params, or by
+# replacing the full prompt template string in PROMPTS.
+PROMPTS[
+    "default_entity_types_guidance"
+] = """Classify each entity using one of the following types. If no type fits, use `Other`.
+
+- Person: Human individuals, real or fictional
+- Creature: Non-human living beings (animals, mythical beings, etc.)
+- Organization: Companies, institutions, government bodies, groups
+- Location: Geographic places (cities, countries, buildings, regions)
+- Event: Occurrences, incidents, ceremonies, meetings
+- Concept: Abstract ideas, theories, principles, beliefs
+- Method: Procedures, techniques, algorithms, workflows
+- Content: Creative or informational works (books, articles, films, reports)
+- Data: Quantitative or structured information (statistics, datasets, measurements)
+- Artifact: Physical or digital objects created by humans (tools, software, devices)
+- NaturalObject: Natural non-living objects (minerals, celestial bodies, chemical compounds)"""
+
 PROMPTS["entity_extraction_system_prompt"] = """---Role---
-You are a Knowledge Graph Specialist responsible for extracting entities and relationships from the input text.
+You are a Knowledge Graph Specialist responsible for extracting entities and relationships from the `---Input Text---` section of user prompt.
 
 ---Instructions---
-1.  **Entity Extraction & Output:**
-    *   **Identification:** Identify clearly defined and meaningful entities in the input text.
-    *   **Entity Details:** For each identified entity, extract the following information:
-        *   `entity_name`: The name of the entity. If the entity name is case-insensitive, capitalize the first letter of each significant word (title case). Ensure **consistent naming** across the entire extraction process.
-        *   `entity_type`: Categorize the entity using one of the following types: `{entity_types}`. If none of the provided entity types apply, do not add new entity type and classify it as `Other`.
-        *   `entity_description`: Provide a concise yet comprehensive description of the entity's attributes and activities, based *solely* on the information present in the input text.
-    *   **Output Format - Entities:** Output a total of 4 fields for each entity, delimited by `{tuple_delimiter}`, on a single line. The first field *must* be the literal string `entity`.
-        *   Format: `entity{tuple_delimiter}entity_name{tuple_delimiter}entity_type{tuple_delimiter}entity_description`
+1. **Entity Extraction:**
+  - Identify clearly defined and meaningful entities in the `---Input Text---` section of user prompt.
+  - For each entity, extract:
+    - `entity_name`: The name of the entity. If the entity name is case-insensitive, capitalize the first letter of each significant word (title case). Ensure **consistent naming** across the entire extraction process.
+    - `entity_type`: Categorize the entity using the type guidance provided in the `---Entity Types---` section below. If none of the provided entity types apply, classify it as `Other`.
+    - `entity_description`: Provide a concise yet comprehensive description of the entity's attributes and activities, based *solely* on the information present in the input text.
 
-2.  **Relationship Extraction & Output:**
-    *   **Identification:** Identify direct, clearly stated, and meaningful relationships between previously extracted entities.
-    *   **N-ary Relationship Decomposition:** If a single statement describes a relationship involving more than two entities (an N-ary relationship), decompose it into multiple binary (two-entity) relationship pairs for separate description.
-        *   **Example:** For "Alice, Bob, and Carol collaborated on Project X," extract binary relationships such as "Alice collaborated with Project X," "Bob collaborated with Project X," and "Carol collaborated with Project X," or "Alice collaborated with Bob," based on the most reasonable binary interpretations.
-    *   **Relationship Details:** For each binary relationship, extract the following fields:
-        *   `source_entity`: The name of the source entity. Ensure **consistent naming** with entity extraction. Capitalize the first letter of each significant word (title case) if the name is case-insensitive.
-        *   `target_entity`: The name of the target entity. Ensure **consistent naming** with entity extraction. Capitalize the first letter of each significant word (title case) if the name is case-insensitive.
-        *   `relationship_keywords`: One or more high-level keywords summarizing the overarching nature, concepts, or themes of the relationship. Multiple keywords within this field must be separated by a comma `,`. **DO NOT use `{tuple_delimiter}` for separating multiple keywords within this field.**
-        *   `relationship_description`: A concise explanation of the nature of the relationship between the source and target entities, providing a clear rationale for their connection.
-    *   **Output Format - Relationships:** Output a total of 5 fields for each relationship, delimited by `{tuple_delimiter}`, on a single line. The first field *must* be the literal string `relation`.
-        *   Format: `relation{tuple_delimiter}source_entity{tuple_delimiter}target_entity{tuple_delimiter}relationship_keywords{tuple_delimiter}relationship_description`
+2. **Relationship Extraction:**
+  - Identify direct, clearly stated, and meaningful relationships between previously extracted entities.
+  - If a single statement describes a relationship involving more than two entities, decompose it into multiple binary relationships.
+  - For each binary relationship, extract:
+    - `source_entity`: The name of the source entity. Ensure **consistent naming** with entity extraction. Capitalize the first letter of each significant word (title case) if the name is case-insensitive.
+    - `target_entity`: The name of the target entity. Ensure **consistent naming** with entity extraction. Capitalize the first letter of each significant word (title case) if the name is case-insensitive.
+    - `relationship_keywords`: One or more high-level keywords summarizing the relationship. Multiple keywords within this field must be separated by a comma `,`. **DO NOT use `{tuple_delimiter}` for separating multiple keywords within this field.**
+    - `relationship_description`: A concise explanation of the nature of the relationship between the source and target entities.
 
-3.  **Delimiter Usage Protocol:**
-    *   The `{tuple_delimiter}` is a complete, atomic marker and **must not be filled with content**. It serves strictly as a field separator.
-    *   **Incorrect Example:** `entity{tuple_delimiter}Tokyo<|location|>Tokyo is the capital of Japan.`
-    *   **Correct Example:** `entity{tuple_delimiter}Tokyo{tuple_delimiter}location{tuple_delimiter}Tokyo is the capital of Japan.`
+3. **Record Types:**
+  - `entity` is used only for entity rows and those rows always contain exactly 4 tuple parts total.
+  - `relation` is used only for relationship rows and those rows always contain exactly 5 tuple parts total.
+  - A row with two entity names plus relationship keywords and a relationship description must start with `relation`, never `entity`.
+  - After the last entity row, switch prefixes to `relation` for every relationship row.
 
-4.  **Relationship Direction & Duplication:**
-    *   Treat all relationships as **undirected** unless explicitly stated otherwise. Swapping the source and target entities for an undirected relationship does not constitute a new relationship.
-    *   Avoid outputting duplicate relationships.
+4. **Output Format:**
+  - Entity row: `entity{tuple_delimiter}entity_name{tuple_delimiter}entity_type{tuple_delimiter}entity_description`
+  - Relation row: `relation{tuple_delimiter}source_entity{tuple_delimiter}target_entity{tuple_delimiter}relationship_keywords{tuple_delimiter}relationship_description`
+  - Wrong: `entity{tuple_delimiter}Alice{tuple_delimiter}Acme{tuple_delimiter}founded{tuple_delimiter}Alice founded Acme`
+  - Correct: `relation{tuple_delimiter}Alice{tuple_delimiter}Acme{tuple_delimiter}founded{tuple_delimiter}Alice founded Acme`
 
-5.  **Output Order & Prioritization:**
-    *   Output all extracted entities first, followed by all extracted relationships.
-    *   Within the list of relationships, prioritize and output those relationships that are **most significant** to the core meaning of the input text first.
+5. **Delimiter Usage:**
+  - The `{tuple_delimiter}` is a complete, atomic marker and **must not be filled with content**. It serves strictly as a field separator.
+  - Incorrect: `entity{tuple_delimiter}Tokyo<|location|>Tokyo is the capital of Japan.`
+  - Correct: `entity{tuple_delimiter}Tokyo{tuple_delimiter}location{tuple_delimiter}Tokyo is the capital of Japan.`
 
-6.  **Context & Objectivity:**
-    *   Ensure all entity names and descriptions are written in the **third person**.
-    *   Explicitly name the subject or object; **avoid using pronouns** such as `this article`, `this paper`, `our company`, `I`, `you`, and `he/she`.
+6. **Output Order & Deduplication:**
+  - Output all extracted entities first, followed by all extracted relationships.
+  - Treat all relationships as **undirected** unless explicitly stated otherwise. Swapping the source and target entities for an undirected relationship does not constitute a new relationship.
+  - Avoid outputting duplicate relationships.
+  - Within the list of relationships, output the relationships that are **most significant** to the core meaning of the input text first.
 
-7.  **Language & Proper Nouns:**
-    *   The entire output (entity names, keywords, and descriptions) must be written in `{language}`.
-    *   Proper nouns (e.g., personal names, place names, organization names) should be retained in their original language if a proper, widely accepted translation is not available or would cause ambiguity.
+7. **Context & Language:**
+  - Ensure all entity names and descriptions are written in the **third person**.
+  - Explicitly name the subject or object; **avoid using pronouns** such as `this article`, `this paper`, `our company`, `I`, `you`, and `he/she`.
+  - The entire output (entity names, keywords, and descriptions) must be written in `{language}`.
+  - Proper nouns (e.g., personal names, place names, organization names) should be retained in their original language if a proper, widely accepted translation is not available or would cause ambiguity.
 
-8.  **Completion Signal:** Output the literal string `{completion_delimiter}` only after all entities and relationships, following all criteria, have been completely extracted and outputted.
+8. **Completion Signal:** Output the literal string `{completion_delimiter}` only after all entities and relationships have been completely extracted and outputted.
+
+---Entity Types---
+{entity_types_guidance}
 
 ---Examples---
 {examples}
 """
 
 PROMPTS["entity_extraction_user_prompt"] = """---Task---
-Extract entities and relationships from the input text in Data to be Processed below.
+Extract entities and relationships from the `---Input Text---` session below.
 
 ---Instructions---
-1.  **Strict Adherence to Format:** Strictly adhere to all format requirements for entity and relationship lists, including output order, field delimiters, and proper noun handling, as specified in the system prompt.
-2.  **Output Content Only:** Output *only* the extracted list of entities and relationships. Do not include any introductory or concluding remarks, explanations, or additional text before or after the list.
-3.  **Completion Signal:** Output `{completion_delimiter}` as the final line after all relevant entities and relationships have been extracted and presented.
-4.  **Output Language:** Ensure the output language is {language}. Proper nouns (e.g., personal names, place names, organization names) must be kept in their original language and not translated.
+1. **Strict Adherence to Format:** Strictly adhere to all format requirements for entity and relationship lists, including output order, field delimiters, and proper noun handling, as specified in the system prompt.
+2. **Output Content Only:** Output *only* the extracted list of entities and relationships. Do not include any introductory or concluding remarks, explanations, or additional text before or after the list.
+3. **Completion Signal:** Output `{completion_delimiter}` as the final line after all relevant entities and relationships have been extracted and presented.
+4. **Output Language:** Ensure the output language is {language}. Proper nouns (e.g., personal names, place names, organization names) must be kept in their original language and not translated.
 
----Data to be Processed---
-<Entity_types>
-[{entity_types}]
-
-<Input Text>
+---Input Text---
 ```
 {input_text}
 ```
 
-<Output>
+---Output---
 """
 
 PROMPTS["entity_continue_extraction_user_prompt"] = """---Task---
-Based on the last extraction task, identify and extract any **missed or incorrectly formatted** entities and relationships from the input text.
+Based on the last extraction task, identify and extract any missed or incorrectly formatted entities and relationships from the input text.
 
 ---Instructions---
-1.  **Strict Adherence to System Format:** Strictly adhere to all format requirements for entity and relationship lists, including output order, field delimiters, and proper noun handling, as specified in the system instructions.
-2.  **Focus on Corrections/Additions:**
-    *   **Do NOT** re-output entities and relationships that were **correctly and fully** extracted in the last task.
-    *   If an entity or relationship was **missed** in the last task, extract and output it now according to the system format.
-    *   If an entity or relationship was **truncated, had missing fields, or was otherwise incorrectly formatted** in the last task, re-output the *corrected and complete* version in the specified format.
-3.  **Output Format - Entities:** Output a total of 4 fields for each entity, delimited by `{tuple_delimiter}`, on a single line. The first field *must* be the literal string `entity`.
-4.  **Output Format - Relationships:** Output a total of 5 fields for each relationship, delimited by `{tuple_delimiter}`, on a single line. The first field *must* be the literal string `relation`.
-5.  **Output Content Only:** Output *only* the extracted list of entities and relationships. Do not include any introductory or concluding remarks, explanations, or additional text before or after the list.
-6.  **Completion Signal:** Output `{completion_delimiter}` as the final line after all relevant missing or corrected entities and relationships have been extracted and presented.
-7.  **Output Language:** Ensure the output language is {language}. Proper nouns (e.g., personal names, place names, organization names) must be kept in their original language and not translated.
+1. **Strict Adherence to System Format:** Strictly adhere to all format requirements for entity and relationship lists, including output order, field delimiters, and proper noun handling, as specified in the system instructions.
+2. **Focus on Corrections/Additions:**
+  - **Do NOT** re-output entities and relationships that were **correctly and fully** extracted in the last task.
+  - If an entity or relationship was **missed** in the last task, extract and output it now according to the system format.
+  - If an entity or relationship was **truncated, had missing fields, or was otherwise incorrectly formatted** in the last task, re-output the *corrected and complete* version in the specified format.
+  - Any corrected relationship row must be emitted with the literal `relation` prefix, never `entity`.
+3. **Output Content Only:** Output *only* the extracted list of entities and relationships. Do not include any introductory or concluding remarks, explanations, or additional text before or after the list.
+4. **Completion Signal:** Output `{completion_delimiter}` as the final line after all relevant missing or corrected entities and relationships have been extracted and presented.
+5. **Output Language:** Ensure the output language is {language}. Proper nouns (e.g., personal names, place names, organization names) must be kept in their original language and not translated.
 
-<Output>
+---Output---
 """
 
 PROMPTS["entity_extraction_examples"] = [
-    """<Entity_types>
-["Person","Creature","Organization","Location","Event","Concept","Method","Content","Data","Artifact","NaturalObject"]
+    """---Entity Types---
+- Person: Human individuals, real or fictional
+- Artifact: Physical or digital objects created by humans (tools, software, devices)
+- Concept: Abstract ideas, theories, principles, beliefs
 
-<Input Text>
+---Input Text---
 ```
 while Alex clenched his jaw, the buzz of frustration dull against the backdrop of Taylor's authoritarian certainty. It was this competitive undercurrent that kept him alert, the sense that his and Jordan's shared commitment to discovery was an unspoken rebellion against Cruz's narrowing vision of control and order.
 
@@ -114,12 +136,13 @@ The underlying dismissal earlier seemed to falter, replaced by a glimpse of relu
 It was a small transformation, barely perceptible, but one that Alex noted with an inward nod. They had all been brought here by different paths
 ```
 
-<Output>
-entity{tuple_delimiter}Alex{tuple_delimiter}person{tuple_delimiter}Alex is a character who experiences frustration and is observant of the dynamics among other characters.
-entity{tuple_delimiter}Taylor{tuple_delimiter}person{tuple_delimiter}Taylor is portrayed with authoritarian certainty and shows a moment of reverence towards a device, indicating a change in perspective.
-entity{tuple_delimiter}Jordan{tuple_delimiter}person{tuple_delimiter}Jordan shares a commitment to discovery and has a significant interaction with Taylor regarding a device.
-entity{tuple_delimiter}Cruz{tuple_delimiter}person{tuple_delimiter}Cruz is associated with a vision of control and order, influencing the dynamics among other characters.
-entity{tuple_delimiter}The Device{tuple_delimiter}equipment{tuple_delimiter}The Device is central to the story, with potential game-changing implications, and is revered by Taylor.
+---Output---
+entity{tuple_delimiter}Alex{tuple_delimiter}Person{tuple_delimiter}Alex is a character who experiences frustration and is observant of the dynamics among other characters.
+entity{tuple_delimiter}Taylor{tuple_delimiter}Person{tuple_delimiter}Taylor is portrayed with authoritarian certainty and shows a moment of reverence towards a device, indicating a change in perspective.
+entity{tuple_delimiter}Jordan{tuple_delimiter}Person{tuple_delimiter}Jordan shares a commitment to discovery and has a significant interaction with Taylor regarding a device.
+entity{tuple_delimiter}Cruz{tuple_delimiter}Person{tuple_delimiter}Cruz is associated with a vision of control and order, influencing the dynamics among other characters.
+entity{tuple_delimiter}The Device{tuple_delimiter}Artifact{tuple_delimiter}The Device is central to the story, with potential game-changing implications, and is revered by Taylor.
+entity{tuple_delimiter}Discovery{tuple_delimiter}Concept{tuple_delimiter}Discovery represents the shared intellectual pursuit that unites Jordan and Alex in opposition to Cruz's controlling worldview.
 relation{tuple_delimiter}Alex{tuple_delimiter}Taylor{tuple_delimiter}power dynamics, observation{tuple_delimiter}Alex observes Taylor's authoritarian behavior and notes changes in Taylor's attitude toward the device.
 relation{tuple_delimiter}Alex{tuple_delimiter}Jordan{tuple_delimiter}shared goals, rebellion{tuple_delimiter}Alex and Jordan share a commitment to discovery, which contrasts with Cruz's vision.)
 relation{tuple_delimiter}Taylor{tuple_delimiter}Jordan{tuple_delimiter}conflict resolution, mutual respect{tuple_delimiter}Taylor and Jordan interact directly regarding the device, leading to a moment of mutual respect and an uneasy truce.
@@ -128,55 +151,69 @@ relation{tuple_delimiter}Taylor{tuple_delimiter}The Device{tuple_delimiter}rever
 {completion_delimiter}
 
 """,
-    """<Entity_types>
-["Person","Creature","Organization","Location","Event","Concept","Method","Content","Data","Artifact","NaturalObject"]
+    """---Entity Types---
+- Person: Human individuals, real or fictional
+- Location: Geographic places (cities, countries, buildings, regions)
+- Creature: Non-human living beings (animals, mythical beings, etc.)
+- Method: Procedures, techniques, algorithms, workflows
+- Organization: Companies, institutions, government bodies, groups
+- Content: Creative or informational works (books, articles, films, reports)
+- NaturalObject: Natural non-living objects (minerals, celestial bodies, chemical compounds)
 
-<Input Text>
+---Input Text---
 ```
-Stock markets faced a sharp downturn today as tech giants saw significant declines, with the global tech index dropping by 3.4% in midday trading. Analysts attribute the selloff to investor concerns over rising interest rates and regulatory uncertainty.
+Dr. Elena Vasquez led a field expedition to the Borneo rainforest to document the population decline of the Bornean orangutan. Using transect sampling — a method where researchers walk predetermined line paths and record every animal sighting within a fixed distance — her team estimated that fewer than 1,500 individuals remained in the surveyed region.
 
-Among the hardest hit, nexon technologies saw its stock plummet by 7.8% after reporting lower-than-expected quarterly earnings. In contrast, Omega Energy posted a modest 2.1% gain, driven by rising oil prices.
-
-Meanwhile, commodity markets reflected a mixed sentiment. Gold futures rose by 1.5%, reaching $2,080 per ounce, as investors sought safe-haven assets. Crude oil prices continued their rally, climbing to $87.60 per barrel, supported by supply constraints and strong demand.
-
-Financial experts are closely watching the Federal Reserve's next move, as speculation grows over potential rate hikes. The upcoming policy announcement is expected to influence investor confidence and overall market stability.
+The expedition was funded by the Global Wildlife Conservation Institute and produced a landmark report titled "Primate Decline in Insular Southeast Asia." Vasquez attributed the collapse primarily to peat-soil destruction caused by palm oil plantation expansion, which had converted over 40% of the surveyed forest area within a decade.
 ```
 
-<Output>
-entity{tuple_delimiter}Global Tech Index{tuple_delimiter}category{tuple_delimiter}The Global Tech Index tracks the performance of major technology stocks and experienced a 3.4% decline today.
-entity{tuple_delimiter}Nexon Technologies{tuple_delimiter}organization{tuple_delimiter}Nexon Technologies is a tech company that saw its stock decline by 7.8% after disappointing earnings.
-entity{tuple_delimiter}Omega Energy{tuple_delimiter}organization{tuple_delimiter}Omega Energy is an energy company that gained 2.1% in stock value due to rising oil prices.
-entity{tuple_delimiter}Gold Futures{tuple_delimiter}product{tuple_delimiter}Gold futures rose by 1.5%, indicating increased investor interest in safe-haven assets.
-entity{tuple_delimiter}Crude Oil{tuple_delimiter}product{tuple_delimiter}Crude oil prices rose to $87.60 per barrel due to supply constraints and strong demand.
-entity{tuple_delimiter}Market Selloff{tuple_delimiter}category{tuple_delimiter}Market selloff refers to the significant decline in stock values due to investor concerns over interest rates and regulations.
-entity{tuple_delimiter}Federal Reserve Policy Announcement{tuple_delimiter}category{tuple_delimiter}The Federal Reserve's upcoming policy announcement is expected to impact investor confidence and market stability.
-entity{tuple_delimiter}3.4% Decline{tuple_delimiter}category{tuple_delimiter}The Global Tech Index experienced a 3.4% decline in midday trading.
-relation{tuple_delimiter}Global Tech Index{tuple_delimiter}Market Selloff{tuple_delimiter}market performance, investor sentiment{tuple_delimiter}The decline in the Global Tech Index is part of the broader market selloff driven by investor concerns.
-relation{tuple_delimiter}Nexon Technologies{tuple_delimiter}Global Tech Index{tuple_delimiter}company impact, index movement{tuple_delimiter}Nexon Technologies' stock decline contributed to the overall drop in the Global Tech Index.
-relation{tuple_delimiter}Gold Futures{tuple_delimiter}Market Selloff{tuple_delimiter}market reaction, safe-haven investment{tuple_delimiter}Gold prices rose as investors sought safe-haven assets during the market selloff.
-relation{tuple_delimiter}Federal Reserve Policy Announcement{tuple_delimiter}Market Selloff{tuple_delimiter}interest rate impact, financial regulation{tuple_delimiter}Speculation over Federal Reserve policy changes contributed to market volatility and investor selloff.
+---Output---
+entity{tuple_delimiter}Dr. Elena Vasquez{tuple_delimiter}Person{tuple_delimiter}Dr. Elena Vasquez is a field researcher who led an expedition to document orangutan population decline in Borneo.
+entity{tuple_delimiter}Borneo Rainforest{tuple_delimiter}Location{tuple_delimiter}The Borneo rainforest is the field site of the expedition and the primary habitat of the Bornean orangutan.
+entity{tuple_delimiter}Bornean Orangutan{tuple_delimiter}Creature{tuple_delimiter}The Bornean orangutan is a primate species whose population was found to have declined to fewer than 1,500 individuals in the surveyed region.
+entity{tuple_delimiter}Transect Sampling{tuple_delimiter}Method{tuple_delimiter}Transect sampling is a wildlife survey technique where researchers walk predetermined paths and record animal sightings within a fixed lateral distance.
+entity{tuple_delimiter}Global Wildlife Conservation Institute{tuple_delimiter}Organization{tuple_delimiter}The Global Wildlife Conservation Institute funded the expedition led by Dr. Vasquez.
+entity{tuple_delimiter}Primate Decline in Insular Southeast Asia{tuple_delimiter}Content{tuple_delimiter}A landmark research report produced by Vasquez's expedition documenting primate population decline in the region.
+entity{tuple_delimiter}Peat Soil{tuple_delimiter}NaturalObject{tuple_delimiter}Peat soil is a natural substrate in the Borneo rainforest that has been destroyed by palm oil plantation expansion.
+relation{tuple_delimiter}Dr. Elena Vasquez{tuple_delimiter}Bornean Orangutan{tuple_delimiter}field research, population survey{tuple_delimiter}Dr. Vasquez led the expedition that documented the population decline of the Bornean orangutan.
+relation{tuple_delimiter}Dr. Elena Vasquez{tuple_delimiter}Transect Sampling{tuple_delimiter}methodology, research application{tuple_delimiter}Dr. Vasquez's team used transect sampling to estimate the orangutan population.
+relation{tuple_delimiter}Global Wildlife Conservation Institute{tuple_delimiter}Dr. Elena Vasquez{tuple_delimiter}funding, research support{tuple_delimiter}The institute funded the expedition led by Dr. Vasquez.
+relation{tuple_delimiter}Dr. Elena Vasquez{tuple_delimiter}Primate Decline in Insular Southeast Asia{tuple_delimiter}authorship, research output{tuple_delimiter}Dr. Vasquez's expedition produced the landmark report on primate decline.
+relation{tuple_delimiter}Peat Soil{tuple_delimiter}Borneo Rainforest{tuple_delimiter}habitat composition, ecological destruction{tuple_delimiter}Peat soil destruction in the Borneo rainforest was caused by palm oil plantation expansion and is a primary driver of orangutan decline.
 {completion_delimiter}
 
 """,
-    """<Entity_types>
-["Person","Creature","Organization","Location","Event","Concept","Method","Content","Data","Artifact","NaturalObject"]
+    """---Entity Types---
+- Content: Creative or informational works (books, articles, films, reports)
+- Artifact: Physical or digital objects created by humans (tools, software, devices)
+- Person: Human individuals, real or fictional
+- Organization: Companies, institutions, government bodies, groups
+- Method: Procedures, techniques, algorithms, workflows
+- Data: Quantitative or structured information (statistics, datasets, measurements)
+- Concept: Abstract ideas, theories, principles, beliefs
 
-<Input Text>
+---Input Text---
 ```
-At the World Athletics Championship in Tokyo, Noah Carter broke the 100m sprint record using cutting-edge carbon-fiber spikes.
+The 2023 edition of "Advances in Neural Architecture Search" synthesized findings from over 200 peer-reviewed papers and introduced a new benchmarking framework called NASBench-360, designed to evaluate search algorithms across diverse task domains. The publication was co-authored by Dr. Priya Nair and Dr. Luca Ferretti of the DeepSystems Research Lab.
+
+NASBench-360 measures three key metrics: search efficiency (time-to-solution), model accuracy on held-out test sets, and computational cost in GPU-hours. Early results showed that evolutionary search algorithms outperformed gradient-based methods by 12% on accuracy while consuming 30% fewer GPU-hours on vision tasks.
 ```
 
-<Output>
-entity{tuple_delimiter}World Athletics Championship{tuple_delimiter}event{tuple_delimiter}The World Athletics Championship is a global sports competition featuring top athletes in track and field.
-entity{tuple_delimiter}Tokyo{tuple_delimiter}location{tuple_delimiter}Tokyo is the host city of the World Athletics Championship.
-entity{tuple_delimiter}Noah Carter{tuple_delimiter}person{tuple_delimiter}Noah Carter is a sprinter who set a new record in the 100m sprint at the World Athletics Championship.
-entity{tuple_delimiter}100m Sprint Record{tuple_delimiter}category{tuple_delimiter}The 100m sprint record is a benchmark in athletics, recently broken by Noah Carter.
-entity{tuple_delimiter}Carbon-Fiber Spikes{tuple_delimiter}equipment{tuple_delimiter}Carbon-fiber spikes are advanced sprinting shoes that provide enhanced speed and traction.
-entity{tuple_delimiter}World Athletics Federation{tuple_delimiter}organization{tuple_delimiter}The World Athletics Federation is the governing body overseeing the World Athletics Championship and record validations.
-relation{tuple_delimiter}World Athletics Championship{tuple_delimiter}Tokyo{tuple_delimiter}event location, international competition{tuple_delimiter}The World Athletics Championship is being hosted in Tokyo.
-relation{tuple_delimiter}Noah Carter{tuple_delimiter}100m Sprint Record{tuple_delimiter}athlete achievement, record-breaking{tuple_delimiter}Noah Carter set a new 100m sprint record at the championship.
-relation{tuple_delimiter}Noah Carter{tuple_delimiter}Carbon-Fiber Spikes{tuple_delimiter}athletic equipment, performance boost{tuple_delimiter}Noah Carter used carbon-fiber spikes to enhance performance during the race.
-relation{tuple_delimiter}Noah Carter{tuple_delimiter}World Athletics Championship{tuple_delimiter}athlete participation, competition{tuple_delimiter}Noah Carter is competing at the World Athletics Championship.
+---Output---
+entity{tuple_delimiter}Advances in Neural Architecture Search{tuple_delimiter}Content{tuple_delimiter}A 2023 publication that synthesizes findings from over 200 papers and introduces the NASBench-360 benchmarking framework.
+entity{tuple_delimiter}NASBench-360{tuple_delimiter}Artifact{tuple_delimiter}NASBench-360 is a benchmarking framework introduced to evaluate neural architecture search algorithms across diverse task domains.
+entity{tuple_delimiter}Dr. Priya Nair{tuple_delimiter}Person{tuple_delimiter}Dr. Priya Nair is a co-author of the publication and a researcher at the DeepSystems Research Lab.
+entity{tuple_delimiter}Dr. Luca Ferretti{tuple_delimiter}Person{tuple_delimiter}Dr. Luca Ferretti is a co-author of the publication and a researcher at the DeepSystems Research Lab.
+entity{tuple_delimiter}DeepSystems Research Lab{tuple_delimiter}Organization{tuple_delimiter}The DeepSystems Research Lab is the institution where the co-authors of the publication are affiliated.
+entity{tuple_delimiter}Evolutionary Search{tuple_delimiter}Method{tuple_delimiter}Evolutionary search is a class of neural architecture search algorithms that outperformed gradient-based methods in the NASBench-360 evaluation.
+entity{tuple_delimiter}Gradient-Based Search{tuple_delimiter}Method{tuple_delimiter}Gradient-based search is a class of neural architecture search algorithms that was benchmarked against evolutionary search in NASBench-360.
+entity{tuple_delimiter}GPU-Hours{tuple_delimiter}Data{tuple_delimiter}GPU-hours is a metric used in NASBench-360 to measure the computational cost of neural architecture search algorithms.
+entity{tuple_delimiter}Neural Architecture Search{tuple_delimiter}Concept{tuple_delimiter}Neural architecture search is the automated process of designing optimal neural network architectures, the central topic of the publication.
+relation{tuple_delimiter}Dr. Priya Nair{tuple_delimiter}Advances in Neural Architecture Search{tuple_delimiter}authorship{tuple_delimiter}Dr. Priya Nair co-authored the publication.
+relation{tuple_delimiter}Dr. Luca Ferretti{tuple_delimiter}Advances in Neural Architecture Search{tuple_delimiter}authorship{tuple_delimiter}Dr. Luca Ferretti co-authored the publication.
+relation{tuple_delimiter}Advances in Neural Architecture Search{tuple_delimiter}NASBench-360{tuple_delimiter}introduces, benchmarking{tuple_delimiter}The publication introduced the NASBench-360 framework.
+relation{tuple_delimiter}Evolutionary Search{tuple_delimiter}Gradient-Based Search{tuple_delimiter}performance comparison{tuple_delimiter}Evolutionary search outperformed gradient-based methods by 12% on accuracy and used 30% fewer GPU-hours on vision tasks.
+relation{tuple_delimiter}NASBench-360{tuple_delimiter}GPU-Hours{tuple_delimiter}evaluation metric{tuple_delimiter}NASBench-360 uses GPU-hours as one of three key metrics to measure computational cost.
 {completion_delimiter}
 
 """,
@@ -188,106 +225,88 @@ relation{tuple_delimiter}Noah Carter{tuple_delimiter}World Athletics Championshi
 ###############################################################################
 
 PROMPTS["entity_extraction_json_system_prompt"] = """---Role---
-You are a Knowledge Graph Specialist responsible for extracting entities and relationships from the input text.
+You are a Knowledge Graph Specialist responsible for extracting entities and relationships from the `---Input Text---` session of user prompt.
 
 ---Instructions---
-1.  **Entity Extraction:**
-    *   **Identification:** Identify clearly defined and meaningful entities in the input text.
-    *   **Entity Details:** For each identified entity, extract the following information:
-        *   `entity_name`: The name of the entity. If the entity name is case-insensitive, capitalize the first letter of each significant word (title case). Ensure **consistent naming** across the entire extraction process.
-        *   `entity_type`: Categorize the entity using one of the following types: `{entity_types}`. If none of the provided entity types apply, do not add new entity type and classify it as `Other`.
-        *   `entity_description`: Provide a concise yet comprehensive description of the entity's attributes and activities, based *solely* on the information present in the input text.
+1. **Entity Extraction:**
+  - **Identification:** Identify clearly defined and meaningful entities in the `---Input Text---` session of user prompt.
+  - **Entity Details:** For each identified entity, extract the following information:
+    - `name`: The name of the entity. If the entity name is case-insensitive, capitalize the first letter of each significant word (title case). Ensure **consistent naming** across the entire extraction process.
+    - `type`: Categorize the entity using the type guidance provided in the `---Entity Types---` section below. If none of the provided entity types apply, classify it as `Other`.
+    - `description`: Provide a concise yet comprehensive description of the entity's attributes and activities, based *solely* on the information present in the input text.
 
-2.  **Relationship Extraction:**
-    *   **Identification:** Identify direct, clearly stated, and meaningful relationships between previously extracted entities.
-    *   **N-ary Relationship Decomposition:** If a single statement describes a relationship involving more than two entities (an N-ary relationship), decompose it into multiple binary (two-entity) relationship pairs for separate description.
-        *   **Example:** For "Alice, Bob, and Carol collaborated on Project X," extract binary relationships such as "Alice collaborated with Project X," "Bob collaborated with Project X," and "Carol collaborated with Project X," or "Alice collaborated with Bob," based on the most reasonable binary interpretations.
-    *   **Relationship Details:** For each binary relationship, extract the following fields:
-        *   `source_entity`: The name of the source entity. Ensure **consistent naming** with entity extraction. Capitalize the first letter of each significant word (title case) if the name is case-insensitive.
-        *   `target_entity`: The name of the target entity. Ensure **consistent naming** with entity extraction. Capitalize the first letter of each significant word (title case) if the name is case-insensitive.
-        *   `relationship_keywords`: One or more high-level keywords summarizing the overarching nature, concepts, or themes of the relationship, separated by commas.
-        *   `relationship_description`: A concise explanation of the nature of the relationship between the source and target entities, providing a clear rationale for their connection.
+2. **Relationship Extraction:**
+  - **Identification:** Identify direct, clearly stated, and meaningful relationships between previously extracted entities.
+  - **N-ary Relationship Decomposition:** If a single statement describes a relationship involving more than two entities (an N-ary relationship), decompose it into multiple binary (two-entity) relationship pairs for separate description.
+    - Example: For "Alice, Bob, and Carol collaborated on Project X," extract binary relationships such as "Alice collaborated with Project X," "Bob collaborated with Project X," and "Carol collaborated with Project X," or "Alice collaborated with Bob," based on the most reasonable binary interpretations.
+  - **Relationship Details:** For each binary relationship, extract the following fields:
+    - `source`: The name of the source entity. Ensure **consistent naming** with entity extraction. Capitalize the first letter of each significant word (title case) if the name is case-insensitive.
+    - `target`: The name of the target entity. Ensure **consistent naming** with entity extraction. Capitalize the first letter of each significant word (title case) if the name is case-insensitive.
+    - `keywords`: One or more high-level keywords summarizing the overarching nature, concepts, or themes of the relationship, separated by commas.
+    - `description`: A concise explanation of the nature of the relationship between the source and target entities, providing a clear rationale for their connection.
 
-3.  **Relationship Direction & Duplication:**
-    *   Treat all relationships as **undirected** unless explicitly stated otherwise. Swapping the source and target entities for an undirected relationship does not constitute a new relationship.
-    *   Avoid outputting duplicate relationships.
+3. **Relationship Direction & Duplication:**
+  - Treat all relationships as **undirected** unless explicitly stated otherwise. Swapping the source and target entities for an undirected relationship does not constitute a new relationship.
+  - Avoid outputting duplicate relationships.
 
-4.  **Prioritization:**
-    *   Within the list of relationships, prioritize and output those relationships that are **most significant** to the core meaning of the input text first.
+4. **Prioritization:**
+  - Within the list of relationships, prioritize and output those relationships that are **most significant** to the core meaning of the input text first.
 
-5.  **Context & Objectivity:**
-    *   Ensure all entity names and descriptions are written in the **third person**.
-    *   Explicitly name the subject or object; **avoid using pronouns** such as `this article`, `this paper`, `our company`, `I`, `you`, and `he/she`.
+5. **Context & Objectivity:**
+  - Ensure all entity names and descriptions are written in the **third person**.
+  - Explicitly name the subject or object; **avoid using pronouns** such as `this article`, `this paper`, `our company`, `I`, `you`, and `he/she`.
 
-6.  **Language & Proper Nouns:**
-    *   The entire output (entity names, keywords, and descriptions) must be written in `{language}`.
-    *   Proper nouns (e.g., personal names, place names, organization names) should be retained in their original language if a proper, widely accepted translation is not available or would cause ambiguity.
+6. **Language & Proper Nouns:**
+  - The entire output (entity names, keywords, and descriptions) must be written in `{language}`.
+  - Proper nouns (e.g., personal names, place names, organization names) should be retained in their original language if a proper, widely accepted translation is not available or would cause ambiguity.
 
-7.  **Output Format:** Your output MUST be a valid JSON object with the following structure:
-
-```json
-{{
-  "entities": [
-    {{
-      "entity_name": "Entity Name",
-      "entity_type": "entity_type",
-      "entity_description": "Description of the entity."
-    }}
-  ],
-  "relationships": [
-    {{
-      "source_entity": "Source Entity Name",
-      "target_entity": "Target Entity Name",
-      "relationship_keywords": "keyword1, keyword2",
-      "relationship_description": "Description of the relationship."
-    }}
-  ]
-}}
-```
+---Entity Types---
+{entity_types_guidance}
 
 ---Examples---
 {examples}
 """
 
 PROMPTS["entity_extraction_json_user_prompt"] = """---Task---
-Extract entities and relationships from the input text in Data to be Processed below.
+Extract entities and relationships from the `---Input Text---` session below.
 
 ---Instructions---
-1.  **Strict Adherence to JSON Format:** Your output MUST be a valid JSON object with `entities` and `relationships` arrays. Do not include any introductory or concluding remarks, explanations, markdown code fences, or any other text before or after the JSON.
-2.  **Output Language:** Ensure the output language is {language}. Proper nouns (e.g., personal names, place names, organization names) must be kept in their original language and not translated.
+1. **Strict Adherence to JSON Format:** Your output MUST be a valid JSON object with `entities` and `relationships` arrays. Do not include any introductory or concluding remarks, explanations, markdown code fences, or any other text before or after the JSON.
+2. **Output Language:** Ensure the output language is {language}. Proper nouns (e.g., personal names, place names, organization names) must be kept in their original language and not translated.
 
----Data to be Processed---
-<Entity_types>
-[{entity_types}]
+---Entity Types---
+{entity_types_guidance}
 
-<Input Text>
+---Input Text---
 ```
 {input_text}
 ```
 
-<Output>
+---Output---
 """
 
 PROMPTS["entity_continue_extraction_json_user_prompt"] = """---Task---
-Based on the last extraction task, identify and extract any **missed or incorrectly described** entities and relationships from the input text.
+Based on the last extraction task, identify and extract any **missed or incorrectly described** entities and relationships from the `---Input Text---` session.
 
 ---Instructions---
-1.  **Focus on Corrections/Additions:**
-    *   **Do NOT** re-output entities and relationships that were **correctly and fully** extracted in the last task.
-    *   If an entity or relationship was **missed** in the last task, extract and output it now.
-    *   If an entity or relationship was **incorrectly described** in the last task, re-output the *corrected and complete* version.
-2.  **Strict Adherence to JSON Format:** Your output MUST be a valid JSON object with `entities` and `relationships` arrays. Do not include any introductory or concluding remarks, explanations, markdown code fences, or any other text before or after the JSON.
-3.  **Output Language:** Ensure the output language is {language}. Proper nouns (e.g., personal names, place names, organization names) must be kept in their original language and not translated.
-4.  **If nothing was missed or needs correction**, output: `{{"entities": [], "relationships": []}}`
+1. **Focus on Corrections/Additions:**
+  - **Do NOT** re-output entities and relationships that were **correctly and fully** extracted in the last task.
+  - If an entity or relationship was **missed** in the last task, extract and output it now.
+  - If an entity or relationship was **incorrectly described** in the last task, re-output the *corrected and complete* version.
+2. **Strict Adherence to JSON Format:** Your output MUST be a valid JSON object with `entities` and `relationships` arrays. Do not include any introductory or concluding remarks, explanations, markdown code fences, or any other text before or after the JSON.
+3. **Output Language:** Ensure the output language is {language}. Proper nouns (e.g., personal names, place names, organization names) must be kept in their original language and not translated.
+4. **If nothing was missed or needs correction**, output: `{{"entities": [], "relationships": []}}`
 
-<Output>
+---Output---
 """
 
 PROMPTS["entity_extraction_json_examples"] = [
-    """<Entity_types>
-["Person","Creature","Organization","Location","Event","Concept","Method","Content","Data","Artifact","NaturalObject"]
+    """---Entity Types---
+- Person: Human individuals, real or fictional
+- Artifact: Physical or digital objects created by humans (tools, software, devices)
+- Concept: Abstract ideas, theories, principles, beliefs
 
-<Input Text>
+---Input Text---
 ```
 while Alex clenched his jaw, the buzz of frustration dull against the backdrop of Taylor's authoritarian certainty. It was this competitive undercurrent that kept him alert, the sense that his and Jordan's shared commitment to discovery was an unspoken rebellion against Cruz's narrowing vision of control and order.
 
@@ -298,83 +317,98 @@ The underlying dismissal earlier seemed to falter, replaced by a glimpse of relu
 It was a small transformation, barely perceptible, but one that Alex noted with an inward nod. They had all been brought here by different paths
 ```
 
-<Output>
+---Output---
 {
   "entities": [
-    {"entity_name": "Alex", "entity_type": "person", "entity_description": "Alex is a character who experiences frustration and is observant of the dynamics among other characters."},
-    {"entity_name": "Taylor", "entity_type": "person", "entity_description": "Taylor is portrayed with authoritarian certainty and shows a moment of reverence towards a device, indicating a change in perspective."},
-    {"entity_name": "Jordan", "entity_type": "person", "entity_description": "Jordan shares a commitment to discovery and has a significant interaction with Taylor regarding a device."},
-    {"entity_name": "Cruz", "entity_type": "person", "entity_description": "Cruz is associated with a vision of control and order, influencing the dynamics among other characters."},
-    {"entity_name": "The Device", "entity_type": "equipment", "entity_description": "The Device is central to the story, with potential game-changing implications, and is revered by Taylor."}
+    {"name": "Alex", "type": "Person", "description": "Alex is a character who experiences frustration and is observant of the dynamics among other characters."},
+    {"name": "Taylor", "type": "Person", "description": "Taylor is portrayed with authoritarian certainty and shows a moment of reverence towards a device, indicating a change in perspective."},
+    {"name": "Jordan", "type": "Person", "description": "Jordan shares a commitment to discovery and has a significant interaction with Taylor regarding a device."},
+    {"name": "Cruz", "type": "Person", "description": "Cruz is associated with a vision of control and order, influencing the dynamics among other characters."},
+    {"name": "The Device", "type": "Artifact", "description": "The Device is central to the story, with potential game-changing implications, and is revered by Taylor."},
+    {"name": "Discovery", "type": "Concept", "description": "Discovery represents the shared intellectual pursuit that unites Jordan and Alex in opposition to Cruz's controlling worldview."}
   ],
   "relationships": [
-    {"source_entity": "Alex", "target_entity": "Taylor", "relationship_keywords": "power dynamics, observation", "relationship_description": "Alex observes Taylor's authoritarian behavior and notes changes in Taylor's attitude toward the device."},
-    {"source_entity": "Alex", "target_entity": "Jordan", "relationship_keywords": "shared goals, rebellion", "relationship_description": "Alex and Jordan share a commitment to discovery, which contrasts with Cruz's vision."},
-    {"source_entity": "Taylor", "target_entity": "Jordan", "relationship_keywords": "conflict resolution, mutual respect", "relationship_description": "Taylor and Jordan interact directly regarding the device, leading to a moment of mutual respect and an uneasy truce."},
-    {"source_entity": "Jordan", "target_entity": "Cruz", "relationship_keywords": "ideological conflict, rebellion", "relationship_description": "Jordan's commitment to discovery is in rebellion against Cruz's vision of control and order."},
-    {"source_entity": "Taylor", "target_entity": "The Device", "relationship_keywords": "reverence, technological significance", "relationship_description": "Taylor shows reverence towards the device, indicating its importance and potential impact."}
+    {"source": "Alex", "target": "Taylor", "keywords": "power dynamics, observation", "description": "Alex observes Taylor's authoritarian behavior and notes changes in Taylor's attitude toward the device."},
+    {"source": "Alex", "target": "Jordan", "keywords": "shared goals, rebellion", "description": "Alex and Jordan share a commitment to discovery, which contrasts with Cruz's vision."},
+    {"source": "Taylor", "target": "Jordan", "keywords": "conflict resolution, mutual respect", "description": "Taylor and Jordan interact directly regarding the device, leading to a moment of mutual respect and an uneasy truce."},
+    {"source": "Jordan", "target": "Cruz", "keywords": "ideological conflict, rebellion", "description": "Jordan's commitment to discovery is in rebellion against Cruz's vision of control and order."},
+    {"source": "Taylor", "target": "The Device", "keywords": "reverence, technological significance", "description": "Taylor shows reverence towards the device, indicating its importance and potential impact."}
   ]
 }
 
 """,
-    """<Entity_types>
-["Person","Creature","Organization","Location","Event","Concept","Method","Content","Data","Artifact","NaturalObject"]
+    """---Entity Types---
+- Person: Human individuals, real or fictional
+- Location: Geographic places (cities, countries, buildings, regions)
+- Creature: Non-human living beings (animals, mythical beings, etc.)
+- Method: Procedures, techniques, algorithms, workflows
+- Organization: Companies, institutions, government bodies, groups
+- Content: Creative or informational works (books, articles, films, reports)
+- NaturalObject: Natural non-living objects (minerals, celestial bodies, chemical compounds)
 
-<Input Text>
+---Input Text---
 ```
-Stock markets faced a sharp downturn today as tech giants saw significant declines, with the global tech index dropping by 3.4% in midday trading. Analysts attribute the selloff to investor concerns over rising interest rates and regulatory uncertainty.
+Dr. Elena Vasquez led a field expedition to the Borneo rainforest to document the population decline of the Bornean orangutan. Using transect sampling — a method where researchers walk predetermined line paths and record every animal sighting within a fixed distance — her team estimated that fewer than 1,500 individuals remained in the surveyed region.
 
-Among the hardest hit, nexon technologies saw its stock plummet by 7.8% after reporting lower-than-expected quarterly earnings. In contrast, Omega Energy posted a modest 2.1% gain, driven by rising oil prices.
-
-Meanwhile, commodity markets reflected a mixed sentiment. Gold futures rose by 1.5%, reaching $2,080 per ounce, as investors sought safe-haven assets. Crude oil prices continued their rally, climbing to $87.60 per barrel, supported by supply constraints and strong demand.
-
-Financial experts are closely watching the Federal Reserve's next move, as speculation grows over potential rate hikes. The upcoming policy announcement is expected to influence investor confidence and overall market stability.
+The expedition was funded by the Global Wildlife Conservation Institute and produced a landmark report titled "Primate Decline in Insular Southeast Asia." Vasquez attributed the collapse primarily to peat-soil destruction caused by palm oil plantation expansion, which had converted over 40% of the surveyed forest area within a decade.
 ```
 
-<Output>
+---Output---
 {
   "entities": [
-    {"entity_name": "Global Tech Index", "entity_type": "category", "entity_description": "The Global Tech Index tracks the performance of major technology stocks and experienced a 3.4% decline today."},
-    {"entity_name": "Nexon Technologies", "entity_type": "organization", "entity_description": "Nexon Technologies is a tech company that saw its stock decline by 7.8% after disappointing earnings."},
-    {"entity_name": "Omega Energy", "entity_type": "organization", "entity_description": "Omega Energy is an energy company that gained 2.1% in stock value due to rising oil prices."},
-    {"entity_name": "Gold Futures", "entity_type": "product", "entity_description": "Gold futures rose by 1.5%, indicating increased investor interest in safe-haven assets."},
-    {"entity_name": "Crude Oil", "entity_type": "product", "entity_description": "Crude oil prices rose to $87.60 per barrel due to supply constraints and strong demand."},
-    {"entity_name": "Market Selloff", "entity_type": "category", "entity_description": "Market selloff refers to the significant decline in stock values due to investor concerns over interest rates and regulations."},
-    {"entity_name": "Federal Reserve Policy Announcement", "entity_type": "category", "entity_description": "The Federal Reserve's upcoming policy announcement is expected to impact investor confidence and market stability."},
-    {"entity_name": "3.4% Decline", "entity_type": "category", "entity_description": "The Global Tech Index experienced a 3.4% decline in midday trading."}
+    {"name": "Dr. Elena Vasquez", "type": "Person", "description": "Dr. Elena Vasquez is a field researcher who led an expedition to document orangutan population decline in Borneo."},
+    {"name": "Borneo Rainforest", "type": "Location", "description": "The Borneo rainforest is the field site of the expedition and the primary habitat of the Bornean orangutan."},
+    {"name": "Bornean Orangutan", "type": "Creature", "description": "The Bornean orangutan is a primate species whose population was found to have declined to fewer than 1,500 individuals in the surveyed region."},
+    {"name": "Transect Sampling", "type": "Method", "description": "Transect sampling is a wildlife survey technique where researchers walk predetermined paths and record animal sightings within a fixed lateral distance."},
+    {"name": "Global Wildlife Conservation Institute", "type": "Organization", "description": "The Global Wildlife Conservation Institute funded the expedition led by Dr. Vasquez."},
+    {"name": "Primate Decline in Insular Southeast Asia", "type": "Content", "description": "A landmark research report produced by Vasquez's expedition documenting primate population decline in the region."},
+    {"name": "Peat Soil", "type": "NaturalObject", "description": "Peat soil is a natural substrate in the Borneo rainforest that has been destroyed by palm oil plantation expansion."}
   ],
   "relationships": [
-    {"source_entity": "Global Tech Index", "target_entity": "Market Selloff", "relationship_keywords": "market performance, investor sentiment", "relationship_description": "The decline in the Global Tech Index is part of the broader market selloff driven by investor concerns."},
-    {"source_entity": "Nexon Technologies", "target_entity": "Global Tech Index", "relationship_keywords": "company impact, index movement", "relationship_description": "Nexon Technologies' stock decline contributed to the overall drop in the Global Tech Index."},
-    {"source_entity": "Gold Futures", "target_entity": "Market Selloff", "relationship_keywords": "market reaction, safe-haven investment", "relationship_description": "Gold prices rose as investors sought safe-haven assets during the market selloff."},
-    {"source_entity": "Federal Reserve Policy Announcement", "target_entity": "Market Selloff", "relationship_keywords": "interest rate impact, financial regulation", "relationship_description": "Speculation over Federal Reserve policy changes contributed to market volatility and investor selloff."}
+    {"source": "Dr. Elena Vasquez", "target": "Bornean Orangutan", "keywords": "field research, population survey", "description": "Dr. Vasquez led the expedition that documented the population decline of the Bornean orangutan."},
+    {"source": "Dr. Elena Vasquez", "target": "Transect Sampling", "keywords": "methodology, research application", "description": "Dr. Vasquez's team used transect sampling to estimate the orangutan population."},
+    {"source": "Global Wildlife Conservation Institute", "target": "Dr. Elena Vasquez", "keywords": "funding, research support", "description": "The institute funded the expedition led by Dr. Vasquez."},
+    {"source": "Dr. Elena Vasquez", "target": "Primate Decline in Insular Southeast Asia", "keywords": "authorship, research output", "description": "Dr. Vasquez's expedition produced the landmark report on primate decline."},
+    {"source": "Peat Soil", "target": "Borneo Rainforest", "keywords": "habitat composition, ecological destruction", "description": "Peat soil destruction in the Borneo rainforest was caused by palm oil plantation expansion and is a primary driver of orangutan decline."}
   ]
 }
 
 """,
-    """<Entity_types>
-["Person","Creature","Organization","Location","Event","Concept","Method","Content","Data","Artifact","NaturalObject"]
+    """---Entity Types---
+- Content: Creative or informational works (books, articles, films, reports)
+- Artifact: Physical or digital objects created by humans (tools, software, devices)
+- Person: Human individuals, real or fictional
+- Organization: Companies, institutions, government bodies, groups
+- Method: Procedures, techniques, algorithms, workflows
+- Data: Quantitative or structured information (statistics, datasets, measurements)
+- Concept: Abstract ideas, theories, principles, beliefs
 
-<Input Text>
+---Input Text---
 ```
-At the World Athletics Championship in Tokyo, Noah Carter broke the 100m sprint record using cutting-edge carbon-fiber spikes.
+The 2023 edition of "Advances in Neural Architecture Search" synthesized findings from over 200 peer-reviewed papers and introduced a new benchmarking framework called NASBench-360, designed to evaluate search algorithms across diverse task domains. The publication was co-authored by Dr. Priya Nair and Dr. Luca Ferretti of the DeepSystems Research Lab.
+
+NASBench-360 measures three key metrics: search efficiency (time-to-solution), model accuracy on held-out test sets, and computational cost in GPU-hours. Early results showed that evolutionary search algorithms outperformed gradient-based methods by 12% on accuracy while consuming 30% fewer GPU-hours on vision tasks.
 ```
 
-<Output>
+---Output---
 {
   "entities": [
-    {"entity_name": "World Athletics Championship", "entity_type": "event", "entity_description": "The World Athletics Championship is a global sports competition featuring top athletes in track and field."},
-    {"entity_name": "Tokyo", "entity_type": "location", "entity_description": "Tokyo is the host city of the World Athletics Championship."},
-    {"entity_name": "Noah Carter", "entity_type": "person", "entity_description": "Noah Carter is a sprinter who set a new record in the 100m sprint at the World Athletics Championship."},
-    {"entity_name": "100m Sprint Record", "entity_type": "category", "entity_description": "The 100m sprint record is a benchmark in athletics, recently broken by Noah Carter."},
-    {"entity_name": "Carbon-Fiber Spikes", "entity_type": "equipment", "entity_description": "Carbon-fiber spikes are advanced sprinting shoes that provide enhanced speed and traction."},
-    {"entity_name": "World Athletics Federation", "entity_type": "organization", "entity_description": "The World Athletics Federation is the governing body overseeing the World Athletics Championship and record validations."}
+    {"name": "Advances in Neural Architecture Search", "type": "Content", "description": "A 2023 publication that synthesizes findings from over 200 papers and introduces the NASBench-360 benchmarking framework."},
+    {"name": "NASBench-360", "type": "Artifact", "description": "NASBench-360 is a benchmarking framework introduced to evaluate neural architecture search algorithms across diverse task domains."},
+    {"name": "Dr. Priya Nair", "type": "Person", "description": "Dr. Priya Nair is a co-author of the publication and a researcher at the DeepSystems Research Lab."},
+    {"name": "Dr. Luca Ferretti", "type": "Person", "description": "Dr. Luca Ferretti is a co-author of the publication and a researcher at the DeepSystems Research Lab."},
+    {"name": "DeepSystems Research Lab", "type": "Organization", "description": "The DeepSystems Research Lab is the institution where the co-authors of the publication are affiliated."},
+    {"name": "Evolutionary Search", "type": "Method", "description": "Evolutionary search is a class of neural architecture search algorithms that outperformed gradient-based methods in the NASBench-360 evaluation."},
+    {"name": "Gradient-Based Search", "type": "Method", "description": "Gradient-based search is a class of neural architecture search algorithms that was benchmarked against evolutionary search in NASBench-360."},
+    {"name": "GPU-Hours", "type": "Data", "description": "GPU-hours is a metric used in NASBench-360 to measure the computational cost of neural architecture search algorithms."},
+    {"name": "Neural Architecture Search", "type": "Concept", "description": "Neural architecture search is the automated process of designing optimal neural network architectures, the central topic of the publication."}
   ],
   "relationships": [
-    {"source_entity": "World Athletics Championship", "target_entity": "Tokyo", "relationship_keywords": "event location, international competition", "relationship_description": "The World Athletics Championship is being hosted in Tokyo."},
-    {"source_entity": "Noah Carter", "target_entity": "100m Sprint Record", "relationship_keywords": "athlete achievement, record-breaking", "relationship_description": "Noah Carter set a new 100m sprint record at the championship."},
-    {"source_entity": "Noah Carter", "target_entity": "Carbon-Fiber Spikes", "relationship_keywords": "athletic equipment, performance boost", "relationship_description": "Noah Carter used carbon-fiber spikes to enhance performance during the race."},
-    {"source_entity": "Noah Carter", "target_entity": "World Athletics Championship", "relationship_keywords": "athlete participation, competition", "relationship_description": "Noah Carter is competing at the World Athletics Championship."}
+    {"source": "Dr. Priya Nair", "target": "Advances in Neural Architecture Search", "keywords": "authorship", "description": "Dr. Priya Nair co-authored the publication."},
+    {"source": "Dr. Luca Ferretti", "target": "Advances in Neural Architecture Search", "keywords": "authorship", "description": "Dr. Luca Ferretti co-authored the publication."},
+    {"source": "Advances in Neural Architecture Search", "target": "NASBench-360", "keywords": "introduces, benchmarking", "description": "The publication introduced the NASBench-360 framework."},
+    {"source": "Evolutionary Search", "target": "Gradient-Based Search", "keywords": "performance comparison", "description": "Evolutionary search outperformed gradient-based methods by 12% on accuracy and used 30% fewer GPU-hours on vision tasks."},
+    {"source": "NASBench-360", "target": "GPU-Hours", "keywords": "evaluation metric", "description": "NASBench-360 uses GPU-hours as one of three key metrics to measure computational cost."}
   ]
 }
 

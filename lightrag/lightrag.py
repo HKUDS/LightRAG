@@ -59,7 +59,6 @@ from lightrag.constants import (
     DEFAULT_MAX_GRAPH_NODES,
     DEFAULT_MAX_SOURCE_IDS_PER_ENTITY,
     DEFAULT_MAX_SOURCE_IDS_PER_RELATION,
-    DEFAULT_ENTITY_TYPES,
     DEFAULT_SUMMARY_LANGUAGE,
     DEFAULT_LLM_TIMEOUT,
     DEFAULT_EMBEDDING_TIMEOUT,
@@ -629,13 +628,13 @@ class LightRAG:
     )
 
     entity_extraction_use_json: bool = field(
-        default=os.getenv("ENTITY_EXTRACTION_USE_JSON", "true").lower() == "true"
+        default=os.getenv("ENTITY_EXTRACTION_USE_JSON", "false").lower() == "true"
     )
     """When True, entity extraction uses JSON structured output instead of delimiter-based text.
-    JSON mode significantly improves extraction quality and compatibility with smaller models.
+    JSON mode is slower but significantly improves extraction quality and compatibility with smaller models.
     Providers with native structured output support (OpenAI, Ollama, Gemini) will use their
     native capabilities. Other providers rely on JSON-formatted prompts with json_repair parsing.
-    Default: True. Set ENTITY_EXTRACTION_USE_JSON=false in .env to disable."""
+    Default: False. Set ENTITY_EXTRACTION_USE_JSON=true in .env to enable."""
 
     # Rerank Configuration
     # ---
@@ -730,7 +729,6 @@ class LightRAG:
             "language": get_env_value(
                 "SUMMARY_LANGUAGE", DEFAULT_SUMMARY_LANGUAGE, str
             ),
-            "entity_types": get_env_value("ENTITY_TYPES", DEFAULT_ENTITY_TYPES, list),
         }
     )
 
@@ -960,6 +958,14 @@ class LightRAG:
         from lightrag.kg.shared_storage import (
             initialize_share_data,
         )
+
+        # Fail fast if deprecated ENTITY_TYPES env var is set
+        if os.getenv("ENTITY_TYPES") is not None:
+            raise SystemExit(
+                "ERROR: ENTITY_TYPES environment variable is no longer supported. "
+                "Please customize entity type guidance through the prompt template instead. "
+                "Set addon_params={'entity_types_guidance': '...'} or replace the prompt template."
+            )
 
         # Handle deprecated parameters
         if self.log_level is not None:
