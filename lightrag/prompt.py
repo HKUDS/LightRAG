@@ -28,11 +28,11 @@ PROMPTS[
 - NaturalObject: Natural non-living objects (minerals, celestial bodies, chemical compounds)"""
 
 PROMPTS["entity_extraction_system_prompt"] = """---Role---
-You are a Knowledge Graph Specialist responsible for extracting entities and relationships from the input text.
+You are a Knowledge Graph Specialist responsible for extracting entities and relationships from the `---Input Text---` section of user prompt.
 
 ---Instructions---
 1.  **Entity Extraction & Output:**
-    *   **Identification:** Identify clearly defined and meaningful entities in the input text.
+    *   **Identification:** Identify clearly defined and meaningful entities in the in the `---Input Text---` section of user prompt.
     *   **Entity Details:** For each identified entity, extract the following information:
         *   `entity_name`: The name of the entity. If the entity name is case-insensitive, capitalize the first letter of each significant word (title case). Ensure **consistent naming** across the entire extraction process.
         *   `entity_type`: Categorize the entity using the type guidance provided in the `---Entity Types---` section below. If none of the provided entity types apply, classify it as `Other`.
@@ -83,7 +83,7 @@ You are a Knowledge Graph Specialist responsible for extracting entities and rel
 """
 
 PROMPTS["entity_extraction_user_prompt"] = """---Task---
-Extract entities and relationships from the input text in Data to be Processed below.
+Extract entities and relationships from the `---Input Text---` session below.
 
 ---Instructions---
 1.  **Strict Adherence to Format:** Strictly adhere to all format requirements for entity and relationship lists, including output order, field delimiters, and proper noun handling, as specified in the system prompt.
@@ -91,13 +91,12 @@ Extract entities and relationships from the input text in Data to be Processed b
 3.  **Completion Signal:** Output `{completion_delimiter}` as the final line after all relevant entities and relationships have been extracted and presented.
 4.  **Output Language:** Ensure the output language is {language}. Proper nouns (e.g., personal names, place names, organization names) must be kept in their original language and not translated.
 
----Data to be Processed---
-<Input Text>
+---Input Text---
 ```
 {input_text}
 ```
 
-<Output>
+---Output---
 """
 
 PROMPTS["entity_continue_extraction_user_prompt"] = """---Task---
@@ -115,7 +114,7 @@ Based on the last extraction task, identify and extract any **missed or incorrec
 6.  **Completion Signal:** Output `{completion_delimiter}` as the final line after all relevant missing or corrected entities and relationships have been extracted and presented.
 7.  **Output Language:** Ensure the output language is {language}. Proper nouns (e.g., personal names, place names, organization names) must be kept in their original language and not translated.
 
-<Output>
+---Output---
 """
 
 PROMPTS["entity_extraction_examples"] = [
@@ -123,7 +122,8 @@ PROMPTS["entity_extraction_examples"] = [
 - Person: Human individuals, real or fictional
 - Artifact: Physical or digital objects created by humans (tools, software, devices)
 - Concept: Abstract ideas, theories, principles, beliefs
-<Input Text>
+
+---Input Text---
 ```
 while Alex clenched his jaw, the buzz of frustration dull against the backdrop of Taylor's authoritarian certainty. It was this competitive undercurrent that kept him alert, the sense that his and Jordan's shared commitment to discovery was an unspoken rebellion against Cruz's narrowing vision of control and order.
 
@@ -134,7 +134,7 @@ The underlying dismissal earlier seemed to falter, replaced by a glimpse of relu
 It was a small transformation, barely perceptible, but one that Alex noted with an inward nod. They had all been brought here by different paths
 ```
 
-<Output>
+---Output---
 entity{tuple_delimiter}Alex{tuple_delimiter}Person{tuple_delimiter}Alex is a character who experiences frustration and is observant of the dynamics among other characters.
 entity{tuple_delimiter}Taylor{tuple_delimiter}Person{tuple_delimiter}Taylor is portrayed with authoritarian certainty and shows a moment of reverence towards a device, indicating a change in perspective.
 entity{tuple_delimiter}Jordan{tuple_delimiter}Person{tuple_delimiter}Jordan shares a commitment to discovery and has a significant interaction with Taylor regarding a device.
@@ -157,14 +157,15 @@ relation{tuple_delimiter}Taylor{tuple_delimiter}The Device{tuple_delimiter}rever
 - Organization: Companies, institutions, government bodies, groups
 - Content: Creative or informational works (books, articles, films, reports)
 - NaturalObject: Natural non-living objects (minerals, celestial bodies, chemical compounds)
-<Input Text>
+
+---Input Text---
 ```
 Dr. Elena Vasquez led a field expedition to the Borneo rainforest to document the population decline of the Bornean orangutan. Using transect sampling — a method where researchers walk predetermined line paths and record every animal sighting within a fixed distance — her team estimated that fewer than 1,500 individuals remained in the surveyed region.
 
 The expedition was funded by the Global Wildlife Conservation Institute and produced a landmark report titled "Primate Decline in Insular Southeast Asia." Vasquez attributed the collapse primarily to peat-soil destruction caused by palm oil plantation expansion, which had converted over 40% of the surveyed forest area within a decade.
 ```
 
-<Output>
+---Output---
 entity{tuple_delimiter}Dr. Elena Vasquez{tuple_delimiter}Person{tuple_delimiter}Dr. Elena Vasquez is a field researcher who led an expedition to document orangutan population decline in Borneo.
 entity{tuple_delimiter}Borneo Rainforest{tuple_delimiter}Location{tuple_delimiter}The Borneo rainforest is the field site of the expedition and the primary habitat of the Bornean orangutan.
 entity{tuple_delimiter}Bornean Orangutan{tuple_delimiter}Creature{tuple_delimiter}The Bornean orangutan is a primate species whose population was found to have declined to fewer than 1,500 individuals in the surveyed region.
@@ -188,14 +189,15 @@ relation{tuple_delimiter}Peat Soil{tuple_delimiter}Borneo Rainforest{tuple_delim
 - Method: Procedures, techniques, algorithms, workflows
 - Data: Quantitative or structured information (statistics, datasets, measurements)
 - Concept: Abstract ideas, theories, principles, beliefs
-<Input Text>
+
+---Input Text---
 ```
 The 2023 edition of "Advances in Neural Architecture Search" synthesized findings from over 200 peer-reviewed papers and introduced a new benchmarking framework called NASBench-360, designed to evaluate search algorithms across diverse task domains. The publication was co-authored by Dr. Priya Nair and Dr. Luca Ferretti of the DeepSystems Research Lab.
 
 NASBench-360 measures three key metrics: search efficiency (time-to-solution), model accuracy on held-out test sets, and computational cost in GPU-hours. Early results showed that evolutionary search algorithms outperformed gradient-based methods by 12% on accuracy while consuming 30% fewer GPU-hours on vision tasks.
 ```
 
-<Output>
+---Output---
 entity{tuple_delimiter}Advances in Neural Architecture Search{tuple_delimiter}Content{tuple_delimiter}A 2023 publication that synthesizes findings from over 200 papers and introduces the NASBench-360 benchmarking framework.
 entity{tuple_delimiter}NASBench-360{tuple_delimiter}Artifact{tuple_delimiter}NASBench-360 is a benchmarking framework introduced to evaluate neural architecture search algorithms across diverse task domains.
 entity{tuple_delimiter}Dr. Priya Nair{tuple_delimiter}Person{tuple_delimiter}Dr. Priya Nair is a co-author of the publication and a researcher at the DeepSystems Research Lab.
@@ -221,11 +223,11 @@ relation{tuple_delimiter}NASBench-360{tuple_delimiter}GPU-Hours{tuple_delimiter}
 ###############################################################################
 
 PROMPTS["entity_extraction_json_system_prompt"] = """---Role---
-You are a Knowledge Graph Specialist responsible for extracting entities and relationships from the input text.
+You are a Knowledge Graph Specialist responsible for extracting entities and relationships from the `---Input Text---` session of user prompt.
 
 ---Instructions---
 1.  **Entity Extraction:**
-    *   **Identification:** Identify clearly defined and meaningful entities in the input text.
+    *   **Identification:** Identify clearly defined and meaningful entities in the `---Input Text---` session of user prompt.
     *   **Entity Details:** For each identified entity, extract the following information:
         *   `entity_name`: The name of the entity. If the entity name is case-insensitive, capitalize the first letter of each significant word (title case). Ensure **consistent naming** across the entire extraction process.
         *   `entity_type`: Categorize the entity using the type guidance provided in the `---Entity Types---` section below. If none of the provided entity types apply, classify it as `Other`.
@@ -264,26 +266,25 @@ You are a Knowledge Graph Specialist responsible for extracting entities and rel
 """
 
 PROMPTS["entity_extraction_json_user_prompt"] = """---Task---
-Extract entities and relationships from the input text in Data to be Processed below.
+Extract entities and relationships from the `---Input Text---` session below.
 
 ---Instructions---
 1.  **Strict Adherence to JSON Format:** Your output MUST be a valid JSON object with `entities` and `relationships` arrays. Do not include any introductory or concluding remarks, explanations, markdown code fences, or any other text before or after the JSON.
 2.  **Output Language:** Ensure the output language is {language}. Proper nouns (e.g., personal names, place names, organization names) must be kept in their original language and not translated.
 
----Data to be Processed---
 ---Entity Types---
 {entity_types_guidance}
 
-<Input Text>
+---Input Text---
 ```
 {input_text}
 ```
 
-<Output>
+---Output---
 """
 
 PROMPTS["entity_continue_extraction_json_user_prompt"] = """---Task---
-Based on the last extraction task, identify and extract any **missed or incorrectly described** entities and relationships from the input text.
+Based on the last extraction task, identify and extract any **missed or incorrectly described** entities and relationships from the `---Input Text---` session.
 
 ---Instructions---
 1.  **Focus on Corrections/Additions:**
@@ -294,7 +295,7 @@ Based on the last extraction task, identify and extract any **missed or incorrec
 3.  **Output Language:** Ensure the output language is {language}. Proper nouns (e.g., personal names, place names, organization names) must be kept in their original language and not translated.
 4.  **If nothing was missed or needs correction**, output: `{{"entities": [], "relationships": []}}`
 
-<Output>
+---Output---
 """
 
 PROMPTS["entity_extraction_json_examples"] = [
@@ -302,7 +303,8 @@ PROMPTS["entity_extraction_json_examples"] = [
 - Person: Human individuals, real or fictional
 - Artifact: Physical or digital objects created by humans (tools, software, devices)
 - Concept: Abstract ideas, theories, principles, beliefs
-<Input Text>
+
+---Input Text---
 ```
 while Alex clenched his jaw, the buzz of frustration dull against the backdrop of Taylor's authoritarian certainty. It was this competitive undercurrent that kept him alert, the sense that his and Jordan's shared commitment to discovery was an unspoken rebellion against Cruz's narrowing vision of control and order.
 
@@ -313,7 +315,7 @@ The underlying dismissal earlier seemed to falter, replaced by a glimpse of relu
 It was a small transformation, barely perceptible, but one that Alex noted with an inward nod. They had all been brought here by different paths
 ```
 
-<Output>
+---Output---
 {
   "entities": [
     {"entity_name": "Alex", "entity_type": "Person", "entity_description": "Alex is a character who experiences frustration and is observant of the dynamics among other characters."},
@@ -341,14 +343,15 @@ It was a small transformation, barely perceptible, but one that Alex noted with 
 - Organization: Companies, institutions, government bodies, groups
 - Content: Creative or informational works (books, articles, films, reports)
 - NaturalObject: Natural non-living objects (minerals, celestial bodies, chemical compounds)
-<Input Text>
+
+---Input Text---
 ```
 Dr. Elena Vasquez led a field expedition to the Borneo rainforest to document the population decline of the Bornean orangutan. Using transect sampling — a method where researchers walk predetermined line paths and record every animal sighting within a fixed distance — her team estimated that fewer than 1,500 individuals remained in the surveyed region.
 
 The expedition was funded by the Global Wildlife Conservation Institute and produced a landmark report titled "Primate Decline in Insular Southeast Asia." Vasquez attributed the collapse primarily to peat-soil destruction caused by palm oil plantation expansion, which had converted over 40% of the surveyed forest area within a decade.
 ```
 
-<Output>
+---Output---
 {
   "entities": [
     {"entity_name": "Dr. Elena Vasquez", "entity_type": "Person", "entity_description": "Dr. Elena Vasquez is a field researcher who led an expedition to document orangutan population decline in Borneo."},
@@ -377,14 +380,15 @@ The expedition was funded by the Global Wildlife Conservation Institute and prod
 - Method: Procedures, techniques, algorithms, workflows
 - Data: Quantitative or structured information (statistics, datasets, measurements)
 - Concept: Abstract ideas, theories, principles, beliefs
-<Input Text>
+
+---Input Text---
 ```
 The 2023 edition of "Advances in Neural Architecture Search" synthesized findings from over 200 peer-reviewed papers and introduced a new benchmarking framework called NASBench-360, designed to evaluate search algorithms across diverse task domains. The publication was co-authored by Dr. Priya Nair and Dr. Luca Ferretti of the DeepSystems Research Lab.
 
 NASBench-360 measures three key metrics: search efficiency (time-to-solution), model accuracy on held-out test sets, and computational cost in GPU-hours. Early results showed that evolutionary search algorithms outperformed gradient-based methods by 12% on accuracy while consuming 30% fewer GPU-hours on vision tasks.
 ```
 
-<Output>
+---Output---
 {
   "entities": [
     {"entity_name": "Advances in Neural Architecture Search", "entity_type": "Content", "entity_description": "A 2023 publication that synthesizes findings from over 200 papers and introduces the NASBench-360 benchmarking framework."},

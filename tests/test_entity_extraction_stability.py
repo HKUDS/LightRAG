@@ -136,7 +136,10 @@ def test_json_examples_define_all_relationship_endpoints_as_entities():
     from lightrag.prompt import PROMPTS
 
     for example in PROMPTS["entity_extraction_json_examples"]:
-        output = example.split("<Output>", 1)[1].strip()
+        if "<Output>" in example:
+            output = example.split("<Output>", 1)[1].strip()
+        else:
+            output = example.split("---Output---", 1)[1].strip()
         parsed = json.loads(output)
         entity_names = {
             entity["entity_name"] for entity in parsed.get("entities", []) if entity
