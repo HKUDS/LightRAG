@@ -130,6 +130,22 @@ def test_default_entity_types_guidance_covers_all_types():
         ), f"Expected entity type '{t}' missing from default_entity_types_guidance"
 
 
+@pytest.mark.offline
+def test_json_examples_define_all_relationship_endpoints_as_entities():
+    """JSON examples must define every relationship endpoint in the entities list."""
+    from lightrag.prompt import PROMPTS
+
+    for example in PROMPTS["entity_extraction_json_examples"]:
+        output = example.split("<Output>", 1)[1].strip()
+        parsed = json.loads(output)
+        entity_names = {
+            entity["entity_name"] for entity in parsed.get("entities", []) if entity
+        }
+        for relationship in parsed.get("relationships", []):
+            assert relationship["source_entity"] in entity_names
+            assert relationship["target_entity"] in entity_names
+
+
 # ---------------------------------------------------------------------------
 # 2. DEFAULT_ENTITY_TYPES is gone from constants
 # ---------------------------------------------------------------------------
