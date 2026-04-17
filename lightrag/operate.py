@@ -665,7 +665,7 @@ async def _process_json_extraction_result(
 
         try:
             entity_name = sanitize_and_normalize_extracted_text(
-                str(entity_data.get("entity_name", "")), remove_inner_quotes=True
+                str(entity_data.get("name", "")), remove_inner_quotes=True
             )
             if not entity_name or not entity_name.strip():
                 logger.info(
@@ -674,7 +674,7 @@ async def _process_json_extraction_result(
                 continue
 
             entity_type = sanitize_and_normalize_extracted_text(
-                str(entity_data.get("entity_type", "")), remove_inner_quotes=True
+                str(entity_data.get("type", "")), remove_inner_quotes=True
             )
             if not entity_type.strip() or any(
                 char in entity_type
@@ -688,7 +688,7 @@ async def _process_json_extraction_result(
             entity_type = entity_type.replace(" ", "").lower()
 
             entity_description = sanitize_and_normalize_extracted_text(
-                str(entity_data.get("entity_description", ""))
+                str(entity_data.get("description", ""))
             )
             if not entity_description.strip():
                 logger.warning(
@@ -733,10 +733,10 @@ async def _process_json_extraction_result(
 
         try:
             source = sanitize_and_normalize_extracted_text(
-                str(rel_data.get("source_entity", "")), remove_inner_quotes=True
+                str(rel_data.get("source", "")), remove_inner_quotes=True
             )
             target = sanitize_and_normalize_extracted_text(
-                str(rel_data.get("target_entity", "")), remove_inner_quotes=True
+                str(rel_data.get("target", "")), remove_inner_quotes=True
             )
 
             if not source:
@@ -754,12 +754,12 @@ async def _process_json_extraction_result(
                 continue
 
             edge_keywords = sanitize_and_normalize_extracted_text(
-                str(rel_data.get("relationship_keywords", "")), remove_inner_quotes=True
+                str(rel_data.get("keywords", "")), remove_inner_quotes=True
             )
             edge_keywords = edge_keywords.replace("，", ",")
 
             edge_description = sanitize_and_normalize_extracted_text(
-                str(rel_data.get("relationship_description", ""))
+                str(rel_data.get("description", ""))
             )
 
             if not edge_description.strip():

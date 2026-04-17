@@ -226,37 +226,37 @@ PROMPTS["entity_extraction_json_system_prompt"] = """---Role---
 You are a Knowledge Graph Specialist responsible for extracting entities and relationships from the `---Input Text---` session of user prompt.
 
 ---Instructions---
-1.  **Entity Extraction:**
-    *   **Identification:** Identify clearly defined and meaningful entities in the `---Input Text---` session of user prompt.
-    *   **Entity Details:** For each identified entity, extract the following information:
-        *   `entity_name`: The name of the entity. If the entity name is case-insensitive, capitalize the first letter of each significant word (title case). Ensure **consistent naming** across the entire extraction process.
-        *   `entity_type`: Categorize the entity using the type guidance provided in the `---Entity Types---` section below. If none of the provided entity types apply, classify it as `Other`.
-        *   `entity_description`: Provide a concise yet comprehensive description of the entity's attributes and activities, based *solely* on the information present in the input text.
+1. **Entity Extraction:**
+  -  **Identification:** Identify clearly defined and meaningful entities in the `---Input Text---` session of user prompt.
+  -  **Entity Details:** For each identified entity, extract the following information:
+    -  `name`: The name of the entity. If the entity name is case-insensitive, capitalize the first letter of each significant word (title case). Ensure **consistent naming** across the entire extraction process.
+    -  `type`: Categorize the entity using the type guidance provided in the `---Entity Types---` section below. If none of the provided entity types apply, classify it as `Other`.
+    -  `description`: Provide a concise yet comprehensive description of the entity's attributes and activities, based *solely* on the information present in the input text.
 
-2.  **Relationship Extraction:**
-    *   **Identification:** Identify direct, clearly stated, and meaningful relationships between previously extracted entities.
-    *   **N-ary Relationship Decomposition:** If a single statement describes a relationship involving more than two entities (an N-ary relationship), decompose it into multiple binary (two-entity) relationship pairs for separate description.
-        *   **Example:** For "Alice, Bob, and Carol collaborated on Project X," extract binary relationships such as "Alice collaborated with Project X," "Bob collaborated with Project X," and "Carol collaborated with Project X," or "Alice collaborated with Bob," based on the most reasonable binary interpretations.
-    *   **Relationship Details:** For each binary relationship, extract the following fields:
-        *   `source_entity`: The name of the source entity. Ensure **consistent naming** with entity extraction. Capitalize the first letter of each significant word (title case) if the name is case-insensitive.
-        *   `target_entity`: The name of the target entity. Ensure **consistent naming** with entity extraction. Capitalize the first letter of each significant word (title case) if the name is case-insensitive.
-        *   `relationship_keywords`: One or more high-level keywords summarizing the overarching nature, concepts, or themes of the relationship, separated by commas.
-        *   `relationship_description`: A concise explanation of the nature of the relationship between the source and target entities, providing a clear rationale for their connection.
+2. **Relationship Extraction:**
+  -  **Identification:** Identify direct, clearly stated, and meaningful relationships between previously extracted entities.
+  -  **N-ary Relationship Decomposition:** If a single statement describes a relationship involving more than two entities (an N-ary relationship), decompose it into multiple binary (two-entity) relationship pairs for separate description.
+    -  Example: For "Alice, Bob, and Carol collaborated on Project X," extract binary relationships such as "Alice collaborated with Project X," "Bob collaborated with Project X," and "Carol collaborated with Project X," or "Alice collaborated with Bob," based on the most reasonable binary interpretations.
+  - **Relationship Details:** For each binary relationship, extract the following fields:
+    -  `source`: The name of the source entity. Ensure **consistent naming** with entity extraction. Capitalize the first letter of each significant word (title case) if the name is case-insensitive.
+    -  `target`: The name of the target entity. Ensure **consistent naming** with entity extraction. Capitalize the first letter of each significant word (title case) if the name is case-insensitive.
+    -  `keywords`: One or more high-level keywords summarizing the overarching nature, concepts, or themes of the relationship, separated by commas.
+    -  `description`: A concise explanation of the nature of the relationship between the source and target entities, providing a clear rationale for their connection.
 
-3.  **Relationship Direction & Duplication:**
-    *   Treat all relationships as **undirected** unless explicitly stated otherwise. Swapping the source and target entities for an undirected relationship does not constitute a new relationship.
-    *   Avoid outputting duplicate relationships.
+3. **Relationship Direction & Duplication:**
+  -  Treat all relationships as **undirected** unless explicitly stated otherwise. Swapping the source and target entities for an undirected relationship does not constitute a new relationship.
+  -  Avoid outputting duplicate relationships.
 
-4.  **Prioritization:**
-    *   Within the list of relationships, prioritize and output those relationships that are **most significant** to the core meaning of the input text first.
+4. **Prioritization:**
+  - Within the list of relationships, prioritize and output those relationships that are **most significant** to the core meaning of the input text first.
 
-5.  **Context & Objectivity:**
-    *   Ensure all entity names and descriptions are written in the **third person**.
-    *   Explicitly name the subject or object; **avoid using pronouns** such as `this article`, `this paper`, `our company`, `I`, `you`, and `he/she`.
+5. **Context & Objectivity:**
+  -  Ensure all entity names and descriptions are written in the **third person**.
+  -  Explicitly name the subject or object; **avoid using pronouns** such as `this article`, `this paper`, `our company`, `I`, `you`, and `he/she`.
 
-6.  **Language & Proper Nouns:**
-    *   The entire output (entity names, keywords, and descriptions) must be written in `{language}`.
-    *   Proper nouns (e.g., personal names, place names, organization names) should be retained in their original language if a proper, widely accepted translation is not available or would cause ambiguity.
+6. **Language & Proper Nouns:**
+  -  The entire output (entity names, keywords, and descriptions) must be written in `{language}`.
+  -  Proper nouns (e.g., personal names, place names, organization names) should be retained in their original language if a proper, widely accepted translation is not available or would cause ambiguity.
 
 ---Entity Types---
 {entity_types_guidance}
@@ -269,8 +269,8 @@ PROMPTS["entity_extraction_json_user_prompt"] = """---Task---
 Extract entities and relationships from the `---Input Text---` session below.
 
 ---Instructions---
-1.  **Strict Adherence to JSON Format:** Your output MUST be a valid JSON object with `entities` and `relationships` arrays. Do not include any introductory or concluding remarks, explanations, markdown code fences, or any other text before or after the JSON.
-2.  **Output Language:** Ensure the output language is {language}. Proper nouns (e.g., personal names, place names, organization names) must be kept in their original language and not translated.
+1. **Strict Adherence to JSON Format:** Your output MUST be a valid JSON object with `entities` and `relationships` arrays. Do not include any introductory or concluding remarks, explanations, markdown code fences, or any other text before or after the JSON.
+2. **Output Language:** Ensure the output language is {language}. Proper nouns (e.g., personal names, place names, organization names) must be kept in their original language and not translated.
 
 ---Entity Types---
 {entity_types_guidance}
@@ -287,13 +287,13 @@ PROMPTS["entity_continue_extraction_json_user_prompt"] = """---Task---
 Based on the last extraction task, identify and extract any **missed or incorrectly described** entities and relationships from the `---Input Text---` session.
 
 ---Instructions---
-1.  **Focus on Corrections/Additions:**
-    *   **Do NOT** re-output entities and relationships that were **correctly and fully** extracted in the last task.
-    *   If an entity or relationship was **missed** in the last task, extract and output it now.
-    *   If an entity or relationship was **incorrectly described** in the last task, re-output the *corrected and complete* version.
-2.  **Strict Adherence to JSON Format:** Your output MUST be a valid JSON object with `entities` and `relationships` arrays. Do not include any introductory or concluding remarks, explanations, markdown code fences, or any other text before or after the JSON.
-3.  **Output Language:** Ensure the output language is {language}. Proper nouns (e.g., personal names, place names, organization names) must be kept in their original language and not translated.
-4.  **If nothing was missed or needs correction**, output: `{{"entities": [], "relationships": []}}`
+1. **Focus on Corrections/Additions:**
+  - **Do NOT** re-output entities and relationships that were **correctly and fully** extracted in the last task.
+  - If an entity or relationship was **missed** in the last task, extract and output it now.
+  - If an entity or relationship was **incorrectly described** in the last task, re-output the *corrected and complete* version.
+2. **Strict Adherence to JSON Format:** Your output MUST be a valid JSON object with `entities` and `relationships` arrays. Do not include any introductory or concluding remarks, explanations, markdown code fences, or any other text before or after the JSON.
+3. **Output Language:** Ensure the output language is {language}. Proper nouns (e.g., personal names, place names, organization names) must be kept in their original language and not translated.
+4. **If nothing was missed or needs correction**, output: `{{"entities": [], "relationships": []}}`
 
 ---Output---
 """
@@ -318,19 +318,19 @@ It was a small transformation, barely perceptible, but one that Alex noted with 
 ---Output---
 {
   "entities": [
-    {"entity_name": "Alex", "entity_type": "Person", "entity_description": "Alex is a character who experiences frustration and is observant of the dynamics among other characters."},
-    {"entity_name": "Taylor", "entity_type": "Person", "entity_description": "Taylor is portrayed with authoritarian certainty and shows a moment of reverence towards a device, indicating a change in perspective."},
-    {"entity_name": "Jordan", "entity_type": "Person", "entity_description": "Jordan shares a commitment to discovery and has a significant interaction with Taylor regarding a device."},
-    {"entity_name": "Cruz", "entity_type": "Person", "entity_description": "Cruz is associated with a vision of control and order, influencing the dynamics among other characters."},
-    {"entity_name": "The Device", "entity_type": "Artifact", "entity_description": "The Device is central to the story, with potential game-changing implications, and is revered by Taylor."},
-    {"entity_name": "Discovery", "entity_type": "Concept", "entity_description": "Discovery represents the shared intellectual pursuit that unites Jordan and Alex in opposition to Cruz's controlling worldview."}
+    {"name": "Alex", "type": "Person", "description": "Alex is a character who experiences frustration and is observant of the dynamics among other characters."},
+    {"name": "Taylor", "type": "Person", "description": "Taylor is portrayed with authoritarian certainty and shows a moment of reverence towards a device, indicating a change in perspective."},
+    {"name": "Jordan", "type": "Person", "description": "Jordan shares a commitment to discovery and has a significant interaction with Taylor regarding a device."},
+    {"name": "Cruz", "type": "Person", "description": "Cruz is associated with a vision of control and order, influencing the dynamics among other characters."},
+    {"name": "The Device", "type": "Artifact", "description": "The Device is central to the story, with potential game-changing implications, and is revered by Taylor."},
+    {"name": "Discovery", "type": "Concept", "description": "Discovery represents the shared intellectual pursuit that unites Jordan and Alex in opposition to Cruz's controlling worldview."}
   ],
   "relationships": [
-    {"source_entity": "Alex", "target_entity": "Taylor", "relationship_keywords": "power dynamics, observation", "relationship_description": "Alex observes Taylor's authoritarian behavior and notes changes in Taylor's attitude toward the device."},
-    {"source_entity": "Alex", "target_entity": "Jordan", "relationship_keywords": "shared goals, rebellion", "relationship_description": "Alex and Jordan share a commitment to discovery, which contrasts with Cruz's vision."},
-    {"source_entity": "Taylor", "target_entity": "Jordan", "relationship_keywords": "conflict resolution, mutual respect", "relationship_description": "Taylor and Jordan interact directly regarding the device, leading to a moment of mutual respect and an uneasy truce."},
-    {"source_entity": "Jordan", "target_entity": "Cruz", "relationship_keywords": "ideological conflict, rebellion", "relationship_description": "Jordan's commitment to discovery is in rebellion against Cruz's vision of control and order."},
-    {"source_entity": "Taylor", "target_entity": "The Device", "relationship_keywords": "reverence, technological significance", "relationship_description": "Taylor shows reverence towards the device, indicating its importance and potential impact."}
+    {"source": "Alex", "target": "Taylor", "keywords": "power dynamics, observation", "description": "Alex observes Taylor's authoritarian behavior and notes changes in Taylor's attitude toward the device."},
+    {"source": "Alex", "target": "Jordan", "keywords": "shared goals, rebellion", "description": "Alex and Jordan share a commitment to discovery, which contrasts with Cruz's vision."},
+    {"source": "Taylor", "target": "Jordan", "keywords": "conflict resolution, mutual respect", "description": "Taylor and Jordan interact directly regarding the device, leading to a moment of mutual respect and an uneasy truce."},
+    {"source": "Jordan", "target": "Cruz", "keywords": "ideological conflict, rebellion", "description": "Jordan's commitment to discovery is in rebellion against Cruz's vision of control and order."},
+    {"source": "Taylor", "target": "The Device", "keywords": "reverence, technological significance", "description": "Taylor shows reverence towards the device, indicating its importance and potential impact."}
   ]
 }
 
@@ -354,20 +354,20 @@ The expedition was funded by the Global Wildlife Conservation Institute and prod
 ---Output---
 {
   "entities": [
-    {"entity_name": "Dr. Elena Vasquez", "entity_type": "Person", "entity_description": "Dr. Elena Vasquez is a field researcher who led an expedition to document orangutan population decline in Borneo."},
-    {"entity_name": "Borneo Rainforest", "entity_type": "Location", "entity_description": "The Borneo rainforest is the field site of the expedition and the primary habitat of the Bornean orangutan."},
-    {"entity_name": "Bornean Orangutan", "entity_type": "Creature", "entity_description": "The Bornean orangutan is a primate species whose population was found to have declined to fewer than 1,500 individuals in the surveyed region."},
-    {"entity_name": "Transect Sampling", "entity_type": "Method", "entity_description": "Transect sampling is a wildlife survey technique where researchers walk predetermined paths and record animal sightings within a fixed lateral distance."},
-    {"entity_name": "Global Wildlife Conservation Institute", "entity_type": "Organization", "entity_description": "The Global Wildlife Conservation Institute funded the expedition led by Dr. Vasquez."},
-    {"entity_name": "Primate Decline in Insular Southeast Asia", "entity_type": "Content", "entity_description": "A landmark research report produced by Vasquez's expedition documenting primate population decline in the region."},
-    {"entity_name": "Peat Soil", "entity_type": "NaturalObject", "entity_description": "Peat soil is a natural substrate in the Borneo rainforest that has been destroyed by palm oil plantation expansion."}
+    {"name": "Dr. Elena Vasquez", "type": "Person", "description": "Dr. Elena Vasquez is a field researcher who led an expedition to document orangutan population decline in Borneo."},
+    {"name": "Borneo Rainforest", "type": "Location", "description": "The Borneo rainforest is the field site of the expedition and the primary habitat of the Bornean orangutan."},
+    {"name": "Bornean Orangutan", "type": "Creature", "description": "The Bornean orangutan is a primate species whose population was found to have declined to fewer than 1,500 individuals in the surveyed region."},
+    {"name": "Transect Sampling", "type": "Method", "description": "Transect sampling is a wildlife survey technique where researchers walk predetermined paths and record animal sightings within a fixed lateral distance."},
+    {"name": "Global Wildlife Conservation Institute", "type": "Organization", "description": "The Global Wildlife Conservation Institute funded the expedition led by Dr. Vasquez."},
+    {"name": "Primate Decline in Insular Southeast Asia", "type": "Content", "description": "A landmark research report produced by Vasquez's expedition documenting primate population decline in the region."},
+    {"name": "Peat Soil", "type": "NaturalObject", "description": "Peat soil is a natural substrate in the Borneo rainforest that has been destroyed by palm oil plantation expansion."}
   ],
   "relationships": [
-    {"source_entity": "Dr. Elena Vasquez", "target_entity": "Bornean Orangutan", "relationship_keywords": "field research, population survey", "relationship_description": "Dr. Vasquez led the expedition that documented the population decline of the Bornean orangutan."},
-    {"source_entity": "Dr. Elena Vasquez", "target_entity": "Transect Sampling", "relationship_keywords": "methodology, research application", "relationship_description": "Dr. Vasquez's team used transect sampling to estimate the orangutan population."},
-    {"source_entity": "Global Wildlife Conservation Institute", "target_entity": "Dr. Elena Vasquez", "relationship_keywords": "funding, research support", "relationship_description": "The institute funded the expedition led by Dr. Vasquez."},
-    {"source_entity": "Dr. Elena Vasquez", "target_entity": "Primate Decline in Insular Southeast Asia", "relationship_keywords": "authorship, research output", "relationship_description": "Dr. Vasquez's expedition produced the landmark report on primate decline."},
-    {"source_entity": "Peat Soil", "target_entity": "Borneo Rainforest", "relationship_keywords": "habitat composition, ecological destruction", "relationship_description": "Peat soil destruction in the Borneo rainforest was caused by palm oil plantation expansion and is a primary driver of orangutan decline."}
+    {"source": "Dr. Elena Vasquez", "target": "Bornean Orangutan", "keywords": "field research, population survey", "description": "Dr. Vasquez led the expedition that documented the population decline of the Bornean orangutan."},
+    {"source": "Dr. Elena Vasquez", "target": "Transect Sampling", "keywords": "methodology, research application", "description": "Dr. Vasquez's team used transect sampling to estimate the orangutan population."},
+    {"source": "Global Wildlife Conservation Institute", "target": "Dr. Elena Vasquez", "keywords": "funding, research support", "description": "The institute funded the expedition led by Dr. Vasquez."},
+    {"source": "Dr. Elena Vasquez", "target": "Primate Decline in Insular Southeast Asia", "keywords": "authorship, research output", "description": "Dr. Vasquez's expedition produced the landmark report on primate decline."},
+    {"source": "Peat Soil", "target": "Borneo Rainforest", "keywords": "habitat composition, ecological destruction", "description": "Peat soil destruction in the Borneo rainforest was caused by palm oil plantation expansion and is a primary driver of orangutan decline."}
   ]
 }
 
@@ -391,22 +391,22 @@ NASBench-360 measures three key metrics: search efficiency (time-to-solution), m
 ---Output---
 {
   "entities": [
-    {"entity_name": "Advances in Neural Architecture Search", "entity_type": "Content", "entity_description": "A 2023 publication that synthesizes findings from over 200 papers and introduces the NASBench-360 benchmarking framework."},
-    {"entity_name": "NASBench-360", "entity_type": "Artifact", "entity_description": "NASBench-360 is a benchmarking framework introduced to evaluate neural architecture search algorithms across diverse task domains."},
-    {"entity_name": "Dr. Priya Nair", "entity_type": "Person", "entity_description": "Dr. Priya Nair is a co-author of the publication and a researcher at the DeepSystems Research Lab."},
-    {"entity_name": "Dr. Luca Ferretti", "entity_type": "Person", "entity_description": "Dr. Luca Ferretti is a co-author of the publication and a researcher at the DeepSystems Research Lab."},
-    {"entity_name": "DeepSystems Research Lab", "entity_type": "Organization", "entity_description": "The DeepSystems Research Lab is the institution where the co-authors of the publication are affiliated."},
-    {"entity_name": "Evolutionary Search", "entity_type": "Method", "entity_description": "Evolutionary search is a class of neural architecture search algorithms that outperformed gradient-based methods in the NASBench-360 evaluation."},
-    {"entity_name": "Gradient-Based Search", "entity_type": "Method", "entity_description": "Gradient-based search is a class of neural architecture search algorithms that was benchmarked against evolutionary search in NASBench-360."},
-    {"entity_name": "GPU-Hours", "entity_type": "Data", "entity_description": "GPU-hours is a metric used in NASBench-360 to measure the computational cost of neural architecture search algorithms."},
-    {"entity_name": "Neural Architecture Search", "entity_type": "Concept", "entity_description": "Neural architecture search is the automated process of designing optimal neural network architectures, the central topic of the publication."}
+    {"name": "Advances in Neural Architecture Search", "type": "Content", "description": "A 2023 publication that synthesizes findings from over 200 papers and introduces the NASBench-360 benchmarking framework."},
+    {"name": "NASBench-360", "type": "Artifact", "description": "NASBench-360 is a benchmarking framework introduced to evaluate neural architecture search algorithms across diverse task domains."},
+    {"name": "Dr. Priya Nair", "type": "Person", "description": "Dr. Priya Nair is a co-author of the publication and a researcher at the DeepSystems Research Lab."},
+    {"name": "Dr. Luca Ferretti", "type": "Person", "description": "Dr. Luca Ferretti is a co-author of the publication and a researcher at the DeepSystems Research Lab."},
+    {"name": "DeepSystems Research Lab", "type": "Organization", "description": "The DeepSystems Research Lab is the institution where the co-authors of the publication are affiliated."},
+    {"name": "Evolutionary Search", "type": "Method", "description": "Evolutionary search is a class of neural architecture search algorithms that outperformed gradient-based methods in the NASBench-360 evaluation."},
+    {"name": "Gradient-Based Search", "type": "Method", "description": "Gradient-based search is a class of neural architecture search algorithms that was benchmarked against evolutionary search in NASBench-360."},
+    {"name": "GPU-Hours", "type": "Data", "description": "GPU-hours is a metric used in NASBench-360 to measure the computational cost of neural architecture search algorithms."},
+    {"name": "Neural Architecture Search", "type": "Concept", "description": "Neural architecture search is the automated process of designing optimal neural network architectures, the central topic of the publication."}
   ],
   "relationships": [
-    {"source_entity": "Dr. Priya Nair", "target_entity": "Advances in Neural Architecture Search", "relationship_keywords": "authorship", "relationship_description": "Dr. Priya Nair co-authored the publication."},
-    {"source_entity": "Dr. Luca Ferretti", "target_entity": "Advances in Neural Architecture Search", "relationship_keywords": "authorship", "relationship_description": "Dr. Luca Ferretti co-authored the publication."},
-    {"source_entity": "Advances in Neural Architecture Search", "target_entity": "NASBench-360", "relationship_keywords": "introduces, benchmarking", "relationship_description": "The publication introduced the NASBench-360 framework."},
-    {"source_entity": "Evolutionary Search", "target_entity": "Gradient-Based Search", "relationship_keywords": "performance comparison", "relationship_description": "Evolutionary search outperformed gradient-based methods by 12% on accuracy and used 30% fewer GPU-hours on vision tasks."},
-    {"source_entity": "NASBench-360", "target_entity": "GPU-Hours", "relationship_keywords": "evaluation metric", "relationship_description": "NASBench-360 uses GPU-hours as one of three key metrics to measure computational cost."}
+    {"source": "Dr. Priya Nair", "target": "Advances in Neural Architecture Search", "keywords": "authorship", "description": "Dr. Priya Nair co-authored the publication."},
+    {"source": "Dr. Luca Ferretti", "target": "Advances in Neural Architecture Search", "keywords": "authorship", "description": "Dr. Luca Ferretti co-authored the publication."},
+    {"source": "Advances in Neural Architecture Search", "target": "NASBench-360", "keywords": "introduces, benchmarking", "description": "The publication introduced the NASBench-360 framework."},
+    {"source": "Evolutionary Search", "target": "Gradient-Based Search", "keywords": "performance comparison", "description": "Evolutionary search outperformed gradient-based methods by 12% on accuracy and used 30% fewer GPU-hours on vision tasks."},
+    {"source": "NASBench-360", "target": "GPU-Hours", "keywords": "evaluation metric", "description": "NASBench-360 uses GPU-hours as one of three key metrics to measure computational cost."}
   ]
 }
 

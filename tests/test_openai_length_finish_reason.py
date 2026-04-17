@@ -11,8 +11,8 @@ from lightrag.llm.openai import openai_complete_if_cache
 @pytest.mark.asyncio
 async def test_length_finish_reason_falls_back_to_raw_content():
     raw_json = (
-        '{"entities":[{"entity_name":"Alice","entity_type":"Person",'
-        '"entity_description":"Founder"}],"relationships":[]}'
+        '{"entities":[{"name":"Alice","type":"Person",'
+        '"description":"Founder"}],"relationships":[]}'
     )
     completion = SimpleNamespace(
         choices=[

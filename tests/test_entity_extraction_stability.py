@@ -68,22 +68,22 @@ _JSON_MODE_RESPONSE = json.dumps(
     {
         "entities": [
             {
-                "entity_name": "Alice",
-                "entity_type": "Person",
-                "entity_description": "Alice is the founder of Acme Corp.",
+                "name": "Alice",
+                "type": "Person",
+                "description": "Alice is the founder of Acme Corp.",
             },
             {
-                "entity_name": "Acme Corp",
-                "entity_type": "Organization",
-                "entity_description": "Acme Corp is a company founded by Alice.",
+                "name": "Acme Corp",
+                "type": "Organization",
+                "description": "Acme Corp is a company founded by Alice.",
             },
         ],
         "relationships": [
             {
-                "source_entity": "Alice",
-                "target_entity": "Acme Corp",
-                "relationship_keywords": "founded",
-                "relationship_description": "Alice founded Acme Corp.",
+                "source": "Alice",
+                "target": "Acme Corp",
+                "keywords": "founded",
+                "description": "Alice founded Acme Corp.",
             },
         ],
     }
@@ -141,12 +141,10 @@ def test_json_examples_define_all_relationship_endpoints_as_entities():
         else:
             output = example.split("---Output---", 1)[1].strip()
         parsed = json.loads(output)
-        entity_names = {
-            entity["entity_name"] for entity in parsed.get("entities", []) if entity
-        }
+        entity_names = {entity["name"] for entity in parsed.get("entities", []) if entity}
         for relationship in parsed.get("relationships", []):
-            assert relationship["source_entity"] in entity_names
-            assert relationship["target_entity"] in entity_names
+            assert relationship["source"] in entity_names
+            assert relationship["target"] in entity_names
 
 
 # ---------------------------------------------------------------------------
