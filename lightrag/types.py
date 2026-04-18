@@ -4,11 +4,6 @@ from pydantic import BaseModel, Field
 from typing import Any, Optional
 
 
-class GPTKeywordExtractionFormat(BaseModel):
-    high_level_keywords: list[str]
-    low_level_keywords: list[str]
-
-
 class ExtractedEntity(BaseModel):
     """A single entity extracted from text by the LLM."""
 
