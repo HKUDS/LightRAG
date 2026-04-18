@@ -15,6 +15,10 @@ DEFAULT_SUMMARY_LANGUAGE = "English"  # Default language for document processing
 DEFAULT_MAX_GLEANING = 1
 DEFAULT_ENTITY_NAME_MAX_LENGTH = 256
 
+# Per-response output limits for entity extraction prompts
+DEFAULT_MAX_EXTRACTION_RECORDS = 100
+DEFAULT_MAX_EXTRACTION_ENTITIES = 40
+
 # Number of description fragments to trigger LLM summary
 DEFAULT_FORCE_LLM_SUMMARY_ON_MERGE = 8
 # Max description token size to trigger LLM summary

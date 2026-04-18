@@ -41,6 +41,8 @@ from lightrag.prompt import PROMPTS
 from lightrag.exceptions import PipelineCancelledException
 from lightrag.constants import (
     DEFAULT_MAX_GLEANING,
+    DEFAULT_MAX_EXTRACTION_RECORDS,
+    DEFAULT_MAX_EXTRACTION_ENTITIES,
     DEFAULT_FORCE_LLM_SUMMARY_ON_MERGE,
     DEFAULT_TOP_K,
     DEFAULT_CHUNK_TOP_K,
@@ -442,6 +444,20 @@ class LightRAG:
         default=get_env_value("MAX_GLEANING", DEFAULT_MAX_GLEANING, int)
     )
     """Maximum number of entity extraction attempts for ambiguous content."""
+
+    entity_extract_max_records: int = field(
+        default=get_env_value(
+            "MAX_EXTRACTION_RECORDS", DEFAULT_MAX_EXTRACTION_RECORDS, int
+        )
+    )
+    """Per-response cap on total entity+relationship rows/records."""
+
+    entity_extract_max_entities: int = field(
+        default=get_env_value(
+            "MAX_EXTRACTION_ENTITIES", DEFAULT_MAX_EXTRACTION_ENTITIES, int
+        )
+    )
+    """Per-response cap on entity rows/objects."""
 
     force_llm_summary_on_merge: int = field(
         default=get_env_value(

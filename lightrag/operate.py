@@ -3268,6 +3268,9 @@ async def extract_entities(
         "entity_types_guidance", PROMPTS["default_entity_types_guidance"]
     )
 
+    max_total_records = global_config["entity_extract_max_records"]
+    max_entity_records = global_config["entity_extract_max_entities"]
+
     if use_json_extraction:
         # JSON mode: use JSON-specific prompts without delimiters
         examples = "\n".join(PROMPTS["entity_extraction_json_examples"])
@@ -3275,6 +3278,8 @@ async def extract_entities(
             entity_types_guidance=entity_types_guidance,
             examples=examples,
             language=language,
+            max_total_records=max_total_records,
+            max_entity_records=max_entity_records,
         )
     else:
         # Text mode: use traditional delimiter-based prompts
@@ -3294,6 +3299,8 @@ async def extract_entities(
             entity_types_guidance=entity_types_guidance,
             examples=examples,
             language=language,
+            max_total_records=max_total_records,
+            max_entity_records=max_entity_records,
         )
 
     processed_chunks = 0

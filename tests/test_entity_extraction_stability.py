@@ -36,6 +36,8 @@ def _make_global_config(
     return {
         "llm_model_func": AsyncMock(return_value=""),
         "entity_extract_max_gleaning": max_gleaning,
+        "entity_extract_max_records": 100,
+        "entity_extract_max_entities": 40,
         "addon_params": addon_params if addon_params is not None else {},
         "tokenizer": tokenizer,
         "max_extract_input_tokens": 20480,
@@ -225,6 +227,8 @@ async def test_text_mode_default_guidance_injected_into_prompt():
     assert PROMPTS["default_entity_types_guidance"] in system_prompt
     assert "must start with `relation`, never `entity`" in system_prompt
     assert "After the last entity row, switch prefixes to `relation`" in system_prompt
+    assert "Output at most 100 total rows" in system_prompt
+    assert "Output at most 40 entity rows" in system_prompt
 
 
 @pytest.mark.offline
@@ -261,6 +265,25 @@ def test_text_continue_prompt_requires_relation_prefix_for_corrections():
         "Any corrected relationship row must be emitted with the literal `relation` prefix"
         in prompt
     )
+    assert (
+        "output at most {max_total_records} total rows and at most {max_entity_records} entity rows"
+        in prompt
+    )
+
+
+@pytest.mark.offline
+def test_text_user_prompt_includes_quantity_limits():
+    from lightrag.prompt import PROMPTS
+
+    prompt = PROMPTS["entity_extraction_user_prompt"]
+    assert (
+        "output at most {max_total_records} total rows and at most {max_entity_records} entity rows"
+        in prompt
+    )
+    assert (
+        "If the row limit is reached, output `{completion_delimiter}` immediately"
+        in prompt
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -289,6 +312,8 @@ async def test_json_mode_default_guidance_injected_into_prompt():
     call_kwargs = llm_func.call_args_list[0][1]
     system_prompt = call_kwargs.get("system_prompt", "")
     assert PROMPTS["default_entity_types_guidance"] in system_prompt
+    assert "Output at most 100 total records" in system_prompt
+    assert "Output at most 40 entity objects" in system_prompt
 
 
 @pytest.mark.offline
@@ -335,6 +360,36 @@ async def test_json_mode_custom_guidance_overrides_default():
     call_kwargs = llm_func.call_args_list[0][1]
     system_prompt = call_kwargs.get("system_prompt", "")
     assert custom_guidance in system_prompt
+
+
+@pytest.mark.offline
+def test_json_user_prompt_includes_quantity_limits():
+    from lightrag.prompt import PROMPTS
+
+    prompt = PROMPTS["entity_extraction_json_user_prompt"]
+    assert (
+        "output at most {max_total_records} total records and at most {max_entity_records} entity objects"
+        in prompt
+    )
+    assert (
+        "Only output relationship objects whose `source` and `target` are both included"
+        in prompt
+    )
+
+
+@pytest.mark.offline
+def test_json_continue_prompt_includes_quantity_limits():
+    from lightrag.prompt import PROMPTS
+
+    prompt = PROMPTS["entity_continue_extraction_json_user_prompt"]
+    assert (
+        "output at most {max_total_records} total records and at most {max_entity_records} entity objects"
+        in prompt
+    )
+    assert (
+        "Only output relationship objects whose `source` and `target` are both included"
+        in prompt
+    )
 
 
 # ---------------------------------------------------------------------------
