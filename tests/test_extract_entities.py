@@ -26,6 +26,8 @@ def _make_global_config(
     return {
         "llm_model_func": AsyncMock(return_value=""),
         "entity_extract_max_gleaning": entity_extract_max_gleaning,
+        "entity_extract_max_records": 100,
+        "entity_extract_max_entities": 40,
         "addon_params": {},
         "tokenizer": tokenizer,
         "max_extract_input_tokens": max_extract_input_tokens,

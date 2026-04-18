@@ -66,6 +66,11 @@ You are a Knowledge Graph Specialist responsible for extracting entities and rel
 
 6. **Output Order & Deduplication:**
   - Output all extracted entities first, followed by all extracted relationships.
+  - Output at most {max_total_records} total rows across entities and relationships in this response.
+  - Output at most {max_entity_records} entity rows in this response.
+  - Output fewer rows if fewer high-value items are present. Do not try to fill the limit.
+  - Only output relationship rows whose source and target entities are both included in the selected entity rows for this response.
+  - If the limit is reached, stop adding new rows immediately and output `{completion_delimiter}`.
   - Treat all relationships as **undirected** unless explicitly stated otherwise. Swapping the source and target entities for an undirected relationship does not constitute a new relationship.
   - Avoid outputting duplicate relationships.
   - Within the list of relationships, output the relationships that are **most significant** to the core meaning of the input text first.
@@ -90,9 +95,10 @@ Extract entities and relationships from the `---Input Text---` session below.
 
 ---Instructions---
 1. **Strict Adherence to Format:** Strictly adhere to all format requirements for entity and relationship lists, including output order, field delimiters, and proper noun handling, as specified in the system prompt.
-2. **Output Content Only:** Output *only* the extracted list of entities and relationships. Do not include any introductory or concluding remarks, explanations, or additional text before or after the list.
-3. **Completion Signal:** Output `{completion_delimiter}` as the final line after all relevant entities and relationships have been extracted and presented.
-4. **Output Language:** Ensure the output language is {language}. Proper nouns (e.g., personal names, place names, organization names) must be kept in their original language and not translated.
+2. **Quantity Limits:** In this response, output at most {max_total_records} total rows and at most {max_entity_records} entity rows. Output fewer rows if fewer high-value items are present. Only output relationship rows whose source and target entities are both included in this response.
+3. **Output Content Only:** Output *only* the extracted list of entities and relationships. Do not include any introductory or concluding remarks, explanations, or additional text before or after the list.
+4. **Completion Signal:** Output `{completion_delimiter}` as the final line after all relevant entities and relationships have been extracted and presented. If the row limit is reached, output `{completion_delimiter}` immediately after the last allowed row.
+5. **Output Language:** Ensure the output language is {language}. Proper nouns (e.g., personal names, place names, organization names) must be kept in their original language and not translated.
 
 ---Input Text---
 ```
@@ -112,9 +118,10 @@ Based on the last extraction task, identify and extract any missed or incorrectl
   - If an entity or relationship was **missed** in the last task, extract and output it now according to the system format.
   - If an entity or relationship was **truncated, had missing fields, or was otherwise incorrectly formatted** in the last task, re-output the *corrected and complete* version in the specified format.
   - Any corrected relationship row must be emitted with the literal `relation` prefix, never `entity`.
-3. **Output Content Only:** Output *only* the extracted list of entities and relationships. Do not include any introductory or concluding remarks, explanations, or additional text before or after the list.
-4. **Completion Signal:** Output `{completion_delimiter}` as the final line after all relevant missing or corrected entities and relationships have been extracted and presented.
-5. **Output Language:** Ensure the output language is {language}. Proper nouns (e.g., personal names, place names, organization names) must be kept in their original language and not translated.
+3. **Quantity Limits:** In this response, output at most {max_total_records} total rows and at most {max_entity_records} entity rows. Output fewer rows if fewer high-value corrections or additions remain. A relationship row may reference entities that were already extracted correctly in the previous response. Do not re-output those entities unless they were missing or need correction.
+4. **Output Content Only:** Output *only* the extracted list of entities and relationships. Do not include any introductory or concluding remarks, explanations, or additional text before or after the list.
+5. **Completion Signal:** Output `{completion_delimiter}` as the final line after all relevant missing or corrected entities and relationships have been extracted and presented. If the row limit is reached, output `{completion_delimiter}` immediately after the last allowed row.
+6. **Output Language:** Ensure the output language is {language}. Proper nouns (e.g., personal names, place names, organization names) must be kept in their original language and not translated.
 
 ---Output---
 """
@@ -249,7 +256,11 @@ You are a Knowledge Graph Specialist responsible for extracting entities and rel
   - Treat all relationships as **undirected** unless explicitly stated otherwise. Swapping the source and target entities for an undirected relationship does not constitute a new relationship.
   - Avoid outputting duplicate relationships.
 
-4. **Prioritization:**
+4. **Output Limits & Prioritization:**
+  - Output at most {max_total_records} total records across `entities` and `relationships` in this response.
+  - Output at most {max_entity_records} entity objects in this response.
+  - Output fewer records if fewer high-value items are present. Do not try to fill the limit.
+  - Only output relationship objects whose `source` and `target` are both included in the selected `entities` list for this response.
   - Within the list of relationships, prioritize and output those relationships that are **most significant** to the core meaning of the input text first.
 
 5. **Context & Objectivity:**
@@ -259,6 +270,10 @@ You are a Knowledge Graph Specialist responsible for extracting entities and rel
 6. **Language & Proper Nouns:**
   - The entire output (entity names, keywords, and descriptions) must be written in `{language}`.
   - Proper nouns (e.g., personal names, place names, organization names) should be retained in their original language if a proper, widely accepted translation is not available or would cause ambiguity.
+
+7. **JSON Contract:**
+  - Return one valid JSON object with `entities` and `relationships` arrays only.
+  - If the record limit is reached, stop adding new objects immediately and return the JSON object with the allowed items only.
 
 ---Entity Types---
 {entity_types_guidance}
@@ -272,7 +287,8 @@ Extract entities and relationships from the `---Input Text---` session below.
 
 ---Instructions---
 1. **Strict Adherence to JSON Format:** Your output MUST be a valid JSON object with `entities` and `relationships` arrays. Do not include any introductory or concluding remarks, explanations, markdown code fences, or any other text before or after the JSON.
-2. **Output Language:** Ensure the output language is {language}. Proper nouns (e.g., personal names, place names, organization names) must be kept in their original language and not translated.
+2. **Quantity Limits:** In this response, output at most {max_total_records} total records and at most {max_entity_records} entity objects. Output fewer records if fewer high-value items are present. Only output relationship objects whose `source` and `target` are both included in this response.
+3. **Output Language:** Ensure the output language is {language}. Proper nouns (e.g., personal names, place names, organization names) must be kept in their original language and not translated.
 
 ---Entity Types---
 {entity_types_guidance}
@@ -294,8 +310,9 @@ Based on the last extraction task, identify and extract any **missed or incorrec
   - If an entity or relationship was **missed** in the last task, extract and output it now.
   - If an entity or relationship was **incorrectly described** in the last task, re-output the *corrected and complete* version.
 2. **Strict Adherence to JSON Format:** Your output MUST be a valid JSON object with `entities` and `relationships` arrays. Do not include any introductory or concluding remarks, explanations, markdown code fences, or any other text before or after the JSON.
-3. **Output Language:** Ensure the output language is {language}. Proper nouns (e.g., personal names, place names, organization names) must be kept in their original language and not translated.
-4. **If nothing was missed or needs correction**, output: `{{"entities": [], "relationships": []}}`
+3. **Quantity Limits:** In this response, output at most {max_total_records} total records and at most {max_entity_records} entity objects. Output fewer records if fewer high-value corrections or additions remain. A relationship object may reference entities already extracted correctly in the previous response. Do not repeat those entity objects unless they were missing or need correction.
+4. **Output Language:** Ensure the output language is {language}. Proper nouns (e.g., personal names, place names, organization names) must be kept in their original language and not translated.
+5. **If nothing was missed or needs correction**, output: `{{"entities": [], "relationships": []}}`
 
 ---Output---
 """
