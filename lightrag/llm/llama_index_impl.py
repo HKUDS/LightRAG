@@ -1,3 +1,5 @@
+import warnings
+
 import pipmaster as pm
 from llama_index.core.llms import (
     ChatMessage,
@@ -164,8 +166,23 @@ async def llama_index_complete(
     if history_messages is None:
         history_messages = []
 
-    kwargs.pop("keyword_extraction", None)
-    kwargs.pop("entity_extraction", None)
+    # LlamaIndex adapters have no JSON mode; drop response_format and warn
+    # when legacy boolean shim flags are set.
+    if kwargs.pop("keyword_extraction", False) or keyword_extraction:
+        warnings.warn(
+            "llama_index_complete(keyword_extraction=True) is deprecated; "
+            "pass response_format={'type': 'json_object'} instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+    if kwargs.pop("entity_extraction", False) or entity_extraction:
+        warnings.warn(
+            "llama_index_complete(entity_extraction=True) is deprecated; "
+            "pass response_format={'type': 'json_object'} instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+    kwargs.pop("response_format", None)
     result = await llama_index_complete_if_cache(
         kwargs.get("llm_instance"),
         prompt,

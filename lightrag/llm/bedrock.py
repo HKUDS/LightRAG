@@ -2,6 +2,7 @@ import copy
 import os
 import json
 import logging
+import warnings
 
 import pipmaster as pm  # Pipmaster for dynamic library install
 
@@ -159,9 +160,25 @@ async def bedrock_complete_if_cache(
             "enable_cot=True is not supported for Bedrock and will be ignored."
         )
 
-    # Bedrock Converse API has no JSON mode; drop the flag and rely on the
-    # prompt template plus downstream tolerant JSON parsing.
-    kwargs.pop("keyword_extraction", None)
+    # Bedrock Converse API has no JSON mode; drop legacy extraction flags and
+    # response_format below and rely on the prompt template plus downstream
+    # tolerant JSON parsing.
+    keyword_extraction = kwargs.pop("keyword_extraction", False)
+    entity_extraction = kwargs.pop("entity_extraction", False)
+    if keyword_extraction:
+        warnings.warn(
+            "bedrock_complete_if_cache(keyword_extraction=True) is deprecated; "
+            "pass response_format={'type': 'json_object'} instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+    if entity_extraction:
+        warnings.warn(
+            "bedrock_complete_if_cache(entity_extraction=True) is deprecated; "
+            "pass response_format={'type': 'json_object'} instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
 
     # Respect existing env; only set if a non-empty value is available
     access_key = os.environ.get("AWS_ACCESS_KEY_ID") or aws_access_key_id
@@ -348,9 +365,9 @@ async def bedrock_complete(
     entity_extraction=False,
     **kwargs,
 ) -> Union[str, AsyncIterator[str]]:
-    # entity_extraction is absorbed by the signature and intentionally unused:
-    # Bedrock Converse API has no JSON mode, so the flag has no effect here.
-    _ = entity_extraction
+    # Bedrock Converse API has no JSON mode; the shim booleans are absorbed
+    # and forwarded so bedrock_complete_if_cache can emit DeprecationWarnings
+    # with accurate stack frames.
     model_name = kwargs["hashing_kv"].global_config["llm_model_name"]
     result = await bedrock_complete_if_cache(
         model_name,
@@ -358,6 +375,7 @@ async def bedrock_complete(
         system_prompt=system_prompt,
         history_messages=history_messages,
         keyword_extraction=keyword_extraction,
+        entity_extraction=entity_extraction,
         **kwargs,
     )
     return result

@@ -1,4 +1,5 @@
 import sys
+import warnings
 
 if sys.version_info < (3, 9):
     from typing import AsyncIterator
@@ -52,6 +53,24 @@ async def lollms_model_if_cache(
         from lightrag.utils import logger
 
         logger.debug("enable_cot=True is not supported for lollms and will be ignored.")
+
+    # lollms has no JSON mode; drop response_format and warn when legacy
+    # boolean shim flags are set.
+    if kwargs.pop("keyword_extraction", False):
+        warnings.warn(
+            "lollms_model_if_cache(keyword_extraction=True) is deprecated; "
+            "pass response_format={'type': 'json_object'} instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+    if kwargs.pop("entity_extraction", False):
+        warnings.warn(
+            "lollms_model_if_cache(entity_extraction=True) is deprecated; "
+            "pass response_format={'type': 'json_object'} instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+    kwargs.pop("response_format", None)
 
     stream = True if kwargs.get("stream") else False
     api_key = kwargs.pop("api_key", None)
@@ -117,9 +136,12 @@ async def lollms_model_complete(
 ) -> Union[str, AsyncIterator[str]]:
     """Complete function for lollms model generation."""
 
-    # lollms has no JSON mode; keyword_extraction/entity_extraction flags are
-    # absorbed by the signature and ignored — the shared prompt template plus
-    # downstream tolerant JSON parsing handle structured output.
+    # Forward legacy extraction flags as kwargs so lollms_model_if_cache can
+    # emit a single DeprecationWarning with the correct stack frame.
+    if keyword_extraction:
+        kwargs.setdefault("keyword_extraction", True)
+    if entity_extraction:
+        kwargs.setdefault("entity_extraction", True)
     model_name = kwargs["hashing_kv"].global_config["llm_model_name"]
 
     return await lollms_model_if_cache(

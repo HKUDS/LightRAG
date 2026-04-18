@@ -333,7 +333,7 @@ async def test_json_mode_default_guidance_injected_into_prompt():
 @pytest.mark.offline
 @pytest.mark.asyncio
 async def test_json_mode_entity_extraction_kwarg_passed():
-    """JSON mode must pass entity_extraction=True to the LLM function."""
+    """JSON mode must pass response_format={'type':'json_object'} to the LLM function."""
     from lightrag.operate import extract_entities
 
     global_config = _make_global_config(use_json=True)
@@ -348,7 +348,8 @@ async def test_json_mode_entity_extraction_kwarg_passed():
 
     assert llm_func.await_count >= 1
     call_kwargs = llm_func.call_args_list[0][1]
-    assert call_kwargs.get("entity_extraction") is True
+    assert call_kwargs.get("response_format") == {"type": "json_object"}
+    assert call_kwargs.get("entity_extraction") is not True
 
 
 @pytest.mark.offline

@@ -1,4 +1,5 @@
 import sys
+import warnings
 from ..utils import verbose_debug
 
 if sys.version_info < (3, 9):
@@ -116,37 +117,38 @@ async def zhipu_complete(
     system_prompt=None,
     history_messages=[],
     keyword_extraction=False,
+    entity_extraction=False,
     enable_cot: bool = False,
     **kwargs,
 ):
-    # Pop keyword_extraction from kwargs to avoid passing it to zhipu_complete_if_cache
+    # Pop legacy extraction flags from kwargs to avoid passing them downstream.
     keyword_extraction = kwargs.pop("keyword_extraction", keyword_extraction)
+    entity_extraction = kwargs.pop("entity_extraction", entity_extraction)
 
-    if keyword_extraction:
-        # Add a system prompt to guide the model to return JSON format
-        extraction_prompt = """You are a helpful assistant that extracts keywords from text.
-        Please analyze the content and extract two types of keywords:
-        1. High-level keywords: Important concepts and main themes
-        2. Low-level keywords: Specific details and supporting elements
+    # Deprecation shims: map legacy boolean flags to response_format only when
+    # an explicit response_format was not supplied by the caller. The legacy
+    # path also forces enable_cot=False so that reasoning_content cannot
+    # corrupt the JSON payload expected by callers that were relying on it.
+    if kwargs.get("response_format") is None:
+        if entity_extraction:
+            warnings.warn(
+                "zhipu_complete(entity_extraction=True) is deprecated; "
+                "pass response_format={'type': 'json_object'} instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            kwargs["response_format"] = {"type": "json_object"}
+            enable_cot = False
+        elif keyword_extraction:
+            warnings.warn(
+                "zhipu_complete(keyword_extraction=True) is deprecated; "
+                "pass response_format={'type': 'json_object'} instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            kwargs["response_format"] = {"type": "json_object"}
+            enable_cot = False
 
-        Return your response in this exact JSON format:
-        {
-            "high_level_keywords": ["keyword1", "keyword2"],
-            "low_level_keywords": ["keyword1", "keyword2", "keyword3"]
-        }
-
-        Only return the JSON, no other text."""
-
-        # Combine with existing system prompt if any
-        if system_prompt:
-            system_prompt = f"{system_prompt}\n\n{extraction_prompt}"
-        else:
-            system_prompt = extraction_prompt
-        # Reasoning text would corrupt the JSON payload expected by callers.
-        enable_cot = False
-
-    # For both keyword extraction and normal completion, return raw text and let
-    # the caller handle tolerant JSON parsing if needed.
     return await zhipu_complete_if_cache(
         prompt=prompt,
         system_prompt=system_prompt,

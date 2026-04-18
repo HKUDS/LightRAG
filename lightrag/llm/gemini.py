@@ -10,6 +10,7 @@ implementation mirrors the OpenAI helpers while relying on the official
 from __future__ import annotations
 
 import os
+import warnings
 from collections.abc import AsyncIterator
 from functools import lru_cache
 from typing import Any
@@ -119,8 +120,7 @@ def _ensure_api_key(api_key: str | None) -> str:
 def _build_generation_config(
     base_config: dict[str, Any] | None,
     system_prompt: str | None,
-    keyword_extraction: bool,
-    entity_extraction: bool = False,
+    response_format: Any | None,
 ) -> types.GenerateContentConfig | None:
     config_data = dict(base_config or {})
 
@@ -132,10 +132,19 @@ def _build_generation_config(
         else:
             config_data["system_instruction"] = system_prompt
 
-    if (keyword_extraction or entity_extraction) and not config_data.get(
-        "response_mime_type"
-    ):
-        config_data["response_mime_type"] = "application/json"
+    # Translate response_format to Gemini's native generation config fields.
+    if response_format is not None:
+        is_json_object = (
+            isinstance(response_format, dict)
+            and response_format.get("type") == "json_object"
+        )
+        if is_json_object:
+            config_data.setdefault("response_mime_type", "application/json")
+        else:
+            # Typed/schema payload: request JSON output and attach the schema.
+            config_data.setdefault("response_mime_type", "application/json")
+            if "response_schema" not in config_data:
+                config_data["response_schema"] = response_format
 
     # Remove entries that are explicitly set to None to avoid type errors
     sanitized = {
@@ -228,6 +237,7 @@ async def gemini_complete_if_cache(
     api_key: str | None = None,
     token_tracker: Any | None = None,
     stream: bool | None = None,
+    response_format: Any | None = None,
     keyword_extraction: bool = False,
     entity_extraction: bool = False,
     generation_config: dict[str, Any] | None = None,
@@ -254,7 +264,12 @@ async def gemini_complete_if_cache(
         api_key: Optional Gemini API key. If None, uses environment variable.
         base_url: Optional custom API endpoint.
         generation_config: Optional generation configuration dict.
-        keyword_extraction: Whether to use JSON response format.
+        response_format: Structured output control. ``{"type": "json_object"}``
+            maps to ``response_mime_type="application/json"``; a typed/schema
+            payload additionally populates ``response_schema``. Deprecated
+            ``keyword_extraction``/``entity_extraction`` booleans are shimmed
+            to ``{"type": "json_object"}`` when no explicit ``response_format``
+            is supplied.
         token_tracker: Optional token usage tracker for monitoring API usage.
         stream: Whether to stream the response.
         hashing_kv: Storage interface (for interface parity with other bindings).
@@ -275,6 +290,26 @@ async def gemini_complete_if_cache(
     timeout_ms = timeout * 1000 if timeout else None
     client = _get_gemini_client(key, base_url, timeout_ms)
 
+    # Deprecation shims: map legacy boolean flags to response_format only when
+    # an explicit response_format was not supplied.
+    if response_format is None:
+        if entity_extraction:
+            warnings.warn(
+                "gemini_complete_if_cache(entity_extraction=True) is deprecated; "
+                "pass response_format={'type': 'json_object'} instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            response_format = {"type": "json_object"}
+        elif keyword_extraction:
+            warnings.warn(
+                "gemini_complete_if_cache(keyword_extraction=True) is deprecated; "
+                "pass response_format={'type': 'json_object'} instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            response_format = {"type": "json_object"}
+
     history_block = _format_history_messages(history_messages)
     prompt_sections = []
     if history_block:
@@ -285,8 +320,7 @@ async def gemini_complete_if_cache(
     config_obj = _build_generation_config(
         generation_config,
         system_prompt=system_prompt,
-        keyword_extraction=keyword_extraction,
-        entity_extraction=entity_extraction,
+        response_format=response_format,
     )
 
     request_kwargs: dict[str, Any] = {
@@ -444,10 +478,12 @@ async def gemini_model_complete(
     prompt: str,
     system_prompt: str | None = None,
     history_messages: list[dict[str, Any]] | None = None,
+    response_format: Any | None = None,
     keyword_extraction: bool = False,
     entity_extraction: bool = False,
     **kwargs: Any,
 ) -> str | AsyncIterator[str]:
+    # Accept legacy keyword if passed via kwargs to preserve backwards compat.
     entity_extraction = kwargs.pop("entity_extraction", entity_extraction)
     hashing_kv = kwargs.get("hashing_kv")
     model_name = None
@@ -463,6 +499,7 @@ async def gemini_model_complete(
         prompt,
         system_prompt=system_prompt,
         history_messages=history_messages,
+        response_format=response_format,
         keyword_extraction=keyword_extraction,
         entity_extraction=entity_extraction,
         **kwargs,

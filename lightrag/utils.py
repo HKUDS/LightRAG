@@ -14,6 +14,7 @@ import os
 import re
 import time
 import uuid
+import warnings
 from dataclasses import dataclass
 from datetime import datetime
 from functools import wraps
@@ -2040,6 +2041,7 @@ async def use_llm_func_with_cache(
     cache_type: str = "extract",
     chunk_id: str | None = None,
     cache_keys_collector: list = None,
+    response_format: Any | None = None,
     entity_extraction: bool = False,
 ) -> tuple[str, int]:
     """Call LLM function with cache support and text sanitization
@@ -2059,15 +2061,30 @@ async def use_llm_func_with_cache(
         chunk_id: Chunk identifier to store in cache
         text_chunks_storage: Text chunks storage to update llm_cache_list
         cache_keys_collector: Optional list to collect cache keys for batch processing
-        entity_extraction: Whether to enable JSON structured output for entity extraction.
-            When True, passes entity_extraction=True to the LLM provider to trigger
-            native structured output (e.g., response_format for OpenAI, format for Ollama).
+        response_format: Structured output control forwarded to the LLM provider.
+            Providers translate this to their native structured-output surface
+            (OpenAI response_format, Ollama format, Gemini response_mime_type/schema).
+            ``{"type": "json_object"}`` requests JSON output; typed/schema payloads
+            trigger schema-constrained output where supported; ``None`` leaves
+            output unconstrained. Providers that do not support structured output
+            safely strip this argument.
+        entity_extraction: Deprecated. When True and ``response_format`` is not
+            provided, maps to ``{"type": "json_object"}``. Prefer passing
+            ``response_format`` directly.
 
     Returns:
         tuple[str, int]: (LLM response text, timestamp)
             - For cache hits: (content, cache_create_time)
             - For cache misses: (content, current_timestamp)
     """
+    if entity_extraction and response_format is None:
+        warnings.warn(
+            "use_llm_func_with_cache(entity_extraction=True) is deprecated; "
+            "pass response_format={'type': 'json_object'} instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        response_format = {"type": "json_object"}
     # Sanitize input text to prevent UTF-8 encoding errors for all LLM providers
     safe_user_prompt = sanitize_text_for_encoding(user_prompt)
     safe_system_prompt = (
@@ -2126,8 +2143,8 @@ async def use_llm_func_with_cache(
             kwargs["history_messages"] = safe_history_messages
         if max_tokens is not None:
             kwargs["max_tokens"] = max_tokens
-        if entity_extraction:
-            kwargs["entity_extraction"] = True
+        if response_format is not None:
+            kwargs["response_format"] = response_format
 
         res: str = await use_llm_func(
             safe_user_prompt, system_prompt=safe_system_prompt, **kwargs
@@ -2162,8 +2179,8 @@ async def use_llm_func_with_cache(
         kwargs["history_messages"] = safe_history_messages
     if max_tokens is not None:
         kwargs["max_tokens"] = max_tokens
-    if entity_extraction:
-        kwargs["entity_extraction"] = True
+    if response_format is not None:
+        kwargs["response_format"] = response_format
 
     try:
         res = await use_llm_func(

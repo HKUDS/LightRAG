@@ -2,6 +2,7 @@ from ..utils import verbose_debug, VERBOSE_DEBUG
 import sys
 import os
 import logging
+import warnings
 import numpy as np
 from typing import Any, Union, AsyncIterator
 import pipmaster as pm  # Pipmaster for dynamic library install
@@ -83,8 +84,23 @@ async def anthropic_complete_if_cache(
         logging.getLogger("anthropic").setLevel(logging.INFO)
 
     kwargs.pop("hashing_kv", None)
-    kwargs.pop("keyword_extraction", None)
-    kwargs.pop("entity_extraction", None)
+    # Anthropic Messages API has no JSON mode; drop legacy flags and
+    # response_format. Emit DeprecationWarning when the booleans were set.
+    if kwargs.pop("keyword_extraction", False):
+        warnings.warn(
+            "anthropic_complete_if_cache(keyword_extraction=True) is deprecated; "
+            "pass response_format={'type': 'json_object'} instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+    if kwargs.pop("entity_extraction", False):
+        warnings.warn(
+            "anthropic_complete_if_cache(entity_extraction=True) is deprecated; "
+            "pass response_format={'type': 'json_object'} instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+    kwargs.pop("response_format", None)
     timeout = kwargs.pop("timeout", None)
 
     anthropic_async_client = (
