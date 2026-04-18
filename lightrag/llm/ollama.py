@@ -51,6 +51,29 @@ def _coerce_host_for_cloud_model(host: Optional[str], model: object) -> Optional
     return host
 
 
+def _normalize_ollama_response_format(kwargs: dict) -> None:
+    """Translate OpenAI-style response_format into Ollama's native format field.
+
+    Precedence: an explicit ``format`` value (Ollama's native field) wins over
+    ``response_format`` — if ``format`` is already set, ``response_format`` is
+    dropped silently. Otherwise, ``{"type": "json_object"}`` maps to
+    ``format="json"`` and any other payload is passed through unchanged so
+    callers can supply JSON schemas directly.
+    """
+
+    response_format = kwargs.pop("response_format", None)
+    if kwargs.get("format") is not None or response_format is None:
+        return
+
+    if isinstance(response_format, dict):
+        if response_format.get("type") == "json_object":
+            kwargs["format"] = "json"
+            return
+
+    # Fall back to passing through schema-like payloads for native Ollama support.
+    kwargs["format"] = response_format
+
+
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=4, max=10),
@@ -71,7 +94,7 @@ async def _ollama_model_if_cache(
     stream = True if kwargs.get("stream") else False
 
     kwargs.pop("max_tokens", None)
-    # kwargs.pop("response_format", None) # allow json
+    _normalize_ollama_response_format(kwargs)
     host = kwargs.pop("host", None)
     timeout = kwargs.pop("timeout", None)
     if timeout == 0:
@@ -159,10 +182,8 @@ async def ollama_model_complete(
     entity_extraction=False,
     **kwargs,
 ) -> Union[str, AsyncIterator[str]]:
-    keyword_extraction = kwargs.pop("keyword_extraction", None)
-    entity_extraction = kwargs.pop("entity_extraction", entity_extraction)
     if keyword_extraction or entity_extraction:
-        kwargs["format"] = "json"
+        kwargs["response_format"] = {"type": "json_object"}
     model_name = kwargs["hashing_kv"].global_config["llm_model_name"]
     return await _ollama_model_if_cache(
         model_name,

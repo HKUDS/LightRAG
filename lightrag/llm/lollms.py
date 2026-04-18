@@ -117,18 +117,10 @@ async def lollms_model_complete(
 ) -> Union[str, AsyncIterator[str]]:
     """Complete function for lollms model generation."""
 
-    # Extract and remove keyword_extraction and entity_extraction from kwargs if present
-    keyword_extraction = kwargs.pop("keyword_extraction", None)
-    kwargs.pop("entity_extraction", None)
-
-    # Get model name from config
+    # lollms has no JSON mode; keyword_extraction/entity_extraction flags are
+    # absorbed by the signature and ignored — the shared prompt template plus
+    # downstream tolerant JSON parsing handle structured output.
     model_name = kwargs["hashing_kv"].global_config["llm_model_name"]
-
-    # If keyword extraction is needed, we might need to modify the prompt
-    # or add specific parameters for JSON output (if lollms supports it)
-    if keyword_extraction:
-        # Note: You might need to adjust this based on how lollms handles structured output
-        pass
 
     return await lollms_model_if_cache(
         model_name,

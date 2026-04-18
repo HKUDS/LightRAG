@@ -1,6 +1,4 @@
 import sys
-import re
-import json
 from ..utils import verbose_debug
 
 if sys.version_info < (3, 9):
@@ -29,8 +27,6 @@ from lightrag.utils import (
     wrap_embedding_func_with_attrs,
     logger,
 )
-
-from lightrag.types import GPTKeywordExtractionFormat
 
 import numpy as np
 from typing import Union, List, Optional, Dict
@@ -146,57 +142,18 @@ async def zhipu_complete(
             system_prompt = f"{system_prompt}\n\n{extraction_prompt}"
         else:
             system_prompt = extraction_prompt
+        # Reasoning text would corrupt the JSON payload expected by callers.
+        enable_cot = False
 
-        try:
-            response = await zhipu_complete_if_cache(
-                prompt=prompt,
-                system_prompt=system_prompt,
-                history_messages=history_messages,
-                enable_cot=enable_cot,
-                **kwargs,
-            )
-
-            # Try to parse as JSON
-            try:
-                data = json.loads(response)
-                return GPTKeywordExtractionFormat(
-                    high_level_keywords=data.get("high_level_keywords", []),
-                    low_level_keywords=data.get("low_level_keywords", []),
-                )
-            except json.JSONDecodeError:
-                # If direct JSON parsing fails, try to extract JSON from text
-                match = re.search(r"\{[\s\S]*\}", response)
-                if match:
-                    try:
-                        data = json.loads(match.group())
-                        return GPTKeywordExtractionFormat(
-                            high_level_keywords=data.get("high_level_keywords", []),
-                            low_level_keywords=data.get("low_level_keywords", []),
-                        )
-                    except json.JSONDecodeError:
-                        pass
-
-                # If all parsing fails, log warning and return empty format
-                logger.warning(
-                    f"Failed to parse keyword extraction response: {response}"
-                )
-                return GPTKeywordExtractionFormat(
-                    high_level_keywords=[], low_level_keywords=[]
-                )
-        except Exception as e:
-            logger.error(f"Error during keyword extraction: {str(e)}")
-            return GPTKeywordExtractionFormat(
-                high_level_keywords=[], low_level_keywords=[]
-            )
-    else:
-        # For non-keyword-extraction, just return the raw response string
-        return await zhipu_complete_if_cache(
-            prompt=prompt,
-            system_prompt=system_prompt,
-            history_messages=history_messages,
-            enable_cot=enable_cot,
-            **kwargs,
-        )
+    # For both keyword extraction and normal completion, return raw text and let
+    # the caller handle tolerant JSON parsing if needed.
+    return await zhipu_complete_if_cache(
+        prompt=prompt,
+        system_prompt=system_prompt,
+        history_messages=history_messages,
+        enable_cot=enable_cot,
+        **kwargs,
+    )
 
 
 @wrap_embedding_func_with_attrs(

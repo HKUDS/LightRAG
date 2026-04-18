@@ -4,6 +4,7 @@ from pathlib import Path
 
 import asyncio
 import json
+import re
 import json_repair
 from typing import Any, AsyncIterator, overload, Literal
 from collections import Counter, defaultdict
@@ -3782,9 +3783,95 @@ async def get_keywords_from_query(
     if query_param.hl_keywords or query_param.ll_keywords:
         return query_param.hl_keywords, query_param.ll_keywords
 
-    # Extract keywords using extract_keywords_only function which already supports conversation history
+    # Extract keywords directly from the current query text.
     hl_keywords, ll_keywords = await extract_keywords_only(
         query, query_param, global_config, hashing_kv
+    )
+    return hl_keywords, ll_keywords
+
+
+def _normalize_keyword_list(raw_values: Any, field_name: str) -> list[str]:
+    """Normalize keyword payloads into a clean list of strings.
+
+    When the field is a plain string (e.g. LLM returned CSV), split on
+    newlines/commas/semicolons. List-shaped payloads are preserved per-item so
+    multi-word phrases that legitimately contain commas are not broken apart.
+    """
+
+    if raw_values is None:
+        return []
+
+    if isinstance(raw_values, str):
+        raw_values = [
+            part.strip()
+            for part in re.split(r"[\n,;]+", raw_values)
+            if part and part.strip()
+        ]
+
+    if not isinstance(raw_values, list):
+        logger.warning(
+            "Keyword extraction field '%s' is not a list: %r",
+            field_name,
+            raw_values,
+        )
+        return []
+
+    normalized: list[str] = []
+    for idx, value in enumerate(raw_values):
+        if isinstance(value, str):
+            cleaned = value.strip()
+            if cleaned:
+                normalized.append(cleaned)
+            continue
+
+        logger.warning(
+            "Keyword extraction field '%s' contains non-string element at index %d: %r",
+            field_name,
+            idx,
+            value,
+        )
+
+    return normalized
+
+
+def _parse_keywords_payload(result: Any) -> tuple[list[str], list[str]]:
+    """Parse keyword extraction responses from heterogeneous provider outputs."""
+
+    payload: Any
+
+    if result is None:
+        return [], []
+
+    if hasattr(result, "model_dump") and callable(result.model_dump):
+        payload = result.model_dump()
+    elif isinstance(result, dict):
+        payload = result
+    elif isinstance(result, str):
+        cleaned_result = remove_think_tags(result)
+        try:
+            payload = json_repair.loads(cleaned_result)
+        except Exception as e:
+            logger.error(f"JSON parsing error: {e}; response: {cleaned_result}")
+            return [], []
+    else:
+        logger.error(
+            "Unsupported keyword extraction response type: %s",
+            type(result).__name__,
+        )
+        return [], []
+
+    if not isinstance(payload, dict):
+        logger.error(
+            "Keyword extraction payload is not a JSON object: %s",
+            type(payload).__name__,
+        )
+        return [], []
+
+    hl_keywords = _normalize_keyword_list(
+        payload.get("high_level_keywords"), "high_level_keywords"
+    )
+    ll_keywords = _normalize_keyword_list(
+        payload.get("low_level_keywords"), "low_level_keywords"
     )
     return hl_keywords, ll_keywords
 
@@ -3817,12 +3904,10 @@ async def extract_keywords_only(
     )
     if cached_result is not None:
         cached_response, _ = cached_result  # Extract content, ignore timestamp
-        try:
-            keywords_data = json_repair.loads(cached_response)
-            return keywords_data.get("high_level_keywords", []), keywords_data.get(
-                "low_level_keywords", []
-            )
-        except (json.JSONDecodeError, KeyError):
+        hl_keywords, ll_keywords = _parse_keywords_payload(cached_response)
+        if hl_keywords or ll_keywords:
+            return hl_keywords, ll_keywords
+        else:
             logger.warning(
                 "Invalid cache format for keywords, proceeding with extraction"
             )
@@ -3853,20 +3938,8 @@ async def extract_keywords_only(
 
     result = await use_model_func(kw_prompt, keyword_extraction=True)
 
-    # 5. Parse out JSON from the LLM response
-    result = remove_think_tags(result)
-    try:
-        keywords_data = json_repair.loads(result)
-        if not keywords_data:
-            logger.error("No JSON-like structure found in the LLM respond.")
-            return [], []
-    except json.JSONDecodeError as e:
-        logger.error(f"JSON parsing error: {e}")
-        logger.error(f"LLM respond: {result}")
-        return [], []
-
-    hl_keywords = keywords_data.get("high_level_keywords", [])
-    ll_keywords = keywords_data.get("low_level_keywords", [])
+    # 5. Parse out JSON from the LLM response with tolerant provider normalization
+    hl_keywords, ll_keywords = _parse_keywords_payload(result)
 
     # 6. Cache only the processed keywords with cache type
     if hl_keywords or ll_keywords:
@@ -3874,7 +3947,7 @@ async def extract_keywords_only(
             "high_level_keywords": hl_keywords,
             "low_level_keywords": ll_keywords,
         }
-        if hashing_kv.global_config.get("enable_llm_cache"):
+        if hashing_kv and hashing_kv.global_config.get("enable_llm_cache"):
             # Save to cache with query parameters
             queryparam_dict = {
                 "mode": param.mode,
