@@ -608,6 +608,32 @@ def compute_args_hash(*args: Any) -> str:
         return md5(safe_bytes).hexdigest()
 
 
+def _serialize_cache_variant(value: Any) -> str:
+    """Serialize cache-affecting options to a stable string for hash inputs."""
+    if value is None:
+        return ""
+
+    if hasattr(value, "model_dump") and callable(value.model_dump):
+        try:
+            value = value.model_dump(mode="json")
+        except TypeError:
+            value = value.model_dump()
+
+    if hasattr(value, "model_json_schema") and callable(value.model_json_schema):
+        value = value.model_json_schema()
+
+    try:
+        return json.dumps(
+            value,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=repr,
+        )
+    except (TypeError, ValueError):
+        return repr(value)
+
+
 def compute_mdhash_id(content: str, prefix: str = "") -> str:
     """
     Compute a unique ID for a given content string.
@@ -2114,7 +2140,10 @@ async def use_llm_func_with_cache(
             prompt_parts.append(history)
         _prompt = "\n".join(prompt_parts)
 
-        arg_hash = compute_args_hash(_prompt)
+        response_format_key = _serialize_cache_variant(response_format)
+        arg_hash = compute_args_hash(
+            _prompt, "\n<response_format>\n", response_format_key
+        )
         # Generate cache key for this LLM call
         cache_key = generate_cache_key("default", cache_type, arg_hash)
 

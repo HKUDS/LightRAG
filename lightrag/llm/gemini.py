@@ -143,8 +143,8 @@ def _build_generation_config(
         else:
             # Typed/schema payload: request JSON output and attach the schema.
             config_data.setdefault("response_mime_type", "application/json")
-            if "response_schema" not in config_data:
-                config_data["response_schema"] = response_format
+            if "response_json_schema" not in config_data:
+                config_data["response_json_schema"] = response_format
 
     # Remove entries that are explicitly set to None to avoid type errors
     sanitized = {
@@ -255,6 +255,9 @@ async def gemini_complete_if_cache(
       to Gemini's native generation config fields.
     - ``response_format={"type": "json_object"}`` maps to
       ``response_mime_type="application/json"``.
+    - Schema-like ``response_format`` payloads map to
+      ``response_mime_type="application/json"`` plus
+      ``response_json_schema=<schema>``.
     - Deprecated ``keyword_extraction`` and ``entity_extraction`` booleans are
       compatibility shims; when no explicit ``response_format`` is supplied,
       they are mapped to ``{"type": "json_object"}``.
@@ -275,7 +278,8 @@ async def gemini_complete_if_cache(
         generation_config: Optional generation configuration dict.
         response_format: OpenAI-style structured output control translated to
             Gemini generation config. ``{"type": "json_object"}`` maps to
-            ``response_mime_type="application/json"``.
+            ``response_mime_type="application/json"``; schema-like payloads
+            map to ``response_json_schema``.
         token_tracker: Optional token usage tracker for monitoring API usage.
         stream: Whether to stream the response.
         hashing_kv: Storage interface (for interface parity with other bindings).

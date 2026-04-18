@@ -230,9 +230,11 @@ async def openai_complete_if_cache(
     Structured output design note:
     - LightRAG only uses OpenAI JSON-object mode via
       ``response_format={"type": "json_object"}``.
-    - This project does not use OpenAI ``json_schema`` mode, Pydantic-based
-      typed structured output, or other ``parse()``-oriented response formats
-      in this path.
+    - Other ``response_format`` payloads, including OpenAI ``json_schema``,
+      are forwarded as-is to ``chat.completions.create()`` when supplied.
+    - This path does not use ``parse()`` or Pydantic-based typed structured
+      output; structured responses are returned as raw text from
+      ``message.content`` and are not locally schema-validated here.
     - ``keyword_extraction`` is deprecated; prefer
       ``response_format={"type": "json_object"}`` instead.
 
@@ -281,8 +283,11 @@ async def openai_complete_if_cache(
             environment variable.
         **kwargs: Additional keyword arguments to pass to the OpenAI API.
             Special kwargs:
-            - response_format: Structured output control. LightRAG only relies on
-                ``{"type": "json_object"}`` in this code path.
+            - response_format: Structured output control forwarded to the OpenAI
+                chat completions API. LightRAG primarily relies on
+                ``{"type": "json_object"}`` here; schema-like payloads are
+                passed through as-is, but this path does not use ``parse()`` or
+                typed response deserialization.
             - openai_client_configs: Dict of configuration options for the AsyncOpenAI client.
                 These will be passed to the client constructor but will be overridden by
                 explicit parameters (api_key, base_url). Supports proxy configuration,
