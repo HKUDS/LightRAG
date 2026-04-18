@@ -195,5 +195,4 @@ async def test_zhipu_keyword_extraction_ignores_reasoning_content(monkeypatch):
         enable_cot=True,
     )
 
-    assert result.high_level_keywords == ["AI"]
-    assert result.low_level_keywords == ["RAG"]
+    assert result == '{"high_level_keywords": ["AI"], "low_level_keywords": ["RAG"]}'

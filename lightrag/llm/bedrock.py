@@ -158,6 +158,11 @@ async def bedrock_complete_if_cache(
         logging.debug(
             "enable_cot=True is not supported for Bedrock and will be ignored."
         )
+
+    # Bedrock Converse API has no JSON mode; drop the flag and rely on the
+    # prompt template plus downstream tolerant JSON parsing.
+    kwargs.pop("keyword_extraction", None)
+
     # Respect existing env; only set if a non-empty value is available
     access_key = os.environ.get("AWS_ACCESS_KEY_ID") or aws_access_key_id
     secret_key = os.environ.get("AWS_SECRET_ACCESS_KEY") or aws_secret_access_key
@@ -183,7 +188,6 @@ async def bedrock_complete_if_cache(
         "logprobs",
         "top_logprobs",
         "max_completion_tokens",
-        "response_format",
     ]:
         kwargs.pop(k, None)
     # Fix message history format
@@ -344,14 +348,16 @@ async def bedrock_complete(
     entity_extraction=False,
     **kwargs,
 ) -> Union[str, AsyncIterator[str]]:
-    kwargs.pop("keyword_extraction", None)
-    kwargs.pop("entity_extraction", None)
+    # entity_extraction is absorbed by the signature and intentionally unused:
+    # Bedrock Converse API has no JSON mode, so the flag has no effect here.
+    _ = entity_extraction
     model_name = kwargs["hashing_kv"].global_config["llm_model_name"]
     result = await bedrock_complete_if_cache(
         model_name,
         prompt,
         system_prompt=system_prompt,
         history_messages=history_messages,
+        keyword_extraction=keyword_extraction,
         **kwargs,
     )
     return result

@@ -630,11 +630,17 @@ Given a user query, your task is to extract two distinct types of keywords:
 2. **low_level_keywords**: for specific entities or details, identifying the specific entities, proper nouns, technical jargon, product names, or concrete items.
 
 ---Instructions & Constraints---
-1. **Output Format**: Your output MUST be a valid JSON object and nothing else. Do not include any explanatory text, markdown code fences (like ```json), or any other text before or after the JSON. It will be parsed directly by a JSON parser.
-2. **Source of Truth**: All keywords must be explicitly derived from the user query, with both high-level and low-level keyword categories are required to contain content.
-3. **Concise & Meaningful**: Keywords should be concise words or meaningful phrases. Prioritize multi-word phrases when they represent a single concept. For example, from "latest financial report of Apple Inc.", you should extract "latest financial report" and "Apple Inc." rather than "latest", "financial", "report", and "Apple".
-4. **Handle Edge Cases**: For queries that are too simple, vague, or nonsensical (e.g., "hello", "ok", "asdfghjkl"), you must return a JSON object with empty lists for both keyword types.
-5. **Language**: All extracted keywords MUST be in {language}. Proper nouns (e.g., personal names, place names, organization names) should be kept in their original language.
+1. **Output Format**: Your output MUST be a valid JSON object and nothing else. Do not include any explanatory text, markdown code fences (like ```json), comments, or any other text before or after the JSON.
+2. **Exact JSON Shape**: The JSON object must contain exactly these two keys:
+   - `"high_level_keywords"`: an array of strings
+   - `"low_level_keywords"`: an array of strings
+3. **JSON Boundary**: The first character of your response must be `{{` and the last character must be `}}`.
+4. **Source of Truth**: All keywords must be explicitly derived from the user query. Do not infer unsupported facts. Do not invent entities, products, organizations, dates, or technical terms that are not grounded in the query.
+5. **Concise & Meaningful**: Keywords should be concise words or meaningful phrases. Prioritize multi-word phrases when they represent a single concept. For example, from "latest financial report of Apple Inc.", extract "latest financial report" and "Apple Inc." rather than "latest", "financial", "report", and "Apple".
+6. **Handle Edge Cases**: For queries that are too simple, vague, or nonsensical (e.g., "hello", "ok", "asdfghjkl"), return:
+   `{{"high_level_keywords": [], "low_level_keywords": []}}`
+7. **No Duplicates**: Do not repeat the same keyword within a list. Keep the lists short and high-signal.
+8. **Language**: All extracted keywords MUST be in {language}. Proper nouns (e.g., personal names, place names, organization names) should be kept in their original language.
 
 ---Examples---
 {examples}

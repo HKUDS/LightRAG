@@ -102,6 +102,7 @@ async def lmdeploy_model_if_cache(
     except Exception:
         raise ImportError("Please install lmdeploy before initialize lmdeploy backend.")
     kwargs.pop("hashing_kv", None)
+    kwargs.pop("keyword_extraction", None)
     kwargs.pop("response_format", None)
     kwargs.pop("entity_extraction", None)
     max_new_tokens = kwargs.pop("max_tokens", 512)
