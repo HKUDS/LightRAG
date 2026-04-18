@@ -3276,7 +3276,6 @@ async def extract_entities(
             examples=examples,
             language=language,
         )
-        logger.info("Entity extraction using JSON structured output mode")
     else:
         # Text mode: use traditional delimiter-based prompts
         examples = "\n".join(PROMPTS["entity_extraction_examples"])
