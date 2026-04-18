@@ -48,7 +48,14 @@ async def lollms_model_if_cache(
     base_url="http://localhost:9600",
     **kwargs,
 ) -> Union[str, AsyncIterator[str]]:
-    """Client implementation for lollms generation."""
+    """Client implementation for lollms generation.
+
+    Structured output note:
+    - This adapter does not support OpenAI-style ``response_format`` JSON mode.
+    - If callers pass ``response_format``, it is stripped before the request.
+    - Deprecated ``keyword_extraction`` and ``entity_extraction`` booleans are
+      accepted only as compatibility shims; they emit warnings and are ignored.
+    """
     if enable_cot:
         from lightrag.utils import logger
 

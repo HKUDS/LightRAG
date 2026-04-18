@@ -131,6 +131,14 @@ async def hf_model_complete(
     enable_cot: bool = False,
     **kwargs,
 ) -> str:
+    """Run local Hugging Face inference with LightRAG-compatible shims.
+
+    Structured output note:
+    - This adapter does not support OpenAI-style ``response_format`` JSON mode.
+    - If callers pass ``response_format``, it is stripped before generation.
+    - Deprecated ``keyword_extraction`` and ``entity_extraction`` booleans are
+      accepted only as compatibility shims; they emit warnings and are ignored.
+    """
     # HuggingFace local inference has no JSON mode; drop response_format and
     # warn when legacy shim flags are set.
     if kwargs.pop("keyword_extraction", False) or keyword_extraction:

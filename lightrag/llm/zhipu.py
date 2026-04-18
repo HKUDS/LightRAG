@@ -60,6 +60,8 @@ async def zhipu_complete_if_cache(
     - `enable_cot`: LightRAG-only formatting switch. When True and the API
       returns `reasoning_content`, it is preserved in the final string as
       `<think>...</think>`.
+    - `response_format`: forwarded as Zhipu's OpenAI-compatible structured
+      output parameter when supplied by callers.
     """
     # dynamically load ZhipuAI
     try:
@@ -121,6 +123,15 @@ async def zhipu_complete(
     enable_cot: bool = False,
     **kwargs,
 ):
+    """Zhipu completion wrapper with LightRAG structured-output shims.
+
+    Structured output note:
+    - This adapter accepts OpenAI-style ``response_format`` and forwards it to
+      Zhipu's compatible chat-completions API.
+    - Deprecated ``keyword_extraction`` and ``entity_extraction`` booleans are
+      compatibility shims; when no explicit ``response_format`` is supplied,
+      they are mapped to ``{"type": "json_object"}``.
+    """
     # Pop legacy extraction flags from kwargs to avoid passing them downstream.
     keyword_extraction = kwargs.pop("keyword_extraction", keyword_extraction)
     entity_extraction = kwargs.pop("entity_extraction", entity_extraction)

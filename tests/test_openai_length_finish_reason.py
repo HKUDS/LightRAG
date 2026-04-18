@@ -89,9 +89,9 @@ async def test_json_object_response_format_forwarded_to_create():
 
     assert result == '{"high_level_keywords":["AI"],"low_level_keywords":["RAG"]}'
     fake_client.chat.completions.create.assert_awaited_once()
-    assert fake_client.chat.completions.create.await_args.kwargs[
-        "response_format"
-    ] == {"type": "json_object"}
+    assert fake_client.chat.completions.create.await_args.kwargs["response_format"] == {
+        "type": "json_object"
+    }
     fake_client.close.assert_awaited_once()
 
 
@@ -113,17 +113,15 @@ async def test_legacy_entity_extraction_emits_deprecation_warning():
             )
 
     fake_client.chat.completions.create.assert_awaited_once()
-    assert fake_client.chat.completions.create.await_args.kwargs[
-        "response_format"
-    ] == {"type": "json_object"}
+    assert fake_client.chat.completions.create.await_args.kwargs["response_format"] == {
+        "type": "json_object"
+    }
 
 
 @pytest.mark.offline
 @pytest.mark.asyncio
 async def test_legacy_keyword_extraction_emits_deprecation_warning():
-    completion = _make_completion(
-        '{"high_level_keywords":[],"low_level_keywords":[]}'
-    )
+    completion = _make_completion('{"high_level_keywords":[],"low_level_keywords":[]}')
     fake_client = _make_fake_client(completion)
 
     with patch(
@@ -138,6 +136,6 @@ async def test_legacy_keyword_extraction_emits_deprecation_warning():
             )
 
     fake_client.chat.completions.create.assert_awaited_once()
-    assert fake_client.chat.completions.create.await_args.kwargs[
-        "response_format"
-    ] == {"type": "json_object"}
+    assert fake_client.chat.completions.create.await_args.kwargs["response_format"] == {
+        "type": "json_object"
+    }

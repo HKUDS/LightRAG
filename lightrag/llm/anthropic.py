@@ -65,6 +65,14 @@ async def anthropic_complete_if_cache(
     api_key: str | None = None,
     **kwargs: Any,
 ) -> Union[str, AsyncIterator[str]]:
+    """Call Anthropic Messages API with LightRAG-compatible shims.
+
+    Structured output note:
+    - This adapter does not support OpenAI-style ``response_format`` JSON mode.
+    - If callers pass ``response_format``, it is stripped before the request.
+    - Deprecated ``keyword_extraction`` and ``entity_extraction`` booleans are
+      accepted only as compatibility shims; they emit warnings and are ignored.
+    """
     if history_messages is None:
         history_messages = []
     if enable_cot:

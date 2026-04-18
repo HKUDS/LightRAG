@@ -6,7 +6,7 @@ from llama_index.core.llms import (
     MessageRole,
     ChatResponse,
 )
-from typing import List, Optional
+from typing import Any, List, Optional
 from lightrag.utils import logger
 
 # Install required dependencies
@@ -32,7 +32,7 @@ from lightrag.exceptions import (
 import numpy as np
 
 
-def configure_llama_index(settings: LlamaIndexSettings = None, **kwargs):
+def configure_llama_index(settings: Any = None, **kwargs):
     """
     Configure LlamaIndex settings.
 
@@ -148,20 +148,27 @@ async def llama_index_complete(
     enable_cot: bool = False,
     keyword_extraction=False,
     entity_extraction=False,
-    settings: LlamaIndexSettings = None,
+    settings: Any = None,
     **kwargs,
 ) -> str:
     """
-    Main completion function for LlamaIndex
+    Main completion function for LlamaIndex.
 
     Args:
         prompt: Input prompt
         system_prompt: Optional system prompt
         history_messages: Optional chat history
-        keyword_extraction: Whether to extract keywords from response
-        entity_extraction: Whether to use JSON structured output for entity extraction
+        keyword_extraction: Deprecated compatibility shim. Emits a warning and
+            is ignored.
+        entity_extraction: Deprecated compatibility shim. Emits a warning and
+            is ignored.
         settings: Optional LlamaIndex settings
-        **kwargs: Additional arguments
+        **kwargs: Additional arguments. ``response_format`` is not supported by
+            this adapter and is stripped before calling LlamaIndex.
+
+    Structured output note:
+    - This adapter does not support OpenAI-style ``response_format`` JSON mode.
+    - If callers pass ``response_format``, it is stripped before generation.
     """
     if history_messages is None:
         history_messages = []
@@ -205,7 +212,7 @@ async def llama_index_complete(
 async def llama_index_embed(
     texts: list[str],
     embed_model: BaseEmbedding = None,
-    settings: LlamaIndexSettings = None,
+    settings: Any = None,
     **kwargs,
 ) -> np.ndarray:
     """

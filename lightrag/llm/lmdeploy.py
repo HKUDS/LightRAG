@@ -64,7 +64,14 @@ async def lmdeploy_model_if_cache(
     quant_policy=0,
     **kwargs,
 ) -> str:
-    """
+    """Run lmdeploy generation with LightRAG-compatible shims.
+
+    Structured output note:
+    - This adapter does not support OpenAI-style ``response_format`` JSON mode.
+    - If callers pass ``response_format``, it is stripped before generation.
+    - Deprecated ``keyword_extraction`` and ``entity_extraction`` booleans are
+      accepted only as compatibility shims; they emit warnings and are ignored.
+
     Args:
         model (str): The path to the model.
             It could be one of the following options:

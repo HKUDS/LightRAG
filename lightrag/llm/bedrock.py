@@ -153,6 +153,14 @@ async def bedrock_complete_if_cache(
     aws_session_token=None,
     **kwargs,
 ) -> Union[str, AsyncIterator[str]]:
+    """Call Amazon Bedrock Converse API with LightRAG-compatible shims.
+
+    Structured output note:
+    - This adapter does not support OpenAI-style ``response_format`` JSON mode.
+    - If callers pass ``response_format``, it is stripped before the request.
+    - Deprecated ``keyword_extraction`` and ``entity_extraction`` booleans are
+      accepted only as compatibility shims; they emit warnings and are ignored.
+    """
     if enable_cot:
         import logging
 

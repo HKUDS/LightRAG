@@ -90,6 +90,16 @@ async def _ollama_model_if_cache(
     enable_cot: bool = False,
     **kwargs,
 ) -> Union[str, AsyncIterator[str]]:
+    """Call Ollama chat API with OpenAI-style structured-output compatibility.
+
+    Structured output note:
+    - This adapter accepts OpenAI-style ``response_format`` and translates it
+      to Ollama's native ``format`` field.
+    - ``response_format={"type": "json_object"}`` maps to ``format="json"``.
+    - Deprecated ``keyword_extraction`` and ``entity_extraction`` booleans are
+      compatibility shims; when no explicit ``response_format`` is supplied,
+      they are mapped to ``{"type": "json_object"}``.
+    """
     if enable_cot:
         logger.debug("enable_cot=True is not supported for ollama and will be ignored.")
     stream = True if kwargs.get("stream") else False
@@ -118,6 +128,7 @@ async def _ollama_model_if_cache(
         # response_format was supplied explicitly; drop legacy flags silently.
         kwargs.pop("entity_extraction", None)
         kwargs.pop("keyword_extraction", None)
+
     _normalize_ollama_response_format(kwargs)
     host = kwargs.pop("host", None)
     timeout = kwargs.pop("timeout", None)

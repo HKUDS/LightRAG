@@ -227,6 +227,15 @@ async def openai_complete_if_cache(
     Chain of Thought capabilities. The reasoning content is seamlessly integrated into the response
     using <think>...</think> tags.
 
+    Structured output design note:
+    - LightRAG only uses OpenAI JSON-object mode via
+      ``response_format={"type": "json_object"}``.
+    - This project does not use OpenAI ``json_schema`` mode, Pydantic-based
+      typed structured output, or other ``parse()``-oriented response formats
+      in this path.
+    - ``keyword_extraction`` is deprecated; prefer
+      ``response_format={"type": "json_object"}`` instead.
+
     Note on truncated structured output: when the OpenAI SDK raises
     `LengthFinishReasonError`, callers may still receive partial raw JSON from
     `completion.choices[0].message.content`. That payload should be treated as
@@ -259,8 +268,10 @@ async def openai_complete_if_cache(
         token_tracker: Optional token usage tracker for monitoring API usage.
         stream: Whether to stream the response. Default is False.
         timeout: Request timeout in seconds. Default is None.
-        keyword_extraction: Whether to enable keyword extraction mode. When True, triggers
-            special response formatting for keyword extraction. Default is False.
+        keyword_extraction: Deprecated compatibility shim. When True and no
+            explicit ``response_format`` is supplied, it is mapped to
+            ``{"type": "json_object"}``. Prefer passing ``response_format``
+            directly. Default is False.
         use_azure: Whether to use Azure OpenAI service instead of standard OpenAI.
             When True, creates an AsyncAzureOpenAI client. Default is False.
         azure_deployment: Azure OpenAI deployment name. Only used when use_azure=True.
@@ -270,6 +281,8 @@ async def openai_complete_if_cache(
             environment variable.
         **kwargs: Additional keyword arguments to pass to the OpenAI API.
             Special kwargs:
+            - response_format: Structured output control. LightRAG only relies on
+                ``{"type": "json_object"}`` in this code path.
             - openai_client_configs: Dict of configuration options for the AsyncOpenAI client.
                 These will be passed to the client constructor but will be overridden by
                 explicit parameters (api_key, base_url). Supports proxy configuration,

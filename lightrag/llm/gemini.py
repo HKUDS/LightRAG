@@ -250,6 +250,15 @@ async def gemini_complete_if_cache(
     This function supports automatic integration of reasoning content from Gemini models
     that provide Chain of Thought capabilities via the thinking_config API feature.
 
+    Structured output note:
+    - This adapter accepts OpenAI-style ``response_format`` and translates it
+      to Gemini's native generation config fields.
+    - ``response_format={"type": "json_object"}`` maps to
+      ``response_mime_type="application/json"``.
+    - Deprecated ``keyword_extraction`` and ``entity_extraction`` booleans are
+      compatibility shims; when no explicit ``response_format`` is supplied,
+      they are mapped to ``{"type": "json_object"}``.
+
     COT Integration:
     - When enable_cot=True: Thought content is wrapped in <think>...</think> tags
     - When enable_cot=False: Thought content is filtered out, only regular content returned
@@ -264,12 +273,9 @@ async def gemini_complete_if_cache(
         api_key: Optional Gemini API key. If None, uses environment variable.
         base_url: Optional custom API endpoint.
         generation_config: Optional generation configuration dict.
-        response_format: Structured output control. ``{"type": "json_object"}``
-            maps to ``response_mime_type="application/json"``; a typed/schema
-            payload additionally populates ``response_schema``. Deprecated
-            ``keyword_extraction``/``entity_extraction`` booleans are shimmed
-            to ``{"type": "json_object"}`` when no explicit ``response_format``
-            is supplied.
+        response_format: OpenAI-style structured output control translated to
+            Gemini generation config. ``{"type": "json_object"}`` maps to
+            ``response_mime_type="application/json"``.
         token_tracker: Optional token usage tracker for monitoring API usage.
         stream: Whether to stream the response.
         hashing_kv: Storage interface (for interface parity with other bindings).

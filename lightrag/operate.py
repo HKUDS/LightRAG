@@ -3356,9 +3356,7 @@ async def extract_entities(
             cache_type="extract",
             chunk_id=chunk_key,
             cache_keys_collector=cache_keys_collector,
-            response_format=(
-                {"type": "json_object"} if use_json_extraction else None
-            ),
+            response_format=({"type": "json_object"} if use_json_extraction else None),
         )
 
         history = pack_user_ass_to_openai_messages(
@@ -3955,9 +3953,7 @@ async def extract_keywords_only(
         # Apply higher priority (5) to query relation LLM function
         use_model_func = partial(use_model_func, _priority=5)
 
-    result = await use_model_func(
-        kw_prompt, response_format={"type": "json_object"}
-    )
+    result = await use_model_func(kw_prompt, response_format={"type": "json_object"})
 
     # 5. Parse out JSON from the LLM response with tolerant provider normalization
     _, hl_keywords, ll_keywords = _parse_keywords_payload(result)
