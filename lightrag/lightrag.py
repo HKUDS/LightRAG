@@ -610,6 +610,9 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         repr=False,
     )
 
+    prompts: dict[str, Any] = field(default_factory=dict)
+    """Per-instance prompt overrides. Keys matching PROMPTS dict take precedence over the global PROMPTS."""
+
     # Storages Management
     # ---
 

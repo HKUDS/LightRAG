@@ -698,16 +698,31 @@ class EntityExtractionPromptProfile(TypedDict):
     entity_extraction_json_examples: list[str]
 
 
-def get_default_entity_extraction_prompt_profile() -> EntityExtractionPromptProfile:
+def _get_prompt(key: str, global_config: dict | None = None) -> Any:
+    """Return per-instance prompt override if set, else fall back to global PROMPTS."""
+    if global_config:
+        override = global_config.get("prompts", {}).get(key)
+        if override is not None:
+            return override
+    return PROMPTS[key]
+
+
+def get_default_entity_extraction_prompt_profile(
+    global_config: dict | None = None,
+) -> EntityExtractionPromptProfile:
     """Return a copy of the built-in entity extraction prompt profile."""
 
     return {
-        "entity_types_guidance": PROMPTS["default_entity_types_guidance"].rstrip(),
+        "entity_types_guidance": _get_prompt(
+            "default_entity_types_guidance", global_config
+        ).rstrip(),
         "entity_extraction_examples": [
-            example.rstrip() for example in PROMPTS["entity_extraction_examples"]
+            example.rstrip()
+            for example in _get_prompt("entity_extraction_examples", global_config)
         ],
         "entity_extraction_json_examples": [
-            example.rstrip() for example in PROMPTS["entity_extraction_json_examples"]
+            example.rstrip()
+            for example in _get_prompt("entity_extraction_json_examples", global_config)
         ],
     }
 
@@ -847,10 +862,11 @@ def load_entity_extraction_prompt_profile(
 def resolve_entity_extraction_prompt_profile(
     addon_params: Mapping[str, Any] | None,
     use_json: bool,
+    global_config: dict | None = None,
 ) -> EntityExtractionPromptProfile:
     """Resolve and merge the configured entity extraction prompt profile."""
 
-    default_profile = get_default_entity_extraction_prompt_profile()
+    default_profile = get_default_entity_extraction_prompt_profile(global_config)
     addon_params = addon_params or {}
     prompt_file = addon_params.get("entity_type_prompt_file")
 
