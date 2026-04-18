@@ -3834,13 +3834,13 @@ def _normalize_keyword_list(raw_values: Any, field_name: str) -> list[str]:
     return normalized
 
 
-def _parse_keywords_payload(result: Any) -> tuple[list[str], list[str]]:
+def _parse_keywords_payload(result: Any) -> tuple[bool, list[str], list[str]]:
     """Parse keyword extraction responses from heterogeneous provider outputs."""
 
     payload: Any
 
     if result is None:
-        return [], []
+        return False, [], []
 
     if hasattr(result, "model_dump") and callable(result.model_dump):
         payload = result.model_dump()
@@ -3849,23 +3849,36 @@ def _parse_keywords_payload(result: Any) -> tuple[list[str], list[str]]:
     elif isinstance(result, str):
         cleaned_result = remove_think_tags(result)
         try:
-            payload = json_repair.loads(cleaned_result)
-        except Exception as e:
-            logger.error(f"JSON parsing error: {e}; response: {cleaned_result}")
-            return [], []
+            payload = json.loads(cleaned_result)
+        except json.JSONDecodeError as strict_error:
+            try:
+                payload = json_repair.loads(cleaned_result)
+                logger.warning(
+                    "Keyword extraction response required JSON repair: %s; response: %r",
+                    strict_error,
+                    cleaned_result[:500],
+                )
+            except Exception as repair_error:
+                logger.error(
+                    "JSON parsing error: %s; repair failed: %s; response: %r",
+                    strict_error,
+                    repair_error,
+                    cleaned_result[:500],
+                )
+                return False, [], []
     else:
         logger.error(
             "Unsupported keyword extraction response type: %s",
             type(result).__name__,
         )
-        return [], []
+        return False, [], []
 
     if not isinstance(payload, dict):
         logger.error(
             "Keyword extraction payload is not a JSON object: %s",
             type(payload).__name__,
         )
-        return [], []
+        return False, [], []
 
     hl_keywords = _normalize_keyword_list(
         payload.get("high_level_keywords"), "high_level_keywords"
@@ -3873,7 +3886,7 @@ def _parse_keywords_payload(result: Any) -> tuple[list[str], list[str]]:
     ll_keywords = _normalize_keyword_list(
         payload.get("low_level_keywords"), "low_level_keywords"
     )
-    return hl_keywords, ll_keywords
+    return True, hl_keywords, ll_keywords
 
 
 async def extract_keywords_only(
@@ -3904,8 +3917,10 @@ async def extract_keywords_only(
     )
     if cached_result is not None:
         cached_response, _ = cached_result  # Extract content, ignore timestamp
-        hl_keywords, ll_keywords = _parse_keywords_payload(cached_response)
-        if hl_keywords or ll_keywords:
+        is_valid_payload, hl_keywords, ll_keywords = _parse_keywords_payload(
+            cached_response
+        )
+        if is_valid_payload:
             return hl_keywords, ll_keywords
         else:
             logger.warning(
@@ -3939,7 +3954,7 @@ async def extract_keywords_only(
     result = await use_model_func(kw_prompt, keyword_extraction=True)
 
     # 5. Parse out JSON from the LLM response with tolerant provider normalization
-    hl_keywords, ll_keywords = _parse_keywords_payload(result)
+    _, hl_keywords, ll_keywords = _parse_keywords_payload(result)
 
     # 6. Cache only the processed keywords with cache type
     if hl_keywords or ll_keywords:
