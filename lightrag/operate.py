@@ -2611,7 +2611,7 @@ async def _merge_edges_then_upsert(
                         timeout_seconds=_get_relationship_vdb_timeout_seconds(
                             global_config
                         ),
-                        log_start=True,
+                        log_start=False,
                         success_log_threshold_seconds=5.0,
                     )
 
@@ -2726,7 +2726,7 @@ async def _merge_edges_then_upsert(
                         timeout_seconds=_get_relationship_vdb_timeout_seconds(
                             global_config
                         ),
-                        log_start=True,
+                        log_start=False,
                         success_log_threshold_seconds=5.0,
                     )
 
@@ -2818,7 +2818,7 @@ async def _merge_edges_then_upsert(
                 max_retries=3,
                 retry_delay=0.2,
                 timeout_seconds=_get_relationship_vdb_timeout_seconds(global_config),
-                log_start=True,
+                log_start=False,
                 success_log_threshold_seconds=5.0,
             )
 
@@ -3044,11 +3044,6 @@ async def merge_nodes_and_edges(
                 try:
                     added_entities = []  # Track entities added during edge processing
 
-                    logger.info(
-                        "Phase 2 edge start for `%s` with %d fragments",
-                        edge_label,
-                        len(edges),
-                    )
                     edge_data = await _merge_edges_then_upsert(
                         edge_key[0],
                         edge_key[1],
@@ -3066,17 +3061,8 @@ async def merge_nodes_and_edges(
                     )
 
                     if edge_data is None:
-                        logger.info(
-                            "Phase 2 edge done for `%s` with no edge_data",
-                            edge_label,
-                        )
                         return None, []
 
-                    logger.info(
-                        "Phase 2 edge done for `%s` with %d added entities",
-                        edge_label,
-                        len(added_entities),
-                    )
                     return edge_data, added_entities
 
                 except Exception as e:
@@ -3115,19 +3101,8 @@ async def merge_nodes_and_edges(
     all_added_entities = []
 
     if edge_tasks:
-        logger.info(
-            "Phase 2 submitted %d relation tasks for %s",
-            len(edge_tasks),
-            doc_id,
-        )
         done, pending = await asyncio.wait(
             edge_tasks, return_when=asyncio.FIRST_EXCEPTION
-        )
-        logger.info(
-            "Phase 2 wait returned for %s: done=%d pending=%d",
-            doc_id,
-            len(done),
-            len(pending),
         )
 
         first_exception = None
