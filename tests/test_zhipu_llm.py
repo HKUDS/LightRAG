@@ -188,11 +188,12 @@ async def test_zhipu_keyword_extraction_ignores_reasoning_content(monkeypatch):
 
     zhipu_module = _load_zhipu_module(monkeypatch, FakeClient)
 
-    result = await zhipu_module.zhipu_complete(
-        prompt="hello",
-        api_key="test-key",
-        keyword_extraction=True,
-        enable_cot=True,
-    )
+    with pytest.warns(DeprecationWarning):
+        result = await zhipu_module.zhipu_complete(
+            prompt="hello",
+            api_key="test-key",
+            keyword_extraction=True,
+            enable_cot=True,
+        )
 
     assert result == '{"high_level_keywords": ["AI"], "low_level_keywords": ["RAG"]}'
