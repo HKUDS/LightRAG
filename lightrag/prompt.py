@@ -118,7 +118,7 @@ Based on the last extraction task, identify and extract any missed or incorrectl
   - If an entity or relationship was **missed** in the last task, extract and output it now according to the system format.
   - If an entity or relationship was **truncated, had missing fields, or was otherwise incorrectly formatted** in the last task, re-output the *corrected and complete* version in the specified format.
   - Any corrected relationship row must be emitted with the literal `relation` prefix, never `entity`.
-3. **Quantity Limits:** In this response, output at most {max_total_records} total rows and at most {max_entity_records} entity rows. Output fewer rows if fewer high-value corrections or additions remain. Only output relationship rows whose source and target entities are both included in this response.
+3. **Quantity Limits:** In this response, output at most {max_total_records} total rows and at most {max_entity_records} entity rows. Output fewer rows if fewer high-value corrections or additions remain. A relationship row may reference entities that were already extracted correctly in the previous response. Do not re-output those entities unless they were missing or need correction.
 4. **Output Content Only:** Output *only* the extracted list of entities and relationships. Do not include any introductory or concluding remarks, explanations, or additional text before or after the list.
 5. **Completion Signal:** Output `{completion_delimiter}` as the final line after all relevant missing or corrected entities and relationships have been extracted and presented. If the row limit is reached, output `{completion_delimiter}` immediately after the last allowed row.
 6. **Output Language:** Ensure the output language is {language}. Proper nouns (e.g., personal names, place names, organization names) must be kept in their original language and not translated.
@@ -310,7 +310,7 @@ Based on the last extraction task, identify and extract any **missed or incorrec
   - If an entity or relationship was **missed** in the last task, extract and output it now.
   - If an entity or relationship was **incorrectly described** in the last task, re-output the *corrected and complete* version.
 2. **Strict Adherence to JSON Format:** Your output MUST be a valid JSON object with `entities` and `relationships` arrays. Do not include any introductory or concluding remarks, explanations, markdown code fences, or any other text before or after the JSON.
-3. **Quantity Limits:** In this response, output at most {max_total_records} total records and at most {max_entity_records} entity objects. Output fewer records if fewer high-value corrections or additions remain. Only output relationship objects whose `source` and `target` are both included in this response.
+3. **Quantity Limits:** In this response, output at most {max_total_records} total records and at most {max_entity_records} entity objects. Output fewer records if fewer high-value corrections or additions remain. A relationship object may reference entities already extracted correctly in the previous response. Do not repeat those entity objects unless they were missing or need correction.
 4. **Output Language:** Ensure the output language is {language}. Proper nouns (e.g., personal names, place names, organization names) must be kept in their original language and not translated.
 5. **If nothing was missed or needs correction**, output: `{{"entities": [], "relationships": []}}`
 

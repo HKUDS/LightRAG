@@ -78,6 +78,12 @@ _TEXT_MODE_GLEANED_RELATION_RESPONSES = [
     "\nrelation<|#|>Alice<|#|>Acme Corp<|#|>founded<|#|>Alice founded Acme Corp.\n<|COMPLETE|>",
 ]
 
+_TEXT_MODE_CROSS_PASS_RELATION_RESPONSES = [
+    "entity<|#|>Alice<|#|>Person<|#|>Alice founded a company.\n<|COMPLETE|>",
+    "entity<|#|>Acme Corp<|#|>Organization<|#|>Acme Corp was founded by Alice."
+    "\nrelation<|#|>Alice<|#|>Acme Corp<|#|>founded<|#|>Alice founded Acme Corp.\n<|COMPLETE|>",
+]
+
 _JSON_MODE_RESPONSE = json.dumps(
     {
         "entities": [
@@ -269,6 +275,14 @@ def test_text_continue_prompt_requires_relation_prefix_for_corrections():
         "output at most {max_total_records} total rows and at most {max_entity_records} entity rows"
         in prompt
     )
+    assert (
+        "may reference entities that were already extracted correctly in the previous response"
+        in prompt
+    )
+    assert (
+        "whose source and target entities are both included in this response"
+        not in prompt
+    )
 
 
 @pytest.mark.offline
@@ -387,7 +401,7 @@ def test_json_continue_prompt_includes_quantity_limits():
         in prompt
     )
     assert (
-        "Only output relationship objects whose `source` and `target` are both included"
+        "may reference entities already extracted correctly in the previous response"
         in prompt
     )
 
@@ -455,6 +469,29 @@ async def test_text_mode_gleaned_relation_merges_cleanly_after_recovery():
 
     entities, relationships = chunk_results[0]
     assert len(entities) == 2
+    assert len(relationships) == 1
+    relation_data = next(iter(relationships.values()))[0]
+    assert relation_data["src_id"] == "Alice"
+    assert relation_data["tgt_id"] == "Acme Corp"
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_text_mode_gleaned_relation_can_reference_prior_entity():
+    from lightrag.operate import extract_entities
+
+    global_config = _make_global_config(use_json=False, max_gleaning=1)
+    llm_func = global_config["llm_model_func"]
+    llm_func.side_effect = _TEXT_MODE_CROSS_PASS_RELATION_RESPONSES
+
+    with patch("lightrag.operate.logger"):
+        chunk_results = await extract_entities(
+            chunks=_make_chunks(),
+            global_config=global_config,
+        )
+
+    entities, relationships = chunk_results[0]
+    assert set(entities.keys()) == {"Alice", "Acme Corp"}
     assert len(relationships) == 1
     relation_data = next(iter(relationships.values()))[0]
     assert relation_data["src_id"] == "Alice"
