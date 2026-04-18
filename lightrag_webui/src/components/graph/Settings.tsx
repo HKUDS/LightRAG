@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect} from 'react'
+import { useState, useCallback, useEffect, useRef } from 'react'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/Popover'
 import Checkbox from '@/components/ui/Checkbox'
 import Button from '@/components/ui/Button'
@@ -64,9 +64,27 @@ const LabeledNumberInput = ({
   // Create unique ID using the label text converted to lowercase with spaces removed
   const id = `input-${label.toLowerCase().replace(/\s+/g, '-')}`;
 
+  // Keep refs in sync so the unmount effect can read the latest values
+  const currentValueRef = useRef(currentValue)
+  const valueRef = useRef(value)
+  const onEditFinishedRef = useRef(onEditFinished)
+  currentValueRef.current = currentValue
+  valueRef.current = value
+  onEditFinishedRef.current = onEditFinished
+
   useEffect(() => {
     setCurrentValue(value)
   }, [value])
+
+  // Commit any pending change when the component unmounts (e.g. popover closes)
+  useEffect(() => {
+    return () => {
+      const cur = currentValueRef.current
+      if (cur !== null && cur !== valueRef.current) {
+        onEditFinishedRef.current(cur)
+      }
+    }
+  }, [])
 
   const onValueChange = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -215,11 +233,7 @@ export default function Settings() {
   const setGraphQueryMaxDepth = useCallback((depth: number) => {
     if (depth < 1) return
     useSettingsStore.setState({ graphQueryMaxDepth: depth })
-    const currentLabel = useSettingsStore.getState().queryLabel
-    useSettingsStore.getState().setQueryLabel('')
-    setTimeout(() => {
-      useSettingsStore.getState().setQueryLabel(currentLabel)
-    }, 300)
+    useGraphStore.getState().setGraphDataFetchAttempted(false)
   }, [])
 
   const setGraphMaxNodes = useCallback((nodes: number) => {
