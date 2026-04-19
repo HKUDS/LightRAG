@@ -240,6 +240,18 @@ class InsertTextRequest(BaseModel):
     file_source: Optional[str] = Field(
         default=None, min_length=0, description="File Source"
     )
+    split_by_character: Optional[str] = Field(
+        default=None,
+        description="Character(s) to split the text on instead of token-based chunking. "
+        "When set, the text is split on this separator and each piece becomes a chunk. "
+        "Useful when sending pre-chunked content joined by a known delimiter.",
+    )
+    split_by_character_only: bool = Field(
+        default=False,
+        description="If True, split only on split_by_character without token-based fallback. "
+        "If False (default), chunks that exceed chunk_token_size after character splitting "
+        "are further split by the token-based chunker.",
+    )
 
     @field_validator("text", mode="after")
     @classmethod
@@ -256,6 +268,8 @@ class InsertTextRequest(BaseModel):
             "example": {
                 "text": "This is a sample text to be inserted into the RAG system.",
                 "file_source": "Source of the text (optional)",
+                "split_by_character": None,
+                "split_by_character_only": False,
             }
         }
     )
@@ -275,6 +289,14 @@ class InsertTextsRequest(BaseModel):
     )
     file_sources: Optional[list[str]] = Field(
         default=None, min_length=0, description="Sources of the texts"
+    )
+    split_by_character: Optional[str] = Field(
+        default=None,
+        description="Character(s) to split each text on instead of token-based chunking.",
+    )
+    split_by_character_only: bool = Field(
+        default=False,
+        description="If True, split only on split_by_character without token-based fallback.",
     )
 
     @field_validator("texts", mode="after")
@@ -302,6 +324,8 @@ class InsertTextsRequest(BaseModel):
                 "file_sources": [
                     "First file source (optional)",
                 ],
+                "split_by_character": None,
+                "split_by_character_only": False,
             }
         }
     )
@@ -1745,6 +1769,8 @@ async def pipeline_index_texts(
     texts: List[str],
     file_sources: List[str] = None,
     track_id: str = None,
+    split_by_character: str = None,
+    split_by_character_only: bool = False,
 ):
     """Index a list of texts with track_id
 
@@ -1753,6 +1779,8 @@ async def pipeline_index_texts(
         texts: The texts to index
         file_sources: Sources of the texts
         track_id: Optional tracking ID
+        split_by_character: Character(s) to split text on instead of token-based chunking
+        split_by_character_only: If True, split only on character without token fallback
     """
     if not texts:
         return
@@ -1772,7 +1800,10 @@ async def pipeline_index_texts(
     await rag.apipeline_enqueue_documents(
         input=texts, file_paths=normalized_file_sources, track_id=track_id
     )
-    await rag.apipeline_process_enqueue_documents()
+    await rag.apipeline_process_enqueue_documents(
+        split_by_character=split_by_character,
+        split_by_character_only=split_by_character_only,
+    )
 
 
 async def run_scanning_process(
@@ -2349,6 +2380,8 @@ def create_document_routes(
                 [request.text],
                 file_sources=[request.file_source],
                 track_id=track_id,
+                split_by_character=request.split_by_character,
+                split_by_character_only=request.split_by_character_only,
             )
 
             return InsertResponse(
@@ -2432,6 +2465,8 @@ def create_document_routes(
                 request.texts,
                 file_sources=request.file_sources,
                 track_id=track_id,
+                split_by_character=request.split_by_character,
+                split_by_character_only=request.split_by_character_only,
             )
 
             return InsertResponse(
