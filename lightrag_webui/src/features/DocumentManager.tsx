@@ -414,42 +414,42 @@ export default function DocumentManager() {
 
   const getStatusDisplay = useCallback((status: DocStatus): StatusDisplayConfig => {
     switch (status) {
-    case 'processed':
-      return {
-        labelKey: 'documentPanel.documentManager.status.completed',
-        className: 'text-green-600'
-      }
-    case 'preprocessed':
-      return {
-        labelKey: 'documentPanel.documentManager.status.preprocessed',
-        className: 'text-purple-600'
-      }
-    case 'parsing':
-      return {
-        labelKey: 'documentPanel.documentManager.status.parsing',
-        className: 'text-cyan-600'
-      }
-    case 'analyzing':
-      return {
-        labelKey: 'documentPanel.documentManager.status.analyzing',
-        className: 'text-indigo-600'
-      }
-    case 'processing':
-      return {
-        labelKey: 'documentPanel.documentManager.status.processing',
-        className: 'text-blue-600'
-      }
-    case 'pending':
-      return {
-        labelKey: 'documentPanel.documentManager.status.pending',
-        className: 'text-yellow-600'
-      }
-    case 'failed':
-    default:
-      return {
-        labelKey: 'documentPanel.documentManager.status.failed',
-        className: 'text-red-600'
-      }
+      case 'processed':
+        return {
+          labelKey: 'documentPanel.documentManager.status.completed',
+          className: 'text-green-600'
+        }
+      case 'preprocessed':
+        return {
+          labelKey: 'documentPanel.documentManager.status.preprocessed',
+          className: 'text-purple-600'
+        }
+      case 'parsing':
+        return {
+          labelKey: 'documentPanel.documentManager.status.parsing',
+          className: 'text-cyan-600'
+        }
+      case 'analyzing':
+        return {
+          labelKey: 'documentPanel.documentManager.status.analyzing',
+          className: 'text-indigo-600'
+        }
+      case 'processing':
+        return {
+          labelKey: 'documentPanel.documentManager.status.processing',
+          className: 'text-blue-600'
+        }
+      case 'pending':
+        return {
+          labelKey: 'documentPanel.documentManager.status.pending',
+          className: 'text-yellow-600'
+        }
+      case 'failed':
+      default:
+        return {
+          labelKey: 'documentPanel.documentManager.status.failed',
+          className: 'text-red-600'
+        }
     }
   }, [])
 

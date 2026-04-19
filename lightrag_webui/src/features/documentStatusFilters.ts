@@ -17,16 +17,16 @@ export const getStatusBucket = (status: DocStatus): StatusBucket => {
 
 export const getGroupedStatusesForFilter = (statusFilter: StatusFilter): DocStatus[] | null => {
   switch (statusFilter) {
-  case 'analyzing':
-    return ANALYZING_STATUS_FILTERS
-  case 'processed':
-  case 'processing':
-  case 'pending':
-  case 'failed':
-    return [statusFilter]
-  case 'all':
-  default:
-    return null
+    case 'analyzing':
+      return ANALYZING_STATUS_FILTERS
+    case 'processed':
+    case 'processing':
+    case 'pending':
+    case 'failed':
+      return [statusFilter]
+    case 'all':
+    default:
+      return null
   }
 }
 
