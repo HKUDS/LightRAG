@@ -170,6 +170,7 @@ async def test_gemini_streaming_structured_output_disables_cot(monkeypatch):
         regular_text='{"answer":"ok"}',
         thought_text="this should not be included",
     )
+
     async def _single_chunk_stream(response):
         yield response
 
