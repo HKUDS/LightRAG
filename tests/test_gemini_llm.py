@@ -49,6 +49,25 @@ def _load_gemini_module(monkeypatch):
     return importlib.import_module("lightrag.llm.gemini")
 
 
+def _make_fake_gemini_response(regular_text="", thought_text=""):
+    parts = []
+    if thought_text:
+        parts.append(SimpleNamespace(text=thought_text, thought=True))
+    if regular_text:
+        parts.append(SimpleNamespace(text=regular_text, thought=False))
+
+    return SimpleNamespace(
+        candidates=[
+            SimpleNamespace(content=SimpleNamespace(parts=parts)),
+        ],
+        usage_metadata=SimpleNamespace(
+            prompt_token_count=1,
+            candidates_token_count=2,
+            total_token_count=3,
+        ),
+    )
+
+
 @pytest.mark.offline
 def test_gemini_maps_schema_response_format_to_response_json_schema(monkeypatch):
     gemini_module = _load_gemini_module(monkeypatch)
@@ -105,3 +124,42 @@ def test_gemini_rejects_typed_response_format(monkeypatch):
 
     with pytest.raises(TypeError, match="typed/Pydantic"):
         gemini_module._validate_gemini_response_format(FakeSchemaModel)
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_gemini_streaming_structured_output_disables_cot(monkeypatch):
+    gemini_module = _load_gemini_module(monkeypatch)
+
+    fake_stream_response = _make_fake_gemini_response(
+        regular_text='{"answer":"ok"}',
+        thought_text="this should not be included",
+    )
+    async def _single_chunk_stream(response):
+        yield response
+
+    async def _fake_generate_content_stream(**kwargs):
+        return _single_chunk_stream(fake_stream_response)
+
+    fake_client = SimpleNamespace(
+        aio=SimpleNamespace(
+            models=SimpleNamespace(
+                generate_content_stream=_fake_generate_content_stream
+            )
+        )
+    )
+
+    monkeypatch.setattr(gemini_module, "_get_gemini_client", lambda *args: fake_client)
+
+    stream = await gemini_module.gemini_complete_if_cache(
+        model="gemini-model",
+        prompt="hello",
+        stream=True,
+        enable_cot=True,
+        response_format={"type": "json_object"},
+    )
+    chunks = []
+    async for chunk in stream:
+        chunks.append(chunk)
+
+    assert "".join(chunks) == '{"answer":"ok"}'

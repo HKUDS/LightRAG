@@ -37,6 +37,36 @@ def _make_fake_client(completion):
     )
 
 
+class _FakeAsyncStream:
+    def __init__(self, chunks):
+        self._chunks = iter(chunks)
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        try:
+            return next(self._chunks)
+        except StopIteration:
+            raise StopAsyncIteration
+
+    async def aclose(self):
+        return None
+
+
+def _make_stream_chunk(content=None, reasoning_content=None):
+    return SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                delta=SimpleNamespace(
+                    content=content,
+                    reasoning_content=reasoning_content,
+                )
+            )
+        ]
+    )
+
+
 @pytest.mark.offline
 @pytest.mark.asyncio
 async def test_length_finish_reason_returns_raw_content():
@@ -163,3 +193,33 @@ async def test_typed_response_format_is_rejected():
 
     fake_client.chat.completions.create.assert_not_awaited()
     fake_client.close.assert_not_awaited()
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_streaming_structured_output_disables_cot():
+    fake_stream = _FakeAsyncStream(
+        [
+            _make_stream_chunk(reasoning_content="this should not be included"),
+            _make_stream_chunk(content='{"answer":"ok"}'),
+        ]
+    )
+    fake_client = _make_fake_client(fake_stream)
+
+    with patch(
+        "lightrag.llm.openai.create_openai_async_client",
+        return_value=fake_client,
+    ):
+        stream = await openai_complete_if_cache(
+            model="test-model",
+            prompt="Extract entities",
+            stream=True,
+            enable_cot=True,
+            response_format={"type": "json_object"},
+        )
+        chunks = []
+        async for chunk in stream:
+            chunks.append(chunk)
+
+    assert "".join(chunks) == '{"answer":"ok"}'
+    fake_client.close.assert_awaited_once()

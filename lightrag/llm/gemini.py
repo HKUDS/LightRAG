@@ -348,6 +348,8 @@ async def gemini_complete_if_cache(
             )
             response_format = {"type": "json_object"}
     _validate_gemini_response_format(response_format)
+    if response_format is not None:
+        enable_cot = False
 
     history_block = _format_history_messages(history_messages)
     prompt_sections = []

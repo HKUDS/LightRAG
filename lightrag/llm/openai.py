@@ -345,6 +345,8 @@ async def openai_complete_if_cache(
         )
         kwargs["response_format"] = {"type": "json_object"}
     _validate_openai_response_format(kwargs.get("response_format"))
+    if kwargs.get("response_format") is not None:
+        enable_cot = False
 
     # Create the OpenAI client (supports both OpenAI and Azure)
     openai_async_client = create_openai_async_client(
