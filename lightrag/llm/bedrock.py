@@ -17,14 +17,10 @@ from tenacity import (
     retry_if_exception_type,
 )
 
-import sys
-from lightrag.utils import wrap_embedding_func_with_attrs
-
-if sys.version_info < (3, 9):
-    from typing import AsyncIterator
-else:
-    from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator
 from typing import Union
+
+from lightrag.utils import wrap_embedding_func_with_attrs
 
 # Import botocore exceptions for proper exception handling
 try:
@@ -66,6 +62,14 @@ def _normalize_bedrock_endpoint_url(endpoint_url: str | None) -> str | None:
         return None
 
     return normalized
+
+
+def _bedrock_client_kwargs(region: str | None, endpoint_url: str | None) -> dict:
+    """Build kwargs for aioboto3 ``session.client("bedrock-runtime", ...)``."""
+    client_kwargs: dict = {"region_name": region}
+    if endpoint_url is not None:
+        client_kwargs["endpoint_url"] = endpoint_url
+    return client_kwargs
 
 
 def _set_env_if_present(key: str, value):
@@ -173,6 +177,11 @@ async def bedrock_complete_if_cache(
     - If callers pass ``response_format``, it is stripped before the request.
     - Deprecated ``keyword_extraction`` and ``entity_extraction`` booleans are
       accepted only as compatibility shims; they emit warnings and are ignored.
+
+    Endpoint note:
+    - ``endpoint_url`` overrides the default regional Bedrock endpoint. Pass
+      ``None``, an empty string, or the sentinel ``DEFAULT_BEDROCK_ENDPOINT``
+      to let the AWS SDK select its default endpoint.
     """
     if enable_cot:
         import logging
@@ -210,9 +219,7 @@ async def bedrock_complete_if_cache(
     _set_env_if_present("AWS_SESSION_TOKEN", session_token)
     # Region handling: prefer env, else kwarg (optional)
     region = os.environ.get("AWS_REGION") or kwargs.pop("aws_region", None)
-    endpoint_url = _normalize_bedrock_endpoint_url(
-        endpoint_url or kwargs.pop("base_url", None)
-    )
+    endpoint_url = _normalize_bedrock_endpoint_url(endpoint_url)
     kwargs.pop("hashing_kv", None)
     # Capture stream flag (if provided) and remove from kwargs since it's not a Bedrock API parameter
     # We'll use this to determine whether to call converse_stream or converse
@@ -271,9 +278,7 @@ async def bedrock_complete_if_cache(
         # Create a session that will be used throughout the streaming process
         session = aioboto3.Session()
         client = None
-        client_kwargs = {"region_name": region}
-        if endpoint_url is not None:
-            client_kwargs["endpoint_url"] = endpoint_url
+        client_kwargs = _bedrock_client_kwargs(region, endpoint_url)
 
         # Define the generator function that will manage the client lifecycle
         async def stream_generator():
@@ -354,11 +359,8 @@ async def bedrock_complete_if_cache(
 
     # For non-streaming responses, use the standard async context manager pattern
     session = aioboto3.Session()
-    client_kwargs = {"region_name": region}
-    if endpoint_url is not None:
-        client_kwargs["endpoint_url"] = endpoint_url
     async with session.client(
-        "bedrock-runtime", **client_kwargs
+        "bedrock-runtime", **_bedrock_client_kwargs(region, endpoint_url)
     ) as bedrock_async_client:
         try:
             # Use converse for non-streaming responses
@@ -444,11 +446,8 @@ async def bedrock_embed(
     endpoint_url = _normalize_bedrock_endpoint_url(endpoint_url)
 
     session = aioboto3.Session()
-    client_kwargs = {"region_name": region}
-    if endpoint_url is not None:
-        client_kwargs["endpoint_url"] = endpoint_url
     async with session.client(
-        "bedrock-runtime", **client_kwargs
+        "bedrock-runtime", **_bedrock_client_kwargs(region, endpoint_url)
     ) as bedrock_async_client:
         try:
             if (model_provider := model.split(".")[0]) == "amazon":

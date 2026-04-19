@@ -187,3 +187,41 @@ async def test_bedrock_embed_custom_endpoint_url_is_forwarded(monkeypatch):
         "region_name": None,
         "endpoint_url": "https://proxy.example.com",
     }
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_bedrock_embed_default_endpoint_sentinel_uses_sdk_default(monkeypatch):
+    captured_calls: list[dict] = []
+    client_kwargs_calls: list[dict] = []
+    monkeypatch.delenv("AWS_REGION", raising=False)
+
+    with patch(
+        "lightrag.llm.bedrock.aioboto3.Session",
+        return_value=_FakeEmbeddingSession(captured_calls, client_kwargs_calls),
+    ):
+        await bedrock_embed(
+            texts=["hello"],
+            endpoint_url="DEFAULT_BEDROCK_ENDPOINT",
+        )
+
+    assert client_kwargs_calls[-1] == {"region_name": None}
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_bedrock_embed_empty_endpoint_url_uses_sdk_default(monkeypatch):
+    captured_calls: list[dict] = []
+    client_kwargs_calls: list[dict] = []
+    monkeypatch.delenv("AWS_REGION", raising=False)
+
+    with patch(
+        "lightrag.llm.bedrock.aioboto3.Session",
+        return_value=_FakeEmbeddingSession(captured_calls, client_kwargs_calls),
+    ):
+        await bedrock_embed(
+            texts=["hello"],
+            endpoint_url="",
+        )
+
+    assert client_kwargs_calls[-1] == {"region_name": None}
