@@ -193,6 +193,7 @@ async def test_gemini_streaming_structured_output_disables_cot(monkeypatch):
         stream=True,
         enable_cot=True,
         response_format={"type": "json_object"},
+        api_key="test-key",
     )
     chunks = []
     async for chunk in stream:
