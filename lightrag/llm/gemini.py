@@ -49,6 +49,33 @@ class InvalidResponseError(Exception):
     pass
 
 
+_DEFAULT_GEMINI_BASE_URLS = {
+    "https://generativelanguage.googleapis.com",
+    "https://generativelanguage.googleapis.com/",
+    "https://generativelanguage.googleapis.com/v1beta",
+    "https://generativelanguage.googleapis.com/v1beta/",
+    "https://generativelanguage.googleapis.com/v1",
+    "https://generativelanguage.googleapis.com/v1/",
+}
+
+
+def _normalize_gemini_base_url(base_url: str | None) -> str | None:
+    """Treat Google's default Gemini API service roots as SDK defaults."""
+    if not base_url:
+        return None
+
+    normalized = base_url.strip()
+    if not normalized or normalized == "DEFAULT_GEMINI_ENDPOINT":
+        return None
+
+    if normalized.rstrip("/") in {
+        service_root.rstrip("/") for service_root in _DEFAULT_GEMINI_BASE_URLS
+    }:
+        return None
+
+    return normalized
+
+
 @lru_cache(maxsize=8)
 def _get_gemini_client(
     api_key: str, base_url: str | None, timeout: int | None = None
@@ -65,6 +92,7 @@ def _get_gemini_client(
         genai.Client: Configured Gemini client instance.
     """
     client_kwargs: dict[str, Any] = {}
+    normalized_base_url = _normalize_gemini_base_url(base_url)
 
     # Add Vertex AI support
     use_vertexai = os.getenv("GOOGLE_GENAI_USE_VERTEXAI", "").lower() == "true"
@@ -85,11 +113,11 @@ def _get_gemini_client(
         # Standard Gemini API mode: use api_key
         client_kwargs["api_key"] = api_key
 
-    if base_url and base_url != "DEFAULT_GEMINI_ENDPOINT" or timeout is not None:
+    if normalized_base_url is not None or timeout is not None:
         try:
             http_options_kwargs = {}
-            if base_url and base_url != "DEFAULT_GEMINI_ENDPOINT":
-                http_options_kwargs["base_url"] = base_url
+            if normalized_base_url is not None:
+                http_options_kwargs["base_url"] = normalized_base_url
             if timeout is not None:
                 http_options_kwargs["timeout"] = timeout
 
