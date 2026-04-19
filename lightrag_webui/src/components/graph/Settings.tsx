@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect} from 'react'
+import { useState, useCallback, useEffect, useRef, useLayoutEffect } from 'react'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/Popover'
 import Checkbox from '@/components/ui/Checkbox'
 import Button from '@/components/ui/Button'
@@ -61,6 +61,30 @@ const LabeledNumberInput = ({
 }) => {
   const { t } = useTranslation();
   const [currentValue, setCurrentValue] = useState<number | null>(value)
+
+  // Refs to hold the latest values for the unmount effect without triggering re-renders
+  const currentValueRef = useRef(currentValue)
+  const valueRef = useRef(value)
+  const onEditFinishedRef = useRef(onEditFinished)
+
+  useLayoutEffect(() => {
+    currentValueRef.current = currentValue
+    valueRef.current = value
+    onEditFinishedRef.current = onEditFinished
+  }, [currentValue, value, onEditFinished])
+
+  // Commit changes when the component unmounts (e.g. Popover closes before onBlur fires)
+  useEffect(() => {
+    return () => {
+      if (
+        currentValueRef.current !== null &&
+        valueRef.current !== currentValueRef.current
+      ) {
+        onEditFinishedRef.current(currentValueRef.current)
+      }
+    }
+  }, [])
+
   // Create unique ID using the label text converted to lowercase with spaces removed
   const id = `input-${label.toLowerCase().replace(/\s+/g, '-')}`;
 
@@ -215,11 +239,7 @@ export default function Settings() {
   const setGraphQueryMaxDepth = useCallback((depth: number) => {
     if (depth < 1) return
     useSettingsStore.setState({ graphQueryMaxDepth: depth })
-    const currentLabel = useSettingsStore.getState().queryLabel
-    useSettingsStore.getState().setQueryLabel('')
-    setTimeout(() => {
-      useSettingsStore.getState().setQueryLabel(currentLabel)
-    }, 300)
+    useGraphStore.getState().setGraphDataFetchAttempted(false)
   }, [])
 
   const setGraphMaxNodes = useCallback((nodes: number) => {
