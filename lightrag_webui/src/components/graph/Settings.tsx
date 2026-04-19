@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useRef } from 'react'
+import { useState, useCallback, useEffect, useLayoutEffect, useRef } from 'react'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/Popover'
 import Checkbox from '@/components/ui/Checkbox'
 import Button from '@/components/ui/Button'
@@ -68,9 +68,11 @@ const LabeledNumberInput = ({
   const currentValueRef = useRef(currentValue)
   const valueRef = useRef(value)
   const onEditFinishedRef = useRef(onEditFinished)
-  currentValueRef.current = currentValue
-  valueRef.current = value
-  onEditFinishedRef.current = onEditFinished
+  useLayoutEffect(() => {
+    currentValueRef.current = currentValue
+    valueRef.current = value
+    onEditFinishedRef.current = onEditFinished
+  })
 
   useEffect(() => {
     setCurrentValue(value)
