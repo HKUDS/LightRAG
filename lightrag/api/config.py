@@ -66,9 +66,9 @@ def get_default_host(binding_type: str) -> str:
         "lollms": os.getenv("LLM_BINDING_HOST", "http://localhost:9600"),
         "azure_openai": os.getenv("AZURE_OPENAI_ENDPOINT", "https://api.openai.com/v1"),
         "openai": os.getenv("LLM_BINDING_HOST", "https://api.openai.com/v1"),
-        "gemini": os.getenv(
-            "LLM_BINDING_HOST", "https://generativelanguage.googleapis.com"
-        ),
+        # Let google-genai pick the correct default endpoint/version unless the
+        # user explicitly overrides LLM_BINDING_HOST / EMBEDDING_BINDING_HOST.
+        "gemini": os.getenv("LLM_BINDING_HOST", "DEFAULT_GEMINI_ENDPOINT"),
     }
     return default_hosts.get(
         binding_type, os.getenv("LLM_BINDING_HOST", "http://localhost:11434")

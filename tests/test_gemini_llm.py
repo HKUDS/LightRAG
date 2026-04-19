@@ -127,6 +127,41 @@ def test_gemini_rejects_typed_response_format(monkeypatch):
 
 
 @pytest.mark.offline
+def test_gemini_default_service_root_is_not_treated_as_custom_base_url(monkeypatch):
+    gemini_module = _load_gemini_module(monkeypatch)
+    gemini_module._get_gemini_client.cache_clear()
+    monkeypatch.delenv("GOOGLE_GENAI_USE_VERTEXAI", raising=False)
+
+    client = gemini_module._get_gemini_client(
+        "test-key",
+        "https://generativelanguage.googleapis.com",
+        1234,
+    )
+
+    assert client.kwargs["api_key"] == "test-key"
+    assert "http_options" in client.kwargs
+    assert client.kwargs["http_options"].kwargs == {"timeout": 1234}
+
+
+@pytest.mark.offline
+def test_gemini_custom_base_url_is_preserved(monkeypatch):
+    gemini_module = _load_gemini_module(monkeypatch)
+    gemini_module._get_gemini_client.cache_clear()
+    monkeypatch.delenv("GOOGLE_GENAI_USE_VERTEXAI", raising=False)
+
+    client = gemini_module._get_gemini_client(
+        "test-key",
+        "https://proxy.example.com",
+        1234,
+    )
+
+    assert client.kwargs["http_options"].kwargs == {
+        "base_url": "https://proxy.example.com",
+        "timeout": 1234,
+    }
+
+
+@pytest.mark.offline
 @pytest.mark.asyncio
 async def test_gemini_streaming_structured_output_disables_cot(monkeypatch):
     gemini_module = _load_gemini_module(monkeypatch)
@@ -135,6 +170,7 @@ async def test_gemini_streaming_structured_output_disables_cot(monkeypatch):
         regular_text='{"answer":"ok"}',
         thought_text="this should not be included",
     )
+
     async def _single_chunk_stream(response):
         yield response
 
@@ -157,6 +193,7 @@ async def test_gemini_streaming_structured_output_disables_cot(monkeypatch):
         stream=True,
         enable_cot=True,
         response_format={"type": "json_object"},
+        api_key="test-key",
     )
     chunks = []
     async for chunk in stream:
