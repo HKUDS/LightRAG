@@ -134,17 +134,10 @@ def _build_generation_config(
 
     # Translate response_format to Gemini's native generation config fields.
     if response_format is not None:
-        is_json_object = (
-            isinstance(response_format, dict)
-            and response_format.get("type") == "json_object"
-        )
-        if is_json_object:
-            config_data.setdefault("response_mime_type", "application/json")
-        else:
-            # Typed/schema payload: request JSON output and attach the schema.
-            config_data.setdefault("response_mime_type", "application/json")
-            if "response_json_schema" not in config_data:
-                config_data["response_json_schema"] = response_format
+        config_data.setdefault("response_mime_type", "application/json")
+        schema = _normalize_gemini_response_schema(response_format)
+        if schema is not None and "response_json_schema" not in config_data:
+            config_data["response_json_schema"] = schema
 
     # Remove entries that are explicitly set to None to avoid type errors
     sanitized = {
@@ -157,6 +150,33 @@ def _build_generation_config(
         return None
 
     return types.GenerateContentConfig(**sanitized)
+
+
+def _normalize_gemini_response_schema(response_format: Any) -> Any | None:
+    """Extract a Gemini-compatible JSON schema from LightRAG/OpenAI inputs."""
+    if response_format is None:
+        return None
+
+    if hasattr(response_format, "model_json_schema") and callable(
+        response_format.model_json_schema
+    ):
+        return response_format.model_json_schema()
+
+    if isinstance(response_format, dict):
+        if response_format.get("type") == "json_object":
+            return None
+
+        if response_format.get("type") == "json_schema":
+            json_schema = response_format.get("json_schema")
+            if isinstance(json_schema, dict):
+                schema = json_schema.get("schema")
+                if isinstance(schema, dict):
+                    return schema
+                return json_schema
+
+        return response_format
+
+    return response_format
 
 
 def _format_history_messages(history_messages: list[dict[str, Any]] | None) -> str:

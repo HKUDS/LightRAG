@@ -67,3 +67,55 @@ def test_gemini_maps_schema_response_format_to_response_json_schema(monkeypatch)
     assert config.kwargs["response_mime_type"] == "application/json"
     assert config.kwargs["response_json_schema"] == schema
     assert "response_schema" not in config.kwargs
+
+
+@pytest.mark.offline
+def test_gemini_unwraps_openai_json_schema_wrapper(monkeypatch):
+    gemini_module = _load_gemini_module(monkeypatch)
+
+    schema = {
+        "type": "object",
+        "properties": {"answer": {"type": "string"}},
+        "required": ["answer"],
+    }
+    response_format = {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "answer_payload",
+            "schema": schema,
+        },
+    }
+
+    config = gemini_module._build_generation_config(
+        base_config=None,
+        system_prompt=None,
+        response_format=response_format,
+    )
+
+    assert config.kwargs["response_mime_type"] == "application/json"
+    assert config.kwargs["response_json_schema"] == schema
+
+
+@pytest.mark.offline
+def test_gemini_maps_model_json_schema_provider(monkeypatch):
+    gemini_module = _load_gemini_module(monkeypatch)
+
+    schema = {
+        "type": "object",
+        "properties": {"answer": {"type": "string"}},
+        "required": ["answer"],
+    }
+
+    class FakeSchemaModel:
+        @classmethod
+        def model_json_schema(cls):
+            return schema
+
+    config = gemini_module._build_generation_config(
+        base_config=None,
+        system_prompt=None,
+        response_format=FakeSchemaModel,
+    )
+
+    assert config.kwargs["response_mime_type"] == "application/json"
+    assert config.kwargs["response_json_schema"] == schema
