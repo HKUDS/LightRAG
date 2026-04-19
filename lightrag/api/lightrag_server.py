@@ -1034,6 +1034,8 @@ def create_app(args):
                     )
                     # Pass model only if provided, let function use its default otherwise
                     kwargs = {"texts": texts}
+                    if host is not None:
+                        kwargs["endpoint_url"] = host
                     if model:
                         kwargs["model"] = model
                     return await actual_func(**kwargs)
@@ -1150,6 +1152,7 @@ def create_app(args):
             prompt,
             system_prompt=system_prompt,
             history_messages=history_messages,
+            endpoint_url=args.llm_binding_host,
             **kwargs,
         )
 
