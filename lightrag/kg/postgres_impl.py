@@ -3493,22 +3493,22 @@ class PGVectorStorage(BaseVectorStorage):
             )  # higher priority for query
             embedding = embeddings[0]
 
-        embedding_string = ",".join(map(str, embedding))
-
+        # Use positional $4 parameter instead of string-interpolated literal.
+        # asyncpg sends the embedding via register_vector binary codec, avoiding
+        # per-query text serialization and PostgreSQL text-to-vector parsing.
         vector_cast = (
             "halfvec"
             if getattr(self.db, "vector_index_type", None) == "HNSW_HALFVEC"
             else "vector"
         )
         sql = SQL_TEMPLATES[self.namespace].format(
-            embedding_string=embedding_string,
-            table_name=self.table_name,
-            vector_cast=vector_cast,
+            table_name=self.table_name, vector_cast=vector_cast
         )
         params = {
             "workspace": self.workspace,
             "closer_than_threshold": 1 - self.cosine_better_than_threshold,
             "top_k": top_k,
+            "embedding": embedding,
         }
         results = await self.db.query(sql, params=list(params.values()), multirows=True)
         return results
@@ -6642,33 +6642,33 @@ SQL_TEMPLATES = {
                       update_time = EXCLUDED.update_time
                      """,
     "relationships": """
-                     SELECT r.source_id AS src_id,
-                            r.target_id AS tgt_id,
-                            EXTRACT(EPOCH FROM r.create_time)::BIGINT AS created_at
-                     FROM {table_name} r
-                     WHERE r.workspace = $1
-                       AND r.content_vector <=> '[{embedding_string}]'::{vector_cast} < $2
-                     ORDER BY r.content_vector <=> '[{embedding_string}]'::{vector_cast}
+                     SELECT source_id AS src_id,
+                            target_id AS tgt_id,
+                            EXTRACT(EPOCH FROM create_time)::BIGINT AS created_at
+                     FROM {table_name}
+                     WHERE workspace = $1
+                       AND content_vector <=> $4::{vector_cast} < $2
+                     ORDER BY content_vector <=> $4::{vector_cast}
                      LIMIT $3;
                      """,
     "entities": """
-                SELECT e.entity_name,
-                       EXTRACT(EPOCH FROM e.create_time)::BIGINT AS created_at
-                FROM {table_name} e
-                WHERE e.workspace = $1
-                  AND e.content_vector <=> '[{embedding_string}]'::{vector_cast} < $2
-                ORDER BY e.content_vector <=> '[{embedding_string}]'::{vector_cast}
+                SELECT entity_name,
+                       EXTRACT(EPOCH FROM create_time)::BIGINT AS created_at
+                FROM {table_name}
+                WHERE workspace = $1
+                  AND content_vector <=> $4::{vector_cast} < $2
+                ORDER BY content_vector <=> $4::{vector_cast}
                 LIMIT $3;
                 """,
     "chunks": """
-              SELECT c.id,
-                     c.content,
-                     c.file_path,
-                     EXTRACT(EPOCH FROM c.create_time)::BIGINT AS created_at
-              FROM {table_name} c
-              WHERE c.workspace = $1
-                AND c.content_vector <=> '[{embedding_string}]'::{vector_cast} < $2
-              ORDER BY c.content_vector <=> '[{embedding_string}]'::{vector_cast}
+              SELECT id,
+                     content,
+                     file_path,
+                     EXTRACT(EPOCH FROM create_time)::BIGINT AS created_at
+              FROM {table_name}
+              WHERE workspace = $1
+                AND content_vector <=> $4::{vector_cast} < $2
+              ORDER BY content_vector <=> $4::{vector_cast}
               LIMIT $3;
               """,
     # DROP tables
