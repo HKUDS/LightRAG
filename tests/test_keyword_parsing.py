@@ -50,14 +50,19 @@ def test_parse_keywords_payload_warns_when_json_repair_is_used():
     assert hl_keywords == ["AI", "Agents"]
     assert ll_keywords == ["RAG", "LightRAG"]
     mocked_warning.assert_called_once()
-    assert "Keyword extraction response required JSON repair" in mocked_warning.call_args[0][0]
+    assert (
+        "Keyword extraction response required JSON repair"
+        in mocked_warning.call_args[0][0]
+    )
 
 
 @pytest.mark.offline
 @pytest.mark.asyncio
 async def test_extract_keywords_only_accepts_empty_keyword_cache_without_requery():
     async def should_not_run(*_args, **_kwargs):
-        raise AssertionError("model_func should not be called on a valid empty cache hit")
+        raise AssertionError(
+            "model_func should not be called on a valid empty cache hit"
+        )
 
     param = QueryParam(model_func=should_not_run)
     global_config = {"addon_params": {"language": "en"}}

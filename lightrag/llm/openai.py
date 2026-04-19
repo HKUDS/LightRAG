@@ -1,6 +1,7 @@
 from ..utils import verbose_debug, VERBOSE_DEBUG
 import os
 import logging
+import warnings
 
 from collections.abc import AsyncIterator
 
@@ -15,7 +16,6 @@ from openai import (
     APIConnectionError,
     RateLimitError,
     APITimeoutError,
-    LengthFinishReasonError,
 )
 from tenacity import (
     retry,
@@ -73,6 +73,17 @@ class InvalidResponseError(Exception):
     """Custom exception class for triggering retry mechanism"""
 
     pass
+
+
+def _validate_openai_response_format(response_format: Any | None) -> None:
+    """Reject typed structured-output helpers; only wire-format dicts are supported."""
+    if response_format is None or isinstance(response_format, dict):
+        return
+
+    raise TypeError(
+        "openai_complete_if_cache only supports dict response_format payloads; "
+        "typed/Pydantic response_format values are not supported."
+    )
 
 
 # Module-level cache for tiktoken encodings
@@ -227,6 +238,15 @@ async def openai_complete_if_cache(
     Chain of Thought capabilities. The reasoning content is seamlessly integrated into the response
     using <think>...</think> tags.
 
+    Structured output design note:
+    - This adapter supports dict-based OpenAI response_format payloads,
+      including ``{"type": "json_object"}`` and dict-form ``json_schema``.
+    - Typed/Pydantic ``response_format`` helpers are rejected explicitly.
+    - Structured responses are returned as raw text from ``message.content``
+      and are not locally schema-validated here.
+    - ``keyword_extraction`` is deprecated; prefer
+      ``response_format={"type": "json_object"}`` instead.
+
     Note on truncated structured output: when the OpenAI SDK raises
     `LengthFinishReasonError`, callers may still receive partial raw JSON from
     `completion.choices[0].message.content`. That payload should be treated as
@@ -259,8 +279,10 @@ async def openai_complete_if_cache(
         token_tracker: Optional token usage tracker for monitoring API usage.
         stream: Whether to stream the response. Default is False.
         timeout: Request timeout in seconds. Default is None.
-        keyword_extraction: Whether to enable keyword extraction mode. When True, triggers
-            special response formatting for keyword extraction. Default is False.
+        keyword_extraction: Deprecated compatibility shim. When True and no
+            explicit ``response_format`` is supplied, it is mapped to
+            ``{"type": "json_object"}``. Prefer passing ``response_format``
+            directly. Default is False.
         use_azure: Whether to use Azure OpenAI service instead of standard OpenAI.
             When True, creates an AsyncAzureOpenAI client. Default is False.
         azure_deployment: Azure OpenAI deployment name. Only used when use_azure=True.
@@ -270,6 +292,10 @@ async def openai_complete_if_cache(
             environment variable.
         **kwargs: Additional keyword arguments to pass to the OpenAI API.
             Special kwargs:
+            - response_format: Structured output control forwarded to the OpenAI
+                chat completions API. This adapter accepts dict payloads such
+                as ``{"type": "json_object"}`` and dict-form ``json_schema``,
+                but rejects typed/Pydantic response_format values.
             - openai_client_configs: Dict of configuration options for the AsyncOpenAI client.
                 These will be passed to the client constructor but will be overridden by
                 explicit parameters (api_key, base_url). Supports proxy configuration,
@@ -298,14 +324,29 @@ async def openai_complete_if_cache(
     # Extract client configuration options
     client_configs = kwargs.pop("openai_client_configs", {})
 
-    # Handle entity extraction mode with json_object for compatibility
+    # Deprecation shims: map legacy boolean flags to response_format only when
+    # an explicit response_format was not supplied by the caller. Prefer passing
+    # response_format directly.
     entity_extraction = kwargs.pop("entity_extraction", False)
-    if entity_extraction:
+    if entity_extraction and kwargs.get("response_format") is None:
+        warnings.warn(
+            "openai_complete_if_cache(entity_extraction=True) is deprecated; "
+            "pass response_format={'type': 'json_object'} instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         kwargs["response_format"] = {"type": "json_object"}
-
-    # Handle keyword extraction mode with json_object for broader compatibility
-    if keyword_extraction:
+    if keyword_extraction and kwargs.get("response_format") is None:
+        warnings.warn(
+            "openai_complete_if_cache(keyword_extraction=True) is deprecated; "
+            "pass response_format={'type': 'json_object'} instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         kwargs["response_format"] = {"type": "json_object"}
+    _validate_openai_response_format(kwargs.get("response_format"))
+    if kwargs.get("response_format") is not None:
+        enable_cot = False
 
     # Create the OpenAI client (supports both OpenAI and Azure)
     openai_async_client = create_openai_async_client(
@@ -347,48 +388,14 @@ async def openai_complete_if_cache(
     api_model = azure_deployment if use_azure and azure_deployment else model
 
     try:
-        # Don't use async with context manager, use client directly
-        # Use parse() for structured output whenever available so truncated responses can
-        # still surface raw content via LengthFinishReasonError.completion.
-        # For JSON object mode we keep a fallback to create() for broader compatibility
-        # with OpenAI-compatible providers that may not implement parse().
-        response_format = kwargs.get("response_format")
-        use_parse = (
-            "response_format" in kwargs
-            and response_format is not None
-            and (entity_extraction or not isinstance(response_format, dict))
+        # Single dispatch: create() covers the dict-based response_format
+        # payloads used by this project. Typed/Pydantic helpers are rejected
+        # above. Length-truncation is detected via finish_reason below and the
+        # raw content is returned unchanged so upstream tolerant JSON parsing
+        # can still salvage it.
+        response = await openai_async_client.chat.completions.create(
+            model=api_model, messages=messages, **kwargs
         )
-        if use_parse:
-            try:
-                response = await openai_async_client.chat.completions.parse(
-                    model=api_model, messages=messages, **kwargs
-                )
-            except (AttributeError, TypeError) as e:
-                if not entity_extraction:
-                    raise
-                logger.debug(
-                    "OpenAI-compatible client does not support parse() for JSON mode; "
-                    "falling back to create(). Model: %s, error: %s",
-                    model,
-                    e,
-                )
-                response = await openai_async_client.chat.completions.create(
-                    model=api_model, messages=messages, **kwargs
-                )
-            except LengthFinishReasonError as e:
-                response = getattr(e, "completion", None)
-                if response is None:
-                    raise
-                logger.warning(
-                    "Structured OpenAI-compatible response hit the length limit; "
-                    "falling back to raw content. Model: %s, max_completion_tokens: %s",
-                    model,
-                    kwargs.get("max_completion_tokens") or kwargs.get("max_tokens"),
-                )
-        else:
-            response = await openai_async_client.chat.completions.create(
-                model=api_model, messages=messages, **kwargs
-            )
     except APITimeoutError as e:
         logger.error(f"OpenAI API Timeout Error: {e}")
         await openai_async_client.close()  # Ensure client is closed

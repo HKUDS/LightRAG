@@ -497,7 +497,6 @@ def create_app(args):
             prompt,
             system_prompt=None,
             history_messages=None,
-            keyword_extraction=False,
             **kwargs,
         ) -> str:
             from lightrag.llm.openai import openai_complete_if_cache
@@ -505,7 +504,10 @@ def create_app(args):
             if history_messages is None:
                 history_messages = []
 
-            # Use pre-processed configuration to avoid repeated parsing
+            # Use pre-processed configuration to avoid repeated parsing.
+            # response_format and legacy keyword_extraction/entity_extraction
+            # flags flow through **kwargs; openai_complete_if_cache handles
+            # the deprecation shim for the legacy booleans.
             kwargs["timeout"] = llm_timeout
             if config_cache.openai_llm_options:
                 kwargs.update(config_cache.openai_llm_options)
@@ -517,7 +519,6 @@ def create_app(args):
                 history_messages=history_messages,
                 base_url=args.llm_binding_host,
                 api_key=args.llm_binding_api_key,
-                keyword_extraction=keyword_extraction,
                 **kwargs,
             )
 
@@ -532,7 +533,6 @@ def create_app(args):
             prompt,
             system_prompt=None,
             history_messages=None,
-            keyword_extraction=False,
             **kwargs,
         ) -> str:
             from lightrag.llm.azure_openai import azure_openai_complete_if_cache
@@ -540,7 +540,8 @@ def create_app(args):
             if history_messages is None:
                 history_messages = []
 
-            # Use pre-processed configuration to avoid repeated parsing
+            # response_format and legacy extraction booleans flow through kwargs
+            # to azure_openai_complete_if_cache, which handles deprecation shims.
             kwargs["timeout"] = llm_timeout
             if config_cache.openai_llm_options:
                 kwargs.update(config_cache.openai_llm_options)
@@ -552,7 +553,6 @@ def create_app(args):
                 history_messages=history_messages,
                 base_url=args.llm_binding_host,
                 api_key=os.getenv("AZURE_OPENAI_API_KEY", args.llm_binding_api_key),
-                keyword_extraction=keyword_extraction,
                 api_version=os.getenv("AZURE_OPENAI_API_VERSION", "2024-08-01-preview"),
                 **kwargs,
             )
@@ -568,7 +568,6 @@ def create_app(args):
             prompt,
             system_prompt=None,
             history_messages=None,
-            keyword_extraction=False,
             **kwargs,
         ) -> str:
             from lightrag.llm.gemini import gemini_complete_if_cache
@@ -576,7 +575,8 @@ def create_app(args):
             if history_messages is None:
                 history_messages = []
 
-            # Use pre-processed configuration to avoid repeated parsing
+            # response_format and legacy extraction booleans flow through kwargs
+            # to gemini_complete_if_cache, which handles deprecation shims.
             kwargs["timeout"] = llm_timeout
             if (
                 config_cache.gemini_llm_options is not None
@@ -591,7 +591,6 @@ def create_app(args):
                 history_messages=history_messages,
                 api_key=args.llm_binding_api_key,
                 base_url=args.llm_binding_host,
-                keyword_extraction=keyword_extraction,
                 **kwargs,
             )
 
@@ -737,12 +736,11 @@ def create_app(args):
                     system_prompt=None,
                     history_messages=None,
                     enable_cot: bool = False,
-                    keyword_extraction=False,
-                    entity_extraction=False,
                     **kwargs,
                 ):
-                    if keyword_extraction or entity_extraction:
-                        kwargs["response_format"] = {"type": "json_object"}
+                    # response_format and legacy extraction booleans flow
+                    # through kwargs to _ollama_model_if_cache, which handles
+                    # the deprecation shim and emits a single warning.
                     if history_messages is None:
                         history_messages = []
                     if role_provider_options:
@@ -768,10 +766,11 @@ def create_app(args):
                     system_prompt=None,
                     history_messages=None,
                     enable_cot: bool = False,
-                    keyword_extraction=False,
-                    entity_extraction=False,
                     **kwargs,
                 ):
+                    # response_format and legacy extraction booleans flow
+                    # through kwargs to lollms_model_if_cache, which drops
+                    # them and emits deprecation warnings when booleans are set.
                     if history_messages is None:
                         history_messages = []
                     if role_provider_options:
@@ -796,7 +795,6 @@ def create_app(args):
                     prompt,
                     system_prompt=None,
                     history_messages=None,
-                    keyword_extraction=False,
                     **kwargs,
                 ) -> str:
                     if history_messages is None:
@@ -811,7 +809,6 @@ def create_app(args):
                         history_messages=history_messages,
                         base_url=role_host,
                         api_key=os.getenv("AZURE_OPENAI_API_KEY", role_apikey),
-                        keyword_extraction=keyword_extraction,
                         api_version=os.getenv(
                             "AZURE_OPENAI_API_VERSION", "2024-08-01-preview"
                         ),
@@ -826,7 +823,6 @@ def create_app(args):
                     prompt,
                     system_prompt=None,
                     history_messages=None,
-                    keyword_extraction=False,
                     **kwargs,
                 ) -> str:
                     if history_messages is None:
@@ -841,7 +837,6 @@ def create_app(args):
                         history_messages=history_messages,
                         api_key=role_apikey,
                         base_url=role_host,
-                        keyword_extraction=keyword_extraction,
                         **kwargs,
                     )
 
@@ -853,7 +848,6 @@ def create_app(args):
                 prompt,
                 system_prompt=None,
                 history_messages=None,
-                keyword_extraction=False,
                 **kwargs,
             ) -> str:
                 if history_messages is None:
@@ -868,7 +862,6 @@ def create_app(args):
                     history_messages=history_messages,
                     base_url=role_host,
                     api_key=role_apikey,
-                    keyword_extraction=keyword_extraction,
                     **kwargs,
                 )
 
@@ -1139,7 +1132,6 @@ def create_app(args):
         prompt,
         system_prompt=None,
         history_messages=None,
-        keyword_extraction=False,
         **kwargs,
     ) -> str:
         # Lazy import
@@ -1148,7 +1140,9 @@ def create_app(args):
         if history_messages is None:
             history_messages = []
 
-        # Use global temperature for Bedrock
+        # Bedrock Converse API has no JSON mode; response_format and the legacy
+        # extraction booleans flow through kwargs to bedrock_complete_if_cache,
+        # which drops them and emits deprecation warnings when booleans are set.
         kwargs["temperature"] = get_env_value("BEDROCK_LLM_TEMPERATURE", 1.0, float)
 
         return await bedrock_complete_if_cache(
@@ -1156,7 +1150,6 @@ def create_app(args):
             prompt,
             system_prompt=system_prompt,
             history_messages=history_messages,
-            keyword_extraction=keyword_extraction,
             **kwargs,
         )
 

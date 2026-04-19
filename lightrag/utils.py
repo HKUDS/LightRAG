@@ -14,6 +14,7 @@ import os
 import re
 import time
 import uuid
+import warnings
 from dataclasses import dataclass
 from datetime import datetime
 from functools import wraps
@@ -605,6 +606,49 @@ def compute_args_hash(*args: Any) -> str:
         # Handle surrogate characters and other encoding issues
         safe_bytes = args_str.encode("utf-8", errors="replace")
         return md5(safe_bytes).hexdigest()
+
+
+def _serialize_cache_variant(value: Any) -> str:
+    """Serialize cache-affecting options to a stable string for hash inputs."""
+    if value is None:
+        return ""
+
+    if hasattr(value, "model_dump") and callable(value.model_dump):
+        try:
+            value = value.model_dump(mode="json")
+        except TypeError:
+            value = value.model_dump()
+
+    if hasattr(value, "model_json_schema") and callable(value.model_json_schema):
+        value = value.model_json_schema()
+
+    try:
+        return json.dumps(
+            value,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=repr,
+        )
+    except (TypeError, ValueError):
+        return repr(value)
+
+
+def _validate_cached_response_format(response_format: Any | None) -> None:
+    """Reject structured-output modes that the cache wrapper does not support."""
+    if response_format is None:
+        return
+
+    if (
+        isinstance(response_format, dict)
+        and response_format.get("type") == "json_object"
+    ):
+        return
+
+    raise ValueError(
+        "use_llm_func_with_cache only supports response_format={'type': 'json_object'}; "
+        "json_schema and typed response_format values must not be passed through the cache wrapper."
+    )
 
 
 def compute_mdhash_id(content: str, prefix: str = "") -> str:
@@ -2040,6 +2084,7 @@ async def use_llm_func_with_cache(
     cache_type: str = "extract",
     chunk_id: str | None = None,
     cache_keys_collector: list = None,
+    response_format: Any | None = None,
     entity_extraction: bool = False,
 ) -> tuple[str, int]:
     """Call LLM function with cache support and text sanitization
@@ -2059,15 +2104,31 @@ async def use_llm_func_with_cache(
         chunk_id: Chunk identifier to store in cache
         text_chunks_storage: Text chunks storage to update llm_cache_list
         cache_keys_collector: Optional list to collect cache keys for batch processing
-        entity_extraction: Whether to enable JSON structured output for entity extraction.
-            When True, passes entity_extraction=True to the LLM provider to trigger
-            native structured output (e.g., response_format for OpenAI, format for Ollama).
+        response_format: Structured output control forwarded to the LLM provider.
+            Providers translate this to their native structured-output surface
+            (OpenAI response_format, Ollama format, Gemini response_mime_type/schema).
+            ``{"type": "json_object"}`` requests JSON output; typed/schema payloads
+            trigger schema-constrained output where supported; ``None`` leaves
+            output unconstrained. Providers that do not support structured output
+            safely strip this argument.
+        entity_extraction: Deprecated. When True and ``response_format`` is not
+            provided, maps to ``{"type": "json_object"}``. Prefer passing
+            ``response_format`` directly.
 
     Returns:
         tuple[str, int]: (LLM response text, timestamp)
             - For cache hits: (content, cache_create_time)
             - For cache misses: (content, current_timestamp)
     """
+    if entity_extraction and response_format is None:
+        warnings.warn(
+            "use_llm_func_with_cache(entity_extraction=True) is deprecated; "
+            "pass response_format={'type': 'json_object'} instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        response_format = {"type": "json_object"}
+    _validate_cached_response_format(response_format)
     # Sanitize input text to prevent UTF-8 encoding errors for all LLM providers
     safe_user_prompt = sanitize_text_for_encoding(user_prompt)
     safe_system_prompt = (
@@ -2097,7 +2158,10 @@ async def use_llm_func_with_cache(
             prompt_parts.append(history)
         _prompt = "\n".join(prompt_parts)
 
-        arg_hash = compute_args_hash(_prompt)
+        response_format_key = _serialize_cache_variant(response_format)
+        arg_hash = compute_args_hash(
+            _prompt, "\n<response_format>\n", response_format_key
+        )
         # Generate cache key for this LLM call
         cache_key = generate_cache_key("default", cache_type, arg_hash)
 
@@ -2126,8 +2190,8 @@ async def use_llm_func_with_cache(
             kwargs["history_messages"] = safe_history_messages
         if max_tokens is not None:
             kwargs["max_tokens"] = max_tokens
-        if entity_extraction:
-            kwargs["entity_extraction"] = True
+        if response_format is not None:
+            kwargs["response_format"] = response_format
 
         res: str = await use_llm_func(
             safe_user_prompt, system_prompt=safe_system_prompt, **kwargs
@@ -2162,8 +2226,8 @@ async def use_llm_func_with_cache(
         kwargs["history_messages"] = safe_history_messages
     if max_tokens is not None:
         kwargs["max_tokens"] = max_tokens
-    if entity_extraction:
-        kwargs["entity_extraction"] = True
+    if response_format is not None:
+        kwargs["response_format"] = response_format
 
     try:
         res = await use_llm_func(

@@ -69,7 +69,7 @@ async def test_bedrock_keyword_extraction_does_not_inject_system_prompt():
         result = await bedrock_complete_if_cache(
             model="bedrock-model",
             prompt="hello",
-            keyword_extraction=True,
+            response_format={"type": "json_object"},
         )
 
     assert result == '{"high_level_keywords":["AI"],"low_level_keywords":["RAG"]}'
