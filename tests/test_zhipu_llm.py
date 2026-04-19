@@ -197,3 +197,62 @@ async def test_zhipu_keyword_extraction_ignores_reasoning_content(monkeypatch):
         )
 
     assert result == '{"high_level_keywords": ["AI"], "low_level_keywords": ["RAG"]}'
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_zhipu_if_cache_entity_extraction_maps_to_json_object(monkeypatch):
+    captured_calls = []
+
+    class FakeClient:
+        def __init__(self, api_key=None):
+            self.api_key = api_key
+            self.chat = SimpleNamespace(completions=SimpleNamespace(create=self.create))
+
+        def create(self, **kwargs):
+            captured_calls.append(kwargs)
+            return _fake_chat_response(
+                content='{"entities":[],"relationships":[]}',
+                reasoning_content="this should not be parsed",
+            )
+
+    zhipu_module = _load_zhipu_module(monkeypatch, FakeClient)
+
+    with pytest.warns(DeprecationWarning):
+        result = await zhipu_module.zhipu_complete_if_cache(
+            prompt="hello",
+            api_key="test-key",
+            entity_extraction=True,
+            enable_cot=True,
+        )
+
+    assert result == '{"entities":[],"relationships":[]}'
+    assert captured_calls[0]["response_format"] == {"type": "json_object"}
+    assert "entity_extraction" not in captured_calls[0]
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_zhipu_if_cache_structured_output_disables_cot(monkeypatch):
+    class FakeClient:
+        def __init__(self, api_key=None):
+            self.api_key = api_key
+            self.chat = SimpleNamespace(completions=SimpleNamespace(create=self.create))
+
+        def create(self, **kwargs):
+            return _fake_chat_response(
+                content='{"answer":"ok"}',
+                reasoning_content="this should not be included",
+            )
+
+    zhipu_module = _load_zhipu_module(monkeypatch, FakeClient)
+
+    result = await zhipu_module.zhipu_complete_if_cache(
+        prompt="hello",
+        api_key="test-key",
+        response_format={"type": "json_object"},
+        enable_cot=True,
+    )
+
+    assert result == '{"answer":"ok"}'
+    assert "<think>" not in result

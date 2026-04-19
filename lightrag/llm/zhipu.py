@@ -62,6 +62,9 @@ async def zhipu_complete_if_cache(
       `<think>...</think>`.
     - `response_format`: forwarded as Zhipu's OpenAI-compatible structured
       output parameter when supplied by callers.
+    - Deprecated `keyword_extraction` and `entity_extraction` booleans are
+      compatibility shims; when no explicit `response_format` is supplied,
+      they are mapped to `{"type": "json_object"}`.
     """
     # dynamically load ZhipuAI
     try:
@@ -92,9 +95,42 @@ async def zhipu_complete_if_cache(
     logger.debug(f"Query: {prompt}")
     verbose_debug(f"System prompt: {system_prompt}")
 
+    # Deprecation shims: map legacy extraction booleans to response_format only
+    # when an explicit response_format was not supplied by the caller. The
+    # legacy path also forces enable_cot=False so reasoning_content cannot
+    # corrupt the JSON payload expected by callers relying on it.
+    keyword_extraction = kwargs.pop("keyword_extraction", False)
+    entity_extraction = kwargs.pop("entity_extraction", False)
+    if kwargs.get("response_format") is None:
+        if entity_extraction:
+            warnings.warn(
+                "zhipu_complete_if_cache(entity_extraction=True) is deprecated; "
+                "pass response_format={'type': 'json_object'} instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            kwargs["response_format"] = {"type": "json_object"}
+            enable_cot = False
+        elif keyword_extraction:
+            warnings.warn(
+                "zhipu_complete_if_cache(keyword_extraction=True) is deprecated; "
+                "pass response_format={'type': 'json_object'} instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            kwargs["response_format"] = {"type": "json_object"}
+            enable_cot = False
+
+    # Structured output and COT are mutually exclusive here because
+    # reasoning_content would corrupt the JSON payload expected by callers.
+    if kwargs.get("response_format") is not None:
+        enable_cot = False
+
     # Remove unsupported kwargs
     kwargs = {
-        k: v for k, v in kwargs.items() if k not in ["hashing_kv", "keyword_extraction"]
+        k: v
+        for k, v in kwargs.items()
+        if k not in ["hashing_kv", "keyword_extraction", "entity_extraction"]
     }
     # `thinking` is an official Zhipu request field. Example:
     # {"type": "enabled"} enables reasoning output on supported models.
