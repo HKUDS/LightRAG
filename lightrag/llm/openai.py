@@ -75,6 +75,17 @@ class InvalidResponseError(Exception):
     pass
 
 
+def _validate_openai_response_format(response_format: Any | None) -> None:
+    """Reject typed structured-output helpers; only wire-format dicts are supported."""
+    if response_format is None or isinstance(response_format, dict):
+        return
+
+    raise TypeError(
+        "openai_complete_if_cache only supports dict response_format payloads; "
+        "typed/Pydantic response_format values are not supported."
+    )
+
+
 # Module-level cache for tiktoken encodings
 _TIKTOKEN_ENCODING_CACHE: dict[str, Any] = {}
 
@@ -228,13 +239,11 @@ async def openai_complete_if_cache(
     using <think>...</think> tags.
 
     Structured output design note:
-    - LightRAG only uses OpenAI JSON-object mode via
-      ``response_format={"type": "json_object"}``.
-    - Other ``response_format`` payloads, including OpenAI ``json_schema``,
-      are forwarded as-is to ``chat.completions.create()`` when supplied.
-    - This path does not use ``parse()`` or Pydantic-based typed structured
-      output; structured responses are returned as raw text from
-      ``message.content`` and are not locally schema-validated here.
+    - This adapter supports dict-based OpenAI response_format payloads,
+      including ``{"type": "json_object"}`` and dict-form ``json_schema``.
+    - Typed/Pydantic ``response_format`` helpers are rejected explicitly.
+    - Structured responses are returned as raw text from ``message.content``
+      and are not locally schema-validated here.
     - ``keyword_extraction`` is deprecated; prefer
       ``response_format={"type": "json_object"}`` instead.
 
@@ -284,10 +293,9 @@ async def openai_complete_if_cache(
         **kwargs: Additional keyword arguments to pass to the OpenAI API.
             Special kwargs:
             - response_format: Structured output control forwarded to the OpenAI
-                chat completions API. LightRAG primarily relies on
-                ``{"type": "json_object"}`` here; schema-like payloads are
-                passed through as-is, but this path does not use ``parse()`` or
-                typed response deserialization.
+                chat completions API. This adapter accepts dict payloads such
+                as ``{"type": "json_object"}`` and dict-form ``json_schema``,
+                but rejects typed/Pydantic response_format values.
             - openai_client_configs: Dict of configuration options for the AsyncOpenAI client.
                 These will be passed to the client constructor but will be overridden by
                 explicit parameters (api_key, base_url). Supports proxy configuration,
@@ -336,6 +344,7 @@ async def openai_complete_if_cache(
             stacklevel=2,
         )
         kwargs["response_format"] = {"type": "json_object"}
+    _validate_openai_response_format(kwargs.get("response_format"))
 
     # Create the OpenAI client (supports both OpenAI and Azure)
     openai_async_client = create_openai_async_client(
@@ -377,12 +386,11 @@ async def openai_complete_if_cache(
     api_model = azure_deployment if use_azure and azure_deployment else model
 
     try:
-        # Single dispatch: create() covers both text and json_object response
-        # formats. The project never passes Pydantic / JSON Schema, so parse()
-        # buys no extra value and risks server-side compatibility on
-        # OpenAI-alike providers. Length-truncation is detected via
-        # finish_reason below and the raw content is returned unchanged so
-        # upstream tolerant JSON parsing can still salvage it.
+        # Single dispatch: create() covers the dict-based response_format
+        # payloads used by this project. Typed/Pydantic helpers are rejected
+        # above. Length-truncation is detected via finish_reason below and the
+        # raw content is returned unchanged so upstream tolerant JSON parsing
+        # can still salvage it.
         response = await openai_async_client.chat.completions.create(
             model=api_model, messages=messages, **kwargs
         )

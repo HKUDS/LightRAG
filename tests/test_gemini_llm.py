@@ -97,25 +97,11 @@ def test_gemini_unwraps_openai_json_schema_wrapper(monkeypatch):
 
 
 @pytest.mark.offline
-def test_gemini_maps_model_json_schema_provider(monkeypatch):
+def test_gemini_rejects_typed_response_format(monkeypatch):
     gemini_module = _load_gemini_module(monkeypatch)
 
-    schema = {
-        "type": "object",
-        "properties": {"answer": {"type": "string"}},
-        "required": ["answer"],
-    }
-
     class FakeSchemaModel:
-        @classmethod
-        def model_json_schema(cls):
-            return schema
+        pass
 
-    config = gemini_module._build_generation_config(
-        base_config=None,
-        system_prompt=None,
-        response_format=FakeSchemaModel,
-    )
-
-    assert config.kwargs["response_mime_type"] == "application/json"
-    assert config.kwargs["response_json_schema"] == schema
+    with pytest.raises(TypeError, match="typed/Pydantic"):
+        gemini_module._validate_gemini_response_format(FakeSchemaModel)

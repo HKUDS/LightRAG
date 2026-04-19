@@ -157,11 +157,6 @@ def _normalize_gemini_response_schema(response_format: Any) -> Any | None:
     if response_format is None:
         return None
 
-    if hasattr(response_format, "model_json_schema") and callable(
-        response_format.model_json_schema
-    ):
-        return response_format.model_json_schema()
-
     if isinstance(response_format, dict):
         if response_format.get("type") == "json_object":
             return None
@@ -177,6 +172,17 @@ def _normalize_gemini_response_schema(response_format: Any) -> Any | None:
         return response_format
 
     return response_format
+
+
+def _validate_gemini_response_format(response_format: Any | None) -> None:
+    """Reject typed structured-output helpers; only dict payloads are supported."""
+    if response_format is None or isinstance(response_format, dict):
+        return
+
+    raise TypeError(
+        "gemini_complete_if_cache only supports dict response_format payloads; "
+        "typed/Pydantic response_format values are not supported."
+    )
 
 
 def _format_history_messages(history_messages: list[dict[str, Any]] | None) -> str:
@@ -275,9 +281,10 @@ async def gemini_complete_if_cache(
       to Gemini's native generation config fields.
     - ``response_format={"type": "json_object"}`` maps to
       ``response_mime_type="application/json"``.
-    - Schema-like ``response_format`` payloads map to
+    - Dict-form ``json_schema`` payloads map to
       ``response_mime_type="application/json"`` plus
       ``response_json_schema=<schema>``.
+    - Typed/Pydantic ``response_format`` helpers are rejected explicitly.
     - Deprecated ``keyword_extraction`` and ``entity_extraction`` booleans are
       compatibility shims; when no explicit ``response_format`` is supplied,
       they are mapped to ``{"type": "json_object"}``.
@@ -298,8 +305,9 @@ async def gemini_complete_if_cache(
         generation_config: Optional generation configuration dict.
         response_format: OpenAI-style structured output control translated to
             Gemini generation config. ``{"type": "json_object"}`` maps to
-            ``response_mime_type="application/json"``; schema-like payloads
-            map to ``response_json_schema``.
+            ``response_mime_type="application/json"``; dict-form
+            ``json_schema`` payloads map to ``response_json_schema``.
+            Typed/Pydantic response_format values are rejected.
         token_tracker: Optional token usage tracker for monitoring API usage.
         stream: Whether to stream the response.
         hashing_kv: Storage interface (for interface parity with other bindings).
@@ -339,6 +347,7 @@ async def gemini_complete_if_cache(
                 stacklevel=2,
             )
             response_format = {"type": "json_object"}
+    _validate_gemini_response_format(response_format)
 
     history_block = _format_history_messages(history_messages)
     prompt_sections = []

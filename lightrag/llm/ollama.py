@@ -70,6 +70,11 @@ def _normalize_ollama_response_format(kwargs: dict) -> None:
         if response_format.get("type") == "json_object":
             kwargs["format"] = "json"
             return
+        if response_format.get("type") == "json_schema":
+            json_schema = response_format.get("json_schema")
+            if isinstance(json_schema, dict):
+                kwargs["format"] = json_schema.get("schema", json_schema)
+                return
 
     # Fall back to passing through schema-like payloads for native Ollama support.
     kwargs["format"] = response_format

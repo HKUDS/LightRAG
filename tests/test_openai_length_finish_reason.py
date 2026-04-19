@@ -139,3 +139,27 @@ async def test_legacy_keyword_extraction_emits_deprecation_warning():
     assert fake_client.chat.completions.create.await_args.kwargs["response_format"] == {
         "type": "json_object"
     }
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_typed_response_format_is_rejected():
+    completion = _make_completion("{}")
+    fake_client = _make_fake_client(completion)
+
+    class FakeSchemaModel:
+        pass
+
+    with patch(
+        "lightrag.llm.openai.create_openai_async_client",
+        return_value=fake_client,
+    ):
+        with pytest.raises(TypeError, match="typed/Pydantic"):
+            await openai_complete_if_cache(
+                model="test-model",
+                prompt="Extract entities",
+                response_format=FakeSchemaModel,
+            )
+
+    fake_client.chat.completions.create.assert_not_awaited()
+    fake_client.close.assert_not_awaited()

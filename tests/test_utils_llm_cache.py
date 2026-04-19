@@ -39,3 +39,24 @@ async def test_use_llm_func_with_cache_partitions_cache_by_response_format():
     assert json_result == '{"answer":"json"}'
     assert llm_func.await_count == 2
     assert len(cache._store) == 2
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_use_llm_func_with_cache_rejects_json_schema_response_format():
+    llm_func = AsyncMock()
+
+    with pytest.raises(ValueError, match="json_schema"):
+        await use_llm_func_with_cache(
+            "same prompt",
+            llm_func,
+            response_format={
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "answer_payload",
+                    "schema": {"type": "object"},
+                },
+            },
+        )
+
+    llm_func.assert_not_awaited()

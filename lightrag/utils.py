@@ -634,6 +634,23 @@ def _serialize_cache_variant(value: Any) -> str:
         return repr(value)
 
 
+def _validate_cached_response_format(response_format: Any | None) -> None:
+    """Reject structured-output modes that the cache wrapper does not support."""
+    if response_format is None:
+        return
+
+    if (
+        isinstance(response_format, dict)
+        and response_format.get("type") == "json_object"
+    ):
+        return
+
+    raise ValueError(
+        "use_llm_func_with_cache only supports response_format={'type': 'json_object'}; "
+        "json_schema and typed response_format values must not be passed through the cache wrapper."
+    )
+
+
 def compute_mdhash_id(content: str, prefix: str = "") -> str:
     """
     Compute a unique ID for a given content string.
@@ -2111,6 +2128,7 @@ async def use_llm_func_with_cache(
             stacklevel=2,
         )
         response_format = {"type": "json_object"}
+    _validate_cached_response_format(response_format)
     # Sanitize input text to prevent UTF-8 encoding errors for all LLM providers
     safe_user_prompt = sanitize_text_for_encoding(user_prompt)
     safe_system_prompt = (
