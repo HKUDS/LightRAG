@@ -52,7 +52,7 @@ from lightrag.base import (
     QueryResult,
     QueryContextResult,
 )
-from lightrag.prompt import PROMPTS
+from lightrag.prompt import PROMPTS, resolve_entity_extraction_prompt_profile
 from lightrag.constants import (
     GRAPH_FIELD_SEP,
     DEFAULT_MAX_ENTITY_TOKENS,
@@ -382,7 +382,10 @@ async def _summarize_descriptions(
     # Apply higher priority (8) to entity/relation summary tasks
     use_llm_func = partial(use_llm_func, _priority=8)
 
-    language = global_config["addon_params"].get("language", DEFAULT_SUMMARY_LANGUAGE)
+    addon_params = global_config.get("addon_params") or {}
+    language = global_config.get("_resolved_summary_language")
+    if language is None:
+        language = addon_params.get("language", DEFAULT_SUMMARY_LANGUAGE)
 
     summary_length_recommended = global_config["summary_length_recommended"]
 
@@ -3264,17 +3267,27 @@ async def extract_entities(
 
     ordered_chunks = list(chunks.items())
     # add language and example number params to prompt
-    language = global_config["addon_params"].get("language", DEFAULT_SUMMARY_LANGUAGE)
-    entity_types_guidance = global_config["addon_params"].get(
-        "entity_types_guidance", PROMPTS["default_entity_types_guidance"]
-    )
+    addon_params = global_config.get("addon_params") or {}
+    language = global_config.get("_resolved_summary_language")
+    if language is None:
+        language = addon_params.get("language", DEFAULT_SUMMARY_LANGUAGE)
+    prompt_profile = global_config.get("_entity_extraction_prompt_profile")
+    if prompt_profile is None:
+        # Fallback for callers that construct global_config directly (e.g. tests
+        # or custom wiring). Re-run the resolver so behavior matches the cached
+        # path that LightRAG.__post_init__ populates, instead of duplicating
+        # guidance/override logic here.
+        prompt_profile = resolve_entity_extraction_prompt_profile(
+            addon_params, use_json_extraction
+        )
+    entity_types_guidance = prompt_profile["entity_types_guidance"]
 
     max_total_records = global_config["entity_extract_max_records"]
     max_entity_records = global_config["entity_extract_max_entities"]
 
     if use_json_extraction:
         # JSON mode: use JSON-specific prompts without delimiters
-        examples = "\n".join(PROMPTS["entity_extraction_json_examples"])
+        examples = "\n".join(prompt_profile["entity_extraction_json_examples"])
         context_base = dict(
             entity_types_guidance=entity_types_guidance,
             examples=examples,
@@ -3284,7 +3297,7 @@ async def extract_entities(
         )
     else:
         # Text mode: use traditional delimiter-based prompts
-        examples = "\n".join(PROMPTS["entity_extraction_examples"])
+        examples = "\n".join(prompt_profile["entity_extraction_examples"])
         example_context_base = dict(
             tuple_delimiter=PROMPTS["DEFAULT_TUPLE_DELIMITER"],
             completion_delimiter=PROMPTS["DEFAULT_COMPLETION_DELIMITER"],
@@ -3906,7 +3919,10 @@ async def extract_keywords_only(
     # 1. Build the examples
     examples = "\n".join(PROMPTS["keywords_extraction_examples"])
 
-    language = global_config["addon_params"].get("language", DEFAULT_SUMMARY_LANGUAGE)
+    addon_params = global_config.get("addon_params") or {}
+    language = global_config.get("_resolved_summary_language")
+    if language is None:
+        language = addon_params.get("language", DEFAULT_SUMMARY_LANGUAGE)
 
     # 2. Handle cache if needed - add cache type for keywords
     args_hash = compute_args_hash(
