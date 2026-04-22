@@ -336,8 +336,9 @@ async def openai_complete_if_cache(
     try:
         # Don't use async with context manager, use client directly
         if "response_format" in kwargs:
+            parse_kwargs = {k: v for k, v in kwargs.items() if k != "stream"}
             response = await openai_async_client.chat.completions.parse(
-                model=api_model, messages=messages, **kwargs
+                model=api_model, messages=messages, **parse_kwargs
             )
         else:
             response = await openai_async_client.chat.completions.create(
