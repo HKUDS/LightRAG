@@ -742,7 +742,11 @@ def resolve_entity_type_prompt_path(prompt_file_name: str | Path) -> Path:
         )
 
     candidate = Path(file_name)
-    if candidate.is_absolute() or candidate.name != file_name or ".." in candidate.parts:
+    if (
+        candidate.is_absolute()
+        or candidate.name != file_name
+        or ".." in candidate.parts
+    ):
         raise ValueError(
             "ENTITY_TYPE_PROMPT_FILE must be a file name only. "
             "Files are loaded from prompts/entity_type/."
@@ -896,9 +900,7 @@ def validate_entity_extraction_prompt_profile_for_mode(
     """Validate that the resolved profile contains the active-mode examples."""
 
     required_examples_key = (
-        "entity_extraction_json_examples"
-        if use_json
-        else "entity_extraction_examples"
+        "entity_extraction_json_examples" if use_json else "entity_extraction_examples"
     )
     if (
         required_examples_key not in prompt_profile
