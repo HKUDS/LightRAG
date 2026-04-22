@@ -37,7 +37,12 @@ from typing import (
     Dict,
     Union,
 )
-from lightrag.prompt import PROMPTS
+from lightrag.prompt import (
+    PROMPTS,
+    get_default_entity_extraction_prompt_profile,
+    resolve_entity_extraction_prompt_profile,
+    validate_entity_extraction_prompt_profile_for_mode,
+)
 from lightrag.exceptions import PipelineCancelledException
 from lightrag.constants import (
     DEFAULT_MAX_GLEANING,
@@ -745,7 +750,20 @@ class LightRAG:
             "language": get_env_value(
                 "SUMMARY_LANGUAGE", DEFAULT_SUMMARY_LANGUAGE, str
             ),
+            "entity_type_prompt_file": get_env_value(
+                "ENTITY_TYPE_PROMPT_FILE", "", str
+            ),
         }
+    )
+    _entity_extraction_prompt_profile: dict[str, Any] = field(
+        default_factory=get_default_entity_extraction_prompt_profile,
+        init=False,
+        repr=False,
+    )
+    _resolved_summary_language: str = field(
+        default=DEFAULT_SUMMARY_LANGUAGE,
+        init=False,
+        repr=False,
     )
 
     # Storages Management
@@ -982,6 +1000,31 @@ class LightRAG:
                 "Please customize entity type guidance through the prompt template instead. "
                 "Set addon_params={'entity_types_guidance': '...'} or replace the prompt template."
             )
+
+        if not isinstance(self.addon_params, dict):
+            self.addon_params = {}
+
+        summary_language = self.addon_params.get("language", DEFAULT_SUMMARY_LANGUAGE)
+        if not isinstance(summary_language, str) or not summary_language.strip():
+            summary_language = DEFAULT_SUMMARY_LANGUAGE
+        self._resolved_summary_language = summary_language
+
+        try:
+            resolved_prompt_profile = resolve_entity_extraction_prompt_profile(
+                self.addon_params,
+                self.entity_extraction_use_json,
+            )
+            self._entity_extraction_prompt_profile = (
+                validate_entity_extraction_prompt_profile_for_mode(
+                    resolved_prompt_profile,
+                    self.entity_extraction_use_json,
+                    self.addon_params.get("entity_type_prompt_file"),
+                )
+            )
+        except Exception as exc:
+            raise ValueError(
+                f"Invalid entity extraction prompt configuration: {exc}"
+            ) from exc
 
         # Handle deprecated parameters
         if self.log_level is not None:

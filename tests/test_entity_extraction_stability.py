@@ -10,11 +10,12 @@ Covers:
 
 import json
 import os
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from lightrag.utils import Tokenizer, TokenizerInterface
+from lightrag.utils import EmbeddingFunc, Tokenizer, TokenizerInterface
 
 
 class DummyTokenizer(TokenizerInterface):
@@ -31,6 +32,7 @@ def _make_global_config(
     addon_params: dict | None = None,
     use_json: bool = False,
     max_gleaning: int = 0,
+    prompt_profile: dict | None = None,
 ) -> dict:
     tokenizer = Tokenizer("dummy", DummyTokenizer())
     return {
@@ -43,6 +45,7 @@ def _make_global_config(
         "max_extract_input_tokens": 20480,
         "llm_model_max_async": 1,
         "entity_extraction_use_json": use_json,
+        "_entity_extraction_prompt_profile": prompt_profile,
     }
 
 
@@ -55,6 +58,84 @@ def _make_chunks(content: str = "Alice founded Acme Corp in 1990.") -> dict[str,
             "chunk_order_index": 0,
         }
     }
+
+
+def _require_yaml() -> None:
+    pytest.importorskip("yaml")
+
+
+def _write_prompt_profile(
+    path: Path,
+    *,
+    guidance: str | None = None,
+    text_examples: list[str] | None = None,
+    json_examples: list[str] | None = None,
+) -> None:
+    lines: list[str] = []
+
+    def _append_block(key: str, value: str) -> None:
+        lines.append(f"{key}: |")
+        for line in value.strip("\n").splitlines():
+            lines.append(f"  {line}")
+
+    def _append_examples(key: str, values: list[str]) -> None:
+        lines.append(f"{key}:")
+        for value in values:
+            lines.append("  - |")
+            for line in value.strip("\n").splitlines():
+                lines.append(f"    {line}")
+
+    if guidance is not None:
+        _append_block("entity_types_guidance", guidance)
+    if text_examples is not None:
+        _append_examples("entity_extraction_examples", text_examples)
+    if json_examples is not None:
+        _append_examples("entity_extraction_json_examples", json_examples)
+
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _dummy_embedding_func() -> EmbeddingFunc:
+    async def _embed(texts):
+        return [[0.0, 0.0, 0.0] for _ in texts]
+
+    return EmbeddingFunc(embedding_dim=3, func=_embed)
+
+
+def _patch_prompt_dir(path: Path):
+    return patch("lightrag.prompt.get_entity_type_prompt_dir", return_value=path)
+
+
+def _text_profile_example(label: str) -> str:
+    return f"""---Entity Types---
+- ExampleType: Test type
+
+---Input Text---
+```
+{label}
+```
+
+---Output---
+entity{{tuple_delimiter}}{label}{{tuple_delimiter}}ExampleType{{tuple_delimiter}}{label} description.
+{{completion_delimiter}}"""
+
+
+def _json_profile_example(label: str) -> str:
+    return f"""---Entity Types---
+- ExampleType: Test type
+
+---Input Text---
+```
+{label}
+```
+
+---Output---
+{{
+  "entities": [
+    {{"name": "{label}", "type": "ExampleType", "description": "{label} description."}}
+  ],
+  "relationships": []
+}}"""
 
 
 # --- Minimal valid LLM responses ---
@@ -497,3 +578,319 @@ async def test_text_mode_gleaned_relation_can_reference_prior_entity():
     relation_data = next(iter(relationships.values()))[0]
     assert relation_data["src_id"] == "Alice"
     assert relation_data["tgt_id"] == "Acme Corp"
+
+
+@pytest.mark.offline
+def test_addon_params_default_includes_entity_type_prompt_file_env():
+    from lightrag import LightRAG
+
+    with patch.dict(
+        os.environ,
+        {
+            "SUMMARY_LANGUAGE": "English",
+            "ENTITY_TYPE_PROMPT_FILE": "entity_type_prompt.sample.yml",
+        },
+    ):
+        addon_params = LightRAG.__dataclass_fields__["addon_params"].default_factory()
+
+    assert addon_params["entity_type_prompt_file"] == "entity_type_prompt.sample.yml"
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_text_mode_prompt_file_injects_examples_and_guidance():
+    _require_yaml()
+
+    from lightrag.operate import extract_entities
+
+    guidance = "- ExampleType: Injected guidance"
+    example_label = "Custom Text Example"
+    prompt_profile = {
+        "entity_types_guidance": guidance,
+        "entity_extraction_examples": [_text_profile_example(example_label)],
+        "entity_extraction_json_examples": [],
+    }
+
+    global_config = _make_global_config(
+        prompt_profile=prompt_profile,
+        use_json=False,
+    )
+    llm_func = global_config["llm_model_func"]
+    llm_func.return_value = _TEXT_MODE_RESPONSE
+
+    with patch("lightrag.operate.logger"):
+        await extract_entities(chunks=_make_chunks(), global_config=global_config)
+
+    call_kwargs = llm_func.call_args_list[0][1]
+    system_prompt = call_kwargs.get("system_prompt", "")
+    assert guidance in system_prompt
+    assert example_label in system_prompt
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_json_mode_prompt_file_injects_examples_and_guidance():
+    _require_yaml()
+
+    from lightrag.operate import extract_entities
+
+    guidance = "- ExampleType: Injected JSON guidance"
+    example_label = "Custom Json Example"
+    prompt_profile = {
+        "entity_types_guidance": guidance,
+        "entity_extraction_examples": [],
+        "entity_extraction_json_examples": [_json_profile_example(example_label)],
+    }
+
+    global_config = _make_global_config(
+        prompt_profile=prompt_profile,
+        use_json=True,
+    )
+    llm_func = global_config["llm_model_func"]
+    llm_func.return_value = _JSON_MODE_RESPONSE
+
+    with patch("lightrag.operate.logger"):
+        await extract_entities(chunks=_make_chunks(), global_config=global_config)
+
+    call_kwargs = llm_func.call_args_list[0][1]
+    system_prompt = call_kwargs.get("system_prompt", "")
+    assert guidance in system_prompt
+    assert example_label in system_prompt
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_prompt_file_guidance_falls_back_to_default_when_missing():
+    _require_yaml()
+
+    from lightrag.operate import extract_entities
+    from lightrag.prompt import PROMPTS
+
+    global_config = _make_global_config(
+        prompt_profile={
+            "entity_types_guidance": PROMPTS["default_entity_types_guidance"].rstrip(),
+            "entity_extraction_examples": [
+                _text_profile_example("Fallback Guidance Example")
+            ],
+            "entity_extraction_json_examples": [],
+        },
+        use_json=False,
+    )
+    llm_func = global_config["llm_model_func"]
+    llm_func.return_value = _TEXT_MODE_RESPONSE
+
+    with patch("lightrag.operate.logger"):
+        await extract_entities(chunks=_make_chunks(), global_config=global_config)
+
+    call_kwargs = llm_func.call_args_list[0][1]
+    system_prompt = call_kwargs.get("system_prompt", "")
+    assert PROMPTS["default_entity_types_guidance"] in system_prompt
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_cached_prompt_profile_supplies_merged_guidance():
+    from lightrag.operate import extract_entities
+
+    merged_guidance = "- ExampleType: Addon override"
+
+    global_config = _make_global_config(
+        prompt_profile={
+            "entity_types_guidance": merged_guidance,
+            "entity_extraction_examples": [_text_profile_example("Override Example")],
+            "entity_extraction_json_examples": [],
+        },
+        use_json=False,
+    )
+    llm_func = global_config["llm_model_func"]
+    llm_func.return_value = _TEXT_MODE_RESPONSE
+
+    with patch("lightrag.operate.logger"):
+        await extract_entities(chunks=_make_chunks(), global_config=global_config)
+
+    call_kwargs = llm_func.call_args_list[0][1]
+    system_prompt = call_kwargs.get("system_prompt", "")
+    assert merged_guidance in system_prompt
+
+
+@pytest.mark.offline
+def test_text_mode_prompt_file_can_omit_json_examples(tmp_path):
+    _require_yaml()
+
+    from lightrag import LightRAG
+
+    prompt_dir = tmp_path / "entity_type"
+    prompt_dir.mkdir()
+    _write_prompt_profile(
+        prompt_dir / "text_only.yml",
+        text_examples=[_text_profile_example("Text Only Example")],
+    )
+
+    with _patch_prompt_dir(prompt_dir):
+        rag = LightRAG(
+            working_dir=str(tmp_path / "rag-text"),
+            llm_model_func=AsyncMock(),
+            embedding_func=_dummy_embedding_func(),
+            entity_extraction_use_json=False,
+            addon_params={"entity_type_prompt_file": "text_only.yml"},
+        )
+
+    assert rag.addon_params["entity_type_prompt_file"] == "text_only.yml"
+
+
+@pytest.mark.offline
+def test_json_mode_prompt_file_can_omit_text_examples(tmp_path):
+    _require_yaml()
+
+    from lightrag import LightRAG
+
+    prompt_dir = tmp_path / "entity_type"
+    prompt_dir.mkdir()
+    _write_prompt_profile(
+        prompt_dir / "json_only.yml",
+        json_examples=[_json_profile_example("Json Only Example")],
+    )
+
+    with _patch_prompt_dir(prompt_dir):
+        rag = LightRAG(
+            working_dir=str(tmp_path / "rag-json"),
+            llm_model_func=AsyncMock(),
+            embedding_func=_dummy_embedding_func(),
+            entity_extraction_use_json=True,
+            addon_params={"entity_type_prompt_file": "json_only.yml"},
+        )
+
+    assert rag.addon_params["entity_type_prompt_file"] == "json_only.yml"
+
+
+@pytest.mark.offline
+def test_text_mode_prompt_file_requires_text_examples(tmp_path):
+    _require_yaml()
+
+    from lightrag import LightRAG
+
+    prompt_dir = tmp_path / "entity_type"
+    prompt_dir.mkdir()
+    _write_prompt_profile(
+        prompt_dir / "missing_text_examples.yml",
+        json_examples=[_json_profile_example("Wrong Mode Only")],
+    )
+
+    with _patch_prompt_dir(prompt_dir):
+        with pytest.raises(ValueError) as exc_info:
+            LightRAG(
+                working_dir=str(tmp_path / "rag-missing-text"),
+                llm_model_func=AsyncMock(),
+                embedding_func=None,
+                entity_extraction_use_json=False,
+                addon_params={"entity_type_prompt_file": "missing_text_examples.yml"},
+            )
+
+    assert "entity_extraction_examples" in str(exc_info.value)
+
+
+@pytest.mark.offline
+def test_json_mode_prompt_file_requires_json_examples(tmp_path):
+    _require_yaml()
+
+    from lightrag import LightRAG
+
+    prompt_dir = tmp_path / "entity_type"
+    prompt_dir.mkdir()
+    _write_prompt_profile(
+        prompt_dir / "missing_json_examples.yml",
+        text_examples=[_text_profile_example("Wrong Mode Only")],
+    )
+
+    with _patch_prompt_dir(prompt_dir):
+        with pytest.raises(ValueError) as exc_info:
+            LightRAG(
+                working_dir=str(tmp_path / "rag-missing-json"),
+                llm_model_func=AsyncMock(),
+                embedding_func=None,
+                entity_extraction_use_json=True,
+                addon_params={"entity_type_prompt_file": "missing_json_examples.yml"},
+            )
+
+    assert "entity_extraction_json_examples" in str(exc_info.value)
+
+
+@pytest.mark.offline
+def test_prompt_file_rejects_directory_segments(tmp_path):
+    _require_yaml()
+
+    from lightrag import LightRAG
+
+    with pytest.raises(ValueError) as exc_info:
+        LightRAG(
+            working_dir=str(tmp_path / "rag-bad-path"),
+            llm_model_func=AsyncMock(),
+            embedding_func=None,
+            addon_params={"entity_type_prompt_file": "../outside.yml"},
+        )
+
+    assert "file name only" in str(exc_info.value)
+
+
+@pytest.mark.offline
+def test_prompt_file_rejects_absolute_paths(tmp_path):
+    _require_yaml()
+
+    from lightrag import LightRAG
+
+    with pytest.raises(ValueError) as exc_info:
+        LightRAG(
+            working_dir=str(tmp_path / "rag-abs-path"),
+            llm_model_func=AsyncMock(),
+            embedding_func=None,
+            addon_params={"entity_type_prompt_file": str(tmp_path / "abs.yml")},
+        )
+
+    assert "file name only" in str(exc_info.value)
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_extract_entities_uses_cached_prompt_profile_without_reloading():
+    from lightrag.operate import extract_entities
+
+    cached_profile = {
+        "entity_types_guidance": "- ExampleType: Cached guidance",
+        "entity_extraction_examples": [_text_profile_example("Cached Text Example")],
+        "entity_extraction_json_examples": [],
+    }
+    global_config = _make_global_config(use_json=False, prompt_profile=cached_profile)
+    llm_func = global_config["llm_model_func"]
+    llm_func.return_value = _TEXT_MODE_RESPONSE
+
+    with patch(
+        "lightrag.operate.get_default_entity_extraction_prompt_profile",
+        side_effect=AssertionError("should not load default profile when cache exists"),
+    ):
+        with patch("lightrag.operate.logger"):
+            await extract_entities(chunks=_make_chunks(), global_config=global_config)
+            await extract_entities(chunks=_make_chunks(), global_config=global_config)
+
+    system_prompt = llm_func.call_args_list[0][1].get("system_prompt", "")
+    assert "Cached Text Example" in system_prompt
+    assert "Cached guidance" in system_prompt
+
+
+@pytest.mark.offline
+def test_sample_prompt_file_matches_builtin_prompt_data():
+    _require_yaml()
+
+    from lightrag.prompt import (
+        get_default_entity_extraction_prompt_profile,
+        load_entity_extraction_prompt_profile,
+    )
+
+    sample_file = (
+        Path(__file__).resolve().parents[1]
+        / "prompts"
+        / "entity_type"
+        / "entity_type_prompt.sample.yml"
+    )
+
+    loaded_profile = load_entity_extraction_prompt_profile(sample_file)
+    assert loaded_profile == get_default_entity_extraction_prompt_profile()
