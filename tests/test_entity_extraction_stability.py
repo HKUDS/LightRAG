@@ -888,7 +888,7 @@ def test_sample_prompt_file_matches_builtin_prompt_data():
     sample_file = (
         Path(__file__).resolve().parents[1]
         / "prompts"
-        / "entity_type"
+        / "samples"
         / "entity_type_prompt.sample.yml"
     )
 
