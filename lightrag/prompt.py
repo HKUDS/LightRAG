@@ -713,22 +713,23 @@ def get_default_entity_extraction_prompt_profile() -> EntityExtractionPromptProf
 
 
 _ALLOWED_PROMPT_SUFFIXES = frozenset({".yml", ".yaml"})
-_DEFAULT_PROMPT_DIR = "./prompts/entity_type"
+_DEFAULT_PROMPT_DIR = "./prompts"
+_ENTITY_TYPE_SUBDIR = "entity_type"
 
 
 def get_entity_type_prompt_dir() -> Path:
     """Return the directory for entity type prompt profiles.
 
-    Resolves ``PROMPT_DIR`` (defaults to ``./prompts/entity_type`` relative to
-    the current working directory, mirroring ``INPUT_DIR`` / ``WORKING_DIR``).
-    Profile files are provided by the user at runtime and are not shipped with
-    the distribution. The file-name sandbox in
-    :func:`resolve_entity_type_prompt_path` ensures user-supplied file names
-    cannot escape the resolved directory.
+    Resolves ``PROMPT_DIR`` (defaults to ``./prompts`` relative to the current
+    working directory, mirroring ``INPUT_DIR`` / ``WORKING_DIR``) and appends
+    the hard-coded ``entity_type`` subdirectory. Profile files are provided by
+    the user at runtime and are not shipped with the distribution. The
+    file-name sandbox in :func:`resolve_entity_type_prompt_path` ensures
+    user-supplied file names cannot escape the resolved directory.
     """
 
     configured = os.getenv("PROMPT_DIR", "").strip() or _DEFAULT_PROMPT_DIR
-    return Path(configured).expanduser().resolve()
+    return (Path(configured).expanduser() / _ENTITY_TYPE_SUBDIR).resolve()
 
 
 def resolve_entity_type_prompt_path(prompt_file_name: str | Path) -> Path:
@@ -743,7 +744,7 @@ def resolve_entity_type_prompt_path(prompt_file_name: str | Path) -> Path:
     if "\\" in file_name:
         raise ValueError(
             "ENTITY_TYPE_PROMPT_FILE must not contain directory separators. "
-            "Only file names inside PROMPT_DIR are allowed."
+            "Only file names inside PROMPT_DIR/entity_type are allowed."
         )
 
     candidate = Path(file_name)
@@ -754,7 +755,8 @@ def resolve_entity_type_prompt_path(prompt_file_name: str | Path) -> Path:
     ):
         raise ValueError(
             "ENTITY_TYPE_PROMPT_FILE must be a file name only. "
-            "Files are loaded from PROMPT_DIR (defaults to ./prompts/entity_type)."
+            "Files are loaded from PROMPT_DIR/entity_type "
+            "(PROMPT_DIR defaults to ./prompts)."
         )
     if candidate.suffix.lower() not in _ALLOWED_PROMPT_SUFFIXES:
         raise ValueError(

@@ -923,9 +923,10 @@ def test_prompt_dir_env_var_overrides_default(tmp_path, monkeypatch):
     )
 
     monkeypatch.setenv("PROMPT_DIR", str(tmp_path))
-    assert get_entity_type_prompt_dir() == tmp_path.resolve()
+    expected_dir = (tmp_path / "entity_type").resolve()
+    assert get_entity_type_prompt_dir() == expected_dir
     resolved = resolve_entity_type_prompt_path("custom.yml")
-    assert resolved == tmp_path.resolve() / "custom.yml"
+    assert resolved == expected_dir / "custom.yml"
 
 
 @pytest.mark.offline
