@@ -1101,3 +1101,34 @@ def test_runtime_addon_params_replacement_refreshes_cached_values(tmp_path):
         global_config["_entity_extraction_prompt_profile"]["entity_types_guidance"]
         == "- ReplacementType: runtime replace"
     )
+
+
+@pytest.mark.offline
+def test_runtime_mode_flip_invalidates_cached_prompt_profile(tmp_path):
+    _require_yaml()
+
+    from lightrag import LightRAG
+
+    prompt_dir = tmp_path / "entity_type"
+    prompt_dir.mkdir()
+    _write_prompt_profile(
+        prompt_dir / "text_only.yml",
+        text_examples=[_text_profile_example("Text Only Example")],
+    )
+
+    with _patch_prompt_dir(prompt_dir):
+        rag = LightRAG(
+            working_dir=str(tmp_path / "rag-mode-flip"),
+            llm_model_func=AsyncMock(),
+            embedding_func=_dummy_embedding_func(),
+            entity_extraction_use_json=False,
+            addon_params={"entity_type_prompt_file": "text_only.yml"},
+        )
+
+        rag._build_global_config()
+        rag.entity_extraction_use_json = True
+
+        with pytest.raises(ValueError) as exc_info:
+            rag._build_global_config()
+
+    assert "entity_extraction_json_examples" in str(exc_info.value)

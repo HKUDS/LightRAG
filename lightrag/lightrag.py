@@ -827,6 +827,11 @@ class LightRAG:
         init=False,
         repr=False,
     )
+    _cached_entity_extraction_use_json: bool | None = field(
+        default=None,
+        init=False,
+        repr=False,
+    )
     _resolved_summary_language: str = field(
         default=DEFAULT_SUMMARY_LANGUAGE,
         init=False,
@@ -1125,10 +1130,15 @@ class LightRAG:
                 self._addon_params.get("entity_type_prompt_file"),
             )
         )
+        self._cached_entity_extraction_use_json = self.entity_extraction_use_json
         self._addon_params_dirty = False
 
     def _ensure_addon_params_cache(self) -> None:
-        if not self._addon_params_dirty:
+        if (
+            not self._addon_params_dirty
+            and self._cached_entity_extraction_use_json
+            == self.entity_extraction_use_json
+        ):
             return
         self._refresh_addon_params_cache()
 
@@ -1137,6 +1147,7 @@ class LightRAG:
         global_config = asdict(self)
         global_config.pop("_addon_params", None)
         global_config.pop("_addon_params_dirty", None)
+        global_config.pop("_cached_entity_extraction_use_json", None)
         global_config["addon_params"] = dict(self._addon_params)
         return global_config
 
