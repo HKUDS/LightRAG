@@ -19,7 +19,7 @@ try:
     import httpx
 except Exception:  # pragma: no cover - optional dependency
     httpx = None
-from dataclasses import asdict, dataclass, field, replace
+from dataclasses import InitVar, asdict, dataclass, field, replace
 from datetime import datetime, timezone
 from functools import partial
 from pathlib import Path
@@ -32,6 +32,7 @@ from typing import (
     cast,
     final,
     Literal,
+    Mapping,
     Optional,
     List,
     Dict,
@@ -362,6 +363,75 @@ def _enforce_chunk_token_limit_before_embedding(
     for idx, item in enumerate(normalized):
         item["chunk_order_index"] = idx
     return normalized
+
+
+def _default_addon_params() -> dict[str, Any]:
+    return {
+        "language": get_env_value("SUMMARY_LANGUAGE", DEFAULT_SUMMARY_LANGUAGE, str),
+        "entity_type_prompt_file": get_env_value("ENTITY_TYPE_PROMPT_FILE", "", str),
+    }
+
+
+class ObservableAddonParams(dict[str, Any]):
+    def __init__(
+        self,
+        *args: Any,
+        on_change: Callable[[], None] | None = None,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(*args, **kwargs)
+        self._on_change = on_change
+
+    def _changed(self) -> None:
+        if self._on_change is not None:
+            self._on_change()
+
+    def __setitem__(self, key: str, value: Any) -> None:
+        super().__setitem__(key, value)
+        self._changed()
+
+    def __delitem__(self, key: str) -> None:
+        super().__delitem__(key)
+        self._changed()
+
+    def clear(self) -> None:
+        if self:
+            super().clear()
+            self._changed()
+
+    def pop(self, key: str, default: Any = ...):
+        existed = key in self
+        if default is ...:
+            value = super().pop(key)
+            self._changed()
+        else:
+            value = super().pop(key, default)
+            if existed:
+                self._changed()
+        return value
+
+    def popitem(self) -> tuple[str, Any]:
+        item = super().popitem()
+        self._changed()
+        return item
+
+    def setdefault(self, key: str, default: Any = None) -> Any:
+        if key in self:
+            return self[key]
+        value = super().setdefault(key, default)
+        self._changed()
+        return value
+
+    def update(self, *args: Any, **kwargs: Any) -> None:
+        if not args and not kwargs:
+            return
+        super().update(*args, **kwargs)
+        self._changed()
+
+    def __ior__(self, other: Mapping[str, Any]):
+        super().__ior__(other)
+        self._changed()
+        return self
 
 
 @final
@@ -745,16 +815,15 @@ class LightRAG:
     file_path_more_placeholder: str = field(default=DEFAULT_FILE_PATH_MORE_PLACEHOLDER)
     """Placeholder text when file paths exceed max_file_paths limit."""
 
-    addon_params: dict[str, Any] = field(
-        default_factory=lambda: {
-            "language": get_env_value(
-                "SUMMARY_LANGUAGE", DEFAULT_SUMMARY_LANGUAGE, str
-            ),
-            "entity_type_prompt_file": get_env_value(
-                "ENTITY_TYPE_PROMPT_FILE", "", str
-            ),
-        }
+    addon_params: InitVar[dict[str, Any] | None] = field(
+        default=None,
     )
+    _addon_params: ObservableAddonParams = field(
+        default_factory=ObservableAddonParams,
+        init=False,
+        repr=False,
+    )
+    _addon_params_dirty: bool = field(default=True, init=False, repr=False)
     _entity_extraction_prompt_profile: dict[str, Any] = field(
         default_factory=get_default_entity_extraction_prompt_profile,
         init=False,
@@ -988,7 +1057,83 @@ class LightRAG:
             self._role_llm_runtime_meta[role] = snapshot["meta"]
             raise
 
-    def __post_init__(self):
+    def _mark_addon_params_dirty(self) -> None:
+        self._addon_params_dirty = True
+
+    def _normalize_addon_params(
+        self, addon_params: Mapping[str, Any] | None
+    ) -> dict[str, Any]:
+        if addon_params is None:
+            normalized = _default_addon_params()
+        elif isinstance(addon_params, Mapping):
+            normalized = dict(addon_params)
+        else:
+            normalized = {}
+
+        # When the caller supplies addon_params explicitly, the dataclass
+        # default_factory is skipped — fall back to environment variables so
+        # ENTITY_TYPE_PROMPT_FILE / SUMMARY_LANGUAGE still apply.
+        normalized.setdefault(
+            "language", get_env_value("SUMMARY_LANGUAGE", DEFAULT_SUMMARY_LANGUAGE, str)
+        )
+        normalized.setdefault(
+            "entity_type_prompt_file",
+            get_env_value("ENTITY_TYPE_PROMPT_FILE", "", str),
+        )
+        return normalized
+
+    def _replace_addon_params(
+        self, addon_params: Mapping[str, Any] | None, *, mark_dirty: bool
+    ) -> None:
+        wrapped = ObservableAddonParams(
+            self._normalize_addon_params(addon_params),
+            on_change=self._mark_addon_params_dirty,
+        )
+        self._addon_params = wrapped
+        if mark_dirty:
+            self._mark_addon_params_dirty()
+
+    def _get_addon_params(self) -> ObservableAddonParams:
+        return self._addon_params
+
+    def _set_runtime_addon_params(self, addon_params: Mapping[str, Any] | None) -> None:
+        self._replace_addon_params(addon_params, mark_dirty=True)
+
+    def _refresh_addon_params_cache(self) -> None:
+        self._replace_addon_params(self._addon_params, mark_dirty=False)
+
+        summary_language = self._addon_params.get("language", DEFAULT_SUMMARY_LANGUAGE)
+        if not isinstance(summary_language, str) or not summary_language.strip():
+            summary_language = DEFAULT_SUMMARY_LANGUAGE
+        self._resolved_summary_language = summary_language
+
+        resolved_prompt_profile = resolve_entity_extraction_prompt_profile(
+            self._addon_params,
+            self.entity_extraction_use_json,
+        )
+        self._entity_extraction_prompt_profile = (
+            validate_entity_extraction_prompt_profile_for_mode(
+                resolved_prompt_profile,
+                self.entity_extraction_use_json,
+                self._addon_params.get("entity_type_prompt_file"),
+            )
+        )
+        self._addon_params_dirty = False
+
+    def _ensure_addon_params_cache(self) -> None:
+        if not self._addon_params_dirty:
+            return
+        self._refresh_addon_params_cache()
+
+    def _build_global_config(self) -> dict[str, Any]:
+        self._ensure_addon_params_cache()
+        global_config = asdict(self)
+        global_config.pop("_addon_params", None)
+        global_config.pop("_addon_params_dirty", None)
+        global_config["addon_params"] = dict(self._addon_params)
+        return global_config
+
+    def __post_init__(self, addon_params: dict[str, Any] | None):
         from lightrag.kg.shared_storage import (
             initialize_share_data,
         )
@@ -1001,40 +1146,8 @@ class LightRAG:
                 "Set addon_params={'entity_types_guidance': '...'} or replace the prompt template."
             )
 
-        if not isinstance(self.addon_params, dict):
-            self.addon_params = {}
-
-        # When the caller supplies addon_params explicitly, the dataclass
-        # default_factory is skipped — fall back to environment variables so
-        # ENTITY_TYPE_PROMPT_FILE / SUMMARY_LANGUAGE still apply.
-        self.addon_params.setdefault(
-            "language", get_env_value("SUMMARY_LANGUAGE", DEFAULT_SUMMARY_LANGUAGE, str)
-        )
-        self.addon_params.setdefault(
-            "entity_type_prompt_file",
-            get_env_value("ENTITY_TYPE_PROMPT_FILE", "", str),
-        )
-
-        summary_language = self.addon_params.get("language", DEFAULT_SUMMARY_LANGUAGE)
-        if not isinstance(summary_language, str) or not summary_language.strip():
-            summary_language = DEFAULT_SUMMARY_LANGUAGE
-        self._resolved_summary_language = summary_language
-
-        # Resolve + validate the entity extraction prompt profile exactly once.
-        # ValueError / FileNotFoundError / RuntimeError (missing PyYAML) are
-        # allowed to propagate with their original types so callers can handle
-        # them distinctly.
-        resolved_prompt_profile = resolve_entity_extraction_prompt_profile(
-            self.addon_params,
-            self.entity_extraction_use_json,
-        )
-        self._entity_extraction_prompt_profile = (
-            validate_entity_extraction_prompt_profile_for_mode(
-                resolved_prompt_profile,
-                self.entity_extraction_use_json,
-                self.addon_params.get("entity_type_prompt_file"),
-            )
-        )
+        self._replace_addon_params(addon_params, mark_dirty=False)
+        self._refresh_addon_params_cache()
 
         # Handle deprecated parameters
         if self.log_level is not None:
@@ -1120,7 +1233,7 @@ class LightRAG:
         self.embedding_token_limit = embedding_max_token_size
 
         # Fix global_config now
-        global_config = asdict(self)
+        global_config = self._build_global_config()
         # Restore original EmbeddingFunc object (asdict converts it to dict)
         global_config["embedding_func"] = original_embedding_func
 
@@ -2892,7 +3005,7 @@ class LightRAG:
                                     knowledge_graph_inst=self.chunk_entity_relation_graph,
                                     entity_vdb=self.entities_vdb,
                                     relationships_vdb=self.relationships_vdb,
-                                    global_config=asdict(self),
+                                    global_config=self._build_global_config(),
                                     full_entities_storage=self.full_entities,
                                     full_relations_storage=self.full_relations,
                                     doc_id=doc_id,
@@ -3228,7 +3341,7 @@ class LightRAG:
         try:
             chunk_results = await extract_entities(
                 chunk,
-                global_config=asdict(self),
+                global_config=self._build_global_config(),
                 pipeline_status=pipeline_status,
                 pipeline_status_lock=pipeline_status_lock,
                 llm_response_cache=self.llm_response_cache,
@@ -4610,7 +4723,7 @@ class LightRAG:
         Default behavior is no-op. This method defines a stable extension point
         for integrating RAG-Anything multimodal processors.
         """
-        addon_params = self.addon_params if isinstance(self.addon_params, dict) else {}
+        addon_params = self.addon_params
         if not addon_params.get("enable_multimodal_pipeline", False):
             return chunking_result
 
@@ -5333,7 +5446,7 @@ class LightRAG:
             actual data is nested under the 'data' field, with 'status' and 'message'
             fields at the top level.
         """
-        global_config = asdict(self)
+        global_config = self._build_global_config()
 
         # Create a copy of param to avoid modifying the original
         data_param = QueryParam(
@@ -5451,7 +5564,7 @@ class LightRAG:
         """
         logger.debug(f"[aquery_llm] Query param: {param}")
 
-        global_config = asdict(self)
+        global_config = self._build_global_config()
 
         try:
             query_result = None
@@ -6507,7 +6620,7 @@ class LightRAG:
                         relationships_vdb=self.relationships_vdb,
                         text_chunks_storage=self.text_chunks,
                         llm_response_cache=self.llm_response_cache,
-                        global_config=asdict(self),
+                        global_config=self._build_global_config(),
                         pipeline_status=pipeline_status,
                         pipeline_status_lock=pipeline_status_lock,
                         entity_chunks_storage=self.entity_chunks,
@@ -7057,3 +7170,9 @@ class LightRAG:
         loop.run_until_complete(
             self.aexport_data(output_path, file_format, include_vector_data)
         )
+
+
+LightRAG.addon_params = property(  # type: ignore[attr-defined]
+    LightRAG._get_addon_params,
+    LightRAG._set_runtime_addon_params,
+)

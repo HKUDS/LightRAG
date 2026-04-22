@@ -581,8 +581,17 @@ async def test_text_mode_gleaned_relation_can_reference_prior_entity():
 
 
 @pytest.mark.offline
-def test_addon_params_default_includes_entity_type_prompt_file_env():
+def test_addon_params_default_includes_entity_type_prompt_file_env(tmp_path):
+    _require_yaml()
+
     from lightrag import LightRAG
+
+    prompt_dir = tmp_path / "entity_type"
+    prompt_dir.mkdir()
+    _write_prompt_profile(
+        prompt_dir / "entity_type_prompt.sample.yml",
+        text_examples=[_text_profile_example("Env Default Example")],
+    )
 
     with patch.dict(
         os.environ,
@@ -591,9 +600,17 @@ def test_addon_params_default_includes_entity_type_prompt_file_env():
             "ENTITY_TYPE_PROMPT_FILE": "entity_type_prompt.sample.yml",
         },
     ):
-        addon_params = LightRAG.__dataclass_fields__["addon_params"].default_factory()
+        with _patch_prompt_dir(prompt_dir):
+            rag = LightRAG(
+                working_dir=str(tmp_path / "rag-default-env"),
+                llm_model_func=AsyncMock(),
+                embedding_func=_dummy_embedding_func(),
+                entity_extraction_use_json=False,
+            )
 
-    assert addon_params["entity_type_prompt_file"] == "entity_type_prompt.sample.yml"
+    assert (
+        rag.addon_params["entity_type_prompt_file"] == "entity_type_prompt.sample.yml"
+    )
 
 
 @pytest.mark.offline
@@ -1008,3 +1025,78 @@ def test_explicit_addon_params_still_picks_up_env_defaults(tmp_path, monkeypatch
         )
 
     assert rag.addon_params["entity_type_prompt_file"] == "from_env.yml"
+
+
+@pytest.mark.offline
+def test_runtime_addon_params_item_update_refreshes_cached_values(tmp_path):
+    _require_yaml()
+
+    from lightrag import LightRAG
+
+    prompt_dir = tmp_path / "entity_type"
+    prompt_dir.mkdir()
+    _write_prompt_profile(
+        prompt_dir / "initial.yml",
+        text_examples=[_text_profile_example("Initial Example")],
+    )
+    _write_prompt_profile(
+        prompt_dir / "updated.yml",
+        guidance="- UpdatedType: runtime update",
+        text_examples=[_text_profile_example("Updated Example")],
+    )
+
+    with _patch_prompt_dir(prompt_dir):
+        rag = LightRAG(
+            working_dir=str(tmp_path / "rag-runtime-update"),
+            llm_model_func=AsyncMock(),
+            embedding_func=_dummy_embedding_func(),
+            entity_extraction_use_json=False,
+            addon_params={
+                "entity_type_prompt_file": "initial.yml",
+                "language": "English",
+            },
+        )
+        rag.addon_params["entity_type_prompt_file"] = "updated.yml"
+        rag.addon_params["language"] = "French"
+        global_config = rag._build_global_config()
+
+    assert global_config["addon_params"]["language"] == "French"
+    assert global_config["_resolved_summary_language"] == "French"
+    assert (
+        global_config["_entity_extraction_prompt_profile"]["entity_types_guidance"]
+        == "- UpdatedType: runtime update"
+    )
+    assert any(
+        "Updated Example" in example
+        for example in global_config["_entity_extraction_prompt_profile"][
+            "entity_extraction_examples"
+        ]
+    )
+
+
+@pytest.mark.offline
+def test_runtime_addon_params_replacement_refreshes_cached_values(tmp_path):
+    _require_yaml()
+
+    from lightrag import LightRAG
+
+    rag = LightRAG(
+        working_dir=str(tmp_path / "rag-runtime-replace"),
+        llm_model_func=AsyncMock(),
+        embedding_func=_dummy_embedding_func(),
+        entity_extraction_use_json=False,
+        addon_params={"language": "English"},
+    )
+
+    rag.addon_params = {
+        "language": "German",
+        "entity_types_guidance": "- ReplacementType: runtime replace",
+    }
+    global_config = rag._build_global_config()
+
+    assert global_config["addon_params"]["language"] == "German"
+    assert global_config["_resolved_summary_language"] == "German"
+    assert (
+        global_config["_entity_extraction_prompt_profile"]["entity_types_guidance"]
+        == "- ReplacementType: runtime replace"
+    )
