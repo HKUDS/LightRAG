@@ -3,6 +3,8 @@ import os
 from pathlib import Path
 from typing import Any, Mapping, TypedDict
 
+import yaml
+
 
 PROMPTS: dict[str, Any] = {}
 
@@ -710,17 +712,6 @@ def get_default_entity_extraction_prompt_profile() -> EntityExtractionPromptProf
     }
 
 
-def _load_yaml_module():
-    try:
-        import yaml
-    except ModuleNotFoundError as exc:  # pragma: no cover - depends on env packaging
-        raise RuntimeError(
-            "ENTITY_TYPE_PROMPT_FILE requires PyYAML. Install the updated "
-            "LightRAG dependencies before using external YAML prompt profiles."
-        ) from exc
-    return yaml
-
-
 _ALLOWED_PROMPT_SUFFIXES = frozenset({".yml", ".yaml"})
 _DEFAULT_PROMPT_DIR = "./prompts/entity_type"
 
@@ -814,7 +805,6 @@ def load_entity_extraction_prompt_profile(
             f"Failed to read ENTITY_TYPE_PROMPT_FILE '{profile_path}': {exc}"
         ) from exc
 
-    yaml = _load_yaml_module()
     try:
         raw_profile = yaml.safe_load(content)
     except yaml.YAMLError as exc:

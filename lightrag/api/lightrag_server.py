@@ -1289,13 +1289,10 @@ def create_app(args):
         name=args.simulated_model_name, tag=args.simulated_model_tag
     )
 
-    # Build addon params by merging LightRAG defaults with API-level overrides.
-    addon_params_defaults: dict = {}
-    addon_params_field = LightRAG.__dataclass_fields__.get("addon_params")
-    if addon_params_field and callable(addon_params_field.default_factory):
-        addon_params_defaults = addon_params_field.default_factory()
+    # LightRAG.__post_init__ normalizes addon_params and backfills env-based defaults
+    # (SUMMARY_LANGUAGE, ENTITY_TYPE_PROMPT_FILE, ...), so we only need to pass the
+    # API-level overrides here.
     addon_params = {
-        **addon_params_defaults,
         "language": args.summary_language,
     }
 

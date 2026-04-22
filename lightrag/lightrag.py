@@ -815,9 +815,7 @@ class LightRAG:
     file_path_more_placeholder: str = field(default=DEFAULT_FILE_PATH_MORE_PLACEHOLDER)
     """Placeholder text when file paths exceed max_file_paths limit."""
 
-    addon_params: InitVar[dict[str, Any] | None] = field(
-        default=None,
-    )
+    addon_params: InitVar[dict[str, Any] | None] = None
     _addon_params: ObservableAddonParams = field(
         default_factory=ObservableAddonParams,
         init=False,
@@ -1068,7 +1066,10 @@ class LightRAG:
         elif isinstance(addon_params, Mapping):
             normalized = dict(addon_params)
         else:
-            normalized = {}
+            raise TypeError(
+                "addon_params must be a Mapping or None, got "
+                f"{type(addon_params).__name__}"
+            )
 
         # When the caller supplies addon_params explicitly, the dataclass
         # default_factory is skipped — fall back to environment variables so
@@ -1094,14 +1095,20 @@ class LightRAG:
             self._mark_addon_params_dirty()
 
     def _get_addon_params(self) -> ObservableAddonParams:
+        """Return the live addon_params store.
+
+        Mutations on the returned instance trigger a cache refresh on the next
+        _build_global_config() call. If the whole mapping is replaced via the
+        setter, previously captured references point at the old instance and
+        will no longer propagate changes — always re-read `rag.addon_params`
+        after replacement rather than caching references.
+        """
         return self._addon_params
 
     def _set_runtime_addon_params(self, addon_params: Mapping[str, Any] | None) -> None:
         self._replace_addon_params(addon_params, mark_dirty=True)
 
     def _refresh_addon_params_cache(self) -> None:
-        self._replace_addon_params(self._addon_params, mark_dirty=False)
-
         summary_language = self._addon_params.get("language", DEFAULT_SUMMARY_LANGUAGE)
         if not isinstance(summary_language, str) or not summary_language.strip():
             summary_language = DEFAULT_SUMMARY_LANGUAGE
@@ -7172,6 +7179,12 @@ class LightRAG:
         )
 
 
+# `addon_params` is declared as an InitVar on the dataclass so it can still be
+# passed through LightRAG(addon_params=...). InitVars are not stored as
+# instance attributes, which frees the name to be installed here as a property
+# that routes reads/writes through the observable `_addon_params` store.
+# Declaring it as both a dataclass field and a property is not supported by
+# @dataclass, so the property is attached after class creation.
 LightRAG.addon_params = property(  # type: ignore[attr-defined]
     LightRAG._get_addon_params,
     LightRAG._set_runtime_addon_params,
