@@ -1004,27 +1004,37 @@ class LightRAG:
         if not isinstance(self.addon_params, dict):
             self.addon_params = {}
 
+        # When the caller supplies addon_params explicitly, the dataclass
+        # default_factory is skipped — fall back to environment variables so
+        # ENTITY_TYPE_PROMPT_FILE / SUMMARY_LANGUAGE still apply.
+        self.addon_params.setdefault(
+            "language", get_env_value("SUMMARY_LANGUAGE", DEFAULT_SUMMARY_LANGUAGE, str)
+        )
+        self.addon_params.setdefault(
+            "entity_type_prompt_file",
+            get_env_value("ENTITY_TYPE_PROMPT_FILE", "", str),
+        )
+
         summary_language = self.addon_params.get("language", DEFAULT_SUMMARY_LANGUAGE)
         if not isinstance(summary_language, str) or not summary_language.strip():
             summary_language = DEFAULT_SUMMARY_LANGUAGE
         self._resolved_summary_language = summary_language
 
-        try:
-            resolved_prompt_profile = resolve_entity_extraction_prompt_profile(
-                self.addon_params,
+        # Resolve + validate the entity extraction prompt profile exactly once.
+        # ValueError / FileNotFoundError / RuntimeError (missing PyYAML) are
+        # allowed to propagate with their original types so callers can handle
+        # them distinctly.
+        resolved_prompt_profile = resolve_entity_extraction_prompt_profile(
+            self.addon_params,
+            self.entity_extraction_use_json,
+        )
+        self._entity_extraction_prompt_profile = (
+            validate_entity_extraction_prompt_profile_for_mode(
+                resolved_prompt_profile,
                 self.entity_extraction_use_json,
+                self.addon_params.get("entity_type_prompt_file"),
             )
-            self._entity_extraction_prompt_profile = (
-                validate_entity_extraction_prompt_profile_for_mode(
-                    resolved_prompt_profile,
-                    self.entity_extraction_use_json,
-                    self.addon_params.get("entity_type_prompt_file"),
-                )
-            )
-        except Exception as exc:
-            raise ValueError(
-                f"Invalid entity extraction prompt configuration: {exc}"
-            ) from exc
+        )
 
         # Handle deprecated parameters
         if self.log_level is not None:

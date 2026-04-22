@@ -1,4 +1,5 @@
 from __future__ import annotations
+import os
 from pathlib import Path
 from typing import Any, Mapping, TypedDict
 
@@ -720,10 +721,23 @@ def _load_yaml_module():
     return yaml
 
 
-def get_entity_type_prompt_dir() -> Path:
-    """Return the allowlisted directory for entity type prompt profiles."""
+_ALLOWED_PROMPT_SUFFIXES = frozenset({".yml", ".yaml"})
+_DEFAULT_PROMPT_DIR = "./prompts/entity_type"
 
-    return Path(__file__).resolve().parent.parent / "prompts" / "entity_type"
+
+def get_entity_type_prompt_dir() -> Path:
+    """Return the directory for entity type prompt profiles.
+
+    Resolves ``PROMPT_DIR`` (defaults to ``./prompts/entity_type`` relative to
+    the current working directory, mirroring ``INPUT_DIR`` / ``WORKING_DIR``).
+    Profile files are provided by the user at runtime and are not shipped with
+    the distribution. The file-name sandbox in
+    :func:`resolve_entity_type_prompt_path` ensures user-supplied file names
+    cannot escape the resolved directory.
+    """
+
+    configured = os.getenv("PROMPT_DIR", "").strip() or _DEFAULT_PROMPT_DIR
+    return Path(configured).expanduser().resolve()
 
 
 def resolve_entity_type_prompt_path(prompt_file_name: str | Path) -> Path:
@@ -738,7 +752,7 @@ def resolve_entity_type_prompt_path(prompt_file_name: str | Path) -> Path:
     if "\\" in file_name:
         raise ValueError(
             "ENTITY_TYPE_PROMPT_FILE must not contain directory separators. "
-            "Only file names under prompts/entity_type/ are allowed."
+            "Only file names inside PROMPT_DIR are allowed."
         )
 
     candidate = Path(file_name)
@@ -749,11 +763,11 @@ def resolve_entity_type_prompt_path(prompt_file_name: str | Path) -> Path:
     ):
         raise ValueError(
             "ENTITY_TYPE_PROMPT_FILE must be a file name only. "
-            "Files are loaded from prompts/entity_type/."
+            "Files are loaded from PROMPT_DIR (defaults to ./prompts/entity_type)."
         )
-    if not candidate.suffix:
+    if candidate.suffix.lower() not in _ALLOWED_PROMPT_SUFFIXES:
         raise ValueError(
-            "ENTITY_TYPE_PROMPT_FILE must include a file extension such as '.yml'."
+            "ENTITY_TYPE_PROMPT_FILE must use a '.yml' or '.yaml' extension."
         )
 
     return get_entity_type_prompt_dir() / candidate.name

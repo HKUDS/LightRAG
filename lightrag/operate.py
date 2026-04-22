@@ -52,7 +52,7 @@ from lightrag.base import (
     QueryResult,
     QueryContextResult,
 )
-from lightrag.prompt import PROMPTS, get_default_entity_extraction_prompt_profile
+from lightrag.prompt import PROMPTS, resolve_entity_extraction_prompt_profile
 from lightrag.constants import (
     GRAPH_FIELD_SEP,
     DEFAULT_MAX_ENTITY_TOKENS,
@@ -3273,17 +3273,13 @@ async def extract_entities(
         language = addon_params.get("language", DEFAULT_SUMMARY_LANGUAGE)
     prompt_profile = global_config.get("_entity_extraction_prompt_profile")
     if prompt_profile is None:
-        prompt_profile = get_default_entity_extraction_prompt_profile()
-        override_guidance = addon_params.get("entity_types_guidance")
-        if override_guidance is not None:
-            if not isinstance(override_guidance, str) or not override_guidance.strip():
-                raise ValueError(
-                    "addon_params['entity_types_guidance'] must be a non-empty string."
-                )
-            prompt_profile = {
-                **prompt_profile,
-                "entity_types_guidance": override_guidance.rstrip(),
-            }
+        # Fallback for callers that construct global_config directly (e.g. tests
+        # or custom wiring). Re-run the resolver so behavior matches the cached
+        # path that LightRAG.__post_init__ populates, instead of duplicating
+        # guidance/override logic here.
+        prompt_profile = resolve_entity_extraction_prompt_profile(
+            addon_params, use_json_extraction
+        )
     entity_types_guidance = prompt_profile["entity_types_guidance"]
 
     max_total_records = global_config["entity_extract_max_records"]

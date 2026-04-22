@@ -1,3 +1,6 @@
+### When ENTITY_EXTRACTION_USE_JSON=false, entity_extraction_examples session must include in this file
+### When ENTITY_EXTRACTION_USE_JSON=true, entity_extraction_json_examples session must include in this file
+
 entity_types_guidance: |
   Classify each entity using one of the following types. If no type fits, use `Other`.
 

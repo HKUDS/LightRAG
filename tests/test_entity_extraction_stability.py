@@ -864,8 +864,8 @@ async def test_extract_entities_uses_cached_prompt_profile_without_reloading():
     llm_func.return_value = _TEXT_MODE_RESPONSE
 
     with patch(
-        "lightrag.operate.get_default_entity_extraction_prompt_profile",
-        side_effect=AssertionError("should not load default profile when cache exists"),
+        "lightrag.operate.resolve_entity_extraction_prompt_profile",
+        side_effect=AssertionError("should not resolve profile when cache exists"),
     ):
         with patch("lightrag.operate.logger"):
             await extract_entities(chunks=_make_chunks(), global_config=global_config)
@@ -894,3 +894,117 @@ def test_sample_prompt_file_matches_builtin_prompt_data():
 
     loaded_profile = load_entity_extraction_prompt_profile(sample_file)
     assert loaded_profile == get_default_entity_extraction_prompt_profile()
+
+
+@pytest.mark.offline
+def test_prompt_dir_env_var_overrides_default(tmp_path, monkeypatch):
+    _require_yaml()
+
+    from lightrag.prompt import (
+        get_entity_type_prompt_dir,
+        resolve_entity_type_prompt_path,
+    )
+
+    monkeypatch.setenv("PROMPT_DIR", str(tmp_path))
+    assert get_entity_type_prompt_dir() == tmp_path.resolve()
+    resolved = resolve_entity_type_prompt_path("custom.yml")
+    assert resolved == tmp_path.resolve() / "custom.yml"
+
+
+@pytest.mark.offline
+def test_prompt_dir_defaults_to_cwd_relative(tmp_path, monkeypatch):
+    _require_yaml()
+
+    from lightrag.prompt import get_entity_type_prompt_dir
+
+    monkeypatch.delenv("PROMPT_DIR", raising=False)
+    monkeypatch.chdir(tmp_path)
+    assert (
+        get_entity_type_prompt_dir() == (tmp_path / "prompts" / "entity_type").resolve()
+    )
+
+
+@pytest.mark.offline
+def test_prompt_file_rejects_unsupported_extension(tmp_path):
+    _require_yaml()
+
+    from lightrag import LightRAG
+
+    with pytest.raises(ValueError, match="'.yml' or '.yaml'"):
+        LightRAG(
+            working_dir=str(tmp_path / "rag-bad-ext"),
+            llm_model_func=AsyncMock(),
+            embedding_func=None,
+            addon_params={"entity_type_prompt_file": "profile.txt"},
+        )
+
+
+@pytest.mark.offline
+def test_prompt_file_malformed_yaml_raises_valueerror(tmp_path):
+    _require_yaml()
+
+    from lightrag.prompt import load_entity_extraction_prompt_profile
+
+    bad_file = tmp_path / "broken.yml"
+    bad_file.write_text("entity_types_guidance: [unclosed", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="invalid YAML"):
+        load_entity_extraction_prompt_profile(bad_file)
+
+
+@pytest.mark.offline
+def test_addon_guidance_overrides_file_profile(tmp_path):
+    _require_yaml()
+
+    from lightrag.prompt import resolve_entity_extraction_prompt_profile
+
+    prompt_dir = tmp_path / "entity_type"
+    prompt_dir.mkdir()
+    _write_prompt_profile(
+        prompt_dir / "profile.yml",
+        guidance="- FileType: from file",
+        text_examples=[_text_profile_example("Merged Example")],
+    )
+
+    with _patch_prompt_dir(prompt_dir):
+        profile = resolve_entity_extraction_prompt_profile(
+            addon_params={
+                "entity_type_prompt_file": "profile.yml",
+                "entity_types_guidance": "- AddonType: from addon_params",
+            },
+            use_json=False,
+        )
+
+    assert profile["entity_types_guidance"] == "- AddonType: from addon_params"
+    # File-provided examples must still be honored.
+    assert any(
+        "Merged Example" in example for example in profile["entity_extraction_examples"]
+    )
+
+
+@pytest.mark.offline
+def test_explicit_addon_params_still_picks_up_env_defaults(tmp_path, monkeypatch):
+    """Passing addon_params explicitly must not drop env-based defaults."""
+    _require_yaml()
+
+    from lightrag import LightRAG
+
+    prompt_dir = tmp_path / "entity_type"
+    prompt_dir.mkdir()
+    _write_prompt_profile(
+        prompt_dir / "from_env.yml",
+        text_examples=[_text_profile_example("Env Example")],
+    )
+
+    monkeypatch.setenv("ENTITY_TYPE_PROMPT_FILE", "from_env.yml")
+
+    with _patch_prompt_dir(prompt_dir):
+        rag = LightRAG(
+            working_dir=str(tmp_path / "rag-env-default"),
+            llm_model_func=AsyncMock(),
+            embedding_func=_dummy_embedding_func(),
+            entity_extraction_use_json=False,
+            addon_params={"language": "English"},
+        )
+
+    assert rag.addon_params["entity_type_prompt_file"] == "from_env.yml"
