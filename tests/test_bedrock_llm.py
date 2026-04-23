@@ -65,9 +65,10 @@ async def test_bedrock_complete_forwards_keyword_extraction_to_if_cache():
 
 @pytest.mark.offline
 @pytest.mark.asyncio
-async def test_bedrock_keyword_extraction_does_not_inject_system_prompt():
+async def test_bedrock_keyword_extraction_does_not_inject_system_prompt(monkeypatch):
     captured_calls: list[dict] = []
     client_kwargs_calls: list[dict] = []
+    monkeypatch.delenv("AWS_REGION", raising=False)
 
     with patch(
         "lightrag.llm.bedrock.aioboto3.Session",
@@ -87,9 +88,10 @@ async def test_bedrock_keyword_extraction_does_not_inject_system_prompt():
 
 @pytest.mark.offline
 @pytest.mark.asyncio
-async def test_bedrock_default_endpoint_sentinel_uses_sdk_default():
+async def test_bedrock_default_endpoint_sentinel_uses_sdk_default(monkeypatch):
     captured_calls: list[dict] = []
     client_kwargs_calls: list[dict] = []
+    monkeypatch.delenv("AWS_REGION", raising=False)
 
     with patch(
         "lightrag.llm.bedrock.aioboto3.Session",
@@ -106,9 +108,10 @@ async def test_bedrock_default_endpoint_sentinel_uses_sdk_default():
 
 @pytest.mark.offline
 @pytest.mark.asyncio
-async def test_bedrock_empty_endpoint_url_uses_sdk_default():
+async def test_bedrock_empty_endpoint_url_uses_sdk_default(monkeypatch):
     captured_calls: list[dict] = []
     client_kwargs_calls: list[dict] = []
+    monkeypatch.delenv("AWS_REGION", raising=False)
 
     with patch(
         "lightrag.llm.bedrock.aioboto3.Session",
@@ -125,9 +128,10 @@ async def test_bedrock_empty_endpoint_url_uses_sdk_default():
 
 @pytest.mark.offline
 @pytest.mark.asyncio
-async def test_bedrock_custom_endpoint_url_is_forwarded():
+async def test_bedrock_custom_endpoint_url_is_forwarded(monkeypatch):
     captured_calls: list[dict] = []
     client_kwargs_calls: list[dict] = []
+    monkeypatch.delenv("AWS_REGION", raising=False)
 
     with patch(
         "lightrag.llm.bedrock.aioboto3.Session",

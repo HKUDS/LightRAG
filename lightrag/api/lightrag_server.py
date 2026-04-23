@@ -788,6 +788,30 @@ def create_app(args):
                     )
 
                 return role_lollms_complete
+            if role_binding == "aws_bedrock":
+                from lightrag.llm.bedrock import bedrock_complete_if_cache
+
+                async def role_bedrock_complete(
+                    prompt,
+                    system_prompt=None,
+                    history_messages=None,
+                    **kwargs,
+                ) -> str:
+                    if history_messages is None:
+                        history_messages = []
+                    kwargs["temperature"] = get_env_value(
+                        "BEDROCK_LLM_TEMPERATURE", 1.0, float
+                    )
+                    return await bedrock_complete_if_cache(
+                        role_model,
+                        prompt,
+                        system_prompt=system_prompt,
+                        history_messages=history_messages,
+                        endpoint_url=role_host,
+                        **kwargs,
+                    )
+
+                return role_bedrock_complete
             if role_binding == "azure_openai":
                 from lightrag.llm.azure_openai import azure_openai_complete_if_cache
 
