@@ -89,6 +89,7 @@ class LLMConfigCache:
         self.gemini_embedding_options = None
         self.ollama_llm_options = None
         self.ollama_embedding_options = None
+        self.bedrock_llm_options = None
 
         # Only initialize and log OpenAI options when using OpenAI-related bindings
         if args.llm_binding in ["openai", "azure_openai"]:
@@ -102,6 +103,12 @@ class LLMConfigCache:
 
             self.gemini_llm_options = GeminiLLMOptions.options_dict(args)
             logger.info(f"Gemini LLM Options: {self.gemini_llm_options}")
+
+        if args.llm_binding == "bedrock":
+            from lightrag.llm.binding_options import BedrockLLMOptions
+
+            self.bedrock_llm_options = BedrockLLMOptions.options_dict(args)
+            logger.info(f"Bedrock LLM Options: {self.bedrock_llm_options}")
 
         # Only initialize and log Ollama LLM options when using Ollama LLM binding
         if args.llm_binding == "ollama":
@@ -302,7 +309,7 @@ def create_app(args):
         "ollama",
         "openai",
         "azure_openai",
-        "aws_bedrock",
+        "bedrock",
         "gemini",
     ]:
         raise Exception("llm binding not supported")
@@ -312,7 +319,7 @@ def create_app(args):
         "ollama",
         "openai",
         "azure_openai",
-        "aws_bedrock",
+        "bedrock",
         "jina",
         "gemini",
     ]:
@@ -610,7 +617,7 @@ def create_app(args):
                 from lightrag.llm.ollama import ollama_model_complete
 
                 return ollama_model_complete
-            elif binding == "aws_bedrock":
+            elif binding == "bedrock":
                 return bedrock_model_complete  # Already defined locally
             elif binding == "azure_openai":
                 # Use optimized function with pre-processed configuration
@@ -696,6 +703,12 @@ def create_app(args):
                 from lightrag.llm.binding_options import OllamaLLMOptions
 
                 role_provider_options = OllamaLLMOptions.options_dict_for_role(
+                    args, role, is_cross_provider
+                )
+            elif role_binding == "bedrock":
+                from lightrag.llm.binding_options import BedrockLLMOptions
+
+                role_provider_options = BedrockLLMOptions.options_dict_for_role(
                     args, role, is_cross_provider
                 )
             else:
@@ -788,7 +801,7 @@ def create_app(args):
                     )
 
                 return role_lollms_complete
-            if role_binding == "aws_bedrock":
+            if role_binding == "bedrock":
                 from lightrag.llm.bedrock import bedrock_complete_if_cache
 
                 async def role_bedrock_complete(
@@ -799,9 +812,8 @@ def create_app(args):
                 ) -> str:
                     if history_messages is None:
                         history_messages = []
-                    kwargs["temperature"] = get_env_value(
-                        "BEDROCK_LLM_TEMPERATURE", 1.0, float
-                    )
+                    if role_provider_options:
+                        kwargs = {**role_provider_options, **kwargs}
                     return await bedrock_complete_if_cache(
                         role_model,
                         prompt,
@@ -958,7 +970,7 @@ def create_app(args):
                 from lightrag.llm.azure_openai import azure_openai_embed
 
                 provider_func = azure_openai_embed
-            elif binding == "aws_bedrock":
+            elif binding == "bedrock":
                 from lightrag.llm.bedrock import bedrock_embed
 
                 provider_func = bedrock_embed
@@ -1049,7 +1061,7 @@ def create_app(args):
                     if model:
                         kwargs["model"] = model
                     return await actual_func(**kwargs)
-                elif binding == "aws_bedrock":
+                elif binding == "bedrock":
                     from lightrag.llm.bedrock import bedrock_embed
 
                     actual_func = (
@@ -1170,7 +1182,8 @@ def create_app(args):
         # Bedrock Converse API has no JSON mode; response_format and the legacy
         # extraction booleans flow through kwargs to bedrock_complete_if_cache,
         # which drops them and emits deprecation warnings when booleans are set.
-        kwargs["temperature"] = get_env_value("BEDROCK_LLM_TEMPERATURE", 1.0, float)
+        if config_cache.bedrock_llm_options:
+            kwargs = {**config_cache.bedrock_llm_options, **kwargs}
 
         return await bedrock_complete_if_cache(
             args.llm_model,

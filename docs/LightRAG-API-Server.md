@@ -68,7 +68,7 @@ LightRAG necessitates the integration of both an LLM (Large Language Model) and 
 * lollms
 * openai or openai compatible
 * azure_openai
-* aws_bedrock
+* bedrock
 * gemini
 
 It is recommended to use environment variables to configure the LightRAG Server. There is an example environment variable file named `env.example` in the root directory of the project. Please copy this file to the startup directory and rename it to `.env`. After that, you can modify the parameters related to the LLM and Embedding models in the `.env` file. It is important to note that the LightRAG Server will load the environment variables from `.env` into the system environment variables each time it starts. **LightRAG Server will prioritize the settings in the system environment variables to .env file**.
@@ -459,7 +459,7 @@ LightRAG supports binding to various LLM/Embedding backends:
 * openai (including openai compatible)
 * azure_openai
 * lollms
-* aws_bedrock
+* bedrock
 
 Use environment variables `LLM_BINDING` or CLI argument `--llm-binding` to select the LLM backend type. Use environment variables `EMBEDDING_BINDING` or CLI argument `--embedding-binding` to select the Embedding backend type.
 
@@ -534,8 +534,8 @@ When switching the storage implementation in LightRAG, the LLM cache can be migr
 | --ssl                 | False         | Enable HTTPS                                                                                                                    |
 | --ssl-certfile        | None          | Path to SSL certificate file (required if --ssl is enabled)                                                                     |
 | --ssl-keyfile         | None          | Path to SSL private key file (required if --ssl is enabled)                                                                     |
-| --llm-binding         | ollama        | LLM binding type (lollms, ollama, openai, openai-ollama, azure_openai, aws_bedrock)                                                          |
-| --embedding-binding   | ollama        | Embedding binding type (lollms, ollama, openai, azure_openai, aws_bedrock)                                                                   |
+| --llm-binding         | ollama        | LLM binding type (lollms, ollama, openai, openai-ollama, azure_openai, bedrock)                                                          |
+| --embedding-binding   | ollama        | Embedding binding type (lollms, ollama, openai, azure_openai, bedrock)                                                                   |
 
 ### Reranking Configuration
 

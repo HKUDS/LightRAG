@@ -18,7 +18,7 @@ from tenacity import (
 )
 
 from collections.abc import AsyncIterator
-from typing import Union
+from typing import Any, Union
 
 from lightrag.utils import wrap_embedding_func_with_attrs
 
@@ -271,14 +271,17 @@ async def bedrock_complete_if_cache(
         "top_p": "topP",
         "stop_sequences": "stopSequences",
     }
-    if inference_params := list(
-        set(kwargs) & set(["max_tokens", "temperature", "top_p", "stop_sequences"])
-    ):
-        args["inferenceConfig"] = {}
-        for param in inference_params:
-            args["inferenceConfig"][inference_params_map.get(param, param)] = (
-                kwargs.pop(param)
-            )
+    inference_config: dict[str, Any] = {}
+    for param in ("max_tokens", "temperature", "top_p", "stop_sequences"):
+        if param not in kwargs:
+            continue
+        value = kwargs.pop(param)
+        # Bedrock rejects None; a None default means "inherit provider default"
+        if value is None:
+            continue
+        inference_config[inference_params_map.get(param, param)] = value
+    if inference_config:
+        args["inferenceConfig"] = inference_config
 
     # Import logging for error handling
     import logging

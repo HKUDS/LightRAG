@@ -43,8 +43,8 @@ def _make_args(tmp_path) -> SimpleNamespace:
         jwt_algorithm="HS256",
         token_auto_renew=True,
         token_renew_threshold=0.5,
-        llm_binding="aws_bedrock",
-        embedding_binding="aws_bedrock",
+        llm_binding="bedrock",
+        embedding_binding="bedrock",
         llm_binding_host="DEFAULT_BEDROCK_ENDPOINT",
         embedding_binding_host="DEFAULT_BEDROCK_ENDPOINT",
         ssl=False,
@@ -107,13 +107,16 @@ async def test_create_app_query_role_uses_bedrock_binding(tmp_path, monkeypatch)
 
     args = _make_args(tmp_path)
 
-    with patch(
-        "lightrag.llm.bedrock.bedrock_complete_if_cache",
-        AsyncMock(return_value="bedrock-ok"),
-    ) as mocked_bedrock, patch(
-        "lightrag.llm.openai.openai_complete_if_cache",
-        AsyncMock(side_effect=AssertionError("OpenAI fallback should not be used")),
-    ) as mocked_openai:
+    with (
+        patch(
+            "lightrag.llm.bedrock.bedrock_complete_if_cache",
+            AsyncMock(return_value="bedrock-ok"),
+        ) as mocked_bedrock,
+        patch(
+            "lightrag.llm.openai.openai_complete_if_cache",
+            AsyncMock(side_effect=AssertionError("OpenAI fallback should not be used")),
+        ) as mocked_openai,
+    ):
         lightrag_server.create_app(args)
         query_func = _FakeLightRAG.last_init_kwargs["query_llm_model_func"]
         result = await query_func("hello")

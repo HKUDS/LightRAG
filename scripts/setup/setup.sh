@@ -1721,8 +1721,8 @@ clear_bedrock_credentials() {
 }
 
 bedrock_binding_in_use() {
-  [[ "${ENV_VALUES[LLM_BINDING]:-}" == "aws_bedrock" ||
-    "${ENV_VALUES[EMBEDDING_BINDING]:-}" == "aws_bedrock" ]]
+  [[ "${ENV_VALUES[LLM_BINDING]:-}" == "bedrock" ||
+    "${ENV_VALUES[EMBEDDING_BINDING]:-}" == "bedrock" ]]
 }
 
 clear_bedrock_credentials_if_unused() {
@@ -1804,7 +1804,7 @@ default_llm_model_for_binding() {
     gemini)
       printf 'gemini-flash-latest'
       ;;
-    aws_bedrock)
+    bedrock)
       printf 'anthropic.claude-3-5-sonnet-20241022-v2:0'
       ;;
     *)
@@ -1829,7 +1829,7 @@ default_embedding_model_for_binding() {
     gemini)
       printf 'gemini-embedding-001'
       ;;
-    aws_bedrock)
+    bedrock)
       printf 'amazon.titan-embed-text-v2:0'
       ;;
     lollms)
@@ -1848,7 +1848,7 @@ default_embedding_dim_for_binding() {
     openai|azure_openai)
       printf '3072'
       ;;
-    ollama|aws_bedrock|lollms)
+    ollama|bedrock|lollms)
       printf '1024'
       ;;
     jina)
@@ -1864,7 +1864,7 @@ default_embedding_dim_for_binding() {
 }
 
 collect_llm_config() {
-  local options=("openai" "azure_openai" "ollama" "openai-ollama" "lollms" "gemini" "aws_bedrock")
+  local options=("openai" "azure_openai" "ollama" "openai-ollama" "lollms" "gemini" "bedrock")
   local current_binding="${ENV_VALUES[LLM_BINDING]:-openai}"
   local binding model model_default host host_default api_key
 
@@ -1898,7 +1898,7 @@ collect_llm_config() {
       host="$(prompt_with_default "Gemini endpoint" "$host_default")"
       api_key="$(prompt_secret_until_valid_with_default "Gemini API key: " "${ENV_VALUES[LLM_BINDING_API_KEY]:-}" validate_api_key gemini)"
       ;;
-    aws_bedrock)
+    bedrock)
       host="$(provider_default_or_existing "$binding" "$current_binding" "${ENV_VALUES[LLM_BINDING_HOST]:-}" "DEFAULT_BEDROCK_ENDPOINT")"
       api_key=""
       collect_bedrock_credentials
@@ -1918,7 +1918,7 @@ collect_llm_config() {
 }
 
 collect_embedding_config() {
-  local options=("openai" "azure_openai" "ollama" "jina" "lollms" "gemini" "aws_bedrock")
+  local options=("openai" "azure_openai" "ollama" "jina" "lollms" "gemini" "bedrock")
   local current_binding="${ENV_VALUES[EMBEDDING_BINDING]:-openai}"
   local binding model model_default host host_default api_key dim dim_default
 
@@ -1962,7 +1962,7 @@ collect_embedding_config() {
       host="$(prompt_with_default "Gemini endpoint" "$host_default")"
       api_key="$(prompt_secret_until_valid_with_default "Gemini API key: " "${ENV_VALUES[EMBEDDING_BINDING_API_KEY]:-$llm_api_key_default}" validate_api_key gemini)"
       ;;
-    aws_bedrock)
+    bedrock)
       host="$(provider_default_or_existing "$binding" "$current_binding" "${ENV_VALUES[EMBEDDING_BINDING_HOST]:-}" "${llm_host_fallback:-DEFAULT_BEDROCK_ENDPOINT}")"
       api_key=""
       collect_bedrock_credentials

@@ -9,6 +9,7 @@ import logging
 from dotenv import load_dotenv
 from lightrag.utils import get_env_value
 from lightrag.llm.binding_options import (
+    BedrockLLMOptions,
     GeminiEmbeddingOptions,
     GeminiLLMOptions,
     OllamaEmbeddingOptions,
@@ -68,7 +69,7 @@ def get_default_host(binding_type: str) -> str:
         "openai": os.getenv("LLM_BINDING_HOST", "https://api.openai.com/v1"),
         # Let boto3 select the regional Bedrock endpoint unless the user
         # explicitly overrides LLM_BINDING_HOST / EMBEDDING_BINDING_HOST.
-        "aws_bedrock": os.getenv("LLM_BINDING_HOST", "DEFAULT_BEDROCK_ENDPOINT"),
+        "bedrock": os.getenv("LLM_BINDING_HOST", "DEFAULT_BEDROCK_ENDPOINT"),
         # Let google-genai pick the correct default endpoint/version unless the
         # user explicitly overrides LLM_BINDING_HOST / EMBEDDING_BINDING_HOST.
         "gemini": os.getenv("LLM_BINDING_HOST", "DEFAULT_GEMINI_ENDPOINT"),
@@ -245,7 +246,7 @@ def parse_args() -> argparse.Namespace:
             "openai",
             "openai-ollama",
             "azure_openai",
-            "aws_bedrock",
+            "bedrock",
             "gemini",
         ],
         help="LLM binding type (default: from env or ollama)",
@@ -259,7 +260,7 @@ def parse_args() -> argparse.Namespace:
             "ollama",
             "openai",
             "azure_openai",
-            "aws_bedrock",
+            "bedrock",
             "jina",
             "gemini",
         ],
@@ -306,6 +307,8 @@ def parse_args() -> argparse.Namespace:
         OpenAILLMOptions.add_args(parser)
     elif llm_binding_value == "gemini":
         GeminiLLMOptions.add_args(parser)
+    elif llm_binding_value == "bedrock":
+        BedrockLLMOptions.add_args(parser)
 
     # Determine embedding binding value consistently from command line or environment
     embedding_binding_value = None

@@ -264,10 +264,10 @@ def test_switching_both_providers_off_bedrock_clears_saved_aws_credentials(
     write_text_lines(
         tmp_path / ".env",
         [
-            "LLM_BINDING=aws_bedrock",
+            "LLM_BINDING=bedrock",
             "LLM_MODEL=anthropic.claude-3-5-sonnet-20241022-v2:0",
             "LLM_BINDING_HOST=https://bedrock.amazonaws.com",
-            "EMBEDDING_BINDING=aws_bedrock",
+            "EMBEDDING_BINDING=bedrock",
             "EMBEDDING_MODEL=amazon.titan-embed-text-v2:0",
             "EMBEDDING_DIM=1024",
             "EMBEDDING_BINDING_HOST=https://bedrock.amazonaws.com",
