@@ -807,6 +807,7 @@ def create_app(args):
                         prompt,
                         system_prompt=system_prompt,
                         history_messages=history_messages,
+                        api_key=role_apikey,
                         endpoint_url=role_host,
                         **kwargs,
                     )
@@ -1057,7 +1058,7 @@ def create_app(args):
                         else bedrock_embed
                     )
                     # Pass model only if provided, let function use its default otherwise
-                    kwargs = {"texts": texts}
+                    kwargs = {"texts": texts, "api_key": api_key}
                     if host is not None:
                         kwargs["endpoint_url"] = host
                     if model:
@@ -1176,6 +1177,7 @@ def create_app(args):
             prompt,
             system_prompt=system_prompt,
             history_messages=history_messages,
+            api_key=args.llm_binding_api_key,
             endpoint_url=args.llm_binding_host,
             **kwargs,
         )

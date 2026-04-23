@@ -1,3 +1,4 @@
+import os
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -229,3 +230,59 @@ async def test_bedrock_embed_empty_endpoint_url_uses_sdk_default(monkeypatch):
         )
 
     assert client_kwargs_calls[-1] == {"region_name": None}
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_bedrock_api_key_promotes_to_bearer_token_env(monkeypatch):
+    monkeypatch.delenv("AWS_REGION", raising=False)
+    monkeypatch.delenv("AWS_BEARER_TOKEN_BEDROCK", raising=False)
+
+    with patch(
+        "lightrag.llm.bedrock.aioboto3.Session",
+        return_value=_FakeSession([], []),
+    ):
+        await bedrock_complete_if_cache(
+            model="bedrock-model",
+            prompt="hello",
+            api_key="absk-from-llm-binding",
+        )
+
+    assert os.environ.get("AWS_BEARER_TOKEN_BEDROCK") == "absk-from-llm-binding"
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_bedrock_api_key_does_not_override_existing_bearer_env(monkeypatch):
+    monkeypatch.delenv("AWS_REGION", raising=False)
+    monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", "absk-from-env")
+
+    with patch(
+        "lightrag.llm.bedrock.aioboto3.Session",
+        return_value=_FakeSession([], []),
+    ):
+        await bedrock_complete_if_cache(
+            model="bedrock-model",
+            prompt="hello",
+            api_key="absk-should-be-ignored",
+        )
+
+    assert os.environ.get("AWS_BEARER_TOKEN_BEDROCK") == "absk-from-env"
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_bedrock_embed_api_key_promotes_to_bearer_token_env(monkeypatch):
+    monkeypatch.delenv("AWS_REGION", raising=False)
+    monkeypatch.delenv("AWS_BEARER_TOKEN_BEDROCK", raising=False)
+
+    with patch(
+        "lightrag.llm.bedrock.aioboto3.Session",
+        return_value=_FakeEmbeddingSession([], []),
+    ):
+        await bedrock_embed(
+            texts=["hello"],
+            api_key="absk-embedding-key",
+        )
+
+    assert os.environ.get("AWS_BEARER_TOKEN_BEDROCK") == "absk-embedding-key"

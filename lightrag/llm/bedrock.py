@@ -167,6 +167,7 @@ async def bedrock_complete_if_cache(
     aws_access_key_id=None,
     aws_secret_access_key=None,
     aws_session_token=None,
+    api_key: str | None = None,
     endpoint_url: str | None = None,
     **kwargs,
 ) -> Union[str, AsyncIterator[str]]:
@@ -177,6 +178,12 @@ async def bedrock_complete_if_cache(
     - If callers pass ``response_format``, it is stripped before the request.
     - Deprecated ``keyword_extraction`` and ``entity_extraction`` booleans are
       accepted only as compatibility shims; they emit warnings and are ignored.
+
+    Authentication note:
+    - ``api_key`` acts as a provider-agnostic alias for the Bedrock bearer token.
+      When ``AWS_BEARER_TOKEN_BEDROCK`` is not set in the environment, a non-empty
+      ``api_key`` is promoted to that env var so botocore picks up bearer auth.
+      The env var always wins when both are provided.
 
     Endpoint note:
     - ``endpoint_url`` overrides the default regional Bedrock endpoint. Pass
@@ -217,6 +224,9 @@ async def bedrock_complete_if_cache(
     _set_env_if_present("AWS_ACCESS_KEY_ID", access_key)
     _set_env_if_present("AWS_SECRET_ACCESS_KEY", secret_key)
     _set_env_if_present("AWS_SESSION_TOKEN", session_token)
+    # Bedrock API key (bearer token) — env takes precedence over api_key alias
+    bearer_token = os.environ.get("AWS_BEARER_TOKEN_BEDROCK") or api_key
+    _set_env_if_present("AWS_BEARER_TOKEN_BEDROCK", bearer_token)
     # Region handling: prefer env, else kwarg (optional)
     region = os.environ.get("AWS_REGION") or kwargs.pop("aws_region", None)
     endpoint_url = _normalize_bedrock_endpoint_url(endpoint_url)
@@ -431,6 +441,7 @@ async def bedrock_embed(
     aws_access_key_id=None,
     aws_secret_access_key=None,
     aws_session_token=None,
+    api_key: str | None = None,
     endpoint_url: str | None = None,
 ) -> np.ndarray:
     # Respect existing env; only set if a non-empty value is available
@@ -440,6 +451,9 @@ async def bedrock_embed(
     _set_env_if_present("AWS_ACCESS_KEY_ID", access_key)
     _set_env_if_present("AWS_SECRET_ACCESS_KEY", secret_key)
     _set_env_if_present("AWS_SESSION_TOKEN", session_token)
+    # Bedrock API key (bearer token) — env takes precedence over api_key alias
+    bearer_token = os.environ.get("AWS_BEARER_TOKEN_BEDROCK") or api_key
+    _set_env_if_present("AWS_BEARER_TOKEN_BEDROCK", bearer_token)
 
     # Region handling: prefer env
     region = os.environ.get("AWS_REGION")
