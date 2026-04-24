@@ -68,7 +68,7 @@ LightRAG necessitates the integration of both an LLM (Large Language Model) and 
 * lollms
 * openai or openai compatible
 * azure_openai
-* aws_bedrock
+* bedrock
 * gemini
 
 It is recommended to use environment variables to configure the LightRAG Server. There is an example environment variable file named `env.example` in the root directory of the project. Please copy this file to the startup directory and rename it to `.env`. After that, you can modify the parameters related to the LLM and Embedding models in the `.env` file. It is important to note that the LightRAG Server will load the environment variables from `.env` into the system environment variables each time it starts. **LightRAG Server will prioritize the settings in the system environment variables to .env file**.
@@ -423,7 +423,6 @@ az cognitiveservices account deployment create --resource-group $RESOURCE_GROUP_
 az cognitiveservices account deployment create --resource-group $RESOURCE_GROUP_NAME  --model-format OpenAI --name $RESOURCE_NAME --deployment-name text-embedding-3-large --model-name text-embedding-3-large --model-version "1"  --sku-capacity 80 --sku-name "Standard"
 az cognitiveservices account show --name $RESOURCE_NAME --resource-group $RESOURCE_GROUP_NAME --query "properties.endpoint"
 az cognitiveservices account keys list --name $RESOURCE_NAME -g $RESOURCE_GROUP_NAME
-
 ```
 
 The output of the last command will give you the endpoint and the key for the OpenAI API. You can use these values to set the environment variables in the `.env` file.
@@ -459,9 +458,11 @@ LightRAG supports binding to various LLM/Embedding backends:
 * openai (including openai compatible)
 * azure_openai
 * lollms
-* aws_bedrock
+* bedrock
 
 Use environment variables `LLM_BINDING` or CLI argument `--llm-binding` to select the LLM backend type. Use environment variables `EMBEDDING_BINDING` or CLI argument `--embedding-binding` to select the Embedding backend type.
+
+Bedrock ignores `LLM_BINDING_API_KEY` and `EMBEDDING_BINDING_API_KEY`. Use SigV4 credentials through the AWS credential chain, or set the process-level `AWS_BEARER_TOKEN_BEDROCK` environment variable before startup for Bedrock API key / bearer-token auth.
 
 For LLM and embedding configuration examples, please refer to the `env.example` file in the project's root directory. To view the complete list of configurable options for OpenAI and Ollama-compatible LLM interfaces, use the following commands:
 ```
@@ -534,8 +535,8 @@ When switching the storage implementation in LightRAG, the LLM cache can be migr
 | --ssl                 | False         | Enable HTTPS                                                                                                                    |
 | --ssl-certfile        | None          | Path to SSL certificate file (required if --ssl is enabled)                                                                     |
 | --ssl-keyfile         | None          | Path to SSL private key file (required if --ssl is enabled)                                                                     |
-| --llm-binding         | ollama        | LLM binding type (lollms, ollama, openai, openai-ollama, azure_openai, aws_bedrock)                                                          |
-| --embedding-binding   | ollama        | Embedding binding type (lollms, ollama, openai, azure_openai, aws_bedrock)                                                                   |
+| --llm-binding         | ollama        | LLM binding type (lollms, ollama, openai, openai-ollama, azure_openai, bedrock)                                                          |
+| --embedding-binding   | ollama        | Embedding binding type (lollms, ollama, openai, azure_openai, bedrock)                                                                   |
 
 ### Reranking Configuration
 

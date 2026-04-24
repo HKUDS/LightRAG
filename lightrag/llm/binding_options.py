@@ -642,6 +642,36 @@ class OpenAILLMOptions(BindingOptions):
 
 
 # =============================================================================
+# Binding Options for AWS Bedrock
+# =============================================================================
+#
+# Bedrock binding options map to the subset of the Bedrock Converse API
+# inferenceConfig that LightRAG's bedrock driver actually forwards. See
+# ``lightrag/llm/bedrock.py`` for the whitelist — any field added here that is
+# not in that whitelist will be silently dropped by the driver.
+# =============================================================================
+@dataclass
+class BedrockLLMOptions(BindingOptions):
+    """Options for AWS Bedrock LLM (Converse API inferenceConfig)."""
+
+    _binding_name: ClassVar[str] = "bedrock_llm"
+
+    temperature: float = DEFAULT_TEMPERATURE
+    max_tokens: int | None = None
+    top_p: float = 1.0
+    stop_sequences: List[str] = field(default_factory=list)
+    extra_fields: dict = None  # Converse API additionalModelRequestFields
+
+    _help: ClassVar[dict[str, str]] = {
+        "temperature": "Controls randomness (0.0-1.0 for most Bedrock models)",
+        "max_tokens": "Maximum tokens generated in the response (leave empty for model default)",
+        "top_p": "Nucleus sampling parameter (0.0-1.0)",
+        "stop_sequences": "Stop sequences (JSON array of strings, e.g., '[\"</s>\"]')",
+        "extra_fields": 'Model-specific request fields forwarded as Converse API additionalModelRequestFields (JSON dict, e.g., \'{"reasoning_config": {"type": "enabled"}}\')',
+    }
+
+
+# =============================================================================
 # Main Section - For Testing and Sample Generation
 # =============================================================================
 #

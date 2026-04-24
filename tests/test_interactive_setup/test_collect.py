@@ -450,7 +450,7 @@ REPO_ROOT="{tmp_path}"
 reset_state
 load_existing_env_if_present
 
-prompt_choice() {{ printf 'aws_bedrock'; }}
+prompt_choice() {{ printf 'bedrock'; }}
 prompt_with_default() {{ printf '%s' "$2"; }}
 prompt_required_secret() {{ printf 'dummy-secret'; }}
 mask_sensitive_input() {{ printf ''; }}
@@ -467,7 +467,7 @@ else
 fi
 """)
     values = parse_lines(output)
-    assert values["BINDING"] == "aws_bedrock"
+    assert values["BINDING"] == "bedrock"
     assert values["API_KEY_SET"] == ""
     assert values["VALID"] == "yes"
 
@@ -521,13 +521,13 @@ fi
         (
             "collect_llm_config",
             "LLM",
-            "aws_bedrock",
+            "bedrock",
             """
 prompt_clearable_with_default() { printf ''; }
 prompt_required_secret() { return 1; }
 confirm_default_yes() { return 1; }
 """,
-            "aws_bedrock",
+            "bedrock",
             "anthropic.claude-3-5-sonnet-20241022-v2:0",
             "DEFAULT_BEDROCK_ENDPOINT",
             "",
@@ -547,13 +547,13 @@ confirm_default_yes() { return 1; }
         (
             "collect_embedding_config",
             "EMBEDDING",
-            "aws_bedrock",
+            "bedrock",
             """
 prompt_clearable_with_default() { printf ''; }
 prompt_required_secret() { return 1; }
 confirm_default_yes() { return 1; }
 """,
-            "aws_bedrock",
+            "bedrock",
             "amazon.titan-embed-text-v2:0",
             "DEFAULT_BEDROCK_ENDPOINT",
             "1024",
@@ -631,7 +631,7 @@ printf 'API_KEY_SET=%s\\n' "${{ENV_VALUES[{binding_prefix}_BINDING_API_KEY]+set}
             "collect_embedding_config",
             "EMBEDDING",
             [
-                "EMBEDDING_BINDING=aws_bedrock",
+                "EMBEDDING_BINDING=bedrock",
                 "EMBEDDING_MODEL=amazon.titan-embed-text-v2:0",
                 "EMBEDDING_DIM=1024",
                 "EMBEDDING_BINDING_HOST=https://bedrock.amazonaws.com",
@@ -817,7 +817,7 @@ set -euo pipefail
 source "{REPO_ROOT}/scripts/setup/setup.sh"
 reset_state
 
-prompt_choice() {{ printf 'aws_bedrock'; }}
+prompt_choice() {{ printf 'bedrock'; }}
 prompt_with_default() {{ printf '%s' "$2"; }}
 prompt_clearable_with_default() {{ printf ''; }}
 prompt_required_secret() {{ return 1; }}
@@ -832,7 +832,7 @@ printf 'AWS_SESSION_TOKEN_SET=%s\\n' "${{ENV_VALUES[AWS_SESSION_TOKEN]+set}}"
 printf 'AWS_REGION_SET=%s\\n' "${{ENV_VALUES[AWS_REGION]+set}}\"
 """)
     values = parse_lines(output)
-    assert values["LLM_BINDING"] == "aws_bedrock"
+    assert values["LLM_BINDING"] == "bedrock"
     assert values["AWS_ACCESS_KEY_ID_SET"] == ""
     assert values["AWS_SECRET_ACCESS_KEY_SET"] == ""
     assert values["AWS_SESSION_TOKEN_SET"] == ""

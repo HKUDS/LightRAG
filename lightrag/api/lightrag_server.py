@@ -89,6 +89,7 @@ class LLMConfigCache:
         self.gemini_embedding_options = None
         self.ollama_llm_options = None
         self.ollama_embedding_options = None
+        self.bedrock_llm_options = None
 
         # Only initialize and log OpenAI options when using OpenAI-related bindings
         if args.llm_binding in ["openai", "azure_openai"]:
@@ -102,6 +103,12 @@ class LLMConfigCache:
 
             self.gemini_llm_options = GeminiLLMOptions.options_dict(args)
             logger.info(f"Gemini LLM Options: {self.gemini_llm_options}")
+
+        if args.llm_binding == "bedrock":
+            from lightrag.llm.binding_options import BedrockLLMOptions
+
+            self.bedrock_llm_options = BedrockLLMOptions.options_dict(args)
+            logger.info(f"Bedrock LLM Options: {self.bedrock_llm_options}")
 
         # Only initialize and log Ollama LLM options when using Ollama LLM binding
         if args.llm_binding == "ollama":
@@ -302,7 +309,7 @@ def create_app(args):
         "ollama",
         "openai",
         "azure_openai",
-        "aws_bedrock",
+        "bedrock",
         "gemini",
     ]:
         raise Exception("llm binding not supported")
@@ -312,7 +319,7 @@ def create_app(args):
         "ollama",
         "openai",
         "azure_openai",
-        "aws_bedrock",
+        "bedrock",
         "jina",
         "gemini",
     ]:
@@ -610,7 +617,7 @@ def create_app(args):
                 from lightrag.llm.ollama import ollama_model_complete
 
                 return ollama_model_complete
-            elif binding == "aws_bedrock":
+            elif binding == "bedrock":
                 return bedrock_model_complete  # Already defined locally
             elif binding == "azure_openai":
                 # Use optimized function with pre-processed configuration
@@ -665,11 +672,19 @@ def create_app(args):
             or getattr(args, f"{attr}_llm_binding_host", None)
             or args.llm_binding_host
         )
-        role_apikey = (
-            override_meta.get("api_key")
-            or getattr(args, f"{attr}_llm_binding_api_key", None)
-            or args.llm_binding_api_key
+        explicit_role_apikey = override_meta.get("api_key") or getattr(
+            args, f"{attr}_llm_binding_api_key", None
         )
+        if role_binding == "bedrock":
+            if explicit_role_apikey:
+                raise ValueError(
+                    f"Bedrock role '{role}' does not support role-specific "
+                    "LLM_BINDING_API_KEY; use role-specific SigV4 AWS_* "
+                    "variables or process-level AWS_BEARER_TOKEN_BEDROCK."
+                )
+            role_apikey = None
+        else:
+            role_apikey = explicit_role_apikey or args.llm_binding_api_key
         role_timeout = (
             override_meta.get("timeout")
             or getattr(args, f"{attr}_llm_timeout", None)
@@ -698,8 +713,36 @@ def create_app(args):
                 role_provider_options = OllamaLLMOptions.options_dict_for_role(
                     args, role, is_cross_provider
                 )
+            elif role_binding == "bedrock":
+                from lightrag.llm.binding_options import BedrockLLMOptions
+
+                role_provider_options = BedrockLLMOptions.options_dict_for_role(
+                    args, role, is_cross_provider
+                )
             else:
                 role_provider_options = {}
+
+        bedrock_aws_options = {}
+        if role_binding == "bedrock":
+            override_bedrock_aws_options = override_meta.get("bedrock_aws_options", {})
+            bedrock_aws_options = {
+                "aws_region": override_meta.get("aws_region")
+                or override_bedrock_aws_options.get("aws_region")
+                or getattr(args, f"{attr}_aws_region", None)
+                or getattr(args, "aws_region", None),
+                "aws_access_key_id": override_meta.get("aws_access_key_id")
+                or override_bedrock_aws_options.get("aws_access_key_id")
+                or getattr(args, f"{attr}_aws_access_key_id", None)
+                or getattr(args, "aws_access_key_id", None),
+                "aws_secret_access_key": override_meta.get("aws_secret_access_key")
+                or override_bedrock_aws_options.get("aws_secret_access_key")
+                or getattr(args, f"{attr}_aws_secret_access_key", None)
+                or getattr(args, "aws_secret_access_key", None),
+                "aws_session_token": override_meta.get("aws_session_token")
+                or override_bedrock_aws_options.get("aws_session_token")
+                or getattr(args, f"{attr}_aws_session_token", None)
+                or getattr(args, "aws_session_token", None),
+            }
 
         return {
             "binding": role_binding,
@@ -710,6 +753,7 @@ def create_app(args):
             "max_async": role_max_async,
             "provider_options": role_provider_options,
             "is_cross_provider": is_cross_provider,
+            "bedrock_aws_options": bedrock_aws_options,
         }
 
     def create_role_llm_func(role: str, override_meta: dict | None = None):
@@ -721,6 +765,7 @@ def create_app(args):
         role_apikey = settings["api_key"]
         role_timeout = settings["timeout"]
         role_provider_options = settings["provider_options"]
+        bedrock_aws_options = settings["bedrock_aws_options"]
 
         logger.info(
             f"  Role '{role}': binding={role_binding}, model={role_model}, "
@@ -788,6 +833,30 @@ def create_app(args):
                     )
 
                 return role_lollms_complete
+            if role_binding == "bedrock":
+                from lightrag.llm.bedrock import bedrock_complete_if_cache
+
+                async def role_bedrock_complete(
+                    prompt,
+                    system_prompt=None,
+                    history_messages=None,
+                    **kwargs,
+                ) -> str:
+                    if history_messages is None:
+                        history_messages = []
+                    if role_provider_options:
+                        kwargs = {**role_provider_options, **kwargs}
+                    return await bedrock_complete_if_cache(
+                        role_model,
+                        prompt,
+                        system_prompt=system_prompt,
+                        history_messages=history_messages,
+                        endpoint_url=role_host,
+                        **bedrock_aws_options,
+                        **kwargs,
+                    )
+
+                return role_bedrock_complete
             if role_binding == "azure_openai":
                 from lightrag.llm.azure_openai import azure_openai_complete_if_cache
 
@@ -808,7 +877,7 @@ def create_app(args):
                         system_prompt=system_prompt,
                         history_messages=history_messages,
                         base_url=role_host,
-                        api_key=os.getenv("AZURE_OPENAI_API_KEY", role_apikey),
+                        api_key=role_apikey or os.getenv("AZURE_OPENAI_API_KEY"),
                         api_version=os.getenv(
                             "AZURE_OPENAI_API_VERSION", "2024-08-01-preview"
                         ),
@@ -933,7 +1002,7 @@ def create_app(args):
                 from lightrag.llm.azure_openai import azure_openai_embed
 
                 provider_func = azure_openai_embed
-            elif binding == "aws_bedrock":
+            elif binding == "bedrock":
                 from lightrag.llm.bedrock import bedrock_embed
 
                 provider_func = bedrock_embed
@@ -1024,7 +1093,7 @@ def create_app(args):
                     if model:
                         kwargs["model"] = model
                     return await actual_func(**kwargs)
-                elif binding == "aws_bedrock":
+                elif binding == "bedrock":
                     from lightrag.llm.bedrock import bedrock_embed
 
                     actual_func = (
@@ -1033,7 +1102,15 @@ def create_app(args):
                         else bedrock_embed
                     )
                     # Pass model only if provided, let function use its default otherwise
-                    kwargs = {"texts": texts}
+                    kwargs = {
+                        "texts": texts,
+                        "aws_region": getattr(args, "aws_region", None),
+                        "aws_access_key_id": getattr(args, "aws_access_key_id", None),
+                        "aws_secret_access_key": getattr(
+                            args, "aws_secret_access_key", None
+                        ),
+                        "aws_session_token": getattr(args, "aws_session_token", None),
+                    }
                     if host is not None:
                         kwargs["endpoint_url"] = host
                     if model:
@@ -1145,7 +1222,8 @@ def create_app(args):
         # Bedrock Converse API has no JSON mode; response_format and the legacy
         # extraction booleans flow through kwargs to bedrock_complete_if_cache,
         # which drops them and emits deprecation warnings when booleans are set.
-        kwargs["temperature"] = get_env_value("BEDROCK_LLM_TEMPERATURE", 1.0, float)
+        if config_cache.bedrock_llm_options:
+            kwargs = {**config_cache.bedrock_llm_options, **kwargs}
 
         return await bedrock_complete_if_cache(
             args.llm_model,
@@ -1153,6 +1231,10 @@ def create_app(args):
             system_prompt=system_prompt,
             history_messages=history_messages,
             endpoint_url=args.llm_binding_host,
+            aws_region=getattr(args, "aws_region", None),
+            aws_access_key_id=getattr(args, "aws_access_key_id", None),
+            aws_secret_access_key=getattr(args, "aws_secret_access_key", None),
+            aws_session_token=getattr(args, "aws_session_token", None),
             **kwargs,
         )
 
@@ -1165,7 +1247,9 @@ def create_app(args):
         binding=args.embedding_binding,
         model=args.embedding_model,
         host=args.embedding_binding_host,
-        api_key=args.embedding_binding_api_key,
+        api_key=None
+        if args.embedding_binding == "bedrock"
+        else args.embedding_binding_api_key,
         args=args,
     )
 
@@ -1373,6 +1457,7 @@ def create_app(args):
             host=role_llm_configs[role]["host"],
             api_key=role_llm_configs[role]["api_key"],
             provider_options=role_llm_configs[role]["provider_options"],
+            bedrock_aws_options=role_llm_configs[role]["bedrock_aws_options"],
             is_cross_provider=role_llm_configs[role]["is_cross_provider"],
         )
 
