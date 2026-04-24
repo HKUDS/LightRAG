@@ -112,13 +112,13 @@ def validate_bedrock_auth_configuration(args: argparse.Namespace) -> None:
         secret_key = getattr(args, "aws_secret_access_key", None)
         return _is_set(access_key) and _is_set(secret_key)
 
-    if args.llm_binding == "bedrock" and not has_valid_auth():
+    if getattr(args, "llm_binding", None) == "bedrock" and not has_valid_auth():
         raise ValueError(
             "Bedrock LLM binding requires AWS_ACCESS_KEY_ID and "
             "AWS_SECRET_ACCESS_KEY, or process-level AWS_BEARER_TOKEN_BEDROCK."
         )
 
-    if args.embedding_binding == "bedrock" and not has_valid_auth():
+    if getattr(args, "embedding_binding", None) == "bedrock" and not has_valid_auth():
         raise ValueError(
             "Bedrock embedding binding requires AWS_ACCESS_KEY_ID and "
             "AWS_SECRET_ACCESS_KEY, or process-level AWS_BEARER_TOKEN_BEDROCK."
