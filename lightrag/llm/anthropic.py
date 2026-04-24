@@ -104,6 +104,9 @@ async def anthropic_complete_if_cache(
         )
     kwargs.pop("response_format", None)
     timeout = kwargs.pop("timeout", None)
+    # Anthropic requires this, while LightRAG callers usually don't pass it.
+    kwargs.setdefault("max_tokens", 8192)
+    stream_requested = kwargs.pop("stream", False)
 
     anthropic_async_client = (
         AsyncAnthropic(
@@ -129,7 +132,12 @@ async def anthropic_complete_if_cache(
     verbose_debug(f"System prompt: {system_prompt}")
 
     try:
-        create_params = {"model": model, "messages": messages, "stream": True, **kwargs}
+        create_params = {
+            "model": model,
+            "messages": messages,
+            "stream": stream_requested,
+            **kwargs,
+        }
         if system_prompt:
             create_params["system"] = system_prompt
         response = await anthropic_async_client.messages.create(**create_params)
@@ -159,6 +167,19 @@ async def anthropic_complete_if_cache(
             f"Anthropic API Call Failed,\nModel: {model},\nParams: {kwargs}, Got: {e}{extra}"
         )
         raise
+
+    if not stream_requested:
+        # Non-streaming: return the plain string LightRAG's KG pipeline expects.
+        content_blocks = getattr(response, "content", None) or []
+        text_parts = [
+            getattr(block, "text", "")
+            for block in content_blocks
+            if getattr(block, "type", None) == "text"
+        ]
+        text = "".join(text_parts)
+        if r"\u" in text:
+            text = safe_unicode_decode(text.encode("utf-8"))
+        return text
 
     async def stream_response():
         try:
