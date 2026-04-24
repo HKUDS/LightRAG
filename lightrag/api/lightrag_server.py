@@ -690,7 +690,9 @@ def create_app(args):
             or getattr(args, f"{attr}_llm_timeout", None)
             or llm_timeout
         )
-        role_max_async = getattr(args, f"{attr}_llm_max_async", None) or args.max_async
+        role_max_async = override_meta.get("max_async")
+        if role_max_async is None:
+            role_max_async = getattr(args, f"{attr}_llm_max_async", None)
         is_cross_provider = role_binding != args.llm_binding
 
         role_provider_options = override_meta.get("provider_options")
@@ -1465,9 +1467,14 @@ def create_app(args):
     logger.info(f"\n{'🎭 Role LLM Configuration:'}")
     for role in ["extract", "keyword", "query", "vlm"]:
         role_cfg = role_llm_configs[role]
+        effective_max_async = (
+            role_cfg["max_async"]
+            if role_cfg["max_async"] is not None
+            else args.max_async
+        )
         logger.info(
             f"    ├─ {role}: binding={role_cfg['binding']}, model={role_cfg['model']}, "
-            f"host={role_cfg['host']}, max_async={role_cfg['max_async']}"
+            f"host={role_cfg['host']}, max_async={effective_max_async}"
         )
 
     # Add routes
@@ -1678,8 +1685,7 @@ def create_app(args):
                             or args.llm_model,
                             "host": getattr(args, f"{role}_llm_binding_host", None)
                             or args.llm_binding_host,
-                            "max_async": getattr(args, f"{role}_llm_max_async", None)
-                            or args.max_async,
+                            "max_async": rag._get_effective_role_llm_max_async(role),
                         }
                         for role in ["extract", "keyword", "query", "vlm"]
                     },
