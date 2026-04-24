@@ -1,4 +1,5 @@
 import copy
+import inspect
 import json
 import logging
 import warnings
@@ -303,7 +304,6 @@ async def bedrock_complete_if_cache(
     if stream:
         # Create a session that will be used throughout the streaming process
         session = aioboto3.Session()
-        client = None
         client_kwargs = _bedrock_client_kwargs(
             region,
             endpoint_url,
@@ -314,77 +314,52 @@ async def bedrock_complete_if_cache(
 
         # Define the generator function that will manage the client lifecycle
         async def stream_generator():
-            nonlocal client
+            # async with ensures the aioboto3 client is closed even under
+            # task cancellation, avoiding aiohttp "Unclosed connection" warnings.
+            async with session.client("bedrock-runtime", **client_kwargs) as client:
+                event_stream = None
+                try:
+                    # Make the API call
+                    response = await client.converse_stream(**args, **kwargs)
+                    event_stream = response.get("stream")
 
-            # Create the client outside the generator to ensure it stays open
-            client = await session.client(
-                "bedrock-runtime", **client_kwargs
-            ).__aenter__()
-            event_stream = None
-            iteration_started = False
+                    # Process the stream
+                    async for event in event_stream:
+                        # Validate event structure
+                        if not event or not isinstance(event, dict):
+                            continue
 
-            try:
-                # Make the API call
-                response = await client.converse_stream(**args, **kwargs)
-                event_stream = response.get("stream")
-                iteration_started = True
+                        if "contentBlockDelta" in event:
+                            delta = event["contentBlockDelta"].get("delta", {})
+                            text = delta.get("text")
+                            if text:
+                                yield text
+                        # Handle other event types that might indicate stream end
+                        elif "messageStop" in event:
+                            break
 
-                # Process the stream
-                async for event in event_stream:
-                    # Validate event structure
-                    if not event or not isinstance(event, dict):
-                        continue
+                except Exception as e:
+                    # Convert to appropriate exception type
+                    _handle_bedrock_exception(e, "Bedrock streaming")
 
-                    if "contentBlockDelta" in event:
-                        delta = event["contentBlockDelta"].get("delta", {})
-                        text = delta.get("text")
-                        if text:
-                            yield text
-                    # Handle other event types that might indicate stream end
-                    elif "messageStop" in event:
-                        break
-
-            except Exception as e:
-                # Try to clean up resources if possible
-                if (
-                    iteration_started
-                    and event_stream
-                    and hasattr(event_stream, "aclose")
-                    and callable(getattr(event_stream, "aclose", None))
-                ):
-                    try:
-                        await event_stream.aclose()
-                    except Exception as close_error:
-                        logging.warning(
-                            f"Failed to close Bedrock event stream: {close_error}"
+                finally:
+                    # Close the event stream once; client cleanup is handled by async with.
+                    # aiobotocore's EventStream exposes sync `close()`, while generic
+                    # async iterators expose async `aclose()` — handle both and dispatch
+                    # awaitable results accordingly.
+                    if event_stream is not None:
+                        close_fn = getattr(event_stream, "close", None) or getattr(
+                            event_stream, "aclose", None
                         )
-
-                # Convert to appropriate exception type
-                _handle_bedrock_exception(e, "Bedrock streaming")
-
-            finally:
-                # Clean up the event stream
-                if (
-                    iteration_started
-                    and event_stream
-                    and hasattr(event_stream, "aclose")
-                    and callable(getattr(event_stream, "aclose", None))
-                ):
-                    try:
-                        await event_stream.aclose()
-                    except Exception as close_error:
-                        logging.warning(
-                            f"Failed to close Bedrock event stream in finally block: {close_error}"
-                        )
-
-                # Clean up the client
-                if client:
-                    try:
-                        await client.__aexit__(None, None, None)
-                    except Exception as client_close_error:
-                        logging.warning(
-                            f"Failed to close Bedrock client: {client_close_error}"
-                        )
+                        if callable(close_fn):
+                            try:
+                                result = close_fn()
+                                if inspect.isawaitable(result):
+                                    await result
+                            except Exception as close_error:
+                                logging.warning(
+                                    f"Failed to close Bedrock event stream: {close_error}"
+                                )
 
         # Return the generator that manages its own lifecycle
         return stream_generator()
