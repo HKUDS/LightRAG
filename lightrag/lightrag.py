@@ -372,6 +372,10 @@ def _default_addon_params() -> dict[str, Any]:
     }
 
 
+def _optional_env_int(env_key: str) -> int | None:
+    return get_env_value(env_key, None, int, special_none=True)
+
+
 class ObservableAddonParams(dict[str, Any]):
     def __init__(
         self,
@@ -649,23 +653,23 @@ class LightRAG:
     """VLM (vision-language) model for multimodal analysis (images/tables/equations).
     Used in analyze_multimodal phase. When Ray-Anything merges, bind here as the VLM role."""
 
-    vlm_llm_model_max_async: int = field(
-        default=int(os.getenv("MAX_ASYNC_VLM_LLM", str(DEFAULT_MAX_ASYNC)))
+    vlm_llm_model_max_async: int | None = field(
+        default_factory=partial(_optional_env_int, "MAX_ASYNC_VLM_LLM")
     )
     """Max concurrent VLM calls in analyze_multimodal."""
 
-    extract_llm_model_max_async: int = field(
-        default=int(os.getenv("MAX_ASYNC_EXTRACT_LLM", str(DEFAULT_MAX_ASYNC)))
+    extract_llm_model_max_async: int | None = field(
+        default_factory=partial(_optional_env_int, "MAX_ASYNC_EXTRACT_LLM")
     )
     """Max concurrent LLM calls for entity/relation extraction."""
 
-    keyword_llm_model_max_async: int = field(
-        default=int(os.getenv("MAX_ASYNC_KEYWORD_LLM", str(DEFAULT_MAX_ASYNC)))
+    keyword_llm_model_max_async: int | None = field(
+        default_factory=partial(_optional_env_int, "MAX_ASYNC_KEYWORD_LLM")
     )
     """Max concurrent LLM calls for keyword extraction."""
 
-    query_llm_model_max_async: int = field(
-        default=int(os.getenv("MAX_ASYNC_QUERY_LLM", str(DEFAULT_MAX_ASYNC)))
+    query_llm_model_max_async: int | None = field(
+        default_factory=partial(_optional_env_int, "MAX_ASYNC_QUERY_LLM")
     )
     """Max concurrent LLM calls for query/answer generation."""
 
@@ -3409,7 +3413,8 @@ class LightRAG:
 
             # Analyze sidecar multimodal items by VLM model role.
             use_vlm_func = self.vlm_llm_model_func or self.llm_model_func
-            sem = asyncio.Semaphore(max(1, self.vlm_llm_model_max_async))
+            effective_vlm_max_async = self._get_effective_role_llm_max_async("vlm")
+            sem = asyncio.Semaphore(max(1, effective_vlm_max_async))
             analyze_retries = max(0, int(os.getenv("VLM_ANALYZE_RETRIES", "2")))
             max_image_bytes = max(
                 256 * 1024, int(os.getenv("VLM_MAX_IMAGE_BYTES", str(5 * 1024 * 1024)))

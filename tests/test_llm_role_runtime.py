@@ -44,6 +44,47 @@ def _make_rag(tmp_path, **kwargs) -> LightRAG:
     )
 
 
+ROLE_MAX_ASYNC_ENV_KEYS = (
+    "MAX_ASYNC_EXTRACT_LLM",
+    "MAX_ASYNC_KEYWORD_LLM",
+    "MAX_ASYNC_QUERY_LLM",
+    "MAX_ASYNC_VLM_LLM",
+)
+
+
+def test_role_max_async_defaults_inherit_base(tmp_path, monkeypatch):
+    for env_key in ROLE_MAX_ASYNC_ENV_KEYS:
+        monkeypatch.delenv(env_key, raising=False)
+
+    rag = _make_rag(tmp_path, llm_model_max_async=10)
+
+    assert rag.extract_llm_model_max_async is None
+    assert rag.keyword_llm_model_max_async is None
+    assert rag.query_llm_model_max_async is None
+    assert rag.vlm_llm_model_max_async is None
+    assert rag._get_effective_role_llm_max_async("extract") == 10
+    assert rag._get_effective_role_llm_max_async("keyword") == 10
+    assert rag._get_effective_role_llm_max_async("query") == 10
+    assert rag._get_effective_role_llm_max_async("vlm") == 10
+
+
+def test_role_max_async_env_override_keeps_other_roles_inherited(tmp_path, monkeypatch):
+    for env_key in ROLE_MAX_ASYNC_ENV_KEYS:
+        monkeypatch.delenv(env_key, raising=False)
+    monkeypatch.setenv("MAX_ASYNC_EXTRACT_LLM", "7")
+
+    rag = _make_rag(tmp_path, llm_model_max_async=10)
+
+    assert rag.extract_llm_model_max_async == 7
+    assert rag.keyword_llm_model_max_async is None
+    assert rag.query_llm_model_max_async is None
+    assert rag.vlm_llm_model_max_async is None
+    assert rag._get_effective_role_llm_max_async("extract") == 7
+    assert rag._get_effective_role_llm_max_async("keyword") == 10
+    assert rag._get_effective_role_llm_max_async("query") == 10
+    assert rag._get_effective_role_llm_max_async("vlm") == 10
+
+
 @pytest.mark.asyncio
 async def test_role_functions_are_isolated_and_vlm_present(tmp_path):
     rag = _make_rag(tmp_path)

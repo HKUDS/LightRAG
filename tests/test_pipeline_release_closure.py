@@ -197,6 +197,36 @@ def test_analyze_multimodal_json_retry_and_writeback(tmp_path):
 
 
 @pytest.mark.offline
+def test_analyze_multimodal_uses_effective_vlm_max_async_when_role_none(tmp_path):
+    async def _run():
+        rag = _new_rag(
+            tmp_path,
+            llm_model_max_async=3,
+            vlm_llm_model_max_async=None,
+        )
+        blocks = tmp_path / "demo.blocks.jsonl"
+        blocks.write_text(
+            json.dumps({"type": "meta", "format_version": "1.0"}) + "\n",
+            encoding="utf-8",
+        )
+
+        parsed = {
+            "doc_id": "doc-1",
+            "file_path": "demo.pdf",
+            "blocks_path": str(blocks),
+            "content": "body",
+        }
+        result = await rag.analyze_multimodal("doc-1", "demo.pdf", parsed)
+
+        meta = json.loads(blocks.read_text(encoding="utf-8").splitlines()[0])
+        assert meta.get("analyze_time")
+        assert result["analyze_time"]
+        assert result["multimodal_processed"] is True
+
+    asyncio.run(_run())
+
+
+@pytest.mark.offline
 def test_safe_vdb_operation_times_out_with_context():
     async def _run():
         async def _hang():
