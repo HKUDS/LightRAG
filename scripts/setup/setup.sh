@@ -1734,7 +1734,7 @@ clear_bedrock_credentials_if_unused() {
 collect_bedrock_credentials() {
   local access_key secret_key session_token region
 
-  log_info "Bedrock uses the AWS credential chain instead of LLM_BINDING_API_KEY/EMBEDDING_BINDING_API_KEY."
+  log_info "Bedrock ignores LLM_BINDING_API_KEY/EMBEDDING_BINDING_API_KEY; use SigV4 credentials or AWS_BEARER_TOKEN_BEDROCK."
   if [[ -n "${ENV_VALUES[AWS_ACCESS_KEY_ID]:-}" && -n "${ENV_VALUES[AWS_SECRET_ACCESS_KEY]:-}" ]]; then
     if confirm_default_yes "Reuse existing AWS Bedrock credentials?"; then
       region="$(prompt_with_default "AWS region" "${ENV_VALUES[AWS_REGION]:-us-east-1}")"

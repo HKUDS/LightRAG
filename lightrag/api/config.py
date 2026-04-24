@@ -90,6 +90,65 @@ def validate_auth_configuration(args: argparse.Namespace) -> None:
         )
 
 
+def _is_set(value: str | None) -> bool:
+    return bool((value or "").strip())
+
+
+def validate_bedrock_auth_configuration(args: argparse.Namespace) -> None:
+    """Reject Bedrock configuration with no explicit supported auth source."""
+    bearer_token = os.getenv("AWS_BEARER_TOKEN_BEDROCK")
+
+    def has_valid_auth(prefix: str | None = None) -> bool:
+        if _is_set(bearer_token):
+            return True
+
+        if prefix:
+            role_access_key = getattr(args, f"{prefix}_aws_access_key_id", None)
+            role_secret_key = getattr(args, f"{prefix}_aws_secret_access_key", None)
+            if _is_set(role_access_key) or _is_set(role_secret_key):
+                return _is_set(role_access_key) and _is_set(role_secret_key)
+
+        access_key = getattr(args, "aws_access_key_id", None)
+        secret_key = getattr(args, "aws_secret_access_key", None)
+        return _is_set(access_key) and _is_set(secret_key)
+
+    if args.llm_binding == "bedrock" and not has_valid_auth():
+        raise ValueError(
+            "Bedrock LLM binding requires AWS_ACCESS_KEY_ID and "
+            "AWS_SECRET_ACCESS_KEY, or process-level AWS_BEARER_TOKEN_BEDROCK."
+        )
+
+    if args.embedding_binding == "bedrock" and not has_valid_auth():
+        raise ValueError(
+            "Bedrock embedding binding requires AWS_ACCESS_KEY_ID and "
+            "AWS_SECRET_ACCESS_KEY, or process-level AWS_BEARER_TOKEN_BEDROCK."
+        )
+
+    for role in ("extract", "keyword", "query", "vlm"):
+        if getattr(args, f"{role}_llm_binding", None) == "bedrock" and not has_valid_auth(
+            role
+        ):
+            role_upper = role.upper()
+            raise ValueError(
+                f"Bedrock role '{role}' requires {role_upper}_AWS_ACCESS_KEY_ID "
+                f"and {role_upper}_AWS_SECRET_ACCESS_KEY, global "
+                "AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY, or process-level "
+                "AWS_BEARER_TOKEN_BEDROCK."
+            )
+
+
+def normalize_binding_name(binding: str | None) -> str | None:
+    """Normalize environment-provided binding aliases to canonical names."""
+    if binding == "aws_bedrock":
+        return "bedrock"
+    return binding
+
+
+def get_binding_env_value(env_key: str, default: str) -> str:
+    """Read a binding env var and normalize legacy aliases."""
+    return normalize_binding_name(get_env_value(env_key, default)) or default
+
+
 def parse_args() -> argparse.Namespace:
     """
     Parse command line arguments with environment variable fallback
@@ -239,7 +298,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--llm-binding",
         type=str,
-        default=get_env_value("LLM_BINDING", "ollama"),
+        default=get_binding_env_value("LLM_BINDING", "ollama"),
         choices=[
             "lollms",
             "ollama",
@@ -254,7 +313,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--embedding-binding",
         type=str,
-        default=get_env_value("EMBEDDING_BINDING", "ollama"),
+        default=get_binding_env_value("EMBEDDING_BINDING", "ollama"),
         choices=[
             "lollms",
             "ollama",
@@ -298,7 +357,7 @@ def parse_args() -> argparse.Namespace:
 
     # Fall back to environment variable using same function as argparse default
     if llm_binding_value is None:
-        llm_binding_value = get_env_value("LLM_BINDING", "ollama")
+        llm_binding_value = get_binding_env_value("LLM_BINDING", "ollama")
 
     # Add LLM binding options based on determined value
     if llm_binding_value == "ollama":
@@ -322,7 +381,7 @@ def parse_args() -> argparse.Namespace:
 
     # Fall back to environment variable using same function as argparse default
     if embedding_binding_value is None:
-        embedding_binding_value = get_env_value("EMBEDDING_BINDING", "ollama")
+        embedding_binding_value = get_binding_env_value("EMBEDDING_BINDING", "ollama")
 
     # Add embedding binding options based on determined value
     if embedding_binding_value == "ollama":
@@ -370,6 +429,13 @@ def parse_args() -> argparse.Namespace:
     args.llm_binding_api_key = get_env_value("LLM_BINDING_API_KEY", None)
     args.embedding_binding_api_key = get_env_value("EMBEDDING_BINDING_API_KEY", "")
 
+    args.aws_region = get_env_value("AWS_REGION", None, special_none=True)
+    args.aws_access_key_id = get_env_value("AWS_ACCESS_KEY_ID", None, special_none=True)
+    args.aws_secret_access_key = get_env_value(
+        "AWS_SECRET_ACCESS_KEY", None, special_none=True
+    )
+    args.aws_session_token = get_env_value("AWS_SESSION_TOKEN", None, special_none=True)
+
     # Inject model configuration
     args.llm_model = get_env_value("LLM_MODEL", "mistral-nemo:latest")
     # EMBEDDING_MODEL defaults to None - each binding will use its own default model
@@ -411,12 +477,24 @@ def parse_args() -> argparse.Namespace:
         max_async_key = f"MAX_ASYNC_{role}_LLM"
         timeout_key = f"LLM_TIMEOUT_{role}_LLM"
 
-        role_binding = get_env_value(binding_key, None, special_none=True)
+        role_binding = normalize_binding_name(
+            get_env_value(binding_key, None, special_none=True)
+        )
         role_model = get_env_value(model_key, None, special_none=True)
         role_host = get_env_value(host_key, None, special_none=True)
         role_apikey = get_env_value(apikey_key, None, special_none=True)
         role_max_async = get_env_value(max_async_key, None, int, special_none=True)
         role_timeout = get_env_value(timeout_key, None, int, special_none=True)
+        role_aws_region = get_env_value(f"{role}_AWS_REGION", None, special_none=True)
+        role_aws_access_key_id = get_env_value(
+            f"{role}_AWS_ACCESS_KEY_ID", None, special_none=True
+        )
+        role_aws_secret_access_key = get_env_value(
+            f"{role}_AWS_SECRET_ACCESS_KEY", None, special_none=True
+        )
+        role_aws_session_token = get_env_value(
+            f"{role}_AWS_SESSION_TOKEN", None, special_none=True
+        )
 
         attr_prefix = role.lower()
         setattr(args, f"{attr_prefix}_llm_binding", role_binding)
@@ -425,6 +503,19 @@ def parse_args() -> argparse.Namespace:
         setattr(args, f"{attr_prefix}_llm_binding_api_key", role_apikey)
         setattr(args, f"{attr_prefix}_llm_max_async", role_max_async)
         setattr(args, f"{attr_prefix}_llm_timeout", role_timeout)
+        setattr(args, f"{attr_prefix}_aws_region", role_aws_region)
+        setattr(args, f"{attr_prefix}_aws_access_key_id", role_aws_access_key_id)
+        setattr(
+            args, f"{attr_prefix}_aws_secret_access_key", role_aws_secret_access_key
+        )
+        setattr(args, f"{attr_prefix}_aws_session_token", role_aws_session_token)
+
+        if role_binding == "bedrock" and role_apikey:
+            raise SystemExit(
+                f"Bedrock role '{role}' does not support {apikey_key}; use "
+                "role-specific SigV4 AWS_* variables or process-level "
+                "AWS_BEARER_TOKEN_BEDROCK."
+            )
 
         # Cross-provider validation
         if role_binding and role_binding != args.llm_binding:
@@ -434,7 +525,7 @@ def parse_args() -> argparse.Namespace:
             if not role_host:
                 role_host = get_default_host(role_binding)
                 setattr(args, f"{attr_prefix}_llm_binding_host", role_host)
-            if not role_apikey:
+            if role_binding != "bedrock" and not role_apikey:
                 missing.append(apikey_key)
             if missing:
                 raise SystemExit(
@@ -527,6 +618,7 @@ def parse_args() -> argparse.Namespace:
             args.workspace = sanitized
 
     validate_auth_configuration(args)
+    validate_bedrock_auth_configuration(args)
     return args
 
 
@@ -580,6 +672,7 @@ def initialize_config(args=None, force=False):
 
     resolved_args = args if args is not None else parse_args()
     validate_auth_configuration(resolved_args)
+    validate_bedrock_auth_configuration(resolved_args)
     _global_args = resolved_args
     _initialized = True
     return _global_args

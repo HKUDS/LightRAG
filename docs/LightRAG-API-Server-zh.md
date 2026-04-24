@@ -462,6 +462,8 @@ LightRAG 支持绑定到各种 LLM/嵌入后端：
 
 使用环境变量 `LLM_BINDING` 或 CLI 参数 `--llm-binding` 选择 LLM 后端类型。使用环境变量 `EMBEDDING_BINDING` 或 CLI 参数 `--embedding-binding` 选择嵌入后端类型。
 
+Bedrock 会忽略 `LLM_BINDING_API_KEY` 和 `EMBEDDING_BINDING_API_KEY`。请通过 AWS credential chain 使用 SigV4 凭据；如果要使用 Bedrock API key / bearer token，请在启动前显式设置进程级环境变量 `AWS_BEARER_TOKEN_BEDROCK`。
+
 LLM和Embedding配置例子请查看项目根目录的 env.example 文件。OpenAI和Ollama兼容LLM接口的支持的完整配置选型可以通过一下命令查看：
 
 ```

@@ -1,5 +1,4 @@
 import copy
-import os
 import json
 import logging
 import warnings
@@ -64,18 +63,24 @@ def _normalize_bedrock_endpoint_url(endpoint_url: str | None) -> str | None:
     return normalized
 
 
-def _bedrock_client_kwargs(region: str | None, endpoint_url: str | None) -> dict:
+def _bedrock_client_kwargs(
+    region: str | None,
+    endpoint_url: str | None,
+    aws_access_key_id: str | None = None,
+    aws_secret_access_key: str | None = None,
+    aws_session_token: str | None = None,
+) -> dict:
     """Build kwargs for aioboto3 ``session.client("bedrock-runtime", ...)``."""
     client_kwargs: dict = {"region_name": region}
     if endpoint_url is not None:
         client_kwargs["endpoint_url"] = endpoint_url
+    if aws_access_key_id:
+        client_kwargs["aws_access_key_id"] = aws_access_key_id
+    if aws_secret_access_key:
+        client_kwargs["aws_secret_access_key"] = aws_secret_access_key
+    if aws_session_token:
+        client_kwargs["aws_session_token"] = aws_session_token
     return client_kwargs
-
-
-def _set_env_if_present(key: str, value):
-    """Set environment variable only if a non-empty value is provided."""
-    if value is not None and value != "":
-        os.environ[key] = value
 
 
 def _handle_bedrock_exception(e: Exception, operation: str = "Bedrock API") -> None:
@@ -167,6 +172,7 @@ async def bedrock_complete_if_cache(
     aws_access_key_id=None,
     aws_secret_access_key=None,
     aws_session_token=None,
+    aws_region: str | None = None,
     api_key: str | None = None,
     endpoint_url: str | None = None,
     **kwargs,
@@ -180,10 +186,15 @@ async def bedrock_complete_if_cache(
       accepted only as compatibility shims; they emit warnings and are ignored.
 
     Authentication note:
-    - ``api_key`` acts as a provider-agnostic alias for the Bedrock bearer token.
-      When ``AWS_BEARER_TOKEN_BEDROCK`` is not set in the environment, a non-empty
-      ``api_key`` is promoted to that env var so botocore picks up bearer auth.
-      The env var always wins when both are provided.
+    - Bedrock does not use LightRAG's generic ``api_key`` fields.
+    - ``LLM_BINDING_API_KEY`` and ``EMBEDDING_BINDING_API_KEY`` are ignored for
+      Bedrock.
+    - To use Bedrock API key / bearer-token auth, set
+      ``AWS_BEARER_TOKEN_BEDROCK`` before starting the process; this is a
+      process-level AWS SDK setting.
+    - For role-specific Bedrock LLMs, use explicit SigV4 parameters
+      (``aws_access_key_id``, ``aws_secret_access_key``, ``aws_session_token``,
+      ``aws_region``). Per-role bearer-token overrides are not supported.
 
     Endpoint note:
     - ``endpoint_url`` overrides the default regional Bedrock endpoint. Pass
@@ -216,19 +227,15 @@ async def bedrock_complete_if_cache(
             DeprecationWarning,
             stacklevel=2,
         )
+    if api_key:
+        warnings.warn(
+            "bedrock_complete_if_cache(api_key=...) is ignored; use SigV4 "
+            "parameters or set AWS_BEARER_TOKEN_BEDROCK before process start.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
 
-    # Respect existing env; only set if a non-empty value is available
-    access_key = os.environ.get("AWS_ACCESS_KEY_ID") or aws_access_key_id
-    secret_key = os.environ.get("AWS_SECRET_ACCESS_KEY") or aws_secret_access_key
-    session_token = os.environ.get("AWS_SESSION_TOKEN") or aws_session_token
-    _set_env_if_present("AWS_ACCESS_KEY_ID", access_key)
-    _set_env_if_present("AWS_SECRET_ACCESS_KEY", secret_key)
-    _set_env_if_present("AWS_SESSION_TOKEN", session_token)
-    # Bedrock API key (bearer token) — env takes precedence over api_key alias
-    bearer_token = os.environ.get("AWS_BEARER_TOKEN_BEDROCK") or api_key
-    _set_env_if_present("AWS_BEARER_TOKEN_BEDROCK", bearer_token)
-    # Region handling: prefer env, else kwarg (optional)
-    region = os.environ.get("AWS_REGION") or kwargs.pop("aws_region", None)
+    region = aws_region or kwargs.pop("aws_region", None)
     endpoint_url = _normalize_bedrock_endpoint_url(endpoint_url)
     kwargs.pop("hashing_kv", None)
     # Capture stream flag (if provided) and remove from kwargs since it's not a Bedrock API parameter
@@ -291,7 +298,13 @@ async def bedrock_complete_if_cache(
         # Create a session that will be used throughout the streaming process
         session = aioboto3.Session()
         client = None
-        client_kwargs = _bedrock_client_kwargs(region, endpoint_url)
+        client_kwargs = _bedrock_client_kwargs(
+            region,
+            endpoint_url,
+            aws_access_key_id=aws_access_key_id,
+            aws_secret_access_key=aws_secret_access_key,
+            aws_session_token=aws_session_token,
+        )
 
         # Define the generator function that will manage the client lifecycle
         async def stream_generator():
@@ -373,7 +386,14 @@ async def bedrock_complete_if_cache(
     # For non-streaming responses, use the standard async context manager pattern
     session = aioboto3.Session()
     async with session.client(
-        "bedrock-runtime", **_bedrock_client_kwargs(region, endpoint_url)
+        "bedrock-runtime",
+        **_bedrock_client_kwargs(
+            region,
+            endpoint_url,
+            aws_access_key_id=aws_access_key_id,
+            aws_secret_access_key=aws_secret_access_key,
+            aws_session_token=aws_session_token,
+        ),
     ) as bedrock_async_client:
         try:
             # Use converse for non-streaming responses
@@ -444,27 +464,44 @@ async def bedrock_embed(
     aws_access_key_id=None,
     aws_secret_access_key=None,
     aws_session_token=None,
+    aws_region: str | None = None,
     api_key: str | None = None,
     endpoint_url: str | None = None,
 ) -> np.ndarray:
-    # Respect existing env; only set if a non-empty value is available
-    access_key = os.environ.get("AWS_ACCESS_KEY_ID") or aws_access_key_id
-    secret_key = os.environ.get("AWS_SECRET_ACCESS_KEY") or aws_secret_access_key
-    session_token = os.environ.get("AWS_SESSION_TOKEN") or aws_session_token
-    _set_env_if_present("AWS_ACCESS_KEY_ID", access_key)
-    _set_env_if_present("AWS_SECRET_ACCESS_KEY", secret_key)
-    _set_env_if_present("AWS_SESSION_TOKEN", session_token)
-    # Bedrock API key (bearer token) — env takes precedence over api_key alias
-    bearer_token = os.environ.get("AWS_BEARER_TOKEN_BEDROCK") or api_key
-    _set_env_if_present("AWS_BEARER_TOKEN_BEDROCK", bearer_token)
+    """Generate embeddings with Amazon Bedrock Runtime.
 
-    # Region handling: prefer env
-    region = os.environ.get("AWS_REGION")
+    Authentication note:
+    - Bedrock does not use LightRAG's generic ``api_key`` fields.
+    - ``LLM_BINDING_API_KEY`` and ``EMBEDDING_BINDING_API_KEY`` are ignored for
+      Bedrock.
+    - To use Bedrock API key / bearer-token auth, set
+      ``AWS_BEARER_TOKEN_BEDROCK`` before starting the process; this is a
+      process-level AWS SDK setting.
+    - For role-specific Bedrock configuration, use explicit SigV4 parameters
+      (``aws_access_key_id``, ``aws_secret_access_key``, ``aws_session_token``,
+      ``aws_region``). Per-role bearer-token overrides are not supported.
+    """
+    if api_key:
+        warnings.warn(
+            "bedrock_embed(api_key=...) is ignored; use SigV4 parameters or "
+            "set AWS_BEARER_TOKEN_BEDROCK before process start.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+
+    region = aws_region
     endpoint_url = _normalize_bedrock_endpoint_url(endpoint_url)
 
     session = aioboto3.Session()
     async with session.client(
-        "bedrock-runtime", **_bedrock_client_kwargs(region, endpoint_url)
+        "bedrock-runtime",
+        **_bedrock_client_kwargs(
+            region,
+            endpoint_url,
+            aws_access_key_id=aws_access_key_id,
+            aws_secret_access_key=aws_secret_access_key,
+            aws_session_token=aws_session_token,
+        ),
     ) as bedrock_async_client:
         try:
             if (model_provider := model.split(".")[0]) == "amazon":
