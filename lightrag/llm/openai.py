@@ -398,15 +398,24 @@ async def openai_complete_if_cache(
         )
     except APITimeoutError as e:
         logger.error(f"OpenAI API Timeout Error: {e}")
-        await openai_async_client.close()  # Ensure client is closed
+        try:
+            await openai_async_client.close()
+        except Exception as close_error:
+            logger.warning(f"Failed to close OpenAI client: {close_error}")
         raise
     except APIConnectionError as e:
         logger.error(f"OpenAI API Connection Error: {e}")
-        await openai_async_client.close()  # Ensure client is closed
+        try:
+            await openai_async_client.close()
+        except Exception as close_error:
+            logger.warning(f"Failed to close OpenAI client: {close_error}")
         raise
     except RateLimitError as e:
         logger.error(f"OpenAI API Rate Limit Error: {e}")
-        await openai_async_client.close()  # Ensure client is closed
+        try:
+            await openai_async_client.close()
+        except Exception as close_error:
+            logger.warning(f"Failed to close OpenAI client: {close_error}")
         raise
     except Exception as e:
         body = getattr(e, "body", None)
@@ -423,7 +432,10 @@ async def openai_complete_if_cache(
         logger.error(
             f"OpenAI API Call Failed,\nModel: {model},\nParams: {kwargs}, Got: {e}{extra}"
         )
-        await openai_async_client.close()  # Ensure client is closed
+        try:
+            await openai_async_client.close()
+        except Exception as close_error:
+            logger.warning(f"Failed to close OpenAI client: {close_error}")
         raise
 
     if hasattr(response, "__aiter__"):
@@ -558,7 +570,12 @@ async def openai_complete_if_cache(
                             f"Failed to close stream response: {close_error}"
                         )
                 # Ensure client is closed in case of exception
-                await openai_async_client.close()
+                try:
+                    await openai_async_client.close()
+                except Exception as client_close_error:
+                    logger.warning(
+                        f"Failed to close OpenAI client after stream error: {client_close_error}"
+                    )
                 raise
             finally:
                 # Final safety check for unclosed COT tags
@@ -611,7 +628,10 @@ async def openai_complete_if_cache(
                 or not hasattr(response.choices[0], "message")
             ):
                 logger.error("Invalid response from OpenAI API")
-                await openai_async_client.close()  # Ensure client is closed
+                try:
+                    await openai_async_client.close()
+                except Exception as close_error:
+                    logger.warning(f"Failed to close OpenAI client: {close_error}")
                 raise InvalidResponseError("Invalid response from OpenAI API")
 
             message = response.choices[0].message
@@ -664,7 +684,10 @@ async def openai_complete_if_cache(
                 # Validate final content
                 if not final_content or final_content.strip() == "":
                     logger.error("Received empty content from OpenAI API")
-                    await openai_async_client.close()  # Ensure client is closed
+                    try:
+                        await openai_async_client.close()
+                    except Exception as close_error:
+                        logger.warning(f"Failed to close OpenAI client: {close_error}")
                     raise InvalidResponseError("Received empty content from OpenAI API")
 
             # Apply Unicode decoding to final content if needed
@@ -687,7 +710,12 @@ async def openai_complete_if_cache(
             return final_content
         finally:
             # Ensure client is closed in all cases for non-streaming responses
-            await openai_async_client.close()
+            try:
+                await openai_async_client.close()
+            except Exception as close_error:
+                logger.warning(
+                    f"Failed to close OpenAI client in non-streaming finally block: {close_error}"
+                )
 
 
 async def openai_complete(

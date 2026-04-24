@@ -411,10 +411,10 @@ async def gemini_complete_if_cache(
             try:
                 # Use native async streaming from genai SDK
                 # Note: generate_content_stream returns Awaitable[AsyncIterator], need to await first
-                stream = await client.aio.models.generate_content_stream(
+                stream_iter = await client.aio.models.generate_content_stream(
                     **request_kwargs
                 )
-                async for chunk in stream:
+                async for chunk in stream_iter:
                     usage = getattr(chunk, "usage_metadata", None)
                     if usage is not None:
                         usage_metadata = usage
@@ -471,14 +471,14 @@ async def gemini_complete_if_cache(
                     yield "</think>"
                     cot_active = False
 
-            except Exception as exc:
+            except Exception:
                 # Try to close COT tag before re-raising
                 if cot_active:
                     try:
                         yield "</think>"
                     except Exception:
                         pass
-                raise exc
+                raise
             finally:
                 # Track token usage after streaming completes
                 if token_tracker and usage_metadata:
