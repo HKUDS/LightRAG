@@ -2,7 +2,7 @@ import importlib
 import os
 import sys
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 from fastapi import APIRouter
@@ -12,6 +12,24 @@ from lightrag.llm.bedrock import (
     bedrock_complete_if_cache,
     bedrock_embed,
 )
+
+
+def _reload_api_modules_if_mocked() -> None:
+    """Drop Mock-replaced lightrag.api entries so importlib reloads the real modules.
+
+    Other test files (e.g. test_token_auto_renewal.py) replace
+    ``sys.modules["lightrag.api.config"]`` with a Mock at import time. When
+    pytest collects those files before ours, any subsequent
+    ``from .config import global_args`` inside lightrag_server picks up the
+    Mock, which breaks ``create_app`` in create_app_* tests below.
+    """
+    for modname in (
+        "lightrag.api.lightrag_server",
+        "lightrag.api.auth",
+        "lightrag.api.config",
+    ):
+        if isinstance(sys.modules.get(modname), Mock):
+            sys.modules.pop(modname, None)
 
 
 class _FakeBedrockClient:
@@ -510,6 +528,7 @@ def _make_args(tmp_path) -> SimpleNamespace:
 @pytest.mark.offline
 @pytest.mark.asyncio
 async def test_create_app_query_role_uses_bedrock_binding(tmp_path, monkeypatch):
+    _reload_api_modules_if_mocked()
     monkeypatch.setattr(sys, "argv", ["pytest"])
     config = importlib.import_module("lightrag.api.config")
     config.initialize_config(_make_args(tmp_path), force=True)
@@ -560,6 +579,7 @@ async def test_create_app_query_role_uses_bedrock_binding(tmp_path, monkeypatch)
 async def test_create_app_bedrock_query_role_uses_role_sigv4_credentials(
     tmp_path, monkeypatch
 ):
+    _reload_api_modules_if_mocked()
     monkeypatch.setattr(sys, "argv", ["pytest"])
     config = importlib.import_module("lightrag.api.config")
     config.initialize_config(_make_args(tmp_path), force=True)
@@ -599,6 +619,7 @@ async def test_create_app_bedrock_query_role_uses_role_sigv4_credentials(
 
 @pytest.mark.offline
 def test_create_app_rejects_bedrock_role_api_key(tmp_path, monkeypatch):
+    _reload_api_modules_if_mocked()
     monkeypatch.setattr(sys, "argv", ["pytest"])
     config = importlib.import_module("lightrag.api.config")
     config.initialize_config(_make_args(tmp_path), force=True)
