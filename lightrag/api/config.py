@@ -112,22 +112,34 @@ def validate_bedrock_auth_configuration(args: argparse.Namespace) -> None:
         secret_key = getattr(args, "aws_secret_access_key", None)
         return _is_set(access_key) and _is_set(secret_key)
 
-    if getattr(args, "llm_binding", None) == "bedrock" and not has_valid_auth():
-        raise ValueError(
-            "Bedrock LLM binding requires AWS_ACCESS_KEY_ID and "
-            "AWS_SECRET_ACCESS_KEY, or process-level AWS_BEARER_TOKEN_BEDROCK."
-        )
+    if getattr(args, "llm_binding", None) == "bedrock":
+        if not has_valid_auth():
+            raise ValueError(
+                "Bedrock LLM binding requires AWS_ACCESS_KEY_ID and "
+                "AWS_SECRET_ACCESS_KEY, or process-level AWS_BEARER_TOKEN_BEDROCK."
+            )
+        if _is_set(getattr(args, "llm_binding_api_key", None)):
+            logging.warning(
+                "LLM_BINDING_API_KEY is set but ignored for Bedrock LLM binding. "
+                "Use SigV4 AWS_* variables or process-level AWS_BEARER_TOKEN_BEDROCK instead."
+            )
 
-    if getattr(args, "embedding_binding", None) == "bedrock" and not has_valid_auth():
-        raise ValueError(
-            "Bedrock embedding binding requires AWS_ACCESS_KEY_ID and "
-            "AWS_SECRET_ACCESS_KEY, or process-level AWS_BEARER_TOKEN_BEDROCK."
-        )
+    if getattr(args, "embedding_binding", None) == "bedrock":
+        if not has_valid_auth():
+            raise ValueError(
+                "Bedrock embedding binding requires AWS_ACCESS_KEY_ID and "
+                "AWS_SECRET_ACCESS_KEY, or process-level AWS_BEARER_TOKEN_BEDROCK."
+            )
+        if _is_set(getattr(args, "embedding_binding_api_key", None)):
+            logging.warning(
+                "EMBEDDING_BINDING_API_KEY is set but ignored for Bedrock embedding binding. "
+                "Use SigV4 AWS_* variables or process-level AWS_BEARER_TOKEN_BEDROCK instead."
+            )
 
     for role in ("extract", "keyword", "query", "vlm"):
-        if getattr(args, f"{role}_llm_binding", None) == "bedrock" and not has_valid_auth(
-            role
-        ):
+        if getattr(
+            args, f"{role}_llm_binding", None
+        ) == "bedrock" and not has_valid_auth(role):
             role_upper = role.upper()
             raise ValueError(
                 f"Bedrock role '{role}' requires {role_upper}_AWS_ACCESS_KEY_ID "
