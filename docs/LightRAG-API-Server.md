@@ -75,6 +75,8 @@ It is recommended to use environment variables to configure the LightRAG Server.
 
 > Since VS Code with the Python extension may automatically load the .env file in the integrated terminal, please open a new terminal session after each modification to the .env file.
 
+If you need to configure different LLMs/VLMs for entity extraction, keyword extraction, final answers, or multimodal analysis, see the [Role-Specific LLM/VLM Configuration Guide](./RoleSpecificLLMConfiguration.md).
+
 Here are some examples of common settings for LLM and Embedding models:
 
 * OpenAI LLM + Ollama Embedding:
