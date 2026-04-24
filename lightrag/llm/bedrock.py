@@ -415,7 +415,17 @@ async def bedrock_complete_if_cache(
             ):
                 raise BedrockError("Invalid response structure from Bedrock API")
 
-            content = response["output"]["message"]["content"][0]["text"]
+            # When thinking/reasoning is enabled, the first content block is a
+            # `reasoningContent` block and the visible text follows in a later
+            # block. Pick the first block that carries a text payload.
+            content = next(
+                (
+                    block["text"]
+                    for block in response["output"]["message"]["content"]
+                    if isinstance(block, dict) and block.get("text")
+                ),
+                None,
+            )
 
             if not content or content.strip() == "":
                 raise BedrockError("Received empty content from Bedrock API")

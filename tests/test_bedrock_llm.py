@@ -49,6 +49,50 @@ class _FakeSession:
         return _FakeBedrockClient(self._captured_calls)
 
 
+class _FakeReasoningClient(_FakeBedrockClient):
+    async def converse(self, **kwargs):
+        self._captured_calls.append(kwargs)
+        return {
+            "output": {
+                "message": {
+                    "content": [
+                        {
+                            "reasoningContent": {
+                                "reasoningText": {"text": "internal thought"}
+                            }
+                        },
+                        {"text": "final answer"},
+                    ]
+                }
+            }
+        }
+
+
+class _FakeReasoningSession(_FakeSession):
+    def client(self, *_args, **kwargs):
+        self._client_kwargs_calls.append(dict(kwargs))
+        return _FakeReasoningClient(self._captured_calls)
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_bedrock_complete_skips_reasoning_content_block(monkeypatch):
+    monkeypatch.delenv("AWS_REGION", raising=False)
+    captured_calls: list[dict] = []
+
+    with patch(
+        "lightrag.llm.bedrock.aioboto3.Session",
+        return_value=_FakeReasoningSession(captured_calls, []),
+    ):
+        result = await bedrock_complete_if_cache(
+            model="bedrock-model",
+            prompt="hello",
+            extra_fields={"reasoning_config": {"type": "enabled"}},
+        )
+
+    assert result == "final answer"
+
+
 @pytest.mark.offline
 @pytest.mark.asyncio
 async def test_bedrock_complete_forwards_keyword_extraction_to_if_cache():
