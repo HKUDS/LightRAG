@@ -15,10 +15,9 @@ else:
 if not pm.is_installed("anthropic"):
     pm.install("anthropic")
 
-# Add Voyage AI import
-if not pm.is_installed("voyageai"):
-    pm.install("voyageai")
-import voyageai
+# voyageai is only needed for anthropic_embed; import it lazily there so that
+# users who only use the LLM side don't hit ModuleNotFoundError when the
+# pipmaster auto-install silently no-ops in a uv-managed venv.
 
 from anthropic import (
     AsyncAnthropic,
@@ -85,6 +84,11 @@ async def anthropic_complete_if_cache(
     kwargs.pop("hashing_kv", None)
     kwargs.pop("keyword_extraction", None)
     timeout = kwargs.pop("timeout", None)
+    # Anthropic's messages.create() requires max_tokens; LightRAG's callers
+    # don't set it, so default to a generous value consistent with the other
+    # providers. Callers can still override via **kwargs.
+    kwargs.setdefault("max_tokens", 8192)
+    stream_requested = kwargs.pop("stream", False)
 
     anthropic_async_client = (
         AsyncAnthropic(
@@ -110,7 +114,12 @@ async def anthropic_complete_if_cache(
     verbose_debug(f"System prompt: {system_prompt}")
 
     try:
-        create_params = {"model": model, "messages": messages, "stream": True, **kwargs}
+        create_params = {
+            "model": model,
+            "messages": messages,
+            "stream": stream_requested,
+            **kwargs,
+        }
         if system_prompt:
             create_params["system"] = system_prompt
         response = await anthropic_async_client.messages.create(**create_params)
@@ -140,6 +149,19 @@ async def anthropic_complete_if_cache(
             f"Anthropic API Call Failed,\nModel: {model},\nParams: {kwargs}, Got: {e}{extra}"
         )
         raise
+
+    if not stream_requested:
+        # Non-streaming: return the plain string LightRAG's KG pipeline expects.
+        content_blocks = getattr(response, "content", None) or []
+        text_parts = [
+            getattr(block, "text", "")
+            for block in content_blocks
+            if getattr(block, "type", None) == "text"
+        ]
+        text = "".join(text_parts)
+        if r"\u" in text:
+            text = safe_unicode_decode(text.encode("utf-8"))
+        return text
 
     async def stream_response():
         try:
@@ -270,6 +292,12 @@ async def anthropic_embed(
     Returns:
         numpy array of shape (len(texts), embedding_dimension) containing the embeddings
     """
+    # Install/import voyageai lazily so LLM-only users don't need it at module
+    # load (see Bug 1 in issue #2955).
+    if not pm.is_installed("voyageai"):
+        pm.install("voyageai")
+    import voyageai
+
     if not api_key:
         api_key = os.environ.get("VOYAGE_API_KEY")
         if not api_key:
