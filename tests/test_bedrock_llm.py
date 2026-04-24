@@ -267,6 +267,54 @@ async def test_bedrock_complete_forwards_explicit_sigv4_client_kwargs(monkeypatc
 
 @pytest.mark.offline
 @pytest.mark.asyncio
+async def test_bedrock_extra_fields_maps_to_additional_model_request_fields(
+    monkeypatch,
+):
+    monkeypatch.delenv("AWS_REGION", raising=False)
+    captured_calls: list[dict] = []
+
+    with patch(
+        "lightrag.llm.bedrock.aioboto3.Session",
+        return_value=_FakeSession(captured_calls, []),
+    ):
+        await bedrock_complete_if_cache(
+            model="bedrock-model",
+            prompt="hello",
+            extra_fields={"reasoning_config": {"type": "enabled"}},
+        )
+
+    assert captured_calls[-1]["additionalModelRequestFields"] == {
+        "reasoning_config": {"type": "enabled"}
+    }
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_bedrock_empty_extra_fields_is_dropped(monkeypatch):
+    monkeypatch.delenv("AWS_REGION", raising=False)
+    captured_calls: list[dict] = []
+
+    with patch(
+        "lightrag.llm.bedrock.aioboto3.Session",
+        return_value=_FakeSession(captured_calls, []),
+    ):
+        await bedrock_complete_if_cache(
+            model="bedrock-model",
+            prompt="hello",
+            extra_fields=None,
+        )
+        await bedrock_complete_if_cache(
+            model="bedrock-model",
+            prompt="hello",
+            extra_fields={},
+        )
+
+    for call in captured_calls:
+        assert "additionalModelRequestFields" not in call
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
 async def test_bedrock_api_key_is_ignored_and_does_not_mutate_env(monkeypatch):
     monkeypatch.delenv("AWS_REGION", raising=False)
     monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", "absk-from-env")

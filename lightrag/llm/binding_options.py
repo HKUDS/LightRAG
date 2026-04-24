@@ -660,12 +660,14 @@ class BedrockLLMOptions(BindingOptions):
     max_tokens: int | None = None
     top_p: float = 1.0
     stop_sequences: List[str] = field(default_factory=list)
+    extra_fields: dict = None  # Converse API additionalModelRequestFields
 
     _help: ClassVar[dict[str, str]] = {
         "temperature": "Controls randomness (0.0-1.0 for most Bedrock models)",
         "max_tokens": "Maximum tokens generated in the response (leave empty for model default)",
         "top_p": "Nucleus sampling parameter (0.0-1.0)",
         "stop_sequences": "Stop sequences (JSON array of strings, e.g., '[\"</s>\"]')",
+        "extra_fields": 'Model-specific request fields forwarded as Converse API additionalModelRequestFields (JSON dict, e.g., \'{"reasoning_config": {"type": "enabled"}}\')',
     }
 
 

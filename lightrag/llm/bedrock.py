@@ -290,6 +290,12 @@ async def bedrock_complete_if_cache(
     if inference_config:
         args["inferenceConfig"] = inference_config
 
+    # Pass-through for model-specific parameters (e.g. Anthropic reasoning_config,
+    # Nova inferenceConfig extensions). Mirrors OpenAI's `extra_body`.
+    extra_fields = kwargs.pop("extra_fields", None)
+    if extra_fields:
+        args["additionalModelRequestFields"] = extra_fields
+
     # Import logging for error handling
     import logging
 
