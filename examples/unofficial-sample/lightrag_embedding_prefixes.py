@@ -134,6 +134,7 @@ async def initialize_rag():
 
 
 async def main():
+    rag = None
     try:
         # Clear old data files
         files_to_delete = [
