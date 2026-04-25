@@ -6,9 +6,14 @@ import pipmaster as pm  # Pipmaster for dynamic library install
 if not pm.is_installed("voyageai"):
     pm.install("voyageai")
 
+import voyageai
 from voyageai.error import (
-    RateLimitError,
     APIConnectionError,
+    RateLimitError,
+    ServerError,
+    ServiceUnavailableError,
+    Timeout,
+    TryAgain,
 )
 
 from tenacity import (
@@ -20,18 +25,27 @@ from tenacity import (
 from lightrag.utils import wrap_embedding_func_with_attrs, logger
 
 
-# Custome exceptions for VoyageAI errors
+# Custom exceptions for VoyageAI errors
 class VoyageAIError(Exception):
     """Generic VoyageAI API error"""
 
     pass
 
 
-@wrap_embedding_func_with_attrs(embedding_dim=1024, max_token_size=16000)
+@wrap_embedding_func_with_attrs(embedding_dim=1024, max_token_size=32000)
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=4, max=60),
-    retry=retry_if_exception_type((RateLimitError, APIConnectionError)),
+    retry=retry_if_exception_type(
+        (
+            APIConnectionError,
+            RateLimitError,
+            ServerError,
+            ServiceUnavailableError,
+            Timeout,
+            TryAgain,
+        )
+    ),
 )
 async def voyageai_embed(
     texts: list[str],
@@ -39,7 +53,7 @@ async def voyageai_embed(
     api_key: str | None = None,
     embedding_dim: int | None = None,
     input_type: str | None = None,
-    truncation: bool | None = None,
+    truncation: bool | None = True,
 ) -> np.ndarray:
     """Generate embeddings for a list of texts using VoyageAI's API.
 
@@ -52,12 +66,20 @@ async def voyageai_embed(
             - "voyage-code-3": Code optimized (1024 dims, 32K context)
             - "voyage-law-2": Legal documents (1024 dims, 16K context)
             - "voyage-finance-2": Finance (1024 dims, 32K context)
-        api_key: Optional VoyageAI API key. If None, uses VOYAGEAI_API_KEY environment variable.
+        api_key: Optional VoyageAI API key. If None, falls back to the
+            ``VOYAGE_API_KEY`` environment variable (the name VoyageAI's own
+            SDK uses), then to ``VOYAGEAI_API_KEY`` for backward compatibility.
+        embedding_dim: Optional Matryoshka output dimension. Only honored by
+            models that support dimension reduction (e.g. voyage-3-large);
+            ignored otherwise. The decorator default is 1024 to match
+            ``voyage-3``; if you select ``voyage-3-lite`` (512 dims) override
+            ``EMBEDDING_DIM`` accordingly so the vector store size matches.
         input_type: Optional input type hint for the model. Options:
             - "query": For search queries
             - "document": For documents to be indexed
             - None: Let the model decide (default)
-        truncation: Whether to truncate texts that exceed token limit (default: None).
+        truncation: Whether the API should truncate texts that exceed the model's
+            token limit. Defaults to True (matches the VoyageAI SDK default).
 
     Returns:
         A numpy array of embeddings, one per input text.
@@ -66,37 +88,29 @@ async def voyageai_embed(
         VoyageAIError: If the API call fails or returns invalid data.
 
     """
-
-    try:
-        import voyageai
-    except ImportError:
-        raise ImportError(
-            "voyageai package is required. Install it with: pip install voyageai"
-        )
-
-    # Get API key from parameter or environment
-    logger.debug(
-        "Starting VoyageAI embedding generation. (Ignore api_key, use env variable)"
-    )
     if not api_key:
-        api_key = os.environ.get("VOYAGEAI_API_KEY")
+        api_key = os.environ.get("VOYAGE_API_KEY") or os.environ.get(
+            "VOYAGEAI_API_KEY"
+        )
         if not api_key:
-            logger.error("VOYAGEAI_API_KEY environment variable not set")
+            logger.error(
+                "VoyageAI API key not provided and neither VOYAGE_API_KEY nor "
+                "VOYAGEAI_API_KEY environment variable is set"
+            )
             raise ValueError(
-                "VOYAGEAI_API_KEY environment variable is required or pass api_key parameter"
+                "VoyageAI API key is required: pass api_key, or set the "
+                "VOYAGE_API_KEY (preferred) or VOYAGEAI_API_KEY environment variable"
             )
 
     try:
-        # Create async client
         client = voyageai.AsyncClient(api_key=api_key)
 
-        logger.debug(f"VoyageAI embedding request: {len(texts)} texts, model: {model}")
-        # Calculate total characters for debugging
         total_chars = sum(len(t) for t in texts)
         avg_chars = total_chars / len(texts) if texts else 0
         logger.debug(
             f"VoyageAI embedding request: {len(texts)} texts, "
-            f"total_chars={total_chars}, avg_chars={avg_chars:.0f}, model={model}"
+            f"total_chars={total_chars}, avg_chars={avg_chars:.0f}, model={model}, "
+            f"input_type={input_type}"
         )
 
         # Prepare API call parameters
