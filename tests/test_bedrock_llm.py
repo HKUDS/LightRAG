@@ -559,7 +559,7 @@ async def test_create_app_query_role_uses_bedrock_binding(tmp_path, monkeypatch)
         ) as mocked_openai,
     ):
         lightrag_server.create_app(args)
-        query_func = _FakeLightRAG.last_init_kwargs["query_llm_model_func"]
+        query_func = _FakeLightRAG.last_init_kwargs["role_llm_configs"]["query"].func
         result = await query_func("hello")
 
     assert result == "bedrock-ok"
@@ -608,7 +608,7 @@ async def test_create_app_bedrock_query_role_uses_role_sigv4_credentials(
         AsyncMock(return_value="bedrock-ok"),
     ) as mocked_bedrock:
         lightrag_server.create_app(args)
-        query_func = _FakeLightRAG.last_init_kwargs["query_llm_model_func"]
+        query_func = _FakeLightRAG.last_init_kwargs["role_llm_configs"]["query"].func
         await query_func("hello")
 
     assert mocked_bedrock.await_args.kwargs["aws_region"] == "us-west-2"

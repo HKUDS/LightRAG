@@ -376,9 +376,7 @@ async def _summarize_descriptions(
     Returns:
         Summarized description string
     """
-    use_llm_func: callable = (
-        global_config.get("extract_llm_model_func") or global_config["llm_model_func"]
-    )
+    use_llm_func: callable = global_config["role_llm_funcs"]["extract"]
     # Apply higher priority (8) to entity/relation summary tasks
     use_llm_func = partial(use_llm_func, _priority=8)
 
@@ -3257,9 +3255,7 @@ async def extract_entities(
                     "User cancelled during entity extraction"
                 )
 
-    use_llm_func: callable = (
-        global_config.get("extract_llm_model_func") or global_config["llm_model_func"]
-    )
+    use_llm_func: callable = global_config["role_llm_funcs"]["extract"]
     entity_extract_max_gleaning = global_config["entity_extract_max_gleaning"]
 
     # Check if JSON structured output mode is enabled
@@ -3609,9 +3605,7 @@ async def kg_query(
     if query_param.model_func:
         use_model_func = query_param.model_func
     else:
-        use_model_func = (
-            global_config.get("query_llm_model_func") or global_config["llm_model_func"]
-        )
+        use_model_func = global_config["role_llm_funcs"]["query"]
         # Apply higher priority (5) to query relation LLM function
         use_model_func = partial(use_model_func, _priority=5)
 
@@ -3986,10 +3980,7 @@ async def extract_keywords_only(
     if param.model_func:
         use_model_func = param.model_func
     else:
-        use_model_func = (
-            global_config.get("keyword_llm_model_func")
-            or global_config["llm_model_func"]
-        )
+        use_model_func = global_config["role_llm_funcs"]["keyword"]
         # Apply higher priority (5) to query relation LLM function
         use_model_func = partial(use_model_func, _priority=5)
 
@@ -5504,9 +5495,7 @@ async def naive_query(
     if query_param.model_func:
         use_model_func = query_param.model_func
     else:
-        use_model_func = (
-            global_config.get("query_llm_model_func") or global_config["llm_model_func"]
-        )
+        use_model_func = global_config["role_llm_funcs"]["query"]
         # Apply higher priority (5) to query relation LLM function
         use_model_func = partial(use_model_func, _priority=5)
 
