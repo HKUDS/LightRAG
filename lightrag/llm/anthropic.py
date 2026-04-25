@@ -223,3 +223,30 @@ async def claude_3_haiku_complete(
         enable_cot=enable_cot,
         **kwargs,
     )
+
+
+# Backward-compatibility shim: the previous embedding implementation lived in
+# this module under the (misleading) name ``anthropic_embed`` even though it
+# called Voyage AI under the hood. The real implementation now lives in
+# ``lightrag.llm.voyageai.voyageai_embed``. Keep the old name importable for one
+# release cycle so downstream users get a clear deprecation warning instead of
+# an ImportError. Remove in a future major version.
+def anthropic_embed(*args, **kwargs):
+    """Deprecated alias for :func:`lightrag.llm.voyageai.voyageai_embed`.
+
+    This shim accepts the same arguments as the original ``anthropic_embed``
+    function (which was always backed by VoyageAI) and forwards them to
+    :func:`voyageai_embed`. It will be removed in a future release.
+    """
+    import warnings
+
+    warnings.warn(
+        "lightrag.llm.anthropic.anthropic_embed is deprecated and will be "
+        "removed in a future release. Import "
+        "lightrag.llm.voyageai.voyageai_embed instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    from lightrag.llm.voyageai import voyageai_embed
+
+    return voyageai_embed.func(*args, **kwargs)
