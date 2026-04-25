@@ -39,6 +39,7 @@ export type LightragQueueStatus = {
   completed_total?: number
   failed_total?: number
   cancelled_total?: number
+  rejected_total?: number
 }
 
 export type LightragStatus = {

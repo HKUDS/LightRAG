@@ -1671,20 +1671,7 @@ def create_app(args):
                     "max_async": args.max_async,
                     "embedding_func_max_async": args.embedding_func_max_async,
                     "embedding_batch_num": args.embedding_batch_num,
-                    "role_llm_config": {
-                        spec.name: {
-                            "binding": getattr(args, f"{spec.name}_llm_binding", None)
-                            or args.llm_binding,
-                            "model": getattr(args, f"{spec.name}_llm_model", None)
-                            or args.llm_model,
-                            "host": getattr(args, f"{spec.name}_llm_binding_host", None)
-                            or args.llm_binding_host,
-                            "max_async": rag._get_effective_role_llm_max_async(
-                                spec.name
-                            ),
-                        }
-                        for spec in ROLES
-                    },
+                    "role_llm_config": rag.get_llm_role_config(),
                 },
                 "auth_mode": auth_mode,
                 "pipeline_busy": pipeline_status.get("busy", False),

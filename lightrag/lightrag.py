@@ -1180,7 +1180,10 @@ class LightRAG:
 
     _SECRET_MARKERS = (
         "api_key",
+        "api-key",
+        "apikey",
         "access_key",
+        "access-key",
         "secret",
         "token",
         "credential",
@@ -1209,16 +1212,21 @@ class LightRAG:
         provider clients) read it directly off the private
         ``_role_llm_states[role].metadata`` dict.
         """
-        scrubbed = deepcopy(metadata)
-        for key in list(scrubbed.keys()):
-            if self._is_secret_key(key):
-                del scrubbed[key]
-        bedrock_options = scrubbed.get("bedrock_aws_options")
-        if isinstance(bedrock_options, dict):
-            for key in list(bedrock_options.keys()):
-                if self._is_secret_key(key):
-                    del bedrock_options[key]
-        return scrubbed
+
+        def scrub_value(value: Any) -> Any:
+            if isinstance(value, Mapping):
+                return {
+                    key: scrub_value(inner_value)
+                    for key, inner_value in value.items()
+                    if not self._is_secret_key(str(key))
+                }
+            if isinstance(value, list):
+                return [scrub_value(item) for item in value]
+            if isinstance(value, tuple):
+                return tuple(scrub_value(item) for item in value)
+            return deepcopy(value)
+
+        return scrub_value(metadata)
 
     def get_llm_role_config(self, role: str | None = None) -> dict[str, Any]:
         """Return effective role LLM runtime configuration (observability snapshot).
@@ -1611,6 +1619,20 @@ class LightRAG:
         self._retired_llm_queue_cleanup_tasks: set[asyncio.Task] = set()
 
         user_role_configs = self.role_llm_configs or {}
+        if not isinstance(user_role_configs, Mapping):
+            raise TypeError(
+                "role_llm_configs must be a Mapping or None, got "
+                f"{type(user_role_configs).__name__}"
+            )
+        unknown_roles = [role for role in user_role_configs if role not in ROLE_NAMES]
+        if unknown_roles:
+            valid_roles = ", ".join(sorted(ROLE_NAMES))
+            unknown = ", ".join(repr(role) for role in unknown_roles)
+            raise ValueError(
+                f"Unknown role_llm_configs key(s): {unknown}. "
+                f"Valid roles are: {valid_roles}"
+            )
+
         self._role_llm_states: dict[str, _RoleLLMState] = {}
         for spec in ROLES:
             override = user_role_configs.get(spec.name)

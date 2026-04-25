@@ -287,6 +287,11 @@ async def test_role_llm_configs_accepts_dict_form(tmp_path):
     assert await rag.role_llm_funcs["query"]("ping") == "query-via-dict"
 
 
+def test_role_llm_configs_rejects_unknown_role_keys(tmp_path):
+    with pytest.raises(ValueError, match="qurey"):
+        _make_rag(tmp_path, role_llm_configs={"qurey": {}})
+
+
 @pytest.mark.asyncio
 async def test_role_specific_kwargs_and_fallback(tmp_path):
     extract_calls = []
@@ -564,6 +569,21 @@ def test_get_llm_role_config_strips_bedrock_and_password_fields(tmp_path):
         binding="bedrock",
         model="claude-3",
         password="proxy-password",
+        provider_options={
+            "temperature": 0.1,
+            "extra_body": {
+                "safe_option": True,
+                "api_key": "nested-api-key",
+                "headers": {
+                    "Authorization": "Bearer nested-token",
+                    "X-API-Key": "nested-api-key",
+                    "Accept": "application/json",
+                },
+                "tools": [
+                    {"name": "safe-tool", "token": "nested-token"},
+                ],
+            },
+        },
         bedrock_aws_options={
             "region_name": "us-east-1",
             "aws_access_key_id": "AKIA-secret",
@@ -574,6 +594,13 @@ def test_get_llm_role_config_strips_bedrock_and_password_fields(tmp_path):
 
     snapshot = rag.get_llm_role_config("query")
     assert "password" not in snapshot["metadata"]
+    provider_options = snapshot["metadata"]["provider_options"]
+    assert provider_options["temperature"] == 0.1
+    extra_body = provider_options["extra_body"]
+    assert extra_body["safe_option"] is True
+    assert "api_key" not in extra_body
+    assert extra_body["headers"] == {"Accept": "application/json"}
+    assert extra_body["tools"] == [{"name": "safe-tool"}]
     bedrock = snapshot["metadata"]["bedrock_aws_options"]
     # Non-secret fields stay; auth-bearing fields are removed entirely.
     assert bedrock["region_name"] == "us-east-1"

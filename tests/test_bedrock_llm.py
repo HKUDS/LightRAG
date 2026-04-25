@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 from fastapi import APIRouter
+from fastapi.testclient import TestClient
 
 from lightrag.llm.bedrock import (
     bedrock_complete,
@@ -443,15 +444,25 @@ def test_bedrock_auth_docstrings_describe_generic_api_key_behavior():
 
 class _FakeLightRAG:
     last_init_kwargs = None
+    last_instance = None
 
     def __init__(self, **kwargs):
         type(self).last_init_kwargs = dict(kwargs)
+        type(self).last_instance = self
+        self.role_config_snapshot = {}
+        self.queue_status_snapshot = {}
 
     def register_role_llm_builder(self, _builder) -> None:
         return None
 
     def set_role_llm_metadata(self, _role: str, **_metadata) -> None:
         return None
+
+    def get_llm_role_config(self):
+        return self.role_config_snapshot
+
+    async def get_llm_queue_status(self, include_base=True):
+        return self.queue_status_snapshot
 
 
 class _FakeOllamaAPI:
@@ -503,6 +514,7 @@ def _make_args(tmp_path) -> SimpleNamespace:
         max_async=4,
         summary_max_tokens=512,
         summary_context_size=4096,
+        force_llm_summary_on_merge=8,
         chunk_size=1200,
         chunk_overlap_size=100,
         kv_storage="JsonKVStorage",
@@ -521,6 +533,10 @@ def _make_args(tmp_path) -> SimpleNamespace:
         rerank_model=None,
         rerank_binding_host=None,
         rerank_binding_api_key=None,
+        embedding_func_max_async=8,
+        embedding_batch_num=10,
+        min_rerank_score=0.0,
+        related_chunk_number=5,
         top_k=10,
     )
 
@@ -631,3 +647,61 @@ def test_create_app_rejects_bedrock_role_api_key(tmp_path, monkeypatch):
 
     with pytest.raises(ValueError, match="does not support role-specific"):
         lightrag_server.create_app(args)
+
+
+@pytest.mark.offline
+def test_health_role_llm_config_uses_runtime_snapshot(tmp_path, monkeypatch):
+    _reload_api_modules_if_mocked()
+    monkeypatch.setattr(sys, "argv", ["pytest"])
+    config = importlib.import_module("lightrag.api.config")
+    config.initialize_config(_make_args(tmp_path), force=True)
+    lightrag_server = importlib.import_module("lightrag.api.lightrag_server")
+    monkeypatch.setattr(lightrag_server, "LightRAG", _FakeLightRAG)
+    monkeypatch.setattr(lightrag_server, "check_frontend_build", lambda: (True, False))
+    monkeypatch.setattr(
+        lightrag_server, "create_document_routes", lambda *_args, **_kwargs: APIRouter()
+    )
+    monkeypatch.setattr(
+        lightrag_server, "create_query_routes", lambda *_args, **_kwargs: APIRouter()
+    )
+    monkeypatch.setattr(
+        lightrag_server, "create_graph_routes", lambda *_args, **_kwargs: APIRouter()
+    )
+    monkeypatch.setattr(lightrag_server, "OllamaAPI", _FakeOllamaAPI)
+    monkeypatch.setattr(
+        lightrag_server,
+        "get_namespace_data",
+        AsyncMock(return_value={"busy": False}),
+    )
+    monkeypatch.setattr(lightrag_server, "get_default_workspace", lambda: "default")
+    monkeypatch.setattr(
+        lightrag_server,
+        "cleanup_keyed_lock",
+        lambda: {"cleanup_performed": {}, "current_status": {}},
+    )
+
+    app = lightrag_server.create_app(_make_args(tmp_path))
+    _FakeLightRAG.last_instance.role_config_snapshot = {
+        "query": {
+            "binding": "runtime-binding",
+            "model": "runtime-model",
+            "host": "https://runtime.example/v1",
+            "max_async": 9,
+            "metadata": {"binding": "runtime-binding"},
+        }
+    }
+    _FakeLightRAG.last_instance.queue_status_snapshot = {
+        "query": {"available": True, "rejected_total": 2}
+    }
+
+    response = TestClient(app).get("/health")
+
+    assert response.status_code == 200
+    body = response.json()
+    role_cfg = body["configuration"]["role_llm_config"]["query"]
+    assert role_cfg["binding"] == "runtime-binding"
+    assert role_cfg["model"] == "runtime-model"
+    assert role_cfg["host"] == "https://runtime.example/v1"
+    assert role_cfg["max_async"] == 9
+    assert role_cfg["model"] != "us.amazon.nova-lite-v1:0"
+    assert body["llm_queue_status"]["query"]["rejected_total"] == 2
