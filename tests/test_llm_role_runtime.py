@@ -1,5 +1,6 @@
 """Offline tests for role-specific LLM runtime configuration."""
 
+import asyncio
 from argparse import Namespace
 
 import numpy as np
@@ -7,7 +8,7 @@ import pytest
 
 from lightrag import LightRAG
 from lightrag.llm.binding_options import OpenAILLMOptions
-from lightrag.utils import EmbeddingFunc, Tokenizer
+from lightrag.utils import EmbeddingFunc, Tokenizer, priority_limit_async_func_call
 
 
 pytestmark = pytest.mark.offline
@@ -50,6 +51,42 @@ ROLE_MAX_ASYNC_ENV_KEYS = (
     "MAX_ASYNC_QUERY_LLM",
     "MAX_ASYNC_VLM_LLM",
 )
+
+
+@pytest.mark.asyncio
+async def test_priority_queue_stats_track_running_and_queued():
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def slow_func(value: str, **_kwargs):
+        started.set()
+        await release.wait()
+        return value
+
+    wrapped = priority_limit_async_func_call(1, queue_name="test LLM func")(slow_func)
+
+    first = asyncio.create_task(wrapped("first"))
+    await started.wait()
+    second = asyncio.create_task(wrapped("second"))
+    await asyncio.sleep(0.05)
+
+    stats = await wrapped.get_queue_stats()
+    assert stats["max_async"] == 1
+    assert stats["running"] == 1
+    assert stats["queued"] == 1
+    assert stats["in_flight"] == 2
+    assert stats["submitted_total"] == 2
+
+    release.set()
+    assert await asyncio.gather(first, second) == ["first", "second"]
+    await asyncio.sleep(0)
+
+    stats = await wrapped.get_queue_stats()
+    assert stats["running"] == 0
+    assert stats["queued"] == 0
+    assert stats["completed_total"] == 2
+
+    await wrapped.shutdown()
 
 
 def test_role_max_async_defaults_inherit_base(tmp_path, monkeypatch):
@@ -167,6 +204,55 @@ async def test_update_llm_role_config_rewraps_without_double_call(tmp_path):
     assert call_count == 5
     assert seen_tags[-1] == "v2"
     assert rag.query_llm_model_max_async == 7
+    await rag.wait_for_retired_llm_queues()
+
+
+@pytest.mark.asyncio
+async def test_aupdate_llm_role_config_drains_old_queue(tmp_path):
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def old_query_func(*args, **kwargs):
+        started.set()
+        await release.wait()
+        return "old"
+
+    async def new_query_func(*args, **kwargs):
+        return "new"
+
+    rag = _make_rag(tmp_path, query_llm_model_func=old_query_func)
+
+    old_call = asyncio.create_task(rag.query_llm_model_func("old"))
+    await started.wait()
+
+    update_call = asyncio.create_task(
+        rag.aupdate_llm_role_config("query", model_func=new_query_func)
+    )
+    await asyncio.sleep(0.05)
+    assert not update_call.done()
+    assert await rag.query_llm_model_func("new") == "new"
+
+    release.set()
+    assert await old_call == "old"
+    await update_call
+
+
+@pytest.mark.asyncio
+async def test_sync_update_tracks_retired_queue_cleanup(tmp_path):
+    async def query_func(*args, **kwargs):
+        return "old"
+
+    async def new_query_func(*args, **kwargs):
+        return "new"
+
+    rag = _make_rag(tmp_path, query_llm_model_func=query_func)
+
+    assert await rag.query_llm_model_func("before") == "old"
+    rag.update_llm_role_config("query", model_func=new_query_func)
+    assert await rag.query_llm_model_func("after") == "new"
+
+    await rag.wait_for_retired_llm_queues()
+    assert not rag._retired_llm_queue_cleanup_tasks
 
 
 @pytest.mark.asyncio
@@ -212,6 +298,34 @@ async def test_update_llm_role_config_with_builder_metadata(tmp_path):
     assert built_calls[-1]["meta"]["model"] == "gemini-2.0-flash"
     assert built_calls[-1]["kwargs"]["runtime_host"] == "https://new-host"
     assert built_calls[-1]["kwargs"]["provider_options"]["top_k"] == 8
+
+
+@pytest.mark.asyncio
+async def test_llm_role_config_and_queue_status_are_observable(tmp_path):
+    rag = _make_rag(tmp_path, query_llm_model_kwargs={"tag": "query"})
+    rag.set_role_llm_metadata(
+        "query",
+        binding="openai",
+        model="gpt-test",
+        host="https://api.example.com/v1",
+        api_key="secret-key",
+        provider_options={"temperature": 0.1},
+    )
+
+    all_configs = rag.get_llm_role_config()
+    assert set(all_configs) == {"extract", "keyword", "query", "vlm"}
+    assert all_configs["query"]["binding"] == "openai"
+    assert all_configs["query"]["model"] == "gpt-test"
+    assert all_configs["query"]["metadata"]["api_key"] == "***"
+    assert all_configs["query"]["has_model_kwargs"] is True
+
+    query_config = rag.get_llm_role_config("query", include_secrets=True)
+    assert query_config["metadata"]["api_key"] == "secret-key"
+
+    queue_status = await rag.get_llm_queue_status()
+    assert set(queue_status) == {"base", "extract", "keyword", "query", "vlm"}
+    assert queue_status["query"]["available"] is True
+    assert queue_status["query"]["queue_name"] == "query LLM func"
 
 
 @pytest.mark.asyncio

@@ -25,6 +25,22 @@ export type LightragGraphType = {
   edges: LightragEdgeType[]
 }
 
+export type LightragQueueStatus = {
+  available: boolean
+  queue_name?: string
+  max_async?: number
+  max_queue_size?: number
+  queued?: number
+  running?: number
+  in_flight?: number
+  worker_count?: number
+  initialized?: boolean
+  submitted_total?: number
+  completed_total?: number
+  failed_total?: number
+  cancelled_total?: number
+}
+
 export type LightragStatus = {
   status: 'healthy'
   working_directory: string
@@ -61,6 +77,7 @@ export type LightragStatus = {
   api_version?: string
   auth_mode?: 'enabled' | 'disabled'
   pipeline_busy: boolean
+  llm_queue_status?: Record<string, LightragQueueStatus>
   keyed_locks?: {
     process_id: number
     cleanup_performed: {

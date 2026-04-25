@@ -1693,6 +1693,7 @@ def create_app(args):
                 "auth_mode": auth_mode,
                 "pipeline_busy": pipeline_status.get("busy", False),
                 "keyed_locks": keyed_lock_info,
+                "llm_queue_status": await rag.get_llm_queue_status(include_base=True),
                 "core_version": core_version,
                 "api_version": api_version_display,
                 "webui_title": webui_title,

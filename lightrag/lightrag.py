@@ -969,7 +969,50 @@ class LightRAG:
         )
         setattr(self, f"{role}_llm_model_func", wrapped)
 
-    def update_llm_role_config(
+    async def _shutdown_llm_wrapper(self, wrapped_func: Callable[..., object]) -> None:
+        shutdown = getattr(wrapped_func, "shutdown", None)
+        if callable(shutdown):
+            await shutdown(graceful=True)
+
+    def _schedule_retired_llm_queue_cleanup(
+        self, wrapped_func: Callable[..., object] | None
+    ) -> None:
+        if wrapped_func is None or not callable(getattr(wrapped_func, "shutdown", None)):
+            return
+
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            try:
+                asyncio.run(self._shutdown_llm_wrapper(wrapped_func))
+            except RuntimeError as e:
+                logger.warning(
+                    f"Failed to clean up retired LLM queue synchronously: {e}"
+                )
+            return
+
+        task = loop.create_task(self._shutdown_llm_wrapper(wrapped_func))
+        if not hasattr(self, "_retired_llm_queue_cleanup_tasks"):
+            self._retired_llm_queue_cleanup_tasks = set()
+        self._retired_llm_queue_cleanup_tasks.add(task)
+        task.add_done_callback(self._finalize_retired_llm_queue_cleanup)
+
+    def _finalize_retired_llm_queue_cleanup(self, task: asyncio.Task) -> None:
+        self._retired_llm_queue_cleanup_tasks.discard(task)
+        try:
+            task.result()
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.warning(f"Retired LLM queue cleanup failed: {e}")
+
+    async def wait_for_retired_llm_queues(self) -> None:
+        """Wait until all retired role LLM queues have drained and shut down."""
+        while getattr(self, "_retired_llm_queue_cleanup_tasks", None):
+            tasks = list(self._retired_llm_queue_cleanup_tasks)
+            await asyncio.gather(*tasks, return_exceptions=False)
+
+    def _apply_llm_role_config_update(
         self,
         role: str,
         *,
@@ -982,14 +1025,7 @@ class LightRAG:
         host: str | None = None,
         api_key: str | None = None,
         provider_options: dict[str, Any] | None = None,
-    ) -> None:
-        """
-        Update a role-specific LLM configuration at runtime.
-
-        Supports lightweight updates (kwargs/max_async/timeout/model_func) directly.
-        For binding/model/host/api_key/provider_options updates, a role builder must
-        be registered via register_role_llm_builder().
-        """
+    ) -> Callable[..., object] | None:
         role = self._normalize_llm_role(role)
         kwargs_attr = self._role_llm_kwargs_attr(role)
         max_async_attr = self._role_llm_max_async_attr(role)
@@ -1055,6 +1091,7 @@ class LightRAG:
 
             self._role_llm_runtime_meta[role] = role_meta
             self._rebuild_single_role_llm_func(role)
+            return snapshot["wrapped_func"]
         except Exception:
             self._raw_role_llm_funcs[role] = snapshot["raw_func"]
             setattr(self, func_attr, snapshot["wrapped_func"])
@@ -1063,6 +1100,151 @@ class LightRAG:
             setattr(self, timeout_attr, snapshot["timeout"])
             self._role_llm_runtime_meta[role] = snapshot["meta"]
             raise
+
+    def update_llm_role_config(
+        self,
+        role: str,
+        *,
+        model_func: Callable[..., object] | None = None,
+        model_kwargs: dict[str, Any] | None = None,
+        max_async: int | None = None,
+        timeout: int | None = None,
+        binding: str | None = None,
+        model: str | None = None,
+        host: str | None = None,
+        api_key: str | None = None,
+        provider_options: dict[str, Any] | None = None,
+    ) -> None:
+        """
+        Update a role-specific LLM configuration at runtime.
+
+        Supports lightweight updates (kwargs/max_async/timeout/model_func) directly.
+        For binding/model/host/api_key/provider_options updates, a role builder must
+        be registered via register_role_llm_builder().
+        """
+        old_wrapped = self._apply_llm_role_config_update(
+            role,
+            model_func=model_func,
+            model_kwargs=model_kwargs,
+            max_async=max_async,
+            timeout=timeout,
+            binding=binding,
+            model=model,
+            host=host,
+            api_key=api_key,
+            provider_options=provider_options,
+        )
+        self._schedule_retired_llm_queue_cleanup(old_wrapped)
+
+    async def aupdate_llm_role_config(
+        self,
+        role: str,
+        *,
+        model_func: Callable[..., object] | None = None,
+        model_kwargs: dict[str, Any] | None = None,
+        max_async: int | None = None,
+        timeout: int | None = None,
+        binding: str | None = None,
+        model: str | None = None,
+        host: str | None = None,
+        api_key: str | None = None,
+        provider_options: dict[str, Any] | None = None,
+    ) -> None:
+        """Async variant of update_llm_role_config that waits for queue cleanup."""
+        old_wrapped = self._apply_llm_role_config_update(
+            role,
+            model_func=model_func,
+            model_kwargs=model_kwargs,
+            max_async=max_async,
+            timeout=timeout,
+            binding=binding,
+            model=model,
+            host=host,
+            api_key=api_key,
+            provider_options=provider_options,
+        )
+        if old_wrapped is not None:
+            await self._shutdown_llm_wrapper(old_wrapped)
+
+    @staticmethod
+    def _mask_secret_value(value: Any) -> Any:
+        if isinstance(value, str) and value:
+            return "***"
+        return value
+
+    def _masked_llm_metadata(
+        self, metadata: dict[str, Any], include_secrets: bool
+    ) -> dict[str, Any]:
+        masked = deepcopy(metadata)
+        if include_secrets:
+            return masked
+
+        secret_markers = ("api_key", "access_key", "secret", "token", "credential")
+        for key in list(masked.keys()):
+            if any(marker in key.lower() for marker in secret_markers):
+                masked[key] = self._mask_secret_value(masked[key])
+        bedrock_options = masked.get("bedrock_aws_options")
+        if isinstance(bedrock_options, dict):
+            for key in list(bedrock_options.keys()):
+                if any(marker in key.lower() for marker in secret_markers):
+                    bedrock_options[key] = self._mask_secret_value(
+                        bedrock_options[key]
+                    )
+        return masked
+
+    def get_llm_role_config(
+        self, role: str | None = None, include_secrets: bool = False
+    ) -> dict[str, Any]:
+        """Return effective role LLM runtime configuration."""
+
+        def role_config(role_name: str) -> dict[str, Any]:
+            role_meta = getattr(self, "_role_llm_runtime_meta", {}).get(role_name, {})
+            metadata = self._masked_llm_metadata(role_meta, include_secrets)
+            kwargs_value = getattr(self, self._role_llm_kwargs_attr(role_name))
+            return {
+                "binding": metadata.get("binding"),
+                "model": metadata.get("model"),
+                "host": metadata.get("host"),
+                "is_cross_provider": metadata.get("is_cross_provider", False),
+                "max_async": self._get_effective_role_llm_max_async(role_name),
+                "timeout": self._get_effective_role_llm_timeout(role_name),
+                "has_model_kwargs": kwargs_value is not None,
+                "metadata": metadata,
+            }
+
+        if role is not None:
+            normalized = self._normalize_llm_role(role)
+            return role_config(normalized)
+
+        return {
+            role_name: role_config(role_name)
+            for role_name in ("extract", "keyword", "query", "vlm")
+        }
+
+    async def get_llm_queue_status(self, include_base: bool = True) -> dict[str, Any]:
+        """Return queue status for base and role LLM wrappers."""
+
+        async def stats_for(func: Callable[..., object] | None) -> dict[str, Any]:
+            if func is None:
+                return {"available": False}
+            get_stats = getattr(func, "get_queue_stats", None)
+            if not callable(get_stats):
+                return {"available": False}
+            stats = get_stats()
+            if inspect.isawaitable(stats):
+                stats = await stats
+            stats["available"] = True
+            return stats
+
+        result: dict[str, Any] = {}
+        if include_base:
+            result["base"] = await stats_for(self.llm_model_func)
+
+        for role_name in ("extract", "keyword", "query", "vlm"):
+            result[role_name] = await stats_for(
+                getattr(self, f"{role_name}_llm_model_func", None)
+            )
+        return result
 
     def _mark_addon_params_dirty(self) -> None:
         self._addon_params_dirty = True
@@ -1381,6 +1563,7 @@ class LightRAG:
 
         self._llm_role_builder = None
         self._role_llm_runtime_meta: dict[str, dict[str, Any]] = {}
+        self._retired_llm_queue_cleanup_tasks: set[asyncio.Task] = set()
         self._raw_llm_model_func = base_llm_func
         self._raw_role_llm_funcs: dict[str, Callable[..., object]] = {
             "extract": self.extract_llm_model_func or base_llm_func,
