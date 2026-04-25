@@ -1,6 +1,7 @@
 """Offline tests for role-specific LLM runtime configuration."""
 
 import asyncio
+import logging
 from argparse import Namespace
 
 import numpy as np
@@ -12,6 +13,12 @@ from lightrag.utils import EmbeddingFunc, Tokenizer, priority_limit_async_func_c
 
 
 pytestmark = pytest.mark.offline
+
+
+@pytest.fixture
+def lightrag_logger_propagating(monkeypatch):
+    """Force the lightrag logger to propagate so caplog can capture records."""
+    monkeypatch.setattr(logging.getLogger("lightrag"), "propagate", True)
 
 
 class _SimpleTokenizerImpl:
@@ -85,8 +92,61 @@ async def test_priority_queue_stats_track_running_and_queued():
     assert stats["running"] == 0
     assert stats["queued"] == 0
     assert stats["completed_total"] == 2
+    assert stats["rejected_total"] == 0
 
     await wrapped.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_priority_queue_graceful_shutdown_timeout_falls_back_to_force(
+    caplog, lightrag_logger_propagating
+):
+    started = asyncio.Event()
+
+    async def stuck_func(value: str, **_kwargs):
+        started.set()
+        await asyncio.sleep(60)
+        return value
+
+    wrapped = priority_limit_async_func_call(1, queue_name="stuck LLM func")(
+        stuck_func
+    )
+
+    in_flight = asyncio.create_task(wrapped("hold"))
+    await started.wait()
+
+    with caplog.at_level("WARNING", logger="lightrag"):
+        await wrapped.shutdown(graceful=True, timeout=0.1)
+
+    assert any(
+        "Graceful drain timed out" in record.getMessage()
+        for record in caplog.records
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await in_flight
+
+    stats = await wrapped.get_queue_stats()
+    assert stats["cancelled_total"] >= 1
+
+
+@pytest.mark.asyncio
+async def test_priority_queue_rejects_submissions_after_shutdown():
+    async def fast_func(value: str, **_kwargs):
+        return value
+
+    wrapped = priority_limit_async_func_call(1, queue_name="reject LLM func")(
+        fast_func
+    )
+
+    assert await wrapped("warmup") == "warmup"
+    await wrapped.shutdown()
+
+    with pytest.raises(RuntimeError, match="Queue is shutting down"):
+        await wrapped("rejected")
+
+    stats = await wrapped.get_queue_stats()
+    assert stats["rejected_total"] == 1
 
 
 def test_role_max_async_defaults_inherit_base(tmp_path, monkeypatch):
@@ -255,6 +315,80 @@ async def test_sync_update_tracks_retired_queue_cleanup(tmp_path):
     assert not rag._retired_llm_queue_cleanup_tasks
 
 
+def test_sync_update_without_event_loop_skips_cleanup(
+    tmp_path, caplog, lightrag_logger_propagating
+):
+    async def query_func(*args, **kwargs):
+        return "old"
+
+    async def new_query_func(*args, **kwargs):
+        return "new"
+
+    rag = _make_rag(tmp_path, query_llm_model_func=query_func)
+
+    with caplog.at_level("WARNING", logger="lightrag"):
+        rag.update_llm_role_config("query", model_func=new_query_func)
+
+    assert not rag._retired_llm_queue_cleanup_tasks
+    assert any(
+        "no event loop is running" in record.getMessage()
+        for record in caplog.records
+    )
+
+    async def call_new() -> str:
+        return await rag.query_llm_model_func("after")
+
+    assert asyncio.run(call_new()) == "new"
+
+
+@pytest.mark.asyncio
+async def test_aupdate_llm_role_config_with_builder_drains_old_queue(tmp_path):
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    def builder(role, meta):
+        model_name = meta["model"]
+
+        if model_name == "old-model":
+            async def built_func(*args, **kwargs):
+                started.set()
+                await release.wait()
+                return model_name
+        else:
+            async def built_func(*args, **kwargs):
+                return model_name
+
+        return built_func, None
+
+    rag = _make_rag(tmp_path)
+    rag.register_role_llm_builder(builder)
+    rag.set_role_llm_metadata(
+        "query",
+        binding="openai",
+        model="seed",
+        host="https://seed",
+        api_key="seed-key",
+    )
+
+    rag.update_llm_role_config("query", binding="openai", model="old-model")
+    await rag.wait_for_retired_llm_queues()
+
+    in_flight = asyncio.create_task(rag.query_llm_model_func("hold"))
+    await started.wait()
+
+    update_call = asyncio.create_task(
+        rag.aupdate_llm_role_config("query", binding="openai", model="new-model")
+    )
+    await asyncio.sleep(0.05)
+    assert not update_call.done()
+    assert await rag.query_llm_model_func("hello") == "new-model"
+
+    release.set()
+    assert await in_flight == "old-model"
+    await update_call
+    assert not rag._retired_llm_queue_cleanup_tasks
+
+
 @pytest.mark.asyncio
 async def test_update_llm_role_config_with_builder_metadata(tmp_path):
     built_calls = []
@@ -326,6 +460,34 @@ async def test_llm_role_config_and_queue_status_are_observable(tmp_path):
     assert set(queue_status) == {"base", "extract", "keyword", "query", "vlm"}
     assert queue_status["query"]["available"] is True
     assert queue_status["query"]["queue_name"] == "query LLM func"
+
+
+def test_get_llm_role_config_masks_bedrock_and_password_fields(tmp_path):
+    rag = _make_rag(tmp_path)
+    rag.set_role_llm_metadata(
+        "query",
+        binding="bedrock",
+        model="claude-3",
+        password="proxy-password",
+        bedrock_aws_options={
+            "region_name": "us-east-1",
+            "aws_access_key_id": "AKIA-secret",
+            "aws_secret_access_key": "TOPSECRET",
+        },
+    )
+
+    masked = rag.get_llm_role_config("query")
+    assert masked["metadata"]["password"] == "***"
+    masked_bedrock = masked["metadata"]["bedrock_aws_options"]
+    assert masked_bedrock["region_name"] == "us-east-1"
+    assert masked_bedrock["aws_access_key_id"] == "***"
+    assert masked_bedrock["aws_secret_access_key"] == "***"
+
+    revealed = rag.get_llm_role_config("query", include_secrets=True)
+    assert revealed["metadata"]["password"] == "proxy-password"
+    revealed_bedrock = revealed["metadata"]["bedrock_aws_options"]
+    assert revealed_bedrock["aws_access_key_id"] == "AKIA-secret"
+    assert revealed_bedrock["aws_secret_access_key"] == "TOPSECRET"
 
 
 @pytest.mark.asyncio

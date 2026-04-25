@@ -983,17 +983,20 @@ class LightRAG:
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
-            try:
-                asyncio.run(self._shutdown_llm_wrapper(wrapped_func))
-            except RuntimeError as e:
-                logger.warning(
-                    f"Failed to clean up retired LLM queue synchronously: {e}"
-                )
+            # The retired wrapper's queue and worker tasks are tied to the
+            # event loop that first used them. Spinning up a fresh loop via
+            # asyncio.run would either hang on queue.join() or touch
+            # primitives bound to a closed loop. Skip cleanup with a warning
+            # — call aupdate_llm_role_config() from an async context for
+            # deterministic shutdown.
+            logger.warning(
+                "update_llm_role_config: skipping retired LLM queue cleanup "
+                "because no event loop is running; call aupdate_llm_role_config() "
+                "from an async context for deterministic shutdown"
+            )
             return
 
         task = loop.create_task(self._shutdown_llm_wrapper(wrapped_func))
-        if not hasattr(self, "_retired_llm_queue_cleanup_tasks"):
-            self._retired_llm_queue_cleanup_tasks = set()
         self._retired_llm_queue_cleanup_tasks.add(task)
         task.add_done_callback(self._finalize_retired_llm_queue_cleanup)
 
@@ -1007,10 +1010,15 @@ class LightRAG:
             logger.warning(f"Retired LLM queue cleanup failed: {e}")
 
     async def wait_for_retired_llm_queues(self) -> None:
-        """Wait until all retired role LLM queues have drained and shut down."""
-        while getattr(self, "_retired_llm_queue_cleanup_tasks", None):
+        """Wait until all retired role LLM queues have drained and shut down.
+
+        Cleanup failures are logged by ``_finalize_retired_llm_queue_cleanup``
+        and intentionally swallowed here so callers can rely on this method
+        always returning once every retired wrapper has finished.
+        """
+        while self._retired_llm_queue_cleanup_tasks:
             tasks = list(self._retired_llm_queue_cleanup_tasks)
-            await asyncio.gather(*tasks, return_exceptions=False)
+            await asyncio.gather(*tasks, return_exceptions=True)
 
     def _apply_llm_role_config_update(
         self,
@@ -1038,11 +1046,8 @@ class LightRAG:
             "model_kwargs": deepcopy(getattr(self, kwargs_attr)),
             "max_async": getattr(self, max_async_attr),
             "timeout": getattr(self, timeout_attr),
-            "meta": deepcopy(getattr(self, "_role_llm_runtime_meta", {}).get(role, {})),
+            "meta": deepcopy(self._role_llm_runtime_meta.get(role, {})),
         }
-
-        if not hasattr(self, "_role_llm_runtime_meta"):
-            self._role_llm_runtime_meta = {}
 
         try:
             if model_func is not None and not callable(model_func):
@@ -1179,7 +1184,16 @@ class LightRAG:
         if include_secrets:
             return masked
 
-        secret_markers = ("api_key", "access_key", "secret", "token", "credential")
+        secret_markers = (
+            "api_key",
+            "access_key",
+            "secret",
+            "token",
+            "credential",
+            "password",
+            "passphrase",
+            "pwd",
+        )
         for key in list(masked.keys()):
             if any(marker in key.lower() for marker in secret_markers):
                 masked[key] = self._mask_secret_value(masked[key])
@@ -1195,10 +1209,17 @@ class LightRAG:
     def get_llm_role_config(
         self, role: str | None = None, include_secrets: bool = False
     ) -> dict[str, Any]:
-        """Return effective role LLM runtime configuration."""
+        """Return effective role LLM runtime configuration.
+
+        Each role entry exposes ``binding`` / ``model`` / ``host`` at the top
+        level for convenience and again inside ``metadata`` as part of the
+        full runtime snapshot (which may contain extra builder-specific
+        keys). Secret-bearing fields in ``metadata`` are masked unless
+        ``include_secrets=True``.
+        """
 
         def role_config(role_name: str) -> dict[str, Any]:
-            role_meta = getattr(self, "_role_llm_runtime_meta", {}).get(role_name, {})
+            role_meta = self._role_llm_runtime_meta.get(role_name, {})
             metadata = self._masked_llm_metadata(role_meta, include_secrets)
             kwargs_value = getattr(self, self._role_llm_kwargs_attr(role_name))
             return {
