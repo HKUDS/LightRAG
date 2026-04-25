@@ -852,11 +852,14 @@ def create_app(args):
                         if isinstance(voyageai_embed, EmbeddingFunc)
                         else voyageai_embed
                     )
-                    return await actual_func(
-                        texts,
-                        api_key=api_key,
-                        embedding_dim=embedding_dim,
-                    )
+                    kwargs = {
+                        "texts": texts,
+                        "api_key": api_key,
+                        "embedding_dim": embedding_dim,
+                    }
+                    if model:
+                        kwargs["model"] = model
+                    return await actual_func(**kwargs)
                 else:  # openai and compatible
                     from lightrag.llm.openai import openai_embed
 
