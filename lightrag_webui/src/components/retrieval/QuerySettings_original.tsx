@@ -18,26 +18,6 @@ import { useSettingsStore } from '@/stores/settings'
 import { useTranslation } from 'react-i18next'
 import { RotateCcw } from 'lucide-react'
 
-const ResetButton = ({ onClick, title }: { onClick: () => void; title: string }) => (
-  <TooltipProvider>
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <button
-          type="button"
-          onClick={onClick}
-          className="mr-1 p-1 rounded hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
-          title={title}
-        >
-          <RotateCcw className="h-3 w-3 text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200" />
-        </button>
-      </TooltipTrigger>
-      <TooltipContent side="left">
-        <p>{title}</p>
-      </TooltipContent>
-    </Tooltip>
-  </TooltipProvider>
-)
-
 export default function QuerySettings() {
   const { t } = useTranslation()
   const querySettings = useSettingsStore((state) => state.querySettings)
@@ -70,6 +50,27 @@ export default function QuerySettings() {
   const handleReset = useCallback((key: keyof typeof defaultValues) => {
     handleChange(key, defaultValues[key])
   }, [handleChange, defaultValues])
+
+  // Reset button component
+  const ResetButton = ({ onClick, title }: { onClick: () => void; title: string }) => (
+    <TooltipProvider>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            type="button"
+            onClick={onClick}
+            className="mr-1 p-1 rounded hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+            title={title}
+          >
+            <RotateCcw className="h-3 w-3 text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200" />
+          </button>
+        </TooltipTrigger>
+        <TooltipContent side="left">
+          <p>{title}</p>
+        </TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
+  )
 
   return (
     <Card className="flex shrink-0 flex-col w-[280px]">
@@ -212,23 +213,15 @@ export default function QuerySettings() {
                   value={querySettings.chunk_top_k ?? ''}
                   onChange={(e) => {
                     const value = e.target.value
-                    const numValue = value === '' ? '' : parseInt(value) || 0
-                    handleChange('chunk_top_k', numValue)
-
-                    // Auto-enable KG-only mode when chunk_top_k is 0
-                    if (numValue === 0) {
-                      handleChange('only_kg_context', true)
-                    } else {
-                      handleChange('only_kg_context', false)
-                    }
+                    handleChange('chunk_top_k', value === '' ? '' : parseInt(value) || 0)
                   }}
                   onBlur={(e) => {
                     const value = e.target.value
                     if (value === '' || isNaN(parseInt(value))) {
-                      handleChange('chunk_top_k', 0)
+                      handleChange('chunk_top_k', 20)
                     }
                   }}
-                  min={0}
+                  min={1}
                   placeholder={t('retrievePanel.querySettings.chunkTopKPlaceholder')}
                   className="h-9 flex-1 pr-2 [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none [-moz-appearance:textfield]"
                 />

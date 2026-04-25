@@ -47,7 +47,7 @@ class QueryRequest(BaseModel):
     )
 
     chunk_top_k: Optional[int] = Field(
-        ge=0,
+        ge=1,
         default=None,
         description="Number of text chunks to retrieve initially from vector search and keep after reranking.",
     )
@@ -78,11 +78,6 @@ class QueryRequest(BaseModel):
     ll_keywords: list[str] = Field(
         default_factory=list,
         description="List of low-level keywords to refine retrieval focus. Leave empty to use the LLM to generate the keywords.",
-    )
-
-    only_kg_context: Optional[bool] = Field(
-        default=False,
-        description="If True, includes only knowledge graph data (entities and relations) in context, excluding all chunks.",
     )
 
     conversation_history: Optional[List[Dict[str, Any]]] = Field(
@@ -1156,7 +1151,6 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                     status="failure",
                     message="Invalid response type",
                     data={},
-                    metadata={},
                 )
         except Exception as e:
             logger.error(f"Error processing data query: {str(e)}", exc_info=True)

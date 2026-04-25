@@ -18,25 +18,20 @@ export const TabVisibilityProvider: React.FC<TabVisibilityProviderProps> = ({ ch
   // Initialize visibility state with all tabs visible
   const [visibleTabs, setVisibleTabs] = useState<Record<string, boolean>>(() => ({
     'documents': true,
-    'sanitize-data': true,
     'knowledge-graph': true,
     'retrieval': true,
     'api': true
   }));
 
-  // Keep all tabs visible because we use CSS to control TAB visibility instead of React.
-  // TabContent sets its tab to false on unmount (cleanup); this effect resets them to true
-  // whenever the current tab changes, acting as a safety net against stale false values.
+  // Keep all tabs visible because we use CSS to control TAB visibility instead of React
   useEffect(() => {
-    const timer = setTimeout(() => setVisibleTabs((prev) => ({
+    setVisibleTabs((prev) => ({
       ...prev,
       'documents': true,
-      'sanitize-data': true,
       'knowledge-graph': true,
       'retrieval': true,
       'api': true
-    })), 0)
-    return () => clearTimeout(timer)
+    }));
   }, [currentTab]);
 
   // Create the context value with memoization to prevent unnecessary re-renders

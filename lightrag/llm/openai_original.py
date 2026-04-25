@@ -78,15 +78,6 @@ class InvalidResponseError(Exception):
 # Module-level cache for tiktoken encodings
 _TIKTOKEN_ENCODING_CACHE: dict[str, Any] = {}
 
-# Whether to request base64-encoded embeddings from the API.
-# Base64 is more efficient over the wire; set EMBEDDING_USE_BASE64=false for
-# providers that don't support it (e.g. Yandex Cloud).
-EMBEDDING_USE_BASE64: bool = os.getenv("EMBEDDING_USE_BASE64", "true").lower() in (
-    "true",
-    "1",
-    "yes",
-)
-
 
 def _get_tiktoken_encoding_for_model(model: str) -> Any:
     """Get tiktoken encoding for the specified model with caching.
@@ -356,19 +347,8 @@ async def openai_complete_if_cache(
         await openai_async_client.close()  # Ensure client is closed
         raise
     except Exception as e:
-        body = getattr(e, "body", None)
-        request_id = getattr(e, "request_id", None)
-        req = getattr(e, "request", None)
-        extra_parts = []
-        if body:
-            extra_parts.append(f"Response body: {body}")
-        if request_id:
-            extra_parts.append(f"Request ID: {request_id}")
-        if req is not None:
-            extra_parts.append(f"Request URL: {req.url}")
-        extra = ("\n" + "\n".join(extra_parts)) if extra_parts else ""
         logger.error(
-            f"OpenAI API Call Failed,\nModel: {model},\nParams: {kwargs}, Got: {e}{extra}"
+            f"OpenAI API Call Failed,\nModel: {model},\nParams: {kwargs}, Got: {e}"
         )
         await openai_async_client.close()  # Ensure client is closed
         raise
@@ -723,10 +703,7 @@ async def nvidia_openai_complete(
 
 
 @wrap_embedding_func_with_attrs(
-    embedding_dim=3072,
-    max_token_size=8192,
-    model_name="text-embedding-3-large",
-    allow_extra_vectors=True,
+    embedding_dim=1536, max_token_size=8192, model_name="text-embedding-3-small"
 )
 @retry(
     stop=stop_after_attempt(3),
@@ -739,7 +716,7 @@ async def nvidia_openai_complete(
 )
 async def openai_embed(
     texts: list[str],
-    model: str = "text-embedding-3-large",
+    model: str = "text-embedding-3-small",
     base_url: str | None = None,
     api_key: str | None = None,
     embedding_dim: int | None = None,
@@ -843,11 +820,8 @@ async def openai_embed(
         api_params = {
             "model": api_model,
             "input": texts,
+            "encoding_format": "base64",
         }
-
-        # Add encoding_format parameter (some providers like Yandex don't support base64)
-        # OpenAI client defaults to base64, so we must explicitly set it to "float" if disabled
-        api_params["encoding_format"] = "base64" if EMBEDDING_USE_BASE64 else "float"
 
         # Add dimensions parameter only if embedding_dim is provided
         if embedding_dim is not None:
@@ -957,17 +931,15 @@ async def azure_openai_complete(
 
 
 @wrap_embedding_func_with_attrs(
-    embedding_dim=3072,
+    embedding_dim=1536,
     max_token_size=8192,
     model_name="my-text-embedding-3-large-deployment",
-    allow_extra_vectors=True,
 )
 async def azure_openai_embed(
     texts: list[str],
     model: str | None = None,
     base_url: str | None = None,
     api_key: str | None = None,
-    embedding_dim: int | None = None,
     token_tracker: Any | None = None,
     client_configs: dict[str, Any] | None = None,
     api_version: str | None = None,
@@ -1040,7 +1012,6 @@ async def azure_openai_embed(
         model=deployment,
         base_url=base_url,
         api_key=api_key,
-        embedding_dim=embedding_dim,
         token_tracker=token_tracker,
         client_configs=client_configs,
         use_azure=True,

@@ -45,7 +45,6 @@ from lightrag.constants import (
 
 # Precompile regex pattern for JSON sanitization (module-level, compiled once)
 _SURROGATE_PATTERN = re.compile(r"[\uD800-\uDFFF\uFFFE\uFFFF]")
-_CONTROL_CHAR_PATTERN_ALL = re.compile(r"[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]")
 
 
 class SafeStreamHandler(logging.StreamHandler):
@@ -236,9 +235,6 @@ if TYPE_CHECKING:
 load_dotenv(dotenv_path=".env", override=False)
 
 VERBOSE_DEBUG = os.getenv("VERBOSE", "false").lower() == "true"
-PERFORMANCE_TIMING_LOGS = (
-    os.getenv("LIGHTRAG_PERFORMANCE_TIMING_LOGS", "false").lower() == "true"
-)
 
 
 def verbose_debug(msg: str, *args, **kwargs):
@@ -272,12 +268,6 @@ def set_verbose_debug(enabled: bool):
     """Enable or disable verbose debug output"""
     global VERBOSE_DEBUG
     VERBOSE_DEBUG = enabled
-
-
-def performance_timing_log(msg: str, *args, **kwargs):
-    """Emit targeted performance timing logs only when explicitly enabled."""
-    if PERFORMANCE_TIMING_LOGS:
-        logger.info(msg, *args, **kwargs)
 
 
 statistic_data = {"llm_call": 0, "llm_cache": 0, "embed_call": 0}
@@ -419,87 +409,142 @@ class TaskState:
 
 @dataclass
 class EmbeddingFunc:
-    """Embedding function wrapper with dimension validation + allow_extra_vectors flag (fixes #2549)"""
+    """Embedding function wrapper with dimension validation
+
+    This class wraps an embedding function to ensure that the output embeddings have the correct dimension.
+    If wrapped multiple times, the inner wrappers will be automatically unwrapped to prevent
+    configuration conflicts where inner wrapper settings would override outer wrapper settings.
+
+    Using functools.partial for parameter binding:
+        A common pattern is to use functools.partial to pre-bind model and host parameters
+        to an embedding function. When the base embedding function is already decorated with
+        @wrap_embedding_func_with_attrs (e.g., ollama_embed), use `.func` to access the
+        original unwrapped function to avoid double wrapping:
+
+        Example:
+            from functools import partial
+
+            # ❌ Wrong - causes double wrapping (inner EmbeddingFunc still executes)
+            func=partial(ollama_embed, embed_model="bge-m3:latest", host="http://localhost:11434")
+
+            # ✅ Correct - access the unwrapped function via .func
+            func=partial(ollama_embed.func, embed_model="bge-m3:latest", host="http://localhost:11434")
+
+    Args:
+        embedding_dim: Expected dimension of the embeddings(For dimension checking and workspace data isolation in vector DB)
+        func: The actual embedding function to wrap
+        max_token_size: Enable embedding token limit checking for description summarization(Set embedding_token_limit in LightRAG)
+        send_dimensions: Whether to inject embedding_dim argument to underlying function
+        model_name: Model name for implementing workspace data isolation in vector DB
+    """
 
     embedding_dim: int
     func: callable
     max_token_size: int | None = None
     send_dimensions: bool = False
-    model_name: str | None = None
-    allow_extra_vectors: bool = False  # ← our fix — default is safe fail-fast
+    model_name: str | None = (
+        None  # Model name for implementing workspace data isolation in vector DB
+    )
 
     def __post_init__(self):
-        """Unwrap nested EmbeddingFunc to prevent double wrapping issues."""
-        max_unwrap_depth = 3
+        """Unwrap nested EmbeddingFunc to prevent double wrapping issues.
+
+        When an EmbeddingFunc wraps another EmbeddingFunc, the inner wrapper's
+        __call__ preprocessing would override the outer wrapper's settings.
+        This method detects and unwraps nested EmbeddingFunc instances to ensure
+        that only the outermost wrapper's configuration is applied.
+        """
+        # Check if func is already an EmbeddingFunc instance and unwrap it
+        max_unwrap_depth = 3  # Safety limit to prevent infinite loops
         unwrap_count = 0
         while isinstance(self.func, EmbeddingFunc):
             unwrap_count += 1
             if unwrap_count > max_unwrap_depth:
                 raise ValueError(
-                    "EmbeddingFunc unwrap depth exceeded — possible circular reference."
+                    f"EmbeddingFunc unwrap depth exceeded {max_unwrap_depth}. "
+                    "Possible circular reference detected."
                 )
+            # Unwrap to get the original function
             self.func = self.func.func
 
         if unwrap_count > 0:
             logger.warning(
-                f"Detected nested EmbeddingFunc (depth: {unwrap_count}), auto-unwrapped."
+                f"Detected nested EmbeddingFunc wrapping (depth: {unwrap_count}), "
+                "auto-unwrapped to prevent configuration conflicts. "
+                "Consider using .func to access the unwrapped function directly."
             )
 
     async def __call__(self, *args, **kwargs) -> np.ndarray:
-        # === Original upstream logic (unchanged) ===
+        # Only inject embedding_dim when send_dimensions is True
         if self.send_dimensions:
-            if (
-                "embedding_dim" in kwargs
-                and kwargs["embedding_dim"] is not None
-                and kwargs["embedding_dim"] != self.embedding_dim
-            ):
-                logger.warning(
-                    f"Ignoring user-provided embedding_dim, using {self.embedding_dim}"
-                )
+            # Check if user provided embedding_dim parameter
+            if "embedding_dim" in kwargs:
+                user_provided_dim = kwargs["embedding_dim"]
+                # If user's value differs from class attribute, output warning
+                if (
+                    user_provided_dim is not None
+                    and user_provided_dim != self.embedding_dim
+                ):
+                    logger.warning(
+                        f"Ignoring user-provided embedding_dim={user_provided_dim}, "
+                        f"using declared embedding_dim={self.embedding_dim} from decorator"
+                    )
+
+            # Inject embedding_dim from decorator
             kwargs["embedding_dim"] = self.embedding_dim
 
+        # Check if underlying function supports max_token_size and inject if not provided
         if self.max_token_size is not None and "max_token_size" not in kwargs:
             sig = inspect.signature(self.func)
             if "max_token_size" in sig.parameters:
                 kwargs["max_token_size"] = self.max_token_size
 
-        # Call the real function
+        # Call the actual embedding function
         result = await self.func(*args, **kwargs)
 
-        # === Dimension validation (unchanged) ===
-        total_elements = result.size
+        # Validate embedding dimensions using total element count
+        total_elements = result.size  # Total number of elements in the numpy array
         expected_dim = self.embedding_dim
+
+        # Check if total elements can be evenly divided by embedding_dim
         if total_elements % expected_dim != 0:
             raise ValueError(
-                f"Embedding dimension mismatch: got {total_elements}, expected multiple of {expected_dim}"
+                f"Embedding dimension mismatch detected: "
+                f"total elements ({total_elements}) cannot be evenly divided by "
+                f"expected dimension ({expected_dim}). "
             )
 
-        # === Our approved fix for MinerU/RAGAnything ===
+        # Optional: Verify vector count matches input text count
+        # actual_vectors = total_elements // expected_dim
+        # if args and isinstance(args[0], (list, tuple)):
+        #     expected_vectors = len(args[0])
+        #     if actual_vectors != expected_vectors:
+        #         raise ValueError(
+        #             f"Vector count mismatch: "
+        #             f"expected {expected_vectors} vectors but got {actual_vectors} vectors (from embedding result)."
+        #         )
+
+        # Optional: Verify vector count matches input text count
         actual_vectors = total_elements // expected_dim
         if args and isinstance(args[0], (list, tuple)):
             expected_vectors = len(args[0])
             if actual_vectors != expected_vectors:
-                provider = self.model_name or "unknown"
-                if self.allow_extra_vectors:
+                # WORKAROUND: Handle the doubling bug in multimodal/mineru pipelines
+                if actual_vectors == 2 * expected_vectors:
                     logger.warning(
-                        f"Vector count mismatch (provider={provider}): "
-                        f"expected {expected_vectors} but got {actual_vectors}. "
-                        f"Adjusting... (allow_extra_vectors=True — normal for MinerU)."
+                        f"Vector count doubling detected ({actual_vectors} vs {expected_vectors}). Slicing result to match."
                     )
-                    # Over = slice    |   Under = pad with last vector (safe fallback)
-                    reshaped = result.reshape(-1, expected_dim)
-                    if actual_vectors > expected_vectors:
-                        result = reshaped[:expected_vectors]
+                    # Reshape if it's a 2D array, slice, then return
+                    if len(result.shape) > 1:
+                        return result[:expected_vectors]
                     else:
-                        pad = np.tile(
-                            reshaped[-1:], (expected_vectors - actual_vectors, 1)
-                        )
-                        result = np.vstack([reshaped, pad])
+                        # Fallback for flat arrays
+                        new_size = expected_vectors * expected_dim
+                        return result[:new_size]
                 else:
                     raise ValueError(
-                        f"Vector count mismatch (provider={provider}): "
-                        f"expected {expected_vectors} vectors but got {actual_vectors}. "
-                        f"Set allow_extra_vectors=True on EmbeddingFunc if using MinerU/RAGAnything."
+                        f"Vector count mismatch: "
+                        f"expected {expected_vectors} vectors but got {actual_vectors} vectors (from embedding result)."
                     )
 
         return result
@@ -533,23 +578,6 @@ def compute_mdhash_id(content: str, prefix: str = "") -> str:
     The ID is a combination of the given prefix and the MD5 hash of the content string.
     """
     return prefix + compute_args_hash(content)
-
-
-def make_relation_vdb_ids(src_entity: str, tgt_entity: str) -> list[str]:
-    """Return candidate relation VDB IDs for an undirected edge.
-
-    The normalized ID is returned first for all new writes. The reverse-order ID is
-    kept as a compatibility fallback for historical custom-KG imports that hashed
-    the relation using the original endpoint order.
-    """
-    normalized_src, normalized_tgt = sorted((src_entity, tgt_entity))
-    relation_ids = [compute_mdhash_id(normalized_src + normalized_tgt, prefix="rel-")]
-    reverse_relation_id = compute_mdhash_id(
-        normalized_tgt + normalized_src, prefix="rel-"
-    )
-    if reverse_relation_id not in relation_ids:
-        relation_ids.append(reverse_relation_id)
-    return relation_ids
 
 
 def generate_cache_key(mode: str, cache_type: str, hash_value: str) -> str:
@@ -1490,16 +1518,6 @@ def exists_func(obj, func_name: str) -> bool:
         return False
 
 
-async def _cooperative_yield(iteration: int, every: int = 64) -> None:
-    """Periodically yield control to the event loop during CPU-heavy async loops.
-
-    Call inside long synchronous-style loops to prevent event loop starvation
-    in single-worker deployments. Yields every `every` iterations.
-    """
-    if iteration > 0 and iteration % every == 0:
-        await asyncio.sleep(0)
-
-
 def always_get_an_event_loop() -> asyncio.AbstractEventLoop:
     """
     Ensure that there is always an event loop available.
@@ -1605,11 +1623,8 @@ async def aexport_data(
 
                 # Optional: Get vector database information
                 if include_vector_data:
-                    vector_data = None
-                    for rel_id in make_relation_vdb_ids(src_entity, tgt_entity):
-                        vector_data = await relationships_vdb.get_by_id(rel_id)
-                        if vector_data is not None:
-                            break
+                    rel_id = compute_mdhash_id(src_entity + tgt_entity, prefix="rel-")
+                    vector_data = await relationships_vdb.get_by_id(rel_id)
                     relation_info["vector_data"] = vector_data
 
                 relation_row = {
@@ -1934,19 +1949,11 @@ async def update_chunk_cache_list(
 
 
 def remove_think_tags(text: str) -> str:
-    """Remove <think>...</think> tags and their content from the text.
-
-    Handles two cases:
-    1. Complete <think>...</think> blocks anywhere in the text.
-    2. Orphaned </think> at the very start (e.g., from streaming that begins
-       mid-think-block), removing everything before and including it.
-    """
-    # First, remove orphaned </think> prefix (content before first </think>
-    # when there is no preceding <think> tag)
-    text = re.sub(r"^((?!<think>).)*?</think>", "", text, flags=re.DOTALL)
-    # Then remove all complete <think>...</think> blocks
-    text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
-    return text.strip()
+    """Remove <think>...</think> tags from the text
+    Remove  orphon ...</think> tags from the text also"""
+    return re.sub(
+        r"^(<think>.*?</think>|.*</think>)", "", text, flags=re.DOTALL
+    ).strip()
 
 
 async def use_llm_func_with_cache(
@@ -2254,6 +2261,8 @@ def normalize_extracted_info(name: str, remove_inner_quotes=False) -> str:
         return all(c.isdigit() or c == "." for c in text) and "." in text
 
     if len(name) < 6 and should_filter_by_dots(name):
+        # Filter out mixed numeric and dot content with length < 6
+        return ""
         # Filter out mixed numeric and dot content with length < 6, requiring at least one dot
         return ""
 
@@ -2277,28 +2286,75 @@ def sanitize_text_for_encoding(text: str, replacement_char: str = "") -> str:
 
     Returns:
         Sanitized text that can be safely encoded as UTF-8
+
+    Raises:
+        ValueError: When text contains uncleanable encoding issues that cannot be safely processed
     """
     if not text:
         return text
 
-    # First, strip whitespace
-    text = text.strip()
+    try:
+        # First, strip whitespace
+        text = text.strip()
 
-    # Early return if text is empty after basic cleaning
-    if not text:
-        return text
+        # Early return if text is empty after basic cleaning
+        if not text:
+            return text
 
-    # 1. html.unescape first to catch entities that might become surrogates or control chars
-    text = html.unescape(text)
+        # Try to encode/decode to catch any encoding issues early
+        text.encode("utf-8")
 
-    # 2. Use pre-compiled regex to clean surrogates and non-characters in one pass
-    # This replaces the slow manual loop and initial .encode() check
-    text = _SURROGATE_PATTERN.sub(replacement_char, text)
+        # Remove or replace surrogate characters (U+D800 to U+DFFF)
+        # These are the main cause of the encoding error
+        sanitized = ""
+        for char in text:
+            code_point = ord(char)
+            # Check for surrogate characters
+            if 0xD800 <= code_point <= 0xDFFF:
+                # Replace surrogate with replacement character
+                sanitized += replacement_char
+                continue
+            # Check for other problematic characters
+            elif code_point == 0xFFFE or code_point == 0xFFFF:
+                # These are non-characters in Unicode
+                sanitized += replacement_char
+                continue
+            else:
+                sanitized += char
 
-    # 3. Remove control characters but preserve common whitespace (\t, \n, \r)
-    text = _CONTROL_CHAR_PATTERN_ALL.sub(replacement_char, text)
+        # Additional cleanup: remove null bytes and other control characters that might cause issues
+        # (but preserve common whitespace like \t, \n, \r)
+        sanitized = re.sub(
+            r"[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]", replacement_char, sanitized
+        )
 
-    return text.strip()
+        # Test final encoding to ensure it's safe
+        sanitized.encode("utf-8")
+
+        # Unescape HTML escapes
+        sanitized = html.unescape(sanitized)
+
+        # Remove control characters but preserve common whitespace (\t, \n, \r)
+        sanitized = re.sub(r"[\x00-\x08\x0B\x0C\x0E-\x1F\x7F-\x9F]", "", sanitized)
+
+        return sanitized.strip()
+
+    except UnicodeEncodeError as e:
+        # Critical change: Don't return placeholder, raise exception for caller to handle
+        error_msg = f"Text contains uncleanable UTF-8 encoding issues: {str(e)[:100]}"
+        logger.error(f"Text sanitization failed: {error_msg}")
+        raise ValueError(error_msg) from e
+
+    except Exception as e:
+        logger.error(f"Text sanitization: Unexpected error: {str(e)}")
+        # For other exceptions, if no encoding issues detected, return original text
+        try:
+            text.encode("utf-8")
+            return text
+        except UnicodeEncodeError:
+            raise ValueError(
+                f"Text sanitization failed with unexpected error: {str(e)}"
+            ) from e
 
 
 def check_storage_env_vars(storage_name: str) -> None:
@@ -3119,12 +3175,13 @@ def create_prefixed_exception(original_exception: Exception, prefix: str) -> Exc
         else:
             # Method 2: If no args, try single parameter construction.
             return type(original_exception)(f"{prefix}: {str(original_exception)}")
-    except (TypeError, ValueError, AttributeError):
+    except (TypeError, ValueError, AttributeError) as construct_error:
         # Method 3: If reconstruction fails, wrap it in a RuntimeError.
         # This is the safest fallback, as attempting to create the same type
         # with a single string can fail if the constructor requires multiple arguments.
         return RuntimeError(
-            f"{prefix}: {type(original_exception).__name__}: {str(original_exception)}"
+            f"{prefix}: {type(original_exception).__name__}: {str(original_exception)} "
+            f"(Original exception could not be reconstructed: {construct_error})"
         )
 
 

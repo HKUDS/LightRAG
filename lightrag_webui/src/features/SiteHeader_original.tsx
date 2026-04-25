@@ -7,8 +7,7 @@ import { useAuthStore } from '@/stores/state'
 import { cn } from '@/lib/utils'
 import { useTranslation } from 'react-i18next'
 import { navigationService } from '@/services/navigation'
-import { ZapIcon, LogOutIcon } from 'lucide-react'
-import GithubIcon from '@/components/icons/GithubIcon'
+import { ZapIcon, GithubIcon, LogOutIcon } from 'lucide-react'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/Tooltip'
 
 interface NavigationTabProps {
@@ -40,9 +39,6 @@ function TabsNavigation() {
       <TabsList className="h-full gap-2">
         <NavigationTab value="documents" currentTab={currentTab}>
           {t('header.documents')}
-        </NavigationTab>
-        <NavigationTab value="sanitize-data" currentTab={currentTab}>
-          {t('header.sanitizeData')}
         </NavigationTab>
         <NavigationTab value="knowledge-graph" currentTab={currentTab}>
           {t('header.knowledgeGraph')}
@@ -131,7 +127,7 @@ export default function SiteHeader() {
           )}
           <Button variant="ghost" size="icon" side="bottom" tooltip={t('header.projectRepository')}>
             <a href={SiteInfo.github} target="_blank" rel="noopener noreferrer">
-              <GithubIcon className="size-4" />
+              <GithubIcon className="size-4" aria-hidden="true" />
             </a>
           </Button>
           <AppSettings />
