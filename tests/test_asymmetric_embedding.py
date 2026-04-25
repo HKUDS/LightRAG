@@ -16,7 +16,7 @@ All tests are fully mocked; no live API calls.
 from __future__ import annotations
 
 import base64
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pytest
@@ -209,7 +209,9 @@ async def test_gemini_task_type_query_for_query_context(gemini_client_cache_clea
 
 
 @pytest.mark.asyncio
-async def test_gemini_task_type_document_for_document_context(gemini_client_cache_cleared):
+async def test_gemini_task_type_document_for_document_context(
+    gemini_client_cache_cleared,
+):
     pytest.importorskip("google.genai")
     from lightrag.llm import gemini as gemini_mod
 
