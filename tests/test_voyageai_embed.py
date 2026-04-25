@@ -5,8 +5,7 @@ These tests mock voyageai.AsyncClient so they run fully offline.
 
 from __future__ import annotations
 
-import os
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pytest
@@ -38,7 +37,9 @@ def patched_async_client(fake_voyage_response):
     fake_client = MagicMock()
     fake_client.embed = fake_embed
 
-    with patch("lightrag.llm.voyageai.voyageai.AsyncClient", return_value=fake_client) as m:
+    with patch(
+        "lightrag.llm.voyageai.voyageai.AsyncClient", return_value=fake_client
+    ) as m:
         yield captured, m
 
 
@@ -59,7 +60,9 @@ async def test_voyageai_embed_passes_model(patched_async_client):
 
 
 @pytest.mark.asyncio
-async def test_voyageai_embed_accepts_legacy_voyage_api_key(patched_async_client, monkeypatch):
+async def test_voyageai_embed_accepts_legacy_voyage_api_key(
+    patched_async_client, monkeypatch
+):
     """Setting only VOYAGE_API_KEY (the SDK's name) must work for backward compat."""
     captured, _ = patched_async_client
     monkeypatch.delenv("VOYAGEAI_API_KEY", raising=False)
@@ -72,7 +75,9 @@ async def test_voyageai_embed_accepts_legacy_voyage_api_key(patched_async_client
 
 
 @pytest.mark.asyncio
-async def test_voyageai_embed_accepts_voyageai_api_key(patched_async_client, monkeypatch):
+async def test_voyageai_embed_accepts_voyageai_api_key(
+    patched_async_client, monkeypatch
+):
     """The newer VOYAGEAI_API_KEY name must also still work."""
     captured, _ = patched_async_client
     monkeypatch.delenv("VOYAGE_API_KEY", raising=False)

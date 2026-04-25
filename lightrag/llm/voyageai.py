@@ -89,9 +89,7 @@ async def voyageai_embed(
 
     """
     if not api_key:
-        api_key = os.environ.get("VOYAGE_API_KEY") or os.environ.get(
-            "VOYAGEAI_API_KEY"
-        )
+        api_key = os.environ.get("VOYAGE_API_KEY") or os.environ.get("VOYAGEAI_API_KEY")
         if not api_key:
             logger.error(
                 "VoyageAI API key not provided and neither VOYAGE_API_KEY nor "
