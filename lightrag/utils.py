@@ -1168,13 +1168,28 @@ def wrap_embedding_func_with_attrs(**kwargs):
         embedding_dim: The dimension of embedding vectors
         max_token_size: Maximum number of tokens (optional)
         send_dimensions: Whether to pass embedding_dim as a keyword argument (for models with configurable embedding dimensions).
-        supports_asymmetric: Whether the function supports context parameter (optional)
+        supports_asymmetric: Whether the function supports context parameter (optional).
+            If omitted, this is auto-detected from the wrapped function's signature
+            (set to True iff the function accepts a ``context`` parameter).
 
     Returns:
         A decorator that wraps the function as an EmbeddingFunc instance
     """
 
     def final_decro(func) -> EmbeddingFunc:
+        # Auto-detect supports_asymmetric from the wrapped function's signature
+        # if the caller did not declare it explicitly. Without this, any user or
+        # third-party embed function that accepts a `context` parameter but
+        # forgets to set ``supports_asymmetric=True`` would have its `context`
+        # silently dropped by ``EmbeddingFunc.__call__``, defeating the
+        # task-aware embedding feature.
+        if "supports_asymmetric" not in kwargs:
+            try:
+                sig = inspect.signature(func)
+                kwargs["supports_asymmetric"] = "context" in sig.parameters
+            except (TypeError, ValueError):
+                # inspect.signature can fail for builtins; fall back to False.
+                kwargs["supports_asymmetric"] = False
         new_func = EmbeddingFunc(**kwargs, func=func)
         return new_func
 
