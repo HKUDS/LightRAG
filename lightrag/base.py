@@ -248,6 +248,10 @@ class BaseVectorStorage(StorageNameSpace, ABC):
 
         # Check if model_name exists (model_name is optional in EmbeddingFunc)
         model_name = getattr(self.embedding_func, "model_name", None)
+        if not isinstance(model_name, str):
+            return None
+
+        model_name = model_name.strip()
         if not model_name:
             return None
 

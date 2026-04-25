@@ -379,6 +379,108 @@ class TestMilvusIndexCreation:
         bootstrap_client.create_database.assert_not_called()
         bootstrap_client.use_database.assert_called_once_with("lightrag")
 
+    def test_model_suffix_is_used_for_milvus_collection_names(self):
+        """Milvus should isolate collections by embedding model when model_name is available."""
+        mock_embedding_func = MagicMock()
+        mock_embedding_func.embedding_dim = 2560
+        mock_embedding_func.model_name = "qwen3-embedding:4b"
+
+        storage = MilvusVectorDBStorage(
+            namespace="entities",
+            workspace="",
+            global_config={
+                "embedding_batch_num": 100,
+                "working_dir": "/tmp/lightrag",
+                "vector_db_storage_cls_kwargs": {
+                    "cosine_better_than_threshold": 0.3,
+                },
+            },
+            embedding_func=mock_embedding_func,
+            meta_fields=set(),
+        )
+
+        assert storage.legacy_namespace == "entities"
+        assert storage.final_namespace == "entities_qwen3_embedding_4b_2560d"
+
+    def test_compatible_legacy_collection_is_reused_when_suffix_available(self):
+        """Compatible legacy collections should still be reused after suffixing is introduced."""
+        mock_embedding_func = MagicMock()
+        mock_embedding_func.embedding_dim = 2560
+        mock_embedding_func.model_name = "qwen3-embedding:4b"
+
+        storage = MilvusVectorDBStorage(
+            namespace="entities",
+            workspace="",
+            global_config={
+                "embedding_batch_num": 100,
+                "working_dir": "/tmp/lightrag",
+                "vector_db_storage_cls_kwargs": {
+                    "cosine_better_than_threshold": 0.3,
+                },
+            },
+            embedding_func=mock_embedding_func,
+            meta_fields=set(),
+        )
+        storage._client = MagicMock()
+        storage._client.has_collection.side_effect = (
+            lambda name: name == storage.legacy_namespace
+        )
+        storage._client.describe_collection.return_value = {}
+
+        with patch.object(storage, "_validate_collection_compatibility"):
+            with patch.object(storage, "_ensure_collection_loaded"):
+                storage._create_collection_if_not_exist()
+
+        storage._client.create_collection.assert_not_called()
+        assert storage.final_namespace == storage.legacy_namespace
+
+    def test_legacy_dimension_mismatch_creates_isolated_collection_when_suffix_available(
+        self,
+    ):
+        """A legacy dimension mismatch should create a new suffixed Milvus collection."""
+        mock_embedding_func = MagicMock()
+        mock_embedding_func.embedding_dim = 2560
+        mock_embedding_func.model_name = "qwen3-embedding:4b"
+
+        storage = MilvusVectorDBStorage(
+            namespace="entities",
+            workspace="",
+            global_config={
+                "embedding_batch_num": 100,
+                "working_dir": "/tmp/lightrag",
+                "vector_db_storage_cls_kwargs": {
+                    "cosine_better_than_threshold": 0.3,
+                },
+            },
+            embedding_func=mock_embedding_func,
+            meta_fields=set(),
+        )
+        storage._client = MagicMock()
+        storage._client.has_collection.side_effect = (
+            lambda name: name == storage.legacy_namespace
+        )
+        storage._client.describe_collection.return_value = {}
+
+        with patch.object(
+            storage,
+            "_validate_collection_compatibility",
+            side_effect=ValueError(
+                "Vector dimension mismatch for collection 'entities': existing=4096, current=2560"
+            ),
+        ):
+            with patch.object(
+                storage, "_create_schema_for_namespace", return_value="schema"
+            ):
+                with patch.object(storage, "_create_indexes_after_collection"):
+                    with patch.object(storage, "_ensure_collection_loaded"):
+                        storage._create_collection_if_not_exist()
+
+        storage._client.create_collection.assert_called_once_with(
+            collection_name="entities_qwen3_embedding_4b_2560d",
+            schema="schema",
+        )
+        assert storage.final_namespace == "entities_qwen3_embedding_4b_2560d"
+
     def test_existing_collection_missing_vector_index_is_repaired(self):
         """Existing collections missing vector indexes should be repaired automatically."""
         mock_embedding_func = MagicMock()
