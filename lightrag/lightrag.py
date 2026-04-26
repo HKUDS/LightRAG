@@ -1186,7 +1186,30 @@ class LightRAG:
         api_key: str | None = None,
         provider_options: dict[str, Any] | None = None,
     ) -> None:
-        """Async variant of update_llm_role_config that waits for queue cleanup."""
+        """Async variant of update_llm_role_config that waits for queue cleanup.
+
+        Blocking behavior:
+            This coroutine awaits a graceful shutdown of the retired role
+            wrapper's priority queue. The shutdown blocks on
+            ``queue.join()`` until every already-queued LLM call has been
+            executed (workers always call ``task_done()`` in ``finally``,
+            so in-flight requests are not cut off).
+
+            The wait is bounded by ``max_task_duration`` of the retired
+            queue, which is computed as ``llm_timeout * 2 + 15`` seconds
+            (default ``180 * 2 + 15 = 375`` seconds, ~6 min 15 s). When
+            this bound is reached, the drain times out and the shutdown
+            falls through to forced cancellation: pending futures are
+            cancelled, the queue is cleared, workers are stopped. So this
+            method **never blocks indefinitely**, but with a deep backlog
+            of slow LLM calls it can take up to that bound to return, and
+            in-flight calls past the bound will be cancelled.
+
+            If you need a non-blocking switch, use the sync
+            ``update_llm_role_config()`` (which schedules cleanup as a
+            background task) and await ``wait_for_retired_llm_queues()``
+            separately when you want to confirm the old queue is gone.
+        """
         old_wrapped = self._apply_llm_role_config_update(
             role,
             model_func=model_func,
