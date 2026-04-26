@@ -42,6 +42,16 @@ export type LightragQueueStatus = {
   rejected_total?: number
 }
 
+export type LightragRoleLLMConfig = {
+  binding?: string | null
+  model?: string | null
+  host?: string | null
+  max_async?: number
+  timeout?: number
+  has_model_kwargs?: boolean
+  metadata?: Record<string, any>
+}
+
 export type LightragStatus = {
   status: 'healthy'
   working_directory: string
@@ -58,6 +68,12 @@ export type LightragStatus = {
     graph_storage: string
     vector_storage: string
     workspace?: string
+    storage_workspaces?: {
+      kv_storage?: string | null
+      doc_status_storage?: string | null
+      graph_storage?: string | null
+      vector_storage?: string | null
+    }
     max_graph_nodes?: string
     enable_rerank?: boolean
     rerank_binding?: string | null
@@ -72,6 +88,7 @@ export type LightragStatus = {
     cosine_threshold: number
     min_rerank_score: number
     related_chunk_number: number
+    role_llm_config?: Record<string, LightragRoleLLMConfig>
   }
   update_status?: Record<string, any>
   core_version?: string
@@ -79,6 +96,8 @@ export type LightragStatus = {
   auth_mode?: 'enabled' | 'disabled'
   pipeline_busy: boolean
   llm_queue_status?: Record<string, LightragQueueStatus>
+  embedding_queue_status?: LightragQueueStatus
+  rerank_queue_status?: LightragQueueStatus
   keyed_locks?: {
     process_id: number
     cleanup_performed: {

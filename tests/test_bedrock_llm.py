@@ -451,6 +451,8 @@ class _FakeLightRAG:
         type(self).last_instance = self
         self.role_config_snapshot = {}
         self.queue_status_snapshot = {}
+        self.embedding_queue_status_snapshot = {}
+        self.rerank_queue_status_snapshot = {}
 
     def register_role_llm_builder(self, _builder) -> None:
         return None
@@ -463,6 +465,12 @@ class _FakeLightRAG:
 
     async def get_llm_queue_status(self, include_base=True):
         return self.queue_status_snapshot
+
+    async def get_embedding_queue_status(self):
+        return self.embedding_queue_status_snapshot
+
+    async def get_rerank_queue_status(self):
+        return self.rerank_queue_status_snapshot
 
 
 class _FakeOllamaAPI:
@@ -575,9 +583,15 @@ async def test_create_app_query_role_uses_bedrock_binding(tmp_path, monkeypatch)
         ) as mocked_openai,
     ):
         lightrag_server.create_app(args)
-        query_func = _FakeLightRAG.last_init_kwargs["role_llm_configs"]["query"].func
+        query_cfg = _FakeLightRAG.last_init_kwargs["role_llm_configs"]["query"]
+        query_func = query_cfg.func
         result = await query_func("hello")
 
+    assert query_cfg.metadata["binding"] == "bedrock"
+    assert query_cfg.metadata["model"] == "us.amazon.nova-lite-v1:0"
+    assert query_cfg.metadata["host"] == "DEFAULT_BEDROCK_ENDPOINT"
+    assert query_cfg.metadata["api_key"] is None
+    assert query_cfg.metadata["bedrock_aws_options"]["aws_region"] == "us-east-1"
     assert result == "bedrock-ok"
     assert mocked_openai.await_count == 0
     assert mocked_bedrock.await_count == 1
@@ -693,6 +707,13 @@ def test_health_role_llm_config_uses_runtime_snapshot(tmp_path, monkeypatch):
     _FakeLightRAG.last_instance.queue_status_snapshot = {
         "query": {"available": True, "rejected_total": 2}
     }
+    _FakeLightRAG.last_instance.embedding_queue_status_snapshot = {
+        "available": True,
+        "running": 1,
+    }
+    _FakeLightRAG.last_instance.rerank_queue_status_snapshot = {
+        "available": False,
+    }
 
     response = TestClient(app).get("/health")
 
@@ -705,3 +726,5 @@ def test_health_role_llm_config_uses_runtime_snapshot(tmp_path, monkeypatch):
     assert role_cfg["max_async"] == 9
     assert role_cfg["model"] != "us.amazon.nova-lite-v1:0"
     assert body["llm_queue_status"]["query"]["rejected_total"] == 2
+    assert body["embedding_queue_status"]["running"] == 1
+    assert body["rerank_queue_status"]["available"] is False

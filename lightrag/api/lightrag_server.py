@@ -77,6 +77,46 @@ webui_description = os.getenv("WEBUI_DESCRIPTION")
 auth_configured = bool(auth_handler.accounts)
 
 
+def _clean_workspace_value(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _get_storage_workspace(storage: Any) -> str | None:
+    if storage is None:
+        return None
+
+    effective_workspace = _clean_workspace_value(
+        getattr(storage, "effective_workspace", None)
+    )
+    if effective_workspace:
+        return effective_workspace
+
+    final_namespace = _clean_workspace_value(getattr(storage, "final_namespace", None))
+    namespace = _clean_workspace_value(getattr(storage, "namespace", None))
+    if final_namespace and namespace:
+        suffix = f"_{namespace}"
+        if final_namespace.endswith(suffix):
+            workspace = final_namespace[: -len(suffix)]
+            if workspace:
+                return workspace
+
+    return _clean_workspace_value(getattr(storage, "workspace", None))
+
+
+def _get_storage_workspaces(rag: Any) -> dict[str, str | None]:
+    return {
+        "kv_storage": _get_storage_workspace(getattr(rag, "full_docs", None)),
+        "doc_status_storage": _get_storage_workspace(getattr(rag, "doc_status", None)),
+        "graph_storage": _get_storage_workspace(
+            getattr(rag, "chunk_entity_relation_graph", None)
+        ),
+        "vector_storage": _get_storage_workspace(getattr(rag, "entities_vdb", None)),
+    }
+
+
 class LLMConfigCache:
     """Smart LLM and Embedding configuration cache class"""
 
@@ -769,11 +809,6 @@ def create_app(args):
         role_provider_options = settings["provider_options"]
         bedrock_aws_options = settings["bedrock_aws_options"]
 
-        logger.info(
-            f"  Role '{role}': binding={role_binding}, model={role_model}, "
-            f"host={role_host}, timeout={role_timeout}"
-        )
-
         try:
             if role_binding == "ollama":
                 from lightrag.llm.ollama import _ollama_model_if_cache
@@ -1429,6 +1464,22 @@ def create_app(args):
                     kwargs=role_llm_configs[spec.name]["kwargs"],
                     max_async=role_llm_configs[spec.name]["max_async"],
                     timeout=role_llm_configs[spec.name]["timeout"],
+                    metadata={
+                        "base_binding": args.llm_binding,
+                        "binding": role_llm_configs[spec.name]["binding"],
+                        "model": role_llm_configs[spec.name]["model"],
+                        "host": role_llm_configs[spec.name]["host"],
+                        "api_key": role_llm_configs[spec.name]["api_key"],
+                        "provider_options": role_llm_configs[spec.name][
+                            "provider_options"
+                        ],
+                        "bedrock_aws_options": role_llm_configs[spec.name][
+                            "bedrock_aws_options"
+                        ],
+                        "is_cross_provider": role_llm_configs[spec.name][
+                            "is_cross_provider"
+                        ],
+                    },
                 )
                 for spec in ROLES
             },
@@ -1443,33 +1494,6 @@ def create_app(args):
             create_role_llm_model_kwargs(role, meta),
         )
     )
-    for spec in ROLES:
-        cfg = role_llm_configs[spec.name]
-        rag.set_role_llm_metadata(
-            spec.name,
-            base_binding=args.llm_binding,
-            binding=cfg["binding"],
-            model=cfg["model"],
-            host=cfg["host"],
-            api_key=cfg["api_key"],
-            provider_options=cfg["provider_options"],
-            bedrock_aws_options=cfg["bedrock_aws_options"],
-            is_cross_provider=cfg["is_cross_provider"],
-        )
-
-    # Print role LLM configuration
-    logger.info(f"\n{'🎭 Role LLM Configuration:'}")
-    for spec in ROLES:
-        role_cfg = role_llm_configs[spec.name]
-        effective_max_async = (
-            role_cfg["max_async"]
-            if role_cfg["max_async"] is not None
-            else args.max_async
-        )
-        logger.info(
-            f"    ├─ {spec.name}: binding={role_cfg['binding']}, model={role_cfg['model']}, "
-            f"host={role_cfg['host']}, max_async={effective_max_async}"
-        )
 
     # Add routes
     app.include_router(
@@ -1600,6 +1624,12 @@ def create_app(args):
                                 "embedding_binding": "openai",
                                 "embedding_model": "text-embedding-ada-002",
                                 "workspace": "default",
+                                "storage_workspaces": {
+                                    "kv_storage": "default",
+                                    "doc_status_storage": "default",
+                                    "graph_storage": "default",
+                                    "vector_storage": "default",
+                                },
                             },
                             "auth_mode": "enabled",
                             "pipeline_busy": False,
@@ -1653,6 +1683,7 @@ def create_app(args):
                     "enable_llm_cache_for_extract": args.enable_llm_cache_for_extract,
                     "enable_llm_cache": args.enable_llm_cache,
                     "workspace": default_workspace,
+                    "storage_workspaces": _get_storage_workspaces(rag),
                     "max_graph_nodes": args.max_graph_nodes,
                     # Rerank configuration
                     "enable_rerank": rerank_model_func is not None,
@@ -1677,6 +1708,8 @@ def create_app(args):
                 "pipeline_busy": pipeline_status.get("busy", False),
                 "keyed_locks": keyed_lock_info,
                 "llm_queue_status": await rag.get_llm_queue_status(include_base=True),
+                "embedding_queue_status": await rag.get_embedding_queue_status(),
+                "rerank_queue_status": await rag.get_rerank_queue_status(),
                 "core_version": core_version,
                 "api_version": api_version_display,
                 "webui_title": webui_title,
