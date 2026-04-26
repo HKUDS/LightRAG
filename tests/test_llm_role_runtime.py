@@ -203,8 +203,14 @@ async def test_priority_queue_rejects_submissions_after_shutdown():
 
 
 def test_role_max_async_defaults_inherit_base(tmp_path, monkeypatch):
+    # Use the literal "None" string rather than delenv: storage modules
+    # (e.g. lightrag.kg.networkx_impl) are imported lazily during
+    # LightRAG() and re-run load_dotenv(override=False), which would
+    # restore deleted vars from .env. Setting "None" keeps the variable
+    # present so load_dotenv leaves it alone, and _optional_env_int
+    # interprets the string as Python None via special_none=True.
     for env_key in ROLE_MAX_ASYNC_ENV_KEYS:
-        monkeypatch.delenv(env_key, raising=False)
+        monkeypatch.setenv(env_key, "None")
 
     rag = _make_rag(tmp_path, llm_model_max_async=10)
 
@@ -219,8 +225,11 @@ def test_role_max_async_defaults_inherit_base(tmp_path, monkeypatch):
 
 
 def test_role_max_async_env_override_keeps_other_roles_inherited(tmp_path, monkeypatch):
+    # See note in test_role_max_async_defaults_inherit_base: lazy
+    # storage imports re-run load_dotenv, so we mark unwanted keys with
+    # "None" instead of deleting them.
     for env_key in ROLE_MAX_ASYNC_ENV_KEYS:
-        monkeypatch.delenv(env_key, raising=False)
+        monkeypatch.setenv(env_key, "None")
     monkeypatch.setenv("MAX_ASYNC_EXTRACT_LLM", "7")
 
     rag = _make_rag(tmp_path, llm_model_max_async=10)
@@ -702,6 +711,130 @@ async def test_aupdate_llm_role_config_logs_after_success(
     assert " - query: openai/old-model" in messages
     assert "max_async=2" in messages
     assert "timeout=180" in messages
+
+
+@pytest.mark.asyncio
+async def test_aupdate_llm_role_config_metadata_without_builder_raises(tmp_path):
+    """Pin down the public-API contract: updating any metadata field
+    (binding/model/host/api_key/provider_options) without a registered
+    builder and without an explicit model_func must fail loudly with a
+    ValueError. State must be intact so the caller can recover."""
+    rag = _make_rag(tmp_path)
+    original_wrapped = rag.role_llm_funcs["query"]
+    original_metadata = dict(rag._role_llm_states["query"].metadata)
+
+    with pytest.raises(ValueError, match="Runtime role builder is not configured"):
+        await rag.aupdate_llm_role_config("query", binding="openai")
+
+    assert rag.role_llm_funcs["query"] is original_wrapped
+    assert rag._role_llm_states["query"].metadata == original_metadata
+    assert await rag.role_llm_funcs["query"]("ping") == "base"
+
+
+@pytest.mark.asyncio
+async def test_aupdate_llm_role_config_rejects_non_callable_model_func(tmp_path):
+    """model_func type check must reject non-callables before any state
+    mutation happens."""
+    rag = _make_rag(tmp_path)
+    original_wrapped = rag.role_llm_funcs["query"]
+
+    with pytest.raises(TypeError, match="model_func must be callable"):
+        await rag.aupdate_llm_role_config("query", model_func="not-a-func")
+
+    assert rag.role_llm_funcs["query"] is original_wrapped
+    assert await rag.role_llm_funcs["query"]("ping") == "base"
+
+
+@pytest.mark.asyncio
+async def test_aupdate_llm_role_config_rejects_unknown_role(tmp_path):
+    """Typos in the role name must surface as ValueError, not KeyError,
+    via the shared _normalize_llm_role guard."""
+    rag = _make_rag(tmp_path)
+
+    with pytest.raises(ValueError, match="Invalid LLM role"):
+        await rag.aupdate_llm_role_config("qurey", max_async=2)
+
+
+@pytest.mark.asyncio
+async def test_aupdate_llm_role_config_rolls_back_and_keeps_old_wrapped(tmp_path):
+    """When the builder raises, the async path must roll state back AND
+    skip the retired-wrapper shutdown — the swap effectively never
+    happened, so the old queue must remain live and accept new work."""
+
+    async def query_func(*args, **kwargs):
+        return "old"
+
+    rag = _make_rag(tmp_path, query_llm_model_func=query_func)
+    rag.set_role_llm_metadata(
+        "query",
+        binding="openai",
+        model="base-model",
+        host="https://base",
+    )
+
+    original_wrapped = rag.role_llm_funcs["query"]
+    original_raw = rag._role_llm_states["query"].raw_func
+    original_metadata = dict(rag._role_llm_states["query"].metadata)
+
+    def failing_builder(_role, _meta):
+        raise RuntimeError("builder boom")
+
+    rag.register_role_llm_builder(failing_builder)
+
+    with pytest.raises(RuntimeError, match="builder boom"):
+        await rag.aupdate_llm_role_config(
+            "query",
+            binding="gemini",
+            model="new-model",
+        )
+
+    assert rag.role_llm_funcs["query"] is original_wrapped
+    assert rag._role_llm_states["query"].raw_func is original_raw
+    assert rag._role_llm_states["query"].metadata == original_metadata
+    # Critical: old wrapper was NOT shut down — it still serves calls.
+    assert await rag.role_llm_funcs["query"]("ping") == "old"
+
+
+@pytest.mark.asyncio
+async def test_aupdate_llm_role_config_drain_timeout_does_not_propagate(
+    tmp_path, monkeypatch, caplog, lightrag_logger_propagating
+):
+    """If the retired queue drain hits its timeout, the underlying
+    shutdown falls through to forced cancellation. aupdate must absorb
+    that — no TimeoutError leaking to the caller — so config swaps stay
+    bounded even with a deep backlog of slow LLM calls."""
+    started = asyncio.Event()
+
+    async def stuck_func(*args, **kwargs):
+        started.set()
+        await asyncio.sleep(60)
+        return "never"
+
+    async def new_func(*args, **kwargs):
+        return "new"
+
+    rag = _make_rag(tmp_path, query_llm_model_func=stuck_func)
+
+    async def fast_shutdown(_self, wrapped_func):
+        shutdown = getattr(wrapped_func, "shutdown", None)
+        if callable(shutdown):
+            await shutdown(graceful=True, timeout=0.05)
+
+    monkeypatch.setattr(LightRAG, "_shutdown_llm_wrapper", fast_shutdown)
+
+    in_flight = asyncio.create_task(rag.role_llm_funcs["query"]("hold"))
+    await started.wait()
+
+    with caplog.at_level("WARNING", logger="lightrag"):
+        await rag.aupdate_llm_role_config("query", model_func=new_func)
+
+    with pytest.raises(asyncio.CancelledError):
+        await in_flight
+
+    assert await rag.role_llm_funcs["query"]("now") == "new"
+    assert any(
+        "Graceful drain timed out" in record.getMessage() for record in caplog.records
+    )
 
 
 @pytest.mark.asyncio
