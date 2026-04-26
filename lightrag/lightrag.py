@@ -1459,6 +1459,10 @@ class LightRAG:
     def _build_role_llm_cache_identity(
         self, role: str, state: _RoleLLMState | None
     ) -> dict[str, Any]:
+        # `state` is None during the first _build_global_config() call from
+        # __post_init__ — role builders have not run yet, so metadata is empty
+        # and we fall back to self.llm_model_name. Once roles are initialized
+        # or aupdate_llm_role_config() runs, metadata always carries `model`.
         metadata = state.metadata if state is not None else {}
         return {
             "role": role,
