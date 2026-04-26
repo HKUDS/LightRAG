@@ -79,12 +79,16 @@ export type LightragStatus = {
     rerank_binding?: string | null
     rerank_model?: string | null
     rerank_binding_host?: string | null
+    rerank_max_async?: number
+    rerank_timeout?: number
     summary_language: string
     force_llm_summary_on_merge: boolean
     max_parallel_insert: number
     max_async: number
+    llm_timeout?: number
     embedding_func_max_async: number
     embedding_batch_num: number
+    embedding_timeout?: number
     cosine_threshold: number
     min_rerank_score: number
     related_chunk_number: number
