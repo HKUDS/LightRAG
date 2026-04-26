@@ -43,6 +43,41 @@ async def test_use_llm_func_with_cache_partitions_cache_by_response_format():
 
 @pytest.mark.offline
 @pytest.mark.asyncio
+async def test_use_llm_func_with_cache_partitions_cache_by_llm_identity():
+    cache = _FakeKVStorage()
+    llm_func = AsyncMock(side_effect=["model-a", "model-b"])
+
+    first_result, _ = await use_llm_func_with_cache(
+        "same prompt",
+        llm_func,
+        llm_response_cache=cache,
+        llm_cache_identity={
+            "role": "query",
+            "binding": "openai",
+            "model": "model-a",
+            "host": "https://api.example.com/v1",
+        },
+    )
+    second_result, _ = await use_llm_func_with_cache(
+        "same prompt",
+        llm_func,
+        llm_response_cache=cache,
+        llm_cache_identity={
+            "role": "query",
+            "binding": "openai",
+            "model": "model-b",
+            "host": "https://api.example.com/v1",
+        },
+    )
+
+    assert first_result == "model-a"
+    assert second_result == "model-b"
+    assert llm_func.await_count == 2
+    assert len(cache._store) == 2
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
 async def test_use_llm_func_with_cache_rejects_json_schema_response_format():
     llm_func = AsyncMock()
 

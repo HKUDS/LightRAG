@@ -545,6 +545,32 @@ async def test_aupdate_llm_role_config_with_builder_drains_old_queue(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_aupdate_llm_role_config_updates_cache_identity(tmp_path):
+    async def query_func(*_args, **_kwargs):
+        return "query"
+
+    rag = _make_rag(tmp_path)
+    rag.register_role_llm_builder(lambda _role, _meta: (query_func, {}))
+
+    await rag.aupdate_llm_role_config(
+        "query",
+        binding="openai",
+        model="gpt-cache-test",
+        host="https://api.example.com/v1",
+    )
+
+    identity = rag._build_global_config()["llm_cache_identities"]["query"]
+
+    assert identity == {
+        "role": "query",
+        "binding": "openai",
+        "model": "gpt-cache-test",
+        "host": "https://api.example.com/v1",
+    }
+    await rag.wait_for_retired_llm_queues()
+
+
+@pytest.mark.asyncio
 async def test_update_llm_role_config_with_builder_metadata(tmp_path):
     built_calls = []
 

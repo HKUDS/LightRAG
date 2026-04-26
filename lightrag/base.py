@@ -145,10 +145,18 @@ class QueryParam:
     history_turns: int = int(os.getenv("HISTORY_TURNS", str(DEFAULT_HISTORY_TURNS)))
     """Number of complete conversation turns (user-assistant pairs) to consider in the response context."""
 
+    # TODO(v1.5.0): remove model_func together with the override branches in
+    # operate.py (_warn_deprecated_query_model_func call sites) and the
+    # `model_func_override` path in utils.get_llm_cache_identity.
     model_func: Callable[..., object] | None = None
-    """Optional override for the LLM model function to use for this specific query.
-    If provided, this will be used instead of the global model function.
-    This allows using different models for different query modes.
+    """Deprecated optional override for the LLM model function.
+    Use role_llm_configs at initialization or LightRAG.aupdate_llm_role_config() /
+    LightRAG.update_llm_role_config() for runtime role LLM changes instead.
+    Kept for backward compatibility with direct Python callers.
+
+    Note: when set, the LLM cache key collapses to a single "override" identity,
+    so swapping the override across calls will reuse stale cached responses.
+    Use aupdate_llm_role_config() for cache-correct model swaps.
     """
 
     user_prompt: str | None = None

@@ -13,6 +13,7 @@ def _clear_bedrock_auth_env(monkeypatch):
         "LLM_BINDING",
         "EMBEDDING_BINDING",
         "QUERY_LLM_BINDING",
+        "QUERY_LLM_BINDING_API_KEY",
         "AWS_ACCESS_KEY_ID",
         "AWS_SECRET_ACCESS_KEY",
         "AWS_SESSION_TOKEN",
