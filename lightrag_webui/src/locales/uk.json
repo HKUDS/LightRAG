@@ -289,7 +289,7 @@
       "inputDirectory": "Вхідна директорія",
       "otherSettings": "Інші налаштування",
       "summarySettings": "Налаштування резюме",
-      "llmConfig": "Конфігурація LLM",
+      "llmConfig": "Конфігурація моделі",
       "llmBinding": "Прив'язка LLM",
       "llmBindingHost": "Кінцева точка LLM",
       "llmModel": "Модель LLM",

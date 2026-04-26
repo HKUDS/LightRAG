@@ -289,7 +289,7 @@
       "inputDirectory": "Répertoire d'entrée",
       "otherSettings": "Autres paramètres",
       "summarySettings": "Paramètres de résumé",
-      "llmConfig": "Configuration du modèle de langage",
+      "llmConfig": "Configuration du modèle",
       "llmBinding": "Liaison du modèle de langage",
       "llmBindingHost": "Point de terminaison LLM",
       "llmModel": "Modèle de langage",

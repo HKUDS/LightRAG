@@ -289,7 +289,7 @@
       "inputDirectory": "Input Directory",
       "otherSettings": "Other Settings",
       "summarySettings": "Summary Settings",
-      "llmConfig": "LLM Configuration",
+      "llmConfig": "Model Configuration",
       "llmBinding": "LLM Binding",
       "llmBindingHost": "LLM Endpoint",
       "llmModel": "LLM Model",

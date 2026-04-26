@@ -289,7 +289,7 @@
       "inputDirectory": "دليل الإدخال",
       "otherSettings": "إعدادات أخرى",
       "summarySettings": "إعدادات الملخص",
-      "llmConfig": "تكوين نموذج اللغة الكبير",
+      "llmConfig": "تكوين النموذج",
       "llmBinding": "ربط نموذج اللغة الكبير",
       "llmBindingHost": "نقطة نهاية نموذج اللغة الكبير",
       "llmModel": "نموذج اللغة الكبير",

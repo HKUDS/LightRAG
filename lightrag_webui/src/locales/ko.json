@@ -289,7 +289,7 @@
       "inputDirectory": "입력 디렉토리",
       "otherSettings": "기타 설정",
       "summarySettings": "요약 설정",
-      "llmConfig": "LLM 구성",
+      "llmConfig": "모델 구성",
       "llmBinding": "LLM 바인딩",
       "llmBindingHost": "LLM 엔드포인트",
       "llmModel": "LLM 모델",
