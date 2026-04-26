@@ -98,6 +98,10 @@ DEFAULT_TIMEOUT = 300
 DEFAULT_LLM_TIMEOUT = 180
 DEFAULT_EMBEDDING_TIMEOUT = 30
 
+# Rerank async / timeout defaults (fall back to base LLM defaults when env unset)
+DEFAULT_RERANK_MAX_ASYNC = DEFAULT_MAX_ASYNC
+DEFAULT_RERANK_TIMEOUT = DEFAULT_LLM_TIMEOUT
+
 # Logging configuration defaults
 DEFAULT_LOG_MAX_BYTES = 10485760  # Default 10MB
 DEFAULT_LOG_BACKUP_COUNT = 5  # Default 5 backups

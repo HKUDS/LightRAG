@@ -43,6 +43,7 @@ from lightrag.constants import (
     DEFAULT_OLLAMA_MODEL_NAME,
     DEFAULT_OLLAMA_MODEL_TAG,
     DEFAULT_RERANK_BINDING,
+    DEFAULT_LLM_TIMEOUT,
 )
 
 # use the .env that is inside the current folder
@@ -572,6 +573,17 @@ def parse_args() -> argparse.Namespace:
     # Min rerank score configuration
     args.min_rerank_score = get_env_value(
         "MIN_RERANK_SCORE", DEFAULT_MIN_RERANK_SCORE, float
+    )
+
+    # Rerank async/timeout configuration (independent from base LLM)
+    # When unset, falls back to MAX_ASYNC / LLM_TIMEOUT
+    args.rerank_max_async = get_env_value(
+        "MAX_ASYNC_RERANK_LLM", args.max_async, int
+    )
+    args.rerank_timeout = get_env_value(
+        "RERANK_TIMEOUT",
+        get_env_value("LLM_TIMEOUT", DEFAULT_LLM_TIMEOUT, int),
+        int,
     )
 
     # Query configuration

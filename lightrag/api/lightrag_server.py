@@ -1454,6 +1454,8 @@ def create_app(args):
             enable_llm_cache_for_entity_extract=args.enable_llm_cache_for_extract,
             enable_llm_cache=args.enable_llm_cache,
             rerank_model_func=rerank_model_func,
+            rerank_model_max_async=args.rerank_max_async,
+            default_rerank_timeout=args.rerank_timeout,
             max_parallel_insert=args.max_parallel_insert,
             max_graph_nodes=args.max_graph_nodes,
             addon_params=addon_params,
@@ -1692,6 +1694,8 @@ def create_app(args):
                     "rerank_binding_host": args.rerank_binding_host
                     if rerank_model_func
                     else None,
+                    "rerank_max_async": args.rerank_max_async,
+                    "rerank_timeout": args.rerank_timeout,
                     # Environment variable status (requested configuration)
                     "summary_language": args.summary_language,
                     "force_llm_summary_on_merge": args.force_llm_summary_on_merge,

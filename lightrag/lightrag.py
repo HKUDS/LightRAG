@@ -760,6 +760,28 @@ class LightRAG:
     rerank_model_func: Callable[..., object] | None = field(default=None)
     """Function for reranking retrieved documents. All rerank configurations (model name, API keys, top_k, etc.) should be included in this function. Optional."""
 
+    rerank_model_max_async: int = field(
+        default=int(
+            os.getenv(
+                "MAX_ASYNC_RERANK_LLM",
+                os.getenv("MAX_ASYNC", DEFAULT_MAX_ASYNC),
+            )
+        )
+    )
+    """Maximum number of concurrent rerank calls.
+    Falls back to MAX_ASYNC when MAX_ASYNC_RERANK_LLM is unset."""
+
+    default_rerank_timeout: int = field(
+        default=int(
+            os.getenv(
+                "RERANK_TIMEOUT",
+                os.getenv("LLM_TIMEOUT", DEFAULT_LLM_TIMEOUT),
+            )
+        )
+    )
+    """Rerank request timeout in seconds.
+    Falls back to LLM_TIMEOUT when RERANK_TIMEOUT is unset."""
+
     min_rerank_score: float = field(
         default=get_env_value("MIN_RERANK_SCORE", DEFAULT_MIN_RERANK_SCORE, float)
     )
@@ -1520,8 +1542,8 @@ class LightRAG:
 
         if self.rerank_model_func is not None:
             self.rerank_model_func = priority_limit_async_func_call(
-                self.llm_model_max_async,
-                llm_timeout=self.default_llm_timeout,
+                self.rerank_model_max_async,
+                llm_timeout=self.default_rerank_timeout,
                 queue_name="Rerank func",
             )(self.rerank_model_func)
 
