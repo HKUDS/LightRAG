@@ -13,6 +13,11 @@ venv/
 
 # Enviroment Variable Files
 .env
+.env.backup.*
+
+# Generated Docker Compose files (output of setup wizard)
+docker-compose.*.yml
+!docker-compose.podman.yml
 
 # Build / Distribution
 dist/
@@ -50,6 +55,9 @@ output/
 rag_storage/
 data/
 
+# Runtime-provided entity type prompt profiles (keep sample files only)
+prompts/entity_type/
+
 # Evaluation results
 lightrag/evaluation/results/
 
@@ -62,7 +70,7 @@ ignore_this.txt
 # Project-specific files
 /dickens*/
 /book.txt
-download_models_hf.py
+/ag2_demo_workdir/
 
 # Frontend build output (built during PyPI release)
 /lightrag/api/webui/
@@ -74,3 +82,9 @@ download_models_hf.py
 memory-bank
 .claude/CLAUDE.md
 .claude/
+
+# Claude Code
+CLAUDE.md
+
+# Google Jules
+.jules/

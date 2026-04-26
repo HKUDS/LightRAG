@@ -8,6 +8,7 @@ from lightrag.base import (
     DocStatusStorage,
 )
 from lightrag.utils import (
+    _cooperative_yield,
     load_json,
     logger,
     write_json,
@@ -104,29 +105,41 @@ class JsonDocStatusStorage(DocStatusStorage):
         self, status: DocStatus
     ) -> dict[str, DocProcessingStatus]:
         """Get all documents with a specific status"""
+        return await self.get_docs_by_statuses([status])
+
+    async def get_docs_by_statuses(
+        self, statuses: list[DocStatus]
+    ) -> dict[str, DocProcessingStatus]:
+        """Get all documents matching any of the given statuses in a single pass.
+
+        Acquires the storage lock once and scans the in-memory dict once,
+        filtering against a set of status values.  More efficient than N separate
+        get_docs_by_status() calls, which would acquire the lock N times and scan
+        the data N times.
+        """
+        if not statuses:
+            return {}
+        status_values = {s.value for s in statuses}
         result = {}
         async with self._storage_lock:
             for k, v in self._data.items():
-                if v["status"] == status.value:
-                    try:
-                        # Make a copy of the data to avoid modifying the original
-                        data = v.copy()
-                        # Remove deprecated content field if it exists
-                        data.pop("content", None)
-                        # If file_path is not in data, use document id as file path
-                        if "file_path" not in data:
-                            data["file_path"] = "no-file-path"
-                        # Ensure new fields exist with default values
-                        if "metadata" not in data:
-                            data["metadata"] = {}
-                        if "error_msg" not in data:
-                            data["error_msg"] = None
-                        result[k] = DocProcessingStatus(**data)
-                    except KeyError as e:
-                        logger.error(
-                            f"[{self.workspace}] Missing required field for document {k}: {e}"
-                        )
-                        continue
+                if v["status"] not in status_values:
+                    continue
+                try:
+                    data = v.copy()
+                    data.pop("content", None)
+                    if not data.get("file_path"):
+                        data["file_path"] = "no-file-path"
+                    if "metadata" not in data:
+                        data["metadata"] = {}
+                    if "error_msg" not in data:
+                        data["error_msg"] = None
+                    result[k] = DocProcessingStatus(**data)
+                except (KeyError, TypeError) as e:
+                    logger.error(
+                        f"[{self.workspace}] Missing required field for document {k}: {e}"
+                    )
+                    continue
         return result
 
     async def get_docs_by_track_id(
@@ -142,8 +155,8 @@ class JsonDocStatusStorage(DocStatusStorage):
                         data = v.copy()
                         # Remove deprecated content field if it exists
                         data.pop("content", None)
-                        # If file_path is not in data, use document id as file path
-                        if "file_path" not in data:
+                        # Normalize missing or null file_path
+                        if not data.get("file_path"):
                             data["file_path"] = "no-file-path"
                         # Ensure new fields exist with default values
                         if "metadata" not in data:
@@ -196,11 +209,13 @@ class JsonDocStatusStorage(DocStatusStorage):
         )
         if self._storage_lock is None:
             raise StorageNotInitializedError("JsonDocStatusStorage")
+        # Prepare data outside the lock: this only mutates the caller-supplied
+        # dict values, not shared storage state, so no lock needed here.
+        for i, (doc_id, doc_data) in enumerate(data.items(), start=1):
+            if "chunks_list" not in doc_data:
+                doc_data["chunks_list"] = []
+            await _cooperative_yield(i)
         async with self._storage_lock:
-            # Ensure chunks_list field exists for new documents
-            for doc_id, doc_data in data.items():
-                if "chunks_list" not in doc_data:
-                    doc_data["chunks_list"] = []
             self._data.update(data)
             await set_all_update_flags(self.namespace, workspace=self.workspace)
 
@@ -274,7 +289,7 @@ class JsonDocStatusStorage(DocStatusStorage):
                     # Prepare document data
                     data = doc_data.copy()
                     data.pop("content", None)
-                    if "file_path" not in data:
+                    if not data.get("file_path"):
                         data["file_path"] = "no-file-path"
                     if "metadata" not in data:
                         data["metadata"] = {}

@@ -94,8 +94,6 @@ async def anthropic_complete_if_cache(
     )
 
     messages: list[dict[str, Any]] = []
-    if system_prompt:
-        messages.append({"role": "system", "content": system_prompt})
     messages.extend(history_messages)
     messages.append({"role": "user", "content": prompt})
 
@@ -106,9 +104,11 @@ async def anthropic_complete_if_cache(
     verbose_debug(f"System prompt: {system_prompt}")
 
     try:
-        response = await anthropic_async_client.messages.create(
-            model=model, messages=messages, stream=True, **kwargs
-        )
+        create_params = {"model": model, "messages": messages, "stream": True, **kwargs}
+        if system_prompt:
+            create_params["system"] = system_prompt
+        response = await anthropic_async_client.messages.create(**create_params)
+
     except APIConnectionError as e:
         logger.error(f"Anthropic API Connection Error: {e}")
         raise
@@ -119,8 +119,19 @@ async def anthropic_complete_if_cache(
         logger.error(f"Anthropic API Timeout Error: {e}")
         raise
     except Exception as e:
+        body = getattr(e, "body", None)
+        request_id = getattr(e, "request_id", None)
+        req = getattr(e, "request", None)
+        extra_parts = []
+        if body:
+            extra_parts.append(f"Response body: {body}")
+        if request_id:
+            extra_parts.append(f"Request ID: {request_id}")
+        if req is not None:
+            extra_parts.append(f"Request URL: {req.url}")
+        extra = ("\n" + "\n".join(extra_parts)) if extra_parts else ""
         logger.error(
-            f"Anthropic API Call Failed,\nModel: {model},\nParams: {kwargs}, Got: {e}"
+            f"Anthropic API Call Failed,\nModel: {model},\nParams: {kwargs}, Got: {e}{extra}"
         )
         raise
 
@@ -129,7 +140,9 @@ async def anthropic_complete_if_cache(
             async for event in response:
                 content = (
                     event.delta.text
-                    if hasattr(event, "delta") and event.delta.text
+                    if hasattr(event, "delta")
+                    and hasattr(event.delta, "text")
+                    and event.delta.text
                     else None
                 )
                 if content is None:

@@ -714,7 +714,7 @@ def test_generate_concurrent() -> None:
 
             for i, result in enumerate(results):
                 if isinstance(result, Exception):
-                    error_messages.append(f"Request {i+1} failed: {str(result)}")
+                    error_messages.append(f"Request {i + 1} failed: {str(result)}")
                 else:
                     success_results.append((i + 1, result))
 

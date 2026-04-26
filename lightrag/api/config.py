@@ -3,6 +3,7 @@ Configs for the LightRAG API.
 """
 
 import os
+import re
 import argparse
 import logging
 from dotenv import load_dotenv
@@ -50,6 +51,7 @@ load_dotenv(dotenv_path=".env", override=False)
 
 
 ollama_server_infos = OllamaServerInfos()
+DEFAULT_TOKEN_SECRET = "lightrag-jwt-default-secret-key!"
 
 
 class DefaultRAGStorageConfig:
@@ -72,6 +74,17 @@ def get_default_host(binding_type: str) -> str:
     return default_hosts.get(
         binding_type, os.getenv("LLM_BINDING_HOST", "http://localhost:11434")
     )  # fallback to ollama if unknown
+
+
+def validate_auth_configuration(args: argparse.Namespace) -> None:
+    """Reject insecure JWT auth settings before the API starts."""
+    auth_accounts = (getattr(args, "auth_accounts", "") or "").strip()
+    token_secret = (getattr(args, "token_secret", "") or "").strip()
+
+    if auth_accounts and (not token_secret or token_secret == DEFAULT_TOKEN_SECRET):
+        raise ValueError(
+            "TOKEN_SECRET must be explicitly set to a non-default value when AUTH_ACCOUNTS is configured."
+        )
 
 
 def parse_args() -> argparse.Namespace:
@@ -267,59 +280,51 @@ def parse_args() -> argparse.Namespace:
         help="Enable DOCLING document loading engine (default: from env or DEFAULT)",
     )
 
-    # Conditionally add binding options defined in binding_options module
-    # This will add command line arguments for all binding options (e.g., --ollama-embedding-num_ctx)
-    # and corresponding environment variables (e.g., OLLAMA_EMBEDDING_NUM_CTX)
+    # Conditionally add binding-specific options (Ollama, OpenAI, Azure OpenAI, Gemini)
+    # This registers command line arguments (e.g., --openai-llm-temperature)
+    # and reads corresponding environment variables (e.g., OPENAI_LLM_TEMPERATURE)
+
+    # Determine LLM binding value consistently from command line or environment
+    llm_binding_value = None
     if "--llm-binding" in sys.argv:
         try:
             idx = sys.argv.index("--llm-binding")
-            if idx + 1 < len(sys.argv) and sys.argv[idx + 1] == "ollama":
-                OllamaLLMOptions.add_args(parser)
+            if idx + 1 < len(sys.argv) and not sys.argv[idx + 1].startswith("-"):
+                llm_binding_value = sys.argv[idx + 1]
         except IndexError:
             pass
-    elif os.environ.get("LLM_BINDING") == "ollama":
-        OllamaLLMOptions.add_args(parser)
 
+    # Fall back to environment variable using same function as argparse default
+    if llm_binding_value is None:
+        llm_binding_value = get_env_value("LLM_BINDING", "ollama")
+
+    # Add LLM binding options based on determined value
+    if llm_binding_value == "ollama":
+        OllamaLLMOptions.add_args(parser)
+    elif llm_binding_value in ["openai", "azure_openai"]:
+        OpenAILLMOptions.add_args(parser)
+    elif llm_binding_value == "gemini":
+        GeminiLLMOptions.add_args(parser)
+
+    # Determine embedding binding value consistently from command line or environment
+    embedding_binding_value = None
     if "--embedding-binding" in sys.argv:
         try:
             idx = sys.argv.index("--embedding-binding")
-            if idx + 1 < len(sys.argv):
-                if sys.argv[idx + 1] == "ollama":
-                    OllamaEmbeddingOptions.add_args(parser)
-                elif sys.argv[idx + 1] == "gemini":
-                    GeminiEmbeddingOptions.add_args(parser)
+            if idx + 1 < len(sys.argv) and not sys.argv[idx + 1].startswith("-"):
+                embedding_binding_value = sys.argv[idx + 1]
         except IndexError:
             pass
-    else:
-        env_embedding_binding = os.environ.get("EMBEDDING_BINDING")
-        if env_embedding_binding == "ollama":
-            OllamaEmbeddingOptions.add_args(parser)
-        elif env_embedding_binding == "gemini":
-            GeminiEmbeddingOptions.add_args(parser)
 
-    # Add OpenAI LLM options when llm-binding is openai or azure_openai
-    if "--llm-binding" in sys.argv:
-        try:
-            idx = sys.argv.index("--llm-binding")
-            if idx + 1 < len(sys.argv) and sys.argv[idx + 1] in [
-                "openai",
-                "azure_openai",
-            ]:
-                OpenAILLMOptions.add_args(parser)
-        except IndexError:
-            pass
-    elif os.environ.get("LLM_BINDING") in ["openai", "azure_openai"]:
-        OpenAILLMOptions.add_args(parser)
+    # Fall back to environment variable using same function as argparse default
+    if embedding_binding_value is None:
+        embedding_binding_value = get_env_value("EMBEDDING_BINDING", "ollama")
 
-    if "--llm-binding" in sys.argv:
-        try:
-            idx = sys.argv.index("--llm-binding")
-            if idx + 1 < len(sys.argv) and sys.argv[idx + 1] == "gemini":
-                GeminiLLMOptions.add_args(parser)
-        except IndexError:
-            pass
-    elif os.environ.get("LLM_BINDING") == "gemini":
-        GeminiLLMOptions.add_args(parser)
+    # Add embedding binding options based on determined value
+    if embedding_binding_value == "ollama":
+        OllamaEmbeddingOptions.add_args(parser)
+    elif embedding_binding_value == "gemini":
+        GeminiEmbeddingOptions.add_args(parser)
 
     args = parser.parse_args()
 
@@ -351,9 +356,6 @@ def parse_args() -> argparse.Namespace:
     if args.llm_binding == "openai-ollama":
         args.llm_binding = "openai"
         args.embedding_binding = "ollama"
-
-    # Ollama ctx_num
-    args.ollama_num_ctx = get_env_value("OLLAMA_NUM_CTX", 32768, int)
 
     args.llm_binding_host = get_env_value(
         "LLM_BINDING_HOST", get_default_host(args.llm_binding)
@@ -403,10 +405,14 @@ def parse_args() -> argparse.Namespace:
 
     # For JWT Auth
     args.auth_accounts = get_env_value("AUTH_ACCOUNTS", "")
-    args.token_secret = get_env_value("TOKEN_SECRET", "lightrag-jwt-default-secret")
-    args.token_expire_hours = get_env_value("TOKEN_EXPIRE_HOURS", 48, int)
-    args.guest_token_expire_hours = get_env_value("GUEST_TOKEN_EXPIRE_HOURS", 24, int)
+    args.token_secret = get_env_value("TOKEN_SECRET", None)
+    args.token_expire_hours = get_env_value("TOKEN_EXPIRE_HOURS", 48, float)
+    args.guest_token_expire_hours = get_env_value("GUEST_TOKEN_EXPIRE_HOURS", 24, float)
     args.jwt_algorithm = get_env_value("JWT_ALGORITHM", "HS256")
+
+    # Token auto-renewal configuration (sliding window expiration)
+    args.token_auto_renew = get_env_value("TOKEN_AUTO_RENEW", True, bool)
+    args.token_renew_threshold = get_env_value("TOKEN_RENEW_THRESHOLD", 0.5, float)
 
     # Rerank model configuration
     args.rerank_model = get_env_value("RERANK_MODEL", None)
@@ -455,9 +461,27 @@ def parse_args() -> argparse.Namespace:
         "EMBEDDING_TOKEN_LIMIT", None, int, special_none=True
     )
 
+    # File upload size limit (in bytes, None for unlimited)
+    # Default: 100MB (104857600 bytes)
+    args.max_upload_size = get_env_value(
+        "MAX_UPLOAD_SIZE", 104857600, int, special_none=True
+    )
+
     ollama_server_infos.LIGHTRAG_NAME = args.simulated_model_name
     ollama_server_infos.LIGHTRAG_TAG = args.simulated_model_tag
 
+    # Sanitize workspace: only alphanumeric characters and underscores are allowed
+    if args.workspace:
+        sanitized = re.sub(r"[^a-zA-Z0-9_]", "_", args.workspace)
+        if sanitized != args.workspace:
+            logging.warning(
+                f"Workspace name '{args.workspace}' contains invalid characters. "
+                f"It has been sanitized to '{sanitized}'. "
+                "Only alphanumeric characters and underscores are allowed."
+            )
+            args.workspace = sanitized
+
+    validate_auth_configuration(args)
     return args
 
 
@@ -467,7 +491,7 @@ def update_uvicorn_mode_config():
         original_workers = global_args.workers
         global_args.workers = 1
         # Log warning directly here
-        logging.warning(
+        logging.debug(
             f">> Forcing workers=1 in uvicorn mode(Ignoring workers={original_workers})"
         )
 
@@ -509,7 +533,9 @@ def initialize_config(args=None, force=False):
     if _initialized and not force:
         return _global_args
 
-    _global_args = args if args is not None else parse_args()
+    resolved_args = args if args is not None else parse_args()
+    validate_auth_configuration(resolved_args)
+    _global_args = resolved_args
     _initialized = True
     return _global_args
 
@@ -530,19 +556,44 @@ class _GlobalArgsProxy:
 
     This maintains backward compatibility with existing code while
     allowing programmatic control over initialization timing.
+
+    The proxy fully delegates to the underlying argparse.Namespace,
+    including support for vars() calls which is used by binding_options
+    to extract provider-specific configuration options.
     """
 
-    def __getattr__(self, name):
+    def __getattribute__(self, name):
+        """Override attribute access to support vars() and regular attribute access.
+
+        This method intercepts __dict__ access (used by vars()) and delegates
+        to the underlying _global_args namespace, ensuring binding options
+        can be properly extracted.
+        """
+        global _initialized, _global_args
+
+        # Handle __dict__ access for vars() support
+        if name == "__dict__":
+            if not _initialized:
+                initialize_config()
+            return vars(_global_args)
+
+        # Handle class-level attributes that should come from the proxy itself
+        if name in ("__class__", "__repr__", "__getattribute__", "__setattr__"):
+            return object.__getattribute__(self, name)
+
+        # Delegate all other attribute access to the underlying namespace
         if not _initialized:
             initialize_config()
         return getattr(_global_args, name)
 
     def __setattr__(self, name, value):
+        global _initialized, _global_args
         if not _initialized:
             initialize_config()
         setattr(_global_args, name, value)
 
     def __repr__(self):
+        global _initialized, _global_args
         if not _initialized:
             return "<GlobalArgsProxy: Not initialized>"
         return repr(_global_args)

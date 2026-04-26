@@ -138,7 +138,9 @@ async def lollms_model_complete(
     )
 
 
-@wrap_embedding_func_with_attrs(embedding_dim=1024, max_token_size=8192)
+@wrap_embedding_func_with_attrs(
+    embedding_dim=1024, max_token_size=8192, model_name="lollms_embedding_model"
+)
 async def lollms_embed(
     texts: List[str], embed_model=None, base_url="http://localhost:9600", **kwargs
 ) -> np.ndarray:

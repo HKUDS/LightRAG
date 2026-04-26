@@ -44,7 +44,8 @@ export const supportedFileTypes = {
   'text/plain': [
     '.txt',
     '.md',
-    '.rtf',  //# Rich Text Format
+    '.mdx', // # MDX (Markdown + JSX)
+    '.rtf', // # Rich Text Format
     '.odt', // # OpenDocument Text
     '.tex', // # LaTeX
     '.epub', // # Electronic Publication
@@ -63,7 +64,9 @@ export const supportedFileTypes = {
     '.bat', // # Batch files
     '.sh', // # Shell scripts
     '.c', // # C source code
+    '.h', // # C header
     '.cpp', // # C++ source code
+    '.hpp', // # C++ header
     '.py', // # Python source code
     '.java', // # Java source code
     '.js', // # JavaScript source code
@@ -73,7 +76,7 @@ export const supportedFileTypes = {
     '.rb', // # Ruby source code
     '.php', // # PHP source code
     '.css', // # Cascading Style Sheets
-    '.scss',  //# Sassy CSS
+    '.scss', // # Sassy CSS
     '.less'
   ],
   'application/pdf': ['.pdf'],

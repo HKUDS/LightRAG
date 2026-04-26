@@ -7,8 +7,17 @@ from typing import Any, cast
 from .base import DeletionResult
 from .kg.shared_storage import get_storage_keyed_lock
 from .constants import GRAPH_FIELD_SEP
-from .utils import compute_mdhash_id, logger
+from .utils import compute_mdhash_id, logger, make_relation_vdb_ids
 from .base import StorageNameSpace
+
+
+def _require_non_empty_description(
+    description: Any, *, operation: str, object_type: str
+) -> None:
+    if description is None or not str(description).strip():
+        raise ValueError(
+            f"{object_type.capitalize()} description cannot be empty for {operation} operation"
+        )
 
 
 async def _persist_graph_updates(
@@ -568,6 +577,11 @@ async def aedit_entity(
             - "failed": Merge operation failed
             - "not_attempted": No merge was attempted (normal update/rename)
     """
+    if "description" in updated_data:
+        _require_non_empty_description(
+            updated_data.get("description"), operation="edit", object_type="entity"
+        )
+
     new_entity_name = updated_data.get("entity_name", entity_name)
     is_renaming = new_entity_name != entity_name
 
@@ -737,6 +751,11 @@ async def aedit_relation(
     Returns:
         Dictionary containing updated relation information
     """
+    if "description" in updated_data:
+        _require_non_empty_description(
+            updated_data.get("description"), operation="edit", object_type="relation"
+        )
+
     # Normalize entity order for undirected graph (ensures consistent key generation)
     if source_entity > target_entity:
         source_entity, target_entity = target_entity, source_entity
@@ -921,6 +940,10 @@ async def acreate_entity(
     Returns:
         Dictionary containing created entity information
     """
+    _require_non_empty_description(
+        entity_data.get("description"), operation="create", object_type="entity"
+    )
+
     # Use keyed lock for entity to ensure atomic graph and vector db operations
     workspace = entities_vdb.global_config.get("workspace", "")
     namespace = f"{workspace}:GraphDB" if workspace else "GraphDB"
@@ -1035,6 +1058,10 @@ async def acreate_relation(
     Returns:
         Dictionary containing created relation information
     """
+    _require_non_empty_description(
+        relation_data.get("description"), operation="create", object_type="relation"
+    )
+
     # Use keyed lock for relation to ensure atomic graph and vector db operations
     workspace = relationships_vdb.global_config.get("workspace", "")
     namespace = f"{workspace}:GraphDB" if workspace else "GraphDB"
@@ -1408,6 +1435,7 @@ async def _merge_entities_impl(
                 "description": description,
                 "keywords": keywords,
                 "weight": weight,
+                "file_path": edge_data.get("file_path", ""),
             }
         }
         await relationships_vdb.upsert(relation_data_for_vdb)
@@ -1431,6 +1459,7 @@ async def _merge_entities_impl(
             "source_id": source_id,
             "description": description,
             "entity_type": entity_type,
+            "file_path": merged_entity_data.get("file_path", ""),
         }
     }
     await entities_vdb.upsert(entity_data_for_vdb)
@@ -1726,8 +1755,11 @@ async def get_relation_info(
 
     # Optional: Get vector database information
     if include_vector_data:
-        rel_id = compute_mdhash_id(src_entity + tgt_entity, prefix="rel-")
-        vector_data = await relationships_vdb.get_by_id(rel_id)
+        vector_data = None
+        for rel_id in make_relation_vdb_ids(src_entity, tgt_entity):
+            vector_data = await relationships_vdb.get_by_id(rel_id)
+            if vector_data is not None:
+                break
         result["vector_data"] = vector_data
 
     return result

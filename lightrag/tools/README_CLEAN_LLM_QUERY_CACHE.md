@@ -10,6 +10,7 @@ This tool cleans up LightRAG's LLM query cache from KV storage implementations. 
 2. **RedisKVStorage** - Redis database storage
 3. **PGKVStorage** - PostgreSQL database storage
 4. **MongoKVStorage** - MongoDB database storage
+5. **OpenSearchKVStorage** - OpenSearch index storage
 
 ## Cache Types
 
@@ -40,7 +41,7 @@ Examples:
 
 ## Prerequisites
 
-- The tool reads storage configuration from environment variables or `config.ini`
+- The tool reads storage configuration from environment variables
 - Ensure the target storage is properly configured and accessible
 - Backup important data before running cleanup operations
 
@@ -73,8 +74,9 @@ Supported KV Storage Types:
 [2] RedisKVStorage
 [3] PGKVStorage
 [4] MongoKVStorage
+[5] OpenSearchKVStorage
 
-Select storage type (1-4) (Press Enter to exit): 1
+Select storage type (1-5) (Press Enter to exit): 1
 ```
 
 **Note**: You can press Enter or type `0` at any prompt to exit gracefully.
@@ -199,6 +201,16 @@ Pattern 2/8: Deleted 567 records ✓
 Total deleted: 7,605 records
 ```
 
+**OpenSearchKVStorage Example:**
+```
+=== Starting Cleanup ===
+💡 Processing 1,000 records at a time from OpenSearchKVStorage
+
+Batch 1/8: ████░░░░░░░░░░░░░░░░ 1,000/7,605 (13.1%) ✓
+Batch 2/8: ████████░░░░░░░░░░░░ 2,000/7,605 (26.3%) ✓
+...
+```
+
 #### 7. Review Cleanup Report
 
 The tool provides a comprehensive final report:
@@ -291,6 +303,7 @@ The tool retrieves workspace in the following priority order:
    - PGKVStorage: `POSTGRES_WORKSPACE`
    - MongoKVStorage: `MONGODB_WORKSPACE`
    - RedisKVStorage: `REDIS_WORKSPACE`
+   - OpenSearchKVStorage: `OPENSEARCH_WORKSPACE`
 
 2. **Generic workspace environment variable**
    - `WORKSPACE`
@@ -354,6 +367,12 @@ WHERE id LIKE 'mix:query:%' OR id LIKE 'mix:keywords:%'
 {"_id": {"$regex": "^mix:query:"}}
 ```
 
+**OpenSearchKVStorage:**
+```python
+# Scan raw hits, then match cache key prefixes in Python
+if hit["_id"].startswith("mix:query:"):
+```
+
 ## Error Handling & Resilience
 
 The tool implements comprehensive error tracking:
@@ -409,8 +428,7 @@ After cleanup completes, a detailed report includes:
 The tool supports multiple configuration methods with the following priority:
 
 1. **Environment variables** (highest priority)
-2. **config.ini file** (medium priority)
-3. **Default values** (lowest priority)
+2. **Default values** (lowest priority)
 
 ### Environment Variable Configuration
 
@@ -459,27 +477,14 @@ MONGO_URI=mongodb://root:root@localhost:27017/
 MONGO_DATABASE=LightRAG
 ```
 
-### config.ini Configuration
+#### OpenSearchKVStorage
 
-Alternatively, create a `config.ini` file in the project root:
-
-```ini
-[redis]
-uri = redis://localhost:6379
-
-[postgres]
-host = localhost
-port = 5432
-user = postgres
-password = yourpassword
-database = lightrag
-
-[mongodb]
-uri = mongodb://root:root@localhost:27017/
-database = LightRAG
+```bash
+OPENSEARCH_HOSTS=localhost:9200
+OPENSEARCH_WORKSPACE=search_space
 ```
 
-**Note**: Environment variables take precedence over config.ini settings.
+If environment variables are not provided, the tool falls back to built-in defaults where available.
 
 ## Troubleshooting
 
@@ -487,7 +492,7 @@ database = LightRAG
 ```
 ⚠️  Warning: Missing environment variables: POSTGRES_USER, POSTGRES_PASSWORD
 ```
-**Solution**: Add missing variables to your `.env` file or configure in `config.ini`
+**Solution**: Add missing variables to your `.env` file
 
 ### Connection Failed
 ```

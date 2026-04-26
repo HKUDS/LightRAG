@@ -52,7 +52,7 @@ def check_env_file():
 
         # Check if running in an interactive terminal
         if sys.stdin.isatty():
-            response = input("Do you want to continue? (yes/no): ")
+            response = input("Do you want to continue? (yes/NO): ")
             if response.lower() != "yes":
                 ASCIIColors.red("Test program cancelled.")
                 return False
@@ -128,6 +128,34 @@ async def initialize_graph_storage():
     except Exception as e:
         ASCIIColors.red(f"Error: Failed to initialize {graph_storage_type}: {str(e)}")
         return None
+
+
+@pytest.fixture
+async def storage():
+    """
+    Pytest fixture for graph storage integration tests.
+
+    Each test gets an initialized storage instance with a clean graph state.
+    """
+    load_dotenv(dotenv_path=".env", override=False)
+
+    if not check_env_file():
+        pytest.skip(".env file not available for graph storage integration tests")
+
+    storage_instance = await initialize_graph_storage()
+    if storage_instance is None:
+        pytest.skip("Graph storage backend is not configured for integration tests")
+
+    try:
+        await storage_instance.drop()
+        yield storage_instance
+    finally:
+        try:
+            await storage_instance.drop()
+        except Exception as exc:
+            ASCIIColors.yellow(f"Warning: failed to drop test graph data: {exc}")
+        finally:
+            await storage_instance.finalize()
 
 
 @pytest.mark.integration
@@ -992,6 +1020,213 @@ async def test_graph_special_characters(storage):
 
 @pytest.mark.integration
 @pytest.mark.requires_db
+async def test_graph_string_escaping_regressions(storage):
+    """
+    Regression coverage for entity IDs and properties that require Cypher escaping.
+
+    Covers quoted and backslash-heavy node IDs across single-node reads, batch reads,
+    edge retrieval, and delete/remove write paths.
+    """
+    center_id = 'Danh mục "bài toán lớn"'
+    backslash_id = r"C:\Program Files\LightRAG"
+    mixed_id = 'Path "C:\\RAG\\docs"'
+    single_quote_id = "Node with 'single quotes'"
+
+    node_payloads = {
+        center_id: {
+            "entity_id": center_id,
+            "description": 'Quoted entity with JSON-ish payload {"path": "C:\\\\temp"}',
+            "keywords": 'quotes,"double quotes",unicode',
+            "entity_type": "Regression Node",
+        },
+        backslash_id: {
+            "entity_id": backslash_id,
+            "description": r"Windows path C:\Program Files\LightRAG\bin",
+            "keywords": r"paths,C:\temp,backslashes",
+            "entity_type": "Regression Node",
+        },
+        mixed_id: {
+            "entity_id": mixed_id,
+            "description": 'Mixed quotes "and" slashes \\ in one entity id',
+            "keywords": r'mixed,"quoted",C:\RAG\docs',
+            "entity_type": "Regression Node",
+        },
+        single_quote_id: {
+            "entity_id": single_quote_id,
+            "description": "Single quotes stay literal in entity identifiers",
+            "keywords": "single quotes,escaping",
+            "entity_type": "Regression Node",
+        },
+    }
+
+    for node_id, payload in node_payloads.items():
+        await storage.upsert_node(node_id, payload)
+
+    edge_payloads = {
+        (center_id, backslash_id): {
+            "relationship": r'contains "path"\edge',
+            "weight": 1.0,
+            "description": r'Links "quoted" title to C:\Program Files\LightRAG',
+        },
+        (center_id, mixed_id): {
+            "relationship": 'references "docs"',
+            "weight": 0.8,
+            "description": r'Contains both "quotes" and \\backslashes\\',
+        },
+        (center_id, single_quote_id): {
+            "relationship": "mentions 'alias'",
+            "weight": 0.6,
+            "description": 'Single quote entity linked to "quoted" center node',
+        },
+    }
+
+    for (src_id, tgt_id), payload in edge_payloads.items():
+        await storage.upsert_edge(src_id, tgt_id, payload)
+
+    for node_id, payload in node_payloads.items():
+        node = await storage.get_node(node_id)
+        assert node is not None, f"Expected node {node_id!r} to round-trip"
+        assert node["entity_id"] == node_id
+        assert node["description"] == payload["description"]
+
+    nodes_batch = await storage.get_nodes_batch(list(node_payloads))
+    assert set(nodes_batch) == set(node_payloads)
+    for node_id, payload in node_payloads.items():
+        assert nodes_batch[node_id]["entity_id"] == node_id
+        assert nodes_batch[node_id]["description"] == payload["description"]
+
+    degrees = await storage.node_degrees_batch(list(node_payloads))
+    assert degrees[center_id] == 3
+    assert degrees[backslash_id] == 1
+    assert degrees[mixed_id] == 1
+    assert degrees[single_quote_id] == 1
+
+    # Helper: undirected graph has no canonical direction, so accept either (a,b) or (b,a).
+    def connects(edges, a, b):
+        return any(
+            (src == a and tgt == b) or (src == b and tgt == a) for src, tgt in edges
+        )
+
+    center_edges = await storage.get_node_edges(center_id)
+    assert center_edges is not None
+    assert connects(
+        center_edges, center_id, backslash_id
+    ), f"center_edges should contain connection to {backslash_id}"
+    assert connects(
+        center_edges, center_id, mixed_id
+    ), f"center_edges should contain connection to {mixed_id}"
+    assert connects(
+        center_edges, center_id, single_quote_id
+    ), f"center_edges should contain connection to {single_quote_id}"
+
+    batch_edges = await storage.get_nodes_edges_batch(
+        [center_id, mixed_id, backslash_id, single_quote_id]
+    )
+    assert set(batch_edges) == {center_id, mixed_id, backslash_id, single_quote_id}
+    assert connects(batch_edges[center_id], center_id, backslash_id)
+    assert connects(batch_edges[center_id], center_id, mixed_id)
+    assert connects(batch_edges[center_id], center_id, single_quote_id)
+    assert connects(batch_edges[mixed_id], center_id, mixed_id)
+    assert connects(batch_edges[backslash_id], center_id, backslash_id)
+    assert connects(batch_edges[single_quote_id], center_id, single_quote_id)
+
+    # --- Undirected property: get_edge in both directions ---
+    print("\n== Verifying undirected property: get_edge forward and reverse")
+    for (src_id, tgt_id), payload in edge_payloads.items():
+        fwd = await storage.get_edge(src_id, tgt_id)
+        rev = await storage.get_edge(tgt_id, src_id)
+        assert (
+            fwd is not None
+        ), f"get_edge({src_id!r}, {tgt_id!r}) returned None after insertion"
+        assert rev is not None, (
+            f"get_edge({tgt_id!r}, {src_id!r}) returned None — "
+            f"storage is not treating the edge as undirected"
+        )
+        assert fwd["relationship"] == payload["relationship"]
+        assert fwd["description"] == payload["description"]
+        assert rev["relationship"] == fwd["relationship"], (
+            f"Reverse get_edge returned different relationship for "
+            f"({src_id!r}, {tgt_id!r})"
+        )
+        assert rev["description"] == fwd["description"], (
+            f"Reverse get_edge returned different description for "
+            f"({src_id!r}, {tgt_id!r})"
+        )
+    print(
+        "Undirected property verification successful: "
+        "get_edge returns consistent data in both directions"
+    )
+
+    # --- Undirected property: has_edge in both directions ---
+    print("\n== Verifying undirected property: has_edge forward and reverse")
+    for src_id, tgt_id in edge_payloads:
+        assert await storage.has_edge(
+            src_id, tgt_id
+        ), f"has_edge({src_id!r}, {tgt_id!r}) returned False after insertion"
+        assert await storage.has_edge(tgt_id, src_id), (
+            f"has_edge({tgt_id!r}, {src_id!r}) returned False — "
+            f"storage is not treating the edge as undirected"
+        )
+    print(
+        "Undirected property verification successful: "
+        "has_edge returns True in both directions"
+    )
+
+    # --- Undirected property: get_edges_batch forward and reverse ---
+    print("\n== Verifying undirected property: get_edges_batch forward and reverse")
+    forward_edges = await storage.get_edges_batch(
+        [{"src": src_id, "tgt": tgt_id} for src_id, tgt_id in edge_payloads]
+    )
+    reverse_edges = await storage.get_edges_batch(
+        [{"src": tgt_id, "tgt": src_id} for src_id, tgt_id in edge_payloads]
+    )
+
+    assert set(forward_edges) == set(edge_payloads)
+    for pair, payload in edge_payloads.items():
+        assert forward_edges[pair]["relationship"] == payload["relationship"]
+        assert forward_edges[pair]["description"] == payload["description"]
+        reverse_pair = (pair[1], pair[0])
+        assert (
+            reverse_pair in reverse_edges
+        ), f"get_edges_batch did not return reverse pair {reverse_pair!r}"
+        assert reverse_edges[reverse_pair]["relationship"] == payload["relationship"]
+        assert reverse_edges[reverse_pair]["description"] == payload["description"]
+    print(
+        "Undirected property verification successful: "
+        "get_edges_batch returns consistent data in both directions"
+    )
+
+    # --- Undirected property: edge deletion removes both directions ---
+    print("\n== Verifying undirected property: edge deletion removes both directions")
+    await storage.remove_edges([(center_id, mixed_id)])
+    assert (
+        await storage.get_edge(center_id, mixed_id) is None
+    ), f"Forward edge ({center_id!r} -> {mixed_id!r}) should be deleted"
+    assert await storage.get_edge(mixed_id, center_id) is None, (
+        f"Reverse edge ({mixed_id!r} -> {center_id!r}) should also be deleted "
+        f"— storage is not treating deletion as undirected"
+    )
+    remaining_center_edges = await storage.get_node_edges(center_id)
+    assert remaining_center_edges is not None
+    assert not connects(
+        remaining_center_edges, center_id, mixed_id
+    ), "Edge between center and mixed_id should have been removed"
+    print(
+        "Undirected property verification successful: "
+        "deleting an edge removes it in both directions"
+    )
+
+    await storage.delete_node(single_quote_id)
+    assert await storage.get_node(single_quote_id) is None
+
+    await storage.remove_nodes([center_id, backslash_id])
+    assert await storage.get_node(center_id) is None
+    assert await storage.get_node(backslash_id) is None
+    assert await storage.get_node(mixed_id) is not None
+
+
+@pytest.mark.integration
+@pytest.mark.requires_db
 async def test_graph_undirected_property(storage):
     """
     Specifically test the undirected graph property of the storage:
@@ -1239,6 +1474,12 @@ async def main():
         return
 
     try:
+
+        async def reset_storage(test_name: str) -> None:
+            ASCIIColors.yellow(f"\nCleaning data before {test_name}...")
+            await storage.drop()
+            ASCIIColors.green("Data cleanup complete\n")
+
         # Display test options
         ASCIIColors.yellow("\nPlease select a test type:")
         ASCIIColors.white("1. Basic Test (Node and edge insertion, reading)")
@@ -1254,15 +1495,16 @@ async def main():
         ASCIIColors.white(
             "5. Special Characters Test (Verify handling of single/double quotes, backslashes, etc.)"
         )
-        ASCIIColors.white("6. All Tests")
+        ASCIIColors.white(
+            "6. String Escaping Regression Test (Quoted and escaped entity IDs across graph operations)"
+        )
+        ASCIIColors.white("7. All Tests")
 
-        choice = input("\nEnter your choice (1/2/3/4/5/6): ")
+        choice = input("\nEnter your choice (1/2/3/4/5/6/7): ")
 
         # Clean data before running tests
-        if choice in ["1", "2", "3", "4", "5", "6"]:
-            ASCIIColors.yellow("\nCleaning data before running tests...")
-            await storage.drop()
-            ASCIIColors.green("Data cleanup complete\n")
+        if choice in ["1", "2", "3", "4", "5", "6", "7"]:
+            await reset_storage("running tests")
 
         if choice == "1":
             await test_graph_basic(storage)
@@ -1275,19 +1517,25 @@ async def main():
         elif choice == "5":
             await test_graph_special_characters(storage)
         elif choice == "6":
+            await test_graph_string_escaping_regressions(storage)
+        elif choice == "7":
             ASCIIColors.cyan("\n=== Starting Basic Test ===")
+            await reset_storage("Basic Test")
             basic_result = await test_graph_basic(storage)
 
             if basic_result:
                 ASCIIColors.cyan("\n=== Starting Advanced Test ===")
+                await reset_storage("Advanced Test")
                 advanced_result = await test_graph_advanced(storage)
 
                 if advanced_result:
                     ASCIIColors.cyan("\n=== Starting Batch Operations Test ===")
+                    await reset_storage("Batch Operations Test")
                     batch_result = await test_graph_batch_operations(storage)
 
                     if batch_result:
                         ASCIIColors.cyan("\n=== Starting Undirected Property Test ===")
+                        await reset_storage("Undirected Property Test")
                         undirected_result = await test_graph_undirected_property(
                             storage
                         )
@@ -1296,7 +1544,17 @@ async def main():
                             ASCIIColors.cyan(
                                 "\n=== Starting Special Characters Test ==="
                             )
-                            await test_graph_special_characters(storage)
+                            await reset_storage("Special Characters Test")
+                            special_result = await test_graph_special_characters(
+                                storage
+                            )
+
+                            if special_result:
+                                ASCIIColors.cyan(
+                                    "\n=== Starting String Escaping Regression Test ==="
+                                )
+                                await reset_storage("String Escaping Regression Test")
+                                await test_graph_string_escaping_regressions(storage)
         else:
             ASCIIColors.red("Invalid choice")
 

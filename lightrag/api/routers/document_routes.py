@@ -3,10 +3,11 @@ This module contains all document-related routes for the LightRAG API.
 """
 
 import asyncio
+import time
+from uuid import uuid4
 from functools import lru_cache
-from lightrag.utils import logger, get_pinyin_sort_key
+from lightrag.utils import logger, get_pinyin_sort_key, performance_timing_log
 import aiofiles
-import shutil
 import traceback
 from datetime import datetime, timezone
 from pathlib import Path
@@ -20,7 +21,7 @@ from fastapi import (
     HTTPException,
     UploadFile,
 )
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from lightrag import LightRAG
 from lightrag.base import DeletionResult, DocProcessingStatus, DocStatus
@@ -83,6 +84,20 @@ router = APIRouter(
 
 # Temporary file prefix
 temp_prefix = "__tmp__"
+UNKNOWN_FILE_SOURCE = "unknown_source"
+LEGACY_EMPTY_FILE_PATH_SENTINELS = {"", "no-file-path"}
+
+
+def normalize_file_path(file_path: str | None) -> str:
+    """Normalize missing document sources to a single non-null sentinel."""
+    if file_path is None:
+        return UNKNOWN_FILE_SOURCE
+
+    normalized = file_path.strip()
+    if normalized in LEGACY_EMPTY_FILE_PATH_SENTINELS:
+        return UNKNOWN_FILE_SOURCE
+
+    return normalized
 
 
 def sanitize_filename(filename: str, input_dir: Path) -> str:
@@ -147,14 +162,15 @@ class ScanResponse(BaseModel):
     )
     track_id: str = Field(description="Tracking ID for monitoring scanning progress")
 
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "status": "scanning_started",
                 "message": "Scanning process has been initiated in the background",
                 "track_id": "scan_20250729_170612_abc123",
             }
         }
+    )
 
 
 class ReprocessResponse(BaseModel):
@@ -175,14 +191,15 @@ class ReprocessResponse(BaseModel):
         description="Always empty string. Reprocessed documents retain their original track_id from initial upload.",
     )
 
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "status": "reprocessing_started",
                 "message": "Reprocessing of failed documents has been initiated in background",
                 "track_id": "",
             }
         }
+    )
 
 
 class CancelPipelineResponse(BaseModel):
@@ -198,13 +215,14 @@ class CancelPipelineResponse(BaseModel):
     )
     message: str = Field(description="Human-readable message describing the operation")
 
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "status": "cancellation_requested",
                 "message": "Pipeline cancellation has been requested. Documents will be marked as FAILED.",
             }
         }
+    )
 
 
 class InsertTextRequest(BaseModel):
@@ -219,25 +237,28 @@ class InsertTextRequest(BaseModel):
         min_length=1,
         description="The text to insert",
     )
-    file_source: str = Field(default=None, min_length=0, description="File Source")
+    file_source: Optional[str] = Field(
+        default=None, min_length=0, description="File Source"
+    )
 
     @field_validator("text", mode="after")
     @classmethod
     def strip_text_after(cls, text: str) -> str:
         return text.strip()
 
-    @field_validator("file_source", mode="after")
+    @field_validator("file_source", mode="before")
     @classmethod
-    def strip_source_after(cls, file_source: str) -> str:
-        return file_source.strip()
+    def normalize_source_before(cls, file_source: Optional[str]) -> str:
+        return normalize_file_path(file_source)
 
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "text": "This is a sample text to be inserted into the RAG system.",
                 "file_source": "Source of the text (optional)",
             }
         }
+    )
 
 
 class InsertTextsRequest(BaseModel):
@@ -252,7 +273,7 @@ class InsertTextsRequest(BaseModel):
         min_length=1,
         description="The texts to insert",
     )
-    file_sources: list[str] = Field(
+    file_sources: Optional[list[str]] = Field(
         default=None, min_length=0, description="Sources of the texts"
     )
 
@@ -261,13 +282,18 @@ class InsertTextsRequest(BaseModel):
     def strip_texts_after(cls, texts: list[str]) -> list[str]:
         return [text.strip() for text in texts]
 
-    @field_validator("file_sources", mode="after")
+    @field_validator("file_sources", mode="before")
     @classmethod
-    def strip_sources_after(cls, file_sources: list[str]) -> list[str]:
-        return [file_source.strip() for file_source in file_sources]
+    def normalize_sources_before(
+        cls, file_sources: Optional[list[str]]
+    ) -> Optional[list[str]]:
+        if file_sources is None:
+            return None
 
-    class Config:
-        json_schema_extra = {
+        return [normalize_file_path(file_source) for file_source in file_sources]
+
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "texts": [
                     "This is the first text to be inserted.",
@@ -278,6 +304,7 @@ class InsertTextsRequest(BaseModel):
                 ],
             }
         }
+    )
 
 
 class InsertResponse(BaseModel):
@@ -295,14 +322,15 @@ class InsertResponse(BaseModel):
     message: str = Field(description="Message describing the operation result")
     track_id: str = Field(description="Tracking ID for monitoring processing status")
 
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "status": "success",
                 "message": "File 'document.pdf' uploaded successfully. Processing will continue in background.",
                 "track_id": "upload_20250729_170612_abc123",
             }
         }
+    )
 
 
 class ClearDocumentsResponse(BaseModel):
@@ -318,13 +346,14 @@ class ClearDocumentsResponse(BaseModel):
     )
     message: str = Field(description="Message describing the operation result")
 
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "status": "success",
                 "message": "All documents cleared successfully. Deleted 15 files.",
             }
         }
+    )
 
 
 class ClearCacheRequest(BaseModel):
@@ -334,8 +363,7 @@ class ClearCacheRequest(BaseModel):
     All cache will be cleared regardless of the request content.
     """
 
-    class Config:
-        json_schema_extra = {"example": {}}
+    model_config = ConfigDict(json_schema_extra={"example": {}})
 
 
 class ClearCacheResponse(BaseModel):
@@ -351,13 +379,14 @@ class ClearCacheResponse(BaseModel):
     )
     message: str = Field(description="Message describing the operation result")
 
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "status": "success",
                 "message": "Successfully cleared cache for modes: ['default', 'naive']",
             }
         }
+    )
 
 
 """Response model for document status
@@ -450,8 +479,8 @@ class DocStatusResponse(BaseModel):
     )
     file_path: str = Field(description="Path to the document file")
 
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "id": "doc_123456",
                 "content_summary": "Research paper on machine learning",
@@ -466,6 +495,7 @@ class DocStatusResponse(BaseModel):
                 "file_path": "research_paper.pdf",
             }
         }
+    )
 
 
 class DocsStatusesResponse(BaseModel):
@@ -480,8 +510,8 @@ class DocsStatusesResponse(BaseModel):
         description="Dictionary mapping document status to lists of document status responses",
     )
 
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "statuses": {
                     "PENDING": [
@@ -532,6 +562,7 @@ class DocsStatusesResponse(BaseModel):
                 }
             }
         }
+    )
 
 
 class TrackStatusResponse(BaseModel):
@@ -551,8 +582,8 @@ class TrackStatusResponse(BaseModel):
     total_count: int = Field(description="Total number of documents for this track_id")
     status_summary: Dict[str, int] = Field(description="Count of documents by status")
 
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "track_id": "upload_20250729_170612_abc123",
                 "documents": [
@@ -574,6 +605,7 @@ class TrackStatusResponse(BaseModel):
                 "status_summary": {"PROCESSED": 1},
             }
         }
+    )
 
 
 class DocumentsRequest(BaseModel):
@@ -601,8 +633,8 @@ class DocumentsRequest(BaseModel):
         default="desc", description="Sort direction"
     )
 
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "status_filter": "PROCESSED",
                 "page": 1,
@@ -611,6 +643,7 @@ class DocumentsRequest(BaseModel):
                 "sort_direction": "desc",
             }
         }
+    )
 
 
 class PaginationInfo(BaseModel):
@@ -632,8 +665,8 @@ class PaginationInfo(BaseModel):
     has_next: bool = Field(description="Whether there is a next page")
     has_prev: bool = Field(description="Whether there is a previous page")
 
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "page": 1,
                 "page_size": 50,
@@ -643,6 +676,7 @@ class PaginationInfo(BaseModel):
                 "has_prev": False,
             }
         }
+    )
 
 
 class PaginatedDocsResponse(BaseModel):
@@ -662,8 +696,8 @@ class PaginatedDocsResponse(BaseModel):
         description="Count of documents by status for all documents"
     )
 
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "documents": [
                     {
@@ -697,6 +731,7 @@ class PaginatedDocsResponse(BaseModel):
                 },
             }
         }
+    )
 
 
 class StatusCountsResponse(BaseModel):
@@ -708,8 +743,8 @@ class StatusCountsResponse(BaseModel):
 
     status_counts: Dict[str, int] = Field(description="Count of documents by status")
 
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "status_counts": {
                     "PENDING": 10,
@@ -720,6 +755,7 @@ class StatusCountsResponse(BaseModel):
                 }
             }
         }
+    )
 
 
 class PipelineStatusResponse(BaseModel):
@@ -757,8 +793,7 @@ class PipelineStatusResponse(BaseModel):
         """Process datetime and return as ISO format string with timezone"""
         return format_datetime(value)
 
-    class Config:
-        extra = "allow"  # Allow additional fields from the pipeline status
+    model_config = ConfigDict(extra="allow")
 
 
 class DocumentManager:
@@ -769,6 +804,7 @@ class DocumentManager:
         supported_extensions: tuple = (
             ".txt",
             ".md",
+            ".mdx",  # MDX (Markdown + JSX)
             ".pdf",
             ".docx",
             ".pptx",
@@ -792,7 +828,9 @@ class DocumentManager:
             ".bat",  # Batch files
             ".sh",  # Shell scripts
             ".c",  # C source code
+            ".h",  # C header
             ".cpp",  # C++ source code
+            ".hpp",  # C++ header
             ".py",  # Python source code
             ".java",  # Java source code
             ".js",  # JavaScript source code
@@ -965,12 +1003,13 @@ def _extract_pdf_pypdf(file_bytes: bytes, password: str = None) -> str:
 
     # Check if PDF is encrypted
     if reader.is_encrypted:
-        if not password:
-            raise Exception("PDF is encrypted but no password provided")
-
-        decrypt_result = reader.decrypt(password)
+        # Try empty password first (covers permission-only encrypted PDFs)
+        decrypt_result = reader.decrypt(password or "")
         if decrypt_result == 0:
-            raise Exception("Incorrect PDF password")
+            if password:
+                raise Exception("Incorrect PDF password")
+            else:
+                raise Exception("PDF is encrypted but no password provided")
 
     # Extract text from all pages
     content = ""
@@ -1015,10 +1054,10 @@ def _extract_docx(file_bytes: bytes) -> str:
         # CRITICAL: Escape backslash first to avoid double-escaping
         return (
             text.replace("\\", "\\\\")  # Must be first: \ -> \\
-            .replace("\t", "\\t")  # Tab -> \t (visible)
-            .replace("\r\n", "\\n")  # Windows newline -> \n
-            .replace("\r", "\\n")  # Mac newline -> \n
-            .replace("\n", "\\n")  # Unix newline -> \n
+            .replace("\t", "&emsp;&emsp;")  # Tab -> \t (visible)
+            .replace("\r\n", "<br>")  # Windows newline -> \n
+            .replace("\r", "<br>")  # Mac newline -> \n
+            .replace("\n", "<br>")  # Unix newline -> \n
         )
 
     content_parts = []
@@ -1213,7 +1252,8 @@ async def pipeline_enqueue_file(
 
         # Get file size for error reporting
         try:
-            file_size = file_path.stat().st_size
+            stat = await asyncio.to_thread(file_path.stat)
+            file_size = stat.st_size
         except Exception:
             file_size = 0
 
@@ -1268,6 +1308,7 @@ async def pipeline_enqueue_file(
                 case (
                     ".txt"
                     | ".md"
+                    | ".mdx"
                     | ".html"
                     | ".htm"
                     | ".tex"
@@ -1287,7 +1328,9 @@ async def pipeline_enqueue_file(
                     | ".bat"
                     | ".sh"
                     | ".c"
+                    | ".h"
                     | ".cpp"
+                    | ".hpp"
                     | ".py"
                     | ".java"
                     | ".js"
@@ -1301,8 +1344,8 @@ async def pipeline_enqueue_file(
                     | ".less"
                 ):
                     try:
-                        # Try to decode as UTF-8
-                        content = file.decode("utf-8")
+                        # Try to decode as UTF-8 (offloaded to thread to avoid blocking the event loop)
+                        content = await asyncio.to_thread(file.decode, "utf-8")
 
                         # Validate content
                         if not content or len(content.strip()) == 0:
@@ -1569,7 +1612,7 @@ async def pipeline_enqueue_file(
                 # Move file to __enqueued__ directory after enqueuing
                 try:
                     enqueued_dir = file_path.parent / "__enqueued__"
-                    enqueued_dir.mkdir(exist_ok=True)
+                    await asyncio.to_thread(enqueued_dir.mkdir, exist_ok=True)
 
                     # Generate unique filename to avoid conflicts
                     unique_filename = get_unique_filename_in_enqueued(
@@ -1578,7 +1621,7 @@ async def pipeline_enqueue_file(
                     target_path = enqueued_dir / unique_filename
 
                     # Move the file
-                    file_path.rename(target_path)
+                    await asyncio.to_thread(file_path.rename, target_path)
                     logger.debug(
                         f"Moved file to enqueued directory: {file_path.name} -> {unique_filename}"
                     )
@@ -1713,14 +1756,21 @@ async def pipeline_index_texts(
     """
     if not texts:
         return
-    if file_sources is not None:
-        if len(file_sources) != 0 and len(file_sources) != len(texts):
-            [
-                file_sources.append("unknown_source")
-                for _ in range(len(file_sources), len(texts))
-            ]
+
+    normalized_file_sources: list[str] | None = None
+    if file_sources:
+        normalized_file_sources = [
+            normalize_file_path(source) for source in file_sources
+        ]
+        if len(normalized_file_sources) > len(texts):
+            raise ValueError("Number of file sources must not exceed number of texts")
+        if len(normalized_file_sources) < len(texts):
+            normalized_file_sources.extend(
+                [UNKNOWN_FILE_SOURCE] * (len(texts) - len(normalized_file_sources))
+            )
+
     await rag.apipeline_enqueue_documents(
-        input=texts, file_paths=file_sources, track_id=track_id
+        input=texts, file_paths=normalized_file_sources, track_id=track_id
     )
     await rag.apipeline_process_enqueue_documents()
 
@@ -2078,16 +2128,49 @@ def create_document_routes(
         uploaded file is of a supported type, saves it in the specified input directory,
         indexes it for retrieval, and returns a success status with relevant details.
 
+        **File Size Limit:**
+        - Configurable via `MAX_UPLOAD_SIZE` environment variable (default: 100MB)
+        - Set to `None` or `0` for unlimited upload size
+        - Returns HTTP 413 (Request Entity Too Large) if file exceeds limit
+
+        **Duplicate Detection Behavior:**
+
+        This endpoint handles two types of duplicate scenarios differently:
+
+        1. **Filename Duplicate (Synchronous Detection)**:
+           - Detected immediately before file processing
+           - Returns `status="duplicated"` with the existing document's track_id
+           - Two cases:
+             - If filename exists in document storage: returns existing track_id
+             - If filename exists in file system only: returns empty track_id ("")
+
+        2. **Content Duplicate (Asynchronous Detection)**:
+           - Detected during background processing after content extraction
+           - Returns `status="success"` with a new track_id immediately
+           - The duplicate is detected later when processing the file content
+           - Use `/documents/track_status/{track_id}` to check the final result:
+             - Document will have `status="FAILED"`
+             - `error_msg` contains "Content already exists. Original doc_id: xxx"
+             - `metadata.is_duplicate=true` with reference to original document
+             - `metadata.original_doc_id` points to the existing document
+             - `metadata.original_track_id` shows the original upload's track_id
+
+        **Why Different Behavior?**
+        - Filename check is fast (simple lookup), done synchronously
+        - Content extraction is expensive (PDF/DOCX parsing), done asynchronously
+        - This design prevents blocking the client during expensive operations
+
         Args:
             background_tasks: FastAPI BackgroundTasks for async processing
             file (UploadFile): The file to be uploaded. It must have an allowed extension.
 
         Returns:
             InsertResponse: A response object containing the upload status and a message.
-                status can be "success", "duplicated", or error is thrown.
+                - status="success": File accepted and queued for processing
+                - status="duplicated": Filename already exists (see track_id for existing document)
 
         Raises:
-            HTTPException: If the file type is not supported (400) or other errors occur (500).
+            HTTPException: If the file type is not supported (400), file too large (413), or other errors occur (500).
         """
         try:
             # Sanitize filename to prevent Path Traversal attacks
@@ -2098,6 +2181,27 @@ def create_document_routes(
                     status_code=400,
                     detail=f"Unsupported file type. Supported types: {doc_manager.supported_extensions}",
                 )
+
+            # Check file size limit (if configured)
+            if (
+                global_args.max_upload_size is not None
+                and global_args.max_upload_size > 0
+            ):
+                # Safe access to file size (not available in older Starlette versions)
+                file_size = getattr(file, "size", None)
+
+                # Pre-flight size check (only if size is available)
+                if file_size is not None:
+                    if file_size > global_args.max_upload_size:
+                        raise HTTPException(
+                            status_code=413,
+                            detail=f"File too large. Maximum size: {global_args.max_upload_size / 1024 / 1024:.1f}MB, uploaded: {file_size / 1024 / 1024:.1f}MB",
+                        )
+                else:
+                    # If size not available, we'll check during streaming
+                    logger.debug(
+                        f"File size not available in UploadFile for {safe_filename}, will check during streaming"
+                    )
 
             # Check if filename already exists in doc_status storage
             existing_doc_data = await rag.doc_status.get_doc_by_file_path(safe_filename)
@@ -2121,8 +2225,44 @@ def create_document_routes(
                     track_id="",
                 )
 
-            with open(file_path, "wb") as buffer:
-                shutil.copyfileobj(file.file, buffer)
+            # Async streaming write with size check
+            bytes_written = 0
+            chunk_size = 1024 * 1024  # 1MB chunks
+            needs_cleanup = False
+
+            async with aiofiles.open(file_path, "wb") as out_file:
+                while True:
+                    # Read chunk from upload stream
+                    chunk = await file.read(chunk_size)
+                    if not chunk:
+                        break
+
+                    # Check size limit during streaming (if not checked before)
+                    if (
+                        global_args.max_upload_size is not None
+                        and global_args.max_upload_size > 0
+                    ):
+                        bytes_written += len(chunk)
+                        if bytes_written > global_args.max_upload_size:
+                            needs_cleanup = True
+                            break
+
+                    # Write chunk to file
+                    await out_file.write(chunk)
+
+            # Cleanup after file is closed
+            if needs_cleanup:
+                try:
+                    file_path.unlink()
+                except Exception as cleanup_error:
+                    logger.error(
+                        f"Error cleaning up oversized file {safe_filename}: {cleanup_error}"
+                    )
+
+                raise HTTPException(
+                    status_code=413,
+                    detail=f"File too large. Maximum size: {global_args.max_upload_size / 1024 / 1024:.1f}MB, uploaded: {bytes_written / 1024 / 1024:.1f}MB",
+                )
 
             track_id = generate_track_id("upload")
 
@@ -2135,6 +2275,9 @@ def create_document_routes(
                 track_id=track_id,
             )
 
+        except HTTPException:
+            # Re-raise HTTP exceptions (400, 413, etc.)
+            raise
         except Exception as e:
             logger.error(f"Error /documents/upload: {file.filename}: {str(e)}")
             logger.error(traceback.format_exc())
@@ -2681,7 +2824,7 @@ def create_document_routes(
                             chunks_count=doc_status.chunks_count,
                             error_msg=doc_status.error_msg,
                             metadata=doc_status.metadata,
-                            file_path=doc_status.file_path,
+                            file_path=normalize_file_path(doc_status.file_path),
                         )
                     )
 
@@ -2943,7 +3086,7 @@ def create_document_routes(
                         chunks_count=doc_status.chunks_count,
                         error_msg=doc_status.error_msg,
                         metadata=doc_status.metadata,
-                        file_path=doc_status.file_path,
+                        file_path=normalize_file_path(doc_status.file_path),
                     )
                 )
 
@@ -2993,23 +3136,92 @@ def create_document_routes(
         Raises:
             HTTPException: If an error occurs while retrieving documents (500).
         """
-        try:
-            # Get paginated documents and status counts in parallel
-            docs_task = rag.doc_status.get_docs_paginated(
-                status_filter=request.status_filter,
-                page=request.page,
-                page_size=request.page_size,
-                sort_field=request.sort_field,
-                sort_direction=request.sort_direction,
-            )
-            status_counts_task = rag.doc_status.get_all_status_counts()
+        trace_id = uuid4().hex[:8]
+        request_start = time.perf_counter()
+        status_filter_value = (
+            request.status_filter.value if request.status_filter is not None else None
+        )
 
-            # Execute both queries in parallel
+        performance_timing_log(
+            "[documents/paginated][%s] Request start workspace=%s status_filter=%s page=%s page_size=%s sort_field=%s sort_direction=%s",
+            trace_id,
+            rag.workspace,
+            status_filter_value,
+            request.page,
+            request.page_size,
+            request.sort_field,
+            request.sort_direction,
+        )
+
+        try:
+
+            async def _timed_call(operation_name: str, operation):
+                operation_start = time.perf_counter()
+                performance_timing_log(
+                    "[documents/paginated][%s] %s started",
+                    trace_id,
+                    operation_name,
+                )
+                try:
+                    result = await operation
+                except Exception:
+                    elapsed = time.perf_counter() - operation_start
+                    performance_timing_log(
+                        "[documents/paginated][%s] %s failed after %.4fs",
+                        trace_id,
+                        operation_name,
+                        elapsed,
+                    )
+                    raise
+
+                elapsed = time.perf_counter() - operation_start
+                performance_timing_log(
+                    "[documents/paginated][%s] %s completed in %.4fs",
+                    trace_id,
+                    operation_name,
+                    elapsed,
+                )
+                return result
+
+            query_task_create_start = time.perf_counter()
+            docs_task = asyncio.create_task(
+                _timed_call(
+                    "get_docs_paginated",
+                    rag.doc_status.get_docs_paginated(
+                        status_filter=request.status_filter,
+                        page=request.page,
+                        page_size=request.page_size,
+                        sort_field=request.sort_field,
+                        sort_direction=request.sort_direction,
+                    ),
+                )
+            )
+            status_counts_task = asyncio.create_task(
+                _timed_call(
+                    "get_all_status_counts",
+                    rag.doc_status.get_all_status_counts(),
+                )
+            )
+            query_task_create_elapsed = time.perf_counter() - query_task_create_start
+            performance_timing_log(
+                "[documents/paginated][%s] Query tasks created in %.4fs",
+                trace_id,
+                query_task_create_elapsed,
+            )
+
+            query_await_start = time.perf_counter()
             (documents_with_ids, total_count), status_counts = await asyncio.gather(
                 docs_task, status_counts_task
             )
+            query_await_elapsed = time.perf_counter() - query_await_start
+            performance_timing_log(
+                "[documents/paginated][%s] Query tasks awaited in %.4fs",
+                trace_id,
+                query_await_elapsed,
+            )
 
             # Convert documents to response format
+            response_assembly_start = time.perf_counter()
             doc_responses = []
             for doc_id, doc in documents_with_ids:
                 doc_responses.append(
@@ -3024,7 +3236,7 @@ def create_document_routes(
                         chunks_count=doc.chunks_count,
                         error_msg=doc.error_msg,
                         metadata=doc.metadata,
-                        file_path=doc.file_path,
+                        file_path=normalize_file_path(doc.file_path),
                     )
                 )
 
@@ -3041,14 +3253,37 @@ def create_document_routes(
                 has_next=has_next,
                 has_prev=has_prev,
             )
-
-            return PaginatedDocsResponse(
+            response = PaginatedDocsResponse(
                 documents=doc_responses,
                 pagination=pagination,
                 status_counts=status_counts,
             )
+            response_assembly_elapsed = time.perf_counter() - response_assembly_start
+            total_elapsed = time.perf_counter() - request_start
+
+            performance_timing_log(
+                "[documents/paginated][%s] Response assembled in %.4fs",
+                trace_id,
+                response_assembly_elapsed,
+            )
+            performance_timing_log(
+                "[documents/paginated][%s] Request completed in %.4fs returned_rows=%s total_count=%s status_count_keys=%s",
+                trace_id,
+                total_elapsed,
+                len(doc_responses),
+                total_count,
+                sorted(status_counts.keys()),
+            )
+
+            return response
 
         except Exception as e:
+            total_elapsed = time.perf_counter() - request_start
+            performance_timing_log(
+                "[documents/paginated][%s] Request failed after %.4fs",
+                trace_id,
+                total_elapsed,
+            )
             logger.error(f"Error getting paginated documents: {str(e)}")
             logger.error(traceback.format_exc())
             raise HTTPException(status_code=500, detail=str(e))

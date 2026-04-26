@@ -172,10 +172,37 @@ async def ollama_model_complete(
     )
 
 
-@wrap_embedding_func_with_attrs(embedding_dim=1024, max_token_size=8192)
+@wrap_embedding_func_with_attrs(
+    embedding_dim=1024, max_token_size=8192, model_name="bge-m3:latest"
+)
 async def ollama_embed(
-    texts: list[str], embed_model: str = "bge-m3:latest", **kwargs
+    texts: list[str],
+    embed_model: str = "bge-m3:latest",
+    max_token_size: int | None = None,
+    **kwargs,
 ) -> np.ndarray:
+    """Generate embeddings using Ollama's API.
+
+    Args:
+        texts: List of texts to embed.
+        embed_model: The Ollama embedding model to use. Default is "bge-m3:latest".
+        max_token_size: Maximum tokens per text. This parameter is automatically
+            injected by the EmbeddingFunc wrapper when the underlying function
+            signature supports it (via inspect.signature check). Ollama will
+            automatically truncate texts exceeding the model's context length
+            (num_ctx), so no client-side truncation is needed.
+        **kwargs: Additional arguments passed to the Ollama client.
+
+    Returns:
+        A numpy array of embeddings, one per input text.
+
+    Note:
+        - Ollama API automatically truncates texts exceeding the model's context length
+        - The max_token_size parameter is received but not used for client-side truncation
+    """
+    # Note: max_token_size is received but not used for client-side truncation.
+    # Ollama API handles truncation automatically based on the model's num_ctx setting.
+    _ = max_token_size  # Acknowledge parameter to avoid unused variable warning
     api_key = kwargs.pop("api_key", None)
     if not api_key:
         api_key = os.getenv("OLLAMA_API_KEY")

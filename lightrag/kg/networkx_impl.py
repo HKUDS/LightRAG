@@ -1,4 +1,5 @@
 import os
+from collections import deque
 from dataclasses import dataclass
 from typing import final
 
@@ -109,7 +110,9 @@ class NetworkXStorage(BaseGraphStorage):
 
     async def node_degree(self, node_id: str) -> int:
         graph = await self._get_graph()
-        return graph.degree(node_id)
+        if graph.has_node(node_id):
+            return graph.degree(node_id)
+        return 0
 
     async def edge_degree(self, src_id: str, tgt_id: str) -> int:
         graph = await self._get_graph()
@@ -150,6 +153,40 @@ class NetworkXStorage(BaseGraphStorage):
         """
         graph = await self._get_graph()
         graph.add_edge(source_node_id, target_node_id, **edge_data)
+
+    async def upsert_nodes_batch(self, nodes: list[tuple[str, dict[str, str]]]) -> None:
+        """Batch insert/update multiple nodes in a single call.
+
+        Much faster than calling upsert_node() in a loop for large imports
+        because it avoids per-call async event loop overhead.
+
+        Args:
+            nodes: List of (node_id, node_data) tuples.
+        """
+        graph = await self._get_graph()
+        for node_id, node_data in nodes:
+            graph.add_node(node_id, **node_data)
+
+    async def has_nodes_batch(self, node_ids: list[str]) -> set[str]:
+        """Check existence of multiple nodes in a single call.
+
+        Returns:
+            Set of node_ids that exist in the graph.
+        """
+        graph = await self._get_graph()
+        return {nid for nid in node_ids if graph.has_node(nid)}
+
+    async def upsert_edges_batch(
+        self, edges: list[tuple[str, str, dict[str, str]]]
+    ) -> None:
+        """Batch insert/update multiple edges in a single call.
+
+        Args:
+            edges: List of (source_id, target_id, edge_data) tuples.
+        """
+        graph = await self._get_graph()
+        for src, tgt, edge_data in edges:
+            graph.add_edge(src, tgt, **edge_data)
 
     async def delete_node(self, node_id: str) -> None:
         """
@@ -201,7 +238,7 @@ class NetworkXStorage(BaseGraphStorage):
 
     async def get_all_labels(self) -> list[str]:
         """
-        Get all node labels in the graph
+        Get all node labels(entity names) in the graph
         Returns:
             [label1, label2, ...]  # Alphabetically sorted label list
         """
@@ -215,7 +252,7 @@ class NetworkXStorage(BaseGraphStorage):
 
     async def get_popular_labels(self, limit: int = 300) -> list[str]:
         """
-        Get popular labels by node degree (most connected entities)
+        Get popular labels(entity names) by node degree (most connected entities)
 
         Args:
             limit: Maximum number of labels to return
@@ -240,7 +277,7 @@ class NetworkXStorage(BaseGraphStorage):
 
     async def search_labels(self, query: str, limit: int = 50) -> list[str]:
         """
-        Search labels with fuzzy matching
+        Search labels(entity names) with fuzzy matching
 
         Args:
             query: Search query string
@@ -352,7 +389,7 @@ class NetworkXStorage(BaseGraphStorage):
             bfs_nodes = []
             visited = set()
             # Store (node, depth, degree) in the queue
-            queue = [(node_label, 0, graph.degree(node_label))]
+            queue = deque([(node_label, 0, graph.degree(node_label))])
 
             # Flag to track if there are unexplored neighbors due to depth limit
             has_unexplored_neighbors = False
@@ -365,7 +402,7 @@ class NetworkXStorage(BaseGraphStorage):
                 # Collect all nodes at the current depth
                 current_level_nodes = []
                 while queue and queue[0][1] == current_depth:
-                    current_level_nodes.append(queue.pop(0))
+                    current_level_nodes.append(queue.popleft())
 
                 # Sort nodes at current depth by degree (highest first)
                 current_level_nodes.sort(key=lambda x: x[2], reverse=True)

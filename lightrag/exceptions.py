@@ -14,7 +14,9 @@ class APIStatusError(Exception):
     def __init__(
         self, message: str, *, response: httpx.Response, body: object | None
     ) -> None:
-        super().__init__(message, response.request, body=body)
+        super().__init__(message)
+        self.request = response.request
+        self.body = body
         self.response = response
         self.status_code = response.status_code
         self.request_id = response.headers.get("x-request-id")
@@ -22,9 +24,10 @@ class APIStatusError(Exception):
 
 class APIConnectionError(Exception):
     def __init__(
-        self, *, message: str = "Connection error.", request: httpx.Request
+        self, *, message: str = "Connection error.", request: httpx.Request | None
     ) -> None:
-        super().__init__(message, request, body=None)
+        super().__init__(message)
+        self.request = request
 
 
 class BadRequestError(APIStatusError):
@@ -56,7 +59,7 @@ class RateLimitError(APIStatusError):
 
 
 class APITimeoutError(APIConnectionError):
-    def __init__(self, request: httpx.Request) -> None:
+    def __init__(self, request: httpx.Request | None) -> None:
         super().__init__(message="Request timed out.", request=request)
 
 
@@ -128,8 +131,8 @@ class ChunkTokenLimitExceededError(ValueError):
         self.chunk_preview = truncated_preview
 
 
-class QdrantMigrationError(Exception):
-    """Raised when Qdrant data migration from legacy collections fails."""
+class DataMigrationError(Exception):
+    """Raised when data migration from legacy collection/table fails."""
 
     def __init__(self, message: str):
         super().__init__(message)

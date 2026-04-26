@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: read
+  id-token: write
   packages: write
 
 jobs:
@@ -18,22 +19,40 @@ jobs:
         with:
           fetch-depth: 0  # Fetch all history for tags
 
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.x"
+
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       - name: Login to GitHub Container Registry
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Install cosign
+        uses: sigstore/cosign-installer@cad07c2e89fa2edd6e2d7bab4c1aa38e53f76003  # v4.1.1
+
       - name: Get latest tag
         id: get_tag
         run: |
-          TAG=$(git describe --tags --abbrev=0)
+          if [ "${{ github.event_name }}" = "release" ] && [ -n "${{ github.event.release.tag_name }}" ]; then
+            TAG="${{ github.event.release.tag_name }}"
+          else
+            TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+          fi
+          if [ -z "$TAG" ]; then
+            echo "No git tag found for docker publish"
+            exit 1
+          fi
+          PACKAGE_VERSION="${TAG#v}"
           echo "Found tag: $TAG"
           echo "tag=$TAG" >> $GITHUB_OUTPUT
+          echo "package_version=$PACKAGE_VERSION" >> $GITHUB_OUTPUT
 
       - name: Check if pre-release
         id: check_prerelease
@@ -47,15 +66,15 @@ jobs:
             echo "This is a stable release: $TAG"
           fi
 
-      - name: Update version in __init__.py
+      - name: Update version definitions
         run: |
-          sed -i "s/__version__ = \".*\"/__version__ = \"${{ steps.get_tag.outputs.tag }}\"/" lightrag/__init__.py
-          echo "Updated __init__.py with version ${{ steps.get_tag.outputs.tag }}"
-          cat lightrag/__init__.py | grep __version__
+          python scripts/release/set_version.py --core-version "${{ steps.get_tag.outputs.package_version }}"
+          echo "Updated version definitions with ${{ steps.get_tag.outputs.package_version }}"
+          grep '__version__ = ' lightrag/_version.py
 
       - name: Extract metadata for Docker
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: ghcr.io/${{ github.repository }}
           tags: |
@@ -63,7 +82,8 @@ jobs:
             type=raw,value=latest,enable=${{ steps.check_prerelease.outputs.is_prerelease == 'false' }}
 
       - name: Build and push Docker image
-        uses: docker/build-push-action@v6
+        id: build-and-push
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: ./Dockerfile
@@ -73,3 +93,28 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Sign Docker image
+        if: steps.build-and-push.outputs.digest != ''
+        env:
+          DIGEST: ${{ steps.build-and-push.outputs.digest }}
+          TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          set -euo pipefail
+          echo "Signing manifest digest: $DIGEST"
+          while IFS= read -r tag; do
+            if [ -z "$tag" ]; then
+              continue
+            fi
+            echo "Signing ${tag}@${DIGEST}"
+            cosign sign --yes "${tag}@${DIGEST}"
+          done <<< "$TAGS"
+
+      - name: Output image details
+        run: |
+          echo "Docker image built and pushed successfully!"
+          echo "Image tags:"
+          echo "  - ghcr.io/${{ github.repository }}:${{ steps.get_tag.outputs.tag }}"
+          echo "  - ghcr.io/${{ github.repository }}:latest"
+          echo "Signed manifest digest: ${{ steps.build-and-push.outputs.digest }}"
+          echo "Latest Git tag used: ${{ steps.get_tag.outputs.tag }}"

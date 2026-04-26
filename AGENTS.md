@@ -6,15 +6,20 @@ LightRAG is an advanced Retrieval-Augmented Generation (RAG) framework designed 
 - `lightrag/`: Core Python package with orchestrators (`lightrag/lightrag.py`), storage adapters in `kg/`, LLM bindings in `llm/`, and helpers such as `operate.py` and `utils_*.py`.
 - `lightrag-api/`: FastAPI service (`lightrag_server.py`) with routers under `routers/` and Gunicorn launcher `run_with_gunicorn.py`.
 - `lightrag_webui/`: React 19 + TypeScript client driven by Bun + Vite; UI components live in `src/`.
+- `scripts/setup/`: Interactive environment setup wizard. `setup.sh` orchestrates staged `--base` / `--storage` / `--server` / validation flows, `lib/` holds prompt/validation/file helpers, and `templates/*.yml` contains compose fragments for bundled services.
 - Tests live in `tests/` and root-level `test_*.py`. Working datasets stay in `inputs/`, `rag_storage/`, `temp/`; deployment collateral lives in `docs/`, `k8s-deploy/`, and `docker-compose.yml`.
+- `Makefile`: Canonical entry point for the setup wizard and local developer shortcuts; prefer documented targets over invoking ad hoc shell snippets.
 
 ## Build, Test, and Development Commands
 - `python -m venv .venv && source .venv/bin/activate`: set up the Python runtime.
 - `pip install -e .` / `pip install -e .[api]`: install the package and API extras in editable mode.
+- `make env-base`: first-run interactive setup for LLM, embedding, and reranker configuration; writes `.env` and may generate `docker-compose.final.yml`.
+- `make env-storage`, `make env-server`: optional follow-up wizard stages for storage backends and server/security/SSL settings; both reuse the existing `.env`.
+- `make env-validate`, `make env-security-check`, `make env-backup`: validate, audit, or back up the current `.env` via the setup wizard.
 - `lightrag-server` or `uvicorn lightrag.api.lightrag_server:app --reload`: start the API locally; ensure `.env` is present.
 - `python -m pytest tests` (offline markers apply by default) or `python -m pytest tests --run-integration` / `python test_graph_storage.py`: run the full suite, opt into integration coverage, or target an individual script.
 - `ruff check .`: lint Python sources before committing.
-- `bun install`, `bun run dev`, `bun run build`, `bun test`: manage the web UI workflow (Bun is mandatory).
+- Front-end workflow uses Bun from `lightrag_webui/`; run UI commands from the repo root as `cd lightrag_webui && bun install`, `cd lightrag_webui && bun run dev`, `cd lightrag_webui && bun run build`, `cd lightrag_webui && bun run lint`, and `cd lightrag_webui && bun test`.
 
 ## Coding Style & Naming Conventions
 - Backend code follow PEP 8 with four-space indentation, annotate functions, and reach for dataclasses when modelling state.
@@ -28,15 +33,20 @@ LightRAG is an advanced Retrieval-Augmented Generation (RAG) framework designed 
 - Follow `tests/pytest.ini`: markers include `offline`, `integration`, `requires_db`, and `requires_api`, and the suite runs with `-m "not integration"` by default—pass `--run-integration` (or set `LIGHTRAG_RUN_INTEGRATION=true`) when external services are available.
 - Use the custom CLI toggles from `tests/conftest.py`: `--keep-artifacts`/`LIGHTRAG_KEEP_ARTIFACTS=true`, `--stress-test`/`LIGHTRAG_STRESS_TEST=true`, and `--test-workers N`/`LIGHTRAG_TEST_WORKERS` to dial up workloads or preserve temp files during investigations.
 - Export other required `LIGHTRAG_*` environment variables before running integration or storage tests so adapters can reach configured backends.
-- For UI updates, pair changes with Vitest specs and run `bun test`.
+- For UI updates, pair changes with Bun test coverage using `bun:test`; run `cd lightrag_webui && bun test`, and use `cd lightrag_webui && bun test --watch` or `cd lightrag_webui && bun test --coverage` when needed.
 
 ## Commit & Pull Request Guidelines
 - Use concise, imperative commit subjects (e.g., `Fix lock key normalization`) and add body context only when necessary.
 - PRs should include a summary, operational impact, linked issues, and screenshots or API samples for user-facing work.
-- Verify `ruff check .`, `python -m pytest`, and affected Bun commands succeed before requesting review; note the runs in the PR text.
+- Verify `ruff check .`, `python -m pytest`, and affected front-end commands such as `cd lightrag_webui && bun run lint`, `cd lightrag_webui && bun run build`, and `cd lightrag_webui && bun test` succeed before requesting review; note the runs in the PR text.
+- This repo is a fork of `HKUDS/LightRAG`. Always target **`HKUDS/LightRAG:main`** (upstream) when creating PRs, not the fork's own main.
+- Create PR work from a dedicated branch, not `main`. If the CLI sandbox blocks writes under `.git/refs`, request escalation for branch creation or other ref updates instead of retrying blindly.
+- If `gh auth status` is invalid but the GitHub plugin is available, prefer the plugin to create the upstream PR after pushing the branch to the fork; `gh` login state and plugin auth can differ.
+- For `gh` commands that require GitHub network/auth access, prefer running them with escalation from the start instead of first trying the sandboxed path. Use an escalated `gh auth status` check as the source of truth for Codex, not the VSCode terminal. Only abandon the `gh` path when the escalated check still fails; otherwise treat sandbox-only failures as an expected limitation.
+- For lightweight Python validation in fresh shells, prefer `python3` over `python` unless the active environment has already exposed `python`.
 
 ## Security & Configuration Tips
-- Copy `.env.example` and `config.ini.example`; never commit secrets or real connection strings.
+- Copy `.env.example`; never commit secrets or real connection strings.
 - Configure storage backends through `LIGHTRAG_*` variables and validate them with `docker-compose` services when needed.
 - Treat `lightrag.log*` as local artefacts; purge sensitive information before sharing logs or outputs.
 
@@ -46,3 +56,6 @@ LightRAG is an advanced Retrieval-Augmented Generation (RAG) framework designed 
 - Honor existing local modifications; never revert or discard user changes (especially via `git reset --hard`) unless explicitly asked.
 - Follow the planning tool guidance: skip it for trivial fixes, but provide multi-step plans for non-trivial work and keep the plan updated as steps progress.
 - Validate changes by running the relevant `ruff`/`pytest`/`bun test` commands whenever feasible, and describe any unrun checks with follow-up guidance.
+- For Codex and other fresh-shell automation, prefer `./scripts/test.sh` instead of bare `pytest`; the script falls back through `PYTHON`, the active virtualenv, `uv`, `.venv`, and `venv` before trying `python` or `python3`.
+- For setup workflow changes, prefer `make env-*` targets over calling `scripts/setup/setup.sh` directly; the `Makefile` resolves a Bash 4+ interpreter for macOS/Linux compatibility.
+- When editing setup logic, keep `.env` host-usable and treat `docker-compose.final.yml` as generated output assembled from `scripts/setup/templates/*.yml`; compose-only overrides belong in the wizard-managed compose layer rather than being persisted back into `.env`.

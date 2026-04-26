@@ -99,7 +99,7 @@
         "error": "部分檔案上傳失敗"
       },
       "generalError": "上傳失敗\n{{error}}",
-      "fileTypes": "支援的檔案類型：TXT, MD, DOCX, PDF, PPTX, XLSX, RTF, ODT, EPUB, HTML, HTM, TEX, JSON, XML, YAML, YML, CSV, LOG, CONF, INI, PROPERTIES, SQL, BAT, SH, C, CPP, PY, JAVA, JS, TS, SWIFT, GO, RB, PHP, CSS, SCSS, LESS",
+      "fileTypes": "支援的檔案類型：TXT, MD, MDX, DOCX, PDF, PPTX, XLSX, RTF, ODT, EPUB, HTML, HTM, TEX, JSON, XML, YAML, YML, CSV, LOG, CONF, INI, PROPERTIES, SQL, BAT, SH, C, CPP, H, HPP, PY, JAVA, JS, TS, SWIFT, GO, RB, PHP, CSS, SCSS, LESS",
       "fileUploader": {
         "singleFileLimit": "一次只能上傳一個檔案",
         "maxFilesLimit": "最多只能上傳 {{count}} 個檔案",
@@ -333,7 +333,7 @@
         "properties": "屬性",
         "relationships": "關係(子圖內)",
         "expandNode": "展開節點",
-        "pruneNode": "修剪節點",
+        "pruneNode": "隱藏節點",
         "deleteAllNodesError": "拒絕刪除圖中的所有節點",
         "nodesRemoved": "已刪除 {{count}} 個節點，包括孤立節點",
         "noNewNodes": "沒有發現可以展開的節點",
@@ -436,12 +436,12 @@
       "userPromptPlaceholder": "輸入自定義提示詞（可選）",
       "enableRerank": "啟用重排",
       "enableRerankTooltip": "為檢索到的文本塊啟用重排。如果為True但未配置重排模型，將發出警告。默認為True。",
-      "maxEntityTokens": "實體令牌數上限",
-      "maxEntityTokensTooltip": "統一令牌控制系統中分配給實體上下文的最大令牌數",
-      "maxRelationTokens": "關係令牌數上限",
-      "maxRelationTokensTooltip": "統一令牌控制系統中分配給關係上下文的最大令牌數",
-      "maxTotalTokens": "總令牌數上限",
-      "maxTotalTokensTooltip": "整個查詢上下文的最大總令牌預算（實體+關係+文檔塊+系統提示）"
+      "maxEntityTokens": "實體詞元數上限",
+      "maxEntityTokensTooltip": "統一詞元控制系統中分配給實體上下文的最大詞元數",
+      "maxRelationTokens": "關係詞元數上限",
+      "maxRelationTokensTooltip": "統一詞元控制系統中分配給關係上下文的最大詞元數",
+      "maxTotalTokens": "總詞元數上限",
+      "maxTotalTokensTooltip": "整個查詢上下文的最大總詞元預算（實體+關係+文檔塊+系統提示）"
     }
   },
   "apiSite": {

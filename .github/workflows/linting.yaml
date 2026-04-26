@@ -2,15 +2,18 @@ name: Linting and Formatting
 
 on:
     push:
-        branches:
-            - main
+        branches: [ main, dev ]
     pull_request:
-        branches:
-            - main
+        branches: [ main, dev ]
+        types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+    pull-requests: write
 
 jobs:
     lint-and-format:
         name: Linting and Formatting
+        if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
         runs-on: ubuntu-latest
 
         steps:
@@ -28,4 +31,104 @@ jobs:
                 pip install pre-commit
 
             - name: Run pre-commit
+              id: pre-commit
               run: pre-commit run --all-files --show-diff-on-failure
+
+            - name: Post fix instructions on failure
+              if: failure() && steps.pre-commit.outcome == 'failure'
+              run: |
+                cat >> "$GITHUB_STEP_SUMMARY" << 'EOF'
+                ## ❌ Linting / Formatting checks failed
+
+                Pre-commit found issues in your code. Fix them locally and push again:
+
+                ```bash
+                # Install pre-commit (one-time setup)
+                pip install pre-commit
+                pre-commit install
+
+                # Auto-fix all issues
+                pre-commit run --all-files
+
+                # Commit the fixes
+                git add -u
+                git commit -m "fix: apply pre-commit formatting fixes"
+                git push
+                ```
+
+                ### What was checked
+
+                | Hook | Tool | What it fixes |
+                |------|------|---------------|
+                | `trailing-whitespace` | pre-commit-hooks | Removes trailing whitespace |
+                | `end-of-file-fixer` | pre-commit-hooks | Ensures files end with a newline |
+                | `requirements-txt-fixer` | pre-commit-hooks | Sorts requirements.txt entries |
+                | `ruff-format` | Ruff | Auto-formats Python code (like Black) |
+                | `ruff` | Ruff | Fixes Python lint errors (`--fix`) |
+
+                > See the diff above for the exact changes needed.
+                EOF
+
+            - name: Comment on PR with fix instructions
+              if: failure() && steps.pre-commit.outcome == 'failure' && github.event_name == 'pull_request'
+              uses: actions/github-script@v9
+              with:
+                script: |
+                  const body = `## ❌ Linting / Formatting checks failed
+
+                  Pre-commit found issues in your code. Run the following locally, then push again:
+
+                  \`\`\`bash
+                  # Install pre-commit (one-time setup)
+                  pip install pre-commit
+                  pre-commit install
+
+                  # Auto-fix all issues
+                  pre-commit run --all-files
+
+                  # Commit the fixes
+                  git add -u
+                  git commit -m "fix: apply pre-commit formatting fixes"
+                  git push
+                  \`\`\`
+
+                  <details>
+                  <summary>What was checked</summary>
+
+                  | Hook | Tool | What it fixes |
+                  |------|------|---------------|
+                  | \`trailing-whitespace\` | pre-commit-hooks | Removes trailing whitespace |
+                  | \`end-of-file-fixer\` | pre-commit-hooks | Ensures files end with a newline |
+                  | \`requirements-txt-fixer\` | pre-commit-hooks | Sorts requirements.txt entries |
+                  | \`ruff-format\` | Ruff | Auto-formats Python code (like Black) |
+                  | \`ruff\` | Ruff | Fixes Python lint errors (\`--fix\`) |
+
+                  </details>
+
+                  > See the [workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for the exact diff of required changes.`;
+
+                  // Find existing bot comment to avoid duplicates
+                  const { data: comments } = await github.rest.issues.listComments({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    issue_number: context.issue.number,
+                  });
+                  const existing = comments.find(c =>
+                    c.user.type === 'Bot' && c.body.includes('Linting / Formatting checks failed')
+                  );
+
+                  if (existing) {
+                    await github.rest.issues.updateComment({
+                      owner: context.repo.owner,
+                      repo: context.repo.repo,
+                      comment_id: existing.id,
+                      body,
+                    });
+                  } else {
+                    await github.rest.issues.createComment({
+                      owner: context.repo.owner,
+                      repo: context.repo.repo,
+                      issue_number: context.issue.number,
+                      body,
+                    });
+                  }

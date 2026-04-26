@@ -36,6 +36,7 @@ class MemgraphStorage(BaseGraphStorage):
     def __init__(self, namespace, global_config, embedding_func, workspace=None):
         # Priority: 1) MEMGRAPH_WORKSPACE env 2) user arg 3) default 'base'
         memgraph_workspace = os.environ.get("MEMGRAPH_WORKSPACE")
+        original_workspace = workspace  # Save original value for logging
         if memgraph_workspace and memgraph_workspace.strip():
             workspace = memgraph_workspace
 
@@ -48,11 +49,28 @@ class MemgraphStorage(BaseGraphStorage):
             global_config=global_config,
             embedding_func=embedding_func,
         )
+
+        # Log after super().__init__() to ensure self.workspace is initialized
+        if memgraph_workspace and memgraph_workspace.strip():
+            logger.info(
+                f"Using MEMGRAPH_WORKSPACE environment variable: '{memgraph_workspace}' (overriding '{original_workspace}/{namespace}')"
+            )
+
         self._driver = None
 
     def _get_workspace_label(self) -> str:
-        """Return workspace label (guaranteed non-empty during initialization)"""
-        return self.workspace
+        """Return sanitized workspace label safe for use as a backtick-quoted identifier in Cypher queries.
+
+        Escapes backticks by doubling them to prevent Cypher injection
+        via the LIGHTRAG-WORKSPACE header, while preserving a 1-to-1 mapping
+        for all other characters. The returned value is intended to be used
+        inside backticks (for example, MATCH (n:`{label}`)) and is not
+        validated as a standalone unquoted identifier.
+        """
+        workspace = self.workspace.strip()
+        if not workspace:
+            return "base"
+        return workspace.replace("`", "``")
 
     async def initialize(self):
         async with get_data_init_lock():
@@ -305,7 +323,7 @@ class MemgraphStorage(BaseGraphStorage):
 
     async def get_all_labels(self) -> list[str]:
         """
-        Get all existing node labels in the database
+        Get all existing node labels(entity names) in the database
         Returns:
             ["Person", "Company", ...]  # Alphabetically sorted label list
 
@@ -369,31 +387,25 @@ class MemgraphStorage(BaseGraphStorage):
                     query = f"""MATCH (n:`{workspace_label}` {{entity_id: $entity_id}})
                             OPTIONAL MATCH (n)-[r]-(connected:`{workspace_label}`)
                             WHERE connected.entity_id IS NOT NULL
-                            RETURN n, r, connected"""
+                            RETURN n.entity_id AS node_entity_id,
+                                   connected.entity_id AS connected_entity_id,
+                                   startNode(r).entity_id AS start_entity_id"""
                     results = await session.run(query, entity_id=source_node_id)
 
                     edges = []
                     async for record in results:
-                        source_node = record["n"]
-                        connected_node = record["connected"]
+                        node_entity_id = record["node_entity_id"]
+                        connected_entity_id = record["connected_entity_id"]
+                        start_entity_id = record["start_entity_id"]
 
-                        # Skip if either node is None
-                        if not source_node or not connected_node:
+                        if not node_entity_id or not connected_entity_id:
                             continue
 
-                        source_label = (
-                            source_node.get("entity_id")
-                            if source_node.get("entity_id")
-                            else None
-                        )
-                        target_label = (
-                            connected_node.get("entity_id")
-                            if connected_node.get("entity_id")
-                            else None
-                        )
-
-                        if source_label and target_label:
-                            edges.append((source_label, target_label))
+                        # Preserve the original edge direction via startNode(r)
+                        if start_entity_id == node_entity_id:
+                            edges.append((node_entity_id, connected_entity_id))
+                        else:
+                            edges.append((connected_entity_id, node_entity_id))
 
                     await results.consume()  # Ensure results are consumed
                     return edges
@@ -486,7 +498,6 @@ class MemgraphStorage(BaseGraphStorage):
                 "Memgraph driver is not initialized. Call 'await initialize()' first."
             )
         properties = node_data
-        entity_type = properties["entity_type"]
         if "entity_id" not in properties:
             raise ValueError(
                 "Memgraph: node properties must contain an 'entity_id' field"
@@ -510,7 +521,6 @@ class MemgraphStorage(BaseGraphStorage):
                         query = f"""
                         MERGE (n:`{workspace_label}` {{entity_id: $entity_id}})
                         SET n += $properties
-                        SET n:`{entity_type}`
                         """
                         result = await tx.run(
                             query, entity_id=node_id, properties=properties
@@ -661,6 +671,202 @@ class MemgraphStorage(BaseGraphStorage):
             except Exception as e:
                 logger.error(
                     f"[{self.workspace}] Unexpected error during edge upsert: {str(e)}"
+                )
+                raise
+
+    async def upsert_nodes_batch(self, nodes: list[tuple[str, dict[str, str]]]) -> None:
+        """Batch insert/update multiple nodes using a single UNWIND Cypher query.
+
+        Uses the same transient-error retry logic as upsert_node().
+
+        Args:
+            nodes: List of (node_id, node_data) tuples.
+        """
+        if not nodes:
+            return
+        if self._driver is None:
+            raise RuntimeError(
+                "Memgraph driver is not initialized. Call 'await initialize()' first."
+            )
+        workspace_label = self._get_workspace_label()
+        nodes_data = []
+        for node_id, node_data in nodes:
+            if "entity_id" not in node_data:
+                raise ValueError(
+                    "Memgraph: node properties must contain an 'entity_id' field"
+                )
+            nodes_data.append({"entity_id": node_id, "props": node_data})
+
+        max_retries = 100
+        initial_wait_time = 0.2
+        backoff_factor = 1.1
+        jitter_factor = 0.1
+
+        for attempt in range(max_retries):
+            try:
+                async with self._driver.session(database=self._DATABASE) as session:
+
+                    async def execute_batch(tx: AsyncManagedTransaction):
+                        query = f"""
+                        UNWIND $nodes AS row
+                        MERGE (n:`{workspace_label}` {{entity_id: row.entity_id}})
+                        SET n += row.props
+                        """
+                        result = await tx.run(query, nodes=nodes_data)
+                        await result.consume()
+
+                    await session.execute_write(execute_batch)
+                    break
+            except (TransientError, ResultFailedError) as e:
+                root_cause = e
+                while hasattr(root_cause, "__cause__") and root_cause.__cause__:
+                    root_cause = root_cause.__cause__
+                is_transient = (
+                    isinstance(root_cause, TransientError)
+                    or isinstance(e, TransientError)
+                    or "TransientError" in str(e)
+                    or "Cannot resolve conflicting transactions" in str(e)
+                )
+                if is_transient:
+                    if attempt < max_retries - 1:
+                        jitter = random.uniform(0, jitter_factor) * initial_wait_time
+                        wait_time = (
+                            initial_wait_time * (backoff_factor**attempt) + jitter
+                        )
+                        logger.warning(
+                            f"[{self.workspace}] Batch node upsert failed. Attempt #{attempt + 1} retrying in {wait_time:.3f}s... Error: {str(e)}"
+                        )
+                        await asyncio.sleep(wait_time)
+                    else:
+                        logger.error(
+                            f"[{self.workspace}] Memgraph transient error during batch node upsert after {max_retries} retries: {str(e)}"
+                        )
+                        raise
+                else:
+                    logger.error(
+                        f"[{self.workspace}] Non-transient error during batch node upsert: {str(e)}"
+                    )
+                    raise
+            except Exception as e:
+                logger.error(
+                    f"[{self.workspace}] Unexpected error during batch node upsert: {str(e)}"
+                )
+                raise
+
+    async def has_nodes_batch(self, node_ids: list[str]) -> set[str]:
+        """Check existence of multiple nodes in a single UNWIND query.
+
+        Args:
+            node_ids: List of node IDs to check.
+
+        Returns:
+            Set of node_ids that exist in the graph.
+        """
+        if not node_ids:
+            return set()
+        if self._driver is None:
+            raise RuntimeError(
+                "Memgraph driver is not initialized. Call 'await initialize()' first."
+            )
+        workspace_label = self._get_workspace_label()
+        try:
+            async with self._driver.session(
+                database=self._DATABASE, default_access_mode="READ"
+            ) as session:
+                query = f"""
+                UNWIND $ids AS id
+                MATCH (n:`{workspace_label}` {{entity_id: id}})
+                RETURN n.entity_id AS entity_id
+                """
+                result = await session.run(query, ids=node_ids)
+                records = await result.data()
+                await result.consume()
+                return {r["entity_id"] for r in records}
+        except Exception as e:
+            logger.error(
+                f"[{self.workspace}] Error during batch node existence check: {str(e)}"
+            )
+            raise
+
+    async def upsert_edges_batch(
+        self, edges: list[tuple[str, str, dict[str, str]]]
+    ) -> None:
+        """Batch insert/update multiple edges using a single UNWIND Cypher query.
+
+        Uses the same transient-error retry logic as upsert_edge().
+
+        Args:
+            edges: List of (source_node_id, target_node_id, edge_data) tuples.
+        """
+        if not edges:
+            return
+        if self._driver is None:
+            raise RuntimeError(
+                "Memgraph driver is not initialized. Call 'await initialize()' first."
+            )
+        workspace_label = self._get_workspace_label()
+        edges_data = [
+            {"src": src, "tgt": tgt, "props": edge_data}
+            for src, tgt, edge_data in edges
+        ]
+
+        max_retries = 100
+        initial_wait_time = 0.2
+        backoff_factor = 1.1
+        jitter_factor = 0.1
+
+        for attempt in range(max_retries):
+            try:
+                async with self._driver.session(database=self._DATABASE) as session:
+
+                    async def execute_batch(tx: AsyncManagedTransaction):
+                        query = f"""
+                        UNWIND $edges AS row
+                        MATCH (source:`{workspace_label}` {{entity_id: row.src}})
+                        WITH source, row
+                        MATCH (target:`{workspace_label}` {{entity_id: row.tgt}})
+                        MERGE (source)-[r:DIRECTED]-(target)
+                        SET r += row.props
+                        RETURN r
+                        """
+                        result = await tx.run(query, edges=edges_data)
+                        await result.consume()
+
+                    await session.execute_write(execute_batch)
+                    break
+            except (TransientError, ResultFailedError) as e:
+                root_cause = e
+                while hasattr(root_cause, "__cause__") and root_cause.__cause__:
+                    root_cause = root_cause.__cause__
+                is_transient = (
+                    isinstance(root_cause, TransientError)
+                    or isinstance(e, TransientError)
+                    or "TransientError" in str(e)
+                    or "Cannot resolve conflicting transactions" in str(e)
+                )
+                if is_transient:
+                    if attempt < max_retries - 1:
+                        jitter = random.uniform(0, jitter_factor) * initial_wait_time
+                        wait_time = (
+                            initial_wait_time * (backoff_factor**attempt) + jitter
+                        )
+                        logger.warning(
+                            f"[{self.workspace}] Batch edge upsert failed. Attempt #{attempt + 1} retrying in {wait_time:.3f}s... Error: {str(e)}"
+                        )
+                        await asyncio.sleep(wait_time)
+                    else:
+                        logger.error(
+                            f"[{self.workspace}] Memgraph transient error during batch edge upsert after {max_retries} retries: {str(e)}"
+                        )
+                        raise
+                else:
+                    logger.error(
+                        f"[{self.workspace}] Non-transient error during batch edge upsert: {str(e)}"
+                    )
+                    raise
+            except Exception as e:
+                logger.error(
+                    f"[{self.workspace}] Unexpected error during batch edge upsert: {str(e)}"
                 )
                 raise
 
@@ -886,24 +1092,25 @@ class MemgraphStorage(BaseGraphStorage):
                     MATCH (start:`{workspace_label}`)
                     WHERE start.entity_id = $entity_id
 
-                    MATCH path = (start)-[*BFS 0..{max_depth}]-(end:`{workspace_label}`)
-                    WHERE ALL(n IN nodes(path) WHERE '{workspace_label}' IN labels(n))
-                    WITH collect(DISTINCT end) + start AS all_nodes_unlimited
+                    OPTIONAL MATCH path = (start)-[*BFS 0..{max_depth}]-(end:`{workspace_label}`)
+                    WHERE path IS NULL OR ALL(n IN nodes(path) WHERE '{workspace_label}' IN labels(n))
+                    WITH start, collect(DISTINCT end) AS discovered_nodes
+                    WITH start, [node IN discovered_nodes WHERE node IS NOT NULL AND node <> start] AS other_nodes
                     WITH
                     CASE
-                        WHEN size(all_nodes_unlimited) <= $max_nodes THEN all_nodes_unlimited
-                        ELSE all_nodes_unlimited[0..$max_nodes]
+                        WHEN 1 + size(other_nodes) <= $max_nodes THEN [start] + other_nodes
+                        ELSE [start] + other_nodes[0..$max_other_nodes]
                     END AS limited_nodes,
-                    size(all_nodes_unlimited) > $max_nodes AS is_truncated
+                    1 + size(other_nodes) > $max_nodes AS is_truncated
 
                     UNWIND limited_nodes AS n
-                    MATCH (n)-[r]-(m)
+                    OPTIONAL MATCH (n)-[r]-(m)
                     WHERE m IN limited_nodes
-                    WITH collect(DISTINCT n) AS limited_nodes, collect(DISTINCT r) AS relationships, is_truncated
+                    WITH limited_nodes, collect(DISTINCT r) AS relationships, is_truncated
 
                     RETURN
                     [node IN limited_nodes | {{node: node}}] AS node_info,
-                    relationships,
+                    [rel IN relationships WHERE rel IS NOT NULL] AS relationships,
                     is_truncated
                     """
 
@@ -914,6 +1121,7 @@ class MemgraphStorage(BaseGraphStorage):
                             {
                                 "entity_id": node_label,
                                 "max_nodes": max_nodes,
+                                "max_other_nodes": max(max_nodes - 1, 0),
                             },
                         )
                         record = await result_set.single()
@@ -1038,10 +1246,10 @@ class MemgraphStorage(BaseGraphStorage):
         """Get popular labels by node degree (most connected entities)
 
         Args:
-            limit: Maximum number of labels to return
+            limit: Maximum number of labels(entity names) to return
 
         Returns:
-            List of labels sorted by degree (highest first)
+            List of labels(entity names) sorted by degree (highest first)
         """
         if self._driver is None:
             raise RuntimeError(
@@ -1080,14 +1288,14 @@ class MemgraphStorage(BaseGraphStorage):
             return []
 
     async def search_labels(self, query: str, limit: int = 50) -> list[str]:
-        """Search labels with fuzzy matching
+        """Search labels(entity names) with fuzzy matching
 
         Args:
             query: Search query string
             limit: Maximum number of results to return
 
         Returns:
-            List of matching labels sorted by relevance
+            List of matching labels(entity names) sorted by relevance
         """
         if self._driver is None:
             raise RuntimeError(
