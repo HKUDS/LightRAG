@@ -1,4 +1,5 @@
 import importlib
+import logging
 import os
 import sys
 from types import SimpleNamespace
@@ -450,6 +451,18 @@ class _FakeLightRAG:
         type(self).last_init_kwargs = dict(kwargs)
         type(self).last_instance = self
         self.role_config_snapshot = {}
+        for role, cfg in (kwargs.get("role_llm_configs") or {}).items():
+            metadata = dict(getattr(cfg, "metadata", None) or {})
+            self.role_config_snapshot[role] = {
+                "binding": metadata.get("binding"),
+                "model": metadata.get("model"),
+                "host": metadata.get("host"),
+                "is_cross_provider": metadata.get("is_cross_provider", False),
+                "max_async": getattr(cfg, "max_async", None),
+                "timeout": getattr(cfg, "timeout", None),
+                "has_model_kwargs": getattr(cfg, "kwargs", None) is not None,
+                "metadata": metadata,
+            }
         self.queue_status_snapshot = {}
         self.embedding_queue_status_snapshot = {}
         self.rerank_queue_status_snapshot = {}
@@ -649,6 +662,84 @@ async def test_create_app_bedrock_query_role_uses_role_sigv4_credentials(
     assert mocked_bedrock.await_args.kwargs["aws_access_key_id"] == "query-akid"
     assert mocked_bedrock.await_args.kwargs["aws_secret_access_key"] == "query-secret"
     assert mocked_bedrock.await_args.kwargs["aws_session_token"] == "query-session"
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_create_app_keyword_openai_role_forwards_nested_extra_body(
+    tmp_path, monkeypatch, caplog
+):
+    _reload_api_modules_if_mocked()
+    monkeypatch.setattr(sys, "argv", ["pytest"])
+    monkeypatch.setattr(logging.getLogger("lightrag"), "propagate", True)
+    monkeypatch.setenv(
+        "KEYWORD_OPENAI_LLM_EXTRA_BODY",
+        '{"chat_template_kwargs": {"enable_thinking": false}}',
+    )
+
+    config = importlib.import_module("lightrag.api.config")
+    config.initialize_config(_make_args(tmp_path), force=True)
+    lightrag_server = importlib.import_module("lightrag.api.lightrag_server")
+    monkeypatch.setattr(lightrag_server, "LightRAG", _FakeLightRAG)
+    monkeypatch.setattr(lightrag_server, "check_frontend_build", lambda: (True, False))
+    monkeypatch.setattr(
+        lightrag_server, "create_document_routes", lambda *_args, **_kwargs: APIRouter()
+    )
+    monkeypatch.setattr(
+        lightrag_server, "create_query_routes", lambda *_args, **_kwargs: APIRouter()
+    )
+    monkeypatch.setattr(
+        lightrag_server, "create_graph_routes", lambda *_args, **_kwargs: APIRouter()
+    )
+    monkeypatch.setattr(lightrag_server, "OllamaAPI", _FakeOllamaAPI)
+
+    args = _make_args(tmp_path)
+    args.keyword_llm_binding = "openai"
+    args.keyword_llm_model = "xhd/Qwen3.5-35B-A3B"
+    args.keyword_llm_binding_host = "https://keyword.example/v1"
+    args.keyword_llm_binding_api_key = "keyword-secret"
+
+    with (
+        caplog.at_level("INFO", logger="lightrag"),
+        patch(
+            "lightrag.llm.openai.openai_complete_if_cache",
+            AsyncMock(
+                return_value='{"high_level_keywords":[],"low_level_keywords":[]}'
+            ),
+        ) as mocked_openai,
+    ):
+        lightrag_server.create_app(args)
+        keyword_cfg = _FakeLightRAG.last_init_kwargs["role_llm_configs"]["keyword"]
+        result = await keyword_cfg.func(
+            "keyword prompt", response_format={"type": "json_object"}
+        )
+
+    assert result == '{"high_level_keywords":[],"low_level_keywords":[]}'
+    assert keyword_cfg.metadata["binding"] == "openai"
+    assert keyword_cfg.metadata["provider_options"]["extra_body"] == {
+        "chat_template_kwargs": {"enable_thinking": False}
+    }
+    assert mocked_openai.await_count == 1
+    assert mocked_openai.await_args.args[:2] == (
+        "xhd/Qwen3.5-35B-A3B",
+        "keyword prompt",
+    )
+    kwargs = mocked_openai.await_args.kwargs
+    assert kwargs["base_url"] == "https://keyword.example/v1"
+    assert kwargs["api_key"] == "keyword-secret"
+    assert kwargs["response_format"] == {"type": "json_object"}
+    assert kwargs["extra_body"] == {"chat_template_kwargs": {"enable_thinking": False}}
+
+    messages = "\n".join(record.getMessage() for record in caplog.records)
+    assert "Role LLM Option:" in messages
+    assert " - extract: Bedrock {}" in messages
+    assert " - keyword: OpenAI {'extra_body':" in messages
+    assert " - query: Bedrock {}" in messages
+    assert " - vlm: Bedrock {}" in messages
+    assert "chat_template_kwargs" in messages
+    assert "reasoning_effort" not in messages
+    assert "frequency_penalty" not in messages
+    assert "keyword-secret" not in messages
 
 
 @pytest.mark.offline

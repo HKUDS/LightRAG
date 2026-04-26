@@ -105,6 +105,11 @@ def _role_config_headers(caplog) -> list[str]:
     ]
 
 
+def _clear_role_provider_env(monkeypatch, role: str, options_cls) -> None:
+    for arg_item in options_cls.args_env_name_type_value():
+        monkeypatch.delenv(f"{role.upper()}_{arg_item['env_name']}", raising=False)
+
+
 ROLE_MAX_ASYNC_ENV_KEYS = (
     "MAX_ASYNC_EXTRACT_LLM",
     "MAX_ASYNC_KEYWORD_LLM",
@@ -343,7 +348,7 @@ def test_role_llm_config_logs_once_on_init_with_metadata(
     assert len(headers) == 1
     assert "initialized" in headers[0]
     messages = "\n".join(_captured_messages(caplog))
-    assert " - query: binding=openai, model=gpt-test" in messages
+    assert " - query: openai/gpt-test" in messages
     assert "max_async=7" in messages
     assert "timeout=42" in messages
     assert "secret-key" not in messages
@@ -654,7 +659,7 @@ def test_update_llm_role_config_logs_after_success(
     assert len(headers) == 1
     assert "updated: query" in headers[0]
     messages = "\n".join(_captured_messages(caplog))
-    assert " - query: binding=gemini, model=gemini-2.0-flash" in messages
+    assert " - query: gemini/gemini-2.0-flash" in messages
     assert "host=https://gemini.example/v1" in messages
     assert "is_cross_provider" not in messages
     assert "new-secret" not in messages
@@ -694,7 +699,7 @@ async def test_aupdate_llm_role_config_logs_after_success(
     assert len(headers) == 1
     assert "updated: query" in headers[0]
     messages = "\n".join(_captured_messages(caplog))
-    assert " - query: binding=openai, model=old-model" in messages
+    assert " - query: openai/old-model" in messages
     assert "max_async=2" in messages
     assert "timeout=180" in messages
 
@@ -909,6 +914,7 @@ def test_options_dict_for_role_inherits_same_provider(monkeypatch):
         openai_llm_top_p=0.8,
         openai_llm_extra_body={"base": True},
     )
+    _clear_role_provider_env(monkeypatch, "extract", OpenAILLMOptions)
     monkeypatch.setenv("EXTRACT_OPENAI_LLM_TEMPERATURE", "0.7")
 
     options = OpenAILLMOptions.options_dict_for_role(args, "extract")
@@ -924,16 +930,29 @@ def test_options_dict_for_role_resets_cross_provider(monkeypatch):
         openai_llm_top_p=0.8,
         openai_llm_extra_body={"base": True},
     )
-    default_options = OpenAILLMOptions().asdict()
+    _clear_role_provider_env(monkeypatch, "query", OpenAILLMOptions)
     monkeypatch.setenv("QUERY_OPENAI_LLM_TOP_P", "0.6")
 
     options = OpenAILLMOptions.options_dict_for_role(
         args, "query", is_cross_provider=True
     )
 
-    assert options["temperature"] == default_options["temperature"]
-    assert options["top_p"] == 0.6
-    assert options["extra_body"] == default_options["extra_body"]
+    assert options == {"top_p": 0.6}
+
+
+def test_options_dict_for_role_parses_nested_extra_body_cross_provider(monkeypatch):
+    args = Namespace(openai_llm_extra_body={"base": True})
+    _clear_role_provider_env(monkeypatch, "keyword", OpenAILLMOptions)
+    monkeypatch.setenv(
+        "KEYWORD_OPENAI_LLM_EXTRA_BODY",
+        '{"chat_template_kwargs": {"enable_thinking": false}}',
+    )
+
+    options = OpenAILLMOptions.options_dict_for_role(
+        args, "keyword", is_cross_provider=True
+    )
+
+    assert options["extra_body"] == {"chat_template_kwargs": {"enable_thinking": False}}
 
 
 @pytest.mark.asyncio

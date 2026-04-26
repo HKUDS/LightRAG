@@ -196,6 +196,52 @@ class LLMConfigCache:
                 self.gemini_embedding_options = {}
 
 
+_PROVIDER_LOG_LABELS = {
+    "azure_openai": "Azure OpenAI",
+    "bedrock": "Bedrock",
+    "gemini": "Gemini",
+    "lollms": "Lollms",
+    "ollama": "Ollama",
+    "openai": "OpenAI",
+}
+
+
+def _provider_log_label(binding: Any) -> str:
+    binding_name = str(binding)
+    return _PROVIDER_LOG_LABELS.get(
+        binding_name, binding_name.replace("_", " ").title()
+    )
+
+
+def _log_role_provider_options(rag: Any) -> None:
+    """Log sanitized provider options for every role LLM."""
+    try:
+        role_configs = rag.get_llm_role_config()
+    except Exception as e:
+        logger.warning(f"Failed to read role LLM configuration for logging: {e}")
+        return
+
+    logger.info("Role LLM Option:")
+
+    for spec in ROLES:
+        role_config = role_configs.get(spec.name)
+        if not isinstance(role_config, dict):
+            continue
+
+        metadata = role_config.get("metadata") or {}
+        binding = role_config.get("binding") or metadata.get("binding")
+        if not binding:
+            continue
+
+        provider_options = metadata.get("provider_options") or {}
+        logger.info(
+            " - %s: %s %s",
+            spec.name,
+            _provider_log_label(binding),
+            provider_options,
+        )
+
+
 def check_frontend_build():
     """Check if frontend is built and optionally check if source is up-to-date
 
@@ -1485,6 +1531,8 @@ def create_app(args):
     except Exception as e:
         logger.error(f"Failed to initialize LightRAG: {e}")
         raise
+
+    _log_role_provider_options(rag)
 
     rag.register_role_llm_builder(
         lambda role, meta: (

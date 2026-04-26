@@ -133,7 +133,7 @@ If a role's `{ROLE}_LLM_BINDING` differs from the base `LLM_BINDING`, it is a cr
 - `{ROLE}_LLM_MODEL` must be set.
 - Non-Bedrock providers must set `{ROLE}_LLM_BINDING_API_KEY`.
 - If `{ROLE}_LLM_BINDING_HOST` is not set, LightRAG tries to use that provider's default host.
-- Provider options do not inherit base provider options. They start from the target provider defaults, then apply role-specific provider options.
+- Provider options do not inherit base provider options. They start empty and only apply role-specific provider options.
 
 Example: use Ollama as the base for local extraction, then use OpenAI for final answers:
 
@@ -365,7 +365,7 @@ Do not set `QUERY_LLM_BINDING_API_KEY`; Bedrock rejects that configuration.
 ## Caveats
 
 - Within the same provider, provider options such as `OPENAI_LLM_REASONING_EFFORT`, `OPENAI_LLM_MAX_TOKENS`, `OLLAMA_LLM_NUM_CTX`, and `GEMINI_LLM_THINKING_CONFIG` are inherited automatically.
-- There is currently no clean role-level semantic for "unsetting an inherited provider option". If a model in a same-provider role does not support a base option, explicitly override that option for the role with a supported value, or configure the role as cross-provider and use the target provider defaults.
+- There is currently no clean role-level semantic for "unsetting an inherited provider option". If a model in a same-provider role does not support a base option, explicitly override that option for the role with a supported value, or configure the role as cross-provider and set only the role-specific provider options it supports.
 - `AZURE_OPENAI_DEPLOYMENT` and `AZURE_OPENAI_API_VERSION` for `azure_openai` are global environment variables. If `AZURE_OPENAI_DEPLOYMENT` is set, it may take precedence over the role model name.
 - Gemini Vertex AI mode is controlled by process-level Google environment variables. In the same LightRAG process, some roles cannot use Vertex AI while others use AI Studio API keys.
 - In Docker/Compose, `LLM_BINDING_HOST` usually needs to use a container-reachable address such as `host.docker.internal`; role-level hosts follow the same principle.
