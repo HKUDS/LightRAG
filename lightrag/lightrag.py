@@ -1289,6 +1289,20 @@ class LightRAG:
                 cfg["timeout"],
             )
 
+    async def _queue_status_for_func(
+        self, func: Callable[..., object] | None
+    ) -> dict[str, Any]:
+        if func is None:
+            return {"available": False}
+        get_stats = getattr(func, "get_queue_stats", None)
+        if not callable(get_stats):
+            return {"available": False}
+        stats = get_stats()
+        if inspect.isawaitable(stats):
+            stats = await stats
+        stats["available"] = True
+        return stats
+
     async def get_llm_queue_status(self, include_base: bool = True) -> dict[str, Any]:
         """Return queue status for each role's wrapped LLM func.
 
@@ -1298,23 +1312,23 @@ class LightRAG:
         """
         del include_base  # base is unwrapped — see docstring
 
-        async def stats_for(func: Callable[..., object] | None) -> dict[str, Any]:
-            if func is None:
-                return {"available": False}
-            get_stats = getattr(func, "get_queue_stats", None)
-            if not callable(get_stats):
-                return {"available": False}
-            stats = get_stats()
-            if inspect.isawaitable(stats):
-                stats = await stats
-            stats["available"] = True
-            return stats
-
         result: dict[str, Any] = {}
         for spec in ROLES:
             state = self._role_llm_states.get(spec.name)
-            result[spec.name] = await stats_for(state.wrapped if state else None)
+            result[spec.name] = await self._queue_status_for_func(
+                state.wrapped if state else None
+            )
         return result
+
+    async def get_embedding_queue_status(self) -> dict[str, Any]:
+        """Return queue status for the wrapped embedding function."""
+        return await self._queue_status_for_func(
+            self.embedding_func.func if self.embedding_func is not None else None
+        )
+
+    async def get_rerank_queue_status(self) -> dict[str, Any]:
+        """Return queue status for the wrapped rerank function."""
+        return await self._queue_status_for_func(self.rerank_model_func)
 
     def _mark_addon_params_dirty(self) -> None:
         self._addon_params_dirty = True
@@ -1503,6 +1517,13 @@ class LightRAG:
             logger.warning(
                 f"max_total_tokens({self.summary_max_tokens}) should greater than summary_length_recommended({self.summary_length_recommended})"
             )
+
+        if self.rerank_model_func is not None:
+            self.rerank_model_func = priority_limit_async_func_call(
+                self.llm_model_max_async,
+                llm_timeout=self.default_llm_timeout,
+                queue_name="Rerank func",
+            )(self.rerank_model_func)
 
         # Init Embedding
         # Step 1: Capture embedding_func and max_token_size before applying rate_limit decorator

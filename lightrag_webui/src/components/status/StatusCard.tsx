@@ -30,7 +30,7 @@ const statValue = (value: number | undefined) => {
   return typeof value === 'number' ? value.toString() : '-'
 }
 
-const getRoleRows = (status: LightragStatus): RoleLLMRow[] => {
+const getModelRows = (status: LightragStatus): RoleLLMRow[] => {
   const configs = status.configuration.role_llm_config || {}
   const queues = status.llm_queue_status || {}
   const discoveredRoles = new Set([...Object.keys(configs), ...Object.keys(queues)])
@@ -39,21 +39,7 @@ const getRoleRows = (status: LightragStatus): RoleLLMRow[] => {
     ...Array.from(discoveredRoles).filter((role) => !ROLE_ORDER.includes(role))
   ]
 
-  if (!orderedRoles.length) {
-    return [
-      {
-        role: 'base',
-        config: {
-          binding: status.configuration.llm_binding,
-          model: status.configuration.llm_model,
-          host: status.configuration.llm_binding_host,
-          max_async: status.configuration.max_async
-        }
-      }
-    ]
-  }
-
-  return orderedRoles.map((role) => ({
+  const rows = orderedRoles.map((role) => ({
     role,
     config: configs[role] || {
       binding: status.configuration.llm_binding,
@@ -63,6 +49,44 @@ const getRoleRows = (status: LightragStatus): RoleLLMRow[] => {
     },
     queue: queues[role]
   }))
+
+  if (!rows.length) {
+    rows.push({
+      role: 'base',
+      config: {
+        binding: status.configuration.llm_binding,
+        model: status.configuration.llm_model,
+        host: status.configuration.llm_binding_host,
+        max_async: status.configuration.max_async
+      }
+    })
+  }
+
+  rows.push({
+    role: 'embed',
+    config: {
+      binding: status.configuration.embedding_binding,
+      model: status.configuration.embedding_model,
+      host: status.configuration.embedding_binding_host,
+      max_async: status.configuration.embedding_func_max_async
+    },
+    queue: status.embedding_queue_status
+  })
+
+  if (status.configuration.enable_rerank || status.rerank_queue_status?.available) {
+    rows.push({
+      role: 'rerank',
+      config: {
+        binding: status.configuration.rerank_binding,
+        model: status.configuration.rerank_model,
+        host: status.configuration.rerank_binding_host,
+        max_async: status.rerank_queue_status?.max_async
+      },
+      queue: status.rerank_queue_status
+    })
+  }
+
+  return rows
 }
 
 const StatusCard = ({ status }: { status: LightragStatus | null }) => {
@@ -71,7 +95,7 @@ const StatusCard = ({ status }: { status: LightragStatus | null }) => {
     return <div className="text-foreground text-xs">{t('graphPanel.statusCard.unavailable')}</div>
   }
 
-  const roleRows = getRoleRows(status)
+  const roleRows = getModelRows(status)
 
   return (
     <div className="min-w-[300px] space-y-2 text-xs">
@@ -109,7 +133,7 @@ const StatusCard = ({ status }: { status: LightragStatus | null }) => {
                   run/max
                 </TableHead>
                 <TableHead className="h-7 px-2 py-1 text-right">
-                  req/done
+                  req
                 </TableHead>
               </TableRow>
             </TableHeader>
@@ -137,7 +161,7 @@ const StatusCard = ({ status }: { status: LightragStatus | null }) => {
                       {statValue(queue?.running)}/{statValue(maxAsync)}
                     </TableCell>
                     <TableCell className="px-2 py-1 text-right tabular-nums">
-                      {`${statValue(queue?.submitted_total)}/${statValue(queue?.completed_total)}`}
+                      {statValue(queue?.submitted_total)}
                     </TableCell>
                   </TableRow>
                 )
@@ -146,28 +170,6 @@ const StatusCard = ({ status }: { status: LightragStatus | null }) => {
           </Table>
         </div>
       </div>
-
-      <div className="space-y-1">
-        <h4 className="font-medium">{t('graphPanel.statusCard.embeddingConfig')}</h4>
-        <div className="text-foreground grid grid-cols-[160px_1fr] gap-1">
-          <span>{t('graphPanel.statusCard.embeddingBindingHost')}:</span>
-          <span>{status.configuration.embedding_binding_host}</span>
-          <span>{t('graphPanel.statusCard.embeddingModel')}:</span>
-          <span>{status.configuration.embedding_binding}: {status.configuration.embedding_model} (#{status.configuration.embedding_func_max_async} Async * {status.configuration.embedding_batch_num} batches)</span>
-        </div>
-      </div>
-
-      {status.configuration.enable_rerank && (
-        <div className="space-y-1">
-          <h4 className="font-medium">{t('graphPanel.statusCard.rerankerConfig')}</h4>
-          <div className="text-foreground grid grid-cols-[160px_1fr] gap-1">
-            <span>{t('graphPanel.statusCard.rerankerBindingHost')}:</span>
-            <span>{status.configuration.rerank_binding_host || '-'}</span>
-            <span>{t('graphPanel.statusCard.rerankerModel')}:</span>
-            <span>{(status.configuration.rerank_binding || '-')} : {(status.configuration.rerank_model || '-')}</span>
-          </div>
-        </div>
-      )}
 
       <div className="space-y-1">
         <h4 className="font-medium">{t('graphPanel.statusCard.storageConfig')}</h4>

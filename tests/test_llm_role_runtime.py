@@ -705,6 +705,24 @@ async def test_llm_role_config_and_queue_status_are_observable(tmp_path):
     assert queue_status["query"]["queue_name"] == "query LLM func"
 
 
+@pytest.mark.asyncio
+async def test_embedding_and_rerank_queue_status_are_observable(tmp_path):
+    async def rerank_func(*args, **kwargs):
+        return []
+
+    rag = _make_rag(tmp_path, rerank_model_func=rerank_func, llm_model_max_async=3)
+
+    embedding_status = await rag.get_embedding_queue_status()
+    rerank_status = await rag.get_rerank_queue_status()
+
+    assert embedding_status["available"] is True
+    assert embedding_status["queue_name"] == "Embedding func"
+    assert embedding_status["max_async"] == rag.embedding_func_max_async
+    assert rerank_status["available"] is True
+    assert rerank_status["queue_name"] == "Rerank func"
+    assert rerank_status["max_async"] == 3
+
+
 def test_get_llm_role_config_strips_bedrock_and_password_fields(tmp_path):
     rag = _make_rag(tmp_path)
     rag.set_role_llm_metadata(

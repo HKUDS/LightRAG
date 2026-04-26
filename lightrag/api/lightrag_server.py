@@ -1661,6 +1661,8 @@ def create_app(args):
                 "pipeline_busy": pipeline_status.get("busy", False),
                 "keyed_locks": keyed_lock_info,
                 "llm_queue_status": await rag.get_llm_queue_status(include_base=True),
+                "embedding_queue_status": await rag.get_embedding_queue_status(),
+                "rerank_queue_status": await rag.get_rerank_queue_status(),
                 "core_version": core_version,
                 "api_version": api_version_display,
                 "webui_title": webui_title,

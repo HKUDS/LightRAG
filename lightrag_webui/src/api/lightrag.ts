@@ -90,6 +90,8 @@ export type LightragStatus = {
   auth_mode?: 'enabled' | 'disabled'
   pipeline_busy: boolean
   llm_queue_status?: Record<string, LightragQueueStatus>
+  embedding_queue_status?: LightragQueueStatus
+  rerank_queue_status?: LightragQueueStatus
   keyed_locks?: {
     process_id: number
     cleanup_performed: {
