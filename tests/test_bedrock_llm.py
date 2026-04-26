@@ -546,6 +546,10 @@ def _make_args(tmp_path) -> SimpleNamespace:
         min_rerank_score=0.0,
         related_chunk_number=5,
         top_k=10,
+        llm_timeout=180,
+        embedding_timeout=30,
+        rerank_max_async=4,
+        rerank_timeout=30,
     )
 
 
