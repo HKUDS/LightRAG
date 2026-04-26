@@ -43,6 +43,9 @@ from lightrag.constants import (
     DEFAULT_OLLAMA_MODEL_NAME,
     DEFAULT_OLLAMA_MODEL_TAG,
     DEFAULT_RERANK_BINDING,
+    DEFAULT_LLM_TIMEOUT,
+    DEFAULT_EMBEDDING_TIMEOUT,
+    DEFAULT_RERANK_TIMEOUT,
 )
 
 # use the .env that is inside the current folder
@@ -573,6 +576,17 @@ def parse_args() -> argparse.Namespace:
     args.min_rerank_score = get_env_value(
         "MIN_RERANK_SCORE", DEFAULT_MIN_RERANK_SCORE, float
     )
+
+    # LLM / Embedding request timeouts
+    args.llm_timeout = get_env_value("LLM_TIMEOUT", DEFAULT_LLM_TIMEOUT, int)
+    args.embedding_timeout = get_env_value(
+        "EMBEDDING_TIMEOUT", DEFAULT_EMBEDDING_TIMEOUT, int
+    )
+
+    # Rerank async/timeout configuration (independent from base LLM)
+    # rerank_max_async falls back to MAX_ASYNC; rerank_timeout has its own default.
+    args.rerank_max_async = get_env_value("MAX_ASYNC_RERANK_LLM", args.max_async, int)
+    args.rerank_timeout = get_env_value("RERANK_TIMEOUT", DEFAULT_RERANK_TIMEOUT, int)
 
     # Query configuration
     args.history_turns = get_env_value("HISTORY_TURNS", DEFAULT_HISTORY_TURNS, int)

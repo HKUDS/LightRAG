@@ -336,24 +336,6 @@ def display_splash_screen(args: argparse.Namespace) -> None:
     ASCIIColors.yellow(f"{args.working_dir}")
     ASCIIColors.white("    └─ Input Directory: ", end="")
     ASCIIColors.yellow(f"{args.input_dir}")
-
-    # LLM Configuration
-    ASCIIColors.magenta("\n🤖 LLM Configuration:")
-    ASCIIColors.white("    ├─ Binding: ", end="")
-    ASCIIColors.yellow(f"{args.llm_binding}")
-    ASCIIColors.white("    ├─ Host: ", end="")
-    ASCIIColors.yellow(f"{args.llm_binding_host}")
-    ASCIIColors.white("    ├─ Model: ", end="")
-    ASCIIColors.yellow(f"{args.llm_model}")
-    ASCIIColors.white("    ├─ Max Async for LLM: ", end="")
-    ASCIIColors.yellow(f"{args.max_async}")
-    ASCIIColors.white("    ├─ Summary Context Size: ", end="")
-    ASCIIColors.yellow(f"{args.summary_context_size}")
-    ASCIIColors.white("    ├─ LLM Cache Enabled: ", end="")
-    ASCIIColors.yellow(f"{args.enable_llm_cache}")
-    ASCIIColors.white("    └─ LLM Cache for Extraction Enabled: ", end="")
-    ASCIIColors.yellow(f"{args.enable_llm_cache_for_extract}")
-
     # Embedding Configuration
     ASCIIColors.magenta("\n📊 Embedding Configuration:")
     ASCIIColors.white("    ├─ Binding: ", end="")

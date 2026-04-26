@@ -79,12 +79,16 @@ export type LightragStatus = {
     rerank_binding?: string | null
     rerank_model?: string | null
     rerank_binding_host?: string | null
+    rerank_max_async?: number
+    rerank_timeout?: number
     summary_language: string
     force_llm_summary_on_merge: boolean
     max_parallel_insert: number
     max_async: number
+    llm_timeout?: number
     embedding_func_max_async: number
     embedding_batch_num: number
+    embedding_timeout?: number
     cosine_threshold: number
     min_rerank_score: number
     related_chunk_number: number
@@ -905,7 +909,8 @@ export const getAuthStatus = async (): Promise<AuthStatusResponse> => {
     });
 
     // Check if response is HTML (which indicates a redirect or wrong endpoint)
-    const contentType = response.headers['content-type'] || '';
+    const contentTypeHeader = response.headers['content-type'];
+    const contentType = typeof contentTypeHeader === 'string' ? contentTypeHeader : '';
     if (contentType.includes('text/html')) {
       console.warn('Received HTML response instead of JSON for auth-status endpoint');
       return {

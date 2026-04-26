@@ -710,7 +710,7 @@ async def test_embedding_and_rerank_queue_status_are_observable(tmp_path):
     async def rerank_func(*args, **kwargs):
         return []
 
-    rag = _make_rag(tmp_path, rerank_model_func=rerank_func, llm_model_max_async=3)
+    rag = _make_rag(tmp_path, rerank_model_func=rerank_func)
 
     embedding_status = await rag.get_embedding_queue_status()
     rerank_status = await rag.get_rerank_queue_status()
@@ -720,7 +720,7 @@ async def test_embedding_and_rerank_queue_status_are_observable(tmp_path):
     assert embedding_status["max_async"] == rag.embedding_func_max_async
     assert rerank_status["available"] is True
     assert rerank_status["queue_name"] == "Rerank func"
-    assert rerank_status["max_async"] == 3
+    assert rerank_status["max_async"] == rag.rerank_model_max_async
 
 
 def test_get_llm_role_config_strips_bedrock_and_password_fields(tmp_path):

@@ -42,8 +42,6 @@ from lightrag.constants import (
     DEFAULT_LOG_MAX_BYTES,
     DEFAULT_LOG_BACKUP_COUNT,
     DEFAULT_LOG_FILENAME,
-    DEFAULT_LLM_TIMEOUT,
-    DEFAULT_EMBEDDING_TIMEOUT,
 )
 from lightrag.api.routers.document_routes import (
     DocumentManager,
@@ -1239,10 +1237,8 @@ def create_app(args):
 
         return embedding_func_instance
 
-    llm_timeout = get_env_value("LLM_TIMEOUT", DEFAULT_LLM_TIMEOUT, int)
-    embedding_timeout = get_env_value(
-        "EMBEDDING_TIMEOUT", DEFAULT_EMBEDDING_TIMEOUT, int
-    )
+    llm_timeout = args.llm_timeout
+    embedding_timeout = args.embedding_timeout
 
     async def bedrock_model_complete(
         prompt,
@@ -1454,6 +1450,8 @@ def create_app(args):
             enable_llm_cache_for_entity_extract=args.enable_llm_cache_for_extract,
             enable_llm_cache=args.enable_llm_cache,
             rerank_model_func=rerank_model_func,
+            rerank_model_max_async=args.rerank_max_async,
+            default_rerank_timeout=args.rerank_timeout,
             max_parallel_insert=args.max_parallel_insert,
             max_graph_nodes=args.max_graph_nodes,
             addon_params=addon_params,
@@ -1692,6 +1690,8 @@ def create_app(args):
                     "rerank_binding_host": args.rerank_binding_host
                     if rerank_model_func
                     else None,
+                    "rerank_max_async": args.rerank_max_async,
+                    "rerank_timeout": args.rerank_timeout,
                     # Environment variable status (requested configuration)
                     "summary_language": args.summary_language,
                     "force_llm_summary_on_merge": args.force_llm_summary_on_merge,
@@ -1700,8 +1700,10 @@ def create_app(args):
                     "min_rerank_score": args.min_rerank_score,
                     "related_chunk_number": args.related_chunk_number,
                     "max_async": args.max_async,
+                    "llm_timeout": args.llm_timeout,
                     "embedding_func_max_async": args.embedding_func_max_async,
                     "embedding_batch_num": args.embedding_batch_num,
+                    "embedding_timeout": args.embedding_timeout,
                     "role_llm_config": rag.get_llm_role_config(),
                 },
                 "auth_mode": auth_mode,
