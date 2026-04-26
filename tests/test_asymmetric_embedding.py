@@ -62,6 +62,24 @@ def test_wrap_explicit_supports_asymmetric_overrides_auto_detect():
     assert my_embed.supports_asymmetric is False
 
 
+def test_wrap_auto_detects_per_function_when_decorator_reused():
+    """Reusing a decorator must not share auto-detected support between functions."""
+    from lightrag.utils import wrap_embedding_func_with_attrs
+
+    decorator = wrap_embedding_func_with_attrs(embedding_dim=4, max_token_size=64)
+
+    @decorator
+    async def legacy_embed(texts):
+        return np.zeros((len(texts), 4), dtype=np.float32)
+
+    @decorator
+    async def aware_embed(texts, context="document"):
+        return np.zeros((len(texts), 4), dtype=np.float32)
+
+    assert legacy_embed.supports_asymmetric is False
+    assert aware_embed.supports_asymmetric is True
+
+
 # ---------------------------------------------------------------------------
 # EmbeddingFunc.__call__ strips context for legacy embeds
 # ---------------------------------------------------------------------------

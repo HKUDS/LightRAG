@@ -1177,20 +1177,21 @@ def wrap_embedding_func_with_attrs(**kwargs):
     """
 
     def final_decro(func) -> EmbeddingFunc:
+        embedding_kwargs = dict(kwargs)
         # Auto-detect supports_asymmetric from the wrapped function's signature
         # if the caller did not declare it explicitly. Without this, any user or
         # third-party embed function that accepts a `context` parameter but
         # forgets to set ``supports_asymmetric=True`` would have its `context`
         # silently dropped by ``EmbeddingFunc.__call__``, defeating the
         # task-aware embedding feature.
-        if "supports_asymmetric" not in kwargs:
+        if "supports_asymmetric" not in embedding_kwargs:
             try:
                 sig = inspect.signature(func)
-                kwargs["supports_asymmetric"] = "context" in sig.parameters
+                embedding_kwargs["supports_asymmetric"] = "context" in sig.parameters
             except (TypeError, ValueError):
                 # inspect.signature can fail for builtins; fall back to False.
-                kwargs["supports_asymmetric"] = False
-        new_func = EmbeddingFunc(**kwargs, func=func)
+                embedding_kwargs["supports_asymmetric"] = False
+        new_func = EmbeddingFunc(**embedding_kwargs, func=func)
         return new_func
 
     return final_decro
