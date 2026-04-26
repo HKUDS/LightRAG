@@ -32,7 +32,9 @@ class VoyageAIError(Exception):
     pass
 
 
-@wrap_embedding_func_with_attrs(embedding_dim=1024, max_token_size=32000)
+@wrap_embedding_func_with_attrs(
+    embedding_dim=1024, max_token_size=32000, supports_asymmetric=True
+)
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=4, max=60),
@@ -54,6 +56,7 @@ async def voyageai_embed(
     embedding_dim: int | None = None,
     input_type: str | None = None,
     truncation: bool | None = True,
+    context: str | None = None,
 ) -> np.ndarray:
     """Generate embeddings for a list of texts using VoyageAI's API.
 
@@ -80,6 +83,9 @@ async def voyageai_embed(
             - None: Let the model decide (default)
         truncation: Whether the API should truncate texts that exceed the model's
             token limit. Defaults to True (matches the VoyageAI SDK default).
+        context: Optional LightRAG embedding context. When ``input_type`` is not
+            set, "query" maps to ``input_type="query"`` and "document" maps to
+            ``input_type="document"``.
 
     Returns:
         A numpy array of embeddings, one per input text.
@@ -99,6 +105,9 @@ async def voyageai_embed(
                 "VoyageAI API key is required: pass api_key, or set the "
                 "VOYAGE_API_KEY (preferred) or VOYAGEAI_API_KEY environment variable"
             )
+
+    if input_type is None and context in {"query", "document"}:
+        input_type = context
 
     try:
         client = voyageai.AsyncClient(api_key=api_key)

@@ -113,6 +113,38 @@ async def test_voyageai_embed_forwards_input_type(patched_async_client):
     assert captured[1]["input_type"] == "document"
 
 
+@pytest.mark.asyncio
+async def test_voyageai_embed_maps_context_to_input_type(patched_async_client):
+    """LightRAG query/document context should drive VoyageAI's input_type."""
+    captured, _ = patched_async_client
+    from lightrag.llm.voyageai import voyageai_embed
+
+    await voyageai_embed.func(texts=["q"], api_key="fake", context="query")
+    await voyageai_embed.func(texts=["d"], api_key="fake", context="document")
+    assert captured[0]["input_type"] == "query"
+    assert captured[1]["input_type"] == "document"
+
+
+@pytest.mark.asyncio
+async def test_voyageai_embed_explicit_input_type_overrides_context(
+    patched_async_client,
+):
+    """Explicit input_type must keep direct callers backward compatible."""
+    captured, _ = patched_async_client
+    from lightrag.llm.voyageai import voyageai_embed
+
+    await voyageai_embed.func(
+        texts=["x"], api_key="fake", input_type="document", context="query"
+    )
+    assert captured[0]["input_type"] == "document"
+
+
+def test_voyageai_embed_declares_asymmetric_support():
+    from lightrag.llm.voyageai import voyageai_embed
+
+    assert voyageai_embed.supports_asymmetric is True
+
+
 def test_anthropic_embed_deprecation_shim():
     """``anthropic_embed`` must remain importable and emit DeprecationWarning."""
     import warnings

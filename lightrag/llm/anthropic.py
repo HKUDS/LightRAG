@@ -252,7 +252,6 @@ def anthropic_embed(*args, **kwargs):
     function (which was always backed by VoyageAI) and forwards them to
     :func:`voyageai_embed`. It will be removed in a future release.
     """
-    import warnings
 
     warnings.warn(
         "lightrag.llm.anthropic.anthropic_embed is deprecated and will be "

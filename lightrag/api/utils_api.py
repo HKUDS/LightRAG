@@ -362,8 +362,10 @@ def display_splash_screen(args: argparse.Namespace) -> None:
     ASCIIColors.yellow(f"{args.embedding_binding_host}")
     ASCIIColors.white("    ├─ Model: ", end="")
     ASCIIColors.yellow(f"{args.embedding_model}")
-    ASCIIColors.white("    └─ Dimensions: ", end="")
+    ASCIIColors.white("    ├─ Dimensions: ", end="")
     ASCIIColors.yellow(f"{args.embedding_dim}")
+    ASCIIColors.white("    └─ Asymmetric: ", end="")
+    ASCIIColors.yellow(f"{args.embedding_asymmetric}")
 
     # RAG Configuration
     ASCIIColors.magenta("\n⚙️ RAG Configuration:")
