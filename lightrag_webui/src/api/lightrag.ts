@@ -909,7 +909,8 @@ export const getAuthStatus = async (): Promise<AuthStatusResponse> => {
     });
 
     // Check if response is HTML (which indicates a redirect or wrong endpoint)
-    const contentType = response.headers['content-type'] || '';
+    const contentTypeHeader = response.headers['content-type'];
+    const contentType = typeof contentTypeHeader === 'string' ? contentTypeHeader : '';
     if (contentType.includes('text/html')) {
       console.warn('Received HTML response instead of JSON for auth-status endpoint');
       return {
