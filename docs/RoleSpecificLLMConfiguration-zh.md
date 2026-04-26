@@ -133,7 +133,7 @@ QUERY_LLM_MODEL=gpt-5
 - 必须设置 `{ROLE}_LLM_MODEL`。
 - 非 Bedrock provider 必须设置 `{ROLE}_LLM_BINDING_API_KEY`。
 - 如果没有设置 `{ROLE}_LLM_BINDING_HOST`，LightRAG 会尝试使用该 provider 的默认 host。
-- provider 参数不继承基础 provider options，而是从目标 provider 默认值开始，再叠加角色专属 provider options。
+- provider 参数不继承基础 provider options，而是从空配置开始，只叠加角色专属 provider options。
 
 示例：基础使用 Ollama，本地抽取；最终回答改用 OpenAI：
 
@@ -365,7 +365,7 @@ QUERY_BEDROCK_LLM_TEMPERATURE=0.2
 ## 注意事项
 
 - 同 provider 下，`OPENAI_LLM_REASONING_EFFORT`、`OPENAI_LLM_MAX_TOKENS`、`OLLAMA_LLM_NUM_CTX`、`GEMINI_LLM_THINKING_CONFIG` 等 provider 参数会自动继承。
-- 当前没有干净的角色级“取消继承某个 provider 参数”的语义。如果某个同 provider 角色模型不支持基础参数，需要为该角色显式覆盖为可用值，或将它配置成跨 provider 并使用目标 provider 默认参数。
+- 当前没有干净的角色级“取消继承某个 provider 参数”的语义。如果某个同 provider 角色模型不支持基础参数，需要为该角色显式覆盖为可用值，或将它配置成跨 provider，并且只设置该角色支持的 provider 参数。
 - `azure_openai` 的 `AZURE_OPENAI_DEPLOYMENT` 和 `AZURE_OPENAI_API_VERSION` 是全局环境变量。若设置了 `AZURE_OPENAI_DEPLOYMENT`，它可能优先于角色模型名。
 - Gemini Vertex AI 模式由进程级 Google 环境变量控制，不能在同一个 LightRAG 进程里让某些角色使用 Vertex AI、另一些角色使用 AI Studio API key。
 - `LLM_BINDING_HOST` 在 Docker/Compose 中通常需要使用容器可访问地址，例如 `host.docker.internal`，角色级 host 也遵循相同原则。

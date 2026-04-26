@@ -1300,7 +1300,7 @@ class LightRAG:
         for role_name in role_names:
             cfg = configs[role_name]
             logger.info(
-                " - %s: binding=%s, model=%s, host=%s, max_async=%s, timeout=%s",
+                " - %s: %s/%s, host=%s, max_async=%s, timeout=%s",
                 role_name,
                 cfg["binding"],
                 cfg["model"],

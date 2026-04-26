@@ -354,28 +354,17 @@ class BindingOptions:
         - overlay any role-specific environment variable overrides
 
         Cross provider:
-        - start from the provider defaults
+        - start from empty provider options
         - overlay any role-specific environment variable overrides
 
         Role env vars follow the pattern:
         `{ROLE}_{BINDING_PREFIX}_{FIELD}`
         e.g. `EXTRACT_OPENAI_LLM_TEMPERATURE`
         """
-        import dataclasses
         import os
 
         if is_cross_provider:
-            if dataclasses.is_dataclass(cls):
-                base: dict[str, Any] = {}
-                for dataclass_field in dataclasses.fields(cls):
-                    if dataclass_field.name.startswith("_"):
-                        continue
-                    if dataclass_field.default is not dataclasses.MISSING:
-                        base[dataclass_field.name] = dataclass_field.default
-                    elif dataclass_field.default_factory is not dataclasses.MISSING:
-                        base[dataclass_field.name] = dataclass_field.default_factory()
-            else:
-                base = dict(cls._all_class_vars(cls))
+            base: dict[str, Any] = {}
         else:
             base = cls.options_dict(args)
 
