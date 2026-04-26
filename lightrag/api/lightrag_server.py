@@ -77,6 +77,48 @@ webui_description = os.getenv("WEBUI_DESCRIPTION")
 auth_configured = bool(auth_handler.accounts)
 
 
+def _clean_workspace_value(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _get_storage_workspace(storage: Any) -> str | None:
+    if storage is None:
+        return None
+
+    effective_workspace = _clean_workspace_value(
+        getattr(storage, "effective_workspace", None)
+    )
+    if effective_workspace:
+        return effective_workspace
+
+    final_namespace = _clean_workspace_value(getattr(storage, "final_namespace", None))
+    namespace = _clean_workspace_value(getattr(storage, "namespace", None))
+    if final_namespace and namespace:
+        suffix = f"_{namespace}"
+        if final_namespace.endswith(suffix):
+            workspace = final_namespace[: -len(suffix)]
+            if workspace:
+                return workspace
+
+    return _clean_workspace_value(getattr(storage, "workspace", None))
+
+
+def _get_storage_workspaces(rag: Any) -> dict[str, str | None]:
+    return {
+        "kv_storage": _get_storage_workspace(getattr(rag, "full_docs", None)),
+        "doc_status_storage": _get_storage_workspace(
+            getattr(rag, "doc_status", None)
+        ),
+        "graph_storage": _get_storage_workspace(
+            getattr(rag, "chunk_entity_relation_graph", None)
+        ),
+        "vector_storage": _get_storage_workspace(getattr(rag, "entities_vdb", None)),
+    }
+
+
 class LLMConfigCache:
     """Smart LLM and Embedding configuration cache class"""
 
@@ -1584,6 +1626,12 @@ def create_app(args):
                                 "embedding_binding": "openai",
                                 "embedding_model": "text-embedding-ada-002",
                                 "workspace": "default",
+                                "storage_workspaces": {
+                                    "kv_storage": "default",
+                                    "doc_status_storage": "default",
+                                    "graph_storage": "default",
+                                    "vector_storage": "default",
+                                },
                             },
                             "auth_mode": "enabled",
                             "pipeline_busy": False,
@@ -1637,6 +1685,7 @@ def create_app(args):
                     "enable_llm_cache_for_extract": args.enable_llm_cache_for_extract,
                     "enable_llm_cache": args.enable_llm_cache,
                     "workspace": default_workspace,
+                    "storage_workspaces": _get_storage_workspaces(rag),
                     "max_graph_nodes": args.max_graph_nodes,
                     # Rerank configuration
                     "enable_rerank": rerank_model_func is not None,

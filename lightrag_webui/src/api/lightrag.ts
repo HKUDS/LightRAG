@@ -68,6 +68,12 @@ export type LightragStatus = {
     graph_storage: string
     vector_storage: string
     workspace?: string
+    storage_workspaces?: {
+      kv_storage?: string | null
+      doc_status_storage?: string | null
+      graph_storage?: string | null
+      vector_storage?: string | null
+    }
     max_graph_nodes?: string
     enable_rerank?: boolean
     rerank_binding?: string | null

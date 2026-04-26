@@ -39,7 +39,7 @@ const getModelRows = (status: LightragStatus): RoleLLMRow[] => {
     ...Array.from(discoveredRoles).filter((role) => !ROLE_ORDER.includes(role))
   ]
 
-  const rows = orderedRoles.map((role) => ({
+  const rows: RoleLLMRow[] = orderedRoles.map((role) => ({
     role,
     config: configs[role] || {
       binding: status.configuration.llm_binding,
@@ -96,6 +96,34 @@ const StatusCard = ({ status }: { status: LightragStatus | null }) => {
   }
 
   const roleRows = getModelRows(status)
+  const storageWorkspaces = status.configuration.storage_workspaces
+  const defaultWorkspace = status.configuration.workspace
+  const storageColumns = [
+    {
+      key: 'kv',
+      label: t('graphPanel.statusCard.kvStorage'),
+      storageClass: status.configuration.kv_storage,
+      workspace: storageWorkspaces?.kv_storage ?? defaultWorkspace
+    },
+    {
+      key: 'doc-status',
+      label: t('graphPanel.statusCard.docStatusStorage'),
+      storageClass: status.configuration.doc_status_storage,
+      workspace: storageWorkspaces?.doc_status_storage ?? defaultWorkspace
+    },
+    {
+      key: 'graph',
+      label: t('graphPanel.statusCard.graphStorage'),
+      storageClass: status.configuration.graph_storage,
+      workspace: storageWorkspaces?.graph_storage ?? defaultWorkspace
+    },
+    {
+      key: 'vector',
+      label: t('graphPanel.statusCard.vectorStorage'),
+      storageClass: status.configuration.vector_storage,
+      workspace: storageWorkspaces?.vector_storage ?? defaultWorkspace
+    }
+  ]
 
   return (
     <div className="min-w-[300px] space-y-2 text-xs">
@@ -173,17 +201,36 @@ const StatusCard = ({ status }: { status: LightragStatus | null }) => {
 
       <div className="space-y-1">
         <h4 className="font-medium">{t('graphPanel.statusCard.storageConfig')}</h4>
+        <div className="rounded-md border">
+          <Table className="text-xs">
+            <TableHeader>
+              <TableRow className="hover:bg-transparent">
+                {storageColumns.map(({ key, label }) => (
+                  <TableHead key={key} className="h-7 min-w-[130px] px-2 py-1">
+                    {label}
+                  </TableHead>
+                ))}
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              <TableRow className="hover:bg-muted/30">
+                {storageColumns.map(({ key, storageClass }) => (
+                  <TableCell key={`${key}-class`} className="break-all px-2 py-1 align-top font-medium">
+                    {textValue(storageClass)}
+                  </TableCell>
+                ))}
+              </TableRow>
+              <TableRow className="hover:bg-muted/30">
+                {storageColumns.map(({ key, workspace }) => (
+                  <TableCell key={`${key}-workspace`} className="text-muted-foreground break-all px-2 py-1 align-top">
+                    {textValue(workspace)}
+                  </TableCell>
+                ))}
+              </TableRow>
+            </TableBody>
+          </Table>
+        </div>
         <div className="text-foreground grid grid-cols-[160px_1fr] gap-1">
-          <span>{t('graphPanel.statusCard.kvStorage')}:</span>
-          <span>{status.configuration.kv_storage}</span>
-          <span>{t('graphPanel.statusCard.docStatusStorage')}:</span>
-          <span>{status.configuration.doc_status_storage}</span>
-          <span>{t('graphPanel.statusCard.graphStorage')}:</span>
-          <span>{status.configuration.graph_storage}</span>
-          <span>{t('graphPanel.statusCard.vectorStorage')}:</span>
-          <span>{status.configuration.vector_storage}</span>
-          <span>{t('graphPanel.statusCard.workspace')}:</span>
-          <span>{status.configuration.workspace || '-'}</span>
           <span>{t('graphPanel.statusCard.maxGraphNodes')}:</span>
           <span>{status.configuration.max_graph_nodes || '-'}</span>
           {status.keyed_locks && (
