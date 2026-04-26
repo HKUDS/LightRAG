@@ -336,6 +336,10 @@ async def openai_complete_if_cache(
     try:
         # Don't use async with context manager, use client directly
         if "response_format" in kwargs:
+            # beta.chat.completions.parse() provides structured output and is inherently
+            # non-streaming; passing `stream=True` would raise a TypeError at runtime.
+            # Strip `stream` from kwargs before forwarding to avoid this error when
+            # OpenAI-compatible providers (e.g. DeepSeek) set stream in their kwargs.
             parse_kwargs = {k: v for k, v in kwargs.items() if k != "stream"}
             response = await openai_async_client.chat.completions.parse(
                 model=api_model, messages=messages, **parse_kwargs
