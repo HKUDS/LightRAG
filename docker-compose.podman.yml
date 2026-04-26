@@ -1,0 +1,35 @@
+# Podman-compatible compose file for LightRAG
+#
+# Usage:
+#   podman-compose -f docker-compose.podman.yml up -d
+#
+# Key differences from docker-compose.yml:
+#   - Uses top-level `restart` instead of `deploy.restart_policy`
+#     (Podman does not support the deploy block for restart policies)
+#   - No `extra_hosts` with `host-gateway` (Podman fails on this special
+#     value; Podman auto-provides host.containers.internal for host access)
+#   - When connecting to host services (e.g. LLM, embedding, rerank),
+#     use `host.containers.internal` instead of `host.docker.internal`
+#     in your .env binding host configuration
+
+services:
+  lightrag:
+    image: ghcr.io/hkuds/lightrag:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+      tags:
+        - ghcr.io/hkuds/lightrag:latest
+    ports:
+      - "${HOST:-0.0.0.0}:${PORT:-9621}:9621"
+    volumes:
+      - ./data/rag_storage:/app/data/rag_storage
+      - ./data/inputs:/app/data/inputs
+      - ./config.ini:/app/config.ini
+      - ./.env:/app/.env
+    restart: on-failure:10
+    environment:
+      WORKING_DIR: "/app/data/rag_storage"
+      INPUT_DIR: "/app/data/inputs"
+      HOST: "0.0.0.0"
+      PORT: "9621"
