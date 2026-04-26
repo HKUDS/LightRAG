@@ -109,9 +109,7 @@ def _get_storage_workspace(storage: Any) -> str | None:
 def _get_storage_workspaces(rag: Any) -> dict[str, str | None]:
     return {
         "kv_storage": _get_storage_workspace(getattr(rag, "full_docs", None)),
-        "doc_status_storage": _get_storage_workspace(
-            getattr(rag, "doc_status", None)
-        ),
+        "doc_status_storage": _get_storage_workspace(getattr(rag, "doc_status", None)),
         "graph_storage": _get_storage_workspace(
             getattr(rag, "chunk_entity_relation_graph", None)
         ),
