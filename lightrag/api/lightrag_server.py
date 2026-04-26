@@ -35,7 +35,7 @@ from .config import (
     get_default_host,
 )
 from lightrag.utils import get_env_value
-from lightrag import LightRAG, __version__ as core_version
+from lightrag import LightRAG, ROLES, RoleLLMConfig, __version__ as core_version
 from lightrag.api import __api_version__
 from lightrag.utils import EmbeddingFunc
 from lightrag.constants import (
@@ -1383,12 +1383,12 @@ def create_app(args):
     }
 
     role_llm_configs = {
-        role: {
-            **resolve_role_llm_settings(role),
-            "func": create_role_llm_func(role),
-            "kwargs": create_role_llm_model_kwargs(role),
+        spec.name: {
+            **resolve_role_llm_settings(spec.name),
+            "func": create_role_llm_func(spec.name),
+            "kwargs": create_role_llm_model_kwargs(spec.name),
         }
-        for role in ("extract", "keyword", "query", "vlm")
+        for spec in ROLES
     }
 
     # Initialize RAG with unified configuration
@@ -1423,22 +1423,15 @@ def create_app(args):
             max_graph_nodes=args.max_graph_nodes,
             addon_params=addon_params,
             ollama_server_infos=ollama_server_infos,
-            extract_llm_model_func=role_llm_configs["extract"]["func"],
-            extract_llm_model_kwargs=role_llm_configs["extract"]["kwargs"],
-            extract_llm_model_max_async=role_llm_configs["extract"]["max_async"],
-            extract_llm_timeout=role_llm_configs["extract"]["timeout"],
-            keyword_llm_model_func=role_llm_configs["keyword"]["func"],
-            keyword_llm_model_kwargs=role_llm_configs["keyword"]["kwargs"],
-            keyword_llm_model_max_async=role_llm_configs["keyword"]["max_async"],
-            keyword_llm_timeout=role_llm_configs["keyword"]["timeout"],
-            query_llm_model_func=role_llm_configs["query"]["func"],
-            query_llm_model_kwargs=role_llm_configs["query"]["kwargs"],
-            query_llm_model_max_async=role_llm_configs["query"]["max_async"],
-            query_llm_timeout=role_llm_configs["query"]["timeout"],
-            vlm_llm_model_func=role_llm_configs["vlm"]["func"],
-            vlm_llm_model_kwargs=role_llm_configs["vlm"]["kwargs"],
-            vlm_llm_model_max_async=role_llm_configs["vlm"]["max_async"],
-            vlm_llm_timeout=role_llm_configs["vlm"]["timeout"],
+            role_llm_configs={
+                spec.name: RoleLLMConfig(
+                    func=role_llm_configs[spec.name]["func"],
+                    kwargs=role_llm_configs[spec.name]["kwargs"],
+                    max_async=role_llm_configs[spec.name]["max_async"],
+                    timeout=role_llm_configs[spec.name]["timeout"],
+                )
+                for spec in ROLES
+            },
         )
     except Exception as e:
         logger.error(f"Failed to initialize LightRAG: {e}")
@@ -1450,30 +1443,31 @@ def create_app(args):
             create_role_llm_model_kwargs(role, meta),
         )
     )
-    for role in ("extract", "keyword", "query", "vlm"):
+    for spec in ROLES:
+        cfg = role_llm_configs[spec.name]
         rag.set_role_llm_metadata(
-            role,
+            spec.name,
             base_binding=args.llm_binding,
-            binding=role_llm_configs[role]["binding"],
-            model=role_llm_configs[role]["model"],
-            host=role_llm_configs[role]["host"],
-            api_key=role_llm_configs[role]["api_key"],
-            provider_options=role_llm_configs[role]["provider_options"],
-            bedrock_aws_options=role_llm_configs[role]["bedrock_aws_options"],
-            is_cross_provider=role_llm_configs[role]["is_cross_provider"],
+            binding=cfg["binding"],
+            model=cfg["model"],
+            host=cfg["host"],
+            api_key=cfg["api_key"],
+            provider_options=cfg["provider_options"],
+            bedrock_aws_options=cfg["bedrock_aws_options"],
+            is_cross_provider=cfg["is_cross_provider"],
         )
 
     # Print role LLM configuration
     logger.info(f"\n{'🎭 Role LLM Configuration:'}")
-    for role in ["extract", "keyword", "query", "vlm"]:
-        role_cfg = role_llm_configs[role]
+    for spec in ROLES:
+        role_cfg = role_llm_configs[spec.name]
         effective_max_async = (
             role_cfg["max_async"]
             if role_cfg["max_async"] is not None
             else args.max_async
         )
         logger.info(
-            f"    ├─ {role}: binding={role_cfg['binding']}, model={role_cfg['model']}, "
+            f"    ├─ {spec.name}: binding={role_cfg['binding']}, model={role_cfg['model']}, "
             f"host={role_cfg['host']}, max_async={effective_max_async}"
         )
 
@@ -1677,22 +1671,12 @@ def create_app(args):
                     "max_async": args.max_async,
                     "embedding_func_max_async": args.embedding_func_max_async,
                     "embedding_batch_num": args.embedding_batch_num,
-                    "role_llm_config": {
-                        role: {
-                            "binding": getattr(args, f"{role}_llm_binding", None)
-                            or args.llm_binding,
-                            "model": getattr(args, f"{role}_llm_model", None)
-                            or args.llm_model,
-                            "host": getattr(args, f"{role}_llm_binding_host", None)
-                            or args.llm_binding_host,
-                            "max_async": rag._get_effective_role_llm_max_async(role),
-                        }
-                        for role in ["extract", "keyword", "query", "vlm"]
-                    },
+                    "role_llm_config": rag.get_llm_role_config(),
                 },
                 "auth_mode": auth_mode,
                 "pipeline_busy": pipeline_status.get("busy", False),
                 "keyed_locks": keyed_lock_info,
+                "llm_queue_status": await rag.get_llm_queue_status(include_base=True),
                 "core_version": core_version,
                 "api_version": api_version_display,
                 "webui_title": webui_title,

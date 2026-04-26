@@ -17,7 +17,7 @@ class _FakeRag:
         self.base_calls = []
         self.query_calls = []
         self.llm_model_kwargs = {"route": "base"}
-        self.query_llm_model_kwargs = {"route": "query"}
+        self._query_kwargs = {"route": "query"}
         self.ollama_server_infos = SimpleNamespace(
             LIGHTRAG_MODEL="lightrag:latest",
             LIGHTRAG_CREATED_AT="2026-03-14T00:00:00Z",
@@ -33,7 +33,10 @@ class _FakeRag:
             return "query"
 
         self.llm_model_func = base_func
-        self.query_llm_model_func = query_func
+        # ollama_api.py reads `rag.role_llm_funcs[role]` and
+        # `rag.role_llm_kwargs[role]`; expose them as plain dict mappings here.
+        self.role_llm_funcs = {"query": query_func}
+        self.role_llm_kwargs = {"query": self._query_kwargs}
 
     async def aquery(self, *args, **kwargs):
         return "aquery"
@@ -76,7 +79,7 @@ def test_generate_non_stream_uses_query_role_kwargs_without_mutating_base(monkey
     assert rag.query_calls[-1]["route"] == "query"
     assert rag.query_calls[-1]["system_prompt"] == "custom system"
     assert "system_prompt" not in rag.llm_model_kwargs
-    assert "system_prompt" not in rag.query_llm_model_kwargs
+    assert "system_prompt" not in rag.role_llm_kwargs["query"]
 
 
 def test_chat_bypass_stream_uses_query_role_kwargs_without_mutating_base(monkeypatch):
@@ -106,4 +109,4 @@ def test_chat_bypass_stream_uses_query_role_kwargs_without_mutating_base(monkeyp
         {"role": "assistant", "content": "history"}
     ]
     assert "system_prompt" not in rag.llm_model_kwargs
-    assert "system_prompt" not in rag.query_llm_model_kwargs
+    assert "system_prompt" not in rag.role_llm_kwargs["query"]

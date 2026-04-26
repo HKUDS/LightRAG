@@ -787,6 +787,7 @@ def priority_limit_async_func_call(
         counter = 0
         shutdown_event = asyncio.Event()
         initialized = False
+        accepting_new_tasks = True
         worker_health_check_task = None
 
         # Enhanced task state management
@@ -794,6 +795,11 @@ def priority_limit_async_func_call(
         task_states_lock = asyncio.Lock()
         active_futures = weakref.WeakSet()
         reinit_count = 0
+        submitted_total = 0
+        completed_total = 0
+        failed_total = 0
+        cancelled_total = 0
+        rejected_total = 0
 
         async def worker():
             """Enhanced worker that processes tasks with proper timeout and state management"""
@@ -1014,31 +1020,83 @@ def priority_limit_async_func_call(
                     f"{queue_name}: {workers_needed} new workers initialized {timeout_str}"
                 )
 
-        async def shutdown():
-            """Gracefully shut down all workers and cleanup resources"""
+        async def get_queue_stats():
+            """Return a best-effort snapshot of queue and worker state."""
+            async with task_states_lock:
+                running = sum(
+                    1
+                    for task_state in task_states.values()
+                    if task_state.worker_started and not task_state.future.done()
+                )
+                in_flight = len(task_states)
+
+            active_workers = len([task for task in tasks if not task.done()])
+            return {
+                "queue_name": queue_name,
+                "max_async": max_size,
+                "max_queue_size": max_queue_size,
+                "queued": queue.qsize(),
+                "running": running,
+                "in_flight": in_flight,
+                "worker_count": active_workers,
+                "initialized": initialized,
+                "submitted_total": submitted_total,
+                "completed_total": completed_total,
+                "failed_total": failed_total,
+                "cancelled_total": cancelled_total,
+                "rejected_total": rejected_total,
+            }
+
+        async def shutdown(graceful: bool = True, timeout: float | None = None):
+            """Shut down workers and cleanup resources.
+
+            Graceful mode stops new submissions and drains queued/running
+            work; if the drain exceeds ``timeout`` (defaulting to
+            ``max_task_duration`` or 30s), it falls through to forced
+            cancellation so shutdown never blocks indefinitely.
+            """
+            nonlocal accepting_new_tasks, initialized, worker_health_check_task
             logger.info(f"{queue_name}: Shutting down priority queue workers")
 
+            accepting_new_tasks = False
+
+            drain_timed_out = False
+            if graceful:
+                effective_timeout = timeout
+                if effective_timeout is None:
+                    effective_timeout = (
+                        max_task_duration if max_task_duration is not None else 30.0
+                    )
+                try:
+                    await asyncio.wait_for(queue.join(), timeout=effective_timeout)
+                except asyncio.TimeoutError:
+                    drain_timed_out = True
+                    logger.warning(
+                        f"{queue_name}: Graceful drain timed out after "
+                        f"{effective_timeout}s; cancelling pending work"
+                    )
+
+            if not graceful or drain_timed_out:
+                # Cancel all active futures
+                for future in list(active_futures):
+                    if not future.done():
+                        future.cancel()
+
+                # Cancel all pending tasks
+                async with task_states_lock:
+                    for task_id, task_state in list(task_states.items()):
+                        if not task_state.future.done():
+                            task_state.future.cancel()
+                    task_states.clear()
+
+                while True:
+                    try:
+                        queue.get_nowait()
+                        queue.task_done()
+                    except asyncio.QueueEmpty:
+                        break
+
             shutdown_event.set()
-
-            # Cancel all active futures
-            for future in list(active_futures):
-                if not future.done():
-                    future.cancel()
-
-            # Cancel all pending tasks
-            async with task_states_lock:
-                for task_id, task_state in list(task_states.items()):
-                    if not task_state.future.done():
-                        task_state.future.cancel()
-                task_states.clear()
-
-            # Wait for queue to empty with timeout
-            try:
-                await asyncio.wait_for(queue.join(), timeout=5.0)
-            except asyncio.TimeoutError:
-                logger.warning(
-                    f"{queue_name}: Timeout waiting for queue to empty during shutdown"
-                )
 
             # Cancel worker tasks
             for task in list(tasks):
@@ -1056,6 +1114,8 @@ def priority_limit_async_func_call(
                     await worker_health_check_task
                 except asyncio.CancelledError:
                     pass
+            worker_health_check_task = None
+            initialized = False
 
             logger.info(f"{queue_name}: Priority queue workers shutdown complete")
 
@@ -1081,6 +1141,12 @@ def priority_limit_async_func_call(
                 QueueFullError: If the queue is full and waiting times out
                 Any exception raised by the decorated function
             """
+            nonlocal submitted_total, completed_total, cancelled_total, failed_total
+            nonlocal rejected_total
+            if not accepting_new_tasks:
+                rejected_total += 1
+                raise RuntimeError(f"{queue_name}: Queue is shutting down")
+
             await ensure_workers()
 
             # Generate unique task ID
@@ -1107,6 +1173,9 @@ def priority_limit_async_func_call(
 
                 # Queue the task with timeout handling
                 try:
+                    if not accepting_new_tasks:
+                        rejected_total += 1
+                        raise RuntimeError(f"{queue_name}: Queue is shutting down")
                     if _queue_timeout is not None:
                         await asyncio.wait_for(
                             queue.put(
@@ -1118,6 +1187,7 @@ def priority_limit_async_func_call(
                         await queue.put(
                             (_priority, current_count, task_id, args, kwargs)
                         )
+                    submitted_total += 1
                 except asyncio.TimeoutError:
                     raise QueueFullError(
                         f"{queue_name}: Queue full, timeout after {_queue_timeout} seconds"
@@ -1131,9 +1201,11 @@ def priority_limit_async_func_call(
                 # Wait for result with timeout handling
                 try:
                     if _timeout is not None:
-                        return await asyncio.wait_for(future, _timeout)
+                        result = await asyncio.wait_for(future, _timeout)
                     else:
-                        return await future
+                        result = await future
+                    completed_total += 1
+                    return result
                 except asyncio.TimeoutError:
                     # This is user-level timeout (asyncio.wait_for caused)
                     # Mark cancellation request
@@ -1154,15 +1226,24 @@ def priority_limit_async_func_call(
                     ):
                         await asyncio.sleep(0.1)
 
+                    cancelled_total += 1
                     raise TimeoutError(
                         f"{queue_name}: User timeout after {_timeout} seconds"
                     )
                 except WorkerTimeoutError as e:
                     # This is Worker-level timeout, directly propagate exception information
+                    failed_total += 1
                     raise TimeoutError(f"{queue_name}: {str(e)}")
                 except HealthCheckTimeoutError as e:
                     # This is Health Check-level timeout, directly propagate exception information
+                    failed_total += 1
                     raise TimeoutError(f"{queue_name}: {str(e)}")
+                except asyncio.CancelledError:
+                    cancelled_total += 1
+                    raise
+                except Exception:
+                    failed_total += 1
+                    raise
 
             finally:
                 # Ensure cleanup
@@ -1172,6 +1253,7 @@ def priority_limit_async_func_call(
 
         # Add shutdown method to decorated function
         wait_func.shutdown = shutdown
+        wait_func.get_queue_stats = get_queue_stats
 
         return wait_func
 

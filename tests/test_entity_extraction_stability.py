@@ -35,8 +35,15 @@ def _make_global_config(
     prompt_profile: dict | None = None,
 ) -> dict:
     tokenizer = Tokenizer("dummy", DummyTokenizer())
+    extract_func = AsyncMock(return_value="")
     return {
-        "llm_model_func": AsyncMock(return_value=""),
+        "llm_model_func": extract_func,
+        "role_llm_funcs": {
+            "extract": extract_func,
+            "keyword": extract_func,
+            "query": extract_func,
+            "vlm": extract_func,
+        },
         "entity_extract_max_gleaning": max_gleaning,
         "entity_extract_max_records": 100,
         "entity_extract_max_entities": 40,

@@ -7,6 +7,7 @@ import re
 import argparse
 import logging
 from dotenv import load_dotenv
+from lightrag import ROLES
 from lightrag.utils import get_env_value
 from lightrag.llm.binding_options import (
     BedrockLLMOptions,
@@ -136,14 +137,14 @@ def validate_bedrock_auth_configuration(args: argparse.Namespace) -> None:
                 "Use SigV4 AWS_* variables or process-level AWS_BEARER_TOKEN_BEDROCK instead."
             )
 
-    for role in ("extract", "keyword", "query", "vlm"):
+    for spec in ROLES:
+        role = spec.name
         if getattr(
             args, f"{role}_llm_binding", None
         ) == "bedrock" and not has_valid_auth(role):
-            role_upper = role.upper()
             raise ValueError(
-                f"Bedrock role '{role}' requires {role_upper}_AWS_ACCESS_KEY_ID "
-                f"and {role_upper}_AWS_SECRET_ACCESS_KEY, global "
+                f"Bedrock role '{role}' requires {spec.env_prefix}_AWS_ACCESS_KEY_ID "
+                f"and {spec.env_prefix}_AWS_SECRET_ACCESS_KEY, global "
                 "AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY, or process-level "
                 "AWS_BEARER_TOKEN_BEDROCK."
             )
@@ -479,15 +480,16 @@ def parse_args() -> argparse.Namespace:
     # PDF decryption password
     args.pdf_decrypt_password = get_env_value("PDF_DECRYPT_PASSWORD", None)
 
-    # --- Per-role LLM configuration (extract / keyword / query / vlm) ---
-    ROLE_PREFIXES = ["EXTRACT", "KEYWORD", "QUERY", "VLM"]
-    for role in ROLE_PREFIXES:
-        binding_key = f"{role}_LLM_BINDING"
-        model_key = f"{role}_LLM_MODEL"
-        host_key = f"{role}_LLM_BINDING_HOST"
-        apikey_key = f"{role}_LLM_BINDING_API_KEY"
-        max_async_key = f"MAX_ASYNC_{role}_LLM"
-        timeout_key = f"LLM_TIMEOUT_{role}_LLM"
+    # --- Per-role LLM configuration (driven by lightrag.ROLES registry) ---
+    for spec in ROLES:
+        prefix = spec.env_prefix
+        attr_prefix = spec.name
+        binding_key = f"{prefix}_LLM_BINDING"
+        model_key = f"{prefix}_LLM_MODEL"
+        host_key = f"{prefix}_LLM_BINDING_HOST"
+        apikey_key = f"{prefix}_LLM_BINDING_API_KEY"
+        max_async_key = f"MAX_ASYNC_{prefix}_LLM"
+        timeout_key = f"LLM_TIMEOUT_{prefix}_LLM"
 
         role_binding = normalize_binding_name(
             get_env_value(binding_key, None, special_none=True)
@@ -497,18 +499,17 @@ def parse_args() -> argparse.Namespace:
         role_apikey = get_env_value(apikey_key, None, special_none=True)
         role_max_async = get_env_value(max_async_key, None, int, special_none=True)
         role_timeout = get_env_value(timeout_key, None, int, special_none=True)
-        role_aws_region = get_env_value(f"{role}_AWS_REGION", None, special_none=True)
+        role_aws_region = get_env_value(f"{prefix}_AWS_REGION", None, special_none=True)
         role_aws_access_key_id = get_env_value(
-            f"{role}_AWS_ACCESS_KEY_ID", None, special_none=True
+            f"{prefix}_AWS_ACCESS_KEY_ID", None, special_none=True
         )
         role_aws_secret_access_key = get_env_value(
-            f"{role}_AWS_SECRET_ACCESS_KEY", None, special_none=True
+            f"{prefix}_AWS_SECRET_ACCESS_KEY", None, special_none=True
         )
         role_aws_session_token = get_env_value(
-            f"{role}_AWS_SESSION_TOKEN", None, special_none=True
+            f"{prefix}_AWS_SESSION_TOKEN", None, special_none=True
         )
 
-        attr_prefix = role.lower()
         setattr(args, f"{attr_prefix}_llm_binding", role_binding)
         setattr(args, f"{attr_prefix}_llm_model", role_model)
         setattr(args, f"{attr_prefix}_llm_binding_host", role_host)
@@ -524,7 +525,7 @@ def parse_args() -> argparse.Namespace:
 
         if role_binding == "bedrock" and role_apikey:
             raise SystemExit(
-                f"Bedrock role '{role}' does not support {apikey_key}; use "
+                f"Bedrock role '{spec.name}' does not support {apikey_key}; use "
                 "role-specific SigV4 AWS_* variables or process-level "
                 "AWS_BEARER_TOKEN_BEDROCK."
             )
@@ -541,7 +542,7 @@ def parse_args() -> argparse.Namespace:
                 missing.append(apikey_key)
             if missing:
                 raise SystemExit(
-                    f"Cross-provider error for role '{role}': "
+                    f"Cross-provider error for role '{spec.name}': "
                     f"binding={role_binding} differs from base={args.llm_binding}, "
                     f"but required env vars are missing: {', '.join(missing)}"
                 )

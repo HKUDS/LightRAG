@@ -300,17 +300,17 @@ class OllamaAPI:
                 prompt_tokens = estimate_tokens(query)
 
                 role_kwargs = (
-                    dict(self.rag.query_llm_model_kwargs)
-                    if self.rag.query_llm_model_kwargs is not None
+                    dict(self.rag.role_llm_kwargs["query"])
+                    if self.rag.role_llm_kwargs["query"] is not None
                     else dict(self.rag.llm_model_kwargs)
                 )
                 if request.system:
                     role_kwargs["system_prompt"] = request.system
 
                 if request.stream:
-                    response = await (
-                        self.rag.query_llm_model_func or self.rag.llm_model_func
-                    )(query, stream=True, **role_kwargs)
+                    response = await (self.rag.role_llm_funcs["query"])(
+                        query, stream=True, **role_kwargs
+                    )
 
                     async def stream_generator():
                         first_chunk_time = None
@@ -433,9 +433,9 @@ class OllamaAPI:
                     )
                 else:
                     first_chunk_time = time.time_ns()
-                    response_text = await (
-                        self.rag.query_llm_model_func or self.rag.llm_model_func
-                    )(query, stream=False, **role_kwargs)
+                    response_text = await (self.rag.role_llm_funcs["query"])(
+                        query, stream=False, **role_kwargs
+                    )
                     last_chunk_time = time.time_ns()
 
                     if not response_text:
@@ -521,15 +521,13 @@ class OllamaAPI:
                     # Determine if the request is prefix with "/bypass"
                     if mode == SearchMode.bypass:
                         role_kwargs = (
-                            dict(self.rag.query_llm_model_kwargs)
-                            if self.rag.query_llm_model_kwargs is not None
+                            dict(self.rag.role_llm_kwargs["query"])
+                            if self.rag.role_llm_kwargs["query"] is not None
                             else dict(self.rag.llm_model_kwargs)
                         )
                         if request.system:
                             role_kwargs["system_prompt"] = request.system
-                        response = await (
-                            self.rag.query_llm_model_func or self.rag.llm_model_func
-                        )(
+                        response = await (self.rag.role_llm_funcs["query"])(
                             cleaned_query,
                             stream=True,
                             history_messages=conversation_history,
@@ -690,16 +688,14 @@ class OllamaAPI:
                     )
                     if match_result or mode == SearchMode.bypass:
                         role_kwargs = (
-                            dict(self.rag.query_llm_model_kwargs)
-                            if self.rag.query_llm_model_kwargs is not None
+                            dict(self.rag.role_llm_kwargs["query"])
+                            if self.rag.role_llm_kwargs["query"] is not None
                             else dict(self.rag.llm_model_kwargs)
                         )
                         if request.system:
                             role_kwargs["system_prompt"] = request.system
 
-                        response_text = await (
-                            self.rag.query_llm_model_func or self.rag.llm_model_func
-                        )(
+                        response_text = await (self.rag.role_llm_funcs["query"])(
                             cleaned_query,
                             stream=False,
                             history_messages=conversation_history,
