@@ -151,6 +151,28 @@ normalize_vllm_rerank_binding_state() {
   fi
 }
 
+# Backfill sentinel hosts for bedrock/gemini bindings when LLM_BINDING_HOST or
+# EMBEDDING_BINDING_HOST is missing or empty. Flows that skip collect_llm_config /
+# collect_embedding_config (--server, --storage) would otherwise let the openai URL
+# hardcoded in env.example leak into the regenerated .env.
+normalize_provider_binding_hosts() {
+  local llm_sentinel="" embedding_sentinel=""
+  case "${ENV_VALUES[LLM_BINDING]:-}" in
+    bedrock) llm_sentinel="DEFAULT_BEDROCK_ENDPOINT" ;;
+    gemini) llm_sentinel="DEFAULT_GEMINI_ENDPOINT" ;;
+  esac
+  case "${ENV_VALUES[EMBEDDING_BINDING]:-}" in
+    bedrock) embedding_sentinel="DEFAULT_BEDROCK_ENDPOINT" ;;
+    gemini) embedding_sentinel="DEFAULT_GEMINI_ENDPOINT" ;;
+  esac
+  if [[ -n "$llm_sentinel" && -z "${ENV_VALUES[LLM_BINDING_HOST]:-}" ]]; then
+    ENV_VALUES["LLM_BINDING_HOST"]="$llm_sentinel"
+  fi
+  if [[ -n "$embedding_sentinel" && -z "${ENV_VALUES[EMBEDDING_BINDING_HOST]:-}" ]]; then
+    ENV_VALUES["EMBEDDING_BINDING_HOST"]="$embedding_sentinel"
+  fi
+}
+
 load_existing_env_if_present() {
   local env_file="${REPO_ROOT}/.env"
 
@@ -159,6 +181,7 @@ load_existing_env_if_present() {
     load_env_file "$env_file"
     clear_deprecated_vllm_dtype_state
     normalize_vllm_rerank_binding_state
+    normalize_provider_binding_hosts
     if [[ "${ENV_VALUES[SSL]:-false}" == "true" ]]; then
       SSL_CERT_SOURCE_PATH="${ENV_VALUES[SSL_CERTFILE]:-}"
       SSL_KEY_SOURCE_PATH="${ENV_VALUES[SSL_KEYFILE]:-}"
