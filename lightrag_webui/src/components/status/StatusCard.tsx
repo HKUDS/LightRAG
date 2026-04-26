@@ -138,8 +138,18 @@ const StatusCard = ({ status }: { status: LightragStatus | null }) => {
           <span>{status.configuration.summary_language} / LLM summary on {status.configuration.force_llm_summary_on_merge.toString()} fragments</span>
           <span>{t('graphPanel.statusCard.threshold')}:</span>
           <span>cosine {status.configuration.cosine_threshold} / rerank_score {status.configuration.min_rerank_score} / max_related {status.configuration.related_chunk_number}</span>
-          <span>{t('graphPanel.statusCard.maxParallelInsert')}:</span>
-          <span>{status.configuration.max_parallel_insert}</span>
+          <span>{t('graphPanel.statusCard.otherSettings')}:</span>
+          <span>max_graph_nodes {status.configuration.max_graph_nodes || '-'} / max_parallel_insert {status.configuration.max_parallel_insert}</span>
+          {status.keyed_locks && (
+            <>
+              <span>{t('graphPanel.statusCard.lockStatus')}:</span>
+              <span>
+                mp {status.keyed_locks.current_status.pending_mp_cleanup}/{status.keyed_locks.current_status.total_mp_locks} |
+                async {status.keyed_locks.current_status.pending_async_cleanup}/{status.keyed_locks.current_status.total_async_locks}
+                (pid: {status.keyed_locks.process_id})
+              </span>
+            </>
+          )}
         </div>
       </div>
 
@@ -153,7 +163,7 @@ const StatusCard = ({ status }: { status: LightragStatus | null }) => {
                 <TableHead className="h-7 px-2 py-1">
                   binding/model
                 </TableHead>
-                <TableHead className="h-7 px-2 py-1">host</TableHead>
+                <TableHead className="h-7 px-2 py-1">base_url</TableHead>
                 <TableHead className="h-7 px-2 py-1 text-right">
                   queued
                 </TableHead>
@@ -229,20 +239,6 @@ const StatusCard = ({ status }: { status: LightragStatus | null }) => {
               </TableRow>
             </TableBody>
           </Table>
-        </div>
-        <div className="text-foreground grid grid-cols-[160px_1fr] gap-1">
-          <span>{t('graphPanel.statusCard.maxGraphNodes')}:</span>
-          <span>{status.configuration.max_graph_nodes || '-'}</span>
-          {status.keyed_locks && (
-            <>
-              <span>{t('graphPanel.statusCard.lockStatus')}:</span>
-              <span>
-                mp {status.keyed_locks.current_status.pending_mp_cleanup}/{status.keyed_locks.current_status.total_mp_locks} |
-                async {status.keyed_locks.current_status.pending_async_cleanup}/{status.keyed_locks.current_status.total_async_locks}
-                (pid: {status.keyed_locks.process_id})
-              </span>
-            </>
-          )}
         </div>
       </div>
     </div>
