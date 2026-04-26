@@ -42,6 +42,16 @@ export type LightragQueueStatus = {
   rejected_total?: number
 }
 
+export type LightragRoleLLMConfig = {
+  binding?: string | null
+  model?: string | null
+  host?: string | null
+  max_async?: number
+  timeout?: number
+  has_model_kwargs?: boolean
+  metadata?: Record<string, any>
+}
+
 export type LightragStatus = {
   status: 'healthy'
   working_directory: string
@@ -72,6 +82,7 @@ export type LightragStatus = {
     cosine_threshold: number
     min_rerank_score: number
     related_chunk_number: number
+    role_llm_config?: Record<string, LightragRoleLLMConfig>
   }
   update_status?: Record<string, any>
   core_version?: string

@@ -1,11 +1,77 @@
-import { LightragStatus } from '@/api/lightrag'
+import type {
+  LightragQueueStatus,
+  LightragRoleLLMConfig,
+  LightragStatus
+} from '@/api/lightrag'
 import { useTranslation } from 'react-i18next'
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow
+} from '@/components/ui/Table'
+
+const ROLE_ORDER = ['extract', 'keyword', 'query', 'vlm']
+
+type RoleLLMRow = {
+  role: string
+  config: LightragRoleLLMConfig
+  queue?: LightragQueueStatus
+}
+
+const textValue = (value: string | number | null | undefined) => {
+  if (value === null || value === undefined || value === '') return '-'
+  return String(value)
+}
+
+const statValue = (value: number | undefined) => {
+  return typeof value === 'number' ? value.toString() : '-'
+}
+
+const getRoleRows = (status: LightragStatus): RoleLLMRow[] => {
+  const configs = status.configuration.role_llm_config || {}
+  const queues = status.llm_queue_status || {}
+  const discoveredRoles = new Set([...Object.keys(configs), ...Object.keys(queues)])
+  const orderedRoles = [
+    ...ROLE_ORDER.filter((role) => discoveredRoles.has(role)),
+    ...Array.from(discoveredRoles).filter((role) => !ROLE_ORDER.includes(role))
+  ]
+
+  if (!orderedRoles.length) {
+    return [
+      {
+        role: 'base',
+        config: {
+          binding: status.configuration.llm_binding,
+          model: status.configuration.llm_model,
+          host: status.configuration.llm_binding_host,
+          max_async: status.configuration.max_async
+        }
+      }
+    ]
+  }
+
+  return orderedRoles.map((role) => ({
+    role,
+    config: configs[role] || {
+      binding: status.configuration.llm_binding,
+      model: status.configuration.llm_model,
+      host: status.configuration.llm_binding_host,
+      max_async: status.configuration.max_async
+    },
+    queue: queues[role]
+  }))
+}
 
 const StatusCard = ({ status }: { status: LightragStatus | null }) => {
   const { t } = useTranslation()
   if (!status) {
     return <div className="text-foreground text-xs">{t('graphPanel.statusCard.unavailable')}</div>
   }
+
+  const roleRows = getRoleRows(status)
 
   return (
     <div className="min-w-[300px] space-y-2 text-xs">
@@ -27,11 +93,57 @@ const StatusCard = ({ status }: { status: LightragStatus | null }) => {
 
       <div className="space-y-1">
         <h4 className="font-medium">{t('graphPanel.statusCard.llmConfig')}</h4>
-        <div className="text-foreground grid grid-cols-[160px_1fr] gap-1">
-          <span>{t('graphPanel.statusCard.llmBindingHost')}:</span>
-          <span>{status.configuration.llm_binding_host}</span>
-          <span>{t('graphPanel.statusCard.llmModel')}:</span>
-          <span>{status.configuration.llm_binding}: {status.configuration.llm_model} (#{status.configuration.max_async} Async)</span>
+        <div className="rounded-md border">
+          <Table className="text-xs">
+            <TableHeader>
+              <TableRow className="hover:bg-transparent">
+                <TableHead className="h-7 px-2 py-1">role</TableHead>
+                <TableHead className="h-7 px-2 py-1">
+                  binding/model
+                </TableHead>
+                <TableHead className="h-7 px-2 py-1">host</TableHead>
+                <TableHead className="h-7 px-2 py-1 text-right">
+                  queued
+                </TableHead>
+                <TableHead className="h-7 px-2 py-1 text-right">
+                  run/max
+                </TableHead>
+                <TableHead className="h-7 px-2 py-1 text-right">
+                  req/done
+                </TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {roleRows.map(({ role, config, queue }) => {
+                const maxAsync = queue?.max_async ?? config.max_async
+                return (
+                  <TableRow key={role} className="hover:bg-muted/30">
+                    <TableCell className="px-2 py-1 font-medium capitalize">
+                      {role}
+                    </TableCell>
+                    <TableCell className="max-w-[170px] px-2 py-1">
+                      <div className="truncate">{textValue(config.binding)}</div>
+                      <div className="text-muted-foreground truncate">
+                        {textValue(config.model)}
+                      </div>
+                    </TableCell>
+                    <TableCell className="max-w-[220px] px-2 py-1">
+                      <div className="truncate">{textValue(config.host)}</div>
+                    </TableCell>
+                    <TableCell className="px-2 py-1 text-right tabular-nums">
+                      {statValue(queue?.queued)}
+                    </TableCell>
+                    <TableCell className="px-2 py-1 text-right tabular-nums">
+                      {statValue(queue?.running)}/{statValue(maxAsync)}
+                    </TableCell>
+                    <TableCell className="px-2 py-1 text-right tabular-nums">
+                      {`${statValue(queue?.submitted_total)}/${statValue(queue?.completed_total)}`}
+                    </TableCell>
+                  </TableRow>
+                )
+              })}
+            </TableBody>
+          </Table>
         </div>
       </div>
 
