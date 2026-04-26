@@ -17,6 +17,7 @@ venv/
 
 # Generated Docker Compose files (output of setup wizard)
 docker-compose.*.yml
+!docker-compose.podman.yml
 
 # Build / Distribution
 dist/
