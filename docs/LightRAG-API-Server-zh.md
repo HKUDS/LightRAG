@@ -289,6 +289,15 @@ MAX_PARALLEL_INSERT=2
 MAX_ASYNC=4
 ```
 
+在 macOS 上，Gunicorn 多工作进程模式还要求 Objective-C fork safety
+覆盖变量必须在 Python 进程启动前就存在。不要依赖 `.env` 设置这个变量；
+`.env` 会在 Python 启动后才加载，对 Objective-C 运行时来说已经太晚：
+
+```shell
+export OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES
+lightrag-gunicorn --workers 2
+```
+
 ### 将 Lightrag 安装为 Linux 服务
 
 从示例文件 `lightrag.service.example` 创建您的服务文件 `lightrag.service`。修改服务文件中的服务启动定义：
