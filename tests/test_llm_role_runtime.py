@@ -93,6 +93,18 @@ def _make_rag(tmp_path, **kwargs) -> LightRAG:
     )
 
 
+def _captured_messages(caplog) -> list[str]:
+    return [record.getMessage() for record in caplog.records]
+
+
+def _role_config_headers(caplog) -> list[str]:
+    return [
+        message
+        for message in _captured_messages(caplog)
+        if "Role LLM Configuration" in message
+    ]
+
+
 ROLE_MAX_ASYNC_ENV_KEYS = (
     "MAX_ASYNC_EXTRACT_LLM",
     "MAX_ASYNC_KEYWORD_LLM",
@@ -290,6 +302,53 @@ async def test_role_llm_configs_accepts_dict_form(tmp_path):
 def test_role_llm_configs_rejects_unknown_role_keys(tmp_path):
     with pytest.raises(ValueError, match="qurey"):
         _make_rag(tmp_path, role_llm_configs={"qurey": {}})
+
+
+def test_role_llm_config_logs_once_on_init_with_metadata(
+    tmp_path, caplog, lightrag_logger_propagating
+):
+    with caplog.at_level("INFO", logger="lightrag"):
+        rag = _make_rag(
+            tmp_path,
+            role_llm_configs={
+                "query": RoleLLMConfig(
+                    max_async=7,
+                    timeout=42,
+                    metadata={
+                        "binding": "openai",
+                        "model": "gpt-test",
+                        "host": "https://api.example.com/v1",
+                        "api_key": "secret-key",
+                        "provider_options": {
+                            "temperature": 0.1,
+                            "token": "nested-token",
+                        },
+                        "bedrock_aws_options": {
+                            "region_name": "us-east-1",
+                            "aws_secret_access_key": "aws-secret",
+                        },
+                    },
+                )
+            },
+        )
+
+    snapshot = rag.get_llm_role_config("query")
+    assert snapshot["binding"] == "openai"
+    assert snapshot["model"] == "gpt-test"
+    assert snapshot["host"] == "https://api.example.com/v1"
+    assert snapshot["max_async"] == 7
+    assert snapshot["timeout"] == 42
+
+    headers = _role_config_headers(caplog)
+    assert len(headers) == 1
+    assert "initialized" in headers[0]
+    messages = "\n".join(_captured_messages(caplog))
+    assert " - query: binding=openai, model=gpt-test" in messages
+    assert "max_async=7" in messages
+    assert "timeout=42" in messages
+    assert "secret-key" not in messages
+    assert "nested-token" not in messages
+    assert "aws-secret" not in messages
 
 
 @pytest.mark.asyncio
@@ -530,6 +589,90 @@ async def test_update_llm_role_config_with_builder_metadata(tmp_path):
     assert built_calls[-1]["kwargs"]["provider_options"]["top_k"] == 8
 
 
+def test_update_llm_role_config_logs_after_success(
+    tmp_path, caplog, lightrag_logger_propagating
+):
+    async def built_func(*args, **kwargs):
+        return "ok"
+
+    def builder(role: str, meta: dict):
+        return built_func, None
+
+    rag = _make_rag(
+        tmp_path,
+        role_llm_configs={
+            "query": RoleLLMConfig(
+                metadata={
+                    "base_binding": "openai",
+                    "binding": "openai",
+                    "model": "old-model",
+                    "host": "https://old.example/v1",
+                },
+            )
+        },
+    )
+    rag.register_role_llm_builder(builder)
+
+    caplog.clear()
+    with caplog.at_level("INFO", logger="lightrag"):
+        rag.update_llm_role_config(
+            "query",
+            binding="gemini",
+            model="gemini-2.0-flash",
+            host="https://gemini.example/v1",
+            api_key="new-secret",
+            provider_options={"token": "nested-token"},
+        )
+
+    headers = _role_config_headers(caplog)
+    assert len(headers) == 1
+    assert "updated: query" in headers[0]
+    messages = "\n".join(_captured_messages(caplog))
+    assert " - query: binding=gemini, model=gemini-2.0-flash" in messages
+    assert "host=https://gemini.example/v1" in messages
+    assert "is_cross_provider" not in messages
+    assert "new-secret" not in messages
+    assert "nested-token" not in messages
+
+
+@pytest.mark.asyncio
+async def test_aupdate_llm_role_config_logs_after_success(
+    tmp_path, caplog, lightrag_logger_propagating
+):
+    async def new_query_func(*args, **kwargs):
+        return "new-query"
+
+    rag = _make_rag(
+        tmp_path,
+        role_llm_configs={
+            "query": RoleLLMConfig(
+                metadata={
+                    "binding": "openai",
+                    "model": "old-model",
+                    "host": "https://old.example/v1",
+                },
+            )
+        },
+    )
+
+    caplog.clear()
+    with caplog.at_level("INFO", logger="lightrag"):
+        await rag.aupdate_llm_role_config(
+            "query",
+            model_func=new_query_func,
+            max_async=2,
+            timeout=180,
+        )
+
+    headers = _role_config_headers(caplog)
+    assert len(headers) == 1
+    assert "updated: query" in headers[0]
+    messages = "\n".join(_captured_messages(caplog))
+    assert " - query: binding=openai, model=old-model" in messages
+    assert "max_async=2" in messages
+    assert "timeout=180" in messages
+
+
 @pytest.mark.asyncio
 async def test_llm_role_config_and_queue_status_are_observable(tmp_path):
     rag = _make_rag(tmp_path, query_llm_model_kwargs={"tag": "query"})
@@ -680,7 +823,9 @@ async def test_cross_provider_update_does_not_inherit_base_kwargs(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_update_llm_role_config_rolls_back_on_failure(tmp_path):
+async def test_update_llm_role_config_rolls_back_on_failure(
+    tmp_path, caplog, lightrag_logger_propagating
+):
     rag = _make_rag(tmp_path, extract_llm_model_kwargs={"tag": "before"})
     original_raw = rag._role_llm_states["extract"].raw_func
     original_wrapped = rag.role_llm_funcs["extract"]
@@ -699,16 +844,19 @@ async def test_update_llm_role_config_rolls_back_on_failure(tmp_path):
         provider_options={"temperature": 0.1},
     )
 
-    with pytest.raises(RuntimeError, match="boom"):
-        rag.update_llm_role_config(
-            "extract",
-            binding="gemini",
-            provider_options={"temperature": 0.9},
-        )
+    caplog.clear()
+    with caplog.at_level("INFO", logger="lightrag"):
+        with pytest.raises(RuntimeError, match="boom"):
+            rag.update_llm_role_config(
+                "extract",
+                binding="gemini",
+                provider_options={"temperature": 0.9},
+            )
 
     assert rag._role_llm_states["extract"].raw_func is original_raw
     assert rag.role_llm_funcs["extract"] is original_wrapped
     assert rag.role_llm_kwargs["extract"] == original_kwargs
+    assert not _role_config_headers(caplog)
 
 
 def test_options_dict_for_role_inherits_same_provider(monkeypatch):

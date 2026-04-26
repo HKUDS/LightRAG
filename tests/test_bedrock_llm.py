@@ -575,9 +575,15 @@ async def test_create_app_query_role_uses_bedrock_binding(tmp_path, monkeypatch)
         ) as mocked_openai,
     ):
         lightrag_server.create_app(args)
-        query_func = _FakeLightRAG.last_init_kwargs["role_llm_configs"]["query"].func
+        query_cfg = _FakeLightRAG.last_init_kwargs["role_llm_configs"]["query"]
+        query_func = query_cfg.func
         result = await query_func("hello")
 
+    assert query_cfg.metadata["binding"] == "bedrock"
+    assert query_cfg.metadata["model"] == "us.amazon.nova-lite-v1:0"
+    assert query_cfg.metadata["host"] == "DEFAULT_BEDROCK_ENDPOINT"
+    assert query_cfg.metadata["api_key"] is None
+    assert query_cfg.metadata["bedrock_aws_options"]["aws_region"] == "us-east-1"
     assert result == "bedrock-ok"
     assert mocked_openai.await_count == 0
     assert mocked_bedrock.await_count == 1

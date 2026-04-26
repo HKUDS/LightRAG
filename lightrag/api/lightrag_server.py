@@ -769,11 +769,6 @@ def create_app(args):
         role_provider_options = settings["provider_options"]
         bedrock_aws_options = settings["bedrock_aws_options"]
 
-        logger.info(
-            f"  Role '{role}': binding={role_binding}, model={role_model}, "
-            f"host={role_host}, timeout={role_timeout}"
-        )
-
         try:
             if role_binding == "ollama":
                 from lightrag.llm.ollama import _ollama_model_if_cache
@@ -1429,6 +1424,22 @@ def create_app(args):
                     kwargs=role_llm_configs[spec.name]["kwargs"],
                     max_async=role_llm_configs[spec.name]["max_async"],
                     timeout=role_llm_configs[spec.name]["timeout"],
+                    metadata={
+                        "base_binding": args.llm_binding,
+                        "binding": role_llm_configs[spec.name]["binding"],
+                        "model": role_llm_configs[spec.name]["model"],
+                        "host": role_llm_configs[spec.name]["host"],
+                        "api_key": role_llm_configs[spec.name]["api_key"],
+                        "provider_options": role_llm_configs[spec.name][
+                            "provider_options"
+                        ],
+                        "bedrock_aws_options": role_llm_configs[spec.name][
+                            "bedrock_aws_options"
+                        ],
+                        "is_cross_provider": role_llm_configs[spec.name][
+                            "is_cross_provider"
+                        ],
+                    },
                 )
                 for spec in ROLES
             },
@@ -1443,33 +1454,6 @@ def create_app(args):
             create_role_llm_model_kwargs(role, meta),
         )
     )
-    for spec in ROLES:
-        cfg = role_llm_configs[spec.name]
-        rag.set_role_llm_metadata(
-            spec.name,
-            base_binding=args.llm_binding,
-            binding=cfg["binding"],
-            model=cfg["model"],
-            host=cfg["host"],
-            api_key=cfg["api_key"],
-            provider_options=cfg["provider_options"],
-            bedrock_aws_options=cfg["bedrock_aws_options"],
-            is_cross_provider=cfg["is_cross_provider"],
-        )
-
-    # Print role LLM configuration
-    logger.info(f"\n{'🎭 Role LLM Configuration:'}")
-    for spec in ROLES:
-        role_cfg = role_llm_configs[spec.name]
-        effective_max_async = (
-            role_cfg["max_async"]
-            if role_cfg["max_async"] is not None
-            else args.max_async
-        )
-        logger.info(
-            f"    ├─ {spec.name}: binding={role_cfg['binding']}, model={role_cfg['model']}, "
-            f"host={role_cfg['host']}, max_async={effective_max_async}"
-        )
 
     # Add routes
     app.include_router(
