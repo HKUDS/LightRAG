@@ -585,12 +585,8 @@ def parse_args() -> argparse.Namespace:
 
     # Rerank async/timeout configuration (independent from base LLM)
     # rerank_max_async falls back to MAX_ASYNC; rerank_timeout has its own default.
-    args.rerank_max_async = get_env_value(
-        "MAX_ASYNC_RERANK_LLM", args.max_async, int
-    )
-    args.rerank_timeout = get_env_value(
-        "RERANK_TIMEOUT", DEFAULT_RERANK_TIMEOUT, int
-    )
+    args.rerank_max_async = get_env_value("MAX_ASYNC_RERANK_LLM", args.max_async, int)
+    args.rerank_timeout = get_env_value("RERANK_TIMEOUT", DEFAULT_RERANK_TIMEOUT, int)
 
     # Query configuration
     args.history_turns = get_env_value("HISTORY_TURNS", DEFAULT_HISTORY_TURNS, int)
