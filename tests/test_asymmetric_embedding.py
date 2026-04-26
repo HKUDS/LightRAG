@@ -9,6 +9,7 @@ Covers:
   * ``jina_embed`` selects the right ``task`` from ``context`` when the caller
     leaves the new ``task=None`` default in place.
   * ``gemini_embed`` selects the right ``task_type`` from ``context``.
+  * ``voyageai_embed`` selects the right ``input_type`` from ``context``.
 
 All tests are fully mocked; no live API calls.
 """
@@ -20,6 +21,8 @@ from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pytest
+
+from lightrag.api import config as api_config
 
 
 # ---------------------------------------------------------------------------
@@ -122,6 +125,127 @@ async def test_embedding_func_forwards_context_when_supported():
     await func(["a"], context="query")
     await func(["b"], context="document")
     assert received == ["query", "document"]
+
+
+# ---------------------------------------------------------------------------
+# API asymmetric opt-in resolution
+# ---------------------------------------------------------------------------
+
+
+def test_asymmetric_opt_in_is_off_when_toggle_is_unset_even_with_prefixes():
+    assert (
+        api_config.resolve_asymmetric_embedding_opt_in(
+            binding="ollama",
+            embedding_asymmetric=False,
+            embedding_asymmetric_configured=False,
+            query_prefix="search_query: ",
+            query_prefix_configured=True,
+            document_prefix=None,
+            document_prefix_configured=False,
+        )
+        is False
+    )
+
+
+def test_asymmetric_opt_in_explicit_false_disables_even_with_prefixes():
+    assert (
+        api_config.resolve_asymmetric_embedding_opt_in(
+            binding="ollama",
+            embedding_asymmetric=False,
+            embedding_asymmetric_configured=True,
+            query_prefix="search_query: ",
+            query_prefix_configured=True,
+            document_prefix=None,
+            document_prefix_configured=False,
+        )
+        is False
+    )
+
+
+@pytest.mark.parametrize("binding", ["jina", "gemini", "voyageai"])
+def test_asymmetric_opt_in_explicit_true_allows_provider_level_bindings(binding):
+    assert (
+        api_config.resolve_asymmetric_embedding_opt_in(
+            binding=binding,
+            embedding_asymmetric=True,
+            embedding_asymmetric_configured=True,
+            query_prefix=None,
+            query_prefix_configured=False,
+            document_prefix=None,
+            document_prefix_configured=False,
+        )
+        is True
+    )
+
+
+def test_asymmetric_opt_in_explicit_true_ignores_provider_prefixes():
+    assert (
+        api_config.resolve_asymmetric_embedding_opt_in(
+            binding="jina",
+            embedding_asymmetric=True,
+            embedding_asymmetric_configured=True,
+            query_prefix="search_query: ",
+            query_prefix_configured=True,
+            document_prefix=None,
+            document_prefix_configured=False,
+        )
+        is True
+    )
+
+
+def test_asymmetric_opt_in_explicit_true_requires_both_prefix_settings():
+    with pytest.raises(ValueError, match="requires both"):
+        api_config.resolve_asymmetric_embedding_opt_in(
+            binding="ollama",
+            embedding_asymmetric=True,
+            embedding_asymmetric_configured=True,
+            query_prefix="search_query: ",
+            query_prefix_configured=True,
+            document_prefix=None,
+            document_prefix_configured=False,
+        )
+
+
+def test_asymmetric_opt_in_explicit_true_accepts_no_prefix_sentinel_side():
+    assert (
+        api_config.resolve_asymmetric_embedding_opt_in(
+            binding="ollama",
+            embedding_asymmetric=True,
+            embedding_asymmetric_configured=True,
+            query_prefix="search_query: ",
+            query_prefix_configured=True,
+            document_prefix="",
+            document_prefix_configured=True,
+        )
+        is True
+    )
+
+
+def test_asymmetric_opt_in_explicit_true_rejects_both_sides_no_prefix():
+    with pytest.raises(ValueError, match="At least one"):
+        api_config.resolve_asymmetric_embedding_opt_in(
+            binding="ollama",
+            embedding_asymmetric=True,
+            embedding_asymmetric_configured=True,
+            query_prefix="",
+            query_prefix_configured=True,
+            document_prefix="",
+            document_prefix_configured=True,
+        )
+
+
+def test_get_embedding_prefix_config_uses_no_prefix_sentinel(monkeypatch):
+    monkeypatch.setenv("EMBEDDING_DOCUMENT_PREFIX", api_config.NO_PREFIX_SENTINEL)
+    assert api_config.get_embedding_prefix_config("EMBEDDING_DOCUMENT_PREFIX") == (
+        "",
+        True,
+    )
+
+
+def test_get_embedding_prefix_config_rejects_empty_env_value(monkeypatch):
+    monkeypatch.setenv("EMBEDDING_DOCUMENT_PREFIX", "")
+    with pytest.raises(ValueError, match=api_config.NO_PREFIX_SENTINEL):
+        api_config.get_embedding_prefix_config("EMBEDDING_DOCUMENT_PREFIX")
 
 
 # ---------------------------------------------------------------------------

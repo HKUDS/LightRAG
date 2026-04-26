@@ -12,11 +12,6 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import Mock
 from fastapi import Response
 import time
-import sys
-
-# Mock the config before importing utils_api
-sys.modules["lightrag.api.config"] = Mock()
-sys.modules["lightrag.api.auth"] = Mock()
 
 # Create a simple token renewal cache for testing
 _token_renewal_cache = {}

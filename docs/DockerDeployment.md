@@ -48,8 +48,12 @@ LightRAG can be configured using environment variables in the `.env` file:
 - `EMBEDDING_BINDING`: Embedding backend (lollms/ollama/openai)
 - `EMBEDDING_BINDING_HOST`: Embedding server host URL
 - `EMBEDDING_MODEL`: Embedding model name
-- `EMBEDDING_DOCUMENT_PREFIX`: Optional prefix for document embeddings (e.g., "search_document: ")
-- `EMBEDDING_QUERY_PREFIX`: Optional prefix for query embeddings (e.g., "search_query: ")
+- `EMBEDDING_ASYMMETRIC`: Explicitly enable query/document asymmetric embeddings
+- `EMBEDDING_DOCUMENT_PREFIX`: Document prefix for prefix-based asymmetric embeddings (or `NO_PREFIX`)
+- `EMBEDDING_QUERY_PREFIX`: Query prefix for prefix-based asymmetric embeddings (or `NO_PREFIX`)
+
+See [Asymmetric Embedding Configuration](./AsymmetricEmbedding.md) for prefix
+validation rules and provider-specific behavior.
 
 **RAG Configuration**
 

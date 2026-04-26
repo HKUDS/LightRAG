@@ -32,6 +32,8 @@ from .config import (
     global_args,
     update_uvicorn_mode_config,
     get_default_host,
+    resolve_asymmetric_embedding_opt_in,
+    PREFIX_ASYMMETRIC_EMBEDDING_BINDINGS,
 )
 from lightrag.utils import get_env_value
 from lightrag import LightRAG, __version__ as core_version
@@ -743,10 +745,16 @@ def create_app(args):
         final_embedding_dim = (
             args.embedding_dim if args.embedding_dim else provider_embedding_dim
         )
-        # Backward compatibility: context-aware behavior is disabled by default
-        # It is enabled when EMBEDDING_ASYMMETRIC=true or when prefixes are used
-        asymmetric_opt_in = args.embedding_asymmetric or bool(
-            query_prefix or document_prefix
+        # Asymmetric embedding is explicit opt-in only. Provider-specific
+        # validation decides whether task parameters or prefixes are required.
+        asymmetric_opt_in = resolve_asymmetric_embedding_opt_in(
+            binding=binding,
+            embedding_asymmetric=args.embedding_asymmetric,
+            embedding_asymmetric_configured=args.embedding_asymmetric_configured,
+            query_prefix=query_prefix,
+            document_prefix=document_prefix,
+            query_prefix_configured=args.embedding_query_prefix_configured,
+            document_prefix_configured=args.embedding_document_prefix_configured,
         )
 
         # Step 3: Create optimized embedding function (calls underlying function directly)
@@ -794,10 +802,10 @@ def create_app(args):
                     }
                     if provider_supports_asymmetric and asymmetric_opt_in:
                         kwargs["context"] = context
-                    if query_prefix:
-                        kwargs["query_prefix"] = query_prefix
-                    if document_prefix:
-                        kwargs["document_prefix"] = document_prefix
+                        if query_prefix:
+                            kwargs["query_prefix"] = query_prefix
+                        if document_prefix:
+                            kwargs["document_prefix"] = document_prefix
                     if model:
                         kwargs["embed_model"] = model
                     return await actual_func(**kwargs)
@@ -819,10 +827,10 @@ def create_app(args):
                         kwargs["model"] = model
                     if provider_supports_asymmetric and asymmetric_opt_in:
                         kwargs["context"] = context
-                    if query_prefix:
-                        kwargs["query_prefix"] = query_prefix
-                    if document_prefix:
-                        kwargs["document_prefix"] = document_prefix
+                        if query_prefix:
+                            kwargs["query_prefix"] = query_prefix
+                        if document_prefix:
+                            kwargs["document_prefix"] = document_prefix
                     return await actual_func(**kwargs)
                 elif binding == "aws_bedrock":
                     from lightrag.llm.bedrock import bedrock_embed
@@ -904,6 +912,8 @@ def create_app(args):
                     }
                     if model:
                         kwargs["model"] = model
+                    if provider_supports_asymmetric and asymmetric_opt_in:
+                        kwargs["context"] = context
                     return await actual_func(**kwargs)
                 else:  # openai and compatible
                     from lightrag.llm.openai import openai_embed
@@ -924,10 +934,10 @@ def create_app(args):
                         kwargs["model"] = model
                     if provider_supports_asymmetric and asymmetric_opt_in:
                         kwargs["context"] = context
-                    if query_prefix:
-                        kwargs["query_prefix"] = query_prefix
-                    if document_prefix:
-                        kwargs["document_prefix"] = document_prefix
+                        if query_prefix:
+                            kwargs["query_prefix"] = query_prefix
+                        if document_prefix:
+                            kwargs["document_prefix"] = document_prefix
                     return await actual_func(**kwargs)
             except ImportError as e:
                 raise Exception(f"Failed to import {binding} embedding: {e}")
@@ -942,9 +952,14 @@ def create_app(args):
             supports_asymmetric=provider_supports_asymmetric and asymmetric_opt_in,
         )
 
-        # Log final embedding configuration
+        # Log final embedding configuration. Only include prefix info when
+        # prefixes will actually be applied (prefix-based asymmetric mode).
         prefix_info = ""
-        if document_prefix or query_prefix:
+        if (
+            asymmetric_opt_in
+            and binding in PREFIX_ASYMMETRIC_EMBEDDING_BINDINGS
+            and (document_prefix or query_prefix)
+        ):
             prefix_info = f" document_prefix={repr(document_prefix)} query_prefix={repr(query_prefix)}"
         logger.info(
             f"Embedding config: binding={binding} model={model} "
