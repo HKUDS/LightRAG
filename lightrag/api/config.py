@@ -45,6 +45,7 @@ from lightrag.constants import (
     DEFAULT_RERANK_BINDING,
     DEFAULT_LLM_TIMEOUT,
     DEFAULT_EMBEDDING_TIMEOUT,
+    DEFAULT_RERANK_TIMEOUT,
 )
 
 # use the .env that is inside the current folder
@@ -583,12 +584,12 @@ def parse_args() -> argparse.Namespace:
     )
 
     # Rerank async/timeout configuration (independent from base LLM)
-    # When unset, falls back to MAX_ASYNC / LLM_TIMEOUT
+    # rerank_max_async falls back to MAX_ASYNC; rerank_timeout has its own default.
     args.rerank_max_async = get_env_value(
         "MAX_ASYNC_RERANK_LLM", args.max_async, int
     )
     args.rerank_timeout = get_env_value(
-        "RERANK_TIMEOUT", args.llm_timeout, int
+        "RERANK_TIMEOUT", DEFAULT_RERANK_TIMEOUT, int
     )
 
     # Query configuration

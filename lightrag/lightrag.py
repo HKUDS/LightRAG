@@ -70,6 +70,7 @@ from lightrag.constants import (
     DEFAULT_SUMMARY_LANGUAGE,
     DEFAULT_LLM_TIMEOUT,
     DEFAULT_EMBEDDING_TIMEOUT,
+    DEFAULT_RERANK_TIMEOUT,
     DEFAULT_SOURCE_IDS_LIMIT_METHOD,
     DEFAULT_MAX_FILE_PATHS,
     FULL_DOCS_FORMAT_RAW,
@@ -772,15 +773,11 @@ class LightRAG:
     Falls back to MAX_ASYNC when MAX_ASYNC_RERANK_LLM is unset."""
 
     default_rerank_timeout: int = field(
-        default=int(
-            os.getenv(
-                "RERANK_TIMEOUT",
-                os.getenv("LLM_TIMEOUT", DEFAULT_LLM_TIMEOUT),
-            )
-        )
+        default=int(os.getenv("RERANK_TIMEOUT", DEFAULT_RERANK_TIMEOUT))
     )
     """Rerank request timeout in seconds.
-    Falls back to LLM_TIMEOUT when RERANK_TIMEOUT is unset."""
+    Independent from LLM_TIMEOUT since reranker calls are much shorter
+    than full LLM generation."""
 
     min_rerank_score: float = field(
         default=get_env_value("MIN_RERANK_SCORE", DEFAULT_MIN_RERANK_SCORE, float)
