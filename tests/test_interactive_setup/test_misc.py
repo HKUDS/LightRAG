@@ -357,6 +357,63 @@ printf 'LIGHTRAG_SETUP_RERANK_PROVIDER=%s\\n' "${{ENV_VALUES[LIGHTRAG_SETUP_RERA
     assert values["LIGHTRAG_SETUP_RERANK_PROVIDER"] == "vllm"
 
 
+@pytest.mark.parametrize(
+    ("llm_binding", "embedding_binding", "expected_llm_host", "expected_embed_host"),
+    [
+        ("bedrock", "bedrock", "DEFAULT_BEDROCK_ENDPOINT", "DEFAULT_BEDROCK_ENDPOINT"),
+        ("gemini", "gemini", "DEFAULT_GEMINI_ENDPOINT", "DEFAULT_GEMINI_ENDPOINT"),
+        ("bedrock", "openai", "DEFAULT_BEDROCK_ENDPOINT", ""),
+    ],
+    ids=["bedrock-both", "gemini-both", "bedrock-llm-only"],
+)
+def test_load_existing_env_backfills_sentinel_hosts_for_bedrock_and_gemini(
+    tmp_path: Path,
+    llm_binding: str,
+    embedding_binding: str,
+    expected_llm_host: str,
+    expected_embed_host: str,
+) -> None:
+    """Flows that skip collect_*_config (--server, --storage) must not let env.example's openai URL leak through for sentinel-based providers."""
+    write_text_lines(
+        tmp_path / ".env",
+        [
+            f"LLM_BINDING={llm_binding}",
+            f"EMBEDDING_BINDING={embedding_binding}",
+        ],
+    )
+    write_text_lines(
+        tmp_path / "env.example",
+        (REPO_ROOT / "env.example").read_text(encoding="utf-8").splitlines(),
+    )
+    values = run_bash_lines(f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+load_existing_env_if_present
+generate_env_file "$REPO_ROOT/env.example" "$REPO_ROOT/.env.generated"
+
+printf 'LOADED_LLM_HOST=%s\\n' "${{ENV_VALUES[LLM_BINDING_HOST]:-}}"
+printf 'LOADED_EMBED_HOST=%s\\n' "${{ENV_VALUES[EMBEDDING_BINDING_HOST]:-}}\"
+""")
+    assert values["LOADED_LLM_HOST"] == expected_llm_host
+    generated_lines = (
+        (tmp_path / ".env.generated").read_text(encoding="utf-8").splitlines()
+    )
+    llm_host_line = next(
+        line for line in generated_lines if line.startswith("LLM_BINDING_HOST=")
+    )
+    assert llm_host_line == f"LLM_BINDING_HOST={expected_llm_host}"
+    if expected_embed_host:
+        assert values["LOADED_EMBED_HOST"] == expected_embed_host
+        embed_host_line = next(
+            line
+            for line in generated_lines
+            if line.startswith("EMBEDDING_BINDING_HOST=")
+        )
+        assert embed_host_line == f"EMBEDDING_BINDING_HOST={expected_embed_host}"
+
+
 def test_finalize_base_setup_uses_compose_native_storage_endpoints_on_rerun(
     tmp_path: Path,
 ) -> None:
