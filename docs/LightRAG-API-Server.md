@@ -113,7 +113,17 @@ EMBEDDING_DIM=1024
 # EMBEDDING_BINDING_API_KEY=your_api_key
 ```
 
-> **Important Note**: The Embedding model must be determined before document indexing, and the same model must be used during the document query phase. For certain storage solutions (e.g., PostgreSQL), the vector dimension must be defined upon initial table creation. Therefore, when changing embedding models, it is necessary to delete the existing vector-related tables and allow LightRAG to recreate them with the new dimensions.
+> **Important Note**: The embedding model and asymmetric embedding configuration must be determined before document indexing, and the same settings must be used during the query phase. For certain storage solutions (e.g., PostgreSQL), the vector dimension must be defined upon initial table creation. When changing the embedding model, embedding dimension, `EMBEDDING_ASYMMETRIC`, query/document prefixes, or provider task behavior, clear the existing LightRAG workspace/vector data and re-index the source files.
+
+#### Asymmetric Embedding Configuration
+
+LightRAG uses symmetric embeddings by default. Query/document asymmetric embeddings are enabled only when `EMBEDDING_ASYMMETRIC=true` is explicitly set.
+
+- Provider task bindings such as `jina`, `gemini`, and `voyageai` use provider parameters (`task` / `task_type` / `input_type`) and should not use query/document prefixes.
+- Prefix-based bindings such as `openai`, `azure_openai`, and `ollama` require both `EMBEDDING_QUERY_PREFIX` and `EMBEDDING_DOCUMENT_PREFIX`. Use `NO_PREFIX` for a side that should intentionally have no prefix.
+- Any valid change to asymmetric embedding settings requires clearing existing data and re-indexing files.
+
+For the full validation rules and examples, see [Asymmetric Embedding Configuration](./AsymmetricEmbedding.md).
 
 ### Create .env File With Setup Tool
 
@@ -464,17 +474,31 @@ Most of the configurations come with default settings; check out the details in 
 
 ### LLM and Embedding Backend Supported
 
-LightRAG supports binding to various LLM/Embedding backends:
+LightRAG supports binding to various LLM backends:
 
 * ollama
 * openai (including openai compatible)
 * azure_openai
 * lollms
 * bedrock
+* gemini
+
+LightRAG supports binding to various Embedding backends:
+
+* lollms
+* ollama
+* openai (including openai compatible)
+* azure_openai
+* bedrock
+* jina
+* gemini
+* voyageai
 
 Use environment variables `LLM_BINDING` or CLI argument `--llm-binding` to select the LLM backend type. Use environment variables `EMBEDDING_BINDING` or CLI argument `--embedding-binding` to select the Embedding backend type.
 
 Bedrock ignores `LLM_BINDING_API_KEY` and `EMBEDDING_BINDING_API_KEY`. Use SigV4 credentials through the AWS credential chain, or set the process-level `AWS_BEARER_TOKEN_BEDROCK` environment variable before startup for Bedrock API key / bearer-token auth.
+
+Asymmetric embedding is explicit opt-in. Set `EMBEDDING_ASYMMETRIC=true` only when the selected embedding backend supports either provider task parameters or task prefixes. See [Asymmetric Embedding Configuration](./AsymmetricEmbedding.md) before changing these settings, because existing data must be cleared and files re-indexed after any change.
 
 For LLM and embedding configuration examples, please refer to the `env.example` file in the project's root directory. To view the complete list of configurable options for OpenAI and Ollama-compatible LLM interfaces, use the following commands:
 ```
@@ -548,7 +572,7 @@ When switching the storage implementation in LightRAG, the LLM cache can be migr
 | --ssl-certfile        | None          | Path to SSL certificate file (required if --ssl is enabled)                                                                     |
 | --ssl-keyfile         | None          | Path to SSL private key file (required if --ssl is enabled)                                                                     |
 | --llm-binding         | ollama        | LLM binding type (lollms, ollama, openai, openai-ollama, azure_openai, bedrock)                                                          |
-| --embedding-binding   | ollama        | Embedding binding type (lollms, ollama, openai, azure_openai, bedrock)                                                                   |
+| --embedding-binding   | ollama        | Embedding binding type (lollms, ollama, openai, azure_openai, bedrock, jina, gemini)                                                     |
 
 ### Reranking Configuration
 
@@ -669,6 +693,11 @@ EMBEDDING_MODEL=bge-m3:latest
 EMBEDDING_DIM=1024
 EMBEDDING_BINDING=ollama
 EMBEDDING_BINDING_HOST=http://localhost:11434
+# Optional asymmetric embedding for prefix-based models:
+# EMBEDDING_ASYMMETRIC=true
+# EMBEDDING_QUERY_PREFIX="search_query: "
+# EMBEDDING_DOCUMENT_PREFIX="search_document: "
+# Use NO_PREFIX for a side that should intentionally have no prefix.
 
 ### For JWT Auth
 # AUTH_ACCOUNTS='admin:{bcrypt}$2b$12$replace-with-generated-hash,user1:pass456'

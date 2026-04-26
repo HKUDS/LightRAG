@@ -113,7 +113,17 @@ EMBEDDING_DIM=1024
 # EMBEDDING_BINDING_API_KEY=your_api_key
 ```
 
-> **重要提示**：在文档索引前必须确定使用的Embedding模型，且在文档查询阶段必须沿用与索引阶段相同的模型。有些存储（例如PostgreSQL）在首次建立数表的时候需要确定向量维度，因此更换Embedding模型后需要删除向量相关库表，以便让LightRAG重建新的库表。
+> **重要提示**：在文档索引前必须确定使用的 Embedding 模型和非对称嵌入配置，且在查询阶段必须沿用相同设置。有些存储（例如 PostgreSQL）在首次建立表时需要确定向量维度。更换 Embedding 模型、向量维度、`EMBEDDING_ASYMMETRIC`、query/document 前缀或 provider task 行为后，必须清空现有 LightRAG workspace/向量数据并重新索引源文件。
+
+#### 非对称嵌入配置
+
+LightRAG 默认使用对称嵌入。只有显式设置 `EMBEDDING_ASYMMETRIC=true` 时，才会开启 query/document 非对称嵌入。
+
+- `jina`、`gemini`、`voyageai` 等 provider task 型绑定通过 provider 参数（`task` / `task_type` / `input_type`）区分 query/document，不应配置 query/document 前缀。
+- `openai`、`azure_openai`、`ollama` 等前缀型绑定必须同时配置 `EMBEDDING_QUERY_PREFIX` 和 `EMBEDDING_DOCUMENT_PREFIX`。如果某一侧明确不需要前缀，请使用 `NO_PREFIX`。
+- 任何非对称嵌入配置的有效变更，都需要清空已有数据并重新索引文件。
+
+完整校验规则和示例请参阅 [Asymmetric Embedding Configuration](./AsymmetricEmbedding.md)。
 
 ### 使用 Setup 工具创建 .env 文件
 
@@ -463,17 +473,31 @@ API 服务器可以通过两种方式配置（优先级从高到低）：
 
 ### 支持的 LLM 和嵌入后端
 
-LightRAG 支持绑定到各种 LLM/嵌入后端：
+LightRAG 支持绑定到各种 LLM 后端：
 
 * ollama
 * openai (含openai 兼容)
 * azure_openai
 * lollms
 * bedrock
+* gemini
+
+LightRAG 支持绑定到各种嵌入后端：
+
+* lollms
+* ollama
+* openai (含 openai 兼容)
+* azure_openai
+* bedrock
+* jina
+* gemini
+* voyageai
 
 使用环境变量 `LLM_BINDING` 或 CLI 参数 `--llm-binding` 选择 LLM 后端类型。使用环境变量 `EMBEDDING_BINDING` 或 CLI 参数 `--embedding-binding` 选择嵌入后端类型。
 
 Bedrock 会忽略 `LLM_BINDING_API_KEY` 和 `EMBEDDING_BINDING_API_KEY`。请通过 AWS credential chain 使用 SigV4 凭据；如果要使用 Bedrock API key / bearer token，请在启动前显式设置进程级环境变量 `AWS_BEARER_TOKEN_BEDROCK`。
+
+非对称嵌入需要显式开启。仅当所选嵌入后端支持 provider task 参数或任务前缀时，才设置 `EMBEDDING_ASYMMETRIC=true`。修改这些设置前请先阅读 [Asymmetric Embedding Configuration](./AsymmetricEmbedding.md)，因为任何变更后都必须清空已有数据并重新索引文件。
 
 LLM和Embedding配置例子请查看项目根目录的 env.example 文件。OpenAI和Ollama兼容LLM接口的支持的完整配置选型可以通过一下命令查看：
 
@@ -547,8 +571,8 @@ LIGHTRAG_DOC_STATUS_STORAGE=PGDocStatusStorage
 | --ssl | False | 启用 HTTPS |
 | --ssl-certfile | None | SSL 证书文件路径（如果启用 --ssl 则必需） |
 | --ssl-keyfile | None | SSL 私钥文件路径（如果启用 --ssl 则必需） |
-| --llm-binding | ollama | LLM 绑定类型（lollms、ollama、openai、openai-ollama、azure_openai、bedrock） |
-| --embedding-binding | ollama | 嵌入绑定类型（lollms、ollama、openai、azure_openai、bedrock） |
+| --llm-binding | ollama | LLM 绑定类型（lollms、ollama、openai、openai-ollama、azure_openai、bedrock）                 |
+| --embedding-binding | ollama | 嵌入绑定类型（lollms、ollama、openai、azure_openai、bedrock, jina、gemini、voyageai）   |
 
 ### Reranking 配置
 
@@ -669,6 +693,11 @@ EMBEDDING_MODEL=bge-m3:latest
 EMBEDDING_DIM=1024
 EMBEDDING_BINDING=ollama
 EMBEDDING_BINDING_HOST=http://localhost:11434
+# 可选：前缀型模型的非对称嵌入配置
+# EMBEDDING_ASYMMETRIC=true
+# EMBEDDING_QUERY_PREFIX="search_query: "
+# EMBEDDING_DOCUMENT_PREFIX="search_document: "
+# 如果某一侧明确不需要前缀，请使用 NO_PREFIX。
 
 ### For JWT Auth
 # AUTH_ACCOUNTS='admin:{bcrypt}$2b$12$replace-with-generated-hash,user1:pass456'
