@@ -70,6 +70,10 @@ def get_default_host(binding_type: str) -> str:
         "gemini": os.getenv(
             "LLM_BINDING_HOST", "https://generativelanguage.googleapis.com"
         ),
+        "gemini_batch": os.getenv(
+            "LLM_BINDING_HOST", "https://generativelanguage.googleapis.com"
+        ),
+        "openai_batch": os.getenv("LLM_BINDING_HOST", "https://api.openai.com/v1"),
     }
     return default_hosts.get(
         binding_type, os.getenv("LLM_BINDING_HOST", "http://localhost:11434")
@@ -300,9 +304,9 @@ def parse_args() -> argparse.Namespace:
     # Add LLM binding options based on determined value
     if llm_binding_value == "ollama":
         OllamaLLMOptions.add_args(parser)
-    elif llm_binding_value in ["openai", "azure_openai"]:
+    elif llm_binding_value in ["openai", "azure_openai", "openai_batch"]:
         OpenAILLMOptions.add_args(parser)
-    elif llm_binding_value == "gemini":
+    elif llm_binding_value in ["gemini", "gemini_batch"]:
         GeminiLLMOptions.add_args(parser)
 
     # Determine embedding binding value consistently from command line or environment
@@ -322,7 +326,7 @@ def parse_args() -> argparse.Namespace:
     # Add embedding binding options based on determined value
     if embedding_binding_value == "ollama":
         OllamaEmbeddingOptions.add_args(parser)
-    elif embedding_binding_value == "gemini":
+    elif embedding_binding_value in ["gemini", "gemini_batch"]:
         GeminiEmbeddingOptions.add_args(parser)
 
     args = parser.parse_args()
