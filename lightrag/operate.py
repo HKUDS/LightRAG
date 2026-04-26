@@ -653,6 +653,22 @@ def _normalize_text_extraction_record_attributes(
     return normalized
 
 
+def _looks_like_json_extraction_result(result: str) -> bool:
+    """Return True for raw or fenced JSON extraction responses."""
+
+    stripped = result.strip()
+    if not stripped:
+        return False
+
+    if stripped.startswith(("{", "[")):
+        return True
+
+    if stripped.startswith("```"):
+        return _strip_markdown_code_fence(stripped).strip().startswith(("{", "["))
+
+    return False
+
+
 async def _process_json_extraction_result(
     result: str,
     chunk_key: str,
@@ -678,7 +694,7 @@ async def _process_json_extraction_result(
 
     try:
         # Parse the JSON response using json_repair for robustness
-        parsed = json_repair.loads(result)
+        parsed = json_repair.loads(_strip_markdown_code_fence(result).strip())
     except Exception as e:
         logger.warning(f"{chunk_key}: Failed to parse JSON extraction result: {e}")
         return dict(maybe_nodes), dict(maybe_edges)
@@ -1378,8 +1394,7 @@ async def _rebuild_from_extraction_result(
     )
 
     # Auto-detect format: try JSON first if the result looks like JSON
-    stripped_result = extraction_result.strip()
-    if stripped_result.startswith("{") or stripped_result.startswith("["):
+    if _looks_like_json_extraction_result(extraction_result):
         # Likely JSON format (from entity_extraction_use_json mode)
         nodes, edges = await _process_json_extraction_result(
             extraction_result,

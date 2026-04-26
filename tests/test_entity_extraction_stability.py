@@ -198,6 +198,11 @@ _JSON_MODE_RESPONSE = json.dumps(
 )
 
 
+class _DummyTextChunksStorage:
+    async def get_by_id(self, chunk_id: str):
+        return {"file_path": "test.md"}
+
+
 # ---------------------------------------------------------------------------
 # 1. Default entity_types_guidance constant
 # ---------------------------------------------------------------------------
@@ -391,6 +396,30 @@ def test_text_user_prompt_includes_quantity_limits():
 # ---------------------------------------------------------------------------
 # 5. JSON mode: entity_types_guidance injected + entity_extraction kwarg set
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_rebuild_from_cached_fenced_json_uses_json_parser():
+    """Cached JSON wrapped in markdown fences must not fall back to text parsing."""
+    from lightrag import operate
+
+    fenced_json = f"```json\n{_JSON_MODE_RESPONSE}\n```"
+
+    with patch(
+        "lightrag.operate._process_extraction_result",
+        side_effect=AssertionError("text parser should not be used"),
+    ):
+        nodes, edges = await operate._rebuild_from_extraction_result(
+            text_chunks_storage=_DummyTextChunksStorage(),
+            extraction_result=fenced_json,
+            chunk_id="chunk-001",
+            timestamp=123,
+        )
+
+    assert set(nodes) == {"Alice", "Acme Corp"}
+    assert ("Alice", "Acme Corp") in edges
+    assert nodes["Alice"][0]["file_path"] == "test.md"
 
 
 @pytest.mark.offline
