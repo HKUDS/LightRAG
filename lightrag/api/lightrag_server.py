@@ -315,8 +315,9 @@ def create_app(args):
         "aws_bedrock",
         "jina",
         "gemini",
+        "voyageai",
     ]:
-        raise Exception("embedding binding not supported")
+        raise Exception(f"embedding binding '{args.embedding_binding}' not supported")
 
     # Set default hosts if not provided
     if args.llm_binding_host is None:
@@ -708,7 +709,10 @@ def create_app(args):
                 from lightrag.llm.lollms import lollms_embed
 
                 provider_func = lollms_embed
+            elif binding == "voyageai":
+                from lightrag.llm.voyageai import voyageai_embed
 
+                provider_func = voyageai_embed
             # Extract attributes if provider is an EmbeddingFunc
             if provider_func and isinstance(provider_func, EmbeddingFunc):
                 provider_max_token_size = provider_func.max_token_size
@@ -838,7 +842,6 @@ def create_app(args):
                         from lightrag.llm.binding_options import GeminiEmbeddingOptions
 
                         gemini_options = GeminiEmbeddingOptions.options_dict(args)
-
                     # Pass model only if provided, let function use its default (gemini-embedding-001)
                     kwargs = {
                         "texts": texts,
@@ -848,6 +851,22 @@ def create_app(args):
                         "task_type": gemini_options.get(
                             "task_type", "RETRIEVAL_DOCUMENT"
                         ),
+                    }
+                    if model:
+                        kwargs["model"] = model
+                    return await actual_func(**kwargs)
+                elif binding == "voyageai":
+                    from lightrag.llm.voyageai import voyageai_embed
+
+                    actual_func = (
+                        voyageai_embed.func
+                        if isinstance(voyageai_embed, EmbeddingFunc)
+                        else voyageai_embed
+                    )
+                    kwargs = {
+                        "texts": texts,
+                        "api_key": api_key,
+                        "embedding_dim": embedding_dim,
                     }
                     if model:
                         kwargs["model"] = model
