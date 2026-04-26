@@ -118,6 +118,7 @@ from lightrag.operate import (
     kg_query,
     naive_query,
     rebuild_knowledge_from_chunks,
+    _warn_deprecated_query_model_func,
 )
 from lightrag.constants import GRAPH_FIELD_SEP
 from lightrag.utils import (
@@ -1447,7 +1448,24 @@ class LightRAG:
             spec.name: states[spec.name].wrapped if spec.name in states else None
             for spec in ROLES
         }
+        global_config["llm_cache_identities"] = {
+            spec.name: self._build_role_llm_cache_identity(
+                spec.name, states.get(spec.name)
+            )
+            for spec in ROLES
+        }
         return global_config
+
+    def _build_role_llm_cache_identity(
+        self, role: str, state: _RoleLLMState | None
+    ) -> dict[str, Any]:
+        metadata = state.metadata if state is not None else {}
+        return {
+            "role": role,
+            "binding": metadata.get("binding"),
+            "model": metadata.get("model") or self.llm_model_name,
+            "host": metadata.get("host"),
+        }
 
     def __post_init__(self, addon_params: dict[str, Any] | None):
         from lightrag.kg.shared_storage import (
@@ -5966,6 +5984,8 @@ class LightRAG:
                 )
             elif param.mode == "bypass":
                 # Bypass mode: directly use LLM without knowledge retrieval
+                if param.model_func:
+                    _warn_deprecated_query_model_func("bypass query generation")
                 use_llm_func = (
                     param.model_func or global_config["role_llm_funcs"]["query"]
                 )

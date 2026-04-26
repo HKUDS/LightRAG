@@ -634,6 +634,38 @@ def _serialize_cache_variant(value: Any) -> str:
         return repr(value)
 
 
+def get_llm_cache_identity(
+    global_config: dict[str, Any] | None,
+    role: str,
+    model_func_override: Callable[..., Any] | None = None,
+) -> dict[str, Any]:
+    """Get the non-secret LLM identity used to partition LLM cache keys."""
+    if model_func_override is not None:
+        return {
+            "role": role,
+            "override": "query_param.model_func",
+        }
+
+    config = global_config or {}
+    identities = config.get("llm_cache_identities")
+    if isinstance(identities, dict):
+        identity = identities.get(role)
+        if isinstance(identity, dict):
+            return dict(identity)
+
+    return {
+        "role": role,
+        "binding": None,
+        "model": config.get("llm_model_name"),
+        "host": None,
+    }
+
+
+def serialize_llm_cache_identity(identity: Any) -> str:
+    """Serialize an LLM cache identity for inclusion in hash inputs."""
+    return _serialize_cache_variant(identity)
+
+
 def _validate_cached_response_format(response_format: Any | None) -> None:
     """Reject structured-output modes that the cache wrapper does not support."""
     if response_format is None:
@@ -2168,6 +2200,7 @@ async def use_llm_func_with_cache(
     cache_keys_collector: list = None,
     response_format: Any | None = None,
     entity_extraction: bool = False,
+    llm_cache_identity: Any | None = None,
 ) -> tuple[str, int]:
     """Call LLM function with cache support and text sanitization
 
@@ -2196,6 +2229,8 @@ async def use_llm_func_with_cache(
         entity_extraction: Deprecated. When True and ``response_format`` is not
             provided, maps to ``{"type": "json_object"}``. Prefer passing
             ``response_format`` directly.
+        llm_cache_identity: Non-secret model/provider identity used to partition
+            cache entries across role model, binding, or host changes.
 
     Returns:
         tuple[str, int]: (LLM response text, timestamp)
@@ -2241,8 +2276,13 @@ async def use_llm_func_with_cache(
         _prompt = "\n".join(prompt_parts)
 
         response_format_key = _serialize_cache_variant(response_format)
+        llm_identity_key = serialize_llm_cache_identity(llm_cache_identity)
         arg_hash = compute_args_hash(
-            _prompt, "\n<response_format>\n", response_format_key
+            _prompt,
+            "\n<response_format>\n",
+            response_format_key,
+            "\n<llm_identity>\n",
+            llm_identity_key,
         )
         # Generate cache key for this LLM call
         cache_key = generate_cache_key("default", cache_type, arg_hash)

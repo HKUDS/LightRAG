@@ -149,9 +149,10 @@ class QueryParam:
     """
 
     model_func: Callable[..., object] | None = None
-    """Optional override for the LLM model function to use for this specific query.
-    If provided, this will be used instead of the global model function.
-    This allows using different models for different query modes.
+    """Deprecated optional override for the LLM model function.
+    Use role-specific LLM configuration at initialization or
+    await rag.aupdate_llm_role_config("query" | "keyword", ...) for runtime
+    LLM changes instead. Kept for backward compatibility with direct Python callers.
     """
 
     user_prompt: str | None = None
