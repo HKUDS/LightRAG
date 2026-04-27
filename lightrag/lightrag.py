@@ -4462,9 +4462,7 @@ class LightRAG:
         if source.suffix.lower() != ".docx":
             return None
         try:
-            target = await move_file_to_parsed_dir(
-                source, skip_if_already_parsed=True
-            )
+            target = await move_file_to_parsed_dir(source, skip_if_already_parsed=True)
         except Exception as e:
             logger.warning(
                 f"[parse] DOCX source archive skipped after full_docs sync: {source_path}: {e}"

@@ -165,9 +165,7 @@ async def test_pipeline_index_files_moves_processed_docx_batch(tmp_path):
     assert (tmp_path / PARSED_DIR_NAME / second.name).exists()
 
 
-async def test_scan_existing_full_path_docx_does_not_reenqueue(
-    tmp_path, monkeypatch
-):
+async def test_scan_existing_full_path_docx_does_not_reenqueue(tmp_path, monkeypatch):
     file_path = tmp_path / "already-parsed.docx"
     file_path.write_bytes(b"docx bytes")
     doc_manager = DocumentManager(str(tmp_path))
@@ -230,9 +228,7 @@ async def test_docx_archive_failure_is_best_effort(tmp_path, monkeypatch):
     async def _raise_archive_failure(*args, **kwargs):
         raise OSError("simulated archive failure")
 
-    monkeypatch.setattr(
-        _lightrag, "move_file_to_parsed_dir", _raise_archive_failure
-    )
+    monkeypatch.setattr(_lightrag, "move_file_to_parsed_dir", _raise_archive_failure)
 
     archived_path = await LightRAG._archive_docx_source_after_full_docs_sync(
         rag, str(file_path)
@@ -251,7 +247,10 @@ async def test_parse_native_archives_docx_after_full_docs_sync(tmp_path, monkeyp
     monkeypatch.setattr(
         parse_document,
         "parse_docx_to_interchange_jsonl",
-        lambda file_bytes, source_file, doc_id, output_dir: '{"type":"meta"}\n{"type":"content","content":"parsed"}',
+        lambda file_bytes,
+        source_file,
+        doc_id,
+        output_dir: '{"type":"meta"}\n{"type":"content","content":"parsed"}',
     )
 
     result = await LightRAG.parse_native(
