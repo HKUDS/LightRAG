@@ -1,6 +1,7 @@
 import importlib
 import sys
 from io import BytesIO
+from types import SimpleNamespace
 
 import pytest
 
@@ -189,7 +190,14 @@ async def test_scan_existing_full_path_docx_does_not_reenqueue(tmp_path, monkeyp
     assert rag.process_calls == 1
 
 
-async def test_upload_rejects_same_name_failed_doc_status_without_full_docs(tmp_path):
+async def test_upload_rejects_same_name_failed_doc_status_without_full_docs(
+    tmp_path, monkeypatch
+):
+    # Other tests (e.g. test_auth.py) may replace global_args with a SimpleNamespace
+    # that lacks max_upload_size; pin a known state so the upload endpoint runs.
+    monkeypatch.setattr(
+        _document_routes, "global_args", SimpleNamespace(max_upload_size=None)
+    )
     doc_manager = DocumentManager(str(tmp_path))
     rag = _DuplicateUploadRag(
         {
