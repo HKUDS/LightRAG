@@ -471,6 +471,10 @@ def create_app(args):
 
         Returns:
             Workspace identifier (may be empty string for global namespace)
+
+        Raises:
+            HTTPException: 403 if the requested workspace does not match the
+                server's configured workspace.
         """
         # Check custom header first
         workspace = request.headers.get("LIGHTRAG-WORKSPACE", "").strip()
@@ -485,6 +489,18 @@ def create_app(args):
                     f"Sanitized to '{sanitized}'."
                 )
                 workspace = sanitized
+
+            server_workspace = args.workspace or get_default_workspace() or ""
+            if workspace != server_workspace:
+                logger.warning(
+                    "Unauthorized workspace access attempt: "
+                    f"requested '{workspace}', "
+                    f"server workspace is '{server_workspace}'."
+                )
+                raise HTTPException(
+                    status_code=403,
+                    detail="Unauthorized workspace",
+                )
 
         return workspace
 
@@ -1384,6 +1400,8 @@ def create_app(args):
                 "webui_title": webui_title,
                 "webui_description": webui_description,
             }
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error(f"Error getting health status: {str(e)}")
             raise HTTPException(status_code=500, detail=str(e))
