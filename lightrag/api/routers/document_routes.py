@@ -969,6 +969,82 @@ def get_unique_filename_in_enqueued(target_dir: Path, original_name: str) -> str
     return f"{base_name}_{timestamp}{extension}"
 
 
+async def move_file_to_parsed_dir(file_path: Path) -> Path | None:
+    """Move a processed source file into its sibling __parsed__ directory."""
+    if not file_path.exists():
+        return None
+
+    parsed_dir = file_path.parent / PARSED_DIR_NAME
+    await asyncio.to_thread(parsed_dir.mkdir, exist_ok=True)
+
+    unique_filename = get_unique_filename_in_enqueued(parsed_dir, file_path.name)
+    target_path = parsed_dir / unique_filename
+
+    await asyncio.to_thread(file_path.rename, target_path)
+    logger.debug(
+        f"Moved file to parsed directory: {file_path.name} -> {unique_filename}"
+    )
+    return target_path
+
+
+def get_doc_status_value(doc_status: Any) -> str:
+    """Read status from dict or DocProcessingStatus-like objects."""
+    status = (
+        doc_status.get("status")
+        if isinstance(doc_status, dict)
+        else getattr(doc_status, "status", None)
+    )
+    if isinstance(status, DocStatus):
+        return status.value
+    return str(status or "")
+
+
+def get_doc_track_id(doc_status: Any) -> str:
+    """Read track_id from dict or DocProcessingStatus-like objects."""
+    track_id = (
+        doc_status.get("track_id")
+        if isinstance(doc_status, dict)
+        else getattr(doc_status, "track_id", None)
+    )
+    return str(track_id or "")
+
+
+async def move_docx_to_parsed_after_processing(
+    rag: LightRAG, file_path: Path, track_id: str | None
+) -> None:
+    """Archive a DOCX source file only after this pipeline run processed it."""
+    if file_path.suffix.lower() != ".docx":
+        return
+
+    doc_id = compute_mdhash_id(str(file_path), prefix="doc-")
+    doc_status = await rag.doc_status.get_by_id(doc_id)
+    if not doc_status:
+        logger.debug(
+            f"Skipping DOCX archive for {file_path.name}: no document status found"
+        )
+        return
+
+    status = get_doc_status_value(doc_status)
+    status_track_id = get_doc_track_id(doc_status)
+    if status != DocStatus.PROCESSED.value:
+        logger.debug(
+            f"Skipping DOCX archive for {file_path.name}: document status is {status}"
+        )
+        return
+    if track_id and status_track_id and status_track_id != track_id:
+        logger.debug(
+            f"Skipping DOCX archive for {file_path.name}: track_id does not match current run"
+        )
+        return
+
+    try:
+        await move_file_to_parsed_dir(file_path)
+    except Exception as move_error:
+        logger.error(
+            f"Failed to move file {file_path.name} to {PARSED_DIR_NAME} directory: {move_error}"
+        )
+
+
 # Document processing helper functions (synchronous)
 # These functions run in thread pool via asyncio.to_thread() to avoid blocking the event loop
 
@@ -1614,21 +1690,7 @@ async def pipeline_enqueue_file(
 
                 # Move file to __parsed__ directory after enqueuing (LR2-PRD: parsed output dir)
                 try:
-                    enqueued_dir = file_path.parent / PARSED_DIR_NAME
-                    await asyncio.to_thread(enqueued_dir.mkdir, exist_ok=True)
-
-                    # Generate unique filename to avoid conflicts
-                    unique_filename = get_unique_filename_in_enqueued(
-                        enqueued_dir, file_path.name
-                    )
-                    target_path = enqueued_dir / unique_filename
-
-                    # Move the file
-                    await asyncio.to_thread(file_path.rename, target_path)
-                    logger.debug(
-                        f"Moved file to enqueued directory: {file_path.name} -> {unique_filename}"
-                    )
-
+                    await move_file_to_parsed_dir(file_path)
                 except Exception as move_error:
                     logger.error(
                         f"Failed to move file {file_path.name} to {PARSED_DIR_NAME} directory: {move_error}"
@@ -1703,6 +1765,9 @@ async def pipeline_index_file(rag: LightRAG, file_path: Path, track_id: str = No
         )
         if success:
             await rag.apipeline_process_enqueue_documents()
+            await move_docx_to_parsed_after_processing(
+                rag, file_path, returned_track_id
+            )
 
     except Exception as e:
         logger.error(f"Error indexing file {file_path.name}: {str(e)}")
@@ -1723,6 +1788,7 @@ async def pipeline_index_files(
         return
     try:
         enqueued = False
+        enqueued_docx_files: list[tuple[Path, str]] = []
 
         # Use get_pinyin_sort_key for Chinese pinyin sorting
         sorted_file_paths = sorted(
@@ -1731,13 +1797,21 @@ async def pipeline_index_files(
 
         # Process files sequentially with track_id
         for file_path in sorted_file_paths:
-            success, _ = await pipeline_enqueue_file(rag, file_path, track_id)
+            success, returned_track_id = await pipeline_enqueue_file(
+                rag, file_path, track_id
+            )
             if success:
                 enqueued = True
+                if file_path.suffix.lower() == ".docx":
+                    enqueued_docx_files.append((file_path, returned_track_id))
 
         # Process the queue only if at least one file was successfully enqueued
         if enqueued:
             await rag.apipeline_process_enqueue_documents()
+            for docx_file_path, returned_track_id in enqueued_docx_files:
+                await move_docx_to_parsed_after_processing(
+                    rag, docx_file_path, returned_track_id
+                )
     except Exception as e:
         logger.error(f"Error indexing files: {str(e)}")
         logger.error(traceback.format_exc())

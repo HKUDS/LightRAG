@@ -4151,6 +4151,12 @@ class LightRAG:
     def _resolve_parser_engine(
         self, file_path: str, content_data: dict[str, Any]
     ) -> str:
+        doc_format = content_data.get("format", FULL_DOCS_FORMAT_RAW)
+        if doc_format == FULL_DOCS_FORMAT_LIGHTRAG and content_data.get(
+            "lightrag_document_path"
+        ):
+            return "native"
+
         explicit_engine = str(content_data.get("parsed_engine") or "").strip().lower()
         if explicit_engine in {"native", "mineru", "docling"}:
             return explicit_engine
@@ -4448,12 +4454,54 @@ class LightRAG:
                 return str(candidate)
         return file_path
 
+    def _get_unique_filename_in_parsed_dir(
+        self, target_dir: Path, original_name: str
+    ) -> str:
+        original_path = Path(original_name)
+        base_name = original_path.stem
+        extension = original_path.suffix
+
+        if not (target_dir / original_name).exists():
+            return original_name
+
+        for i in range(1, 1000):
+            suffix = f"{i:03d}"
+            new_name = f"{base_name}_{suffix}{extension}"
+            if not (target_dir / new_name).exists():
+                return new_name
+
+        timestamp = int(time.time())
+        return f"{base_name}_{timestamp}{extension}"
+
+    async def _archive_docx_source_after_full_docs_sync(
+        self, source_path: str
+    ) -> str | None:
+        source = Path(source_path)
+        if source.suffix.lower() != ".docx":
+            return None
+        if not source.exists() or not source.is_file():
+            return None
+        if source.parent.name == PARSED_DIR_NAME:
+            return str(source)
+
+        parsed_dir = source.parent / PARSED_DIR_NAME
+        await asyncio.to_thread(parsed_dir.mkdir, parents=True, exist_ok=True)
+
+        target_name = self._get_unique_filename_in_parsed_dir(parsed_dir, source.name)
+        target_path = parsed_dir / target_name
+        await asyncio.to_thread(source.rename, target_path)
+        logger.debug(
+            f"[parse] Archived DOCX source after full_docs sync: {source} -> {target_path}"
+        )
+        return str(target_path)
+
     async def _write_lightrag_document_from_content_list(
         self,
         doc_id: str,
         file_path: str,
         content_list: list[dict[str, Any]],
         engine: str,
+        source_path: str | None = None,
     ) -> dict[str, Any]:
         """Convert parser content list to LightRAG Document files and return parsed_data."""
         parsed_dir = Path(self.working_dir) / PARSED_DIR_NAME
@@ -4851,6 +4899,10 @@ class LightRAG:
                 }
             }
         )
+        await self.full_docs.index_done_callback()
+        await self._archive_docx_source_after_full_docs_sync(
+            source_path or self._resolve_source_file_for_parser(file_path)
+        )
         return {
             "doc_id": doc_id,
             "file_path": file_path,
@@ -4923,10 +4975,13 @@ class LightRAG:
                                     "content": interchange_text,
                                     "file_path": file_path,
                                     "format": FULL_DOCS_FORMAT_RAW,
+                                    "parsed_engine": "native",
                                     "update_time": int(time.time()),
                                 }
                             }
                         )
+                        await self.full_docs.index_done_callback()
+                        await self._archive_docx_source_after_full_docs_sync(str(p))
                         logger.info(
                             f"[parse_native] pending_parse completed for {file_path} via interchange JSONL"
                         )
@@ -4953,10 +5008,13 @@ class LightRAG:
                                 "content": content,
                                 "file_path": file_path,
                                 "format": FULL_DOCS_FORMAT_RAW,
+                                "parsed_engine": "native",
                                 "update_time": int(time.time()),
                             }
                         }
                     )
+                    await self.full_docs.index_done_callback()
+                    await self._archive_docx_source_after_full_docs_sync(str(p))
                     return {
                         "doc_id": doc_id,
                         "file_path": file_path,
@@ -5029,8 +5087,25 @@ class LightRAG:
                         file_path=file_path,
                         content_list=content_list,
                         engine="mineru",
+                        source_path=source_file_path,
                     )
                 if result_text:
+                    await self.full_docs.upsert(
+                        {
+                            doc_id: {
+                                "content": str(result_text),
+                                "file_path": file_path,
+                                "format": FULL_DOCS_FORMAT_RAW,
+                                "parsed_engine": "native",
+                                "source_parsed_engine": "mineru",
+                                "update_time": int(time.time()),
+                            }
+                        }
+                    )
+                    await self.full_docs.index_done_callback()
+                    await self._archive_docx_source_after_full_docs_sync(
+                        source_file_path
+                    )
                     return {
                         "doc_id": doc_id,
                         "file_path": file_path,
@@ -5051,6 +5126,7 @@ class LightRAG:
                 file_path=file_path,
                 content_list=raganything_content_list,
                 engine="mineru",
+                source_path=self._resolve_source_file_for_parser(file_path),
             )
 
         return await self.parse_native(doc_id, file_path, content_data)
@@ -5100,8 +5176,25 @@ class LightRAG:
                         file_path=file_path,
                         content_list=content_list,
                         engine="docling",
+                        source_path=source_file_path,
                     )
                 if result_text:
+                    await self.full_docs.upsert(
+                        {
+                            doc_id: {
+                                "content": str(result_text),
+                                "file_path": file_path,
+                                "format": FULL_DOCS_FORMAT_RAW,
+                                "parsed_engine": "native",
+                                "source_parsed_engine": "docling",
+                                "update_time": int(time.time()),
+                            }
+                        }
+                    )
+                    await self.full_docs.index_done_callback()
+                    await self._archive_docx_source_after_full_docs_sync(
+                        source_file_path
+                    )
                     return {
                         "doc_id": doc_id,
                         "file_path": file_path,
@@ -5122,6 +5215,7 @@ class LightRAG:
                 file_path=file_path,
                 content_list=raganything_content_list,
                 engine="docling",
+                source_path=self._resolve_source_file_for_parser(file_path),
             )
 
         return await self.parse_native(doc_id, file_path, content_data)
