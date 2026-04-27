@@ -1,5 +1,6 @@
 import importlib
 import sys
+from io import BytesIO
 
 import pytest
 
@@ -22,6 +23,7 @@ pipeline_index_file = _document_routes.pipeline_index_file
 pipeline_index_files = _document_routes.pipeline_index_files
 run_scanning_process = _document_routes.run_scanning_process
 DocumentManager = _document_routes.DocumentManager
+create_document_routes = _document_routes.create_document_routes
 
 pytestmark = pytest.mark.offline
 
@@ -83,6 +85,11 @@ class _ScanRag:
 
     async def apipeline_process_enqueue_documents(self):
         self.process_calls += 1
+
+
+class _DuplicateUploadRag:
+    def __init__(self, docs_by_path):
+        self.doc_status = _ScanDocStatus(docs_by_path)
 
 
 class _ArchiveFailureRag:
@@ -182,6 +189,37 @@ async def test_scan_existing_full_path_docx_does_not_reenqueue(
     await run_scanning_process(rag, doc_manager, "track-scan")
 
     assert rag.process_calls == 1
+
+
+async def test_upload_rejects_same_name_failed_doc_status_without_full_docs(tmp_path):
+    doc_manager = DocumentManager(str(tmp_path))
+    rag = _DuplicateUploadRag(
+        {
+            "failed.docx": {
+                "status": DocStatus.FAILED.value,
+                "file_path": "failed.docx",
+                "track_id": "track-failed",
+                "metadata": {"error_type": "file_extraction_error"},
+            }
+        }
+    )
+    router = create_document_routes(rag, doc_manager)
+    upload_endpoint = [
+        route.endpoint
+        for route in router.routes
+        if getattr(route, "name", "") == "upload_to_input_dir"
+    ][-1]
+    upload_file = _document_routes.UploadFile(
+        filename="failed.docx",
+        file=BytesIO(b"replacement docx bytes"),
+    )
+
+    response = await upload_endpoint(_document_routes.BackgroundTasks(), upload_file)
+
+    assert response.status == "duplicated"
+    assert response.track_id == "track-failed"
+    assert "Status: failed" in response.message
+    assert not (tmp_path / "failed.docx").exists()
 
 
 async def test_docx_archive_failure_is_best_effort(tmp_path, monkeypatch):

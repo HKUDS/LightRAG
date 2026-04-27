@@ -2210,6 +2210,8 @@ def create_document_routes(
 
         1. **Filename Duplicate (Synchronous Detection)**:
            - Detected immediately before file processing
+           - File name is treated as the unique document key; an existing
+             document storage row rejects the upload regardless of status
            - Returns `status="duplicated"` with the existing document's track_id
            - Two cases:
              - If filename exists in document storage: returns existing track_id
