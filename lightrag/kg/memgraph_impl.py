@@ -4,6 +4,7 @@ import random
 from dataclasses import dataclass
 from typing import final
 import configparser
+import re
 
 from ..utils import logger
 from ..base import BaseGraphStorage
@@ -59,18 +60,20 @@ class MemgraphStorage(BaseGraphStorage):
         self._driver = None
 
     def _get_workspace_label(self) -> str:
-        """Return sanitized workspace label safe for use as a backtick-quoted identifier in Cypher queries.
+        """Return a workspace label safe for use in Cypher queries.
 
-        Escapes backticks by doubling them to prevent Cypher injection
-        via the LIGHTRAG-WORKSPACE header, while preserving a 1-to-1 mapping
-        for all other characters. The returned value is intended to be used
-        inside backticks (for example, MATCH (n:`{label}`)) and is not
-        validated as a standalone unquoted identifier.
+        Cypher labels cannot be parameterized, so constrain workspace labels to
+        alphanumeric characters and underscores before interpolating them into
+        query strings. This prevents injection through MEMGRAPH_WORKSPACE or
+        direct library callers that bypass API-level workspace sanitization.
         """
         workspace = self.workspace.strip()
         if not workspace:
             return "base"
-        return workspace.replace("`", "``")
+        sanitized = re.sub(r"[^A-Za-z0-9_]", "_", workspace)
+        if not sanitized:
+            return "base"
+        return sanitized
 
     async def initialize(self):
         async with get_data_init_lock():
@@ -1093,7 +1096,7 @@ class MemgraphStorage(BaseGraphStorage):
                     WHERE start.entity_id = $entity_id
 
                     OPTIONAL MATCH path = (start)-[*BFS 0..{max_depth}]-(end:`{workspace_label}`)
-                    WHERE path IS NULL OR ALL(n IN nodes(path) WHERE '{workspace_label}' IN labels(n))
+                    WHERE path IS NULL OR ALL(n IN nodes(path) WHERE $workspace_label IN labels(n))
                     WITH start, collect(DISTINCT end) AS discovered_nodes
                     WITH start, [node IN discovered_nodes WHERE node IS NOT NULL AND node <> start] AS other_nodes
                     WITH
@@ -1122,6 +1125,7 @@ class MemgraphStorage(BaseGraphStorage):
                                 "entity_id": node_label,
                                 "max_nodes": max_nodes,
                                 "max_other_nodes": max(max_nodes - 1, 0),
+                                "workspace_label": workspace_label,
                             },
                         )
                         record = await result_set.single()
