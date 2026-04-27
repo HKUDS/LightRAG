@@ -1009,6 +1009,34 @@ def get_doc_track_id(doc_status: Any) -> str:
     return str(track_id or "")
 
 
+def build_file_path_lookup_candidates(file_path: Path | str) -> list[str]:
+    """Build compatible file_path keys for legacy name/full-path records."""
+    path = Path(file_path)
+    candidates = [path.name, str(path)]
+    try:
+        candidates.append(str(path.resolve()))
+    except Exception:
+        pass
+
+    seen: set[str] = set()
+    return [
+        candidate
+        for candidate in candidates
+        if candidate and not (candidate in seen or seen.add(candidate))
+    ]
+
+
+async def get_existing_doc_by_file_path_candidates(
+    doc_status: Any, file_path: Path | str
+) -> dict[str, Any] | None:
+    """Find an existing document using filename and full-path variants."""
+    for candidate in build_file_path_lookup_candidates(file_path):
+        existing_doc_data = await doc_status.get_doc_by_file_path(candidate)
+        if existing_doc_data:
+            return existing_doc_data
+    return None
+
+
 async def move_docx_to_parsed_after_processing(
     rag: LightRAG, file_path: Path, track_id: str | None
 ) -> None:
@@ -1871,15 +1899,27 @@ async def run_scanning_process(
             # Check for files with PROCESSED status and filter them out
             valid_files = []
             processed_files = []
+            queued_existing_files = []
 
             for file_path in new_files:
                 filename = file_path.name
-                existing_doc_data = await rag.doc_status.get_doc_by_file_path(filename)
+                existing_doc_data = await get_existing_doc_by_file_path_candidates(
+                    rag.doc_status, file_path
+                )
 
-                if existing_doc_data and existing_doc_data.get("status") == "processed":
+                if (
+                    existing_doc_data
+                    and get_doc_status_value(existing_doc_data)
+                    == DocStatus.PROCESSED.value
+                ):
                     # File is already PROCESSED, skip it with warning
                     processed_files.append(filename)
                     logger.warning(f"Skipping already processed file: {filename}")
+                elif existing_doc_data:
+                    queued_existing_files.append(filename)
+                    logger.info(
+                        f"Skipping already enqueued file and continuing existing pipeline state: {filename}"
+                    )
                 else:
                     # File is new or in non-PROCESSED status, add to processing list
                     valid_files.append(file_path)
@@ -1899,6 +1939,8 @@ async def run_scanning_process(
                 logger.info(
                     "No files to process after filtering already processed files."
                 )
+                if queued_existing_files:
+                    await rag.apipeline_process_enqueue_documents()
         else:
             # No new files to index, check if there are any documents in the queue
             logger.info(
@@ -2280,20 +2322,23 @@ def create_document_routes(
                         f"File size not available in UploadFile for {safe_filename}, will check during streaming"
                     )
 
+            file_path = doc_manager.input_dir / safe_filename
+
             # Check if filename already exists in doc_status storage
-            existing_doc_data = await rag.doc_status.get_doc_by_file_path(safe_filename)
+            existing_doc_data = await get_existing_doc_by_file_path_candidates(
+                rag.doc_status, file_path
+            )
             if existing_doc_data:
                 # Get document status and track_id from existing document
-                status = existing_doc_data.get("status", "unknown")
+                status = get_doc_status_value(existing_doc_data) or "unknown"
                 # Use `or ""` to handle both missing key and None value (e.g., legacy rows without track_id)
-                existing_track_id = existing_doc_data.get("track_id") or ""
+                existing_track_id = get_doc_track_id(existing_doc_data)
                 return InsertResponse(
                     status="duplicated",
                     message=f"File '{safe_filename}' already exists in document storage (Status: {status}).",
                     track_id=existing_track_id,
                 )
 
-            file_path = doc_manager.input_dir / safe_filename
             # Check if file already exists in file system
             if file_path.exists():
                 return InsertResponse(

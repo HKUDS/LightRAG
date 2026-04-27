@@ -4476,24 +4476,32 @@ class LightRAG:
     async def _archive_docx_source_after_full_docs_sync(
         self, source_path: str
     ) -> str | None:
-        source = Path(source_path)
-        if source.suffix.lower() != ".docx":
-            return None
-        if not source.exists() or not source.is_file():
-            return None
-        if source.parent.name == PARSED_DIR_NAME:
-            return str(source)
+        try:
+            source = Path(source_path)
+            if source.suffix.lower() != ".docx":
+                return None
+            if not source.exists() or not source.is_file():
+                return None
+            if source.parent.name == PARSED_DIR_NAME:
+                return str(source)
 
-        parsed_dir = source.parent / PARSED_DIR_NAME
-        await asyncio.to_thread(parsed_dir.mkdir, parents=True, exist_ok=True)
+            parsed_dir = source.parent / PARSED_DIR_NAME
+            await asyncio.to_thread(parsed_dir.mkdir, parents=True, exist_ok=True)
 
-        target_name = self._get_unique_filename_in_parsed_dir(parsed_dir, source.name)
-        target_path = parsed_dir / target_name
-        await asyncio.to_thread(source.rename, target_path)
-        logger.debug(
-            f"[parse] Archived DOCX source after full_docs sync: {source} -> {target_path}"
-        )
-        return str(target_path)
+            target_name = self._get_unique_filename_in_parsed_dir(
+                parsed_dir, source.name
+            )
+            target_path = parsed_dir / target_name
+            await asyncio.to_thread(source.rename, target_path)
+            logger.debug(
+                f"[parse] Archived DOCX source after full_docs sync: {source} -> {target_path}"
+            )
+            return str(target_path)
+        except Exception as e:
+            logger.warning(
+                f"[parse] DOCX source archive skipped after full_docs sync: {source_path}: {e}"
+            )
+            return None
 
     async def _write_lightrag_document_from_content_list(
         self,

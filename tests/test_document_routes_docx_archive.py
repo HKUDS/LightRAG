@@ -20,6 +20,8 @@ compute_mdhash_id = _utils.compute_mdhash_id
 LightRAG = _lightrag.LightRAG
 pipeline_index_file = _document_routes.pipeline_index_file
 pipeline_index_files = _document_routes.pipeline_index_files
+run_scanning_process = _document_routes.run_scanning_process
+DocumentManager = _document_routes.DocumentManager
 
 pytestmark = pytest.mark.offline
 
@@ -64,6 +66,32 @@ class _FakeRag:
 
     async def apipeline_enqueue_error_documents(self, error_files, track_id=None):
         self.errors.append((error_files, track_id))
+
+
+class _ScanDocStatus:
+    def __init__(self, docs_by_path):
+        self.docs_by_path = docs_by_path
+
+    async def get_doc_by_file_path(self, file_path):
+        return self.docs_by_path.get(file_path)
+
+
+class _ScanRag:
+    def __init__(self, docs_by_path):
+        self.doc_status = _ScanDocStatus(docs_by_path)
+        self.process_calls = 0
+
+    async def apipeline_process_enqueue_documents(self):
+        self.process_calls += 1
+
+
+class _ArchiveFailureRag:
+    _archive_docx_source_after_full_docs_sync = (
+        LightRAG._archive_docx_source_after_full_docs_sync
+    )
+
+    def _get_unique_filename_in_parsed_dir(self, target_dir, original_name):
+        raise OSError("simulated archive failure")
 
 
 class _ParseFullDocs:
@@ -132,6 +160,45 @@ async def test_pipeline_index_files_moves_processed_docx_batch(tmp_path):
     assert not second.exists()
     assert (tmp_path / PARSED_DIR_NAME / first.name).exists()
     assert (tmp_path / PARSED_DIR_NAME / second.name).exists()
+
+
+async def test_scan_existing_full_path_docx_does_not_reenqueue(
+    tmp_path, monkeypatch
+):
+    file_path = tmp_path / "already-parsed.docx"
+    file_path.write_bytes(b"docx bytes")
+    doc_manager = DocumentManager(str(tmp_path))
+    rag = _ScanRag(
+        {
+            str(file_path): {
+                "status": DocStatus.PARSING.value,
+                "file_path": str(file_path),
+                "track_id": "track-existing",
+            }
+        }
+    )
+
+    async def fail_if_reenqueue(*args, **kwargs):
+        raise AssertionError("existing docx should not be re-enqueued")
+
+    monkeypatch.setattr(_document_routes, "pipeline_index_files", fail_if_reenqueue)
+
+    await run_scanning_process(rag, doc_manager, "track-scan")
+
+    assert rag.process_calls == 1
+
+
+async def test_docx_archive_failure_is_best_effort(tmp_path):
+    file_path = tmp_path / "archive-failure.docx"
+    file_path.write_bytes(b"docx bytes")
+    rag = _ArchiveFailureRag()
+
+    archived_path = await LightRAG._archive_docx_source_after_full_docs_sync(
+        rag, str(file_path)
+    )
+
+    assert archived_path is None
+    assert file_path.exists()
 
 
 async def test_parse_native_archives_docx_after_full_docs_sync(tmp_path, monkeypatch):
