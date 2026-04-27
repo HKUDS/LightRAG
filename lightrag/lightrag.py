@@ -139,6 +139,7 @@ from lightrag.utils import (
     subtract_source_ids,
     make_relation_chunk_key,
     normalize_source_ids_limit_method,
+    move_file_to_parsed_dir,
 )
 from lightrag.types import KnowledgeGraph
 from dotenv import load_dotenv
@@ -4454,54 +4455,28 @@ class LightRAG:
                 return str(candidate)
         return file_path
 
-    def _get_unique_filename_in_parsed_dir(
-        self, target_dir: Path, original_name: str
-    ) -> str:
-        original_path = Path(original_name)
-        base_name = original_path.stem
-        extension = original_path.suffix
-
-        if not (target_dir / original_name).exists():
-            return original_name
-
-        for i in range(1, 1000):
-            suffix = f"{i:03d}"
-            new_name = f"{base_name}_{suffix}{extension}"
-            if not (target_dir / new_name).exists():
-                return new_name
-
-        timestamp = int(time.time())
-        return f"{base_name}_{timestamp}{extension}"
-
     async def _archive_docx_source_after_full_docs_sync(
         self, source_path: str
     ) -> str | None:
+        source = Path(source_path)
+        if source.suffix.lower() != ".docx":
+            return None
         try:
-            source = Path(source_path)
-            if source.suffix.lower() != ".docx":
-                return None
-            if not source.exists() or not source.is_file():
-                return None
-            if source.parent.name == PARSED_DIR_NAME:
-                return str(source)
-
-            parsed_dir = source.parent / PARSED_DIR_NAME
-            await asyncio.to_thread(parsed_dir.mkdir, parents=True, exist_ok=True)
-
-            target_name = self._get_unique_filename_in_parsed_dir(
-                parsed_dir, source.name
+            target = await move_file_to_parsed_dir(
+                source, skip_if_already_parsed=True
             )
-            target_path = parsed_dir / target_name
-            await asyncio.to_thread(source.rename, target_path)
-            logger.debug(
-                f"[parse] Archived DOCX source after full_docs sync: {source} -> {target_path}"
-            )
-            return str(target_path)
         except Exception as e:
             logger.warning(
                 f"[parse] DOCX source archive skipped after full_docs sync: {source_path}: {e}"
             )
             return None
+        if target is None:
+            return None
+        if target != source:
+            logger.debug(
+                f"[parse] Archived DOCX source after full_docs sync: {source} -> {target}"
+            )
+        return str(target)
 
     async def _write_lightrag_document_from_content_list(
         self,
@@ -5098,6 +5073,10 @@ class LightRAG:
                         source_path=source_file_path,
                     )
                 if result_text:
+                    # Content is already extracted as raw text and persisted; mark
+                    # parsed_engine="native" so retries skip the remote MinerU call
+                    # via _resolve_parser_engine. The original engine is kept in
+                    # source_parsed_engine for audit.
                     await self.full_docs.upsert(
                         {
                             doc_id: {
@@ -5187,6 +5166,10 @@ class LightRAG:
                         source_path=source_file_path,
                     )
                 if result_text:
+                    # Same retry-skip rationale as in parse_mineru: parsed_engine
+                    # is normalized to "native" because the raw content is already
+                    # in full_docs; the real upstream engine is kept in
+                    # source_parsed_engine for audit.
                     await self.full_docs.upsert(
                         {
                             doc_id: {

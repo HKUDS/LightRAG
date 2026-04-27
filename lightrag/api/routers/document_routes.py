@@ -30,6 +30,7 @@ from lightrag.utils import (
     generate_track_id,
     compute_mdhash_id,
     sanitize_text_for_encoding,
+    move_file_to_parsed_dir,
 )
 from lightrag.api.utils_api import get_combined_auth_dependency
 from ..config import global_args
@@ -937,56 +938,6 @@ def validate_file_path_security(file_path_str: str, base_dir: Path) -> Optional[
         return None
 
 
-def get_unique_filename_in_enqueued(target_dir: Path, original_name: str) -> str:
-    """Generate a unique filename in the target directory by adding numeric suffixes if needed
-
-    Args:
-        target_dir: Target directory path
-        original_name: Original filename
-
-    Returns:
-        str: Unique filename (may have numeric suffix added)
-    """
-    import time
-
-    original_path = Path(original_name)
-    base_name = original_path.stem
-    extension = original_path.suffix
-
-    # Try original name first
-    if not (target_dir / original_name).exists():
-        return original_name
-
-    # Try with numeric suffixes 001-999
-    for i in range(1, 1000):
-        suffix = f"{i:03d}"
-        new_name = f"{base_name}_{suffix}{extension}"
-        if not (target_dir / new_name).exists():
-            return new_name
-
-    # Fallback with timestamp if all 999 slots are taken
-    timestamp = int(time.time())
-    return f"{base_name}_{timestamp}{extension}"
-
-
-async def move_file_to_parsed_dir(file_path: Path) -> Path | None:
-    """Move a processed source file into its sibling __parsed__ directory."""
-    if not file_path.exists():
-        return None
-
-    parsed_dir = file_path.parent / PARSED_DIR_NAME
-    await asyncio.to_thread(parsed_dir.mkdir, exist_ok=True)
-
-    unique_filename = get_unique_filename_in_enqueued(parsed_dir, file_path.name)
-    target_path = parsed_dir / unique_filename
-
-    await asyncio.to_thread(file_path.rename, target_path)
-    logger.debug(
-        f"Moved file to parsed directory: {file_path.name} -> {unique_filename}"
-    )
-    return target_path
-
-
 def get_doc_status_value(doc_status: Any) -> str:
     """Read status from dict or DocProcessingStatus-like objects."""
     status = (
@@ -1019,11 +970,12 @@ def build_file_path_lookup_candidates(file_path: Path | str) -> list[str]:
         pass
 
     seen: set[str] = set()
-    return [
-        candidate
-        for candidate in candidates
-        if candidate and not (candidate in seen or seen.add(candidate))
-    ]
+    unique: list[str] = []
+    for candidate in candidates:
+        if candidate and candidate not in seen:
+            seen.add(candidate)
+            unique.append(candidate)
+    return unique
 
 
 async def get_existing_doc_by_file_path_candidates(

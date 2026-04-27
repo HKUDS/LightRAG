@@ -90,9 +90,6 @@ class _ArchiveFailureRag:
         LightRAG._archive_docx_source_after_full_docs_sync
     )
 
-    def _get_unique_filename_in_parsed_dir(self, target_dir, original_name):
-        raise OSError("simulated archive failure")
-
 
 class _ParseFullDocs:
     def __init__(self, source_path):
@@ -113,7 +110,6 @@ class _ParseRag:
     _archive_docx_source_after_full_docs_sync = (
         LightRAG._archive_docx_source_after_full_docs_sync
     )
-    _get_unique_filename_in_parsed_dir = LightRAG._get_unique_filename_in_parsed_dir
 
     def __init__(self, working_dir, source_path):
         self.working_dir = str(working_dir)
@@ -188,10 +184,17 @@ async def test_scan_existing_full_path_docx_does_not_reenqueue(
     assert rag.process_calls == 1
 
 
-async def test_docx_archive_failure_is_best_effort(tmp_path):
+async def test_docx_archive_failure_is_best_effort(tmp_path, monkeypatch):
     file_path = tmp_path / "archive-failure.docx"
     file_path.write_bytes(b"docx bytes")
     rag = _ArchiveFailureRag()
+
+    async def _raise_archive_failure(*args, **kwargs):
+        raise OSError("simulated archive failure")
+
+    monkeypatch.setattr(
+        _lightrag, "move_file_to_parsed_dir", _raise_archive_failure
+    )
 
     archived_path = await LightRAG._archive_docx_source_after_full_docs_sync(
         rag, str(file_path)
