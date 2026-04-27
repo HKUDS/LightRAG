@@ -45,6 +45,7 @@ class SystemRepository(Protocol):
         self, tenant_id: str | None = None, workspace_id: str | None = None, status: ApprovalStatus | None = None
     ) -> list[ApprovalRequest]: ...
     async def get_policy(self, key: str, tenant_id: str | None = None, workspace_id: str | None = None) -> Any: ...
+    async def set_policy(self, key: str, value: Any, tenant_id: str | None = None, workspace_id: str | None = None) -> None: ...
 
 
 class InMemorySystemRepository:
@@ -163,6 +164,9 @@ class InMemorySystemRepository:
 
     async def get_policy(self, key: str, tenant_id: str | None = None, workspace_id: str | None = None) -> Any:
         return self.policies.get((tenant_id, workspace_id, key))
+
+    async def set_policy(self, key: str, value: Any, tenant_id: str | None = None, workspace_id: str | None = None) -> None:
+        self.policies[(tenant_id, workspace_id, key)] = value
 
 
 class PostgresSystemRepository:
@@ -508,6 +512,21 @@ class PostgresSystemRepository:
         value = row["value"]
         return json.loads(value) if isinstance(value, str) else value
 
+    async def set_policy(self, key: str, value: Any, tenant_id: str | None = None, workspace_id: str | None = None) -> None:
+        pool = await self._get_pool()
+        await pool.execute(
+            """
+            INSERT INTO system_policies (policy_id, tenant_id, workspace_id, key, value, updated_at)
+            VALUES ($1,$2,$3,$4,$5::jsonb,$6)
+            """,
+            new_id("pol"),
+            tenant_id,
+            workspace_id,
+            key,
+            json.dumps(value),
+            utc_now(),
+        )
+
 
 def default_tenant_and_workspace() -> tuple[Tenant, Workspace]:
     tenant = Tenant(tenant_id="default", name="Default")
@@ -529,4 +548,3 @@ def membership_for_master(user_id: str, tenant_id: str = "default", workspace_id
         workspace_id=workspace_id,
         roles=("master",),
     )
-

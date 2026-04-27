@@ -10,7 +10,9 @@ Little Bull is the governed local-first facade for using LightRAG from a home/wo
 - `LITTLE_BULL_PRIVATE_STRICT=true`: blocks sensitive/private queries unless the UI selects the `privado` model profile.
 - `LITTLE_BULL_APPROVALS_ENFORCED=true`: destructive actions become approval requests instead of executing immediately.
 - `LIGHTRAG_SYSTEM_DATABASE_URL` or `DATABASE_URL`: enables PostgreSQL storage for users, tenants, workspaces, roles, approvals, and audit.
-- `LITTLE_BULL_BOOTSTRAP_TOKEN`: optional header gate for `POST /system/bootstrap-master`.
+- `LIGHTRAG_SYSTEM_TOKEN_SECRET` or `TOKEN_SECRET`: required before enterprise tokens can be issued or validated.
+- `LIGHTRAG_SYSTEM_ALLOW_INSECURE_DEV_SECRET=true`: allows the built-in development token secret only for local throwaway environments.
+- `LITTLE_BULL_BOOTSTRAP_TOKEN`: required header gate for `POST /system/bootstrap-master`.
 
 If no database URL is set, the system layer uses an in-memory repository for local tests and development. PostgreSQL is required for durable local-first operation.
 
@@ -29,6 +31,7 @@ python -m lightrag_enterprise.system.bootstrap_master --username master --passwo
 ```
 
 The script creates the default tenant/workspace and assigns the global MASTER to that workspace.
+Set `LIGHTRAG_SYSTEM_TOKEN_SECRET` or `TOKEN_SECRET` before logging in. HTTP bootstrap is intentionally closed unless `LITTLE_BULL_BOOTSTRAP_TOKEN` is configured and sent as `X-Little-Bull-Bootstrap-Token`; the CLI bootstrap is the preferred local-first path.
 
 ## Permission Matrix
 
@@ -88,5 +91,6 @@ cd lightrag_webui && bun run build
 
 ## Known Limits
 
-- The facade authorizes workspace access before calling LightRAG, but the current LightRAG instance is still initialized with a startup workspace. Full dynamic multi-workspace RAG instances remain a later production hardening item.
+- The facade authorizes workspace access before calling LightRAG and blocks authorized workspaces that are not attached to the current LightRAG data plane. Full dynamic multi-workspace RAG instances remain a later production hardening item.
+- Private/local enforcement is policy-based at the workspace/request boundary. It blocks hosted profiles when a workspace is marked sensitive/private, but model-provider routing and content classification remain later hardening items.
 - The first UI slice supports real areas, documents, upload, query, activity, approvals, assistants, and audit. Full tenant/user/policy administration is available through backend endpoints first.

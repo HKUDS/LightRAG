@@ -88,6 +88,33 @@ for path in whitelist_paths:
 auth_configured = bool(auth_handler.accounts)
 
 
+async def _enterprise_auth_configured() -> bool:
+    try:
+        from lightrag_enterprise.system.runtime import (
+            get_system_auth_service,
+            little_bull_functional_enabled,
+        )
+
+        if not little_bull_functional_enabled():
+            return False
+        return await get_system_auth_service().has_users()
+    except Exception as exc:
+        logger.warning(f"Little Bull enterprise auth check failed: {exc}")
+        return False
+
+
+async def _validate_enterprise_token(token: str, request: Request) -> bool:
+    try:
+        from lightrag_enterprise.system.runtime import get_system_auth_service
+
+        principal = await get_system_auth_service().principal_from_token(token)
+        request.state.little_bull_principal = principal
+        return True
+    except Exception as exc:
+        logger.debug(f"Little Bull enterprise token validation failed: {exc}")
+        return False
+
+
 def get_combined_auth_dependency(api_key: Optional[str] = None):
     """
     Create a combined authentication dependency that implements authentication logic
@@ -125,8 +152,18 @@ def get_combined_auth_dependency(api_key: Optional[str] = None):
         if api_key_header is None
         else Security(api_key_header),
     ):
+        enterprise_auth_configured = await _enterprise_auth_configured()
+
         # 1. Check if path is in whitelist
         path = request.url.path
+        if enterprise_auth_configured:
+            if token and await _validate_enterprise_token(token, request):
+                return
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Enterprise authentication required.",
+            )
+
         for pattern, is_prefix in whitelist_patterns:
             if (is_prefix and path.startswith(pattern)) or (
                 not is_prefix and path == pattern

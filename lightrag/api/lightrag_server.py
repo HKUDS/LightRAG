@@ -1206,6 +1206,7 @@ def create_app(args):
                     _, principal = await system_auth.authenticate(
                         form_data.username, form_data.password
                     )
+                    system_auth.require_token_secret()
                     return {
                         "access_token": system_auth.create_token(principal),
                         "token_type": "bearer",
@@ -1218,6 +1219,8 @@ def create_app(args):
                     }
             except ValueError:
                 raise HTTPException(status_code=401, detail="Incorrect credentials")
+            except RuntimeError as exc:
+                raise HTTPException(status_code=503, detail=str(exc))
             except Exception as exc:
                 logger.warning(f"Little Bull enterprise login unavailable: {exc}")
 

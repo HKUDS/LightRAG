@@ -2,6 +2,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from fastapi import HTTPException
 
 from lightrag_enterprise.little_bull.models import LittleBullQueryRequest
 from lightrag_enterprise.little_bull.service import LittleBullService
@@ -10,6 +11,7 @@ from lightrag_enterprise.system import (
     ApprovalService,
     AuditService,
     SystemAuthService,
+    Workspace,
 )
 from lightrag_enterprise.system.repositories import (
     InMemorySystemRepository,
@@ -39,6 +41,7 @@ class FakeDocStatus:
 class FakeRag:
     def __init__(self):
         self.doc_status = FakeDocStatus()
+        self.workspace = "default"
 
     async def aquery_llm(self, query, param):
         return {
@@ -99,6 +102,51 @@ async def test_little_bull_query_blocks_hosted_profile_for_private_data(tmp_path
         )
 
     assert "Private/local" in str(exc.value)
+
+
+@pytest.mark.asyncio
+async def test_little_bull_query_blocks_hosted_profile_when_workspace_has_private_data(tmp_path):
+    principal, service = await _principal_and_service(tmp_path)
+    await service.repository.set_policy(
+        "little_bull.workspace_contains_private_data",
+        True,
+        tenant_id="default",
+        workspace_id="default",
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        await service.query(
+            principal,
+            LittleBullQueryRequest(
+                workspace_id="default",
+                query="normal looking question",
+                confidentiality="normal",
+                model_profile="equilibrado",
+            ),
+        )
+
+    assert exc.value.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_little_bull_blocks_unbacked_workspace_data_plane(tmp_path):
+    principal, service = await _principal_and_service(tmp_path)
+    await service.repository.create_workspace(
+        Workspace(
+            workspace_id="other",
+            tenant_id="default",
+            name="Other",
+            slug="other",
+        )
+    )
+    principal = await SystemAuthService(service.repository, secret="test-secret").principal_for_user(
+        await service.repository.get_user(principal.user_id)
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        await service.list_documents(principal, workspace_id="other")
+
+    assert exc.value.status_code == 409
 
 
 @pytest.mark.asyncio

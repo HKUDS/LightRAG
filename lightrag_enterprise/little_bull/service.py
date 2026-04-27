@@ -46,6 +46,8 @@ AREA_PRESENTATION = {
     "negocio": ("Pequeno negócio", "🧾", "#0F766E"),
 }
 
+WORKSPACE_PRIVATE_POLICY = "little_bull.workspace_contains_private_data"
+
 
 def sanitize_upload_filename(filename: str, input_dir: Path) -> str:
     clean_name = filename.replace("/", "").replace("\\", "").replace("..", "")
@@ -84,6 +86,17 @@ class LittleBullService:
         decision = self.access.require(principal, activity=activity, workspace_id=workspace_id)
         if not decision.allowed:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=decision.reason)
+
+    def _require_backed_workspace(self, workspace_id: str) -> None:
+        current_workspace = getattr(self.rag, "workspace", None) or "default"
+        if workspace_id != current_workspace:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    f"Workspace '{workspace_id}' is authorized but is not attached to the current "
+                    f"LightRAG data plane '{current_workspace}'."
+                ),
+            )
 
     async def _workspace_tenant(self, workspace_id: str | None) -> str | None:
         if workspace_id is None:
@@ -127,6 +140,7 @@ class LittleBullService:
         self, principal: Principal, *, workspace_id: str, page: int = 1, page_size: int = 50
     ) -> LittleBullDocumentsResponse:
         self._require(principal, ACTIVITY_DOCUMENT_READ, workspace_id)
+        self._require_backed_workspace(workspace_id)
         try:
             (documents_with_ids, total_count), status_counts = await self._documents_paginated(
                 page=page,
@@ -178,6 +192,7 @@ class LittleBullService:
         confidentiality: str = "normal",
     ) -> LittleBullUploadResponse:
         self._require(principal, ACTIVITY_DOCUMENT_UPLOAD, workspace_id)
+        self._require_backed_workspace(workspace_id)
         input_dir = Path(self.doc_manager.input_dir)
         input_dir.mkdir(parents=True, exist_ok=True)
         safe_filename = sanitize_upload_filename(file.filename or "document", input_dir)
@@ -196,6 +211,15 @@ class LittleBullService:
             while chunk := await file.read(1024 * 1024):
                 await out_file.write(chunk)
 
+        tenant_id = await self._workspace_tenant(workspace_id)
+        if confidentiality in {"sensivel", "privado"}:
+            await self.repository.set_policy(
+                WORKSPACE_PRIVATE_POLICY,
+                True,
+                tenant_id=tenant_id,
+                workspace_id=workspace_id,
+            )
+
         track_id = generate_track_id("little_bull_upload")
         from lightrag.api.routers.document_routes import pipeline_index_file
 
@@ -203,7 +227,7 @@ class LittleBullService:
         await self.audit.record(
             principal=principal,
             action=ACTIVITY_DOCUMENT_UPLOAD,
-            tenant_id=await self._workspace_tenant(workspace_id),
+            tenant_id=tenant_id,
             workspace_id=workspace_id,
             result="queued",
             metadata={"file_name": safe_filename, "track_id": track_id, "confidentiality": confidentiality},
@@ -217,16 +241,30 @@ class LittleBullService:
 
     async def query(self, principal: Principal, request: LittleBullQueryRequest) -> LittleBullQueryResponse:
         self._require(principal, ACTIVITY_QUERY, request.workspace_id)
-        if request.confidentiality in {"sensivel", "privado"} and private_strict_enabled():
+        self._require_backed_workspace(request.workspace_id)
+        tenant_id = await self._workspace_tenant(request.workspace_id)
+        workspace_contains_private_data = bool(
+            await self.repository.get_policy(
+                WORKSPACE_PRIVATE_POLICY,
+                tenant_id=tenant_id,
+                workspace_id=request.workspace_id,
+            )
+        )
+        requires_private_profile = request.confidentiality in {"sensivel", "privado"} or workspace_contains_private_data
+        if requires_private_profile and private_strict_enabled():
             if request.model_profile != "privado":
                 await self.audit.record(
                     principal=principal,
                     action=ACTIVITY_QUERY,
-                    tenant_id=await self._workspace_tenant(request.workspace_id),
+                    tenant_id=tenant_id,
                     workspace_id=request.workspace_id,
                     result="blocked",
                     model=request.model_profile,
-                    metadata={"reason": "private_local_required", "confidentiality": request.confidentiality},
+                    metadata={
+                        "reason": "private_local_required",
+                        "confidentiality": request.confidentiality,
+                        "workspace_contains_private_data": workspace_contains_private_data,
+                    },
                 )
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
@@ -251,7 +289,7 @@ class LittleBullService:
         await self.audit.record(
             principal=principal,
             action=ACTIVITY_QUERY,
-            tenant_id=await self._workspace_tenant(request.workspace_id),
+            tenant_id=tenant_id,
             workspace_id=request.workspace_id,
             result="success",
             model=request.model_profile,
@@ -266,6 +304,7 @@ class LittleBullService:
 
     async def delete_document(self, principal: Principal, *, workspace_id: str, document_id: str) -> dict[str, Any]:
         self._require(principal, ACTIVITY_DOCUMENT_DELETE, workspace_id)
+        self._require_backed_workspace(workspace_id)
         if approvals_enforced():
             approval = await self.approvals.request(
                 principal=principal,

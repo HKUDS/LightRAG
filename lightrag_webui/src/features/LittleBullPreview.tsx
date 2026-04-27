@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ActivityIcon,
   BotIcon,
@@ -51,6 +51,24 @@ type ChatMessage = {
   references?: Array<Record<string, any>>
 }
 
+type WorkspaceUiState = {
+  docs: LittleBullDocument[]
+  activity: LittleBullActivityItem[]
+  assistants: LittleBullAssistant[]
+  messages: ChatMessage[]
+  prompt: string
+}
+
+const createWorkspaceUiState = (): WorkspaceUiState => ({
+  docs: [],
+  activity: [],
+  assistants: [],
+  messages: [],
+  prompt: ''
+})
+
+const emptyWorkspaceUiState = createWorkspaceUiState()
+
 const pageLabels: Record<Page, string> = {
   inicio: 'Início',
   perguntar: 'Perguntar',
@@ -72,17 +90,48 @@ const navItems: Array<{ id: Page; icon: LucideIcon }> = [
 ]
 
 const permissionMap = {
+  readAreas: 'little_bull.areas.read',
   readDocuments: 'little_bull.documents.read',
   uploadDocuments: 'little_bull.documents.upload',
   deleteDocuments: 'little_bull.documents.delete',
   query: 'little_bull.query',
+  readAssistants: 'little_bull.assistants.read',
+  readActivity: 'little_bull.activity.read',
+  readApprovals: 'little_bull.approvals.read',
   decideApprovals: 'little_bull.approvals.decide',
   readAudit: 'little_bull.audit.read'
+}
+
+const pagePermissionRules: Partial<Record<Page, string[]>> = {
+  perguntar: [permissionMap.query],
+  conhecimento: [permissionMap.readDocuments],
+  areas: [permissionMap.readAreas],
+  assistentes: [permissionMap.readAssistants],
+  atividade: [permissionMap.readActivity],
+  admin: [
+    permissionMap.readApprovals,
+    permissionMap.decideApprovals,
+    permissionMap.readAudit
+  ]
 }
 
 const hasPermission = (principal: LittleBullPrincipal | null, permission: string) => {
   if (!principal) return false
   return principal.is_master_global || principal.permissions.includes('*') || principal.permissions.includes(permission)
+}
+
+const hasAnyPermission = (principal: LittleBullPrincipal | null, permissions: string[]) => {
+  return permissions.some((permission) => hasPermission(principal, permission))
+}
+
+const canAccessPage = (principal: LittleBullPrincipal | null, page: Page) => {
+  const permissions = pagePermissionRules[page]
+  if (!permissions) return true
+  return hasAnyPermission(principal, permissions)
+}
+
+const visibleNavItemsFor = (principal: LittleBullPrincipal | null) => {
+  return navItems.filter((item) => canAccessPage(principal, item.id))
 }
 
 const formatDate = (value?: string | null) => {
@@ -181,6 +230,9 @@ function Shell({
   onSearchSubmit: () => void
   children: React.ReactNode
 }) {
+  const visibleNavItems = visibleNavItemsFor(principal)
+  const canQuery = hasPermission(principal, permissionMap.query)
+
   return (
     <div className="min-h-screen bg-slate-50 text-slate-950">
       <div className="flex min-h-screen">
@@ -193,7 +245,7 @@ function Shell({
             </div>
           </div>
           <nav className="mt-5 space-y-1">
-            {navItems.map((item) => {
+            {visibleNavItems.map((item) => {
               const Icon = item.icon
               const selected = page === item.id
               return (
@@ -223,15 +275,17 @@ function Shell({
                   value={searchText}
                   onChange={(event) => setSearchText(event.target.value)}
                   onKeyDown={(event) => {
-                    if (event.key === 'Enter') onSearchSubmit()
+                    if (event.key === 'Enter' && canQuery) onSearchSubmit()
                   }}
+                  disabled={!canQuery}
                   className="h-10 min-w-0 flex-1 bg-transparent text-sm outline-none"
-                  placeholder="Perguntar ao workspace ativo"
+                  placeholder={canQuery ? 'Perguntar ao workspace ativo' : 'Perguntas bloqueadas por permissão'}
                 />
               </div>
               <select
                 value={activeWorkspaceId}
                 onChange={(event) => setActiveWorkspaceId(event.target.value)}
+                disabled={!areas.length}
                 className="h-10 rounded-lg border border-slate-200 bg-white px-3 text-sm font-semibold outline-none"
                 aria-label="Selecionar workspace"
               >
@@ -249,8 +303,11 @@ function Shell({
 
           <div className="flex-1 p-4">{children}</div>
 
-          <nav className="sticky bottom-0 grid grid-cols-7 border-t border-slate-200 bg-white p-1 lg:hidden">
-            {navItems.map((item) => {
+          <nav
+            className="sticky bottom-0 grid border-t border-slate-200 bg-white p-1 lg:hidden"
+            style={{ gridTemplateColumns: `repeat(${Math.max(visibleNavItems.length, 1)}, minmax(0, 1fr))` }}
+          >
+            {visibleNavItems.map((item) => {
               const Icon = item.icon
               const selected = page === item.id
               return (
@@ -279,17 +336,23 @@ function HomePage({
   areas,
   docs,
   activity,
+  principal,
   setPage,
   setActiveWorkspaceId
 }: {
   areas: LittleBullArea[]
   docs: LittleBullDocument[]
   activity: LittleBullActivityItem[]
+  principal: LittleBullPrincipal | null
   setPage: (page: Page) => void
   setActiveWorkspaceId: (workspaceId: string) => void
 }) {
   const processed = docs.filter((doc) => doc.status.toLowerCase().includes('processed')).length
   const processing = docs.filter((doc) => doc.status.toLowerCase().includes('processing') || doc.status.toLowerCase().includes('pending')).length
+  const canReadDocuments = hasPermission(principal, permissionMap.readDocuments)
+  const canUploadDocuments = hasPermission(principal, permissionMap.uploadDocuments)
+  const canQuery = hasPermission(principal, permissionMap.query)
+  const workspaceTargetPage: Page | null = canQuery ? 'perguntar' : canReadDocuments ? 'conhecimento' : null
 
   return (
     <div className="space-y-4">
@@ -299,9 +362,14 @@ function HomePage({
             <p className="text-sm font-semibold uppercase tracking-wide text-blue-600">Operação local-first</p>
             <h2 className="mt-2 text-3xl font-semibold tracking-tight">Little Bull funcional sobre LightRAG</h2>
           </div>
-          <IconButton onClick={() => setPage('conhecimento')}>
+          <IconButton
+            onClick={() => {
+              if (canReadDocuments) setPage('conhecimento')
+            }}
+            disabled={!canReadDocuments}
+          >
             <UploadCloudIcon className="size-4" />
-            Enviar arquivo
+            {canUploadDocuments ? 'Enviar arquivo' : 'Ver documentos'}
           </IconButton>
         </div>
         <div className="mt-5 grid gap-3 md:grid-cols-4">
@@ -317,11 +385,16 @@ function HomePage({
           <button
             key={area.id}
             type="button"
+            disabled={!workspaceTargetPage}
             onClick={() => {
+              if (!workspaceTargetPage) return
               setActiveWorkspaceId(area.id)
-              setPage('perguntar')
+              setPage(workspaceTargetPage)
             }}
-            className="rounded-lg border border-slate-200 bg-white p-4 text-left shadow-sm transition hover:border-blue-300 hover:shadow"
+            className={cn(
+              'rounded-lg border border-slate-200 bg-white p-4 text-left shadow-sm transition hover:border-blue-300 hover:shadow',
+              !workspaceTargetPage && 'cursor-not-allowed opacity-60 hover:border-slate-200 hover:shadow-sm'
+            )}
           >
             <div className="flex items-center justify-between gap-3">
               <span className="grid size-11 place-items-center rounded-lg text-xl" style={{ backgroundColor: `${area.accent}22` }}>
@@ -353,33 +426,50 @@ function AskPage({
   prompt: string
   setPrompt: (value: string) => void
   messages: ChatMessage[]
-  setMessages: (messages: ChatMessage[]) => void
+  setMessages: React.Dispatch<React.SetStateAction<ChatMessage[]>>
   refreshActivity: () => Promise<void>
 }) {
   const [mode, setMode] = useState<QueryMode>('mix')
   const [confidentiality, setConfidentiality] = useState<'normal' | 'sensivel' | 'privado'>('normal')
   const [modelProfile, setModelProfile] = useState('equilibrado')
   const [loading, setLoading] = useState(false)
+  const activeWorkspaceRef = useRef(activeWorkspaceId)
+  const submitInFlightRef = useRef(false)
+  const submitSequenceRef = useRef(0)
+
+  useEffect(() => {
+    activeWorkspaceRef.current = activeWorkspaceId
+    submitInFlightRef.current = false
+    setLoading(false)
+  }, [activeWorkspaceId])
 
   const submit = async () => {
     const query = prompt.trim()
-    if (!query) return
+    if (!query || submitInFlightRef.current) return
+    const workspaceId = activeWorkspaceId
+    const requestId = submitSequenceRef.current + 1
+    submitSequenceRef.current = requestId
+    submitInFlightRef.current = true
     setLoading(true)
     const userMessage: ChatMessage = { id: crypto.randomUUID(), role: 'user', content: query }
-    setMessages([...messages, userMessage])
+    setMessages((current) => [...current, userMessage])
     setPrompt('')
     try {
       const response = await queryLittleBull({
-        workspace_id: activeWorkspaceId,
+        workspace_id: workspaceId,
         query,
         mode,
         confidentiality,
         model_profile: modelProfile,
         include_references: true
       })
-      setMessages([
-        ...messages,
-        userMessage,
+      if (response.workspace_id !== workspaceId) {
+        setMessages((current) => current.filter((message) => message.id !== userMessage.id))
+        toast.error('Resposta descartada: workspace divergente.')
+        return
+      }
+      setMessages((current) => [
+        ...current,
         {
           id: crypto.randomUUID(),
           role: 'assistant',
@@ -390,9 +480,12 @@ function AskPage({
       await refreshActivity()
     } catch (error) {
       toast.error(errorMessage(error))
-      setMessages(messages)
+      setMessages((current) => current.filter((message) => message.id !== userMessage.id))
     } finally {
-      setLoading(false)
+      if (submitSequenceRef.current === requestId) {
+        submitInFlightRef.current = false
+        if (activeWorkspaceRef.current === workspaceId) setLoading(false)
+      }
     }
   }
 
@@ -455,8 +548,12 @@ function AskPage({
               value={prompt}
               onChange={(event) => setPrompt(event.target.value)}
               onKeyDown={(event) => {
-                if (event.key === 'Enter') submit()
+                if (event.key === 'Enter') {
+                  event.preventDefault()
+                  submit()
+                }
               }}
+              disabled={loading}
               className="h-11 min-w-0 flex-1 rounded-lg border border-slate-200 px-3 text-sm outline-none focus:border-blue-400"
               placeholder="Escreva sua pergunta"
             />
@@ -497,8 +594,15 @@ function KnowledgePage({
 }) {
   const [loading, setLoading] = useState(false)
   const [uploadProgress, setUploadProgress] = useState<Record<string, number>>({})
+  const activeWorkspaceRef = useRef(activeWorkspaceId)
   const canUpload = hasPermission(principal, permissionMap.uploadDocuments)
   const canDelete = hasPermission(principal, permissionMap.deleteDocuments)
+
+  useEffect(() => {
+    activeWorkspaceRef.current = activeWorkspaceId
+    setLoading(false)
+    setUploadProgress({})
+  }, [activeWorkspaceId])
 
   const refreshDocuments = useCallback(async () => {
     if (!activeWorkspaceId) return
@@ -508,31 +612,48 @@ function KnowledgePage({
 
   const uploadFiles = async (files: FileList | null) => {
     if (!files?.length || !canUpload) return
+    const workspaceId = activeWorkspaceId
     setLoading(true)
     try {
       for (const file of Array.from(files)) {
-        await uploadLittleBullDocument(activeWorkspaceId, file, 'normal', (percent) => {
-          setUploadProgress((current) => ({ ...current, [file.name]: percent }))
+        await uploadLittleBullDocument(workspaceId, file, 'normal', (percent) => {
+          if (activeWorkspaceRef.current === workspaceId) {
+            setUploadProgress((current) => ({ ...current, [file.name]: percent }))
+          }
         })
       }
-      toast.success('Upload enviado para processamento')
+      if (activeWorkspaceRef.current === workspaceId) {
+        toast.success('Upload enviado para processamento')
+      }
       await refreshDocuments()
       await refreshActivity()
     } catch (error) {
-      toast.error(errorMessage(error))
+      if (activeWorkspaceRef.current === workspaceId) {
+        toast.error(errorMessage(error))
+      }
     } finally {
-      setLoading(false)
+      if (activeWorkspaceRef.current === workspaceId) {
+        setLoading(false)
+      }
     }
   }
 
   const requestDelete = async (documentId: string) => {
     if (!canDelete) return
+    const workspaceId = activeWorkspaceId
     try {
-      const response = await deleteLittleBullDocument(activeWorkspaceId, documentId)
-      toast.info(response.message ?? 'Ação registrada')
+      const response = await deleteLittleBullDocument(workspaceId, documentId)
+      if (activeWorkspaceRef.current === workspaceId) {
+        toast.info(response.message)
+      }
+      if (response.status === 'success') {
+        await refreshDocuments()
+      }
       await refreshActivity()
     } catch (error) {
-      toast.error(errorMessage(error))
+      if (activeWorkspaceRef.current === workspaceId) {
+        toast.error(errorMessage(error))
+      }
     }
   }
 
@@ -609,27 +730,36 @@ function KnowledgePage({
 function AreasPage({
   areas,
   activeWorkspaceId,
+  principal,
   setActiveWorkspaceId,
   setPage
 }: {
   areas: LittleBullArea[]
   activeWorkspaceId: string
+  principal: LittleBullPrincipal | null
   setActiveWorkspaceId: (workspaceId: string) => void
   setPage: (page: Page) => void
 }) {
+  const canQuery = hasPermission(principal, permissionMap.query)
+  const canReadDocuments = hasPermission(principal, permissionMap.readDocuments)
+  const workspaceTargetPage: Page | null = canReadDocuments ? 'conhecimento' : canQuery ? 'perguntar' : null
+
   return (
     <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
       {areas.map((area) => (
         <button
           key={area.id}
           type="button"
+          disabled={!workspaceTargetPage}
           onClick={() => {
+            if (!workspaceTargetPage) return
             setActiveWorkspaceId(area.id)
-            setPage('conhecimento')
+            setPage(workspaceTargetPage)
           }}
           className={cn(
             'rounded-lg border bg-white p-4 text-left shadow-sm transition hover:border-blue-300',
-            activeWorkspaceId === area.id ? 'border-blue-500 ring-2 ring-blue-100' : 'border-slate-200'
+            activeWorkspaceId === area.id ? 'border-blue-500 ring-2 ring-blue-100' : 'border-slate-200',
+            !workspaceTargetPage && 'cursor-not-allowed opacity-60 hover:border-slate-200'
           )}
         >
           <div className="flex items-center gap-3">
@@ -655,10 +785,12 @@ function AreasPage({
 
 function AssistantsPage({
   assistants,
-  setPage
+  setPage,
+  canQuery
 }: {
   assistants: LittleBullAssistant[]
   setPage: (page: Page) => void
+  canQuery: boolean
 }) {
   return (
     <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
@@ -683,7 +815,13 @@ function AssistantsPage({
               </div>
             ))}
           </div>
-          <IconButton onClick={() => setPage('perguntar')} tone="light">
+          <IconButton
+            onClick={() => {
+              if (canQuery) setPage('perguntar')
+            }}
+            disabled={!canQuery}
+            tone="light"
+          >
             <MessageCircleIcon className="size-4" />
             Usar agora
           </IconButton>
@@ -745,6 +883,11 @@ function AdminPage({
   refreshAdmin: () => Promise<void>
 }) {
   const canDecide = hasPermission(principal, permissionMap.decideApprovals)
+  const canReadApprovals = hasAnyPermission(principal, [
+    permissionMap.readApprovals,
+    permissionMap.decideApprovals
+  ])
+  const canReadAudit = hasPermission(principal, permissionMap.readAudit)
 
   const decide = async (approval: LittleBullApproval, decision: 'approve' | 'reject') => {
     try {
@@ -762,67 +905,71 @@ function AdminPage({
 
   return (
     <div className="grid gap-4 xl:grid-cols-2">
-      <section className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
-        <div className="flex items-center justify-between gap-3">
-          <div>
-            <p className="text-sm font-semibold uppercase tracking-wide text-blue-600">Aprovações</p>
-            <h2 className="mt-1 text-2xl font-semibold">Fila humana</h2>
+      {canReadApprovals && (
+        <section className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <p className="text-sm font-semibold uppercase tracking-wide text-blue-600">Aprovações</p>
+              <h2 className="mt-1 text-2xl font-semibold">Fila humana</h2>
+            </div>
+            <IconButton onClick={refreshAdmin} tone="light">
+              <RefreshCwIcon className="size-4" />
+              Atualizar
+            </IconButton>
           </div>
-          <IconButton onClick={refreshAdmin} tone="light">
-            <RefreshCwIcon className="size-4" />
-            Atualizar
-          </IconButton>
-        </div>
-        <div className="mt-5 space-y-3">
-          {approvals.length === 0 ? (
-            <EmptyState icon={ShieldCheckIcon} label="Nenhuma aprovação pendente ou recente." />
-          ) : (
-            approvals.map((approval) => (
-              <div key={approval.approval_id} className="rounded-lg border border-slate-200 p-4">
-                <div className="flex flex-wrap items-start justify-between gap-3">
-                  <div>
-                    <p className="font-semibold">{approval.action}</p>
-                    <p className="mt-1 text-sm text-slate-500">{approval.reason}</p>
-                    <p className="mt-1 text-xs text-slate-400">{approval.status} · {formatDate(approval.requested_at)}</p>
-                  </div>
-                  {approval.status === 'pending' && (
-                    <div className="flex gap-2">
-                      <IconButton disabled={!canDecide} onClick={() => decide(approval, 'approve')} tone="blue">
-                        Aprovar
-                      </IconButton>
-                      <IconButton disabled={!canDecide} onClick={() => decide(approval, 'reject')} tone="light">
-                        Rejeitar
-                      </IconButton>
+          <div className="mt-5 space-y-3">
+            {approvals.length === 0 ? (
+              <EmptyState icon={ShieldCheckIcon} label="Nenhuma aprovação pendente ou recente." />
+            ) : (
+              approvals.map((approval) => (
+                <div key={approval.approval_id} className="rounded-lg border border-slate-200 p-4">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                      <p className="font-semibold">{approval.action}</p>
+                      <p className="mt-1 text-sm text-slate-500">{approval.reason}</p>
+                      <p className="mt-1 text-xs text-slate-400">{approval.status} · {formatDate(approval.requested_at)}</p>
                     </div>
-                  )}
-                </div>
-              </div>
-            ))
-          )}
-        </div>
-      </section>
-
-      <section className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
-        <p className="text-sm font-semibold uppercase tracking-wide text-blue-600">Auditoria</p>
-        <h2 className="mt-1 text-2xl font-semibold">Eventos duráveis</h2>
-        <div className="mt-5 space-y-2">
-          {auditEvents.length === 0 ? (
-            <EmptyState icon={ActivityIcon} label="Nenhum evento de auditoria retornado." />
-          ) : (
-            auditEvents.map((event) => (
-              <div key={event.event_id} className="rounded-lg border border-slate-200 p-4">
-                <div className="flex flex-wrap items-start justify-between gap-3">
-                  <div>
-                    <p className="font-semibold">{event.action}</p>
-                    <p className="mt-1 text-sm text-slate-500">{event.result} · {event.workspace_id ?? 'global'}</p>
+                    {approval.status === 'pending' && (
+                      <div className="flex gap-2">
+                        <IconButton disabled={!canDecide} onClick={() => decide(approval, 'approve')} tone="blue">
+                          Aprovar
+                        </IconButton>
+                        <IconButton disabled={!canDecide} onClick={() => decide(approval, 'reject')} tone="light">
+                          Rejeitar
+                        </IconButton>
+                      </div>
+                    )}
                   </div>
-                  <span className="text-xs font-semibold text-slate-500">{formatDate(event.created_at)}</span>
                 </div>
-              </div>
-            ))
-          )}
-        </div>
-      </section>
+              ))
+            )}
+          </div>
+        </section>
+      )}
+
+      {canReadAudit && (
+        <section className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
+          <p className="text-sm font-semibold uppercase tracking-wide text-blue-600">Auditoria</p>
+          <h2 className="mt-1 text-2xl font-semibold">Eventos duráveis</h2>
+          <div className="mt-5 space-y-2">
+            {auditEvents.length === 0 ? (
+              <EmptyState icon={ActivityIcon} label="Nenhum evento de auditoria retornado." />
+            ) : (
+              auditEvents.map((event) => (
+                <div key={event.event_id} className="rounded-lg border border-slate-200 p-4">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                      <p className="font-semibold">{event.action}</p>
+                      <p className="mt-1 text-sm text-slate-500">{event.result} · {event.workspace_id ?? 'global'}</p>
+                    </div>
+                    <span className="text-xs font-semibold text-slate-500">{formatDate(event.created_at)}</span>
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+        </section>
+      )}
     </div>
   )
 }
@@ -832,48 +979,102 @@ export default function LittleBullPreview() {
   const [principal, setPrincipal] = useState<LittleBullPrincipal | null>(null)
   const [areas, setAreas] = useState<LittleBullArea[]>([])
   const [activeWorkspaceId, setActiveWorkspaceId] = useState('')
-  const [docs, setDocs] = useState<LittleBullDocument[]>([])
-  const [activity, setActivity] = useState<LittleBullActivityItem[]>([])
-  const [assistants, setAssistants] = useState<LittleBullAssistant[]>([])
+  const [workspaceStateById, setWorkspaceStateById] = useState<Record<string, WorkspaceUiState>>({})
   const [approvals, setApprovals] = useState<LittleBullApproval[]>([])
   const [auditEvents, setAuditEvents] = useState<LittleBullAuditEvent[]>([])
-  const [messages, setMessages] = useState<ChatMessage[]>([])
   const [searchText, setSearchText] = useState('')
-  const [prompt, setPrompt] = useState('')
   const [loading, setLoading] = useState(true)
   const [fatalError, setFatalError] = useState<string | null>(null)
+  const activeWorkspaceState = workspaceStateById[activeWorkspaceId] ?? emptyWorkspaceUiState
+  const visibleNavItems = useMemo(() => visibleNavItemsFor(principal), [principal])
+  const fallbackPage = visibleNavItems[0]?.id ?? 'inicio'
+  const canReadDocuments = hasPermission(principal, permissionMap.readDocuments)
+  const canQuery = hasPermission(principal, permissionMap.query)
+  const canReadActivity = hasPermission(principal, permissionMap.readActivity)
+  const canReadAssistants = hasPermission(principal, permissionMap.readAssistants)
+  const canReadApprovals = hasAnyPermission(principal, [
+    permissionMap.readApprovals,
+    permissionMap.decideApprovals
+  ])
+  const canReadAudit = hasPermission(principal, permissionMap.readAudit)
 
-  const refreshAreas = useCallback(async () => {
-    const [me, loadedAreas] = await Promise.all([getLittleBullMe(), getLittleBullAreas()])
-    setPrincipal(me)
-    setAreas(loadedAreas)
-    setActiveWorkspaceId((current) => current || loadedAreas[0]?.id || '')
+  const updateWorkspaceState = useCallback((
+    workspaceId: string,
+    updater: (state: WorkspaceUiState) => WorkspaceUiState
+  ) => {
+    if (!workspaceId) return
+    setWorkspaceStateById((current) => {
+      const previous = current[workspaceId] ?? createWorkspaceUiState()
+      return {
+        ...current,
+        [workspaceId]: updater(previous)
+      }
+    })
   }, [])
 
-  const refreshDocuments = useCallback(async () => {
-    if (!activeWorkspaceId) return
-    const response = await getLittleBullDocuments(activeWorkspaceId)
-    setDocs(response.documents)
-  }, [activeWorkspaceId])
+  const patchWorkspaceState = useCallback((workspaceId: string, patch: Partial<WorkspaceUiState>) => {
+    updateWorkspaceState(workspaceId, (state) => ({ ...state, ...patch }))
+  }, [updateWorkspaceState])
 
-  const refreshActivity = useCallback(async () => {
-    if (!activeWorkspaceId) return
-    setActivity(await getLittleBullActivity(activeWorkspaceId))
-  }, [activeWorkspaceId])
+  const setActiveDocs = useCallback((docs: LittleBullDocument[]) => {
+    updateWorkspaceState(activeWorkspaceId, (state) => ({ ...state, docs }))
+  }, [activeWorkspaceId, updateWorkspaceState])
 
-  const refreshAssistants = useCallback(async () => {
-    if (!activeWorkspaceId) return
-    setAssistants(await getLittleBullAssistants(activeWorkspaceId))
-  }, [activeWorkspaceId])
+  const setActivePrompt = useCallback((prompt: string) => {
+    updateWorkspaceState(activeWorkspaceId, (state) => ({ ...state, prompt }))
+  }, [activeWorkspaceId, updateWorkspaceState])
+
+  const setActiveMessages = useCallback<React.Dispatch<React.SetStateAction<ChatMessage[]>>>((nextMessages) => {
+    updateWorkspaceState(activeWorkspaceId, (state) => ({
+      ...state,
+      messages: typeof nextMessages === 'function' ? nextMessages(state.messages) : nextMessages
+    }))
+  }, [activeWorkspaceId, updateWorkspaceState])
+
+  const refreshAreas = useCallback(async () => {
+    const me = await getLittleBullMe()
+    const loadedAreas = hasPermission(me, permissionMap.readAreas) ? await getLittleBullAreas() : []
+    const loadedWorkspaceIds = new Set(loadedAreas.map((area) => area.id))
+    setPrincipal(me)
+    setAreas(loadedAreas)
+    setWorkspaceStateById((current) => {
+      return Object.fromEntries(
+        Object.entries(current).filter(([workspaceId]) => loadedWorkspaceIds.has(workspaceId))
+      )
+    })
+    setActiveWorkspaceId((current) => (
+      current && loadedWorkspaceIds.has(current) ? current : loadedAreas[0]?.id || ''
+    ))
+  }, [])
+
+  const refreshDocuments = useCallback(async (workspaceId = activeWorkspaceId) => {
+    if (!workspaceId || !canReadDocuments) return
+    const response = await getLittleBullDocuments(workspaceId)
+    patchWorkspaceState(workspaceId, { docs: response.documents })
+  }, [activeWorkspaceId, canReadDocuments, patchWorkspaceState])
+
+  const refreshActivity = useCallback(async (workspaceId = activeWorkspaceId) => {
+    if (!workspaceId || !canReadActivity) return
+    patchWorkspaceState(workspaceId, { activity: await getLittleBullActivity(workspaceId) })
+  }, [activeWorkspaceId, canReadActivity, patchWorkspaceState])
+
+  const refreshAssistants = useCallback(async (workspaceId = activeWorkspaceId) => {
+    if (!workspaceId || !canReadAssistants) return
+    patchWorkspaceState(workspaceId, { assistants: await getLittleBullAssistants(workspaceId) })
+  }, [activeWorkspaceId, canReadAssistants, patchWorkspaceState])
 
   const refreshAdmin = useCallback(async () => {
     const [approvalItems, auditItems] = await Promise.all([
-      getLittleBullApprovals(),
-      getLittleBullAuditEvents()
+      canReadApprovals ? getLittleBullApprovals() : Promise.resolve([]),
+      canReadAudit ? getLittleBullAuditEvents() : Promise.resolve([])
     ])
     setApprovals(approvalItems)
     setAuditEvents(auditItems)
-  }, [])
+  }, [canReadApprovals, canReadAudit])
+
+  const refreshActiveActivity = useCallback(() => {
+    return refreshActivity(activeWorkspaceId)
+  }, [activeWorkspaceId, refreshActivity])
 
   useEffect(() => {
     let cancelled = false
@@ -895,22 +1096,53 @@ export default function LittleBullPreview() {
   }, [refreshAreas])
 
   useEffect(() => {
-    if (!activeWorkspaceId) return
-    refreshDocuments().catch((error) => toast.error(errorMessage(error)))
-    refreshActivity().catch((error) => toast.error(errorMessage(error)))
-    refreshAssistants().catch((error) => toast.error(errorMessage(error)))
-  }, [activeWorkspaceId, refreshActivity, refreshAssistants, refreshDocuments])
+    if (!canAccessPage(principal, page)) {
+      setPage(fallbackPage)
+    }
+  }, [fallbackPage, page, principal])
 
   useEffect(() => {
-    if (page === 'admin') {
+    if (!activeWorkspaceId) return
+    if (canReadDocuments) {
+      refreshDocuments(activeWorkspaceId).catch((error) => toast.error(errorMessage(error)))
+    } else {
+      patchWorkspaceState(activeWorkspaceId, { docs: [] })
+    }
+    if (canReadActivity) {
+      refreshActivity(activeWorkspaceId).catch((error) => toast.error(errorMessage(error)))
+    } else {
+      patchWorkspaceState(activeWorkspaceId, { activity: [] })
+    }
+    if (canReadAssistants) {
+      refreshAssistants(activeWorkspaceId).catch((error) => toast.error(errorMessage(error)))
+    } else {
+      patchWorkspaceState(activeWorkspaceId, { assistants: [] })
+    }
+  }, [
+    activeWorkspaceId,
+    canReadActivity,
+    canReadAssistants,
+    canReadDocuments,
+    patchWorkspaceState,
+    refreshActivity,
+    refreshAssistants,
+    refreshDocuments
+  ])
+
+  useEffect(() => {
+    if (page === 'admin' && (canReadApprovals || canReadAudit)) {
       refreshAdmin().catch((error) => toast.error(errorMessage(error)))
     }
-  }, [page, refreshAdmin])
+  }, [canReadApprovals, canReadAudit, page, refreshAdmin])
 
   const onSearchSubmit = () => {
     const value = searchText.trim()
     if (!value) return
-    setPrompt(value)
+    if (!canQuery) {
+      toast.error('Você não tem permissão para consultar este workspace.')
+      return
+    }
+    setActivePrompt(value)
     setPage('perguntar')
   }
 
@@ -936,13 +1168,18 @@ export default function LittleBullPreview() {
       return <EmptyState icon={FolderOpenIcon} label="Nenhum workspace disponível para este usuário." />
     }
 
+    if (!canAccessPage(principal, page)) {
+      return <EmptyState icon={LockIcon} label="Você não tem permissão para acessar esta seção." />
+    }
+
     switch (page) {
       case 'inicio':
         return (
           <HomePage
             areas={areas}
-            docs={docs}
-            activity={activity}
+            docs={activeWorkspaceState.docs}
+            activity={activeWorkspaceState.activity}
+            principal={principal}
             setPage={setPage}
             setActiveWorkspaceId={setActiveWorkspaceId}
           />
@@ -951,21 +1188,21 @@ export default function LittleBullPreview() {
         return (
           <AskPage
             activeWorkspaceId={activeWorkspaceId}
-            prompt={prompt}
-            setPrompt={setPrompt}
-            messages={messages}
-            setMessages={setMessages}
-            refreshActivity={refreshActivity}
+            prompt={activeWorkspaceState.prompt}
+            setPrompt={setActivePrompt}
+            messages={activeWorkspaceState.messages}
+            setMessages={setActiveMessages}
+            refreshActivity={refreshActiveActivity}
           />
         )
       case 'conhecimento':
         return (
           <KnowledgePage
             activeWorkspaceId={activeWorkspaceId}
-            docs={docs}
-            setDocs={setDocs}
+            docs={activeWorkspaceState.docs}
+            setDocs={setActiveDocs}
             principal={principal}
-            refreshActivity={refreshActivity}
+            refreshActivity={refreshActiveActivity}
           />
         )
       case 'areas':
@@ -973,14 +1210,15 @@ export default function LittleBullPreview() {
           <AreasPage
             areas={areas}
             activeWorkspaceId={activeWorkspaceId}
+            principal={principal}
             setActiveWorkspaceId={setActiveWorkspaceId}
             setPage={setPage}
           />
         )
       case 'assistentes':
-        return <AssistantsPage assistants={assistants} setPage={setPage} />
+        return <AssistantsPage assistants={activeWorkspaceState.assistants} setPage={setPage} canQuery={canQuery} />
       case 'atividade':
-        return <ActivityPage activity={activity} refresh={refreshActivity} />
+        return <ActivityPage activity={activeWorkspaceState.activity} refresh={refreshActiveActivity} />
       case 'admin':
         return (
           <AdminPage
@@ -995,20 +1233,20 @@ export default function LittleBullPreview() {
     }
   }, [
     activeWorkspaceId,
-    activity,
+    activeWorkspaceState,
     approvals,
     areas,
     auditEvents,
-    assistants,
-    docs,
+    canQuery,
     fatalError,
     loading,
-    messages,
     page,
     principal,
-    prompt,
-    refreshActivity,
-    refreshAdmin
+    refreshActiveActivity,
+    refreshAdmin,
+    setActiveDocs,
+    setActiveMessages,
+    setActivePrompt
   ])
 
   return (

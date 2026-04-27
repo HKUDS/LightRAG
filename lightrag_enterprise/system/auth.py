@@ -42,14 +42,22 @@ class SystemAuthService:
         expire_hours: int = 24,
     ) -> None:
         self.repository = repository
-        self.secret = (
-            secret
-            or os.getenv("LIGHTRAG_SYSTEM_TOKEN_SECRET")
-            or os.getenv("TOKEN_SECRET")
-            or DEFAULT_SYSTEM_TOKEN_SECRET
-        )
+        self.secret = secret or os.getenv("LIGHTRAG_SYSTEM_TOKEN_SECRET") or os.getenv("TOKEN_SECRET")
+        if self.secret is None and os.getenv("LIGHTRAG_SYSTEM_ALLOW_INSECURE_DEV_SECRET", "").lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }:
+            self.secret = DEFAULT_SYSTEM_TOKEN_SECRET
         self.algorithm = algorithm
         self.expire_hours = expire_hours
+
+    def require_token_secret(self) -> None:
+        if not self.secret:
+            raise RuntimeError(
+                "LIGHTRAG_SYSTEM_TOKEN_SECRET or TOKEN_SECRET must be set before enterprise tokens can be issued."
+            )
 
     async def has_users(self) -> bool:
         return await self.repository.has_users()
@@ -102,6 +110,7 @@ class SystemAuthService:
         )
 
     def create_token(self, principal: Principal) -> str:
+        self.require_token_secret()
         expire = datetime.now(timezone.utc) + timedelta(hours=self.expire_hours)
         payload: dict[str, Any] = principal.to_token_payload()
         payload["exp"] = expire
@@ -110,6 +119,7 @@ class SystemAuthService:
         return jwt.encode(payload, self.secret, algorithm=self.algorithm)
 
     def decode_token(self, token: str) -> dict[str, Any]:
+        self.require_token_secret()
         return jwt.decode(token, self.secret, algorithms=[self.algorithm])
 
     async def principal_from_token(self, token: str) -> Principal:
@@ -121,4 +131,3 @@ class SystemAuthService:
         if int(payload.get("permission_version", 0)) != user.permission_version:
             raise ValueError("Token permission version is stale")
         return await self.principal_for_user(user)
-

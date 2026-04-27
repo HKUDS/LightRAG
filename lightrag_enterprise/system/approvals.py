@@ -40,16 +40,31 @@ class ApprovalService:
         )
         return await self.repository.create_approval_request(approval)
 
-    async def approve(self, approval_id: str, principal: Principal) -> ApprovalRequest:
+    def _can_decide(self, approval: ApprovalRequest, principal: Principal) -> None:
         if not principal.is_master_global and ACTIVITY_APPROVAL_DECIDE not in principal.permissions:
             raise PermissionError("Principal cannot approve requests.")
+        if not principal.is_master_global:
+            if approval.tenant_id != principal.tenant_id:
+                raise PermissionError("Approval tenant is outside principal scope.")
+            if approval.workspace_id and approval.workspace_id not in principal.workspace_ids:
+                raise PermissionError("Approval workspace is outside principal scope.")
+        if approval.status != ApprovalStatus.PENDING:
+            raise ValueError("Approval request is no longer pending.")
+
+    async def approve(self, approval_id: str, principal: Principal) -> ApprovalRequest:
+        approval = await self.repository.get_approval_request(approval_id)
+        if approval is None:
+            raise KeyError(approval_id)
+        self._can_decide(approval, principal)
         return await self.repository.update_approval_status(
             approval_id, ApprovalStatus.APPROVED, principal.user_id
         )
 
     async def reject(self, approval_id: str, principal: Principal) -> ApprovalRequest:
-        if not principal.is_master_global and ACTIVITY_APPROVAL_DECIDE not in principal.permissions:
-            raise PermissionError("Principal cannot reject requests.")
+        approval = await self.repository.get_approval_request(approval_id)
+        if approval is None:
+            raise KeyError(approval_id)
+        self._can_decide(approval, principal)
         return await self.repository.update_approval_status(
             approval_id, ApprovalStatus.REJECTED, principal.user_id
         )
@@ -62,4 +77,3 @@ class ApprovalService:
         status: ApprovalStatus | None = None,
     ) -> list[ApprovalRequest]:
         return await self.repository.list_approval_requests(tenant_id, workspace_id, status)
-

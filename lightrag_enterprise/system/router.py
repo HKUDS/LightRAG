@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import os
 
-from fastapi import APIRouter, Depends, Header, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordRequestForm
 from pydantic import BaseModel, Field
 
 from .models import Membership, Tenant, Workspace, new_id
-from .permissions import MANAGER_ROLE, OPERATOR_ROLE
+from .permissions import ACTIVITY_APPROVAL_READ, MANAGER_ROLE, OPERATOR_ROLE
 from .repositories import default_tenant_and_workspace, membership_for_master
 from .runtime import (
     get_access_service,
@@ -44,8 +44,11 @@ def create_system_router() -> APIRouter:
         auth = get_system_auth_service()
         try:
             _, principal = await auth.authenticate(form_data.username, form_data.password)
+            auth.require_token_secret()
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Incorrect credentials") from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
         return {
             "access_token": auth.create_token(principal),
             "token_type": "bearer",
@@ -59,15 +62,25 @@ def create_system_router() -> APIRouter:
 
     @router.post("/system/bootstrap-master")
     async def bootstrap_master(
+        raw_request: Request,
         request: BootstrapMasterRequest,
         x_little_bull_bootstrap_token: str | None = Header(default=None),
     ):
         expected = os.getenv("LITTLE_BULL_BOOTSTRAP_TOKEN")
-        if expected and x_little_bull_bootstrap_token != expected:
+        if not expected:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="LITTLE_BULL_BOOTSTRAP_TOKEN must be set for HTTP bootstrap; use the CLI for local bootstrap.",
+            )
+        if x_little_bull_bootstrap_token != expected:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid bootstrap token")
 
         repo = get_system_repository()
         auth = get_system_auth_service()
+        try:
+            auth.require_token_secret()
+        except RuntimeError as exc:
+            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
         tenant = Tenant(tenant_id="default", name=request.tenant_name)
         workspace = Workspace(
             workspace_id="default",
@@ -88,6 +101,14 @@ def create_system_router() -> APIRouter:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
         await repo.create_membership(membership_for_master(user.user_id))
         principal = await auth.principal_for_user(user)
+        await get_audit_service().record(
+            principal=principal,
+            action="little_bull.system.bootstrap_master",
+            tenant_id=tenant.tenant_id,
+            workspace_id=workspace.workspace_id,
+            result="success",
+            metadata={"client_host": raw_request.client.host if raw_request.client else None},
+        )
         return {
             "user": user.public_dict(),
             "tenant": tenant.__dict__,
@@ -141,8 +162,22 @@ def create_system_router() -> APIRouter:
 
     @router.get("/approvals")
     async def list_approvals(principal=Depends(require_principal)):
-        workspace_id = None if principal.is_master_global else (principal.workspace_ids[0] if principal.workspace_ids else None)
-        approvals = await get_approval_service().list(tenant_id=principal.tenant_id, workspace_id=workspace_id)
+        decision = get_access_service().require(
+            principal,
+            activity=ACTIVITY_APPROVAL_READ,
+        )
+        if not decision.allowed:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=decision.reason)
+        approvals = await get_approval_service().list(
+            tenant_id=None if principal.is_master_global else principal.tenant_id,
+            workspace_id=None,
+        )
+        if not principal.is_master_global:
+            approvals = [
+                approval
+                for approval in approvals
+                if approval.workspace_id is None or approval.workspace_id in principal.workspace_ids
+            ]
         return {"approvals": [approval.to_dict() for approval in approvals]}
 
     @router.post("/approvals/{approval_id}/approve")
@@ -151,6 +186,8 @@ def create_system_router() -> APIRouter:
             approval = await get_approval_service().approve(approval_id, principal)
         except PermissionError as exc:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
         except KeyError as exc:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Approval not found") from exc
         await get_audit_service().record(
@@ -169,6 +206,8 @@ def create_system_router() -> APIRouter:
             approval = await get_approval_service().reject(approval_id, principal)
         except PermissionError as exc:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
         except KeyError as exc:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Approval not found") from exc
         await get_audit_service().record(

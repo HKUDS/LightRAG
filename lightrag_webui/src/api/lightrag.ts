@@ -381,6 +381,18 @@ export type LittleBullApproval = {
   metadata: Record<string, any>
 }
 
+export type LittleBullDeleteDocumentResponse =
+  | {
+    status: 'success'
+    message: string
+    doc_id: string
+  }
+  | {
+    status: 'pending_approval'
+    message: string
+    approval: LittleBullApproval
+  }
+
 export type LittleBullAuditEvent = {
   event_id: string
   actor_user_id: string
@@ -1098,7 +1110,7 @@ export const uploadLittleBullDocument = async (
 export const deleteLittleBullDocument = async (
   workspaceId: string,
   documentId: string
-): Promise<Record<string, any>> => {
+): Promise<LittleBullDeleteDocumentResponse> => {
   const response = await axiosInstance.delete(`/little-bull/documents/${encodeURIComponent(documentId)}`, {
     params: { workspace_id: workspaceId }
   })
