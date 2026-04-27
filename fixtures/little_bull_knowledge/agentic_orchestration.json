@@ -1,0 +1,760 @@
+{
+  "schema_version": "1.0.0",
+  "fixture_id": "little_bull_agentic_orchestration_demo",
+  "generated_at": "2026-04-25T12:00:00-03:00",
+  "description": "Deterministic demo fixture for Little Bull Knowledge agentic orchestration. All people, tenants, workspaces, decisions, and audit events are fictional.",
+  "privacy_notice": {
+    "contains_real_secrets": false,
+    "contains_personal_data": false,
+    "data_classification": "demo",
+    "notes": [
+      "No API keys, tokens, passwords, or live endpoint credentials are included.",
+      "Decision records summarize options, trade-offs, and selected paths without private chain-of-thought."
+    ]
+  },
+  "tenant": {
+    "tenant_id": "tenant_little_bull_demo",
+    "display_name": "Little Bull Knowledge Demo",
+    "default_workspace": "casa",
+    "locale": "pt-BR",
+    "timezone": "America/Sao_Paulo"
+  },
+  "workspaces": [
+    {
+      "workspace": "casa",
+      "label": "Casa",
+      "privacy": "familia",
+      "description": "Manuais, garantias, contas e contratos da casa."
+    },
+    {
+      "workspace": "familia",
+      "label": "Familia",
+      "privacy": "familia",
+      "description": "Escola, saude, viagens e documentos importantes."
+    },
+    {
+      "workspace": "financas",
+      "label": "Financas",
+      "privacy": "solo",
+      "description": "Recibos, impostos, investimentos e vencimentos."
+    },
+    {
+      "workspace": "trabalho",
+      "label": "Trabalho",
+      "privacy": "equipe",
+      "description": "Propostas, clientes, projetos e reunioes."
+    },
+    {
+      "workspace": "estudos",
+      "label": "Estudos",
+      "privacy": "solo",
+      "description": "PDFs, cursos, resumos e anotacoes."
+    },
+    {
+      "workspace": "pequeno_negocio",
+      "label": "Pequeno negocio",
+      "privacy": "equipe",
+      "description": "Produtos, atendimento, pedidos e perguntas frequentes."
+    }
+  ],
+  "agents": [
+    {
+      "name": "orchestrator_agent",
+      "display_name": "Coordenador Little Bull",
+      "mission": "Coordinate home knowledge workflows around LightRAG without bypassing policy gates.",
+      "role": "primary",
+      "allowed_skills": [
+        "query_lightrag",
+        "route_model_by_policy",
+        "audit_action"
+      ],
+      "delegates_to": [
+        "planner_agent",
+        "retrieval_agent",
+        "model_router_agent",
+        "compliance_audit_agent",
+        "critic_evaluator_agent"
+      ],
+      "safety_notes": [
+        "Never expose private planning traces.",
+        "Use short, source-backed Portuguese responses for home users.",
+        "Require audit events for user-visible workflow decisions."
+      ]
+    },
+    {
+      "name": "planner_agent",
+      "display_name": "Planejador de Resposta",
+      "mission": "Compare bounded execution plans and emit only decisions, trade-offs, and validations.",
+      "role": "subagent",
+      "allowed_skills": [
+        "route_model_by_policy",
+        "validate_json_output",
+        "audit_action"
+      ],
+      "safety_notes": [
+        "Summarize Tree-of-Thought decisions as options and selected path only.",
+        "Do not store raw chain-of-thought."
+      ]
+    },
+    {
+      "name": "retrieval_agent",
+      "display_name": "Leitor de Conhecimento",
+      "mission": "Use LightRAG as knowledge layer, retrieval core, and memory engine.",
+      "role": "subagent",
+      "allowed_skills": [
+        "query_lightrag",
+        "query_lightrag_context_only",
+        "ingest_document",
+        "ingest_batch"
+      ],
+      "safety_notes": [
+        "Prefer context-only retrieval before generated answers when confidence is uncertain.",
+        "Return citations for all factual claims about documents."
+      ]
+    },
+    {
+      "name": "model_router_agent",
+      "display_name": "Roteador de Modelo",
+      "mission": "Select runtime-visible and policy-permitted models.",
+      "role": "subagent",
+      "allowed_skills": [
+        "sync_model_catalog",
+        "get_model_catalog",
+        "route_model_by_policy"
+      ],
+      "safety_notes": [
+        "Prefer local/private profiles for sensitive or private workspaces.",
+        "Do not expose provider credentials or hidden routing metadata."
+      ]
+    },
+    {
+      "name": "compliance_audit_agent",
+      "display_name": "Auditoria e Privacidade",
+      "mission": "Review actions for RBAC, ACL, retention, privacy, and audit completeness.",
+      "role": "subagent",
+      "allowed_skills": [
+        "audit_action",
+        "check_cost_policy"
+      ],
+      "safety_notes": [
+        "Block destructive actions without explicit user confirmation.",
+        "Record demo audit events without secrets or raw document dumps."
+      ]
+    },
+    {
+      "name": "critic_evaluator_agent",
+      "display_name": "Critico de Qualidade",
+      "mission": "Challenge plans and outputs for unsupported claims, security gaps, and regressions.",
+      "role": "subagent",
+      "allowed_skills": [
+        "validate_json_output",
+        "audit_action"
+      ],
+      "safety_notes": [
+        "Flag unsupported certainty and missing citations.",
+        "Escalate legal, financial, or health-sensitive wording to human review."
+      ]
+    }
+  ],
+  "assistant_profiles": [
+    {
+      "assistant_id": "organizador_casa",
+      "name": "Organizador da Casa",
+      "backing_agent": "orchestrator_agent",
+      "workspace_ids": [
+        "casa"
+      ],
+      "default_model_profile": "equilibrado",
+      "response_rules": [
+        "Responder em linguagem simples",
+        "Mostrar fontes usadas",
+        "Sugerir proximos passos"
+      ]
+    },
+    {
+      "assistant_id": "ajudante_financeiro",
+      "name": "Ajudante Financeiro",
+      "backing_agent": "orchestrator_agent",
+      "workspace_ids": [
+        "financas"
+      ],
+      "default_model_profile": "privado",
+      "response_rules": [
+        "Nao dar recomendacao financeira definitiva",
+        "Marcar incertezas",
+        "Citar documentos"
+      ]
+    },
+    {
+      "assistant_id": "leitor_contratos",
+      "name": "Leitor de Contratos",
+      "backing_agent": "orchestrator_agent",
+      "workspace_ids": [
+        "casa",
+        "trabalho",
+        "pequeno_negocio"
+      ],
+      "default_model_profile": "inteligente",
+      "response_rules": [
+        "Nao substituir advogado",
+        "Destacar riscos",
+        "Sempre citar clausulas/fontes"
+      ]
+    },
+    {
+      "assistant_id": "assistente_estudos",
+      "name": "Assistente de Estudos",
+      "backing_agent": "orchestrator_agent",
+      "workspace_ids": [
+        "estudos"
+      ],
+      "default_model_profile": "equilibrado",
+      "response_rules": [
+        "Explicar por etapas",
+        "Criar exemplos",
+        "Gerar perguntas de revisao"
+      ]
+    },
+    {
+      "assistant_id": "atendente_negocio",
+      "name": "Atendente do Pequeno Negocio",
+      "backing_agent": "orchestrator_agent",
+      "workspace_ids": [
+        "pequeno_negocio"
+      ],
+      "default_model_profile": "rapido",
+      "response_rules": [
+        "Nao prometer excecoes",
+        "Usar tom cordial",
+        "Pedir revisao humana em casos sensiveis"
+      ]
+    }
+  ],
+  "skills": [
+    {
+      "name": "query_lightrag",
+      "category": "retrieval",
+      "description": "Query LightRAG with governed model and ACL policy.",
+      "side_effect": false,
+      "audit_event": "skill.query_lightrag",
+      "demo_inputs": {
+        "tenant_id": "tenant_little_bull_demo",
+        "workspace": "casa",
+        "query": "Quando vence a garantia da geladeira?",
+        "mode": "hybrid",
+        "include_references": true
+      }
+    },
+    {
+      "name": "query_lightrag_context_only",
+      "category": "retrieval",
+      "description": "Return retrieved context and citations without LLM generation.",
+      "side_effect": false,
+      "audit_event": "skill.query_lightrag_context_only",
+      "demo_inputs": {
+        "tenant_id": "tenant_little_bull_demo",
+        "workspace": "casa",
+        "query": "Quais documentos mencionam garantia da geladeira?",
+        "mode": "mix",
+        "include_references": true
+      }
+    },
+    {
+      "name": "route_model_by_policy",
+      "category": "policy",
+      "description": "Select model profile by policy.",
+      "side_effect": false,
+      "audit_event": "skill.route_model_by_policy",
+      "demo_inputs": {
+        "tenant_id": "tenant_little_bull_demo",
+        "workspace": "financas",
+        "payload": {
+          "requested_profile": "equilibrado",
+          "document_confidentiality": "sensivel",
+          "selected_profile": "privado"
+        }
+      }
+    },
+    {
+      "name": "validate_json_output",
+      "category": "validation",
+      "description": "Validate model output against a JSON schema.",
+      "side_effect": false,
+      "audit_event": "skill.validate_json_output",
+      "demo_inputs": {
+        "tenant_id": "tenant_little_bull_demo",
+        "workspace": "trabalho",
+        "payload": {
+          "schema_name": "little_bull_checklist_response",
+          "required_fields": [
+            "summary",
+            "citations",
+            "next_actions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "audit_action",
+      "category": "audit",
+      "description": "Append structured audit event.",
+      "side_effect": true,
+      "audit_event": "skill.audit_action",
+      "demo_inputs": {
+        "tenant_id": "tenant_little_bull_demo",
+        "workspace": "casa",
+        "payload": {
+          "actor": "demo_user",
+          "action": "assistant.answer.created",
+          "resource_id": "run_garantia_geladeira"
+        }
+      }
+    },
+    {
+      "name": "check_cost_policy",
+      "category": "policy",
+      "description": "Validate request estimate against tenant caps.",
+      "side_effect": false,
+      "audit_event": "skill.check_cost_policy",
+      "demo_inputs": {
+        "tenant_id": "tenant_little_bull_demo",
+        "workspace": "estudos",
+        "payload": {
+          "estimated_cost_brl": 0.08,
+          "monthly_cap_brl": 150.0,
+          "decision": "allow"
+        }
+      }
+    }
+  ],
+  "model_profiles": [
+    {
+      "profile_id": "rapido",
+      "label": "Rapido",
+      "visible_to_home_users": true,
+      "policy": "Use for simple answers, low-risk summaries, and high-volume support drafts."
+    },
+    {
+      "profile_id": "equilibrado",
+      "label": "Equilibrado",
+      "visible_to_home_users": true,
+      "policy": "Default for quality, cost, and speed."
+    },
+    {
+      "profile_id": "inteligente",
+      "label": "Mais inteligente",
+      "visible_to_home_users": true,
+      "policy": "Use for contracts, ambiguous questions, and higher reasoning needs."
+    },
+    {
+      "profile_id": "privado",
+      "label": "Privado/local",
+      "visible_to_home_users": true,
+      "policy": "Prefer for sensitive, private, financial, health, or family data."
+    }
+  ],
+  "guardrails": [
+    {
+      "guardrail_id": "require_workspace_scope",
+      "name": "Workspace scope required",
+      "applies_to": [
+        "all_agents",
+        "all_skills"
+      ],
+      "rule": "Every skill call must include tenant_id and workspace.",
+      "failure_action": "block_and_audit"
+    },
+    {
+      "guardrail_id": "block_private_to_hosted",
+      "name": "Protect private data from hosted models",
+      "applies_to": [
+        "model_router_agent",
+        "orchestrator_agent"
+      ],
+      "rule": "If confidentiality is privado or sensivel, select privado/local when available or ask for confirmation.",
+      "failure_action": "fallback_to_context_only"
+    },
+    {
+      "guardrail_id": "require_sources",
+      "name": "Require citations for document claims",
+      "applies_to": [
+        "retrieval_agent",
+        "critic_evaluator_agent"
+      ],
+      "rule": "User-facing factual answers based on documents must include citations.",
+      "failure_action": "revise_or_mark_uncertain"
+    },
+    {
+      "guardrail_id": "no_professional_advice",
+      "name": "No legal, financial, or medical certainty",
+      "applies_to": [
+        "leitor_contratos",
+        "ajudante_financeiro",
+        "orchestrator_agent"
+      ],
+      "rule": "Use educational wording, surface uncertainty, and recommend human review for high-impact decisions.",
+      "failure_action": "escalate_to_human_review"
+    },
+    {
+      "guardrail_id": "no_raw_chain_of_thought",
+      "name": "No raw chain-of-thought storage",
+      "applies_to": [
+        "planner_agent",
+        "critic_evaluator_agent",
+        "audit_action"
+      ],
+      "rule": "Persist only options considered, pruning criteria, selected decision, and validation outcome.",
+      "failure_action": "redact_before_persisting"
+    },
+    {
+      "guardrail_id": "confirm_destructive_actions",
+      "name": "Confirm destructive actions",
+      "applies_to": [
+        "delete_document_by_id",
+        "delete_entity",
+        "delete_relation",
+        "merge_entities"
+      ],
+      "rule": "Deletion or merge actions require explicit user confirmation and audit trail.",
+      "failure_action": "block_and_request_confirmation"
+    }
+  ],
+  "workflow_runs": [
+    {
+      "run_id": "run_garantia_geladeira",
+      "started_at": "2026-04-25T09:12:00-03:00",
+      "completed_at": "2026-04-25T09:12:18-03:00",
+      "status": "success",
+      "actor": "demo_user",
+      "assistant_id": "organizador_casa",
+      "primary_agent": "orchestrator_agent",
+      "workspace": "casa",
+      "user_request": "Quando vence a garantia da geladeira?",
+      "model_profile_selected": "equilibrado",
+      "steps": [
+        {
+          "step_id": "step_001",
+          "agent": "planner_agent",
+          "skill": "route_model_by_policy",
+          "status": "success",
+          "summary": "Selected a source-backed answer path because the question asks for a concrete date."
+        },
+        {
+          "step_id": "step_002",
+          "agent": "retrieval_agent",
+          "skill": "query_lightrag_context_only",
+          "status": "success",
+          "summary": "Retrieved note and manual references for the refrigerator warranty."
+        },
+        {
+          "step_id": "step_003",
+          "agent": "critic_evaluator_agent",
+          "skill": "validate_json_output",
+          "status": "success",
+          "summary": "Validated that the answer includes date, uncertainty, and citations."
+        },
+        {
+          "step_id": "step_004",
+          "agent": "compliance_audit_agent",
+          "skill": "audit_action",
+          "status": "success",
+          "summary": "Recorded demo audit event without raw document content."
+        }
+      ],
+      "sources": [
+        {
+          "document_id": "doc_nota_geladeira",
+          "file_name": "nota-fiscal-geladeira.pdf",
+          "confidence": "alta"
+        },
+        {
+          "document_id": "doc_manual_geladeira",
+          "file_name": "manual-geladeira-brastemp.pdf",
+          "confidence": "alta"
+        }
+      ],
+      "output_summary": "A garantia principal parece vencer em 12/03/2027; confirmar a cobertura estendida antes de acionar assistencia."
+    },
+    {
+      "run_id": "run_recibos_privado",
+      "started_at": "2026-04-25T10:04:00-03:00",
+      "completed_at": "2026-04-25T10:04:11-03:00",
+      "status": "needs_review",
+      "actor": "demo_user",
+      "assistant_id": "ajudante_financeiro",
+      "primary_agent": "orchestrator_agent",
+      "workspace": "financas",
+      "user_request": "Quais recibos medicos preciso revisar para imposto?",
+      "model_profile_selected": "privado",
+      "steps": [
+        {
+          "step_id": "step_001",
+          "agent": "model_router_agent",
+          "skill": "route_model_by_policy",
+          "status": "success",
+          "summary": "Routed to privado/local profile because the workspace and document are sensitive."
+        },
+        {
+          "step_id": "step_002",
+          "agent": "retrieval_agent",
+          "skill": "query_lightrag_context_only",
+          "status": "success",
+          "summary": "Returned context-only financial document matches for safe review."
+        },
+        {
+          "step_id": "step_003",
+          "agent": "critic_evaluator_agent",
+          "skill": "validate_json_output",
+          "status": "success",
+          "summary": "Marked the response as organizational help, not tax advice."
+        }
+      ],
+      "sources": [
+        {
+          "document_id": "doc_recibos_2026",
+          "file_name": "recibos-medicos-2026.zip",
+          "confidence": "media"
+        }
+      ],
+      "output_summary": "Separar recibos por prestador, data e valor; revisar itens sem CPF/CNPJ ou sem comprovante legivel."
+    },
+    {
+      "run_id": "run_followup_aurora",
+      "started_at": "2026-04-25T11:20:00-03:00",
+      "completed_at": "2026-04-25T11:20:23-03:00",
+      "status": "success",
+      "actor": "demo_user",
+      "assistant_id": "leitor_contratos",
+      "primary_agent": "orchestrator_agent",
+      "workspace": "trabalho",
+      "user_request": "Crie um checklist de proximos passos para o Cliente Aurora.",
+      "model_profile_selected": "inteligente",
+      "steps": [
+        {
+          "step_id": "step_001",
+          "agent": "planner_agent",
+          "skill": "route_model_by_policy",
+          "status": "success",
+          "summary": "Selected checklist output with citations because the request is operational and source-backed."
+        },
+        {
+          "step_id": "step_002",
+          "agent": "retrieval_agent",
+          "skill": "query_lightrag",
+          "status": "success",
+          "summary": "Queried meeting notes and generated a concise action checklist."
+        },
+        {
+          "step_id": "step_003",
+          "agent": "critic_evaluator_agent",
+          "skill": "validate_json_output",
+          "status": "success",
+          "summary": "Confirmed checklist has owners implied from the note and no unsupported promises."
+        },
+        {
+          "step_id": "step_004",
+          "agent": "compliance_audit_agent",
+          "skill": "audit_action",
+          "status": "success",
+          "summary": "Recorded auditable assistant usage for the Trabalho workspace."
+        }
+      ],
+      "sources": [
+        {
+          "document_id": "doc_reuniao_cliente",
+          "file_name": "reuniao-cliente-aurora.md",
+          "confidence": "alta"
+        }
+      ],
+      "output_summary": "Enviar proposta revisada, confirmar prazo de implantacao, alinhar responsavel tecnico, responder objecao de suporte e marcar reuniao de decisao."
+    }
+  ],
+  "tot_decisions": [
+    {
+      "decision_id": "tot_garantia_geladeira_path",
+      "run_id": "run_garantia_geladeira",
+      "agent": "planner_agent",
+      "question": "Which response strategy should answer a warranty-date question?",
+      "options_considered": [
+        {
+          "option_id": "context_only",
+          "summary": "Return retrieved excerpts and ask the user to interpret the date.",
+          "trade_off": "Safest but less helpful."
+        },
+        {
+          "option_id": "source_backed_answer",
+          "summary": "Generate a short answer using retrieved note and manual sources.",
+          "trade_off": "Helpful if citations and uncertainty are preserved."
+        },
+        {
+          "option_id": "full_contract_analysis",
+          "summary": "Perform a broader purchase and warranty review.",
+          "trade_off": "More expensive and unnecessary for a simple date question."
+        }
+      ],
+      "pruning_criteria": [
+        "Minimize user friction",
+        "Require citations",
+        "Avoid unnecessary broad analysis"
+      ],
+      "selected_option": "source_backed_answer",
+      "public_rationale": "The user asked for one concrete date, and the fixture has high-confidence note/manual sources.",
+      "validation": "critic_evaluator_agent confirmed date, uncertainty, and citations."
+    },
+    {
+      "decision_id": "tot_financas_privacy_route",
+      "run_id": "run_recibos_privado",
+      "agent": "model_router_agent",
+      "question": "Which model profile should handle sensitive medical receipts?",
+      "options_considered": [
+        {
+          "option_id": "equilibrado",
+          "summary": "Use the default profile for a balanced answer.",
+          "trade_off": "Fast and convenient but may violate sensitivity policy."
+        },
+        {
+          "option_id": "privado",
+          "summary": "Use private/local profile and context-only retrieval.",
+          "trade_off": "More conservative and best aligned with financial/health sensitivity."
+        },
+        {
+          "option_id": "block",
+          "summary": "Refuse the request entirely.",
+          "trade_off": "Overly restrictive because organization of receipts is allowed."
+        }
+      ],
+      "pruning_criteria": [
+        "Protect sensitive financial and health data",
+        "Keep useful organization support",
+        "Avoid professional tax advice"
+      ],
+      "selected_option": "privado",
+      "public_rationale": "The request can be answered as document organization, but sensitive data should stay on the private route.",
+      "validation": "compliance_audit_agent recorded the policy route and critic_evaluator_agent marked the answer as non-advisory."
+    },
+    {
+      "decision_id": "tot_cliente_aurora_checklist",
+      "run_id": "run_followup_aurora",
+      "agent": "planner_agent",
+      "question": "How should the assistant transform meeting notes into next actions?",
+      "options_considered": [
+        {
+          "option_id": "raw_summary",
+          "summary": "Summarize the entire meeting.",
+          "trade_off": "Accurate but less actionable."
+        },
+        {
+          "option_id": "checklist",
+          "summary": "Create a concise action checklist with source citation.",
+          "trade_off": "Best fit for follow-up, but must avoid unsupported owners or deadlines."
+        },
+        {
+          "option_id": "ticket_creation",
+          "summary": "Create a tracked ticket automatically.",
+          "trade_off": "Side effect not requested by user."
+        }
+      ],
+      "pruning_criteria": [
+        "No side effects without request",
+        "Prefer actionable output",
+        "Keep every item grounded in meeting notes"
+      ],
+      "selected_option": "checklist",
+      "public_rationale": "The user asked for next steps, not automatic ticket creation.",
+      "validation": "validate_json_output confirmed summary, citations, and next_actions fields."
+    }
+  ],
+  "audit_log_demo": [
+    {
+      "event_id": "audit_20260425_091200_001",
+      "timestamp": "2026-04-25T09:12:00-03:00",
+      "actor": "demo_user",
+      "tenant_id": "tenant_little_bull_demo",
+      "workspace": "casa",
+      "agent": "orchestrator_agent",
+      "action": "workflow.started",
+      "resource_id": "run_garantia_geladeira",
+      "decision": "allow",
+      "metadata": {
+        "assistant_id": "organizador_casa",
+        "request_kind": "question_answering"
+      }
+    },
+    {
+      "event_id": "audit_20260425_091203_002",
+      "timestamp": "2026-04-25T09:12:03-03:00",
+      "actor": "planner_agent",
+      "tenant_id": "tenant_little_bull_demo",
+      "workspace": "casa",
+      "agent": "planner_agent",
+      "action": "decision.tot_summary_recorded",
+      "resource_id": "tot_garantia_geladeira_path",
+      "decision": "source_backed_answer",
+      "metadata": {
+        "raw_chain_of_thought_stored": false,
+        "selected_option": "source_backed_answer"
+      }
+    },
+    {
+      "event_id": "audit_20260425_100400_003",
+      "timestamp": "2026-04-25T10:04:00-03:00",
+      "actor": "demo_user",
+      "tenant_id": "tenant_little_bull_demo",
+      "workspace": "financas",
+      "agent": "model_router_agent",
+      "action": "policy.model_route.selected",
+      "resource_id": "run_recibos_privado",
+      "decision": "allow_private_route",
+      "metadata": {
+        "requested_profile": "equilibrado",
+        "selected_profile": "privado",
+        "reason": "sensitive_financial_health_context"
+      }
+    },
+    {
+      "event_id": "audit_20260425_100411_004",
+      "timestamp": "2026-04-25T10:04:11-03:00",
+      "actor": "critic_evaluator_agent",
+      "tenant_id": "tenant_little_bull_demo",
+      "workspace": "financas",
+      "agent": "critic_evaluator_agent",
+      "action": "output.reviewed",
+      "resource_id": "run_recibos_privado",
+      "decision": "needs_review",
+      "metadata": {
+        "professional_advice_detected": false,
+        "human_review_recommended": true
+      }
+    },
+    {
+      "event_id": "audit_20260425_112000_005",
+      "timestamp": "2026-04-25T11:20:00-03:00",
+      "actor": "demo_user",
+      "tenant_id": "tenant_little_bull_demo",
+      "workspace": "trabalho",
+      "agent": "orchestrator_agent",
+      "action": "workflow.started",
+      "resource_id": "run_followup_aurora",
+      "decision": "allow",
+      "metadata": {
+        "assistant_id": "leitor_contratos",
+        "request_kind": "checklist_generation"
+      }
+    },
+    {
+      "event_id": "audit_20260425_112023_006",
+      "timestamp": "2026-04-25T11:20:23-03:00",
+      "actor": "compliance_audit_agent",
+      "tenant_id": "tenant_little_bull_demo",
+      "workspace": "trabalho",
+      "agent": "compliance_audit_agent",
+      "action": "workflow.completed",
+      "resource_id": "run_followup_aurora",
+      "decision": "success",
+      "metadata": {
+        "citations_count": 1,
+        "side_effects_performed": false
+      }
+    }
+  ]
+}

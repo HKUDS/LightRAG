@@ -52,6 +52,12 @@ from lightrag.api.routers.document_routes import (
 from lightrag.api.routers.query_routes import create_query_routes
 from lightrag.api.routers.graph_routes import create_graph_routes
 from lightrag.api.routers.ollama_api import OllamaAPI
+from lightrag_enterprise.little_bull import create_little_bull_router
+from lightrag_enterprise.system.router import create_system_router, ensure_default_scope
+from lightrag_enterprise.system.runtime import (
+    get_system_auth_service,
+    little_bull_functional_enabled,
+)
 
 from lightrag.utils import logger, set_verbose_debug
 from lightrag.kg.shared_storage import (
@@ -355,6 +361,12 @@ def create_app(args):
 
             # Data migration regardless of storage implementation
             await rag.check_and_migrate_data()
+
+            if little_bull_functional_enabled():
+                try:
+                    await ensure_default_scope()
+                except Exception as exc:
+                    logger.warning(f"Little Bull system scope initialization skipped: {exc}")
 
             ASCIIColors.green("\nServer is ready to accept connections! 🚀\n")
 
@@ -1105,6 +1117,8 @@ def create_app(args):
     )
     app.include_router(create_query_routes(rag, api_key, args.top_k))
     app.include_router(create_graph_routes(rag, api_key))
+    app.include_router(create_system_router())
+    app.include_router(create_little_bull_router(rag, doc_manager))
 
     # Add Ollama API routes
     ollama_api = OllamaAPI(rag, top_k=args.top_k, api_key=api_key)
@@ -1140,6 +1154,22 @@ def create_app(args):
     @app.get("/auth-status")
     async def get_auth_status():
         """Get authentication status and guest token if auth is not configured"""
+        enterprise_auth_configured = False
+        if little_bull_functional_enabled():
+            try:
+                enterprise_auth_configured = await get_system_auth_service().has_users()
+            except Exception as exc:
+                logger.warning(f"Little Bull auth status check failed: {exc}")
+
+        if enterprise_auth_configured:
+            return {
+                "auth_configured": True,
+                "auth_mode": "enterprise",
+                "core_version": core_version,
+                "api_version": api_version_display,
+                "webui_title": webui_title,
+                "webui_description": webui_description,
+            }
 
         if not auth_handler.accounts:
             # Authentication not configured, return guest token
@@ -1169,6 +1199,28 @@ def create_app(args):
 
     @app.post("/login")
     async def login(form_data: OAuth2PasswordRequestForm = Depends()):
+        if little_bull_functional_enabled():
+            try:
+                system_auth = get_system_auth_service()
+                if await system_auth.has_users():
+                    _, principal = await system_auth.authenticate(
+                        form_data.username, form_data.password
+                    )
+                    return {
+                        "access_token": system_auth.create_token(principal),
+                        "token_type": "bearer",
+                        "auth_mode": "enterprise",
+                        "core_version": core_version,
+                        "api_version": api_version_display,
+                        "webui_title": webui_title,
+                        "webui_description": webui_description,
+                        "principal": principal.to_token_payload(),
+                    }
+            except ValueError:
+                raise HTTPException(status_code=401, detail="Incorrect credentials")
+            except Exception as exc:
+                logger.warning(f"Little Bull enterprise login unavailable: {exc}")
+
         if not auth_handler.accounts:
             # Authentication not configured, return guest token
             guest_token = auth_handler.create_token(

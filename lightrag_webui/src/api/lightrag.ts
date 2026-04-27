@@ -142,6 +142,7 @@ export type QueryRequest = {
 
 export type QueryResponse = {
   response: string
+  references?: Array<Record<string, any>> | null
 }
 
 export type EntityUpdateResponse = {
@@ -241,7 +242,7 @@ export type AuthStatusResponse = {
   auth_configured: boolean
   access_token?: string
   token_type?: string
-  auth_mode?: 'enabled' | 'disabled'
+  auth_mode?: 'enabled' | 'disabled' | 'enterprise'
   message?: string
   core_version?: string
   api_version?: string
@@ -267,12 +268,130 @@ export type PipelineStatusResponse = {
 export type LoginResponse = {
   access_token: string
   token_type: string
-  auth_mode?: 'enabled' | 'disabled'  // Authentication mode identifier
+  auth_mode?: 'enabled' | 'disabled' | 'enterprise'  // Authentication mode identifier
   message?: string                    // Optional message
   core_version?: string
   api_version?: string
   webui_title?: string
   webui_description?: string
+  principal?: LittleBullPrincipal
+}
+
+export type LittleBullPrincipal = {
+  user_id: string
+  sub: string
+  tenant_id: string | null
+  is_master_global: boolean
+  roles: string[]
+  workspace_ids: string[]
+  permission_version: number
+  permissions: string[]
+}
+
+export type LittleBullArea = {
+  id: string
+  label: string
+  slug: string
+  description: string
+  privacy: string
+  document_count: number
+  ready_count: number
+  processing_count: number
+  accent: string
+  emoji: string
+}
+
+export type LittleBullDocument = {
+  id: string
+  file_path: string
+  title: string
+  status: string
+  content_summary: string
+  content_length: number
+  updated_at?: string | null
+  created_at?: string | null
+  track_id?: string | null
+  chunks_count?: number | null
+  metadata: Record<string, any>
+}
+
+export type LittleBullDocumentsResponse = {
+  documents: LittleBullDocument[]
+  total_count: number
+  status_counts: Record<string, number>
+}
+
+export type LittleBullQueryRequest = {
+  workspace_id: string
+  query: string
+  mode?: QueryMode
+  response_type?: string
+  top_k?: number
+  include_references?: boolean
+  include_chunk_content?: boolean
+  conversation_history?: Message[]
+  confidentiality?: 'normal' | 'sensivel' | 'privado'
+  model_profile?: string
+}
+
+export type LittleBullQueryResponse = {
+  response: string
+  references: Array<Record<string, any>>
+  workspace_id: string
+  model_profile: string
+}
+
+export type LittleBullUploadResponse = {
+  status: string
+  message: string
+  track_id?: string | null
+  workspace_id: string
+}
+
+export type LittleBullActivityItem = {
+  id: string
+  action: string
+  result: string
+  created_at: string
+  actor_user_id: string
+  workspace_id?: string | null
+  metadata: Record<string, any>
+}
+
+export type LittleBullAssistant = {
+  id: string
+  name: string
+  description: string
+  enabled: boolean
+  response_rules: string[]
+}
+
+export type LittleBullApproval = {
+  approval_id: string
+  action: string
+  actor_user_id: string
+  tenant_id: string | null
+  workspace_id: string | null
+  payload_hash: string
+  reason: string
+  status: 'pending' | 'approved' | 'rejected'
+  requested_at: string
+  decided_at?: string | null
+  decided_by?: string | null
+  metadata: Record<string, any>
+}
+
+export type LittleBullAuditEvent = {
+  event_id: string
+  actor_user_id: string
+  action: string
+  tenant_id: string | null
+  workspace_id: string | null
+  result: string
+  approval_id?: string | null
+  model?: string | null
+  metadata: Record<string, any>
+  created_at: string
 }
 
 export const InvalidApiKeyError = 'Invalid API Key'
@@ -860,7 +979,7 @@ export const getAuthStatus = async (): Promise<AuthStatusResponse> => {
     });
 
     // Check if response is HTML (which indicates a redirect or wrong endpoint)
-    const contentType = response.headers['content-type'] || '';
+    const contentType = String(response.headers['content-type'] ?? '');
     if (contentType.includes('text/html')) {
       console.warn('Received HTML response instead of JSON for auth-status endpoint');
       return {
@@ -930,6 +1049,112 @@ export const loginToServer = async (username: string, password: string): Promise
   });
 
   return response.data;
+}
+
+export const getLittleBullMe = async (): Promise<LittleBullPrincipal> => {
+  const response = await axiosInstance.get('/auth/me')
+  return response.data
+}
+
+export const getLittleBullAreas = async (): Promise<LittleBullArea[]> => {
+  const response = await axiosInstance.get('/little-bull/areas')
+  return response.data.areas
+}
+
+export const getLittleBullDocuments = async (
+  workspaceId: string,
+  page: number = 1,
+  pageSize: number = 50
+): Promise<LittleBullDocumentsResponse> => {
+  const response = await axiosInstance.get('/little-bull/documents', {
+    params: { workspace_id: workspaceId, page, page_size: pageSize }
+  })
+  return response.data
+}
+
+export const uploadLittleBullDocument = async (
+  workspaceId: string,
+  file: File,
+  confidentiality: 'normal' | 'sensivel' | 'privado' = 'normal',
+  onUploadProgress?: (percentCompleted: number) => void
+): Promise<LittleBullUploadResponse> => {
+  const formData = new FormData()
+  formData.append('file', file)
+
+  const response = await axiosInstance.post('/little-bull/documents/upload', formData, {
+    params: { workspace_id: workspaceId, confidentiality },
+    headers: { 'Content-Type': 'multipart/form-data' },
+    onUploadProgress:
+      onUploadProgress !== undefined
+        ? (progressEvent) => {
+          const total = progressEvent.total || progressEvent.loaded || 1
+          onUploadProgress(Math.round((progressEvent.loaded * 100) / total))
+        }
+        : undefined
+  })
+  return response.data
+}
+
+export const deleteLittleBullDocument = async (
+  workspaceId: string,
+  documentId: string
+): Promise<Record<string, any>> => {
+  const response = await axiosInstance.delete(`/little-bull/documents/${encodeURIComponent(documentId)}`, {
+    params: { workspace_id: workspaceId }
+  })
+  return response.data
+}
+
+export const queryLittleBull = async (
+  request: LittleBullQueryRequest
+): Promise<LittleBullQueryResponse> => {
+  const response = await axiosInstance.post('/little-bull/query', request)
+  return response.data
+}
+
+export const getLittleBullActivity = async (
+  workspaceId: string,
+  limit: number = 50
+): Promise<LittleBullActivityItem[]> => {
+  const response = await axiosInstance.get('/little-bull/activity', {
+    params: { workspace_id: workspaceId, limit }
+  })
+  return response.data.activity
+}
+
+export const getLittleBullAssistants = async (
+  workspaceId: string
+): Promise<LittleBullAssistant[]> => {
+  const response = await axiosInstance.get('/little-bull/assistants', {
+    params: { workspace_id: workspaceId }
+  })
+  return response.data.assistants
+}
+
+export const getLittleBullApprovals = async (): Promise<LittleBullApproval[]> => {
+  const response = await axiosInstance.get('/approvals')
+  return response.data.approvals
+}
+
+export const approveLittleBullApproval = async (
+  approvalId: string
+): Promise<LittleBullApproval> => {
+  const response = await axiosInstance.post(`/approvals/${encodeURIComponent(approvalId)}/approve`)
+  return response.data
+}
+
+export const rejectLittleBullApproval = async (
+  approvalId: string
+): Promise<LittleBullApproval> => {
+  const response = await axiosInstance.post(`/approvals/${encodeURIComponent(approvalId)}/reject`)
+  return response.data
+}
+
+export const getLittleBullAuditEvents = async (
+  limit: number = 100
+): Promise<LittleBullAuditEvent[]> => {
+  const response = await axiosInstance.get('/audit/events', { params: { limit } })
+  return response.data.events
 }
 
 /**

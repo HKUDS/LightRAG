@@ -6,11 +6,12 @@ import { navigationService } from '@/services/navigation'
 import { Toaster } from 'sonner'
 import App from './App'
 import LoginPage from '@/features/LoginPage'
+import LittleBullPreview from '@/features/LittleBullPreview'
 import ThemeProvider from '@/components/ThemeProvider'
 
 const AppContent = () => {
   const [initializing, setInitializing] = useState(true)
-  const { isAuthenticated } = useAuthStore()
+  const { isAuthenticated, isGuestMode } = useAuthStore()
   const navigate = useNavigate()
 
   // Set navigate function for navigation service
@@ -51,14 +52,16 @@ const AppContent = () => {
 
   // Redirect effect for protected routes
   useEffect(() => {
-    if (!initializing && !isAuthenticated) {
+    if (!initializing && (!isAuthenticated || isGuestMode)) {
       const currentPath = window.location.hash.slice(1);
-      if (currentPath !== '/login') {
+      const isLittleBullPath = currentPath === '/little-bull' || currentPath === '/little-bull-preview'
+      const publicPaths = ['/login']
+      if (!publicPaths.includes(currentPath) && (!isAuthenticated || isLittleBullPath)) {
         console.log('Not authenticated, redirecting to login');
         navigate('/login');
       }
     }
-  }, [initializing, isAuthenticated, navigate]);
+  }, [initializing, isAuthenticated, isGuestMode, navigate]);
 
   // Show nothing while initializing
   if (initializing) {
@@ -68,6 +71,14 @@ const AppContent = () => {
   return (
     <Routes>
       <Route path="/login" element={<LoginPage />} />
+      <Route
+        path="/little-bull-preview"
+        element={isAuthenticated && !isGuestMode ? <LittleBullPreview /> : null}
+      />
+      <Route
+        path="/little-bull"
+        element={isAuthenticated && !isGuestMode ? <LittleBullPreview /> : null}
+      />
       <Route
         path="/*"
         element={isAuthenticated ? <App /> : null}

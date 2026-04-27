@@ -148,6 +148,7 @@ function FileUploader(props: FileUploaderProps) {
 
   const [files, setFiles] = useControllableState({
     prop: valueProp,
+    defaultProp: [],
     onChange: onValueChange
   })
 
