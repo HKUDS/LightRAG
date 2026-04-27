@@ -30,6 +30,7 @@ from lightrag.utils import (
     generate_track_id,
     compute_mdhash_id,
     sanitize_text_for_encoding,
+    move_file_to_parsed_dir,
 )
 from lightrag.api.utils_api import get_combined_auth_dependency
 from ..config import global_args
@@ -937,36 +938,91 @@ def validate_file_path_security(file_path_str: str, base_dir: Path) -> Optional[
         return None
 
 
-def get_unique_filename_in_enqueued(target_dir: Path, original_name: str) -> str:
-    """Generate a unique filename in the target directory by adding numeric suffixes if needed
+def get_doc_status_value(doc_status: Any) -> str:
+    """Read status from dict or DocProcessingStatus-like objects."""
+    status = (
+        doc_status.get("status")
+        if isinstance(doc_status, dict)
+        else getattr(doc_status, "status", None)
+    )
+    if isinstance(status, DocStatus):
+        return status.value
+    return str(status or "")
 
-    Args:
-        target_dir: Target directory path
-        original_name: Original filename
 
-    Returns:
-        str: Unique filename (may have numeric suffix added)
-    """
-    import time
+def get_doc_track_id(doc_status: Any) -> str:
+    """Read track_id from dict or DocProcessingStatus-like objects."""
+    track_id = (
+        doc_status.get("track_id")
+        if isinstance(doc_status, dict)
+        else getattr(doc_status, "track_id", None)
+    )
+    return str(track_id or "")
 
-    original_path = Path(original_name)
-    base_name = original_path.stem
-    extension = original_path.suffix
 
-    # Try original name first
-    if not (target_dir / original_name).exists():
-        return original_name
+def build_file_path_lookup_candidates(file_path: Path | str) -> list[str]:
+    """Build compatible file_path keys for legacy name/full-path records."""
+    path = Path(file_path)
+    candidates = [path.name, str(path)]
+    try:
+        candidates.append(str(path.resolve()))
+    except Exception:
+        pass
 
-    # Try with numeric suffixes 001-999
-    for i in range(1, 1000):
-        suffix = f"{i:03d}"
-        new_name = f"{base_name}_{suffix}{extension}"
-        if not (target_dir / new_name).exists():
-            return new_name
+    seen: set[str] = set()
+    unique: list[str] = []
+    for candidate in candidates:
+        if candidate and candidate not in seen:
+            seen.add(candidate)
+            unique.append(candidate)
+    return unique
 
-    # Fallback with timestamp if all 999 slots are taken
-    timestamp = int(time.time())
-    return f"{base_name}_{timestamp}{extension}"
+
+async def get_existing_doc_by_file_path_candidates(
+    doc_status: Any, file_path: Path | str
+) -> dict[str, Any] | None:
+    """Find an existing document using filename and full-path variants."""
+    for candidate in build_file_path_lookup_candidates(file_path):
+        existing_doc_data = await doc_status.get_doc_by_file_path(candidate)
+        if existing_doc_data:
+            return existing_doc_data
+    return None
+
+
+async def move_docx_to_parsed_after_processing(
+    rag: LightRAG, file_path: Path, track_id: str | None
+) -> None:
+    """Archive a DOCX source file only after this pipeline run processed it."""
+    if file_path.suffix.lower() != ".docx":
+        return
+
+    doc_id = compute_mdhash_id(str(file_path), prefix="doc-")
+    doc_status = await rag.doc_status.get_by_id(doc_id)
+    if not doc_status:
+        logger.debug(
+            f"Skipping DOCX archive for {file_path.name}: no document status found"
+        )
+        return
+
+    status = get_doc_status_value(doc_status)
+    status_track_id = get_doc_track_id(doc_status)
+    if status != DocStatus.PROCESSED.value:
+        logger.debug(
+            f"Skipping DOCX archive for {file_path.name}: document status is {status}"
+        )
+        return
+    if track_id and status_track_id and status_track_id != track_id:
+        logger.debug(
+            f"Skipping DOCX archive for {file_path.name}: track_id does not match current run"
+        )
+        return
+
+    try:
+        await move_file_to_parsed_dir(file_path)
+    except Exception as move_error:
+        logger.error(
+            f"Failed to move file {file_path.name} to {PARSED_DIR_NAME} directory: {move_error}"
+        )
 
 
 # Document processing helper functions (synchronous)
@@ -1614,21 +1670,7 @@ async def pipeline_enqueue_file(
 
                 # Move file to __parsed__ directory after enqueuing (LR2-PRD: parsed output dir)
                 try:
-                    enqueued_dir = file_path.parent / PARSED_DIR_NAME
-                    await asyncio.to_thread(enqueued_dir.mkdir, exist_ok=True)
-
-                    # Generate unique filename to avoid conflicts
-                    unique_filename = get_unique_filename_in_enqueued(
-                        enqueued_dir, file_path.name
-                    )
-                    target_path = enqueued_dir / unique_filename
-
-                    # Move the file
-                    await asyncio.to_thread(file_path.rename, target_path)
-                    logger.debug(
-                        f"Moved file to enqueued directory: {file_path.name} -> {unique_filename}"
-                    )
-
+                    await move_file_to_parsed_dir(file_path)
                 except Exception as move_error:
                     logger.error(
                         f"Failed to move file {file_path.name} to {PARSED_DIR_NAME} directory: {move_error}"
@@ -1703,6 +1745,9 @@ async def pipeline_index_file(rag: LightRAG, file_path: Path, track_id: str = No
         )
         if success:
             await rag.apipeline_process_enqueue_documents()
+            await move_docx_to_parsed_after_processing(
+                rag, file_path, returned_track_id
+            )
 
     except Exception as e:
         logger.error(f"Error indexing file {file_path.name}: {str(e)}")
@@ -1723,6 +1768,7 @@ async def pipeline_index_files(
         return
     try:
         enqueued = False
+        enqueued_docx_files: list[tuple[Path, str]] = []
 
         # Use get_pinyin_sort_key for Chinese pinyin sorting
         sorted_file_paths = sorted(
@@ -1731,13 +1777,21 @@ async def pipeline_index_files(
 
         # Process files sequentially with track_id
         for file_path in sorted_file_paths:
-            success, _ = await pipeline_enqueue_file(rag, file_path, track_id)
+            success, returned_track_id = await pipeline_enqueue_file(
+                rag, file_path, track_id
+            )
             if success:
                 enqueued = True
+                if file_path.suffix.lower() == ".docx":
+                    enqueued_docx_files.append((file_path, returned_track_id))
 
         # Process the queue only if at least one file was successfully enqueued
         if enqueued:
             await rag.apipeline_process_enqueue_documents()
+            for docx_file_path, returned_track_id in enqueued_docx_files:
+                await move_docx_to_parsed_after_processing(
+                    rag, docx_file_path, returned_track_id
+                )
     except Exception as e:
         logger.error(f"Error indexing files: {str(e)}")
         logger.error(traceback.format_exc())
@@ -1797,15 +1851,27 @@ async def run_scanning_process(
             # Check for files with PROCESSED status and filter them out
             valid_files = []
             processed_files = []
+            queued_existing_files = []
 
             for file_path in new_files:
                 filename = file_path.name
-                existing_doc_data = await rag.doc_status.get_doc_by_file_path(filename)
+                existing_doc_data = await get_existing_doc_by_file_path_candidates(
+                    rag.doc_status, file_path
+                )
 
-                if existing_doc_data and existing_doc_data.get("status") == "processed":
+                if (
+                    existing_doc_data
+                    and get_doc_status_value(existing_doc_data)
+                    == DocStatus.PROCESSED.value
+                ):
                     # File is already PROCESSED, skip it with warning
                     processed_files.append(filename)
                     logger.warning(f"Skipping already processed file: {filename}")
+                elif existing_doc_data:
+                    queued_existing_files.append(filename)
+                    logger.info(
+                        f"Skipping already enqueued file and continuing existing pipeline state: {filename}"
+                    )
                 else:
                     # File is new or in non-PROCESSED status, add to processing list
                     valid_files.append(file_path)
@@ -1825,6 +1891,8 @@ async def run_scanning_process(
                 logger.info(
                     "No files to process after filtering already processed files."
                 )
+                if queued_existing_files:
+                    await rag.apipeline_process_enqueue_documents()
         else:
             # No new files to index, check if there are any documents in the queue
             logger.info(
@@ -2142,6 +2210,8 @@ def create_document_routes(
 
         1. **Filename Duplicate (Synchronous Detection)**:
            - Detected immediately before file processing
+           - File name is treated as the unique document key; an existing
+             document storage row rejects the upload regardless of status
            - Returns `status="duplicated"` with the existing document's track_id
            - Two cases:
              - If filename exists in document storage: returns existing track_id
@@ -2206,20 +2276,23 @@ def create_document_routes(
                         f"File size not available in UploadFile for {safe_filename}, will check during streaming"
                     )
 
+            file_path = doc_manager.input_dir / safe_filename
+
             # Check if filename already exists in doc_status storage
-            existing_doc_data = await rag.doc_status.get_doc_by_file_path(safe_filename)
+            existing_doc_data = await get_existing_doc_by_file_path_candidates(
+                rag.doc_status, file_path
+            )
             if existing_doc_data:
                 # Get document status and track_id from existing document
-                status = existing_doc_data.get("status", "unknown")
+                status = get_doc_status_value(existing_doc_data) or "unknown"
                 # Use `or ""` to handle both missing key and None value (e.g., legacy rows without track_id)
-                existing_track_id = existing_doc_data.get("track_id") or ""
+                existing_track_id = get_doc_track_id(existing_doc_data)
                 return InsertResponse(
                     status="duplicated",
                     message=f"File '{safe_filename}' already exists in document storage (Status: {status}).",
                     track_id=existing_track_id,
                 )
 
-            file_path = doc_manager.input_dir / safe_filename
             # Check if file already exists in file system
             if file_path.exists():
                 return InsertResponse(

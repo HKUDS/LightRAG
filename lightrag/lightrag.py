@@ -139,6 +139,7 @@ from lightrag.utils import (
     subtract_source_ids,
     make_relation_chunk_key,
     normalize_source_ids_limit_method,
+    move_file_to_parsed_dir,
 )
 from lightrag.types import KnowledgeGraph
 from dotenv import load_dotenv
@@ -4151,6 +4152,12 @@ class LightRAG:
     def _resolve_parser_engine(
         self, file_path: str, content_data: dict[str, Any]
     ) -> str:
+        doc_format = content_data.get("format", FULL_DOCS_FORMAT_RAW)
+        if doc_format == FULL_DOCS_FORMAT_LIGHTRAG and content_data.get(
+            "lightrag_document_path"
+        ):
+            return "native"
+
         explicit_engine = str(content_data.get("parsed_engine") or "").strip().lower()
         if explicit_engine in {"native", "mineru", "docling"}:
             return explicit_engine
@@ -4448,12 +4455,34 @@ class LightRAG:
                 return str(candidate)
         return file_path
 
+    async def _archive_docx_source_after_full_docs_sync(
+        self, source_path: str
+    ) -> str | None:
+        source = Path(source_path)
+        if source.suffix.lower() != ".docx":
+            return None
+        try:
+            target = await move_file_to_parsed_dir(source, skip_if_already_parsed=True)
+        except Exception as e:
+            logger.warning(
+                f"[parse] DOCX source archive skipped after full_docs sync: {source_path}: {e}"
+            )
+            return None
+        if target is None:
+            return None
+        if target != source:
+            logger.debug(
+                f"[parse] Archived DOCX source after full_docs sync: {source} -> {target}"
+            )
+        return str(target)
+
     async def _write_lightrag_document_from_content_list(
         self,
         doc_id: str,
         file_path: str,
         content_list: list[dict[str, Any]],
         engine: str,
+        source_path: str | None = None,
     ) -> dict[str, Any]:
         """Convert parser content list to LightRAG Document files and return parsed_data."""
         parsed_dir = Path(self.working_dir) / PARSED_DIR_NAME
@@ -4851,6 +4880,10 @@ class LightRAG:
                 }
             }
         )
+        await self.full_docs.index_done_callback()
+        await self._archive_docx_source_after_full_docs_sync(
+            source_path or self._resolve_source_file_for_parser(file_path)
+        )
         return {
             "doc_id": doc_id,
             "file_path": file_path,
@@ -4923,10 +4956,13 @@ class LightRAG:
                                     "content": interchange_text,
                                     "file_path": file_path,
                                     "format": FULL_DOCS_FORMAT_RAW,
+                                    "parsed_engine": "native",
                                     "update_time": int(time.time()),
                                 }
                             }
                         )
+                        await self.full_docs.index_done_callback()
+                        await self._archive_docx_source_after_full_docs_sync(str(p))
                         logger.info(
                             f"[parse_native] pending_parse completed for {file_path} via interchange JSONL"
                         )
@@ -4953,10 +4989,13 @@ class LightRAG:
                                 "content": content,
                                 "file_path": file_path,
                                 "format": FULL_DOCS_FORMAT_RAW,
+                                "parsed_engine": "native",
                                 "update_time": int(time.time()),
                             }
                         }
                     )
+                    await self.full_docs.index_done_callback()
+                    await self._archive_docx_source_after_full_docs_sync(str(p))
                     return {
                         "doc_id": doc_id,
                         "file_path": file_path,
@@ -5029,8 +5068,29 @@ class LightRAG:
                         file_path=file_path,
                         content_list=content_list,
                         engine="mineru",
+                        source_path=source_file_path,
                     )
                 if result_text:
+                    # Content is already extracted as raw text and persisted; mark
+                    # parsed_engine="native" so retries skip the remote MinerU call
+                    # via _resolve_parser_engine. The original engine is kept in
+                    # source_parsed_engine for audit.
+                    await self.full_docs.upsert(
+                        {
+                            doc_id: {
+                                "content": str(result_text),
+                                "file_path": file_path,
+                                "format": FULL_DOCS_FORMAT_RAW,
+                                "parsed_engine": "native",
+                                "source_parsed_engine": "mineru",
+                                "update_time": int(time.time()),
+                            }
+                        }
+                    )
+                    await self.full_docs.index_done_callback()
+                    await self._archive_docx_source_after_full_docs_sync(
+                        source_file_path
+                    )
                     return {
                         "doc_id": doc_id,
                         "file_path": file_path,
@@ -5051,6 +5111,7 @@ class LightRAG:
                 file_path=file_path,
                 content_list=raganything_content_list,
                 engine="mineru",
+                source_path=self._resolve_source_file_for_parser(file_path),
             )
 
         return await self.parse_native(doc_id, file_path, content_data)
@@ -5100,8 +5161,29 @@ class LightRAG:
                         file_path=file_path,
                         content_list=content_list,
                         engine="docling",
+                        source_path=source_file_path,
                     )
                 if result_text:
+                    # Same retry-skip rationale as in parse_mineru: parsed_engine
+                    # is normalized to "native" because the raw content is already
+                    # in full_docs; the real upstream engine is kept in
+                    # source_parsed_engine for audit.
+                    await self.full_docs.upsert(
+                        {
+                            doc_id: {
+                                "content": str(result_text),
+                                "file_path": file_path,
+                                "format": FULL_DOCS_FORMAT_RAW,
+                                "parsed_engine": "native",
+                                "source_parsed_engine": "docling",
+                                "update_time": int(time.time()),
+                            }
+                        }
+                    )
+                    await self.full_docs.index_done_callback()
+                    await self._archive_docx_source_after_full_docs_sync(
+                        source_file_path
+                    )
                     return {
                         "doc_id": doc_id,
                         "file_path": file_path,
@@ -5122,6 +5204,7 @@ class LightRAG:
                 file_path=file_path,
                 content_list=raganything_content_list,
                 engine="docling",
+                source_path=self._resolve_source_file_for_parser(file_path),
             )
 
         return await self.parse_native(doc_id, file_path, content_data)

@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from functools import wraps
 from hashlib import md5
+from pathlib import Path
 from typing import (
     Any,
     Protocol,
@@ -42,6 +43,7 @@ from lightrag.constants import (
     DEFAULT_SOURCE_IDS_LIMIT_METHOD,
     VALID_SOURCE_IDS_LIMIT_METHODS,
     SOURCE_IDS_LIMIT_METHOD_FIFO,
+    PARSED_DIR_NAME,
 )
 
 # Precompile regex pattern for JSON sanitization (module-level, compiled once)
@@ -721,6 +723,55 @@ def compute_mdhash_id(content: str, prefix: str = "") -> str:
     The ID is a combination of the given prefix and the MD5 hash of the content string.
     """
     return prefix + compute_args_hash(content)
+
+
+def get_unique_filename_in_parsed(target_dir: Path, original_name: str) -> str:
+    """Generate a unique filename in target_dir, adding numeric suffixes on conflict.
+
+    Tries the original name first, then `{stem}_001{ext}` ... `{stem}_999{ext}`,
+    falling back to a timestamp-suffixed name if all numeric slots are taken.
+    """
+    original_path = Path(original_name)
+    base_name = original_path.stem
+    extension = original_path.suffix
+
+    if not (target_dir / original_name).exists():
+        return original_name
+
+    for i in range(1, 1000):
+        new_name = f"{base_name}_{i:03d}{extension}"
+        if not (target_dir / new_name).exists():
+            return new_name
+
+    return f"{base_name}_{int(time.time())}{extension}"
+
+
+async def move_file_to_parsed_dir(
+    file_path: Path,
+    *,
+    skip_if_already_parsed: bool = False,
+) -> Path | None:
+    """Move a processed source file into its sibling __parsed__ directory.
+
+    Returns the new path on success, the input path if `skip_if_already_parsed`
+    is set and the file already lives in a `__parsed__` directory, or None if
+    the source no longer exists.
+    """
+    if not file_path.exists() or not file_path.is_file():
+        return None
+    if skip_if_already_parsed and file_path.parent.name == PARSED_DIR_NAME:
+        return file_path
+
+    parsed_dir = file_path.parent / PARSED_DIR_NAME
+    await asyncio.to_thread(parsed_dir.mkdir, parents=True, exist_ok=True)
+
+    unique_filename = get_unique_filename_in_parsed(parsed_dir, file_path.name)
+    target_path = parsed_dir / unique_filename
+    await asyncio.to_thread(file_path.rename, target_path)
+    logger.debug(
+        f"Moved file to parsed directory: {file_path.name} -> {unique_filename}"
+    )
+    return target_path
 
 
 def make_relation_vdb_ids(src_entity: str, tgt_entity: str) -> list[str]:
