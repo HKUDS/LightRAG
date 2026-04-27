@@ -1,4 +1,6 @@
 from __future__ import annotations
+import json
+import os
 from typing import Any
 
 
@@ -430,3 +432,43 @@ Output:
 
 """,
 ]
+
+# ── Environment variable overrides ───────────────────────────────────
+# Allow users to customize prompts via environment variables without
+# modifying this file. Each override is optional — if the env var is
+# not set, the hardcoded default above is used.
+#
+# This is a lightweight bridge until the full prompt template management
+# system (see #2623 / #2652) is available.
+#
+# String prompts: set the env var to the full prompt text.
+# List prompts (examples): set the env var to a JSON array of strings.
+
+_PROMPT_ENV_OVERRIDES: dict[str, str] = {
+    "entity_extraction_system_prompt": "ENTITY_EXTRACTION_SYSTEM_PROMPT",
+    "entity_extraction_user_prompt": "ENTITY_EXTRACTION_USER_PROMPT",
+    "summarize_entity_descriptions": "SUMMARIZE_ENTITY_DESCRIPTIONS_PROMPT",
+    "rag_response": "RAG_RESPONSE_PROMPT",
+    "naive_rag_response": "NAIVE_RAG_RESPONSE_PROMPT",
+    "keywords_extraction": "KEYWORDS_EXTRACTION_PROMPT",
+}
+
+_LIST_PROMPT_ENV_OVERRIDES: dict[str, str] = {
+    "entity_extraction_examples": "ENTITY_EXTRACTION_EXAMPLES",
+    "keywords_extraction_examples": "KEYWORDS_EXTRACTION_EXAMPLES",
+}
+
+for _key, _env_var in _PROMPT_ENV_OVERRIDES.items():
+    _val = os.environ.get(_env_var)
+    if _val is not None:
+        PROMPTS[_key] = _val
+
+for _key, _env_var in _LIST_PROMPT_ENV_OVERRIDES.items():
+    _val = os.environ.get(_env_var)
+    if _val is not None:
+        try:
+            parsed = json.loads(_val)
+            if isinstance(parsed, list):
+                PROMPTS[_key] = parsed
+        except (json.JSONDecodeError, TypeError):
+            pass  # Ignore malformed JSON — keep the default
