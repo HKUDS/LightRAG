@@ -40,6 +40,11 @@ DEFAULT_ENTITY_TYPES = [
     "NaturalObject",
 ]
 
+# Default entity attributes: empty means no extra attribute field is extracted.
+# Override with ENTITY_ATTRIBUTES env var, e.g.:
+#   ENTITY_ATTRIBUTES='["sentiment","urgency","business_impact","confidence"]'
+DEFAULT_ENTITY_ATTRIBUTES: list[str] = []
+
 # Separator for: description, source_id and relation-key fields(Can not be changed after data inserted)
 GRAPH_FIELD_SEP = "<SEP>"
 
