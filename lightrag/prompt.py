@@ -20,6 +20,8 @@ You are a Knowledge Graph Specialist responsible for extracting entities and rel
         *   `entity_description`: Provide a concise yet comprehensive description of the entity's attributes and activities, based *solely* on the information present in the input text.
     *   **Output Format - Entities:** Output a total of 4 fields for each entity, delimited by `{tuple_delimiter}`, on a single line. The first field *must* be the literal string `entity`.
         *   Format: `entity{tuple_delimiter}entity_name{tuple_delimiter}entity_type{tuple_delimiter}entity_description`
+        *   **Attributes (when requested):** If `{entity_attributes}` is non-empty, append a 5th field containing a compact JSON object with keys `{entity_attributes}`. Infer each value from the entity context; use `null` if not determinable. The JSON must be on a single line with no surrounding whitespace. Numeric confidence values must be in the range 0.0–1.0.
+        *   Extended format: `entity{tuple_delimiter}entity_name{tuple_delimiter}entity_type{tuple_delimiter}entity_description{tuple_delimiter}{{"attr1": "val1", "attr2": "val2"}}`
 
 2.  **Relationship Extraction & Output:**
     *   **Identification:** Identify direct, clearly stated, and meaningful relationships between previously extracted entities.
@@ -32,6 +34,7 @@ You are a Knowledge Graph Specialist responsible for extracting entities and rel
         *   `relationship_description`: A concise explanation of the nature of the relationship between the source and target entities, providing a clear rationale for their connection.
     *   **Output Format - Relationships:** Output a total of 5 fields for each relationship, delimited by `{tuple_delimiter}`, on a single line. The first field *must* be the literal string `relation`.
         *   Format: `relation{tuple_delimiter}source_entity{tuple_delimiter}target_entity{tuple_delimiter}relationship_keywords{tuple_delimiter}relationship_description`
+        *   Relationships never carry an attributes field — the 5-field format is unchanged regardless of `{entity_attributes}`.
 
 3.  **Delimiter Usage Protocol:**
     *   The `{tuple_delimiter}` is a complete, atomic marker and **must not be filled with content**. It serves strictly as a field separator.
@@ -68,6 +71,7 @@ Extract entities and relationships from the input text in Data to be Processed b
 2.  **Output Content Only:** Output *only* the extracted list of entities and relationships. Do not include any introductory or concluding remarks, explanations, or additional text before or after the list.
 3.  **Completion Signal:** Output `{completion_delimiter}` as the final line after all relevant entities and relationships have been extracted and presented.
 4.  **Output Language:** Ensure the output language is {language}. Proper nouns (e.g., personal names, place names, organization names) must be kept in their original language and not translated.
+5.  **Entity Attributes:** {entity_attributes_instruction}
 
 ---Data to be Processed---
 <Entity_types>
