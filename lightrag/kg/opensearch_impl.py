@@ -65,6 +65,54 @@ def _sanitize_index_name(name: str) -> str:
     return sanitized
 
 
+# Detected at first connection; True when OpenSearch >= 3.3.0.
+_shard_doc_supported: bool | None = None
+
+
+def _pit_tiebreaker() -> list[dict]:
+    """Return PIT sort tiebreaker based on detected OpenSearch version.
+
+    >= 3.3.0: _shard_doc (shard-local ordinal, most efficient).
+    < 3.3.0:  _doc + _id (_doc for efficiency, _id for cross-shard uniqueness).
+    """
+    if _shard_doc_supported:
+        return [{"_shard_doc": "asc"}]
+    return [{"_doc": "asc"}, {"_id": "asc"}]
+
+
+def _pit_sort_with_field(field: str, order: str = "asc") -> list[dict]:
+    """Return PIT sort clause with a unique field as primary sort.
+
+    >= 3.3.0: field + _shard_doc.
+    < 3.3.0:  field + _doc (field is unique, so _doc suffices).
+    """
+    if _shard_doc_supported:
+        return [{field: {"order": order}}, {"_shard_doc": "asc"}]
+    return [{field: {"order": order}}, {"_doc": "asc"}]
+
+
+async def _detect_shard_doc_support(client: AsyncOpenSearch) -> bool:
+    """Check if the cluster supports _shard_doc (OpenSearch >= 3.3.0)."""
+    try:
+        info = await client.info()
+        version_str = info.get("version", {}).get("number", "0.0.0")
+        # Strip pre-release suffixes (e.g. "3.3.0-SNAPSHOT" → "3", "3", "0")
+        parts = [p.split("-")[0] for p in version_str.split(".")]
+        major = int(parts[0]) if parts[0].isdigit() else 0
+        minor = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 0
+        supported = (major > 3) or (major == 3 and minor >= 3)
+        logger.info(
+            f"OpenSearch version {version_str}: "
+            f"_shard_doc {'supported' if supported else 'not supported, using _doc+_id fallback'}"
+        )
+        return supported
+    except Exception as e:
+        logger.warning(
+            f"Failed to detect OpenSearch version, assuming _shard_doc not supported: {e}"
+        )
+        return False
+
+
 class ClientManager:
     """Singleton manager for OpenSearch client connections."""
 
@@ -74,6 +122,7 @@ class ClientManager:
     @classmethod
     async def get_client(cls) -> AsyncOpenSearch:
         """Get or create a shared AsyncOpenSearch client with reference counting."""
+        global _shard_doc_supported
         async with cls._lock:
             if cls._instances["client"] is None:
                 hosts_str = _get_opensearch_env("OPENSEARCH_HOSTS", "localhost:9200")
@@ -110,6 +159,7 @@ class ClientManager:
                 )
                 cls._instances["client"] = client
                 cls._instances["ref_count"] = 0
+                _shard_doc_supported = await _detect_shard_doc_support(client)
                 logger.info(f"OpenSearch client connected to {hosts}")
 
             cls._instances["ref_count"] += 1
@@ -118,6 +168,7 @@ class ClientManager:
     @classmethod
     async def release_client(cls, client: AsyncOpenSearch):
         """Release a client reference. Closes the connection when ref count reaches 0."""
+        global _shard_doc_supported
         async with cls._lock:
             if client is not None and client is cls._instances["client"]:
                 cls._instances["ref_count"] -= 1
@@ -128,6 +179,7 @@ class ClientManager:
                         pass
                     cls._instances["client"] = None
                     cls._instances["ref_count"] = 0
+                    _shard_doc_supported = None
                     logger.info("OpenSearch client connection closed")
 
 
@@ -270,7 +322,7 @@ class OpenSearchKVStorage(BaseKVStorage):
                         "query": {"match_all": {}},
                         "size": batch_size,
                         "pit": {"id": pit_id, "keep_alive": "1m"},
-                        "sort": [{"_shard_doc": "asc"}],
+                        "sort": _pit_tiebreaker(),
                     }
                     if search_after:
                         body["search_after"] = search_after
@@ -689,7 +741,7 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
                         "query": query,
                         "size": batch_size,
                         "pit": {"id": pit_id, "keep_alive": "1m"},
-                        "sort": [{"_shard_doc": "asc"}],
+                        "sort": _pit_tiebreaker(),
                     }
                     if search_after:
                         body["search_after"] = search_after
@@ -779,7 +831,7 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
             if total_count == 0 or skip_count >= total_count:
                 return [], total_count
 
-            sort_clause = [{sort_field: {"order": sort_order}}, {"_shard_doc": "asc"}]
+            sort_clause = [{sort_field: {"order": sort_order}}] + _pit_tiebreaker()
 
             pit = await self.client.create_pit(
                 index=self._index_name, params={"keep_alive": "1m"}
@@ -1307,7 +1359,7 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                         "_source": ["source_node_id", "target_node_id"],
                         "size": 10000,
                         "pit": {"id": pit_id, "keep_alive": "1m"},
-                        "sort": [{"_shard_doc": "asc"}],
+                        "sort": _pit_tiebreaker(),
                     }
                     if search_after:
                         body["search_after"] = search_after
@@ -1439,7 +1491,7 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                         "_source": ["source_node_id", "target_node_id"],
                         "size": 10000,
                         "pit": {"id": pit_id, "keep_alive": "1m"},
-                        "sort": [{"_shard_doc": "asc"}],
+                        "sort": _pit_tiebreaker(),
                     }
                     if search_after:
                         body["search_after"] = search_after
@@ -1783,7 +1835,7 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                         "_source": False,
                         "size": 10000,
                         "pit": {"id": pit_id, "keep_alive": "1m"},
-                        "sort": [{"_shard_doc": "asc"}],
+                        "sort": _pit_sort_with_field("entity_id"),
                     }
                     if search_after:
                         body["search_after"] = search_after
@@ -1838,7 +1890,7 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                     "_source": False,
                     "size": 10000,
                     "pit": {"id": pit_id, "keep_alive": "1m"},
-                    "sort": [{"_shard_doc": "asc"}],
+                    "sort": _pit_sort_with_field("entity_id"),
                 }
                 if search_after:
                     body["search_after"] = search_after
@@ -1908,7 +1960,7 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                     "query": edge_query,
                     "size": 10000,
                     "pit": {"id": pit_id, "keep_alive": "1m"},
-                    "sort": [{"_shard_doc": "asc"}],
+                    "sort": _pit_tiebreaker(),
                 }
                 if search_after:
                     edge_body["search_after"] = search_after
@@ -2295,7 +2347,7 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                         "query": {"match_all": {}},
                         "size": 10000,
                         "pit": {"id": pit_id, "keep_alive": "1m"},
-                        "sort": [{"_shard_doc": "asc"}],
+                        "sort": _pit_sort_with_field("entity_id"),
                     }
                     if search_after:
                         body["search_after"] = search_after
@@ -2339,7 +2391,7 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                         "query": {"match_all": {}},
                         "size": 10000,
                         "pit": {"id": pit_id, "keep_alive": "1m"},
-                        "sort": [{"_shard_doc": "asc"}],
+                        "sort": _pit_tiebreaker(),
                     }
                     if search_after:
                         body["search_after"] = search_after
