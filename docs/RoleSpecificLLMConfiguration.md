@@ -41,7 +41,7 @@ Common fields:
 | `LLM_BINDING_HOST` | Base provider endpoint. For SDK default endpoints, use the corresponding sentinel, such as `DEFAULT_GEMINI_ENDPOINT` or `DEFAULT_BEDROCK_ENDPOINT`. |
 | `LLM_BINDING_API_KEY` | Base API key. Bedrock does not use this field. |
 | `LLM_TIMEOUT` | Base LLM timeout. A role inherits it when no role timeout is set. |
-| `MAX_ASYNC` | Base maximum LLM concurrency. A role inherits it when `MAX_ASYNC_{ROLE}_LLM` is not set. |
+| `MAX_ASYNC` | Base maximum LLM concurrency. A role inherits it when `{ROLE}_MAX_ASYNC_LLM` is not set. |
 
 ## Role Override Variables
 
@@ -52,7 +52,7 @@ QUERY_LLM_BINDING=openai
 QUERY_LLM_MODEL=gpt-5
 QUERY_LLM_BINDING_HOST=https://api.openai.com/v1
 QUERY_LLM_BINDING_API_KEY=your_query_api_key
-MAX_ASYNC_QUERY_LLM=2
+QUERY_MAX_ASYNC_LLM=2
 LLM_TIMEOUT_QUERY_LLM=240
 ```
 
@@ -64,7 +64,7 @@ Variable format:
 | `{ROLE}_LLM_MODEL` | Overrides the role model name. |
 | `{ROLE}_LLM_BINDING_HOST` | Overrides the role endpoint. |
 | `{ROLE}_LLM_BINDING_API_KEY` | Overrides the role API key. Bedrock does not support it. |
-| `MAX_ASYNC_{ROLE}_LLM` | Overrides the role maximum concurrency. Inherits `MAX_ASYNC` when unset. |
+| `{ROLE}_MAX_ASYNC_LLM` | Overrides the role maximum concurrency. Inherits `MAX_ASYNC` when unset. |
 | `LLM_TIMEOUT_{ROLE}_LLM` | Overrides the role timeout. Inherits `LLM_TIMEOUT` when unset. |
 
 ## Provider Option Overrides
@@ -110,7 +110,7 @@ If a role does not set `{ROLE}_LLM_BINDING`, or sets it to the same value as the
 - Inherits `LLM_BINDING_HOST` when `{ROLE}_LLM_BINDING_HOST` is not set.
 - Inherits `LLM_BINDING_API_KEY` when `{ROLE}_LLM_BINDING_API_KEY` is not set.
 - Inherits `LLM_TIMEOUT` when `LLM_TIMEOUT_{ROLE}_LLM` is not set.
-- Inherits `MAX_ASYNC` when `MAX_ASYNC_{ROLE}_LLM` is not set.
+- Inherits `MAX_ASYNC` when `{ROLE}_MAX_ASYNC_LLM` is not set.
 - Provider options first inherit the base provider options, then apply role-specific provider options.
 
 Therefore, when you only want to change the model within the same provider, you only need to set the model name:
@@ -204,7 +204,7 @@ LLM_BINDING_API_KEY=your_api_key
 OPENAI_LLM_REASONING_EFFORT=minimal
 
 QUERY_LLM_MODEL=gpt-5
-MAX_ASYNC_QUERY_LLM=2
+QUERY_MAX_ASYNC_LLM=2
 ```
 
 `QUERY` inherits the base host, API key, and `OPENAI_LLM_REASONING_EFFORT`.
@@ -264,7 +264,7 @@ EXTRACT_LLM_BINDING_HOST=https://api.openai.com/v1
 EXTRACT_LLM_BINDING_API_KEY=your_extract_openai_api_key
 EXTRACT_OPENAI_LLM_REASONING_EFFORT=low
 EXTRACT_OPENAI_LLM_MAX_COMPLETION_TOKENS=4096
-MAX_ASYNC_EXTRACT_LLM=4
+EXTRACT_MAX_ASYNC_LLM=4
 LLM_TIMEOUT_EXTRACT_LLM=180
 
 ###########################################################################
@@ -276,7 +276,7 @@ QUERY_LLM_BINDING_HOST=https://api.openai.com/v1
 QUERY_LLM_BINDING_API_KEY=your_query_openai_api_key
 QUERY_OPENAI_LLM_REASONING_EFFORT=medium
 QUERY_OPENAI_LLM_MAX_COMPLETION_TOKENS=9000
-MAX_ASYNC_QUERY_LLM=2
+QUERY_MAX_ASYNC_LLM=2
 LLM_TIMEOUT_QUERY_LLM=240
 
 ###########################################################################
@@ -292,7 +292,7 @@ KEYWORD_LLM_BINDING_API_KEY=local-vllm-api-key
 KEYWORD_OPENAI_LLM_MAX_TOKENS=2048
 # Optional for Qwen-style models served by vLLM when you want to disable thinking.
 KEYWORD_OPENAI_LLM_EXTRA_BODY='{"chat_template_kwargs": {"enable_thinking": false}}'
-MAX_ASYNC_KEYWORD_LLM=4
+KEYWORD_MAX_ASYNC_LLM=4
 LLM_TIMEOUT_KEYWORD_LLM=180
 ```
 
@@ -333,7 +333,7 @@ LLM_BINDING_API_KEY=your_api_key
 VLM_LLM_BINDING=openai
 VLM_LLM_MODEL=gpt-4o
 VLM_OPENAI_LLM_MAX_TOKENS=4096
-MAX_ASYNC_VLM_LLM=2
+VLM_MAX_ASYNC_LLM=2
 LLM_TIMEOUT_VLM_LLM=240
 ```
 

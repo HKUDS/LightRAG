@@ -41,7 +41,7 @@ MAX_ASYNC=4
 | `LLM_BINDING_HOST` | 基础 provider endpoint。对于 SDK 默认 endpoint，可使用对应 sentinel，例如 `DEFAULT_GEMINI_ENDPOINT` 或 `DEFAULT_BEDROCK_ENDPOINT`。 |
 | `LLM_BINDING_API_KEY` | 基础 API key。Bedrock 不使用这个字段。 |
 | `LLM_TIMEOUT` | 基础 LLM timeout。角色未设置 timeout 时继承它。 |
-| `MAX_ASYNC` | 基础 LLM 最大并发。角色未设置 `MAX_ASYNC_{ROLE}_LLM` 时继承它。 |
+| `MAX_ASYNC` | 基础 LLM 最大并发。角色未设置 `{ROLE}_MAX_ASYNC_LLM` 时继承它。 |
 
 ## 角色覆盖变量
 
@@ -52,7 +52,7 @@ QUERY_LLM_BINDING=openai
 QUERY_LLM_MODEL=gpt-5
 QUERY_LLM_BINDING_HOST=https://api.openai.com/v1
 QUERY_LLM_BINDING_API_KEY=your_query_api_key
-MAX_ASYNC_QUERY_LLM=2
+QUERY_MAX_ASYNC_LLM=2
 LLM_TIMEOUT_QUERY_LLM=240
 ```
 
@@ -64,7 +64,7 @@ LLM_TIMEOUT_QUERY_LLM=240
 | `{ROLE}_LLM_MODEL` | 覆盖角色模型名。 |
 | `{ROLE}_LLM_BINDING_HOST` | 覆盖角色 endpoint。 |
 | `{ROLE}_LLM_BINDING_API_KEY` | 覆盖角色 API key。Bedrock 不支持。 |
-| `MAX_ASYNC_{ROLE}_LLM` | 覆盖角色最大并发。未设置时继承 `MAX_ASYNC`。 |
+| `{ROLE}_MAX_ASYNC_LLM` | 覆盖角色最大并发。未设置时继承 `MAX_ASYNC`。 |
 | `LLM_TIMEOUT_{ROLE}_LLM` | 覆盖角色 timeout。未设置时继承 `LLM_TIMEOUT`。 |
 
 ## Provider 参数覆盖
@@ -110,7 +110,7 @@ VLM_GEMINI_LLM_TEMPERATURE=0.2
 - 未设置 `{ROLE}_LLM_BINDING_HOST` 时继承 `LLM_BINDING_HOST`。
 - 未设置 `{ROLE}_LLM_BINDING_API_KEY` 时继承 `LLM_BINDING_API_KEY`。
 - 未设置 `LLM_TIMEOUT_{ROLE}_LLM` 时继承 `LLM_TIMEOUT`。
-- 未设置 `MAX_ASYNC_{ROLE}_LLM` 时继承 `MAX_ASYNC`。
+- 未设置 `{ROLE}_MAX_ASYNC_LLM` 时继承 `MAX_ASYNC`。
 - provider 参数先继承基础 provider options，再叠加角色专属 provider options。
 
 因此，同一个 provider 下只想换模型时，只需要写模型名：
@@ -204,7 +204,7 @@ LLM_BINDING_API_KEY=your_api_key
 OPENAI_LLM_REASONING_EFFORT=minimal
 
 QUERY_LLM_MODEL=gpt-5
-MAX_ASYNC_QUERY_LLM=2
+QUERY_MAX_ASYNC_LLM=2
 ```
 
 `QUERY` 会继承基础 host、API key 和 `OPENAI_LLM_REASONING_EFFORT`。
@@ -264,7 +264,7 @@ EXTRACT_LLM_BINDING_HOST=https://api.openai.com/v1
 EXTRACT_LLM_BINDING_API_KEY=your_extract_openai_api_key
 EXTRACT_OPENAI_LLM_REASONING_EFFORT=low
 EXTRACT_OPENAI_LLM_MAX_COMPLETION_TOKENS=4096
-MAX_ASYNC_EXTRACT_LLM=4
+EXTRACT_MAX_ASYNC_LLM=4
 LLM_TIMEOUT_EXTRACT_LLM=180
 
 ###########################################################################
@@ -276,7 +276,7 @@ QUERY_LLM_BINDING_HOST=https://api.openai.com/v1
 QUERY_LLM_BINDING_API_KEY=your_query_openai_api_key
 QUERY_OPENAI_LLM_REASONING_EFFORT=medium
 QUERY_OPENAI_LLM_MAX_COMPLETION_TOKENS=9000
-MAX_ASYNC_QUERY_LLM=2
+QUERY_MAX_ASYNC_LLM=2
 LLM_TIMEOUT_QUERY_LLM=240
 
 ###########################################################################
@@ -292,7 +292,7 @@ KEYWORD_LLM_BINDING_API_KEY=local-vllm-api-key
 KEYWORD_OPENAI_LLM_MAX_TOKENS=2048
 # Optional for Qwen-style models served by vLLM when you want to disable thinking.
 KEYWORD_OPENAI_LLM_EXTRA_BODY='{"chat_template_kwargs": {"enable_thinking": false}}'
-MAX_ASYNC_KEYWORD_LLM=4
+KEYWORD_MAX_ASYNC_LLM=4
 LLM_TIMEOUT_KEYWORD_LLM=180
 ```
 
@@ -333,7 +333,7 @@ LLM_BINDING_API_KEY=your_api_key
 VLM_LLM_BINDING=openai
 VLM_LLM_MODEL=gpt-4o
 VLM_OPENAI_LLM_MAX_TOKENS=4096
-MAX_ASYNC_VLM_LLM=2
+VLM_MAX_ASYNC_LLM=2
 LLM_TIMEOUT_VLM_LLM=240
 ```
 

@@ -10,10 +10,10 @@ pytestmark = pytest.mark.offline
 
 ROLE_MAX_ASYNC_ENV_KEYS = (
     "MAX_ASYNC",
-    "MAX_ASYNC_EXTRACT_LLM",
-    "MAX_ASYNC_KEYWORD_LLM",
-    "MAX_ASYNC_QUERY_LLM",
-    "MAX_ASYNC_VLM_LLM",
+    "EXTRACT_MAX_ASYNC_LLM",
+    "KEYWORD_MAX_ASYNC_LLM",
+    "QUERY_MAX_ASYNC_LLM",
+    "VLM_MAX_ASYNC_LLM",
 )
 
 
@@ -40,7 +40,7 @@ def test_role_max_async_env_override_keeps_other_roles_none(monkeypatch):
     _clear_max_async_env(monkeypatch)
     monkeypatch.setattr(sys, "argv", ["lightrag-server"])
     monkeypatch.setenv("MAX_ASYNC", "10")
-    monkeypatch.setenv("MAX_ASYNC_EXTRACT_LLM", "7")
+    monkeypatch.setenv("EXTRACT_MAX_ASYNC_LLM", "7")
 
     args = parse_args()
 
@@ -55,7 +55,7 @@ def test_role_max_async_literal_none_string_is_preserved(monkeypatch):
     _clear_max_async_env(monkeypatch)
     monkeypatch.setattr(sys, "argv", ["lightrag-server"])
     monkeypatch.setenv("MAX_ASYNC", "10")
-    monkeypatch.setenv("MAX_ASYNC_QUERY_LLM", "None")
+    monkeypatch.setenv("QUERY_MAX_ASYNC_LLM", "None")
 
     args = parse_args()
 

@@ -111,10 +111,10 @@ def _clear_role_provider_env(monkeypatch, role: str, options_cls) -> None:
 
 
 ROLE_MAX_ASYNC_ENV_KEYS = (
-    "MAX_ASYNC_EXTRACT_LLM",
-    "MAX_ASYNC_KEYWORD_LLM",
-    "MAX_ASYNC_QUERY_LLM",
-    "MAX_ASYNC_VLM_LLM",
+    "EXTRACT_MAX_ASYNC_LLM",
+    "KEYWORD_MAX_ASYNC_LLM",
+    "QUERY_MAX_ASYNC_LLM",
+    "VLM_MAX_ASYNC_LLM",
 )
 
 
@@ -230,7 +230,7 @@ def test_role_max_async_env_override_keeps_other_roles_inherited(tmp_path, monke
     # "None" instead of deleting them.
     for env_key in ROLE_MAX_ASYNC_ENV_KEYS:
         monkeypatch.setenv(env_key, "None")
-    monkeypatch.setenv("MAX_ASYNC_EXTRACT_LLM", "7")
+    monkeypatch.setenv("EXTRACT_MAX_ASYNC_LLM", "7")
 
     rag = _make_rag(tmp_path, llm_model_max_async=10)
 

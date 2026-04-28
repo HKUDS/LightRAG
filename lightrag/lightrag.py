@@ -394,7 +394,7 @@ class RoleSpec:
 
     env_prefix: str
     """Uppercase prefix used by the API env-var layer, e.g. ``"EXTRACT"`` for
-    ``EXTRACT_LLM_BINDING`` / ``MAX_ASYNC_EXTRACT_LLM`` / ``LLM_TIMEOUT_EXTRACT_LLM``."""
+    ``EXTRACT_LLM_BINDING`` / ``EXTRACT_MAX_ASYNC_LLM`` / ``LLM_TIMEOUT_EXTRACT_LLM``."""
 
     queue_name: str
     """Display name passed to ``priority_limit_async_func_call`` for log lines."""
@@ -418,7 +418,7 @@ class RoleLLMConfig:
     setting (``llm_model_func`` / ``llm_model_kwargs`` / ``llm_model_max_async``
     / ``default_llm_timeout``). When ``max_async`` is None at init and the
     user did not pass a ``role_llm_configs`` entry for the role, the value is
-    additionally seeded from ``MAX_ASYNC_{ROLE_PREFIX}_LLM``. ``metadata`` seeds
+    additionally seeded from ``{ROLE_PREFIX}_MAX_ASYNC_LLM``. ``metadata`` seeds
     runtime observability and role-builder context.
     """
 
@@ -714,7 +714,7 @@ class LightRAG:
     keys ``func`` / ``kwargs`` / ``max_async`` / ``timeout``). Any field left
     as ``None`` falls back to the corresponding base LLM setting. Roles not
     present in the dict are wrapped from the base ``llm_model_func`` and
-    pick up ``MAX_ASYNC_{ROLE_PREFIX}_LLM`` env defaults."""
+    pick up ``{ROLE_PREFIX}_MAX_ASYNC_LLM`` env defaults."""
 
     llm_model_name: str = field(default="gpt-4o-mini")
     """Name of the LLM model used for generating responses."""
@@ -1764,7 +1764,7 @@ class LightRAG:
 
             max_async = cfg.max_async
             if max_async is None:
-                max_async = _optional_env_int(f"MAX_ASYNC_{spec.env_prefix}_LLM")
+                max_async = _optional_env_int(f"{spec.env_prefix}_MAX_ASYNC_LLM")
 
             metadata = {}
             if cfg.metadata is not None:

@@ -565,7 +565,7 @@ def parse_args() -> argparse.Namespace:
         model_key = f"{prefix}_LLM_MODEL"
         host_key = f"{prefix}_LLM_BINDING_HOST"
         apikey_key = f"{prefix}_LLM_BINDING_API_KEY"
-        max_async_key = f"MAX_ASYNC_{prefix}_LLM"
+        max_async_key = f"{prefix}_MAX_ASYNC_LLM"
         timeout_key = f"LLM_TIMEOUT_{prefix}_LLM"
 
         role_binding = normalize_binding_name(
