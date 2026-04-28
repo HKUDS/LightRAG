@@ -26,6 +26,18 @@ const textValue = (value: string | number | null | undefined) => {
   return String(value)
 }
 
+const formatKwargs = (value: Record<string, any> | null | undefined): string => {
+  if (!value || typeof value !== 'object') return '-'
+  const entries = Object.entries(value)
+  if (!entries.length) return '-'
+  return entries
+    .map(([k, v]) => {
+      const strVal = typeof v === 'object' && v !== null ? JSON.stringify(v) : String(v)
+      return `${k}=${strVal}`
+    })
+    .join(', ')
+}
+
 const statValue = (value: number | undefined) => {
   return typeof value === 'number' ? value.toString() : '-'
 }
@@ -163,7 +175,7 @@ const StatusCard = ({ status }: { status: LightragStatus | null }) => {
                 <TableHead className="h-7 px-2 py-1">
                   binding/model
                 </TableHead>
-                <TableHead className="h-7 px-2 py-1">base_url</TableHead>
+                <TableHead className="h-7 px-2 py-1">base_url/kwargs</TableHead>
                 <TableHead className="h-7 px-2 py-1 text-right">
                   queued
                 </TableHead>
@@ -191,6 +203,18 @@ const StatusCard = ({ status }: { status: LightragStatus | null }) => {
                     </TableCell>
                     <TableCell className="max-w-[220px] px-2 py-1">
                       <div className="truncate">{textValue(config.host)}</div>
+                      {(() => {
+                        const providerOptions = config.metadata?.provider_options as Record<string, any> | undefined
+                        const kwargsStr = formatKwargs(providerOptions)
+                        return (
+                          <div
+                            className="text-muted-foreground truncate"
+                            title={kwargsStr !== '-' ? JSON.stringify(providerOptions, null, 2) : undefined}
+                          >
+                            {kwargsStr}
+                          </div>
+                        )
+                      })()}
                     </TableCell>
                     <TableCell className="px-2 py-1 text-right tabular-nums">
                       {statValue(queue?.queued)}
