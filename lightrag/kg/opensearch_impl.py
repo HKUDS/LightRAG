@@ -91,6 +91,17 @@ def _pit_sort_with_field(field: str, order: str = "asc") -> list[dict]:
     return [{field: {"order": order}}, {"_doc": "asc"}]
 
 
+def _pit_sort_with_composite_key(*fields: str) -> list[dict]:
+    """Return PIT sort clause with multiple fields forming a composite unique key.
+
+    >= 3.3.0: _shard_doc (most efficient, ignores the fields).
+    < 3.3.0:  field1 + field2 + ... + _doc (composite is unique, _doc for efficiency).
+    """
+    if _shard_doc_supported:
+        return [{"_shard_doc": "asc"}]
+    return [{f: {"order": "asc"}} for f in fields] + [{"_doc": "asc"}]
+
+
 async def _detect_shard_doc_support(client: AsyncOpenSearch) -> bool:
     """Check if the cluster supports _shard_doc (OpenSearch >= 3.3.0)."""
     try:
@@ -1359,7 +1370,9 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                         "_source": ["source_node_id", "target_node_id"],
                         "size": 10000,
                         "pit": {"id": pit_id, "keep_alive": "1m"},
-                        "sort": _pit_tiebreaker(),
+                        "sort": _pit_sort_with_composite_key(
+                            "source_node_id", "target_node_id"
+                        ),
                     }
                     if search_after:
                         body["search_after"] = search_after
@@ -1491,7 +1504,9 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                         "_source": ["source_node_id", "target_node_id"],
                         "size": 10000,
                         "pit": {"id": pit_id, "keep_alive": "1m"},
-                        "sort": _pit_tiebreaker(),
+                        "sort": _pit_sort_with_composite_key(
+                            "source_node_id", "target_node_id"
+                        ),
                     }
                     if search_after:
                         body["search_after"] = search_after
@@ -1960,7 +1975,9 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                     "query": edge_query,
                     "size": 10000,
                     "pit": {"id": pit_id, "keep_alive": "1m"},
-                    "sort": _pit_tiebreaker(),
+                    "sort": _pit_sort_with_composite_key(
+                        "source_node_id", "target_node_id"
+                    ),
                 }
                 if search_after:
                     edge_body["search_after"] = search_after
@@ -2391,7 +2408,9 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                         "query": {"match_all": {}},
                         "size": 10000,
                         "pit": {"id": pit_id, "keep_alive": "1m"},
-                        "sort": _pit_tiebreaker(),
+                        "sort": _pit_sort_with_composite_key(
+                            "source_node_id", "target_node_id"
+                        ),
                     }
                     if search_after:
                         body["search_after"] = search_after
