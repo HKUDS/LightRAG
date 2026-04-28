@@ -35,6 +35,7 @@ from .config import (
     resolve_asymmetric_embedding_opt_in,
     PREFIX_ASYMMETRIC_EMBEDDING_BINDINGS,
 )
+from lightrag.tracing import shutdown as shutdown_tracing
 from lightrag.utils import get_env_value
 from lightrag import LightRAG, __version__ as core_version
 from lightrag.api import __api_version__
@@ -366,6 +367,8 @@ def create_app(args):
         finally:
             # Clean up database connections
             await rag.finalize_storages()
+
+            shutdown_tracing()
 
             if "LIGHTRAG_GUNICORN_MODE" not in os.environ:
                 # Only perform cleanup in Uvicorn single-process mode

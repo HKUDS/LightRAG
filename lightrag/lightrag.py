@@ -113,7 +113,27 @@ from lightrag.utils import (
     make_relation_chunk_key,
     normalize_source_ids_limit_method,
 )
+from lightrag.tracing import (
+    create_traced_llm_wrapper,
+    is_tracing_enabled,
+    flush as flush_tracing,
+)
 from lightrag.types import KnowledgeGraph
+
+try:
+    from langfuse import get_client as langfuse_client, observe as langfuse_observe
+except ImportError:
+
+    def langfuse_observe(**kwargs):  # type: ignore[misc]
+        def _identity(func):
+            return func
+
+        return _identity
+
+    def langfuse_client():  # type: ignore[misc]
+        return None
+
+
 from dotenv import load_dotenv
 
 # use the .env that is inside the current folder
@@ -752,6 +772,11 @@ class LightRAG:
             )
         )
 
+        if is_tracing_enabled():
+            self.llm_model_func = create_traced_llm_wrapper(
+                self.llm_model_func, model_name=self.llm_model_name
+            )
+
         self._storages_status = StoragesStatus.CREATED
 
     async def initialize_storages(self):
@@ -839,6 +864,8 @@ class LightRAG:
                 )
             else:
                 logger.debug("All storages finalized successfully")
+
+            flush_tracing()
 
             self._storages_status = StoragesStatus.FINALIZED
 
@@ -1234,6 +1261,7 @@ class LightRAG:
             )
         )
 
+    @langfuse_observe(name="insert", capture_input=False)
     async def ainsert(
         self,
         input: str | list[str],
@@ -1261,6 +1289,14 @@ class LightRAG:
         # Generate track_id if not provided
         if track_id is None:
             track_id = generate_track_id("insert")
+
+        doc_count = len(input) if isinstance(input, list) else 1
+        client = langfuse_client()
+        if client is not None:
+            client.update_current_span(
+                input={"doc_count": doc_count, "track_id": track_id},
+                metadata={"workspace": self.workspace},
+            )
 
         await self.apipeline_enqueue_documents(input, ids, file_paths, track_id)
         await self.apipeline_process_enqueue_documents(
@@ -1753,7 +1789,15 @@ class LightRAG:
         4. Process each chunk for entity and relation extraction
         5. Update the document status
         """
+        await self._apipeline_process_enqueue_documents_impl(
+            split_by_character, split_by_character_only
+        )
 
+    async def _apipeline_process_enqueue_documents_impl(
+        self,
+        split_by_character: str | None = None,
+        split_by_character_only: bool = False,
+    ) -> None:
         # Get pipeline status shared data and lock
         pipeline_status = await get_namespace_data(
             "pipeline_status", workspace=self.workspace
@@ -1870,6 +1914,11 @@ class LightRAG:
                 # Create a semaphore to limit the number of concurrent file processing
                 semaphore = asyncio.Semaphore(self.max_parallel_insert)
 
+                @langfuse_observe(
+                    name="lightrag-insert-doc",
+                    capture_input=False,
+                    capture_output=False,
+                )
                 async def process_document(
                     doc_id: str,
                     status_doc: DocProcessingStatus,
@@ -1890,6 +1939,13 @@ class LightRAG:
                     chunks: dict[str, Any] = {}
                     content_data: dict[str, Any] | None = None
 
+                    client = langfuse_client()
+                    if client is not None:
+                        client.update_current_span(
+                            input={"doc_id": doc_id, "file_path": file_path},
+                            metadata={"workspace": self.workspace},
+                        )
+
                     def get_failed_chunk_snapshot() -> tuple[list[str], int]:
                         if chunks:
                             chunk_ids = list(chunks.keys())
@@ -1901,6 +1957,7 @@ class LightRAG:
                         # Initialize to prevent UnboundLocalError in error handling
                         first_stage_tasks = []
                         entity_relation_task = None
+
                         try:
                             # Resolve file_path from full_docs before honoring a queued
                             # cancellation so corrupted doc_status placeholders do not
@@ -2674,6 +2731,7 @@ class LightRAG:
         loop = always_get_an_event_loop()
         return loop.run_until_complete(self.aquery_data(query, param))
 
+    @langfuse_observe(name="query-data", capture_input=False)
     async def aquery_data(
         self,
         query: str,
@@ -2785,6 +2843,19 @@ class LightRAG:
             actual data is nested under the 'data' field, with 'status' and 'message'
             fields at the top level.
         """
+        client = langfuse_client()
+        if client is not None:
+            client.update_current_span(
+                input={"query": query[:200] if query else "", "mode": param.mode},
+                metadata={"workspace": self.workspace},
+            )
+        return await self._aquery_data_impl(query, param)
+
+    async def _aquery_data_impl(
+        self,
+        query: str,
+        param: QueryParam,
+    ) -> dict[str, Any]:
         global_config = asdict(self)
 
         # Create a copy of param to avoid modifying the original
@@ -2881,6 +2952,7 @@ class LightRAG:
         await self._query_done()
         return final_data
 
+    @langfuse_observe(name="query", capture_input=False)
     async def aquery_llm(
         self,
         query: str,
@@ -2902,6 +2974,13 @@ class LightRAG:
             dict[str, Any]: Complete response with structured data and LLM response.
         """
         logger.debug(f"[aquery_llm] Query param: {param}")
+
+        client = langfuse_client()
+        if client is not None:
+            client.update_current_span(
+                input={"query": query if query else "", "mode": param.mode},
+                metadata={"workspace": self.workspace, "stream": param.stream},
+            )
 
         global_config = asdict(self)
 
@@ -3006,6 +3085,8 @@ class LightRAG:
 
         except Exception as e:
             logger.error(f"Query failed: {e}")
+            if client is not None:
+                client.update_current_span(level="ERROR", status_message=str(e))
             # Return error response
             return {
                 "status": "failure",

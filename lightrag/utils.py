@@ -42,6 +42,21 @@ from lightrag.constants import (
     VALID_SOURCE_IDS_LIMIT_METHODS,
     SOURCE_IDS_LIMIT_METHOD_FIFO,
 )
+from lightrag.tracing import is_tracing_enabled
+
+try:
+    from langfuse import get_client as langfuse_client, observe as langfuse_observe
+except ImportError:
+
+    def langfuse_observe(**kwargs):  # type: ignore[misc]
+        def _identity(func):
+            return func
+
+        return _identity
+
+    def langfuse_client():  # type: ignore[misc]
+        return None
+
 
 # Precompile regex pattern for JSON sanitization (module-level, compiled once)
 _SURROGATE_PATTERN = re.compile(r"[\uD800-\uDFFF\uFFFE\uFFFF]")
@@ -497,6 +512,9 @@ class EmbeddingFunc:
                 "Consider using .func to access the unwrapped function directly."
             )
 
+    @langfuse_observe(
+        name="embedding", as_type="embedding", capture_input=False, capture_output=False
+    )
     async def __call__(self, *args, **kwargs) -> np.ndarray:
         # Only inject embedding_dim when send_dimensions is True
         if self.send_dimensions:
@@ -530,8 +548,25 @@ class EmbeddingFunc:
             if "max_token_size" in sig.parameters:
                 kwargs["max_token_size"] = self.max_token_size
 
-        # Call the actual embedding function
+        text_count = len(args[0]) if args and isinstance(args[0], (list, tuple)) else 0
+        client = langfuse_client()
+        if client is not None:
+            client.update_current_generation(
+                model=self.model_name,
+                input={"text_count": text_count},
+                metadata={
+                    "embedding_dim": self.embedding_dim,
+                    "text_count": text_count,
+                },
+            )
+
         result = await self.func(*args, **kwargs)
+
+        if client is not None:
+            client.update_current_generation(
+                output=f"{text_count} vectors, dim={self.embedding_dim}",
+                usage_details={"input_tokens": text_count},
+            )
 
         # Validate embedding dimensions using total element count
         total_elements = result.size  # Total number of elements in the numpy array
@@ -2113,6 +2148,14 @@ async def use_llm_func_with_cache(
             content, timestamp = cached_result
             logger.debug(f"Found cache for {arg_hash}")
             statistic_data["llm_cache"] += 1
+            if is_tracing_enabled():
+                try:
+                    from langfuse import get_client as _get_langfuse
+
+                    _lf = _get_langfuse()
+                    _lf.update_current_generation(metadata={"cache_hit": True})
+                except Exception as exc:
+                    logger.warning("Failed to annotate cache hit in Langfuse: %s", exc)
 
             # Add cache key to collector if provided
             if cache_keys_collector is not None:
@@ -2131,6 +2174,16 @@ async def use_llm_func_with_cache(
         res: str = await use_llm_func(
             safe_user_prompt, system_prompt=safe_system_prompt, **kwargs
         )
+        if is_tracing_enabled():
+            try:
+                from langfuse import get_client as _get_langfuse
+
+                _lf = _get_langfuse()
+                _lf.update_current_generation(
+                    metadata={"cache_hit": False, "cache_type": cache_type}
+                )
+            except Exception as exc:
+                logger.warning("Failed to annotate cache miss in Langfuse: %s", exc)
 
         res = remove_think_tags(res)
 
