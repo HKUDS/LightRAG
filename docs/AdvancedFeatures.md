@@ -108,37 +108,109 @@ if __name__ == "__main__":
 
 **Overview and Usage**
 
-LightRAG provides a `TokenTracker` tool to monitor and manage token consumption by large language models. This feature is useful for controlling API costs and optimizing performance.
+LightRAG provides a `TokenTracker` tool to monitor token consumption reported by supported LLM providers. This feature is useful for controlling API costs and optimizing performance.
+
+`TokenTracker` does not automatically inject itself into LLM calls. Pass it to the provider binding directly, bind it through `llm_model_kwargs`, or capture it in your custom LLM function.
+
+**Method 1: Track direct LLM calls**
 
 ```python
+from lightrag.llm.openai import openai_complete_if_cache
 from lightrag.utils import TokenTracker
 
 token_tracker = TokenTracker()
 
-# Method 1: Using context manager (Recommended)
 with token_tracker:
-    result1 = await llm_model_func("your question 1")
-    result2 = await llm_model_func("your question 2")
+    result1 = await openai_complete_if_cache(
+        "gpt-4o-mini",
+        "your question 1",
+        token_tracker=token_tracker,
+    )
+    result2 = await openai_complete_if_cache(
+        "gpt-4o-mini",
+        "your question 2",
+        token_tracker=token_tracker,
+    )
+```
 
-# Method 2: Manually adding token usage records
+The context manager resets the tracker when entering the block and prints usage when leaving it. The `token_tracker=token_tracker` argument is still required.
+
+**Method 2: Track LightRAG calls**
+
+```python
+from lightrag import LightRAG, QueryParam
+from lightrag.llm.openai import gpt_4o_mini_complete
+from lightrag.utils import TokenTracker
+
+token_tracker = TokenTracker()
+
+rag = LightRAG(
+    working_dir="./rag_storage",
+    llm_model_func=gpt_4o_mini_complete,
+    llm_model_kwargs={"token_tracker": token_tracker},
+    embedding_func=embedding_func,
+)
+
+await rag.initialize_storages()
+
 token_tracker.reset()
+await rag.ainsert(["document one", "document two"])
+await rag.aquery("your question 1", param=QueryParam(mode="naive"))
+await rag.aquery("your question 2", param=QueryParam(mode="mix"))
 
-rag.insert()
+print("Token usage:", token_tracker.get_usage())
+```
 
-rag.query("your question 1", param=QueryParam(mode="naive"))
-rag.query("your question 2", param=QueryParam(mode="mix"))
+`llm_model_kwargs={"token_tracker": token_tracker}` is passed to the default role LLM wrappers used by extraction, keyword generation, querying, and VLM calls. If you configure role-specific LLM kwargs, put `token_tracker` in the relevant role kwargs as well, or use the closure pattern below.
+
+**Robust custom wrapper pattern**
+
+```python
+from lightrag import LightRAG
+from lightrag.llm.gemini import gemini_complete_if_cache
+from lightrag.utils import TokenTracker
+
+
+def make_llm_func(token_tracker: TokenTracker):
+    async def _llm_model_func(
+        prompt,
+        system_prompt=None,
+        history_messages=None,
+        **kwargs,
+    ):
+        return await gemini_complete_if_cache(
+            "gemini-2.5-flash-lite",
+            prompt,
+            system_prompt=system_prompt,
+            history_messages=history_messages,
+            token_tracker=token_tracker,
+            **kwargs,
+        )
+
+    return _llm_model_func
+
+
+token_tracker = TokenTracker()
+
+rag = LightRAG(
+    working_dir="./rag_storage",
+    llm_model_func=make_llm_func(token_tracker),
+    embedding_func=embedding_func,
+)
+
+await rag.initialize_storages()
+
+token_tracker.reset()
+await rag.ainsert(["document one", "document two"])
 
 print("Token usage:", token_tracker.get_usage())
 ```
 
 **Usage Tips:**
-- Use context managers for long sessions or batch operations to automatically track all token consumption
-- For segmented statistics, use manual mode and call `reset()` when appropriate
+- Use context managers for direct LLM sessions when you want automatic reset and final printing
+- For segmented statistics, call `reset()` before each indexing or query phase
+- LLM cache hits do not create new provider calls, so token usage does not increase for cached responses
 - Regular checking of token usage helps detect abnormal consumption early
-
-**Example files:**
-- `examples/lightrag_gemini_track_token_demo.py`: Token tracking with Google Gemini
-- `examples/lightrag_siliconcloud_track_token_demo.py`: Token tracking with SiliconCloud
 
 ---
 
