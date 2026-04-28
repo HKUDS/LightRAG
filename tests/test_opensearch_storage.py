@@ -338,6 +338,8 @@ class TestKVStorage:
                 s = self._make(global_config, embed_func)
                 await s.initialize()
                 await s.upsert({"k1": {"content": "v1"}})
+                # upsert buffers docs; flush happens in index_done_callback
+                await s.index_done_callback()
                 _, kwargs = mock_bulk.call_args
                 assert "refresh" not in kwargs
 
@@ -351,6 +353,8 @@ class TestKVStorage:
                 s = self._make(global_config, embed_func)
                 await s.initialize()
                 await s.upsert({"k1": {"content": "v1"}})
+                # upsert buffers docs; flush happens in index_done_callback
+                await s.index_done_callback()
                 actions = mock_bulk.call_args[0][1]
                 src = actions[0]["_source"]
                 assert "create_time" in src
@@ -1186,10 +1190,9 @@ class TestGraphStorage:
             await s.upsert_node(
                 "Alice", {"entity_type": "person", "source_id": "c1<SEP>c2"}
             )
-            mock_client.index.assert_awaited()
-            call_kwargs = mock_client.index.call_args
-            assert call_kwargs.kwargs["id"] == "Alice"
-            body = call_kwargs.kwargs["body"]
+            # upsert_node buffers; verify the buffer content directly
+            assert "Alice" in s._pending_nodes
+            body = s._pending_nodes["Alice"]
             assert body["source_ids"] == ["c1", "c2"]
             assert body["entity_id"] == "Alice"
 
@@ -1200,8 +1203,10 @@ class TestGraphStorage:
             s = self._make(global_config, embed_func)
             await s.initialize()
             await s.upsert_edge("A", "B", {"weight": "1.0", "description": "knows"})
-            # Should call index twice: once for ensuring source node, once for edge
-            assert mock_client.index.await_count == 2
+            # Source node "A" should be buffered (since has_node returned False)
+            assert "A" in s._pending_nodes
+            # Edge should also be buffered
+            assert len(s._pending_edges) == 1
 
     @pytest.mark.asyncio
     async def test_upsert_edges_batch_reuses_id_for_reciprocal_edges(
@@ -1254,7 +1259,9 @@ class TestGraphStorage:
                 await s.drop()
                 await s.upsert_edge("A", "B", {"weight": "1.0"})
                 mock_create.assert_awaited_once()
-                assert mock_client.index.await_count == 2
+                # Buffered, not flushed yet
+                assert "A" in s._pending_nodes
+                assert len(s._pending_edges) == 1
 
     @pytest.mark.asyncio
     async def test_reads_short_circuit_after_drop(
@@ -1619,6 +1626,188 @@ class TestGraphStorage:
             assert len(result.edges) == 0
 
 
+# ---------------------------------------------------------------------------
+# Batch flush tests
+# ---------------------------------------------------------------------------
+
+
+class TestBatchFlush:
+    """Tests for write-buffering and flush behavior across all storage classes."""
+
+    @pytest.mark.asyncio
+    async def test_graph_flush_via_index_done_callback(
+        self, global_config, embed_func, mock_client
+    ):
+        """Buffered node/edge writes should be flushed as a single async_bulk call."""
+        mock_client.exists = AsyncMock(return_value=False)
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            with patch(
+                "lightrag.kg.opensearch_impl.helpers.async_bulk", new_callable=AsyncMock
+            ) as mock_bulk:
+                mock_bulk.return_value = (5, [])
+                s = OpenSearchGraphStorage(
+                    namespace="chunk_entity_relation",
+                    global_config=global_config,
+                    embedding_func=embed_func,
+                    workspace="test",
+                )
+                await s.initialize()
+
+                # Buffer several nodes and edges
+                await s.upsert_node("A", {"entity_type": "person"})
+                await s.upsert_node("B", {"entity_type": "place"})
+                await s.upsert_edge("A", "B", {"weight": "1.0"})
+
+                # Nothing flushed yet
+                mock_bulk.assert_not_awaited()
+
+                await s.index_done_callback()
+
+                # Now everything should be flushed in one bulk call
+                mock_bulk.assert_awaited_once()
+                actions = mock_bulk.call_args[0][1]
+                # A, B (nodes), source node C from edge (if not in buffer), edge
+                node_actions = [a for a in actions if a["_index"].endswith("-nodes")]
+                edge_actions = [a for a in actions if a["_index"].endswith("-edges")]
+                assert len(node_actions) >= 2
+                assert len(edge_actions) == 1
+
+    @pytest.mark.asyncio
+    async def test_graph_has_node_sees_buffered_nodes(
+        self, global_config, embed_func, mock_client
+    ):
+        """has_node should return True for nodes in the pending buffer."""
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = OpenSearchGraphStorage(
+                namespace="chunk_entity_relation",
+                global_config=global_config,
+                embedding_func=embed_func,
+                workspace="test",
+            )
+            await s.initialize()
+            await s.upsert_node("X", {"entity_type": "thing"})
+            assert await s.has_node("X") is True
+            # Should not have hit the server
+            mock_client.exists.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_graph_get_node_sees_buffered_nodes(
+        self, global_config, embed_func, mock_client
+    ):
+        """get_node should return data from the pending buffer."""
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = OpenSearchGraphStorage(
+                namespace="chunk_entity_relation",
+                global_config=global_config,
+                embedding_func=embed_func,
+                workspace="test",
+            )
+            await s.initialize()
+            await s.upsert_node("Y", {"entity_type": "org", "description": "test"})
+            node = await s.get_node("Y")
+            assert node is not None
+            assert node["entity_type"] == "org"
+            assert node["_id"] == "Y"
+
+    @pytest.mark.asyncio
+    async def test_kv_flush_via_index_done_callback(
+        self, global_config, embed_func, mock_client
+    ):
+        """KV upserts should be buffered and flushed via index_done_callback."""
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            with patch(
+                "lightrag.kg.opensearch_impl.helpers.async_bulk", new_callable=AsyncMock
+            ) as mock_bulk:
+                mock_bulk.return_value = (3, [])
+                s = OpenSearchKVStorage(
+                    namespace="text_chunks",
+                    global_config=global_config,
+                    embedding_func=embed_func,
+                    workspace="test",
+                )
+                await s.initialize()
+
+                await s.upsert({"k1": {"content": "v1"}})
+                await s.upsert({"k2": {"content": "v2"}})
+                await s.upsert({"k3": {"content": "v3"}})
+
+                # Nothing flushed yet
+                mock_bulk.assert_not_awaited()
+
+                await s.index_done_callback()
+
+                # All 3 docs flushed in one bulk call
+                mock_bulk.assert_awaited_once()
+                actions = mock_bulk.call_args[0][1]
+                assert len(actions) == 3
+
+    @pytest.mark.asyncio
+    async def test_kv_get_by_id_sees_buffered_docs(
+        self, global_config, embed_func, mock_client
+    ):
+        """get_by_id should return data from the pending buffer."""
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = OpenSearchKVStorage(
+                namespace="text_chunks",
+                global_config=global_config,
+                embedding_func=embed_func,
+                workspace="test",
+            )
+            await s.initialize()
+            await s.upsert({"doc1": {"content": "buffered"}})
+            doc = await s.get_by_id("doc1")
+            assert doc is not None
+            assert doc["content"] == "buffered"
+            assert doc["_id"] == "doc1"
+
+    @pytest.mark.asyncio
+    async def test_vector_delete_flush(self, global_config, embed_func, mock_client):
+        """Vector deletes should be buffered and flushed via index_done_callback."""
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            with patch(
+                "lightrag.kg.opensearch_impl.helpers.async_bulk", new_callable=AsyncMock
+            ) as mock_bulk:
+                mock_bulk.return_value = (5, [])
+                s = OpenSearchVectorDBStorage(
+                    namespace="entities",
+                    global_config=global_config,
+                    embedding_func=embed_func,
+                    workspace="test",
+                )
+                await s.initialize()
+
+                await s.delete(["v1", "v2"])
+                await s.delete(["v3"])
+
+                mock_bulk.assert_not_awaited()
+
+                await s.index_done_callback()
+
+                mock_bulk.assert_awaited_once()
+                actions = mock_bulk.call_args[0][1]
+                assert len(actions) == 3
+                assert all(a["_op_type"] == "delete" for a in actions)
+
+    @pytest.mark.asyncio
+    async def test_graph_drop_clears_pending_buffer(
+        self, global_config, embed_func, mock_client
+    ):
+        """drop() should discard pending writes since the indices are deleted."""
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = OpenSearchGraphStorage(
+                namespace="chunk_entity_relation",
+                global_config=global_config,
+                embedding_func=embed_func,
+                workspace="test",
+            )
+            await s.initialize()
+            await s.upsert_node("Z", {"entity_type": "person"})
+            assert len(s._pending_nodes) == 1
+            await s.drop()
+            assert len(s._pending_nodes) == 0
+            assert len(s._pending_edges) == 0
+
+
 class TestGraphPPLDetection:
     """Tests for PPL graphlookup detection and server-side BFS."""
 
@@ -1978,7 +2167,7 @@ class TestGraphPPLDetection:
             s = self._make(global_config, embed_func)
             await s.initialize()
             await s.upsert_node("TestNode", {"description": "test"})
-            body = mock_client.index.call_args.kwargs["body"]
+            body = s._pending_nodes["TestNode"]
             assert body["entity_id"] == "TestNode"
             assert body["description"] == "test"
 
@@ -2239,6 +2428,8 @@ class TestVectorStorage:
                 s = self._make(global_config, embed_func)
                 await s.initialize()
                 await s.delete(["v1", "v2"])
+                # delete buffers; flush via index_done_callback
+                await s.index_done_callback()
                 actions = mock_bulk.call_args[0][1]
                 assert len(actions) == 2
                 assert all(a["_op_type"] == "delete" for a in actions)
