@@ -766,13 +766,13 @@ class LightRAG:
     rerank_model_max_async: int = field(
         default=int(
             os.getenv(
-                "MAX_ASYNC_RERANK_LLM",
+                "MAX_ASYNC_RERANK",
                 os.getenv("MAX_ASYNC", DEFAULT_MAX_ASYNC),
             )
         )
     )
     """Maximum number of concurrent rerank calls.
-    Falls back to MAX_ASYNC when MAX_ASYNC_RERANK_LLM is unset."""
+    Falls back to MAX_ASYNC when MAX_ASYNC_RERANK is unset."""
 
     default_rerank_timeout: int = field(
         default=int(os.getenv("RERANK_TIMEOUT", DEFAULT_RERANK_TIMEOUT))
