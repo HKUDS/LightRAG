@@ -22,6 +22,7 @@ compute_mdhash_id = _utils.compute_mdhash_id
 LightRAG = _lightrag.LightRAG
 pipeline_index_file = _document_routes.pipeline_index_file
 pipeline_index_files = _document_routes.pipeline_index_files
+pipeline_enqueue_file = _document_routes.pipeline_enqueue_file
 run_scanning_process = _document_routes.run_scanning_process
 DocumentManager = _document_routes.DocumentManager
 create_document_routes = _document_routes.create_document_routes
@@ -127,7 +128,10 @@ class _ParseRag:
         return file_path
 
 
-async def test_pipeline_index_file_moves_processed_docx_to_parsed(tmp_path):
+async def test_pipeline_index_file_moves_processed_docx_to_parsed(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("DOCX_PARSING_DEFAULT_METHOD", "lightrag_document")
     file_path = tmp_path / "sample.[docling].docx"
     file_path.write_bytes(b"docx bytes")
     rag = _FakeRag()
@@ -140,7 +144,10 @@ async def test_pipeline_index_file_moves_processed_docx_to_parsed(tmp_path):
     assert rag.enqueued[0]["docs_format"] == FULL_DOCS_FORMAT_PENDING_PARSE
 
 
-async def test_pipeline_index_file_keeps_failed_docx_in_input_dir(tmp_path):
+async def test_pipeline_index_file_keeps_failed_docx_in_input_dir(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("DOCX_PARSING_DEFAULT_METHOD", "lightrag_document")
     file_path = tmp_path / "failed.docx"
     file_path.write_bytes(b"docx bytes")
     rag = _FakeRag(final_status=DocStatus.FAILED)
@@ -151,7 +158,37 @@ async def test_pipeline_index_file_keeps_failed_docx_in_input_dir(tmp_path):
     assert not (tmp_path / PARSED_DIR_NAME / file_path.name).exists()
 
 
-async def test_pipeline_index_files_moves_processed_docx_batch(tmp_path):
+async def test_pipeline_enqueue_docx_plain_text_extracts_before_enqueue(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("DOCX_PARSING_DEFAULT_METHOD", "plain_text")
+    monkeypatch.setattr(
+        _document_routes, "_extract_docx", lambda file_bytes: "plain docx content"
+    )
+    file_path = tmp_path / "plain.docx"
+    file_path.write_bytes(b"docx bytes")
+    rag = _FakeRag()
+
+    success, returned_track_id = await pipeline_enqueue_file(
+        rag, file_path, "track-docx"
+    )
+
+    assert success is True
+    assert returned_track_id == "track-docx"
+    assert rag.enqueued == [
+        {
+            "input": "plain docx content",
+            "file_path": file_path.name,
+            "track_id": "track-docx",
+            "docs_format": None,
+        }
+    ]
+    assert not file_path.exists()
+    assert (tmp_path / PARSED_DIR_NAME / file_path.name).exists()
+
+
+async def test_pipeline_index_files_moves_processed_docx_batch(tmp_path, monkeypatch):
+    monkeypatch.setenv("DOCX_PARSING_DEFAULT_METHOD", "lightrag_document")
     first = tmp_path / "first.docx"
     second = tmp_path / "second.[mineru].docx"
     first.write_bytes(b"first docx bytes")
@@ -273,6 +310,65 @@ async def test_parse_native_archives_docx_after_full_docs_sync(tmp_path, monkeyp
     assert not source_path.exists()
     assert (tmp_path / PARSED_DIR_NAME / source_path.name).exists()
     assert rag.full_docs.data["doc-test"]["parsed_engine"] == "native"
+
+
+async def test_parse_native_docx_interchange_failure_raises_without_fallback(
+    tmp_path, monkeypatch
+):
+    source_path = tmp_path / "interchange-failure.docx"
+    source_path.write_bytes(b"docx bytes")
+    rag = _ParseRag(tmp_path / "work", source_path)
+    parse_document = importlib.import_module("lightrag.extraction.parse_document")
+
+    def _raise_parser(file_bytes, source_file, doc_id, output_dir):
+        raise RuntimeError("interchange boom")
+
+    def _fail_fallback(file_bytes):
+        raise AssertionError("plain text fallback should not run")
+
+    monkeypatch.setattr(
+        parse_document, "parse_docx_to_interchange_jsonl", _raise_parser
+    )
+    monkeypatch.setattr(_document_routes, "_extract_docx", _fail_fallback)
+
+    with pytest.raises(RuntimeError, match="interchange boom"):
+        await LightRAG.parse_native(
+            rag,
+            "doc-test",
+            str(source_path),
+            {"format": FULL_DOCS_FORMAT_PENDING_PARSE, "content": ""},
+        )
+
+    assert source_path.exists()
+    assert rag.full_docs.events == []
+
+
+async def test_parse_native_docx_empty_interchange_result_raises_without_fallback(
+    tmp_path, monkeypatch
+):
+    source_path = tmp_path / "empty-interchange.docx"
+    source_path.write_bytes(b"docx bytes")
+    rag = _ParseRag(tmp_path / "work", source_path)
+    parse_document = importlib.import_module("lightrag.extraction.parse_document")
+
+    def _fail_fallback(file_bytes):
+        raise AssertionError("plain text fallback should not run")
+
+    monkeypatch.setattr(
+        parse_document, "parse_docx_to_interchange_jsonl", lambda *args: " \n\t"
+    )
+    monkeypatch.setattr(_document_routes, "_extract_docx", _fail_fallback)
+
+    with pytest.raises(ValueError, match="empty content"):
+        await LightRAG.parse_native(
+            rag,
+            "doc-test",
+            str(source_path),
+            {"format": FULL_DOCS_FORMAT_PENDING_PARSE, "content": ""},
+        )
+
+    assert source_path.exists()
+    assert rag.full_docs.events == []
 
 
 def test_lightrag_document_reprocess_uses_full_docs_without_reparse():

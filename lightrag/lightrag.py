@@ -4933,80 +4933,49 @@ class LightRAG:
             source_path = self._resolve_source_file_for_parser(file_path)
             p = Path(source_path)
             if p.exists() and p.is_file() and p.suffix.lower() == ".docx":
-                try:
-                    from lightrag.extraction.parse_document import (
-                        parse_docx_to_interchange_jsonl,
+                from lightrag.extraction.parse_document import (
+                    parse_docx_to_interchange_jsonl,
+                )
+
+                file_bytes = await asyncio.to_thread(p.read_bytes)
+                parsed_dir = Path(self.working_dir) / PARSED_DIR_NAME
+                parsed_dir.mkdir(parents=True, exist_ok=True)
+                output_dir = str(parsed_dir)
+                interchange_text = await asyncio.to_thread(
+                    parse_docx_to_interchange_jsonl,
+                    file_bytes,
+                    p.name,
+                    doc_id,
+                    output_dir,
+                )
+                if not interchange_text or not interchange_text.strip():
+                    raise ValueError(
+                        f"DOCX parser returned empty content for {file_path}"
                     )
 
-                    file_bytes = await asyncio.to_thread(p.read_bytes)
-                    parsed_dir = Path(self.working_dir) / PARSED_DIR_NAME
-                    parsed_dir.mkdir(parents=True, exist_ok=True)
-                    output_dir = str(parsed_dir)
-                    interchange_text = await asyncio.to_thread(
-                        parse_docx_to_interchange_jsonl,
-                        file_bytes,
-                        p.name,
-                        doc_id,
-                        output_dir,
-                    )
-                    if interchange_text and interchange_text.strip():
-                        await self.full_docs.upsert(
-                            {
-                                doc_id: {
-                                    "content": interchange_text,
-                                    "file_path": file_path,
-                                    "format": FULL_DOCS_FORMAT_RAW,
-                                    "parsed_engine": "native",
-                                    "update_time": int(time.time()),
-                                }
-                            }
-                        )
-                        await self.full_docs.index_done_callback()
-                        await self._archive_docx_source_after_full_docs_sync(str(p))
-                        logger.info(
-                            f"[parse_native] pending_parse completed for {file_path} via interchange JSONL"
-                        )
-                        return {
-                            "doc_id": doc_id,
+                await self.full_docs.upsert(
+                    {
+                        doc_id: {
+                            "content": interchange_text,
                             "file_path": file_path,
                             "format": FULL_DOCS_FORMAT_RAW,
-                            "content": interchange_text,
-                            "blocks_path": "",
+                            "parsed_engine": "native",
+                            "update_time": int(time.time()),
                         }
-                except Exception as e:
-                    logger.warning(
-                        f"[parse_native] pending_parse interchange failed for {file_path}: {e}, fallback to basic extraction"
-                    )
-            if p.exists() and p.is_file():
-                try:
-                    file_bytes = await asyncio.to_thread(p.read_bytes)
-                    from lightrag.api.routers.document_routes import _extract_docx
-
-                    content = await asyncio.to_thread(_extract_docx, file_bytes)
-                    await self.full_docs.upsert(
-                        {
-                            doc_id: {
-                                "content": content,
-                                "file_path": file_path,
-                                "format": FULL_DOCS_FORMAT_RAW,
-                                "parsed_engine": "native",
-                                "update_time": int(time.time()),
-                            }
-                        }
-                    )
-                    await self.full_docs.index_done_callback()
-                    await self._archive_docx_source_after_full_docs_sync(str(p))
-                    return {
-                        "doc_id": doc_id,
-                        "file_path": file_path,
-                        "format": FULL_DOCS_FORMAT_RAW,
-                        "content": content,
-                        "blocks_path": "",
                     }
-                except Exception as fallback_err:
-                    logger.warning(
-                        f"[parse_native] pending_parse fallback also failed for {file_path}: {fallback_err}"
-                    )
+                )
+                await self.full_docs.index_done_callback()
+                await self._archive_docx_source_after_full_docs_sync(str(p))
+                logger.info(
+                    f"[parse_native] pending_parse completed for {file_path} via interchange JSONL"
+                )
+                return {
+                    "doc_id": doc_id,
+                    "file_path": file_path,
+                    "format": FULL_DOCS_FORMAT_RAW,
+                    "content": interchange_text,
+                    "blocks_path": "",
+                }
             return {
                 "doc_id": doc_id,
                 "file_path": file_path,

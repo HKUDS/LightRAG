@@ -84,7 +84,11 @@ FULL_DOCS_FORMAT_LIGHTRAG = "lightrag"  # content in LightRAG Document files
 FULL_DOCS_FORMAT_PENDING_PARSE = (
     "pending_parse"  # file saved but not yet parsed; parse_native will read from disk
 )
+DOCX_PARSING_METHOD_PLAIN_TEXT = "plain_text"
+DOCX_PARSING_METHOD_LIGHTRAG_DOCUMENT = "lightrag_document"
+DEFAULT_DOCX_PARSING_METHOD = DOCX_PARSING_METHOD_PLAIN_TEXT
 PARSED_DIR_NAME = "__parsed__"  # Dir for parsed files (renamed from __enqueued__)
+
 DEFAULT_MAX_PARALLEL_ANALYZE = 2  # Multimodal analysis (VLM) concurrency
 
 # Embedding configuration defaults
