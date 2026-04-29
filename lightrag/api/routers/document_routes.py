@@ -3,6 +3,7 @@ This module contains all document-related routes for the LightRAG API.
 """
 
 import asyncio
+import os
 import time
 from uuid import uuid4
 from functools import lru_cache
@@ -25,7 +26,13 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from lightrag import LightRAG
 from lightrag.base import DeletionResult, DocProcessingStatus, DocStatus
-from lightrag.constants import PARSED_DIR_NAME, FULL_DOCS_FORMAT_PENDING_PARSE
+from lightrag.constants import (
+    DEFAULT_DOCX_PARSING_METHOD,
+    DOCX_PARSING_METHOD_LIGHTRAG_DOCUMENT,
+    DOCX_PARSING_METHOD_PLAIN_TEXT,
+    FULL_DOCS_FORMAT_PENDING_PARSE,
+    PARSED_DIR_NAME,
+)
 from lightrag.utils import (
     generate_track_id,
     compute_mdhash_id,
@@ -52,6 +59,26 @@ def _is_docling_available() -> bool:
         return True
     except ImportError:
         return False
+
+
+def _get_docx_parsing_default_method() -> str:
+    method = (
+        os.getenv("DOCX_PARSING_DEFAULT_METHOD", DEFAULT_DOCX_PARSING_METHOD)
+        .strip()
+        .lower()
+    )
+    if method in {
+        DOCX_PARSING_METHOD_PLAIN_TEXT,
+        DOCX_PARSING_METHOD_LIGHTRAG_DOCUMENT,
+    }:
+        return method
+
+    logger.warning(
+        "Invalid DOCX_PARSING_DEFAULT_METHOD=%r. Falling back to %s.",
+        method,
+        DOCX_PARSING_METHOD_PLAIN_TEXT,
+    )
+    return DOCX_PARSING_METHOD_PLAIN_TEXT
 
 
 # Function to format datetime to ISO format string with timezone information
@@ -989,42 +1016,6 @@ async def get_existing_doc_by_file_path_candidates(
     return None
 
 
-async def move_docx_to_parsed_after_processing(
-    rag: LightRAG, file_path: Path, track_id: str | None
-) -> None:
-    """Archive a DOCX source file only after this pipeline run processed it."""
-    if file_path.suffix.lower() != ".docx":
-        return
-
-    doc_id = compute_mdhash_id(str(file_path), prefix="doc-")
-    doc_status = await rag.doc_status.get_by_id(doc_id)
-    if not doc_status:
-        logger.debug(
-            f"Skipping DOCX archive for {file_path.name}: no document status found"
-        )
-        return
-
-    status = get_doc_status_value(doc_status)
-    status_track_id = get_doc_track_id(doc_status)
-    if status != DocStatus.PROCESSED.value:
-        logger.debug(
-            f"Skipping DOCX archive for {file_path.name}: document status is {status}"
-        )
-        return
-    if track_id and status_track_id and status_track_id != track_id:
-        logger.debug(
-            f"Skipping DOCX archive for {file_path.name}: track_id does not match current run"
-        )
-        return
-
-    try:
-        await move_file_to_parsed_dir(file_path)
-    except Exception as move_error:
-        logger.error(
-            f"Failed to move file {file_path.name} to {PARSED_DIR_NAME} directory: {move_error}"
-        )
-
-
 # Document processing helper functions (synchronous)
 # These functions run in thread pool via asyncio.to_thread() to avoid blocking the event loop
 
@@ -1504,28 +1495,47 @@ async def pipeline_enqueue_file(
                         return False, track_id
 
                 case ".docx":
-                    # Defer parsing to three-stage pipeline (parse_native / parse_docling).
-                    # Enqueue with pending_parse format so parse worker handles extraction.
-                    logger.info(
-                        f"[File Extraction]DOCX deferred to pipeline: {file_path.name}"
-                    )
-                    try:
-                        await rag.apipeline_enqueue_documents(
-                            "",
-                            file_paths=str(file_path),
-                            track_id=track_id,
-                            docs_format=FULL_DOCS_FORMAT_PENDING_PARSE,
-                        )
+                    docx_parsing_method = _get_docx_parsing_default_method()
+                    if docx_parsing_method == DOCX_PARSING_METHOD_LIGHTRAG_DOCUMENT:
                         logger.info(
-                            f"Successfully enqueued DOCX for pipeline parsing: {file_path.name}"
+                            f"[File Extraction]DOCX deferred to pipeline: {file_path.name}"
                         )
-                        return True, track_id
+                        try:
+                            await rag.apipeline_enqueue_documents(
+                                "",
+                                file_paths=str(file_path),
+                                track_id=track_id,
+                                docs_format=FULL_DOCS_FORMAT_PENDING_PARSE,
+                            )
+                            logger.info(
+                                f"Successfully enqueued DOCX for pipeline parsing: {file_path.name}"
+                            )
+                            return True, track_id
+                        except Exception as e:
+                            error_files = [
+                                {
+                                    "file_path": str(file_path.name),
+                                    "error_description": "[File Extraction]DOCX enqueue error",
+                                    "original_error": f"Failed to enqueue DOCX for pipeline: {str(e)}",
+                                    "file_size": file_size,
+                                }
+                            ]
+                            await rag.apipeline_enqueue_error_documents(
+                                error_files, track_id
+                            )
+                            logger.error(
+                                f"[File Extraction]Error enqueuing DOCX {file_path.name}: {str(e)}"
+                            )
+                            return False, track_id
+
+                    try:
+                        content = await asyncio.to_thread(_extract_docx, file)
                     except Exception as e:
                         error_files = [
                             {
                                 "file_path": str(file_path.name),
-                                "error_description": "[File Extraction]DOCX enqueue error",
-                                "original_error": f"Failed to enqueue DOCX for pipeline: {str(e)}",
+                                "error_description": "[File Extraction]DOCX processing error",
+                                "original_error": f"Failed to extract text from DOCX: {str(e)}",
                                 "file_size": file_size,
                             }
                         ]
@@ -1533,7 +1543,7 @@ async def pipeline_enqueue_file(
                             error_files, track_id
                         )
                         logger.error(
-                            f"[File Extraction]Error enqueuing DOCX {file_path.name}: {str(e)}"
+                            f"[File Extraction]Error processing DOCX {file_path.name}: {str(e)}"
                         )
                         return False, track_id
 
@@ -1740,14 +1750,9 @@ async def pipeline_index_file(rag: LightRAG, file_path: Path, track_id: str = No
         track_id: Optional tracking ID
     """
     try:
-        success, returned_track_id = await pipeline_enqueue_file(
-            rag, file_path, track_id
-        )
+        success, _ = await pipeline_enqueue_file(rag, file_path, track_id)
         if success:
             await rag.apipeline_process_enqueue_documents()
-            await move_docx_to_parsed_after_processing(
-                rag, file_path, returned_track_id
-            )
 
     except Exception as e:
         logger.error(f"Error indexing file {file_path.name}: {str(e)}")
@@ -1768,7 +1773,6 @@ async def pipeline_index_files(
         return
     try:
         enqueued = False
-        enqueued_docx_files: list[tuple[Path, str]] = []
 
         # Use get_pinyin_sort_key for Chinese pinyin sorting
         sorted_file_paths = sorted(
@@ -1777,21 +1781,13 @@ async def pipeline_index_files(
 
         # Process files sequentially with track_id
         for file_path in sorted_file_paths:
-            success, returned_track_id = await pipeline_enqueue_file(
-                rag, file_path, track_id
-            )
+            success, _ = await pipeline_enqueue_file(rag, file_path, track_id)
             if success:
                 enqueued = True
-                if file_path.suffix.lower() == ".docx":
-                    enqueued_docx_files.append((file_path, returned_track_id))
 
         # Process the queue only if at least one file was successfully enqueued
         if enqueued:
             await rag.apipeline_process_enqueue_documents()
-            for docx_file_path, returned_track_id in enqueued_docx_files:
-                await move_docx_to_parsed_after_processing(
-                    rag, docx_file_path, returned_track_id
-                )
     except Exception as e:
         logger.error(f"Error indexing files: {str(e)}")
         logger.error(traceback.format_exc())
