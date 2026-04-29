@@ -10,7 +10,6 @@ import fnmatch
 import hashlib
 import base64
 import mimetypes
-import sys
 import time
 import warnings
 from copy import deepcopy
@@ -4362,70 +4361,6 @@ class LightRAG:
         except Exception:
             return None
 
-    def _resolve_local_raganything_root(self) -> Path | None:
-        """Resolve local RAG-Anything source root if present."""
-        env_root = os.getenv("RAGANYTHING_ROOT", "").strip()
-        candidates: list[Path] = []
-        if env_root:
-            candidates.append(Path(env_root))
-        candidates.extend(
-            [
-                Path("/root/autodl-tmp/RAG-Anything"),
-                Path.cwd().parent / "RAG-Anything",
-            ]
-        )
-        for c in candidates:
-            if (c / "raganything" / "__init__.py").exists():
-                return c
-        return None
-
-    def _ensure_local_raganything_importable(self) -> bool:
-        root = self._resolve_local_raganything_root()
-        if root is None:
-            return False
-        root_str = str(root)
-        if root_str not in sys.path:
-            sys.path.insert(0, root_str)
-        return True
-
-    async def _parse_via_local_raganything(
-        self, engine: str, file_path: str
-    ) -> list[dict[str, Any]] | None:
-        """Use local RAG-Anything parser classes directly."""
-        if engine not in {"mineru", "docling"}:
-            return None
-        if not self._ensure_local_raganything_importable():
-            return None
-        try:
-            from raganything.parser import MineruParser, DoclingParser  # type: ignore[import-untyped]
-        except Exception as e:
-            logger.info(f"Local RAG-Anything import unavailable: {e}")
-            return None
-
-        parser = DoclingParser() if engine == "docling" else MineruParser()
-        try:
-            if (
-                hasattr(parser, "check_installation")
-                and not parser.check_installation()
-            ):
-                logger.info(
-                    f"Local RAG-Anything {engine} parser not installed/configured"
-                )
-                return None
-        except Exception:
-            return None
-
-        source_file_path = self._resolve_source_file_for_parser(file_path)
-        try:
-            content_list = await asyncio.to_thread(
-                parser.parse_document, source_file_path, "auto", None
-            )
-            if isinstance(content_list, list):
-                return content_list
-        except Exception as e:
-            logger.warning(f"Local RAG-Anything {engine} parse failed: {e}")
-        return None
-
     def _resolve_source_file_for_parser(self, file_path: str) -> str:
         """Resolve a readable source file path for parser upload."""
         p = Path(file_path)
@@ -5068,20 +5003,7 @@ class LightRAG:
                         "blocks_path": "",
                     }
         except Exception as e:
-            logger.warning(f"MinerU async service failed, fallback local/native: {e}")
-
-        raganything_content_list = await self._parse_via_local_raganything(
-            engine="mineru",
-            file_path=file_path,
-        )
-        if raganything_content_list:
-            return await self._write_lightrag_document_from_content_list(
-                doc_id=doc_id,
-                file_path=file_path,
-                content_list=raganything_content_list,
-                engine="mineru",
-                source_path=self._resolve_source_file_for_parser(file_path),
-            )
+            logger.warning(f"MinerU async service failed, fallback native: {e}")
 
         return await self.parse_native(doc_id, file_path, content_data)
 
@@ -5161,20 +5083,7 @@ class LightRAG:
                         "blocks_path": "",
                     }
         except Exception as e:
-            logger.warning(f"Docling async service failed, fallback local/native: {e}")
-
-        raganything_content_list = await self._parse_via_local_raganything(
-            engine="docling",
-            file_path=file_path,
-        )
-        if raganything_content_list:
-            return await self._write_lightrag_document_from_content_list(
-                doc_id=doc_id,
-                file_path=file_path,
-                content_list=raganything_content_list,
-                engine="docling",
-                source_path=self._resolve_source_file_for_parser(file_path),
-            )
+            logger.warning(f"Docling async service failed, fallback native: {e}")
 
         return await self.parse_native(doc_id, file_path, content_data)
 
@@ -5191,7 +5100,7 @@ class LightRAG:
             interchange parsing -> [this hook] -> entity extraction
 
         Default behavior is no-op. This method defines a stable extension point
-        for integrating RAG-Anything multimodal processors.
+        for built-in multimodal processors.
         """
         addon_params = self.addon_params
         if not addon_params.get("enable_multimodal_pipeline", False):
@@ -5209,11 +5118,10 @@ class LightRAG:
             f"engine={extraction_meta.get('engine')}, caps={sorted(capabilities)}"
         )
 
-        # TODO(RAG-Anything integration):
-        # 1) convert interchange chunks -> RAG-Anything content_list
-        # 2) call modal processors (image/table/equation) using vlm_llm_model_func (VLM role)
-        # 3) merge multimodal outputs back into chunk dicts
-        # 4) keep chunk_order_index continuity and chunk_id stability
+        # TODO(multimodal pipeline):
+        # 1) call modal processors using vlm_llm_model_func (VLM role)
+        # 2) merge multimodal outputs back into chunk dicts
+        # 3) keep chunk_order_index continuity and chunk_id stability
         return chunking_result
 
     def _build_mm_chunks_from_sidecars(

@@ -423,14 +423,6 @@ def parse_args() -> argparse.Namespace:
         help=f"Rerank binding type (default: from env or {DEFAULT_RERANK_BINDING})",
     )
 
-    # Document loading engine configuration
-    parser.add_argument(
-        "--docling",
-        action="store_true",
-        default=False,
-        help="Enable DOCLING document loading engine (default: from env or DEFAULT)",
-    )
-
     # Conditionally add binding-specific options (Ollama, OpenAI, Azure OpenAI, Gemini)
     # This registers command line arguments (e.g., --openai-llm-temperature)
     # and reads corresponding environment variables (e.g., OPENAI_LLM_TEMPERATURE)
@@ -545,14 +537,6 @@ def parse_args() -> argparse.Namespace:
         "ENABLE_LLM_CACHE_FOR_EXTRACT", True, bool
     )
     args.enable_llm_cache = get_env_value("ENABLE_LLM_CACHE", True, bool)
-
-    # Set document_loading_engine from --docling flag
-    if args.docling:
-        args.document_loading_engine = "DOCLING"
-    else:
-        args.document_loading_engine = get_env_value(
-            "DOCUMENT_LOADING_ENGINE", "DEFAULT"
-        )
 
     # PDF decryption password
     args.pdf_decrypt_password = get_env_value("PDF_DECRYPT_PASSWORD", None)

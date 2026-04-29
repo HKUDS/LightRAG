@@ -2,7 +2,7 @@
 
 This document summarizes the companion changes made on the `RAG-Anything` side to better align its parser output with the LightRAG multimodal pipeline introduced in this PR.
 
-These notes are provided as reviewer context. The code changes described below live in the `RAG-Anything` repository, mainly in `raganything/parser.py`, rather than in this LightRAG pull request.
+These notes are historical reviewer context for parser output compatibility. LightRAG Server now consumes external parser service output directly and does not require installing or importing the `raganything` package locally.
 
 ## Why This Alignment Was Needed
 
@@ -82,7 +82,7 @@ These RAG-Anything parser changes are the external counterpart of the LightRAG w
 - multimodal sidecars depend on parser-side heading and table metadata
 - heading propagation and table dimension fixes are more reliable when the parser emits normalized structure upstream
 
-In short, the LightRAG code in this PR can run independently, but the best end-to-end behavior for Docling/RAG-Anything-driven multimodal ingestion depends on this parser alignment on the `RAG-Anything` side as well.
+In short, LightRAG can run independently of the local `raganything` package. External parser services should emit the normalized structures described here for the best multimodal ingestion behavior.
 
 ## Scope Note
 
