@@ -128,7 +128,7 @@ class _ParseRag:
         return file_path
 
 
-async def test_pipeline_index_file_moves_processed_docx_to_parsed(
+async def test_pipeline_index_file_leaves_lightrag_document_docx_for_parser_archive(
     tmp_path, monkeypatch
 ):
     monkeypatch.setenv("DOCX_PARSING_DEFAULT_METHOD", "lightrag_document")
@@ -138,24 +138,30 @@ async def test_pipeline_index_file_moves_processed_docx_to_parsed(
 
     await pipeline_index_file(rag, file_path, "track-docx")
 
-    assert not file_path.exists()
-    assert (tmp_path / PARSED_DIR_NAME / file_path.name).exists()
+    assert file_path.exists()
+    assert not (tmp_path / PARSED_DIR_NAME / file_path.name).exists()
     assert rag.enqueued[0]["file_path"] == str(file_path)
     assert rag.enqueued[0]["docs_format"] == FULL_DOCS_FORMAT_PENDING_PARSE
 
 
-async def test_pipeline_index_file_keeps_failed_docx_in_input_dir(
+async def test_pipeline_enqueue_lightrag_document_docx_does_not_move_source(
     tmp_path, monkeypatch
 ):
     monkeypatch.setenv("DOCX_PARSING_DEFAULT_METHOD", "lightrag_document")
-    file_path = tmp_path / "failed.docx"
+    file_path = tmp_path / "pending.docx"
     file_path.write_bytes(b"docx bytes")
-    rag = _FakeRag(final_status=DocStatus.FAILED)
+    rag = _FakeRag()
 
-    await pipeline_index_file(rag, file_path, "track-docx")
+    success, returned_track_id = await pipeline_enqueue_file(
+        rag, file_path, "track-docx"
+    )
 
+    assert success is True
+    assert returned_track_id == "track-docx"
     assert file_path.exists()
     assert not (tmp_path / PARSED_DIR_NAME / file_path.name).exists()
+    assert rag.enqueued[0]["file_path"] == str(file_path)
+    assert rag.enqueued[0]["docs_format"] == FULL_DOCS_FORMAT_PENDING_PARSE
 
 
 async def test_pipeline_enqueue_docx_plain_text_extracts_before_enqueue(
@@ -187,7 +193,31 @@ async def test_pipeline_enqueue_docx_plain_text_extracts_before_enqueue(
     assert (tmp_path / PARSED_DIR_NAME / file_path.name).exists()
 
 
-async def test_pipeline_index_files_moves_processed_docx_batch(tmp_path, monkeypatch):
+async def test_pipeline_enqueue_md_moves_after_enqueue(tmp_path, monkeypatch):
+    monkeypatch.setenv("DOCX_PARSING_DEFAULT_METHOD", "plain_text")
+    file_path = tmp_path / "notes.md"
+    file_path.write_text("# Notes\n\nmarkdown content", encoding="utf-8")
+    rag = _FakeRag()
+
+    success, returned_track_id = await pipeline_enqueue_file(rag, file_path, "track-md")
+
+    assert success is True
+    assert returned_track_id == "track-md"
+    assert rag.enqueued == [
+        {
+            "input": "# Notes\n\nmarkdown content",
+            "file_path": file_path.name,
+            "track_id": "track-md",
+            "docs_format": None,
+        }
+    ]
+    assert not file_path.exists()
+    assert (tmp_path / PARSED_DIR_NAME / file_path.name).exists()
+
+
+async def test_pipeline_index_files_leaves_lightrag_document_docx_batch(
+    tmp_path, monkeypatch
+):
     monkeypatch.setenv("DOCX_PARSING_DEFAULT_METHOD", "lightrag_document")
     first = tmp_path / "first.docx"
     second = tmp_path / "second.[mineru].docx"
@@ -197,10 +227,13 @@ async def test_pipeline_index_files_moves_processed_docx_batch(tmp_path, monkeyp
 
     await pipeline_index_files(rag, [second, first], "track-scan")
 
-    assert not first.exists()
-    assert not second.exists()
-    assert (tmp_path / PARSED_DIR_NAME / first.name).exists()
-    assert (tmp_path / PARSED_DIR_NAME / second.name).exists()
+    assert first.exists()
+    assert second.exists()
+    assert not (tmp_path / PARSED_DIR_NAME / first.name).exists()
+    assert not (tmp_path / PARSED_DIR_NAME / second.name).exists()
+    assert all(
+        item["docs_format"] == FULL_DOCS_FORMAT_PENDING_PARSE for item in rag.enqueued
+    )
 
 
 async def test_scan_existing_full_path_docx_does_not_reenqueue(tmp_path, monkeypatch):
