@@ -14,10 +14,12 @@ import os
 import re
 import time
 import uuid
+import warnings
 from dataclasses import dataclass
 from datetime import datetime
 from functools import wraps
 from hashlib import md5
+from pathlib import Path
 from typing import (
     Any,
     Protocol,
@@ -41,6 +43,7 @@ from lightrag.constants import (
     DEFAULT_SOURCE_IDS_LIMIT_METHOD,
     VALID_SOURCE_IDS_LIMIT_METHODS,
     SOURCE_IDS_LIMIT_METHOD_FIFO,
+    PARSED_DIR_NAME,
 )
 
 # Precompile regex pattern for JSON sanitization (module-level, compiled once)
@@ -137,6 +140,9 @@ async def safe_vdb_operation_with_exception(
     max_retries: int = 3,
     retry_delay: float = 0.2,
     logger_func: Optional[Callable] = None,
+    timeout_seconds: float | None = None,
+    log_start: bool = False,
+    success_log_threshold_seconds: float = 10.0,
 ) -> None:
     """
     Safely execute vector database operations with retry mechanism and exception handling.
@@ -151,6 +157,9 @@ async def safe_vdb_operation_with_exception(
         max_retries: Maximum number of retry attempts
         retry_delay: Delay between retries in seconds
         logger_func: Logger function to use for error messages
+        timeout_seconds: Optional timeout for a single operation attempt
+        log_start: Whether to emit start/success logs for each attempt
+        success_log_threshold_seconds: Log successful attempts when duration exceeds this threshold
 
     Raises:
         Exception: When operation fails after all retry attempts
@@ -158,17 +167,60 @@ async def safe_vdb_operation_with_exception(
     log_func = logger_func or logger.warning
 
     for attempt in range(max_retries):
+        start_ts = time.perf_counter()
+        attempt_label = f"{attempt + 1}/{max_retries}"
         try:
-            await operation()
+            if log_start:
+                logger.info(
+                    "VDB %s start for %s (attempt %s, timeout=%s)",
+                    operation_name,
+                    entity_name or "<unknown>",
+                    attempt_label,
+                    f"{timeout_seconds:.1f}s"
+                    if timeout_seconds is not None
+                    else "none",
+                )
+
+            if timeout_seconds is not None and timeout_seconds > 0:
+                await asyncio.wait_for(operation(), timeout=timeout_seconds)
+            else:
+                await operation()
+
+            elapsed = time.perf_counter() - start_ts
+            if log_start or elapsed >= success_log_threshold_seconds:
+                logger.info(
+                    "VDB %s success for %s in %.2fs (attempt %s)",
+                    operation_name,
+                    entity_name or "<unknown>",
+                    elapsed,
+                    attempt_label,
+                )
             return  # Success, return immediately
-        except Exception as e:
+        except asyncio.TimeoutError as e:
+            elapsed = time.perf_counter() - start_ts
+            timeout_msg = (
+                f"VDB {operation_name} timeout for {entity_name or '<unknown>'} "
+                f"after {elapsed:.2f}s (attempt {attempt_label}, timeout={timeout_seconds}s)"
+            )
             if attempt >= max_retries - 1:
-                error_msg = f"VDB {operation_name} failed for {entity_name} after {max_retries} attempts: {e}"
+                log_func(timeout_msg)
+                raise TimeoutError(timeout_msg) from e
+            log_func(f"{timeout_msg}, retrying...")
+            if retry_delay > 0:
+                await asyncio.sleep(retry_delay)
+        except Exception as e:
+            elapsed = time.perf_counter() - start_ts
+            if attempt >= max_retries - 1:
+                error_msg = (
+                    f"VDB {operation_name} failed for {entity_name or '<unknown>'} "
+                    f"after {max_retries} attempts in {elapsed:.2f}s: {e}"
+                )
                 log_func(error_msg)
                 raise Exception(error_msg) from e
             else:
                 log_func(
-                    f"VDB {operation_name} attempt {attempt + 1} failed for {entity_name}: {e}, retrying..."
+                    f"VDB {operation_name} attempt {attempt + 1} failed for "
+                    f"{entity_name or '<unknown>'} after {elapsed:.2f}s: {e}, retrying..."
                 )
                 if retry_delay > 0:
                     await asyncio.sleep(retry_delay)
@@ -579,6 +631,91 @@ def compute_args_hash(*args: Any) -> str:
         return md5(safe_bytes).hexdigest()
 
 
+def _serialize_cache_variant(value: Any) -> str:
+    """Serialize cache-affecting options to a stable string for hash inputs."""
+    if value is None:
+        return ""
+
+    if hasattr(value, "model_dump") and callable(value.model_dump):
+        try:
+            value = value.model_dump(mode="json")
+        except TypeError:
+            value = value.model_dump()
+
+    if hasattr(value, "model_json_schema") and callable(value.model_json_schema):
+        value = value.model_json_schema()
+
+    try:
+        return json.dumps(
+            value,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=repr,
+        )
+    except (TypeError, ValueError):
+        return repr(value)
+
+
+def get_llm_cache_identity(
+    global_config: dict[str, Any] | None,
+    role: str,
+    model_func_override: Callable[..., Any] | None = None,
+) -> dict[str, Any]:
+    """Get the non-secret LLM identity used to partition LLM cache keys.
+
+    Includes ``role``, ``binding``, ``model``, and ``host``. Deliberately excludes
+    ``api_key`` and ``provider_options`` so cache keys remain non-secret and safe
+    to persist.
+
+    When ``model_func_override`` is set (the deprecated ``QueryParam.model_func``
+    path), the identity collapses to ``{role, override}`` and does not partition
+    by the underlying model — callers swapping overrides will hit shared cache
+    entries. Use ``LightRAG.aupdate_llm_role_config()`` for cache-correct swaps.
+    """
+    if model_func_override is not None:
+        return {
+            "role": role,
+            "override": "query_param.model_func",
+        }
+
+    config = global_config or {}
+    identities = config.get("llm_cache_identities")
+    if isinstance(identities, dict):
+        identity = identities.get(role)
+        if isinstance(identity, dict):
+            return dict(identity)
+
+    return {
+        "role": role,
+        "binding": None,
+        "model": config.get("llm_model_name"),
+        "host": None,
+    }
+
+
+def serialize_llm_cache_identity(identity: Any) -> str:
+    """Serialize an LLM cache identity for inclusion in hash inputs."""
+    return _serialize_cache_variant(identity)
+
+
+def _validate_cached_response_format(response_format: Any | None) -> None:
+    """Reject structured-output modes that the cache wrapper does not support."""
+    if response_format is None:
+        return
+
+    if (
+        isinstance(response_format, dict)
+        and response_format.get("type") == "json_object"
+    ):
+        return
+
+    raise ValueError(
+        "use_llm_func_with_cache only supports response_format={'type': 'json_object'}; "
+        "json_schema and typed response_format values must not be passed through the cache wrapper."
+    )
+
+
 def compute_mdhash_id(content: str, prefix: str = "") -> str:
     """
     Compute a unique ID for a given content string.
@@ -586,6 +723,55 @@ def compute_mdhash_id(content: str, prefix: str = "") -> str:
     The ID is a combination of the given prefix and the MD5 hash of the content string.
     """
     return prefix + compute_args_hash(content)
+
+
+def get_unique_filename_in_parsed(target_dir: Path, original_name: str) -> str:
+    """Generate a unique filename in target_dir, adding numeric suffixes on conflict.
+
+    Tries the original name first, then `{stem}_001{ext}` ... `{stem}_999{ext}`,
+    falling back to a timestamp-suffixed name if all numeric slots are taken.
+    """
+    original_path = Path(original_name)
+    base_name = original_path.stem
+    extension = original_path.suffix
+
+    if not (target_dir / original_name).exists():
+        return original_name
+
+    for i in range(1, 1000):
+        new_name = f"{base_name}_{i:03d}{extension}"
+        if not (target_dir / new_name).exists():
+            return new_name
+
+    return f"{base_name}_{int(time.time())}{extension}"
+
+
+async def move_file_to_parsed_dir(
+    file_path: Path,
+    *,
+    skip_if_already_parsed: bool = False,
+) -> Path | None:
+    """Move a processed source file into its sibling __parsed__ directory.
+
+    Returns the new path on success, the input path if `skip_if_already_parsed`
+    is set and the file already lives in a `__parsed__` directory, or None if
+    the source no longer exists.
+    """
+    if not file_path.exists() or not file_path.is_file():
+        return None
+    if skip_if_already_parsed and file_path.parent.name == PARSED_DIR_NAME:
+        return file_path
+
+    parsed_dir = file_path.parent / PARSED_DIR_NAME
+    await asyncio.to_thread(parsed_dir.mkdir, parents=True, exist_ok=True)
+
+    unique_filename = get_unique_filename_in_parsed(parsed_dir, file_path.name)
+    target_path = parsed_dir / unique_filename
+    await asyncio.to_thread(file_path.rename, target_path)
+    logger.debug(
+        f"Moved file to parsed directory: {file_path.name} -> {unique_filename}"
+    )
+    return target_path
 
 
 def make_relation_vdb_ids(src_entity: str, tgt_entity: str) -> list[str]:
@@ -715,6 +901,7 @@ def priority_limit_async_func_call(
         counter = 0
         shutdown_event = asyncio.Event()
         initialized = False
+        accepting_new_tasks = True
         worker_health_check_task = None
 
         # Enhanced task state management
@@ -722,6 +909,11 @@ def priority_limit_async_func_call(
         task_states_lock = asyncio.Lock()
         active_futures = weakref.WeakSet()
         reinit_count = 0
+        submitted_total = 0
+        completed_total = 0
+        failed_total = 0
+        cancelled_total = 0
+        rejected_total = 0
 
         async def worker():
             """Enhanced worker that processes tasks with proper timeout and state management"""
@@ -942,31 +1134,83 @@ def priority_limit_async_func_call(
                     f"{queue_name}: {workers_needed} new workers initialized {timeout_str}"
                 )
 
-        async def shutdown():
-            """Gracefully shut down all workers and cleanup resources"""
+        async def get_queue_stats():
+            """Return a best-effort snapshot of queue and worker state."""
+            async with task_states_lock:
+                running = sum(
+                    1
+                    for task_state in task_states.values()
+                    if task_state.worker_started and not task_state.future.done()
+                )
+                in_flight = len(task_states)
+
+            active_workers = len([task for task in tasks if not task.done()])
+            return {
+                "queue_name": queue_name,
+                "max_async": max_size,
+                "max_queue_size": max_queue_size,
+                "queued": queue.qsize(),
+                "running": running,
+                "in_flight": in_flight,
+                "worker_count": active_workers,
+                "initialized": initialized,
+                "submitted_total": submitted_total,
+                "completed_total": completed_total,
+                "failed_total": failed_total,
+                "cancelled_total": cancelled_total,
+                "rejected_total": rejected_total,
+            }
+
+        async def shutdown(graceful: bool = True, timeout: float | None = None):
+            """Shut down workers and cleanup resources.
+
+            Graceful mode stops new submissions and drains queued/running
+            work; if the drain exceeds ``timeout`` (defaulting to
+            ``max_task_duration`` or 30s), it falls through to forced
+            cancellation so shutdown never blocks indefinitely.
+            """
+            nonlocal accepting_new_tasks, initialized, worker_health_check_task
             logger.info(f"{queue_name}: Shutting down priority queue workers")
 
+            accepting_new_tasks = False
+
+            drain_timed_out = False
+            if graceful:
+                effective_timeout = timeout
+                if effective_timeout is None:
+                    effective_timeout = (
+                        max_task_duration if max_task_duration is not None else 30.0
+                    )
+                try:
+                    await asyncio.wait_for(queue.join(), timeout=effective_timeout)
+                except asyncio.TimeoutError:
+                    drain_timed_out = True
+                    logger.warning(
+                        f"{queue_name}: Graceful drain timed out after "
+                        f"{effective_timeout}s; cancelling pending work"
+                    )
+
+            if not graceful or drain_timed_out:
+                # Cancel all active futures
+                for future in list(active_futures):
+                    if not future.done():
+                        future.cancel()
+
+                # Cancel all pending tasks
+                async with task_states_lock:
+                    for task_id, task_state in list(task_states.items()):
+                        if not task_state.future.done():
+                            task_state.future.cancel()
+                    task_states.clear()
+
+                while True:
+                    try:
+                        queue.get_nowait()
+                        queue.task_done()
+                    except asyncio.QueueEmpty:
+                        break
+
             shutdown_event.set()
-
-            # Cancel all active futures
-            for future in list(active_futures):
-                if not future.done():
-                    future.cancel()
-
-            # Cancel all pending tasks
-            async with task_states_lock:
-                for task_id, task_state in list(task_states.items()):
-                    if not task_state.future.done():
-                        task_state.future.cancel()
-                task_states.clear()
-
-            # Wait for queue to empty with timeout
-            try:
-                await asyncio.wait_for(queue.join(), timeout=5.0)
-            except asyncio.TimeoutError:
-                logger.warning(
-                    f"{queue_name}: Timeout waiting for queue to empty during shutdown"
-                )
 
             # Cancel worker tasks
             for task in list(tasks):
@@ -984,6 +1228,8 @@ def priority_limit_async_func_call(
                     await worker_health_check_task
                 except asyncio.CancelledError:
                     pass
+            worker_health_check_task = None
+            initialized = False
 
             logger.info(f"{queue_name}: Priority queue workers shutdown complete")
 
@@ -1009,6 +1255,12 @@ def priority_limit_async_func_call(
                 QueueFullError: If the queue is full and waiting times out
                 Any exception raised by the decorated function
             """
+            nonlocal submitted_total, completed_total, cancelled_total, failed_total
+            nonlocal rejected_total
+            if not accepting_new_tasks:
+                rejected_total += 1
+                raise RuntimeError(f"{queue_name}: Queue is shutting down")
+
             await ensure_workers()
 
             # Generate unique task ID
@@ -1035,6 +1287,9 @@ def priority_limit_async_func_call(
 
                 # Queue the task with timeout handling
                 try:
+                    if not accepting_new_tasks:
+                        rejected_total += 1
+                        raise RuntimeError(f"{queue_name}: Queue is shutting down")
                     if _queue_timeout is not None:
                         await asyncio.wait_for(
                             queue.put(
@@ -1046,6 +1301,7 @@ def priority_limit_async_func_call(
                         await queue.put(
                             (_priority, current_count, task_id, args, kwargs)
                         )
+                    submitted_total += 1
                 except asyncio.TimeoutError:
                     raise QueueFullError(
                         f"{queue_name}: Queue full, timeout after {_queue_timeout} seconds"
@@ -1059,9 +1315,11 @@ def priority_limit_async_func_call(
                 # Wait for result with timeout handling
                 try:
                     if _timeout is not None:
-                        return await asyncio.wait_for(future, _timeout)
+                        result = await asyncio.wait_for(future, _timeout)
                     else:
-                        return await future
+                        result = await future
+                    completed_total += 1
+                    return result
                 except asyncio.TimeoutError:
                     # This is user-level timeout (asyncio.wait_for caused)
                     # Mark cancellation request
@@ -1082,15 +1340,24 @@ def priority_limit_async_func_call(
                     ):
                         await asyncio.sleep(0.1)
 
+                    cancelled_total += 1
                     raise TimeoutError(
                         f"{queue_name}: User timeout after {_timeout} seconds"
                     )
                 except WorkerTimeoutError as e:
                     # This is Worker-level timeout, directly propagate exception information
+                    failed_total += 1
                     raise TimeoutError(f"{queue_name}: {str(e)}")
                 except HealthCheckTimeoutError as e:
                     # This is Health Check-level timeout, directly propagate exception information
+                    failed_total += 1
                     raise TimeoutError(f"{queue_name}: {str(e)}")
+                except asyncio.CancelledError:
+                    cancelled_total += 1
+                    raise
+                except Exception:
+                    failed_total += 1
+                    raise
 
             finally:
                 # Ensure cleanup
@@ -1100,6 +1367,7 @@ def priority_limit_async_func_call(
 
         # Add shutdown method to decorated function
         wait_func.shutdown = shutdown
+        wait_func.get_queue_stats = get_queue_stats
 
         return wait_func
 
@@ -2045,6 +2313,9 @@ async def use_llm_func_with_cache(
     cache_type: str = "extract",
     chunk_id: str | None = None,
     cache_keys_collector: list = None,
+    response_format: Any | None = None,
+    entity_extraction: bool = False,
+    llm_cache_identity: Any | None = None,
 ) -> tuple[str, int]:
     """Call LLM function with cache support and text sanitization
 
@@ -2063,12 +2334,33 @@ async def use_llm_func_with_cache(
         chunk_id: Chunk identifier to store in cache
         text_chunks_storage: Text chunks storage to update llm_cache_list
         cache_keys_collector: Optional list to collect cache keys for batch processing
+        response_format: Structured output control forwarded to the LLM provider.
+            Providers translate this to their native structured-output surface
+            (OpenAI response_format, Ollama format, Gemini response_mime_type/schema).
+            ``{"type": "json_object"}`` requests JSON output; typed/schema payloads
+            trigger schema-constrained output where supported; ``None`` leaves
+            output unconstrained. Providers that do not support structured output
+            safely strip this argument.
+        entity_extraction: Deprecated. When True and ``response_format`` is not
+            provided, maps to ``{"type": "json_object"}``. Prefer passing
+            ``response_format`` directly.
+        llm_cache_identity: Non-secret model/provider identity used to partition
+            cache entries across role model, binding, or host changes.
 
     Returns:
         tuple[str, int]: (LLM response text, timestamp)
             - For cache hits: (content, cache_create_time)
             - For cache misses: (content, current_timestamp)
     """
+    if entity_extraction and response_format is None:
+        warnings.warn(
+            "use_llm_func_with_cache(entity_extraction=True) is deprecated; "
+            "pass response_format={'type': 'json_object'} instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        response_format = {"type": "json_object"}
+    _validate_cached_response_format(response_format)
     # Sanitize input text to prevent UTF-8 encoding errors for all LLM providers
     safe_user_prompt = sanitize_text_for_encoding(user_prompt)
     safe_system_prompt = (
@@ -2098,7 +2390,15 @@ async def use_llm_func_with_cache(
             prompt_parts.append(history)
         _prompt = "\n".join(prompt_parts)
 
-        arg_hash = compute_args_hash(_prompt)
+        response_format_key = _serialize_cache_variant(response_format)
+        llm_identity_key = serialize_llm_cache_identity(llm_cache_identity)
+        arg_hash = compute_args_hash(
+            _prompt,
+            "\n<response_format>\n",
+            response_format_key,
+            "\n<llm_identity>\n",
+            llm_identity_key,
+        )
         # Generate cache key for this LLM call
         cache_key = generate_cache_key("default", cache_type, arg_hash)
 
@@ -2127,6 +2427,8 @@ async def use_llm_func_with_cache(
             kwargs["history_messages"] = safe_history_messages
         if max_tokens is not None:
             kwargs["max_tokens"] = max_tokens
+        if response_format is not None:
+            kwargs["response_format"] = response_format
 
         res: str = await use_llm_func(
             safe_user_prompt, system_prompt=safe_system_prompt, **kwargs
@@ -2161,6 +2463,8 @@ async def use_llm_func_with_cache(
         kwargs["history_messages"] = safe_history_messages
     if max_tokens is not None:
         kwargs["max_tokens"] = max_tokens
+    if response_format is not None:
+        kwargs["response_format"] = response_format
 
     try:
         res = await use_llm_func(

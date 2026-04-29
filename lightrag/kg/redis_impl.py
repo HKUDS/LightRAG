@@ -925,6 +925,7 @@ class RedisDocStatusStorage(DocStatusStorage):
     async def get_docs_paginated(
         self,
         status_filter: DocStatus | None = None,
+        status_filters: list[DocStatus] | None = None,
         page: int = 1,
         page_size: int = 50,
         sort_field: str = "updated_at",
@@ -942,6 +943,11 @@ class RedisDocStatusStorage(DocStatusStorage):
         Returns:
             Tuple of (list of (doc_id, DocProcessingStatus) tuples, total_count)
         """
+        status_filter_values = self.resolve_status_filter_values(
+            status_filter=status_filter,
+            status_filters=status_filters,
+        )
+
         # Validate parameters
         if page < 1:
             page = 1
@@ -983,9 +989,9 @@ class RedisDocStatusStorage(DocStatusStorage):
 
                                     # Apply status filter
                                     if (
-                                        status_filter is not None
+                                        status_filter_values is not None
                                         and doc_data.get("status")
-                                        != status_filter.value
+                                        not in status_filter_values
                                     ):
                                         continue
 

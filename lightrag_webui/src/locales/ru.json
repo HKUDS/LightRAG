@@ -136,10 +136,20 @@
         "metadata": "Метаданные",
         "select": "Выбрать"
       },
+      "filters": {
+        "all": "Все",
+        "completed": "Завершено",
+        "analyzing": "Анализ",
+        "processing": "Обработка",
+        "pending": "Ожидание",
+        "failed": "Ошибка"
+      },
       "status": {
         "all": "Все",
         "completed": "Завершено",
         "preprocessed": "Предобработано",
+        "parsing": "Разбор",
+        "analyzing": "Анализ",
         "processing": "Обработка",
         "pending": "Ожидание",
         "failed": "Ошибка"
@@ -277,9 +287,9 @@
       "serverInfo": "Информация о сервере",
       "workingDirectory": "Рабочая директория",
       "inputDirectory": "Входная директория",
-      "maxParallelInsert": "Параллельная обработка документов",
+      "otherSettings": "Другие настройки",
       "summarySettings": "Настройки краткого содержания",
-      "llmConfig": "Конфигурация LLM",
+      "llmConfig": "Конфигурация модели",
       "llmBinding": "Привязка LLM",
       "llmBindingHost": "Конечная точка LLM",
       "llmModel": "Модель LLM",
@@ -293,7 +303,6 @@
       "graphStorage": "Хранилище графа",
       "vectorStorage": "Векторное хранилище",
       "workspace": "Рабочее пространство",
-      "maxGraphNodes": "Максимальное количество узлов графа",
       "rerankerConfig": "Конфигурация ранжирования",
       "rerankerBindingHost": "Конечная точка ранжирования",
       "rerankerModel": "Модель ранжирования",

@@ -845,6 +845,7 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
     async def get_docs_paginated(
         self,
         status_filter: DocStatus | None = None,
+        status_filters: list[DocStatus] | None = None,
         page: int = 1,
         page_size: int = 50,
         sort_field: str = "updated_at",
@@ -853,6 +854,10 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
         """Get documents with pagination using PIT + search_after."""
         if not self._index_ready:
             return [], 0
+        status_filter_values = self.resolve_status_filter_values(
+            status_filter=status_filter,
+            status_filters=status_filters,
+        )
         page = max(1, page)
         page_size = max(10, min(200, page_size))
         if sort_field == "id":
@@ -862,8 +867,11 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
         sort_order = "asc" if sort_direction.lower() == "asc" else "desc"
 
         query = {"match_all": {}}
-        if status_filter is not None:
-            query = {"term": {"status": status_filter.value}}
+        if status_filter_values is not None:
+            if len(status_filter_values) == 1:
+                query = {"term": {"status": next(iter(status_filter_values))}}
+            else:
+                query = {"terms": {"status": sorted(status_filter_values)}}
 
         skip_count = (page - 1) * page_size
 

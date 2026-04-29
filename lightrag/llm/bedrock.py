@@ -1,7 +1,8 @@
 import copy
-import os
+import inspect
 import json
 import logging
+import warnings
 
 import pipmaster as pm  # Pipmaster for dynamic library install
 
@@ -16,14 +17,10 @@ from tenacity import (
     retry_if_exception_type,
 )
 
-import sys
-from lightrag.utils import wrap_embedding_func_with_attrs
+from collections.abc import AsyncIterator
+from typing import Any, Union
 
-if sys.version_info < (3, 9):
-    from typing import AsyncIterator
-else:
-    from collections.abc import AsyncIterator
-from typing import Union
+from lightrag.utils import wrap_embedding_func_with_attrs
 
 # Import botocore exceptions for proper exception handling
 try:
@@ -55,10 +52,36 @@ class BedrockTimeoutError(BedrockError):
     """Error for timeout issues"""
 
 
-def _set_env_if_present(key: str, value):
-    """Set environment variable only if a non-empty value is provided."""
-    if value is not None and value != "":
-        os.environ[key] = value
+def _normalize_bedrock_endpoint_url(endpoint_url: str | None) -> str | None:
+    """Return a usable Bedrock endpoint override or None for SDK defaults."""
+    if endpoint_url is None:
+        return None
+
+    normalized = endpoint_url.strip()
+    if not normalized or normalized == "DEFAULT_BEDROCK_ENDPOINT":
+        return None
+
+    return normalized
+
+
+def _bedrock_client_kwargs(
+    region: str | None,
+    endpoint_url: str | None,
+    aws_access_key_id: str | None = None,
+    aws_secret_access_key: str | None = None,
+    aws_session_token: str | None = None,
+) -> dict:
+    """Build kwargs for aioboto3 ``session.client("bedrock-runtime", ...)``."""
+    client_kwargs: dict = {"region_name": region}
+    if endpoint_url is not None:
+        client_kwargs["endpoint_url"] = endpoint_url
+    if aws_access_key_id:
+        client_kwargs["aws_access_key_id"] = aws_access_key_id
+    if aws_secret_access_key:
+        client_kwargs["aws_secret_access_key"] = aws_secret_access_key
+    if aws_session_token:
+        client_kwargs["aws_session_token"] = aws_session_token
+    return client_kwargs
 
 
 def _handle_bedrock_exception(e: Exception, operation: str = "Bedrock API") -> None:
@@ -150,23 +173,71 @@ async def bedrock_complete_if_cache(
     aws_access_key_id=None,
     aws_secret_access_key=None,
     aws_session_token=None,
+    aws_region: str | None = None,
+    api_key: str | None = None,
+    endpoint_url: str | None = None,
     **kwargs,
 ) -> Union[str, AsyncIterator[str]]:
+    """Call Amazon Bedrock Converse API with LightRAG-compatible shims.
+
+    Structured output note:
+    - This adapter does not support OpenAI-style ``response_format`` JSON mode.
+    - If callers pass ``response_format``, it is stripped before the request.
+    - Deprecated ``keyword_extraction`` and ``entity_extraction`` booleans are
+      accepted only as compatibility shims; they emit warnings and are ignored.
+
+    Authentication note:
+    - Bedrock does not use LightRAG's generic ``api_key`` fields.
+    - ``LLM_BINDING_API_KEY`` and ``EMBEDDING_BINDING_API_KEY`` are ignored for
+      Bedrock.
+    - To use Bedrock API key / bearer-token auth, set
+      ``AWS_BEARER_TOKEN_BEDROCK`` before starting the process; this is a
+      process-level AWS SDK setting.
+    - For role-specific Bedrock LLMs, use explicit SigV4 parameters
+      (``aws_access_key_id``, ``aws_secret_access_key``, ``aws_session_token``,
+      ``aws_region``). Per-role bearer-token overrides are not supported.
+
+    Endpoint note:
+    - ``endpoint_url`` overrides the default regional Bedrock endpoint. Pass
+      ``None``, an empty string, or the sentinel ``DEFAULT_BEDROCK_ENDPOINT``
+      to let the AWS SDK select its default endpoint.
+    """
     if enable_cot:
         import logging
 
         logging.debug(
             "enable_cot=True is not supported for Bedrock and will be ignored."
         )
-    # Respect existing env; only set if a non-empty value is available
-    access_key = os.environ.get("AWS_ACCESS_KEY_ID") or aws_access_key_id
-    secret_key = os.environ.get("AWS_SECRET_ACCESS_KEY") or aws_secret_access_key
-    session_token = os.environ.get("AWS_SESSION_TOKEN") or aws_session_token
-    _set_env_if_present("AWS_ACCESS_KEY_ID", access_key)
-    _set_env_if_present("AWS_SECRET_ACCESS_KEY", secret_key)
-    _set_env_if_present("AWS_SESSION_TOKEN", session_token)
-    # Region handling: prefer env, else kwarg (optional)
-    region = os.environ.get("AWS_REGION") or kwargs.pop("aws_region", None)
+
+    # Bedrock Converse API has no JSON mode; drop legacy extraction flags and
+    # response_format below and rely on the prompt template plus downstream
+    # tolerant JSON parsing.
+    keyword_extraction = kwargs.pop("keyword_extraction", False)
+    entity_extraction = kwargs.pop("entity_extraction", False)
+    if keyword_extraction:
+        warnings.warn(
+            "bedrock_complete_if_cache(keyword_extraction=True) is deprecated; "
+            "pass response_format={'type': 'json_object'} instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+    if entity_extraction:
+        warnings.warn(
+            "bedrock_complete_if_cache(entity_extraction=True) is deprecated; "
+            "pass response_format={'type': 'json_object'} instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+    if api_key:
+        warnings.warn(
+            "bedrock_complete_if_cache(api_key=...) is ignored; use SigV4 "
+            "parameters or set AWS_BEARER_TOKEN_BEDROCK before process start.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+
+    region = aws_region or kwargs.pop("aws_region", None)
+    endpoint_url = _normalize_bedrock_endpoint_url(endpoint_url)
     kwargs.pop("hashing_kv", None)
     # Capture stream flag (if provided) and remove from kwargs since it's not a Bedrock API parameter
     # We'll use this to determine whether to call converse_stream or converse
@@ -183,7 +254,6 @@ async def bedrock_complete_if_cache(
         "logprobs",
         "top_logprobs",
         "max_completion_tokens",
-        "response_format",
     ]:
         kwargs.pop(k, None)
     # Fix message history format
@@ -209,14 +279,23 @@ async def bedrock_complete_if_cache(
         "top_p": "topP",
         "stop_sequences": "stopSequences",
     }
-    if inference_params := list(
-        set(kwargs) & set(["max_tokens", "temperature", "top_p", "stop_sequences"])
-    ):
-        args["inferenceConfig"] = {}
-        for param in inference_params:
-            args["inferenceConfig"][inference_params_map.get(param, param)] = (
-                kwargs.pop(param)
-            )
+    inference_config: dict[str, Any] = {}
+    for param in ("max_tokens", "temperature", "top_p", "stop_sequences"):
+        if param not in kwargs:
+            continue
+        value = kwargs.pop(param)
+        # Bedrock rejects None; a None default means "inherit provider default"
+        if value is None:
+            continue
+        inference_config[inference_params_map.get(param, param)] = value
+    if inference_config:
+        args["inferenceConfig"] = inference_config
+
+    # Pass-through for model-specific parameters (e.g. Anthropic reasoning_config,
+    # Nova inferenceConfig extensions). Mirrors OpenAI's `extra_body`.
+    extra_fields = kwargs.pop("extra_fields", None)
+    if extra_fields:
+        args["additionalModelRequestFields"] = extra_fields
 
     # Import logging for error handling
     import logging
@@ -225,81 +304,62 @@ async def bedrock_complete_if_cache(
     if stream:
         # Create a session that will be used throughout the streaming process
         session = aioboto3.Session()
-        client = None
+        client_kwargs = _bedrock_client_kwargs(
+            region,
+            endpoint_url,
+            aws_access_key_id=aws_access_key_id,
+            aws_secret_access_key=aws_secret_access_key,
+            aws_session_token=aws_session_token,
+        )
 
         # Define the generator function that will manage the client lifecycle
         async def stream_generator():
-            nonlocal client
+            # async with ensures the aioboto3 client is closed even under
+            # task cancellation, avoiding aiohttp "Unclosed connection" warnings.
+            async with session.client("bedrock-runtime", **client_kwargs) as client:
+                event_stream = None
+                try:
+                    # Make the API call
+                    response = await client.converse_stream(**args, **kwargs)
+                    event_stream = response.get("stream")
 
-            # Create the client outside the generator to ensure it stays open
-            client = await session.client(
-                "bedrock-runtime", region_name=region
-            ).__aenter__()
-            event_stream = None
-            iteration_started = False
+                    # Process the stream
+                    async for event in event_stream:
+                        # Validate event structure
+                        if not event or not isinstance(event, dict):
+                            continue
 
-            try:
-                # Make the API call
-                response = await client.converse_stream(**args, **kwargs)
-                event_stream = response.get("stream")
-                iteration_started = True
+                        if "contentBlockDelta" in event:
+                            delta = event["contentBlockDelta"].get("delta", {})
+                            text = delta.get("text")
+                            if text:
+                                yield text
+                        # Handle other event types that might indicate stream end
+                        elif "messageStop" in event:
+                            break
 
-                # Process the stream
-                async for event in event_stream:
-                    # Validate event structure
-                    if not event or not isinstance(event, dict):
-                        continue
+                except Exception as e:
+                    # Convert to appropriate exception type
+                    _handle_bedrock_exception(e, "Bedrock streaming")
 
-                    if "contentBlockDelta" in event:
-                        delta = event["contentBlockDelta"].get("delta", {})
-                        text = delta.get("text")
-                        if text:
-                            yield text
-                    # Handle other event types that might indicate stream end
-                    elif "messageStop" in event:
-                        break
-
-            except Exception as e:
-                # Try to clean up resources if possible
-                if (
-                    iteration_started
-                    and event_stream
-                    and hasattr(event_stream, "aclose")
-                    and callable(getattr(event_stream, "aclose", None))
-                ):
-                    try:
-                        await event_stream.aclose()
-                    except Exception as close_error:
-                        logging.warning(
-                            f"Failed to close Bedrock event stream: {close_error}"
+                finally:
+                    # Close the event stream once; client cleanup is handled by async with.
+                    # aiobotocore's EventStream exposes sync `close()`, while generic
+                    # async iterators expose async `aclose()` — handle both and dispatch
+                    # awaitable results accordingly.
+                    if event_stream is not None:
+                        close_fn = getattr(event_stream, "close", None) or getattr(
+                            event_stream, "aclose", None
                         )
-
-                # Convert to appropriate exception type
-                _handle_bedrock_exception(e, "Bedrock streaming")
-
-            finally:
-                # Clean up the event stream
-                if (
-                    iteration_started
-                    and event_stream
-                    and hasattr(event_stream, "aclose")
-                    and callable(getattr(event_stream, "aclose", None))
-                ):
-                    try:
-                        await event_stream.aclose()
-                    except Exception as close_error:
-                        logging.warning(
-                            f"Failed to close Bedrock event stream in finally block: {close_error}"
-                        )
-
-                # Clean up the client
-                if client:
-                    try:
-                        await client.__aexit__(None, None, None)
-                    except Exception as client_close_error:
-                        logging.warning(
-                            f"Failed to close Bedrock client: {client_close_error}"
-                        )
+                        if callable(close_fn):
+                            try:
+                                result = close_fn()
+                                if inspect.isawaitable(result):
+                                    await result
+                            except Exception as close_error:
+                                logging.warning(
+                                    f"Failed to close Bedrock event stream: {close_error}"
+                                )
 
         # Return the generator that manages its own lifecycle
         return stream_generator()
@@ -307,7 +367,14 @@ async def bedrock_complete_if_cache(
     # For non-streaming responses, use the standard async context manager pattern
     session = aioboto3.Session()
     async with session.client(
-        "bedrock-runtime", region_name=region
+        "bedrock-runtime",
+        **_bedrock_client_kwargs(
+            region,
+            endpoint_url,
+            aws_access_key_id=aws_access_key_id,
+            aws_secret_access_key=aws_secret_access_key,
+            aws_session_token=aws_session_token,
+        ),
     ) as bedrock_async_client:
         try:
             # Use converse for non-streaming responses
@@ -323,7 +390,17 @@ async def bedrock_complete_if_cache(
             ):
                 raise BedrockError("Invalid response structure from Bedrock API")
 
-            content = response["output"]["message"]["content"][0]["text"]
+            # When thinking/reasoning is enabled, the first content block is a
+            # `reasoningContent` block and the visible text follows in a later
+            # block. Pick the first block that carries a text payload.
+            content = next(
+                (
+                    block["text"]
+                    for block in response["output"]["message"]["content"]
+                    if isinstance(block, dict) and block.get("text")
+                ),
+                None,
+            )
 
             if not content or content.strip() == "":
                 raise BedrockError("Received empty content from Bedrock API")
@@ -337,15 +414,24 @@ async def bedrock_complete_if_cache(
 
 # Generic Bedrock completion function
 async def bedrock_complete(
-    prompt, system_prompt=None, history_messages=[], keyword_extraction=False, **kwargs
+    prompt,
+    system_prompt=None,
+    history_messages=[],
+    keyword_extraction=False,
+    entity_extraction=False,
+    **kwargs,
 ) -> Union[str, AsyncIterator[str]]:
-    kwargs.pop("keyword_extraction", None)
+    # Bedrock Converse API has no JSON mode; the shim booleans are absorbed
+    # and forwarded so bedrock_complete_if_cache can emit DeprecationWarnings
+    # with accurate stack frames.
     model_name = kwargs["hashing_kv"].global_config["llm_model_name"]
     result = await bedrock_complete_if_cache(
         model_name,
         prompt,
         system_prompt=system_prompt,
         history_messages=history_messages,
+        keyword_extraction=keyword_extraction,
+        entity_extraction=entity_extraction,
         **kwargs,
     )
     return result
@@ -369,21 +455,44 @@ async def bedrock_embed(
     aws_access_key_id=None,
     aws_secret_access_key=None,
     aws_session_token=None,
+    aws_region: str | None = None,
+    api_key: str | None = None,
+    endpoint_url: str | None = None,
 ) -> np.ndarray:
-    # Respect existing env; only set if a non-empty value is available
-    access_key = os.environ.get("AWS_ACCESS_KEY_ID") or aws_access_key_id
-    secret_key = os.environ.get("AWS_SECRET_ACCESS_KEY") or aws_secret_access_key
-    session_token = os.environ.get("AWS_SESSION_TOKEN") or aws_session_token
-    _set_env_if_present("AWS_ACCESS_KEY_ID", access_key)
-    _set_env_if_present("AWS_SECRET_ACCESS_KEY", secret_key)
-    _set_env_if_present("AWS_SESSION_TOKEN", session_token)
+    """Generate embeddings with Amazon Bedrock Runtime.
 
-    # Region handling: prefer env
-    region = os.environ.get("AWS_REGION")
+    Authentication note:
+    - Bedrock does not use LightRAG's generic ``api_key`` fields.
+    - ``LLM_BINDING_API_KEY`` and ``EMBEDDING_BINDING_API_KEY`` are ignored for
+      Bedrock.
+    - To use Bedrock API key / bearer-token auth, set
+      ``AWS_BEARER_TOKEN_BEDROCK`` before starting the process; this is a
+      process-level AWS SDK setting.
+    - For role-specific Bedrock configuration, use explicit SigV4 parameters
+      (``aws_access_key_id``, ``aws_secret_access_key``, ``aws_session_token``,
+      ``aws_region``). Per-role bearer-token overrides are not supported.
+    """
+    if api_key:
+        warnings.warn(
+            "bedrock_embed(api_key=...) is ignored; use SigV4 parameters or "
+            "set AWS_BEARER_TOKEN_BEDROCK before process start.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+
+    region = aws_region
+    endpoint_url = _normalize_bedrock_endpoint_url(endpoint_url)
 
     session = aioboto3.Session()
     async with session.client(
-        "bedrock-runtime", region_name=region
+        "bedrock-runtime",
+        **_bedrock_client_kwargs(
+            region,
+            endpoint_url,
+            aws_access_key_id=aws_access_key_id,
+            aws_secret_access_key=aws_secret_access_key,
+            aws_session_token=aws_session_token,
+        ),
     ) as bedrock_async_client:
         try:
             if (model_provider := model.split(".")[0]) == "amazon":

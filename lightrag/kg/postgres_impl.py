@@ -4154,6 +4154,7 @@ class PGDocStatusStorage(DocStatusStorage):
     async def get_docs_paginated(
         self,
         status_filter: DocStatus | None = None,
+        status_filters: list[DocStatus] | None = None,
         page: int = 1,
         page_size: int = 50,
         sort_field: str = "updated_at",
@@ -4172,6 +4173,10 @@ class PGDocStatusStorage(DocStatusStorage):
             Tuple of (list of (doc_id, DocProcessingStatus) tuples, total_count)
         """
         start = time.perf_counter()
+        status_filter_values = self.resolve_status_filter_values(
+            status_filter=status_filter,
+            status_filters=status_filters,
+        )
         status_filter_value = status_filter.value if status_filter is not None else None
 
         performance_timing_log(
@@ -4211,10 +4216,10 @@ class PGDocStatusStorage(DocStatusStorage):
         param_count = 1
 
         # Build WHERE clause with parameterized query
-        if status_filter is not None:
+        if status_filter_values is not None:
             param_count += 1
-            where_clause = "WHERE workspace=$1 AND status=$2"
-            params["status"] = status_filter.value
+            where_clause = "WHERE workspace=$1 AND status = ANY($2)"
+            params["status_filters"] = sorted(status_filter_values)
         else:
             where_clause = "WHERE workspace=$1"
 

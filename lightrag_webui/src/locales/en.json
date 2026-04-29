@@ -136,10 +136,20 @@
         "metadata": "Metadata",
         "select": "Select"
       },
+      "filters": {
+        "all": "All",
+        "completed": "Completed",
+        "analyzing": "Analyzing",
+        "processing": "Processing",
+        "pending": "Pending",
+        "failed": "Failed"
+      },
       "status": {
         "all": "All",
         "completed": "Completed",
         "preprocessed": "Preprocessed",
+        "parsing": "Parsing",
+        "analyzing": "Analyzing",
         "processing": "Processing",
         "pending": "Pending",
         "failed": "Failed"
@@ -277,9 +287,9 @@
       "serverInfo": "Server Info",
       "workingDirectory": "Working Directory",
       "inputDirectory": "Input Directory",
-      "maxParallelInsert": "Concurrent Doc Processing",
+      "otherSettings": "Other Settings",
       "summarySettings": "Summary Settings",
-      "llmConfig": "LLM Configuration",
+      "llmConfig": "Model Configuration",
       "llmBinding": "LLM Binding",
       "llmBindingHost": "LLM Endpoint",
       "llmModel": "LLM Model",
@@ -293,7 +303,6 @@
       "graphStorage": "Graph Storage",
       "vectorStorage": "Vector Storage",
       "workspace": "Workspace",
-      "maxGraphNodes": "Max Graph Nodes",
       "rerankerConfig": "Reranker Configuration",
       "rerankerBindingHost": "Reranker Endpoint",
       "rerankerModel": "Reranker Model",

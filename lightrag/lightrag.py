@@ -4,11 +4,25 @@ import traceback
 import asyncio
 import inspect
 import os
+import json
+import re
+import fnmatch
+import hashlib
+import base64
+import mimetypes
+import sys
 import time
 import warnings
-from dataclasses import asdict, dataclass, field, replace
+from copy import deepcopy
+
+try:
+    import httpx
+except Exception:  # pragma: no cover - optional dependency
+    httpx = None
+from dataclasses import InitVar, asdict, dataclass, field, replace
 from datetime import datetime, timezone
 from functools import partial
+from pathlib import Path
 from typing import (
     Any,
     AsyncIterator,
@@ -18,15 +32,23 @@ from typing import (
     cast,
     final,
     Literal,
+    Mapping,
     Optional,
     List,
     Dict,
     Union,
 )
-from lightrag.prompt import PROMPTS
+from lightrag.prompt import (
+    PROMPTS,
+    get_default_entity_extraction_prompt_profile,
+    resolve_entity_extraction_prompt_profile,
+    validate_entity_extraction_prompt_profile_for_mode,
+)
 from lightrag.exceptions import PipelineCancelledException
 from lightrag.constants import (
     DEFAULT_MAX_GLEANING,
+    DEFAULT_MAX_EXTRACTION_RECORDS,
+    DEFAULT_MAX_EXTRACTION_ENTITIES,
     DEFAULT_FORCE_LLM_SUMMARY_ON_MERGE,
     DEFAULT_TOP_K,
     DEFAULT_CHUNK_TOP_K,
@@ -40,18 +62,22 @@ from lightrag.constants import (
     DEFAULT_SUMMARY_MAX_TOKENS,
     DEFAULT_SUMMARY_CONTEXT_SIZE,
     DEFAULT_SUMMARY_LENGTH_RECOMMENDED,
-    DEFAULT_MAX_EXTRACT_INPUT_TOKENS,
     DEFAULT_MAX_ASYNC,
     DEFAULT_MAX_PARALLEL_INSERT,
     DEFAULT_MAX_GRAPH_NODES,
     DEFAULT_MAX_SOURCE_IDS_PER_ENTITY,
     DEFAULT_MAX_SOURCE_IDS_PER_RELATION,
-    DEFAULT_ENTITY_TYPES,
     DEFAULT_SUMMARY_LANGUAGE,
     DEFAULT_LLM_TIMEOUT,
     DEFAULT_EMBEDDING_TIMEOUT,
+    DEFAULT_RERANK_TIMEOUT,
     DEFAULT_SOURCE_IDS_LIMIT_METHOD,
     DEFAULT_MAX_FILE_PATHS,
+    FULL_DOCS_FORMAT_RAW,
+    FULL_DOCS_FORMAT_LIGHTRAG,
+    FULL_DOCS_FORMAT_PENDING_PARSE,
+    PARSED_DIR_NAME,
+    DEFAULT_MAX_PARALLEL_ANALYZE,
     DEFAULT_FILE_PATH_MORE_PLACEHOLDER,
 )
 from lightrag.utils import get_env_value
@@ -92,6 +118,7 @@ from lightrag.operate import (
     kg_query,
     naive_query,
     rebuild_knowledge_from_chunks,
+    _warn_deprecated_query_model_func,
 )
 from lightrag.constants import GRAPH_FIELD_SEP
 from lightrag.utils import (
@@ -112,9 +139,11 @@ from lightrag.utils import (
     subtract_source_ids,
     make_relation_chunk_key,
     normalize_source_ids_limit_method,
+    move_file_to_parsed_dir,
 )
 from lightrag.types import KnowledgeGraph
 from dotenv import load_dotenv
+from lightrag.extraction.interchange import parse_interchange_jsonl
 
 # use the .env that is inside the current folder
 # allows to use different .env file for each lightrag instance
@@ -205,6 +234,275 @@ def _normalize_string_list(raw_values: Any, context: str = "") -> list[str]:
     return result
 
 
+def _split_text_units_for_hard_fallback(text: str) -> list[str]:
+    """Split text into sentence/paragraph-like units for fallback chunking."""
+    if not text:
+        return []
+    units: list[str] = []
+    for para in text.split("\n\n"):
+        p = para.strip()
+        if not p:
+            continue
+        for sentence in re.split(r"(?<=[。！？；.!?])", p):
+            s = sentence.strip()
+            if s:
+                units.append(s)
+    return units if units else [text]
+
+
+def _split_text_by_token_limit(
+    text: str, tokenizer: Tokenizer, max_tokens: int
+) -> list[str]:
+    """Split text by token limit with sentence-first, token-window fallback."""
+    if not text:
+        return []
+
+    try:
+        total_tokens = len(tokenizer.encode(text))
+    except Exception:
+        total_tokens = 0
+
+    if total_tokens > 0 and total_tokens <= max_tokens:
+        return [text]
+
+    units = _split_text_units_for_hard_fallback(text)
+    out: list[str] = []
+    cur_parts: list[str] = []
+    cur_tokens = 0
+
+    for unit in units:
+        try:
+            unit_tokens = len(tokenizer.encode(unit))
+        except Exception:
+            unit_tokens = 0
+
+        # Sentence itself is oversize: token-window split directly.
+        if unit_tokens > max_tokens:
+            if cur_parts:
+                out.append("\n\n".join(cur_parts))
+                cur_parts = []
+                cur_tokens = 0
+
+            token_ids = tokenizer.encode(unit)
+            for start in range(0, len(token_ids), max_tokens):
+                piece = tokenizer.decode(token_ids[start : start + max_tokens]).strip()
+                if piece:
+                    out.append(piece)
+            continue
+
+        if cur_parts and cur_tokens + unit_tokens > max_tokens:
+            out.append("\n\n".join(cur_parts))
+            cur_parts = [unit]
+            cur_tokens = unit_tokens
+        else:
+            cur_parts.append(unit)
+            cur_tokens += unit_tokens
+
+    if cur_parts:
+        out.append("\n\n".join(cur_parts))
+
+    return [x for x in out if x.strip()]
+
+
+def _enforce_chunk_token_limit_before_embedding(
+    chunking_result: list[dict[str, Any]] | tuple[dict[str, Any], ...],
+    tokenizer: Tokenizer,
+    max_tokens: int,
+) -> list[dict[str, Any]]:
+    """Hard fallback split before embedding while preserving heading hierarchy."""
+    if max_tokens <= 0:
+        return list(chunking_result)
+
+    normalized: list[dict[str, Any]] = []
+
+    for dp in chunking_result:
+        if not isinstance(dp, dict):
+            continue
+
+        content = dp.get("content", "")
+        if not isinstance(content, str) or not content.strip():
+            continue
+
+        try:
+            token_count = len(tokenizer.encode(content))
+        except Exception:
+            token_count = (
+                dp.get("tokens", 0) if isinstance(dp.get("tokens"), int) else 0
+            )
+
+        if token_count <= max_tokens:
+            ndp = dict(dp)
+            ndp["tokens"] = token_count if token_count > 0 else ndp.get("tokens", 0)
+            normalized.append(ndp)
+            continue
+
+        pieces = _split_text_by_token_limit(content, tokenizer, max_tokens)
+        if not pieces:
+            ndp = dict(dp)
+            ndp["tokens"] = token_count
+            normalized.append(ndp)
+            continue
+
+        base_chunk_id = dp.get("chunk_id")
+        total_parts = len(pieces)
+        for i, piece in enumerate(pieces, 1):
+            new_dp = dict(dp)
+            new_dp["content"] = piece
+            try:
+                new_dp["tokens"] = len(tokenizer.encode(piece))
+            except Exception:
+                new_dp["tokens"] = max(1, int(len(piece) * 0.5))
+
+            # Keep heading/parent_headings/level unchanged; only split payload.
+            if isinstance(base_chunk_id, str) and base_chunk_id.strip():
+                new_dp["chunk_id"] = f"{base_chunk_id}-s{i:02d}"
+
+            new_dp["split_type"] = "hard_fallback"
+            new_dp["split_part"] = i
+            new_dp["split_total"] = total_parts
+            normalized.append(new_dp)
+
+    # Rebuild order index to keep continuity after splitting.
+    for idx, item in enumerate(normalized):
+        item["chunk_order_index"] = idx
+    return normalized
+
+
+def _default_addon_params() -> dict[str, Any]:
+    return {
+        "language": get_env_value("SUMMARY_LANGUAGE", DEFAULT_SUMMARY_LANGUAGE, str),
+        "entity_type_prompt_file": get_env_value("ENTITY_TYPE_PROMPT_FILE", "", str),
+    }
+
+
+def _optional_env_int(env_key: str) -> int | None:
+    return get_env_value(env_key, None, int, special_none=True)
+
+
+@dataclass(frozen=True)
+class RoleSpec:
+    """Static descriptor for a known LLM role.
+
+    Adding a new role anywhere in LightRAG is a single-line edit: append a
+    ``RoleSpec`` to :data:`ROLES`. Every other component (env var loop in
+    ``api/config.py``, queue observability, role config update flow) iterates
+    this registry rather than hard-coding role names.
+    """
+
+    name: str
+    """Canonical lowercase role key (used in ``role_llm_configs`` dict and CLI/log output)."""
+
+    env_prefix: str
+    """Uppercase prefix used by the API env-var layer, e.g. ``"EXTRACT"`` for
+    ``EXTRACT_LLM_BINDING`` / ``EXTRACT_MAX_ASYNC_LLM`` / ``LLM_TIMEOUT_EXTRACT_LLM``."""
+
+    queue_name: str
+    """Display name passed to ``priority_limit_async_func_call`` for log lines."""
+
+
+ROLES: tuple[RoleSpec, ...] = (
+    RoleSpec("extract", "EXTRACT", "extract LLM func"),
+    RoleSpec("keyword", "KEYWORD", "keyword LLM func"),
+    RoleSpec("query", "QUERY", "query LLM func"),
+    RoleSpec("vlm", "VLM", "vlm LLM func"),
+)
+ROLE_NAMES: frozenset[str] = frozenset(spec.name for spec in ROLES)
+ROLES_BY_NAME: dict[str, RoleSpec] = {spec.name: spec for spec in ROLES}
+
+
+@dataclass
+class RoleLLMConfig:
+    """Per-role LLM override accepted at :class:`LightRAG` init time.
+
+    Any field left as ``None`` falls back to the corresponding base LLM
+    setting (``llm_model_func`` / ``llm_model_kwargs`` / ``llm_model_max_async``
+    / ``default_llm_timeout``). When ``max_async`` is None at init and the
+    user did not pass a ``role_llm_configs`` entry for the role, the value is
+    additionally seeded from ``{ROLE_PREFIX}_MAX_ASYNC_LLM``. ``metadata`` seeds
+    runtime observability and role-builder context.
+    """
+
+    func: Callable[..., object] | None = None
+    kwargs: dict[str, Any] | None = None
+    max_async: int | None = None
+    timeout: int | None = None
+    metadata: dict[str, Any] | None = None
+
+
+@dataclass
+class _RoleLLMState:
+    """Runtime state for one role. Internal — not part of the public API."""
+
+    raw_func: Callable[..., object]
+    kwargs: dict[str, Any] | None
+    max_async: int | None
+    timeout: int | None
+    metadata: dict[str, Any] = field(default_factory=dict)
+    wrapped: Callable[..., object] | None = None
+
+
+class ObservableAddonParams(dict[str, Any]):
+    def __init__(
+        self,
+        *args: Any,
+        on_change: Callable[[], None] | None = None,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(*args, **kwargs)
+        self._on_change = on_change
+
+    def _changed(self) -> None:
+        if self._on_change is not None:
+            self._on_change()
+
+    def __setitem__(self, key: str, value: Any) -> None:
+        super().__setitem__(key, value)
+        self._changed()
+
+    def __delitem__(self, key: str) -> None:
+        super().__delitem__(key)
+        self._changed()
+
+    def clear(self) -> None:
+        if self:
+            super().clear()
+            self._changed()
+
+    def pop(self, key: str, default: Any = ...):
+        existed = key in self
+        if default is ...:
+            value = super().pop(key)
+            self._changed()
+        else:
+            value = super().pop(key, default)
+            if existed:
+                self._changed()
+        return value
+
+    def popitem(self) -> tuple[str, Any]:
+        item = super().popitem()
+        self._changed()
+        return item
+
+    def setdefault(self, key: str, default: Any = None) -> Any:
+        if key in self:
+            return self[key]
+        value = super().setdefault(key, default)
+        self._changed()
+        return value
+
+    def update(self, *args: Any, **kwargs: Any) -> None:
+        if not args and not kwargs:
+            return
+        super().update(*args, **kwargs)
+        self._changed()
+
+    def __ior__(self, other: Mapping[str, Any]):
+        super().__ior__(other)
+        self._changed()
+        return self
+
+
 @final
 @dataclass
 class LightRAG:
@@ -291,12 +589,19 @@ class LightRAG:
     )
     """Maximum number of entity extraction attempts for ambiguous content."""
 
-    max_extract_input_tokens: int = field(
+    entity_extract_max_records: int = field(
         default=get_env_value(
-            "MAX_EXTRACT_INPUT_TOKENS", DEFAULT_MAX_EXTRACT_INPUT_TOKENS, int
+            "MAX_EXTRACTION_RECORDS", DEFAULT_MAX_EXTRACTION_RECORDS, int
         )
     )
-    """Maximum tokens allowed for entity extraction input context."""
+    """Per-response cap on total entity+relationship rows/records."""
+
+    entity_extract_max_entities: int = field(
+        default=get_env_value(
+            "MAX_EXTRACTION_ENTITIES", DEFAULT_MAX_EXTRACTION_ENTITIES, int
+        )
+    )
+    """Per-response cap on entity rows/objects."""
 
     force_llm_summary_on_merge: int = field(
         default=get_env_value(
@@ -400,6 +705,17 @@ class LightRAG:
     llm_model_func: Callable[..., object] | None = field(default=None)
     """Function for interacting with the large language model (LLM). Must be set before use."""
 
+    role_llm_configs: dict[str, RoleLLMConfig | dict[str, Any]] | None = field(
+        default=None
+    )
+    """Per-role LLM overrides keyed by role name (see :data:`ROLES`).
+
+    Each entry is a :class:`RoleLLMConfig` (or a plain dict with the same
+    keys ``func`` / ``kwargs`` / ``max_async`` / ``timeout``). Any field left
+    as ``None`` falls back to the corresponding base LLM setting. Roles not
+    present in the dict are wrapped from the base ``llm_model_func`` and
+    pick up ``{ROLE_PREFIX}_MAX_ASYNC_LLM`` env defaults."""
+
     llm_model_name: str = field(default="gpt-4o-mini")
     """Name of the LLM model used for generating responses."""
 
@@ -432,11 +748,38 @@ class LightRAG:
         default=int(os.getenv("LLM_TIMEOUT", DEFAULT_LLM_TIMEOUT))
     )
 
+    entity_extraction_use_json: bool = field(
+        default=os.getenv("ENTITY_EXTRACTION_USE_JSON", "false").lower() == "true"
+    )
+    """When True, entity extraction uses JSON structured output instead of delimiter-based text.
+    JSON mode is slower but significantly improves extraction quality and compatibility with smaller models.
+    Providers with native structured output support (OpenAI, Ollama, Gemini) will use their
+    native capabilities. Other providers rely on JSON-formatted prompts with json_repair parsing.
+    Default: False. Set ENTITY_EXTRACTION_USE_JSON=true in .env to enable."""
+
     # Rerank Configuration
     # ---
 
     rerank_model_func: Callable[..., object] | None = field(default=None)
     """Function for reranking retrieved documents. All rerank configurations (model name, API keys, top_k, etc.) should be included in this function. Optional."""
+
+    rerank_model_max_async: int = field(
+        default=int(
+            os.getenv(
+                "MAX_ASYNC_RERANK",
+                os.getenv("MAX_ASYNC", DEFAULT_MAX_ASYNC),
+            )
+        )
+    )
+    """Maximum number of concurrent rerank calls.
+    Falls back to MAX_ASYNC when MAX_ASYNC_RERANK is unset."""
+
+    default_rerank_timeout: int = field(
+        default=int(os.getenv("RERANK_TIMEOUT", DEFAULT_RERANK_TIMEOUT))
+    )
+    """Rerank request timeout in seconds.
+    Independent from LLM_TIMEOUT since reranker calls are much shorter
+    than full LLM generation."""
 
     min_rerank_score: float = field(
         default=get_env_value("MIN_RERANK_SCORE", DEFAULT_MIN_RERANK_SCORE, float)
@@ -462,6 +805,23 @@ class LightRAG:
         default=int(os.getenv("MAX_PARALLEL_INSERT", DEFAULT_MAX_PARALLEL_INSERT))
     )
     """Maximum number of parallel insert operations."""
+
+    max_parallel_parse_native: int = field(
+        default=int(os.getenv("MAX_PARALLEL_PARSE_NATIVE", "5"))
+    )
+    max_parallel_parse_mineru: int = field(
+        default=int(os.getenv("MAX_PARALLEL_PARSE_MINERU", "3"))
+    )
+    max_parallel_parse_docling: int = field(
+        default=int(os.getenv("MAX_PARALLEL_PARSE_DOCLING", "3"))
+    )
+    max_parallel_analyze: int = field(
+        default=int(
+            os.getenv("MAX_PARALLEL_ANALYZE", str(DEFAULT_MAX_PARALLEL_ANALYZE))
+        )
+    )
+    queue_size_default: int = field(default=int(os.getenv("QUEUE_SIZE_DEFAULT", "100")))
+    queue_size_insert: int = field(default=int(os.getenv("QUEUE_SIZE_INSERT", "4")))
 
     max_graph_nodes: int = field(
         default=get_env_value("MAX_GRAPH_NODES", DEFAULT_MAX_GRAPH_NODES, int)
@@ -503,13 +863,27 @@ class LightRAG:
     file_path_more_placeholder: str = field(default=DEFAULT_FILE_PATH_MORE_PLACEHOLDER)
     """Placeholder text when file paths exceed max_file_paths limit."""
 
-    addon_params: dict[str, Any] = field(
-        default_factory=lambda: {
-            "language": get_env_value(
-                "SUMMARY_LANGUAGE", DEFAULT_SUMMARY_LANGUAGE, str
-            ),
-            "entity_types": get_env_value("ENTITY_TYPES", DEFAULT_ENTITY_TYPES, list),
-        }
+    addon_params: InitVar[dict[str, Any] | None] = None
+    _addon_params: ObservableAddonParams = field(
+        default_factory=ObservableAddonParams,
+        init=False,
+        repr=False,
+    )
+    _addon_params_dirty: bool = field(default=True, init=False, repr=False)
+    _entity_extraction_prompt_profile: dict[str, Any] = field(
+        default_factory=get_default_entity_extraction_prompt_profile,
+        init=False,
+        repr=False,
+    )
+    _cached_entity_extraction_use_json: bool | None = field(
+        default=None,
+        init=False,
+        repr=False,
+    )
+    _resolved_summary_language: str = field(
+        default=DEFAULT_SUMMARY_LANGUAGE,
+        init=False,
+        repr=False,
     )
 
     # Storages Management
@@ -528,10 +902,614 @@ class LightRAG:
 
     _storages_status: StoragesStatus = field(default=StoragesStatus.NOT_CREATED)
 
-    def __post_init__(self):
+    @staticmethod
+    def _normalize_llm_role(role: str) -> str:
+        normalized = role.strip().lower()
+        if normalized not in ROLE_NAMES:
+            raise ValueError(f"Invalid LLM role: {role}")
+        return normalized
+
+    def register_role_llm_builder(
+        self,
+        builder: Callable[
+            [str, dict[str, Any]], tuple[Callable[..., object], dict[str, Any] | None]
+        ],
+    ) -> None:
+        """Register a runtime builder used by update_llm_role_config for binding/model updates."""
+        self._llm_role_builder = builder
+
+    def set_role_llm_metadata(self, role: str, **metadata: Any) -> None:
+        """Store role metadata used when rebuilding a role-specific LLM function."""
+        role = self._normalize_llm_role(role)
+        state = self._role_llm_states[role]
+        for key, value in metadata.items():
+            if value is None:
+                continue
+            state.metadata[key] = value
+
+    @property
+    def role_llm_funcs(self) -> Mapping[str, Callable[..., object]]:
+        """Read-only mapping of role name → wrapped (queue-managed) LLM func."""
+        return {
+            name: state.wrapped
+            for name, state in self._role_llm_states.items()
+            if state.wrapped is not None
+        }
+
+    @property
+    def role_llm_kwargs(self) -> Mapping[str, dict[str, Any] | None]:
+        """Read-only mapping of role name → effective LLM kwargs (None means inherit base)."""
+        return {name: state.kwargs for name, state in self._role_llm_states.items()}
+
+    def _get_effective_role_llm_kwargs(self, role: str) -> dict[str, Any]:
+        state = self._role_llm_states[self._normalize_llm_role(role)]
+        if state.kwargs is not None:
+            return state.kwargs
+        if state.metadata.get("is_cross_provider"):
+            return {}
+        return self.llm_model_kwargs
+
+    def _get_effective_role_llm_timeout(self, role: str) -> int:
+        state = self._role_llm_states[self._normalize_llm_role(role)]
+        return state.timeout if state.timeout is not None else self.default_llm_timeout
+
+    def _get_effective_role_llm_max_async(self, role: str) -> int:
+        state = self._role_llm_states[self._normalize_llm_role(role)]
+        return (
+            state.max_async if state.max_async is not None else self.llm_model_max_async
+        )
+
+    def _wrap_llm_role_func(
+        self,
+        role_name: str,
+        raw_func: Callable[..., object],
+        max_async: int,
+        timeout: int,
+        model_kwargs: dict[str, Any],
+    ) -> Callable[..., object]:
+        spec = ROLES_BY_NAME[role_name]
+        return priority_limit_async_func_call(
+            max_async,
+            llm_timeout=timeout,
+            queue_name=spec.queue_name,
+        )(
+            partial(
+                raw_func,
+                hashing_kv=self.llm_response_cache,
+                **model_kwargs,
+            )
+        )
+
+    def _rebuild_role_llm_funcs(self) -> None:
+        """Wrap each role's raw_func with its own priority queue.
+
+        Base ``llm_model_func`` is intentionally NOT wrapped — concurrency
+        for the base function is enforced at the role layer (every code path
+        that calls an LLM goes through a role wrapper).
+        """
+        for spec in ROLES:
+            self._rebuild_single_role_llm_func(spec.name)
+
+    def _rebuild_single_role_llm_func(self, role: str) -> None:
+        role = self._normalize_llm_role(role)
+        state = self._role_llm_states[role]
+        state.wrapped = self._wrap_llm_role_func(
+            role,
+            state.raw_func,
+            self._get_effective_role_llm_max_async(role),
+            self._get_effective_role_llm_timeout(role),
+            self._get_effective_role_llm_kwargs(role),
+        )
+
+    async def _shutdown_llm_wrapper(self, wrapped_func: Callable[..., object]) -> None:
+        shutdown = getattr(wrapped_func, "shutdown", None)
+        if callable(shutdown):
+            await shutdown(graceful=True)
+
+    def _schedule_retired_llm_queue_cleanup(
+        self, wrapped_func: Callable[..., object] | None
+    ) -> None:
+        if wrapped_func is None or not callable(
+            getattr(wrapped_func, "shutdown", None)
+        ):
+            return
+
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            # The retired wrapper's queue and worker tasks are tied to the
+            # event loop that first used them. Spinning up a fresh loop via
+            # asyncio.run would either hang on queue.join() or touch
+            # primitives bound to a closed loop. Skip cleanup with a warning
+            # — call aupdate_llm_role_config() from an async context for
+            # deterministic shutdown.
+            logger.warning(
+                "update_llm_role_config: skipping retired LLM queue cleanup "
+                "because no event loop is running; call aupdate_llm_role_config() "
+                "from an async context for deterministic shutdown"
+            )
+            return
+
+        task = loop.create_task(self._shutdown_llm_wrapper(wrapped_func))
+        self._retired_llm_queue_cleanup_tasks.add(task)
+        task.add_done_callback(self._finalize_retired_llm_queue_cleanup)
+
+    def _finalize_retired_llm_queue_cleanup(self, task: asyncio.Task) -> None:
+        self._retired_llm_queue_cleanup_tasks.discard(task)
+        try:
+            task.result()
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.warning(f"Retired LLM queue cleanup failed: {e}")
+
+    async def wait_for_retired_llm_queues(self) -> None:
+        """Wait until all retired role LLM queues have drained and shut down.
+
+        Cleanup failures are logged by ``_finalize_retired_llm_queue_cleanup``
+        and intentionally swallowed here so callers can rely on this method
+        always returning once every retired wrapper has finished.
+        """
+        while self._retired_llm_queue_cleanup_tasks:
+            tasks = list(self._retired_llm_queue_cleanup_tasks)
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    def _apply_llm_role_config_update(
+        self,
+        role: str,
+        *,
+        model_func: Callable[..., object] | None = None,
+        model_kwargs: dict[str, Any] | None = None,
+        max_async: int | None = None,
+        timeout: int | None = None,
+        binding: str | None = None,
+        model: str | None = None,
+        host: str | None = None,
+        api_key: str | None = None,
+        provider_options: dict[str, Any] | None = None,
+    ) -> Callable[..., object] | None:
+        role = self._normalize_llm_role(role)
+        state = self._role_llm_states[role]
+        old_wrapped = state.wrapped
+
+        snapshot = _RoleLLMState(
+            raw_func=state.raw_func,
+            kwargs=deepcopy(state.kwargs),
+            max_async=state.max_async,
+            timeout=state.timeout,
+            metadata=deepcopy(state.metadata),
+            wrapped=state.wrapped,
+        )
+
+        try:
+            if model_func is not None and not callable(model_func):
+                raise TypeError("model_func must be callable")
+
+            if model_kwargs is not None:
+                state.kwargs = model_kwargs
+            if max_async is not None:
+                state.max_async = max_async
+            if timeout is not None:
+                state.timeout = timeout
+            if model_func is not None:
+                state.raw_func = model_func
+
+            metadata_updated = any(
+                value is not None
+                for value in (binding, model, host, api_key, provider_options)
+            )
+            if binding is not None:
+                state.metadata["binding"] = binding
+            if model is not None:
+                state.metadata["model"] = model
+            if host is not None:
+                state.metadata["host"] = host
+            if api_key is not None:
+                state.metadata["api_key"] = api_key
+            if provider_options is not None:
+                state.metadata["provider_options"] = provider_options
+            if "base_binding" in state.metadata and "binding" in state.metadata:
+                state.metadata["is_cross_provider"] = (
+                    state.metadata["binding"] != state.metadata["base_binding"]
+                )
+
+            if metadata_updated:
+                builder = getattr(self, "_llm_role_builder", None)
+                if builder is None and model_func is None:
+                    raise ValueError(
+                        "Runtime role builder is not configured; provide model_func or register_role_llm_builder() first"
+                    )
+                if builder is not None:
+                    built_func, built_kwargs = builder(role, state.metadata)
+                    state.raw_func = built_func
+                    if model_kwargs is None and built_kwargs is not None:
+                        state.kwargs = built_kwargs
+
+            self._rebuild_single_role_llm_func(role)
+        except Exception:
+            state.raw_func = snapshot.raw_func
+            state.kwargs = snapshot.kwargs
+            state.max_async = snapshot.max_async
+            state.timeout = snapshot.timeout
+            state.metadata = snapshot.metadata
+            state.wrapped = snapshot.wrapped
+            raise
+
+        self._log_llm_role_config("updated", role=role)
+        return old_wrapped
+
+    def update_llm_role_config(
+        self,
+        role: str,
+        *,
+        model_func: Callable[..., object] | None = None,
+        model_kwargs: dict[str, Any] | None = None,
+        max_async: int | None = None,
+        timeout: int | None = None,
+        binding: str | None = None,
+        model: str | None = None,
+        host: str | None = None,
+        api_key: str | None = None,
+        provider_options: dict[str, Any] | None = None,
+    ) -> None:
+        """
+        Update a role-specific LLM configuration at runtime.
+
+        Supports lightweight updates (kwargs/max_async/timeout/model_func) directly.
+        For binding/model/host/api_key/provider_options updates, a role builder must
+        be registered via register_role_llm_builder().
+        """
+        old_wrapped = self._apply_llm_role_config_update(
+            role,
+            model_func=model_func,
+            model_kwargs=model_kwargs,
+            max_async=max_async,
+            timeout=timeout,
+            binding=binding,
+            model=model,
+            host=host,
+            api_key=api_key,
+            provider_options=provider_options,
+        )
+        self._schedule_retired_llm_queue_cleanup(old_wrapped)
+
+    async def aupdate_llm_role_config(
+        self,
+        role: str,
+        *,
+        model_func: Callable[..., object] | None = None,
+        model_kwargs: dict[str, Any] | None = None,
+        max_async: int | None = None,
+        timeout: int | None = None,
+        binding: str | None = None,
+        model: str | None = None,
+        host: str | None = None,
+        api_key: str | None = None,
+        provider_options: dict[str, Any] | None = None,
+    ) -> None:
+        """Async variant of update_llm_role_config that waits for queue cleanup.
+
+        Blocking behavior:
+            This coroutine awaits a graceful shutdown of the retired role
+            wrapper's priority queue. The shutdown blocks on
+            ``queue.join()`` until every already-queued LLM call has been
+            executed (workers always call ``task_done()`` in ``finally``,
+            so in-flight requests are not cut off).
+
+            The wait is bounded by ``max_task_duration`` of the retired
+            queue, which is computed as ``llm_timeout * 2 + 15`` seconds
+            (default ``180 * 2 + 15 = 375`` seconds, ~6 min 15 s). When
+            this bound is reached, the drain times out and the shutdown
+            falls through to forced cancellation: pending futures are
+            cancelled, the queue is cleared, workers are stopped. So this
+            method **never blocks indefinitely**, but with a deep backlog
+            of slow LLM calls it can take up to that bound to return, and
+            in-flight calls past the bound will be cancelled.
+
+            If you need a non-blocking switch, use the sync
+            ``update_llm_role_config()`` (which schedules cleanup as a
+            background task) and await ``wait_for_retired_llm_queues()``
+            separately when you want to confirm the old queue is gone.
+        """
+        old_wrapped = self._apply_llm_role_config_update(
+            role,
+            model_func=model_func,
+            model_kwargs=model_kwargs,
+            max_async=max_async,
+            timeout=timeout,
+            binding=binding,
+            model=model,
+            host=host,
+            api_key=api_key,
+            provider_options=provider_options,
+        )
+        if old_wrapped is not None:
+            await self._shutdown_llm_wrapper(old_wrapped)
+
+    _SECRET_MARKERS = (
+        "api_key",
+        "api-key",
+        "apikey",
+        "access_key",
+        "access-key",
+        "secret",
+        "token",
+        "credential",
+        "password",
+        "passphrase",
+        "pwd",
+        "auth",
+        "session",
+    )
+
+    @classmethod
+    def _is_secret_key(cls, key: str) -> bool:
+        lowered = key.lower()
+        return any(marker in lowered for marker in cls._SECRET_MARKERS)
+
+    def _scrubbed_llm_metadata(self, metadata: dict[str, Any]) -> dict[str, Any]:
+        """Return a deep copy of ``metadata`` with auth-bearing fields removed.
+
+        Auth-bearing fields are stripped entirely — not masked — because a
+        masked ``"***"`` carries no information for an external consumer
+        (operators already see ``binding`` / ``host`` to confirm a role is
+        configured). Stripping makes the invariant simple: anything that
+        appears in this output is safe to log, cache, ship over the wire.
+
+        Components that legitimately need the raw secret (the role builder,
+        provider clients) read it directly off the private
+        ``_role_llm_states[role].metadata`` dict.
+        """
+
+        def scrub_value(value: Any) -> Any:
+            if isinstance(value, Mapping):
+                return {
+                    key: scrub_value(inner_value)
+                    for key, inner_value in value.items()
+                    if not self._is_secret_key(str(key))
+                }
+            if isinstance(value, list):
+                return [scrub_value(item) for item in value]
+            if isinstance(value, tuple):
+                return tuple(scrub_value(item) for item in value)
+            return deepcopy(value)
+
+        return scrub_value(metadata)
+
+    def get_llm_role_config(self, role: str | None = None) -> dict[str, Any]:
+        """Return effective role LLM runtime configuration (observability snapshot).
+
+        Each role entry exposes ``binding`` / ``model`` / ``host`` at the top
+        level for convenience and again inside ``metadata`` as part of the
+        full runtime snapshot (which may contain extra builder-specific
+        keys). Auth-bearing fields (``api_key``, ``aws_secret_access_key``,
+        ``password``, …) are **stripped entirely** from ``metadata`` — this
+        method is intended for ``/health`` / WebUI / audit output and must
+        never leak credentials. There is no escape hatch; runtime components
+        that legitimately need the raw value read it from
+        ``_role_llm_states[role].metadata`` directly.
+        """
+
+        def role_config(role_name: str) -> dict[str, Any]:
+            state = self._role_llm_states[role_name]
+            metadata = self._scrubbed_llm_metadata(state.metadata)
+            return {
+                "binding": metadata.get("binding"),
+                "model": metadata.get("model"),
+                "host": metadata.get("host"),
+                "is_cross_provider": metadata.get("is_cross_provider", False),
+                "max_async": self._get_effective_role_llm_max_async(role_name),
+                "timeout": self._get_effective_role_llm_timeout(role_name),
+                "has_model_kwargs": state.kwargs is not None,
+                "metadata": metadata,
+            }
+
+        if role is not None:
+            return role_config(self._normalize_llm_role(role))
+
+        return {spec.name: role_config(spec.name) for spec in ROLES}
+
+    def _log_llm_role_config(self, reason: str, role: str | None = None) -> None:
+        """Log the sanitized role LLM runtime configuration."""
+        if role is None:
+            configs = self.get_llm_role_config()
+            role_names = [spec.name for spec in ROLES]
+            logger.info(f"Role LLM Configuration ({reason}):")
+        else:
+            normalized_role = self._normalize_llm_role(role)
+            configs = {normalized_role: self.get_llm_role_config(normalized_role)}
+            role_names = [normalized_role]
+            logger.info(f"Role LLM Configuration ({reason}: {normalized_role}):")
+
+        for role_name in role_names:
+            cfg = configs[role_name]
+            logger.info(
+                " - %s: %s/%s, host=%s, max_async=%s, timeout=%s",
+                role_name,
+                cfg["binding"],
+                cfg["model"],
+                cfg["host"],
+                cfg["max_async"],
+                cfg["timeout"],
+            )
+
+    async def _queue_status_for_func(
+        self, func: Callable[..., object] | None
+    ) -> dict[str, Any]:
+        if func is None:
+            return {"available": False}
+        get_stats = getattr(func, "get_queue_stats", None)
+        if not callable(get_stats):
+            return {"available": False}
+        stats = get_stats()
+        if inspect.isawaitable(stats):
+            stats = await stats
+        stats["available"] = True
+        return stats
+
+    async def get_llm_queue_status(self, include_base: bool = True) -> dict[str, Any]:
+        """Return queue status for each role's wrapped LLM func.
+
+        The base ``llm_model_func`` is no longer queue-wrapped, so it is not
+        reported here. ``include_base`` is kept for signature compatibility
+        but has no effect.
+        """
+        del include_base  # base is unwrapped — see docstring
+
+        result: dict[str, Any] = {}
+        for spec in ROLES:
+            state = self._role_llm_states.get(spec.name)
+            result[spec.name] = await self._queue_status_for_func(
+                state.wrapped if state else None
+            )
+        return result
+
+    async def get_embedding_queue_status(self) -> dict[str, Any]:
+        """Return queue status for the wrapped embedding function."""
+        return await self._queue_status_for_func(
+            self.embedding_func.func if self.embedding_func is not None else None
+        )
+
+    async def get_rerank_queue_status(self) -> dict[str, Any]:
+        """Return queue status for the wrapped rerank function."""
+        return await self._queue_status_for_func(self.rerank_model_func)
+
+    def _mark_addon_params_dirty(self) -> None:
+        self._addon_params_dirty = True
+
+    def _normalize_addon_params(
+        self, addon_params: Mapping[str, Any] | None
+    ) -> dict[str, Any]:
+        if addon_params is None:
+            normalized = _default_addon_params()
+        elif isinstance(addon_params, Mapping):
+            normalized = dict(addon_params)
+        else:
+            raise TypeError(
+                "addon_params must be a Mapping or None, got "
+                f"{type(addon_params).__name__}"
+            )
+
+        # When the caller supplies addon_params explicitly, the dataclass
+        # default_factory is skipped — fall back to environment variables so
+        # ENTITY_TYPE_PROMPT_FILE / SUMMARY_LANGUAGE still apply.
+        normalized.setdefault(
+            "language", get_env_value("SUMMARY_LANGUAGE", DEFAULT_SUMMARY_LANGUAGE, str)
+        )
+        normalized.setdefault(
+            "entity_type_prompt_file",
+            get_env_value("ENTITY_TYPE_PROMPT_FILE", "", str),
+        )
+        return normalized
+
+    def _replace_addon_params(
+        self, addon_params: Mapping[str, Any] | None, *, mark_dirty: bool
+    ) -> None:
+        wrapped = ObservableAddonParams(
+            self._normalize_addon_params(addon_params),
+            on_change=self._mark_addon_params_dirty,
+        )
+        self._addon_params = wrapped
+        if mark_dirty:
+            self._mark_addon_params_dirty()
+
+    def _get_addon_params(self) -> ObservableAddonParams:
+        """Return the live addon_params store.
+
+        Mutations on the returned instance trigger a cache refresh on the next
+        _build_global_config() call. If the whole mapping is replaced via the
+        setter, previously captured references point at the old instance and
+        will no longer propagate changes — always re-read `rag.addon_params`
+        after replacement rather than caching references.
+        """
+        return self._addon_params
+
+    def _set_runtime_addon_params(self, addon_params: Mapping[str, Any] | None) -> None:
+        self._replace_addon_params(addon_params, mark_dirty=True)
+
+    def _refresh_addon_params_cache(self) -> None:
+        summary_language = self._addon_params.get("language", DEFAULT_SUMMARY_LANGUAGE)
+        if not isinstance(summary_language, str) or not summary_language.strip():
+            summary_language = DEFAULT_SUMMARY_LANGUAGE
+        self._resolved_summary_language = summary_language
+
+        resolved_prompt_profile = resolve_entity_extraction_prompt_profile(
+            self._addon_params,
+            self.entity_extraction_use_json,
+        )
+        self._entity_extraction_prompt_profile = (
+            validate_entity_extraction_prompt_profile_for_mode(
+                resolved_prompt_profile,
+                self.entity_extraction_use_json,
+                self._addon_params.get("entity_type_prompt_file"),
+            )
+        )
+        self._cached_entity_extraction_use_json = self.entity_extraction_use_json
+        self._addon_params_dirty = False
+
+    def _ensure_addon_params_cache(self) -> None:
+        if (
+            not self._addon_params_dirty
+            and self._cached_entity_extraction_use_json
+            == self.entity_extraction_use_json
+        ):
+            return
+        self._refresh_addon_params_cache()
+
+    def _build_global_config(self) -> dict[str, Any]:
+        self._ensure_addon_params_cache()
+        global_config = asdict(self)
+        global_config.pop("_addon_params", None)
+        global_config.pop("_addon_params_dirty", None)
+        global_config.pop("_cached_entity_extraction_use_json", None)
+        global_config["addon_params"] = dict(self._addon_params)
+        # Inject runtime per-role wrapped LLM funcs (callable; not part of asdict
+        # because they live in the private _role_llm_states map). The first
+        # _build_global_config() call from __post_init__ runs before the role
+        # state is built, so fall back to an empty dict in that case.
+        states = getattr(self, "_role_llm_states", None) or {}
+        global_config["role_llm_funcs"] = {
+            spec.name: states[spec.name].wrapped if spec.name in states else None
+            for spec in ROLES
+        }
+        global_config["llm_cache_identities"] = {
+            spec.name: self._build_role_llm_cache_identity(
+                spec.name, states.get(spec.name)
+            )
+            for spec in ROLES
+        }
+        return global_config
+
+    def _build_role_llm_cache_identity(
+        self, role: str, state: _RoleLLMState | None
+    ) -> dict[str, Any]:
+        # `state` is None during the first _build_global_config() call from
+        # __post_init__ — role builders have not run yet, so metadata is empty
+        # and we fall back to self.llm_model_name. Once roles are initialized
+        # or aupdate_llm_role_config() runs, metadata always carries `model`.
+        metadata = state.metadata if state is not None else {}
+        return {
+            "role": role,
+            "binding": metadata.get("binding"),
+            "model": metadata.get("model") or self.llm_model_name,
+            "host": metadata.get("host"),
+        }
+
+    def __post_init__(self, addon_params: dict[str, Any] | None):
         from lightrag.kg.shared_storage import (
             initialize_share_data,
         )
+
+        # Fail fast if deprecated ENTITY_TYPES env var is set
+        if os.getenv("ENTITY_TYPES") is not None:
+            raise SystemExit(
+                "ERROR: ENTITY_TYPES environment variable is no longer supported. "
+                "Please customize entity type guidance through the prompt template instead. "
+                "Set addon_params={'entity_types_guidance': '...'} or replace the prompt template."
+            )
+
+        self._replace_addon_params(addon_params, mark_dirty=False)
+        self._refresh_addon_params_cache()
 
         # Handle deprecated parameters
         if self.log_level is not None:
@@ -605,6 +1583,13 @@ class LightRAG:
                 f"max_total_tokens({self.summary_max_tokens}) should greater than summary_length_recommended({self.summary_length_recommended})"
             )
 
+        if self.rerank_model_func is not None:
+            self.rerank_model_func = priority_limit_async_func_call(
+                self.rerank_model_max_async,
+                llm_timeout=self.default_rerank_timeout,
+                queue_name="Rerank func",
+            )(self.rerank_model_func)
+
         # Init Embedding
         # Step 1: Capture embedding_func and max_token_size before applying rate_limit decorator
         original_embedding_func = self.embedding_func
@@ -617,7 +1602,7 @@ class LightRAG:
         self.embedding_token_limit = embedding_max_token_size
 
         # Fix global_config now
-        global_config = asdict(self)
+        global_config = self._build_global_config()
         # Restore original EmbeddingFunc object (asdict converts it to dict)
         global_config["embedding_func"] = original_embedding_func
 
@@ -736,21 +1721,70 @@ class LightRAG:
             embedding_func=None,
         )
 
-        # Directly use llm_response_cache, don't create a new object
-        hashing_kv = self.llm_response_cache
+        # Per-role isolated LLM wrappers (independent queues per role).
+        # The base ``self.llm_model_func`` is intentionally NOT queue-wrapped:
+        # every code path that calls an LLM goes through one of the role
+        # wrappers built below, so concurrency is enforced at the role layer.
+        base_llm_func = self.llm_model_func
+        if base_llm_func is None:
+            raise ValueError("llm_model_func must be provided")
 
-        # Get timeout from LLM model kwargs for dynamic timeout calculation
-        self.llm_model_func = priority_limit_async_func_call(
-            self.llm_model_max_async,
-            llm_timeout=self.default_llm_timeout,
-            queue_name="LLM func",
-        )(
-            partial(
-                self.llm_model_func,  # type: ignore
-                hashing_kv=hashing_kv,
-                **self.llm_model_kwargs,
+        self._llm_role_builder = None
+        self._retired_llm_queue_cleanup_tasks: set[asyncio.Task] = set()
+
+        user_role_configs = self.role_llm_configs or {}
+        if not isinstance(user_role_configs, Mapping):
+            raise TypeError(
+                "role_llm_configs must be a Mapping or None, got "
+                f"{type(user_role_configs).__name__}"
             )
-        )
+        unknown_roles = [role for role in user_role_configs if role not in ROLE_NAMES]
+        if unknown_roles:
+            valid_roles = ", ".join(sorted(ROLE_NAMES))
+            unknown = ", ".join(repr(role) for role in unknown_roles)
+            raise ValueError(
+                f"Unknown role_llm_configs key(s): {unknown}. "
+                f"Valid roles are: {valid_roles}"
+            )
+
+        self._role_llm_states: dict[str, _RoleLLMState] = {}
+        for spec in ROLES:
+            override = user_role_configs.get(spec.name)
+            if override is None:
+                cfg = RoleLLMConfig()
+            elif isinstance(override, RoleLLMConfig):
+                cfg = override
+            elif isinstance(override, Mapping):
+                cfg = RoleLLMConfig(**dict(override))
+            else:
+                raise TypeError(
+                    f"role_llm_configs[{spec.name!r}] must be RoleLLMConfig or "
+                    f"a dict, got {type(override).__name__}"
+                )
+
+            max_async = cfg.max_async
+            if max_async is None:
+                max_async = _optional_env_int(f"{spec.env_prefix}_MAX_ASYNC_LLM")
+
+            metadata = {}
+            if cfg.metadata is not None:
+                if not isinstance(cfg.metadata, Mapping):
+                    raise TypeError(
+                        f"role_llm_configs[{spec.name!r}].metadata must be a "
+                        f"Mapping or None, got {type(cfg.metadata).__name__}"
+                    )
+                metadata = deepcopy(dict(cfg.metadata))
+
+            self._role_llm_states[spec.name] = _RoleLLMState(
+                raw_func=cfg.func or base_llm_func,
+                kwargs=cfg.kwargs,
+                max_async=max_async,
+                timeout=cfg.timeout,
+                metadata=metadata,
+            )
+
+        self._rebuild_role_llm_funcs()
+        self._log_llm_role_config("initialized")
 
         self._storages_status = StoragesStatus.CREATED
 
@@ -1347,20 +2381,24 @@ class LightRAG:
         ids: list[str] | None = None,
         file_paths: str | list[str] | None = None,
         track_id: str | None = None,
+        docs_format: str = FULL_DOCS_FORMAT_RAW,
+        lightrag_document_paths: str | list[str] | None = None,
     ) -> str:
         """
         Pipeline for Processing Documents
 
-        1. Validate ids if provided or generate MD5 hash IDs and remove duplicate contents
+        1. Validate ids if provided or generate MD5 hash IDs and remove duplicate contents (skip content dedup when format is lightrag)
         2. Generate document initial status
         3. Filter out already processed documents
         4. Enqueue document in status
 
         Args:
-            input: Single document string or list of document strings
-            ids: list of unique document IDs, if not provided, MD5 hash IDs will be generated
+            input: Single document string or list of document strings (can be empty when docs_format is lightrag)
+            ids: list of unique document IDs, if not provided, MD5 hash IDs will be generated (from content or file_path when lightrag)
             file_paths: list of file paths corresponding to each document, used for citation
-            track_id: tracking ID for monitoring processing status, if not provided, will be generated with "enqueue" prefix
+            track_id: tracking ID for monitoring processing status
+            docs_format: "raw" (default) or "lightrag"; when "lightrag" content may be empty and content-dedup is skipped
+            lightrag_document_paths: paths to LightRAG Document (e.g. .blocks.jsonl dir or base path), when docs_format is lightrag
 
         Returns:
             str: tracking ID for monitoring processing status
@@ -1374,6 +2412,10 @@ class LightRAG:
             ids = [ids]
         if isinstance(file_paths, str):
             file_paths = [file_paths]
+        if isinstance(lightrag_document_paths, str):
+            lightrag_document_paths = (
+                [lightrag_document_paths] if lightrag_document_paths else None
+            )
 
         # If file_paths is provided, ensure it matches the number of documents
         if file_paths is not None:
@@ -1388,19 +2430,43 @@ class LightRAG:
             ]
             file_paths = [path if path else "unknown_source" for path in file_paths]
         else:
-            # If no file paths provided, use placeholder
             file_paths = ["unknown_source"] * len(input)
 
-        # 1. Validate ids if provided or generate MD5 hash IDs and remove duplicate contents
+        is_lightrag_format = docs_format == FULL_DOCS_FORMAT_LIGHTRAG
+        if is_lightrag_format and lightrag_document_paths is not None:
+            if len(lightrag_document_paths) != len(input):
+                raise ValueError(
+                    "Number of lightrag_document_paths must match the number of documents"
+                )
+
+        # 1. Validate ids and build contents (when lightrag: no content dedup, content may be empty)
         if ids is not None:
-            # Check if the number of IDs matches the number of documents
             if len(ids) != len(input):
                 raise ValueError("Number of IDs must match the number of documents")
-
-            # Check if IDs are unique
             if len(ids) != len(set(ids)):
                 raise ValueError("IDs must be unique")
 
+        if is_lightrag_format:
+            # LightRAG Document: no content hash dedup; content may be empty
+            contents = {}
+            for i in range(len(file_paths)):
+                path = file_paths[i]
+                doc_id = (
+                    ids[i]
+                    if ids is not None
+                    else compute_mdhash_id(path, prefix="doc-")
+                )
+                lightrag_path = (
+                    lightrag_document_paths[i] if lightrag_document_paths else ""
+                ) or path
+                content_str = (input[i] or "").strip() if i < len(input) else ""
+                contents[doc_id] = {
+                    "content": content_str,
+                    "file_path": path,
+                    "format": FULL_DOCS_FORMAT_LIGHTRAG,
+                    "lightrag_document_path": lightrag_path,
+                }
+        elif ids is not None:
             # Generate contents dict and remove duplicates in one pass
             unique_contents = {}
             for id_, doc, path in zip(ids, input, file_paths):
@@ -1408,11 +2474,27 @@ class LightRAG:
                 if cleaned_content not in unique_contents:
                     unique_contents[cleaned_content] = (id_, path)
 
-            # Reconstruct contents with unique content
             contents = {
-                id_: {"content": content, "file_path": file_path}
+                id_: {
+                    "content": content,
+                    "file_path": file_path,
+                    "format": FULL_DOCS_FORMAT_RAW,
+                }
                 for content, (id_, file_path) in unique_contents.items()
             }
+        elif docs_format == FULL_DOCS_FORMAT_PENDING_PARSE:
+            contents = {}
+            for i, (doc, path) in enumerate(zip(input, file_paths)):
+                doc_id = (
+                    ids[i]
+                    if ids is not None
+                    else compute_mdhash_id(path, prefix="doc-")
+                )
+                contents[doc_id] = {
+                    "content": doc or "",
+                    "file_path": path,
+                    "format": FULL_DOCS_FORMAT_PENDING_PARSE,
+                }
         else:
             # Clean input text and remove duplicates in one pass
             unique_content_with_paths = {}
@@ -1421,11 +2503,11 @@ class LightRAG:
                 if cleaned_content not in unique_content_with_paths:
                     unique_content_with_paths[cleaned_content] = path
 
-            # Generate contents dict of MD5 hash IDs and documents with paths
             contents = {
                 compute_mdhash_id(content, prefix="doc-"): {
                     "content": content,
                     "file_path": path,
+                    "format": FULL_DOCS_FORMAT_RAW,
                 }
                 for content, path in unique_content_with_paths.items()
             }
@@ -1434,14 +2516,12 @@ class LightRAG:
         new_docs: dict[str, Any] = {
             id_: {
                 "status": DocStatus.PENDING,
-                "content_summary": get_content_summary(content_data["content"]),
-                "content_length": len(content_data["content"]),
+                "content_summary": get_content_summary(content_data.get("content", "")),
+                "content_length": len(content_data.get("content", "")),
                 "created_at": datetime.now(timezone.utc).isoformat(),
                 "updated_at": datetime.now(timezone.utc).isoformat(),
-                "file_path": content_data[
-                    "file_path"
-                ],  # Store file path in document status
-                "track_id": track_id,  # Store track_id in document status
+                "file_path": content_data["file_path"],
+                "track_id": track_id,
             }
             for id_, content_data in contents.items()
         }
@@ -1510,14 +2590,19 @@ class LightRAG:
             return
 
         # 4. Store document content in full_docs and status in doc_status
-        #    Store full document content separately
         full_docs_data = {
             doc_id: {
-                "content": contents[doc_id]["content"],
+                "content": contents[doc_id].get("content", ""),
                 "file_path": contents[doc_id]["file_path"],
+                "format": contents[doc_id].get("format", FULL_DOCS_FORMAT_RAW),
             }
             for doc_id in new_docs.keys()
         }
+        for doc_id in new_docs.keys():
+            if contents[doc_id].get("lightrag_document_path"):
+                full_docs_data[doc_id]["lightrag_document_path"] = contents[doc_id][
+                    "lightrag_document_path"
+                ]
         await self.full_docs.upsert(full_docs_data)
         # Persist data to disk immediately
         await self.full_docs.index_done_callback()
@@ -1684,7 +2769,7 @@ class LightRAG:
         #     pipeline_status["latest_message"] = final_message
         #     pipeline_status["history_messages"].append(final_message)
 
-        # Reset PROCESSING and FAILED documents that pass consistency checks to PENDING status
+        # Reset interrupted documents that pass consistency checks to PENDING status
         docs_to_reset = {}
         reset_count = 0
 
@@ -1692,10 +2777,12 @@ class LightRAG:
             # Check if document has corresponding content in full_docs (consistency check)
             content_data = await self.full_docs.get_by_id(doc_id)
             if content_data:  # Document passes consistency check
-                # Check if document is in PROCESSING or FAILED status
+                # Check if document is in interrupted status
                 if hasattr(status_doc, "status") and status_doc.status in [
                     DocStatus.PROCESSING,
                     DocStatus.FAILED,
+                    DocStatus.PARSING,
+                    DocStatus.ANALYZING,
                 ]:
                     preserved_chunks_list, preserved_chunks_count = (
                         _chunk_fields_from_status_doc(status_doc)
@@ -1730,7 +2817,10 @@ class LightRAG:
             await self.doc_status.upsert(docs_to_reset)
 
             async with pipeline_status_lock:
-                reset_message = f"Reset {reset_count} documents from PROCESSING/FAILED to PENDING status"
+                reset_message = (
+                    f"Reset {reset_count} documents from "
+                    "PARSING/ANALYZING/PROCESSING/FAILED to PENDING status"
+                )
                 logger.info(reset_message)
                 pipeline_status["latest_message"] = reset_message
                 pipeline_status["history_messages"].append(reset_message)
@@ -1769,7 +2859,13 @@ class LightRAG:
                 to_process_docs: dict[
                     str, DocProcessingStatus
                 ] = await self.doc_status.get_docs_by_statuses(
-                    [DocStatus.PROCESSING, DocStatus.FAILED, DocStatus.PENDING]
+                    [
+                        DocStatus.PROCESSING,
+                        DocStatus.FAILED,
+                        DocStatus.PENDING,
+                        DocStatus.PARSING,
+                        DocStatus.ANALYZING,
+                    ]
                 )
 
                 if not to_process_docs:
@@ -1878,6 +2974,7 @@ class LightRAG:
                     pipeline_status: dict,
                     pipeline_status_lock: asyncio.Lock,
                     semaphore: asyncio.Semaphore,
+                    pre_parsed_data: dict[str, Any] | None = None,
                 ) -> None:
                     """Process single document"""
                     # Initialize variables at the start to prevent UnboundLocalError in error handling
@@ -1945,44 +3042,224 @@ class LightRAG:
                                     # remains appendable and visible across processes.
                                     del pipeline_status["history_messages"][:-5000]
 
-                            # Get document content from full_docs
-                            if not content_data:
-                                raise Exception(
-                                    f"Document content not found in full_docs for doc_id: {doc_id}"
+                            if pre_parsed_data is None:
+                                # ---- Phase 1: PARSING ----
+                                await self.doc_status.upsert(
+                                    {
+                                        doc_id: {
+                                            "status": DocStatus.PARSING,
+                                            "content_summary": status_doc.content_summary,
+                                            "content_length": status_doc.content_length,
+                                            "created_at": status_doc.created_at,
+                                            "updated_at": datetime.now(
+                                                timezone.utc
+                                            ).isoformat(),
+                                            "file_path": file_path,
+                                            "track_id": status_doc.track_id,
+                                        }
+                                    }
                                 )
-                            content = content_data["content"]
 
-                            # Call chunking function, supporting both sync and async implementations
-                            chunking_result = self.chunking_func(
-                                self.tokenizer,
-                                content,
-                                split_by_character,
-                                split_by_character_only,
-                                self.chunk_overlap_token_size,
-                                self.chunk_token_size,
+                                if not content_data:
+                                    raise Exception(
+                                        f"Document content not found in full_docs for doc_id: {doc_id}"
+                                    )
+
+                                parse_engine = self._resolve_parser_engine(
+                                    file_path=file_path, content_data=content_data
+                                )
+                                if parse_engine == "mineru":
+                                    parsed_data = await self.parse_mineru(
+                                        doc_id, file_path, content_data
+                                    )
+                                elif parse_engine == "docling":
+                                    parsed_data = await self.parse_docling(
+                                        doc_id, file_path, content_data
+                                    )
+                                else:
+                                    parsed_data = await self.parse_native(
+                                        doc_id, file_path, content_data
+                                    )
+
+                                content = parsed_data.get("content", "")
+
+                                # ---- Phase 2: ANALYZING ----
+                                await self.doc_status.upsert(
+                                    {
+                                        doc_id: {
+                                            "status": DocStatus.ANALYZING,
+                                            "content_summary": status_doc.content_summary,
+                                            "content_length": len(content),
+                                            "created_at": status_doc.created_at,
+                                            "updated_at": datetime.now(
+                                                timezone.utc
+                                            ).isoformat(),
+                                            "file_path": file_path,
+                                            "track_id": status_doc.track_id,
+                                        }
+                                    }
+                                )
+                                parsed_data = await self.analyze_multimodal(
+                                    doc_id=doc_id,
+                                    file_path=file_path,
+                                    parsed_data=parsed_data,
+                                )
+                            else:
+                                parsed_data = pre_parsed_data
+                                content = parsed_data.get("content", "")
+
+                            extraction_meta: dict[str, Any] = {}
+
+                            # Try to parse as interchange JSONL (smart extraction output)
+                            parsed_interchange = parse_interchange_jsonl(
+                                content, self.tokenizer
+                            )
+                            if parsed_interchange is not None:
+                                interchange_meta, interchange_chunks = (
+                                    parsed_interchange
+                                )
+                                logger.info(
+                                    f"Detected interchange JSONL for d-id: {doc_id}, {len(interchange_chunks)} chunks"
+                                )
+                                chunking_result = interchange_chunks
+                                extraction_meta = {
+                                    "extraction_format": "interchange_jsonl",
+                                    "format_version": interchange_meta.get(
+                                        "format_version"
+                                    ),
+                                    "engine": interchange_meta.get("engine"),
+                                    "engine_capabilities": interchange_meta.get(
+                                        "engine_capabilities", []
+                                    ),
+                                    "chunking_method": interchange_meta.get(
+                                        "chunking_method"
+                                    ),
+                                }
+                            else:
+                                # Call chunking function, supporting both sync and async implementations
+                                chunking_result = self.chunking_func(
+                                    self.tokenizer,
+                                    content,
+                                    split_by_character,
+                                    split_by_character_only,
+                                    self.chunk_overlap_token_size,
+                                    self.chunk_token_size,
+                                )
+
+                                # If result is awaitable, await to get actual result
+                                if inspect.isawaitable(chunking_result):
+                                    chunking_result = await chunking_result
+
+                                # Validate return type
+                                if not isinstance(chunking_result, (list, tuple)):
+                                    raise TypeError(
+                                        f"chunking_func must return a list or tuple of dicts, "
+                                        f"got {type(chunking_result)}"
+                                    )
+                                extraction_meta = {
+                                    "extraction_format": "plain_text_chunking",
+                                    "engine": "legacy",
+                                }
+
+                            # Multimodal post-process hook entrypoint:
+                            # runs after interchange parsing and before entity extraction.
+                            chunking_result = (
+                                await self._run_multimodal_postprocess_hook(
+                                    doc_id=doc_id,
+                                    file_path=file_path,
+                                    chunking_result=chunking_result,
+                                    extraction_meta=extraction_meta,
+                                )
                             )
 
-                            # If result is awaitable, await to get actual result
-                            if inspect.isawaitable(chunking_result):
-                                chunking_result = await chunking_result
-
-                            # Validate return type
-                            if not isinstance(chunking_result, (list, tuple)):
-                                raise TypeError(
-                                    f"chunking_func must return a list or tuple of dicts, "
-                                    f"got {type(chunking_result)}"
+                            mm_specs: list[dict[str, Any]] = []
+                            blocks_path = str(
+                                parsed_data.get("blocks_path") or ""
+                            ).strip()
+                            if blocks_path:
+                                max_order = -1
+                                for ch in chunking_result:
+                                    if isinstance(ch, dict) and isinstance(
+                                        ch.get("chunk_order_index"), int
+                                    ):
+                                        max_order = max(
+                                            max_order, int(ch["chunk_order_index"])
+                                        )
+                                mm_chunks, mm_specs = (
+                                    self._build_mm_chunks_from_sidecars(
+                                        doc_id=doc_id,
+                                        file_path=file_path,
+                                        blocks_path=blocks_path,
+                                        base_order_index=max_order + 1,
+                                    )
                                 )
+                                if mm_chunks:
+                                    chunking_result = list(chunking_result) + mm_chunks
+                                    extraction_meta["mm_chunks"] = len(mm_chunks)
+
+                            # Final hard guard before embedding:
+                            # split any oversize chunk while preserving heading hierarchy metadata.
+                            if (
+                                self.embedding_token_limit is not None
+                                and self.embedding_token_limit > 0
+                            ):
+                                original_chunk_count = len(chunking_result)
+                                chunking_result = (
+                                    _enforce_chunk_token_limit_before_embedding(
+                                        chunking_result=chunking_result,
+                                        tokenizer=self.tokenizer,
+                                        max_tokens=self.embedding_token_limit,
+                                    )
+                                )
+                                if len(chunking_result) != original_chunk_count:
+                                    logger.info(
+                                        "Applied hard fallback split before embedding for "
+                                        f"d-id: {doc_id}, chunks {original_chunk_count} -> {len(chunking_result)} "
+                                        f"(limit={self.embedding_token_limit})"
+                                    )
+                                    extraction_meta["hard_fallback_split"] = True
+                                    extraction_meta["pre_split_chunks"] = (
+                                        original_chunk_count
+                                    )
+                                    extraction_meta["post_split_chunks"] = len(
+                                        chunking_result
+                                    )
 
                             # Build chunks dictionary
-                            chunks: dict[str, Any] = {
-                                compute_mdhash_id(dp["content"], prefix="chunk-"): {
+                            chunks: dict[str, Any] = {}
+                            for dp in chunking_result:
+                                chunk_content = dp.get("content", "")
+                                if not chunk_content:
+                                    continue
+                                raw_chunk_id = dp.get("chunk_id", "")
+                                order = dp.get("chunk_order_index")
+                                if (
+                                    isinstance(raw_chunk_id, str)
+                                    and raw_chunk_id.strip()
+                                ):
+                                    if raw_chunk_id.startswith(f"{doc_id}-"):
+                                        chunk_key = raw_chunk_id
+                                    else:
+                                        chunk_key = f"{doc_id}-{raw_chunk_id}"
+                                elif isinstance(order, int):
+                                    chunk_key = f"{doc_id}-chunk-{order:03d}"
+                                else:
+                                    chunk_key = compute_mdhash_id(
+                                        f"{doc_id}:{chunk_content}", prefix="chunk-"
+                                    )
+
+                                # Hard collision guard (same chunk_id inside one document).
+                                if chunk_key in chunks:
+                                    chunk_key = compute_mdhash_id(
+                                        f"{doc_id}:{order}:{chunk_content}",
+                                        prefix="chunk-",
+                                    )
+                                chunks[chunk_key] = {
                                     **dp,
                                     "full_doc_id": doc_id,
-                                    "file_path": file_path,  # Add file path to each chunk
-                                    "llm_cache_list": [],  # Initialize empty LLM cache list for each chunk
+                                    "file_path": file_path,
+                                    "llm_cache_list": [],
                                 }
-                                for dp in chunking_result
-                            }
 
                             if not chunks:
                                 logger.warning("No document chunks to process")
@@ -2015,7 +3292,8 @@ class LightRAG:
                                             "file_path": file_path,
                                             "track_id": status_doc.track_id,  # Preserve existing track_id
                                             "metadata": {
-                                                "processing_start_time": processing_start_time
+                                                "processing_start_time": processing_start_time,
+                                                **extraction_meta,
                                             },
                                         }
                                     }
@@ -2046,6 +3324,13 @@ class LightRAG:
                                 )
                             )
                             chunk_results = await entity_relation_task
+                            chunk_results = (
+                                self._augment_chunk_results_with_mm_entities(
+                                    chunk_results=chunk_results,
+                                    mm_specs=mm_specs,
+                                    file_path=file_path,
+                                )
+                            )
                             file_extraction_stage_ok = True
 
                         except Exception as e:
@@ -2138,7 +3423,7 @@ class LightRAG:
                                     knowledge_graph_inst=self.chunk_entity_relation_graph,
                                     entity_vdb=self.entities_vdb,
                                     relationships_vdb=self.relationships_vdb,
-                                    global_config=asdict(self),
+                                    global_config=self._build_global_config(),
                                     full_entities_storage=self.full_entities,
                                     full_relations_storage=self.full_relations,
                                     doc_id=doc_id,
@@ -2172,6 +3457,7 @@ class LightRAG:
                                             "metadata": {
                                                 "processing_start_time": processing_start_time,
                                                 "processing_end_time": processing_end_time,
+                                                **extraction_meta,
                                             },
                                         }
                                     }
@@ -2247,40 +3533,186 @@ class LightRAG:
                                             "metadata": {
                                                 "processing_start_time": processing_start_time,
                                                 "processing_end_time": processing_end_time,
+                                                **extraction_meta,
                                             },
                                         }
                                     }
                                 )
 
-                # Create processing tasks for all documents
-                doc_tasks = []
-                for doc_id, status_doc in to_process_docs.items():
-                    doc_tasks.append(
-                        process_document(
-                            doc_id,
-                            status_doc,
-                            split_by_character,
-                            split_by_character_only,
-                            pipeline_status,
-                            pipeline_status_lock,
-                            semaphore,
-                        )
+                # Three-stage worker queues:
+                # parse_native/mineru/docling -> analyze_multimodal -> process_document
+                q_native: asyncio.Queue = asyncio.Queue(maxsize=self.queue_size_default)
+                q_mineru: asyncio.Queue = asyncio.Queue(maxsize=self.queue_size_default)
+                q_docling: asyncio.Queue = asyncio.Queue(
+                    maxsize=self.queue_size_default
+                )
+                q_analyze: asyncio.Queue = asyncio.Queue(
+                    maxsize=self.queue_size_default
+                )
+                q_process: asyncio.Queue = asyncio.Queue(maxsize=self.queue_size_insert)
+
+                workers: list[asyncio.Task] = []
+
+                async def parse_worker(engine: str, in_q: asyncio.Queue):
+                    while True:
+                        item = await in_q.get()
+                        try:
+                            doc_id_w, status_doc_w = item
+                            file_path_w = getattr(
+                                status_doc_w, "file_path", "unknown_source"
+                            )
+                            content_data_w = await self.full_docs.get_by_id(doc_id_w)
+                            if not content_data_w:
+                                raise Exception(
+                                    f"Document content not found in full_docs for doc_id: {doc_id_w}"
+                                )
+                            await self.doc_status.upsert(
+                                {
+                                    doc_id_w: {
+                                        "status": DocStatus.PARSING,
+                                        "content_summary": status_doc_w.content_summary,
+                                        "content_length": status_doc_w.content_length,
+                                        "created_at": status_doc_w.created_at,
+                                        "updated_at": datetime.now(
+                                            timezone.utc
+                                        ).isoformat(),
+                                        "file_path": file_path_w,
+                                        "track_id": status_doc_w.track_id,
+                                    }
+                                }
+                            )
+                            if engine == "mineru":
+                                parsed_data_w = await self.parse_mineru(
+                                    doc_id_w, file_path_w, content_data_w
+                                )
+                            elif engine == "docling":
+                                parsed_data_w = await self.parse_docling(
+                                    doc_id_w, file_path_w, content_data_w
+                                )
+                            else:
+                                parsed_data_w = await self.parse_native(
+                                    doc_id_w, file_path_w, content_data_w
+                                )
+                            await q_analyze.put((doc_id_w, status_doc_w, parsed_data_w))
+                        except Exception as e:
+                            logger.error(f"Parse worker failed ({engine}): {e}")
+                            try:
+                                await self.doc_status.upsert(
+                                    {
+                                        doc_id_w: {
+                                            "status": DocStatus.FAILED,
+                                            "error_msg": str(e),
+                                            "content_summary": status_doc_w.content_summary,
+                                            "content_length": status_doc_w.content_length,
+                                            "created_at": status_doc_w.created_at,
+                                            "updated_at": datetime.now(
+                                                timezone.utc
+                                            ).isoformat(),
+                                            "file_path": getattr(
+                                                status_doc_w,
+                                                "file_path",
+                                                "unknown_source",
+                                            ),
+                                            "track_id": status_doc_w.track_id,
+                                        }
+                                    }
+                                )
+                            except Exception:
+                                pass
+                        finally:
+                            in_q.task_done()
+
+                async def analyze_worker():
+                    while True:
+                        item = await q_analyze.get()
+                        try:
+                            doc_id_w, status_doc_w, parsed_data_w = item
+                            file_path_w = getattr(
+                                status_doc_w, "file_path", "unknown_source"
+                            )
+                            await self.doc_status.upsert(
+                                {
+                                    doc_id_w: {
+                                        "status": DocStatus.ANALYZING,
+                                        "content_summary": status_doc_w.content_summary,
+                                        "content_length": len(
+                                            parsed_data_w.get("content", "")
+                                        ),
+                                        "created_at": status_doc_w.created_at,
+                                        "updated_at": datetime.now(
+                                            timezone.utc
+                                        ).isoformat(),
+                                        "file_path": file_path_w,
+                                        "track_id": status_doc_w.track_id,
+                                    }
+                                }
+                            )
+                            analyzed = await self.analyze_multimodal(
+                                doc_id=doc_id_w,
+                                file_path=file_path_w,
+                                parsed_data=parsed_data_w,
+                            )
+                            await q_process.put((doc_id_w, status_doc_w, analyzed))
+                        except Exception as e:
+                            logger.error(f"Analyze worker failed: {e}")
+                        finally:
+                            q_analyze.task_done()
+
+                async def process_worker():
+                    while True:
+                        item = await q_process.get()
+                        try:
+                            doc_id_w, status_doc_w, parsed_data_w = item
+                            await process_document(
+                                doc_id_w,
+                                status_doc_w,
+                                split_by_character,
+                                split_by_character_only,
+                                pipeline_status,
+                                pipeline_status_lock,
+                                semaphore,
+                                pre_parsed_data=parsed_data_w,
+                            )
+                        finally:
+                            q_process.task_done()
+
+                for _ in range(max(1, self.max_parallel_parse_native)):
+                    workers.append(
+                        asyncio.create_task(parse_worker("native", q_native))
                     )
+                for _ in range(max(1, self.max_parallel_parse_mineru)):
+                    workers.append(
+                        asyncio.create_task(parse_worker("mineru", q_mineru))
+                    )
+                for _ in range(max(1, self.max_parallel_parse_docling)):
+                    workers.append(
+                        asyncio.create_task(parse_worker("docling", q_docling))
+                    )
+                for _ in range(max(1, self.max_parallel_analyze)):
+                    workers.append(asyncio.create_task(analyze_worker()))
+                for _ in range(max(1, self.max_parallel_insert)):
+                    workers.append(asyncio.create_task(process_worker()))
 
-                # Wait for all document processing to complete
-                try:
-                    await asyncio.gather(*doc_tasks)
-                except PipelineCancelledException:
-                    # Cancel all remaining tasks
-                    for task in doc_tasks:
-                        if not task.done():
-                            task.cancel()
+                for doc_id, status_doc in to_process_docs.items():
+                    content_data = await self.full_docs.get_by_id(doc_id) or {}
+                    engine = self._resolve_parser_engine(
+                        file_path=getattr(status_doc, "file_path", "unknown_source"),
+                        content_data=content_data,
+                    )
+                    if engine == "mineru":
+                        await q_mineru.put((doc_id, status_doc))
+                    elif engine == "docling":
+                        await q_docling.put((doc_id, status_doc))
+                    else:
+                        await q_native.put((doc_id, status_doc))
 
-                    # Wait for all tasks to complete cancellation
-                    await asyncio.wait(doc_tasks, return_when=asyncio.ALL_COMPLETED)
+                await asyncio.gather(q_native.join(), q_mineru.join(), q_docling.join())
+                await q_analyze.join()
+                await q_process.join()
 
-                    # Exit directly (document statuses already updated in process_document)
-                    return
+                for w in workers:
+                    w.cancel()
+                await asyncio.gather(*workers, return_exceptions=True)
 
                 # Check if there's a pending request to process more documents (with lock)
                 has_pending_request = False
@@ -2300,7 +3732,13 @@ class LightRAG:
 
                 # Check for pending documents again
                 to_process_docs = await self.doc_status.get_docs_by_statuses(
-                    [DocStatus.PROCESSING, DocStatus.FAILED, DocStatus.PENDING]
+                    [
+                        DocStatus.PROCESSING,
+                        DocStatus.FAILED,
+                        DocStatus.PENDING,
+                        DocStatus.PARSING,
+                        DocStatus.ANALYZING,
+                    ]
                 )
 
         finally:
@@ -2321,7 +3759,7 @@ class LightRAG:
         try:
             chunk_results = await extract_entities(
                 chunk,
-                global_config=asdict(self),
+                global_config=self._build_global_config(),
                 pipeline_status=pipeline_status,
                 pipeline_status_lock=pipeline_status_lock,
                 llm_response_cache=self.llm_response_cache,
@@ -2335,6 +3773,1699 @@ class LightRAG:
                 pipeline_status["latest_message"] = error_msg
                 pipeline_status["history_messages"].append(error_msg)
             raise e
+
+    async def analyze_multimodal(
+        self,
+        doc_id: str,
+        file_path: str,
+        parsed_data: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Phase 2: Multimodal analysis (VLM). Writes llm_analyze_result and analyze_time to LightRAG Document.
+        Uses vlm_llm_model_func (VLM role). When Ray-Anything merges, bind VLM model here.
+        Default: no-op, returns parsed_data unchanged.
+        """
+        blocks_path = parsed_data.get("blocks_path")
+        if not blocks_path:
+            return parsed_data
+
+        block_file = Path(blocks_path)
+        if not block_file.exists():
+            return parsed_data
+
+        try:
+            lines = block_file.read_text(encoding="utf-8").splitlines()
+            if not lines:
+                return parsed_data
+            meta = json.loads(lines[0])
+            if not isinstance(meta, dict) or meta.get("type") != "meta":
+                return parsed_data
+            if meta.get("analyze_time"):
+                return parsed_data
+
+            now_iso = datetime.now(timezone.utc).isoformat()
+            meta["analyze_time"] = now_iso
+            lines[0] = json.dumps(meta, ensure_ascii=False)
+            block_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+            # Analyze sidecar multimodal items by VLM model role.
+            use_vlm_func = self.role_llm_funcs["vlm"]
+            effective_vlm_max_async = self._get_effective_role_llm_max_async("vlm")
+            sem = asyncio.Semaphore(max(1, effective_vlm_max_async))
+            analyze_retries = max(0, int(os.getenv("VLM_ANALYZE_RETRIES", "2")))
+            max_image_bytes = max(
+                256 * 1024, int(os.getenv("VLM_MAX_IMAGE_BYTES", str(5 * 1024 * 1024)))
+            )
+
+            def _extract_json_obj(text: str) -> dict[str, Any]:
+                if not text:
+                    return {}
+                try:
+                    obj = json.loads(text)
+                    if isinstance(obj, dict):
+                        return obj
+                except Exception:
+                    pass
+                m = re.search(r"\{[\s\S]*\}", text)
+                if m:
+                    try:
+                        obj = json.loads(m.group(0))
+                        if isinstance(obj, dict):
+                            return obj
+                    except Exception:
+                        pass
+                return {}
+
+            async def _analyze_item(
+                root_key: str, item_id: str, item: dict[str, Any]
+            ) -> dict[str, Any]:
+                def _conservative_result(reason: str) -> dict[str, Any]:
+                    base_name = item.get("caption") or item_id
+                    modality = (
+                        "image"
+                        if root_key == "drawings"
+                        else "table"
+                        if root_key == "tables"
+                        else "equation"
+                    )
+                    conservative = {
+                        "name": base_name,
+                        "summary": (
+                            f"Conservative summary only: unavailable or weak visual evidence for {modality}."
+                        ),
+                        "detail_description": (
+                            f"No grounded visual evidence. Reason: {reason}. "
+                            "Only metadata-level description is retained."
+                        ),
+                        "grounded": False,
+                        "grounding_reason": reason,
+                    }
+                    if root_key == "drawings":
+                        conservative["image_type"] = ""
+                    return conservative
+
+                def _build_image_data_url(path_str: str | None) -> str | None:
+                    if not path_str:
+                        return None
+                    p = Path(path_str)
+                    if not p.exists() or not p.is_file():
+                        return None
+                    try:
+                        raw = p.read_bytes()
+                    except Exception:
+                        return None
+                    if not raw:
+                        return None
+                    if len(raw) > max_image_bytes:
+                        logger.warning(
+                            f"[analyze_multimodal] image too large ({len(raw)} bytes) for {root_key}/{item_id}, skip image input"
+                        )
+                        return None
+                    mime, _ = mimetypes.guess_type(str(p))
+                    if not mime:
+                        mime = "image/png"
+                    b64 = base64.b64encode(raw).decode("ascii")
+                    return f"data:{mime};base64,{b64}"
+
+                def _normalize_text(value: Any) -> str:
+                    if value is None:
+                        return ""
+                    if isinstance(value, str):
+                        return value.strip()
+                    if isinstance(value, (list, tuple)):
+                        return "\n".join(
+                            str(v).strip() for v in value if str(v).strip()
+                        )
+                    return str(value).strip()
+
+                def _normalize_grounded_value(value: Any) -> Any:
+                    if isinstance(value, bool) or value is None:
+                        return value
+                    if isinstance(value, str):
+                        lowered = value.strip().lower()
+                        if lowered == "true":
+                            return True
+                        if lowered == "false":
+                            return False
+                    if isinstance(value, (int, float)) and value in {0, 1}:
+                        return bool(value)
+                    return value
+
+                default_result = {
+                    "name": item.get("caption") or item_id,
+                    "summary": "",
+                    "detail_description": "",
+                }
+                if root_key == "drawings":
+                    default_result["image_type"] = ""
+                schema_hint = (
+                    '{"name":"string","summary":"string","detail_description":"string","grounded":"boolean","grounding_reason":"string"}'
+                    if root_key != "drawings"
+                    else '{"name":"string","image_type":"string","summary":"string","detail_description":"string","grounded":"boolean","grounding_reason":"string"}'
+                )
+                image_data_url = _build_image_data_url(
+                    item.get("path") or item.get("img_path") or item.get("image_path")
+                )
+                has_visual_evidence = bool(image_data_url)
+                caption_text = _normalize_text(item.get("caption"))
+                footnotes_text = _normalize_text(item.get("footnotes"))
+                content_text = _normalize_text(item.get("content"))
+                has_textual_evidence = root_key in {
+                    "tables",
+                    "equations",
+                } and any((caption_text, footnotes_text, content_text))
+                evidence_mode = (
+                    "visual"
+                    if has_visual_evidence
+                    else "textual"
+                    if has_textual_evidence
+                    else "none"
+                )
+                for attempt in range(analyze_retries + 1):
+                    prompt = (
+                        "You are a multimodal analyzer.\n"
+                        "Return ONLY one JSON object. No markdown. No explanation.\n"
+                        "Grounding policy:\n"
+                        "- Do NOT invent unseen objects, domains, diseases, or scenarios.\n"
+                        "- Prefer the strongest available evidence source.\n"
+                        "- For tables/equations without image evidence, analyze from content/caption/footnotes first.\n"
+                        "- In textual-only mode, do not invent appearance/layout details that are not supported by the provided content.\n"
+                        "- If evidence is missing/weak/uncertain, set grounded=false and keep summary/detail conservative.\n"
+                        "- If grounded=false, avoid rich semantic claims; keep to metadata-level statements only.\n"
+                        f"JSON schema example: {schema_hint}\n"
+                        f"modality={root_key}\n"
+                        f"item_id={item_id}\n"
+                        f"caption={caption_text}\n"
+                        f"footnotes={footnotes_text}\n"
+                        f"content={content_text}\n"
+                        f"has_visual_evidence={has_visual_evidence}\n"
+                        f"has_textual_evidence={has_textual_evidence}\n"
+                        f"evidence_mode={evidence_mode}\n"
+                        "Constraints:\n"
+                        "- summary: <= 120 words\n"
+                        "- detail_description: <= 500 words\n"
+                    )
+                    messages = None
+                    if image_data_url:
+                        messages = [
+                            {
+                                "role": "user",
+                                "content": [
+                                    {"type": "text", "text": prompt},
+                                    {
+                                        "type": "image_url",
+                                        "image_url": {"url": image_data_url},
+                                    },
+                                ],
+                            }
+                        ]
+                    async with sem:
+                        if messages:
+                            try:
+                                result_text = await use_vlm_func(
+                                    prompt, stream=False, messages=messages
+                                )
+                            except TypeError:
+                                # Backward compatibility for providers that don't accept messages.
+                                result_text = await use_vlm_func(prompt, stream=False)
+                            except Exception as msg_err:
+                                logger.warning(
+                                    f"[analyze_multimodal] visual call failed for {root_key}/{item_id}: {msg_err}"
+                                )
+                                return _conservative_result("visual_call_failed")
+                        else:
+                            result_text = await use_vlm_func(prompt, stream=False)
+                    parsed = _extract_json_obj(str(result_text))
+                    if (
+                        parsed
+                        and isinstance(parsed.get("name"), str)
+                        and isinstance(parsed.get("summary"), str)
+                        and isinstance(parsed.get("detail_description"), str)
+                    ):
+                        if "grounded" in parsed:
+                            parsed["grounded"] = _normalize_grounded_value(
+                                parsed.get("grounded")
+                            )
+                        default_result.update(
+                            {
+                                k: v
+                                for k, v in parsed.items()
+                                if k
+                                in {
+                                    "name",
+                                    "summary",
+                                    "detail_description",
+                                    "image_type",
+                                    "grounded",
+                                    "grounding_reason",
+                                }
+                            }
+                        )
+                        if evidence_mode == "none":
+                            return _conservative_result("missing_image")
+                        if parsed.get("grounded") is False:
+                            reason = str(
+                                parsed.get("grounding_reason")
+                                or (
+                                    "weak_visual_evidence"
+                                    if evidence_mode == "visual"
+                                    else "weak_textual_evidence"
+                                )
+                            )
+                            return _conservative_result(reason)
+                        if "grounded" not in default_result:
+                            default_result["grounded"] = True
+                        if not default_result.get("grounding_reason"):
+                            default_result["grounding_reason"] = (
+                                "visual_evidence"
+                                if evidence_mode == "visual"
+                                else "textual_content_only"
+                            )
+                        return default_result
+                    if attempt < analyze_retries:
+                        logger.warning(
+                            f"[analyze_multimodal] invalid JSON, retry {attempt + 1}/{analyze_retries} for {root_key}/{item_id}"
+                        )
+                if evidence_mode == "none":
+                    return _conservative_result("missing_image")
+                return _conservative_result("analysis_failed")
+
+            # Write back llm_analyze_result to multimodal sidecar files.
+            base_name = str(block_file)
+            if base_name.endswith(".blocks.jsonl"):
+                base_name = base_name[: -len(".blocks.jsonl")]
+            sidecars = [
+                (Path(base_name + ".drawings.json"), "drawings"),
+                (Path(base_name + ".tables.json"), "tables"),
+                (Path(base_name + ".equations.json"), "equations"),
+            ]
+            for sidecar_path, root_key in sidecars:
+                if not sidecar_path.exists():
+                    continue
+                try:
+                    payload = json.loads(sidecar_path.read_text(encoding="utf-8"))
+                    items = payload.get(root_key, {})
+                    if isinstance(items, dict):
+                        analyze_tasks = []
+                        valid_keys = []
+                        for item_id, item in items.items():
+                            if isinstance(item, dict):
+                                valid_keys.append(item_id)
+                                analyze_tasks.append(
+                                    _analyze_item(root_key, item_id, item)
+                                )
+                        analyzed_results = await asyncio.gather(
+                            *analyze_tasks, return_exceptions=True
+                        )
+                        for idx, item_id in enumerate(valid_keys):
+                            item = items.get(item_id)
+                            if not isinstance(item, dict):
+                                continue
+                            result_obj = analyzed_results[idx]
+                            if isinstance(result_obj, Exception):
+                                logger.warning(
+                                    f"[analyze_multimodal] item analyze failed: {root_key}/{item_id}: {result_obj}"
+                                )
+                                continue
+                            item["llm_analyze_result"] = result_obj
+                    sidecar_path.write_text(
+                        json.dumps(payload, ensure_ascii=False, indent=2),
+                        encoding="utf-8",
+                    )
+                except Exception as sidecar_error:
+                    logger.warning(
+                        f"[analyze_multimodal] failed to write sidecar {sidecar_path}: {sidecar_error}"
+                    )
+
+            parsed_data["analyze_time"] = now_iso
+            parsed_data["multimodal_processed"] = True
+            logger.info(
+                f"[analyze_multimodal] marked analyze_time for d-id: {doc_id}, file: {file_path}"
+            )
+        except Exception as e:
+            logger.warning(
+                f"[analyze_multimodal] failed to update analyze_time for d-id: {doc_id}: {e}"
+            )
+        return parsed_data
+
+    async def _load_lightrag_document_content(
+        self, lightrag_document_path: str
+    ) -> tuple[str, str]:
+        """Load LightRAG Document blocks and return (merged_text, blocks_path)."""
+        path = Path(lightrag_document_path)
+        candidates: list[Path] = []
+        if path.suffix == ".jsonl" and path.name.endswith(".blocks.jsonl"):
+            candidates.append(path)
+        else:
+            candidates.append(Path(str(path) + ".blocks.jsonl"))
+            if path.is_dir():
+                candidates.extend(path.glob("*.blocks.jsonl"))
+            else:
+                candidates.append(path)
+
+        blocks_path = None
+        for c in candidates:
+            if c.exists() and c.is_file():
+                blocks_path = c
+                break
+        if blocks_path is None:
+            raise FileNotFoundError(
+                f"LightRAG blocks file not found from path: {lightrag_document_path}"
+            )
+
+        merged_parts: list[str] = []
+        with blocks_path.open("r", encoding="utf-8") as f:
+            for i, line in enumerate(f):
+                text = line.strip()
+                if not text:
+                    continue
+                obj = json.loads(text)
+                if i == 0:
+                    continue
+                if obj.get("type") != "content":
+                    continue
+                content = obj.get("content", "")
+                if isinstance(content, str) and content.strip():
+                    merged_parts.append(content)
+
+        return "\n\n".join(merged_parts), str(blocks_path)
+
+    def _resolve_parser_engine(
+        self, file_path: str, content_data: dict[str, Any]
+    ) -> str:
+        doc_format = content_data.get("format", FULL_DOCS_FORMAT_RAW)
+        if doc_format == FULL_DOCS_FORMAT_LIGHTRAG and content_data.get(
+            "lightrag_document_path"
+        ):
+            return "native"
+
+        explicit_engine = str(content_data.get("parsed_engine") or "").strip().lower()
+        if explicit_engine in {"native", "mineru", "docling"}:
+            return explicit_engine
+
+        file_name = Path(file_path).name
+        m = re.search(r"\.\[([^\]]+)\]\.[^.]+$", file_name)
+        if m:
+            hint = m.group(1).split("-")[0].strip().lower()
+            if hint in {"native", "mineru", "docling"}:
+                return hint
+
+        parser_rules = os.getenv("LIGHTRAG_PARSER", "").strip()
+        if parser_rules:
+            suffix = Path(file_name).suffix.lower().lstrip(".")
+            for item in [x.strip() for x in parser_rules.split(",") if x.strip()]:
+                if ":" not in item:
+                    continue
+                pattern, engine_hint = item.split(":", 1)
+                pattern = pattern.strip().lower()
+                engine = engine_hint.strip().split("-")[0].lower()
+                if engine not in {"native", "mineru", "docling"}:
+                    continue
+                if fnmatch.fnmatch(suffix, pattern):
+                    return engine
+
+        # Auto routing for normal user uploads (without filename hints):
+        # prefer multimodal-capable engines when corresponding service endpoint is configured.
+        suffix = Path(file_name).suffix.lower().lstrip(".")
+        mineru_endpoint = os.getenv("MINERU_ENDPOINT", "").strip()
+        docling_endpoint = os.getenv("DOCLING_ENDPOINT", "").strip()
+
+        # Keep this mapping conservative and practical:
+        # - PDF defaults to MinerU (layout-heavy parsing)
+        # - Office-like docs default to Docling
+        mineru_suffixes = {"pdf"}
+        docling_suffixes = {
+            "doc",
+            "docx",
+            "ppt",
+            "pptx",
+            "xls",
+            "xlsx",
+            "md",
+            "markdown",
+            "html",
+            "htm",
+        }
+
+        if suffix in mineru_suffixes and mineru_endpoint:
+            return "mineru"
+        if suffix in docling_suffixes and docling_endpoint:
+            return "docling"
+
+        # Fallback cross-coverage when only one service is available.
+        if suffix in (mineru_suffixes | docling_suffixes):
+            if docling_endpoint:
+                return "docling"
+            if mineru_endpoint:
+                return "mineru"
+        return "native"
+
+    def _get_by_path(self, payload: Any, path: str) -> Any:
+        if not path:
+            return None
+        cur = payload
+        for part in path.split("."):
+            if isinstance(cur, dict) and part in cur:
+                cur = cur[part]
+            else:
+                return None
+        return cur
+
+    async def _call_protocol_parse_service(
+        self, protocol: dict[str, Any], file_path: str
+    ) -> str | None:
+        """Protocol-driven async parse call for MinerU/Docling."""
+        upload_url = str(protocol.get("upload_url") or "").strip()
+        if not upload_url:
+            return None
+        if httpx is None:
+            logger.warning("httpx not installed, skip async parse service call")
+            return None
+
+        id_field = str(protocol.get("id_field", "id"))
+        status_field = str(protocol.get("status_field", "status"))
+        result_url_field = str(protocol.get("result_url_field", "result_url"))
+        content_field = str(protocol.get("content_field", "content"))
+        poll_url_tpl = str(protocol.get("poll_url_template", "")).strip()
+        poll_method = str(protocol.get("poll_method", "GET")).upper()
+        poll_interval = float(protocol.get("poll_interval_seconds", 2.0))
+        max_polls = int(protocol.get("max_polls", 120))
+        success_values = set(
+            x.strip().lower()
+            for x in str(
+                protocol.get(
+                    "success_values", "done,success,succeeded,completed,finished"
+                )
+            ).split(",")
+            if x.strip()
+        )
+        failed_values = set(
+            x.strip().lower()
+            for x in str(protocol.get("failed_values", "failed,error")).split(",")
+            if x.strip()
+        )
+
+        timeout = httpx.Timeout(120.0, connect=30.0)
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            with open(file_path, "rb") as f:
+                resp = await client.post(
+                    upload_url, files={"file": (Path(file_path).name, f)}
+                )
+            if resp.status_code >= 400:
+                raise RuntimeError(
+                    f"Parse service upload failed: {resp.status_code} {resp.text[:400]}"
+                )
+            upload_payload = resp.json() if resp.text else {}
+            task_id = self._get_by_path(upload_payload, id_field)
+            if not task_id:
+                direct_content = self._get_by_path(upload_payload, content_field)
+                return str(direct_content) if direct_content else None
+            task_id = str(task_id)
+
+            poll_url = (
+                poll_url_tpl.format(task_id=task_id, trace_id=task_id, id=task_id)
+                if poll_url_tpl
+                else upload_url
+            )
+            poll_params = {"task_id": task_id, "trace_id": task_id, "id": task_id}
+            for _ in range(max_polls):
+                await asyncio.sleep(poll_interval)
+                if poll_method == "POST":
+                    poll_resp = await client.post(poll_url, json=poll_params)
+                else:
+                    poll_resp = await client.get(poll_url, params=poll_params)
+                poll_payload = poll_resp.json() if poll_resp.text else {}
+                status_raw = self._get_by_path(poll_payload, status_field)
+                status_val = str(status_raw).lower() if status_raw is not None else ""
+
+                if status_val in success_values:
+                    result_url = self._get_by_path(poll_payload, result_url_field)
+                    if result_url:
+                        dl = await client.get(str(result_url))
+                        dl.raise_for_status()
+                        return dl.text
+                    content_val = self._get_by_path(poll_payload, content_field)
+                    return str(content_val) if content_val else None
+                if status_val in failed_values:
+                    raise RuntimeError(
+                        f"Parse service failed for task {task_id}: {poll_payload}"
+                    )
+        raise TimeoutError(f"Parse service polling timeout for task: {task_id}")
+
+    def _extract_content_list_from_payload(
+        self, payload: Any
+    ) -> list[dict[str, Any]] | None:
+        """Try to find a MinerU/Docling-like content list from arbitrary JSON payload."""
+        if isinstance(payload, list):
+            if payload and all(isinstance(x, dict) for x in payload):
+                first = payload[0]
+                if "type" in first or "label" in first or "text" in first:
+                    return cast(list[dict[str, Any]], payload)
+            return None
+        if not isinstance(payload, dict):
+            return None
+
+        # Common direct keys first
+        for key in ("content_list", "content", "items", "result"):
+            value = payload.get(key)
+            if isinstance(value, list):
+                extracted = self._extract_content_list_from_payload(value)
+                if extracted is not None:
+                    return extracted
+            elif isinstance(value, dict):
+                extracted = self._extract_content_list_from_payload(value)
+                if extracted is not None:
+                    return extracted
+
+        # Deep search as fallback
+        for value in payload.values():
+            extracted = self._extract_content_list_from_payload(value)
+            if extracted is not None:
+                return extracted
+        return None
+
+    def _normalize_parser_result_to_content_list(
+        self, parser_result: str | list[dict[str, Any]] | dict[str, Any] | None
+    ) -> list[dict[str, Any]] | None:
+        """Normalize parser result to structured content list if possible."""
+        if parser_result is None:
+            return None
+        if isinstance(parser_result, list):
+            return self._extract_content_list_from_payload(parser_result)
+        if isinstance(parser_result, dict):
+            return self._extract_content_list_from_payload(parser_result)
+        text = str(parser_result).strip()
+        if not text:
+            return None
+        try:
+            payload = json.loads(text)
+            return self._extract_content_list_from_payload(payload)
+        except Exception:
+            return None
+
+    def _resolve_local_raganything_root(self) -> Path | None:
+        """Resolve local RAG-Anything source root if present."""
+        env_root = os.getenv("RAGANYTHING_ROOT", "").strip()
+        candidates: list[Path] = []
+        if env_root:
+            candidates.append(Path(env_root))
+        candidates.extend(
+            [
+                Path("/root/autodl-tmp/RAG-Anything"),
+                Path.cwd().parent / "RAG-Anything",
+            ]
+        )
+        for c in candidates:
+            if (c / "raganything" / "__init__.py").exists():
+                return c
+        return None
+
+    def _ensure_local_raganything_importable(self) -> bool:
+        root = self._resolve_local_raganything_root()
+        if root is None:
+            return False
+        root_str = str(root)
+        if root_str not in sys.path:
+            sys.path.insert(0, root_str)
+        return True
+
+    async def _parse_via_local_raganything(
+        self, engine: str, file_path: str
+    ) -> list[dict[str, Any]] | None:
+        """Use local RAG-Anything parser classes directly."""
+        if engine not in {"mineru", "docling"}:
+            return None
+        if not self._ensure_local_raganything_importable():
+            return None
+        try:
+            from raganything.parser import MineruParser, DoclingParser  # type: ignore[import-untyped]
+        except Exception as e:
+            logger.info(f"Local RAG-Anything import unavailable: {e}")
+            return None
+
+        parser = DoclingParser() if engine == "docling" else MineruParser()
+        try:
+            if (
+                hasattr(parser, "check_installation")
+                and not parser.check_installation()
+            ):
+                logger.info(
+                    f"Local RAG-Anything {engine} parser not installed/configured"
+                )
+                return None
+        except Exception:
+            return None
+
+        source_file_path = self._resolve_source_file_for_parser(file_path)
+        try:
+            content_list = await asyncio.to_thread(
+                parser.parse_document, source_file_path, "auto", None
+            )
+            if isinstance(content_list, list):
+                return content_list
+        except Exception as e:
+            logger.warning(f"Local RAG-Anything {engine} parse failed: {e}")
+        return None
+
+    def _resolve_source_file_for_parser(self, file_path: str) -> str:
+        """Resolve a readable source file path for parser upload."""
+        p = Path(file_path)
+        if p.exists() and p.is_file():
+            return str(p)
+
+        name = p.name
+        candidates: list[Path] = []
+        input_dir = os.getenv("INPUT_DIR", "").strip()
+        if input_dir:
+            input_path = Path(input_dir)
+            candidates.append(input_path / name)
+            candidates.append(input_path / PARSED_DIR_NAME / name)
+
+        # Common local defaults used by API server.
+        cwd = Path.cwd()
+        candidates.extend(
+            [
+                cwd / "inputs" / name,
+                cwd / "inputs" / PARSED_DIR_NAME / name,
+                cwd / PARSED_DIR_NAME / name,
+            ]
+        )
+
+        for candidate in candidates:
+            if candidate.exists() and candidate.is_file():
+                return str(candidate)
+        return file_path
+
+    async def _archive_docx_source_after_full_docs_sync(
+        self, source_path: str
+    ) -> str | None:
+        source = Path(source_path)
+        if source.suffix.lower() != ".docx":
+            return None
+        try:
+            target = await move_file_to_parsed_dir(source, skip_if_already_parsed=True)
+        except Exception as e:
+            logger.warning(
+                f"[parse] DOCX source archive skipped after full_docs sync: {source_path}: {e}"
+            )
+            return None
+        if target is None:
+            return None
+        if target != source:
+            logger.debug(
+                f"[parse] Archived DOCX source after full_docs sync: {source} -> {target}"
+            )
+        return str(target)
+
+    async def _write_lightrag_document_from_content_list(
+        self,
+        doc_id: str,
+        file_path: str,
+        content_list: list[dict[str, Any]],
+        engine: str,
+        source_path: str | None = None,
+    ) -> dict[str, Any]:
+        """Convert parser content list to LightRAG Document files and return parsed_data."""
+        parsed_dir = Path(self.working_dir) / PARSED_DIR_NAME
+        parsed_dir.mkdir(parents=True, exist_ok=True)
+
+        source_name = Path(file_path).name or f"{doc_id}.bin"
+        base_name = f"{doc_id}.{source_name}"
+        blocks_path = parsed_dir / f"{base_name}.blocks.jsonl"
+        tables_path = parsed_dir / f"{base_name}.tables.json"
+        drawings_path = parsed_dir / f"{base_name}.drawings.json"
+        equations_path = parsed_dir / f"{base_name}.equations.json"
+
+        blocks_lines: list[str] = []
+        merged_parts: list[str] = []
+        block_idx = 0
+        table_idx = 0
+        drawing_idx = 0
+        equation_idx = 0
+
+        tables: dict[str, Any] = {}
+        drawings: dict[str, Any] = {}
+        equations: dict[str, Any] = {}
+
+        def _to_list_str(value: Any) -> list[str]:
+            if value is None:
+                return []
+            if isinstance(value, list):
+                return [str(x) for x in value if str(x).strip()]
+            text_val = str(value).strip()
+            return [text_val] if text_val else []
+
+        def _parse_int(value: Any, default: int = 0) -> int:
+            try:
+                return int(value)
+            except Exception:
+                return default
+
+        def _normalize_grid_rows(grid: Any) -> list[list[str]]:
+            normalized_rows: list[list[str]] = []
+            if not isinstance(grid, list):
+                return normalized_rows
+            for row in grid:
+                if not isinstance(row, list):
+                    continue
+                normalized_row: list[str] = []
+                for cell in row:
+                    if isinstance(cell, dict):
+                        normalized_row.append(str(cell.get("text", "")).strip())
+                    else:
+                        normalized_row.append(str(cell).strip())
+                normalized_rows.append(normalized_row)
+            return normalized_rows
+
+        def _coerce_table_rows(
+            value: Any,
+        ) -> tuple[str, Any, list[list[str]], int, int]:
+            raw_value = value
+            if isinstance(raw_value, str):
+                stripped = raw_value.strip()
+                if not stripped:
+                    return "html", "", [], 0, 0
+                parsed_value = None
+                try:
+                    parsed_value = json.loads(stripped)
+                except Exception:
+                    try:
+                        import ast
+
+                        parsed_value = ast.literal_eval(stripped)
+                    except Exception:
+                        parsed_value = None
+                if parsed_value is None:
+                    return "html", raw_value, [], 0, 0
+                raw_value = parsed_value
+
+            if isinstance(raw_value, list):
+                rows = _normalize_grid_rows(raw_value)
+                return (
+                    "json",
+                    json.dumps(rows, ensure_ascii=False),
+                    rows,
+                    len(rows),
+                    max((len(r) for r in rows), default=0),
+                )
+
+            if isinstance(raw_value, dict):
+                rows = _normalize_grid_rows(raw_value.get("grid"))
+                if not rows and isinstance(raw_value.get("rows"), list):
+                    rows = _normalize_grid_rows(raw_value.get("rows"))
+                num_rows = _parse_int(
+                    raw_value.get("num_rows"), len(rows) if rows else 0
+                )
+                num_cols = _parse_int(
+                    raw_value.get("num_cols"),
+                    max((len(r) for r in rows), default=0),
+                )
+                if rows:
+                    return (
+                        "json",
+                        json.dumps(rows, ensure_ascii=False),
+                        rows,
+                        num_rows,
+                        num_cols,
+                    )
+                return (
+                    "html",
+                    json.dumps(raw_value, ensure_ascii=False),
+                    [],
+                    num_rows,
+                    num_cols,
+                )
+
+            text_value = str(raw_value or "").strip()
+            return "html", text_value, [], 0, 0
+
+        heading_stack: list[str] = []
+
+        def _update_heading_context(
+            heading_text: str, level: int
+        ) -> tuple[str, int, list[str]]:
+            nonlocal heading_stack
+            clean_heading = str(heading_text or "").strip()
+            clean_level = max(_parse_int(level, 1), 1)
+            heading_stack = heading_stack[: max(clean_level - 1, 0)]
+            parent_chain = [x for x in heading_stack if x]
+            heading_stack.append(clean_heading)
+            return clean_heading, clean_level, parent_chain
+
+        def _append_block(
+            content_text: str,
+            heading: str = "",
+            level: int = 0,
+            parent_headings: list[str] | None = None,
+        ) -> str:
+            nonlocal block_idx
+            content_text = str(content_text or "").strip()
+            if not content_text:
+                return ""
+            blockid = hashlib.md5(
+                f"{doc_id}:{block_idx}:{heading}:{content_text}".encode("utf-8")
+            ).hexdigest()
+            blocks_lines.append(
+                json.dumps(
+                    {
+                        "type": "content",
+                        "blockid": blockid,
+                        "format": "plain_text",
+                        "content": content_text,
+                        "heading": heading,
+                        "parent_headings": list(parent_headings or []),
+                        "level": level,
+                        "session_type": "body",
+                        "table_slice": "none",
+                        "positions": [],
+                    },
+                    ensure_ascii=False,
+                )
+            )
+            merged_parts.append(content_text)
+            block_idx += 1
+            return blockid
+
+        current_heading = ""
+        current_level = 0
+        current_parent_headings: list[str] = []
+
+        for item in content_list:
+            if not isinstance(item, dict):
+                continue
+            item_type = str(item.get("type") or item.get("label") or "").lower()
+
+            if item_type in {"text", "title", "section_header", "list", "code"}:
+                text = (
+                    item.get("text")
+                    or item.get("content")
+                    or "\n".join(
+                        item.get("list_items", [])
+                        if isinstance(item.get("list_items"), list)
+                        else []
+                    )
+                    or item.get("code_body")
+                    or ""
+                )
+                if not str(text).strip():
+                    continue
+                inferred_level = int(item.get("text_level", 0) or 0)
+                if item_type in {"title", "section_header"} and inferred_level <= 0:
+                    inferred_level = int(item.get("level", 1) or 1)
+                if inferred_level > 0:
+                    (
+                        current_heading,
+                        current_level,
+                        current_parent_headings,
+                    ) = _update_heading_context(str(text), inferred_level)
+                _append_block(
+                    str(text),
+                    heading=current_heading,
+                    level=current_level,
+                    parent_headings=current_parent_headings,
+                )
+                continue
+
+            if item_type == "equation":
+                equation_idx += 1
+                eq_id = str(item.get("id") or f"eq-{doc_id}-{equation_idx:04d}")
+                caption = str(item.get("caption") or f"公式{equation_idx}")
+                footnotes = _to_list_str(
+                    item.get("equation_footnote") or item.get("footnotes")
+                )
+                eq_text = str(item.get("text") or item.get("content") or "").strip()
+                wrapped = (
+                    f'<equation id="{eq_id}" format="latex" caption="{caption}">{eq_text}</equation>'
+                    if eq_text
+                    else f'<cite type="equation" refid="{eq_id}">公式{equation_idx}</cite>'
+                )
+                blockid = _append_block(
+                    wrapped,
+                    heading=current_heading,
+                    level=current_level,
+                    parent_headings=current_parent_headings,
+                )
+                equations[eq_id] = {
+                    "id": eq_id,
+                    "blockid": blockid,
+                    "heading": current_heading,
+                    "format": "latex",
+                    "content": eq_text,
+                    "index": equation_idx - 1,
+                    "caption": caption,
+                    "footnotes": footnotes,
+                }
+                continue
+
+            if item_type == "table":
+                table_idx += 1
+                table_id = str(item.get("id") or f"tb-{doc_id}-{table_idx:04d}")
+                caption = str(item.get("caption") or f"表格{table_idx}")
+                table_caption = _to_list_str(item.get("table_caption"))
+                if table_caption and not item.get("caption"):
+                    caption = table_caption[0]
+                footnotes = _to_list_str(
+                    item.get("table_footnote") or item.get("footnotes")
+                )
+                table_body = item.get("table_body") or item.get("content") or ""
+                rows = item.get("rows") if isinstance(item.get("rows"), list) else None
+                (
+                    fmt,
+                    table_content,
+                    normalized_rows,
+                    inferred_num_rows,
+                    inferred_num_cols,
+                ) = _coerce_table_rows(rows if rows is not None else table_body)
+                rows = normalized_rows or (rows if isinstance(rows, list) else [])
+                cite_text = (
+                    f'<cite type="table" refid="{table_id}">表{table_idx}</cite>'
+                )
+                blockid = _append_block(
+                    cite_text,
+                    heading=current_heading,
+                    level=current_level,
+                    parent_headings=current_parent_headings,
+                )
+                tables[table_id] = {
+                    "id": table_id,
+                    "blockid": blockid,
+                    "heading": current_heading,
+                    "dimension": [
+                        _parse_int(item.get("num_rows"), inferred_num_rows),
+                        _parse_int(item.get("num_cols"), inferred_num_cols),
+                    ],
+                    "format": fmt,
+                    "content": table_content,
+                    "index": table_idx - 1,
+                    "caption": caption,
+                    "footnotes": footnotes,
+                    "image": item.get("img_path") or item.get("image"),
+                }
+                continue
+
+            if item_type in {"image", "picture", "drawing"}:
+                drawing_idx += 1
+                drawing_id = str(item.get("id") or f"dr-{doc_id}-{drawing_idx:04d}")
+                image_caption = _to_list_str(
+                    item.get("image_caption") or item.get("captions")
+                )
+                caption = str(
+                    item.get("caption")
+                    or (image_caption[0] if image_caption else f"图{drawing_idx}")
+                )
+                footnotes = _to_list_str(
+                    item.get("image_footnote") or item.get("footnotes")
+                )
+                path_val = str(item.get("img_path") or item.get("path") or "")
+                src_val = str(item.get("src") or "")
+                fmt = (
+                    Path(path_val).suffix.lower().lstrip(".")
+                    if path_val
+                    else str(item.get("format") or "")
+                )
+                drawing_tag = (
+                    f'<drawing id="{drawing_id}" format="{fmt}" caption="{caption}" '
+                    f'path="{path_val}" src="{src_val}" />'
+                )
+                blockid = _append_block(
+                    drawing_tag,
+                    heading=current_heading,
+                    level=current_level,
+                    parent_headings=current_parent_headings,
+                )
+                drawings[drawing_id] = {
+                    "id": drawing_id,
+                    "blockid": blockid,
+                    "heading": current_heading,
+                    "format": fmt,
+                    "path": path_val,
+                    "src": src_val,
+                    "caption": caption,
+                    "footnotes": footnotes,
+                }
+                continue
+
+            # Fallback: serialize unknown item to text for robustness.
+            fallback_text = str(item.get("text") or item.get("content") or "").strip()
+            if fallback_text:
+                _append_block(
+                    fallback_text,
+                    heading=current_heading,
+                    level=current_level,
+                    parent_headings=current_parent_headings,
+                )
+
+        merged_text = "\n\n".join([x for x in merged_parts if x.strip()])
+        doc_hash = hashlib.sha256(merged_text.encode("utf-8")).hexdigest()
+        parsed_time = datetime.now(timezone.utc).isoformat()
+        meta = {
+            "type": "meta",
+            "format": "lightrag",
+            "version": "1.0",
+            "document_name": source_name,
+            "document_format": Path(source_name).suffix.lower().lstrip("."),
+            "document_hash": f"sha256:{doc_hash}",
+            "table_file": bool(tables),
+            "equation_file": bool(equations),
+            "drawing_file": bool(drawings),
+            "asset_dir": False,
+            "split_method": "raw_paragraph",
+            "blocks": len(blocks_lines),
+            "doc_id": doc_id,
+            "parsed_engine": engine,
+            "parsed_time": parsed_time,
+            "analyze_time": "",
+            "doc_title": Path(source_name).stem or source_name,
+        }
+        blocks_path.write_text(
+            "\n".join([json.dumps(meta, ensure_ascii=False)] + blocks_lines) + "\n",
+            encoding="utf-8",
+        )
+
+        if tables:
+            tables_path.write_text(
+                json.dumps(
+                    {"version": "1.0", "tables": tables}, ensure_ascii=False, indent=2
+                ),
+                encoding="utf-8",
+            )
+        if drawings:
+            drawings_path.write_text(
+                json.dumps(
+                    {"version": "1.0", "drawings": drawings},
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+        if equations:
+            equations_path.write_text(
+                json.dumps(
+                    {"version": "1.0", "equations": equations},
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+
+        # Keep full_docs in sync so restart/reprocess can directly use LightRAG Document.
+        await self.full_docs.upsert(
+            {
+                doc_id: {
+                    "content": merged_text,
+                    "file_path": file_path,
+                    "format": FULL_DOCS_FORMAT_LIGHTRAG,
+                    "lightrag_document_path": str(blocks_path),
+                    "parsed_engine": engine,
+                    "update_time": int(time.time()),
+                }
+            }
+        )
+        await self.full_docs.index_done_callback()
+        await self._archive_docx_source_after_full_docs_sync(
+            source_path or self._resolve_source_file_for_parser(file_path)
+        )
+        return {
+            "doc_id": doc_id,
+            "file_path": file_path,
+            "format": FULL_DOCS_FORMAT_LIGHTRAG,
+            "content": merged_text,
+            "blocks_path": str(blocks_path),
+        }
+
+    def _content_list_to_plain_text(self, content_list: list[dict[str, Any]]) -> str:
+        parts: list[str] = []
+        for item in content_list:
+            if not isinstance(item, dict):
+                continue
+            tp = item.get("type")
+            if tp in {"text", "equation"}:
+                text = item.get("text") or ""
+                if text:
+                    parts.append(str(text))
+            elif tp == "table":
+                caption = item.get("table_caption") or []
+                body = item.get("table_body") or ""
+                parts.append(f"[TABLE] {caption} {body}")
+            elif tp == "image":
+                caption = item.get("image_caption") or []
+                parts.append(f"[IMAGE] {caption}")
+        return "\n\n".join([x for x in parts if str(x).strip()])
+
+    async def parse_native(
+        self, doc_id: str, file_path: str, content_data: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Phase 1 parse for native/raw, lightrag and pending_parse formats."""
+        doc_format = content_data.get("format", FULL_DOCS_FORMAT_RAW)
+        if doc_format == FULL_DOCS_FORMAT_LIGHTRAG:
+            doc_path = content_data.get("lightrag_document_path") or file_path
+            merged_text, blocks_path = await self._load_lightrag_document_content(
+                str(doc_path)
+            )
+            return {
+                "doc_id": doc_id,
+                "file_path": file_path,
+                "format": doc_format,
+                "content": merged_text,
+                "blocks_path": blocks_path,
+            }
+
+        if doc_format == FULL_DOCS_FORMAT_PENDING_PARSE:
+            source_path = self._resolve_source_file_for_parser(file_path)
+            p = Path(source_path)
+            if p.exists() and p.is_file() and p.suffix.lower() == ".docx":
+                from lightrag.extraction.parse_document import (
+                    parse_docx_to_interchange_jsonl,
+                )
+
+                file_bytes = await asyncio.to_thread(p.read_bytes)
+                parsed_dir = Path(self.working_dir) / PARSED_DIR_NAME
+                parsed_dir.mkdir(parents=True, exist_ok=True)
+                output_dir = str(parsed_dir)
+                interchange_text = await asyncio.to_thread(
+                    parse_docx_to_interchange_jsonl,
+                    file_bytes,
+                    p.name,
+                    doc_id,
+                    output_dir,
+                )
+                if not interchange_text or not interchange_text.strip():
+                    raise ValueError(
+                        f"DOCX parser returned empty content for {file_path}"
+                    )
+
+                await self.full_docs.upsert(
+                    {
+                        doc_id: {
+                            "content": interchange_text,
+                            "file_path": file_path,
+                            "format": FULL_DOCS_FORMAT_RAW,
+                            "parsed_engine": "native",
+                            "update_time": int(time.time()),
+                        }
+                    }
+                )
+                await self.full_docs.index_done_callback()
+                await self._archive_docx_source_after_full_docs_sync(str(p))
+                logger.info(
+                    f"[parse_native] pending_parse completed for {file_path} via interchange JSONL"
+                )
+                return {
+                    "doc_id": doc_id,
+                    "file_path": file_path,
+                    "format": FULL_DOCS_FORMAT_RAW,
+                    "content": interchange_text,
+                    "blocks_path": "",
+                }
+            return {
+                "doc_id": doc_id,
+                "file_path": file_path,
+                "format": FULL_DOCS_FORMAT_RAW,
+                "content": content_data.get("content", ""),
+                "blocks_path": "",
+            }
+
+        return {
+            "doc_id": doc_id,
+            "file_path": file_path,
+            "format": FULL_DOCS_FORMAT_RAW,
+            "content": content_data.get("content", ""),
+            "blocks_path": "",
+        }
+
+    async def parse_mineru(
+        self, doc_id: str, file_path: str, content_data: dict[str, Any]
+    ) -> dict[str, Any]:
+        endpoint = os.getenv(
+            "MINERU_ENDPOINT", "https://mineru.net/api/v4/extract/task"
+        ).strip()
+        try:
+            if endpoint:
+                protocol = {
+                    "upload_url": endpoint,
+                    "poll_url_template": os.getenv(
+                        "MINERU_POLL_ENDPOINT",
+                        endpoint + "/{trace_id}",
+                    ),
+                    "poll_method": os.getenv("MINERU_POLL_METHOD", "GET"),
+                    "id_field": os.getenv("MINERU_ID_FIELD", "trace_id"),
+                    "status_field": os.getenv("MINERU_STATUS_FIELD", "status"),
+                    "result_url_field": os.getenv(
+                        "MINERU_RESULT_URL_FIELD", "result_url"
+                    ),
+                    "content_field": os.getenv("MINERU_CONTENT_FIELD", "content"),
+                    "success_values": os.getenv(
+                        "MINERU_SUCCESS_VALUES",
+                        "done,success,succeeded,completed,finished",
+                    ),
+                    "failed_values": os.getenv("MINERU_FAILED_VALUES", "failed,error"),
+                    "poll_interval_seconds": float(
+                        os.getenv("MINERU_POLL_INTERVAL_SECONDS", "2")
+                    ),
+                    "max_polls": int(os.getenv("MINERU_MAX_POLLS", "180")),
+                }
+                source_file_path = self._resolve_source_file_for_parser(file_path)
+                result_text = await self._call_protocol_parse_service(
+                    protocol=protocol,
+                    file_path=source_file_path,
+                )
+                content_list = self._normalize_parser_result_to_content_list(
+                    result_text
+                )
+                if content_list:
+                    return await self._write_lightrag_document_from_content_list(
+                        doc_id=doc_id,
+                        file_path=file_path,
+                        content_list=content_list,
+                        engine="mineru",
+                        source_path=source_file_path,
+                    )
+                if result_text:
+                    # Content is already extracted as raw text and persisted; mark
+                    # parsed_engine="native" so retries skip the remote MinerU call
+                    # via _resolve_parser_engine. The original engine is kept in
+                    # source_parsed_engine for audit.
+                    await self.full_docs.upsert(
+                        {
+                            doc_id: {
+                                "content": str(result_text),
+                                "file_path": file_path,
+                                "format": FULL_DOCS_FORMAT_RAW,
+                                "parsed_engine": "native",
+                                "source_parsed_engine": "mineru",
+                                "update_time": int(time.time()),
+                            }
+                        }
+                    )
+                    await self.full_docs.index_done_callback()
+                    await self._archive_docx_source_after_full_docs_sync(
+                        source_file_path
+                    )
+                    return {
+                        "doc_id": doc_id,
+                        "file_path": file_path,
+                        "format": FULL_DOCS_FORMAT_RAW,
+                        "content": str(result_text),
+                        "blocks_path": "",
+                    }
+        except Exception as e:
+            logger.warning(f"MinerU async service failed, fallback local/native: {e}")
+
+        raganything_content_list = await self._parse_via_local_raganything(
+            engine="mineru",
+            file_path=file_path,
+        )
+        if raganything_content_list:
+            return await self._write_lightrag_document_from_content_list(
+                doc_id=doc_id,
+                file_path=file_path,
+                content_list=raganything_content_list,
+                engine="mineru",
+                source_path=self._resolve_source_file_for_parser(file_path),
+            )
+
+        return await self.parse_native(doc_id, file_path, content_data)
+
+    async def parse_docling(
+        self, doc_id: str, file_path: str, content_data: dict[str, Any]
+    ) -> dict[str, Any]:
+        endpoint = os.getenv(
+            "DOCLING_ENDPOINT", "http://localhost:8081/v1/convert/file/async"
+        ).strip()
+        try:
+            if endpoint:
+                protocol = {
+                    "upload_url": endpoint,
+                    "poll_url_template": os.getenv(
+                        "DOCLING_POLL_ENDPOINT",
+                        endpoint + "/{task_id}",
+                    ),
+                    "poll_method": os.getenv("DOCLING_POLL_METHOD", "GET"),
+                    "id_field": os.getenv("DOCLING_ID_FIELD", "task_id"),
+                    "status_field": os.getenv("DOCLING_STATUS_FIELD", "status"),
+                    "result_url_field": os.getenv(
+                        "DOCLING_RESULT_URL_FIELD", "result_url"
+                    ),
+                    "content_field": os.getenv("DOCLING_CONTENT_FIELD", "content"),
+                    "success_values": os.getenv(
+                        "DOCLING_SUCCESS_VALUES",
+                        "done,success,succeeded,completed,finished",
+                    ),
+                    "failed_values": os.getenv("DOCLING_FAILED_VALUES", "failed,error"),
+                    "poll_interval_seconds": float(
+                        os.getenv("DOCLING_POLL_INTERVAL_SECONDS", "2")
+                    ),
+                    "max_polls": int(os.getenv("DOCLING_MAX_POLLS", "180")),
+                }
+                source_file_path = self._resolve_source_file_for_parser(file_path)
+                result_text = await self._call_protocol_parse_service(
+                    protocol=protocol,
+                    file_path=source_file_path,
+                )
+                content_list = self._normalize_parser_result_to_content_list(
+                    result_text
+                )
+                if content_list:
+                    return await self._write_lightrag_document_from_content_list(
+                        doc_id=doc_id,
+                        file_path=file_path,
+                        content_list=content_list,
+                        engine="docling",
+                        source_path=source_file_path,
+                    )
+                if result_text:
+                    # Same retry-skip rationale as in parse_mineru: parsed_engine
+                    # is normalized to "native" because the raw content is already
+                    # in full_docs; the real upstream engine is kept in
+                    # source_parsed_engine for audit.
+                    await self.full_docs.upsert(
+                        {
+                            doc_id: {
+                                "content": str(result_text),
+                                "file_path": file_path,
+                                "format": FULL_DOCS_FORMAT_RAW,
+                                "parsed_engine": "native",
+                                "source_parsed_engine": "docling",
+                                "update_time": int(time.time()),
+                            }
+                        }
+                    )
+                    await self.full_docs.index_done_callback()
+                    await self._archive_docx_source_after_full_docs_sync(
+                        source_file_path
+                    )
+                    return {
+                        "doc_id": doc_id,
+                        "file_path": file_path,
+                        "format": FULL_DOCS_FORMAT_RAW,
+                        "content": str(result_text),
+                        "blocks_path": "",
+                    }
+        except Exception as e:
+            logger.warning(f"Docling async service failed, fallback local/native: {e}")
+
+        raganything_content_list = await self._parse_via_local_raganything(
+            engine="docling",
+            file_path=file_path,
+        )
+        if raganything_content_list:
+            return await self._write_lightrag_document_from_content_list(
+                doc_id=doc_id,
+                file_path=file_path,
+                content_list=raganything_content_list,
+                engine="docling",
+                source_path=self._resolve_source_file_for_parser(file_path),
+            )
+
+        return await self.parse_native(doc_id, file_path, content_data)
+
+    async def _run_multimodal_postprocess_hook(
+        self,
+        doc_id: str,
+        file_path: str,
+        chunking_result: list[dict[str, Any]] | tuple[dict[str, Any], ...],
+        extraction_meta: dict[str, Any],
+    ) -> list[dict[str, Any]] | tuple[dict[str, Any], ...]:
+        """Multimodal post-process entrypoint.
+
+        Placement:
+            interchange parsing -> [this hook] -> entity extraction
+
+        Default behavior is no-op. This method defines a stable extension point
+        for integrating RAG-Anything multimodal processors.
+        """
+        addon_params = self.addon_params
+        if not addon_params.get("enable_multimodal_pipeline", False):
+            return chunking_result
+
+        extraction_format = extraction_meta.get("extraction_format")
+        capabilities = set(extraction_meta.get("engine_capabilities", []) or [])
+        if extraction_format != "interchange_jsonl":
+            return chunking_result
+        if not capabilities.intersection({"i", "e", "t"}):
+            return chunking_result
+
+        logger.info(
+            f"[multimodal-hook] enabled for d-id: {doc_id}, file: {file_path}, "
+            f"engine={extraction_meta.get('engine')}, caps={sorted(capabilities)}"
+        )
+
+        # TODO(RAG-Anything integration):
+        # 1) convert interchange chunks -> RAG-Anything content_list
+        # 2) call modal processors (image/table/equation) using vlm_llm_model_func (VLM role)
+        # 3) merge multimodal outputs back into chunk dicts
+        # 4) keep chunk_order_index continuity and chunk_id stability
+        return chunking_result
+
+    def _build_mm_chunks_from_sidecars(
+        self,
+        doc_id: str,
+        file_path: str,
+        blocks_path: str,
+        base_order_index: int,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """Build multimodal chunks and modality descriptors from sidecars."""
+        block_file = Path(blocks_path)
+        if not block_file.exists():
+            return [], []
+
+        base = str(block_file)
+        if base.endswith(".blocks.jsonl"):
+            base = base[: -len(".blocks.jsonl")]
+
+        sidecar_defs = [
+            ("drawings", Path(base + ".drawings.json"), "drawing"),
+            ("tables", Path(base + ".tables.json"), "table"),
+            ("equations", Path(base + ".equations.json"), "equation"),
+        ]
+
+        mm_chunks: list[dict[str, Any]] = []
+        mm_specs: list[dict[str, Any]] = []
+        order = base_order_index
+
+        def _norm_list(v: Any) -> list[str]:
+            if v is None:
+                return []
+            if isinstance(v, list):
+                return [str(x).strip() for x in v if str(x).strip()]
+            s = str(v).strip()
+            return [s] if s else []
+
+        def _mm_entity_name(kind: str, raw_payload: dict[str, Any]) -> str:
+            payload = json.dumps(raw_payload, ensure_ascii=False, sort_keys=True)
+            digest = hashlib.md5(payload.encode("utf-8")).hexdigest()
+            return f"{kind}-{digest}"
+
+        for root_key, sidecar_path, kind in sidecar_defs:
+            if not sidecar_path.exists():
+                continue
+            try:
+                payload = json.loads(sidecar_path.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            items = payload.get(root_key, {})
+            if not isinstance(items, dict):
+                continue
+
+            for local_idx, (item_id, item) in enumerate(items.items()):
+                if not isinstance(item, dict):
+                    continue
+
+                analysis = (
+                    item.get("llm_analyze_result")
+                    if isinstance(item.get("llm_analyze_result"), dict)
+                    else {}
+                )
+                name = str(analysis.get("name") or item.get("caption") or item_id)
+                summary = str(analysis.get("summary") or "").strip()
+                detail = str(analysis.get("detail_description") or "").strip()
+                heading = str(item.get("heading") or "").strip()
+                captions = _norm_list(item.get("caption"))
+                footnotes = _norm_list(item.get("footnotes"))
+                image_type = str(analysis.get("image_type") or "").strip()
+
+                raw_for_hash: dict[str, Any] = {
+                    "kind": kind,
+                    "name": name,
+                    "summary": summary,
+                    "detail": detail,
+                    "content": item.get("content"),
+                    "path": item.get("path"),
+                    "src": item.get("src"),
+                    "caption": item.get("caption"),
+                }
+                entity_name = _mm_entity_name(kind, raw_for_hash)
+                chunk_id = f"{doc_id}-mm-{kind}-{local_idx:03d}"
+
+                if kind == "drawing":
+                    lines = [
+                        f"Image_Name: {name}",
+                    ]
+                    if image_type:
+                        lines.append(f"Image_Type: {image_type}")
+                    lines.extend(
+                        [
+                            "Image_Location:",
+                            f"  - Document_Name: {Path(file_path).name}",
+                        ]
+                    )
+                    if heading:
+                        lines.append(f"  - Session_Heading: {heading}")
+                    if captions:
+                        lines.append("Image_Captions:")
+                        lines.extend([f"  - {x}" for x in captions])
+                    if footnotes:
+                        lines.append("Image_Footnotes:")
+                        lines.extend([f"  - {x}" for x in footnotes])
+                    if summary:
+                        lines.append(f'Image_Summary: "{summary}"')
+                    if detail:
+                        lines.append(f'Image_Detail_Description: "{detail}"')
+                elif kind == "table":
+                    lines = [
+                        f"Table_Name: {name}",
+                        "Table_Location:",
+                        f"  - Document_Name: {Path(file_path).name}",
+                    ]
+                    if heading:
+                        lines.append(f"  - Session_Heading: {heading}")
+                    if captions:
+                        lines.append("Table_Captions:")
+                        lines.extend([f"  - {x}" for x in captions])
+                    if footnotes:
+                        lines.append("Table_Footnotes:")
+                        lines.extend([f"  - {x}" for x in footnotes])
+                    if summary:
+                        lines.append(f'Table_Summary: "{summary}"')
+                    if detail:
+                        lines.append(f'Table_Detail_Description: "{detail}"')
+                else:
+                    lines = [
+                        f"Equation_Name: {name}",
+                        "Equation_Location:",
+                        f"  - Document_Name: {Path(file_path).name}",
+                    ]
+                    if heading:
+                        lines.append(f"  - Session_Heading: {heading}")
+                    if captions:
+                        lines.append("Equation_Captions:")
+                        lines.extend([f"  - {x}" for x in captions])
+                    if footnotes:
+                        lines.append("Equation_Footnotes:")
+                        lines.extend([f"  - {x}" for x in footnotes])
+                    if summary:
+                        lines.append(f'Equation_Summary: "{summary}"')
+                    if detail:
+                        lines.append(f'Equation_Detail_Description: "{detail}"')
+
+                chunk_content = "\n".join(lines).strip()
+                if not chunk_content:
+                    continue
+
+                mm_chunks.append(
+                    {
+                        "chunk_id": chunk_id,
+                        "chunk_order_index": order,
+                        "content": chunk_content,
+                        "tokens": len(self.tokenizer.encode(chunk_content)),
+                        "content_type": kind,
+                        "heading": heading,
+                        "parent_headings": [],
+                        "level": 0,
+                    }
+                )
+                mm_specs.append(
+                    {
+                        "kind": kind,
+                        "chunk_id": chunk_id,
+                        "entity_name": entity_name,
+                        "entity_type": kind,
+                        "name": name,
+                        "caption_text": "; ".join(captions),
+                        "heading": heading,
+                        "summary": summary,
+                    }
+                )
+                order += 1
+
+        return mm_chunks, mm_specs
+
+    def _augment_chunk_results_with_mm_entities(
+        self,
+        chunk_results: list,
+        mm_specs: list[dict[str, Any]],
+        file_path: str,
+    ) -> list:
+        """Inject modality object entities and relations into merge inputs."""
+        if not mm_specs:
+            return chunk_results
+
+        extracted_by_chunk: dict[str, set[str]] = {}
+        for maybe_nodes, _ in chunk_results:
+            if not isinstance(maybe_nodes, dict):
+                continue
+            for entity_name, entity_records in maybe_nodes.items():
+                if not isinstance(entity_records, list):
+                    continue
+                for rec in entity_records:
+                    if not isinstance(rec, dict):
+                        continue
+                    source_id = str(rec.get("source_id") or "")
+                    if not source_id:
+                        continue
+                    extracted_by_chunk.setdefault(source_id, set()).add(
+                        str(entity_name)
+                    )
+
+        now_ts = int(time.time())
+        mm_nodes: dict[str, list[dict[str, Any]]] = {}
+        mm_edges: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        for spec in mm_specs:
+            src = str(spec["entity_name"])
+            chunk_id = str(spec["chunk_id"])
+            kind = str(spec["kind"])
+            title = str(spec.get("name") or src)
+            caption_text = str(spec.get("caption_text") or "").strip()
+            heading = str(spec.get("heading") or "").strip()
+            summary = str(spec.get("summary") or "").strip()
+
+            mm_nodes.setdefault(src, []).append(
+                {
+                    "entity_name": src,
+                    "entity_type": kind,
+                    "description": summary or f"{kind} object: {title}",
+                    "source_id": chunk_id,
+                    "file_path": file_path,
+                    "timestamp": now_ts,
+                }
+            )
+
+            targets = extracted_by_chunk.get(chunk_id, set())
+            for tgt in sorted(targets):
+                if tgt == src:
+                    continue
+                desc = (
+                    f"Entity `{tgt}` is associated with {kind} `{title}` "
+                    f"in section `{heading or 'unknown'}`."
+                )
+                if caption_text:
+                    desc += f" Captions: {caption_text}."
+                edge_key = tuple(sorted((src, tgt)))
+                mm_edges.setdefault(edge_key, []).append(
+                    {
+                        "src_id": src,
+                        "tgt_id": tgt,
+                        "weight": 1.0,
+                        "description": desc,
+                        "keywords": "belongs to,part of,contained in",
+                        "source_id": chunk_id,
+                        "file_path": file_path,
+                        "timestamp": now_ts,
+                    }
+                )
+
+        if mm_nodes or mm_edges:
+            chunk_results = list(chunk_results) + [(mm_nodes, mm_edges)]
+        return chunk_results
 
     async def _insert_done(
         self, pipeline_status=None, pipeline_status_lock=None
@@ -2785,7 +5916,7 @@ class LightRAG:
             actual data is nested under the 'data' field, with 'status' and 'message'
             fields at the top level.
         """
-        global_config = asdict(self)
+        global_config = self._build_global_config()
 
         # Create a copy of param to avoid modifying the original
         data_param = QueryParam(
@@ -2903,7 +6034,7 @@ class LightRAG:
         """
         logger.debug(f"[aquery_llm] Query param: {param}")
 
-        global_config = asdict(self)
+        global_config = self._build_global_config()
 
         try:
             query_result = None
@@ -2932,7 +6063,11 @@ class LightRAG:
                 )
             elif param.mode == "bypass":
                 # Bypass mode: directly use LLM without knowledge retrieval
-                use_llm_func = param.model_func or global_config["llm_model_func"]
+                if param.model_func:
+                    _warn_deprecated_query_model_func("bypass query generation")
+                use_llm_func = (
+                    param.model_func or global_config["role_llm_funcs"]["query"]
+                )
                 # Apply higher priority (8) to entity/relation summary tasks
                 use_llm_func = partial(use_llm_func, _priority=8)
 
@@ -3955,7 +7090,7 @@ class LightRAG:
                         relationships_vdb=self.relationships_vdb,
                         text_chunks_storage=self.text_chunks,
                         llm_response_cache=self.llm_response_cache,
-                        global_config=asdict(self),
+                        global_config=self._build_global_config(),
                         pipeline_status=pipeline_status,
                         pipeline_status_lock=pipeline_status_lock,
                         entity_chunks_storage=self.entity_chunks,
@@ -4505,3 +7640,15 @@ class LightRAG:
         loop.run_until_complete(
             self.aexport_data(output_path, file_format, include_vector_data)
         )
+
+
+# `addon_params` is declared as an InitVar on the dataclass so it can still be
+# passed through LightRAG(addon_params=...). InitVars are not stored as
+# instance attributes, which frees the name to be installed here as a property
+# that routes reads/writes through the observable `_addon_params` store.
+# Declaring it as both a dataclass field and a property is not supported by
+# @dataclass, so the property is attached after class creation.
+LightRAG.addon_params = property(  # type: ignore[attr-defined]
+    LightRAG._get_addon_params,
+    LightRAG._set_runtime_addon_params,
+)

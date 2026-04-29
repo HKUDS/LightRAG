@@ -136,10 +136,20 @@
         "metadata": "Siêu Dữ Liệu",
         "select": "Chọn"
       },
+      "filters": {
+        "all": "Tất cả",
+        "completed": "Hoàn tất",
+        "analyzing": "Đang phân tích",
+        "processing": "Đang xử lý",
+        "pending": "Đang chờ",
+        "failed": "Thất bại"
+      },
       "status": {
         "all": "Tất cả",
         "completed": "Hoàn thành",
         "preprocessed": "Đã tiền xử lý",
+        "parsing": "Đang phân tích cú pháp",
+        "analyzing": "Đang phân tích",
         "processing": "Đang xử lý",
         "pending": "Đang chờ",
         "failed": "Thất bại"
@@ -277,9 +287,9 @@
       "serverInfo": "Thông Tin Máy Chủ",
       "workingDirectory": "Thư Mục Làm Việc",
       "inputDirectory": "Thư Mục Đầu Vào",
-      "maxParallelInsert": "Xử Lý Tài Liệu Đồng Thời",
+      "otherSettings": "Cài Đặt Khác",
       "summarySettings": "Cài Đặt Tóm Tắt",
-      "llmConfig": "Cấu Hình LLM",
+      "llmConfig": "Cấu Hình Mô Hình",
       "llmBinding": "LLM Binding",
       "llmBindingHost": "Điểm Cuối LLM",
       "llmModel": "Mô Hình LLM",
@@ -293,7 +303,6 @@
       "graphStorage": "Graph Storage",
       "vectorStorage": "Vector Storage",
       "workspace": "Không Gian Làm Việc",
-      "maxGraphNodes": "Số Nút Đồ Thị Tối Đa",
       "rerankerConfig": "Cấu Hình Reranker",
       "rerankerBindingHost": "Điểm Cuối Reranker",
       "rerankerModel": "Mô Hình Reranker",

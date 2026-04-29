@@ -450,7 +450,7 @@ REPO_ROOT="{tmp_path}"
 reset_state
 load_existing_env_if_present
 
-prompt_choice() {{ printf 'aws_bedrock'; }}
+prompt_choice() {{ printf 'bedrock'; }}
 prompt_with_default() {{ printf '%s' "$2"; }}
 prompt_required_secret() {{ printf 'dummy-secret'; }}
 mask_sensitive_input() {{ printf ''; }}
@@ -467,7 +467,7 @@ else
 fi
 """)
     values = parse_lines(output)
-    assert values["BINDING"] == "aws_bedrock"
+    assert values["BINDING"] == "bedrock"
     assert values["API_KEY_SET"] == ""
     assert values["VALID"] == "yes"
 
@@ -507,8 +507,67 @@ fi
             "2048",
             "set",
         ),
+        (
+            "collect_llm_config",
+            "LLM",
+            "gemini",
+            "prompt_secret_until_valid_with_default() { printf 'gemini-secret-key'; }",
+            "gemini",
+            "gemini-flash-latest",
+            "DEFAULT_GEMINI_ENDPOINT",
+            "",
+            "set",
+        ),
+        (
+            "collect_llm_config",
+            "LLM",
+            "bedrock",
+            """
+prompt_clearable_with_default() { printf ''; }
+prompt_required_secret() { return 1; }
+confirm_default_yes() { return 1; }
+""",
+            "bedrock",
+            "anthropic.claude-3-5-sonnet-20241022-v2:0",
+            "DEFAULT_BEDROCK_ENDPOINT",
+            "",
+            "",
+        ),
+        (
+            "collect_embedding_config",
+            "EMBEDDING",
+            "gemini",
+            "prompt_secret_until_valid_with_default() { printf 'gemini-secret-key'; }",
+            "gemini",
+            "gemini-embedding-001",
+            "DEFAULT_GEMINI_ENDPOINT",
+            "1536",
+            "set",
+        ),
+        (
+            "collect_embedding_config",
+            "EMBEDDING",
+            "bedrock",
+            """
+prompt_clearable_with_default() { printf ''; }
+prompt_required_secret() { return 1; }
+confirm_default_yes() { return 1; }
+""",
+            "bedrock",
+            "amazon.titan-embed-text-v2:0",
+            "DEFAULT_BEDROCK_ENDPOINT",
+            "1024",
+            "",
+        ),
     ],
-    ids=["llm-provider-defaults", "embedding-provider-defaults"],
+    ids=[
+        "llm-provider-defaults",
+        "embedding-provider-defaults",
+        "llm-gemini-sentinel-default",
+        "llm-bedrock-sentinel-default",
+        "embedding-gemini-sentinel-default",
+        "embedding-bedrock-sentinel-default",
+    ],
 )
 def test_collect_provider_config_uses_provider_specific_defaults(
     collector_name: str,
@@ -545,6 +604,79 @@ printf 'API_KEY_SET=%s\\n' "${{ENV_VALUES[{binding_prefix}_BINDING_API_KEY]+set}
     assert values["HOST"] == expected_host
     assert values["DIM"] == expected_dim
     assert values["API_KEY_SET"] == expected_api_key_set
+
+
+@pytest.mark.parametrize(
+    (
+        "collector_name",
+        "binding_prefix",
+        "env_lines",
+        "expected_host",
+        "expected_api_key",
+    ),
+    [
+        (
+            "collect_llm_config",
+            "LLM",
+            [
+                "LLM_BINDING=gemini",
+                "LLM_MODEL=gemini-flash-latest",
+                "LLM_BINDING_HOST=https://generativelanguage.googleapis.com",
+                "LLM_BINDING_API_KEY=gemini-existing-key",
+            ],
+            "https://generativelanguage.googleapis.com",
+            "gemini-existing-key",
+        ),
+        (
+            "collect_embedding_config",
+            "EMBEDDING",
+            [
+                "EMBEDDING_BINDING=bedrock",
+                "EMBEDDING_MODEL=amazon.titan-embed-text-v2:0",
+                "EMBEDDING_DIM=1024",
+                "EMBEDDING_BINDING_HOST=https://bedrock.amazonaws.com",
+            ],
+            "https://bedrock.amazonaws.com",
+            "",
+        ),
+    ],
+    ids=[
+        "llm-rerun-preserves-explicit-gemini-host",
+        "embedding-rerun-preserves-explicit-bedrock-host",
+    ],
+)
+def test_collect_provider_config_preserves_explicit_host_on_rerun(
+    tmp_path: Path,
+    collector_name: str,
+    binding_prefix: str,
+    env_lines: list[str],
+    expected_host: str,
+    expected_api_key: str,
+) -> None:
+    """Reruns should keep saved explicit provider hosts instead of swapping to sentinels."""
+    write_text_lines(tmp_path / ".env", env_lines)
+    output = run_bash(f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+load_existing_env_if_present
+
+prompt_choice() {{ printf '%s' "$2"; }}
+prompt_with_default() {{ printf '%s' "$2"; }}
+prompt_secret_until_valid_with_default() {{ printf '%s' "$2"; }}
+prompt_clearable_with_default() {{ printf ''; }}
+prompt_required_secret() {{ return 1; }}
+confirm_default_yes() {{ return 1; }}
+
+{collector_name}
+
+printf 'HOST=%s\\n' "${{ENV_VALUES[{binding_prefix}_BINDING_HOST]}}"
+printf 'API_KEY=%s\\n' "${{ENV_VALUES[{binding_prefix}_BINDING_API_KEY]:-}}\"
+""")
+    values = parse_lines(output)
+    assert values["HOST"] == expected_host
+    assert values["API_KEY"] == expected_api_key
 
 
 @pytest.mark.parametrize(
@@ -685,7 +817,7 @@ set -euo pipefail
 source "{REPO_ROOT}/scripts/setup/setup.sh"
 reset_state
 
-prompt_choice() {{ printf 'aws_bedrock'; }}
+prompt_choice() {{ printf 'bedrock'; }}
 prompt_with_default() {{ printf '%s' "$2"; }}
 prompt_clearable_with_default() {{ printf ''; }}
 prompt_required_secret() {{ return 1; }}
@@ -700,7 +832,7 @@ printf 'AWS_SESSION_TOKEN_SET=%s\\n' "${{ENV_VALUES[AWS_SESSION_TOKEN]+set}}"
 printf 'AWS_REGION_SET=%s\\n' "${{ENV_VALUES[AWS_REGION]+set}}\"
 """)
     values = parse_lines(output)
-    assert values["LLM_BINDING"] == "aws_bedrock"
+    assert values["LLM_BINDING"] == "bedrock"
     assert values["AWS_ACCESS_KEY_ID_SET"] == ""
     assert values["AWS_SECRET_ACCESS_KEY_SET"] == ""
     assert values["AWS_SESSION_TOKEN_SET"] == ""

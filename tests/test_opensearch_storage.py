@@ -940,6 +940,33 @@ class TestDocStatusStorage:
             assert count_body["query"] == {"term": {"status": "processed"}}
 
     @pytest.mark.asyncio
+    async def test_get_docs_paginated_with_status_filters(
+        self, global_config, embed_func, mock_client
+    ):
+        """Multi-status filters are passed as terms query and override status_filter."""
+        mock_client.count = AsyncMock(return_value={"count": 2})
+        mock_client.search = AsyncMock(
+            return_value={
+                "hits": {"hits": [], "total": {"value": 2}},
+            }
+        )
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+            docs, total = await s.get_docs_paginated(
+                status_filter=DocStatus.PROCESSED,
+                status_filters=[DocStatus.PARSING, DocStatus.ANALYZING],
+                page=1,
+                page_size=10,
+            )
+            assert total == 2
+            assert docs == []
+            count_body = mock_client.count.call_args.kwargs.get("body", {})
+            assert count_body["query"] == {
+                "terms": {"status": ["analyzing", "parsing"]}
+            }
+
+    @pytest.mark.asyncio
     async def test_get_doc_by_file_path(self, global_config, embed_func, mock_client):
         mock_client.search = AsyncMock(
             return_value={

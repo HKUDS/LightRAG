@@ -145,10 +145,18 @@ class QueryParam:
     history_turns: int = int(os.getenv("HISTORY_TURNS", str(DEFAULT_HISTORY_TURNS)))
     """Number of complete conversation turns (user-assistant pairs) to consider in the response context."""
 
+    # TODO(v1.5.0): remove model_func together with the override branches in
+    # operate.py (_warn_deprecated_query_model_func call sites) and the
+    # `model_func_override` path in utils.get_llm_cache_identity.
     model_func: Callable[..., object] | None = None
-    """Optional override for the LLM model function to use for this specific query.
-    If provided, this will be used instead of the global model function.
-    This allows using different models for different query modes.
+    """Deprecated optional override for the LLM model function.
+    Use role_llm_configs at initialization or LightRAG.aupdate_llm_role_config() /
+    LightRAG.update_llm_role_config() for runtime role LLM changes instead.
+    Kept for backward compatibility with direct Python callers.
+
+    Note: when set, the LLM cache key collapses to a single "override" identity,
+    so swapping the override across calls will reuse stale cached responses.
+    Use aupdate_llm_role_config() for cache-correct model swaps.
     """
 
     user_prompt: str | None = None
@@ -750,11 +758,16 @@ class BaseGraphStorage(StorageNameSpace, ABC):
 
 
 class DocStatus(str, Enum):
-    """Document processing status"""
+    """Document processing status.
+    Pipeline order: PENDING -> PARSING -> ANALYZING (optional) -> PROCESSING -> PROCESSED | FAILED.
+    PREPROCESSED is deprecated, kept for backward compatibility.
+    """
 
     PENDING = "pending"
-    PROCESSING = "processing"
-    PREPROCESSED = "preprocessed"
+    PARSING = "parsing"  # Phase 1: content extraction (parse_native/mineru/docling)
+    ANALYZING = "analyzing"  # Phase 2: multimodal analysis (VLM)
+    PROCESSING = "processing"  # Phase 3: entity/relation extraction
+    PREPROCESSED = "preprocessed"  # Deprecated: use ANALYZING in new pipeline
     PROCESSED = "processed"
     FAILED = "failed"
 
@@ -810,6 +823,22 @@ class DocProcessingStatus:
 class DocStatusStorage(BaseKVStorage, ABC):
     """Base class for document status storage"""
 
+    @staticmethod
+    def resolve_status_filter_values(
+        status_filter: DocStatus | None = None,
+        status_filters: list[DocStatus] | None = None,
+    ) -> set[str] | None:
+        """Normalize single- and multi-status filters into comparable values.
+
+        `status_filters` takes precedence over `status_filter`. Empty multi-status
+        filters are treated as no filter for backward-compatible request handling.
+        """
+        if status_filters:
+            return {status.value for status in status_filters}
+        if status_filter is not None:
+            return {status_filter.value}
+        return None
+
     @abstractmethod
     async def get_status_counts(self) -> dict[str, int]:
         """Get counts of documents in each status"""
@@ -836,6 +865,7 @@ class DocStatusStorage(BaseKVStorage, ABC):
     async def get_docs_paginated(
         self,
         status_filter: DocStatus | None = None,
+        status_filters: list[DocStatus] | None = None,
         page: int = 1,
         page_size: int = 50,
         sort_field: str = "updated_at",
@@ -844,7 +874,8 @@ class DocStatusStorage(BaseKVStorage, ABC):
         """Get documents with pagination support
 
         Args:
-            status_filter: Filter by document status, None for all statuses
+            status_filter: Legacy single-status filter, ignored when status_filters is set
+            status_filters: Filter by multiple document statuses, None for all statuses
             page: Page number (1-based)
             page_size: Number of documents per page (10-200)
             sort_field: Field to sort by ('created_at', 'updated_at', 'id')

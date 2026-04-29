@@ -1742,3 +1742,84 @@ generate_docker_compose "$REPO_ROOT/docker-compose.final.yml\"
         encoding="utf-8"
     )
     assert expected_image in generated_compose
+
+
+def test_generate_docker_compose_omits_config_ini_mount_from_base_template(
+    tmp_path: Path,
+) -> None:
+    compose_file = tmp_path / "docker-compose.yml"
+    compose_file.write_text(
+        "\n".join(
+            [
+                "services:",
+                "  lightrag:",
+                "    image: example/lightrag:test",
+                "    volumes:",
+                "      - ./data/rag_storage:/app/data/rag_storage",
+                "      - ./data/inputs:/app/data/inputs",
+                "      - ./.env:/app/.env",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+
+generate_docker_compose "$REPO_ROOT/docker-compose.generated.yml"
+"""
+    )
+
+    generated_compose = (tmp_path / "docker-compose.generated.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "./config.ini:/app/config.ini" not in generated_compose
+    assert "./data/rag_storage:/app/data/rag_storage" in generated_compose
+    assert "./data/inputs:/app/data/inputs" in generated_compose
+    assert "./.env:/app/.env" in generated_compose
+
+
+def test_generate_docker_compose_preserves_existing_config_ini_mount(
+    tmp_path: Path,
+) -> None:
+    compose_file = tmp_path / "docker-compose.final.yml"
+    compose_file.write_text(
+        "\n".join(
+            [
+                "services:",
+                "  lightrag:",
+                "    image: example/lightrag:test",
+                "    volumes:",
+                "      - ./data/rag_storage:/app/data/rag_storage",
+                "      - ./data/inputs:/app/data/inputs",
+                "      - ./config.ini:/app/config.ini",
+                "      - ./.env:/app/.env",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    run_bash(
+        f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+
+generate_docker_compose "$REPO_ROOT/docker-compose.final.yml"
+"""
+    )
+
+    generated_compose = compose_file.read_text(encoding="utf-8")
+
+    assert "./config.ini:/app/config.ini" in generated_compose
+    assert "./data/rag_storage:/app/data/rag_storage" in generated_compose
+    assert "./data/inputs:/app/data/inputs" in generated_compose
+    assert "./.env:/app/.env" in generated_compose

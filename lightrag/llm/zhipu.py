@@ -1,6 +1,5 @@
 import sys
-import re
-import json
+import warnings
 from ..utils import verbose_debug
 
 if sys.version_info < (3, 9):
@@ -29,8 +28,6 @@ from lightrag.utils import (
     wrap_embedding_func_with_attrs,
     logger,
 )
-
-from lightrag.types import GPTKeywordExtractionFormat
 
 import numpy as np
 from typing import Union, List, Optional, Dict
@@ -63,6 +60,11 @@ async def zhipu_complete_if_cache(
     - `enable_cot`: LightRAG-only formatting switch. When True and the API
       returns `reasoning_content`, it is preserved in the final string as
       `<think>...</think>`.
+    - `response_format`: forwarded as Zhipu's OpenAI-compatible structured
+      output parameter when supplied by callers.
+    - Deprecated `keyword_extraction` and `entity_extraction` booleans are
+      compatibility shims; when no explicit `response_format` is supplied,
+      they are mapped to `{"type": "json_object"}`.
     """
     # dynamically load ZhipuAI
     try:
@@ -93,9 +95,42 @@ async def zhipu_complete_if_cache(
     logger.debug(f"Query: {prompt}")
     verbose_debug(f"System prompt: {system_prompt}")
 
+    # Deprecation shims: map legacy extraction booleans to response_format only
+    # when an explicit response_format was not supplied by the caller. The
+    # legacy path also forces enable_cot=False so reasoning_content cannot
+    # corrupt the JSON payload expected by callers relying on it.
+    keyword_extraction = kwargs.pop("keyword_extraction", False)
+    entity_extraction = kwargs.pop("entity_extraction", False)
+    if kwargs.get("response_format") is None:
+        if entity_extraction:
+            warnings.warn(
+                "zhipu_complete_if_cache(entity_extraction=True) is deprecated; "
+                "pass response_format={'type': 'json_object'} instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            kwargs["response_format"] = {"type": "json_object"}
+            enable_cot = False
+        elif keyword_extraction:
+            warnings.warn(
+                "zhipu_complete_if_cache(keyword_extraction=True) is deprecated; "
+                "pass response_format={'type': 'json_object'} instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            kwargs["response_format"] = {"type": "json_object"}
+            enable_cot = False
+
+    # Structured output and COT are mutually exclusive here because
+    # reasoning_content would corrupt the JSON payload expected by callers.
+    if kwargs.get("response_format") is not None:
+        enable_cot = False
+
     # Remove unsupported kwargs
     kwargs = {
-        k: v for k, v in kwargs.items() if k not in ["hashing_kv", "keyword_extraction"]
+        k: v
+        for k, v in kwargs.items()
+        if k not in ["hashing_kv", "keyword_extraction", "entity_extraction"]
     }
     # `thinking` is an official Zhipu request field. Example:
     # {"type": "enabled"} enables reasoning output on supported models.
@@ -120,83 +155,54 @@ async def zhipu_complete(
     system_prompt=None,
     history_messages=[],
     keyword_extraction=False,
+    entity_extraction=False,
     enable_cot: bool = False,
     **kwargs,
 ):
-    # Pop keyword_extraction from kwargs to avoid passing it to zhipu_complete_if_cache
+    """Zhipu completion wrapper with LightRAG structured-output shims.
+
+    Structured output note:
+    - This adapter accepts OpenAI-style ``response_format`` and forwards it to
+      Zhipu's compatible chat-completions API.
+    - Deprecated ``keyword_extraction`` and ``entity_extraction`` booleans are
+      compatibility shims; when no explicit ``response_format`` is supplied,
+      they are mapped to ``{"type": "json_object"}``.
+    """
+    # Pop legacy extraction flags from kwargs to avoid passing them downstream.
     keyword_extraction = kwargs.pop("keyword_extraction", keyword_extraction)
+    entity_extraction = kwargs.pop("entity_extraction", entity_extraction)
 
-    if keyword_extraction:
-        # Add a system prompt to guide the model to return JSON format
-        extraction_prompt = """You are a helpful assistant that extracts keywords from text.
-        Please analyze the content and extract two types of keywords:
-        1. High-level keywords: Important concepts and main themes
-        2. Low-level keywords: Specific details and supporting elements
-
-        Return your response in this exact JSON format:
-        {
-            "high_level_keywords": ["keyword1", "keyword2"],
-            "low_level_keywords": ["keyword1", "keyword2", "keyword3"]
-        }
-
-        Only return the JSON, no other text."""
-
-        # Combine with existing system prompt if any
-        if system_prompt:
-            system_prompt = f"{system_prompt}\n\n{extraction_prompt}"
-        else:
-            system_prompt = extraction_prompt
-
-        try:
-            response = await zhipu_complete_if_cache(
-                prompt=prompt,
-                system_prompt=system_prompt,
-                history_messages=history_messages,
-                enable_cot=enable_cot,
-                **kwargs,
+    # Deprecation shims: map legacy boolean flags to response_format only when
+    # an explicit response_format was not supplied by the caller. The legacy
+    # path also forces enable_cot=False so that reasoning_content cannot
+    # corrupt the JSON payload expected by callers that were relying on it.
+    if kwargs.get("response_format") is None:
+        if entity_extraction:
+            warnings.warn(
+                "zhipu_complete(entity_extraction=True) is deprecated; "
+                "pass response_format={'type': 'json_object'} instead.",
+                DeprecationWarning,
+                stacklevel=2,
             )
-
-            # Try to parse as JSON
-            try:
-                data = json.loads(response)
-                return GPTKeywordExtractionFormat(
-                    high_level_keywords=data.get("high_level_keywords", []),
-                    low_level_keywords=data.get("low_level_keywords", []),
-                )
-            except json.JSONDecodeError:
-                # If direct JSON parsing fails, try to extract JSON from text
-                match = re.search(r"\{[\s\S]*\}", response)
-                if match:
-                    try:
-                        data = json.loads(match.group())
-                        return GPTKeywordExtractionFormat(
-                            high_level_keywords=data.get("high_level_keywords", []),
-                            low_level_keywords=data.get("low_level_keywords", []),
-                        )
-                    except json.JSONDecodeError:
-                        pass
-
-                # If all parsing fails, log warning and return empty format
-                logger.warning(
-                    f"Failed to parse keyword extraction response: {response}"
-                )
-                return GPTKeywordExtractionFormat(
-                    high_level_keywords=[], low_level_keywords=[]
-                )
-        except Exception as e:
-            logger.error(f"Error during keyword extraction: {str(e)}")
-            return GPTKeywordExtractionFormat(
-                high_level_keywords=[], low_level_keywords=[]
+            kwargs["response_format"] = {"type": "json_object"}
+            enable_cot = False
+        elif keyword_extraction:
+            warnings.warn(
+                "zhipu_complete(keyword_extraction=True) is deprecated; "
+                "pass response_format={'type': 'json_object'} instead.",
+                DeprecationWarning,
+                stacklevel=2,
             )
-    else:
-        # For non-keyword-extraction, just return the raw response string
-        return await zhipu_complete_if_cache(
-            prompt=prompt,
-            system_prompt=system_prompt,
-            history_messages=history_messages,
-            enable_cot=enable_cot,
-            **kwargs,
-        )
+            kwargs["response_format"] = {"type": "json_object"}
+            enable_cot = False
+
+    return await zhipu_complete_if_cache(
+        prompt=prompt,
+        system_prompt=system_prompt,
+        history_messages=history_messages,
+        enable_cot=enable_cot,
+        **kwargs,
+    )
 
 
 @wrap_embedding_func_with_attrs(

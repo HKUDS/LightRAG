@@ -16,6 +16,7 @@ import logging.config
 import sys
 import uvicorn
 import pipmaster as pm
+from typing import Any
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import RedirectResponse
 from pathlib import Path
@@ -36,16 +37,13 @@ from .config import (
     PREFIX_ASYMMETRIC_EMBEDDING_BINDINGS,
 )
 from lightrag.utils import get_env_value
-from lightrag import LightRAG, __version__ as core_version
+from lightrag import LightRAG, ROLES, RoleLLMConfig, __version__ as core_version
 from lightrag.api import __api_version__
-from lightrag.types import GPTKeywordExtractionFormat
 from lightrag.utils import EmbeddingFunc
 from lightrag.constants import (
     DEFAULT_LOG_MAX_BYTES,
     DEFAULT_LOG_BACKUP_COUNT,
     DEFAULT_LOG_FILENAME,
-    DEFAULT_LLM_TIMEOUT,
-    DEFAULT_EMBEDDING_TIMEOUT,
 )
 from lightrag.api.routers.document_routes import (
     DocumentManager,
@@ -79,6 +77,46 @@ webui_description = os.getenv("WEBUI_DESCRIPTION")
 auth_configured = bool(auth_handler.accounts)
 
 
+def _clean_workspace_value(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _get_storage_workspace(storage: Any) -> str | None:
+    if storage is None:
+        return None
+
+    effective_workspace = _clean_workspace_value(
+        getattr(storage, "effective_workspace", None)
+    )
+    if effective_workspace:
+        return effective_workspace
+
+    final_namespace = _clean_workspace_value(getattr(storage, "final_namespace", None))
+    namespace = _clean_workspace_value(getattr(storage, "namespace", None))
+    if final_namespace and namespace:
+        suffix = f"_{namespace}"
+        if final_namespace.endswith(suffix):
+            workspace = final_namespace[: -len(suffix)]
+            if workspace:
+                return workspace
+
+    return _clean_workspace_value(getattr(storage, "workspace", None))
+
+
+def _get_storage_workspaces(rag: Any) -> dict[str, str | None]:
+    return {
+        "kv_storage": _get_storage_workspace(getattr(rag, "full_docs", None)),
+        "doc_status_storage": _get_storage_workspace(getattr(rag, "doc_status", None)),
+        "graph_storage": _get_storage_workspace(
+            getattr(rag, "chunk_entity_relation_graph", None)
+        ),
+        "vector_storage": _get_storage_workspace(getattr(rag, "entities_vdb", None)),
+    }
+
+
 class LLMConfigCache:
     """Smart LLM and Embedding configuration cache class"""
 
@@ -91,6 +129,7 @@ class LLMConfigCache:
         self.gemini_embedding_options = None
         self.ollama_llm_options = None
         self.ollama_embedding_options = None
+        self.bedrock_llm_options = None
 
         # Only initialize and log OpenAI options when using OpenAI-related bindings
         if args.llm_binding in ["openai", "azure_openai"]:
@@ -104,6 +143,12 @@ class LLMConfigCache:
 
             self.gemini_llm_options = GeminiLLMOptions.options_dict(args)
             logger.info(f"Gemini LLM Options: {self.gemini_llm_options}")
+
+        if args.llm_binding == "bedrock":
+            from lightrag.llm.binding_options import BedrockLLMOptions
+
+            self.bedrock_llm_options = BedrockLLMOptions.options_dict(args)
+            logger.info(f"Bedrock LLM Options: {self.bedrock_llm_options}")
 
         # Only initialize and log Ollama LLM options when using Ollama LLM binding
         if args.llm_binding == "ollama":
@@ -151,6 +196,52 @@ class LLMConfigCache:
                     "GeminiEmbeddingOptions not available, using default configuration"
                 )
                 self.gemini_embedding_options = {}
+
+
+_PROVIDER_LOG_LABELS = {
+    "azure_openai": "Azure OpenAI",
+    "bedrock": "Bedrock",
+    "gemini": "Gemini",
+    "lollms": "Lollms",
+    "ollama": "Ollama",
+    "openai": "OpenAI",
+}
+
+
+def _provider_log_label(binding: Any) -> str:
+    binding_name = str(binding)
+    return _PROVIDER_LOG_LABELS.get(
+        binding_name, binding_name.replace("_", " ").title()
+    )
+
+
+def _log_role_provider_options(rag: Any) -> None:
+    """Log sanitized provider options for every role LLM."""
+    try:
+        role_configs = rag.get_llm_role_config()
+    except Exception as e:
+        logger.warning(f"Failed to read role LLM configuration for logging: {e}")
+        return
+
+    logger.info("Role LLM Option:")
+
+    for spec in ROLES:
+        role_config = role_configs.get(spec.name)
+        if not isinstance(role_config, dict):
+            continue
+
+        metadata = role_config.get("metadata") or {}
+        binding = role_config.get("binding") or metadata.get("binding")
+        if not binding:
+            continue
+
+        provider_options = metadata.get("provider_options") or {}
+        logger.info(
+            " - %s: %s %s",
+            spec.name,
+            _provider_log_label(binding),
+            provider_options,
+        )
 
 
 def check_frontend_build():
@@ -304,7 +395,7 @@ def create_app(args):
         "ollama",
         "openai",
         "azure_openai",
-        "aws_bedrock",
+        "bedrock",
         "gemini",
     ]:
         raise Exception("llm binding not supported")
@@ -314,7 +405,7 @@ def create_app(args):
         "ollama",
         "openai",
         "azure_openai",
-        "aws_bedrock",
+        "bedrock",
         "jina",
         "gemini",
         "voyageai",
@@ -500,18 +591,17 @@ def create_app(args):
             prompt,
             system_prompt=None,
             history_messages=None,
-            keyword_extraction=False,
             **kwargs,
         ) -> str:
             from lightrag.llm.openai import openai_complete_if_cache
 
-            keyword_extraction = kwargs.pop("keyword_extraction", None)
-            if keyword_extraction:
-                kwargs["response_format"] = GPTKeywordExtractionFormat
             if history_messages is None:
                 history_messages = []
 
-            # Use pre-processed configuration to avoid repeated parsing
+            # Use pre-processed configuration to avoid repeated parsing.
+            # response_format and legacy keyword_extraction/entity_extraction
+            # flags flow through **kwargs; openai_complete_if_cache handles
+            # the deprecation shim for the legacy booleans.
             kwargs["timeout"] = llm_timeout
             if config_cache.openai_llm_options:
                 kwargs.update(config_cache.openai_llm_options)
@@ -537,18 +627,15 @@ def create_app(args):
             prompt,
             system_prompt=None,
             history_messages=None,
-            keyword_extraction=False,
             **kwargs,
         ) -> str:
             from lightrag.llm.azure_openai import azure_openai_complete_if_cache
 
-            keyword_extraction = kwargs.pop("keyword_extraction", None)
-            if keyword_extraction:
-                kwargs["response_format"] = GPTKeywordExtractionFormat
             if history_messages is None:
                 history_messages = []
 
-            # Use pre-processed configuration to avoid repeated parsing
+            # response_format and legacy extraction booleans flow through kwargs
+            # to azure_openai_complete_if_cache, which handles deprecation shims.
             kwargs["timeout"] = llm_timeout
             if config_cache.openai_llm_options:
                 kwargs.update(config_cache.openai_llm_options)
@@ -575,7 +662,6 @@ def create_app(args):
             prompt,
             system_prompt=None,
             history_messages=None,
-            keyword_extraction=False,
             **kwargs,
         ) -> str:
             from lightrag.llm.gemini import gemini_complete_if_cache
@@ -583,7 +669,8 @@ def create_app(args):
             if history_messages is None:
                 history_messages = []
 
-            # Use pre-processed configuration to avoid repeated parsing
+            # response_format and legacy extraction booleans flow through kwargs
+            # to gemini_complete_if_cache, which handles deprecation shims.
             kwargs["timeout"] = llm_timeout
             if (
                 config_cache.gemini_llm_options is not None
@@ -598,7 +685,6 @@ def create_app(args):
                 history_messages=history_messages,
                 api_key=args.llm_binding_api_key,
                 base_url=args.llm_binding_host,
-                keyword_extraction=keyword_extraction,
                 **kwargs,
             )
 
@@ -618,7 +704,7 @@ def create_app(args):
                 from lightrag.llm.ollama import ollama_model_complete
 
                 return ollama_model_complete
-            elif binding == "aws_bedrock":
+            elif binding == "bedrock":
                 return bedrock_model_complete  # Already defined locally
             elif binding == "azure_openai":
                 # Use optimized function with pre-processed configuration
@@ -650,6 +736,303 @@ def create_app(args):
                 }
             except ImportError as e:
                 raise Exception(f"Failed to import {binding} options: {e}")
+        return {}
+
+    def resolve_role_llm_settings(
+        role: str, override_meta: dict | None = None
+    ) -> dict[str, Any]:
+        attr = role.lower()
+        override_meta = override_meta or {}
+
+        role_binding = (
+            override_meta.get("binding")
+            or getattr(args, f"{attr}_llm_binding", None)
+            or args.llm_binding
+        )
+        role_model = (
+            override_meta.get("model")
+            or getattr(args, f"{attr}_llm_model", None)
+            or args.llm_model
+        )
+        role_host = (
+            override_meta.get("host")
+            or getattr(args, f"{attr}_llm_binding_host", None)
+            or args.llm_binding_host
+        )
+        explicit_role_apikey = override_meta.get("api_key") or getattr(
+            args, f"{attr}_llm_binding_api_key", None
+        )
+        if role_binding == "bedrock":
+            if explicit_role_apikey:
+                raise ValueError(
+                    f"Bedrock role '{role}' does not support role-specific "
+                    "LLM_BINDING_API_KEY; use role-specific SigV4 AWS_* "
+                    "variables or process-level AWS_BEARER_TOKEN_BEDROCK."
+                )
+            role_apikey = None
+        else:
+            role_apikey = explicit_role_apikey or args.llm_binding_api_key
+        role_timeout = (
+            override_meta.get("timeout")
+            or getattr(args, f"{attr}_llm_timeout", None)
+            or llm_timeout
+        )
+        role_max_async = override_meta.get("max_async")
+        if role_max_async is None:
+            role_max_async = getattr(args, f"{attr}_llm_max_async", None)
+        is_cross_provider = role_binding != args.llm_binding
+
+        role_provider_options = override_meta.get("provider_options")
+        if role_provider_options is None:
+            if role_binding in ["openai", "azure_openai"]:
+                from lightrag.llm.binding_options import OpenAILLMOptions
+
+                role_provider_options = OpenAILLMOptions.options_dict_for_role(
+                    args, role, is_cross_provider
+                )
+            elif role_binding == "gemini":
+                from lightrag.llm.binding_options import GeminiLLMOptions
+
+                role_provider_options = GeminiLLMOptions.options_dict_for_role(
+                    args, role, is_cross_provider
+                )
+            elif role_binding in ["lollms", "ollama"]:
+                from lightrag.llm.binding_options import OllamaLLMOptions
+
+                role_provider_options = OllamaLLMOptions.options_dict_for_role(
+                    args, role, is_cross_provider
+                )
+            elif role_binding == "bedrock":
+                from lightrag.llm.binding_options import BedrockLLMOptions
+
+                role_provider_options = BedrockLLMOptions.options_dict_for_role(
+                    args, role, is_cross_provider
+                )
+            else:
+                role_provider_options = {}
+
+        bedrock_aws_options = {}
+        if role_binding == "bedrock":
+            override_bedrock_aws_options = override_meta.get("bedrock_aws_options", {})
+            bedrock_aws_options = {
+                "aws_region": override_meta.get("aws_region")
+                or override_bedrock_aws_options.get("aws_region")
+                or getattr(args, f"{attr}_aws_region", None)
+                or getattr(args, "aws_region", None),
+                "aws_access_key_id": override_meta.get("aws_access_key_id")
+                or override_bedrock_aws_options.get("aws_access_key_id")
+                or getattr(args, f"{attr}_aws_access_key_id", None)
+                or getattr(args, "aws_access_key_id", None),
+                "aws_secret_access_key": override_meta.get("aws_secret_access_key")
+                or override_bedrock_aws_options.get("aws_secret_access_key")
+                or getattr(args, f"{attr}_aws_secret_access_key", None)
+                or getattr(args, "aws_secret_access_key", None),
+                "aws_session_token": override_meta.get("aws_session_token")
+                or override_bedrock_aws_options.get("aws_session_token")
+                or getattr(args, f"{attr}_aws_session_token", None)
+                or getattr(args, "aws_session_token", None),
+            }
+
+        return {
+            "binding": role_binding,
+            "model": role_model,
+            "host": role_host,
+            "api_key": role_apikey,
+            "timeout": role_timeout,
+            "max_async": role_max_async,
+            "provider_options": role_provider_options,
+            "is_cross_provider": is_cross_provider,
+            "bedrock_aws_options": bedrock_aws_options,
+        }
+
+    def create_role_llm_func(role: str, override_meta: dict | None = None):
+        """Create an independent raw LLM function for a role."""
+        settings = resolve_role_llm_settings(role, override_meta)
+        role_binding = settings["binding"]
+        role_model = settings["model"]
+        role_host = settings["host"]
+        role_apikey = settings["api_key"]
+        role_timeout = settings["timeout"]
+        role_provider_options = settings["provider_options"]
+        bedrock_aws_options = settings["bedrock_aws_options"]
+
+        try:
+            if role_binding == "ollama":
+                from lightrag.llm.ollama import _ollama_model_if_cache
+
+                async def role_ollama_complete(
+                    prompt,
+                    system_prompt=None,
+                    history_messages=None,
+                    enable_cot: bool = False,
+                    **kwargs,
+                ):
+                    # response_format and legacy extraction booleans flow
+                    # through kwargs to _ollama_model_if_cache, which handles
+                    # the deprecation shim and emits a single warning.
+                    if history_messages is None:
+                        history_messages = []
+                    if role_provider_options:
+                        kwargs.setdefault("options", dict(role_provider_options))
+                    return await _ollama_model_if_cache(
+                        role_model,
+                        prompt,
+                        system_prompt=system_prompt,
+                        history_messages=history_messages,
+                        enable_cot=enable_cot,
+                        host=role_host,
+                        timeout=role_timeout,
+                        api_key=role_apikey,
+                        **kwargs,
+                    )
+
+                return role_ollama_complete
+            if role_binding == "lollms":
+                from lightrag.llm.lollms import lollms_model_if_cache
+
+                async def role_lollms_complete(
+                    prompt,
+                    system_prompt=None,
+                    history_messages=None,
+                    enable_cot: bool = False,
+                    **kwargs,
+                ):
+                    # response_format and legacy extraction booleans flow
+                    # through kwargs to lollms_model_if_cache, which drops
+                    # them and emits deprecation warnings when booleans are set.
+                    if history_messages is None:
+                        history_messages = []
+                    if role_provider_options:
+                        kwargs = {**role_provider_options, **kwargs}
+                    return await lollms_model_if_cache(
+                        role_model,
+                        prompt,
+                        system_prompt=system_prompt,
+                        history_messages=history_messages,
+                        enable_cot=enable_cot,
+                        base_url=role_host,
+                        api_key=role_apikey,
+                        timeout=role_timeout,
+                        **kwargs,
+                    )
+
+                return role_lollms_complete
+            if role_binding == "bedrock":
+                from lightrag.llm.bedrock import bedrock_complete_if_cache
+
+                async def role_bedrock_complete(
+                    prompt,
+                    system_prompt=None,
+                    history_messages=None,
+                    **kwargs,
+                ) -> str:
+                    if history_messages is None:
+                        history_messages = []
+                    if role_provider_options:
+                        kwargs = {**role_provider_options, **kwargs}
+                    return await bedrock_complete_if_cache(
+                        role_model,
+                        prompt,
+                        system_prompt=system_prompt,
+                        history_messages=history_messages,
+                        endpoint_url=role_host,
+                        **bedrock_aws_options,
+                        **kwargs,
+                    )
+
+                return role_bedrock_complete
+            if role_binding == "azure_openai":
+                from lightrag.llm.azure_openai import azure_openai_complete_if_cache
+
+                async def role_azure_openai_complete(
+                    prompt,
+                    system_prompt=None,
+                    history_messages=None,
+                    **kwargs,
+                ) -> str:
+                    if history_messages is None:
+                        history_messages = []
+                    kwargs["timeout"] = role_timeout
+                    if role_provider_options:
+                        kwargs.update(role_provider_options)
+                    return await azure_openai_complete_if_cache(
+                        role_model,
+                        prompt,
+                        system_prompt=system_prompt,
+                        history_messages=history_messages,
+                        base_url=role_host,
+                        api_key=role_apikey or os.getenv("AZURE_OPENAI_API_KEY"),
+                        api_version=os.getenv(
+                            "AZURE_OPENAI_API_VERSION", "2024-08-01-preview"
+                        ),
+                        **kwargs,
+                    )
+
+                return role_azure_openai_complete
+            if role_binding == "gemini":
+                from lightrag.llm.gemini import gemini_complete_if_cache
+
+                async def role_gemini_complete(
+                    prompt,
+                    system_prompt=None,
+                    history_messages=None,
+                    **kwargs,
+                ) -> str:
+                    if history_messages is None:
+                        history_messages = []
+                    kwargs["timeout"] = role_timeout
+                    if role_provider_options and "generation_config" not in kwargs:
+                        kwargs["generation_config"] = dict(role_provider_options)
+                    return await gemini_complete_if_cache(
+                        role_model,
+                        prompt,
+                        system_prompt=system_prompt,
+                        history_messages=history_messages,
+                        api_key=role_apikey,
+                        base_url=role_host,
+                        **kwargs,
+                    )
+
+                return role_gemini_complete
+
+            from lightrag.llm.openai import openai_complete_if_cache
+
+            async def role_openai_complete(
+                prompt,
+                system_prompt=None,
+                history_messages=None,
+                **kwargs,
+            ) -> str:
+                if history_messages is None:
+                    history_messages = []
+                kwargs["timeout"] = role_timeout
+                if role_provider_options:
+                    kwargs.update(role_provider_options)
+                return await openai_complete_if_cache(
+                    role_model,
+                    prompt,
+                    system_prompt=system_prompt,
+                    history_messages=history_messages,
+                    base_url=role_host,
+                    api_key=role_apikey,
+                    **kwargs,
+                )
+
+            return role_openai_complete
+        except ImportError as e:
+            raise Exception(f"Failed to create LLM for role '{role}': {e}")
+
+    def create_role_llm_model_kwargs(
+        role: str, override_meta: dict | None = None
+    ) -> dict[str, Any] | None:
+        """Create role-specific kwargs for runtime wrapper injection.
+
+        Role functions built above already encapsulate provider host/model/api_key/options,
+        so we intentionally return an empty dict here to prevent base kwargs inheritance
+        from polluting cross-provider role calls.
+        """
+        _ = role
+        _ = override_meta
         return {}
 
     def create_optimized_embedding_function(
@@ -711,7 +1094,7 @@ def create_app(args):
                 from lightrag.llm.azure_openai import azure_openai_embed
 
                 provider_func = azure_openai_embed
-            elif binding == "aws_bedrock":
+            elif binding == "bedrock":
                 from lightrag.llm.bedrock import bedrock_embed
 
                 provider_func = bedrock_embed
@@ -832,7 +1215,7 @@ def create_app(args):
                         if document_prefix:
                             kwargs["document_prefix"] = document_prefix
                     return await actual_func(**kwargs)
-                elif binding == "aws_bedrock":
+                elif binding == "bedrock":
                     from lightrag.llm.bedrock import bedrock_embed
 
                     actual_func = (
@@ -841,7 +1224,17 @@ def create_app(args):
                         else bedrock_embed
                     )
                     # Pass model only if provided, let function use its default otherwise
-                    kwargs = {"texts": texts}
+                    kwargs = {
+                        "texts": texts,
+                        "aws_region": getattr(args, "aws_region", None),
+                        "aws_access_key_id": getattr(args, "aws_access_key_id", None),
+                        "aws_secret_access_key": getattr(
+                            args, "aws_secret_access_key", None
+                        ),
+                        "aws_session_token": getattr(args, "aws_session_token", None),
+                    }
+                    if host is not None:
+                        kwargs["endpoint_url"] = host
                     if model:
                         kwargs["model"] = model
                     return await actual_func(**kwargs)
@@ -968,35 +1361,37 @@ def create_app(args):
 
         return embedding_func_instance
 
-    llm_timeout = get_env_value("LLM_TIMEOUT", DEFAULT_LLM_TIMEOUT, int)
-    embedding_timeout = get_env_value(
-        "EMBEDDING_TIMEOUT", DEFAULT_EMBEDDING_TIMEOUT, int
-    )
+    llm_timeout = args.llm_timeout
+    embedding_timeout = args.embedding_timeout
 
     async def bedrock_model_complete(
         prompt,
         system_prompt=None,
         history_messages=None,
-        keyword_extraction=False,
         **kwargs,
     ) -> str:
         # Lazy import
         from lightrag.llm.bedrock import bedrock_complete_if_cache
 
-        keyword_extraction = kwargs.pop("keyword_extraction", None)
-        if keyword_extraction:
-            kwargs["response_format"] = GPTKeywordExtractionFormat
         if history_messages is None:
             history_messages = []
 
-        # Use global temperature for Bedrock
-        kwargs["temperature"] = get_env_value("BEDROCK_LLM_TEMPERATURE", 1.0, float)
+        # Bedrock Converse API has no JSON mode; response_format and the legacy
+        # extraction booleans flow through kwargs to bedrock_complete_if_cache,
+        # which drops them and emits deprecation warnings when booleans are set.
+        if config_cache.bedrock_llm_options:
+            kwargs = {**config_cache.bedrock_llm_options, **kwargs}
 
         return await bedrock_complete_if_cache(
             args.llm_model,
             prompt,
             system_prompt=system_prompt,
             history_messages=history_messages,
+            endpoint_url=args.llm_binding_host,
+            aws_region=getattr(args, "aws_region", None),
+            aws_access_key_id=getattr(args, "aws_access_key_id", None),
+            aws_secret_access_key=getattr(args, "aws_secret_access_key", None),
+            aws_session_token=getattr(args, "aws_session_token", None),
             **kwargs,
         )
 
@@ -1009,7 +1404,9 @@ def create_app(args):
         binding=args.embedding_binding,
         model=args.embedding_model,
         host=args.embedding_binding_host,
-        api_key=args.embedding_binding_api_key,
+        api_key=None
+        if args.embedding_binding == "bedrock"
+        else args.embedding_binding_api_key,
         args=args,
         document_prefix=args.embedding_document_prefix,
         query_prefix=args.embedding_query_prefix,
@@ -1135,6 +1532,22 @@ def create_app(args):
         name=args.simulated_model_name, tag=args.simulated_model_tag
     )
 
+    # LightRAG.__post_init__ normalizes addon_params and backfills env-based defaults
+    # (SUMMARY_LANGUAGE, ENTITY_TYPE_PROMPT_FILE, ...), so we only need to pass the
+    # API-level overrides here.
+    addon_params = {
+        "language": args.summary_language,
+    }
+
+    role_llm_configs = {
+        spec.name: {
+            **resolve_role_llm_settings(spec.name),
+            "func": create_role_llm_func(spec.name),
+            "kwargs": create_role_llm_model_kwargs(spec.name),
+        }
+        for spec in ROLES
+    }
+
     # Initialize RAG with unified configuration
     try:
         rag = LightRAG(
@@ -1163,17 +1576,50 @@ def create_app(args):
             enable_llm_cache_for_entity_extract=args.enable_llm_cache_for_extract,
             enable_llm_cache=args.enable_llm_cache,
             rerank_model_func=rerank_model_func,
+            rerank_model_max_async=args.rerank_max_async,
+            default_rerank_timeout=args.rerank_timeout,
             max_parallel_insert=args.max_parallel_insert,
             max_graph_nodes=args.max_graph_nodes,
-            addon_params={
-                "language": args.summary_language,
-                "entity_types": args.entity_types,
-            },
+            addon_params=addon_params,
             ollama_server_infos=ollama_server_infos,
+            role_llm_configs={
+                spec.name: RoleLLMConfig(
+                    func=role_llm_configs[spec.name]["func"],
+                    kwargs=role_llm_configs[spec.name]["kwargs"],
+                    max_async=role_llm_configs[spec.name]["max_async"],
+                    timeout=role_llm_configs[spec.name]["timeout"],
+                    metadata={
+                        "base_binding": args.llm_binding,
+                        "binding": role_llm_configs[spec.name]["binding"],
+                        "model": role_llm_configs[spec.name]["model"],
+                        "host": role_llm_configs[spec.name]["host"],
+                        "api_key": role_llm_configs[spec.name]["api_key"],
+                        "provider_options": role_llm_configs[spec.name][
+                            "provider_options"
+                        ],
+                        "bedrock_aws_options": role_llm_configs[spec.name][
+                            "bedrock_aws_options"
+                        ],
+                        "is_cross_provider": role_llm_configs[spec.name][
+                            "is_cross_provider"
+                        ],
+                    },
+                )
+                for spec in ROLES
+            },
         )
     except Exception as e:
         logger.error(f"Failed to initialize LightRAG: {e}")
         raise
+
+    _log_role_provider_options(rag)
+
+    rag.register_role_llm_builder(
+        lambda role, meta: (
+            create_role_llm_func(role, meta),
+            create_role_llm_model_kwargs(role, meta),
+        )
+    )
 
     # Add routes
     app.include_router(
@@ -1304,6 +1750,12 @@ def create_app(args):
                                 "embedding_binding": "openai",
                                 "embedding_model": "text-embedding-ada-002",
                                 "workspace": "default",
+                                "storage_workspaces": {
+                                    "kv_storage": "default",
+                                    "doc_status_storage": "default",
+                                    "graph_storage": "default",
+                                    "vector_storage": "default",
+                                },
                             },
                             "auth_mode": "enabled",
                             "pipeline_busy": False,
@@ -1357,6 +1809,7 @@ def create_app(args):
                     "enable_llm_cache_for_extract": args.enable_llm_cache_for_extract,
                     "enable_llm_cache": args.enable_llm_cache,
                     "workspace": default_workspace,
+                    "storage_workspaces": _get_storage_workspaces(rag),
                     "max_graph_nodes": args.max_graph_nodes,
                     # Rerank configuration
                     "enable_rerank": rerank_model_func is not None,
@@ -1365,6 +1818,8 @@ def create_app(args):
                     "rerank_binding_host": args.rerank_binding_host
                     if rerank_model_func
                     else None,
+                    "rerank_max_async": args.rerank_max_async,
+                    "rerank_timeout": args.rerank_timeout,
                     # Environment variable status (requested configuration)
                     "summary_language": args.summary_language,
                     "force_llm_summary_on_merge": args.force_llm_summary_on_merge,
@@ -1373,12 +1828,18 @@ def create_app(args):
                     "min_rerank_score": args.min_rerank_score,
                     "related_chunk_number": args.related_chunk_number,
                     "max_async": args.max_async,
+                    "llm_timeout": args.llm_timeout,
                     "embedding_func_max_async": args.embedding_func_max_async,
                     "embedding_batch_num": args.embedding_batch_num,
+                    "embedding_timeout": args.embedding_timeout,
+                    "role_llm_config": rag.get_llm_role_config(),
                 },
                 "auth_mode": auth_mode,
                 "pipeline_busy": pipeline_status.get("busy", False),
                 "keyed_locks": keyed_lock_info,
+                "llm_queue_status": await rag.get_llm_queue_status(include_base=True),
+                "embedding_queue_status": await rag.get_embedding_queue_status(),
+                "rerank_queue_status": await rag.get_rerank_queue_status(),
                 "core_version": core_version,
                 "api_version": api_version_display,
                 "webui_title": webui_title,

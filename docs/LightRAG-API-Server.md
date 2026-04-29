@@ -68,12 +68,14 @@ LightRAG necessitates the integration of both an LLM (Large Language Model) and 
 * lollms
 * openai or openai compatible
 * azure_openai
-* aws_bedrock
+* bedrock
 * gemini
 
 It is recommended to use environment variables to configure the LightRAG Server. There is an example environment variable file named `env.example` in the root directory of the project. Please copy this file to the startup directory and rename it to `.env`. After that, you can modify the parameters related to the LLM and Embedding models in the `.env` file. It is important to note that the LightRAG Server will load the environment variables from `.env` into the system environment variables each time it starts. **LightRAG Server will prioritize the settings in the system environment variables to .env file**.
 
 > Since VS Code with the Python extension may automatically load the .env file in the integrated terminal, please open a new terminal session after each modification to the .env file.
+
+If you need to configure different LLMs/VLMs for entity extraction, keyword extraction, final answers, or multimodal analysis, see the [Role-Specific LLM/VLM Configuration Guide](./RoleSpecificLLMConfiguration.md).
 
 Here are some examples of common settings for LLM and Embedding models:
 
@@ -297,6 +299,16 @@ MAX_PARALLEL_INSERT=2
 MAX_ASYNC=4
 ```
 
+On macOS, Gunicorn multi-worker mode also requires the Objective-C fork-safety
+override to be present before the Python process starts. Do not rely on `.env`
+for this variable; `.env` is loaded after Python startup and is too late for
+the Objective-C runtime:
+
+```shell
+export OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES
+lightrag-gunicorn --workers 2
+```
+
 ### Install LightRAG as a Linux Service
 
 Create your service file `lightrag.service` from the sample file: `lightrag.service.example`. Modify the start options the service file:
@@ -433,7 +445,6 @@ az cognitiveservices account deployment create --resource-group $RESOURCE_GROUP_
 az cognitiveservices account deployment create --resource-group $RESOURCE_GROUP_NAME  --model-format OpenAI --name $RESOURCE_NAME --deployment-name text-embedding-3-large --model-name text-embedding-3-large --model-version "1"  --sku-capacity 80 --sku-name "Standard"
 az cognitiveservices account show --name $RESOURCE_NAME --resource-group $RESOURCE_GROUP_NAME --query "properties.endpoint"
 az cognitiveservices account keys list --name $RESOURCE_NAME -g $RESOURCE_GROUP_NAME
-
 ```
 
 The output of the last command will give you the endpoint and the key for the OpenAI API. You can use these values to set the environment variables in the `.env` file.
@@ -469,7 +480,7 @@ LightRAG supports binding to various LLM backends:
 * openai (including openai compatible)
 * azure_openai
 * lollms
-* aws_bedrock
+* bedrock
 * gemini
 
 LightRAG supports binding to various Embedding backends:
@@ -478,12 +489,14 @@ LightRAG supports binding to various Embedding backends:
 * ollama
 * openai (including openai compatible)
 * azure_openai
-* aws_bedrock
+* bedrock
 * jina
 * gemini
 * voyageai
 
 Use environment variables `LLM_BINDING` or CLI argument `--llm-binding` to select the LLM backend type. Use environment variables `EMBEDDING_BINDING` or CLI argument `--embedding-binding` to select the Embedding backend type.
+
+Bedrock ignores `LLM_BINDING_API_KEY` and `EMBEDDING_BINDING_API_KEY`. Use SigV4 credentials through the AWS credential chain, or set the process-level `AWS_BEARER_TOKEN_BEDROCK` environment variable before startup for Bedrock API key / bearer-token auth.
 
 Asymmetric embedding is explicit opt-in. Set `EMBEDDING_ASYMMETRIC=true` only when the selected embedding backend supports either provider task parameters or task prefixes. See [Asymmetric Embedding Configuration](./AsymmetricEmbedding.md) before changing these settings, because existing data must be cleared and files re-indexed after any change.
 
@@ -558,8 +571,8 @@ When switching the storage implementation in LightRAG, the LLM cache can be migr
 | --ssl                 | False         | Enable HTTPS                                                                                                                    |
 | --ssl-certfile        | None          | Path to SSL certificate file (required if --ssl is enabled)                                                                     |
 | --ssl-keyfile         | None          | Path to SSL private key file (required if --ssl is enabled)                                                                     |
-| --llm-binding         | ollama        | LLM binding type (lollms, ollama, openai, openai-ollama, azure_openai, aws_bedrock)                                                          |
-| --embedding-binding   | ollama        | Embedding binding type (lollms, ollama, openai, azure_openai, aws_bedrock, jina, gemini, voyageai)                                           |
+| --llm-binding         | ollama        | LLM binding type (lollms, ollama, openai, openai-ollama, azure_openai, bedrock)                                                          |
+| --embedding-binding   | ollama        | Embedding binding type (lollms, ollama, openai, azure_openai, bedrock, jina, gemini)                                                     |
 
 ### Reranking Configuration
 
