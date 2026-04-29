@@ -69,25 +69,14 @@ def _sanitize_index_name(name: str) -> str:
 _shard_doc_supported: bool | None = None
 
 
-def _pit_tiebreaker() -> list[dict]:
-    """Return PIT sort tiebreaker based on detected OpenSearch version.
-
-    >= 3.3.0: _shard_doc (shard-local ordinal, most efficient).
-    < 3.3.0:  _doc + _id (_doc for efficiency, _id for cross-shard uniqueness).
-    """
-    if _shard_doc_supported:
-        return [{"_shard_doc": "asc"}]
-    return [{"_doc": "asc"}, {"_id": "asc"}]
-
-
 def _pit_sort_with_field(field: str, order: str = "asc") -> list[dict]:
     """Return PIT sort clause with a unique field as primary sort.
 
-    >= 3.3.0: field + _shard_doc.
-    < 3.3.0:  field + _doc (field is unique, so _doc suffices).
+    >= 3.3.0: _shard_doc only (most efficient, already unique within PIT).
+    < 3.3.0:  field + _doc (field is unique, _doc for efficiency).
     """
     if _shard_doc_supported:
-        return [{field: {"order": order}}, {"_shard_doc": "asc"}]
+        return [{"_shard_doc": "asc"}]
     return [{field: {"order": order}}, {"_doc": "asc"}]
 
 
@@ -114,7 +103,7 @@ async def _detect_shard_doc_support(client: AsyncOpenSearch) -> bool:
         supported = (major > 3) or (major == 3 and minor >= 3)
         logger.info(
             f"OpenSearch version {version_str}: "
-            f"_shard_doc {'supported' if supported else 'not supported, using _doc+_id fallback'}"
+            f"_shard_doc {'supported' if supported else 'not supported, using field+_doc fallback'}"
         )
         return supported
     except Exception as e:
@@ -291,7 +280,12 @@ class OpenSearchKVStorage(BaseKVStorage):
             if not await self.client.indices.exists(index=self._index_name):
                 # Use dynamic mapping so any namespace schema works
                 body = {
-                    "mappings": {"dynamic": True},
+                    "mappings": {
+                        "dynamic": True,
+                        "properties": {
+                            "doc_id": {"type": "keyword"},
+                        },
+                    },
                     "settings": {
                         "index": {
                             "number_of_shards": _get_index_number_of_shards(),
@@ -333,7 +327,7 @@ class OpenSearchKVStorage(BaseKVStorage):
                         "query": {"match_all": {}},
                         "size": batch_size,
                         "pit": {"id": pit_id, "keep_alive": "1m"},
-                        "sort": _pit_tiebreaker(),
+                        "sort": _pit_sort_with_field("doc_id"),
                     }
                     if search_after:
                         body["search_after"] = search_after
@@ -369,6 +363,7 @@ class OpenSearchKVStorage(BaseKVStorage):
             if response is None:
                 return None
             doc = response["_source"]
+            doc.pop("doc_id", None)
             doc["_id"] = response["_id"]
             doc.setdefault("create_time", 0)
             doc.setdefault("update_time", 0)
@@ -390,6 +385,7 @@ class OpenSearchKVStorage(BaseKVStorage):
             for doc in response["docs"]:
                 if doc.get("found"):
                     data = doc["_source"]
+                    data.pop("doc_id", None)
                     data["_id"] = doc["_id"]
                     data.setdefault("create_time", 0)
                     data.setdefault("update_time", 0)
@@ -432,12 +428,14 @@ class OpenSearchKVStorage(BaseKVStorage):
         for i, (doc_id, doc_data) in enumerate(data.items(), start=1):
             doc_data["update_time"] = current_time
             doc_data.setdefault("create_time", current_time)
+            source = {k: v for k, v in doc_data.items() if k != "_id"}
+            source["doc_id"] = doc_id
             actions.append(
                 {
                     "_op_type": "index",
                     "_index": self._index_name,
                     "_id": doc_id,
-                    "_source": {k: v for k, v in doc_data.items() if k != "_id"},
+                    "_source": source,
                 }
             )
             await _cooperative_yield(i)
@@ -556,6 +554,7 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
         """Normalize a raw OpenSearch document to DocProcessingStatus-compatible dict."""
         data = doc.copy()
         data.pop("_id", None)
+        data.pop("doc_id", None)
         if "file_path" not in data:
             data["file_path"] = "no-file-path"
         data.setdefault("metadata", {})
@@ -600,6 +599,7 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
                     "mappings": {
                         "dynamic": True,
                         "properties": {
+                            "doc_id": {"type": "keyword"},
                             "status": {"type": "keyword"},
                             "file_path": {"type": "keyword"},
                             "track_id": {"type": "keyword"},
@@ -695,12 +695,14 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
         actions = []
         for i, (k, v) in enumerate(data.items(), start=1):
             v.setdefault("chunks_list", [])
+            source = {fk: fv for fk, fv in v.items() if fk != "_id"}
+            source["doc_id"] = k
             actions.append(
                 {
                     "_op_type": "index",
                     "_index": self._index_name,
                     "_id": k,
-                    "_source": {fk: fv for fk, fv in v.items() if fk != "_id"},
+                    "_source": source,
                 }
             )
             await _cooperative_yield(i)
@@ -752,7 +754,7 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
                         "query": query,
                         "size": batch_size,
                         "pit": {"id": pit_id, "keep_alive": "1m"},
-                        "sort": _pit_tiebreaker(),
+                        "sort": _pit_sort_with_field("doc_id"),
                     }
                     if search_after:
                         body["search_after"] = search_after
@@ -842,7 +844,9 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
             if total_count == 0 or skip_count >= total_count:
                 return [], total_count
 
-            sort_clause = [{sort_field: {"order": sort_order}}] + _pit_tiebreaker()
+            sort_clause = [{sort_field: {"order": sort_order}}] + _pit_sort_with_field(
+                "doc_id"
+            )
 
             pit = await self.client.create_pit(
                 index=self._index_name, params={"keep_alive": "1m"}
