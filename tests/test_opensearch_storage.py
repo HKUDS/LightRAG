@@ -25,6 +25,7 @@ from lightrag.kg.opensearch_impl import (
     _build_index_name,
     _resolve_workspace,
     _sanitize_index_name,
+    _verify_mirrored_id_mapping,
 )
 from lightrag.base import DocStatus, DocProcessingStatus
 
@@ -55,6 +56,16 @@ def patch_data_init_lock():
     with patch(
         "lightrag.kg.opensearch_impl.get_data_init_lock", side_effect=_mock_lock_factory
     ):
+        yield
+
+
+@pytest.fixture(autouse=True)
+def patch_shard_doc_supported():
+    """Default tests to OpenSearch >= 3.3.0 so the __mirrored_id verification is a no-op.
+
+    Tests covering the < 3.3.0 fallback should override this with their own patch.
+    """
+    with patch("lightrag.kg.opensearch_impl._shard_doc_supported", True):
         yield
 
 
@@ -193,11 +204,22 @@ class TestHelpers:
 class TestClientManager:
     """Tests for ClientManager singleton pattern and reference counting."""
 
+    @staticmethod
+    def _stub_client(version: str = "3.3.0") -> AsyncMock:
+        """Build an AsyncMock client with a concrete .info() payload.
+
+        Without this stub, _detect_shard_doc_support's chained .get(...) calls
+        on an AsyncMock would leak un-awaited coroutines.
+        """
+        client = AsyncMock()
+        client.info = AsyncMock(return_value={"version": {"number": version}})
+        return client
+
     @pytest.mark.asyncio
     async def test_singleton_and_refcount(self):
         ClientManager._instances = {"client": None, "ref_count": 0}
         with patch("lightrag.kg.opensearch_impl.AsyncOpenSearch") as mock_cls:
-            mock_cls.return_value = AsyncMock()
+            mock_cls.return_value = self._stub_client()
             c1 = await ClientManager.get_client()
             c2 = await ClientManager.get_client()
             assert c1 is c2
@@ -212,11 +234,65 @@ class TestClientManager:
     async def test_close_called_on_last_release(self):
         ClientManager._instances = {"client": None, "ref_count": 0}
         with patch("lightrag.kg.opensearch_impl.AsyncOpenSearch") as mock_cls:
-            inner = AsyncMock()
+            inner = self._stub_client()
             mock_cls.return_value = inner
             c = await ClientManager.get_client()
             await ClientManager.release_client(c)
             inner.close.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# _verify_mirrored_id_mapping helper
+# ---------------------------------------------------------------------------
+
+
+class TestMirroredIdVerification:
+    """Tests for the _verify_mirrored_id_mapping fail-fast helper."""
+
+    @pytest.mark.asyncio
+    async def test_skipped_on_modern_cluster(self, mock_client):
+        """On OpenSearch >= 3.3.0 the mapping check is short-circuited."""
+        # _shard_doc_supported is True via autouse fixture.
+        await _verify_mirrored_id_mapping(mock_client, "any_index")
+        mock_client.indices.get_mapping.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_passes_when_mapping_present(self, mock_client):
+        """On OpenSearch < 3.3.0 a mapping containing __mirrored_id is accepted."""
+        mock_client.indices.get_mapping = AsyncMock(
+            return_value={
+                "my_index": {
+                    "mappings": {
+                        "properties": {"__mirrored_id": {"type": "keyword"}}
+                    }
+                }
+            }
+        )
+        with patch("lightrag.kg.opensearch_impl._shard_doc_supported", False):
+            await _verify_mirrored_id_mapping(mock_client, "my_index")
+
+    @pytest.mark.asyncio
+    async def test_fails_fast_when_mapping_missing(self, mock_client):
+        """On OpenSearch < 3.3.0 a legacy index without __mirrored_id raises."""
+        mock_client.indices.get_mapping = AsyncMock(
+            return_value={
+                "my_index": {
+                    "mappings": {"properties": {"other_field": {"type": "text"}}}
+                }
+            }
+        )
+        with patch("lightrag.kg.opensearch_impl._shard_doc_supported", False):
+            with pytest.raises(RuntimeError, match="__mirrored_id"):
+                await _verify_mirrored_id_mapping(mock_client, "my_index")
+
+    @pytest.mark.asyncio
+    async def test_swallows_get_mapping_error(self, mock_client):
+        """Mapping-fetch failures should not block initialization."""
+        mock_client.indices.get_mapping = AsyncMock(
+            side_effect=OpenSearchException("transport error")
+        )
+        with patch("lightrag.kg.opensearch_impl._shard_doc_supported", False):
+            await _verify_mirrored_id_mapping(mock_client, "my_index")
 
 
 # ---------------------------------------------------------------------------
@@ -258,6 +334,28 @@ class TestKVStorage:
         with patch.object(ClientManager, "get_client", return_value=mock_client):
             s = self._make(global_config, embed_func)
             await s.initialize()
+            mock_client.indices.create.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_initialize_fails_on_legacy_index_without_mirrored_id(
+        self, global_config, embed_func, mock_client
+    ):
+        """On OpenSearch < 3.3.0, an existing index lacking __mirrored_id must fail-fast."""
+        mock_client.indices.exists = AsyncMock(return_value=True)
+        mock_client.indices.get_mapping = AsyncMock(
+            return_value={
+                "test_text_chunks": {
+                    "mappings": {"properties": {"content": {"type": "text"}}}
+                }
+            }
+        )
+        with (
+            patch.object(ClientManager, "get_client", return_value=mock_client),
+            patch("lightrag.kg.opensearch_impl._shard_doc_supported", False),
+        ):
+            s = self._make(global_config, embed_func)
+            with pytest.raises(RuntimeError, match="__mirrored_id"):
+                await s.initialize()
             mock_client.indices.create.assert_not_awaited()
 
     @pytest.mark.asyncio
