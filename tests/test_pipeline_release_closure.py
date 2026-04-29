@@ -750,3 +750,32 @@ def test_parse_mineru_empty_service_result_falls_back_native(tmp_path, monkeypat
         await rag.finalize_storages()
 
     asyncio.run(_run())
+
+
+@pytest.mark.offline
+def test_parse_docling_empty_service_result_falls_back_native(tmp_path, monkeypatch):
+    async def _run():
+        rag = _new_rag(tmp_path)
+        await rag.initialize_storages()
+
+        src_file = tmp_path / "demo.pptx"
+        src_file.write_bytes(b"fake-pptx")
+
+        async def _fake_service(protocol, file_path):
+            return None
+
+        monkeypatch.setattr(rag, "_call_protocol_parse_service", _fake_service)
+        monkeypatch.setenv("DOCLING_ENDPOINT", "http://fake")
+
+        parsed = await rag.parse_docling(
+            doc_id="doc-local-2",
+            file_path=str(src_file),
+            content_data={"content": "native fallback content"},
+        )
+        assert parsed["format"] == "raw"
+        assert parsed["content"] == "native fallback content"
+        assert parsed["blocks_path"] == ""
+
+        await rag.finalize_storages()
+
+    asyncio.run(_run())

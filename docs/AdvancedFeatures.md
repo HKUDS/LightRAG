@@ -4,7 +4,9 @@
 
 LightRAG Server includes a multimodal document pipeline for text, images, tables, and equations. Document parsing is handled through external MinerU or Docling services configured by endpoint, so the server no longer needs to install or import the `raganything` package locally.
 
-**Key Features:**
+**Status:** the multimodal post-process hook is currently a placeholder; image, table, and equation processors are planned but not yet wired up. Ingestion via external MinerU/Docling parsers and native text indexing already work today.
+
+**Planned Capabilities:**
 - End-to-End Multimodal Pipeline: complete workflow from document ingestion to multimodal query answering
 - Universal Document Support: PDFs, Office documents (DOC/DOCX/PPT/PPTX/XLS/XLSX), images, and diverse file formats
 - Specialized Content Analysis: dedicated processors for images, tables, mathematical equations
