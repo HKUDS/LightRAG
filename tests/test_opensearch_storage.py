@@ -262,9 +262,7 @@ class TestMirroredIdVerification:
         mock_client.indices.get_mapping = AsyncMock(
             return_value={
                 "my_index": {
-                    "mappings": {
-                        "properties": {"__mirrored_id": {"type": "keyword"}}
-                    }
+                    "mappings": {"properties": {"__mirrored_id": {"type": "keyword"}}}
                 }
             }
         )
