@@ -3266,7 +3266,12 @@ async def kg_query(
     )
 
     # Build system prompt
-    sys_prompt_temp = system_prompt if system_prompt else PROMPTS["rag_response"]
+    if system_prompt:
+        sys_prompt_temp = system_prompt
+    elif not query_param.include_references:
+        sys_prompt_temp = PROMPTS["rag_response_no_ref"]
+    else:
+        sys_prompt_temp = PROMPTS["rag_response"]
     sys_prompt = sys_prompt_temp.format(
         response_type=response_type,
         user_prompt=user_prompt,
@@ -3300,6 +3305,7 @@ async def kg_query(
         ll_keywords_str,
         query_param.user_prompt or "",
         query_param.enable_rerank,
+        query_param.include_references,
     )
 
     cached_result = await handle_cache(
@@ -4091,11 +4097,18 @@ async def _build_context_str(
     )
 
     # Get the system prompt template from PROMPTS or global_config
-    sys_prompt_template = global_config.get(
-        "system_prompt_template", PROMPTS["rag_response"]
-    )
+    custom_sys_prompt = global_config.get("system_prompt_template")
+    if custom_sys_prompt:
+        sys_prompt_template = custom_sys_prompt
+    elif not query_param.include_references:
+        sys_prompt_template = PROMPTS["rag_response_no_ref"]
+    else:
+        sys_prompt_template = PROMPTS["rag_response"]
 
-    kg_context_template = PROMPTS["kg_query_context"]
+    if not query_param.include_references:
+        kg_context_template = PROMPTS["kg_query_context_no_ref"]
+    else:
+        kg_context_template = PROMPTS["kg_query_context"]
     user_prompt = query_param.user_prompt if query_param.user_prompt else ""
     response_type = (
         query_param.response_type
@@ -4167,11 +4180,14 @@ async def _build_context_str(
     text_units_str = "\n".join(
         json.dumps(text_unit, ensure_ascii=False) for text_unit in chunks_context
     )
-    reference_list_str = "\n".join(
-        f"[{ref['reference_id']}] {ref['file_path']}"
-        for ref in reference_list
-        if ref["reference_id"]
-    )
+    if query_param.include_references:
+        reference_list_str = "\n".join(
+            f"[{ref['reference_id']}] {ref['file_path']}"
+            for ref in reference_list
+            if ref["reference_id"]
+        )
+    else:
+        reference_list_str = ""
 
     logger.info(
         f"Final context: {len(entities_context)} entities, {len(relations_context)} relations, {len(chunks_context)} chunks"
@@ -5018,9 +5034,12 @@ async def naive_query(
     )
 
     # Use the provided system prompt or default
-    sys_prompt_template = (
-        system_prompt if system_prompt else PROMPTS["naive_rag_response"]
-    )
+    if system_prompt:
+        sys_prompt_template = system_prompt
+    elif not query_param.include_references:
+        sys_prompt_template = PROMPTS["naive_rag_response_no_ref"]
+    else:
+        sys_prompt_template = PROMPTS["naive_rag_response"]
 
     # Create a preliminary system prompt with empty content_data to calculate overhead
     pre_sys_prompt = sys_prompt_template.format(
@@ -5092,13 +5111,17 @@ async def naive_query(
     text_units_str = "\n".join(
         json.dumps(text_unit, ensure_ascii=False) for text_unit in chunks_context
     )
-    reference_list_str = "\n".join(
-        f"[{ref['reference_id']}] {ref['file_path']}"
-        for ref in reference_list
-        if ref["reference_id"]
-    )
+    if query_param.include_references:
+        reference_list_str = "\n".join(
+            f"[{ref['reference_id']}] {ref['file_path']}"
+            for ref in reference_list
+            if ref["reference_id"]
+        )
+        naive_context_template = PROMPTS["naive_query_context"]
+    else:
+        reference_list_str = ""
+        naive_context_template = PROMPTS["naive_query_context_no_ref"]
 
-    naive_context_template = PROMPTS["naive_query_context"]
     context_content = naive_context_template.format(
         text_chunks_str=text_units_str,
         reference_list_str=reference_list_str,
@@ -5131,6 +5154,7 @@ async def naive_query(
         query_param.max_total_tokens,
         query_param.user_prompt or "",
         query_param.enable_rerank,
+        query_param.include_references,
     )
     cached_result = await handle_cache(
         hashing_kv, args_hash, user_query, query_param.mode, cache_type="query"
