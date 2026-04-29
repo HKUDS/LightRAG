@@ -78,7 +78,7 @@ DEFAULT_TEMPERATURE = 1.0
 DEFAULT_MAX_ASYNC = 4  # Default maximum async operations
 DEFAULT_MAX_PARALLEL_INSERT = 2  # Default maximum parallel insert operations
 
-# RAG-Anything / LightRAG Document pipeline (LR2-PRD)
+# LightRAG Document pipeline
 FULL_DOCS_FORMAT_RAW = "raw"  # content in full_docs["content"]
 FULL_DOCS_FORMAT_LIGHTRAG = "lightrag"  # content in LightRAG Document files
 FULL_DOCS_FORMAT_PENDING_PARSE = (

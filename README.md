@@ -292,11 +292,9 @@ For the complete Core API reference — including init parameters, `QueryParam`,
 
 LightRAG provides additional capabilities including token usage tracking, knowledge graph data export, LLM cache management, Langfuse observability integration, and RAGAS-based evaluation. See **[docs/AdvancedFeatures.md](./docs/AdvancedFeatures.md)**.
 
-### Multimodal Document Processing (RAG-Anything Integration)
+### Multimodal Document Processing
 
-LightRAG integrates with [RAG-Anything](https://github.com/HKUDS/RAG-Anything) for end-to-end multimodal RAG across PDFs, Office documents, images, tables, and formulas. For setup and usage examples, see **[docs/AdvancedFeatures.md](./docs/AdvancedFeatures.md)**.
-
-> LightRAG Server will soon integrate RAG-Anything’s multimodal processing capabilities into its file processing pipeline. Stay tuned.
+LightRAG Server includes a multimodal document pipeline for PDFs, Office documents, images, tables, and formulas. Parsing is handled through external MinerU or Docling services, while multimodal indexing runs in the LightRAG pipeline. For setup details, see **[docs/AdvancedFeatures.md](./docs/AdvancedFeatures.md)**.
 
 ## Replicating Findings in the Papper
 

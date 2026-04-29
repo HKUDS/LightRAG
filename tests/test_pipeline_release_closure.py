@@ -724,7 +724,7 @@ def test_mm_chunks_and_modality_relations_from_sidecars(tmp_path):
 
 
 @pytest.mark.offline
-def test_parse_mineru_fallback_local_raganything_parser(tmp_path, monkeypatch):
+def test_parse_mineru_empty_service_result_falls_back_native(tmp_path, monkeypatch):
     async def _run():
         rag = _new_rag(tmp_path)
         await rag.initialize_storages()
@@ -735,28 +735,17 @@ def test_parse_mineru_fallback_local_raganything_parser(tmp_path, monkeypatch):
         async def _fake_service(protocol, file_path):
             return None
 
-        async def _fake_local_parse(engine, file_path):
-            assert engine == "mineru"
-            return [
-                {"type": "text", "text": "正文"},
-                {
-                    "type": "image",
-                    "img_path": "assets/img.png",
-                    "image_caption": ["图1"],
-                },
-            ]
-
         monkeypatch.setattr(rag, "_call_protocol_parse_service", _fake_service)
-        monkeypatch.setattr(rag, "_parse_via_local_raganything", _fake_local_parse)
         monkeypatch.setenv("MINERU_ENDPOINT", "http://fake")
 
         parsed = await rag.parse_mineru(
             doc_id="doc-local-1",
             file_path=str(src_file),
-            content_data={},
+            content_data={"content": "native fallback content"},
         )
-        assert parsed["format"] == "lightrag"
-        assert parsed["blocks_path"]
+        assert parsed["format"] == "raw"
+        assert parsed["content"] == "native fallback content"
+        assert parsed["blocks_path"] == ""
 
         await rag.finalize_storages()
 

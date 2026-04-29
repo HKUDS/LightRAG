@@ -286,7 +286,7 @@ lightrag-server --port 9622 --workspace space2
 
 ### Gunicorn + Uvicorn 的多工作进程
 
-LightRAG 服务器可以在 `Gunicorn + Uvicorn` 预加载模式下运行。Gunicorn 的多工作进程（多进程）功能可以防止文档索引任务阻塞 RAG 查询。使用 CPU 密集型文档提取工具（如 docling）在纯 Uvicorn 模式下可能会导致整个系统被阻塞。
+LightRAG 服务器可以在 `Gunicorn + Uvicorn` 预加载模式下运行。Gunicorn 的多工作进程（多进程）功能可以防止文档索引任务阻塞 RAG 查询。CPU 密集型文档提取工具应作为外置服务部署，避免阻塞 API 进程。
 
 虽然 LightRAG 服务器使用一个工作进程来处理文档索引流程，但通过 Uvicorn 的异步任务支持，可以并行处理多个文件。文档索引速度的瓶颈主要在于 LLM。如果您的 LLM 支持高并发，您可以通过增加 LLM 的并发级别来加速文档索引。以下是几个与并发处理相关的环境变量及其默认值：
 

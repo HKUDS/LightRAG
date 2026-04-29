@@ -1,8 +1,8 @@
 # Advanced Features
 
-## Multimodal Document Processing (RAG-Anything Integration)
+## Multimodal Document Processing
 
-LightRAG integrates with [RAG-Anything](https://github.com/HKUDS/RAG-Anything), an **All-in-One Multimodal Document Processing RAG system** that enables advanced parsing and RAG capabilities across diverse document formats including PDFs, images, Office documents, tables, and formulas.
+LightRAG Server includes a multimodal document pipeline for text, images, tables, and equations. Document parsing is handled through external MinerU or Docling services configured by endpoint, so the server no longer needs to install or import the `raganything` package locally.
 
 **Key Features:**
 - End-to-End Multimodal Pipeline: complete workflow from document ingestion to multimodal query answering
@@ -13,94 +13,15 @@ LightRAG integrates with [RAG-Anything](https://github.com/HKUDS/RAG-Anything), 
 
 ### Quick Start
 
-* Install Rag-Anything
+Configure parser routing and external parser service endpoints in `.env`:
 
 ```bash
-pip install raganything
+LIGHTRAG_PARSER=pdf:mineru,docx:docling,pptx:docling,*:native
+MINERU_ENDPOINT=http://localhost:8000/api/v1/task
+DOCLING_ENDPOINT=http://localhost:8081/v1/convert/file/async
 ```
 
-* RAGAnything Usage Example
-
-```python
-import asyncio
-from raganything import RAGAnything
-from lightrag import LightRAG
-from lightrag.llm.openai import openai_complete_if_cache, openai_embed
-from lightrag.utils import EmbeddingFunc
-import os
-
-async def load_existing_lightrag():
-    lightrag_working_dir = "./existing_lightrag_storage"
-
-    from functools import partial
-
-    lightrag_instance = LightRAG(
-        working_dir=lightrag_working_dir,
-        llm_model_func=lambda prompt, system_prompt=None, history_messages=[], **kwargs: openai_complete_if_cache(
-            "gpt-4o-mini",
-            prompt,
-            system_prompt=system_prompt,
-            history_messages=history_messages,
-            api_key="your-api-key",
-            **kwargs,
-        ),
-        embedding_func=EmbeddingFunc(
-            embedding_dim=3072,
-            max_token_size=8192,
-            model="text-embedding-3-large",
-            func=partial(
-                openai_embed.func,
-                model="text-embedding-3-large",
-                api_key=api_key,
-                base_url=base_url,
-            ),
-        )
-    )
-
-    await lightrag_instance.initialize_storages()
-
-    rag = RAGAnything(
-        lightrag=lightrag_instance,
-        vision_model_func=lambda prompt, system_prompt=None, history_messages=[], image_data=None, **kwargs: openai_complete_if_cache(
-            "gpt-4o",
-            "",
-            system_prompt=None,
-            history_messages=[],
-            messages=[
-                {"role": "system", "content": system_prompt} if system_prompt else None,
-                {"role": "user", "content": [
-                    {"type": "text", "text": prompt},
-                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_data}"}}
-                ]} if image_data else {"role": "user", "content": prompt}
-            ],
-            api_key="your-api-key",
-            **kwargs,
-        ) if image_data else openai_complete_if_cache(
-            "gpt-4o-mini",
-            prompt,
-            system_prompt=system_prompt,
-            history_messages=history_messages,
-            api_key="your-api-key",
-            **kwargs,
-        )
-    )
-
-    result = await rag.query_with_multimodal(
-        "What data has been processed in this LightRAG instance?",
-        mode="hybrid"
-    )
-    print("Query result:", result)
-
-    await rag.process_document_complete(
-        file_path="path/to/new/multimodal_document.pdf",
-        output_dir="./output"
-    )
-
-if __name__ == "__main__":
-    asyncio.run(load_existing_lightrag())
-```
-
-* For detailed documentation and advanced usage, see the [RAG-Anything repository](https://github.com/HKUDS/RAG-Anything).
+Then upload documents through LightRAG Server. Parsed multimodal sidecars are written by the pipeline and consumed by the normal indexing flow.
 
 ---
 

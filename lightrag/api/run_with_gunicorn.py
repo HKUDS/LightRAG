@@ -49,35 +49,6 @@ def main():
     if not check_env_file():
         sys.exit(1)
 
-    # Check DOCLING compatibility with Gunicorn multi-worker mode on macOS
-    if (
-        platform.system() == "Darwin"
-        and global_args.document_loading_engine == "DOCLING"
-        and global_args.workers > 1
-    ):
-        print("\n" + "=" * 80)
-        print("❌ ERROR: Incompatible configuration detected!")
-        print("=" * 80)
-        print(
-            "\nDOCLING engine with Gunicorn multi-worker mode is not supported on macOS"
-        )
-        print("\nReason:")
-        print("  PyTorch (required by DOCLING) has known compatibility issues with")
-        print("  fork-based multiprocessing on macOS, which can cause crashes or")
-        print("  unexpected behavior when using Gunicorn with multiple workers.")
-        print("\nCurrent configuration:")
-        print("  - Operating System: macOS (Darwin)")
-        print(f"  - Document Engine: {global_args.document_loading_engine}")
-        print(f"  - Workers: {global_args.workers}")
-        print("\nPossible solutions:")
-        print("  1. Use single worker mode:")
-        print("     --workers 1")
-        print("\n  2. Change document loading engine in .env:")
-        print("     DOCUMENT_LOADING_ENGINE=DEFAULT")
-        print("\n  3. Deploy on Linux where multi-worker mode is fully supported")
-        print("=" * 80 + "\n")
-        sys.exit(1)
-
     # Check macOS fork safety environment variable for multi-worker mode
     if (
         platform.system() == "Darwin"
