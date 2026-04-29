@@ -1174,6 +1174,65 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         )
         self._create_indexes_after_collection()
 
+    def _activate_existing_collection(self, collection_name: str) -> None:
+        """Validate and load an existing collection, keeping it active on success."""
+        original_final_namespace = self.final_namespace
+
+        try:
+            self.final_namespace = collection_name
+            self._client.describe_collection(self.final_namespace)
+            self._validate_collection_compatibility()
+
+            try:
+                self._ensure_collection_loaded()
+                return
+            except Exception as load_error:
+                if not self._is_missing_vector_index_error(load_error):
+                    raise
+
+                try:
+                    self._repair_missing_vector_index()
+                    self._ensure_collection_loaded()
+                    logger.info(
+                        f"[{self.workspace}] Repaired missing vector index for existing collection '{self.namespace}'"
+                    )
+                except Exception as repair_error:
+                    raise RuntimeError(
+                        f"Index repair failed for collection '{self.final_namespace}'. "
+                        f"Original error: {repair_error}"
+                    ) from repair_error
+        except Exception:
+            self.final_namespace = original_final_namespace
+            raise
+
+    def _try_activate_legacy_collection(self) -> bool:
+        """Reuse a compatible legacy collection when model-isolated naming is enabled."""
+        if self.final_namespace == self.legacy_namespace:
+            return False
+
+        legacy_exists = self._client.has_collection(self.legacy_namespace)
+        if not legacy_exists:
+            return False
+
+        logger.info(
+            f"[{self.workspace}] Found legacy Milvus collection '{self.legacy_namespace}' for namespace '{self.namespace}'"
+        )
+
+        try:
+            self._activate_existing_collection(self.legacy_namespace)
+            logger.info(
+                f"[{self.workspace}] Reusing compatible legacy collection '{self.legacy_namespace}' for namespace '{self.namespace}'"
+            )
+            return True
+        except ValueError as legacy_error:
+            logger.warning(
+                f"[{self.workspace}] Legacy collection '{self.legacy_namespace}' is incompatible with the current embedding configuration: {legacy_error}"
+            )
+            logger.warning(
+                f"[{self.workspace}] Creating isolated collection '{self.final_namespace}' instead."
+            )
+            return False
+
     def _ensure_collection_loaded(self):
         """Ensure the collection is loaded into memory for search operations"""
         try:
@@ -1208,28 +1267,8 @@ class MilvusVectorDBStorage(BaseVectorStorage):
             if collection_exists:
                 # Double-check by trying to describe the collection
                 try:
-                    self._client.describe_collection(self.final_namespace)
-                    self._validate_collection_compatibility()
-                    try:
-                        # Ensure the collection is loaded after validation
-                        self._ensure_collection_loaded()
-                        return
-                    except Exception as load_error:
-                        if not self._is_missing_vector_index_error(load_error):
-                            raise
-
-                        try:
-                            self._repair_missing_vector_index()
-                            self._ensure_collection_loaded()
-                            logger.info(
-                                f"[{self.workspace}] Repaired missing vector index for existing collection '{self.namespace}'"
-                            )
-                            return
-                        except Exception as repair_error:
-                            raise RuntimeError(
-                                f"Index repair failed for collection '{self.final_namespace}'. "
-                                f"Original error: {repair_error}"
-                            ) from repair_error
+                    self._activate_existing_collection(self.final_namespace)
+                    return
                 except Exception as validation_error:
                     # CRITICAL: Collection exists but validation failed
                     # This indicates potential data migration failure or incompatible schema
@@ -1267,8 +1306,13 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                         f"Original error: {validation_error}"
                     )
 
+            if self._try_activate_legacy_collection():
+                return
+
             # Collection doesn't exist, create new collection
-            logger.info(f"[{self.workspace}] Creating new collection: {self.namespace}")
+            logger.info(
+                f"[{self.workspace}] Creating new collection: {self.final_namespace}"
+            )
             schema = self._create_schema_for_namespace()
 
             # Create collection with schema only first
@@ -1389,18 +1433,22 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                     f"Using passed workspace parameter: '{effective_workspace}'"
                 )
 
-        # Build final_namespace with workspace prefix for data isolation
-        # Keep original namespace unchanged for type detection logic
-        if effective_workspace:
-            self.final_namespace = f"{effective_workspace}_{self.namespace}"
-            logger.debug(
-                f"Final namespace with workspace prefix: '{self.final_namespace}'"
-            )
+        # Keep the legacy namespace so compatible deployments can continue using
+        # their existing collection, while model-aware names isolate new embeddings.
+        self.workspace = effective_workspace or ""
+        self.model_suffix = self._generate_collection_suffix()
+        self.legacy_namespace = (
+            f"{self.workspace}_{self.namespace}" if self.workspace else self.namespace
+        )
+
+        if self.model_suffix:
+            self.final_namespace = f"{self.legacy_namespace}_{self.model_suffix}"
+            logger.info(f"[{self.workspace}] Milvus collection: {self.final_namespace}")
         else:
-            # When workspace is empty, final_namespace equals original namespace
-            self.final_namespace = self.namespace
-            self.workspace = ""
-            logger.debug(f"Final namespace (no workspace): '{self.final_namespace}'")
+            self.final_namespace = self.legacy_namespace
+            logger.debug(
+                f"Final namespace without model suffix: '{self.final_namespace}'"
+            )
         cosine_threshold = kwargs.get("cosine_better_than_threshold")
         if cosine_threshold is None:
             raise ValueError(
