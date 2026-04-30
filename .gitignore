@@ -88,3 +88,9 @@ CLAUDE.md
 
 # Google Jules
 .jules/
+
+# Test environment (contains secrets)
+scripts/.env-test
+
+# Agent working directory
+.agents/
