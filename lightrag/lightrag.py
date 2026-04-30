@@ -222,54 +222,72 @@ def _document_source_key(file_path: Any) -> str:
     return filename or "unknown_source"
 
 
-def _file_path_lookup_candidates(file_path: Any, source_path: Any = None) -> list[str]:
-    candidates = [
-        _document_source_key(file_path),
-        str(file_path or "").strip(),
-        str(source_path or "").strip(),
-    ]
-    for raw_path in [file_path, source_path]:
-        try:
-            resolved = str(Path(str(raw_path)).resolve())
-        except Exception:
-            resolved = ""
-        candidates.append(resolved)
-
-    seen: set[str] = set()
-    unique: list[str] = []
-    for candidate in candidates:
-        if candidate and candidate not in seen:
-            seen.add(candidate)
-            unique.append(candidate)
-    return unique
-
-
 def _doc_status_field(doc: Any, field: str, default: Any = "") -> Any:
     if isinstance(doc, dict):
         return doc.get(field, default)
     return getattr(doc, field, default)
 
 
-async def _get_existing_doc_by_file_path_candidates(
-    doc_status: DocStatusStorage, file_path: Any, source_path: Any = None
-) -> Any | None:
-    """Find an existing doc_status record by filename, including legacy paths."""
-    target_name = _document_source_key(file_path)
-    for candidate in _file_path_lookup_candidates(file_path, source_path):
-        existing_doc = await doc_status.get_doc_by_file_path(candidate)
-        if existing_doc:
-            return existing_doc
+def _compute_text_content_hash(content: str) -> str:
+    """MD5 hex digest of text content used for cross-filename dedup."""
+    return compute_mdhash_id(content, prefix="")
 
+
+def _compute_file_content_hash(path_str: str) -> str | None:
+    """Stream-compute MD5 of a file's bytes; returns None if unreadable.
+
+    Resolves the LightRAG ``*.blocks.jsonl`` conventions used by
+    ``_load_lightrag_document_content`` so the hash matches the actual
+    document body regardless of whether ``path_str`` points at the blocks
+    file directly or its parent directory/base name.
+    """
+    if not path_str:
+        return None
     try:
-        docs = await doc_status.get_docs_by_statuses(list(DocStatus))
-    except Exception:
+        path = Path(path_str)
+        if path.is_dir():
+            candidates = sorted(path.glob("*.blocks.jsonl"))
+            if not candidates:
+                return None
+            path = candidates[0]
+        elif not (path.exists() and path.is_file()):
+            blocks_path = Path(path_str + ".blocks.jsonl")
+            if blocks_path.exists() and blocks_path.is_file():
+                path = blocks_path
+            else:
+                return None
+        h = hashlib.md5()
+        with path.open("rb") as f:
+            for chunk in iter(lambda: f.read(65536), b""):
+                h.update(chunk)
+        return h.hexdigest()
+    except Exception as e:
+        logger.warning(f"Failed to compute file content hash for {path_str}: {e}")
         return None
 
-    for existing_doc in docs.values():
-        existing_path = _doc_status_field(existing_doc, "file_path", "")
-        if _document_source_key(existing_path) == target_name:
-            return existing_doc
-    return None
+
+async def _get_existing_doc_by_file_basename(
+    doc_status: DocStatusStorage, file_path: Any
+) -> tuple[str, Any] | None:
+    """Find an existing doc_status record by file basename.
+
+    Delegates to the storage backend's basename index when available so the
+    lookup avoids scanning every record. Backends without a native index fall
+    back to the default scan implemented in DocStatusStorage.
+    """
+    basename = _document_source_key(file_path)
+    if basename == "unknown_source":
+        return None
+    return await doc_status.get_doc_by_file_basename(basename)
+
+
+async def _get_existing_doc_by_content_hash(
+    doc_status: DocStatusStorage, content_hash: str
+) -> tuple[str, Any] | None:
+    """Find an existing doc_status record by content hash."""
+    if not content_hash:
+        return None
+    return await doc_status.get_doc_by_content_hash(content_hash)
 
 
 def _normalize_string_list(raw_values: Any, context: str = "") -> list[str]:
@@ -2523,6 +2541,7 @@ class LightRAG:
         source_keys = [_document_source_key(path) for path in file_paths]
         contents: dict[str, dict[str, Any]] = {}
         source_to_doc_id: dict[str, str] = {}
+        content_hash_to_doc_id: dict[str, str] = {}
         duplicate_attempts: list[dict[str, Any]] = []
 
         def _add_content(
@@ -2549,16 +2568,43 @@ class LightRAG:
                         "content_length": len(content or ""),
                         "existing_status": "batch_duplicate",
                         "existing_track_id": "",
+                        "duplicate_kind": "filename",
+                    }
+                )
+                return
+
+            # Compute content hash: skip for pending_parse (content extracted later).
+            content_hash: str | None = None
+            if doc_format == FULL_DOCS_FORMAT_RAW:
+                content_hash = _compute_text_content_hash(content or "")
+            elif doc_format == FULL_DOCS_FORMAT_LIGHTRAG and lightrag_document_path:
+                content_hash = _compute_file_content_hash(lightrag_document_path)
+
+            if content_hash and content_hash in content_hash_to_doc_id:
+                duplicate_attempts.append(
+                    {
+                        "doc_id": doc_id,
+                        "original_doc_id": content_hash_to_doc_id[content_hash],
+                        "file_path": source_key,
+                        "content_length": len(content or ""),
+                        "existing_status": "batch_duplicate",
+                        "existing_track_id": "",
+                        "duplicate_kind": "content_hash",
                     }
                 )
                 return
 
             source_to_doc_id[source_key] = doc_id
+            if content_hash:
+                content_hash_to_doc_id[content_hash] = doc_id
+
             content_data = {
                 "content": content,
                 "file_path": source_key,
                 "format": doc_format,
             }
+            if content_hash:
+                content_data["content_hash"] = content_hash
             if str(source_path).strip() and str(source_path).strip() != source_key:
                 content_data["source_path"] = source_path
             if lightrag_document_path:
@@ -2610,6 +2656,11 @@ class LightRAG:
                 "updated_at": datetime.now(timezone.utc).isoformat(),
                 "file_path": content_data["file_path"],
                 "track_id": track_id,
+                **(
+                    {"content_hash": content_data["content_hash"]}
+                    if content_data.get("content_hash")
+                    else {}
+                ),
             }
             for id_, content_data in contents.items()
         }
@@ -2622,19 +2673,18 @@ class LightRAG:
 
         for doc_id in list(unique_new_doc_ids):
             content_data = contents[doc_id]
-            existing_doc = await _get_existing_doc_by_file_path_candidates(
-                self.doc_status,
-                content_data["file_path"],
-                content_data.get("source_path"),
+
+            # 3a. Filename-based dedup: same basename always treated as duplicate.
+            match = await _get_existing_doc_by_file_basename(
+                self.doc_status, content_data["file_path"]
             )
-            if existing_doc:
+            if match:
+                existing_doc_id, existing_doc = match
                 unique_new_doc_ids.discard(doc_id)
                 duplicate_attempts.append(
                     {
                         "doc_id": doc_id,
-                        "original_doc_id": _doc_status_field(
-                            existing_doc, "_id", doc_id
-                        ),
+                        "original_doc_id": existing_doc_id,
                         "file_path": content_data["file_path"],
                         "content_length": new_docs.get(doc_id, {}).get(
                             "content_length", 0
@@ -2645,6 +2695,36 @@ class LightRAG:
                         "existing_track_id": _doc_status_field(
                             existing_doc, "track_id", ""
                         ),
+                        "duplicate_kind": "filename",
+                    }
+                )
+                continue
+
+            # 3b. Content-hash dedup: different filename but same body still dupes.
+            content_hash = content_data.get("content_hash")
+            if not content_hash:
+                continue
+            hash_match = await _get_existing_doc_by_content_hash(
+                self.doc_status, content_hash
+            )
+            if hash_match:
+                existing_doc_id, existing_doc = hash_match
+                unique_new_doc_ids.discard(doc_id)
+                duplicate_attempts.append(
+                    {
+                        "doc_id": doc_id,
+                        "original_doc_id": existing_doc_id,
+                        "file_path": content_data["file_path"],
+                        "content_length": new_docs.get(doc_id, {}).get(
+                            "content_length", 0
+                        ),
+                        "existing_status": _doc_status_field(
+                            existing_doc, "status", "unknown"
+                        ),
+                        "existing_track_id": _doc_status_field(
+                            existing_doc, "track_id", ""
+                        ),
+                        "duplicate_kind": "content_hash",
                     }
                 )
 
@@ -2670,6 +2750,7 @@ class LightRAG:
                     "existing_track_id": (
                         existing_doc.get("track_id", "") if existing_doc else ""
                     ),
+                    "duplicate_kind": "filename",
                 }
             )
 
@@ -2678,16 +2759,26 @@ class LightRAG:
             for index, attempt in enumerate(duplicate_attempts):
                 doc_id = attempt["doc_id"]
                 file_path = attempt.get("file_path") or "unknown_source"
-                logger.warning(f"Duplicate document detected: {doc_id} ({file_path})")
+                duplicate_kind = attempt.get("duplicate_kind") or "filename"
+                logger.warning(
+                    f"Duplicate document detected ({duplicate_kind}): "
+                    f"{doc_id} ({file_path})"
+                )
 
                 # Create a new record with unique ID for this duplicate attempt
                 dup_record_id = compute_mdhash_id(
                     f"{doc_id}-{track_id}-{index}-{file_path}", prefix="dup-"
                 )
+                if duplicate_kind == "content_hash":
+                    error_prefix = (
+                        "Identical content already exists under another filename."
+                    )
+                else:
+                    error_prefix = "File name already exists."
                 duplicate_docs[dup_record_id] = {
                     "status": DocStatus.FAILED,
                     "content_summary": (
-                        f"[DUPLICATE] Original document: "
+                        f"[DUPLICATE:{duplicate_kind}] Original document: "
                         f"{attempt.get('original_doc_id', doc_id)}"
                     ),
                     "content_length": attempt.get("content_length", 0),
@@ -2698,12 +2789,13 @@ class LightRAG:
                     "file_path": file_path,
                     "track_id": track_id,  # Use current track_id for tracking
                     "error_msg": (
-                        "File name already exists. "
+                        f"{error_prefix} "
                         f"Original doc_id: {attempt.get('original_doc_id', doc_id)}, "
                         f"Status: {attempt.get('existing_status', 'unknown')}"
                     ),
                     "metadata": {
                         "is_duplicate": True,
+                        "duplicate_kind": duplicate_kind,
                         "original_doc_id": attempt.get("original_doc_id", doc_id),
                         "original_track_id": attempt.get("existing_track_id", ""),
                     },
@@ -2737,6 +2829,10 @@ class LightRAG:
             for doc_id in new_docs.keys()
         }
         for doc_id in new_docs.keys():
+            if contents[doc_id].get("content_hash"):
+                full_docs_data[doc_id]["content_hash"] = contents[doc_id][
+                    "content_hash"
+                ]
             if contents[doc_id].get("source_path"):
                 full_docs_data[doc_id]["source_path"] = contents[doc_id]["source_path"]
             if contents[doc_id].get("lightrag_document_path"):

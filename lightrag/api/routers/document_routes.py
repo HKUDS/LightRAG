@@ -950,46 +950,18 @@ def get_doc_track_id(doc_status: Any) -> str:
     return str(track_id or "")
 
 
-def build_file_path_lookup_candidates(file_path: Path | str) -> list[str]:
-    """Build compatible file_path keys for legacy name/full-path records."""
-    path = Path(file_path)
-    candidates = [path.name, str(path)]
-    try:
-        candidates.append(str(path.resolve()))
-    except Exception:
-        pass
-
-    seen: set[str] = set()
-    unique: list[str] = []
-    for candidate in candidates:
-        if candidate and candidate not in seen:
-            seen.add(candidate)
-            unique.append(candidate)
-    return unique
-
-
 async def get_existing_doc_by_file_path_candidates(
     doc_status: Any, file_path: Path | str
 ) -> dict[str, Any] | None:
-    """Find an existing document using filename and full-path variants."""
-    target_name = normalize_file_path(str(file_path))
-    for candidate in build_file_path_lookup_candidates(file_path):
-        existing_doc_data = await doc_status.get_doc_by_file_path(candidate)
-        if existing_doc_data:
-            return existing_doc_data
-    try:
-        docs = await doc_status.get_docs_by_statuses(list(DocStatus))
-    except Exception:
+    """Find an existing document by file basename via the storage backend."""
+    basename = normalize_file_path(str(file_path))
+    if basename == UNKNOWN_FILE_SOURCE:
         return None
-    for existing_doc_data in docs.values():
-        existing_path = (
-            existing_doc_data.get("file_path")
-            if isinstance(existing_doc_data, dict)
-            else getattr(existing_doc_data, "file_path", None)
-        )
-        if normalize_file_path(existing_path) == target_name:
-            return existing_doc_data
-    return None
+    match = await doc_status.get_doc_by_file_basename(basename)
+    if not match:
+        return None
+    _, existing_doc_data = match
+    return existing_doc_data
 
 
 # Document processing helper functions (synchronous)

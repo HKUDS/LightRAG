@@ -103,36 +103,170 @@ def test_parse_engine_rule_fallback_and_default_legacy(tmp_path, monkeypatch):
 
 
 @pytest.mark.offline
-def test_enqueue_uses_filename_for_document_identity(tmp_path):
+def test_enqueue_dedupes_by_filename_and_content_hash(tmp_path):
     async def _run():
         rag = _new_rag(tmp_path)
         await rag.initialize_storages()
         try:
+            # Distinct filenames with distinct content both get enqueued.
             await rag.apipeline_enqueue_documents(
-                ["same content", "same content"],
+                ["alpha body", "beta body"],
                 file_paths=["first.txt", "second.txt"],
                 track_id="track-a",
             )
-
             first_id = compute_mdhash_id("first.txt", prefix="doc-")
             second_id = compute_mdhash_id("second.txt", prefix="doc-")
-            assert await rag.full_docs.get_by_id(first_id) is not None
-            assert await rag.full_docs.get_by_id(second_id) is not None
+            first_doc = await rag.full_docs.get_by_id(first_id)
+            second_doc = await rag.full_docs.get_by_id(second_id)
+            assert first_doc is not None
+            assert second_doc is not None
+            assert first_doc.get("content_hash")
+            assert second_doc.get("content_hash")
+            assert first_doc["content_hash"] != second_doc["content_hash"]
 
+            # Same filename basename with new content is rejected (filename dedup).
             await rag.apipeline_enqueue_documents(
                 "changed content",
                 file_paths="/tmp/first.txt",
                 track_id="track-b",
             )
-
             first_doc = await rag.full_docs.get_by_id(first_id)
-            assert first_doc["content"] == "same content"
-            failed_docs = await rag.doc_status.get_docs_by_status(DocStatus.FAILED)
-            assert any(
-                getattr(doc, "metadata", {}).get("is_duplicate")
-                and getattr(doc, "file_path", "") == "first.txt"
-                for doc in failed_docs.values()
+            assert first_doc["content"] == "alpha body"
+
+            # New filename but same content as an existing doc is rejected
+            # (content_hash dedup).
+            await rag.apipeline_enqueue_documents(
+                "alpha body",
+                file_paths="third.txt",
+                track_id="track-c",
             )
+            third_id = compute_mdhash_id("third.txt", prefix="doc-")
+            assert await rag.full_docs.get_by_id(third_id) is None
+
+            failed_docs = await rag.doc_status.get_docs_by_status(DocStatus.FAILED)
+            kinds = {
+                getattr(doc, "metadata", {}).get("duplicate_kind")
+                for doc in failed_docs.values()
+                if getattr(doc, "metadata", {}).get("is_duplicate")
+            }
+            assert {"filename", "content_hash"}.issubset(kinds)
+        finally:
+            await rag.finalize_storages()
+
+    asyncio.run(_run())
+
+
+@pytest.mark.offline
+def test_basename_lookup_finds_legacy_full_path_records(tmp_path):
+    async def _run():
+        rag = _new_rag(tmp_path)
+        await rag.initialize_storages()
+        try:
+            # Simulate a legacy doc_status row whose file_path still holds a
+            # full path; the new basename lookup should still resolve it.
+            legacy_id = "doc-legacy-1"
+            await rag.doc_status.upsert(
+                {
+                    legacy_id: {
+                        "status": DocStatus.PROCESSED,
+                        "content_summary": "legacy",
+                        "content_length": 7,
+                        "file_path": "/inputs/legacy.txt",
+                        "track_id": "legacy-track",
+                        "created_at": "2025-01-01T00:00:00+00:00",
+                        "updated_at": "2025-01-01T00:00:00+00:00",
+                        "chunks_list": [],
+                    }
+                }
+            )
+
+            match = await rag.doc_status.get_doc_by_file_basename("legacy.txt")
+            assert match is not None
+            doc_id, doc = match
+            assert doc_id == legacy_id
+            assert doc["file_path"] == "/inputs/legacy.txt"
+
+            # Re-enqueueing the same basename hits the filename guard.
+            await rag.apipeline_enqueue_documents(
+                "fresh body",
+                file_paths="legacy.txt",
+                track_id="track-x",
+            )
+            new_id = compute_mdhash_id("legacy.txt", prefix="doc-")
+            assert await rag.full_docs.get_by_id(new_id) is None
+        finally:
+            await rag.finalize_storages()
+
+    asyncio.run(_run())
+
+
+@pytest.mark.offline
+def test_content_hash_lookup_via_storage(tmp_path):
+    async def _run():
+        rag = _new_rag(tmp_path)
+        await rag.initialize_storages()
+        try:
+            await rag.apipeline_enqueue_documents(
+                "shared body",
+                file_paths="alpha.txt",
+                track_id="track-a",
+            )
+            alpha_id = compute_mdhash_id("alpha.txt", prefix="doc-")
+            alpha_full = await rag.full_docs.get_by_id(alpha_id)
+            assert alpha_full is not None
+            content_hash = alpha_full["content_hash"]
+
+            match = await rag.doc_status.get_doc_by_content_hash(content_hash)
+            assert match is not None
+            doc_id, _ = match
+            assert doc_id == alpha_id
+        finally:
+            await rag.finalize_storages()
+
+    asyncio.run(_run())
+
+
+@pytest.mark.offline
+def test_lightrag_format_uses_blocks_file_hash(tmp_path):
+    async def _run():
+        rag = _new_rag(tmp_path)
+        await rag.initialize_storages()
+        try:
+            blocks_path = tmp_path / "doc.blocks.jsonl"
+            blocks_path.write_text(
+                json.dumps({"type": "header"})
+                + "\n"
+                + json.dumps({"type": "content", "text": "hello"})
+                + "\n",
+                encoding="utf-8",
+            )
+
+            # Enqueue twice with different filenames pointing at the same
+            # blocks file: the second one must be rejected as content_hash dup.
+            await rag.apipeline_enqueue_documents(
+                FULL_DOCS_CONTENT_STORED_IN_LIGHTRAG_DOCUMENT,
+                file_paths="first.lightrag",
+                docs_format="lightrag",
+                lightrag_document_paths=str(blocks_path),
+                track_id="track-a",
+            )
+            await rag.apipeline_enqueue_documents(
+                FULL_DOCS_CONTENT_STORED_IN_LIGHTRAG_DOCUMENT,
+                file_paths="second.lightrag",
+                docs_format="lightrag",
+                lightrag_document_paths=str(blocks_path),
+                track_id="track-b",
+            )
+            second_id = compute_mdhash_id("second.lightrag", prefix="doc-")
+            assert await rag.full_docs.get_by_id(second_id) is None
+
+            failed = await rag.doc_status.get_docs_by_status(DocStatus.FAILED)
+            kinds = {
+                getattr(doc, "metadata", {}).get("duplicate_kind")
+                for doc in failed.values()
+                if getattr(doc, "metadata", {}).get("is_duplicate")
+            }
+            assert "content_hash" in kinds
         finally:
             await rag.finalize_storages()
 

@@ -86,6 +86,14 @@ class _ScanDocStatus:
     async def get_doc_by_file_path(self, file_path):
         return self.docs_by_path.get(file_path)
 
+    async def get_doc_by_file_basename(self, basename):
+        from pathlib import Path as _Path
+
+        for stored_path, doc in self.docs_by_path.items():
+            if _Path(stored_path).name == basename:
+                return stored_path, doc
+        return None
+
 
 class _ScanRag:
     def __init__(self, docs_by_path):

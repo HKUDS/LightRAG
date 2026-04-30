@@ -52,15 +52,30 @@ report.[legacy].pdf
 
 文件名 hint 的优先级高于 `LIGHTRAG_PARSER`。如果指定的引擎不支持该后缀，系统会回退到默认规则继续选择可用引擎。如果所有规则都不可用，文件内容提取方式会回退到 `legacy`，如果legacy也不支持对应的文件后缀，会向系统加一个错误条目，上传文件保留在`INPUT`目录。
 
-## 文件重复判定规则
+## 文档重复判定规则
 
-文件上传、目录扫描、文件解析入队和文本接口都会按照文件名判断文档是否已经存在，不再依赖内容 hash 判断重复。
+文件上传、目录扫描、文件解析入队和文本接口在入队前会按照「文件名 + 内容 hash」两道关卡来判断是否重复，命中任一即视为重复并写入一条 `FAILED` 记录，不会覆盖已有的 `full_docs`。
+
+### 1) 文件名（basename）查重
 
 - 判断粒度为 basename，不包含目录路径和 workspace 路径。例如 `/data/a.pdf`、`inputs/a.pdf` 和 `a.pdf` 都视为同一个文件名 `a.pdf`。
-- 只要 `doc_status` 中已经存在同名文件记录，无论该记录当前处于 `PENDING`、`PARSING`、`ANALYZING`、`PROCESSING`、`FAILED` 还是 `PROCESSED`，同名文件都会被视为重复，不会覆盖已有 `full_docs`。
+- 只要 `doc_status` 中已经存在同名文件记录，无论该记录当前处于 `PENDING`、`PARSING`、`ANALYZING`、`PROCESSING`、`FAILED` 还是 `PROCESSED`，同名文件都会被视为重复。
 - 同名文件即使内容已经变化，也需要先删除旧文档记录后再重新上传或入队。
-- 不同文件名即使内容完全相同，也允许作为不同文档入队。
-- 文本接口必须提供有效的 `file_source`，并按 `file_source` 的 basename 判断重复；缺少有效 `file_source` 时不再使用内容 hash 兜底。
+- 文本接口必须提供有效的 `file_source`，并按 `file_source` 的 basename 判断重复；缺少有效 `file_source` 时直接返回 400。
+
+存储后端通过 `get_doc_by_file_basename` 提供 basename 直查能力。`JsonDocStatusStorage` 已经实现了内存级遍历；其它后端目前回落到默认实现（扫描全部状态后比对 basename），将在后续 PR 中补齐原生索引。
+
+### 2) 内容 hash 查重
+
+- 文件名不同但内容完全相同的文档同样视为重复，不会再次入队。
+- `full_docs` 与 `doc_status` 在入队时都会写入 `content_hash` 字段：
+  - `format=raw`：取经过 `sanitize_text_for_encoding` 之后的文本 MD5。
+  - `format=lightrag`：取 `lightrag_document_path` 解析出的 `*.blocks.jsonl` 文件 MD5（与 `_load_lightrag_document_content` 的解析规则一致）。
+  - `format=pending_parse`：暂不写入 hash，等到真正完成解析后由后续步骤补上（避免按空内容误判）。
+- 重复记录会在 `metadata.duplicate_kind` 中标记为 `filename` 或 `content_hash`，便于排查。
+- 存储后端通过 `get_doc_by_content_hash` 进行 hash 直查；命名约定与 `get_doc_by_file_basename` 一致。
+
+> 入队批次内（同一次 `apipeline_enqueue_documents` 调用）也会做 basename 与 content_hash 去重，命中时把后续条目直接写为 `FAILED` 并标记 `existing_status=batch_duplicate`。
 
 ## 推荐配置
 

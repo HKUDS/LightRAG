@@ -4,7 +4,8 @@ from abc import ABC, abstractmethod
 from enum import Enum
 import os
 from dotenv import load_dotenv
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
+from pathlib import Path
 from typing import (
     Any,
     Literal,
@@ -799,6 +800,12 @@ class DocProcessingStatus:
     metadata: dict[str, Any] = field(default_factory=dict)
     """Additional metadata"""
     multimodal_processed: bool | None = field(default=None, repr=False)
+    content_hash: str | None = None
+    """MD5 hash of the underlying document content (raw text or source file).
+
+    Used together with file_path basename for duplicate detection. Empty for
+    pending_parse records whose content has not been extracted yet.
+    """
     """Internal field: indicates if multimodal processing is complete. Not shown in repr() but accessible for debugging."""
 
     def __post_init__(self):
@@ -904,6 +911,74 @@ class DocStatusStorage(BaseKVStorage, ABC):
             dict[str, Any] | None: Document data if found, None otherwise
             Returns the same format as get_by_ids method
         """
+
+    async def get_doc_by_file_basename(
+        self, basename: str
+    ) -> tuple[str, dict[str, Any]] | None:
+        """Get document by file basename (filename without directory).
+
+        Used for filename-based deduplication. Backends that can index by
+        basename should override this for efficiency. The default implementation
+        scans all documents via get_docs_by_statuses().
+
+        Args:
+            basename: The filename basename to search for (e.g. "report.pdf").
+
+        Returns:
+            (doc_id, doc_data) when a matching record exists, otherwise None.
+        """
+        if not basename:
+            return None
+        try:
+            docs = await self.get_docs_by_statuses(list(DocStatus))
+        except NotImplementedError:
+            raise
+        except Exception:
+            return None
+        for doc_id, doc in docs.items():
+            existing_path = (
+                doc.get("file_path")
+                if isinstance(doc, dict)
+                else getattr(doc, "file_path", None)
+            )
+            if not existing_path:
+                continue
+            if Path(str(existing_path)).name == basename:
+                return doc_id, (doc if isinstance(doc, dict) else asdict(doc))
+        return None
+
+    async def get_doc_by_content_hash(
+        self, content_hash: str
+    ) -> tuple[str, dict[str, Any]] | None:
+        """Get document by content_hash field.
+
+        Used for content-hash deduplication of full documents. Backends that
+        can index by content_hash should override this for efficiency. The
+        default implementation scans all documents via get_docs_by_statuses().
+
+        Args:
+            content_hash: The content hash value to search for.
+
+        Returns:
+            (doc_id, doc_data) when a matching record exists, otherwise None.
+        """
+        if not content_hash:
+            return None
+        try:
+            docs = await self.get_docs_by_statuses(list(DocStatus))
+        except NotImplementedError:
+            raise
+        except Exception:
+            return None
+        for doc_id, doc in docs.items():
+            existing_hash = (
+                doc.get("content_hash")
+                if isinstance(doc, dict)
+                else getattr(doc, "content_hash", None)
+            )
+            if existing_hash and existing_hash == content_hash:
+                return doc_id, (doc if isinstance(doc, dict) else asdict(doc))
+        return None
 
 
 class StoragesStatus(str, Enum):
