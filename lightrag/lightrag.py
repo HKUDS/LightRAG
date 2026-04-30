@@ -2661,9 +2661,7 @@ class LightRAG:
                     "file_path": new_docs.get(doc_id, {}).get(
                         "file_path", "unknown_source"
                     ),
-                    "content_length": new_docs.get(doc_id, {}).get(
-                        "content_length", 0
-                    ),
+                    "content_length": new_docs.get(doc_id, {}).get("content_length", 0),
                     "existing_status": (
                         existing_doc.get("status", "unknown")
                         if existing_doc
@@ -2740,9 +2738,7 @@ class LightRAG:
         }
         for doc_id in new_docs.keys():
             if contents[doc_id].get("source_path"):
-                full_docs_data[doc_id]["source_path"] = contents[doc_id][
-                    "source_path"
-                ]
+                full_docs_data[doc_id]["source_path"] = contents[doc_id]["source_path"]
             if contents[doc_id].get("lightrag_document_path"):
                 full_docs_data[doc_id]["lightrag_document_path"] = contents[doc_id][
                     "lightrag_document_path"
