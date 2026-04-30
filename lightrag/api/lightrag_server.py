@@ -10,7 +10,6 @@ from fastapi.openapi.docs import (
     get_swagger_ui_oauth2_redirect_html,
 )
 import os
-import re
 import logging
 import logging.config
 import sys
@@ -55,6 +54,7 @@ from lightrag.api.routers.query_routes import create_query_routes
 from lightrag.api.routers.graph_routes import create_graph_routes
 from lightrag.api.routers.ollama_api import OllamaAPI
 from lightrag.api.workspace_manager import WorkspaceManager, WorkspaceCapacityError
+from lightrag.api.utils import sanitize_workspace_name, WorkspaceNameError
 
 from lightrag.utils import logger, set_verbose_debug
 from lightrag.kg.shared_storage import (
@@ -474,21 +474,19 @@ def create_app(args):
             request: FastAPI Request object
 
         Returns:
-            Workspace identifier (may be empty string for global namespace)
+            Workspace identifier (may be empty string for global namespace),
+            or JSONResponse with HTTP 400 if the workspace name is invalid.
         """
         # Check custom header first
-        workspace = request.headers.get("LIGHTRAG-WORKSPACE", "").strip()
+        raw_workspace = request.headers.get("LIGHTRAG-WORKSPACE", "").strip()
 
-        if not workspace:
-            workspace = None
+        if raw_workspace:
+            try:
+                workspace = sanitize_workspace_name(raw_workspace)
+            except WorkspaceNameError as e:
+                return JSONResponse(status_code=400, content={"error": str(e)})
         else:
-            sanitized = re.sub(r"[^a-zA-Z0-9_]", "_", workspace)
-            if sanitized != workspace:
-                logger.warning(
-                    f"Workspace header '{workspace}' contains invalid characters. "
-                    f"Sanitized to '{sanitized}'."
-                )
-                workspace = sanitized
+            workspace = None
 
         return workspace
 
@@ -1179,9 +1177,11 @@ def create_app(args):
     # Initialize RAG with unified configuration via WorkspaceManager
     try:
         workspace_mgr = WorkspaceManager(factory=create_lightrag, max_instances=10)
-        # Pre-warm default workspace instance (synchronous factory call)
+        # Pre-warm default workspace.
+        # Intentionally keeps ref_count=1 permanently — the default workspace is never evicted.
+        # This ensures backward compatibility: requests without the LIGHTRAG-WORKSPACE header
+        # always find a ready instance.
         default_rag = workspace_mgr.get_or_create(args.workspace)
-        # Do NOT release — keep a reference so default workspace stays alive
     except Exception as e:
         logger.error(f"Failed to initialize WorkspaceManager: {e}")
         raise
@@ -1380,7 +1380,7 @@ def create_app(args):
                         "vector_storage": args.vector_storage,
                         "enable_llm_cache_for_extract": args.enable_llm_cache_for_extract,
                         "enable_llm_cache": args.enable_llm_cache,
-                        "workspace": default_workspace,
+                        "workspace": workspace,
                         "max_graph_nodes": args.max_graph_nodes,
                         # Rerank configuration
                         "enable_rerank": rerank_model_func is not None,

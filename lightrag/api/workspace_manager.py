@@ -7,6 +7,8 @@ import logging
 from collections import OrderedDict
 from typing import Any, Awaitable, Callable
 
+from lightrag.api.utils import sanitize_workspace_name, WorkspaceNameError
+
 logger = logging.getLogger(__name__)
 
 
@@ -80,7 +82,10 @@ class WorkspaceManager:
 
         Raises:
             WorkspaceCapacityError: If cache is full and all slots have in-flight requests.
+            WorkspaceNameError: If the workspace name is invalid.
         """
+        # Defensive: sanitize workspace name (belt and suspenders)
+        workspace = sanitize_workspace_name(workspace)
         workspace = self._normalize_workspace(workspace)
 
         # Fast path: workspace already cached.
@@ -156,30 +161,32 @@ class WorkspaceManager:
 
         Must be called while holding the per-workspace lock, but will also
         acquire the global eviction lock for thread-safe cache modification.
+        Finalization happens OUTSIDE the lock to avoid blocking other operations.
         """
+        to_finalize = None
         async with self._lock:
             # Find first workspace with ref_count == 0 (oldest such workspace)
-            for ws_name in self._cache:
+            for ws_name in list(self._cache.keys()):
                 if self._ref_counts.get(ws_name, 0) == 0:
-                    # Found evictable workspace
                     instance = self._cache.pop(ws_name)
-                    await self._finalize_instance(instance)
                     del self._ref_counts[ws_name]
-                    # Clean up per-workspace lock if it exists
-                    if ws_name in self._locks:
-                        del self._locks[ws_name]
+                    self._locks.pop(ws_name, None)
                     self._evictions += 1
-                    logger.info(
-                        "Evicted workspace '%s' (LRU)",
-                        ws_name,
-                    )
-                    return
+                    to_finalize = (ws_name, instance)
+                    logger.info(f"Evicted workspace '{ws_name}' (LRU)")
+                    break
 
-            # No evictable workspace found - should not happen if capacity
-            # check was done correctly before calling this method
-            raise WorkspaceCapacityError(
-                "All workspace slots have in-flight requests"
-            )
+            if to_finalize is None:
+                # No evictable workspace found - should not happen if capacity
+                # check was done correctly before calling this method
+                raise WorkspaceCapacityError(
+                    f"All {self._max_instances} workspace slots have in-flight requests. "
+                    "Cannot create a new workspace."
+                )
+
+        # Finalize OUTSIDE the lock — avoid blocking other operations during I/O
+        if to_finalize:
+            await self._finalize_instance(to_finalize[1])
 
     async def _finalize_instance(self, instance: Any) -> None:
         """Finalize a workspace instance (cleanup resources).
@@ -199,20 +206,22 @@ class WorkspaceManager:
 
     async def shutdown(self) -> None:
         """Shutdown the workspace manager, finalizing all cached instances."""
+        instances_to_finalize = []
         async with self._lock:
-            for workspace, instance in list(self._cache.items()):
-                await self._finalize_instance(instance)
-
-            # Clear all state
+            for ws_name, instance in list(self._cache.items()):
+                instances_to_finalize.append((ws_name, instance))
             self._cache.clear()
             self._ref_counts.clear()
             self._locks.clear()
 
+        # Finalize all instances OUTSIDE the lock
+        for ws_name, instance in instances_to_finalize:
+            await self._finalize_instance(instance)
+
+        total_evicted = self._evictions
         logger.info(
-            "WorkspaceManager shutdown: evicted=%d, hits=%d, misses=%d",
-            self._evictions,
-            self._hits,
-            self._misses,
+            f"WorkspaceManager shutdown: evicted={total_evicted}, "
+            f"hits={self._hits}, misses={self._misses}"
         )
 
     def get_stats(self) -> dict:
