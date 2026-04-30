@@ -60,6 +60,9 @@ def pytest_collection_modifyitems(config, items):
 
     Integration tests are skipped unless --run-integration flag is provided.
     This allows running offline tests quickly without needing external services.
+
+    Note: Tests marked with @pytest.mark.offline are NOT skipped, even if they
+    are in an 'integration' directory, because they use mocked external services.
     """
     if config.getoption("--run-integration"):
         # If --run-integration is specified, run all tests
@@ -70,7 +73,9 @@ def pytest_collection_modifyitems(config, items):
     )
 
     for item in items:
-        if "integration" in item.keywords:
+        # Skip tests with 'integration' marker BUT NOT 'offline' marker
+        # Offline tests use mocked external services and should run without --run-integration
+        if "integration" in item.keywords and "offline" not in item.keywords:
             item.add_marker(skip_integration)
 
 
