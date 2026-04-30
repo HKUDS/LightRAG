@@ -315,19 +315,21 @@ class OllamaAPI:
             and will be handled by underlying LLM model.
             Supports both application/json and application/octet-stream Content-Types.
             """
+            # Parse the request body manually
+            request = await parse_request_body(raw_request, OllamaGenerateRequest)
+
+            query = request.prompt
+            start_time = time.time_ns()
+            prompt_tokens = estimate_tokens(query)
+
+            workspace = self._get_workspace(raw_request)
+            rag = await self.workspace_mgr.get_or_create(workspace)
+
             try:
-                # Parse the request body manually
-                request = await parse_request_body(raw_request, OllamaGenerateRequest)
-
-                query = request.prompt
-                start_time = time.time_ns()
-                prompt_tokens = estimate_tokens(query)
-
-                workspace = self._get_workspace(raw_request)
-                rag = await self.workspace_mgr.get_or_create(workspace)
                 infos = rag.ollama_server_infos
 
                 if request.stream:
+                    # Generator's finally handles release
                     return StreamingResponse(
                         self._stream_generate(workspace, rag, infos, request, query, start_time, prompt_tokens),
                         media_type="application/x-ndjson",
@@ -374,9 +376,10 @@ class OllamaAPI:
                         }
                     finally:
                         self.workspace_mgr.release(workspace)
-            except Exception as e:
-                logger.error(f"Ollama generate error: {str(e)}", exc_info=True)
-                raise HTTPException(status_code=500, detail=str(e))
+            except Exception:
+                # If we get here, streaming generator never started — we must release
+                self.workspace_mgr.release(workspace)
+                raise
 
         @self.router.post(
             "/chat", dependencies=[Depends(combined_auth)], include_in_schema=True
@@ -387,52 +390,53 @@ class OllamaAPI:
             Detects and forwards OpenWebUI session-related requests (for meta data generation task) directly to LLM.
             Supports both application/json and application/octet-stream Content-Types.
             """
-            try:
-                # Parse the request body manually
-                request = await parse_request_body(raw_request, OllamaChatRequest)
+            # Parse the request body manually
+            request = await parse_request_body(raw_request, OllamaChatRequest)
 
-                # Get all messages
-                messages = request.messages
-                if not messages:
-                    raise HTTPException(status_code=400, detail="No messages provided")
+            # Get all messages
+            messages = request.messages
+            if not messages:
+                raise HTTPException(status_code=400, detail="No messages provided")
 
-                # Validate that the last message is from a user
-                if messages[-1].role != "user":
-                    raise HTTPException(
-                        status_code=400, detail="Last message must be from user role"
-                    )
-
-                # Get the last message as query and previous messages as history
-                query = messages[-1].content
-                # Convert OllamaMessage objects to dictionaries
-                conversation_history = [
-                    {"role": msg.role, "content": msg.content} for msg in messages[:-1]
-                ]
-
-                # Check for query prefix
-                cleaned_query, mode, only_need_context, user_prompt = parse_query_mode(
-                    query
+            # Validate that the last message is from a user
+            if messages[-1].role != "user":
+                raise HTTPException(
+                    status_code=400, detail="Last message must be from user role"
                 )
 
-                start_time = time.time_ns()
-                prompt_tokens = estimate_tokens(cleaned_query)
+            # Get the last message as query and previous messages as history
+            query = messages[-1].content
+            # Convert OllamaMessage objects to dictionaries
+            conversation_history = [
+                {"role": msg.role, "content": msg.content} for msg in messages[:-1]
+            ]
 
-                param_dict = {
-                    "mode": mode.value,
-                    "stream": request.stream,
-                    "only_need_context": only_need_context,
-                    "conversation_history": conversation_history,
-                    "top_k": self.top_k,
-                }
+            # Check for query prefix
+            cleaned_query, mode, only_need_context, user_prompt = parse_query_mode(
+                query
+            )
 
-                # Add user_prompt to param_dict
-                if user_prompt is not None:
-                    param_dict["user_prompt"] = user_prompt
+            start_time = time.time_ns()
+            prompt_tokens = estimate_tokens(cleaned_query)
 
-                query_param = QueryParam(**param_dict)
+            param_dict = {
+                "mode": mode.value,
+                "stream": request.stream,
+                "only_need_context": only_need_context,
+                "conversation_history": conversation_history,
+                "top_k": self.top_k,
+            }
 
-                workspace = self._get_workspace(raw_request)
-                rag = await self.workspace_mgr.get_or_create(workspace)
+            # Add user_prompt to param_dict
+            if user_prompt is not None:
+                param_dict["user_prompt"] = user_prompt
+
+            query_param = QueryParam(**param_dict)
+
+            workspace = self._get_workspace(raw_request)
+            rag = await self.workspace_mgr.get_or_create(workspace)
+
+            try:
                 infos = rag.ollama_server_infos
 
                 if request.stream:
@@ -450,6 +454,7 @@ class OllamaAPI:
                             cleaned_query, param=query_param
                         )
 
+                    # Generator's finally handles release
                     return StreamingResponse(
                         self._stream_chat(workspace, rag, infos, response, request, mode, cleaned_query, conversation_history, start_time, prompt_tokens, query_param),
                         media_type="application/x-ndjson",
@@ -513,9 +518,10 @@ class OllamaAPI:
                         }
                     finally:
                         self.workspace_mgr.release(workspace)
-            except Exception as e:
-                logger.error(f"Ollama chat error: {str(e)}", exc_info=True)
-                raise HTTPException(status_code=500, detail=str(e))
+            except Exception:
+                # If we get here, streaming generator never started — we must release
+                self.workspace_mgr.release(workspace)
+                raise
 
     async def _stream_generate(
         self,

@@ -1190,13 +1190,12 @@ def create_app(args):
     app.include_router(
         create_document_routes(
             workspace_mgr,
-            default_rag,
             doc_manager,
             api_key,
         )
     )
-    app.include_router(create_query_routes(workspace_mgr, default_rag, api_key, args.top_k))
-    app.include_router(create_graph_routes(workspace_mgr, default_rag, api_key))
+    app.include_router(create_query_routes(workspace_mgr, api_key, args.top_k))
+    app.include_router(create_graph_routes(workspace_mgr, api_key))
 
     # Add Ollama API routes
     ollama_api = OllamaAPI(workspace_mgr, top_k=args.top_k, api_key=api_key)

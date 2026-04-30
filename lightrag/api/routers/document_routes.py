@@ -2211,117 +2211,115 @@ def create_document_routes(
             # Get workspace first for duplicate check and file operations
             workspace = _get_workspace(http_request)
             rag = await workspace_mgr.get_or_create(workspace)
-            try:
-                # Create workspace-specific doc_manager for file operations
-                workspace_doc_manager = DocumentManager(
-                    input_dir=doc_manager.base_input_dir,
-                    workspace=workspace,
-                    supported_extensions=doc_manager.supported_extensions,
+
+            # Create workspace-specific doc_manager for file operations
+            workspace_doc_manager = DocumentManager(
+                input_dir=doc_manager.base_input_dir,
+                workspace=workspace,
+                supported_extensions=doc_manager.supported_extensions,
+            )
+
+            # Sanitize filename to prevent Path Traversal attacks
+            safe_filename = sanitize_filename(file.filename, workspace_doc_manager.input_dir)
+
+            if not workspace_doc_manager.is_supported_file(safe_filename):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Unsupported file type. Supported types: {workspace_doc_manager.supported_extensions}",
                 )
 
-                # Sanitize filename to prevent Path Traversal attacks
-                safe_filename = sanitize_filename(file.filename, workspace_doc_manager.input_dir)
+            # Check file size limit (if configured)
+            if (
+                global_args.max_upload_size is not None
+                and global_args.max_upload_size > 0
+            ):
+                # Safe access to file size (not available in older Starlette versions)
+                file_size = getattr(file, "size", None)
 
-                if not workspace_doc_manager.is_supported_file(safe_filename):
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"Unsupported file type. Supported types: {workspace_doc_manager.supported_extensions}",
-                    )
-
-                # Check file size limit (if configured)
-                if (
-                    global_args.max_upload_size is not None
-                    and global_args.max_upload_size > 0
-                ):
-                    # Safe access to file size (not available in older Starlette versions)
-                    file_size = getattr(file, "size", None)
-
-                    # Pre-flight size check (only if size is available)
-                    if file_size is not None:
-                        if file_size > global_args.max_upload_size:
-                            raise HTTPException(
-                                status_code=413,
-                                detail=f"File too large. Maximum size: {global_args.max_upload_size / 1024 / 1024:.1f}MB, uploaded: {file_size / 1024 / 1024:.1f}MB",
-                            )
-                    else:
-                        # If size not available, we'll check during streaming
-                        logger.debug(
-                            f"File size not available in UploadFile for {safe_filename}, will check during streaming"
+                # Pre-flight size check (only if size is available)
+                if file_size is not None:
+                    if file_size > global_args.max_upload_size:
+                        raise HTTPException(
+                            status_code=413,
+                            detail=f"File too large. Maximum size: {global_args.max_upload_size / 1024 / 1024:.1f}MB, uploaded: {file_size / 1024 / 1024:.1f}MB",
                         )
-
-                # Check if filename already exists in doc_status storage
-                existing_doc_data = await rag.doc_status.get_doc_by_file_path(safe_filename)
-                if existing_doc_data:
-                    # Get document status and track_id from existing document
-                    status = existing_doc_data.get("status", "unknown")
-                    # Use `or ""` to handle both missing key and None value (e.g., legacy rows without track_id)
-                    existing_track_id = existing_doc_data.get("track_id") or ""
-                    return InsertResponse(
-                        status="duplicated",
-                        message=f"File '{safe_filename}' already exists in document storage (Status: {status}).",
-                        track_id=existing_track_id,
+                else:
+                    # If size not available, we'll check during streaming
+                    logger.debug(
+                        f"File size not available in UploadFile for {safe_filename}, will check during streaming"
                     )
 
-                file_path = workspace_doc_manager.input_dir / safe_filename
-                # Check if file already exists in file system
-                if file_path.exists():
-                    return InsertResponse(
-                        status="duplicated",
-                        message=f"File '{safe_filename}' already exists in the input directory.",
-                        track_id="",
-                    )
+            # Check if filename already exists in doc_status storage
+            existing_doc_data = await rag.doc_status.get_doc_by_file_path(safe_filename)
+            if existing_doc_data:
+                # Get document status and track_id from existing document
+                status = existing_doc_data.get("status", "unknown")
+                # Use `or ""` to handle both missing key and None value (e.g., legacy rows without track_id)
+                existing_track_id = existing_doc_data.get("track_id") or ""
+                return InsertResponse(
+                    status="duplicated",
+                    message=f"File '{safe_filename}' already exists in document storage (Status: {status}).",
+                    track_id=existing_track_id,
+                )
 
-                # Async streaming write with size check
-                bytes_written = 0
-                chunk_size = 1024 * 1024  # 1MB chunks
-                needs_cleanup = False
+            file_path = workspace_doc_manager.input_dir / safe_filename
+            # Check if file already exists in file system
+            if file_path.exists():
+                return InsertResponse(
+                    status="duplicated",
+                    message=f"File '{safe_filename}' already exists in the input directory.",
+                    track_id="",
+                )
 
-                async with aiofiles.open(file_path, "wb") as out_file:
-                    while True:
-                        # Read chunk from upload stream
-                        chunk = await file.read(chunk_size)
-                        if not chunk:
+            # Async streaming write with size check
+            bytes_written = 0
+            chunk_size = 1024 * 1024  # 1MB chunks
+            needs_cleanup = False
+
+            async with aiofiles.open(file_path, "wb") as out_file:
+                while True:
+                    # Read chunk from upload stream
+                    chunk = await file.read(chunk_size)
+                    if not chunk:
+                        break
+
+                    # Check size limit during streaming (if not checked before)
+                    if (
+                        global_args.max_upload_size is not None
+                        and global_args.max_upload_size > 0
+                    ):
+                        bytes_written += len(chunk)
+                        if bytes_written > global_args.max_upload_size:
+                            needs_cleanup = True
                             break
 
-                        # Check size limit during streaming (if not checked before)
-                        if (
-                            global_args.max_upload_size is not None
-                            and global_args.max_upload_size > 0
-                        ):
-                            bytes_written += len(chunk)
-                            if bytes_written > global_args.max_upload_size:
-                                needs_cleanup = True
-                                break
+                    # Write chunk to file
+                    await out_file.write(chunk)
 
-                        # Write chunk to file
-                        await out_file.write(chunk)
-
-                # Cleanup after file is closed
-                if needs_cleanup:
-                    try:
-                        file_path.unlink()
-                    except Exception as cleanup_error:
-                        logger.error(
-                            f"Error cleaning up oversized file {safe_filename}: {cleanup_error}"
-                        )
-
-                    raise HTTPException(
-                        status_code=413,
-                        detail=f"File too large. Maximum size: {global_args.max_upload_size / 1024 / 1024:.1f}MB, uploaded: {bytes_written / 1024 / 1024:.1f}MB",
+            # Cleanup after file is closed
+            if needs_cleanup:
+                try:
+                    file_path.unlink()
+                except Exception as cleanup_error:
+                    logger.error(
+                        f"Error cleaning up oversized file {safe_filename}: {cleanup_error}"
                     )
 
-                track_id = generate_track_id("upload")
-
-                # Add to background tasks with workspace isolation
-                background_tasks.add_task(_run_upload_with_workspace, workspace_mgr, workspace, file_path, track_id)
-
-                return InsertResponse(
-                    status="success",
-                    message=f"File '{safe_filename}' uploaded successfully. Processing will continue in background.",
-                    track_id=track_id,
+                raise HTTPException(
+                    status_code=413,
+                    detail=f"File too large. Maximum size: {global_args.max_upload_size / 1024 / 1024:.1f}MB, uploaded: {bytes_written / 1024 / 1024:.1f}MB",
                 )
-            finally:
-                pass
+
+            track_id = generate_track_id("upload")
+
+            # Add to background tasks with workspace isolation
+            background_tasks.add_task(_run_upload_with_workspace, workspace_mgr, workspace, file_path, track_id)
+
+            return InsertResponse(
+                status="success",
+                message=f"File '{safe_filename}' uploaded successfully. Processing will continue in background.",
+                track_id=track_id,
+            )
 
         except HTTPException:
             # Re-raise HTTP exceptions (400, 413, etc.)
