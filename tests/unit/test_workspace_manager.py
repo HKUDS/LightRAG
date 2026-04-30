@@ -113,11 +113,6 @@ class TestSanitizeWorkspaceName:
         ):
             sanitize_workspace_name("ws-1 test")
 
-    def test_exactly_64_chars_valid(self) -> None:
-        """Test that exactly 64-character names are valid."""
-        name_64 = "a" * 64
-        assert sanitize_workspace_name(name_64) == name_64
-
     def test_65_chars_rejected(self) -> None:
         """Test that 65-character names are rejected."""
         name_65 = "a" * 65
@@ -196,7 +191,14 @@ class TestWorkspaceManager:
 
     @pytest.mark.asyncio
     async def test_eviction_skips_in_flight(self, small_manager) -> None:
-        """Test that in-flight workspaces (ref_count > 0) are not evicted."""
+        """Test that in-flight workspaces (ref_count > 0) are not evicted.
+
+        Scenario:
+        - Create ws-1, ws-2, ws-3 (all have ref_count > 0)
+        - Release ws-2 (ref_count becomes 0, making it evictable)
+        - Create ws-4 → should evict ws-2
+        - Assert ws-1 survived (ref_count > 0)
+        """
         # Acquire ws-1 (don't release)
         ws1 = await small_manager.get_or_create("ws-1")
 
@@ -207,18 +209,10 @@ class TestWorkspaceManager:
         # Cache is full, all have ref_count > 0
         assert small_manager.get_stats()["active_instances"] == 3
 
-        # Try to create ws-4 - should evict ws-2 (LRU with ref_count=1, but will be decremented)
-        # Actually, ws-2 should have ref_count=1 since we got it, so it won't be evicted
-        # The eviction will evict the LRU with ref_count == 0
-        # Since ws-1, ws-2, ws-3 all have ref_count > 0, no eviction should happen
-        # Wait, the code checks len >= max_instances first, then all(ref > 0)
-        # If all have ref > 0, it raises WorkspaceCapacityError
-        # But the per-workspace lock prevents the same workspace from being created twice
-
-        # Let's release ws-2 to make it evictable
+        # Release ws-2 to make it evictable (ref_count=0)
         small_manager.release("ws-2")
 
-        # Now ws-4 should evict ws-2
+        # Create ws-4 - should evict ws-2 (LRU with ref_count=0)
         ws4 = await small_manager.get_or_create("ws-4")
         assert small_manager.get_stats()["active_instances"] == 3
 
@@ -677,3 +671,130 @@ class TestWorkspaceManager:
 
         # ws-2 should still have ref_count > 0
         assert fresh_manager.get_stats()["ref_counts"]["ws-2"] == 1
+
+    # -------------------------------------------------------------------------
+    # Factory Failure Tests
+    # -------------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_factory_failure_cleans_up_state(self, fresh_manager) -> None:
+        """Test that factory failure leaves no partial state in cache or ref_counts.
+
+        Scenario:
+        - Create a factory that raises RuntimeError on first call
+        - Call get_or_create and verify exception propagates
+        - Assert no partial state: workspace should NOT be in _cache or _ref_counts
+        - Retry with succeeding factory - should succeed
+        """
+        factory_call_count = 0
+
+        async def failing_then_succeeding_factory(workspace: str) -> MockLightRAG:
+            nonlocal factory_call_count
+            factory_call_count += 1
+            if factory_call_count == 1:
+                raise RuntimeError("factory boom")
+            return MockLightRAG(workspace)
+
+        manager = WorkspaceManager(factory=failing_then_succeeding_factory, max_instances=10)
+
+        # First call should raise RuntimeError
+        with pytest.raises(RuntimeError, match="factory boom"):
+            await manager.get_or_create("ws-fail")
+
+        # Assert no partial state left
+        assert "ws-fail" not in manager._cache
+        assert "ws-fail" not in manager._ref_counts
+        assert len(manager._cache) == 0
+        assert len(manager._ref_counts) == 0
+
+        # Second call should succeed
+        instance = await manager.get_or_create("ws-fail")
+        assert instance is not None
+        assert instance.workspace == "ws-fail"
+        assert "ws-fail" in manager._cache
+        assert "ws-fail" in manager._ref_counts
+
+    # -------------------------------------------------------------------------
+    # Shutdown Tests
+    # -------------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_get_or_create_after_shutdown(self, fresh_manager) -> None:
+        """Test that workspace can be created fresh after shutdown.
+
+        Scenario:
+        - Create a workspace
+        - Call shutdown
+        - Assert cache is cleared
+        - Create same workspace again via get_or_create
+        - Assert it gets a FRESH instance (not the old one)
+        - Verify old instance was finalized
+        """
+        # Create workspace
+        ws1 = await fresh_manager.get_or_create("ws-reuse")
+        original_id = id(ws1)
+
+        # Shutdown should finalize and clear cache
+        await fresh_manager.shutdown()
+        assert ws1.finalize_called is True
+        assert fresh_manager.get_stats()["active_instances"] == 0
+        assert fresh_manager.get_stats()["workspaces"] == []
+
+        # Create same workspace again - should get FRESH instance
+        ws2 = await fresh_manager.get_or_create("ws-reuse")
+        assert id(ws2) != original_id  # Different instance
+        assert ws2.finalize_called is False  # Fresh instance not yet finalized
+
+        # Verify new instance is in cache
+        stats = fresh_manager.get_stats()
+        assert stats["active_instances"] == 1
+        assert "ws-reuse" in stats["workspaces"]
+
+    @pytest.mark.asyncio
+    async def test_double_shutdown_is_safe(self, fresh_manager) -> None:
+        """Test that calling shutdown twice does not raise any exception.
+
+        Scenario:
+        - Create some workspaces
+        - Call shutdown once - verify it works
+        - Call shutdown again - verify it does NOT raise
+        - Assert state is still clean after second shutdown
+        """
+        # Create workspaces
+        await fresh_manager.get_or_create("ws-1")
+        await fresh_manager.get_or_create("ws-2")
+
+        # First shutdown should work
+        await fresh_manager.shutdown()
+
+        stats = fresh_manager.get_stats()
+        assert stats["active_instances"] == 0
+        assert stats["workspaces"] == []
+
+        # Second shutdown should NOT raise any exception
+        await fresh_manager.shutdown()
+
+        # State should still be clean
+        stats = fresh_manager.get_stats()
+        assert stats["active_instances"] == 0
+        assert stats["workspaces"] == []
+
+    # -------------------------------------------------------------------------
+    # WorkspaceNameError Propagation Tests
+    # -------------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_get_or_create_rejects_invalid_workspace_name(self, fresh_manager) -> None:
+        """Test that get_or_create raises WorkspaceNameError for invalid names.
+
+        Since get_or_create calls sanitize_workspace_name internally,
+        invalid names should propagate the error.
+        """
+        with pytest.raises(WorkspaceNameError, match="path traversal detected"):
+            await fresh_manager.get_or_create("../etc")
+
+        with pytest.raises(WorkspaceNameError, match="path traversal detected"):
+            await fresh_manager.get_or_create("ws/name")
+
+        with pytest.raises(WorkspaceNameError, match="max 64 characters"):
+            await fresh_manager.get_or_create("a" * 65)

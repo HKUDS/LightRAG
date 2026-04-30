@@ -20,11 +20,15 @@ from typing import Any, AsyncGenerator
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from fastapi import BackgroundTasks, FastAPI, Request
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from httpx import ASGITransport, AsyncClient
 
-from lightrag.api.utils import sanitize_workspace_name, WorkspaceNameError
+from lightrag.api.utils import (
+    extract_workspace_from_header,
+    sanitize_workspace_name,
+    WorkspaceNameError,
+)
 from lightrag.api.workspace_manager import WorkspaceManager, WorkspaceCapacityError
 
 
@@ -64,6 +68,7 @@ async def mock_factory(workspace: str) -> MockLightRAG:
 def create_test_app(
     max_instances: int = 10,
     factory=None,
+    bg_done_event: asyncio.Event | None = None,
 ) -> tuple[FastAPI, WorkspaceManager]:
     """
     Create a minimal FastAPI app that mimics the real server's workspace routing.
@@ -77,18 +82,20 @@ def create_test_app(
 
     app = FastAPI()
 
+    def get_workspace(request: Request) -> str:
+        """Extract workspace from request header, returning JSONResponse on error."""
+        try:
+            return extract_workspace_from_header(request)
+        except HTTPException as e:
+            raise e  # Re-raise for FastAPI to handle
+
     @app.post("/test/regular")
     async def regular_route(request: Request):
         """Regular handler pattern with proper get/release."""
-        ws_header = request.headers.get("LIGHTRAG-WORKSPACE", "").strip()
-
-        if ws_header:
-            try:
-                ws = sanitize_workspace_name(ws_header)
-            except WorkspaceNameError as e:
-                return JSONResponse(status_code=400, content={"error": str(e)})
-        else:
-            ws = ""
+        try:
+            ws = get_workspace(request)
+        except HTTPException as e:
+            return JSONResponse(status_code=e.status_code, content={"error": e.detail})
 
         try:
             rag = await workspace_mgr.get_or_create(ws)
@@ -105,15 +112,10 @@ def create_test_app(
         """
         Background task pattern - ref is held for duration of bg task.
         """
-        ws_header = request.headers.get("LIGHTRAG-WORKSPACE", "").strip()
-
-        if ws_header:
-            try:
-                ws = sanitize_workspace_name(ws_header)
-            except WorkspaceNameError as e:
-                return JSONResponse(status_code=400, content={"error": str(e)})
-        else:
-            ws = ""
+        try:
+            ws = get_workspace(request)
+        except HTTPException as e:
+            return JSONResponse(status_code=e.status_code, content={"error": e.detail})
 
         # Get ref before scheduling background task
         rag = await workspace_mgr.get_or_create(ws)
@@ -124,7 +126,9 @@ def create_test_app(
             await asyncio.sleep(0.1)
             # Release after background work completes
             workspace_mgr.release(ws)
-            # Signal that bg work is done (using a shared event would be better in real code)
+            # Signal that bg work is done
+            if bg_done_event:
+                bg_done_event.set()
             response_data["bg_completed"] = True
 
         background_tasks.add_task(background_work)
@@ -137,15 +141,10 @@ def create_test_app(
         """
         Streaming response pattern - ref held during stream.
         """
-        ws_header = request.headers.get("LIGHTRAG-WORKSPACE", "").strip()
-
-        if ws_header:
-            try:
-                ws = sanitize_workspace_name(ws_header)
-            except WorkspaceNameError as e:
-                return JSONResponse(status_code=400, content={"error": str(e)})
-        else:
-            ws = ""
+        try:
+            ws = get_workspace(request)
+        except HTTPException as e:
+            return JSONResponse(status_code=e.status_code, content={"error": e.detail})
 
         async def stream_generator() -> AsyncGenerator[str, None]:
             try:
@@ -160,6 +159,58 @@ def create_test_app(
             stream_generator(),
             media_type="text/event-stream",
         )
+
+    @app.post("/test/streaming-error")
+    async def streaming_error_route(request: Request):
+        """
+        Streaming response pattern that errors mid-stream - verifies finally block runs.
+        """
+        try:
+            ws = get_workspace(request)
+        except HTTPException as e:
+            return JSONResponse(status_code=e.status_code, content={"error": e.detail})
+
+        async def stream_generator() -> AsyncGenerator[str, None]:
+            try:
+                rag = await workspace_mgr.get_or_create(ws)
+                yield f"data: workspace={rag.workspace}\n"
+                await asyncio.sleep(0.02)
+                yield "data: before-error\n"
+                # Simulate an error mid-stream
+                raise RuntimeError("simulated error")
+            except RuntimeError:
+                # Re-raise so the stream fails
+                raise
+            finally:
+                workspace_mgr.release(ws)
+
+        return StreamingResponse(
+            stream_generator(),
+            media_type="text/event-stream",
+        )
+
+    @app.post("/test/hold-ref")
+    async def hold_ref_route(request: Request, duration: float = 1.0):
+        """
+        Route that holds a workspace ref for a specified duration.
+        Useful for testing capacity and eviction under load.
+        """
+        try:
+            ws = get_workspace(request)
+        except HTTPException as e:
+            return JSONResponse(status_code=e.status_code, content={"error": e.detail})
+
+        try:
+            rag = await workspace_mgr.get_or_create(ws)
+            # Hold the ref for the specified duration
+            await asyncio.sleep(duration)
+            return JSONResponse(content={"workspace": rag.workspace, "held_for": duration})
+        except WorkspaceCapacityError:
+            return JSONResponse(
+                status_code=503, content={"error": "All workspace slots busy"}
+            )
+        finally:
+            workspace_mgr.release(ws)
 
     @app.get("/test/stats")
     async def stats_route(request: Request):
@@ -217,6 +268,16 @@ async def eviction_client():
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
         yield ac, workspace_mgr
+
+
+@pytest.fixture
+async def client_with_bg_event():
+    """Create a client with bg_done_event for testing background task completion."""
+    bg_done_event = asyncio.Event()
+    app, workspace_mgr = create_test_app(bg_done_event=bg_done_event)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        yield ac, workspace_mgr, bg_done_event
 
 
 # =============================================================================
@@ -431,9 +492,9 @@ class TestBackgroundTaskPattern:
     """Tests for background task workspace management pattern."""
 
     @pytest.mark.asyncio
-    async def test_bg_task_holds_ref_during_execution(self, client):
+    async def test_bg_task_holds_ref_during_execution(self, client_with_bg_event):
         """Test that background task pattern holds ref count during execution."""
-        ac, workspace_mgr = client
+        ac, workspace_mgr, bg_done_event = client_with_bg_event
 
         # Initial stats - no ref counts
         initial_stats = workspace_mgr.get_stats()
@@ -450,8 +511,8 @@ class TestBackgroundTaskPattern:
         assert data["workspace"] == "bg-ws"
         assert data["ref_count_before_bg"] == 1
 
-        # Wait for background task to complete
-        await asyncio.sleep(0.2)
+        # Wait for background task to complete using event
+        await asyncio.wait_for(bg_done_event.wait(), timeout=2.0)
 
         # After bg task completes, ref should be released
         stats = workspace_mgr.get_stats()
@@ -514,9 +575,6 @@ class TestStreamingResponsePattern:
             assert stats["active_instances"] >= 1
             assert "stream-ws" in stats.get("ref_counts", {})
 
-            # Read remaining chunks
-            remaining = await response.aread()
-
         # After stream completes, ref should be released
         stats = workspace_mgr.get_stats()
         assert sum(stats.get("ref_counts", {}).values()) == 0
@@ -550,6 +608,38 @@ class TestStreamingResponsePattern:
         stats = workspace_mgr.get_stats()
         assert sum(stats.get("ref_counts", {}).values()) == 0
 
+    @pytest.mark.asyncio
+    async def test_streaming_error_releases_ref(self, client):
+        """Test that streaming error still releases workspace ref via finally block."""
+        ac, workspace_mgr = client
+
+        # Initial stats - no ref counts
+        initial_stats = workspace_mgr.get_stats()
+        assert sum(initial_stats.get("ref_counts", {}).values()) == 0
+
+        # Start streaming request that will error mid-stream
+        # The exception propagates during the request, not during iteration
+        error_occurred = False
+        try:
+            async with ac.stream(
+                "POST",
+                "/test/streaming-error",
+                headers={"LIGHTRAG-WORKSPACE": "error-ws"},
+            ) as response:
+                # Read chunks until error occurs
+                async for line in response.aiter_lines():
+                    pass
+        except Exception as e:
+            error_occurred = True
+            assert "simulated error" in str(e)
+
+        assert error_occurred
+
+        # After stream error, ref should still be released (finally block runs)
+        await asyncio.sleep(0.05)  # Small delay for cleanup
+        stats = workspace_mgr.get_stats()
+        assert sum(stats.get("ref_counts", {}).values()) == 0
+
 
 # =============================================================================
 # Test 7: WorkspaceCapacityError -> HTTP 503
@@ -562,40 +652,45 @@ class TestCapacityLimit:
 
     @pytest.mark.asyncio
     async def test_capacity_error_returns_503(self, small_client):
-        """Test that capacity exhaustion returns 503."""
+        """Test that capacity exhaustion returns 503 via actual HTTP requests."""
         ac, workspace_mgr = small_client
 
-        # max_instances=2, so we can have 2 concurrent requests
-        # First, make 2 concurrent requests to fill capacity
+        # max_instances=2, use /test/hold-ref to hold refs via HTTP
+        # Start 2 concurrent requests that hold refs
         tasks = [
-            ac.post("/test/regular", headers={"LIGHTRAG-WORKSPACE": f"ws-{i}"})
+            ac.post("/test/hold-ref", params={"duration": 5.0}, headers={"LIGHTRAG-WORKSPACE": f"holder-{i}"})
             for i in range(2)
         ]
-        responses = await asyncio.gather(*tasks)
-        assert all(r.status_code == 200 for r in responses)
 
-        # Now try a third request - should get 503 since regular handler
-        # releases immediately, we need to test with concurrent requests
-        # that hold refs
-        async def hold_ref(ws: str):
-            """Helper to hold a ref without releasing."""
-            rag = await workspace_mgr.get_or_create(ws)
-            return rag
+        # Start both tasks concurrently
+        pending = [asyncio.create_task(t) for t in tasks]
 
-        # Hold 2 refs
-        await hold_ref("holder-1")
-        await hold_ref("holder-2")
+        # Wait for both to start and hold refs
+        await asyncio.sleep(0.2)
 
-        # Now try to create a 3rd - should get 503
-        try:
-            await hold_ref("overflow")
-            assert False, "Should have raised WorkspaceCapacityError"
-        except WorkspaceCapacityError:
-            pass  # Expected
+        # At this point, both holders should have ref_count=1
+        stats = workspace_mgr.get_stats()
+        assert stats["active_instances"] == 2
+        assert stats.get("ref_counts", {}).get("holder-0", 0) == 1
+        assert stats.get("ref_counts", {}).get("holder-1", 0) == 1
 
-        # Clean up
-        workspace_mgr.release("holder-1")
-        workspace_mgr.release("holder-2")
+        # Now try a 3rd request - should get 503
+        response = await ac.post(
+            "/test/regular",
+            headers={"LIGHTRAG-WORKSPACE": "ws-c"},
+        )
+        assert response.status_code == 503
+        assert "All workspace slots busy" in response.json()["error"]
+
+        # Clean up - cancel the pending tasks
+        for task in pending:
+            task.cancel()
+        await asyncio.gather(*pending, return_exceptions=True)
+
+        # After cleanup, refs should be released
+        await asyncio.sleep(0.1)
+        stats = workspace_mgr.get_stats()
+        assert sum(stats.get("ref_counts", {}).values()) == 0
 
     @pytest.mark.asyncio
     async def test_same_workspace_request_within_capacity(self, small_client):
@@ -690,40 +785,58 @@ class TestLRUEviction:
         """Test that workspaces with active refs are not evicted."""
         ac, workspace_mgr = eviction_client
 
-        # Create 4 workspaces
-        for ws in ["ws-1", "ws-2", "ws-3", "ws-4"]:
+        # max_instances=3
+        # Use /test/hold-ref to hold refs via HTTP
+
+        # Start 2 concurrent requests that hold refs for ws-1 and ws-2
+        hold_tasks = [
+            ac.post("/test/hold-ref", params={"duration": 5.0}, headers={"LIGHTRAG-WORKSPACE": f"ws-{i}"})
+            for i in range(1, 3)  # ws-1 and ws-2
+        ]
+        pending = [asyncio.create_task(t) for t in hold_tasks]
+
+        # Wait for both to start and hold refs
+        await asyncio.sleep(0.2)
+
+        # At this point: ws-1 and ws-2 have ref_count=1 (from hold-ref)
+        # Active instances = 2
+        stats = workspace_mgr.get_stats()
+        assert stats.get("ref_counts", {}).get("ws-1", 0) == 1
+        assert stats.get("ref_counts", {}).get("ws-2", 0) == 1
+
+        # Now create ws-3 and ws-4 via regular requests (complete and release)
+        for ws in ["ws-3", "ws-4"]:
             response = await ac.post(
                 "/test/regular",
                 headers={"LIGHTRAG-WORKSPACE": ws},
             )
             assert response.status_code == 200
+        # After these complete, ws-3 and ws-4 have ref_count=0, active_instances=4
 
-        # Try to create ws-5 while holding refs to ws-1 and ws-2
-        # (release happens in finally, so we simulate holding refs)
-        await workspace_mgr.get_or_create("ws-1")
-        await workspace_mgr.get_or_create("ws-2")
+        # Now try to create ws-5 - this should trigger eviction
+        # Eviction should evict ws-3 or ws-4 (ref_count=0), NOT ws-1 or ws-2 (ref_count>0)
+        response = await ac.post(
+            "/test/regular",
+            headers={"LIGHTRAG-WORKSPACE": "ws-5"},
+        )
+        assert response.status_code == 200
 
-        # Now try to create ws-5 - should evict ws-3 or ws-4, not ws-1 or ws-2
-        # (Implementation detail - eviction selects from ref_count=0 entries)
+        # Check that ws-1 and ws-2 survived eviction (still in cache)
         stats = workspace_mgr.get_stats()
-        # ws-1 and ws-2 should have ref_count >= 1
-        ref_counts = stats.get("ref_counts", {})
-        assert ref_counts.get("ws-1", 0) >= 1
-        assert ref_counts.get("ws-2", 0) >= 1
+        assert "ws-1" in stats.get("ref_counts", {})
+        assert "ws-2" in stats.get("ref_counts", {})
+        assert stats.get("ref_counts", {}).get("ws-1", 0) >= 1
+        assert stats.get("ref_counts", {}).get("ws-2", 0) >= 1
+
+        # Verify eviction happened (ws-3 or ws-4 should be evicted)
+        assert stats.get("evictions", 0) > 0
 
         # Clean up
-        workspace_mgr.release("ws-1")
-        workspace_mgr.release("ws-2")
+        for task in pending:
+            task.cancel()
+        await asyncio.gather(*pending, return_exceptions=True)
 
 
 # =============================================================================
 # Cleanup helper
 # =============================================================================
-
-
-@pytest.fixture(autouse=True)
-async def cleanup_workspace_manager():
-    """Ensure workspace manager is cleaned up after each test."""
-    yield
-    # Small delay to allow any background tasks to complete
-    await asyncio.sleep(0.05)
