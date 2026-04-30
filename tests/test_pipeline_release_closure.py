@@ -274,6 +274,104 @@ def test_lightrag_format_uses_blocks_file_hash(tmp_path):
 
 
 @pytest.mark.offline
+def test_persist_parsed_full_docs_syncs_hash_to_doc_status(tmp_path):
+    async def _run():
+        rag = _new_rag(tmp_path)
+        await rag.initialize_storages()
+        try:
+            # Enqueue a pending_parse record: no content_hash should exist yet.
+            await rag.apipeline_enqueue_documents(
+                "",
+                file_paths="pending.txt",
+                docs_format="pending_parse",
+                track_id="track-pending",
+            )
+            doc_id = compute_mdhash_id("pending.txt", prefix="doc-")
+            full_doc = await rag.full_docs.get_by_id(doc_id)
+            assert full_doc is not None
+            assert full_doc.get("content_hash") in (None, "")
+            status_pre = await rag.doc_status.get_by_id(doc_id)
+            assert (status_pre or {}).get("content_hash") in (None, "")
+
+            # Simulate a parse_* completion that converts the record to RAW.
+            content = "extracted body text"
+            await rag._persist_parsed_full_docs(
+                doc_id,
+                {
+                    "content": content,
+                    "file_path": "pending.txt",
+                    "format": "raw",
+                    "parsed_engine": "native",
+                },
+            )
+
+            full_doc = await rag.full_docs.get_by_id(doc_id)
+            status_post = await rag.doc_status.get_by_id(doc_id)
+            expected_hash = compute_mdhash_id(content, prefix="")
+            assert full_doc["content_hash"] == expected_hash
+            assert (status_post or {}).get("content_hash") == expected_hash
+
+            # The hash should be queryable via the storage index.
+            match = await rag.doc_status.get_doc_by_content_hash(expected_hash)
+            assert match is not None
+            assert match[0] == doc_id
+        finally:
+            await rag.finalize_storages()
+
+    asyncio.run(_run())
+
+
+@pytest.mark.offline
+def test_state_machine_upsert_preserves_content_hash(tmp_path):
+    async def _run():
+        rag = _new_rag(tmp_path)
+        await rag.initialize_storages()
+        try:
+            await rag.apipeline_enqueue_documents(
+                "raw body",
+                file_paths="alpha.txt",
+                track_id="track-state",
+            )
+            doc_id = compute_mdhash_id("alpha.txt", prefix="doc-")
+            initial_hash = (await rag.doc_status.get_by_id(doc_id))["content_hash"]
+            assert initial_hash
+
+            # Simulate the production state-machine upsert pattern: read
+            # status_doc, then write a new payload that includes content_hash.
+            status_doc = (await rag.doc_status.get_docs_by_status(DocStatus.PENDING))[
+                doc_id
+            ]
+            for next_status in (
+                DocStatus.PARSING,
+                DocStatus.ANALYZING,
+                DocStatus.PROCESSED,
+            ):
+                await rag.doc_status.upsert(
+                    {
+                        doc_id: {
+                            "status": next_status,
+                            "content_summary": status_doc.content_summary,
+                            "content_length": status_doc.content_length,
+                            "created_at": status_doc.created_at,
+                            "updated_at": "now",
+                            "file_path": status_doc.file_path,
+                            "track_id": status_doc.track_id,
+                            "content_hash": status_doc.content_hash,
+                        }
+                    }
+                )
+                current = await rag.doc_status.get_by_id(doc_id)
+                assert current.get("content_hash") == initial_hash
+                # And the index lookup must still return this doc.
+                match = await rag.doc_status.get_doc_by_content_hash(initial_hash)
+                assert match is not None and match[0] == doc_id
+        finally:
+            await rag.finalize_storages()
+
+    asyncio.run(_run())
+
+
+@pytest.mark.offline
 def test_parser_routing_accepts_semicolon_rules(monkeypatch):
     monkeypatch.setenv("MINERU_ENDPOINT", "http://fake-mineru")
     monkeypatch.setenv("DOCLING_ENDPOINT", "http://fake-docling")

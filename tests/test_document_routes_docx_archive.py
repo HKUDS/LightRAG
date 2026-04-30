@@ -130,14 +130,31 @@ class _ParseFullDocs:
         assert self.source_path.exists()
 
 
+class _ParseDocStatus:
+    """Minimal doc_status double for the parse_* archive tests.
+
+    ``_persist_parsed_full_docs`` reads the existing record and patches its
+    ``content_hash``; with no record present the helper short-circuits, which
+    is what these tests want — they only assert on full_docs side effects.
+    """
+
+    async def get_by_id(self, doc_id):
+        return None
+
+    async def upsert(self, data):
+        return None
+
+
 class _ParseRag:
     _archive_docx_source_after_full_docs_sync = (
         LightRAG._archive_docx_source_after_full_docs_sync
     )
+    _persist_parsed_full_docs = LightRAG._persist_parsed_full_docs
 
     def __init__(self, working_dir, source_path):
         self.working_dir = str(working_dir)
         self.full_docs = _ParseFullDocs(source_path)
+        self.doc_status = _ParseDocStatus()
 
     def _resolve_source_file_for_parser(self, file_path):
         return file_path

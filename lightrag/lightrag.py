@@ -3042,6 +3042,7 @@ class LightRAG:
                         "updated_at": datetime.now(timezone.utc).isoformat(),
                         "file_path": resolved_file_path,
                         "track_id": getattr(status_doc, "track_id", ""),
+                        "content_hash": getattr(status_doc, "content_hash", None),
                         # Clear any error messages and processing metadata
                         "error_msg": "",
                         "metadata": {},
@@ -3296,6 +3297,7 @@ class LightRAG:
                                             ).isoformat(),
                                             "file_path": file_path,
                                             "track_id": status_doc.track_id,
+                                            "content_hash": status_doc.content_hash,
                                         }
                                     }
                                 )
@@ -3323,6 +3325,24 @@ class LightRAG:
 
                                 content = parsed_data.get("content", "")
 
+                                # parse_* may have patched doc_status with the
+                                # content_hash that was missing for pending_parse.
+                                # Refresh the in-memory dataclass so subsequent
+                                # state-machine upserts preserve it.
+                                refreshed_status = await self.doc_status.get_by_id(
+                                    doc_id
+                                )
+                                if refreshed_status:
+                                    refreshed_hash = (
+                                        refreshed_status.get("content_hash")
+                                        if isinstance(refreshed_status, dict)
+                                        else getattr(
+                                            refreshed_status, "content_hash", None
+                                        )
+                                    )
+                                    if refreshed_hash:
+                                        status_doc.content_hash = refreshed_hash
+
                                 # ---- Phase 2: ANALYZING ----
                                 await self.doc_status.upsert(
                                     {
@@ -3336,6 +3356,7 @@ class LightRAG:
                                             ).isoformat(),
                                             "file_path": file_path,
                                             "track_id": status_doc.track_id,
+                                            "content_hash": status_doc.content_hash,
                                         }
                                     }
                                 )
@@ -3531,6 +3552,7 @@ class LightRAG:
                                             ).isoformat(),
                                             "file_path": file_path,
                                             "track_id": status_doc.track_id,  # Preserve existing track_id
+                                            "content_hash": status_doc.content_hash,
                                             "metadata": {
                                                 "processing_start_time": processing_start_time,
                                                 **extraction_meta,
@@ -3637,6 +3659,7 @@ class LightRAG:
                                         ).isoformat(),
                                         "file_path": file_path,
                                         "track_id": status_doc.track_id,  # Preserve existing track_id
+                                        "content_hash": status_doc.content_hash,
                                         "metadata": {
                                             "processing_start_time": processing_start_time,
                                             "processing_end_time": processing_end_time,
@@ -3694,6 +3717,7 @@ class LightRAG:
                                             ).isoformat(),
                                             "file_path": file_path,
                                             "track_id": status_doc.track_id,  # Preserve existing track_id
+                                            "content_hash": status_doc.content_hash,
                                             "metadata": {
                                                 "processing_start_time": processing_start_time,
                                                 "processing_end_time": processing_end_time,
@@ -3770,6 +3794,7 @@ class LightRAG:
                                             ).isoformat(),
                                             "file_path": file_path,
                                             "track_id": status_doc.track_id,  # Preserve existing track_id
+                                            "content_hash": status_doc.content_hash,
                                             "metadata": {
                                                 "processing_start_time": processing_start_time,
                                                 "processing_end_time": processing_end_time,
@@ -3818,6 +3843,7 @@ class LightRAG:
                                         ).isoformat(),
                                         "file_path": file_path_w,
                                         "track_id": status_doc_w.track_id,
+                                        "content_hash": status_doc_w.content_hash,
                                     }
                                 }
                             )
@@ -3833,6 +3859,19 @@ class LightRAG:
                                 parsed_data_w = await self.parse_native(
                                     doc_id_w, file_path_w, content_data_w
                                 )
+
+                            # parse_* may have patched content_hash for
+                            # pending_parse → raw transitions.
+                            refreshed = await self.doc_status.get_by_id(doc_id_w)
+                            if refreshed:
+                                refreshed_hash = (
+                                    refreshed.get("content_hash")
+                                    if isinstance(refreshed, dict)
+                                    else getattr(refreshed, "content_hash", None)
+                                )
+                                if refreshed_hash:
+                                    status_doc_w.content_hash = refreshed_hash
+
                             await q_analyze.put((doc_id_w, status_doc_w, parsed_data_w))
                         except Exception as e:
                             logger.error(f"Parse worker failed ({engine}): {e}")
@@ -3854,6 +3893,7 @@ class LightRAG:
                                                 "unknown_source",
                                             ),
                                             "track_id": status_doc_w.track_id,
+                                            "content_hash": status_doc_w.content_hash,
                                         }
                                     }
                                 )
@@ -3884,6 +3924,7 @@ class LightRAG:
                                         ).isoformat(),
                                         "file_path": file_path_w,
                                         "track_id": status_doc_w.track_id,
+                                        "content_hash": status_doc_w.content_hash,
                                     }
                                 }
                             )
@@ -4537,6 +4578,48 @@ class LightRAG:
         except Exception:
             return None
 
+    async def _persist_parsed_full_docs(
+        self,
+        doc_id: str,
+        record: dict[str, Any],
+    ) -> str | None:
+        """Write a parse-result record to ``full_docs`` and sync ``content_hash``.
+
+        Computes ``content_hash`` from the actual extracted body so subsequent
+        ``get_doc_by_content_hash`` lookups can dedupe across pending_parse
+        records that did not have a hash at enqueue time. Also patches the
+        existing ``doc_status`` row so both storages stay aligned.
+        """
+        fmt = record.get("format")
+        content_hash: str | None = None
+        if fmt == FULL_DOCS_FORMAT_RAW:
+            content_hash = _compute_text_content_hash(record.get("content") or "")
+        elif fmt == FULL_DOCS_FORMAT_LIGHTRAG:
+            blocks_path = record.get("lightrag_document_path") or ""
+            if blocks_path:
+                absolute = (
+                    blocks_path
+                    if Path(blocks_path).is_absolute()
+                    else str(Path(self.working_dir) / blocks_path)
+                )
+                content_hash = _compute_file_content_hash(absolute)
+
+        payload = dict(record)
+        if content_hash:
+            payload["content_hash"] = content_hash
+
+        await self.full_docs.upsert({doc_id: payload})
+        await self.full_docs.index_done_callback()
+
+        if content_hash:
+            existing_status = await self.doc_status.get_by_id(doc_id)
+            if existing_status:
+                patched = dict(existing_status)
+                patched["content_hash"] = content_hash
+                patched["updated_at"] = datetime.now(timezone.utc).isoformat()
+                await self.doc_status.upsert({doc_id: patched})
+        return content_hash
+
     def _resolve_source_file_for_parser(self, file_path: str) -> str:
         """Resolve a readable source file path for parser upload."""
         p = Path(file_path)
@@ -4987,19 +5070,17 @@ class LightRAG:
             stored_blocks_path = str(blocks_path.relative_to(Path(self.working_dir)))
         except ValueError:
             pass
-        await self.full_docs.upsert(
+        await self._persist_parsed_full_docs(
+            doc_id,
             {
-                doc_id: {
-                    "content": FULL_DOCS_CONTENT_STORED_IN_LIGHTRAG_DOCUMENT,
-                    "file_path": file_path,
-                    "format": FULL_DOCS_FORMAT_LIGHTRAG,
-                    "lightrag_document_path": stored_blocks_path,
-                    "parsed_engine": engine,
-                    "update_time": int(time.time()),
-                }
-            }
+                "content": FULL_DOCS_CONTENT_STORED_IN_LIGHTRAG_DOCUMENT,
+                "file_path": file_path,
+                "format": FULL_DOCS_FORMAT_LIGHTRAG,
+                "lightrag_document_path": stored_blocks_path,
+                "parsed_engine": engine,
+                "update_time": int(time.time()),
+            },
         )
-        await self.full_docs.index_done_callback()
         await self._archive_docx_source_after_full_docs_sync(
             source_path or self._resolve_source_file_for_parser(file_path)
         )
@@ -5077,18 +5158,16 @@ class LightRAG:
                         f"DOCX parser returned empty content for {file_path}"
                     )
 
-                await self.full_docs.upsert(
+                await self._persist_parsed_full_docs(
+                    doc_id,
                     {
-                        doc_id: {
-                            "content": interchange_text,
-                            "file_path": file_path,
-                            "format": FULL_DOCS_FORMAT_RAW,
-                            "parsed_engine": PARSER_ENGINE_NATIVE,
-                            "update_time": int(time.time()),
-                        }
-                    }
+                        "content": interchange_text,
+                        "file_path": file_path,
+                        "format": FULL_DOCS_FORMAT_RAW,
+                        "parsed_engine": PARSER_ENGINE_NATIVE,
+                        "update_time": int(time.time()),
+                    },
                 )
-                await self.full_docs.index_done_callback()
                 await self._archive_docx_source_after_full_docs_sync(str(p))
                 logger.info(
                     f"[parse_native] pending_parse completed for {file_path} via interchange JSONL"
@@ -5158,18 +5237,16 @@ class LightRAG:
         if not result_text:
             raise ValueError(f"MinerU parser returned empty content for {file_path}")
 
-        await self.full_docs.upsert(
+        await self._persist_parsed_full_docs(
+            doc_id,
             {
-                doc_id: {
-                    "content": str(result_text),
-                    "file_path": file_path,
-                    "format": FULL_DOCS_FORMAT_RAW,
-                    "parsed_engine": PARSER_ENGINE_MINERU,
-                    "update_time": int(time.time()),
-                }
-            }
+                "content": str(result_text),
+                "file_path": file_path,
+                "format": FULL_DOCS_FORMAT_RAW,
+                "parsed_engine": PARSER_ENGINE_MINERU,
+                "update_time": int(time.time()),
+            },
         )
-        await self.full_docs.index_done_callback()
         await self._archive_docx_source_after_full_docs_sync(source_file_path)
         return {
             "doc_id": doc_id,
@@ -5225,18 +5302,16 @@ class LightRAG:
         if not result_text:
             raise ValueError(f"Docling parser returned empty content for {file_path}")
 
-        await self.full_docs.upsert(
+        await self._persist_parsed_full_docs(
+            doc_id,
             {
-                doc_id: {
-                    "content": str(result_text),
-                    "file_path": file_path,
-                    "format": FULL_DOCS_FORMAT_RAW,
-                    "parsed_engine": PARSER_ENGINE_DOCLING,
-                    "update_time": int(time.time()),
-                }
-            }
+                "content": str(result_text),
+                "file_path": file_path,
+                "format": FULL_DOCS_FORMAT_RAW,
+                "parsed_engine": PARSER_ENGINE_DOCLING,
+                "update_time": int(time.time()),
+            },
         )
-        await self.full_docs.index_done_callback()
         await self._archive_docx_source_after_full_docs_sync(source_file_path)
         return {
             "doc_id": doc_id,
