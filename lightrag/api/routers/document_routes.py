@@ -964,6 +964,28 @@ async def get_existing_doc_by_file_path_candidates(
     return existing_doc_data
 
 
+async def record_scan_warning(rag: LightRAG, message: str) -> None:
+    logger.warning(message)
+    try:
+        from lightrag.kg import shared_storage
+
+        if not getattr(shared_storage, "_initialized", False):
+            return
+
+        workspace = getattr(rag, "workspace", "")
+        pipeline_status = await shared_storage.get_namespace_data(
+            "pipeline_status", workspace=workspace
+        )
+        pipeline_status_lock = shared_storage.get_namespace_lock(
+            "pipeline_status", workspace=workspace
+        )
+        async with pipeline_status_lock:
+            pipeline_status["latest_message"] = message
+            pipeline_status["history_messages"].append(message)
+    except Exception:
+        pass
+
+
 # Document processing helper functions (synchronous)
 # These functions run in thread pool via asyncio.to_thread() to avoid blocking the event loop
 
@@ -1214,7 +1236,10 @@ def _extract_xlsx(file_bytes: bytes) -> str:
 
 
 async def pipeline_enqueue_file(
-    rag: LightRAG, file_path: Path, track_id: str = None
+    rag: LightRAG,
+    file_path: Path,
+    track_id: str = None,
+    reprocess_existing_non_processed: bool = False,
 ) -> tuple[bool, str]:
     """Add a file to the queue for processing
 
@@ -1245,13 +1270,25 @@ async def pipeline_enqueue_file(
         extraction_engine = resolve_file_parser_engine(file_path)
         if extraction_engine != PARSER_ENGINE_LEGACY:
             try:
-                await rag.apipeline_enqueue_documents(
-                    "",
-                    file_paths=str(file_path),
-                    track_id=track_id,
-                    docs_format=FULL_DOCS_FORMAT_PENDING_PARSE,
-                    parsed_engine=extraction_engine,
+                enqueue_kwargs = {
+                    "file_paths": str(file_path),
+                    "track_id": track_id,
+                    "docs_format": FULL_DOCS_FORMAT_PENDING_PARSE,
+                    "parsed_engine": extraction_engine,
+                }
+                if reprocess_existing_non_processed:
+                    enqueue_kwargs["reprocess_existing_non_processed"] = True
+                enqueue_result = await rag.apipeline_enqueue_documents(
+                    "", **enqueue_kwargs
                 )
+                if enqueue_result is None:
+                    try:
+                        await move_file_to_parsed_dir(file_path)
+                    except Exception as move_error:
+                        logger.error(
+                            f"Failed to move duplicate file {file_path.name} to {PARSED_DIR_NAME} directory: {move_error}"
+                        )
+                    return False, track_id
                 logger.info(
                     f"[File Extraction]Deferred {file_path.name} to {extraction_engine} parser"
                 )
@@ -1547,12 +1584,24 @@ async def pipeline_enqueue_file(
                 return False, track_id
 
             try:
-                await rag.apipeline_enqueue_documents(
-                    content,
-                    file_paths=file_path.name,
-                    track_id=track_id,
-                    parsed_engine=PARSER_ENGINE_LEGACY,
+                enqueue_kwargs = {
+                    "file_paths": file_path.name,
+                    "track_id": track_id,
+                    "parsed_engine": PARSER_ENGINE_LEGACY,
+                }
+                if reprocess_existing_non_processed:
+                    enqueue_kwargs["reprocess_existing_non_processed"] = True
+                enqueue_result = await rag.apipeline_enqueue_documents(
+                    content, **enqueue_kwargs
                 )
+                if enqueue_result is None:
+                    try:
+                        await move_file_to_parsed_dir(file_path)
+                    except Exception as move_error:
+                        logger.error(
+                            f"Failed to move duplicate file {file_path.name} to {PARSED_DIR_NAME} directory: {move_error}"
+                        )
+                    return False, track_id
 
                 logger.info(
                     f"Successfully extracted and enqueued file: {file_path.name}"
@@ -1640,7 +1689,10 @@ async def pipeline_index_file(rag: LightRAG, file_path: Path, track_id: str = No
 
 
 async def pipeline_index_files(
-    rag: LightRAG, file_paths: List[Path], track_id: str = None
+    rag: LightRAG,
+    file_paths: List[Path],
+    track_id: str = None,
+    reprocess_existing_non_processed: bool = False,
 ):
     """Index multiple files sequentially to avoid high CPU load
 
@@ -1661,7 +1713,12 @@ async def pipeline_index_files(
 
         # Process files sequentially with track_id
         for file_path in sorted_file_paths:
-            success, _ = await pipeline_enqueue_file(rag, file_path, track_id)
+            success, _ = await pipeline_enqueue_file(
+                rag,
+                file_path,
+                track_id,
+                reprocess_existing_non_processed=reprocess_existing_non_processed,
+            )
             if success:
                 enqueued = True
 
@@ -1724,7 +1781,6 @@ async def run_scanning_process(
             # Check for files with PROCESSED status and filter them out
             valid_files = []
             processed_files = []
-            queued_existing_files = []
 
             for file_path in new_files:
                 filename = file_path.name
@@ -1737,21 +1793,37 @@ async def run_scanning_process(
                     and get_doc_status_value(existing_doc_data)
                     == DocStatus.PROCESSED.value
                 ):
-                    # File is already PROCESSED, skip it with warning
+                    # File is already PROCESSED, skip it with warning and archive it.
                     processed_files.append(filename)
-                    logger.warning(f"Skipping already processed file: {filename}")
-                elif existing_doc_data:
-                    queued_existing_files.append(filename)
-                    logger.info(
-                        f"Skipping already enqueued file and continuing existing pipeline state: {filename}"
+                    warning = (
+                        f"Skipping already processed file: "
+                        f"{filename}"
                     )
+                    await record_scan_warning(rag, warning)
+                    try:
+                        await move_file_to_parsed_dir(file_path)
+                    except Exception as move_error:
+                        logger.error(
+                            f"Failed to move already processed file {filename} to {PARSED_DIR_NAME}: {move_error}"
+                        )
+                elif existing_doc_data:
+                    logger.info(
+                        "Reprocessing previously unfinished file from scan: "
+                        f"{filename} (Status: {get_doc_status_value(existing_doc_data)})"
+                    )
+                    valid_files.append(file_path)
                 else:
                     # File is new or in non-PROCESSED status, add to processing list
                     valid_files.append(file_path)
 
             # Process valid files (new files + non-PROCESSED status files)
             if valid_files:
-                await pipeline_index_files(rag, valid_files, track_id)
+                await pipeline_index_files(
+                    rag,
+                    valid_files,
+                    track_id,
+                    reprocess_existing_non_processed=True,
+                )
                 if processed_files:
                     logger.info(
                         f"Scanning process completed: {len(valid_files)} files Processed {len(processed_files)} skipped."
@@ -1764,8 +1836,6 @@ async def run_scanning_process(
                 logger.info(
                     "No files to process after filtering already processed files."
                 )
-                if queued_existing_files:
-                    await rag.apipeline_process_enqueue_documents()
         else:
             # No new files to index, check if there are any documents in the queue
             logger.info(

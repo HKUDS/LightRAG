@@ -7,7 +7,12 @@ import pytest
 
 from lightrag import LightRAG, ROLES, RoleLLMConfig
 from lightrag.base import DocStatus
-from lightrag.constants import FULL_DOCS_CONTENT_STORED_IN_LIGHTRAG_DOCUMENT
+from lightrag.constants import (
+    FULL_DOCS_CONTENT_STORED_IN_LIGHTRAG_DOCUMENT,
+    FULL_DOCS_FORMAT_PENDING_PARSE,
+    PARSED_DIR_NAME,
+    PARSER_ENGINE_NATIVE,
+)
 from lightrag.operate import _get_relationship_vdb_timeout_seconds
 from lightrag.parser_routing import (
     ParserRoutingConfigError,
@@ -61,7 +66,7 @@ def _new_rag(tmp_path: Path, **kwargs) -> LightRAG:
 
     return LightRAG(
         working_dir=str(tmp_path),
-        workspace="test-release-closure",
+        workspace=f"test-release-closure-{tmp_path.name}",
         llm_model_func=_mock_llm,
         embedding_func=EmbeddingFunc(
             embedding_dim=32,
@@ -316,6 +321,7 @@ def test_lightrag_format_uses_blocks_file_hash(tmp_path, monkeypatch):
         monkeypatch.setenv("INPUT_DIR", str(input_dir))
 
         rag = _new_rag(tmp_path / "work")
+        rag.workspace = "test-pending-parse-duplicate"
         await rag.initialize_storages()
         try:
             blocks_path = parsed_dir / "doc.blocks.jsonl"
@@ -451,6 +457,66 @@ def test_state_machine_upsert_preserves_content_hash(tmp_path):
                 # And the index lookup must still return this doc.
                 match = await rag.doc_status.get_doc_by_content_hash(initial_hash)
                 assert match is not None and match[0] == doc_id
+        finally:
+            await rag.finalize_storages()
+
+    asyncio.run(_run())
+
+
+@pytest.mark.offline
+def test_pending_parse_duplicate_hash_fails_and_archives_source(tmp_path, monkeypatch):
+    async def _run():
+        input_dir = tmp_path / "input"
+        input_dir.mkdir()
+        monkeypatch.setenv("INPUT_DIR", str(input_dir))
+        rag = _new_rag(tmp_path / "work")
+        await rag.initialize_storages()
+        try:
+            content = "same extracted body"
+            await rag.apipeline_enqueue_documents(
+                content,
+                file_paths="existing.txt",
+                track_id="track-original",
+            )
+            original_id = compute_mdhash_id("existing.txt", prefix="doc-")
+            original_status = await rag.doc_status.get_by_id(original_id)
+            original_status["status"] = DocStatus.PROCESSED
+            await rag.doc_status.upsert({original_id: original_status})
+
+            source_path = input_dir / "duplicate.docx"
+            source_path.write_bytes(b"docx bytes")
+            parse_document = __import__(
+                "lightrag.extraction.parse_document",
+                fromlist=["parse_docx_to_interchange_jsonl"],
+            )
+            monkeypatch.setattr(
+                parse_document,
+                "parse_docx_to_interchange_jsonl",
+                lambda file_bytes, source_file, doc_id, output_dir: content,
+            )
+
+            async def _fail_extract(*args, **kwargs):
+                raise AssertionError("duplicate document should not reach extraction")
+
+            monkeypatch.setattr(rag, "_process_extract_entities", _fail_extract)
+
+            await rag.apipeline_enqueue_documents(
+                "",
+                file_paths=str(source_path),
+                docs_format=FULL_DOCS_FORMAT_PENDING_PARSE,
+                parsed_engine=PARSER_ENGINE_NATIVE,
+                track_id="track-dup",
+            )
+            await rag.apipeline_process_enqueue_documents()
+
+            duplicate_id = compute_mdhash_id("duplicate.docx", prefix="doc-")
+            duplicate_status = await rag.doc_status.get_by_id(duplicate_id)
+            assert duplicate_status["status"] == DocStatus.FAILED
+            assert duplicate_status["metadata"]["is_duplicate"] is True
+            assert duplicate_status["metadata"]["duplicate_kind"] == "content_hash"
+            assert duplicate_status["metadata"]["original_doc_id"] == original_id
+            assert not source_path.exists()
+            assert (input_dir / PARSED_DIR_NAME / source_path.name).exists()
         finally:
             await rag.finalize_storages()
 

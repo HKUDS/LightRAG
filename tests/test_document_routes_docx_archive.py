@@ -53,16 +53,18 @@ class _FakeRag:
         track_id=None,
         docs_format=None,
         parsed_engine=None,
+        reprocess_existing_non_processed=False,
     ):
-        self.enqueued.append(
-            {
-                "input": input,
-                "file_path": file_paths,
-                "track_id": track_id,
-                "docs_format": docs_format,
-                "parsed_engine": parsed_engine,
-            }
-        )
+        item = {
+            "input": input,
+            "file_path": file_paths,
+            "track_id": track_id,
+            "docs_format": docs_format,
+            "parsed_engine": parsed_engine,
+        }
+        if reprocess_existing_non_processed:
+            item["reprocess_existing_non_processed"] = True
+        self.enqueued.append(item)
         return track_id
 
     async def apipeline_process_enqueue_documents(self):
@@ -77,6 +79,12 @@ class _FakeRag:
 
     async def apipeline_enqueue_error_documents(self, error_files, track_id=None):
         self.errors.append((error_files, track_id))
+
+
+class _DuplicateEnqueueRag(_FakeRag):
+    async def apipeline_enqueue_documents(self, *args, **kwargs):
+        self.enqueued.append({"args": args, "kwargs": kwargs})
+        return None
 
 
 class _ScanDocStatus:
@@ -99,6 +107,7 @@ class _ScanRag:
     def __init__(self, docs_by_path):
         self.doc_status = _ScanDocStatus(docs_by_path)
         self.process_calls = 0
+        self.workspace = "scan-test"
 
     async def apipeline_process_enqueue_documents(self):
         self.process_calls += 1
@@ -254,6 +263,30 @@ async def test_pipeline_enqueue_md_moves_after_enqueue(tmp_path, monkeypatch):
     assert (tmp_path / PARSED_DIR_NAME / file_path.name).exists()
 
 
+async def test_pipeline_enqueue_legacy_duplicate_archives_with_unique_name(
+    tmp_path, monkeypatch
+):
+    monkeypatch.delenv("LIGHTRAG_PARSER", raising=False)
+    file_path = tmp_path / "duplicate.md"
+    file_path.write_text("duplicate content", encoding="utf-8")
+    parsed_dir = tmp_path / PARSED_DIR_NAME
+    parsed_dir.mkdir()
+    (parsed_dir / file_path.name).write_text("existing", encoding="utf-8")
+    rag = _DuplicateEnqueueRag()
+
+    success, returned_track_id = await pipeline_enqueue_file(
+        rag, file_path, "track-dup"
+    )
+
+    assert success is False
+    assert returned_track_id == "track-dup"
+    assert not file_path.exists()
+    assert (parsed_dir / file_path.name).read_text(encoding="utf-8") == "existing"
+    assert (parsed_dir / "duplicate_001.md").read_text(
+        encoding="utf-8"
+    ) == "duplicate content"
+
+
 async def test_pipeline_enqueue_parser_routed_pdf_defers_without_extraction(
     tmp_path, monkeypatch
 ):
@@ -308,14 +341,19 @@ async def test_pipeline_index_files_leaves_lightrag_document_docx_batch(
     assert all(item["parsed_engine"] == "native" for item in rag.enqueued)
 
 
-async def test_scan_existing_full_path_docx_does_not_reenqueue(tmp_path, monkeypatch):
+async def test_scan_processed_same_name_archives_with_unique_name(
+    tmp_path, monkeypatch
+):
     file_path = tmp_path / "already-parsed.docx"
     file_path.write_bytes(b"docx bytes")
+    parsed_dir = tmp_path / PARSED_DIR_NAME
+    parsed_dir.mkdir()
+    (parsed_dir / file_path.name).write_bytes(b"previous parsed file")
     doc_manager = DocumentManager(str(tmp_path))
     rag = _ScanRag(
         {
             str(file_path): {
-                "status": DocStatus.PARSING.value,
+                "status": DocStatus.PROCESSED.value,
                 "file_path": str(file_path),
                 "track_id": "track-existing",
             }
@@ -329,7 +367,49 @@ async def test_scan_existing_full_path_docx_does_not_reenqueue(tmp_path, monkeyp
 
     await run_scanning_process(rag, doc_manager, "track-scan")
 
-    assert rag.process_calls == 1
+    assert not file_path.exists()
+    assert (parsed_dir / file_path.name).read_bytes() == b"previous parsed file"
+    assert (parsed_dir / "already-parsed_001.docx").read_bytes() == b"docx bytes"
+
+
+async def test_scan_existing_non_processed_reprocesses_file(tmp_path, monkeypatch):
+    file_path = tmp_path / "retry.docx"
+    file_path.write_bytes(b"docx bytes")
+    doc_manager = DocumentManager(str(tmp_path))
+    rag = _ScanRag(
+        {
+            str(file_path): {
+                "status": DocStatus.PARSING.value,
+                "file_path": str(file_path),
+                "track_id": "track-existing",
+            }
+        }
+    )
+    calls = []
+
+    async def capture_pipeline(rag_arg, file_paths, track_id, **kwargs):
+        calls.append(
+            {
+                "rag": rag_arg,
+                "file_paths": file_paths,
+                "track_id": track_id,
+                "kwargs": kwargs,
+            }
+        )
+
+    monkeypatch.setattr(_document_routes, "pipeline_index_files", capture_pipeline)
+
+    await run_scanning_process(rag, doc_manager, "track-scan")
+
+    assert calls == [
+        {
+            "rag": rag,
+            "file_paths": [file_path],
+            "track_id": "track-scan",
+            "kwargs": {"reprocess_existing_non_processed": True},
+        }
+    ]
+    assert file_path.exists()
 
 
 async def test_upload_rejects_same_name_failed_doc_status_without_full_docs(

@@ -239,6 +239,13 @@ def _doc_status_field(doc: Any, field: str, default: Any = "") -> Any:
     return getattr(doc, field, default)
 
 
+def _doc_status_value(doc: Any) -> str:
+    status = _doc_status_field(doc, "status", "")
+    if isinstance(status, DocStatus):
+        return status.value
+    return str(status or "")
+
+
 def _compute_text_content_hash(content: str) -> str:
     """MD5 hex digest of text content used for cross-filename dedup."""
     return compute_mdhash_id(content, prefix="")
@@ -304,6 +311,29 @@ async def _get_existing_doc_by_content_hash(
     if not content_hash:
         return None
     return await doc_status.get_doc_by_content_hash(content_hash)
+
+
+async def _get_duplicate_doc_by_content_hash(
+    doc_status: DocStatusStorage, content_hash: str, current_doc_id: str
+) -> tuple[str, Any] | None:
+    """Find another doc_status record with the same content hash."""
+    if not content_hash:
+        return None
+
+    match = await doc_status.get_doc_by_content_hash(content_hash)
+    if match and match[0] != current_doc_id:
+        return match
+
+    try:
+        docs = await doc_status.get_docs_by_statuses(list(DocStatus))
+    except Exception:
+        return None
+    for doc_id, doc in docs.items():
+        if doc_id == current_doc_id:
+            continue
+        if _doc_status_field(doc, "content_hash", "") == content_hash:
+            return doc_id, doc
+    return None
 
 
 def _normalize_string_list(raw_values: Any, context: str = "") -> list[str]:
@@ -2478,6 +2508,7 @@ class LightRAG:
         docs_format: str = FULL_DOCS_FORMAT_RAW,
         lightrag_document_paths: str | list[str] | None = None,
         parsed_engine: str | list[str] | None = None,
+        reprocess_existing_non_processed: bool = False,
     ) -> str:
         """
         Pipeline for Processing Documents
@@ -2495,6 +2526,8 @@ class LightRAG:
             docs_format: "raw" (default) or "lightrag"; when "lightrag" content may be empty and content-dedup is skipped
             lightrag_document_paths: paths to LightRAG Document (e.g. .blocks.jsonl dir or base path), when docs_format is lightrag
             parsed_engine: file extraction engine already used or target engine for pending_parse
+            reprocess_existing_non_processed: allow scan retries to overwrite
+                existing same-name records that have not reached PROCESSED.
 
         Returns:
             str: tracking ID for monitoring processing status
@@ -2698,6 +2731,16 @@ class LightRAG:
         all_new_doc_ids = set(new_docs.keys())
         # Exclude IDs of documents that are already enqueued
         unique_new_doc_ids = await self.doc_status.filter_keys(all_new_doc_ids)
+        reprocess_doc_ids: set[str] = set()
+        if reprocess_existing_non_processed:
+            for doc_id in all_new_doc_ids - unique_new_doc_ids:
+                existing_doc = await self.doc_status.get_by_id(doc_id)
+                if (
+                    existing_doc
+                    and _doc_status_value(existing_doc) != DocStatus.PROCESSED.value
+                ):
+                    unique_new_doc_ids.add(doc_id)
+                    reprocess_doc_ids.add(doc_id)
 
         for doc_id in list(unique_new_doc_ids):
             content_data = contents[doc_id]
@@ -2708,6 +2751,18 @@ class LightRAG:
             )
             if match:
                 existing_doc_id, existing_doc = match
+                if (
+                    reprocess_existing_non_processed
+                    and _doc_status_value(existing_doc) != DocStatus.PROCESSED.value
+                ):
+                    reprocess_doc_ids.add(doc_id)
+                    if existing_doc_id != doc_id:
+                        await self.doc_status.delete([existing_doc_id])
+                        try:
+                            await self.full_docs.delete([existing_doc_id])
+                        except Exception:
+                            pass
+                    continue
                 unique_new_doc_ids.discard(doc_id)
                 duplicate_attempts.append(
                     {
@@ -2737,6 +2792,8 @@ class LightRAG:
             )
             if hash_match:
                 existing_doc_id, existing_doc = hash_match
+                if existing_doc_id == doc_id and doc_id in reprocess_doc_ids:
+                    continue
                 unique_new_doc_ids.discard(doc_id)
                 duplicate_attempts.append(
                     {
@@ -2760,6 +2817,8 @@ class LightRAG:
         ignored_ids = list(all_new_doc_ids - unique_new_doc_ids)
         for doc_id in ignored_ids:
             if any(attempt.get("doc_id") == doc_id for attempt in duplicate_attempts):
+                continue
+            if doc_id in reprocess_doc_ids:
                 continue
             existing_doc = await self.doc_status.get_by_id(doc_id)
             duplicate_attempts.append(
@@ -3371,6 +3430,18 @@ class LightRAG:
                                     if refreshed_hash:
                                         status_doc.content_hash = refreshed_hash
 
+                                if await self._mark_duplicate_after_parse(
+                                    doc_id=doc_id,
+                                    status_doc=status_doc,
+                                    file_path=file_path,
+                                    content_hash=status_doc.content_hash,
+                                    content_length=len(content),
+                                    content_data=content_data,
+                                    pipeline_status=pipeline_status,
+                                    pipeline_status_lock=pipeline_status_lock,
+                                ):
+                                    return
+
                                 # ---- Phase 2: ANALYZING ----
                                 await self.doc_status.upsert(
                                     {
@@ -3899,6 +3970,18 @@ class LightRAG:
                                 )
                                 if refreshed_hash:
                                     status_doc_w.content_hash = refreshed_hash
+
+                            if await self._mark_duplicate_after_parse(
+                                doc_id=doc_id_w,
+                                status_doc=status_doc_w,
+                                file_path=file_path_w,
+                                content_hash=status_doc_w.content_hash,
+                                content_length=len(parsed_data_w.get("content", "")),
+                                content_data=content_data_w,
+                                pipeline_status=pipeline_status,
+                                pipeline_status_lock=pipeline_status_lock,
+                            ):
+                                continue
 
                             await q_analyze.put((doc_id_w, status_doc_w, parsed_data_w))
                         except Exception as e:
@@ -4644,6 +4727,78 @@ class LightRAG:
                 patched["updated_at"] = datetime.now(timezone.utc).isoformat()
                 await self.doc_status.upsert({doc_id: patched})
         return content_hash
+
+    async def _mark_duplicate_after_parse(
+        self,
+        doc_id: str,
+        status_doc: DocProcessingStatus,
+        file_path: str,
+        content_hash: str | None,
+        content_length: int,
+        content_data: dict[str, Any] | None = None,
+        pipeline_status: dict | None = None,
+        pipeline_status_lock: asyncio.Lock | None = None,
+    ) -> bool:
+        """Mark post-parse content duplicates and stop further processing."""
+        if not content_hash:
+            return False
+
+        match = await _get_duplicate_doc_by_content_hash(
+            self.doc_status, content_hash, doc_id
+        )
+        if not match:
+            return False
+
+        original_doc_id, original_doc = match
+        original_track_id = _doc_status_field(original_doc, "track_id", "")
+        original_status = _doc_status_field(original_doc, "status", "unknown")
+        now = datetime.now(timezone.utc).isoformat()
+        message = (
+            "Identical content already exists under another filename. "
+            f"Original doc_id: {original_doc_id}, Status: {original_status}"
+        )
+
+        await self.doc_status.upsert(
+            {
+                doc_id: {
+                    "status": DocStatus.FAILED,
+                    "content_summary": (
+                        f"[DUPLICATE:content_hash] Original document: {original_doc_id}"
+                    ),
+                    "content_length": content_length,
+                    "chunks_count": 0,
+                    "chunks_list": [],
+                    "created_at": status_doc.created_at,
+                    "updated_at": now,
+                    "file_path": file_path,
+                    "track_id": status_doc.track_id,
+                    "content_hash": content_hash,
+                    "error_msg": message,
+                    "metadata": {
+                        "is_duplicate": True,
+                        "duplicate_kind": "content_hash",
+                        "original_doc_id": original_doc_id,
+                        "original_track_id": original_track_id,
+                    },
+                }
+            }
+        )
+        try:
+            await self.full_docs.delete([doc_id])
+            await self.full_docs.index_done_callback()
+        except Exception as e:
+            logger.warning(f"Failed to remove duplicate full_docs entry {doc_id}: {e}")
+
+        source_path = str((content_data or {}).get("source_path") or file_path)
+        archived = await self._archive_source_after_full_docs_sync(source_path)
+        archive_msg = f"; archived to {archived}" if archived else ""
+        warning = f"Duplicate content skipped after parsing: {file_path}{archive_msg}"
+        logger.warning(warning)
+        if pipeline_status is not None and pipeline_status_lock is not None:
+            async with pipeline_status_lock:
+                pipeline_status["latest_message"] = warning
+                pipeline_status["history_messages"].append(warning)
+        return True
 
     def _input_dir_path(self) -> Path:
         return _configured_input_dir()
