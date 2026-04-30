@@ -365,9 +365,6 @@ def create_app(args):
             yield
 
         finally:
-            # Clean up database connections for default workspace
-            await default_rag.finalize_storages()
-
             # Shutdown WorkspaceManager to finalize all cached instances
             await workspace_mgr.shutdown()
 

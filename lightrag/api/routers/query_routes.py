@@ -6,7 +6,7 @@ import json
 from typing import Any, Dict, List, Literal, Optional
 from fastapi import APIRouter, Depends, HTTPException, Request
 from lightrag.base import QueryParam
-from lightrag.api.utils import sanitize_workspace_name, WorkspaceNameError
+from lightrag.api.utils import extract_workspace_from_header
 from lightrag.api.utils_api import get_combined_auth_dependency
 from lightrag.utils import logger
 from pydantic import BaseModel, Field, field_validator
@@ -193,15 +193,6 @@ class StreamChunkResponse(BaseModel):
 
 def create_query_routes(workspace_mgr, api_key: Optional[str] = None, top_k: int = 60):
     combined_auth = get_combined_auth_dependency(api_key)
-
-    def _get_workspace(request: Request) -> str:
-        """Extract workspace from request headers."""
-        raw_workspace = request.headers.get("LIGHTRAG-WORKSPACE", "").strip()
-        if raw_workspace:
-            workspace = sanitize_workspace_name(raw_workspace)
-        else:
-            workspace = ""
-        return workspace
 
     @router.post(
         "/query",
@@ -411,7 +402,7 @@ def create_query_routes(workspace_mgr, api_key: Optional[str] = None, top_k: int
                 - 400: Invalid input parameters (e.g., query too short)
                 - 500: Internal processing error (e.g., LLM service unavailable)
         """
-        workspace = _get_workspace(http_request)
+        workspace = extract_workspace_from_header(http_request)
         rag = await workspace_mgr.get_or_create(workspace)
         try:
             param = request.to_query_params(
@@ -675,7 +666,7 @@ def create_query_routes(workspace_mgr, api_key: Optional[str] = None, top_k: int
         """
         from fastapi.responses import StreamingResponse
 
-        workspace = _get_workspace(http_request)
+        workspace = extract_workspace_from_header(http_request)
         rag = await workspace_mgr.get_or_create(workspace)
 
         stream_mode = request.stream if request.stream is not None else True
@@ -1149,7 +1140,7 @@ def create_query_routes(workspace_mgr, api_key: Optional[str] = None, top_k: int
             This endpoint always includes references regardless of the include_references parameter,
             as structured data analysis typically requires source attribution.
         """
-        workspace = _get_workspace(http_request)
+        workspace = extract_workspace_from_header(http_request)
         rag = await workspace_mgr.get_or_create(workspace)
         try:
             param = request.to_query_params(False)  # No streaming for data endpoint

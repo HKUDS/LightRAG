@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import re
 
-__all__ = ["sanitize_workspace_name", "WorkspaceNameError"]
+from fastapi import HTTPException, Request
+
+__all__ = ["sanitize_workspace_name", "WorkspaceNameError", "extract_workspace_from_header"]
 
 
 class WorkspaceNameError(ValueError):
@@ -65,3 +67,19 @@ def sanitize_workspace_name(name: str | None) -> str:
         )
 
     return name
+
+
+def extract_workspace_from_header(request: Request) -> str:
+    """Extract and sanitize workspace from LIGHTRAG-WORKSPACE header.
+
+    Returns empty string for default workspace.
+    Raises HTTPException(400) on invalid workspace name.
+    """
+    raw = request.headers.get("LIGHTRAG-WORKSPACE", "").strip()
+    if raw:
+        try:
+            return sanitize_workspace_name(raw)
+        except WorkspaceNameError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+    return ""
+

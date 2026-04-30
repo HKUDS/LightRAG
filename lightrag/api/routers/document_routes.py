@@ -32,6 +32,7 @@ from lightrag.utils import (
     sanitize_text_for_encoding,
 )
 from lightrag.api.utils_api import get_combined_auth_dependency
+from lightrag.api.utils import extract_workspace_from_header
 from ..config import global_args
 
 
@@ -2091,15 +2092,6 @@ def create_document_routes(
     # Create combined auth dependency for document routes
     combined_auth = get_combined_auth_dependency(api_key)
 
-    def _get_workspace(request: Request) -> str:
-        """Extract workspace from request header or use default."""
-        from lightrag.api.lightrag_server import get_workspace_from_request
-        result = get_workspace_from_request(request)
-        if isinstance(result, str) or result is None:
-            return result or ""
-        # If it's a JSONResponse (error), we can't proceed — this shouldn't happen in normal use
-        return ""
-
     async def _run_scan_with_workspace(workspace_mgr, workspace, doc_manager, track_id):
         rag = await workspace_mgr.get_or_create(workspace)
         try:
@@ -2122,7 +2114,7 @@ def create_document_routes(
             ScanResponse: A response object containing the scanning status and track_id
         """
         # Generate track_id with "scan" prefix for scanning operation
-        workspace = _get_workspace(http_request)
+        workspace = extract_workspace_from_header(http_request)
         track_id = generate_track_id("scan")
 
         # Create workspace-specific doc_manager
@@ -2209,7 +2201,7 @@ def create_document_routes(
         """
         try:
             # Get workspace first for duplicate check and file operations
-            workspace = _get_workspace(http_request)
+            workspace = extract_workspace_from_header(http_request)
             rag = await workspace_mgr.get_or_create(workspace)
 
             # Create workspace-specific doc_manager for file operations
@@ -2363,7 +2355,7 @@ def create_document_routes(
         Raises:
             HTTPException: If an error occurs during text processing (500).
         """
-        workspace = _get_workspace(http_request)
+        workspace = extract_workspace_from_header(http_request)
         rag = await workspace_mgr.get_or_create(workspace)
         try:
             # Check if file_source already exists in doc_status storage
@@ -2454,7 +2446,7 @@ def create_document_routes(
         Raises:
             HTTPException: If an error occurs during text processing (500).
         """
-        workspace = _get_workspace(http_request)
+        workspace = extract_workspace_from_header(http_request)
         rag = await workspace_mgr.get_or_create(workspace)
         try:
             # Check if any file_sources already exist in doc_status storage
@@ -2541,7 +2533,7 @@ def create_document_routes(
             HTTPException: Raised when a serious error occurs during the clearing process,
                           with status code 500 and error details in the detail field.
         """
-        workspace = _get_workspace(http_request)
+        workspace = extract_workspace_from_header(http_request)
         rag = await workspace_mgr.get_or_create(workspace)
         try:
             from lightrag.kg.shared_storage import (
@@ -2755,7 +2747,7 @@ def create_document_routes(
         Raises:
             HTTPException: If an error occurs while retrieving pipeline status (500)
         """
-        workspace = _get_workspace(http_request)
+        workspace = extract_workspace_from_header(http_request)
         rag = await workspace_mgr.get_or_create(workspace)
         try:
             from lightrag.kg.shared_storage import (
@@ -2851,7 +2843,7 @@ def create_document_routes(
         Raises:
             HTTPException: If an error occurs while retrieving document statuses (500).
         """
-        workspace = _get_workspace(http_request)
+        workspace = extract_workspace_from_header(http_request)
         rag = await workspace_mgr.get_or_create(workspace)
         try:
             statuses = (
@@ -2992,7 +2984,7 @@ def create_document_routes(
             HTTPException:
               - 500: If an unexpected internal error occurs during initialization.
         """
-        workspace = _get_workspace(http_request)
+        workspace = extract_workspace_from_header(http_request)
         doc_ids = delete_request.doc_ids
 
         rag = await workspace_mgr.get_or_create(workspace)
@@ -3061,7 +3053,7 @@ def create_document_routes(
         Raises:
             HTTPException: If an error occurs during cache clearing (500).
         """
-        workspace = _get_workspace(http_request)
+        workspace = extract_workspace_from_header(http_request)
         rag = await workspace_mgr.get_or_create(workspace)
         try:
             # Call the aclear_cache method (no modes parameter)
@@ -3093,7 +3085,7 @@ def create_document_routes(
         Raises:
             HTTPException: If the entity is not found (404) or an error occurs (500).
         """
-        workspace = _get_workspace(http_request)
+        workspace = extract_workspace_from_header(http_request)
         rag = await workspace_mgr.get_or_create(workspace)
         try:
             result = await rag.adelete_by_entity(entity_name=request.entity_name)
@@ -3133,7 +3125,7 @@ def create_document_routes(
         Raises:
             HTTPException: If the relation is not found (404) or an error occurs (500).
         """
-        workspace = _get_workspace(http_request)
+        workspace = extract_workspace_from_header(http_request)
         rag = await workspace_mgr.get_or_create(workspace)
         try:
             result = await rag.adelete_by_relation(
@@ -3182,7 +3174,7 @@ def create_document_routes(
         Raises:
             HTTPException: If track_id is invalid (400) or an error occurs (500).
         """
-        workspace = _get_workspace(http_request)
+        workspace = extract_workspace_from_header(http_request)
         rag = await workspace_mgr.get_or_create(workspace)
         try:
             # Validate track_id
@@ -3265,7 +3257,7 @@ def create_document_routes(
         Raises:
             HTTPException: If an error occurs while retrieving documents (500).
         """
-        workspace = _get_workspace(http_request)
+        workspace = extract_workspace_from_header(http_request)
         rag = await workspace_mgr.get_or_create(workspace)
         try:
             trace_id = uuid4().hex[:8]
@@ -3435,7 +3427,7 @@ def create_document_routes(
         Raises:
             HTTPException: If an error occurs while retrieving status counts (500).
         """
-        workspace = _get_workspace(http_request)
+        workspace = extract_workspace_from_header(http_request)
         rag = await workspace_mgr.get_or_create(workspace)
         try:
             status_counts = await rag.doc_status.get_all_status_counts()
@@ -3484,7 +3476,7 @@ def create_document_routes(
         Raises:
             HTTPException: If an error occurs while initiating reprocessing (500).
         """
-        workspace = _get_workspace(http_request)
+        workspace = extract_workspace_from_header(http_request)
         # Start the reprocessing in the background
         # Note: Reprocessed documents retain their original track_id from initial upload
         background_tasks.add_task(_run_reprocess_with_workspace, workspace_mgr, workspace)
@@ -3524,7 +3516,7 @@ def create_document_routes(
         Raises:
             HTTPException: If an error occurs while setting cancellation flag (500).
         """
-        workspace = _get_workspace(http_request)
+        workspace = extract_workspace_from_header(http_request)
         rag = await workspace_mgr.get_or_create(workspace)
         try:
             from lightrag.kg.shared_storage import (

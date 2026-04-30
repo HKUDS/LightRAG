@@ -90,6 +90,44 @@ class TestSanitizeWorkspaceName:
         ):
             sanitize_workspace_name("ws!@#")
 
+    # -------------------------------------------------------------------------
+    # Additional Edge Cases
+    # -------------------------------------------------------------------------
+
+    def test_null_bytes_rejected(self) -> None:
+        """Test that null bytes in name are rejected."""
+        with pytest.raises(WorkspaceNameError, match="only lowercase letters.*allowed"):
+            sanitize_workspace_name("ws\x00name")
+
+    def test_unicode_chars_rejected(self) -> None:
+        """Test that unicode characters are rejected."""
+        with pytest.raises(
+            WorkspaceNameError, match="only lowercase letters.*allowed"
+        ):
+            sanitize_workspace_name("workspace日本語")
+
+    def test_mixed_valid_invalid_space_rejected(self) -> None:
+        """Test that space in name is rejected."""
+        with pytest.raises(
+            WorkspaceNameError, match="only lowercase letters.*allowed"
+        ):
+            sanitize_workspace_name("ws-1 test")
+
+    def test_exactly_64_chars_valid(self) -> None:
+        """Test that exactly 64-character names are valid."""
+        name_64 = "a" * 64
+        assert sanitize_workspace_name(name_64) == name_64
+
+    def test_65_chars_rejected(self) -> None:
+        """Test that 65-character names are rejected."""
+        name_65 = "a" * 65
+        with pytest.raises(WorkspaceNameError, match="max 64 characters"):
+            sanitize_workspace_name(name_65)
+
+    def test_leading_trailing_spaces_trimmed_and_lower(self) -> None:
+        """Test that leading/trailing spaces are trimmed and lowercased."""
+        assert sanitize_workspace_name("  MyWorkspace  ") == "myworkspace"
+
 
 # =============================================================================
 # WorkspaceManager Tests
@@ -189,6 +227,162 @@ class TestWorkspaceManager:
         assert small_manager.get_stats()["ref_counts"]["ws-1"] == 1
 
     @pytest.mark.asyncio
+    async def test_lru_eviction_order_verification(self, small_manager) -> None:
+        """Test LRU eviction picks LEAST recently used, not just oldest created.
+
+        Scenario:
+        - Create ws-1, ws-2, ws-3 (in that order)
+        - Access ws-1 again (moves it to end of LRU)
+        - Release ws-2 (ref_count=0)
+        - Create ws-4 → should evict ws-2 (least recently used with ref_count=0),
+          NOT ws-3 (oldest created but not LRU anymore)
+        """
+        # Create 3 workspaces (fills cache)
+        ws_1 = await small_manager.get_or_create("ws-1")
+        ws_2 = await small_manager.get_or_create("ws-2")
+        ws_3 = await small_manager.get_or_create("ws-3")
+
+        # Now access order is: ws-1, ws-2, ws-3 (ws-1 was created first)
+
+        # Access ws-1 again - this moves it to end of LRU order
+        # Now LRU order is: ws-2 (oldest accessed), ws-3, ws-1 (most recent)
+        await small_manager.get_or_create("ws-1")
+
+        # Release ws-2 (ref_count=0, but ws-1 is most recent, ws-3 is middle)
+        small_manager.release("ws-2")
+
+        # Create ws-4 - should evict ws-2 (LRU with ref_count=0)
+        ws_4 = await small_manager.get_or_create("ws-4")
+
+        # Verify ws-4 is in cache
+        assert small_manager.get_stats()["active_instances"] == 3
+
+        # ws-2 should have been evicted (least recently used with ref_count=0)
+        assert ws_2.finalize_called is True
+
+        # ws-1 should NOT have been evicted (ref_count > 0 and was recently accessed)
+        assert ws_1.finalize_called is False
+
+        # ws-3 should NOT have been evicted
+        assert ws_3.finalize_called is False
+
+        # Verify ws-4 is usable
+        assert ws_4.workspace == "ws-4"
+
+    @pytest.mark.asyncio
+    async def test_eviction_of_most_recently_accessed(self, small_manager) -> None:
+        """Test eviction respects access order, not creation order.
+
+        Scenario:
+        - Create ws-1, ws-2, ws-3 (in that order)
+        - Access ws-1 again (move to end of LRU)
+        - Release ws-2
+        - Create ws-4
+        - Verify ws-2 was evicted (not ws-1, which was recently accessed)
+        """
+        # Create ws-1, ws-2, ws-3 (fills capacity)
+        ws_1 = await small_manager.get_or_create("ws-1")
+        ws_2 = await small_manager.get_or_create("ws-2")
+        ws_3 = await small_manager.get_or_create("ws-3")
+
+        # Access ws-1 again to move it to end (most recently accessed)
+        await small_manager.get_or_create("ws-1")
+
+        # Release ws-2 (now ref_count=0, LRU candidate)
+        small_manager.release("ws-2")
+
+        # Create ws-4 - should evict ws-2
+        ws_4 = await small_manager.get_or_create("ws-4")
+
+        # Verify state
+        assert small_manager.get_stats()["active_instances"] == 3
+
+        # ws-2 should be evicted (oldest accessed with ref_count=0)
+        assert ws_2.finalize_called is True
+
+        # ws-1 should NOT be evicted (was most recently accessed)
+        assert ws_1.finalize_called is False
+        assert small_manager.get_stats()["ref_counts"]["ws-1"] == 2  # created + accessed
+
+        # ws-3 should NOT be evicted
+        assert ws_3.finalize_called is False
+
+    @pytest.mark.asyncio
+    async def test_reference_counting_exact_tracking(self, fresh_manager) -> None:
+        """Test reference counting with exact tracking through multiple operations.
+
+        Scenario:
+        - get_or_create 3 times for same workspace → ref_count=3
+        - release 2 times → ref_count=1
+        - get_or_create again → ref_count=2
+        """
+        # Get ws-a 3 times → ref_count should be 3
+        await fresh_manager.get_or_create("ws-a")
+        await fresh_manager.get_or_create("ws-a")
+        ws_a = await fresh_manager.get_or_create("ws-a")
+
+        assert fresh_manager.get_stats()["ref_counts"]["ws-a"] == 3
+
+        # Release twice → ref_count should be 1
+        fresh_manager.release("ws-a")
+        fresh_manager.release("ws-a")
+
+        assert fresh_manager.get_stats()["ref_counts"]["ws-a"] == 1
+
+        # Get again → ref_count should be 2
+        await fresh_manager.get_or_create("ws-a")
+
+        assert fresh_manager.get_stats()["ref_counts"]["ws-a"] == 2
+
+        # Verify active instances is still 1 (same workspace)
+        assert fresh_manager.get_stats()["active_instances"] == 1
+
+    @pytest.mark.asyncio
+    async def test_workspace_capacity_error_recovery_after_release(
+        self, small_manager
+    ) -> None:
+        """Test recovery from WorkspaceCapacityError after releasing a workspace.
+
+        Scenario:
+        - Fill capacity (max=3), all with ref_count > 0
+        - WorkspaceCapacityError on 4th attempt
+        - Release one workspace
+        - Retry → should succeed
+        - Verify the newly created workspace is in cache
+        """
+        # Fill cache with 3 workspaces (all with ref_count > 0)
+        ws_1 = await small_manager.get_or_create("ws-1")
+        ws_2 = await small_manager.get_or_create("ws-2")
+        ws_3 = await small_manager.get_or_create("ws-3")
+
+        assert small_manager.get_stats()["active_instances"] == 3
+
+        # Try to create 4th workspace - should raise WorkspaceCapacityError
+        with pytest.raises(WorkspaceCapacityError):
+            await small_manager.get_or_create("ws-4")
+
+        # Release ws-2 to free up a slot
+        small_manager.release("ws-2")
+
+        # Retry - should succeed now
+        ws_4 = await small_manager.get_or_create("ws-4")
+
+        assert ws_4 is not None
+        assert ws_4.workspace == "ws-4"
+
+        # Verify ws-4 is in cache
+        stats = small_manager.get_stats()
+        assert stats["active_instances"] == 3
+        assert "ws-4" in stats["workspaces"]
+
+        # ws-2 should have been evicted
+        assert ws_2.finalize_called is True
+
+        # ws-1 and ws-3 should still be active
+        assert ws_1.finalize_called is False
+        assert ws_3.finalize_called is False
+
+    @pytest.mark.asyncio
     async def test_capacity_error_when_all_busy(self, small_manager) -> None:
         """Test WorkspaceCapacityError when all slots have in-flight requests."""
         # Fill cache with all in-flight workspaces
@@ -241,6 +435,39 @@ class TestWorkspaceManager:
         assert ws2.finalize_called is True
 
     @pytest.mark.asyncio
+    async def test_shutdown_with_active_instances(self, fresh_manager) -> None:
+        """Test shutdown finalizes ALL instances including those with ref_count > 0.
+
+        After shutdown:
+        - get_stats should show 0 active instances
+        - workspaces list should be empty
+        - All finalize_called flags should be True
+        """
+        # Create 3 workspaces with ref_count > 0 (don't release)
+        ws1 = await fresh_manager.get_or_create("ws-1")
+        ws2 = await fresh_manager.get_or_create("ws-2")
+        ws3 = await fresh_manager.get_or_create("ws-3")
+
+        # All have ref_count > 0
+        assert fresh_manager.get_stats()["active_instances"] == 3
+        assert fresh_manager.get_stats()["ref_counts"]["ws-1"] == 1
+        assert fresh_manager.get_stats()["ref_counts"]["ws-2"] == 1
+        assert fresh_manager.get_stats()["ref_counts"]["ws-3"] == 1
+
+        # Shutdown should finalize ALL instances
+        await fresh_manager.shutdown()
+
+        # All instances should be finalized
+        assert ws1.finalize_called is True
+        assert ws2.finalize_called is True
+        assert ws3.finalize_called is True
+
+        # Stats should show 0 active instances
+        stats = fresh_manager.get_stats()
+        assert stats["active_instances"] == 0
+        assert stats["workspaces"] == []
+
+    @pytest.mark.asyncio
     async def test_shutdown_clears_cache(self, fresh_manager) -> None:
         """Test that shutdown clears the cache."""
         await fresh_manager.get_or_create("ws-1")
@@ -283,6 +510,66 @@ class TestWorkspaceManager:
         assert stats["ref_counts"]["ws-b"] == 2
 
     @pytest.mark.asyncio
+    async def test_stats_reporting_accuracy(self, small_manager) -> None:
+        """Test stats reporting with cache_hits, cache_misses, evictions, and ref_counts.
+
+        Extended version that verifies:
+        - cache_hits and cache_misses are correctly tracked
+        - evictions counter increments on each eviction
+        - workspaces list matches actual cache contents
+        - ref_counts dictionary is accurate
+        """
+        # Create 3 workspaces (3 cache misses)
+        ws_1 = await small_manager.get_or_create("ws-1")
+        ws_2 = await small_manager.get_or_create("ws-2")
+        ws_3 = await small_manager.get_or_create("ws-3")
+
+        # Get ws-1 twice (2 cache hits)
+        await small_manager.get_or_create("ws-1")
+        await small_manager.get_or_create("ws-1")
+
+        stats = small_manager.get_stats()
+        assert stats["cache_misses"] == 3
+        assert stats["cache_hits"] == 2
+        assert stats["evictions"] == 0
+        assert stats["ref_counts"]["ws-1"] == 3
+        assert stats["ref_counts"]["ws-2"] == 1
+        assert stats["ref_counts"]["ws-3"] == 1
+
+        # Release ws-1 twice (ref_count goes from 3 to 1)
+        small_manager.release("ws-1")
+        small_manager.release("ws-1")
+
+        # Release ws-2 (ref_count goes from 1 to 0)
+        small_manager.release("ws-2")
+
+        # Create ws-4 → should evict ws-2 (eviction #1)
+        ws_4 = await small_manager.get_or_create("ws-4")
+
+        stats = small_manager.get_stats()
+        assert stats["cache_misses"] == 4
+        assert stats["cache_hits"] == 2
+        assert stats["evictions"] == 1
+        assert set(stats["workspaces"]) == {"ws-1", "ws-3", "ws-4"}
+        assert stats["ref_counts"]["ws-1"] == 1
+        # ws-2 was evicted and is no longer in ref_counts
+        assert "ws-2" not in stats["ref_counts"]
+        assert stats["ref_counts"]["ws-3"] == 1
+        assert stats["ref_counts"]["ws-4"] == 1
+
+        # Release ws-3 (ref_count goes from 1 to 0)
+        small_manager.release("ws-3")
+
+        # Create ws-5 → should evict ws-3 (eviction #2)
+        ws_5 = await small_manager.get_or_create("ws-5")
+
+        stats = small_manager.get_stats()
+        assert stats["evictions"] == 2
+        assert set(stats["workspaces"]) == {"ws-1", "ws-4", "ws-5"}
+        # ws-3 was evicted and is no longer in ref_counts
+        assert "ws-3" not in stats["ref_counts"]
+
+    @pytest.mark.asyncio
     async def test_none_workspace_maps_to_empty(self, fresh_manager) -> None:
         """Test that None workspace uses empty string as key."""
         instance1 = await fresh_manager.get_or_create(None)
@@ -320,6 +607,44 @@ class TestWorkspaceManager:
         assert fresh_manager.get_stats()["active_instances"] == 1
         assert fresh_manager.get_stats()["cache_hits"] == 2  # 2nd and 3rd are hits
         assert fresh_manager.get_stats()["cache_misses"] == 1  # 1st is miss
+
+    @pytest.mark.asyncio
+    async def test_concurrent_get_or_create_deduplication(self, fresh_manager) -> None:
+        """Test factory is called exactly ONCE even with 10 concurrent requests.
+
+        Uses a side-effect counter to track factory calls.
+        """
+        factory_call_count = 0
+
+        async def counting_factory(workspace: str) -> MockLightRAG:
+            nonlocal factory_call_count
+            factory_call_count += 1
+            # Small delay to increase chance of race condition
+            await asyncio.sleep(0.01)
+            return MockLightRAG(workspace)
+
+        manager = WorkspaceManager(factory=counting_factory, max_instances=10)
+        workspace_name = "concurrent-dedup-ws"
+
+        async def get_workspace() -> MockLightRAG:
+            return await manager.get_or_create(workspace_name)
+
+        # Launch 10 concurrent requests
+        results = await asyncio.gather(
+            *[get_workspace() for _ in range(10)]
+        )
+
+        # Factory should be called exactly once
+        assert factory_call_count == 1
+
+        # All results should be the same instance
+        assert all(r is results[0] for r in results)
+
+        # Stats should show 1 cache miss and 9 cache hits
+        stats = manager.get_stats()
+        assert stats["cache_misses"] == 1
+        assert stats["cache_hits"] == 9
+        assert stats["active_instances"] == 1
 
     # -------------------------------------------------------------------------
     # Edge Cases

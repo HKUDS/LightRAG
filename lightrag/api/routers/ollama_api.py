@@ -12,7 +12,7 @@ from lightrag import QueryParam
 from lightrag.utils import TiktokenTokenizer
 from lightrag.api.utils_api import get_combined_auth_dependency
 from fastapi import Depends
-from lightrag.api.utils import sanitize_workspace_name
+from lightrag.api.utils import extract_workspace_from_header
 
 
 # query mode according to query prefix (bypass is not LightRAG quer mode)
@@ -226,11 +226,6 @@ class OllamaAPI:
         self.router = APIRouter(tags=["ollama"])
         self.setup_routes()
 
-    def _get_workspace(self, http_request: Request) -> str:
-        """Extract workspace name from LIGHTRAG-WORKSPACE header."""
-        ws = http_request.headers.get("LIGHTRAG-WORKSPACE", "")
-        return sanitize_workspace_name(ws)
-
     def setup_routes(self):
         # Create combined auth dependency for Ollama API routes
         combined_auth = get_combined_auth_dependency(self.api_key)
@@ -238,7 +233,7 @@ class OllamaAPI:
         @self.router.get("/version", dependencies=[Depends(combined_auth)])
         async def get_version(http_request: Request):
             """Get Ollama version information"""
-            workspace = self._get_workspace(http_request)
+            workspace = extract_workspace_from_header(http_request)
             rag = await self.workspace_mgr.get_or_create(workspace)
             try:
                 return OllamaVersionResponse(
@@ -250,7 +245,7 @@ class OllamaAPI:
         @self.router.get("/tags", dependencies=[Depends(combined_auth)])
         async def get_tags(http_request: Request):
             """Return available models acting as an Ollama server"""
-            workspace = self._get_workspace(http_request)
+            workspace = extract_workspace_from_header(http_request)
             rag = await self.workspace_mgr.get_or_create(workspace)
             try:
                 infos = rag.ollama_server_infos
@@ -279,7 +274,7 @@ class OllamaAPI:
         @self.router.get("/ps", dependencies=[Depends(combined_auth)])
         async def get_running_models(http_request: Request):
             """List Running Models - returns currently running models"""
-            workspace = self._get_workspace(http_request)
+            workspace = extract_workspace_from_header(http_request)
             rag = await self.workspace_mgr.get_or_create(workspace)
             try:
                 infos = rag.ollama_server_infos
@@ -322,7 +317,7 @@ class OllamaAPI:
             start_time = time.time_ns()
             prompt_tokens = estimate_tokens(query)
 
-            workspace = self._get_workspace(raw_request)
+            workspace = extract_workspace_from_header(raw_request)
             rag = await self.workspace_mgr.get_or_create(workspace)
 
             try:
@@ -433,7 +428,7 @@ class OllamaAPI:
 
             query_param = QueryParam(**param_dict)
 
-            workspace = self._get_workspace(raw_request)
+            workspace = extract_workspace_from_header(raw_request)
             rag = await self.workspace_mgr.get_or_create(workspace)
 
             try:

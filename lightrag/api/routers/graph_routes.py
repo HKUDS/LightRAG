@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, Query, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from lightrag.utils import logger
-from lightrag.api.utils import sanitize_workspace_name
+from lightrag.api.utils import extract_workspace_from_header
 from ..utils_api import get_combined_auth_dependency
 
 router = APIRouter(tags=["graph"])
@@ -90,11 +90,6 @@ class RelationCreateRequest(BaseModel):
 def create_graph_routes(workspace_mgr, api_key: Optional[str] = None):
     combined_auth = get_combined_auth_dependency(api_key)
 
-    def _get_workspace(http_request: Request) -> str:
-        """Extract workspace name from LIGHTRAG-WORKSPACE header."""
-        ws = http_request.headers.get("LIGHTRAG-WORKSPACE", "")
-        return sanitize_workspace_name(ws)
-
     @router.get("/graph/label/list", dependencies=[Depends(combined_auth)])
     async def get_graph_labels(http_request: Request):
         """
@@ -103,7 +98,7 @@ def create_graph_routes(workspace_mgr, api_key: Optional[str] = None):
         Returns:
             List[str]: List of graph labels
         """
-        workspace = _get_workspace(http_request)
+        workspace = extract_workspace_from_header(http_request)
         rag = await workspace_mgr.get_or_create(workspace)
         try:
             return await rag.get_graph_labels()
@@ -132,7 +127,7 @@ def create_graph_routes(workspace_mgr, api_key: Optional[str] = None):
         Returns:
             List[str]: List of popular labels sorted by degree (highest first)
         """
-        workspace = _get_workspace(http_request)
+        workspace = extract_workspace_from_header(http_request)
         rag = await workspace_mgr.get_or_create(workspace)
         try:
             return await rag.chunk_entity_relation_graph.get_popular_labels(limit)
@@ -163,7 +158,7 @@ def create_graph_routes(workspace_mgr, api_key: Optional[str] = None):
         Returns:
             List[str]: List of matching labels sorted by relevance
         """
-        workspace = _get_workspace(http_request)
+        workspace = extract_workspace_from_header(http_request)
         rag = await workspace_mgr.get_or_create(workspace)
         try:
             return await rag.chunk_entity_relation_graph.search_labels(q, limit)
@@ -197,7 +192,7 @@ def create_graph_routes(workspace_mgr, api_key: Optional[str] = None):
         Returns:
             Dict[str, List[str]]: Knowledge graph for label
         """
-        workspace = _get_workspace(http_request)
+        workspace = extract_workspace_from_header(http_request)
         rag = await workspace_mgr.get_or_create(workspace)
         try:
             # Log the label parameter to check for leading spaces
@@ -233,7 +228,7 @@ def create_graph_routes(workspace_mgr, api_key: Optional[str] = None):
         Returns:
             Dict[str, bool]: Dictionary with 'exists' key indicating if entity exists
         """
-        workspace = _get_workspace(http_request)
+        workspace = extract_workspace_from_header(http_request)
         rag = await workspace_mgr.get_or_create(workspace)
         try:
             exists = await rag.chunk_entity_relation_graph.has_node(name)
@@ -382,7 +377,7 @@ def create_graph_routes(workspace_mgr, api_key: Optional[str] = None):
                 }
             }
         """
-        workspace = _get_workspace(http_request)
+        workspace = extract_workspace_from_header(http_request)
         rag = await workspace_mgr.get_or_create(workspace)
         try:
             result = await rag.aedit_entity(
@@ -451,7 +446,7 @@ def create_graph_routes(workspace_mgr, api_key: Optional[str] = None):
         Returns:
             Dict: Updated relation information
         """
-        workspace = _get_workspace(http_request)
+        workspace = extract_workspace_from_header(http_request)
         rag = await workspace_mgr.get_or_create(workspace)
         try:
             result = await rag.aedit_relation(
@@ -525,7 +520,7 @@ def create_graph_routes(workspace_mgr, api_key: Optional[str] = None):
                 }
             }
         """
-        workspace = _get_workspace(http_request)
+        workspace = extract_workspace_from_header(http_request)
         rag = await workspace_mgr.get_or_create(workspace)
         try:
             # Use the proper acreate_entity method which handles:
@@ -614,7 +609,7 @@ def create_graph_routes(workspace_mgr, api_key: Optional[str] = None):
                 }
             }
         """
-        workspace = _get_workspace(http_request)
+        workspace = extract_workspace_from_header(http_request)
         rag = await workspace_mgr.get_or_create(workspace)
         try:
             # Use the proper acreate_relation method which handles:
@@ -707,7 +702,7 @@ def create_graph_routes(workspace_mgr, api_key: Optional[str] = None):
             - Source entities will be permanently deleted after the merge
             - This operation cannot be undone, so verify entity names before merging
         """
-        workspace = _get_workspace(http_request)
+        workspace = extract_workspace_from_header(http_request)
         rag = await workspace_mgr.get_or_create(workspace)
         try:
             result = await rag.amerge_entities(
