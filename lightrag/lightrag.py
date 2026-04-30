@@ -6,7 +6,6 @@ import inspect
 import os
 import json
 import re
-import fnmatch
 import hashlib
 import base64
 import mimetypes
@@ -75,9 +74,13 @@ from lightrag.constants import (
     FULL_DOCS_FORMAT_RAW,
     FULL_DOCS_FORMAT_LIGHTRAG,
     FULL_DOCS_FORMAT_PENDING_PARSE,
+    FULL_DOCS_CONTENT_STORED_IN_LIGHTRAG_DOCUMENT,
     PARSED_DIR_NAME,
     DEFAULT_MAX_PARALLEL_ANALYZE,
     DEFAULT_FILE_PATH_MORE_PLACEHOLDER,
+    PARSER_ENGINE_DOCLING,
+    PARSER_ENGINE_MINERU,
+    PARSER_ENGINE_NATIVE,
 )
 from lightrag.utils import get_env_value
 
@@ -143,6 +146,7 @@ from lightrag.utils import (
 from lightrag.types import KnowledgeGraph
 from dotenv import load_dotenv
 from lightrag.extraction.interchange import parse_interchange_jsonl
+from lightrag.parser_routing import resolve_stored_document_parser_engine
 
 # use the .env that is inside the current folder
 # allows to use different .env file for each lightrag instance
@@ -2382,6 +2386,7 @@ class LightRAG:
         track_id: str | None = None,
         docs_format: str = FULL_DOCS_FORMAT_RAW,
         lightrag_document_paths: str | list[str] | None = None,
+        parsed_engine: str | list[str] | None = None,
     ) -> str:
         """
         Pipeline for Processing Documents
@@ -2398,6 +2403,7 @@ class LightRAG:
             track_id: tracking ID for monitoring processing status
             docs_format: "raw" (default) or "lightrag"; when "lightrag" content may be empty and content-dedup is skipped
             lightrag_document_paths: paths to LightRAG Document (e.g. .blocks.jsonl dir or base path), when docs_format is lightrag
+            parsed_engine: file extraction engine already used or target engine for pending_parse
 
         Returns:
             str: tracking ID for monitoring processing status
@@ -2415,6 +2421,8 @@ class LightRAG:
             lightrag_document_paths = (
                 [lightrag_document_paths] if lightrag_document_paths else None
             )
+        if isinstance(parsed_engine, str):
+            parsed_engine = [parsed_engine] * len(input)
 
         # If file_paths is provided, ensure it matches the number of documents
         if file_paths is not None:
@@ -2437,6 +2445,16 @@ class LightRAG:
                 raise ValueError(
                     "Number of lightrag_document_paths must match the number of documents"
                 )
+        if parsed_engine is not None and len(parsed_engine) != len(input):
+            raise ValueError(
+                "Number of parsed engines must match the number of documents"
+            )
+
+        def _parsed_engine_at(index: int) -> str | None:
+            if parsed_engine is None:
+                return None
+            engine = str(parsed_engine[index] or "").strip().lower()
+            return engine or None
 
         # 1. Validate ids and build contents (when lightrag: no content dedup, content may be empty)
         if ids is not None:
@@ -2458,13 +2476,14 @@ class LightRAG:
                 lightrag_path = (
                     lightrag_document_paths[i] if lightrag_document_paths else ""
                 ) or path
-                content_str = (input[i] or "").strip() if i < len(input) else ""
                 contents[doc_id] = {
-                    "content": content_str,
+                    "content": FULL_DOCS_CONTENT_STORED_IN_LIGHTRAG_DOCUMENT,
                     "file_path": path,
                     "format": FULL_DOCS_FORMAT_LIGHTRAG,
                     "lightrag_document_path": lightrag_path,
                 }
+                if engine := _parsed_engine_at(i):
+                    contents[doc_id]["parsed_engine"] = engine
         elif ids is not None:
             # Generate contents dict and remove duplicates in one pass
             unique_contents = {}
@@ -2473,14 +2492,15 @@ class LightRAG:
                 if cleaned_content not in unique_contents:
                     unique_contents[cleaned_content] = (id_, path)
 
-            contents = {
-                id_: {
+            contents = {}
+            for i, (content, (id_, file_path)) in enumerate(unique_contents.items()):
+                contents[id_] = {
                     "content": content,
                     "file_path": file_path,
                     "format": FULL_DOCS_FORMAT_RAW,
                 }
-                for content, (id_, file_path) in unique_contents.items()
-            }
+                if engine := _parsed_engine_at(i):
+                    contents[id_]["parsed_engine"] = engine
         elif docs_format == FULL_DOCS_FORMAT_PENDING_PARSE:
             contents = {}
             for i, (doc, path) in enumerate(zip(input, file_paths)):
@@ -2494,6 +2514,8 @@ class LightRAG:
                     "file_path": path,
                     "format": FULL_DOCS_FORMAT_PENDING_PARSE,
                 }
+                if engine := _parsed_engine_at(i):
+                    contents[doc_id]["parsed_engine"] = engine
         else:
             # Clean input text and remove duplicates in one pass
             unique_content_with_paths = {}
@@ -2502,14 +2524,16 @@ class LightRAG:
                 if cleaned_content not in unique_content_with_paths:
                     unique_content_with_paths[cleaned_content] = path
 
-            contents = {
-                compute_mdhash_id(content, prefix="doc-"): {
+            contents = {}
+            for i, (content, path) in enumerate(unique_content_with_paths.items()):
+                doc_id = compute_mdhash_id(content, prefix="doc-")
+                contents[doc_id] = {
                     "content": content,
                     "file_path": path,
                     "format": FULL_DOCS_FORMAT_RAW,
                 }
-                for content, path in unique_content_with_paths.items()
-            }
+                if engine := _parsed_engine_at(i):
+                    contents[doc_id]["parsed_engine"] = engine
 
         # 2. Generate document initial status (without content)
         new_docs: dict[str, Any] = {
@@ -2601,6 +2625,10 @@ class LightRAG:
             if contents[doc_id].get("lightrag_document_path"):
                 full_docs_data[doc_id]["lightrag_document_path"] = contents[doc_id][
                     "lightrag_document_path"
+                ]
+            if contents[doc_id].get("parsed_engine"):
+                full_docs_data[doc_id]["parsed_engine"] = contents[doc_id][
+                    "parsed_engine"
                 ]
         await self.full_docs.upsert(full_docs_data)
         # Persist data to disk immediately
@@ -4151,72 +4179,7 @@ class LightRAG:
     def _resolve_parser_engine(
         self, file_path: str, content_data: dict[str, Any]
     ) -> str:
-        doc_format = content_data.get("format", FULL_DOCS_FORMAT_RAW)
-        if doc_format == FULL_DOCS_FORMAT_LIGHTRAG and content_data.get(
-            "lightrag_document_path"
-        ):
-            return "native"
-
-        explicit_engine = str(content_data.get("parsed_engine") or "").strip().lower()
-        if explicit_engine in {"native", "mineru", "docling"}:
-            return explicit_engine
-
-        file_name = Path(file_path).name
-        m = re.search(r"\.\[([^\]]+)\]\.[^.]+$", file_name)
-        if m:
-            hint = m.group(1).split("-")[0].strip().lower()
-            if hint in {"native", "mineru", "docling"}:
-                return hint
-
-        parser_rules = os.getenv("LIGHTRAG_PARSER", "").strip()
-        if parser_rules:
-            suffix = Path(file_name).suffix.lower().lstrip(".")
-            for item in [x.strip() for x in parser_rules.split(",") if x.strip()]:
-                if ":" not in item:
-                    continue
-                pattern, engine_hint = item.split(":", 1)
-                pattern = pattern.strip().lower()
-                engine = engine_hint.strip().split("-")[0].lower()
-                if engine not in {"native", "mineru", "docling"}:
-                    continue
-                if fnmatch.fnmatch(suffix, pattern):
-                    return engine
-
-        # Auto routing for normal user uploads (without filename hints):
-        # prefer multimodal-capable engines when corresponding service endpoint is configured.
-        suffix = Path(file_name).suffix.lower().lstrip(".")
-        mineru_endpoint = os.getenv("MINERU_ENDPOINT", "").strip()
-        docling_endpoint = os.getenv("DOCLING_ENDPOINT", "").strip()
-
-        # Keep this mapping conservative and practical:
-        # - PDF defaults to MinerU (layout-heavy parsing)
-        # - Office-like docs default to Docling
-        mineru_suffixes = {"pdf"}
-        docling_suffixes = {
-            "doc",
-            "docx",
-            "ppt",
-            "pptx",
-            "xls",
-            "xlsx",
-            "md",
-            "markdown",
-            "html",
-            "htm",
-        }
-
-        if suffix in mineru_suffixes and mineru_endpoint:
-            return "mineru"
-        if suffix in docling_suffixes and docling_endpoint:
-            return "docling"
-
-        # Fallback cross-coverage when only one service is available.
-        if suffix in (mineru_suffixes | docling_suffixes):
-            if docling_endpoint:
-                return "docling"
-            if mineru_endpoint:
-                return "mineru"
-        return "native"
+        return resolve_stored_document_parser_engine(file_path, content_data)
 
     def _get_by_path(self, payload: Any, path: str) -> Any:
         if not path:
@@ -4394,13 +4357,11 @@ class LightRAG:
         self, source_path: str
     ) -> str | None:
         source = Path(source_path)
-        if source.suffix.lower() != ".docx":
-            return None
         try:
             target = await move_file_to_parsed_dir(source, skip_if_already_parsed=True)
         except Exception as e:
             logger.warning(
-                f"[parse] DOCX source archive skipped after full_docs sync: {source_path}: {e}"
+                f"[parse] Source archive skipped after full_docs sync: {source_path}: {e}"
             )
             return None
         if target is None:
@@ -4410,6 +4371,11 @@ class LightRAG:
                 f"[parse] Archived DOCX source after full_docs sync: {source} -> {target}"
             )
         return str(target)
+
+    async def _archive_source_after_full_docs_sync(
+        self, source_path: str
+    ) -> str | None:
+        return await self._archive_docx_source_after_full_docs_sync(source_path)
 
     async def _write_lightrag_document_from_content_list(
         self,
@@ -4803,13 +4769,18 @@ class LightRAG:
             )
 
         # Keep full_docs in sync so restart/reprocess can directly use LightRAG Document.
+        stored_blocks_path = str(blocks_path)
+        try:
+            stored_blocks_path = str(blocks_path.relative_to(Path(self.working_dir)))
+        except ValueError:
+            pass
         await self.full_docs.upsert(
             {
                 doc_id: {
-                    "content": merged_text,
+                    "content": FULL_DOCS_CONTENT_STORED_IN_LIGHTRAG_DOCUMENT,
                     "file_path": file_path,
                     "format": FULL_DOCS_FORMAT_LIGHTRAG,
-                    "lightrag_document_path": str(blocks_path),
+                    "lightrag_document_path": stored_blocks_path,
                     "parsed_engine": engine,
                     "update_time": int(time.time()),
                 }
@@ -4853,6 +4824,9 @@ class LightRAG:
         doc_format = content_data.get("format", FULL_DOCS_FORMAT_RAW)
         if doc_format == FULL_DOCS_FORMAT_LIGHTRAG:
             doc_path = content_data.get("lightrag_document_path") or file_path
+            doc_path = Path(str(doc_path))
+            if not doc_path.is_absolute():
+                doc_path = Path(self.working_dir) / doc_path
             merged_text, blocks_path = await self._load_lightrag_document_content(
                 str(doc_path)
             )
@@ -4894,7 +4868,7 @@ class LightRAG:
                             "content": interchange_text,
                             "file_path": file_path,
                             "format": FULL_DOCS_FORMAT_RAW,
-                            "parsed_engine": "native",
+                            "parsed_engine": PARSER_ENGINE_NATIVE,
                             "update_time": int(time.time()),
                         }
                     }
@@ -4911,13 +4885,9 @@ class LightRAG:
                     "content": interchange_text,
                     "blocks_path": "",
                 }
-            return {
-                "doc_id": doc_id,
-                "file_path": file_path,
-                "format": FULL_DOCS_FORMAT_RAW,
-                "content": content_data.get("content", ""),
-                "blocks_path": "",
-            }
+            raise ValueError(
+                f"Native parser does not support pending file: {file_path}"
+            )
 
         return {
             "doc_id": doc_id,
@@ -4930,162 +4900,132 @@ class LightRAG:
     async def parse_mineru(
         self, doc_id: str, file_path: str, content_data: dict[str, Any]
     ) -> dict[str, Any]:
-        endpoint = os.getenv(
-            "MINERU_ENDPOINT", "https://mineru.net/api/v4/extract/task"
-        ).strip()
-        try:
-            if endpoint:
-                protocol = {
-                    "upload_url": endpoint,
-                    "poll_url_template": os.getenv(
-                        "MINERU_POLL_ENDPOINT",
-                        endpoint + "/{trace_id}",
-                    ),
-                    "poll_method": os.getenv("MINERU_POLL_METHOD", "GET"),
-                    "id_field": os.getenv("MINERU_ID_FIELD", "trace_id"),
-                    "status_field": os.getenv("MINERU_STATUS_FIELD", "status"),
-                    "result_url_field": os.getenv(
-                        "MINERU_RESULT_URL_FIELD", "result_url"
-                    ),
-                    "content_field": os.getenv("MINERU_CONTENT_FIELD", "content"),
-                    "success_values": os.getenv(
-                        "MINERU_SUCCESS_VALUES",
-                        "done,success,succeeded,completed,finished",
-                    ),
-                    "failed_values": os.getenv("MINERU_FAILED_VALUES", "failed,error"),
-                    "poll_interval_seconds": float(
-                        os.getenv("MINERU_POLL_INTERVAL_SECONDS", "2")
-                    ),
-                    "max_polls": int(os.getenv("MINERU_MAX_POLLS", "180")),
-                }
-                source_file_path = self._resolve_source_file_for_parser(file_path)
-                result_text = await self._call_protocol_parse_service(
-                    protocol=protocol,
-                    file_path=source_file_path,
-                )
-                content_list = self._normalize_parser_result_to_content_list(
-                    result_text
-                )
-                if content_list:
-                    return await self._write_lightrag_document_from_content_list(
-                        doc_id=doc_id,
-                        file_path=file_path,
-                        content_list=content_list,
-                        engine="mineru",
-                        source_path=source_file_path,
-                    )
-                if result_text:
-                    # Content is already extracted as raw text and persisted; mark
-                    # parsed_engine="native" so retries skip the remote MinerU call
-                    # via _resolve_parser_engine. The original engine is kept in
-                    # source_parsed_engine for audit.
-                    await self.full_docs.upsert(
-                        {
-                            doc_id: {
-                                "content": str(result_text),
-                                "file_path": file_path,
-                                "format": FULL_DOCS_FORMAT_RAW,
-                                "parsed_engine": "native",
-                                "source_parsed_engine": "mineru",
-                                "update_time": int(time.time()),
-                            }
-                        }
-                    )
-                    await self.full_docs.index_done_callback()
-                    await self._archive_docx_source_after_full_docs_sync(
-                        source_file_path
-                    )
-                    return {
-                        "doc_id": doc_id,
-                        "file_path": file_path,
-                        "format": FULL_DOCS_FORMAT_RAW,
-                        "content": str(result_text),
-                        "blocks_path": "",
-                    }
-        except Exception as e:
-            logger.warning(f"MinerU async service failed, fallback native: {e}")
+        endpoint = os.getenv("MINERU_ENDPOINT", "").strip()
+        if not endpoint:
+            raise ValueError("MINERU_ENDPOINT is required for MinerU parsing")
+        protocol = {
+            "upload_url": endpoint,
+            "poll_url_template": os.getenv(
+                "MINERU_POLL_ENDPOINT",
+                endpoint + "/{trace_id}",
+            ),
+            "poll_method": os.getenv("MINERU_POLL_METHOD", "GET"),
+            "id_field": os.getenv("MINERU_ID_FIELD", "trace_id"),
+            "status_field": os.getenv("MINERU_STATUS_FIELD", "status"),
+            "result_url_field": os.getenv("MINERU_RESULT_URL_FIELD", "result_url"),
+            "content_field": os.getenv("MINERU_CONTENT_FIELD", "content"),
+            "success_values": os.getenv(
+                "MINERU_SUCCESS_VALUES",
+                "done,success,succeeded,completed,finished",
+            ),
+            "failed_values": os.getenv("MINERU_FAILED_VALUES", "failed,error"),
+            "poll_interval_seconds": float(
+                os.getenv("MINERU_POLL_INTERVAL_SECONDS", "2")
+            ),
+            "max_polls": int(os.getenv("MINERU_MAX_POLLS", "180")),
+        }
+        source_file_path = self._resolve_source_file_for_parser(file_path)
+        result_text = await self._call_protocol_parse_service(
+            protocol=protocol,
+            file_path=source_file_path,
+        )
+        content_list = self._normalize_parser_result_to_content_list(result_text)
+        if content_list:
+            return await self._write_lightrag_document_from_content_list(
+                doc_id=doc_id,
+                file_path=file_path,
+                content_list=content_list,
+                engine=PARSER_ENGINE_MINERU,
+                source_path=source_file_path,
+            )
+        if not result_text:
+            raise ValueError(f"MinerU parser returned empty content for {file_path}")
 
-        return await self.parse_native(doc_id, file_path, content_data)
+        await self.full_docs.upsert(
+            {
+                doc_id: {
+                    "content": str(result_text),
+                    "file_path": file_path,
+                    "format": FULL_DOCS_FORMAT_RAW,
+                    "parsed_engine": PARSER_ENGINE_MINERU,
+                    "update_time": int(time.time()),
+                }
+            }
+        )
+        await self.full_docs.index_done_callback()
+        await self._archive_docx_source_after_full_docs_sync(source_file_path)
+        return {
+            "doc_id": doc_id,
+            "file_path": file_path,
+            "format": FULL_DOCS_FORMAT_RAW,
+            "content": str(result_text),
+            "blocks_path": "",
+        }
 
     async def parse_docling(
         self, doc_id: str, file_path: str, content_data: dict[str, Any]
     ) -> dict[str, Any]:
-        endpoint = os.getenv(
-            "DOCLING_ENDPOINT", "http://localhost:8081/v1/convert/file/async"
-        ).strip()
-        try:
-            if endpoint:
-                protocol = {
-                    "upload_url": endpoint,
-                    "poll_url_template": os.getenv(
-                        "DOCLING_POLL_ENDPOINT",
-                        endpoint + "/{task_id}",
-                    ),
-                    "poll_method": os.getenv("DOCLING_POLL_METHOD", "GET"),
-                    "id_field": os.getenv("DOCLING_ID_FIELD", "task_id"),
-                    "status_field": os.getenv("DOCLING_STATUS_FIELD", "status"),
-                    "result_url_field": os.getenv(
-                        "DOCLING_RESULT_URL_FIELD", "result_url"
-                    ),
-                    "content_field": os.getenv("DOCLING_CONTENT_FIELD", "content"),
-                    "success_values": os.getenv(
-                        "DOCLING_SUCCESS_VALUES",
-                        "done,success,succeeded,completed,finished",
-                    ),
-                    "failed_values": os.getenv("DOCLING_FAILED_VALUES", "failed,error"),
-                    "poll_interval_seconds": float(
-                        os.getenv("DOCLING_POLL_INTERVAL_SECONDS", "2")
-                    ),
-                    "max_polls": int(os.getenv("DOCLING_MAX_POLLS", "180")),
-                }
-                source_file_path = self._resolve_source_file_for_parser(file_path)
-                result_text = await self._call_protocol_parse_service(
-                    protocol=protocol,
-                    file_path=source_file_path,
-                )
-                content_list = self._normalize_parser_result_to_content_list(
-                    result_text
-                )
-                if content_list:
-                    return await self._write_lightrag_document_from_content_list(
-                        doc_id=doc_id,
-                        file_path=file_path,
-                        content_list=content_list,
-                        engine="docling",
-                        source_path=source_file_path,
-                    )
-                if result_text:
-                    # Same retry-skip rationale as in parse_mineru: parsed_engine
-                    # is normalized to "native" because the raw content is already
-                    # in full_docs; the real upstream engine is kept in
-                    # source_parsed_engine for audit.
-                    await self.full_docs.upsert(
-                        {
-                            doc_id: {
-                                "content": str(result_text),
-                                "file_path": file_path,
-                                "format": FULL_DOCS_FORMAT_RAW,
-                                "parsed_engine": "native",
-                                "source_parsed_engine": "docling",
-                                "update_time": int(time.time()),
-                            }
-                        }
-                    )
-                    await self.full_docs.index_done_callback()
-                    await self._archive_docx_source_after_full_docs_sync(
-                        source_file_path
-                    )
-                    return {
-                        "doc_id": doc_id,
-                        "file_path": file_path,
-                        "format": FULL_DOCS_FORMAT_RAW,
-                        "content": str(result_text),
-                        "blocks_path": "",
-                    }
-        except Exception as e:
-            logger.warning(f"Docling async service failed, fallback native: {e}")
+        endpoint = os.getenv("DOCLING_ENDPOINT", "").strip()
+        if not endpoint:
+            raise ValueError("DOCLING_ENDPOINT is required for Docling parsing")
+        protocol = {
+            "upload_url": endpoint,
+            "poll_url_template": os.getenv(
+                "DOCLING_POLL_ENDPOINT",
+                endpoint + "/{task_id}",
+            ),
+            "poll_method": os.getenv("DOCLING_POLL_METHOD", "GET"),
+            "id_field": os.getenv("DOCLING_ID_FIELD", "task_id"),
+            "status_field": os.getenv("DOCLING_STATUS_FIELD", "status"),
+            "result_url_field": os.getenv("DOCLING_RESULT_URL_FIELD", "result_url"),
+            "content_field": os.getenv("DOCLING_CONTENT_FIELD", "content"),
+            "success_values": os.getenv(
+                "DOCLING_SUCCESS_VALUES",
+                "done,success,succeeded,completed,finished",
+            ),
+            "failed_values": os.getenv("DOCLING_FAILED_VALUES", "failed,error"),
+            "poll_interval_seconds": float(
+                os.getenv("DOCLING_POLL_INTERVAL_SECONDS", "2")
+            ),
+            "max_polls": int(os.getenv("DOCLING_MAX_POLLS", "180")),
+        }
+        source_file_path = self._resolve_source_file_for_parser(file_path)
+        result_text = await self._call_protocol_parse_service(
+            protocol=protocol,
+            file_path=source_file_path,
+        )
+        content_list = self._normalize_parser_result_to_content_list(result_text)
+        if content_list:
+            return await self._write_lightrag_document_from_content_list(
+                doc_id=doc_id,
+                file_path=file_path,
+                content_list=content_list,
+                engine=PARSER_ENGINE_DOCLING,
+                source_path=source_file_path,
+            )
+        if not result_text:
+            raise ValueError(f"Docling parser returned empty content for {file_path}")
 
-        return await self.parse_native(doc_id, file_path, content_data)
+        await self.full_docs.upsert(
+            {
+                doc_id: {
+                    "content": str(result_text),
+                    "file_path": file_path,
+                    "format": FULL_DOCS_FORMAT_RAW,
+                    "parsed_engine": PARSER_ENGINE_DOCLING,
+                    "update_time": int(time.time()),
+                }
+            }
+        )
+        await self.full_docs.index_done_callback()
+        await self._archive_docx_source_after_full_docs_sync(source_file_path)
+        return {
+            "doc_id": doc_id,
+            "file_path": file_path,
+            "format": FULL_DOCS_FORMAT_RAW,
+            "content": str(result_text),
+            "blocks_path": "",
+        }
 
     async def _run_multimodal_postprocess_hook(
         self,
