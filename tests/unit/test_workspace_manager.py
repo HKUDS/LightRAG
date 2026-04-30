@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from lightrag.api.utils import sanitize_workspace_name, WorkspaceNameError
 from lightrag.api.workspace_manager import WorkspaceManager, WorkspaceCapacityError
+
+pytestmark = pytest.mark.offline
 
 
 class MockLightRAG:
@@ -19,12 +20,16 @@ class MockLightRAG:
         self.finalize_called = False
         self._finalize_task = None
 
+    async def initialize_storages(self) -> None:
+        """Mock initialize method."""
+        pass
+
     async def finalize_storages(self) -> None:
         """Mock finalize method that sets a flag."""
         self.finalize_called = True
 
 
-async def mock_factory(workspace: str) -> MockLightRAG:
+def mock_factory(workspace: str) -> MockLightRAG:
     """Factory function that creates MockLightRAG instances."""
     return MockLightRAG(workspace)
 
@@ -85,9 +90,7 @@ class TestSanitizeWorkspaceName:
 
     def test_special_chars_rejected(self) -> None:
         """Test that special characters are rejected."""
-        with pytest.raises(
-            WorkspaceNameError, match="only lowercase letters.*allowed"
-        ):
+        with pytest.raises(WorkspaceNameError, match="only lowercase letters.*allowed"):
             sanitize_workspace_name("ws!@#")
 
     # -------------------------------------------------------------------------
@@ -101,16 +104,12 @@ class TestSanitizeWorkspaceName:
 
     def test_unicode_chars_rejected(self) -> None:
         """Test that unicode characters are rejected."""
-        with pytest.raises(
-            WorkspaceNameError, match="only lowercase letters.*allowed"
-        ):
+        with pytest.raises(WorkspaceNameError, match="only lowercase letters.*allowed"):
             sanitize_workspace_name("workspace日本語")
 
     def test_mixed_valid_invalid_space_rejected(self) -> None:
         """Test that space in name is rejected."""
-        with pytest.raises(
-            WorkspaceNameError, match="only lowercase letters.*allowed"
-        ):
+        with pytest.raises(WorkspaceNameError, match="only lowercase letters.*allowed"):
             sanitize_workspace_name("ws-1 test")
 
     def test_65_chars_rejected(self) -> None:
@@ -172,8 +171,8 @@ class TestWorkspaceManager:
         """Test LRU eviction when cache reaches capacity."""
         # Create 3 workspaces (fills cache)
         ws_a = await small_manager.get_or_create("ws-a")
-        ws_b = await small_manager.get_or_create("ws-b")
-        ws_c = await small_manager.get_or_create("ws-c")
+        await small_manager.get_or_create("ws-b")
+        await small_manager.get_or_create("ws-c")
 
         # All should be in cache
         assert small_manager.get_stats()["active_instances"] == 3
@@ -182,7 +181,7 @@ class TestWorkspaceManager:
         small_manager.release("ws-a")
 
         # Create ws-d - should evict ws-a (LRU with ref_count=0)
-        ws_d = await small_manager.get_or_create("ws-d")
+        await small_manager.get_or_create("ws-d")
 
         # ws-d should be in cache
         assert small_manager.get_stats()["active_instances"] == 3
@@ -203,8 +202,8 @@ class TestWorkspaceManager:
         ws1 = await small_manager.get_or_create("ws-1")
 
         # Fill cache with others (all will have ref_count > 0)
-        ws2 = await small_manager.get_or_create("ws-2")
-        ws3 = await small_manager.get_or_create("ws-3")
+        await small_manager.get_or_create("ws-2")
+        await small_manager.get_or_create("ws-3")
 
         # Cache is full, all have ref_count > 0
         assert small_manager.get_stats()["active_instances"] == 3
@@ -213,7 +212,7 @@ class TestWorkspaceManager:
         small_manager.release("ws-2")
 
         # Create ws-4 - should evict ws-2 (LRU with ref_count=0)
-        ws4 = await small_manager.get_or_create("ws-4")
+        await small_manager.get_or_create("ws-4")
         assert small_manager.get_stats()["active_instances"] == 3
 
         # ws-1 should NOT have been evicted (ref_count > 0)
@@ -286,7 +285,7 @@ class TestWorkspaceManager:
         small_manager.release("ws-2")
 
         # Create ws-4 - should evict ws-2
-        ws_4 = await small_manager.get_or_create("ws-4")
+        await small_manager.get_or_create("ws-4")
 
         # Verify state
         assert small_manager.get_stats()["active_instances"] == 3
@@ -296,7 +295,9 @@ class TestWorkspaceManager:
 
         # ws-1 should NOT be evicted (was most recently accessed)
         assert ws_1.finalize_called is False
-        assert small_manager.get_stats()["ref_counts"]["ws-1"] == 2  # created + accessed
+        assert (
+            small_manager.get_stats()["ref_counts"]["ws-1"] == 2
+        )  # created + accessed
 
         # ws-3 should NOT be evicted
         assert ws_3.finalize_called is False
@@ -313,7 +314,7 @@ class TestWorkspaceManager:
         # Get ws-a 3 times → ref_count should be 3
         await fresh_manager.get_or_create("ws-a")
         await fresh_manager.get_or_create("ws-a")
-        ws_a = await fresh_manager.get_or_create("ws-a")
+        await fresh_manager.get_or_create("ws-a")
 
         assert fresh_manager.get_stats()["ref_counts"]["ws-a"] == 3
 
@@ -391,8 +392,8 @@ class TestWorkspaceManager:
     @pytest.mark.asyncio
     async def test_release_decrements_ref_count(self, fresh_manager) -> None:
         """Test that release decrements the reference count."""
-        instance1 = await fresh_manager.get_or_create("ws-a")
-        instance2 = await fresh_manager.get_or_create("ws-a")
+        await fresh_manager.get_or_create("ws-a")
+        await fresh_manager.get_or_create("ws-a")
 
         assert fresh_manager.get_stats()["ref_counts"]["ws-a"] == 2
 
@@ -478,13 +479,13 @@ class TestWorkspaceManager:
     async def test_get_stats_accuracy(self, fresh_manager) -> None:
         """Test that get_stats returns accurate information."""
         # Create ws-a (cache miss)
-        ws_a = await fresh_manager.get_or_create("ws-a")
+        await fresh_manager.get_or_create("ws-a")
 
         # Get ws-a again (cache hit)
         await fresh_manager.get_or_create("ws-a")
 
         # Create ws-b (cache miss)
-        ws_b = await fresh_manager.get_or_create("ws-b")
+        await fresh_manager.get_or_create("ws-b")
 
         # Get ws-b again (cache hit)
         await fresh_manager.get_or_create("ws-b")
@@ -514,9 +515,9 @@ class TestWorkspaceManager:
         - ref_counts dictionary is accurate
         """
         # Create 3 workspaces (3 cache misses)
-        ws_1 = await small_manager.get_or_create("ws-1")
-        ws_2 = await small_manager.get_or_create("ws-2")
-        ws_3 = await small_manager.get_or_create("ws-3")
+        await small_manager.get_or_create("ws-1")
+        await small_manager.get_or_create("ws-2")
+        await small_manager.get_or_create("ws-3")
 
         # Get ws-1 twice (2 cache hits)
         await small_manager.get_or_create("ws-1")
@@ -538,7 +539,7 @@ class TestWorkspaceManager:
         small_manager.release("ws-2")
 
         # Create ws-4 → should evict ws-2 (eviction #1)
-        ws_4 = await small_manager.get_or_create("ws-4")
+        await small_manager.get_or_create("ws-4")
 
         stats = small_manager.get_stats()
         assert stats["cache_misses"] == 4
@@ -555,7 +556,7 @@ class TestWorkspaceManager:
         small_manager.release("ws-3")
 
         # Create ws-5 → should evict ws-3 (eviction #2)
-        ws_5 = await small_manager.get_or_create("ws-5")
+        await small_manager.get_or_create("ws-5")
 
         stats = small_manager.get_stats()
         assert stats["evictions"] == 2
@@ -610,11 +611,9 @@ class TestWorkspaceManager:
         """
         factory_call_count = 0
 
-        async def counting_factory(workspace: str) -> MockLightRAG:
+        def counting_factory(workspace: str) -> MockLightRAG:
             nonlocal factory_call_count
             factory_call_count += 1
-            # Small delay to increase chance of race condition
-            await asyncio.sleep(0.01)
             return MockLightRAG(workspace)
 
         manager = WorkspaceManager(factory=counting_factory, max_instances=10)
@@ -624,9 +623,7 @@ class TestWorkspaceManager:
             return await manager.get_or_create(workspace_name)
 
         # Launch 10 concurrent requests
-        results = await asyncio.gather(
-            *[get_workspace() for _ in range(10)]
-        )
+        results = await asyncio.gather(*[get_workspace() for _ in range(10)])
 
         # Factory should be called exactly once
         assert factory_call_count == 1
@@ -688,14 +685,16 @@ class TestWorkspaceManager:
         """
         factory_call_count = 0
 
-        async def failing_then_succeeding_factory(workspace: str) -> MockLightRAG:
+        def failing_then_succeeding_factory(workspace: str) -> MockLightRAG:
             nonlocal factory_call_count
             factory_call_count += 1
             if factory_call_count == 1:
                 raise RuntimeError("factory boom")
             return MockLightRAG(workspace)
 
-        manager = WorkspaceManager(factory=failing_then_succeeding_factory, max_instances=10)
+        manager = WorkspaceManager(
+            factory=failing_then_succeeding_factory, max_instances=10
+        )
 
         # First call should raise RuntimeError
         with pytest.raises(RuntimeError, match="factory boom"):
@@ -784,7 +783,9 @@ class TestWorkspaceManager:
     # -------------------------------------------------------------------------
 
     @pytest.mark.asyncio
-    async def test_get_or_create_rejects_invalid_workspace_name(self, fresh_manager) -> None:
+    async def test_get_or_create_rejects_invalid_workspace_name(
+        self, fresh_manager
+    ) -> None:
         """Test that get_or_create raises WorkspaceNameError for invalid names.
 
         Since get_or_create calls sanitize_workspace_name internally,

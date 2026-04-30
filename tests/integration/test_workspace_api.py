@@ -16,8 +16,8 @@ All external services are mocked.
 from __future__ import annotations
 
 import asyncio
-from typing import Any, AsyncGenerator
-from unittest.mock import AsyncMock, MagicMock
+from typing import AsyncGenerator
+from unittest.mock import AsyncMock
 
 import pytest
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
@@ -45,17 +45,16 @@ class MockLightRAG:
         self.finalize_called = False
         self.some_method = AsyncMock(return_value={"status": "ok"})
 
+    async def initialize_storages(self) -> None:
+        """Mock initialize method."""
+        pass
+
     async def finalize_storages(self) -> None:
         """Mock finalize method."""
         self.finalize_called = True
 
 
-# =============================================================================
-# Factory Function
-# =============================================================================
-
-
-async def mock_factory(workspace: str) -> MockLightRAG:
+def mock_factory(workspace: str) -> MockLightRAG:
     """Factory function that creates MockLightRAG instances."""
     return MockLightRAG(workspace)
 
@@ -204,7 +203,9 @@ def create_test_app(
             rag = await workspace_mgr.get_or_create(ws)
             # Hold the ref for the specified duration
             await asyncio.sleep(duration)
-            return JSONResponse(content={"workspace": rag.workspace, "held_for": duration})
+            return JSONResponse(
+                content={"workspace": rag.workspace, "held_for": duration}
+            )
         except WorkspaceCapacityError:
             return JSONResponse(
                 status_code=503, content={"error": "All workspace slots busy"}
@@ -658,7 +659,11 @@ class TestCapacityLimit:
         # max_instances=2, use /test/hold-ref to hold refs via HTTP
         # Start 2 concurrent requests that hold refs
         tasks = [
-            ac.post("/test/hold-ref", params={"duration": 5.0}, headers={"LIGHTRAG-WORKSPACE": f"holder-{i}"})
+            ac.post(
+                "/test/hold-ref",
+                params={"duration": 5.0},
+                headers={"LIGHTRAG-WORKSPACE": f"holder-{i}"},
+            )
             for i in range(2)
         ]
 
@@ -790,7 +795,11 @@ class TestLRUEviction:
 
         # Start 2 concurrent requests that hold refs for ws-1 and ws-2
         hold_tasks = [
-            ac.post("/test/hold-ref", params={"duration": 5.0}, headers={"LIGHTRAG-WORKSPACE": f"ws-{i}"})
+            ac.post(
+                "/test/hold-ref",
+                params={"duration": 5.0},
+                headers={"LIGHTRAG-WORKSPACE": f"ws-{i}"},
+            )
             for i in range(1, 3)  # ws-1 and ws-2
         ]
         pending = [asyncio.create_task(t) for t in hold_tasks]

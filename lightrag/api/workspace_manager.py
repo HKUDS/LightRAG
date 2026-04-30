@@ -7,7 +7,7 @@ import logging
 from collections import OrderedDict
 from typing import Any, Awaitable, Callable
 
-from lightrag.api.utils import sanitize_workspace_name, WorkspaceNameError
+from lightrag.api.utils import sanitize_workspace_name
 
 logger = logging.getLogger(__name__)
 

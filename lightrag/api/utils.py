@@ -6,7 +6,11 @@ import re
 
 from fastapi import HTTPException, Request
 
-__all__ = ["sanitize_workspace_name", "WorkspaceNameError", "extract_workspace_from_header"]
+__all__ = [
+    "sanitize_workspace_name",
+    "WorkspaceNameError",
+    "extract_workspace_from_header",
+]
 
 
 class WorkspaceNameError(ValueError):
@@ -82,4 +86,3 @@ def extract_workspace_from_header(request: Request) -> str:
         except WorkspaceNameError as e:
             raise HTTPException(status_code=400, detail=str(e))
     return ""
-
