@@ -107,6 +107,7 @@ def test_phase1_schema_guards_append_only_and_nullable_uniques():
 
     assert "little_bull_prevent_usage_ledger_update" in sql
     assert "trg_little_bull_usage_ledger_append_only" in sql
+    assert "idx_little_bull_llm_usage_ledger_group_scope" in sql
     assert "uq_little_bull_provider_credentials_tenant" in sql
     assert "uq_little_bull_command_palette_actions_tenant" in sql
     assert "uq_little_bull_agent_context_budgets_default" in sql
@@ -120,6 +121,11 @@ def test_phase1_schema_guards_append_only_and_nullable_uniques():
     assert "idx_little_bull_knowledge_trail_steps_document" in sql
     assert "idx_little_bull_knowledge_trail_steps_canvas" in sql
     assert "idx_little_bull_knowledge_inbox_items_source" in sql
+    insert_source = inspect.getsource(admin_store.LittleBullAdminStore.insert_llm_usage_ledger)
+    reserve_source = inspect.getsource(admin_store.LittleBullAdminStore.reserve_llm_usage_budget)
+    assert "llm_usage_ledger" in insert_source
+    assert insert_source.index("pg_advisory_xact_lock") < insert_source.index("created_at = utc_now()")
+    assert reserve_source.index("llm_usage_ledger") < reserve_source.index("created_at = utc_now()")
 
 
 def test_phase8_admin_store_upserts_have_id_update_paths_and_scope_guards():

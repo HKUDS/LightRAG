@@ -401,6 +401,8 @@ class FakeAdminStore:
         agent_id: str | None = None,
         model_id: str | None = None,
         operation: str | None = None,
+        group_id: str | None = None,
+        subgroup_id: str | None = None,
     ):
         return [
             entry
@@ -411,6 +413,12 @@ class FakeAdminStore:
             and (agent_id is None or entry.get("agent_id") == agent_id)
             and (model_id is None or entry.get("model_id") == model_id)
             and (operation is None or entry.get("operation") == operation)
+            and (group_id is None or entry.get("group_id") == group_id or entry.get("metadata", {}).get("group_id") == group_id)
+            and (
+                subgroup_id is None
+                or entry.get("subgroup_id") == subgroup_id
+                or entry.get("metadata", {}).get("subgroup_id") == subgroup_id
+            )
         ]
 
     async def insert_llm_usage_ledger(
@@ -427,6 +435,8 @@ class FakeAdminStore:
             "usage_ledger_id": payload.get("usage_ledger_id") or f"ledger-{len(self.usage_ledger) + 1}",
             "tenant_id": tenant_id,
             "workspace_id": workspace_id,
+            "group_id": payload.get("group_id"),
+            "subgroup_id": payload.get("subgroup_id"),
             "user_id": payload.get("user_id") or user_id,
             "previous_ledger_hash": previous_hash,
             "ledger_hash": f"sha256:ledger-{len(self.usage_ledger) + 1}",
@@ -3052,6 +3062,208 @@ async def test_little_bull_knowledge_trail_scope_and_step_ids_cannot_cross_trail
 
 
 @pytest.mark.asyncio
+async def test_little_bull_obsidian_graph_scopes_filters_and_focus_without_data_plane(tmp_path):
+    principal, service = await _principal_and_service_with_admin_store(tmp_path)
+    group, subgroup = await _create_group_and_subgroup(service, principal)
+    other_subgroup = await service.upsert_knowledge_subgroup(
+        principal,
+        workspace_id="default",
+        payload=LittleBullKnowledgeSubgroupRequest(
+            group_id=group.group_id,
+            name="Outro",
+            slug="outro",
+        ),
+    )
+    note_a = await service.upsert_markdown_note(
+        principal,
+        workspace_id="default",
+        payload=LittleBullMarkdownNoteRequest(
+            title="Alpha",
+            slug="alpha",
+            group_id=group.group_id,
+            subgroup_id=subgroup.subgroup_id,
+            markdown="# Alpha",
+        ),
+    )
+    note_b = await service.upsert_markdown_note(
+        principal,
+        workspace_id="default",
+        payload=LittleBullMarkdownNoteRequest(
+            title="Beta",
+            slug="beta",
+            group_id=group.group_id,
+            subgroup_id=subgroup.subgroup_id,
+            markdown="# Beta",
+        ),
+    )
+    other_note = await service.upsert_markdown_note(
+        principal,
+        workspace_id="default",
+        payload=LittleBullMarkdownNoteRequest(
+            title="Outro Escopo",
+            slug="outro-escopo",
+            group_id=group.group_id,
+            subgroup_id=other_subgroup.subgroup_id,
+            markdown="# Fora",
+        ),
+    )
+    document = await service.admin_store.register_document(
+        {
+            "group_id": group.group_id,
+            "subgroup_id": subgroup.subgroup_id,
+            "title": "fonte.md",
+            "source_uri": "fonte.md",
+            "source_kind": "upload",
+            "mime_type": "text/markdown",
+            "content_hash": "hash",
+            "confidentiality": "normal",
+            "status": "processed",
+            "metadata": {},
+        },
+        tenant_id="default",
+        workspace_id="default",
+        user_id=principal.user_id,
+    )
+    await service.upsert_backlink(
+        principal,
+        workspace_id="default",
+        payload=LittleBullBacklinkRequest(
+            source_kind="note",
+            source_id=note_a.registry.note_id,
+            target_kind="note",
+            target_id=note_b.registry.note_id,
+            link_text="Alpha para Beta",
+            origin_type="manual",
+            confidence=0.91,
+        ),
+    )
+    await service.upsert_backlink(
+        principal,
+        workspace_id="default",
+        payload=LittleBullBacklinkRequest(
+            source_kind="note",
+            source_id=note_a.registry.note_id,
+            target_kind="document",
+            target_id=document["document_id"],
+            link_text="Fonte",
+            origin_type="wikilink",
+        ),
+    )
+    await service.admin_store.upsert_backlink(
+        {
+            "source_kind": "note",
+            "source_id": note_a.registry.note_id,
+            "target_kind": "note",
+            "target_id": other_note.registry.note_id,
+            "link_text": "Fora",
+            "origin_type": "manual",
+        },
+        tenant_id="default",
+        workspace_id="default",
+        user_id=principal.user_id,
+    )
+    trail = await service.upsert_knowledge_trail(
+        principal,
+        workspace_id="default",
+        payload=LittleBullKnowledgeTrailRequest(
+            title="Leia Isto Antes",
+            slug="leia-isto-antes",
+            group_id=group.group_id,
+            subgroup_id=subgroup.subgroup_id,
+        ),
+    )
+    await service.upsert_knowledge_trail_step(
+        principal,
+        workspace_id="default",
+        knowledge_trail_id=trail.knowledge_trail_id,
+        payload=LittleBullKnowledgeTrailStepRequest(
+            step_order=0,
+            title="Comece pela Alpha",
+            step_kind="note",
+            note_id=note_a.registry.note_id,
+        ),
+    )
+
+    central_node_id = f"note:{note_a.registry.note_id}"
+    graph = await service.get_obsidian_graph(
+        principal,
+        workspace_id="default",
+        scope="subgroup",
+        group_id=group.group_id,
+        subgroup_id=subgroup.subgroup_id,
+        central_node_id=central_node_id,
+    )
+
+    assert graph.scope == "subgroup"
+    assert service.rag.query_calls == 0
+    assert {node.node_id for node in graph.nodes} == {
+        central_node_id,
+        f"note:{note_b.registry.note_id}",
+        f"document:{document['document_id']}",
+        f"trail:{trail.knowledge_trail_id}",
+    }
+    assert f"note:{other_note.registry.note_id}" not in {node.node_id for node in graph.nodes}
+    assert {edge.origin_type for edge in graph.edges} == {"manual", "wikilink", "trail_step"}
+    assert graph.chat_context == {
+        "enabled": True,
+        "focus_node_id": central_node_id,
+        "focus_label": "Alpha",
+        "neighbor_count": 3,
+        "edge_count": 3,
+        "context_kind": "obsidian_graph",
+    }
+    assert len(graph.clusters) == 1
+    assert graph.clusters[0].node_count == 4
+    assert graph.trails == [
+        {
+            "knowledge_trail_id": trail.knowledge_trail_id,
+            "title": "Leia Isto Antes",
+            "trail_type": "study",
+            "node_ids": [central_node_id],
+        }
+    ]
+
+    manual_graph = await service.get_obsidian_graph(
+        principal,
+        workspace_id="default",
+        scope="subgroup",
+        group_id=group.group_id,
+        subgroup_id=subgroup.subgroup_id,
+        central_node_id=central_node_id,
+        origin_type="manual",
+    )
+
+    assert {edge.origin_type for edge in manual_graph.edges} == {"manual"}
+    assert {node.node_id for node in manual_graph.nodes} == {
+        central_node_id,
+        f"note:{note_b.registry.note_id}",
+    }
+
+
+@pytest.mark.asyncio
+async def test_little_bull_obsidian_graph_rejects_invalid_scoped_requests(tmp_path):
+    principal, service = await _principal_and_service_with_admin_store(tmp_path)
+    group, _subgroup = await _create_group_and_subgroup(service, principal)
+
+    with pytest.raises(HTTPException) as exc:
+        await service.get_obsidian_graph(
+            principal,
+            workspace_id="default",
+            scope="group",
+        )
+    assert exc.value.status_code == 422
+
+    with pytest.raises(HTTPException) as exc:
+        await service.get_obsidian_graph(
+            principal,
+            workspace_id="default",
+            scope="subgroup",
+            group_id=group.group_id,
+        )
+    assert exc.value.status_code == 422
+
+
+@pytest.mark.asyncio
 async def test_little_bull_inbox_validates_refs_status_and_filters(tmp_path):
     principal, service = await _principal_and_service_with_admin_store(tmp_path)
     group, subgroup = await _create_group_and_subgroup(service, principal)
@@ -4300,6 +4512,8 @@ async def test_little_bull_cost_summary_aggregates_periods_and_dimensions(tmp_pa
                 "usage_ledger_id": "ledger-today",
                 "tenant_id": "default",
                 "workspace_id": "default",
+                "group_id": group.group_id,
+                "subgroup_id": subgroup.subgroup_id,
                 "user_id": principal.user_id,
                 "agent_id": agent.agent_id,
                 "provider": "openrouter",
@@ -4318,6 +4532,8 @@ async def test_little_bull_cost_summary_aggregates_periods_and_dimensions(tmp_pa
                 "usage_ledger_id": "ledger-week",
                 "tenant_id": "default",
                 "workspace_id": "default",
+                "group_id": group.group_id,
+                "subgroup_id": subgroup.subgroup_id,
                 "user_id": principal.user_id,
                 "agent_id": agent.agent_id,
                 "provider": "openrouter",
@@ -4333,9 +4549,31 @@ async def test_little_bull_cost_summary_aggregates_periods_and_dimensions(tmp_pa
                 "created_at": now - timedelta(days=3),
             },
             {
+                "usage_ledger_id": "ledger-legacy-metadata-scope",
+                "tenant_id": "default",
+                "workspace_id": "default",
+                "group_id": None,
+                "subgroup_id": None,
+                "user_id": principal.user_id,
+                "agent_id": agent.agent_id,
+                "provider": "openrouter",
+                "model_id": "openai/model-legacy-metadata",
+                "operation": "agent_query",
+                "prompt_tokens": 120,
+                "completion_tokens": 30,
+                "total_tokens": 150,
+                "estimated_cost_usd": 0.03,
+                "actual_cost_usd": None,
+                "currency": "USD",
+                "metadata": {"group_id": group.group_id, "subgroup_id": subgroup.subgroup_id},
+                "created_at": now - timedelta(days=2),
+            },
+            {
                 "usage_ledger_id": "ledger-old",
                 "tenant_id": "default",
                 "workspace_id": "default",
+                "group_id": None,
+                "subgroup_id": None,
                 "user_id": "other-user",
                 "agent_id": None,
                 "provider": "openrouter",
@@ -4354,6 +4592,8 @@ async def test_little_bull_cost_summary_aggregates_periods_and_dimensions(tmp_pa
                 "usage_ledger_id": "ledger-other-workspace",
                 "tenant_id": "default",
                 "workspace_id": "other",
+                "group_id": group.group_id,
+                "subgroup_id": subgroup.subgroup_id,
                 "user_id": principal.user_id,
                 "agent_id": agent.agent_id,
                 "provider": "openrouter",
@@ -4373,18 +4613,22 @@ async def test_little_bull_cost_summary_aggregates_periods_and_dimensions(tmp_pa
 
     summary = await service.summarize_costs(principal, workspace_id="default")
 
-    assert summary.periods["total"].request_count == 3
-    assert summary.periods["total"].cost_usd == 0.17
-    assert summary.periods["month"].cost_usd == 0.07
-    assert summary.periods["last_7_days"].cost_usd == 0.07
+    assert summary.periods["total"].request_count == 4
+    assert summary.periods["total"].cost_usd == 0.20
+    assert summary.periods["total"].estimated_cost_usd == 0.21
+    assert summary.periods["total"].actual_cost_usd == 0.05
+    assert summary.periods["month"].cost_usd == 0.10
+    assert summary.periods["last_7_days"].cost_usd == 0.10
     assert summary.periods["today"].cost_usd == 0.02
     principal_user = next(item for item in summary.by_user if item.key == principal.user_id)
-    assert principal_user.cost_usd == 0.07
+    assert principal_user.cost_usd == 0.10
+    agent_bucket = next(item for item in summary.by_agent if item.key == agent.agent_id)
+    assert agent_bucket.cost_usd == 0.10
     assert summary.by_model[0].key == "openai/model-old"
     scoped_group = next(
         item for item in summary.by_group_subgroup if item.key == f"{group.group_id}:{subgroup.subgroup_id}"
     )
-    assert scoped_group.cost_usd == 0.07
+    assert scoped_group.cost_usd == 0.10
     assert {item.key for item in summary.by_operation} == {"agent_query", "embedding_reindex"}
 
     scoped = await service.summarize_costs(
@@ -4394,8 +4638,8 @@ async def test_little_bull_cost_summary_aggregates_periods_and_dimensions(tmp_pa
         subgroup_id=subgroup.subgroup_id,
     )
 
-    assert scoped.periods["total"].request_count == 2
-    assert scoped.periods["total"].cost_usd == 0.07
+    assert scoped.periods["total"].request_count == 3
+    assert scoped.periods["total"].cost_usd == 0.10
     assert scoped.by_operation[0].key == "agent_query"
     events = await service.audit.list(tenant_id="default", workspace_id="default")
     assert any(event.result == "cost_summary" for event in events)

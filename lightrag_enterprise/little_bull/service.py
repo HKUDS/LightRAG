@@ -115,6 +115,10 @@ from .models import (
     LittleBullMarkdownNoteRequest,
     LittleBullMarkdownNoteResponse,
     LittleBullModelSetting,
+    LittleBullGraphClusterSummary,
+    LittleBullGraphEdge,
+    LittleBullGraphNode,
+    LittleBullObsidianGraphResponse,
     LittleBullProvenancePanel,
     LittleBullQueryRequest,
     LittleBullQueryResponse,
@@ -3001,6 +3005,8 @@ class LittleBullService:
             agent_id=agent_id,
             model_id=model_id,
             operation=operation,
+            group_id=group_id,
+            subgroup_id=subgroup_id,
         )
         filters = {
             "user_id": user_id,
@@ -3347,10 +3353,12 @@ class LittleBullService:
             label = f"{provider}/{model_id}" if provider else model_id
             return model_id, label, {"provider": provider, "model_id": model_id}
         if dimension == "group_subgroup":
-            group_id = metadata.get("group_id") or "unscoped"
-            subgroup_id = metadata.get("subgroup_id") or "unscoped"
+            row_group_id = row.get("group_id") or metadata.get("group_id")
+            row_subgroup_id = row.get("subgroup_id") or metadata.get("subgroup_id")
+            group_id = row_group_id or "unscoped"
+            subgroup_id = row_subgroup_id or "unscoped"
             key = f"{group_id}:{subgroup_id}"
-            return key, key, {"group_id": metadata.get("group_id"), "subgroup_id": metadata.get("subgroup_id")}
+            return key, key, {"group_id": row_group_id, "subgroup_id": row_subgroup_id}
         key = str(row.get("operation") or "unknown")
         return key, key, {"operation": row.get("operation")}
 
@@ -3363,9 +3371,11 @@ class LittleBullService:
         subgroup_id: str | None,
     ) -> bool:
         metadata = cls._ledger_metadata(row)
-        if group_id and metadata.get("group_id") != group_id:
+        row_group_id = row.get("group_id") or metadata.get("group_id")
+        row_subgroup_id = row.get("subgroup_id") or metadata.get("subgroup_id")
+        if group_id and row_group_id != group_id:
             return False
-        if subgroup_id and metadata.get("subgroup_id") != subgroup_id:
+        if subgroup_id and row_subgroup_id != subgroup_id:
             return False
         return True
 
@@ -3622,6 +3632,8 @@ class LittleBullService:
         return {
             "user_id": user_id,
             "agent_id": agent_config.get("agent_id"),
+            "group_id": scope_metadata.get("group_id"),
+            "subgroup_id": scope_metadata.get("subgroup_id"),
             "model_setting_id": (model_setting or {}).get("model_setting_id"),
             "provider": (model_setting or {}).get("provider") or "runtime",
             "model_id": (model_setting or {}).get("model_id") or effective_model_profile,
@@ -4073,6 +4085,297 @@ class LittleBullService:
             metadata={"label": label, "max_depth": max_depth, "max_nodes": max_nodes},
         )
         return graph
+
+    async def get_obsidian_graph(
+        self,
+        principal: Principal,
+        *,
+        workspace_id: str,
+        scope: str = "workspace",
+        group_id: str | None = None,
+        subgroup_id: str | None = None,
+        central_node_id: str | None = None,
+        origin_type: str | None = None,
+        max_nodes: int = 500,
+    ) -> LittleBullObsidianGraphResponse:
+        self._require(principal, ACTIVITY_DOCUMENT_READ, workspace_id)
+        tenant_id, workspace_id = await self._existing_workspace_scope(workspace_id)
+        normalized_scope = scope if scope in {"global", "workspace", "group", "subgroup"} else "workspace"
+        if normalized_scope == "group" and not group_id:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="group scope requires group_id.")
+        if normalized_scope == "subgroup" and (not group_id or not subgroup_id):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="subgroup scope requires group_id and subgroup_id.",
+            )
+        if subgroup_id and not group_id:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="subgroup_id requires group_id.")
+        if group_id:
+            await self._require_existing_group(tenant_id=tenant_id, workspace_id=workspace_id, group_id=group_id)
+        if subgroup_id:
+            await self._require_existing_subgroup(
+                tenant_id=tenant_id,
+                workspace_id=workspace_id,
+                group_id=group_id,
+                subgroup_id=subgroup_id,
+            )
+
+        node_map: dict[str, LittleBullGraphNode] = {}
+        notes = await self.admin_store.list_note_registry(
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            group_id=group_id,
+            subgroup_id=subgroup_id,
+        )
+        for note in notes:
+            self._add_graph_node(
+                node_map,
+                kind="note",
+                ref_id=note["note_id"],
+                label=note.get("title") or note.get("slug") or note["note_id"],
+                group_id=note.get("group_id"),
+                subgroup_id=note.get("subgroup_id"),
+                metadata={"slug": note.get("slug"), "privacy": note.get("privacy")},
+            )
+        documents = await self.admin_store.list_document_registry(tenant_id=tenant_id, workspace_id=workspace_id)
+        for document in documents:
+            if not self._graph_scope_matches(document, group_id=group_id, subgroup_id=subgroup_id):
+                continue
+            self._add_graph_node(
+                node_map,
+                kind="document",
+                ref_id=document["document_id"],
+                label=document.get("title") or document.get("source_uri") or document["document_id"],
+                group_id=document.get("group_id"),
+                subgroup_id=document.get("subgroup_id"),
+                metadata={"status": document.get("status"), "chunk_count": document.get("chunk_count")},
+            )
+
+        edges: list[LittleBullGraphEdge] = []
+        backlinks = await self.admin_store.list_backlinks(tenant_id=tenant_id, workspace_id=workspace_id)
+        for backlink in backlinks:
+            if origin_type and backlink.get("origin_type") != origin_type:
+                continue
+            source_node_id = self._graph_node_id(backlink["source_kind"], backlink["source_id"])
+            target_node_id = self._graph_node_id(backlink["target_kind"], backlink["target_id"])
+            if source_node_id not in node_map or target_node_id not in node_map:
+                continue
+            edges.append(
+                LittleBullGraphEdge(
+                    edge_id=f"backlink:{backlink['backlink_id']}",
+                    source_node_id=source_node_id,
+                    target_node_id=target_node_id,
+                    origin_type=backlink.get("origin_type") or "manual",
+                    edge_type="backlink",
+                    confidence=backlink.get("confidence"),
+                    metadata={
+                        "backlink_id": backlink["backlink_id"],
+                        "link_text": backlink.get("link_text", ""),
+                        "graph_edge_origin_id": backlink.get("graph_edge_origin_id"),
+                    },
+                )
+            )
+
+        trails_payload: list[dict[str, Any]] = []
+        trails = await self.admin_store.list_knowledge_trails(
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            group_id=group_id,
+            subgroup_id=subgroup_id,
+        )
+        for trail in trails:
+            trail_node_id = self._graph_node_id("trail", trail["knowledge_trail_id"])
+            self._add_graph_node(
+                node_map,
+                kind="trail",
+                ref_id=trail["knowledge_trail_id"],
+                label=trail.get("title") or trail["knowledge_trail_id"],
+                group_id=trail.get("group_id"),
+                subgroup_id=trail.get("subgroup_id"),
+                metadata={"trail_type": trail.get("trail_type"), "status": trail.get("status")},
+            )
+            steps = await self.admin_store.list_knowledge_trail_steps(
+                knowledge_trail_id=trail["knowledge_trail_id"],
+                tenant_id=tenant_id,
+                workspace_id=workspace_id,
+            )
+            step_nodes: list[str] = []
+            for step in steps:
+                target_node_id = self._graph_node_id(
+                    step.get("step_kind") or "note",
+                    step.get("note_id") or step.get("document_id") or step.get("canvas_board_id") or "",
+                )
+                if target_node_id not in node_map:
+                    continue
+                step_nodes.append(target_node_id)
+                if not origin_type or origin_type == "trail_step":
+                    edges.append(
+                        LittleBullGraphEdge(
+                            edge_id=f"trail_step:{step['knowledge_trail_step_id']}",
+                            source_node_id=trail_node_id,
+                            target_node_id=target_node_id,
+                            origin_type="trail_step",
+                            edge_type="trail",
+                            metadata={"knowledge_trail_id": trail["knowledge_trail_id"], "step_order": step["step_order"]},
+                        )
+                    )
+            trails_payload.append(
+                {
+                    "knowledge_trail_id": trail["knowledge_trail_id"],
+                    "title": trail.get("title", ""),
+                    "trail_type": trail.get("trail_type", ""),
+                    "node_ids": step_nodes,
+                }
+            )
+
+        if central_node_id:
+            node_map, edges = self._focus_graph(node_map, edges, central_node_id)
+        if len(node_map) > max_nodes:
+            kept = set(list(node_map)[:max_nodes])
+            node_map = {node_id: node for node_id, node in node_map.items() if node_id in kept}
+            edges = [edge for edge in edges if edge.source_node_id in kept and edge.target_node_id in kept]
+        clusters = self._graph_clusters(edges, set(node_map))
+        chat_context = self._graph_chat_context(node_map, edges, central_node_id)
+        await self.audit.record(
+            principal=principal,
+            action="little_bull.graph.obsidian.read",
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            result="success",
+            metadata={
+                "scope": normalized_scope,
+                "group_id": group_id,
+                "subgroup_id": subgroup_id,
+                "central_node_id": central_node_id,
+                "origin_type": origin_type,
+                "node_count": len(node_map),
+                "edge_count": len(edges),
+            },
+        )
+        return LittleBullObsidianGraphResponse(
+            workspace_id=workspace_id,
+            scope=normalized_scope,
+            central_node_id=central_node_id,
+            filters={"group_id": group_id, "subgroup_id": subgroup_id, "origin_type": origin_type, "max_nodes": max_nodes},
+            nodes=list(node_map.values()),
+            edges=edges,
+            clusters=clusters,
+            trails=trails_payload,
+            chat_context=chat_context,
+        )
+
+    @staticmethod
+    def _graph_node_id(kind: str, ref_id: str) -> str:
+        return f"{canonical_ref_kind(kind)}:{ref_id}"
+
+    @classmethod
+    def _add_graph_node(
+        cls,
+        node_map: dict[str, LittleBullGraphNode],
+        *,
+        kind: str,
+        ref_id: str,
+        label: str,
+        group_id: str | None,
+        subgroup_id: str | None,
+        metadata: dict[str, Any],
+    ) -> None:
+        node_id = cls._graph_node_id(kind, ref_id)
+        node_map[node_id] = LittleBullGraphNode(
+            node_id=node_id,
+            kind=canonical_ref_kind(kind),
+            ref_id=ref_id,
+            label=label,
+            group_id=group_id,
+            subgroup_id=subgroup_id,
+            metadata=metadata,
+        )
+
+    @staticmethod
+    def _graph_scope_matches(row: dict[str, Any], *, group_id: str | None, subgroup_id: str | None) -> bool:
+        if group_id and row.get("group_id") != group_id:
+            return False
+        if subgroup_id and row.get("subgroup_id") != subgroup_id:
+            return False
+        return True
+
+    @staticmethod
+    def _focus_graph(
+        node_map: dict[str, LittleBullGraphNode],
+        edges: list[LittleBullGraphEdge],
+        central_node_id: str,
+    ) -> tuple[dict[str, LittleBullGraphNode], list[LittleBullGraphEdge]]:
+        if central_node_id not in node_map:
+            return {}, []
+        focused_edges = [
+            edge
+            for edge in edges
+            if edge.source_node_id == central_node_id or edge.target_node_id == central_node_id
+        ]
+        focused_node_ids = {central_node_id}
+        for edge in focused_edges:
+            focused_node_ids.add(edge.source_node_id)
+            focused_node_ids.add(edge.target_node_id)
+        return {node_id: node for node_id, node in node_map.items() if node_id in focused_node_ids}, focused_edges
+
+    @staticmethod
+    def _graph_clusters(edges: list[LittleBullGraphEdge], node_ids: set[str]) -> list[LittleBullGraphClusterSummary]:
+        adjacency = {node_id: set() for node_id in node_ids}
+        edge_counts: dict[str, int] = {node_id: 0 for node_id in node_ids}
+        for edge in edges:
+            if edge.source_node_id not in adjacency or edge.target_node_id not in adjacency:
+                continue
+            adjacency[edge.source_node_id].add(edge.target_node_id)
+            adjacency[edge.target_node_id].add(edge.source_node_id)
+            edge_counts[edge.source_node_id] += 1
+            edge_counts[edge.target_node_id] += 1
+        clusters: list[LittleBullGraphClusterSummary] = []
+        seen: set[str] = set()
+        for node_id in sorted(node_ids):
+            if node_id in seen:
+                continue
+            stack = [node_id]
+            seen.add(node_id)
+            cluster_nodes: list[str] = []
+            while stack:
+                current = stack.pop()
+                cluster_nodes.append(current)
+                for neighbor in adjacency.get(current, set()):
+                    if neighbor not in seen:
+                        seen.add(neighbor)
+                        stack.append(neighbor)
+            clusters.append(
+                LittleBullGraphClusterSummary(
+                    cluster_id=f"cluster-{len(clusters) + 1}",
+                    node_ids=sorted(cluster_nodes),
+                    node_count=len(cluster_nodes),
+                    edge_count=sum(edge_counts.get(item, 0) for item in cluster_nodes) // 2,
+                    label=sorted(cluster_nodes)[0] if cluster_nodes else "",
+                )
+            )
+        return clusters
+
+    @staticmethod
+    def _graph_chat_context(
+        node_map: dict[str, LittleBullGraphNode],
+        edges: list[LittleBullGraphEdge],
+        central_node_id: str | None,
+    ) -> dict[str, Any]:
+        neighbor_ids: set[str] = set()
+        if central_node_id:
+            for edge in edges:
+                if edge.source_node_id == central_node_id:
+                    neighbor_ids.add(edge.target_node_id)
+                if edge.target_node_id == central_node_id:
+                    neighbor_ids.add(edge.source_node_id)
+        return {
+            "enabled": bool(central_node_id and central_node_id in node_map),
+            "focus_node_id": central_node_id,
+            "focus_label": node_map[central_node_id].label if central_node_id in node_map else "",
+            "neighbor_count": len(neighbor_ids),
+            "edge_count": len(edges),
+            "context_kind": "obsidian_graph",
+        }
 
     async def list_graph_labels(self, principal: Principal, *, workspace_id: str) -> list[str]:
         self._require(principal, ACTIVITY_DOCUMENT_READ, workspace_id)

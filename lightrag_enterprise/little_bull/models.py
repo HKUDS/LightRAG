@@ -813,6 +813,46 @@ class GraphChatSession(ScopedContract):
     status: str = "active"
 
 
+class LittleBullGraphNode(BaseModel):
+    node_id: str
+    kind: str
+    ref_id: str
+    label: str
+    group_id: str | None = None
+    subgroup_id: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class LittleBullGraphEdge(BaseModel):
+    edge_id: str
+    source_node_id: str
+    target_node_id: str
+    origin_type: str
+    edge_type: str = "relates"
+    confidence: float | None = Field(default=None, ge=0, le=1)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class LittleBullGraphClusterSummary(BaseModel):
+    cluster_id: str
+    node_ids: list[str] = Field(default_factory=list)
+    node_count: int = 0
+    edge_count: int = 0
+    label: str = ""
+
+
+class LittleBullObsidianGraphResponse(BaseModel):
+    workspace_id: str
+    scope: Literal["global", "workspace", "group", "subgroup"] = "workspace"
+    central_node_id: str | None = None
+    filters: dict[str, Any] = Field(default_factory=dict)
+    nodes: list[LittleBullGraphNode] = Field(default_factory=list)
+    edges: list[LittleBullGraphEdge] = Field(default_factory=list)
+    clusters: list[LittleBullGraphClusterSummary] = Field(default_factory=list)
+    trails: list[dict[str, Any]] = Field(default_factory=list)
+    chat_context: dict[str, Any] = Field(default_factory=dict)
+
+
 class AgentBuilderSession(ScopedContract):
     agent_builder_session_id: str | None = None
     user_id: str

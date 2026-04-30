@@ -120,3 +120,16 @@ This register tracks residual risks that must be reduced or closed before a late
 - Ollama local/private completion maps `max_tokens` to `options.num_predict`, preserving any lower existing limit.
 - OpenAPI contracts pin query scope fields and context calculator request/response fields.
 - Subagents Hegel, Peirce and Russell reaudited Fase 11 with no P0/P1 blockers after fixes.
+
+## Phase 12 Risk Controls Added
+
+- Ledger and cost summaries remain PostgreSQL control-plane only; Neo4j/Qdrant are not activated in this phase.
+- `/little-bull/costs/summary` reports total, month, last 7 days and today plus breakdowns by user, agent, model, group/subgroup and operation.
+- The endpoint requires audit-read permission and scopes all reads by tenant/workspace before aggregation.
+- `little_bull_llm_usage_ledger` now has nullable `group_id` and `subgroup_id` columns plus a group-scope index.
+- Scoped summaries include both new scoped columns and legacy metadata-only scoped ledger rows to avoid under-reporting after migration.
+- Agent query ledger payloads carry group/subgroup/document scope when scoped retrieval becomes data-plane enabled.
+- Non-reservation ledger appends now use a transaction and per-workspace advisory lock before computing the previous hash.
+- Cost-budget reservations also acquire the ledger-chain lock before computing the previous hash, keeping the append-only chain linear.
+- Summary tests cover workspace decoys, period windows, actual-vs-estimated fallback, by-agent/model/user/group/operation and legacy metadata-only scope.
+- Subagents Hegel, Peirce and Russell reaudited Fase 12 with no P0/P1 blockers after fixes.

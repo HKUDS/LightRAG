@@ -1432,6 +1432,8 @@ class LittleBullAdminStore:
         agent_id: str | None = None,
         model_id: str | None = None,
         operation: str | None = None,
+        group_id: str | None = None,
+        subgroup_id: str | None = None,
     ) -> list[dict[str, Any]]:
         pool = await self._get_pool()
         rows = await pool.fetch(
@@ -1440,7 +1442,7 @@ class LittleBullAdminStore:
                 usage_ledger_id, tenant_id, workspace_id, user_id, agent_id,
                 conversation_id, model_setting_id, provider, model_id, operation,
                 prompt_tokens, completion_tokens, total_tokens, estimated_cost_usd,
-                actual_cost_usd, currency, metadata, created_at
+                actual_cost_usd, currency, group_id, subgroup_id, metadata, created_at
             FROM little_bull_llm_usage_ledger
             WHERE tenant_id IS NOT DISTINCT FROM $1
               AND workspace_id=$2
@@ -1448,6 +1450,8 @@ class LittleBullAdminStore:
               AND ($4::text IS NULL OR agent_id=$4)
               AND ($5::text IS NULL OR model_id=$5)
               AND ($6::text IS NULL OR operation=$6)
+              AND ($7::text IS NULL OR group_id=$7 OR metadata->>'group_id'=$7)
+              AND ($8::text IS NULL OR subgroup_id=$8 OR metadata->>'subgroup_id'=$8)
             ORDER BY created_at DESC
             """,
             tenant_id,
@@ -1456,12 +1460,16 @@ class LittleBullAdminStore:
             agent_id,
             model_id,
             operation,
+            group_id,
+            subgroup_id,
         )
         return [
             {
                 "usage_ledger_id": row["usage_ledger_id"],
                 "tenant_id": row["tenant_id"],
                 "workspace_id": row["workspace_id"],
+                "group_id": row["group_id"],
+                "subgroup_id": row["subgroup_id"],
                 "user_id": row["user_id"],
                 "agent_id": row["agent_id"],
                 "conversation_id": row["conversation_id"],
@@ -1490,85 +1498,93 @@ class LittleBullAdminStore:
         user_id: str,
     ) -> dict[str, Any]:
         pool = await self._get_pool()
-        created_at = utc_now()
+        lock_key = f"{tenant_id or ''}:{workspace_id}:llm_usage_ledger"
         async with pool.acquire() as conn:
-            previous_hash = await conn.fetchval(
-                """
-                SELECT ledger_hash
-                FROM little_bull_llm_usage_ledger
-                WHERE tenant_id IS NOT DISTINCT FROM $1
-                  AND workspace_id=$2
-                ORDER BY created_at DESC
-                LIMIT 1
-                """,
-                tenant_id,
-                workspace_id,
-            )
-            usage_ledger_id = str(payload.get("usage_ledger_id") or new_id("lblu"))
-            ledger_material = {
-                "usage_ledger_id": usage_ledger_id,
-                "tenant_id": tenant_id,
-                "workspace_id": workspace_id,
-                "user_id": payload.get("user_id") or user_id,
-                "agent_id": payload.get("agent_id"),
-                "model_setting_id": payload.get("model_setting_id"),
-                "provider": str(payload.get("provider") or "").strip(),
-                "model_id": str(payload.get("model_id") or "").strip(),
-                "operation": str(payload.get("operation") or "").strip(),
-                "prompt_tokens": int(payload.get("prompt_tokens") or 0),
-                "completion_tokens": int(payload.get("completion_tokens") or 0),
-                "total_tokens": int(payload.get("total_tokens") or 0),
-                "estimated_cost_usd": float(payload.get("estimated_cost_usd") or 0),
-                "actual_cost_usd": payload.get("actual_cost_usd"),
-                "currency": str(payload.get("currency") or "USD").strip(),
-                "request_hash": str(payload.get("request_hash") or "").strip(),
-                "response_hash": str(payload.get("response_hash") or "").strip(),
-                "metadata": payload.get("metadata") or {},
-                "previous_ledger_hash": previous_hash or "",
-                "created_at": created_at.isoformat(),
-            }
-            ledger_hash = "sha256:" + hashlib.sha256(
-                json.dumps(ledger_material, sort_keys=True, default=str).encode("utf-8")
-            ).hexdigest()
-            row = await conn.fetchrow(
-                """
-                INSERT INTO little_bull_llm_usage_ledger (
-                    usage_ledger_id, tenant_id, workspace_id, user_id, agent_id,
-                    conversation_id, model_setting_id, provider, model_id, operation,
-                    prompt_tokens, completion_tokens, total_tokens, estimated_cost_usd,
-                    actual_cost_usd, currency, request_hash, response_hash, metadata,
-                    previous_ledger_hash, ledger_hash, created_by, updated_by, created_at, updated_at
+            async with conn.transaction():
+                await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", lock_key)
+                created_at = utc_now()
+                previous_hash = await conn.fetchval(
+                    """
+                    SELECT ledger_hash
+                    FROM little_bull_llm_usage_ledger
+                    WHERE tenant_id IS NOT DISTINCT FROM $1
+                      AND workspace_id=$2
+                    ORDER BY created_at DESC
+                    LIMIT 1
+                    """,
+                    tenant_id,
+                    workspace_id,
                 )
-                VALUES (
-                    $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19::jsonb,
-                    $20,$21,$22,$22,$23,$23
+                usage_ledger_id = str(payload.get("usage_ledger_id") or new_id("lblu"))
+                ledger_material = {
+                    "usage_ledger_id": usage_ledger_id,
+                    "tenant_id": tenant_id,
+                    "workspace_id": workspace_id,
+                    "group_id": payload.get("group_id"),
+                    "subgroup_id": payload.get("subgroup_id"),
+                    "user_id": payload.get("user_id") or user_id,
+                    "agent_id": payload.get("agent_id"),
+                    "model_setting_id": payload.get("model_setting_id"),
+                    "provider": str(payload.get("provider") or "").strip(),
+                    "model_id": str(payload.get("model_id") or "").strip(),
+                    "operation": str(payload.get("operation") or "").strip(),
+                    "prompt_tokens": int(payload.get("prompt_tokens") or 0),
+                    "completion_tokens": int(payload.get("completion_tokens") or 0),
+                    "total_tokens": int(payload.get("total_tokens") or 0),
+                    "estimated_cost_usd": float(payload.get("estimated_cost_usd") or 0),
+                    "actual_cost_usd": payload.get("actual_cost_usd"),
+                    "currency": str(payload.get("currency") or "USD").strip(),
+                    "request_hash": str(payload.get("request_hash") or "").strip(),
+                    "response_hash": str(payload.get("response_hash") or "").strip(),
+                    "metadata": payload.get("metadata") or {},
+                    "previous_ledger_hash": previous_hash or "",
+                    "created_at": created_at.isoformat(),
+                }
+                ledger_hash = "sha256:" + hashlib.sha256(
+                    json.dumps(ledger_material, sort_keys=True, default=str).encode("utf-8")
+                ).hexdigest()
+                row = await conn.fetchrow(
+                    """
+                    INSERT INTO little_bull_llm_usage_ledger (
+                        usage_ledger_id, tenant_id, workspace_id, group_id, subgroup_id,
+                        user_id, agent_id, conversation_id, model_setting_id, provider,
+                        model_id, operation, prompt_tokens, completion_tokens, total_tokens,
+                        estimated_cost_usd, actual_cost_usd, currency, request_hash,
+                        response_hash, metadata, previous_ledger_hash, ledger_hash,
+                        created_by, updated_by, created_at, updated_at
+                    )
+                    VALUES (
+                        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,
+                        $18,$19,$20,$21::jsonb,$22,$23,$24,$24,$25,$25
+                    )
+                    RETURNING *
+                    """,
+                    usage_ledger_id,
+                    tenant_id,
+                    workspace_id,
+                    payload.get("group_id") or None,
+                    payload.get("subgroup_id") or None,
+                    payload.get("user_id") or user_id,
+                    payload.get("agent_id") or None,
+                    payload.get("conversation_id") or None,
+                    payload.get("model_setting_id") or None,
+                    ledger_material["provider"],
+                    ledger_material["model_id"],
+                    ledger_material["operation"],
+                    ledger_material["prompt_tokens"],
+                    ledger_material["completion_tokens"],
+                    ledger_material["total_tokens"],
+                    ledger_material["estimated_cost_usd"],
+                    payload.get("actual_cost_usd"),
+                    ledger_material["currency"],
+                    ledger_material["request_hash"],
+                    ledger_material["response_hash"],
+                    json.dumps(ledger_material["metadata"]),
+                    previous_hash or "",
+                    ledger_hash,
+                    user_id,
+                    created_at,
                 )
-                RETURNING *
-                """,
-                usage_ledger_id,
-                tenant_id,
-                workspace_id,
-                payload.get("user_id") or user_id,
-                payload.get("agent_id") or None,
-                payload.get("conversation_id") or None,
-                payload.get("model_setting_id") or None,
-                ledger_material["provider"],
-                ledger_material["model_id"],
-                ledger_material["operation"],
-                ledger_material["prompt_tokens"],
-                ledger_material["completion_tokens"],
-                ledger_material["total_tokens"],
-                ledger_material["estimated_cost_usd"],
-                payload.get("actual_cost_usd"),
-                ledger_material["currency"],
-                ledger_material["request_hash"],
-                ledger_material["response_hash"],
-                json.dumps(ledger_material["metadata"]),
-                previous_hash or "",
-                ledger_hash,
-                user_id,
-                created_at,
-            )
         return {
             "usage_ledger_id": row["usage_ledger_id"],
             "ledger_hash": row["ledger_hash"],
@@ -1591,11 +1607,13 @@ class LittleBullAdminStore:
     ) -> dict[str, Any]:
         pool = await self._get_pool()
         estimate = float(payload.get("estimated_cost_usd") or 0)
-        created_at = utc_now()
         lock_key = f"{tenant_id or ''}:{workspace_id}:{agent_id or ''}:llm_budget"
+        ledger_lock_key = f"{tenant_id or ''}:{workspace_id}:llm_usage_ledger"
         async with pool.acquire() as conn:
             async with conn.transaction():
                 await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", lock_key)
+                await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", ledger_lock_key)
+                created_at = utc_now()
                 daily_used = await conn.fetchval(
                     """
                     SELECT COALESCE(SUM(COALESCE(actual_cost_usd, estimated_cost_usd)), 0)
@@ -1646,6 +1664,8 @@ class LittleBullAdminStore:
                     "usage_ledger_id": usage_ledger_id,
                     "tenant_id": tenant_id,
                     "workspace_id": workspace_id,
+                    "group_id": payload.get("group_id"),
+                    "subgroup_id": payload.get("subgroup_id"),
                     "user_id": payload.get("user_id") or user_id,
                     "agent_id": payload.get("agent_id"),
                     "model_setting_id": payload.get("model_setting_id"),
@@ -1670,21 +1690,24 @@ class LittleBullAdminStore:
                 row = await conn.fetchrow(
                     """
                     INSERT INTO little_bull_llm_usage_ledger (
-                        usage_ledger_id, tenant_id, workspace_id, user_id, agent_id,
-                        conversation_id, model_setting_id, provider, model_id, operation,
-                        prompt_tokens, completion_tokens, total_tokens, estimated_cost_usd,
-                        actual_cost_usd, currency, request_hash, response_hash, metadata,
-                        previous_ledger_hash, ledger_hash, created_by, updated_by, created_at, updated_at
+                        usage_ledger_id, tenant_id, workspace_id, group_id, subgroup_id,
+                        user_id, agent_id, conversation_id, model_setting_id, provider,
+                        model_id, operation, prompt_tokens, completion_tokens, total_tokens,
+                        estimated_cost_usd, actual_cost_usd, currency, request_hash,
+                        response_hash, metadata, previous_ledger_hash, ledger_hash,
+                        created_by, updated_by, created_at, updated_at
                     )
                     VALUES (
-                        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19::jsonb,
-                        $20,$21,$22,$22,$23,$23
+                        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,
+                        $18,$19,$20,$21::jsonb,$22,$23,$24,$24,$25,$25
                     )
                     RETURNING *
                     """,
                     usage_ledger_id,
                     tenant_id,
                     workspace_id,
+                    payload.get("group_id") or None,
+                    payload.get("subgroup_id") or None,
                     payload.get("user_id") or user_id,
                     payload.get("agent_id") or None,
                     payload.get("conversation_id") or None,

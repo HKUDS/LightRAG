@@ -39,6 +39,7 @@ from .models import (
     LittleBullKnowledgeTrailStepRequest,
     LittleBullMarkdownNoteRequest,
     LittleBullModelSetting,
+    LittleBullObsidianGraphResponse,
     LittleBullQueryRequest,
     LittleBullSourceProvenanceRequest,
 )
@@ -677,6 +678,30 @@ def create_little_bull_router(rag, doc_manager) -> APIRouter:
             max_depth=max_depth,
             max_nodes=max_nodes,
         )
+
+    @router.get("/graph/obsidian", response_model=LittleBullObsidianGraphResponse)
+    async def get_obsidian_graph(
+        workspace_id: str,
+        scope: str = Query("workspace", description="Graph scope: global, workspace, group or subgroup"),
+        group_id: str | None = None,
+        subgroup_id: str | None = None,
+        central_node_id: str | None = None,
+        origin_type: str | None = None,
+        max_nodes: int = Query(500, ge=1, le=2000),
+        principal=Depends(require_principal),
+    ):
+        return (
+            await service().get_obsidian_graph(
+                principal,
+                workspace_id=workspace_id,
+                scope=scope,
+                group_id=group_id,
+                subgroup_id=subgroup_id,
+                central_node_id=central_node_id,
+                origin_type=origin_type,
+                max_nodes=max_nodes,
+            )
+        ).model_dump()
 
     @router.get("/graph/label/list")
     async def list_graph_labels(workspace_id: str, principal=Depends(require_principal)):
