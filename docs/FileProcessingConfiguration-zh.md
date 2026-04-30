@@ -109,20 +109,23 @@ MINERU_ENDPOINT=http://localhost:8000/api/v1/task
 DOCLING_ENDPOINT=http://localhost:8081/v1/convert/file/async
 ```
 
-## `full_docs`存储存储说明
+## `full_docs` 存储说明
 
 文件入队和抽取结果会写入 `full_docs`：
 
 | 字段 | 说明 |
 | --- | --- |
-| `parsed_engine` | 实际完成抽取的引擎：`legacy`, `native`, `mineru`, `docling`。对于待抽取文件，也可暂存目标引擎。 |
+| `file_path` | 文件名 basename（不含目录），文件名重复判定与内容溯源都基于该字段。 |
+| `source_path` | 入队时提供的原始路径（仅当与 `file_path` 不同才会写入），供 `native` / `mineru` / `docling` 解析器定位真实文件位置。 |
 | `format` | 内容格式：`pending_parse`, `raw`, `lightrag`。 |
 | `content` | `raw` 时保存抽取文本；`pending_parse` 时为空字符串；`lightrag` 时固定为 `{{stored-in-lightrag-doucment}}`。 |
+| `content_hash` | 内容 MD5，用于跨文件名查重。`format=raw` 取 `sanitize_text_for_encoding` 后文本的 hash；`format=lightrag` 取 `*.blocks.jsonl` 文件 hash；`format=pending_parse` 不写入，待抽取完成后补上。 |
 | `lightrag_document_path` | `format=lightrag` 时保存结构化 LightRAG Document 的相对路径。 |
+| `parsed_engine` | 实际完成抽取的引擎：`legacy`, `native`, `mineru`, `docling`。对于待抽取文件，也可暂存目标引擎。 |
 
-其中 `file_path` 是文件名重复判定和内容溯源的关键字段，建议保持稳定、可读的文件名来源。
+`pending_parse` 表示文件已经入队，但还没有完成抽取。抽取成功后会改写为 `raw` 或 `lightrag`，并补齐 `content_hash`。抽取失败时保留 `pending_parse` 和空 `content`，便于后续排查和重试。
 
-`pending_parse` 表示文件已经入队，但还没有完成抽取。抽取成功后会改写为 `raw` 或 `lightrag`。抽取失败时保留 `pending_parse` 和空 `content`，便于后续排查和重试。
+> `doc_status` 中也会同步保存 `file_path`（basename）与 `content_hash`，作为 `get_doc_by_file_basename` / `get_doc_by_content_hash` 的查重索引来源。
 
 ## 原始文件归档
 
