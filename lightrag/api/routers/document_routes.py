@@ -2085,7 +2085,7 @@ async def background_delete_documents(
 
 
 def create_document_routes(
-    rag: LightRAG, doc_manager: DocumentManager, api_key: Optional[str] = None
+    workspace_mgr, rag: LightRAG, doc_manager: DocumentManager, api_key: Optional[str] = None
 ):
     # Create combined auth dependency for document routes
     combined_auth = get_combined_auth_dependency(api_key)

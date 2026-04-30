@@ -54,6 +54,7 @@ from lightrag.api.routers.document_routes import (
 from lightrag.api.routers.query_routes import create_query_routes
 from lightrag.api.routers.graph_routes import create_graph_routes
 from lightrag.api.routers.ollama_api import OllamaAPI
+from lightrag.api.workspace_manager import WorkspaceManager, WorkspaceCapacityError
 
 from lightrag.utils import logger, set_verbose_debug
 from lightrag.kg.shared_storage import (
@@ -352,20 +353,23 @@ def create_app(args):
         app.state.background_tasks = set()
 
         try:
-            # Initialize database connections
-            # Note: initialize_storages() now auto-initializes pipeline_status for rag.workspace
-            await rag.initialize_storages()
+            # Initialize database connections for pre-warmed default workspace
+            # Note: initialize_storages() now auto-initializes pipeline_status for default_rag.workspace
+            await default_rag.initialize_storages()
 
             # Data migration regardless of storage implementation
-            await rag.check_and_migrate_data()
+            await default_rag.check_and_migrate_data()
 
             ASCIIColors.green("\nServer is ready to accept connections! 🚀\n")
 
             yield
 
         finally:
-            # Clean up database connections
-            await rag.finalize_storages()
+            # Clean up database connections for default workspace
+            await default_rag.finalize_storages()
+
+            # Shutdown WorkspaceManager to finalize all cached instances
+            await workspace_mgr.shutdown()
 
             if "LIGHTRAG_GUNICORN_MODE" not in os.environ:
                 # Only perform cleanup in Uvicorn single-process mode
@@ -1135,11 +1139,11 @@ def create_app(args):
         name=args.simulated_model_name, tag=args.simulated_model_tag
     )
 
-    # Initialize RAG with unified configuration
-    try:
-        rag = LightRAG(
+    # Create factory callable — captures all constructor args as closure
+    def create_lightrag(workspace: str):
+        return LightRAG(
             working_dir=args.working_dir,
-            workspace=args.workspace,
+            workspace=workspace,
             llm_model_func=create_llm_model_func(args.llm_binding),
             llm_model_name=args.llm_model,
             llm_model_max_async=args.max_async,
@@ -1171,23 +1175,31 @@ def create_app(args):
             },
             ollama_server_infos=ollama_server_infos,
         )
+
+    # Initialize RAG with unified configuration via WorkspaceManager
+    try:
+        workspace_mgr = WorkspaceManager(factory=create_lightrag, max_instances=10)
+        # Pre-warm default workspace instance (synchronous factory call)
+        default_rag = workspace_mgr.get_or_create(args.workspace)
+        # Do NOT release — keep a reference so default workspace stays alive
     except Exception as e:
-        logger.error(f"Failed to initialize LightRAG: {e}")
+        logger.error(f"Failed to initialize WorkspaceManager: {e}")
         raise
 
     # Add routes
     app.include_router(
         create_document_routes(
-            rag,
+            workspace_mgr,
+            default_rag,
             doc_manager,
             api_key,
         )
     )
-    app.include_router(create_query_routes(rag, api_key, args.top_k))
-    app.include_router(create_graph_routes(rag, api_key))
+    app.include_router(create_query_routes(workspace_mgr, default_rag, api_key, args.top_k))
+    app.include_router(create_graph_routes(workspace_mgr, default_rag, api_key))
 
     # Add Ollama API routes
-    ollama_api = OllamaAPI(rag, top_k=args.top_k, api_key=api_key)
+    ollama_api = OllamaAPI(workspace_mgr, default_rag, top_k=args.top_k, api_key=api_key)
     app.include_router(ollama_api.router, prefix="/api")
 
     # Custom Swagger UI endpoint for offline support
@@ -1317,73 +1329,90 @@ def create_app(args):
     )
     async def get_status(request: Request):
         """Get current system status including WebUI availability"""
+        rag = None
         try:
             workspace = get_workspace_from_request(request)
             default_workspace = get_default_workspace()
             if workspace is None:
                 workspace = default_workspace
-            pipeline_status = await get_namespace_data(
-                "pipeline_status", workspace=workspace
-            )
 
-            if not auth_configured:
-                auth_mode = "disabled"
-            else:
-                auth_mode = "enabled"
+            # Get or create the workspace instance via WorkspaceManager
+            try:
+                rag = await workspace_mgr.get_or_create(workspace)
+            except WorkspaceCapacityError:
+                return JSONResponse(
+                    status_code=503,
+                    content={"status": "error", "message": "All workspace slots busy"},
+                )
 
-            # Cleanup expired keyed locks and get status
-            keyed_lock_info = cleanup_keyed_lock()
+            try:
+                pipeline_status = await get_namespace_data(
+                    "pipeline_status", workspace=workspace
+                )
 
-            return {
-                "status": "healthy",
-                "webui_available": webui_assets_exist,
-                "working_directory": str(args.working_dir),
-                "input_directory": str(args.input_dir),
-                "configuration": {
-                    # LLM configuration binding/host address (if applicable)/model (if applicable)
-                    "llm_binding": args.llm_binding,
-                    "llm_binding_host": args.llm_binding_host,
-                    "llm_model": args.llm_model,
-                    # embedding model configuration binding/host address (if applicable)/model (if applicable)
-                    "embedding_binding": args.embedding_binding,
-                    "embedding_binding_host": args.embedding_binding_host,
-                    "embedding_model": args.embedding_model,
-                    "summary_max_tokens": args.summary_max_tokens,
-                    "summary_context_size": args.summary_context_size,
-                    "kv_storage": args.kv_storage,
-                    "doc_status_storage": args.doc_status_storage,
-                    "graph_storage": args.graph_storage,
-                    "vector_storage": args.vector_storage,
-                    "enable_llm_cache_for_extract": args.enable_llm_cache_for_extract,
-                    "enable_llm_cache": args.enable_llm_cache,
-                    "workspace": default_workspace,
-                    "max_graph_nodes": args.max_graph_nodes,
-                    # Rerank configuration
-                    "enable_rerank": rerank_model_func is not None,
-                    "rerank_binding": args.rerank_binding,
-                    "rerank_model": args.rerank_model if rerank_model_func else None,
-                    "rerank_binding_host": args.rerank_binding_host
-                    if rerank_model_func
-                    else None,
-                    # Environment variable status (requested configuration)
-                    "summary_language": args.summary_language,
-                    "force_llm_summary_on_merge": args.force_llm_summary_on_merge,
-                    "max_parallel_insert": args.max_parallel_insert,
-                    "cosine_threshold": args.cosine_threshold,
-                    "min_rerank_score": args.min_rerank_score,
-                    "related_chunk_number": args.related_chunk_number,
-                    "max_async": args.max_async,
-                    "embedding_func_max_async": args.embedding_func_max_async,
-                    "embedding_batch_num": args.embedding_batch_num,
-                },
-                "auth_mode": auth_mode,
-                "pipeline_busy": pipeline_status.get("busy", False),
-                "keyed_locks": keyed_lock_info,
-                "core_version": core_version,
-                "api_version": api_version_display,
-                "webui_title": webui_title,
-                "webui_description": webui_description,
-            }
+                if not auth_configured:
+                    auth_mode = "disabled"
+                else:
+                    auth_mode = "enabled"
+
+                # Cleanup expired keyed locks and get status
+                keyed_lock_info = cleanup_keyed_lock()
+
+                return {
+                    "status": "healthy",
+                    "webui_available": webui_assets_exist,
+                    "working_directory": str(args.working_dir),
+                    "input_directory": str(args.input_dir),
+                    "configuration": {
+                        # LLM configuration binding/host address (if applicable)/model (if applicable)
+                        "llm_binding": args.llm_binding,
+                        "llm_binding_host": args.llm_binding_host,
+                        "llm_model": args.llm_model,
+                        # embedding model configuration binding/host address (if applicable)/model (if applicable)
+                        "embedding_binding": args.embedding_binding,
+                        "embedding_binding_host": args.embedding_binding_host,
+                        "embedding_model": args.embedding_model,
+                        "summary_max_tokens": args.summary_max_tokens,
+                        "summary_context_size": args.summary_context_size,
+                        "kv_storage": args.kv_storage,
+                        "doc_status_storage": args.doc_status_storage,
+                        "graph_storage": args.graph_storage,
+                        "vector_storage": args.vector_storage,
+                        "enable_llm_cache_for_extract": args.enable_llm_cache_for_extract,
+                        "enable_llm_cache": args.enable_llm_cache,
+                        "workspace": default_workspace,
+                        "max_graph_nodes": args.max_graph_nodes,
+                        # Rerank configuration
+                        "enable_rerank": rerank_model_func is not None,
+                        "rerank_binding": args.rerank_binding,
+                        "rerank_model": args.rerank_model if rerank_model_func else None,
+                        "rerank_binding_host": args.rerank_binding_host
+                        if rerank_model_func
+                        else None,
+                        # Environment variable status (requested configuration)
+                        "summary_language": args.summary_language,
+                        "force_llm_summary_on_merge": args.force_llm_summary_on_merge,
+                        "max_parallel_insert": args.max_parallel_insert,
+                        "cosine_threshold": args.cosine_threshold,
+                        "min_rerank_score": args.min_rerank_score,
+                        "related_chunk_number": args.related_chunk_number,
+                        "max_async": args.max_async,
+                        "embedding_func_max_async": args.embedding_func_max_async,
+                        "embedding_batch_num": args.embedding_batch_num,
+                    },
+                    "auth_mode": auth_mode,
+                    "pipeline_busy": pipeline_status.get("busy", False),
+                    "keyed_locks": keyed_lock_info,
+                    "core_version": core_version,
+                    "api_version": api_version_display,
+                    "webui_title": webui_title,
+                    "webui_description": webui_description,
+                }
+            finally:
+                if rag is not None:
+                    workspace_mgr.release(workspace)
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error(f"Error getting health status: {str(e)}")
             raise HTTPException(status_code=500, detail=str(e))
