@@ -879,10 +879,15 @@ def test_analyze_multimodal_without_image_uses_conservative_output(tmp_path):
 
 
 @pytest.mark.offline
-def test_write_lightrag_document_preserves_headings_and_table_dimensions(tmp_path):
+def test_write_lightrag_document_preserves_headings_and_table_dimensions(
+    tmp_path, monkeypatch
+):
     async def _run():
+        monkeypatch.setenv("INPUT_DIR", str(tmp_path))
         rag = _new_rag(tmp_path)
         await rag.initialize_storages()
+        source_path = tmp_path / "demo.docx"
+        source_path.write_bytes(b"docx bytes")
 
         content_list = [
             {"type": "section_header", "text": "第一章 绪论", "level": 1},
@@ -912,9 +917,15 @@ def test_write_lightrag_document_preserves_headings_and_table_dimensions(tmp_pat
             file_path="demo.docx",
             content_list=content_list,
             engine="docling",
+            source_path=str(source_path),
         )
 
         blocks_path = Path(parsed["blocks_path"])
+        assert blocks_path == (
+            tmp_path / PARSED_DIR_NAME / "demo.docx.parsed" / "demo.blocks.jsonl"
+        )
+        assert not source_path.exists()
+        assert (tmp_path / PARSED_DIR_NAME / source_path.name).exists()
         blocks = [
             json.loads(line)
             for line in blocks_path.read_text(encoding="utf-8").splitlines()
@@ -946,6 +957,11 @@ def test_write_lightrag_document_preserves_headings_and_table_dimensions(tmp_pat
 
         drawings = json.loads(Path(base + ".drawings.json").read_text(encoding="utf-8"))
         assert drawings["drawings"]["dr-doc-1-0001"]["heading"] == "1.1 研究背景"
+
+        full_doc = await rag.full_docs.get_by_id("doc-1")
+        assert full_doc["lightrag_document_path"] == (
+            "__parsed__/demo.docx.parsed/demo.blocks.jsonl"
+        )
 
         await rag.finalize_storages()
 

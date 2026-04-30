@@ -4809,12 +4809,33 @@ class LightRAG:
 
         source = Path(source_path)
         if source.is_absolute():
+            if source.parent.name == PARSED_DIR_NAME:
+                return source.parent
             return source.parent / PARSED_DIR_NAME
 
         source_parent = source.parent
         if str(source_parent) == ".":
             return self._input_dir_path() / PARSED_DIR_NAME
+        if source_parent.name == PARSED_DIR_NAME:
+            return self._input_dir_path() / source_parent
         return self._input_dir_path() / source_parent / PARSED_DIR_NAME
+
+    def _parsed_artifact_dir_for_source(
+        self, source_path: str | None = None, file_path: str | None = None
+    ) -> Path:
+        parsed_dir = self._parsed_dir_for_source(source_path)
+        source_name = Path(source_path or file_path or "document").name or "document"
+        artifact_name = f"{source_name}.parsed"
+        artifact_dir = parsed_dir / artifact_name
+        if not artifact_dir.exists() or artifact_dir.is_dir():
+            return artifact_dir
+
+        for i in range(1, 1000):
+            candidate = parsed_dir / f"{artifact_name}_{i:03d}"
+            if not candidate.exists() or candidate.is_dir():
+                return candidate
+
+        return parsed_dir / f"{artifact_name}_{int(time.time())}"
 
     def _resolve_lightrag_document_path(self, document_path: str) -> str:
         path = Path(document_path)
@@ -4883,11 +4904,11 @@ class LightRAG:
         source_path: str | None = None,
     ) -> dict[str, Any]:
         """Convert parser content list to LightRAG Document files and return parsed_data."""
-        parsed_dir = self._parsed_dir_for_source(source_path)
+        parsed_dir = self._parsed_artifact_dir_for_source(source_path, file_path)
         parsed_dir.mkdir(parents=True, exist_ok=True)
 
         source_name = Path(file_path).name or f"{doc_id}.bin"
-        base_name = f"{doc_id}.{source_name}"
+        base_name = Path(source_name).stem or source_name
         blocks_path = parsed_dir / f"{base_name}.blocks.jsonl"
         tables_path = parsed_dir / f"{base_name}.tables.json"
         drawings_path = parsed_dir / f"{base_name}.drawings.json"
@@ -5342,7 +5363,7 @@ class LightRAG:
                 )
 
                 file_bytes = await asyncio.to_thread(p.read_bytes)
-                parsed_dir = self._parsed_dir_for_source(str(p))
+                parsed_dir = self._parsed_artifact_dir_for_source(str(p), file_path)
                 parsed_dir.mkdir(parents=True, exist_ok=True)
                 output_dir = str(parsed_dir)
                 interchange_text = await asyncio.to_thread(

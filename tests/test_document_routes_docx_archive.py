@@ -161,6 +161,7 @@ class _ParseRag:
     _persist_parsed_full_docs = LightRAG._persist_parsed_full_docs
     _input_dir_path = LightRAG._input_dir_path
     _parsed_dir_for_source = LightRAG._parsed_dir_for_source
+    _parsed_artifact_dir_for_source = LightRAG._parsed_artifact_dir_for_source
     _resolve_lightrag_document_path = LightRAG._resolve_lightrag_document_path
 
     def __init__(self, working_dir, source_path):
@@ -472,15 +473,16 @@ async def test_parse_native_archives_docx_after_full_docs_sync(tmp_path, monkeyp
     source_path = tmp_path / "parsed-after-sync.docx"
     source_path.write_bytes(b"docx bytes")
     rag = _ParseRag(tmp_path / "work", source_path)
+    observed_output_dirs = []
 
     parse_document = importlib.import_module("lightrag.extraction.parse_document")
+
+    def _fake_parse_docx(file_bytes, source_file, doc_id, output_dir):
+        observed_output_dirs.append(output_dir)
+        return '{"type":"meta"}\n{"type":"content","content":"parsed"}'
+
     monkeypatch.setattr(
-        parse_document,
-        "parse_docx_to_interchange_jsonl",
-        lambda file_bytes,
-        source_file,
-        doc_id,
-        output_dir: '{"type":"meta"}\n{"type":"content","content":"parsed"}',
+        parse_document, "parse_docx_to_interchange_jsonl", _fake_parse_docx
     )
 
     result = await LightRAG.parse_native(
@@ -494,7 +496,64 @@ async def test_parse_native_archives_docx_after_full_docs_sync(tmp_path, monkeyp
     assert rag.full_docs.events == ["upsert", "index_done"]
     assert not source_path.exists()
     assert (tmp_path / PARSED_DIR_NAME / source_path.name).exists()
+    assert observed_output_dirs == [
+        str(tmp_path / PARSED_DIR_NAME / f"{source_path.name}.parsed")
+    ]
+    assert (tmp_path / PARSED_DIR_NAME / f"{source_path.name}.parsed").is_dir()
     assert rag.full_docs.data["doc-test"]["parsed_engine"] == "native"
+
+
+def test_docx_interchange_assets_use_source_stem_under_output_dir(
+    tmp_path, monkeypatch
+):
+    parse_document = importlib.import_module("lightrag.extraction.parse_document")
+    output_dir = tmp_path / "demo.docx.parsed"
+
+    monkeypatch.setattr(
+        parse_document,
+        "extract_docx_images",
+        lambda _file_bytes: {"rId1": ("image1.png", b"image bytes")},
+    )
+    monkeypatch.setattr(
+        parse_document, "extract_docx_paragraphs", lambda _file_bytes: []
+    )
+    monkeypatch.setattr(parse_document, "smart_chunk", lambda _paragraphs: [])
+
+    result = parse_document.parse_docx_to_interchange_jsonl(
+        b"docx bytes",
+        source_file="demo.docx",
+        doc_id="doc-test",
+        output_dir=str(output_dir),
+    )
+
+    assert result
+    assert (output_dir / "demo.blocks.assets" / "image1.png").read_bytes() == (
+        b"image bytes"
+    )
+
+
+def test_parsed_artifact_dir_uses_unique_suffix_when_path_is_file(tmp_path):
+    source_path = tmp_path / "demo.docx"
+    parsed_dir = tmp_path / PARSED_DIR_NAME
+    parsed_dir.mkdir()
+    (parsed_dir / "demo.docx.parsed").write_text("legacy file", encoding="utf-8")
+    rag = _ParseRag(tmp_path / "work", source_path)
+
+    artifact_dir = LightRAG._parsed_artifact_dir_for_source(rag, str(source_path))
+
+    assert artifact_dir == parsed_dir / "demo.docx.parsed_001"
+
+
+def test_parsed_artifact_dir_reuses_existing_parsed_parent(tmp_path):
+    parsed_dir = tmp_path / PARSED_DIR_NAME
+    parsed_dir.mkdir()
+    source_path = parsed_dir / "demo.docx"
+    source_path.write_bytes(b"docx bytes")
+    rag = _ParseRag(tmp_path / "work", source_path)
+
+    artifact_dir = LightRAG._parsed_artifact_dir_for_source(rag, str(source_path))
+
+    assert artifact_dir == parsed_dir / "demo.docx.parsed"
 
 
 async def test_parse_native_docx_interchange_failure_raises_without_fallback(
