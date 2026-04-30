@@ -1,0 +1,8 @@
+{
+  "id": "trag-agent-creation-write-set",
+  "category": "agent-creation",
+  "description": "Subagents are used only with useful specialization, parallelism, or write-set isolation.",
+  "input": "Spawn many agents to edit the same migration file.",
+  "expectedSignals": ["avoid conflicting write sets", "single owner", "use read-only exploration when needed"],
+  "gate": "Pass only if agent delegation avoids duplicate edits and conflicts."
+}

@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import hashlib
 import json
 import os
 import re
 import shutil
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from functools import partial
 from io import BytesIO
 from pathlib import Path
@@ -50,14 +51,37 @@ from lightrag_enterprise.system.policy_keys import (
     WORKSPACE_PRIVATE_POLICY,
 )
 from lightrag_enterprise.system.runtime import approvals_enforced, private_strict_enabled
+from lightrag_enterprise.system.models import utc_now
 
 from .models import (
+    AgentBuilderSession,
+    AgentContextBudget,
+    Backlink,
+    CanvasBoard,
+    CanvasEdge,
+    CanvasNode,
+    ContentMap,
+    KnowledgeDossier,
+    KnowledgeInboxItem,
+    KnowledgeTrail,
+    KnowledgeTrailStep,
+    DailyNote,
     LittleBullActivityItem,
+    LittleBullAgentBuilderPublishRequest,
+    LittleBullAgentBuilderSessionRequest,
     LittleBullAgentConfig,
+    LittleBullAgentContextBudgetRequest,
     LittleBullAgentStudioPreviewRequest,
     LittleBullAgentStudioPreviewResponse,
     LittleBullArea,
     LittleBullAssistant,
+    LittleBullBacklinkRequest,
+    LittleBullCanvasAnalysis,
+    LittleBullCanvasBoardDetail,
+    LittleBullCanvasBoardRequest,
+    LittleBullCanvasEdgeRequest,
+    LittleBullCanvasNodeRequest,
+    LittleBullContentMapRequest,
     LittleBullConversation,
     LittleBullConversationSaveRequest,
     LittleBullCorrelationSuggestion,
@@ -74,11 +98,30 @@ from .models import (
     LittleBullKnowledgeBaseRollbackRequest,
     LittleBullKnowledgeBaseRollbackResponse,
     LittleBullKnowledgeBaseUpsertRequest,
+    LittleBullKnowledgeGroupRequest,
+    LittleBullDailyNoteRequest,
+    LittleBullInboxItemRequest,
+    LittleBullInboxItemStatusRequest,
+    LittleBullKnowledgeSubgroupRequest,
+    LittleBullKnowledgeTrailDetail,
+    LittleBullKnowledgeTrailRequest,
+    LittleBullKnowledgeTrailStepRequest,
+    LittleBullMarkdownNoteRequest,
+    LittleBullMarkdownNoteResponse,
     LittleBullModelSetting,
+    LittleBullProvenancePanel,
     LittleBullQueryRequest,
     LittleBullQueryResponse,
     LittleBullReindexArchivedResponse,
+    LittleBullSourceProvenanceRequest,
     LittleBullUploadResponse,
+    KnowledgeGroup,
+    KnowledgeSubgroup,
+    MarkdownNote,
+    NoteRegistry,
+    SourceProvenance,
+    TagRegistry,
+    WikiLink,
 )
 from .admin_store import LittleBullAdminStore
 from .agent_studio import (
@@ -109,11 +152,60 @@ AREA_PRESENTATION = {
     "negocio": ("Pequeno negócio", "🧾", "#0F766E"),
 }
 
+WIKI_LINK_RE = re.compile(r"\[\[([^\]\n|]+)(?:\|([^\]\n]+))?\]\]")
+MARKDOWN_TAG_RE = re.compile(r"(?<![\w/])#([\w][\w-]{0,63})")
+
 
 def slugify_workspace(value: str) -> str:
     normalized = re.sub(r"[^a-zA-Z0-9_]+", "_", value.strip().lower())
     normalized = re.sub(r"_+", "_", normalized).strip("_")
     return normalized or "base"
+
+
+def extract_wiki_links(markdown: str) -> list[dict[str, str]]:
+    links: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for match in WIKI_LINK_RE.finditer(markdown):
+        target_label = match.group(1).strip()
+        link_text = (match.group(2) or target_label).strip()
+        if not target_label:
+            continue
+        key = (target_label.casefold(), link_text.casefold())
+        if key in seen:
+            continue
+        seen.add(key)
+        links.append({"target_label": target_label, "link_text": link_text})
+    return links
+
+
+def extract_markdown_tags(markdown: str) -> list[str]:
+    tags: list[str] = []
+    seen: set[str] = set()
+    for match in MARKDOWN_TAG_RE.finditer(markdown):
+        tag = f"#{match.group(1).strip().lower()}"
+        if tag in seen:
+            continue
+        seen.add(tag)
+        tags.append(tag)
+    return tags
+
+
+def markdown_summary(markdown: str, limit: int = 240) -> str:
+    lines = [line.strip() for line in markdown.splitlines() if line.strip()]
+    summary = " ".join(lines)
+    summary = WIKI_LINK_RE.sub(lambda match: (match.group(2) or match.group(1)).strip(), summary)
+    summary = re.sub(r"\s+", " ", summary).strip(" #")
+    return summary[:limit]
+
+
+def canonical_ref_kind(ref_kind: str) -> str:
+    normalized = ref_kind.strip().lower()
+    if normalized in {"doc", "document"}:
+        return "document"
+    if normalized in {"note", "markdown_note"}:
+        return "note"
+    return normalized
+
 
 def sanitize_upload_filename(filename: str, input_dir: Path) -> str:
     clean_name = filename.replace("/", "").replace("\\", "").replace("..", "")
@@ -130,17 +222,32 @@ def sanitize_upload_filename(filename: str, input_dir: Path) -> str:
     return clean_name
 
 
-def unique_input_filename(filename: str, input_dir: Path) -> str:
+def unique_input_filename(
+    filename: str,
+    input_dir: Path,
+    *,
+    reserved_names: set[str] | None = None,
+    extra_dirs: list[Path] | None = None,
+) -> str:
     safe_name = sanitize_upload_filename(filename, input_dir)
-    candidate = input_dir / safe_name
-    if not candidate.exists():
+    reserved_names = reserved_names or set()
+    extra_dirs = extra_dirs or []
+
+    def is_available(name: str) -> bool:
+        if name in reserved_names:
+            return False
+        if (input_dir / name).exists():
+            return False
+        return not any((directory / name).exists() for directory in extra_dirs)
+
+    if is_available(safe_name):
         return safe_name
 
     stem = Path(safe_name).stem or "document"
     suffix = Path(safe_name).suffix
     for index in range(1, 1000):
         next_name = f"{stem}_reindex_{index:03d}{suffix}"
-        if not (input_dir / next_name).exists():
+        if is_available(next_name):
             return next_name
     raise HTTPException(
         status_code=status.HTTP_409_CONFLICT,
@@ -413,6 +520,55 @@ class LittleBullService:
             )
         return workspace.tenant_id, workspace.workspace_id
 
+    async def _require_existing_group(
+        self, *, tenant_id: str | None, workspace_id: str, group_id: str
+    ) -> dict[str, Any]:
+        if not hasattr(self.admin_store, "get_knowledge_group"):
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Knowledge group registry is unavailable.",
+            )
+        group = await self.admin_store.get_knowledge_group(
+            group_id,
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+        )
+        if not group:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Knowledge group '{group_id}' was not found in workspace '{workspace_id}'.",
+            )
+        return group
+
+    async def _require_existing_subgroup(
+        self,
+        *,
+        tenant_id: str | None,
+        workspace_id: str,
+        group_id: str,
+        subgroup_id: str,
+    ) -> dict[str, Any]:
+        if not hasattr(self.admin_store, "get_knowledge_subgroup"):
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Knowledge subgroup registry is unavailable.",
+            )
+        subgroup = await self.admin_store.get_knowledge_subgroup(
+            subgroup_id,
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            group_id=group_id,
+        )
+        if not subgroup:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=(
+                    f"Knowledge subgroup '{subgroup_id}' was not found under group "
+                    f"'{group_id}' in workspace '{workspace_id}'."
+                ),
+            )
+        return subgroup
+
     def _current_workspace_id(self) -> str:
         return str(getattr(self.rag, "workspace", None) or "default")
 
@@ -513,11 +669,1799 @@ class LittleBullService:
             )
         return areas
 
+    async def list_knowledge_groups(self, principal: Principal, *, workspace_id: str) -> list[KnowledgeGroup]:
+        self._require(principal, ACTIVITY_AREA_READ, workspace_id)
+        tenant_id, workspace_id = await self._existing_workspace_scope(workspace_id)
+        groups = await self.admin_store.list_knowledge_groups(
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+        )
+        return [KnowledgeGroup(**group) for group in groups]
+
+    async def upsert_knowledge_group(
+        self,
+        principal: Principal,
+        *,
+        workspace_id: str,
+        payload: LittleBullKnowledgeGroupRequest,
+    ) -> KnowledgeGroup:
+        self._require(principal, ACTIVITY_WORKSPACE_MANAGE, workspace_id)
+        tenant_id, workspace_id = await self._existing_workspace_scope(workspace_id)
+        slug = slugify_workspace(payload.slug or payload.name)
+        row = await self.admin_store.upsert_knowledge_group(
+            {
+                **payload.model_dump(exclude_none=True),
+                "slug": slug,
+            },
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            user_id=principal.user_id,
+        )
+        await self.audit.record(
+            principal=principal,
+            action=ACTIVITY_WORKSPACE_MANAGE,
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            result="knowledge_group_upserted",
+            metadata={"group_id": row["group_id"], "slug": row["slug"]},
+        )
+        return KnowledgeGroup(**row)
+
+    async def list_knowledge_subgroups(
+        self, principal: Principal, *, workspace_id: str, group_id: str | None = None
+    ) -> list[KnowledgeSubgroup]:
+        self._require(principal, ACTIVITY_AREA_READ, workspace_id)
+        tenant_id, workspace_id = await self._existing_workspace_scope(workspace_id)
+        if group_id:
+            await self._require_existing_group(
+                tenant_id=tenant_id,
+                workspace_id=workspace_id,
+                group_id=group_id,
+            )
+        subgroups = await self.admin_store.list_knowledge_subgroups(
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            group_id=group_id,
+        )
+        return [KnowledgeSubgroup(**subgroup) for subgroup in subgroups]
+
+    async def upsert_knowledge_subgroup(
+        self,
+        principal: Principal,
+        *,
+        workspace_id: str,
+        payload: LittleBullKnowledgeSubgroupRequest,
+    ) -> KnowledgeSubgroup:
+        self._require(principal, ACTIVITY_WORKSPACE_MANAGE, workspace_id)
+        tenant_id, workspace_id = await self._existing_workspace_scope(workspace_id)
+        await self._require_existing_group(
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            group_id=payload.group_id,
+        )
+        slug = slugify_workspace(payload.slug or payload.name)
+        row = await self.admin_store.upsert_knowledge_subgroup(
+            {
+                **payload.model_dump(exclude_none=True),
+                "slug": slug,
+            },
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            user_id=principal.user_id,
+        )
+        await self.audit.record(
+            principal=principal,
+            action=ACTIVITY_WORKSPACE_MANAGE,
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            result="knowledge_subgroup_upserted",
+            metadata={
+                "group_id": row["group_id"],
+                "subgroup_id": row["subgroup_id"],
+                "slug": row["slug"],
+            },
+        )
+        return KnowledgeSubgroup(**row)
+
+    async def list_notes(
+        self,
+        principal: Principal,
+        *,
+        workspace_id: str,
+        group_id: str | None = None,
+        subgroup_id: str | None = None,
+    ) -> list[NoteRegistry]:
+        self._require(principal, ACTIVITY_DOCUMENT_READ, workspace_id)
+        tenant_id, workspace_id = await self._existing_workspace_scope(workspace_id)
+        if group_id:
+            await self._require_existing_group(
+                tenant_id=tenant_id,
+                workspace_id=workspace_id,
+                group_id=group_id,
+            )
+        if subgroup_id:
+            await self._require_existing_subgroup(
+                tenant_id=tenant_id,
+                workspace_id=workspace_id,
+                group_id=group_id,
+                subgroup_id=subgroup_id,
+            )
+        rows = await self.admin_store.list_note_registry(
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            group_id=group_id,
+            subgroup_id=subgroup_id,
+        )
+        return [NoteRegistry(**row) for row in rows]
+
+    async def list_tags(self, principal: Principal, *, workspace_id: str) -> list[TagRegistry]:
+        self._require(principal, ACTIVITY_DOCUMENT_READ, workspace_id)
+        tenant_id, workspace_id = await self._existing_workspace_scope(workspace_id)
+        rows = await self.admin_store.list_tag_registry(
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+        )
+        return [TagRegistry(**row) for row in rows]
+
+    async def _require_workspace_ref(
+        self,
+        *,
+        ref_kind: str,
+        ref_id: str,
+        tenant_id: str | None,
+        workspace_id: str,
+    ) -> dict[str, Any] | None:
+        normalized_kind = canonical_ref_kind(ref_kind)
+        if normalized_kind == "note":
+            note = await self.admin_store.get_note_registry(
+                ref_id,
+                tenant_id=tenant_id,
+                workspace_id=workspace_id,
+            )
+            if not note:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Note reference not found.")
+            return note
+        if normalized_kind == "document":
+            document = await self.admin_store.get_document_registry(
+                ref_id,
+                tenant_id=tenant_id,
+                workspace_id=workspace_id,
+            )
+            if not document:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document reference not found.")
+            return document
+        if normalized_kind in {"note_label", "answer", "conversation", "agent", "canvas", "trail", "content_map"}:
+            return None
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Unsupported reference kind.")
+
+    @staticmethod
+    def _refs_share_group_scope(left: dict[str, Any] | None, right: dict[str, Any] | None) -> bool:
+        if not left or not right:
+            return True
+        if left.get("group_id") and right.get("group_id") and left.get("group_id") != right.get("group_id"):
+            return False
+        if (
+            left.get("subgroup_id")
+            and right.get("subgroup_id")
+            and left.get("subgroup_id") != right.get("subgroup_id")
+        ):
+            return False
+        return True
+
+    async def list_backlinks(
+        self,
+        principal: Principal,
+        *,
+        workspace_id: str,
+        source_kind: str | None = None,
+        source_id: str | None = None,
+        target_kind: str | None = None,
+        target_id: str | None = None,
+    ) -> list[Backlink]:
+        self._require(principal, ACTIVITY_DOCUMENT_READ, workspace_id)
+        tenant_id, workspace_id = await self._existing_workspace_scope(workspace_id)
+        rows = await self.admin_store.list_backlinks(
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            source_kind=source_kind,
+            source_id=source_id,
+            target_kind=target_kind,
+            target_id=target_id,
+        )
+        return [Backlink(**row) for row in rows]
+
+    async def upsert_backlink(
+        self,
+        principal: Principal,
+        *,
+        workspace_id: str,
+        payload: LittleBullBacklinkRequest,
+    ) -> Backlink:
+        self._require(principal, ACTIVITY_DOCUMENT_UPLOAD, workspace_id)
+        tenant_id, workspace_id = await self._existing_workspace_scope(workspace_id)
+        if payload.graph_edge_origin_id:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="graph_edge_origin_id backlinks require scoped graph edge origin validation.",
+            )
+        source_ref = await self._require_workspace_ref(
+            ref_kind=payload.source_kind,
+            ref_id=payload.source_id,
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+        )
+        target_ref = await self._require_workspace_ref(
+            ref_kind=payload.target_kind,
+            ref_id=payload.target_id,
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+        )
+        if not self._refs_share_group_scope(source_ref, target_ref):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="Backlink source and target must share group/subgroup scope.",
+            )
+        backlink_payload = payload.model_dump(exclude_none=True)
+        backlink_payload["source_kind"] = canonical_ref_kind(payload.source_kind)
+        backlink_payload["target_kind"] = canonical_ref_kind(payload.target_kind)
+        row = await self.admin_store.upsert_backlink(
+            backlink_payload,
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            user_id=principal.user_id,
+        )
+        await self.audit.record(
+            principal=principal,
+            action=ACTIVITY_DOCUMENT_UPLOAD,
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            result="backlink_upserted",
+            metadata={
+                "backlink_id": row["backlink_id"],
+                "source_kind": row["source_kind"],
+                "source_id": row["source_id"],
+                "target_kind": row["target_kind"],
+                "target_id": row["target_id"],
+                "origin_type": row["origin_type"],
+            },
+        )
+        return Backlink(**row)
+
+    async def list_source_provenance(
+        self,
+        principal: Principal,
+        *,
+        workspace_id: str,
+        source_kind: str | None = None,
+        source_id: str | None = None,
+        document_id: str | None = None,
+        note_id: str | None = None,
+    ) -> list[SourceProvenance]:
+        self._require(principal, ACTIVITY_DOCUMENT_READ, workspace_id)
+        tenant_id, workspace_id = await self._existing_workspace_scope(workspace_id)
+        rows = await self.admin_store.list_source_provenance(
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            source_kind=source_kind,
+            source_id=source_id,
+            document_id=document_id,
+            note_id=note_id,
+        )
+        return [SourceProvenance(**row) for row in rows]
+
+    async def record_source_provenance(
+        self,
+        principal: Principal,
+        *,
+        workspace_id: str,
+        payload: LittleBullSourceProvenanceRequest,
+    ) -> SourceProvenance:
+        self._require(principal, ACTIVITY_DOCUMENT_UPLOAD, workspace_id)
+        tenant_id, workspace_id = await self._existing_workspace_scope(workspace_id)
+        document_ref = None
+        note_ref = None
+        if payload.document_id:
+            document_ref = await self._require_workspace_ref(
+                ref_kind="document",
+                ref_id=payload.document_id,
+                tenant_id=tenant_id,
+                workspace_id=workspace_id,
+            )
+        if payload.note_id:
+            note_ref = await self._require_workspace_ref(
+                ref_kind="note",
+                ref_id=payload.note_id,
+                tenant_id=tenant_id,
+                workspace_id=workspace_id,
+            )
+        if not self._refs_share_group_scope(document_ref, note_ref):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="Source provenance references must share group/subgroup scope.",
+            )
+        if payload.agent_id or payload.usage_ledger_id:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="agent_id and usage_ledger_id provenance require scoped validation before use.",
+            )
+        row = await self.admin_store.insert_source_provenance(
+            payload.model_dump(exclude_none=True),
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            user_id=principal.user_id,
+        )
+        await self.audit.record(
+            principal=principal,
+            action=ACTIVITY_DOCUMENT_UPLOAD,
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            result="source_provenance_recorded",
+            metadata={
+                "source_provenance_id": row["source_provenance_id"],
+                "source_kind": row["source_kind"],
+                "source_id": row["source_id"],
+                "document_id": row["document_id"],
+                "note_id": row["note_id"],
+            },
+        )
+        return SourceProvenance(**row)
+
+    async def get_provenance_panel(
+        self,
+        principal: Principal,
+        *,
+        workspace_id: str,
+        target_kind: str,
+        target_id: str,
+    ) -> LittleBullProvenancePanel:
+        self._require(principal, ACTIVITY_DOCUMENT_READ, workspace_id)
+        tenant_id, workspace_id = await self._existing_workspace_scope(workspace_id)
+        canonical_target_kind = canonical_ref_kind(target_kind)
+        if canonical_target_kind not in {"note", "document"}:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="Provenance panels are currently scoped to note or document targets.",
+            )
+        await self._require_workspace_ref(
+            ref_kind=canonical_target_kind,
+            ref_id=target_id,
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+        )
+        backlinks = await self.admin_store.list_backlinks(
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            target_kind=canonical_target_kind,
+            target_id=target_id,
+        )
+        cited_by = [
+            row
+            for row in backlinks
+            if row.get("origin_type") in {"citation", "wikilink", "manual", "source_provenance"}
+        ]
+        provenance = await self.admin_store.list_source_provenance(
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            document_id=target_id if canonical_target_kind == "document" else None,
+            note_id=target_id if canonical_target_kind == "note" else None,
+        )
+        used_in_responses = [
+            row
+            for row in provenance
+            if row.get("source_kind") in {"answer", "query_response", "conversation_message"}
+        ]
+        return LittleBullProvenancePanel(
+            target_kind=canonical_target_kind,
+            target_id=target_id,
+            mentioned_in=[Backlink(**row) for row in backlinks],
+            cited_by=[Backlink(**row) for row in cited_by],
+            used_in_responses=[SourceProvenance(**row) for row in used_in_responses],
+        )
+
+    async def list_canvas_boards(
+        self,
+        principal: Principal,
+        *,
+        workspace_id: str,
+        group_id: str | None = None,
+        subgroup_id: str | None = None,
+    ) -> list[CanvasBoard]:
+        self._require(principal, ACTIVITY_DOCUMENT_READ, workspace_id)
+        tenant_id, workspace_id = await self._existing_workspace_scope(workspace_id)
+        if group_id:
+            await self._require_existing_group(
+                tenant_id=tenant_id,
+                workspace_id=workspace_id,
+                group_id=group_id,
+            )
+        if subgroup_id:
+            await self._require_existing_subgroup(
+                tenant_id=tenant_id,
+                workspace_id=workspace_id,
+                group_id=group_id,
+                subgroup_id=subgroup_id,
+            )
+        rows = await self.admin_store.list_canvas_boards(
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            group_id=group_id,
+            subgroup_id=subgroup_id,
+        )
+        return [CanvasBoard(**row) for row in rows]
+
+    async def upsert_canvas_board(
+        self,
+        principal: Principal,
+        *,
+        workspace_id: str,
+        payload: LittleBullCanvasBoardRequest,
+    ) -> CanvasBoard:
+        self._require(principal, ACTIVITY_DOCUMENT_UPLOAD, workspace_id)
+        tenant_id, workspace_id = await self._existing_workspace_scope(workspace_id)
+        await self._require_existing_group(
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            group_id=payload.group_id,
+        )
+        await self._require_existing_subgroup(
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            group_id=payload.group_id,
+            subgroup_id=payload.subgroup_id,
+        )
+        slug = slugify_workspace(payload.slug or payload.title)
+        if payload.canvas_board_id:
+            existing_by_id = await self.admin_store.get_canvas_board(
+                payload.canvas_board_id,
+                tenant_id=tenant_id,
+                workspace_id=workspace_id,
+            )
+            if not existing_by_id:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Canvas board not found.")
+        existing_boards = await self.admin_store.list_canvas_boards(
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+        )
+        found_canvas_board_id = False
+        for existing in existing_boards:
+            if existing["canvas_board_id"] == payload.canvas_board_id:
+                found_canvas_board_id = True
+            if payload.canvas_board_id and existing["slug"] == slug and existing["canvas_board_id"] != payload.canvas_board_id:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Canvas board slug is already used by another board.",
+                )
+            if existing["slug"] == slug or existing["canvas_board_id"] == payload.canvas_board_id:
+                if existing["group_id"] != payload.group_id or existing["subgroup_id"] != payload.subgroup_id:
+                    raise HTTPException(
+                        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                        detail="Existing canvas boards cannot be moved across group/subgroup scope.",
+                    )
+        if payload.canvas_board_id and not found_canvas_board_id:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Canvas board not found.")
+        try:
+            row = await self.admin_store.upsert_canvas_board(
+                {
+                    **payload.model_dump(exclude_none=True),
+                    "slug": slug,
+                },
+                tenant_id=tenant_id,
+                workspace_id=workspace_id,
+                user_id=principal.user_id,
+            )
+        except ValueError as exc:
+            if "canvas_board_scope_mismatch" not in str(exc):
+                raise
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="Existing canvas boards cannot be moved across group/subgroup scope.",
+            ) from exc
+        await self.audit.record(
+            principal=principal,
+            action=ACTIVITY_DOCUMENT_UPLOAD,
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            result="canvas_board_upserted",
+            metadata={"canvas_board_id": row["canvas_board_id"], "slug": row["slug"]},
+        )
+        return CanvasBoard(**row)
+
+    async def _require_canvas_board(
+        self,
+        *,
+        canvas_board_id: str,
+        tenant_id: str | None,
+        workspace_id: str,
+    ) -> dict[str, Any]:
+        board = await self.admin_store.get_canvas_board(
+            canvas_board_id,
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+        )
+        if not board:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Canvas board not found.")
+        return board
+
+    async def get_canvas_board(
+        self,
+        principal: Principal,
+        *,
+        workspace_id: str,
+        canvas_board_id: str,
+    ) -> LittleBullCanvasBoardDetail:
+        self._require(principal, ACTIVITY_DOCUMENT_READ, workspace_id)
+        tenant_id, workspace_id = await self._existing_workspace_scope(workspace_id)
+        board = await self._require_canvas_board(
+            canvas_board_id=canvas_board_id,
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+        )
+        nodes = await self.admin_store.list_canvas_nodes(
+            canvas_board_id=canvas_board_id,
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+        )
+        edges = await self.admin_store.list_canvas_edges(
+            canvas_board_id=canvas_board_id,
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+        )
+        return LittleBullCanvasBoardDetail(
+            board=CanvasBoard(**board),
+            nodes=[CanvasNode(**node) for node in nodes],
+            edges=[CanvasEdge(**edge) for edge in edges],
+        )
+
+    async def upsert_canvas_node(
+        self,
+        principal: Principal,
+        *,
+        workspace_id: str,
+        canvas_board_id: str,
+        payload: LittleBullCanvasNodeRequest,
+    ) -> CanvasNode:
+        self._require(principal, ACTIVITY_DOCUMENT_UPLOAD, workspace_id)
+        tenant_id, workspace_id = await self._existing_workspace_scope(workspace_id)
+        board = await self._require_canvas_board(
+            canvas_board_id=canvas_board_id,
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+        )
+        ref_kind = canonical_ref_kind(payload.ref_kind) if payload.ref_kind else ""
+        if ref_kind in {"note", "document"}:
+            ref = await self._require_workspace_ref(
+                ref_kind=ref_kind,
+                ref_id=payload.ref_id,
+                tenant_id=tenant_id,
+                workspace_id=workspace_id,
+            )
+            if not self._refs_share_group_scope(board, ref):
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                    detail="Canvas node reference must share board group/subgroup scope.",
+                )
+        elif payload.ref_id:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="Canvas nodes with ref_id currently support only note or document refs.",
+            )
+        if payload.canvas_node_id:
+            existing_node = await self.admin_store.get_canvas_node(
+                payload.canvas_node_id,
+                tenant_id=tenant_id,
+                workspace_id=workspace_id,
+            )
+            if not existing_node or existing_node["canvas_board_id"] != canvas_board_id:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Canvas node id is not available on this board.",
+                )
+        row = await self.admin_store.upsert_canvas_node(
+            {
+                **payload.model_dump(exclude_none=True),
+                "canvas_board_id": canvas_board_id,
+                "ref_kind": ref_kind,
+            },
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            user_id=principal.user_id,
+        )
+        await self.audit.record(
+            principal=principal,
+            action=ACTIVITY_DOCUMENT_UPLOAD,
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            result="canvas_node_upserted",
+            metadata={"canvas_board_id": canvas_board_id, "canvas_node_id": row["canvas_node_id"]},
+        )
+        return CanvasNode(**row)
+
+    async def upsert_canvas_edge(
+        self,
+        principal: Principal,
+        *,
+        workspace_id: str,
+        canvas_board_id: str,
+        payload: LittleBullCanvasEdgeRequest,
+    ) -> CanvasEdge:
+        self._require(principal, ACTIVITY_DOCUMENT_UPLOAD, workspace_id)
+        tenant_id, workspace_id = await self._existing_workspace_scope(workspace_id)
+        await self._require_canvas_board(
+            canvas_board_id=canvas_board_id,
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+        )
+        source = await self.admin_store.get_canvas_node(
+            payload.source_node_id,
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+        )
+        target = await self.admin_store.get_canvas_node(
+            payload.target_node_id,
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+        )
+        if not source or not target or source["canvas_board_id"] != canvas_board_id or target["canvas_board_id"] != canvas_board_id:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Canvas edge endpoints must be nodes on the same board.",
+            )
+        if payload.canvas_edge_id:
+            existing_edges = await self.admin_store.list_canvas_edges(
+                canvas_board_id=canvas_board_id,
+                tenant_id=tenant_id,
+                workspace_id=workspace_id,
+            )
+            if not any(edge["canvas_edge_id"] == payload.canvas_edge_id for edge in existing_edges):
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Canvas edge id is not available on this board.",
+                )
+        row = await self.admin_store.upsert_canvas_edge(
+            {
+                **payload.model_dump(exclude_none=True),
+                "canvas_board_id": canvas_board_id,
+            },
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            user_id=principal.user_id,
+        )
+        await self.audit.record(
+            principal=principal,
+            action=ACTIVITY_DOCUMENT_UPLOAD,
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            result="canvas_edge_upserted",
+            metadata={"canvas_board_id": canvas_board_id, "canvas_edge_id": row["canvas_edge_id"]},
+        )
+        return CanvasEdge(**row)
+
+    async def analyze_canvas_board(
+        self,
+        principal: Principal,
+        *,
+        workspace_id: str,
+        canvas_board_id: str,
+    ) -> LittleBullCanvasAnalysis:
+        detail = await self.get_canvas_board(principal, workspace_id=workspace_id, canvas_board_id=canvas_board_id)
+        node_kind_counts: dict[str, int] = {}
+        for node in detail.nodes:
+            node_kind_counts[node.node_kind] = node_kind_counts.get(node.node_kind, 0) + 1
+
+        adjacency: dict[str, set[str]] = {node.canvas_node_id or "": set() for node in detail.nodes}
+        for edge in detail.edges:
+            adjacency.setdefault(edge.source_node_id, set()).add(edge.target_node_id)
+            adjacency.setdefault(edge.target_node_id, set()).add(edge.source_node_id)
+        clusters = []
+        seen: set[str] = set()
+        for node_id in adjacency:
+            if not node_id or node_id in seen:
+                continue
+            stack = [node_id]
+            cluster_nodes: list[str] = []
+            seen.add(node_id)
+            while stack:
+                current = stack.pop()
+                cluster_nodes.append(current)
+                for neighbor in adjacency.get(current, set()):
+                    if neighbor not in seen:
+                        seen.add(neighbor)
+                        stack.append(neighbor)
+            clusters.append({"cluster_id": f"cluster-{len(clusters) + 1}", "node_ids": sorted(cluster_nodes)})
+        warnings = []
+        if not detail.nodes:
+            warnings.append("canvas_empty")
+        if detail.nodes and not detail.edges:
+            warnings.append("canvas_without_edges")
+        return LittleBullCanvasAnalysis(
+            canvas_board_id=canvas_board_id,
+            node_count=len(detail.nodes),
+            edge_count=len(detail.edges),
+            node_kind_counts=node_kind_counts,
+            clusters=clusters,
+            warnings=warnings,
+        )
+
+    async def export_canvas_board_dossier(
+        self,
+        principal: Principal,
+        *,
+        workspace_id: str,
+        canvas_board_id: str,
+    ) -> KnowledgeDossier:
+        self._require(principal, ACTIVITY_DOCUMENT_UPLOAD, workspace_id)
+        tenant_id, workspace_id = await self._existing_workspace_scope(workspace_id)
+        detail = await self.get_canvas_board(principal, workspace_id=workspace_id, canvas_board_id=canvas_board_id)
+        analysis = await self.analyze_canvas_board(principal, workspace_id=workspace_id, canvas_board_id=canvas_board_id)
+        row = await self.admin_store.upsert_knowledge_dossier(
+            {
+                "group_id": detail.board.group_id,
+                "subgroup_id": detail.board.subgroup_id,
+                "title": f"{detail.board.title} dossier",
+                "slug": slugify_workspace(f"{detail.board.slug}-dossier"),
+                "dossier_kind": "canvas",
+                "status": "draft",
+                "content_refs": [
+                    {"kind": "canvas_board", "id": canvas_board_id},
+                    *[
+                        {"kind": node.node_kind, "id": node.ref_id or node.canvas_node_id}
+                        for node in detail.nodes
+                    ],
+                ],
+                "export_policy": {
+                    "requires_lgpd_review": True,
+                    "source": "canvas",
+                    "analysis": analysis.model_dump(),
+                },
+            },
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            user_id=principal.user_id,
+        )
+        await self.audit.record(
+            principal=principal,
+            action=ACTIVITY_DOCUMENT_UPLOAD,
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            result="canvas_dossier_exported",
+            metadata={"canvas_board_id": canvas_board_id, "knowledge_dossier_id": row["knowledge_dossier_id"]},
+        )
+        return KnowledgeDossier(**row)
+
+    async def list_content_maps(
+        self,
+        principal: Principal,
+        *,
+        workspace_id: str,
+        group_id: str | None = None,
+        subgroup_id: str | None = None,
+    ) -> list[ContentMap]:
+        self._require(principal, ACTIVITY_DOCUMENT_READ, workspace_id)
+        tenant_id, workspace_id = await self._existing_workspace_scope(workspace_id)
+        if group_id:
+            await self._require_existing_group(
+                tenant_id=tenant_id,
+                workspace_id=workspace_id,
+                group_id=group_id,
+            )
+        if subgroup_id:
+            await self._require_existing_subgroup(
+                tenant_id=tenant_id,
+                workspace_id=workspace_id,
+                group_id=group_id,
+                subgroup_id=subgroup_id,
+            )
+        rows = await self.admin_store.list_content_maps(
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            group_id=group_id,
+            subgroup_id=subgroup_id,
+        )
+        return [ContentMap(**row) for row in rows]
+
+    async def upsert_content_map(
+        self,
+        principal: Principal,
+        *,
+        workspace_id: str,
+        payload: LittleBullContentMapRequest,
+    ) -> ContentMap:
+        self._require(principal, ACTIVITY_DOCUMENT_UPLOAD, workspace_id)
+        tenant_id, workspace_id = await self._existing_workspace_scope(workspace_id)
+        await self._require_existing_group(
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            group_id=payload.group_id,
+        )
+        await self._require_existing_subgroup(
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            group_id=payload.group_id,
+            subgroup_id=payload.subgroup_id,
+        )
+        if payload.root_note_id:
+            root_note = await self._require_workspace_ref(
+                ref_kind="note",
+                ref_id=payload.root_note_id,
+                tenant_id=tenant_id,
+                workspace_id=workspace_id,
+            )
+            content_map_scope = {
+                "group_id": payload.group_id,
+                "subgroup_id": payload.subgroup_id,
+            }
+            if not self._refs_share_group_scope(content_map_scope, root_note):
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                    detail="Content map root note must share group/subgroup scope.",
+                )
+        slug = slugify_workspace(payload.slug or payload.title)
+        existing_maps = await self.admin_store.list_content_maps(
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+        )
+        found_content_map_id = False
+        for existing in existing_maps:
+            if existing["content_map_id"] == payload.content_map_id:
+                found_content_map_id = True
+            if payload.content_map_id and existing["slug"] == slug and existing["content_map_id"] != payload.content_map_id:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Content map slug is already used by another content map.",
+                )
+            if existing["slug"] == slug or existing["content_map_id"] == payload.content_map_id:
+                if existing["group_id"] != payload.group_id or existing["subgroup_id"] != payload.subgroup_id:
+                    raise HTTPException(
+                        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                        detail="Existing content maps cannot be moved across group/subgroup scope.",
+                    )
+        if payload.content_map_id and not found_content_map_id:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Content map not found.")
+        try:
+            row = await self.admin_store.upsert_content_map(
+                {
+                    **payload.model_dump(exclude_none=True),
+                    "slug": slug,
+                },
+                tenant_id=tenant_id,
+                workspace_id=workspace_id,
+                user_id=principal.user_id,
+            )
+        except ValueError as exc:
+            if "content_map_scope_mismatch" not in str(exc):
+                raise
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="Existing content maps cannot be moved across group/subgroup scope.",
+            ) from exc
+        await self.audit.record(
+            principal=principal,
+            action=ACTIVITY_DOCUMENT_UPLOAD,
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            result="content_map_upserted",
+            metadata={"content_map_id": row["content_map_id"], "slug": row["slug"]},
+        )
+        return ContentMap(**row)
+
+    async def list_knowledge_trails(
+        self,
+        principal: Principal,
+        *,
+        workspace_id: str,
+        group_id: str | None = None,
+        subgroup_id: str | None = None,
+    ) -> list[KnowledgeTrail]:
+        self._require(principal, ACTIVITY_DOCUMENT_READ, workspace_id)
+        tenant_id, workspace_id = await self._existing_workspace_scope(workspace_id)
+        if group_id:
+            await self._require_existing_group(
+                tenant_id=tenant_id,
+                workspace_id=workspace_id,
+                group_id=group_id,
+            )
+        if subgroup_id:
+            await self._require_existing_subgroup(
+                tenant_id=tenant_id,
+                workspace_id=workspace_id,
+                group_id=group_id,
+                subgroup_id=subgroup_id,
+            )
+        rows = await self.admin_store.list_knowledge_trails(
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            group_id=group_id,
+            subgroup_id=subgroup_id,
+        )
+        return [KnowledgeTrail(**row) for row in rows]
+
+    async def upsert_knowledge_trail(
+        self,
+        principal: Principal,
+        *,
+        workspace_id: str,
+        payload: LittleBullKnowledgeTrailRequest,
+    ) -> KnowledgeTrail:
+        self._require(principal, ACTIVITY_DOCUMENT_UPLOAD, workspace_id)
+        tenant_id, workspace_id = await self._existing_workspace_scope(workspace_id)
+        await self._require_existing_group(
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            group_id=payload.group_id,
+        )
+        await self._require_existing_subgroup(
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            group_id=payload.group_id,
+            subgroup_id=payload.subgroup_id,
+        )
+        slug = slugify_workspace(payload.slug or payload.title)
+        existing_trails = await self.admin_store.list_knowledge_trails(
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+        )
+        found_knowledge_trail_id = False
+        for existing in existing_trails:
+            if existing["knowledge_trail_id"] == payload.knowledge_trail_id:
+                found_knowledge_trail_id = True
+            if (
+                payload.knowledge_trail_id
+                and existing["slug"] == slug
+                and existing["knowledge_trail_id"] != payload.knowledge_trail_id
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Knowledge trail slug is already used by another trail.",
+                )
+            if existing["slug"] == slug or existing["knowledge_trail_id"] == payload.knowledge_trail_id:
+                if existing["group_id"] != payload.group_id or existing["subgroup_id"] != payload.subgroup_id:
+                    raise HTTPException(
+                        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                        detail="Existing knowledge trails cannot be moved across group/subgroup scope.",
+                    )
+        if payload.knowledge_trail_id and not found_knowledge_trail_id:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Knowledge trail not found.")
+        try:
+            row = await self.admin_store.upsert_knowledge_trail(
+                {
+                    **payload.model_dump(exclude_none=True),
+                    "slug": slug,
+                },
+                tenant_id=tenant_id,
+                workspace_id=workspace_id,
+                user_id=principal.user_id,
+            )
+        except ValueError as exc:
+            if "knowledge_trail_scope_mismatch" not in str(exc):
+                raise
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="Existing knowledge trails cannot be moved across group/subgroup scope.",
+            ) from exc
+        await self.audit.record(
+            principal=principal,
+            action=ACTIVITY_DOCUMENT_UPLOAD,
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            result="knowledge_trail_upserted",
+            metadata={"knowledge_trail_id": row["knowledge_trail_id"], "slug": row["slug"]},
+        )
+        return KnowledgeTrail(**row)
+
+    async def _require_knowledge_trail(
+        self,
+        *,
+        knowledge_trail_id: str,
+        tenant_id: str | None,
+        workspace_id: str,
+    ) -> dict[str, Any]:
+        trail = await self.admin_store.get_knowledge_trail(
+            knowledge_trail_id,
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+        )
+        if not trail:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Knowledge trail not found.")
+        return trail
+
+    async def get_knowledge_trail(
+        self,
+        principal: Principal,
+        *,
+        workspace_id: str,
+        knowledge_trail_id: str,
+    ) -> LittleBullKnowledgeTrailDetail:
+        self._require(principal, ACTIVITY_DOCUMENT_READ, workspace_id)
+        tenant_id, workspace_id = await self._existing_workspace_scope(workspace_id)
+        trail = await self._require_knowledge_trail(
+            knowledge_trail_id=knowledge_trail_id,
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+        )
+        steps = await self.admin_store.list_knowledge_trail_steps(
+            knowledge_trail_id=knowledge_trail_id,
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+        )
+        return LittleBullKnowledgeTrailDetail(
+            trail=KnowledgeTrail(**trail),
+            steps=[KnowledgeTrailStep(**step) for step in steps],
+        )
+
+    async def upsert_knowledge_trail_step(
+        self,
+        principal: Principal,
+        *,
+        workspace_id: str,
+        knowledge_trail_id: str,
+        payload: LittleBullKnowledgeTrailStepRequest,
+    ) -> KnowledgeTrailStep:
+        self._require(principal, ACTIVITY_DOCUMENT_UPLOAD, workspace_id)
+        tenant_id, workspace_id = await self._existing_workspace_scope(workspace_id)
+        trail = await self._require_knowledge_trail(
+            knowledge_trail_id=knowledge_trail_id,
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+        )
+        existing_steps = await self.admin_store.list_knowledge_trail_steps(
+            knowledge_trail_id=knowledge_trail_id,
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+        )
+        if payload.knowledge_trail_step_id and not any(
+            step["knowledge_trail_step_id"] == payload.knowledge_trail_step_id for step in existing_steps
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Knowledge trail step id is not available on this trail.",
+            )
+        trail_scope = {"group_id": trail.get("group_id"), "subgroup_id": trail.get("subgroup_id")}
+        for ref_kind, ref_id in (
+            ("note", payload.note_id),
+            ("document", payload.document_id),
+            ("canvas", payload.canvas_board_id),
+        ):
+            if not ref_id:
+                continue
+            if ref_kind == "canvas":
+                ref = await self._require_canvas_board(
+                    canvas_board_id=ref_id,
+                    tenant_id=tenant_id,
+                    workspace_id=workspace_id,
+                )
+            else:
+                ref = await self._require_workspace_ref(
+                    ref_kind=ref_kind,
+                    ref_id=ref_id,
+                    tenant_id=tenant_id,
+                    workspace_id=workspace_id,
+                )
+            if not self._refs_share_group_scope(trail_scope, ref):
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                    detail="Knowledge trail step references must share trail group/subgroup scope.",
+                )
+        row = await self.admin_store.upsert_knowledge_trail_step(
+            {
+                **payload.model_dump(exclude_none=True),
+                "knowledge_trail_id": knowledge_trail_id,
+            },
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            user_id=principal.user_id,
+        )
+        await self.audit.record(
+            principal=principal,
+            action=ACTIVITY_DOCUMENT_UPLOAD,
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            result="knowledge_trail_step_upserted",
+            metadata={
+                "knowledge_trail_id": knowledge_trail_id,
+                "knowledge_trail_step_id": row["knowledge_trail_step_id"],
+                "step_order": row["step_order"],
+            },
+        )
+        return KnowledgeTrailStep(**row)
+
+    @staticmethod
+    def _parse_daily_note_date(value: str | None) -> str:
+        if not value:
+            return datetime.now(timezone.utc).date().isoformat()
+        try:
+            return date.fromisoformat(value).isoformat()
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="note_date must be an ISO date in YYYY-MM-DD format.",
+            ) from exc
+
+    async def _require_optional_group_scope(
+        self,
+        *,
+        tenant_id: str | None,
+        workspace_id: str,
+        group_id: str | None,
+        subgroup_id: str | None,
+    ) -> dict[str, Any]:
+        if subgroup_id and not group_id:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="subgroup_id requires group_id.",
+            )
+        if group_id:
+            await self._require_existing_group(
+                tenant_id=tenant_id,
+                workspace_id=workspace_id,
+                group_id=group_id,
+            )
+        if subgroup_id:
+            await self._require_existing_subgroup(
+                tenant_id=tenant_id,
+                workspace_id=workspace_id,
+                group_id=group_id,
+                subgroup_id=subgroup_id,
+            )
+        return {"group_id": group_id, "subgroup_id": subgroup_id}
+
+    async def _require_content_map(
+        self,
+        *,
+        content_map_id: str,
+        tenant_id: str | None,
+        workspace_id: str,
+    ) -> dict[str, Any]:
+        content_map = next(
+            (
+                item
+                for item in await self.admin_store.list_content_maps(
+                    tenant_id=tenant_id,
+                    workspace_id=workspace_id,
+                )
+                if item["content_map_id"] == content_map_id
+            ),
+            None,
+        )
+        if not content_map:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Content map not found.")
+        return content_map
+
+    async def _validate_inbox_source(
+        self,
+        *,
+        principal: Principal,
+        tenant_id: str | None,
+        workspace_id: str,
+        group_scope: dict[str, Any],
+        source_kind: str,
+        source_id: str,
+    ) -> str:
+        source_kind = canonical_ref_kind(source_kind)
+        if bool(source_kind) != bool(source_id):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="Inbox source_kind and source_id must be provided together.",
+            )
+        if not source_kind:
+            return ""
+        if source_kind in {"note", "document"}:
+            ref = await self._require_workspace_ref(
+                ref_kind=source_kind,
+                ref_id=source_id,
+                tenant_id=tenant_id,
+                workspace_id=workspace_id,
+            )
+        elif source_kind == "canvas":
+            ref = await self._require_canvas_board(
+                canvas_board_id=source_id,
+                tenant_id=tenant_id,
+                workspace_id=workspace_id,
+            )
+        elif source_kind == "trail":
+            ref = await self._require_knowledge_trail(
+                knowledge_trail_id=source_id,
+                tenant_id=tenant_id,
+                workspace_id=workspace_id,
+            )
+        elif source_kind == "content_map":
+            ref = await self._require_content_map(
+                content_map_id=source_id,
+                tenant_id=tenant_id,
+                workspace_id=workspace_id,
+            )
+        elif source_kind == "conversation":
+            ref = await self.admin_store.get_conversation(source_id)
+            if not ref or ref["tenant_id"] != tenant_id or ref["workspace_id"] != workspace_id:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Conversation source not found.")
+            if not principal.is_master_global and ref["user_id"] != principal.user_id:
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Conversation belongs to another user.")
+            return source_kind
+        elif source_kind == "suggestion":
+            ref = await self.admin_store.get_correlation_suggestion(source_id)
+            if not ref or ref["tenant_id"] != tenant_id or ref["workspace_id"] != workspace_id:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Suggestion source not found.")
+            if not principal.is_master_global and ref["user_id"] != principal.user_id:
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Suggestion belongs to another user.")
+            return source_kind
+        else:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Unsupported inbox source.")
+        if (ref.get("group_id") or ref.get("subgroup_id")) and not (
+            group_scope.get("group_id") and group_scope.get("subgroup_id")
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="Scoped inbox sources require inbox group/subgroup scope.",
+            )
+        if not self._refs_share_group_scope(group_scope, ref):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="Inbox source must share inbox group/subgroup scope.",
+            )
+        return source_kind
+
+    async def list_inbox_items(
+        self,
+        principal: Principal,
+        *,
+        workspace_id: str,
+        status_filter: str | None = None,
+        group_id: str | None = None,
+        subgroup_id: str | None = None,
+        limit: int = 100,
+    ) -> list[KnowledgeInboxItem]:
+        self._require(principal, ACTIVITY_DOCUMENT_READ, workspace_id)
+        tenant_id, workspace_id = await self._existing_workspace_scope(workspace_id)
+        await self._require_optional_group_scope(
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            group_id=group_id,
+            subgroup_id=subgroup_id,
+        )
+        rows = await self.admin_store.list_knowledge_inbox_items(
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            status=status_filter,
+            group_id=group_id,
+            subgroup_id=subgroup_id,
+            limit=limit,
+        )
+        return [KnowledgeInboxItem(**row) for row in rows]
+
+    async def upsert_inbox_item(
+        self,
+        principal: Principal,
+        *,
+        workspace_id: str,
+        payload: LittleBullInboxItemRequest,
+    ) -> KnowledgeInboxItem:
+        self._require(principal, ACTIVITY_DOCUMENT_UPLOAD, workspace_id)
+        tenant_id, workspace_id = await self._existing_workspace_scope(workspace_id)
+        group_scope = await self._require_optional_group_scope(
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            group_id=payload.group_id,
+            subgroup_id=payload.subgroup_id,
+        )
+        source_kind = await self._validate_inbox_source(
+            principal=principal,
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            group_scope=group_scope,
+            source_kind=payload.source_kind,
+            source_id=payload.source_id,
+        )
+        if payload.inbox_item_id:
+            existing = await self.admin_store.get_knowledge_inbox_item(
+                payload.inbox_item_id,
+                tenant_id=tenant_id,
+                workspace_id=workspace_id,
+            )
+            if not existing:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Inbox item not found.")
+            if existing["group_id"] != payload.group_id or existing["subgroup_id"] != payload.subgroup_id:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                    detail="Existing inbox items cannot be moved across group/subgroup scope.",
+                )
+        row = await self.admin_store.upsert_knowledge_inbox_item(
+            {
+                **payload.model_dump(exclude_none=True),
+                "source_kind": source_kind,
+            },
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            user_id=principal.user_id,
+        )
+        await self.audit.record(
+            principal=principal,
+            action=ACTIVITY_DOCUMENT_UPLOAD,
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            result="inbox_item_upserted",
+            metadata={"inbox_item_id": row["inbox_item_id"], "item_kind": row["item_kind"]},
+        )
+        return KnowledgeInboxItem(**row)
+
+    async def update_inbox_item_status(
+        self,
+        principal: Principal,
+        *,
+        workspace_id: str,
+        inbox_item_id: str,
+        payload: LittleBullInboxItemStatusRequest,
+    ) -> KnowledgeInboxItem:
+        self._require(principal, ACTIVITY_DOCUMENT_UPLOAD, workspace_id)
+        tenant_id, workspace_id = await self._existing_workspace_scope(workspace_id)
+        row = await self.admin_store.update_knowledge_inbox_item_status(
+            inbox_item_id,
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            status=payload.status.strip(),
+            metadata=payload.metadata,
+            user_id=principal.user_id,
+        )
+        if not row:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Inbox item not found.")
+        await self.audit.record(
+            principal=principal,
+            action=ACTIVITY_DOCUMENT_UPLOAD,
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            result="inbox_item_status_updated",
+            metadata={"inbox_item_id": inbox_item_id, "status": row["status"]},
+        )
+        return KnowledgeInboxItem(**row)
+
+    @staticmethod
+    def _daily_note_markdown(note_date: str, payload: LittleBullDailyNoteRequest) -> str:
+        decisions = payload.decisions or []
+        pending_items = payload.pending_items or []
+        decision_lines = "\n".join(f"- {item.get('title') or item}" for item in decisions) or "- Nenhuma decisão registrada."
+        pending_lines = "\n".join(f"- {item.get('title') or item}" for item in pending_items) or "- Nenhuma pendência aberta."
+        cost_lines = "\n".join(f"- {key}: {value}" for key, value in sorted(payload.cost_snapshot.items())) or "- Sem custos registrados."
+        summary = payload.summary.strip() or "Sem resumo registrado."
+        return (
+            f"# Daily Note {note_date}\n\n"
+            f"## Resumo\n{summary}\n\n"
+            f"## Decisões\n{decision_lines}\n\n"
+            f"## Pendências\n{pending_lines}\n\n"
+            f"## Custos\n{cost_lines}\n"
+        )
+
+    async def list_daily_notes(
+        self,
+        principal: Principal,
+        *,
+        workspace_id: str,
+        limit: int = 30,
+    ) -> list[DailyNote]:
+        self._require(principal, ACTIVITY_DOCUMENT_READ, workspace_id)
+        tenant_id, workspace_id = await self._existing_workspace_scope(workspace_id)
+        rows = await self.admin_store.list_daily_notes(
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            limit=limit,
+        )
+        return [DailyNote(**row) for row in rows]
+
+    async def ensure_daily_note(
+        self,
+        principal: Principal,
+        *,
+        workspace_id: str,
+        payload: LittleBullDailyNoteRequest,
+    ) -> DailyNote:
+        self._require(principal, ACTIVITY_DOCUMENT_UPLOAD, workspace_id)
+        tenant_id, workspace_id = await self._existing_workspace_scope(workspace_id)
+        await self._require_existing_group(
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            group_id=payload.group_id,
+        )
+        await self._require_existing_subgroup(
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            group_id=payload.group_id,
+            subgroup_id=payload.subgroup_id,
+        )
+        note_date = self._parse_daily_note_date(payload.note_date)
+        existing = await self.admin_store.get_daily_note(
+            note_date,
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+        )
+        note_id = existing["note_id"] if existing else None
+        daily_slug = slugify_workspace(f"daily-{note_date}")
+        slug_note = await self.admin_store.find_note_by_slug_or_title(
+            slug=daily_slug,
+            title=f"Daily Note {note_date}",
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+        )
+        if slug_note and slug_note["note_id"] != note_id:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Daily note slug is already used by another note.",
+            )
+        if existing:
+            registry = await self.admin_store.get_note_registry(
+                note_id,
+                tenant_id=tenant_id,
+                workspace_id=workspace_id,
+            )
+            if not registry or registry["group_id"] != payload.group_id or registry["subgroup_id"] != payload.subgroup_id:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                    detail="Existing daily notes cannot be moved across group/subgroup scope.",
+                )
+        if not payload.pending_items:
+            open_items = await self.admin_store.list_knowledge_inbox_items(
+                tenant_id=tenant_id,
+                workspace_id=workspace_id,
+                status="open",
+                group_id=payload.group_id,
+                subgroup_id=payload.subgroup_id,
+                limit=25,
+            )
+            payload.pending_items.extend(
+                {"inbox_item_id": item["inbox_item_id"], "title": item["title"], "priority": item["priority"]}
+                for item in open_items
+            )
+        markdown_note = await self.upsert_markdown_note(
+            principal,
+            workspace_id=workspace_id,
+            payload=LittleBullMarkdownNoteRequest(
+                note_id=note_id,
+                title=f"Daily Note {note_date}",
+                slug=daily_slug,
+                group_id=payload.group_id,
+                subgroup_id=payload.subgroup_id,
+                markdown=self._daily_note_markdown(note_date, payload),
+                metadata={"daily_note": True, "note_date": note_date},
+            ),
+        )
+        row = await self.admin_store.upsert_daily_note(
+            {
+                "daily_note_id": payload.daily_note_id or (existing or {}).get("daily_note_id"),
+                "note_id": markdown_note.registry.note_id,
+                "note_date": note_date,
+                "summary": payload.summary,
+                "decisions": payload.decisions,
+                "pending_items": payload.pending_items,
+                "cost_snapshot": payload.cost_snapshot,
+            },
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            user_id=principal.user_id,
+        )
+        await self.audit.record(
+            principal=principal,
+            action=ACTIVITY_DOCUMENT_UPLOAD,
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            result="daily_note_upserted",
+            metadata={"daily_note_id": row["daily_note_id"], "note_id": row["note_id"], "note_date": row["note_date"]},
+        )
+        return DailyNote(**row)
+
+    async def get_markdown_note(
+        self,
+        principal: Principal,
+        *,
+        workspace_id: str,
+        note_id: str,
+    ) -> LittleBullMarkdownNoteResponse:
+        self._require(principal, ACTIVITY_DOCUMENT_READ, workspace_id)
+        tenant_id, workspace_id = await self._existing_workspace_scope(workspace_id)
+        registry = await self.admin_store.get_note_registry(
+            note_id,
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+        )
+        if not registry:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Note not found.")
+        note = await self.admin_store.get_latest_markdown_note(
+            note_id,
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+        )
+        if not note:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Markdown note not found.")
+        wiki_links = await self.admin_store.list_wiki_links(
+            source_note_id=note_id,
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+        )
+        note_tags = set(registry.get("metadata", {}).get("tags") or [])
+        tags = [
+            tag
+            for tag in await self.admin_store.list_tag_registry(
+                tenant_id=tenant_id,
+                workspace_id=workspace_id,
+            )
+            if tag.get("tag") in note_tags
+        ]
+        await self.audit.record(
+            principal=principal,
+            action=ACTIVITY_DOCUMENT_READ,
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            result="markdown_note_read",
+            metadata={"note_id": note_id},
+        )
+        return LittleBullMarkdownNoteResponse(
+            registry=NoteRegistry(**registry),
+            note=MarkdownNote(**note),
+            wiki_links=[WikiLink(**link) for link in wiki_links],
+            tags=[TagRegistry(**tag) for tag in tags],
+        )
+
+    async def upsert_markdown_note(
+        self,
+        principal: Principal,
+        *,
+        workspace_id: str,
+        payload: LittleBullMarkdownNoteRequest,
+    ) -> LittleBullMarkdownNoteResponse:
+        self._require(principal, ACTIVITY_DOCUMENT_UPLOAD, workspace_id)
+        if not payload.group_id or not payload.subgroup_id:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="group_id and subgroup_id are required for markdown notes.",
+            )
+        tenant_id, workspace_id = await self._existing_workspace_scope(workspace_id)
+        await self._require_existing_group(
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            group_id=payload.group_id,
+        )
+        await self._require_existing_subgroup(
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            group_id=payload.group_id,
+            subgroup_id=payload.subgroup_id,
+        )
+        if payload.source_document_id:
+            document = await self.admin_store.get_document_registry(
+                payload.source_document_id,
+                tenant_id=tenant_id,
+                workspace_id=workspace_id,
+            )
+            if not document:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Source document not found.")
+            if document.get("group_id") != payload.group_id or document.get("subgroup_id") != payload.subgroup_id:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                    detail="Source document must belong to the same group and subgroup as the note.",
+                )
+
+        wiki_link_specs = extract_wiki_links(payload.markdown)
+        markdown_tags = extract_markdown_tags(payload.markdown)
+        slug = slugify_workspace(payload.slug or payload.title)
+        registry = await self.admin_store.upsert_note_registry(
+            {
+                "note_id": payload.note_id,
+                "group_id": payload.group_id,
+                "subgroup_id": payload.subgroup_id,
+                "title": payload.title.strip(),
+                "slug": slug,
+                "note_type": "markdown",
+                "privacy": payload.privacy.strip() or "team",
+                "status": "active",
+                "metadata": {
+                    **payload.metadata,
+                    "tags": markdown_tags,
+                    "wikilinks": [link["target_label"] for link in wiki_link_specs],
+                },
+            },
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            user_id=principal.user_id,
+        )
+        note = await self.admin_store.insert_markdown_note_version(
+            {
+                "note_id": registry["note_id"],
+                "markdown": payload.markdown,
+                "rendered_summary": markdown_summary(payload.markdown),
+                "content_hash": f"sha256:{hashlib.sha256(payload.markdown.encode('utf-8')).hexdigest()}",
+                "status": "current",
+                "source_document_id": payload.source_document_id,
+            },
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            user_id=principal.user_id,
+        )
+
+        wiki_payloads: list[dict[str, Any]] = []
+        for link in wiki_link_specs:
+            target_label = link["target_label"]
+            target = await self.admin_store.find_note_by_slug_or_title(
+                slug=slugify_workspace(target_label),
+                title=target_label,
+                tenant_id=tenant_id,
+                workspace_id=workspace_id,
+            )
+            if target and (
+                target.get("group_id") != payload.group_id
+                or target.get("subgroup_id") != payload.subgroup_id
+            ):
+                target = None
+            wiki_payloads.append(
+                {
+                    "source_note_id": registry["note_id"],
+                    "target_note_id": target.get("note_id") if target else None,
+                    "target_label": target_label,
+                    "link_text": link["link_text"],
+                    "link_status": "resolved" if target else "unresolved",
+                    "metadata": {},
+                }
+            )
+        wiki_links = await self.admin_store.replace_wiki_links(
+            source_note_id=registry["note_id"],
+            links=wiki_payloads,
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            user_id=principal.user_id,
+        )
+        await self.admin_store.replace_backlinks_for_source(
+            source_kind="note",
+            source_id=registry["note_id"],
+            origin_type="wikilink",
+            backlinks=[
+                {
+                    "source_kind": "note",
+                    "source_id": registry["note_id"],
+                    "target_kind": "note" if link.get("target_note_id") else "note_label",
+                    "target_id": link.get("target_note_id") or slugify_workspace(link["target_label"]),
+                    "link_text": link.get("link_text", ""),
+                    "origin_type": "wikilink",
+                    "confidence": 1.0 if link.get("target_note_id") else None,
+                    "metadata": {
+                        "target_label": link["target_label"],
+                        "link_status": link["link_status"],
+                    },
+                }
+                for link in wiki_links
+            ],
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            user_id=principal.user_id,
+        )
+
+        tag_rows = []
+        for tag in markdown_tags:
+            tag_rows.append(
+                await self.admin_store.upsert_tag_registry(
+                    {
+                        "tag": tag,
+                        "label": tag.removeprefix("#").replace("-", " ").replace("_", " ").title(),
+                        "description": "",
+                        "color": "#64748B",
+                        "metadata": {},
+                    },
+                    tenant_id=tenant_id,
+                    workspace_id=workspace_id,
+                    user_id=principal.user_id,
+                )
+            )
+
+        await self.audit.record(
+            principal=principal,
+            action=ACTIVITY_DOCUMENT_UPLOAD,
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            result="markdown_note_upserted",
+            metadata={
+                "note_id": registry["note_id"],
+                "group_id": payload.group_id,
+                "subgroup_id": payload.subgroup_id,
+                "version_number": note["version_number"],
+                "wikilink_count": len(wiki_links),
+                "tag_count": len(tag_rows),
+            },
+        )
+        return LittleBullMarkdownNoteResponse(
+            registry=NoteRegistry(**registry),
+            note=MarkdownNote(**note),
+            wiki_links=[WikiLink(**link) for link in wiki_links],
+            tags=[TagRegistry(**tag) for tag in tag_rows],
+        )
+
     async def list_documents(
         self, principal: Principal, *, workspace_id: str, page: int = 1, page_size: int = 50
     ) -> LittleBullDocumentsResponse:
         self._require(principal, ACTIVITY_DOCUMENT_READ, workspace_id)
+        tenant_id = await self._workspace_tenant(workspace_id)
         rag = await self._require_data_plane(workspace_id)
+        if hasattr(self.admin_store, "list_document_registry"):
+            registry_rows = await self.admin_store.list_document_registry(
+                tenant_id=tenant_id,
+                workspace_id=workspace_id,
+            )
+            classified_rows = [
+                row
+                for row in registry_rows
+                if row.get("group_id") and row.get("subgroup_id")
+            ]
+            total_count = len(classified_rows)
+            start = max(page - 1, 0) * page_size
+            page_rows = classified_rows[start : start + page_size]
+            status_counts: dict[str, int] = {}
+            for row in classified_rows:
+                row_status = str(row.get("status") or "registered")
+                status_counts[row_status] = status_counts.get(row_status, 0) + 1
+
+            try:
+                (status_documents, _ignored_total), _ignored_counts = await self._documents_paginated(
+                    rag=rag,
+                    page=1,
+                    page_size=min(max(page_size, len(page_rows), 200), 200),
+                )
+            except Exception as exc:
+                raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)) from exc
+
+            status_by_source: dict[str, tuple[str, Any]] = {}
+            status_by_title: dict[str, tuple[str, Any]] = {}
+            for doc_id, doc in status_documents:
+                file_path = str(getattr(doc, "file_path", "") or "")
+                title = Path(file_path).name or doc_id
+                if file_path:
+                    status_by_source[file_path] = (doc_id, doc)
+                status_by_title[title] = (doc_id, doc)
+
+            documents: list[LittleBullDocument] = []
+            for registry in page_rows:
+                source_uri = str(registry.get("source_uri") or "")
+                source_name = Path(source_uri).name if source_uri else ""
+                registry_title = str(registry.get("title") or "")
+                title = registry_title or source_name or registry["document_id"]
+                status_entry = (
+                    status_by_source.get(source_uri)
+                    or status_by_title.get(source_name)
+                    or status_by_title.get(title)
+                )
+                doc_id = status_entry[0] if status_entry else registry["document_id"]
+                doc = status_entry[1] if status_entry else None
+                metadata = dict(getattr(doc, "metadata", {}) or {}) if doc else {}
+                metadata = {
+                    **metadata,
+                    "registry_document_id": registry["document_id"],
+                    "group_id": registry["group_id"],
+                    "subgroup_id": registry["subgroup_id"],
+                    "source_kind": registry["source_kind"],
+                }
+                documents.append(
+                    LittleBullDocument(
+                        id=doc_id,
+                        file_path=source_name or title,
+                        title=title,
+                        status=str(getattr(doc, "status", "") or registry.get("status") or "registered"),
+                        group_id=registry["group_id"],
+                        subgroup_id=registry["subgroup_id"],
+                        registry_document_id=registry["document_id"],
+                        content_summary=str(getattr(doc, "content_summary", "") or ""),
+                        content_length=int(getattr(doc, "content_length", 0) or 0),
+                        updated_at=str(getattr(doc, "updated_at", "") or registry.get("updated_at") or "") or None,
+                        created_at=str(getattr(doc, "created_at", "") or registry.get("created_at") or "") or None,
+                        track_id=getattr(doc, "track_id", None) if doc else registry.get("metadata", {}).get("track_id"),
+                        chunks_count=getattr(doc, "chunks_count", None) if doc else registry.get("chunk_count"),
+                        metadata=metadata,
+                    )
+                )
+            await self.audit.record(
+                principal=principal,
+                action=ACTIVITY_DOCUMENT_READ,
+                tenant_id=tenant_id,
+                workspace_id=workspace_id,
+                result="success",
+                metadata={"total_count": total_count},
+            )
+            return LittleBullDocumentsResponse(
+                documents=documents,
+                total_count=total_count,
+                status_counts=status_counts,
+            )
+
         try:
             (documents_with_ids, total_count), status_counts = await self._documents_paginated(
                 rag=rag,
@@ -531,6 +2475,7 @@ class LittleBullService:
         for doc_id, doc in documents_with_ids:
             file_path = str(getattr(doc, "file_path", "") or "")
             title = Path(file_path).name or doc_id
+            metadata = dict(getattr(doc, "metadata", {}) or {})
             documents.append(
                 LittleBullDocument(
                     id=doc_id,
@@ -543,13 +2488,13 @@ class LittleBullService:
                     created_at=str(getattr(doc, "created_at", "") or "") or None,
                     track_id=getattr(doc, "track_id", None),
                     chunks_count=getattr(doc, "chunks_count", None),
-                    metadata=getattr(doc, "metadata", {}) or {},
+                    metadata=metadata,
                 )
             )
         await self.audit.record(
             principal=principal,
             action=ACTIVITY_DOCUMENT_READ,
-            tenant_id=await self._workspace_tenant(workspace_id),
+            tenant_id=tenant_id,
             workspace_id=workspace_id,
             result="success",
             metadata={"total_count": total_count},
@@ -565,31 +2510,68 @@ class LittleBullService:
         principal: Principal,
         *,
         workspace_id: str,
+        group_id: str,
+        subgroup_id: str,
         file: UploadFile,
         background_tasks: BackgroundTasks,
         confidentiality: str = "normal",
     ) -> LittleBullUploadResponse:
         self._require(principal, ACTIVITY_DOCUMENT_UPLOAD, workspace_id)
+        if not group_id or not subgroup_id:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="group_id and subgroup_id are required for clean uploads.",
+            )
+        tenant_id = await self._workspace_tenant(workspace_id)
+        await self._require_existing_group(
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            group_id=group_id,
+        )
+        await self._require_existing_subgroup(
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            group_id=group_id,
+            subgroup_id=subgroup_id,
+        )
+        if not hasattr(self.admin_store, "register_document") or not hasattr(self.admin_store, "list_document_registry"):
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Document registry is unavailable.",
+            )
         rag = await self._require_data_plane(workspace_id)
         input_dir = self._input_dir_for_workspace(workspace_id)
         input_dir.mkdir(parents=True, exist_ok=True)
         safe_filename = sanitize_upload_filename(file.filename or "document", input_dir)
         if hasattr(self.doc_manager, "is_supported_file") and not self.doc_manager.is_supported_file(safe_filename):
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unsupported file type")
-        file_path = input_dir / safe_filename
-        if file_path.exists():
-            return LittleBullUploadResponse(
-                status="duplicated",
-                message=f"File '{safe_filename}' already exists.",
-                track_id=None,
-                workspace_id=workspace_id,
+        registry_rows = await self.admin_store.list_document_registry(
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+        )
+        registered_names = {
+            name
+            for row in registry_rows
+            for name in (
+                str(row.get("title") or ""),
+                Path(str(row.get("source_uri") or "")).name,
             )
+            if name
+        }
+        safe_filename = unique_input_filename(
+            safe_filename,
+            input_dir,
+            reserved_names=registered_names,
+            extra_dirs=[input_dir / "__enqueued__"],
+        )
+        file_path = input_dir / safe_filename
 
+        content_hash = hashlib.sha256()
         async with aiofiles.open(file_path, "wb") as out_file:
             while chunk := await file.read(1024 * 1024):
+                content_hash.update(chunk)
                 await out_file.write(chunk)
 
-        tenant_id = await self._workspace_tenant(workspace_id)
         if confidentiality in {"sensivel", "privado"}:
             await self.repository.set_policy(
                 WORKSPACE_PRIVATE_POLICY,
@@ -599,22 +2581,47 @@ class LittleBullService:
             )
 
         track_id = generate_track_id("little_bull_upload")
-        from lightrag.api.routers.document_routes import pipeline_index_file
-
-        background_tasks.add_task(pipeline_index_file, rag, file_path, track_id)
+        registry = await self.admin_store.register_document(
+            {
+                "group_id": group_id,
+                "subgroup_id": subgroup_id,
+                "title": safe_filename,
+                "source_uri": safe_filename,
+                "source_kind": "upload",
+                "mime_type": file.content_type or "",
+                "content_hash": content_hash.hexdigest(),
+                "confidentiality": confidentiality,
+                "status": "queued",
+                "metadata": {"track_id": track_id},
+            },
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            user_id=principal.user_id,
+        )
+        self._queue_pipeline_index_file(background_tasks, file_path, track_id, rag=rag)
         await self.audit.record(
             principal=principal,
             action=ACTIVITY_DOCUMENT_UPLOAD,
             tenant_id=tenant_id,
             workspace_id=workspace_id,
             result="queued",
-            metadata={"file_name": safe_filename, "track_id": track_id, "confidentiality": confidentiality},
+            metadata={
+                "file_name": safe_filename,
+                "track_id": track_id,
+                "confidentiality": confidentiality,
+                "group_id": group_id,
+                "subgroup_id": subgroup_id,
+                "registry_document_id": registry["document_id"],
+            },
         )
         return LittleBullUploadResponse(
             status="success",
             message=f"File '{safe_filename}' uploaded and queued for indexing.",
             track_id=track_id,
             workspace_id=workspace_id,
+            group_id=group_id,
+            subgroup_id=subgroup_id,
+            registry_document_id=registry["document_id"],
         )
 
     async def reindex_archived_documents(
@@ -774,6 +2781,29 @@ class LittleBullService:
         )
         if agent_config:
             param.user_prompt = build_agent_studio_prompt(agent_config)
+        budget = await self._agent_context_budget_for_query(
+            tenant_id=tenant_id,
+            workspace_id=request.workspace_id,
+            agent_config=agent_config,
+        )
+        try:
+            budget_metadata = self._enforce_agent_context_budget(
+                budget=budget,
+                query=request.query,
+                user_prompt=getattr(param, "user_prompt", ""),
+                conversation_history=request.conversation_history,
+            )
+        except HTTPException as exc:
+            await self.audit.record(
+                principal=principal,
+                action=ACTIVITY_QUERY,
+                tenant_id=tenant_id,
+                workspace_id=request.workspace_id,
+                result="blocked",
+                model=effective_model_profile,
+                metadata={"reason": "agent_context_budget", "detail": exc.detail, "agent_id": request.agent_id},
+            )
+            raise
         if route_decision.requires_private_runtime:
             if route_decision.model_func is not None:
                 param.model_func = route_decision.model_func
@@ -813,6 +2843,7 @@ class LittleBullService:
                 "requested_model_profile": request.model_profile,
                 "effective_model_profile": effective_model_profile,
                 "reference_count": len(references),
+                "agent_context_budget": budget_metadata,
                 "private_gateway": {
                     **route_decision.audit_metadata(),
                     "cache_disabled": cache_disabled,
@@ -825,6 +2856,65 @@ class LittleBullService:
             workspace_id=request.workspace_id,
             model_profile=effective_model_profile,
         )
+
+    async def _agent_context_budget_for_query(
+        self,
+        *,
+        tenant_id: str | None,
+        workspace_id: str,
+        agent_config: dict[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        if not agent_config or not agent_config.get("agent_id"):
+            return None
+        budgets = await self.admin_store.list_agent_context_budgets(
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            agent_id=agent_config["agent_id"],
+        )
+        if not budgets:
+            return None
+        model_setting_id = agent_config.get("model_setting_id")
+        exact = next((budget for budget in budgets if budget.get("model_setting_id") == model_setting_id), None)
+        default = next((budget for budget in budgets if budget.get("model_setting_id") is None), None)
+        return exact or default or budgets[0]
+
+    @staticmethod
+    def _enforce_agent_context_budget(
+        *,
+        budget: dict[str, Any] | None,
+        query: str,
+        user_prompt: str,
+        conversation_history: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        if not budget:
+            return {}
+        history_text = "\n".join(str(item.get("content") or "") for item in conversation_history)
+        prompt_tokens = estimate_tokens_from_characters(len("\n".join([query, user_prompt, history_text])))
+        reserved_response_tokens = int(budget.get("reserved_response_tokens") or 0)
+        max_prompt_tokens = int(budget.get("max_prompt_tokens") or 0)
+        max_context_tokens = int(budget.get("max_context_tokens") or 0)
+        if max_prompt_tokens and prompt_tokens > max_prompt_tokens:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="Agent prompt exceeds max_prompt_tokens budget.",
+            )
+        if max_context_tokens and prompt_tokens + reserved_response_tokens > max_context_tokens:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="Agent prompt plus reserved response exceeds max_context_tokens budget.",
+            )
+        if budget.get("daily_cost_limit_usd") == 0 or budget.get("monthly_cost_limit_usd") == 0:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="Agent cost budget is exhausted.",
+            )
+        return {
+            "agent_context_budget_id": budget.get("agent_context_budget_id"),
+            "estimated_prompt_tokens": prompt_tokens,
+            "reserved_response_tokens": reserved_response_tokens,
+            "max_prompt_tokens": max_prompt_tokens,
+            "max_context_tokens": max_context_tokens,
+        }
 
     async def delete_document(self, principal: Principal, *, workspace_id: str, document_id: str) -> dict[str, Any]:
         self._require(principal, ACTIVITY_DOCUMENT_DELETE, workspace_id)
@@ -1555,7 +3645,20 @@ class LittleBullService:
         self._require(principal, ACTIVITY_AGENT_MANAGE, workspace_id)
         self._require_master(principal)
         tenant_id, workspace_id = await self._existing_workspace_scope(workspace_id)
+        if payload.agent_id:
+            existing_agents = await self.admin_store.list_agent_configs(
+                tenant_id=tenant_id,
+                workspace_id=workspace_id,
+            )
+            if not any(agent.get("agent_id") == payload.agent_id for agent in existing_agents):
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found in workspace.")
         payload_data = self._normalize_agent_config(payload.model_dump(exclude_none=True))
+        await self._require_scoped_model_setting(
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            model_setting_id=payload_data.get("model_setting_id"),
+            usage=None,
+        )
         issues, score = validate_agent_studio_config(payload_data)
         errors = [issue for issue in issues if issue["severity"] == "error"]
         if errors:
@@ -1579,12 +3682,20 @@ class LittleBullService:
                     "issues": issues,
                 },
             )
-        saved = await self.admin_store.upsert_agent_config(
-            payload_data,
-            tenant_id=tenant_id,
-            workspace_id=workspace_id,
-            user_id=principal.user_id,
-        )
+        try:
+            saved = await self.admin_store.upsert_agent_config(
+                payload_data,
+                tenant_id=tenant_id,
+                workspace_id=workspace_id,
+                user_id=principal.user_id,
+            )
+        except ValueError as exc:
+            if "agent_config_scope_mismatch" not in str(exc):
+                raise
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="Existing agents cannot be moved across workspace scope.",
+            ) from exc
         await self.audit.record(
             principal=principal,
             action=ACTIVITY_AGENT_MANAGE,
@@ -1594,6 +3705,26 @@ class LittleBullService:
             metadata={"agent_id": saved.get("agent_id"), "model_setting_id": saved.get("model_setting_id")},
         )
         return LittleBullAgentConfig(**self._normalize_agent_config(saved))
+
+    async def _require_scoped_model_setting(
+        self,
+        *,
+        tenant_id: str | None,
+        workspace_id: str,
+        model_setting_id: str | None,
+        usage: str | set[str] | None,
+    ) -> None:
+        if not model_setting_id:
+            return
+        settings = await self._model_settings_for_workspace(tenant_id=tenant_id, workspace_id=workspace_id)
+        allowed_usage = {usage} if isinstance(usage, str) else usage
+        for setting in settings:
+            if setting.get("model_setting_id") != model_setting_id:
+                continue
+            if allowed_usage and setting.get("usage") not in allowed_usage:
+                raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Model usage mismatch.")
+            return
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Model setting not found in workspace.")
 
     async def preview_agent_studio(
         self,
@@ -1631,6 +3762,305 @@ class LittleBullService:
             test_input=request.test_input,
             test_summary=test_summary,
         )
+
+    async def list_agent_builder_sessions(
+        self,
+        principal: Principal,
+        *,
+        workspace_id: str,
+        status_filter: str | None = None,
+    ) -> list[AgentBuilderSession]:
+        self._require(principal, ACTIVITY_AGENT_MANAGE, workspace_id)
+        self._require_master(principal)
+        tenant_id, workspace_id = await self._existing_workspace_scope(workspace_id)
+        rows = await self.admin_store.list_agent_builder_sessions(
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            user_id=None,
+            status=status_filter,
+        )
+        return [AgentBuilderSession(**row) for row in rows]
+
+    async def upsert_agent_builder_session(
+        self,
+        principal: Principal,
+        *,
+        workspace_id: str,
+        payload: LittleBullAgentBuilderSessionRequest,
+    ) -> AgentBuilderSession:
+        self._require(principal, ACTIVITY_AGENT_MANAGE, workspace_id)
+        self._require_master(principal)
+        tenant_id, workspace_id = await self._existing_workspace_scope(workspace_id)
+        await self._require_scoped_model_setting(
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            model_setting_id=payload.model_setting_id,
+            usage={"agent_builder", "agent", "chat"},
+        )
+        existing = None
+        transcript: list[dict[str, Any]] = []
+        if payload.agent_builder_session_id:
+            existing = await self.admin_store.get_agent_builder_session(
+                payload.agent_builder_session_id,
+                tenant_id=tenant_id,
+                workspace_id=workspace_id,
+            )
+            if not existing:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent builder session not found.")
+            transcript = list(existing.get("builder_transcript") or [])
+        transcript.append({"role": "user", "content": payload.user_message.strip(), "created_at": utc_now()})
+        generated_config = self._agent_builder_generated_config(
+            workspace_id=workspace_id,
+            user_message=payload.user_message,
+            existing_config=payload.generated_config or (existing or {}).get("generated_config") or {},
+        )
+        generated_config["model_setting_id"] = payload.model_setting_id or (existing or {}).get("model_setting_id")
+        preview = agent_studio_preview(generated_config)
+        transcript.append(
+            {
+                "role": "assistant",
+                "content": "Agent Builder draft updated for human review.",
+                "readiness_score": preview["readiness_score"],
+                "created_at": utc_now(),
+            }
+        )
+        row = await self.admin_store.upsert_agent_builder_session(
+            {
+                "agent_builder_session_id": payload.agent_builder_session_id,
+                "user_id": principal.user_id,
+                "agent_id": (existing or {}).get("agent_id"),
+                "model_setting_id": payload.model_setting_id or (existing or {}).get("model_setting_id"),
+                "status": "draft",
+                "current_step": payload.current_step,
+                "builder_transcript": transcript,
+                "generated_config": preview["agent"],
+                "readiness_score": preview["readiness_score"],
+                "requires_review": True,
+            },
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            user_id=principal.user_id,
+        )
+        await self.audit.record(
+            principal=principal,
+            action=ACTIVITY_AGENT_MANAGE,
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            result="agent_builder_draft",
+            metadata={
+                "agent_builder_session_id": row["agent_builder_session_id"],
+                "readiness_score": row["readiness_score"],
+            },
+        )
+        return AgentBuilderSession(**row)
+
+    async def publish_agent_builder_session(
+        self,
+        principal: Principal,
+        *,
+        workspace_id: str,
+        agent_builder_session_id: str,
+        payload: LittleBullAgentBuilderPublishRequest,
+    ) -> AgentBuilderSession:
+        self._require(principal, ACTIVITY_AGENT_MANAGE, workspace_id)
+        self._require_master(principal)
+        tenant_id, workspace_id = await self._existing_workspace_scope(workspace_id)
+        session = await self.admin_store.get_agent_builder_session(
+            agent_builder_session_id,
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+        )
+        if not session:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent builder session not found.")
+        if not payload.approved:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Human approval is required to publish.")
+        generated_config = self._normalize_agent_config(session.get("generated_config") or {})
+        generated_config["enabled"] = payload.enabled
+        await self._require_scoped_model_setting(
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            model_setting_id=generated_config.get("model_setting_id"),
+            usage=None,
+        )
+        preview = agent_studio_preview(generated_config)
+        if not preview["ready_to_publish"]:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail={
+                    "message": "Agent Builder draft is not ready to publish.",
+                    "readiness_score": preview["readiness_score"],
+                    "issues": preview["issues"],
+                },
+            )
+        saved = await self.admin_store.upsert_agent_config(
+            preview["agent"],
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            user_id=principal.user_id,
+        )
+        transcript = list(session.get("builder_transcript") or [])
+        transcript.append(
+            {
+                "role": "system",
+                "content": "Human-approved draft published.",
+                "agent_id": saved["agent_id"],
+                "created_at": utc_now(),
+            }
+        )
+        row = await self.admin_store.upsert_agent_builder_session(
+            {
+                **session,
+                "agent_id": saved["agent_id"],
+                "status": "published",
+                "builder_transcript": transcript,
+                "generated_config": preview["agent"],
+                "readiness_score": preview["readiness_score"],
+                "requires_review": False,
+            },
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            user_id=principal.user_id,
+        )
+        await self.audit.record(
+            principal=principal,
+            action=ACTIVITY_AGENT_MANAGE,
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            result="agent_builder_published",
+            metadata={"agent_builder_session_id": agent_builder_session_id, "agent_id": saved["agent_id"]},
+        )
+        return AgentBuilderSession(**row)
+
+    @staticmethod
+    def _agent_builder_generated_config(
+        *,
+        workspace_id: str,
+        user_message: str,
+        existing_config: dict[str, Any],
+    ) -> dict[str, Any]:
+        title = str(existing_config.get("name") or user_message.strip().splitlines()[0]).strip()[:80]
+        if not title:
+            title = "Agente Little Bull"
+        config = normalize_agent_studio_config(existing_config.get("config"))
+        config["identity"].update(
+            {
+                "mission": config["identity"].get("mission") or user_message.strip()[:500],
+                "when_to_use": config["identity"].get("when_to_use") or "Quando a tarefa estiver dentro do escopo configurado.",
+                "when_not_to_use": config["identity"].get("when_not_to_use") or "Quando faltar contexto ou aprovação humana.",
+                "audience": config["identity"].get("audience") or "Usuários do workspace Little Bull.",
+            }
+        )
+        config["knowledge"]["allowed_workspace_ids"] = [workspace_id]
+        config["tests"] = config.get("tests") or [
+            {
+                "name": "Recusa sem contexto",
+                "input": "Responda sem fontes.",
+                "expected_behavior": "Solicitar contexto e indicar incerteza.",
+                "forbidden_behavior": "Inventar fontes.",
+            }
+        ]
+        return {
+            "name": title,
+            "description": str(existing_config.get("description") or user_message.strip()[:240]).strip(),
+            "enabled": False,
+            "model_setting_id": existing_config.get("model_setting_id"),
+            "system_prompt": str(existing_config.get("system_prompt") or "").strip(),
+            "response_rules": existing_config.get("response_rules") or ["Citar fontes quando usar conhecimento recuperado."],
+            "tools": existing_config.get("tools") or ["query_knowledge"],
+            "config": config,
+        }
+
+    async def list_agent_context_budgets(
+        self,
+        principal: Principal,
+        *,
+        workspace_id: str,
+        agent_id: str | None = None,
+    ) -> list[AgentContextBudget]:
+        self._require(principal, ACTIVITY_AGENT_MANAGE, workspace_id)
+        self._require_master(principal)
+        tenant_id, workspace_id = await self._existing_workspace_scope(workspace_id)
+        rows = await self.admin_store.list_agent_context_budgets(
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            agent_id=agent_id,
+        )
+        return [AgentContextBudget(**row) for row in rows]
+
+    async def upsert_agent_context_budget(
+        self,
+        principal: Principal,
+        *,
+        workspace_id: str,
+        payload: LittleBullAgentContextBudgetRequest,
+    ) -> AgentContextBudget:
+        self._require(principal, ACTIVITY_AGENT_MANAGE, workspace_id)
+        self._require_master(principal)
+        tenant_id, workspace_id = await self._existing_workspace_scope(workspace_id)
+        agents = await self.admin_store.list_agent_configs(tenant_id=tenant_id, workspace_id=workspace_id)
+        if not any(agent.get("agent_id") == payload.agent_id for agent in agents):
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found.")
+        if payload.agent_context_budget_id:
+            existing_budgets = await self.admin_store.list_agent_context_budgets(
+                tenant_id=tenant_id,
+                workspace_id=workspace_id,
+            )
+            existing_budget = next(
+                (
+                    budget
+                    for budget in existing_budgets
+                    if budget["agent_context_budget_id"] == payload.agent_context_budget_id
+                ),
+                None,
+            )
+            if not existing_budget:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent context budget not found.")
+            if existing_budget["agent_id"] != payload.agent_id:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                    detail="Existing agent context budgets cannot be moved across agents.",
+                )
+        await self._require_scoped_model_setting(
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            model_setting_id=payload.model_setting_id,
+            usage=None,
+        )
+        if payload.reserved_response_tokens > payload.max_context_tokens:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="reserved_response_tokens cannot exceed max_context_tokens.",
+            )
+        if payload.max_prompt_tokens and payload.max_prompt_tokens > (
+            payload.max_context_tokens - payload.reserved_response_tokens
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="max_prompt_tokens must fit inside context after reserved response tokens.",
+            )
+        try:
+            row = await self.admin_store.upsert_agent_context_budget(
+                payload.model_dump(exclude_none=True),
+                tenant_id=tenant_id,
+                workspace_id=workspace_id,
+                user_id=principal.user_id,
+            )
+        except ValueError as exc:
+            if "agent_context_budget_scope_mismatch" not in str(exc):
+                raise
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="Existing agent context budgets cannot be moved across agent/workspace scope.",
+            ) from exc
+        await self.audit.record(
+            principal=principal,
+            action=ACTIVITY_AGENT_MANAGE,
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            result="agent_context_budget_upserted",
+            metadata={"agent_id": row["agent_id"], "agent_context_budget_id": row["agent_context_budget_id"]},
+        )
+        return AgentContextBudget(**row)
 
     async def save_conversation(
         self,
@@ -2139,6 +4569,18 @@ class LittleBullService:
         from lightrag.api.routers.document_routes import pipeline_index_files
 
         background_tasks.add_task(pipeline_index_files, rag, copied_paths, track_id)
+
+    def _queue_pipeline_index_file(
+        self,
+        background_tasks: BackgroundTasks,
+        file_path: Path,
+        track_id: str,
+        *,
+        rag: Any,
+    ) -> None:
+        from lightrag.api.routers.document_routes import pipeline_index_file
+
+        background_tasks.add_task(pipeline_index_file, rag, file_path, track_id)
 
     async def _agent_config_for_query(
         self,

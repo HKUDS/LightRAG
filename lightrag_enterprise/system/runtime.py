@@ -24,6 +24,26 @@ def little_bull_functional_enabled() -> bool:
     return env_flag("LITTLE_BULL_FUNCTIONAL_ENABLED", True)
 
 
+def little_bull_graph_v2_enabled() -> bool:
+    return env_flag("LITTLE_BULL_GRAPH_V2_ENABLED", False)
+
+
+def little_bull_qdrant_data_plane_enabled() -> bool:
+    return env_flag("LITTLE_BULL_QDRANT_DATA_PLANE_ENABLED", False)
+
+
+def little_bull_postgres_control_plane_required() -> bool:
+    return env_flag("LITTLE_BULL_POSTGRES_CONTROL_PLANE_REQUIRED", True)
+
+
+def little_bull_obsidian_workspace_enabled() -> bool:
+    return env_flag("LITTLE_BULL_OBSIDIAN_WORKSPACE_ENABLED", False)
+
+
+def little_bull_clean_knowledge_base_allowed() -> bool:
+    return env_flag("LITTLE_BULL_CLEAN_KNOWLEDGE_BASE_ALLOWED", False)
+
+
 def in_memory_system_repository_allowed() -> bool:
     return env_flag("LIGHTRAG_SYSTEM_ALLOW_IN_MEMORY_REPOSITORY", False)
 
@@ -41,7 +61,11 @@ def get_system_repository() -> SystemRepository:
     database_url = get_database_url()
     if database_url:
         return PostgresSystemRepository(database_url)
-    if little_bull_functional_enabled() and not in_memory_system_repository_allowed():
+    if (
+        little_bull_functional_enabled()
+        and little_bull_postgres_control_plane_required()
+        and not in_memory_system_repository_allowed()
+    ):
         raise RuntimeError(
             "LITTLE_BULL_FUNCTIONAL_ENABLED=true requires LIGHTRAG_SYSTEM_DATABASE_URL "
             "or DATABASE_URL. Set LIGHTRAG_SYSTEM_ALLOW_IN_MEMORY_REPOSITORY=true only "

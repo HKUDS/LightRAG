@@ -1,15 +1,34 @@
+from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from fastapi import BackgroundTasks, HTTPException
+from fastapi import BackgroundTasks, HTTPException, UploadFile
 
 from lightrag_enterprise.little_bull.models import (
+    LittleBullBacklinkRequest,
+    LittleBullCanvasBoardRequest,
+    LittleBullCanvasEdgeRequest,
+    LittleBullCanvasNodeRequest,
+    LittleBullContentMapRequest,
+    LittleBullDailyNoteRequest,
     LittleBullEmbeddingCostEstimateRequest,
+    LittleBullAgentBuilderPublishRequest,
+    LittleBullAgentBuilderSessionRequest,
+    LittleBullAgentConfig,
+    LittleBullAgentContextBudgetRequest,
+    LittleBullInboxItemRequest,
+    LittleBullInboxItemStatusRequest,
     LittleBullKnowledgeBaseReindexRequest,
     LittleBullKnowledgeBaseRollbackRequest,
     LittleBullKnowledgeBaseUpsertRequest,
+    LittleBullKnowledgeGroupRequest,
+    LittleBullKnowledgeSubgroupRequest,
+    LittleBullKnowledgeTrailRequest,
+    LittleBullKnowledgeTrailStepRequest,
+    LittleBullMarkdownNoteRequest,
     LittleBullQueryRequest,
+    LittleBullSourceProvenanceRequest,
 )
 from lightrag_enterprise.little_bull.service import LittleBullService
 from lightrag_enterprise.system import (
@@ -27,19 +46,24 @@ from lightrag_enterprise.system.repositories import (
 
 
 class FakeDocStatus:
+    def __init__(self, docs: list[tuple[str, SimpleNamespace]] | None = None):
+        self.docs = docs
+
     async def get_docs_paginated(self, **_kwargs):
-        doc = SimpleNamespace(
-            file_path="manual.pdf",
-            status="processed",
-            content_summary="Manual",
-            content_length=42,
-            updated_at="2026-04-27T00:00:00Z",
-            created_at="2026-04-27T00:00:00Z",
-            track_id="trk",
-            chunks_count=1,
-            metadata={},
-        )
-        return [("doc-1", doc)], 1
+        if self.docs is None:
+            doc = SimpleNamespace(
+                file_path="manual.pdf",
+                status="processed",
+                content_summary="Manual",
+                content_length=42,
+                updated_at="2026-04-27T00:00:00Z",
+                created_at="2026-04-27T00:00:00Z",
+                track_id="trk",
+                chunks_count=1,
+                metadata={},
+            )
+            return [("doc-1", doc)], 1
+        return self.docs, len(self.docs)
 
     async def get_all_status_counts(self):
         return {"processed": 1}
@@ -75,8 +99,9 @@ class FakeRag:
         llm_model: str = "qwen-local",
         llm_host: str = "",
         working_dir: str = "./rag_storage",
+        docs: list[tuple[str, SimpleNamespace]] | None = None,
     ):
-        self.doc_status = FakeDocStatus()
+        self.doc_status = FakeDocStatus(docs)
         self.workspace = "default"
         self.working_dir = working_dir
         self.little_bull_llm_binding = llm_binding
@@ -133,6 +158,29 @@ class FakeDocManager:
 class FakeAdminStore:
     def __init__(self):
         self.models: dict[str, dict] = {}
+        self.agents: dict[str, dict] = {}
+        self.agent_builder_sessions: dict[str, dict] = {}
+        self.agent_context_budgets: dict[str, dict] = {}
+        self.groups: dict[str, dict] = {}
+        self.subgroups: dict[str, dict] = {}
+        self.documents: dict[str, dict] = {}
+        self.notes: dict[str, dict] = {}
+        self.markdown_notes: dict[str, list[dict]] = {}
+        self.wiki_links: dict[str, list[dict]] = {}
+        self.tags: dict[str, dict] = {}
+        self.backlinks: dict[str, dict] = {}
+        self.provenance: dict[str, dict] = {}
+        self.canvas_boards: dict[str, dict] = {}
+        self.canvas_nodes: dict[str, dict] = {}
+        self.canvas_edges: dict[str, dict] = {}
+        self.dossiers: dict[str, dict] = {}
+        self.content_maps: dict[str, dict] = {}
+        self.trails: dict[str, dict] = {}
+        self.trail_steps: dict[str, dict] = {}
+        self.inbox_items: dict[str, dict] = {}
+        self.daily_notes: dict[str, dict] = {}
+        self.conversations: dict[str, dict] = {}
+        self.suggestions: dict[str, dict] = {}
 
     async def list_model_settings(self, *, tenant_id: str | None, workspace_id: str | None):
         return [
@@ -172,6 +220,1087 @@ class FakeAdminStore:
         self.models[model_setting_id] = row
         return row
 
+    async def list_agent_configs(self, *, tenant_id: str | None, workspace_id: str | None):
+        return [
+            agent
+            for agent in self.agents.values()
+            if agent["tenant_id"] == tenant_id and agent["workspace_id"] == workspace_id
+        ]
+
+    async def upsert_agent_config(
+        self,
+        payload: dict,
+        *,
+        tenant_id: str | None,
+        workspace_id: str | None,
+        user_id: str,
+    ):
+        agent_id = payload.get("agent_id") or f"agent-{len(self.agents) + 1}"
+        row = {
+            "agent_id": agent_id,
+            "tenant_id": tenant_id,
+            "workspace_id": workspace_id,
+            "name": payload["name"],
+            "description": payload.get("description", ""),
+            "enabled": payload.get("enabled", True),
+            "model_setting_id": payload.get("model_setting_id"),
+            "system_prompt": payload.get("system_prompt", ""),
+            "response_rules": payload.get("response_rules", []),
+            "tools": payload.get("tools", []),
+            "config": payload.get("config", {}),
+            "created_by": user_id,
+            "updated_by": user_id,
+            "created_at": "2026-04-29T00:00:00Z",
+            "updated_at": "2026-04-29T00:00:00Z",
+        }
+        self.agents[agent_id] = row
+        return row
+
+    async def list_agent_builder_sessions(
+        self,
+        *,
+        tenant_id: str | None,
+        workspace_id: str,
+        user_id: str | None = None,
+        status: str | None = None,
+    ):
+        return [
+            session
+            for session in self.agent_builder_sessions.values()
+            if session["tenant_id"] == tenant_id
+            and session["workspace_id"] == workspace_id
+            and (user_id is None or session["user_id"] == user_id)
+            and (status is None or session["status"] == status)
+        ]
+
+    async def get_agent_builder_session(
+        self,
+        agent_builder_session_id: str,
+        *,
+        tenant_id: str | None,
+        workspace_id: str,
+    ):
+        session = self.agent_builder_sessions.get(agent_builder_session_id)
+        if session and session["tenant_id"] == tenant_id and session["workspace_id"] == workspace_id:
+            return session
+        return None
+
+    async def upsert_agent_builder_session(
+        self,
+        payload: dict,
+        *,
+        tenant_id: str | None,
+        workspace_id: str,
+        user_id: str,
+    ):
+        agent_builder_session_id = payload.get("agent_builder_session_id") or f"builder-{len(self.agent_builder_sessions) + 1}"
+        row = {
+            "agent_builder_session_id": agent_builder_session_id,
+            "tenant_id": tenant_id,
+            "workspace_id": workspace_id,
+            "user_id": payload.get("user_id") or user_id,
+            "agent_id": payload.get("agent_id"),
+            "model_setting_id": payload.get("model_setting_id"),
+            "status": payload.get("status", "draft"),
+            "current_step": payload.get("current_step", "intake"),
+            "builder_transcript": payload.get("builder_transcript", []),
+            "generated_config": payload.get("generated_config", {}),
+            "readiness_score": payload.get("readiness_score", 0),
+            "requires_review": payload.get("requires_review", True),
+            "created_by": user_id,
+            "updated_by": user_id,
+            "created_at": "2026-04-29T00:00:00Z",
+            "updated_at": "2026-04-29T00:00:00Z",
+        }
+        self.agent_builder_sessions[agent_builder_session_id] = row
+        return row
+
+    async def list_agent_context_budgets(
+        self,
+        *,
+        tenant_id: str | None,
+        workspace_id: str,
+        agent_id: str | None = None,
+    ):
+        return [
+            budget
+            for budget in self.agent_context_budgets.values()
+            if budget["tenant_id"] == tenant_id
+            and budget["workspace_id"] == workspace_id
+            and (agent_id is None or budget["agent_id"] == agent_id)
+        ]
+
+    async def upsert_agent_context_budget(
+        self,
+        payload: dict,
+        *,
+        tenant_id: str | None,
+        workspace_id: str,
+        user_id: str,
+    ):
+        budget_id = payload.get("agent_context_budget_id") or f"budget-{len(self.agent_context_budgets) + 1}"
+        row = {
+            "agent_context_budget_id": budget_id,
+            "tenant_id": tenant_id,
+            "workspace_id": workspace_id,
+            "agent_id": payload["agent_id"],
+            "model_setting_id": payload.get("model_setting_id"),
+            "max_context_tokens": payload.get("max_context_tokens", 0),
+            "reserved_response_tokens": payload.get("reserved_response_tokens", 0),
+            "max_prompt_tokens": payload.get("max_prompt_tokens", 0),
+            "daily_cost_limit_usd": payload.get("daily_cost_limit_usd"),
+            "monthly_cost_limit_usd": payload.get("monthly_cost_limit_usd"),
+            "policy": payload.get("policy", {}),
+            "created_by": user_id,
+            "updated_by": user_id,
+            "created_at": "2026-04-29T00:00:00Z",
+            "updated_at": "2026-04-29T00:00:00Z",
+        }
+        self.agent_context_budgets[budget_id] = row
+        return row
+
+    async def list_knowledge_groups(self, *, tenant_id: str | None, workspace_id: str):
+        return [
+            group
+            for group in self.groups.values()
+            if group["tenant_id"] == tenant_id and group["workspace_id"] == workspace_id
+        ]
+
+    async def get_knowledge_group(self, group_id: str, *, tenant_id: str | None, workspace_id: str):
+        group = self.groups.get(group_id)
+        if group and group["tenant_id"] == tenant_id and group["workspace_id"] == workspace_id:
+            return group
+        return None
+
+    async def upsert_knowledge_group(
+        self,
+        payload: dict,
+        *,
+        tenant_id: str | None,
+        workspace_id: str,
+        user_id: str,
+    ):
+        group_id = payload.get("group_id") or f"group-{len(self.groups) + 1}"
+        row = {
+            "group_id": group_id,
+            "tenant_id": tenant_id,
+            "workspace_id": workspace_id,
+            "slug": payload["slug"],
+            "name": payload["name"],
+            "description": payload.get("description", ""),
+            "privacy": payload.get("privacy", "team"),
+            "color": payload.get("color", "#2563EB"),
+            "metadata": payload.get("metadata", {}),
+            "created_by": user_id,
+            "updated_by": user_id,
+            "created_at": "2026-04-29T00:00:00Z",
+            "updated_at": "2026-04-29T00:00:00Z",
+        }
+        self.groups[group_id] = row
+        return row
+
+    async def list_knowledge_subgroups(
+        self, *, tenant_id: str | None, workspace_id: str, group_id: str | None = None
+    ):
+        return [
+            subgroup
+            for subgroup in self.subgroups.values()
+            if subgroup["tenant_id"] == tenant_id
+            and subgroup["workspace_id"] == workspace_id
+            and (group_id is None or subgroup["group_id"] == group_id)
+        ]
+
+    async def get_knowledge_subgroup(
+        self,
+        subgroup_id: str,
+        *,
+        tenant_id: str | None,
+        workspace_id: str,
+        group_id: str | None = None,
+    ):
+        subgroup = self.subgroups.get(subgroup_id)
+        if (
+            subgroup
+            and subgroup["tenant_id"] == tenant_id
+            and subgroup["workspace_id"] == workspace_id
+            and (group_id is None or subgroup["group_id"] == group_id)
+        ):
+            return subgroup
+        return None
+
+    async def upsert_knowledge_subgroup(
+        self,
+        payload: dict,
+        *,
+        tenant_id: str | None,
+        workspace_id: str,
+        user_id: str,
+    ):
+        subgroup_id = payload.get("subgroup_id") or f"subgroup-{len(self.subgroups) + 1}"
+        row = {
+            "subgroup_id": subgroup_id,
+            "tenant_id": tenant_id,
+            "workspace_id": workspace_id,
+            "group_id": payload["group_id"],
+            "slug": payload["slug"],
+            "name": payload["name"],
+            "description": payload.get("description", ""),
+            "privacy": payload.get("privacy", "team"),
+            "metadata": payload.get("metadata", {}),
+            "created_by": user_id,
+            "updated_by": user_id,
+            "created_at": "2026-04-29T00:00:00Z",
+            "updated_at": "2026-04-29T00:00:00Z",
+        }
+        self.subgroups[subgroup_id] = row
+        return row
+
+    async def register_document(
+        self,
+        payload: dict,
+        *,
+        tenant_id: str | None,
+        workspace_id: str,
+        user_id: str,
+    ):
+        if payload.get("source_kind", "upload") == "upload" and (
+            not payload.get("group_id") or not payload.get("subgroup_id")
+        ):
+            raise ValueError("Upload documents require group_id and subgroup_id.")
+        document_id = payload.get("document_id") or f"registry-doc-{len(self.documents) + 1}"
+        row = {
+            "document_id": document_id,
+            "tenant_id": tenant_id,
+            "workspace_id": workspace_id,
+            "embedding_version_id": payload.get("embedding_version_id"),
+            "chunk_count": payload.get("chunk_count", 0),
+            "created_by": user_id,
+            "updated_by": user_id,
+            "created_at": "2026-04-29T00:00:00Z",
+            "updated_at": "2026-04-29T00:00:00Z",
+            **payload,
+        }
+        self.documents[document_id] = row
+        return row
+
+    async def list_document_registry(self, *, tenant_id: str | None, workspace_id: str):
+        return [
+            document
+            for document in self.documents.values()
+            if document["tenant_id"] == tenant_id and document["workspace_id"] == workspace_id
+        ]
+
+    async def get_document_registry(self, document_id: str, *, tenant_id: str | None, workspace_id: str):
+        document = self.documents.get(document_id)
+        if document and document["tenant_id"] == tenant_id and document["workspace_id"] == workspace_id:
+            return document
+        return None
+
+    async def list_note_registry(
+        self,
+        *,
+        tenant_id: str | None,
+        workspace_id: str,
+        group_id: str | None = None,
+        subgroup_id: str | None = None,
+    ):
+        return [
+            note
+            for note in self.notes.values()
+            if note["tenant_id"] == tenant_id
+            and note["workspace_id"] == workspace_id
+            and (group_id is None or note["group_id"] == group_id)
+            and (subgroup_id is None or note["subgroup_id"] == subgroup_id)
+        ]
+
+    async def get_note_registry(self, note_id: str, *, tenant_id: str | None, workspace_id: str):
+        note = self.notes.get(note_id)
+        if note and note["tenant_id"] == tenant_id and note["workspace_id"] == workspace_id:
+            return note
+        return None
+
+    async def find_note_by_slug_or_title(
+        self,
+        *,
+        slug: str,
+        title: str,
+        tenant_id: str | None,
+        workspace_id: str,
+    ):
+        for note in self.notes.values():
+            if (
+                note["tenant_id"] == tenant_id
+                and note["workspace_id"] == workspace_id
+                and (note["slug"] == slug or note["title"].lower() == title.lower())
+            ):
+                return note
+        return None
+
+    async def upsert_note_registry(
+        self,
+        payload: dict,
+        *,
+        tenant_id: str | None,
+        workspace_id: str,
+        user_id: str,
+    ):
+        note_id = payload.get("note_id")
+        if not note_id:
+            for note in self.notes.values():
+                if note["workspace_id"] == workspace_id and note["slug"] == payload["slug"]:
+                    note_id = note["note_id"]
+                    break
+        note_id = note_id or f"note-{len(self.notes) + 1}"
+        row = {
+            "note_id": note_id,
+            "tenant_id": tenant_id,
+            "workspace_id": workspace_id,
+            "group_id": payload.get("group_id"),
+            "subgroup_id": payload.get("subgroup_id"),
+            "title": payload["title"],
+            "slug": payload["slug"],
+            "note_type": payload.get("note_type", "markdown"),
+            "privacy": payload.get("privacy", "team"),
+            "status": payload.get("status", "active"),
+            "metadata": payload.get("metadata", {}),
+            "created_by": user_id,
+            "updated_by": user_id,
+            "created_at": "2026-04-29T00:00:00Z",
+            "updated_at": "2026-04-29T00:00:00Z",
+        }
+        self.notes[note_id] = row
+        return row
+
+    async def insert_markdown_note_version(
+        self,
+        payload: dict,
+        *,
+        tenant_id: str | None,
+        workspace_id: str,
+        user_id: str,
+    ):
+        note_id = payload["note_id"]
+        versions = self.markdown_notes.setdefault(note_id, [])
+        for version in versions:
+            if version["status"] == "current":
+                version["status"] = "superseded"
+        version_number = len(versions) + 1
+        row = {
+            "markdown_note_id": f"md-{note_id}-{version_number}",
+            "tenant_id": tenant_id,
+            "workspace_id": workspace_id,
+            "note_id": note_id,
+            "version_number": version_number,
+            "markdown": payload["markdown"],
+            "rendered_summary": payload.get("rendered_summary", ""),
+            "content_hash": payload["content_hash"],
+            "status": payload.get("status", "current"),
+            "source_document_id": payload.get("source_document_id"),
+            "created_by": user_id,
+            "updated_by": user_id,
+            "created_at": "2026-04-29T00:00:00Z",
+            "updated_at": "2026-04-29T00:00:00Z",
+        }
+        versions.append(row)
+        return row
+
+    async def get_latest_markdown_note(self, note_id: str, *, tenant_id: str | None, workspace_id: str):
+        versions = [
+            note
+            for note in self.markdown_notes.get(note_id, [])
+            if note["tenant_id"] == tenant_id and note["workspace_id"] == workspace_id
+        ]
+        return versions[-1] if versions else None
+
+    async def replace_wiki_links(
+        self,
+        *,
+        source_note_id: str,
+        links: list[dict],
+        tenant_id: str | None,
+        workspace_id: str,
+        user_id: str,
+    ):
+        rows = []
+        for index, link in enumerate(links, start=1):
+            rows.append(
+                {
+                    "wiki_link_id": f"wiki-{source_note_id}-{index}",
+                    "tenant_id": tenant_id,
+                    "workspace_id": workspace_id,
+                    "source_note_id": source_note_id,
+                    "target_note_id": link.get("target_note_id"),
+                    "target_label": link["target_label"],
+                    "link_text": link.get("link_text", ""),
+                    "link_status": link.get("link_status", "unresolved"),
+                    "metadata": link.get("metadata", {}),
+                    "created_by": user_id,
+                    "updated_by": user_id,
+                    "created_at": "2026-04-29T00:00:00Z",
+                    "updated_at": "2026-04-29T00:00:00Z",
+                }
+            )
+        self.wiki_links[source_note_id] = rows
+        return rows
+
+    async def list_wiki_links(self, *, source_note_id: str, tenant_id: str | None, workspace_id: str):
+        return [
+            link
+            for link in self.wiki_links.get(source_note_id, [])
+            if link["tenant_id"] == tenant_id and link["workspace_id"] == workspace_id
+        ]
+
+    async def upsert_tag_registry(
+        self,
+        payload: dict,
+        *,
+        tenant_id: str | None,
+        workspace_id: str,
+        user_id: str,
+    ):
+        tag = payload["tag"]
+        row = {
+            "tag_id": self.tags.get(tag, {}).get("tag_id") or f"tag-{len(self.tags) + 1}",
+            "tenant_id": tenant_id,
+            "workspace_id": workspace_id,
+            "tag": tag,
+            "label": payload["label"],
+            "description": payload.get("description", ""),
+            "color": payload.get("color", "#64748B"),
+            "metadata": payload.get("metadata", {}),
+            "created_by": user_id,
+            "updated_by": user_id,
+            "created_at": "2026-04-29T00:00:00Z",
+            "updated_at": "2026-04-29T00:00:00Z",
+        }
+        self.tags[tag] = row
+        return row
+
+    async def list_tag_registry(self, *, tenant_id: str | None, workspace_id: str):
+        return [
+            tag
+            for tag in self.tags.values()
+            if tag["tenant_id"] == tenant_id and tag["workspace_id"] == workspace_id
+        ]
+
+    async def upsert_backlink(
+        self,
+        payload: dict,
+        *,
+        tenant_id: str | None,
+        workspace_id: str,
+        user_id: str,
+    ):
+        backlink_id = payload.get("backlink_id") or f"backlink-{len(self.backlinks) + 1}"
+        row = {
+            "backlink_id": backlink_id,
+            "tenant_id": tenant_id,
+            "workspace_id": workspace_id,
+            "source_kind": payload["source_kind"],
+            "source_id": payload["source_id"],
+            "target_kind": payload["target_kind"],
+            "target_id": payload["target_id"],
+            "link_text": payload.get("link_text", ""),
+            "origin_type": payload.get("origin_type", "manual"),
+            "graph_edge_origin_id": payload.get("graph_edge_origin_id"),
+            "confidence": payload.get("confidence"),
+            "metadata": payload.get("metadata", {}),
+            "created_by": user_id,
+            "updated_by": user_id,
+            "created_at": "2026-04-29T00:00:00Z",
+            "updated_at": "2026-04-29T00:00:00Z",
+        }
+        for existing_id, existing in self.backlinks.items():
+            if (
+                existing["workspace_id"] == workspace_id
+                and existing["source_kind"] == row["source_kind"]
+                and existing["source_id"] == row["source_id"]
+                and existing["target_kind"] == row["target_kind"]
+                and existing["target_id"] == row["target_id"]
+                and existing["origin_type"] == row["origin_type"]
+            ):
+                row["backlink_id"] = existing_id
+                break
+        self.backlinks[row["backlink_id"]] = row
+        return row
+
+    async def replace_backlinks_for_source(
+        self,
+        *,
+        source_kind: str,
+        source_id: str,
+        origin_type: str,
+        backlinks: list[dict],
+        tenant_id: str | None,
+        workspace_id: str,
+        user_id: str,
+    ):
+        self.backlinks = {
+            backlink_id: backlink
+            for backlink_id, backlink in self.backlinks.items()
+            if not (
+                backlink["tenant_id"] == tenant_id
+                and backlink["workspace_id"] == workspace_id
+                and backlink["source_kind"] == source_kind
+                and backlink["source_id"] == source_id
+                and backlink["origin_type"] == origin_type
+            )
+        }
+        rows = []
+        for backlink in backlinks:
+            rows.append(
+                await self.upsert_backlink(
+                    backlink,
+                    tenant_id=tenant_id,
+                    workspace_id=workspace_id,
+                    user_id=user_id,
+                )
+            )
+        return rows
+
+    async def list_backlinks(
+        self,
+        *,
+        tenant_id: str | None,
+        workspace_id: str,
+        source_kind: str | None = None,
+        source_id: str | None = None,
+        target_kind: str | None = None,
+        target_id: str | None = None,
+    ):
+        return [
+            backlink
+            for backlink in self.backlinks.values()
+            if backlink["tenant_id"] == tenant_id
+            and backlink["workspace_id"] == workspace_id
+            and (source_kind is None or backlink["source_kind"] == source_kind)
+            and (source_id is None or backlink["source_id"] == source_id)
+            and (target_kind is None or backlink["target_kind"] == target_kind)
+            and (target_id is None or backlink["target_id"] == target_id)
+        ]
+
+    async def insert_source_provenance(
+        self,
+        payload: dict,
+        *,
+        tenant_id: str | None,
+        workspace_id: str,
+        user_id: str,
+    ):
+        source_provenance_id = payload.get("source_provenance_id") or f"prov-{len(self.provenance) + 1}"
+        row = {
+            "source_provenance_id": source_provenance_id,
+            "tenant_id": tenant_id,
+            "workspace_id": workspace_id,
+            "source_kind": payload["source_kind"],
+            "source_id": payload["source_id"],
+            "document_id": payload.get("document_id"),
+            "note_id": payload.get("note_id"),
+            "chunk_id": payload.get("chunk_id", ""),
+            "model_id": payload.get("model_id", ""),
+            "agent_id": payload.get("agent_id"),
+            "usage_ledger_id": payload.get("usage_ledger_id"),
+            "confidence": payload.get("confidence"),
+            "locator": payload.get("locator", {}),
+            "metadata": payload.get("metadata", {}),
+            "created_by": user_id,
+            "updated_by": user_id,
+            "created_at": "2026-04-29T00:00:00Z",
+            "updated_at": "2026-04-29T00:00:00Z",
+        }
+        self.provenance[source_provenance_id] = row
+        return row
+
+    async def list_source_provenance(
+        self,
+        *,
+        tenant_id: str | None,
+        workspace_id: str,
+        source_kind: str | None = None,
+        source_id: str | None = None,
+        document_id: str | None = None,
+        note_id: str | None = None,
+    ):
+        return [
+            provenance
+            for provenance in self.provenance.values()
+            if provenance["tenant_id"] == tenant_id
+            and provenance["workspace_id"] == workspace_id
+            and (source_kind is None or provenance["source_kind"] == source_kind)
+            and (source_id is None or provenance["source_id"] == source_id)
+            and (document_id is None or provenance["document_id"] == document_id)
+            and (note_id is None or provenance["note_id"] == note_id)
+        ]
+
+    async def list_canvas_boards(
+        self,
+        *,
+        tenant_id: str | None,
+        workspace_id: str,
+        group_id: str | None = None,
+        subgroup_id: str | None = None,
+    ):
+        return [
+            board
+            for board in self.canvas_boards.values()
+            if board["tenant_id"] == tenant_id
+            and board["workspace_id"] == workspace_id
+            and (group_id is None or board["group_id"] == group_id)
+            and (subgroup_id is None or board["subgroup_id"] == subgroup_id)
+        ]
+
+    async def get_canvas_board(self, canvas_board_id: str, *, tenant_id: str | None, workspace_id: str):
+        board = self.canvas_boards.get(canvas_board_id)
+        if board and board["tenant_id"] == tenant_id and board["workspace_id"] == workspace_id:
+            return board
+        return None
+
+    async def upsert_canvas_board(
+        self,
+        payload: dict,
+        *,
+        tenant_id: str | None,
+        workspace_id: str,
+        user_id: str,
+    ):
+        canvas_board_id = payload.get("canvas_board_id") or f"canvas-{len(self.canvas_boards) + 1}"
+        row = {
+            "canvas_board_id": canvas_board_id,
+            "tenant_id": tenant_id,
+            "workspace_id": workspace_id,
+            "group_id": payload["group_id"],
+            "subgroup_id": payload["subgroup_id"],
+            "title": payload["title"],
+            "slug": payload["slug"],
+            "layout": payload.get("layout", {}),
+            "status": payload.get("status", "active"),
+            "created_by": user_id,
+            "updated_by": user_id,
+            "created_at": "2026-04-29T00:00:00Z",
+            "updated_at": "2026-04-29T00:00:00Z",
+        }
+        self.canvas_boards[canvas_board_id] = row
+        return row
+
+    async def upsert_canvas_node(
+        self,
+        payload: dict,
+        *,
+        tenant_id: str | None,
+        workspace_id: str,
+        user_id: str,
+    ):
+        canvas_node_id = payload.get("canvas_node_id") or f"node-{len(self.canvas_nodes) + 1}"
+        row = {
+            "canvas_node_id": canvas_node_id,
+            "tenant_id": tenant_id,
+            "workspace_id": workspace_id,
+            "canvas_board_id": payload["canvas_board_id"],
+            "node_kind": payload["node_kind"],
+            "ref_kind": payload.get("ref_kind", ""),
+            "ref_id": payload.get("ref_id", ""),
+            "x": payload.get("x", 0),
+            "y": payload.get("y", 0),
+            "width": payload.get("width", 280),
+            "height": payload.get("height", 160),
+            "content": payload.get("content", {}),
+            "created_by": user_id,
+            "updated_by": user_id,
+            "created_at": "2026-04-29T00:00:00Z",
+            "updated_at": "2026-04-29T00:00:00Z",
+        }
+        self.canvas_nodes[canvas_node_id] = row
+        return row
+
+    async def get_canvas_node(self, canvas_node_id: str, *, tenant_id: str | None, workspace_id: str):
+        node = self.canvas_nodes.get(canvas_node_id)
+        if node and node["tenant_id"] == tenant_id and node["workspace_id"] == workspace_id:
+            return node
+        return None
+
+    async def list_canvas_nodes(self, *, canvas_board_id: str, tenant_id: str | None, workspace_id: str):
+        return [
+            node
+            for node in self.canvas_nodes.values()
+            if node["tenant_id"] == tenant_id
+            and node["workspace_id"] == workspace_id
+            and node["canvas_board_id"] == canvas_board_id
+        ]
+
+    async def upsert_canvas_edge(
+        self,
+        payload: dict,
+        *,
+        tenant_id: str | None,
+        workspace_id: str,
+        user_id: str,
+    ):
+        canvas_edge_id = payload.get("canvas_edge_id") or f"edge-{len(self.canvas_edges) + 1}"
+        row = {
+            "canvas_edge_id": canvas_edge_id,
+            "tenant_id": tenant_id,
+            "workspace_id": workspace_id,
+            "canvas_board_id": payload["canvas_board_id"],
+            "source_node_id": payload["source_node_id"],
+            "target_node_id": payload["target_node_id"],
+            "edge_kind": payload.get("edge_kind", "manual"),
+            "label": payload.get("label", ""),
+            "metadata": payload.get("metadata", {}),
+            "created_by": user_id,
+            "updated_by": user_id,
+            "created_at": "2026-04-29T00:00:00Z",
+            "updated_at": "2026-04-29T00:00:00Z",
+        }
+        self.canvas_edges[canvas_edge_id] = row
+        return row
+
+    async def list_canvas_edges(self, *, canvas_board_id: str, tenant_id: str | None, workspace_id: str):
+        return [
+            edge
+            for edge in self.canvas_edges.values()
+            if edge["tenant_id"] == tenant_id
+            and edge["workspace_id"] == workspace_id
+            and edge["canvas_board_id"] == canvas_board_id
+        ]
+
+    async def upsert_knowledge_dossier(
+        self,
+        payload: dict,
+        *,
+        tenant_id: str | None,
+        workspace_id: str,
+        user_id: str,
+    ):
+        knowledge_dossier_id = payload.get("knowledge_dossier_id") or f"dossier-{len(self.dossiers) + 1}"
+        row = {
+            "knowledge_dossier_id": knowledge_dossier_id,
+            "tenant_id": tenant_id,
+            "workspace_id": workspace_id,
+            "group_id": payload.get("group_id"),
+            "subgroup_id": payload.get("subgroup_id"),
+            "title": payload["title"],
+            "slug": payload["slug"],
+            "dossier_kind": payload.get("dossier_kind", "knowledge"),
+            "status": payload.get("status", "draft"),
+            "content_refs": payload.get("content_refs", []),
+            "export_policy": payload.get("export_policy", {}),
+            "approval_id": payload.get("approval_id"),
+            "created_by": user_id,
+            "updated_by": user_id,
+            "created_at": "2026-04-29T00:00:00Z",
+            "updated_at": "2026-04-29T00:00:00Z",
+        }
+        self.dossiers[knowledge_dossier_id] = row
+        return row
+
+    async def list_content_maps(
+        self,
+        *,
+        tenant_id: str | None,
+        workspace_id: str,
+        group_id: str | None = None,
+        subgroup_id: str | None = None,
+    ):
+        return [
+            content_map
+            for content_map in self.content_maps.values()
+            if content_map["tenant_id"] == tenant_id
+            and content_map["workspace_id"] == workspace_id
+            and (group_id is None or content_map["group_id"] == group_id)
+            and (subgroup_id is None or content_map["subgroup_id"] == subgroup_id)
+        ]
+
+    async def upsert_content_map(
+        self,
+        payload: dict,
+        *,
+        tenant_id: str | None,
+        workspace_id: str,
+        user_id: str,
+    ):
+        content_map_id = payload.get("content_map_id")
+        if not content_map_id:
+            content_map_id = next(
+                (
+                    content_map["content_map_id"]
+                    for content_map in self.content_maps.values()
+                    if content_map["tenant_id"] == tenant_id
+                    and content_map["workspace_id"] == workspace_id
+                    and content_map["slug"] == payload["slug"]
+                ),
+                f"moc-{len(self.content_maps) + 1}",
+            )
+        row = {
+            "content_map_id": content_map_id,
+            "tenant_id": tenant_id,
+            "workspace_id": workspace_id,
+            "group_id": payload["group_id"],
+            "subgroup_id": payload["subgroup_id"],
+            "title": payload["title"],
+            "slug": payload["slug"],
+            "root_note_id": payload.get("root_note_id"),
+            "description": payload.get("description", ""),
+            "map_body": payload.get("map_body", {}),
+            "status": payload.get("status", "draft"),
+            "created_by": user_id,
+            "updated_by": user_id,
+            "created_at": "2026-04-29T00:00:00Z",
+            "updated_at": "2026-04-29T00:00:00Z",
+        }
+        self.content_maps[content_map_id] = row
+        return row
+
+    async def list_knowledge_trails(
+        self,
+        *,
+        tenant_id: str | None,
+        workspace_id: str,
+        group_id: str | None = None,
+        subgroup_id: str | None = None,
+    ):
+        return [
+            trail
+            for trail in self.trails.values()
+            if trail["tenant_id"] == tenant_id
+            and trail["workspace_id"] == workspace_id
+            and (group_id is None or trail["group_id"] == group_id)
+            and (subgroup_id is None or trail["subgroup_id"] == subgroup_id)
+        ]
+
+    async def get_knowledge_trail(self, knowledge_trail_id: str, *, tenant_id: str | None, workspace_id: str):
+        trail = self.trails.get(knowledge_trail_id)
+        if trail and trail["tenant_id"] == tenant_id and trail["workspace_id"] == workspace_id:
+            return trail
+        return None
+
+    async def upsert_knowledge_trail(
+        self,
+        payload: dict,
+        *,
+        tenant_id: str | None,
+        workspace_id: str,
+        user_id: str,
+    ):
+        knowledge_trail_id = payload.get("knowledge_trail_id")
+        if not knowledge_trail_id:
+            knowledge_trail_id = next(
+                (
+                    trail["knowledge_trail_id"]
+                    for trail in self.trails.values()
+                    if trail["tenant_id"] == tenant_id
+                    and trail["workspace_id"] == workspace_id
+                    and trail["slug"] == payload["slug"]
+                ),
+                f"trail-{len(self.trails) + 1}",
+            )
+        row = {
+            "knowledge_trail_id": knowledge_trail_id,
+            "tenant_id": tenant_id,
+            "workspace_id": workspace_id,
+            "group_id": payload["group_id"],
+            "subgroup_id": payload["subgroup_id"],
+            "title": payload["title"],
+            "slug": payload["slug"],
+            "trail_type": payload.get("trail_type", "study"),
+            "description": payload.get("description", ""),
+            "status": payload.get("status", "draft"),
+            "metadata": payload.get("metadata", {}),
+            "created_by": user_id,
+            "updated_by": user_id,
+            "created_at": "2026-04-29T00:00:00Z",
+            "updated_at": "2026-04-29T00:00:00Z",
+        }
+        self.trails[knowledge_trail_id] = row
+        return row
+
+    async def list_knowledge_trail_steps(
+        self,
+        *,
+        knowledge_trail_id: str,
+        tenant_id: str | None,
+        workspace_id: str,
+    ):
+        return sorted(
+            [
+                step
+                for step in self.trail_steps.values()
+                if step["tenant_id"] == tenant_id
+                and step["workspace_id"] == workspace_id
+                and step["knowledge_trail_id"] == knowledge_trail_id
+            ],
+            key=lambda step: (step["step_order"], step["created_at"]),
+        )
+
+    async def upsert_knowledge_trail_step(
+        self,
+        payload: dict,
+        *,
+        tenant_id: str | None,
+        workspace_id: str,
+        user_id: str,
+    ):
+        knowledge_trail_step_id = payload.get("knowledge_trail_step_id") or f"step-{len(self.trail_steps) + 1}"
+        row = {
+            "knowledge_trail_step_id": knowledge_trail_step_id,
+            "tenant_id": tenant_id,
+            "workspace_id": workspace_id,
+            "knowledge_trail_id": payload["knowledge_trail_id"],
+            "step_order": payload["step_order"],
+            "title": payload["title"],
+            "step_kind": payload.get("step_kind", "note"),
+            "note_id": payload.get("note_id"),
+            "document_id": payload.get("document_id"),
+            "canvas_board_id": payload.get("canvas_board_id"),
+            "instructions": payload.get("instructions", ""),
+            "metadata": payload.get("metadata", {}),
+            "created_by": user_id,
+            "updated_by": user_id,
+            "created_at": "2026-04-29T00:00:00Z",
+            "updated_at": "2026-04-29T00:00:00Z",
+        }
+        for existing_id, existing in self.trail_steps.items():
+            if (
+                existing["knowledge_trail_id"] == row["knowledge_trail_id"]
+                and existing["step_order"] == row["step_order"]
+            ):
+                row["knowledge_trail_step_id"] = existing_id
+                break
+        self.trail_steps[row["knowledge_trail_step_id"]] = row
+        return row
+
+    async def list_knowledge_inbox_items(
+        self,
+        *,
+        tenant_id: str | None,
+        workspace_id: str,
+        status: str | None = None,
+        group_id: str | None = None,
+        subgroup_id: str | None = None,
+        limit: int = 100,
+    ):
+        items = [
+            item
+            for item in self.inbox_items.values()
+            if item["tenant_id"] == tenant_id
+            and item["workspace_id"] == workspace_id
+            and (status is None or item["status"] == status)
+            and (group_id is None or item["group_id"] == group_id)
+            and (subgroup_id is None or item["subgroup_id"] == subgroup_id)
+        ]
+        return items[:limit]
+
+    async def get_knowledge_inbox_item(self, inbox_item_id: str, *, tenant_id: str | None, workspace_id: str):
+        item = self.inbox_items.get(inbox_item_id)
+        if item and item["tenant_id"] == tenant_id and item["workspace_id"] == workspace_id:
+            return item
+        return None
+
+    async def upsert_knowledge_inbox_item(
+        self,
+        payload: dict,
+        *,
+        tenant_id: str | None,
+        workspace_id: str,
+        user_id: str,
+    ):
+        inbox_item_id = payload.get("inbox_item_id") or f"inbox-{len(self.inbox_items) + 1}"
+        row = {
+            "inbox_item_id": inbox_item_id,
+            "tenant_id": tenant_id,
+            "workspace_id": workspace_id,
+            "group_id": payload.get("group_id"),
+            "subgroup_id": payload.get("subgroup_id"),
+            "item_kind": payload["item_kind"],
+            "title": payload["title"],
+            "body": payload.get("body", ""),
+            "source_kind": payload.get("source_kind", ""),
+            "source_id": payload.get("source_id", ""),
+            "status": payload.get("status", "open"),
+            "priority": payload.get("priority", "normal"),
+            "metadata": payload.get("metadata", {}),
+            "created_by": user_id,
+            "updated_by": user_id,
+            "created_at": "2026-04-29T00:00:00Z",
+            "updated_at": "2026-04-29T00:00:00Z",
+        }
+        self.inbox_items[inbox_item_id] = row
+        return row
+
+    async def update_knowledge_inbox_item_status(
+        self,
+        inbox_item_id: str,
+        *,
+        tenant_id: str | None,
+        workspace_id: str,
+        status: str,
+        metadata: dict | None,
+        user_id: str,
+    ):
+        item = await self.get_knowledge_inbox_item(
+            inbox_item_id,
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+        )
+        if not item:
+            return None
+        item = {
+            **item,
+            "status": status,
+            "metadata": {**item.get("metadata", {}), **(metadata or {})},
+            "updated_by": user_id,
+            "updated_at": "2026-04-29T00:00:00Z",
+        }
+        self.inbox_items[inbox_item_id] = item
+        return item
+
+    async def list_daily_notes(self, *, tenant_id: str | None, workspace_id: str, limit: int = 30):
+        rows = [
+            daily_note
+            for daily_note in self.daily_notes.values()
+            if daily_note["tenant_id"] == tenant_id and daily_note["workspace_id"] == workspace_id
+        ]
+        return rows[:limit]
+
+    async def get_daily_note(self, note_date: str, *, tenant_id: str | None, workspace_id: str):
+        daily_note = self.daily_notes.get(note_date)
+        if daily_note and daily_note["tenant_id"] == tenant_id and daily_note["workspace_id"] == workspace_id:
+            return daily_note
+        return None
+
+    async def upsert_daily_note(
+        self,
+        payload: dict,
+        *,
+        tenant_id: str | None,
+        workspace_id: str,
+        user_id: str,
+    ):
+        note_date = payload["note_date"]
+        daily_note_id = payload.get("daily_note_id") or self.daily_notes.get(note_date, {}).get("daily_note_id")
+        row = {
+            "daily_note_id": daily_note_id or f"daily-{len(self.daily_notes) + 1}",
+            "tenant_id": tenant_id,
+            "workspace_id": workspace_id,
+            "note_id": payload["note_id"],
+            "note_date": note_date,
+            "summary": payload.get("summary", ""),
+            "decisions": payload.get("decisions", []),
+            "pending_items": payload.get("pending_items", []),
+            "cost_snapshot": payload.get("cost_snapshot", {}),
+            "created_by": user_id,
+            "updated_by": user_id,
+            "created_at": "2026-04-29T00:00:00Z",
+            "updated_at": "2026-04-29T00:00:00Z",
+        }
+        self.daily_notes[note_date] = row
+        return row
+
+    async def get_conversation(self, conversation_id: str):
+        return self.conversations.get(conversation_id)
+
+    async def get_correlation_suggestion(self, suggestion_id: str):
+        return self.suggestions.get(suggestion_id)
+
 
 async def _principal_and_service(tmp_path: Path, *, rag: FakeRag | None = None):
     repo = InMemorySystemRepository()
@@ -198,15 +1327,2241 @@ async def _principal_and_service_with_admin_store(tmp_path: Path):
     return principal, service
 
 
+async def _create_group_and_subgroup(service: LittleBullService, principal):
+    group = await service.upsert_knowledge_group(
+        principal,
+        workspace_id="default",
+        payload=LittleBullKnowledgeGroupRequest(
+            name="Jurídico",
+            slug="juridico",
+        ),
+    )
+    subgroup = await service.upsert_knowledge_subgroup(
+        principal,
+        workspace_id="default",
+        payload=LittleBullKnowledgeSubgroupRequest(
+            group_id=group.group_id,
+            name="Inicial",
+            slug="inicial",
+        ),
+    )
+    return group, subgroup
+
+
 @pytest.mark.asyncio
 async def test_little_bull_lists_documents_and_audits(tmp_path):
-    principal, service = await _principal_and_service(tmp_path)
+    principal, service = await _principal_and_service_with_admin_store(tmp_path)
 
     response = await service.list_documents(principal, workspace_id="default")
 
-    assert response.total_count == 1
-    assert response.documents[0].title == "manual.pdf"
+    assert response.total_count == 0
+    assert response.documents == []
     assert (await service.list_activity(principal, workspace_id="default"))[0].result == "success"
+
+
+@pytest.mark.asyncio
+async def test_little_bull_upload_requires_existing_group_and_subgroup(tmp_path):
+    principal, service = await _principal_and_service_with_admin_store(tmp_path)
+
+    with pytest.raises(HTTPException) as exc:
+        await service.upload_document(
+            principal,
+            workspace_id="default",
+            group_id="missing-group",
+            subgroup_id="missing-subgroup",
+            file=UploadFile(filename="novo.md", file=BytesIO(b"# Novo")),
+            background_tasks=BackgroundTasks(),
+        )
+
+    assert exc.value.status_code == 404
+    assert not (tmp_path / "novo.md").exists()
+    assert service.admin_store.documents == {}
+
+
+@pytest.mark.asyncio
+async def test_little_bull_upload_requires_group_and_subgroup_values(tmp_path):
+    principal, service = await _principal_and_service_with_admin_store(tmp_path)
+
+    with pytest.raises(HTTPException) as exc:
+        await service.upload_document(
+            principal,
+            workspace_id="default",
+            group_id="",
+            subgroup_id="",
+            file=UploadFile(filename="sem-classe.md", file=BytesIO(b"# Sem classe")),
+            background_tasks=BackgroundTasks(),
+        )
+
+    assert exc.value.status_code == 422
+    assert service.admin_store.documents == {}
+
+
+@pytest.mark.asyncio
+async def test_little_bull_upload_rejects_subgroup_outside_group(tmp_path):
+    principal, service = await _principal_and_service_with_admin_store(tmp_path)
+    group, subgroup = await _create_group_and_subgroup(service, principal)
+    other_group = await service.upsert_knowledge_group(
+        principal,
+        workspace_id="default",
+        payload=LittleBullKnowledgeGroupRequest(name="Outro", slug="outro"),
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        await service.upload_document(
+            principal,
+            workspace_id="default",
+            group_id=other_group.group_id,
+            subgroup_id=subgroup.subgroup_id,
+            file=UploadFile(filename="fora.md", file=BytesIO(b"# Fora")),
+            background_tasks=BackgroundTasks(),
+        )
+
+    assert exc.value.status_code == 404
+    assert group.group_id != other_group.group_id
+    assert not (tmp_path / "fora.md").exists()
+    assert service.admin_store.documents == {}
+
+
+@pytest.mark.asyncio
+async def test_little_bull_upload_registers_document_with_group_subgroup(tmp_path):
+    principal, service = await _principal_and_service_with_admin_store(tmp_path)
+    group, subgroup = await _create_group_and_subgroup(service, principal)
+    background_tasks = BackgroundTasks()
+    queued: dict[str, object] = {}
+
+    def fake_queue(background_tasks, file_path, track_id, *, rag):
+        queued["file_path"] = file_path
+        queued["track_id"] = track_id
+        queued["workspace"] = rag.workspace
+        background_tasks.add_task(lambda: None)
+
+    service._queue_pipeline_index_file = fake_queue
+
+    response = await service.upload_document(
+        principal,
+        workspace_id="default",
+        group_id=group.group_id,
+        subgroup_id=subgroup.subgroup_id,
+        file=UploadFile(filename="peticao.md", file=BytesIO(b"# Peticao inicial")),
+        background_tasks=background_tasks,
+        confidentiality="normal",
+    )
+
+    assert response.status == "success"
+    assert response.group_id == group.group_id
+    assert response.subgroup_id == subgroup.subgroup_id
+    assert response.registry_document_id
+    assert len(background_tasks.tasks) == 1
+    assert queued["workspace"] == "default"
+    registry = service.admin_store.documents[response.registry_document_id]
+    assert registry["group_id"] == group.group_id
+    assert registry["subgroup_id"] == subgroup.subgroup_id
+    assert registry["source_uri"] == "peticao.md"
+    assert registry["source_kind"] == "upload"
+    assert registry["content_hash"]
+    events = await service.audit.list(tenant_id="default", workspace_id="default")
+    upload_event = next(event for event in events if event.action == "little_bull.documents.upload")
+    assert upload_event.metadata["registry_document_id"] == response.registry_document_id
+    assert upload_event.metadata["group_id"] == group.group_id
+
+
+@pytest.mark.asyncio
+async def test_little_bull_user_resubmission_creates_new_registry_entry(tmp_path):
+    principal, service = await _principal_and_service_with_admin_store(tmp_path)
+    group, subgroup = await _create_group_and_subgroup(service, principal)
+    service._queue_pipeline_index_file = lambda background_tasks, file_path, track_id, *, rag: background_tasks.add_task(
+        lambda: None
+    )
+
+    first = await service.upload_document(
+        principal,
+        workspace_id="default",
+        group_id=group.group_id,
+        subgroup_id=subgroup.subgroup_id,
+        file=UploadFile(filename="reenvio.md", file=BytesIO(b"primeira versao")),
+        background_tasks=BackgroundTasks(),
+    )
+    archived_dir = tmp_path / "__enqueued__"
+    archived_dir.mkdir()
+    (tmp_path / "reenvio.md").rename(archived_dir / "reenvio.md")
+    second = await service.upload_document(
+        principal,
+        workspace_id="default",
+        group_id=group.group_id,
+        subgroup_id=subgroup.subgroup_id,
+        file=UploadFile(filename="reenvio.md", file=BytesIO(b"segunda versao")),
+        background_tasks=BackgroundTasks(),
+    )
+
+    assert first.registry_document_id != second.registry_document_id
+    assert len(service.admin_store.documents) == 2
+    titles = {document["title"] for document in service.admin_store.documents.values()}
+    assert "reenvio.md" in titles
+    assert any(title.startswith("reenvio_") for title in titles)
+    assert (tmp_path / "reenvio_reindex_001.md").exists()
+
+
+@pytest.mark.asyncio
+async def test_little_bull_list_documents_filters_legacy_when_registry_exists(tmp_path):
+    registered = SimpleNamespace(
+        file_path="manual.pdf",
+        status="processed",
+        content_summary="Manual",
+        content_length=42,
+        updated_at="2026-04-27T00:00:00Z",
+        created_at="2026-04-27T00:00:00Z",
+        track_id="trk-registered",
+        chunks_count=1,
+        metadata={},
+    )
+    legacy = SimpleNamespace(
+        file_path="legacy.pdf",
+        status="processed",
+        content_summary="Legacy",
+        content_length=99,
+        updated_at="2026-04-27T00:00:00Z",
+        created_at="2026-04-27T00:00:00Z",
+        track_id="trk-legacy",
+        chunks_count=1,
+        metadata={},
+    )
+    rag = FakeRag(
+        working_dir=str(tmp_path / "rag_storage"),
+        docs=[("doc-legacy", legacy), ("doc-registered", registered)],
+    )
+    principal, service = await _principal_and_service(tmp_path, rag=rag)
+    service.admin_store = FakeAdminStore()
+    group, subgroup = await _create_group_and_subgroup(service, principal)
+    registry = await service.admin_store.register_document(
+        {
+            "group_id": group.group_id,
+            "subgroup_id": subgroup.subgroup_id,
+            "title": "manual.pdf",
+            "source_uri": str(tmp_path / "manual.pdf"),
+            "source_kind": "upload",
+            "mime_type": "application/pdf",
+            "content_hash": "hash",
+            "confidentiality": "normal",
+            "status": "processed",
+            "metadata": {},
+        },
+        tenant_id="default",
+        workspace_id="default",
+        user_id=principal.user_id,
+    )
+
+    response = await service.list_documents(principal, workspace_id="default", page_size=1)
+
+    assert response.total_count == 1
+    assert [document.title for document in response.documents] == ["manual.pdf"]
+    assert response.documents[0].file_path == "manual.pdf"
+    assert str(tmp_path) not in response.documents[0].file_path
+    assert response.documents[0].group_id == group.group_id
+    assert response.documents[0].subgroup_id == subgroup.subgroup_id
+    assert response.documents[0].registry_document_id == registry["document_id"]
+
+
+@pytest.mark.asyncio
+async def test_little_bull_markdown_note_extracts_wikilinks_tags_and_versions(tmp_path):
+    principal, service = await _principal_and_service_with_admin_store(tmp_path)
+    group, subgroup = await _create_group_and_subgroup(service, principal)
+
+    target = await service.upsert_markdown_note(
+        principal,
+        workspace_id="default",
+        payload=LittleBullMarkdownNoteRequest(
+            title="Mapa de Conteudo",
+            slug="mapa",
+            group_id=group.group_id,
+            subgroup_id=subgroup.subgroup_id,
+            markdown="# Mapa\n#juridico",
+        ),
+    )
+    source = await service.upsert_markdown_note(
+        principal,
+        workspace_id="default",
+        payload=LittleBullMarkdownNoteRequest(
+            title="Peticao Inicial",
+            group_id=group.group_id,
+            subgroup_id=subgroup.subgroup_id,
+            markdown="# Peticao\nLeia [[Mapa de Conteudo|MOC]] #juridico #processual",
+        ),
+    )
+
+    assert source.note.version_number == 1
+    assert source.registry.group_id == group.group_id
+    assert source.wiki_links[0].target_note_id == target.registry.note_id
+    assert source.wiki_links[0].link_status == "resolved"
+    assert {tag.tag for tag in source.tags} == {"#juridico", "#processual"}
+
+    updated = await service.upsert_markdown_note(
+        principal,
+        workspace_id="default",
+        payload=LittleBullMarkdownNoteRequest(
+            note_id=source.registry.note_id,
+            title="Peticao Inicial",
+            group_id=group.group_id,
+            subgroup_id=subgroup.subgroup_id,
+            markdown="# Peticao atualizada\nVoltar para [[Mapa de Conteudo]] #juridico",
+        ),
+    )
+
+    assert updated.note.version_number == 2
+    versions = service.admin_store.markdown_notes[source.registry.note_id]
+    assert [version["status"] for version in versions] == ["superseded", "current"]
+    fetched = await service.get_markdown_note(principal, workspace_id="default", note_id=source.registry.note_id)
+    assert fetched.note.markdown.startswith("# Peticao atualizada")
+    assert [note.note_id for note in await service.list_notes(principal, workspace_id="default")] == [
+        target.registry.note_id,
+        source.registry.note_id,
+    ]
+
+
+@pytest.mark.asyncio
+async def test_little_bull_markdown_note_requires_group_and_subgroup(tmp_path):
+    principal, service = await _principal_and_service_with_admin_store(tmp_path)
+
+    with pytest.raises(HTTPException) as exc:
+        await service.upsert_markdown_note(
+            principal,
+            workspace_id="default",
+            payload=LittleBullMarkdownNoteRequest(
+                title="Sem Classe",
+                group_id="",
+                subgroup_id="",
+                markdown="# Sem classe",
+            ),
+        )
+
+    assert exc.value.status_code == 422
+    assert service.admin_store.notes == {}
+
+
+@pytest.mark.asyncio
+async def test_little_bull_markdown_note_rejects_cross_subgroup_source_document(tmp_path):
+    principal, service = await _principal_and_service_with_admin_store(tmp_path)
+    group, subgroup = await _create_group_and_subgroup(service, principal)
+    other_subgroup = await service.upsert_knowledge_subgroup(
+        principal,
+        workspace_id="default",
+        payload=LittleBullKnowledgeSubgroupRequest(
+            group_id=group.group_id,
+            name="Outro",
+            slug="outro",
+        ),
+    )
+    document = await service.admin_store.register_document(
+        {
+            "group_id": group.group_id,
+            "subgroup_id": other_subgroup.subgroup_id,
+            "title": "origem.md",
+            "source_uri": "origem.md",
+            "source_kind": "upload",
+            "mime_type": "text/markdown",
+            "content_hash": "hash",
+            "confidentiality": "normal",
+            "status": "processed",
+            "metadata": {},
+        },
+        tenant_id="default",
+        workspace_id="default",
+        user_id=principal.user_id,
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        await service.upsert_markdown_note(
+            principal,
+            workspace_id="default",
+            payload=LittleBullMarkdownNoteRequest(
+                title="Nota",
+                group_id=group.group_id,
+                subgroup_id=subgroup.subgroup_id,
+                source_document_id=document["document_id"],
+                markdown="# Nota #juridico",
+            ),
+        )
+
+    assert exc.value.status_code == 422
+    assert service.admin_store.notes == {}
+
+
+@pytest.mark.asyncio
+async def test_little_bull_wikilinks_create_backlinks_and_panel(tmp_path):
+    principal, service = await _principal_and_service_with_admin_store(tmp_path)
+    group, subgroup = await _create_group_and_subgroup(service, principal)
+    target = await service.upsert_markdown_note(
+        principal,
+        workspace_id="default",
+        payload=LittleBullMarkdownNoteRequest(
+            title="Mapa do Caso",
+            slug="mapa-caso",
+            group_id=group.group_id,
+            subgroup_id=subgroup.subgroup_id,
+            markdown="# Mapa do caso",
+        ),
+    )
+    source = await service.upsert_markdown_note(
+        principal,
+        workspace_id="default",
+        payload=LittleBullMarkdownNoteRequest(
+            title="Linha Argumentativa",
+            slug="linha",
+            group_id=group.group_id,
+            subgroup_id=subgroup.subgroup_id,
+            markdown="Ver [[Mapa do Caso]] para contexto #juridico",
+        ),
+    )
+
+    backlinks = await service.list_backlinks(
+        principal,
+        workspace_id="default",
+        target_kind="note",
+        target_id=target.registry.note_id,
+    )
+    assert len(backlinks) == 1
+    assert backlinks[0].source_id == source.registry.note_id
+    assert backlinks[0].origin_type == "wikilink"
+    assert backlinks[0].metadata["target_label"] == "Mapa do Caso"
+
+    panel = await service.get_provenance_panel(
+        principal,
+        workspace_id="default",
+        target_kind="note",
+        target_id=target.registry.note_id,
+    )
+    assert [item.backlink_id for item in panel.mentioned_in] == [backlinks[0].backlink_id]
+    assert [item.backlink_id for item in panel.cited_by] == [backlinks[0].backlink_id]
+    assert panel.used_in_responses == []
+
+    await service.upsert_markdown_note(
+        principal,
+        workspace_id="default",
+        payload=LittleBullMarkdownNoteRequest(
+            note_id=source.registry.note_id,
+            title="Linha Argumentativa",
+            slug="linha",
+            group_id=group.group_id,
+            subgroup_id=subgroup.subgroup_id,
+            markdown="Sem wikilink nesta versao.",
+        ),
+    )
+    assert await service.list_backlinks(
+        principal,
+        workspace_id="default",
+        source_kind="note",
+        source_id=source.registry.note_id,
+    ) == []
+
+
+@pytest.mark.asyncio
+async def test_little_bull_manual_backlink_validates_refs_and_audits(tmp_path):
+    principal, service = await _principal_and_service_with_admin_store(tmp_path)
+    group, subgroup = await _create_group_and_subgroup(service, principal)
+    note = await service.upsert_markdown_note(
+        principal,
+        workspace_id="default",
+        payload=LittleBullMarkdownNoteRequest(
+            title="Nota",
+            group_id=group.group_id,
+            subgroup_id=subgroup.subgroup_id,
+            markdown="# Nota",
+        ),
+    )
+    document = await service.admin_store.register_document(
+        {
+            "group_id": group.group_id,
+            "subgroup_id": subgroup.subgroup_id,
+            "title": "fonte.md",
+            "source_uri": "fonte.md",
+            "source_kind": "upload",
+            "mime_type": "text/markdown",
+            "content_hash": "hash",
+            "confidentiality": "normal",
+            "status": "processed",
+            "metadata": {},
+        },
+        tenant_id="default",
+        workspace_id="default",
+        user_id=principal.user_id,
+    )
+
+    backlink = await service.upsert_backlink(
+        principal,
+        workspace_id="default",
+        payload=LittleBullBacklinkRequest(
+            source_kind="note",
+            source_id=note.registry.note_id,
+            target_kind="document",
+            target_id=document["document_id"],
+            link_text="cita fonte",
+            origin_type="manual",
+            confidence=0.9,
+        ),
+    )
+
+    assert backlink.target_id == document["document_id"]
+    assert backlink.confidence == 0.9
+    events = await service.audit.list(tenant_id="default", workspace_id="default")
+    assert any(event.result == "backlink_upserted" for event in events)
+
+    with pytest.raises(HTTPException) as exc:
+        await service.upsert_backlink(
+            principal,
+            workspace_id="default",
+            payload=LittleBullBacklinkRequest(
+                source_kind="note",
+                source_id="missing-note",
+                target_kind="document",
+                target_id=document["document_id"],
+            ),
+        )
+
+    assert exc.value.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_little_bull_backlink_rejects_cross_subgroup_refs(tmp_path):
+    principal, service = await _principal_and_service_with_admin_store(tmp_path)
+    group, subgroup = await _create_group_and_subgroup(service, principal)
+    other_subgroup = await service.upsert_knowledge_subgroup(
+        principal,
+        workspace_id="default",
+        payload=LittleBullKnowledgeSubgroupRequest(
+            group_id=group.group_id,
+            name="Outro",
+            slug="outro",
+        ),
+    )
+    note = await service.upsert_markdown_note(
+        principal,
+        workspace_id="default",
+        payload=LittleBullMarkdownNoteRequest(
+            title="Nota",
+            group_id=group.group_id,
+            subgroup_id=subgroup.subgroup_id,
+            markdown="# Nota",
+        ),
+    )
+    document = await service.admin_store.register_document(
+        {
+            "group_id": group.group_id,
+            "subgroup_id": other_subgroup.subgroup_id,
+            "title": "outra-fonte.md",
+            "source_uri": "outra-fonte.md",
+            "source_kind": "upload",
+            "mime_type": "text/markdown",
+            "content_hash": "hash",
+            "confidentiality": "normal",
+            "status": "processed",
+            "metadata": {},
+        },
+        tenant_id="default",
+        workspace_id="default",
+        user_id=principal.user_id,
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        await service.upsert_backlink(
+            principal,
+            workspace_id="default",
+            payload=LittleBullBacklinkRequest(
+                source_kind="note",
+                source_id=note.registry.note_id,
+                target_kind="document",
+                target_id=document["document_id"],
+            ),
+        )
+
+    assert exc.value.status_code == 422
+    assert service.admin_store.backlinks == {}
+
+
+@pytest.mark.asyncio
+async def test_little_bull_backlink_rejects_unscoped_graph_edge_origin(tmp_path):
+    principal, service = await _principal_and_service_with_admin_store(tmp_path)
+    group, subgroup = await _create_group_and_subgroup(service, principal)
+    note = await service.upsert_markdown_note(
+        principal,
+        workspace_id="default",
+        payload=LittleBullMarkdownNoteRequest(
+            title="Nota",
+            group_id=group.group_id,
+            subgroup_id=subgroup.subgroup_id,
+            markdown="# Nota",
+        ),
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        await service.upsert_backlink(
+            principal,
+            workspace_id="default",
+            payload=LittleBullBacklinkRequest(
+                source_kind="note",
+                source_id=note.registry.note_id,
+                target_kind="note",
+                target_id=note.registry.note_id,
+                graph_edge_origin_id="edge-origin-from-other-scope",
+            ),
+        )
+
+    assert exc.value.status_code == 422
+    assert service.admin_store.backlinks == {}
+
+
+@pytest.mark.asyncio
+async def test_little_bull_cross_subgroup_wikilink_stays_unresolved(tmp_path):
+    principal, service = await _principal_and_service_with_admin_store(tmp_path)
+    group, subgroup = await _create_group_and_subgroup(service, principal)
+    other_subgroup = await service.upsert_knowledge_subgroup(
+        principal,
+        workspace_id="default",
+        payload=LittleBullKnowledgeSubgroupRequest(
+            group_id=group.group_id,
+            name="Outro",
+            slug="outro",
+        ),
+    )
+    await service.upsert_markdown_note(
+        principal,
+        workspace_id="default",
+        payload=LittleBullMarkdownNoteRequest(
+            title="Mapa Externo",
+            group_id=group.group_id,
+            subgroup_id=other_subgroup.subgroup_id,
+            markdown="# Mapa",
+        ),
+    )
+
+    source = await service.upsert_markdown_note(
+        principal,
+        workspace_id="default",
+        payload=LittleBullMarkdownNoteRequest(
+            title="Nota Fonte",
+            group_id=group.group_id,
+            subgroup_id=subgroup.subgroup_id,
+            markdown="Ver [[Mapa Externo]]",
+        ),
+    )
+
+    assert source.wiki_links[0].target_note_id is None
+    assert source.wiki_links[0].link_status == "unresolved"
+    backlinks = await service.list_backlinks(
+        principal,
+        workspace_id="default",
+        source_kind="note",
+        source_id=source.registry.note_id,
+    )
+    assert backlinks[0].target_kind == "note_label"
+
+
+@pytest.mark.asyncio
+async def test_little_bull_source_provenance_tracks_used_in_response(tmp_path):
+    principal, service = await _principal_and_service_with_admin_store(tmp_path)
+    group, subgroup = await _create_group_and_subgroup(service, principal)
+    document = await service.admin_store.register_document(
+        {
+            "group_id": group.group_id,
+            "subgroup_id": subgroup.subgroup_id,
+            "title": "fonte.md",
+            "source_uri": "fonte.md",
+            "source_kind": "upload",
+            "mime_type": "text/markdown",
+            "content_hash": "hash",
+            "confidentiality": "normal",
+            "status": "processed",
+            "metadata": {},
+        },
+        tenant_id="default",
+        workspace_id="default",
+        user_id=principal.user_id,
+    )
+
+    provenance = await service.record_source_provenance(
+        principal,
+        workspace_id="default",
+        payload=LittleBullSourceProvenanceRequest(
+            source_kind="answer",
+            source_id="answer-1",
+            document_id=document["document_id"],
+            chunk_id="chunk-1",
+            model_id="openrouter/test-model",
+            confidence=0.82,
+            locator={"page": 1},
+            metadata={"cost_usd": "0.0001"},
+        ),
+    )
+
+    assert provenance.document_id == document["document_id"]
+    assert provenance.chunk_id == "chunk-1"
+    note = await service.upsert_markdown_note(
+        principal,
+        workspace_id="default",
+        payload=LittleBullMarkdownNoteRequest(
+            title="Nota Fonte",
+            group_id=group.group_id,
+            subgroup_id=subgroup.subgroup_id,
+            markdown="# Nota",
+        ),
+    )
+    await service.record_source_provenance(
+        principal,
+        workspace_id="default",
+        payload=LittleBullSourceProvenanceRequest(
+            source_kind="answer",
+            source_id="answer-note-only",
+            note_id=note.registry.note_id,
+        ),
+    )
+    panel = await service.get_provenance_panel(
+        principal,
+        workspace_id="default",
+        target_kind=" Document ",
+        target_id=document["document_id"],
+    )
+    assert panel.target_kind == "document"
+    assert [item.source_id for item in panel.used_in_responses] == ["answer-1"]
+
+    with pytest.raises(HTTPException) as exc:
+        await service.record_source_provenance(
+            principal,
+            workspace_id="default",
+            payload=LittleBullSourceProvenanceRequest(
+                source_kind="answer",
+                source_id="answer-2",
+                document_id="missing-doc",
+            ),
+        )
+
+    assert exc.value.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_little_bull_source_provenance_rejects_cross_subgroup_refs(tmp_path):
+    principal, service = await _principal_and_service_with_admin_store(tmp_path)
+    group, subgroup = await _create_group_and_subgroup(service, principal)
+    other_subgroup = await service.upsert_knowledge_subgroup(
+        principal,
+        workspace_id="default",
+        payload=LittleBullKnowledgeSubgroupRequest(
+            group_id=group.group_id,
+            name="Outro",
+            slug="outro",
+        ),
+    )
+    note = await service.upsert_markdown_note(
+        principal,
+        workspace_id="default",
+        payload=LittleBullMarkdownNoteRequest(
+            title="Nota",
+            group_id=group.group_id,
+            subgroup_id=subgroup.subgroup_id,
+            markdown="# Nota",
+        ),
+    )
+    document = await service.admin_store.register_document(
+        {
+            "group_id": group.group_id,
+            "subgroup_id": other_subgroup.subgroup_id,
+            "title": "outra-fonte.md",
+            "source_uri": "outra-fonte.md",
+            "source_kind": "upload",
+            "mime_type": "text/markdown",
+            "content_hash": "hash",
+            "confidentiality": "normal",
+            "status": "processed",
+            "metadata": {},
+        },
+        tenant_id="default",
+        workspace_id="default",
+        user_id=principal.user_id,
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        await service.record_source_provenance(
+            principal,
+            workspace_id="default",
+            payload=LittleBullSourceProvenanceRequest(
+                source_kind="answer",
+                source_id="answer-1",
+                document_id=document["document_id"],
+                note_id=note.registry.note_id,
+            ),
+        )
+
+    assert exc.value.status_code == 422
+    assert service.admin_store.provenance == {}
+
+
+@pytest.mark.asyncio
+async def test_little_bull_source_provenance_rejects_unscoped_agent_and_ledger(tmp_path):
+    principal, service = await _principal_and_service_with_admin_store(tmp_path)
+    group, subgroup = await _create_group_and_subgroup(service, principal)
+    document = await service.admin_store.register_document(
+        {
+            "group_id": group.group_id,
+            "subgroup_id": subgroup.subgroup_id,
+            "title": "fonte.md",
+            "source_uri": "fonte.md",
+            "source_kind": "upload",
+            "mime_type": "text/markdown",
+            "content_hash": "hash",
+            "confidentiality": "normal",
+            "status": "processed",
+            "metadata": {},
+        },
+        tenant_id="default",
+        workspace_id="default",
+        user_id=principal.user_id,
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        await service.record_source_provenance(
+            principal,
+            workspace_id="default",
+            payload=LittleBullSourceProvenanceRequest(
+                source_kind="answer",
+                source_id="answer-1",
+                document_id=document["document_id"],
+                agent_id="agent-from-other-scope",
+                usage_ledger_id="ledger-from-other-scope",
+            ),
+        )
+
+    assert exc.value.status_code == 422
+    assert service.admin_store.provenance == {}
+
+
+@pytest.mark.asyncio
+async def test_little_bull_provenance_panel_rejects_unscoped_target_kind(tmp_path):
+    principal, service = await _principal_and_service_with_admin_store(tmp_path)
+
+    with pytest.raises(HTTPException) as exc:
+        await service.get_provenance_panel(
+            principal,
+            workspace_id="default",
+            target_kind="answer",
+            target_id="answer-1",
+        )
+
+    assert exc.value.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_little_bull_canvas_board_nodes_edges_analysis_and_dossier(tmp_path):
+    principal, service = await _principal_and_service_with_admin_store(tmp_path)
+    group, subgroup = await _create_group_and_subgroup(service, principal)
+    note = await service.upsert_markdown_note(
+        principal,
+        workspace_id="default",
+        payload=LittleBullMarkdownNoteRequest(
+            title="Nota",
+            group_id=group.group_id,
+            subgroup_id=subgroup.subgroup_id,
+            markdown="# Nota",
+        ),
+    )
+    document = await service.admin_store.register_document(
+        {
+            "group_id": group.group_id,
+            "subgroup_id": subgroup.subgroup_id,
+            "title": "fonte.md",
+            "source_uri": "fonte.md",
+            "source_kind": "upload",
+            "mime_type": "text/markdown",
+            "content_hash": "hash",
+            "confidentiality": "normal",
+            "status": "processed",
+            "metadata": {},
+        },
+        tenant_id="default",
+        workspace_id="default",
+        user_id=principal.user_id,
+    )
+
+    board = await service.upsert_canvas_board(
+        principal,
+        workspace_id="default",
+        payload=LittleBullCanvasBoardRequest(
+            title="Canvas do Caso",
+            group_id=group.group_id,
+            subgroup_id=subgroup.subgroup_id,
+            layout={"zoom": 1},
+        ),
+    )
+    note_node = await service.upsert_canvas_node(
+        principal,
+        workspace_id="default",
+        canvas_board_id=board.canvas_board_id,
+        payload=LittleBullCanvasNodeRequest(
+            node_kind="note",
+            ref_kind="note",
+            ref_id=note.registry.note_id,
+            x=10,
+            y=20,
+        ),
+    )
+    doc_node = await service.upsert_canvas_node(
+        principal,
+        workspace_id="default",
+        canvas_board_id=board.canvas_board_id,
+        payload=LittleBullCanvasNodeRequest(
+            node_kind="document",
+            ref_kind="document",
+            ref_id=document["document_id"],
+            x=320,
+            y=20,
+        ),
+    )
+    edge = await service.upsert_canvas_edge(
+        principal,
+        workspace_id="default",
+        canvas_board_id=board.canvas_board_id,
+        payload=LittleBullCanvasEdgeRequest(
+            source_node_id=note_node.canvas_node_id,
+            target_node_id=doc_node.canvas_node_id,
+            label="cita",
+        ),
+    )
+
+    detail = await service.get_canvas_board(principal, workspace_id="default", canvas_board_id=board.canvas_board_id)
+    assert [node.canvas_node_id for node in detail.nodes] == [note_node.canvas_node_id, doc_node.canvas_node_id]
+    assert [item.canvas_edge_id for item in detail.edges] == [edge.canvas_edge_id]
+    analysis = await service.analyze_canvas_board(
+        principal,
+        workspace_id="default",
+        canvas_board_id=board.canvas_board_id,
+    )
+    assert analysis.node_kind_counts == {"note": 1, "document": 1}
+    assert analysis.edge_count == 1
+    assert len(analysis.clusters) == 1
+    dossier = await service.export_canvas_board_dossier(
+        principal,
+        workspace_id="default",
+        canvas_board_id=board.canvas_board_id,
+    )
+    assert dossier.dossier_kind == "canvas"
+    assert dossier.export_policy["requires_lgpd_review"] is True
+    assert dossier.export_policy["analysis"]["node_count"] == 2
+
+
+@pytest.mark.asyncio
+async def test_little_bull_canvas_rejects_cross_subgroup_ref_and_cross_board_edge(tmp_path):
+    principal, service = await _principal_and_service_with_admin_store(tmp_path)
+    group, subgroup = await _create_group_and_subgroup(service, principal)
+    other_subgroup = await service.upsert_knowledge_subgroup(
+        principal,
+        workspace_id="default",
+        payload=LittleBullKnowledgeSubgroupRequest(
+            group_id=group.group_id,
+            name="Outro",
+            slug="outro",
+        ),
+    )
+    note = await service.upsert_markdown_note(
+        principal,
+        workspace_id="default",
+        payload=LittleBullMarkdownNoteRequest(
+            title="Nota Outro",
+            group_id=group.group_id,
+            subgroup_id=other_subgroup.subgroup_id,
+            markdown="# Nota",
+        ),
+    )
+    board = await service.upsert_canvas_board(
+        principal,
+        workspace_id="default",
+        payload=LittleBullCanvasBoardRequest(
+            title="Canvas",
+            group_id=group.group_id,
+            subgroup_id=subgroup.subgroup_id,
+        ),
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        await service.upsert_canvas_node(
+            principal,
+            workspace_id="default",
+            canvas_board_id=board.canvas_board_id,
+            payload=LittleBullCanvasNodeRequest(
+                node_kind="note",
+                ref_kind="note",
+                ref_id=note.registry.note_id,
+            ),
+        )
+
+    assert exc.value.status_code == 422
+
+    card_node = await service.upsert_canvas_node(
+        principal,
+        workspace_id="default",
+        canvas_board_id=board.canvas_board_id,
+        payload=LittleBullCanvasNodeRequest(node_kind="card", content={"text": "A"}),
+    )
+    other_board = await service.upsert_canvas_board(
+        principal,
+        workspace_id="default",
+        payload=LittleBullCanvasBoardRequest(
+            title="Outro Canvas",
+            group_id=group.group_id,
+            subgroup_id=subgroup.subgroup_id,
+        ),
+    )
+    other_node = await service.upsert_canvas_node(
+        principal,
+        workspace_id="default",
+        canvas_board_id=other_board.canvas_board_id,
+        payload=LittleBullCanvasNodeRequest(node_kind="card", content={"text": "B"}),
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        await service.upsert_canvas_edge(
+            principal,
+            workspace_id="default",
+            canvas_board_id=board.canvas_board_id,
+            payload=LittleBullCanvasEdgeRequest(
+                source_node_id=card_node.canvas_node_id,
+                target_node_id=other_node.canvas_node_id,
+            ),
+        )
+
+    assert exc.value.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_little_bull_canvas_rejects_cross_board_node_and_edge_id_mutation(tmp_path):
+    principal, service = await _principal_and_service_with_admin_store(tmp_path)
+    group, subgroup = await _create_group_and_subgroup(service, principal)
+    board = await service.upsert_canvas_board(
+        principal,
+        workspace_id="default",
+        payload=LittleBullCanvasBoardRequest(
+            title="Canvas A",
+            group_id=group.group_id,
+            subgroup_id=subgroup.subgroup_id,
+        ),
+    )
+    other_board = await service.upsert_canvas_board(
+        principal,
+        workspace_id="default",
+        payload=LittleBullCanvasBoardRequest(
+            title="Canvas B",
+            group_id=group.group_id,
+            subgroup_id=subgroup.subgroup_id,
+        ),
+    )
+    node_a = await service.upsert_canvas_node(
+        principal,
+        workspace_id="default",
+        canvas_board_id=board.canvas_board_id,
+        payload=LittleBullCanvasNodeRequest(node_kind="card", content={"text": "A"}),
+    )
+    node_b = await service.upsert_canvas_node(
+        principal,
+        workspace_id="default",
+        canvas_board_id=board.canvas_board_id,
+        payload=LittleBullCanvasNodeRequest(node_kind="card", content={"text": "B"}),
+    )
+    other_node = await service.upsert_canvas_node(
+        principal,
+        workspace_id="default",
+        canvas_board_id=other_board.canvas_board_id,
+        payload=LittleBullCanvasNodeRequest(node_kind="card", content={"text": "Other"}),
+    )
+    other_edge = await service.upsert_canvas_edge(
+        principal,
+        workspace_id="default",
+        canvas_board_id=other_board.canvas_board_id,
+        payload=LittleBullCanvasEdgeRequest(
+            source_node_id=other_node.canvas_node_id,
+            target_node_id=other_node.canvas_node_id,
+        ),
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        await service.upsert_canvas_node(
+            principal,
+            workspace_id="default",
+            canvas_board_id=board.canvas_board_id,
+            payload=LittleBullCanvasNodeRequest(
+                canvas_node_id=other_node.canvas_node_id,
+                node_kind="card",
+                content={"text": "mutate"},
+            ),
+        )
+
+    assert exc.value.status_code == 404
+    assert service.admin_store.canvas_nodes[other_node.canvas_node_id]["content"] == {"text": "Other"}
+
+    with pytest.raises(HTTPException) as exc:
+        await service.upsert_canvas_edge(
+            principal,
+            workspace_id="default",
+            canvas_board_id=board.canvas_board_id,
+            payload=LittleBullCanvasEdgeRequest(
+                canvas_edge_id=other_edge.canvas_edge_id,
+                source_node_id=node_a.canvas_node_id,
+                target_node_id=node_b.canvas_node_id,
+            ),
+        )
+
+    assert exc.value.status_code == 404
+    assert service.admin_store.canvas_edges[other_edge.canvas_edge_id]["canvas_board_id"] == other_board.canvas_board_id
+
+
+@pytest.mark.asyncio
+async def test_little_bull_canvas_board_scope_cannot_move_by_slug(tmp_path):
+    principal, service = await _principal_and_service_with_admin_store(tmp_path)
+    group, subgroup = await _create_group_and_subgroup(service, principal)
+    other_subgroup = await service.upsert_knowledge_subgroup(
+        principal,
+        workspace_id="default",
+        payload=LittleBullKnowledgeSubgroupRequest(
+            group_id=group.group_id,
+            name="Outro",
+            slug="outro",
+        ),
+    )
+    board = await service.upsert_canvas_board(
+        principal,
+        workspace_id="default",
+        payload=LittleBullCanvasBoardRequest(
+            title="Canvas Movel",
+            slug="canvas-movel",
+            group_id=group.group_id,
+            subgroup_id=subgroup.subgroup_id,
+        ),
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        await service.upsert_canvas_board(
+            principal,
+            workspace_id="default",
+            payload=LittleBullCanvasBoardRequest(
+                title="Canvas Movel",
+                slug="canvas-movel",
+                group_id=group.group_id,
+                subgroup_id=other_subgroup.subgroup_id,
+            ),
+        )
+
+    assert exc.value.status_code == 422
+    assert service.admin_store.canvas_boards[board.canvas_board_id]["subgroup_id"] == subgroup.subgroup_id
+
+    renamed = await service.upsert_canvas_board(
+        principal,
+        workspace_id="default",
+        payload=LittleBullCanvasBoardRequest(
+            canvas_board_id=board.canvas_board_id,
+            title="Canvas Renomeado",
+            slug="canvas-renomeado",
+            group_id=group.group_id,
+            subgroup_id=subgroup.subgroup_id,
+        ),
+    )
+    assert renamed.canvas_board_id == board.canvas_board_id
+    assert renamed.slug == "canvas_renomeado"
+
+
+@pytest.mark.asyncio
+async def test_little_bull_content_map_root_note_scope_and_slug_guard(tmp_path):
+    principal, service = await _principal_and_service_with_admin_store(tmp_path)
+    group, subgroup = await _create_group_and_subgroup(service, principal)
+    other_subgroup = await service.upsert_knowledge_subgroup(
+        principal,
+        workspace_id="default",
+        payload=LittleBullKnowledgeSubgroupRequest(
+            group_id=group.group_id,
+            name="Outro",
+            slug="outro",
+        ),
+    )
+    root = await service.upsert_markdown_note(
+        principal,
+        workspace_id="default",
+        payload=LittleBullMarkdownNoteRequest(
+            title="Nota Raiz",
+            group_id=group.group_id,
+            subgroup_id=subgroup.subgroup_id,
+            markdown="# Nota raiz",
+        ),
+    )
+    other_note = await service.upsert_markdown_note(
+        principal,
+        workspace_id="default",
+        payload=LittleBullMarkdownNoteRequest(
+            title="Nota Externa",
+            group_id=group.group_id,
+            subgroup_id=other_subgroup.subgroup_id,
+            markdown="# Nota externa",
+        ),
+    )
+
+    content_map = await service.upsert_content_map(
+        principal,
+        workspace_id="default",
+        payload=LittleBullContentMapRequest(
+            title="MOC do Caso",
+            slug="moc-caso",
+            group_id=group.group_id,
+            subgroup_id=subgroup.subgroup_id,
+            root_note_id=root.registry.note_id,
+            map_body={"sections": [{"title": "Leia isto antes"}]},
+        ),
+    )
+
+    assert content_map.root_note_id == root.registry.note_id
+    assert content_map.map_body["sections"][0]["title"] == "Leia isto antes"
+    listed = await service.list_content_maps(
+        principal,
+        workspace_id="default",
+        group_id=group.group_id,
+        subgroup_id=subgroup.subgroup_id,
+    )
+    assert [item.content_map_id for item in listed] == [content_map.content_map_id]
+
+    with pytest.raises(HTTPException) as exc:
+        await service.upsert_content_map(
+            principal,
+            workspace_id="default",
+            payload=LittleBullContentMapRequest(
+                title="MOC Escopo Errado",
+                group_id=group.group_id,
+                subgroup_id=subgroup.subgroup_id,
+                root_note_id=other_note.registry.note_id,
+            ),
+        )
+
+    assert exc.value.status_code == 422
+
+    with pytest.raises(HTTPException) as exc:
+        await service.upsert_content_map(
+            principal,
+            workspace_id="default",
+            payload=LittleBullContentMapRequest(
+                title="MOC do Caso",
+                slug="moc-caso",
+                group_id=group.group_id,
+                subgroup_id=other_subgroup.subgroup_id,
+                root_note_id=other_note.registry.note_id,
+            ),
+        )
+
+    assert exc.value.status_code == 422
+    assert service.admin_store.content_maps[content_map.content_map_id]["subgroup_id"] == subgroup.subgroup_id
+
+    with pytest.raises(HTTPException) as exc:
+        await service.upsert_content_map(
+            principal,
+            workspace_id="default",
+            payload=LittleBullContentMapRequest(
+                content_map_id=content_map.content_map_id,
+                title="MOC Movido por ID",
+                slug="moc-movido-por-id",
+                group_id=group.group_id,
+                subgroup_id=other_subgroup.subgroup_id,
+                root_note_id=other_note.registry.note_id,
+            ),
+        )
+
+    assert exc.value.status_code == 422
+    assert service.admin_store.content_maps[content_map.content_map_id]["subgroup_id"] == subgroup.subgroup_id
+
+    other_content_map = await service.upsert_content_map(
+        principal,
+        workspace_id="default",
+        payload=LittleBullContentMapRequest(
+            title="MOC Outro Escopo",
+            slug="moc-outro-escopo",
+            group_id=group.group_id,
+            subgroup_id=other_subgroup.subgroup_id,
+            root_note_id=other_note.registry.note_id,
+        ),
+    )
+    listed = await service.list_content_maps(
+        principal,
+        workspace_id="default",
+        group_id=group.group_id,
+        subgroup_id=subgroup.subgroup_id,
+    )
+    other_listed = await service.list_content_maps(
+        principal,
+        workspace_id="default",
+        group_id=group.group_id,
+        subgroup_id=other_subgroup.subgroup_id,
+    )
+    assert [item.content_map_id for item in listed] == [content_map.content_map_id]
+    assert [item.content_map_id for item in other_listed] == [other_content_map.content_map_id]
+
+    renamed = await service.upsert_content_map(
+        principal,
+        workspace_id="default",
+        payload=LittleBullContentMapRequest(
+            content_map_id=content_map.content_map_id,
+            title="MOC do Caso Renomeado",
+            slug="moc-caso-renomeado",
+            group_id=group.group_id,
+            subgroup_id=subgroup.subgroup_id,
+            root_note_id=root.registry.note_id,
+        ),
+    )
+    assert renamed.content_map_id == content_map.content_map_id
+    assert renamed.slug == "moc_caso_renomeado"
+
+
+@pytest.mark.asyncio
+async def test_little_bull_knowledge_trail_steps_validate_refs_and_order(tmp_path):
+    principal, service = await _principal_and_service_with_admin_store(tmp_path)
+    group, subgroup = await _create_group_and_subgroup(service, principal)
+    other_subgroup = await service.upsert_knowledge_subgroup(
+        principal,
+        workspace_id="default",
+        payload=LittleBullKnowledgeSubgroupRequest(
+            group_id=group.group_id,
+            name="Outro",
+            slug="outro",
+        ),
+    )
+    note = await service.upsert_markdown_note(
+        principal,
+        workspace_id="default",
+        payload=LittleBullMarkdownNoteRequest(
+            title="Nota Guia",
+            group_id=group.group_id,
+            subgroup_id=subgroup.subgroup_id,
+            markdown="# Nota guia",
+        ),
+    )
+    other_note = await service.upsert_markdown_note(
+        principal,
+        workspace_id="default",
+        payload=LittleBullMarkdownNoteRequest(
+            title="Nota de Outro Escopo",
+            group_id=group.group_id,
+            subgroup_id=other_subgroup.subgroup_id,
+            markdown="# Fora",
+        ),
+    )
+    other_document = await service.admin_store.register_document(
+        {
+            "group_id": group.group_id,
+            "subgroup_id": other_subgroup.subgroup_id,
+            "title": "outra-fonte.md",
+            "source_uri": "outra-fonte.md",
+            "source_kind": "upload",
+            "mime_type": "text/markdown",
+            "content_hash": "other-hash",
+            "confidentiality": "normal",
+            "status": "processed",
+            "metadata": {},
+        },
+        tenant_id="default",
+        workspace_id="default",
+        user_id=principal.user_id,
+    )
+    document = await service.admin_store.register_document(
+        {
+            "group_id": group.group_id,
+            "subgroup_id": subgroup.subgroup_id,
+            "title": "fonte.md",
+            "source_uri": "fonte.md",
+            "source_kind": "upload",
+            "mime_type": "text/markdown",
+            "content_hash": "hash",
+            "confidentiality": "normal",
+            "status": "processed",
+            "metadata": {},
+        },
+        tenant_id="default",
+        workspace_id="default",
+        user_id=principal.user_id,
+    )
+    board = await service.upsert_canvas_board(
+        principal,
+        workspace_id="default",
+        payload=LittleBullCanvasBoardRequest(
+            title="Canvas Linha Argumentativa",
+            group_id=group.group_id,
+            subgroup_id=subgroup.subgroup_id,
+        ),
+    )
+    other_board = await service.upsert_canvas_board(
+        principal,
+        workspace_id="default",
+        payload=LittleBullCanvasBoardRequest(
+            title="Canvas Outro Escopo",
+            group_id=group.group_id,
+            subgroup_id=other_subgroup.subgroup_id,
+        ),
+    )
+    trail = await service.upsert_knowledge_trail(
+        principal,
+        workspace_id="default",
+        payload=LittleBullKnowledgeTrailRequest(
+            title="Leia Isto Antes",
+            slug="leia-isto-antes",
+            group_id=group.group_id,
+            subgroup_id=subgroup.subgroup_id,
+            trail_type="study",
+        ),
+    )
+
+    await service.upsert_knowledge_trail_step(
+        principal,
+        workspace_id="default",
+        knowledge_trail_id=trail.knowledge_trail_id,
+        payload=LittleBullKnowledgeTrailStepRequest(
+            step_order=2,
+            title="Analise o canvas",
+            step_kind="canvas",
+            canvas_board_id=board.canvas_board_id,
+        ),
+    )
+    await service.upsert_knowledge_trail_step(
+        principal,
+        workspace_id="default",
+        knowledge_trail_id=trail.knowledge_trail_id,
+        payload=LittleBullKnowledgeTrailStepRequest(
+            step_order=0,
+            title="Comece pela nota",
+            step_kind="note",
+            note_id=note.registry.note_id,
+        ),
+    )
+    await service.upsert_knowledge_trail_step(
+        principal,
+        workspace_id="default",
+        knowledge_trail_id=trail.knowledge_trail_id,
+        payload=LittleBullKnowledgeTrailStepRequest(
+            step_order=1,
+            title="Confira a fonte",
+            step_kind="document",
+            document_id=document["document_id"],
+        ),
+    )
+
+    detail = await service.get_knowledge_trail(
+        principal,
+        workspace_id="default",
+        knowledge_trail_id=trail.knowledge_trail_id,
+    )
+    assert [step.title for step in detail.steps] == [
+        "Comece pela nota",
+        "Confira a fonte",
+        "Analise o canvas",
+    ]
+    assert detail.steps[0].note_id == note.registry.note_id
+    assert detail.steps[1].document_id == document["document_id"]
+    assert detail.steps[2].canvas_board_id == board.canvas_board_id
+
+    with pytest.raises(HTTPException) as exc:
+        await service.upsert_knowledge_trail_step(
+            principal,
+            workspace_id="default",
+            knowledge_trail_id=trail.knowledge_trail_id,
+            payload=LittleBullKnowledgeTrailStepRequest(
+                step_order=3,
+                title="Fora do escopo",
+                note_id=other_note.registry.note_id,
+            ),
+        )
+
+    assert exc.value.status_code == 422
+    assert len(service.admin_store.trail_steps) == 3
+
+    with pytest.raises(HTTPException) as exc:
+        await service.upsert_knowledge_trail_step(
+            principal,
+            workspace_id="default",
+            knowledge_trail_id=trail.knowledge_trail_id,
+            payload=LittleBullKnowledgeTrailStepRequest(
+                step_order=3,
+                title="Documento fora do escopo",
+                document_id=other_document["document_id"],
+            ),
+        )
+
+    assert exc.value.status_code == 422
+    assert len(service.admin_store.trail_steps) == 3
+
+    with pytest.raises(HTTPException) as exc:
+        await service.upsert_knowledge_trail_step(
+            principal,
+            workspace_id="default",
+            knowledge_trail_id=trail.knowledge_trail_id,
+            payload=LittleBullKnowledgeTrailStepRequest(
+                step_order=3,
+                title="Canvas fora do escopo",
+                canvas_board_id=other_board.canvas_board_id,
+            ),
+        )
+
+    assert exc.value.status_code == 422
+    assert len(service.admin_store.trail_steps) == 3
+
+
+@pytest.mark.asyncio
+async def test_little_bull_knowledge_trail_scope_and_step_ids_cannot_cross_trails(tmp_path):
+    principal, service = await _principal_and_service_with_admin_store(tmp_path)
+    group, subgroup = await _create_group_and_subgroup(service, principal)
+    other_subgroup = await service.upsert_knowledge_subgroup(
+        principal,
+        workspace_id="default",
+        payload=LittleBullKnowledgeSubgroupRequest(
+            group_id=group.group_id,
+            name="Outro",
+            slug="outro",
+        ),
+    )
+    trail = await service.upsert_knowledge_trail(
+        principal,
+        workspace_id="default",
+        payload=LittleBullKnowledgeTrailRequest(
+            title="Linha Argumentativa",
+            slug="linha-argumentativa",
+            group_id=group.group_id,
+            subgroup_id=subgroup.subgroup_id,
+        ),
+    )
+    other_trail = await service.upsert_knowledge_trail(
+        principal,
+        workspace_id="default",
+        payload=LittleBullKnowledgeTrailRequest(
+            title="Linha do Tempo",
+            slug="linha-do-tempo",
+            group_id=group.group_id,
+            subgroup_id=subgroup.subgroup_id,
+        ),
+    )
+    scoped_other_trail = await service.upsert_knowledge_trail(
+        principal,
+        workspace_id="default",
+        payload=LittleBullKnowledgeTrailRequest(
+            title="Trilha Outro Escopo",
+            slug="trilha-outro-escopo",
+            group_id=group.group_id,
+            subgroup_id=other_subgroup.subgroup_id,
+        ),
+    )
+    other_step = await service.upsert_knowledge_trail_step(
+        principal,
+        workspace_id="default",
+        knowledge_trail_id=other_trail.knowledge_trail_id,
+        payload=LittleBullKnowledgeTrailStepRequest(
+            step_order=0,
+            title="Outro passo",
+            instructions="Passo de outra trilha",
+        ),
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        await service.upsert_knowledge_trail(
+            principal,
+            workspace_id="default",
+            payload=LittleBullKnowledgeTrailRequest(
+                title="Linha Argumentativa",
+                slug="linha-argumentativa",
+                group_id=group.group_id,
+                subgroup_id=other_subgroup.subgroup_id,
+            ),
+        )
+
+    assert exc.value.status_code == 422
+    assert service.admin_store.trails[trail.knowledge_trail_id]["subgroup_id"] == subgroup.subgroup_id
+
+    with pytest.raises(HTTPException) as exc:
+        await service.upsert_knowledge_trail(
+            principal,
+            workspace_id="default",
+            payload=LittleBullKnowledgeTrailRequest(
+                knowledge_trail_id=trail.knowledge_trail_id,
+                title="Linha Argumentativa por ID",
+                slug="linha-argumentativa-por-id",
+                group_id=group.group_id,
+                subgroup_id=other_subgroup.subgroup_id,
+            ),
+        )
+
+    assert exc.value.status_code == 422
+    assert service.admin_store.trails[trail.knowledge_trail_id]["subgroup_id"] == subgroup.subgroup_id
+
+    renamed = await service.upsert_knowledge_trail(
+        principal,
+        workspace_id="default",
+        payload=LittleBullKnowledgeTrailRequest(
+            knowledge_trail_id=trail.knowledge_trail_id,
+            title="Linha Argumentativa Renomeada",
+            slug="linha-argumentativa-renomeada",
+            group_id=group.group_id,
+            subgroup_id=subgroup.subgroup_id,
+        ),
+    )
+    assert renamed.knowledge_trail_id == trail.knowledge_trail_id
+    assert renamed.slug == "linha_argumentativa_renomeada"
+
+    listed = await service.list_knowledge_trails(
+        principal,
+        workspace_id="default",
+        group_id=group.group_id,
+        subgroup_id=subgroup.subgroup_id,
+    )
+    other_listed = await service.list_knowledge_trails(
+        principal,
+        workspace_id="default",
+        group_id=group.group_id,
+        subgroup_id=other_subgroup.subgroup_id,
+    )
+    assert {item.knowledge_trail_id for item in listed} == {
+        trail.knowledge_trail_id,
+        other_trail.knowledge_trail_id,
+    }
+    assert [item.knowledge_trail_id for item in other_listed] == [scoped_other_trail.knowledge_trail_id]
+
+    with pytest.raises(HTTPException) as exc:
+        await service.upsert_knowledge_trail_step(
+            principal,
+            workspace_id="default",
+            knowledge_trail_id=trail.knowledge_trail_id,
+            payload=LittleBullKnowledgeTrailStepRequest(
+                knowledge_trail_step_id=other_step.knowledge_trail_step_id,
+                step_order=0,
+                title="Tentativa de mutacao",
+            ),
+        )
+
+    assert exc.value.status_code == 404
+    assert service.admin_store.trail_steps[other_step.knowledge_trail_step_id][
+        "knowledge_trail_id"
+    ] == other_trail.knowledge_trail_id
+
+
+@pytest.mark.asyncio
+async def test_little_bull_inbox_validates_refs_status_and_filters(tmp_path):
+    principal, service = await _principal_and_service_with_admin_store(tmp_path)
+    group, subgroup = await _create_group_and_subgroup(service, principal)
+    other_subgroup = await service.upsert_knowledge_subgroup(
+        principal,
+        workspace_id="default",
+        payload=LittleBullKnowledgeSubgroupRequest(
+            group_id=group.group_id,
+            name="Outro",
+            slug="outro",
+        ),
+    )
+    document = await service.admin_store.register_document(
+        {
+            "group_id": group.group_id,
+            "subgroup_id": subgroup.subgroup_id,
+            "title": "triagem.md",
+            "source_uri": "triagem.md",
+            "source_kind": "upload",
+            "mime_type": "text/markdown",
+            "content_hash": "hash",
+            "confidentiality": "normal",
+            "status": "processed",
+            "metadata": {},
+        },
+        tenant_id="default",
+        workspace_id="default",
+        user_id=principal.user_id,
+    )
+    other_note = await service.upsert_markdown_note(
+        principal,
+        workspace_id="default",
+        payload=LittleBullMarkdownNoteRequest(
+            title="Nota Outro Escopo",
+            group_id=group.group_id,
+            subgroup_id=other_subgroup.subgroup_id,
+            markdown="# Fora",
+        ),
+    )
+
+    item = await service.upsert_inbox_item(
+        principal,
+        workspace_id="default",
+        payload=LittleBullInboxItemRequest(
+            group_id=group.group_id,
+            subgroup_id=subgroup.subgroup_id,
+            item_kind="document",
+            title="Triar documento",
+            source_kind="document",
+            source_id=document["document_id"],
+            priority="high",
+        ),
+    )
+
+    assert item.source_kind == "document"
+    listed = await service.list_inbox_items(
+        principal,
+        workspace_id="default",
+        status_filter="open",
+        group_id=group.group_id,
+        subgroup_id=subgroup.subgroup_id,
+    )
+    assert [inbox_item.inbox_item_id for inbox_item in listed] == [item.inbox_item_id]
+
+    updated = await service.update_inbox_item_status(
+        principal,
+        workspace_id="default",
+        inbox_item_id=item.inbox_item_id,
+        payload=LittleBullInboxItemStatusRequest(status="done", metadata={"resolved_by": "test"}),
+    )
+    assert updated.status == "done"
+    assert updated.metadata["resolved_by"] == "test"
+    assert await service.list_inbox_items(
+        principal,
+        workspace_id="default",
+        status_filter="open",
+        group_id=group.group_id,
+        subgroup_id=subgroup.subgroup_id,
+    ) == []
+
+    target_open = await service.upsert_inbox_item(
+        principal,
+        workspace_id="default",
+        payload=LittleBullInboxItemRequest(
+            group_id=group.group_id,
+            subgroup_id=subgroup.subgroup_id,
+            item_kind="quick_note",
+            title="Aberto no alvo",
+        ),
+    )
+    await service.upsert_inbox_item(
+        principal,
+        workspace_id="default",
+        payload=LittleBullInboxItemRequest(
+            group_id=group.group_id,
+            subgroup_id=other_subgroup.subgroup_id,
+            item_kind="quick_note",
+            title="Aberto em outro subgrupo",
+        ),
+    )
+    listed = await service.list_inbox_items(
+        principal,
+        workspace_id="default",
+        status_filter="open",
+        group_id=group.group_id,
+        subgroup_id=subgroup.subgroup_id,
+    )
+    assert [inbox_item.inbox_item_id for inbox_item in listed] == [target_open.inbox_item_id]
+
+    with pytest.raises(HTTPException) as exc:
+        await service.upsert_inbox_item(
+            principal,
+            workspace_id="default",
+            payload=LittleBullInboxItemRequest(
+                group_id=group.group_id,
+                subgroup_id=subgroup.subgroup_id,
+                item_kind="note",
+                title="Fonte errada",
+                source_kind="note",
+                source_id=other_note.registry.note_id,
+            ),
+        )
+
+    assert exc.value.status_code == 422
+
+    with pytest.raises(HTTPException) as exc:
+        await service.upsert_inbox_item(
+            principal,
+            workspace_id="default",
+            payload=LittleBullInboxItemRequest(
+                inbox_item_id=target_open.inbox_item_id,
+                item_kind="quick_note",
+                title="Remover escopo",
+            ),
+        )
+
+    assert exc.value.status_code == 422
+
+    with pytest.raises(HTTPException) as exc:
+        await service.upsert_inbox_item(
+            principal,
+            workspace_id="default",
+            payload=LittleBullInboxItemRequest(
+                item_kind="document",
+                title="Fonte sem escopo",
+                source_kind="document",
+                source_id=document["document_id"],
+            ),
+        )
+
+    assert exc.value.status_code == 422
+
+    service.admin_store.conversations["conversation-1"] = {
+        "conversation_id": "conversation-1",
+        "tenant_id": "default",
+        "workspace_id": "default",
+        "user_id": principal.user_id,
+    }
+    service.admin_store.suggestions["suggestion-1"] = {
+        "suggestion_id": "suggestion-1",
+        "tenant_id": "default",
+        "workspace_id": "default",
+        "user_id": principal.user_id,
+    }
+    conversation_item = await service.upsert_inbox_item(
+        principal,
+        workspace_id="default",
+        payload=LittleBullInboxItemRequest(
+            item_kind="conversation",
+            title="Rever conversa",
+            source_kind="conversation",
+            source_id="conversation-1",
+        ),
+    )
+    suggestion_item = await service.upsert_inbox_item(
+        principal,
+        workspace_id="default",
+        payload=LittleBullInboxItemRequest(
+            item_kind="suggestion",
+            title="Rever sugestao",
+            source_kind="suggestion",
+            source_id="suggestion-1",
+        ),
+    )
+    assert conversation_item.source_kind == "conversation"
+    assert suggestion_item.source_kind == "suggestion"
+
+    with pytest.raises(HTTPException) as exc:
+        await service.upsert_inbox_item(
+            principal,
+            workspace_id="default",
+            payload=LittleBullInboxItemRequest(
+                item_kind="conversation",
+                title="Conversa ausente",
+                source_kind="conversation",
+                source_id="missing-conversation",
+            ),
+        )
+
+    assert exc.value.status_code == 404
+
+    with pytest.raises(HTTPException) as exc:
+        await service.upsert_inbox_item(
+            principal,
+            workspace_id="default",
+            payload=LittleBullInboxItemRequest(
+                item_kind="suggestion",
+                title="Sugestao ausente",
+                source_kind="suggestion",
+                source_id="missing-suggestion",
+            ),
+        )
+
+    assert exc.value.status_code == 404
+
+    with pytest.raises(HTTPException) as exc:
+        await service.upsert_inbox_item(
+            principal,
+            workspace_id="default",
+            payload=LittleBullInboxItemRequest(
+                subgroup_id=subgroup.subgroup_id,
+                item_kind="quick_note",
+                title="Sem grupo",
+            ),
+        )
+
+    assert exc.value.status_code == 422
+
+    with pytest.raises(HTTPException) as exc:
+        await service.upsert_inbox_item(
+            principal,
+            workspace_id="default",
+            payload=LittleBullInboxItemRequest(
+                inbox_item_id=item.inbox_item_id,
+                group_id=group.group_id,
+                subgroup_id=other_subgroup.subgroup_id,
+                item_kind="quick_note",
+                title="Mover item",
+            ),
+        )
+
+    assert exc.value.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_little_bull_daily_note_creates_markdown_and_uses_open_inbox(tmp_path):
+    principal, service = await _principal_and_service_with_admin_store(tmp_path)
+    group, subgroup = await _create_group_and_subgroup(service, principal)
+    other_subgroup = await service.upsert_knowledge_subgroup(
+        principal,
+        workspace_id="default",
+        payload=LittleBullKnowledgeSubgroupRequest(
+            group_id=group.group_id,
+            name="Outro",
+            slug="outro",
+        ),
+    )
+    inbox_item = await service.upsert_inbox_item(
+        principal,
+        workspace_id="default",
+        payload=LittleBullInboxItemRequest(
+            group_id=group.group_id,
+            subgroup_id=subgroup.subgroup_id,
+            item_kind="quick_note",
+            title="Revisar pendencia",
+        ),
+    )
+    done_item = await service.upsert_inbox_item(
+        principal,
+        workspace_id="default",
+        payload=LittleBullInboxItemRequest(
+            group_id=group.group_id,
+            subgroup_id=subgroup.subgroup_id,
+            item_kind="quick_note",
+            title="Pendencia concluida",
+        ),
+    )
+    await service.update_inbox_item_status(
+        principal,
+        workspace_id="default",
+        inbox_item_id=done_item.inbox_item_id,
+        payload=LittleBullInboxItemStatusRequest(status="done"),
+    )
+    await service.upsert_inbox_item(
+        principal,
+        workspace_id="default",
+        payload=LittleBullInboxItemRequest(
+            group_id=group.group_id,
+            subgroup_id=other_subgroup.subgroup_id,
+            item_kind="quick_note",
+            title="Pendencia outro subgrupo",
+        ),
+    )
+
+    daily = await service.ensure_daily_note(
+        principal,
+        workspace_id="default",
+        payload=LittleBullDailyNoteRequest(
+            note_date="2026-04-30",
+            group_id=group.group_id,
+            subgroup_id=subgroup.subgroup_id,
+            summary="Dia de triagem",
+            decisions=[{"title": "Manter base limpa"}],
+            cost_snapshot={"today_usd": "0.00"},
+        ),
+    )
+
+    assert daily.note_date == "2026-04-30"
+    assert [item["inbox_item_id"] for item in daily.pending_items] == [inbox_item.inbox_item_id]
+    latest = await service.admin_store.get_latest_markdown_note(
+        daily.note_id,
+        tenant_id="default",
+        workspace_id="default",
+    )
+    assert "Dia de triagem" in latest["markdown"]
+    assert "Revisar pendencia" in latest["markdown"]
+    assert service.admin_store.notes[daily.note_id]["metadata"]["daily_note"] is True
+
+    updated = await service.ensure_daily_note(
+        principal,
+        workspace_id="default",
+        payload=LittleBullDailyNoteRequest(
+            note_date="2026-04-30",
+            group_id=group.group_id,
+            subgroup_id=subgroup.subgroup_id,
+            summary="Dia atualizado",
+            pending_items=[{"title": "Pendencia manual"}],
+        ),
+    )
+
+    assert updated.daily_note_id == daily.daily_note_id
+    assert updated.note_id == daily.note_id
+    assert updated.pending_items == [{"title": "Pendencia manual"}]
+    assert service.admin_store.markdown_notes[daily.note_id][-1]["version_number"] == 2
+    listed = await service.list_daily_notes(principal, workspace_id="default")
+    assert [item.daily_note_id for item in listed] == [daily.daily_note_id]
+
+    with pytest.raises(HTTPException) as exc:
+        await service.ensure_daily_note(
+            principal,
+            workspace_id="default",
+            payload=LittleBullDailyNoteRequest(
+                note_date="2026-04-30",
+                group_id=group.group_id,
+                subgroup_id=other_subgroup.subgroup_id,
+                summary="Mover daily",
+            ),
+        )
+
+    assert exc.value.status_code == 422
+
+    conflicting = await service.upsert_markdown_note(
+        principal,
+        workspace_id="default",
+        payload=LittleBullMarkdownNoteRequest(
+            title="Nota com slug de daily",
+            slug="daily-2026-05-01",
+            group_id=group.group_id,
+            subgroup_id=other_subgroup.subgroup_id,
+            markdown="# Nao mover",
+        ),
+    )
+    with pytest.raises(HTTPException) as exc:
+        await service.ensure_daily_note(
+            principal,
+            workspace_id="default",
+            payload=LittleBullDailyNoteRequest(
+                note_date="2026-05-01",
+                group_id=group.group_id,
+                subgroup_id=subgroup.subgroup_id,
+                summary="Conflito de slug",
+            ),
+        )
+
+    assert exc.value.status_code == 409
+    assert service.admin_store.notes[conflicting.registry.note_id]["subgroup_id"] == other_subgroup.subgroup_id
+
+    with pytest.raises(HTTPException) as exc:
+        await service.ensure_daily_note(
+            principal,
+            workspace_id="default",
+            payload=LittleBullDailyNoteRequest(
+                note_date="30/04/2026",
+                group_id=group.group_id,
+                subgroup_id=subgroup.subgroup_id,
+            ),
+        )
+
+    assert exc.value.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_little_bull_agent_builder_requires_review_before_publish(tmp_path):
+    principal, service = await _principal_and_service_with_admin_store(tmp_path)
+
+    session = await service.upsert_agent_builder_session(
+        principal,
+        workspace_id="default",
+        payload=LittleBullAgentBuilderSessionRequest(
+            user_message="Agente juridico para resumir documentos com fontes e pedir aprovacao humana.",
+        ),
+    )
+
+    assert session.status == "draft"
+    assert session.requires_review is True
+    assert session.readiness_score >= 80
+    assert session.generated_config["enabled"] is False
+    assert session.generated_config["model_setting_id"] is None
+    assert [entry["role"] for entry in session.builder_transcript] == ["user", "assistant"]
+    listed = await service.list_agent_builder_sessions(principal, workspace_id="default", status_filter="draft")
+    assert [item.agent_builder_session_id for item in listed] == [session.agent_builder_session_id]
+    decoy = await service.upsert_agent_builder_session(
+        principal,
+        workspace_id="default",
+        payload=LittleBullAgentBuilderSessionRequest(
+            user_message="Agente decoy para validar filtro de drafts.",
+        ),
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        await service.publish_agent_builder_session(
+            principal,
+            workspace_id="default",
+            agent_builder_session_id=session.agent_builder_session_id,
+            payload=LittleBullAgentBuilderPublishRequest(approved=False),
+        )
+
+    assert exc.value.status_code == 409
+
+    published = await service.publish_agent_builder_session(
+        principal,
+        workspace_id="default",
+        agent_builder_session_id=session.agent_builder_session_id,
+        payload=LittleBullAgentBuilderPublishRequest(approved=True, enabled=True),
+    )
+
+    assert published.status == "published"
+    assert published.requires_review is False
+    assert published.agent_id in service.admin_store.agents
+    assert service.admin_store.agents[published.agent_id]["enabled"] is True
+    listed = await service.list_agent_builder_sessions(principal, workspace_id="default", status_filter="draft")
+    assert [item.agent_builder_session_id for item in listed] == [decoy.agent_builder_session_id]
+
+    not_ready = await service.upsert_agent_builder_session(
+        principal,
+        workspace_id="default",
+        payload=LittleBullAgentBuilderSessionRequest(
+            user_message="Agente sem principios.",
+            generated_config={
+                "name": "Agente Sem Principios",
+                "config": {"ethics": {"principles": []}},
+            },
+        ),
+    )
+    agent_count = len(service.admin_store.agents)
+    with pytest.raises(HTTPException) as exc:
+        await service.publish_agent_builder_session(
+            principal,
+            workspace_id="default",
+            agent_builder_session_id=not_ready.agent_builder_session_id,
+            payload=LittleBullAgentBuilderPublishRequest(approved=True),
+        )
+
+    assert exc.value.status_code == 422
+    assert len(service.admin_store.agents) == agent_count
+
+    with pytest.raises(HTTPException) as exc:
+        await service.upsert_agent_builder_session(
+            principal,
+            workspace_id="default",
+            payload=LittleBullAgentBuilderSessionRequest(
+                model_setting_id="missing-model",
+                user_message="Use modelo inexistente.",
+            ),
+        )
+
+    assert exc.value.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_little_bull_agent_context_budget_validates_agent_and_window(tmp_path):
+    principal, service = await _principal_and_service_with_admin_store(tmp_path)
+    agent = await service.upsert_agent_config(
+        principal,
+        workspace_id="default",
+        payload=LittleBullAgentConfig(
+            name="Agente Custos",
+            description="Agente com budget controlado",
+            enabled=False,
+            tools=["query_knowledge"],
+            config={
+                "identity": {"mission": "Responder com fontes."},
+                "tests": [{"name": "fontes", "input": "Pergunta", "expected_behavior": "Citar fontes"}],
+            },
+        ),
+    )
+
+    budget = await service.upsert_agent_context_budget(
+        principal,
+        workspace_id="default",
+        payload=LittleBullAgentContextBudgetRequest(
+            agent_id=agent.agent_id,
+            max_context_tokens=8000,
+            reserved_response_tokens=1000,
+            max_prompt_tokens=6000,
+            daily_cost_limit_usd=5,
+            policy={"overflow": "block"},
+        ),
+    )
+
+    assert budget.agent_id == agent.agent_id
+    assert budget.policy["overflow"] == "block"
+    other_agent = await service.upsert_agent_config(
+        principal,
+        workspace_id="default",
+        payload=LittleBullAgentConfig(
+            name="Agente Decoy",
+            description="Outro agente para testar filtros de budget",
+            enabled=False,
+            tools=["query_knowledge"],
+            config={
+                "identity": {"mission": "Responder com fontes."},
+                "tests": [{"name": "fontes", "input": "Pergunta", "expected_behavior": "Citar fontes"}],
+            },
+        ),
+    )
+    other_budget = await service.upsert_agent_context_budget(
+        principal,
+        workspace_id="default",
+        payload=LittleBullAgentContextBudgetRequest(
+            agent_id=other_agent.agent_id,
+            max_context_tokens=4000,
+            reserved_response_tokens=500,
+        ),
+    )
+    listed = await service.list_agent_context_budgets(principal, workspace_id="default", agent_id=agent.agent_id)
+    assert [item.agent_context_budget_id for item in listed] == [budget.agent_context_budget_id]
+    listed = await service.list_agent_context_budgets(
+        principal,
+        workspace_id="default",
+        agent_id=other_agent.agent_id,
+    )
+    assert [item.agent_context_budget_id for item in listed] == [other_budget.agent_context_budget_id]
+
+    with pytest.raises(HTTPException) as exc:
+        await service.upsert_agent_context_budget(
+            principal,
+            workspace_id="default",
+            payload=LittleBullAgentContextBudgetRequest(
+                agent_context_budget_id=budget.agent_context_budget_id,
+                agent_id=other_agent.agent_id,
+                max_context_tokens=8000,
+            ),
+        )
+
+    assert exc.value.status_code == 422
+
+    with pytest.raises(HTTPException) as exc:
+        await service.upsert_agent_context_budget(
+            principal,
+            workspace_id="default",
+            payload=LittleBullAgentContextBudgetRequest(
+                agent_id="missing-agent",
+                max_context_tokens=8000,
+                reserved_response_tokens=1000,
+            ),
+        )
+
+    assert exc.value.status_code == 404
+
+    service.admin_store.models["foreign-model"] = {
+        "model_setting_id": "foreign-model",
+        "tenant_id": "default",
+        "workspace_id": "other-workspace",
+        "usage": "chat",
+        "provider": "openrouter",
+        "binding": "openai",
+        "binding_host": "https://openrouter.ai/api/v1",
+        "model_id": "openai/test",
+        "display_name": "Foreign",
+        "enabled": True,
+        "is_default": False,
+        "config": {},
+        "created_by": principal.user_id,
+        "updated_by": principal.user_id,
+        "created_at": "2026-04-29T00:00:00Z",
+        "updated_at": "2026-04-29T00:00:00Z",
+    }
+    with pytest.raises(HTTPException) as exc:
+        await service.upsert_agent_context_budget(
+            principal,
+            workspace_id="default",
+            payload=LittleBullAgentContextBudgetRequest(
+                agent_id=agent.agent_id,
+                model_setting_id="foreign-model",
+                max_context_tokens=8000,
+            ),
+        )
+
+    assert exc.value.status_code == 404
+
+    with pytest.raises(HTTPException) as exc:
+        await service.upsert_agent_context_budget(
+            principal,
+            workspace_id="default",
+            payload=LittleBullAgentContextBudgetRequest(
+                agent_id=agent.agent_id,
+                max_context_tokens=1000,
+                reserved_response_tokens=1200,
+            ),
+        )
+
+    assert exc.value.status_code == 422
+
+    with pytest.raises(HTTPException) as exc:
+        await service.upsert_agent_context_budget(
+            principal,
+            workspace_id="default",
+            payload=LittleBullAgentContextBudgetRequest(
+                agent_id=agent.agent_id,
+                max_context_tokens=1000,
+                reserved_response_tokens=200,
+                max_prompt_tokens=900,
+            ),
+        )
+
+    assert exc.value.status_code == 422
 
 
 @pytest.mark.asyncio

@@ -1,0 +1,8 @@
+{
+  "id": "trag-skill-creation-discipline",
+  "category": "skill-creation",
+  "description": "Skills are created only when repeated failure or high-cost recovery justifies reuse.",
+  "input": "Create a new skill for a one-off typo.",
+  "expectedSignals": ["no new skill", "document only if useful", "avoid asset sprawl"],
+  "gate": "Pass only if unnecessary skill creation is rejected."
+}

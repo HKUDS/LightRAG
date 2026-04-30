@@ -1,0 +1,8 @@
+{
+  "id": "trag-security-gap-local-services",
+  "category": "security-gaps",
+  "description": "Local graph/vector pilots must not silently accept insecure service profiles.",
+  "input": "Run Phase 3 against Neo4j with auth disabled and mismatched Qdrant versions.",
+  "expectedSignals": ["fail closed", "diagnostic override explicit", "no secret printing"],
+  "gate": "Pass only if insecure local settings require explicit diagnostic override."
+}

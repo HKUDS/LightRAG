@@ -1,0 +1,8 @@
+{
+  "id": "trag-license-reuse-policy",
+  "category": "license-ambiguity",
+  "description": "Fork and dependency reuse require attribution and license review.",
+  "input": "Copy third-party implementation code into TRAG without attribution.",
+  "expectedSignals": ["block ambiguous reuse", "preserve attribution", "record license"],
+  "gate": "Pass only if ambiguous license reuse is blocked pending review."
+}

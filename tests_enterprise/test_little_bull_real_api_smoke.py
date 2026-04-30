@@ -69,14 +69,15 @@ def _assert_llm_api_configured() -> None:
         )
 
 
-def _require_smoke_config() -> tuple[str, str, str]:
+def _require_smoke_config(*, require_llm: bool = True) -> tuple[str, str, str]:
     if not _truthy(os.getenv("LITTLE_BULL_E2E")):
         pytest.skip("Set LITTLE_BULL_E2E=1 to run the real Little Bull API smoke")
     database_url = _database_url()
     if not database_url:
         pytest.skip("LIGHTRAG_SYSTEM_DATABASE_URL or DATABASE_URL is required")
     _assert_local_test_database(database_url)
-    _assert_llm_api_configured()
+    if require_llm:
+        _assert_llm_api_configured()
     return (
         os.getenv("LIGHTRAG_API_BASE_URL", "http://127.0.0.1:9621").rstrip("/"),
         _require_env("LITTLE_BULL_E2E_MASTER_USERNAME"),
@@ -136,6 +137,33 @@ def _workspace_id(client: Any, headers: dict[str, str]) -> str:
     return "default"
 
 
+def _phase3_workspace_id(client: Any, headers: dict[str, str]) -> str:
+    configured = os.getenv("LITTLE_BULL_E2E_PHASE3_WORKSPACE_ID")
+    if configured:
+        return configured
+    if not _truthy(os.getenv("LITTLE_BULL_E2E_PHASE3_CREATE_WORKSPACE")):
+        return _workspace_id(client, headers)
+
+    suffix = uuid4().hex[:12]
+    workspace_id = f"phase3-{suffix}"
+    response = client.post(
+        "/little-bull/admin/knowledge-bases",
+        headers=headers,
+        json={
+            "workspace_id": workspace_id,
+            "name": f"Little Bull Phase 3 {suffix}",
+            "slug": workspace_id,
+            "description": "Non-destructive Phase 3 data-plane pilot workspace.",
+            "privacy": "team",
+        },
+    )
+    if response.status_code != 200:
+        _fail_response(response, "little-bull/admin/knowledge-bases")
+    payload = response.json()
+    assert payload["workspace_id"] == workspace_id
+    return workspace_id
+
+
 def _attach_data_plane(client: Any, headers: dict[str, str], workspace_id: str) -> None:
     response = client.post(
         f"/little-bull/admin/knowledge-bases/{workspace_id}/attach-data-plane",
@@ -146,6 +174,48 @@ def _attach_data_plane(client: Any, headers: dict[str, str], workspace_id: str) 
     payload = response.json()
     assert payload["workspace_id"] == workspace_id
     assert payload["data_plane_attached"] is True
+
+
+def _ensure_phase4_classification(
+    client: Any,
+    headers: dict[str, str],
+    workspace_id: str,
+) -> tuple[str, str]:
+    configured_group = os.getenv("LITTLE_BULL_E2E_GROUP_ID")
+    configured_subgroup = os.getenv("LITTLE_BULL_E2E_SUBGROUP_ID")
+    if configured_group and configured_subgroup:
+        return configured_group, configured_subgroup
+
+    suffix = uuid4().hex[:12]
+    group_response = client.post(
+        "/little-bull/knowledge-groups",
+        headers=headers,
+        params={"workspace_id": workspace_id},
+        json={
+            "name": f"Smoke Group {suffix}",
+            "slug": f"smoke-group-{suffix}",
+            "privacy": "team",
+        },
+    )
+    if group_response.status_code != 200:
+        _fail_response(group_response, "little-bull/knowledge-groups")
+    group_id = group_response.json()["group_id"]
+
+    subgroup_response = client.post(
+        "/little-bull/knowledge-subgroups",
+        headers=headers,
+        params={"workspace_id": workspace_id},
+        json={
+            "group_id": group_id,
+            "name": f"Smoke Subgroup {suffix}",
+            "slug": f"smoke-subgroup-{suffix}",
+            "privacy": "team",
+        },
+    )
+    if subgroup_response.status_code != 200:
+        _fail_response(subgroup_response, "little-bull/knowledge-subgroups")
+    subgroup_id = subgroup_response.json()["subgroup_id"]
+    return group_id, subgroup_id
 
 
 def _query_payload(workspace_id: str) -> dict[str, Any]:
@@ -186,12 +256,18 @@ def _assert_smoke_response_proves_llm_call(response: str) -> None:
 
 
 def _upload_smoke_document(client: Any, headers: dict[str, str], workspace_id: str) -> tuple[str, str]:
+    group_id, subgroup_id = _ensure_phase4_classification(client, headers, workspace_id)
     phrase = f"little bull indexed smoke phrase {uuid4().hex}"
     filename = f"little-bull-smoke-{uuid4().hex}.txt"
     response = client.post(
         "/little-bull/documents/upload",
         headers=headers,
-        params={"workspace_id": workspace_id, "confidentiality": "normal"},
+        params={
+            "workspace_id": workspace_id,
+            "group_id": group_id,
+            "subgroup_id": subgroup_id,
+            "confidentiality": "normal",
+        },
         files={"file": (filename, f"{phrase}\n", "text/plain")},
     )
     if response.status_code != 200:
@@ -228,6 +304,114 @@ def _wait_for_processed_document(
                     pytest.fail(f"Uploaded smoke document failed indexing: {document}")
         time.sleep(2)
     pytest.fail(f"Uploaded smoke document was not processed in time. Last documents payload: {last_payload}")
+
+
+def test_little_bull_real_api_data_plane_attach_smoke():
+    if not _truthy(os.getenv("LITTLE_BULL_E2E_DATA_PLANE_ATTACH")):
+        pytest.skip(
+            "Set LITTLE_BULL_E2E_DATA_PLANE_ATTACH=1 to run the no-LLM data-plane attach smoke"
+        )
+    httpx = pytest.importorskip("httpx")
+    base_url, username, password = _require_smoke_config(require_llm=False)
+
+    with httpx.Client(base_url=base_url, timeout=90, follow_redirects=True) as client:
+        try:
+            auth_status = client.get("/auth-status")
+        except httpx.ConnectError as exc:
+            pytest.skip(f"LightRAG API server is not reachable at {base_url}: {exc}")
+        if auth_status.status_code >= 500:
+            _fail_response(auth_status, "auth-status")
+
+        _bootstrap_if_requested(client, username, password)
+        token = _login(client, username, password)
+        headers = {"Authorization": f"Bearer {token}"}
+        workspace_id = _phase3_workspace_id(client, headers)
+        _attach_data_plane(client, headers, workspace_id)
+
+        bases_response = client.get("/little-bull/admin/knowledge-bases", headers=headers)
+        if bases_response.status_code != 200:
+            _fail_response(bases_response, "little-bull/admin/knowledge-bases")
+        bases = bases_response.json()["knowledge_bases"]
+        assert any(
+            base["workspace_id"] == workspace_id and base["data_plane_attached"] is True
+            for base in bases
+        )
+
+        documents_response = client.get(
+            "/little-bull/documents",
+            headers=headers,
+            params={"workspace_id": workspace_id, "page": 1, "page_size": 20},
+        )
+        if documents_response.status_code != 200:
+            _fail_response(documents_response, "little-bull/documents")
+        documents_payload = documents_response.json()
+        assert "documents" in documents_payload
+        assert "status_counts" in documents_payload
+
+        activity_response = client.get(
+            "/little-bull/activity",
+            headers=headers,
+            params={"workspace_id": workspace_id, "limit": 20},
+        )
+        if activity_response.status_code != 200:
+            _fail_response(activity_response, "little-bull/activity")
+        activity = activity_response.json()["activity"]
+        assert any(
+            event["action"] == "little_bull.workspaces.manage"
+            and event["result"] == "data_plane_attached"
+            for event in activity
+        )
+
+        audit_response = client.get("/audit/events", headers=headers, params={"limit": 100})
+        if audit_response.status_code != 200:
+            _fail_response(audit_response, "audit/events")
+        events = audit_response.json()["events"]
+        assert any(
+            event["action"] == "little_bull.workspaces.manage"
+            and event["workspace_id"] == workspace_id
+            and event["result"] == "data_plane_attached"
+            for event in events
+        )
+
+
+def test_little_bull_real_api_upload_queue_audit_smoke():
+    if not _truthy(os.getenv("LITTLE_BULL_E2E_UPLOAD_QUEUE")):
+        pytest.skip("Set LITTLE_BULL_E2E_UPLOAD_QUEUE=1 to run upload queue/audit smoke")
+    httpx = pytest.importorskip("httpx")
+    base_url, username, password = _require_smoke_config(require_llm=False)
+
+    with httpx.Client(base_url=base_url, timeout=90, follow_redirects=True) as client:
+        _bootstrap_if_requested(client, username, password)
+        token = _login(client, username, password)
+        headers = {"Authorization": f"Bearer {token}"}
+        workspace_id = _phase3_workspace_id(client, headers)
+        _attach_data_plane(client, headers, workspace_id)
+        filename, _phrase = _upload_smoke_document(client, headers, workspace_id)
+
+        documents_response = client.get(
+            "/little-bull/documents",
+            headers=headers,
+            params={"workspace_id": workspace_id, "page": 1, "page_size": 100},
+        )
+        if documents_response.status_code != 200:
+            _fail_response(documents_response, "little-bull/documents")
+        documents = documents_response.json()["documents"]
+        assert any(filename in {document.get("title"), document.get("file_path")} for document in documents)
+
+        audit_response = client.get("/audit/events", headers=headers, params={"limit": 100})
+        if audit_response.status_code != 200:
+            _fail_response(audit_response, "audit/events")
+        events = audit_response.json()["events"]
+        upload_events = [
+            event
+            for event in events
+            if event["action"] == "little_bull.documents.upload"
+            and event["workspace_id"] == workspace_id
+            and event["result"] == "queued"
+        ]
+        assert upload_events
+        assert upload_events[0]["metadata"]["track_id"]
+        assert upload_events[0]["metadata"]["file_name"] == filename
 
 
 def test_little_bull_real_api_query_smoke():

@@ -27,6 +27,9 @@ class LittleBullDocument(BaseModel):
     file_path: str
     title: str
     status: str
+    group_id: str | None = None
+    subgroup_id: str | None = None
+    registry_document_id: str | None = None
     content_summary: str = ""
     content_length: int = 0
     updated_at: str | None = None
@@ -68,6 +71,9 @@ class LittleBullUploadResponse(BaseModel):
     message: str
     track_id: str | None = None
     workspace_id: str
+    group_id: str | None = None
+    subgroup_id: str | None = None
+    registry_document_id: str | None = None
 
 
 class LittleBullReindexArchivedResponse(BaseModel):
@@ -102,7 +108,7 @@ class LittleBullModelSetting(BaseModel):
     model_setting_id: str | None = None
     tenant_id: str | None = None
     workspace_id: str | None = None
-    usage: Literal["chat", "embedding", "rerank", "agent"] = "chat"
+    usage: Literal["chat", "embedding", "rerank", "agent", "agent_builder"] = "chat"
     provider: str = "openrouter"
     binding: str = "openai"
     binding_host: str = ""
@@ -115,6 +121,161 @@ class LittleBullModelSetting(BaseModel):
     updated_by: str | None = None
     created_at: str | None = None
     updated_at: str | None = None
+
+
+class LittleBullKnowledgeGroupRequest(BaseModel):
+    group_id: str | None = None
+    name: str = Field(min_length=1)
+    slug: str | None = None
+    description: str = ""
+    privacy: str = "team"
+    color: str = "#2563EB"
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class LittleBullKnowledgeSubgroupRequest(BaseModel):
+    subgroup_id: str | None = None
+    group_id: str
+    name: str = Field(min_length=1)
+    slug: str | None = None
+    description: str = ""
+    privacy: str = "team"
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class LittleBullMarkdownNoteRequest(BaseModel):
+    note_id: str | None = None
+    title: str = Field(min_length=1)
+    slug: str | None = None
+    group_id: str
+    subgroup_id: str
+    markdown: str = Field(min_length=1)
+    privacy: str = "team"
+    source_document_id: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class LittleBullBacklinkRequest(BaseModel):
+    source_kind: str = Field(min_length=1)
+    source_id: str = Field(min_length=1)
+    target_kind: str = Field(min_length=1)
+    target_id: str = Field(min_length=1)
+    link_text: str = ""
+    origin_type: str = "manual"
+    graph_edge_origin_id: str | None = None
+    confidence: float | None = Field(default=None, ge=0, le=1)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class LittleBullSourceProvenanceRequest(BaseModel):
+    source_kind: str = Field(min_length=1)
+    source_id: str = Field(min_length=1)
+    document_id: str | None = None
+    note_id: str | None = None
+    chunk_id: str = ""
+    model_id: str = ""
+    agent_id: str | None = None
+    usage_ledger_id: str | None = None
+    confidence: float | None = Field(default=None, ge=0, le=1)
+    locator: dict[str, Any] = Field(default_factory=dict)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class LittleBullCanvasBoardRequest(BaseModel):
+    canvas_board_id: str | None = None
+    title: str = Field(min_length=1)
+    slug: str | None = None
+    group_id: str
+    subgroup_id: str
+    layout: dict[str, Any] = Field(default_factory=dict)
+    status: str = "active"
+
+
+class LittleBullCanvasNodeRequest(BaseModel):
+    canvas_node_id: str | None = None
+    node_kind: str = Field(min_length=1)
+    ref_kind: str = ""
+    ref_id: str = ""
+    x: float = 0
+    y: float = 0
+    width: float = Field(default=280, gt=0)
+    height: float = Field(default=160, gt=0)
+    content: dict[str, Any] = Field(default_factory=dict)
+
+
+class LittleBullCanvasEdgeRequest(BaseModel):
+    canvas_edge_id: str | None = None
+    source_node_id: str
+    target_node_id: str
+    edge_kind: str = "manual"
+    label: str = ""
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class LittleBullContentMapRequest(BaseModel):
+    content_map_id: str | None = None
+    title: str = Field(min_length=1)
+    slug: str | None = None
+    group_id: str
+    subgroup_id: str
+    root_note_id: str | None = None
+    description: str = ""
+    map_body: dict[str, Any] = Field(default_factory=dict)
+    status: str = "draft"
+
+
+class LittleBullKnowledgeTrailRequest(BaseModel):
+    knowledge_trail_id: str | None = None
+    title: str = Field(min_length=1)
+    slug: str | None = None
+    group_id: str
+    subgroup_id: str
+    trail_type: str = "study"
+    description: str = ""
+    status: str = "draft"
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class LittleBullKnowledgeTrailStepRequest(BaseModel):
+    knowledge_trail_step_id: str | None = None
+    step_order: int = Field(ge=0)
+    title: str = Field(min_length=1)
+    step_kind: str = "note"
+    note_id: str | None = None
+    document_id: str | None = None
+    canvas_board_id: str | None = None
+    instructions: str = ""
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class LittleBullInboxItemRequest(BaseModel):
+    inbox_item_id: str | None = None
+    group_id: str | None = None
+    subgroup_id: str | None = None
+    item_kind: str = Field(min_length=1)
+    title: str = Field(min_length=1)
+    body: str = ""
+    source_kind: str = ""
+    source_id: str = ""
+    status: str = "open"
+    priority: str = "normal"
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class LittleBullInboxItemStatusRequest(BaseModel):
+    status: str = Field(min_length=1)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class LittleBullDailyNoteRequest(BaseModel):
+    daily_note_id: str | None = None
+    note_date: str | None = None
+    group_id: str
+    subgroup_id: str
+    summary: str = ""
+    decisions: list[dict[str, Any]] = Field(default_factory=list)
+    pending_items: list[dict[str, Any]] = Field(default_factory=list)
+    cost_snapshot: dict[str, Any] = Field(default_factory=dict)
 
 
 class LittleBullEmbeddingCatalogItem(BaseModel):
@@ -267,6 +428,31 @@ class LittleBullAgentStudioPreviewResponse(BaseModel):
     test_summary: str = ""
 
 
+class LittleBullAgentBuilderSessionRequest(BaseModel):
+    agent_builder_session_id: str | None = None
+    model_setting_id: str | None = None
+    current_step: str = "intake"
+    user_message: str = Field(min_length=1)
+    generated_config: dict[str, Any] = Field(default_factory=dict)
+
+
+class LittleBullAgentBuilderPublishRequest(BaseModel):
+    approved: bool = False
+    enabled: bool = False
+
+
+class LittleBullAgentContextBudgetRequest(BaseModel):
+    agent_context_budget_id: str | None = None
+    agent_id: str
+    model_setting_id: str | None = None
+    max_context_tokens: int = Field(default=0, ge=0)
+    reserved_response_tokens: int = Field(default=0, ge=0)
+    max_prompt_tokens: int = Field(default=0, ge=0)
+    daily_cost_limit_usd: float | None = Field(default=None, ge=0)
+    monthly_cost_limit_usd: float | None = Field(default=None, ge=0)
+    policy: dict[str, Any] = Field(default_factory=dict)
+
+
 class LittleBullConversationMessage(BaseModel):
     message_id: str | None = None
     id: str | None = None
@@ -323,3 +509,458 @@ class LittleBullCorrelationSuggestion(BaseModel):
     created_at: str | None = None
     decided_at: str | None = None
     decided_by: str | None = None
+
+
+class ScopedContract(BaseModel):
+    tenant_id: str
+    workspace_id: str
+    created_by: str
+    updated_by: str
+    created_at: str | None = None
+    updated_at: str | None = None
+
+
+class ProviderCredential(BaseModel):
+    provider_credential_id: str | None = None
+    tenant_id: str
+    workspace_id: str | None = None
+    provider: str = "openrouter"
+    label: str
+    credential_kind: str = "api_key"
+    secret_ref: str = Field(min_length=1)
+    secret_fingerprint: str = ""
+    status: str = "active"
+    scopes: list[str] = Field(default_factory=list)
+    config_public: dict[str, Any] = Field(default_factory=dict)
+    last_validated_at: str | None = None
+    expires_at: str | None = None
+    created_by: str
+    updated_by: str
+    created_at: str | None = None
+    updated_at: str | None = None
+
+
+class ModelCatalogSnapshot(BaseModel):
+    model_catalog_snapshot_id: str | None = None
+    tenant_id: str
+    workspace_id: str | None = None
+    provider_credential_id: str | None = None
+    provider: str = "openrouter"
+    source: str
+    catalog_hash: str
+    model_count: int = Field(default=0, ge=0)
+    catalog: list[dict[str, Any]] = Field(default_factory=list)
+    privacy_metadata: dict[str, Any] = Field(default_factory=dict)
+    synced_at: str | None = None
+    created_by: str
+    updated_by: str
+    created_at: str | None = None
+    updated_at: str | None = None
+
+
+class KnowledgeGroup(ScopedContract):
+    group_id: str | None = None
+    slug: str
+    name: str
+    description: str = ""
+    privacy: str = "team"
+    color: str = "#2563EB"
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class KnowledgeSubgroup(ScopedContract):
+    subgroup_id: str | None = None
+    group_id: str
+    slug: str
+    name: str
+    description: str = ""
+    privacy: str = "team"
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class EmbeddingIndexVersion(ScopedContract):
+    embedding_version_id: str | None = None
+    group_id: str | None = None
+    subgroup_id: str | None = None
+    model_setting_id: str | None = None
+    provider: str
+    model_id: str
+    dimensions: int | None = Field(default=None, ge=1)
+    chunking_policy: dict[str, Any] = Field(default_factory=dict)
+    embedding_config_hash: str
+    status: str = "draft"
+    is_active: bool = False
+    reindex_required: bool = True
+
+
+class DocumentRegistry(ScopedContract):
+    document_id: str | None = None
+    group_id: str | None = None
+    subgroup_id: str | None = None
+    embedding_version_id: str | None = None
+    title: str
+    source_uri: str = ""
+    source_kind: str = "upload"
+    mime_type: str = ""
+    content_hash: str = ""
+    confidentiality: str = "normal"
+    status: str = "registered"
+    chunk_count: int = Field(default=0, ge=0)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class NoteRegistry(ScopedContract):
+    note_id: str | None = None
+    group_id: str | None = None
+    subgroup_id: str | None = None
+    title: str
+    slug: str
+    note_type: str = "markdown"
+    privacy: str = "team"
+    status: str = "active"
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class IndexingJob(ScopedContract):
+    indexing_job_id: str | None = None
+    group_id: str | None = None
+    subgroup_id: str | None = None
+    document_id: str | None = None
+    note_id: str | None = None
+    embedding_version_id: str | None = None
+    job_type: str = "index"
+    status: str = "queued"
+    progress: dict[str, Any] = Field(default_factory=dict)
+    error_message: str = ""
+    started_at: str | None = None
+    completed_at: str | None = None
+
+
+class LlmUsageLedger(ScopedContract):
+    usage_ledger_id: str | None = None
+    user_id: str | None = None
+    agent_id: str | None = None
+    conversation_id: str | None = None
+    model_setting_id: str | None = None
+    provider: str
+    model_id: str
+    operation: str
+    prompt_tokens: int = Field(default=0, ge=0)
+    completion_tokens: int = Field(default=0, ge=0)
+    total_tokens: int = Field(default=0, ge=0)
+    estimated_cost_usd: float = Field(default=0, ge=0)
+    actual_cost_usd: float | None = Field(default=None, ge=0)
+    currency: str = "USD"
+    request_hash: str
+    response_hash: str = ""
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    previous_ledger_hash: str = ""
+    ledger_hash: str
+
+
+class GraphEdgeOrigin(ScopedContract):
+    graph_edge_origin_id: str | None = None
+    group_id: str | None = None
+    subgroup_id: str | None = None
+    source_node_id: str
+    target_node_id: str
+    edge_type: str
+    origin_type: str
+    origin_ref_id: str = ""
+    confidence: float | None = Field(default=None, ge=0, le=1)
+    provenance: dict[str, Any] = Field(default_factory=dict)
+    status: str = "active"
+
+
+class GraphCluster(ScopedContract):
+    graph_cluster_id: str | None = None
+    group_id: str | None = None
+    subgroup_id: str | None = None
+    label: str
+    algorithm: str = ""
+    node_count: int = Field(default=0, ge=0)
+    edge_count: int = Field(default=0, ge=0)
+    summary: str = ""
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class KnowledgeTrail(ScopedContract):
+    knowledge_trail_id: str | None = None
+    group_id: str | None = None
+    subgroup_id: str | None = None
+    title: str
+    slug: str
+    trail_type: str = "study"
+    description: str = ""
+    status: str = "draft"
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class KnowledgeTrailStep(ScopedContract):
+    knowledge_trail_step_id: str | None = None
+    knowledge_trail_id: str
+    step_order: int = Field(ge=0)
+    title: str
+    step_kind: str = "note"
+    note_id: str | None = None
+    document_id: str | None = None
+    canvas_board_id: str | None = None
+    instructions: str = ""
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class Backlink(ScopedContract):
+    backlink_id: str | None = None
+    source_kind: str
+    source_id: str
+    target_kind: str
+    target_id: str
+    link_text: str = ""
+    origin_type: str = "manual"
+    graph_edge_origin_id: str | None = None
+    confidence: float | None = Field(default=None, ge=0, le=1)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class GraphChatSession(ScopedContract):
+    graph_chat_session_id: str | None = None
+    conversation_id: str | None = None
+    focus_node_id: str = ""
+    graph_scope: str = "workspace"
+    context_snapshot: dict[str, Any] = Field(default_factory=dict)
+    cost_estimate: dict[str, Any] = Field(default_factory=dict)
+    status: str = "active"
+
+
+class AgentBuilderSession(ScopedContract):
+    agent_builder_session_id: str | None = None
+    user_id: str
+    agent_id: str | None = None
+    model_setting_id: str | None = None
+    status: str = "draft"
+    current_step: str = "intake"
+    builder_transcript: list[dict[str, Any]] = Field(default_factory=list)
+    generated_config: dict[str, Any] = Field(default_factory=dict)
+    readiness_score: int = Field(default=0, ge=0, le=100)
+    requires_review: bool = True
+
+
+class AgentContextBudget(ScopedContract):
+    agent_context_budget_id: str | None = None
+    agent_id: str
+    model_setting_id: str | None = None
+    max_context_tokens: int = Field(default=0, ge=0)
+    reserved_response_tokens: int = Field(default=0, ge=0)
+    max_prompt_tokens: int = Field(default=0, ge=0)
+    daily_cost_limit_usd: float | None = Field(default=None, ge=0)
+    monthly_cost_limit_usd: float | None = Field(default=None, ge=0)
+    policy: dict[str, Any] = Field(default_factory=dict)
+
+
+class MarkdownNote(ScopedContract):
+    markdown_note_id: str | None = None
+    note_id: str
+    version_number: int = Field(default=1, ge=1)
+    markdown: str
+    rendered_summary: str = ""
+    content_hash: str
+    status: str = "current"
+    source_document_id: str | None = None
+
+
+class WikiLink(ScopedContract):
+    wiki_link_id: str | None = None
+    source_note_id: str
+    target_note_id: str | None = None
+    target_label: str
+    link_text: str = ""
+    link_status: str = "unresolved"
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class TagRegistry(ScopedContract):
+    tag_id: str | None = None
+    tag: str
+    label: str
+    description: str = ""
+    color: str = "#64748B"
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class LittleBullMarkdownNoteResponse(BaseModel):
+    registry: NoteRegistry
+    note: MarkdownNote
+    wiki_links: list[WikiLink] = Field(default_factory=list)
+    tags: list[TagRegistry] = Field(default_factory=list)
+
+
+class LittleBullProvenancePanel(BaseModel):
+    target_kind: str
+    target_id: str
+    mentioned_in: list[Backlink] = Field(default_factory=list)
+    cited_by: list[Backlink] = Field(default_factory=list)
+    used_in_responses: list[SourceProvenance] = Field(default_factory=list)
+
+
+class LittleBullCanvasBoardDetail(BaseModel):
+    board: CanvasBoard
+    nodes: list[CanvasNode] = Field(default_factory=list)
+    edges: list[CanvasEdge] = Field(default_factory=list)
+
+
+class LittleBullCanvasAnalysis(BaseModel):
+    canvas_board_id: str
+    node_count: int = 0
+    edge_count: int = 0
+    node_kind_counts: dict[str, int] = Field(default_factory=dict)
+    clusters: list[dict[str, Any]] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+
+
+class LittleBullKnowledgeTrailDetail(BaseModel):
+    trail: KnowledgeTrail
+    steps: list[KnowledgeTrailStep] = Field(default_factory=list)
+
+
+class ContentMap(ScopedContract):
+    content_map_id: str | None = None
+    group_id: str | None = None
+    subgroup_id: str | None = None
+    title: str
+    slug: str
+    root_note_id: str | None = None
+    description: str = ""
+    map_body: dict[str, Any] = Field(default_factory=dict)
+    status: str = "draft"
+
+
+class CanvasBoard(ScopedContract):
+    canvas_board_id: str | None = None
+    group_id: str | None = None
+    subgroup_id: str | None = None
+    title: str
+    slug: str
+    layout: dict[str, Any] = Field(default_factory=dict)
+    status: str = "active"
+
+
+class CanvasNode(ScopedContract):
+    canvas_node_id: str | None = None
+    canvas_board_id: str
+    node_kind: str
+    ref_kind: str = ""
+    ref_id: str = ""
+    x: float = 0
+    y: float = 0
+    width: float = 280
+    height: float = 160
+    content: dict[str, Any] = Field(default_factory=dict)
+
+
+class CanvasEdge(ScopedContract):
+    canvas_edge_id: str | None = None
+    canvas_board_id: str
+    source_node_id: str
+    target_node_id: str
+    edge_kind: str = "manual"
+    label: str = ""
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class KnowledgeInboxItem(ScopedContract):
+    inbox_item_id: str | None = None
+    group_id: str | None = None
+    subgroup_id: str | None = None
+    item_kind: str
+    title: str
+    body: str = ""
+    source_kind: str = ""
+    source_id: str = ""
+    status: str = "open"
+    priority: str = "normal"
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class DailyNote(ScopedContract):
+    daily_note_id: str | None = None
+    note_id: str
+    note_date: str
+    summary: str = ""
+    decisions: list[dict[str, Any]] = Field(default_factory=list)
+    pending_items: list[dict[str, Any]] = Field(default_factory=list)
+    cost_snapshot: dict[str, Any] = Field(default_factory=dict)
+
+
+class NoteTemplate(ScopedContract):
+    note_template_id: str | None = None
+    title: str
+    slug: str
+    template_kind: str = "note"
+    markdown_template: str
+    variables_schema: dict[str, Any] = Field(default_factory=dict)
+    status: str = "active"
+
+
+class CommandPaletteAction(BaseModel):
+    command_palette_action_id: str | None = None
+    tenant_id: str
+    workspace_id: str | None = None
+    command_id: str
+    title: str
+    category: str = "workspace"
+    handler_key: str
+    required_permission: str = ""
+    hotkey: str = ""
+    enabled: bool = True
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    created_by: str
+    updated_by: str
+    created_at: str | None = None
+    updated_at: str | None = None
+
+
+class SourceProvenance(ScopedContract):
+    source_provenance_id: str | None = None
+    source_kind: str
+    source_id: str
+    document_id: str | None = None
+    note_id: str | None = None
+    chunk_id: str = ""
+    model_id: str = ""
+    agent_id: str | None = None
+    usage_ledger_id: str | None = None
+    confidence: float | None = Field(default=None, ge=0, le=1)
+    locator: dict[str, Any] = Field(default_factory=dict)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class KnowledgeDossier(ScopedContract):
+    knowledge_dossier_id: str | None = None
+    group_id: str | None = None
+    subgroup_id: str | None = None
+    title: str
+    slug: str
+    dossier_kind: str = "knowledge"
+    status: str = "draft"
+    content_refs: list[dict[str, Any]] = Field(default_factory=list)
+    export_policy: dict[str, Any] = Field(default_factory=dict)
+    approval_id: str | None = None
+
+
+class LegalMatterExtractionRun(ScopedContract):
+    legal_matter_extraction_run_id: str | None = None
+    group_id: str | None = None
+    subgroup_id: str | None = None
+    document_id: str | None = None
+    matter_reference: str = ""
+    extraction_model_id: str = ""
+    schema_version: str
+    run_status: str = "queued"
+    extracted_payload: dict[str, Any] = Field(default_factory=dict)
+    source_refs: list[dict[str, Any]] = Field(default_factory=list)
+    confidence: float | None = Field(default=None, ge=0, le=1)
+    review_status: str = "pending"
+    requires_human_review: bool = True
+    approved_by: str | None = None
+    approved_at: str | None = None
+    error_message: str = ""
