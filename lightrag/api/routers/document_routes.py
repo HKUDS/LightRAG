@@ -32,8 +32,6 @@ from lightrag.constants import (
 from lightrag.parser_routing import resolve_file_parser_engine
 from lightrag.utils import (
     generate_track_id,
-    compute_mdhash_id,
-    sanitize_text_for_encoding,
     move_file_to_parsed_dir,
 )
 from lightrag.api.utils_api import get_combined_auth_dependency
@@ -85,7 +83,13 @@ def normalize_file_path(file_path: str | None) -> str:
     if normalized in LEGACY_EMPTY_FILE_PATH_SENTINELS:
         return UNKNOWN_FILE_SOURCE
 
-    return normalized
+    return Path(normalized).name or UNKNOWN_FILE_SOURCE
+
+
+def is_valid_file_source(file_source: str | None) -> bool:
+    if file_source is None:
+        return False
+    return normalize_file_path(file_source) != UNKNOWN_FILE_SOURCE
 
 
 def sanitize_filename(filename: str, input_dir: Path) -> str:
@@ -946,33 +950,40 @@ def get_doc_track_id(doc_status: Any) -> str:
     return str(track_id or "")
 
 
-def build_file_path_lookup_candidates(file_path: Path | str) -> list[str]:
-    """Build compatible file_path keys for legacy name/full-path records."""
-    path = Path(file_path)
-    candidates = [path.name, str(path)]
-    try:
-        candidates.append(str(path.resolve()))
-    except Exception:
-        pass
-
-    seen: set[str] = set()
-    unique: list[str] = []
-    for candidate in candidates:
-        if candidate and candidate not in seen:
-            seen.add(candidate)
-            unique.append(candidate)
-    return unique
-
-
 async def get_existing_doc_by_file_path_candidates(
     doc_status: Any, file_path: Path | str
 ) -> dict[str, Any] | None:
-    """Find an existing document using filename and full-path variants."""
-    for candidate in build_file_path_lookup_candidates(file_path):
-        existing_doc_data = await doc_status.get_doc_by_file_path(candidate)
-        if existing_doc_data:
-            return existing_doc_data
-    return None
+    """Find an existing document by file basename via the storage backend."""
+    basename = normalize_file_path(str(file_path))
+    if basename == UNKNOWN_FILE_SOURCE:
+        return None
+    match = await doc_status.get_doc_by_file_basename(basename)
+    if not match:
+        return None
+    _, existing_doc_data = match
+    return existing_doc_data
+
+
+async def record_scan_warning(rag: LightRAG, message: str) -> None:
+    logger.warning(message)
+    try:
+        from lightrag.kg import shared_storage
+
+        if not getattr(shared_storage, "_initialized", False):
+            return
+
+        workspace = getattr(rag, "workspace", "")
+        pipeline_status = await shared_storage.get_namespace_data(
+            "pipeline_status", workspace=workspace
+        )
+        pipeline_status_lock = shared_storage.get_namespace_lock(
+            "pipeline_status", workspace=workspace
+        )
+        async with pipeline_status_lock:
+            pipeline_status["latest_message"] = message
+            pipeline_status["history_messages"].append(message)
+    except Exception:
+        pass
 
 
 # Document processing helper functions (synchronous)
@@ -1225,7 +1236,10 @@ def _extract_xlsx(file_bytes: bytes) -> str:
 
 
 async def pipeline_enqueue_file(
-    rag: LightRAG, file_path: Path, track_id: str = None
+    rag: LightRAG,
+    file_path: Path,
+    track_id: str = None,
+    reprocess_existing_non_processed: bool = False,
 ) -> tuple[bool, str]:
     """Add a file to the queue for processing
 
@@ -1256,13 +1270,25 @@ async def pipeline_enqueue_file(
         extraction_engine = resolve_file_parser_engine(file_path)
         if extraction_engine != PARSER_ENGINE_LEGACY:
             try:
-                await rag.apipeline_enqueue_documents(
-                    "",
-                    file_paths=str(file_path),
-                    track_id=track_id,
-                    docs_format=FULL_DOCS_FORMAT_PENDING_PARSE,
-                    parsed_engine=extraction_engine,
+                enqueue_kwargs = {
+                    "file_paths": str(file_path),
+                    "track_id": track_id,
+                    "docs_format": FULL_DOCS_FORMAT_PENDING_PARSE,
+                    "parsed_engine": extraction_engine,
+                }
+                if reprocess_existing_non_processed:
+                    enqueue_kwargs["reprocess_existing_non_processed"] = True
+                enqueue_result = await rag.apipeline_enqueue_documents(
+                    "", **enqueue_kwargs
                 )
+                if enqueue_result is None:
+                    try:
+                        await move_file_to_parsed_dir(file_path)
+                    except Exception as move_error:
+                        logger.error(
+                            f"Failed to move duplicate file {file_path.name} to {PARSED_DIR_NAME} directory: {move_error}"
+                        )
+                    return False, track_id
                 logger.info(
                     f"[File Extraction]Deferred {file_path.name} to {extraction_engine} parser"
                 )
@@ -1558,12 +1584,24 @@ async def pipeline_enqueue_file(
                 return False, track_id
 
             try:
-                await rag.apipeline_enqueue_documents(
-                    content,
-                    file_paths=file_path.name,
-                    track_id=track_id,
-                    parsed_engine=PARSER_ENGINE_LEGACY,
+                enqueue_kwargs = {
+                    "file_paths": file_path.name,
+                    "track_id": track_id,
+                    "parsed_engine": PARSER_ENGINE_LEGACY,
+                }
+                if reprocess_existing_non_processed:
+                    enqueue_kwargs["reprocess_existing_non_processed"] = True
+                enqueue_result = await rag.apipeline_enqueue_documents(
+                    content, **enqueue_kwargs
                 )
+                if enqueue_result is None:
+                    try:
+                        await move_file_to_parsed_dir(file_path)
+                    except Exception as move_error:
+                        logger.error(
+                            f"Failed to move duplicate file {file_path.name} to {PARSED_DIR_NAME} directory: {move_error}"
+                        )
+                    return False, track_id
 
                 logger.info(
                     f"Successfully extracted and enqueued file: {file_path.name}"
@@ -1651,7 +1689,10 @@ async def pipeline_index_file(rag: LightRAG, file_path: Path, track_id: str = No
 
 
 async def pipeline_index_files(
-    rag: LightRAG, file_paths: List[Path], track_id: str = None
+    rag: LightRAG,
+    file_paths: List[Path],
+    track_id: str = None,
+    reprocess_existing_non_processed: bool = False,
 ):
     """Index multiple files sequentially to avoid high CPU load
 
@@ -1672,7 +1713,12 @@ async def pipeline_index_files(
 
         # Process files sequentially with track_id
         for file_path in sorted_file_paths:
-            success, _ = await pipeline_enqueue_file(rag, file_path, track_id)
+            success, _ = await pipeline_enqueue_file(
+                rag,
+                file_path,
+                track_id,
+                reprocess_existing_non_processed=reprocess_existing_non_processed,
+            )
             if success:
                 enqueued = True
 
@@ -1701,17 +1747,14 @@ async def pipeline_index_texts(
     if not texts:
         return
 
-    normalized_file_sources: list[str] | None = None
-    if file_sources:
-        normalized_file_sources = [
-            normalize_file_path(source) for source in file_sources
-        ]
-        if len(normalized_file_sources) > len(texts):
-            raise ValueError("Number of file sources must not exceed number of texts")
-        if len(normalized_file_sources) < len(texts):
-            normalized_file_sources.extend(
-                [UNKNOWN_FILE_SOURCE] * (len(texts) - len(normalized_file_sources))
-            )
+    if not file_sources or len(file_sources) != len(texts):
+        raise ValueError("A valid file source is required for each text")
+
+    normalized_file_sources = [normalize_file_path(source) for source in file_sources]
+    if any(source == UNKNOWN_FILE_SOURCE for source in normalized_file_sources):
+        raise ValueError("A valid file source is required for each text")
+    if len(set(normalized_file_sources)) != len(normalized_file_sources):
+        raise ValueError("File sources must be unique by filename")
 
     await rag.apipeline_enqueue_documents(
         input=texts, file_paths=normalized_file_sources, track_id=track_id
@@ -1738,7 +1781,6 @@ async def run_scanning_process(
             # Check for files with PROCESSED status and filter them out
             valid_files = []
             processed_files = []
-            queued_existing_files = []
 
             for file_path in new_files:
                 filename = file_path.name
@@ -1751,21 +1793,34 @@ async def run_scanning_process(
                     and get_doc_status_value(existing_doc_data)
                     == DocStatus.PROCESSED.value
                 ):
-                    # File is already PROCESSED, skip it with warning
+                    # File is already PROCESSED, skip it with warning and archive it.
                     processed_files.append(filename)
-                    logger.warning(f"Skipping already processed file: {filename}")
+                    warning = f"Skipping already processed file: " f"{filename}"
+                    await record_scan_warning(rag, warning)
+                    try:
+                        await move_file_to_parsed_dir(file_path)
+                    except Exception as move_error:
+                        logger.error(
+                            f"Failed to move already processed file {filename} to {PARSED_DIR_NAME}: {move_error}"
+                        )
                 elif existing_doc_data:
-                    queued_existing_files.append(filename)
                     logger.info(
-                        f"Skipping already enqueued file and continuing existing pipeline state: {filename}"
+                        "Reprocessing previously unfinished file from scan: "
+                        f"{filename} (Status: {get_doc_status_value(existing_doc_data)})"
                     )
+                    valid_files.append(file_path)
                 else:
                     # File is new or in non-PROCESSED status, add to processing list
                     valid_files.append(file_path)
 
             # Process valid files (new files + non-PROCESSED status files)
             if valid_files:
-                await pipeline_index_files(rag, valid_files, track_id)
+                await pipeline_index_files(
+                    rag,
+                    valid_files,
+                    track_id,
+                    reprocess_existing_non_processed=True,
+                )
                 if processed_files:
                     logger.info(
                         f"Scanning process completed: {len(valid_files)} files Processed {len(processed_files)} skipped."
@@ -1778,8 +1833,6 @@ async def run_scanning_process(
                 logger.info(
                     "No files to process after filtering already processed files."
                 )
-                if queued_existing_files:
-                    await rag.apipeline_process_enqueue_documents()
         else:
             # No new files to index, check if there are any documents in the queue
             logger.info(
@@ -2270,36 +2323,24 @@ def create_document_routes(
         """
         try:
             # Check if file_source already exists in doc_status storage
-            if (
-                request.file_source
-                and request.file_source.strip()
-                and request.file_source != "unknown_source"
-            ):
-                existing_doc_data = await rag.doc_status.get_doc_by_file_path(
-                    request.file_source
+            if not is_valid_file_source(request.file_source):
+                raise HTTPException(
+                    status_code=400,
+                    detail="A valid file_source is required for text insertion",
                 )
-                if existing_doc_data:
-                    # Get document status and track_id from existing document
-                    status = existing_doc_data.get("status", "unknown")
-                    # Use `or ""` to handle both missing key and None value (e.g., legacy rows without track_id)
-                    existing_track_id = existing_doc_data.get("track_id") or ""
-                    return InsertResponse(
-                        status="duplicated",
-                        message=f"File source '{request.file_source}' already exists in document storage (Status: {status}).",
-                        track_id=existing_track_id,
-                    )
 
-            # Check if content already exists by computing content hash (doc_id)
-            sanitized_text = sanitize_text_for_encoding(request.text)
-            content_doc_id = compute_mdhash_id(sanitized_text, prefix="doc-")
-            existing_doc = await rag.doc_status.get_by_id(content_doc_id)
-            if existing_doc:
-                # Content already exists, return duplicated with existing track_id
-                status = existing_doc.get("status", "unknown")
-                existing_track_id = existing_doc.get("track_id") or ""
+            normalized_file_source = normalize_file_path(request.file_source)
+            existing_doc_data = await get_existing_doc_by_file_path_candidates(
+                rag.doc_status, normalized_file_source
+            )
+            if existing_doc_data:
+                # Get document status and track_id from existing document
+                status = get_doc_status_value(existing_doc_data) or "unknown"
+                # Use `or ""` to handle both missing key and None value (e.g., legacy rows without track_id)
+                existing_track_id = get_doc_track_id(existing_doc_data)
                 return InsertResponse(
                     status="duplicated",
-                    message=f"Identical content already exists in document storage (doc_id: {content_doc_id}, Status: {status}).",
+                    message=f"File source '{normalized_file_source}' already exists in document storage (Status: {status}).",
                     track_id=existing_track_id,
                 )
 
@@ -2310,7 +2351,7 @@ def create_document_routes(
                 pipeline_index_texts,
                 rag,
                 [request.text],
-                file_sources=[request.file_source],
+                file_sources=[normalized_file_source],
                 track_id=track_id,
             )
 
@@ -2319,6 +2360,8 @@ def create_document_routes(
                 message="Text successfully received. Processing will continue in background.",
                 track_id=track_id,
             )
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error(f"Error /documents/text: {str(e)}")
             logger.error(traceback.format_exc())
@@ -2350,39 +2393,43 @@ def create_document_routes(
         """
         try:
             # Check if any file_sources already exist in doc_status storage
-            if request.file_sources:
-                for file_source in request.file_sources:
-                    if (
-                        file_source
-                        and file_source.strip()
-                        and file_source != "unknown_source"
-                    ):
-                        existing_doc_data = await rag.doc_status.get_doc_by_file_path(
-                            file_source
-                        )
-                        if existing_doc_data:
-                            # Get document status and track_id from existing document
-                            status = existing_doc_data.get("status", "unknown")
-                            # Use `or ""` to handle both missing key and None value (e.g., legacy rows without track_id)
-                            existing_track_id = existing_doc_data.get("track_id") or ""
-                            return InsertResponse(
-                                status="duplicated",
-                                message=f"File source '{file_source}' already exists in document storage (Status: {status}).",
-                                track_id=existing_track_id,
-                            )
+            if not request.file_sources or len(request.file_sources) != len(
+                request.texts
+            ):
+                raise HTTPException(
+                    status_code=400,
+                    detail="A valid file_source is required for each text",
+                )
 
-            # Check if any content already exists by computing content hash (doc_id)
-            for text in request.texts:
-                sanitized_text = sanitize_text_for_encoding(text)
-                content_doc_id = compute_mdhash_id(sanitized_text, prefix="doc-")
-                existing_doc = await rag.doc_status.get_by_id(content_doc_id)
-                if existing_doc:
-                    # Content already exists, return duplicated with existing track_id
-                    status = existing_doc.get("status", "unknown")
-                    existing_track_id = existing_doc.get("track_id") or ""
+            normalized_file_sources = [
+                normalize_file_path(file_source) for file_source in request.file_sources
+            ]
+            if any(
+                file_source == UNKNOWN_FILE_SOURCE
+                for file_source in normalized_file_sources
+            ):
+                raise HTTPException(
+                    status_code=400,
+                    detail="A valid file_source is required for each text",
+                )
+            if len(set(normalized_file_sources)) != len(normalized_file_sources):
+                raise HTTPException(
+                    status_code=400,
+                    detail="file_sources must be unique by filename",
+                )
+
+            for file_source in normalized_file_sources:
+                existing_doc_data = await get_existing_doc_by_file_path_candidates(
+                    rag.doc_status, file_source
+                )
+                if existing_doc_data:
+                    # Get document status and track_id from existing document
+                    status = get_doc_status_value(existing_doc_data) or "unknown"
+                    # Use `or ""` to handle both missing key and None value (e.g., legacy rows without track_id)
+                    existing_track_id = get_doc_track_id(existing_doc_data)
                     return InsertResponse(
                         status="duplicated",
-                        message=f"Identical content already exists in document storage (doc_id: {content_doc_id}, Status: {status}).",
+                        message=f"File source '{file_source}' already exists in document storage (Status: {status}).",
                         track_id=existing_track_id,
                     )
 
@@ -2393,7 +2440,7 @@ def create_document_routes(
                 pipeline_index_texts,
                 rag,
                 request.texts,
-                file_sources=request.file_sources,
+                file_sources=normalized_file_sources,
                 track_id=track_id,
             )
 
@@ -2402,6 +2449,8 @@ def create_document_routes(
                 message="Texts successfully received. Processing will continue in background.",
                 track_id=track_id,
             )
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error(f"Error /documents/texts: {str(e)}")
             logger.error(traceback.format_exc())

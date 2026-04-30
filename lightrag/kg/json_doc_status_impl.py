@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 import os
+from pathlib import Path
 from typing import Any, Union, final
 
 from lightrag.base import (
@@ -398,6 +399,44 @@ class JsonDocStatusStorage(DocStatusStorage):
                     # Return complete document data, consistent with get_by_ids method
                     return doc_data
 
+        return None
+
+    async def get_doc_by_file_basename(
+        self, basename: str
+    ) -> Union[tuple[str, dict[str, Any]], None]:
+        """Find an existing record whose file_path basename matches.
+
+        Compares against the stored file_path's basename so legacy records
+        that still hold a full path are matched the same way as new records
+        whose file_path is already a basename.
+        """
+        if not basename:
+            return None
+        if self._storage_lock is None:
+            raise StorageNotInitializedError("JsonDocStatusStorage")
+
+        async with self._storage_lock:
+            for doc_id, doc_data in self._data.items():
+                stored_path = doc_data.get("file_path")
+                if not stored_path:
+                    continue
+                if Path(str(stored_path)).name == basename:
+                    return doc_id, doc_data
+        return None
+
+    async def get_doc_by_content_hash(
+        self, content_hash: str
+    ) -> Union[tuple[str, dict[str, Any]], None]:
+        """Find an existing record whose content_hash field matches."""
+        if not content_hash:
+            return None
+        if self._storage_lock is None:
+            raise StorageNotInitializedError("JsonDocStatusStorage")
+
+        async with self._storage_lock:
+            for doc_id, doc_data in self._data.items():
+                if doc_data.get("content_hash") == content_hash:
+                    return doc_id, doc_data
         return None
 
     async def drop(self) -> dict[str, str]:

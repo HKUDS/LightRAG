@@ -6,14 +6,25 @@ import numpy as np
 import pytest
 
 from lightrag import LightRAG, ROLES, RoleLLMConfig
-from lightrag.constants import FULL_DOCS_CONTENT_STORED_IN_LIGHTRAG_DOCUMENT
+from lightrag.base import DocStatus
+from lightrag.constants import (
+    FULL_DOCS_CONTENT_STORED_IN_LIGHTRAG_DOCUMENT,
+    FULL_DOCS_FORMAT_PENDING_PARSE,
+    PARSED_DIR_NAME,
+    PARSER_ENGINE_NATIVE,
+)
 from lightrag.operate import _get_relationship_vdb_timeout_seconds
 from lightrag.parser_routing import (
     ParserRoutingConfigError,
     resolve_file_parser_engine,
     validate_parser_routing_config,
 )
-from lightrag.utils import EmbeddingFunc, Tokenizer, safe_vdb_operation_with_exception
+from lightrag.utils import (
+    EmbeddingFunc,
+    Tokenizer,
+    compute_mdhash_id,
+    safe_vdb_operation_with_exception,
+)
 
 
 class _SimpleTokenizerImpl:
@@ -55,7 +66,7 @@ def _new_rag(tmp_path: Path, **kwargs) -> LightRAG:
 
     return LightRAG(
         working_dir=str(tmp_path),
-        workspace="test-release-closure",
+        workspace=f"test-release-closure-{tmp_path.name}",
         llm_model_func=_mock_llm,
         embedding_func=EmbeddingFunc(
             embedding_dim=32,
@@ -94,6 +105,422 @@ def test_parse_engine_rule_fallback_and_default_legacy(tmp_path, monkeypatch):
     monkeypatch.delenv("LIGHTRAG_PARSER", raising=False)
     monkeypatch.setenv("MINERU_ENDPOINT", "")
     assert rag._resolve_parser_engine("slides.pptx", {}) == "legacy"
+
+
+@pytest.mark.offline
+def test_enqueue_dedupes_by_filename_and_content_hash(tmp_path):
+    async def _run():
+        rag = _new_rag(tmp_path)
+        await rag.initialize_storages()
+        try:
+            # Distinct filenames with distinct content both get enqueued.
+            await rag.apipeline_enqueue_documents(
+                ["alpha body", "beta body"],
+                file_paths=["first.txt", "second.txt"],
+                track_id="track-a",
+            )
+            first_id = compute_mdhash_id("first.txt", prefix="doc-")
+            second_id = compute_mdhash_id("second.txt", prefix="doc-")
+            first_doc = await rag.full_docs.get_by_id(first_id)
+            second_doc = await rag.full_docs.get_by_id(second_id)
+            assert first_doc is not None
+            assert second_doc is not None
+            assert first_doc.get("content_hash")
+            assert second_doc.get("content_hash")
+            assert first_doc["content_hash"] != second_doc["content_hash"]
+
+            # Same filename basename with new content is rejected (filename dedup).
+            await rag.apipeline_enqueue_documents(
+                "changed content",
+                file_paths="/tmp/first.txt",
+                track_id="track-b",
+            )
+            first_doc = await rag.full_docs.get_by_id(first_id)
+            assert first_doc["content"] == "alpha body"
+
+            # New filename but same content as an existing doc is rejected
+            # (content_hash dedup).
+            await rag.apipeline_enqueue_documents(
+                "alpha body",
+                file_paths="third.txt",
+                track_id="track-c",
+            )
+            third_id = compute_mdhash_id("third.txt", prefix="doc-")
+            assert await rag.full_docs.get_by_id(third_id) is None
+
+            failed_docs = await rag.doc_status.get_docs_by_status(DocStatus.FAILED)
+            kinds = {
+                getattr(doc, "metadata", {}).get("duplicate_kind")
+                for doc in failed_docs.values()
+                if getattr(doc, "metadata", {}).get("is_duplicate")
+            }
+            assert {"filename", "content_hash"}.issubset(kinds)
+        finally:
+            await rag.finalize_storages()
+
+    asyncio.run(_run())
+
+
+@pytest.mark.offline
+def test_enqueue_without_file_paths_uses_content_ids(tmp_path):
+    async def _run():
+        rag = _new_rag(tmp_path)
+        await rag.initialize_storages()
+        try:
+            docs = ["alpha without source", "beta without source"]
+            await rag.apipeline_enqueue_documents(docs, track_id="track-no-source")
+
+            for content in docs:
+                doc_id = compute_mdhash_id(content, prefix="doc-")
+                full_doc = await rag.full_docs.get_by_id(doc_id)
+                status = await rag.doc_status.get_by_id(doc_id)
+                assert full_doc is not None
+                assert status is not None
+                assert full_doc["content"] == content
+                assert full_doc["file_path"] == "unknown_source"
+                assert status["file_path"] == "unknown_source"
+                assert full_doc.get("content_hash")
+                assert status.get("content_hash") == full_doc.get("content_hash")
+
+            failed_docs = await rag.doc_status.get_docs_by_status(DocStatus.FAILED)
+            duplicate_failures = [
+                doc
+                for doc in failed_docs.values()
+                if getattr(doc, "track_id", "") == "track-no-source"
+                and getattr(doc, "metadata", {}).get("is_duplicate")
+            ]
+            assert duplicate_failures == []
+        finally:
+            await rag.finalize_storages()
+
+    asyncio.run(_run())
+
+
+@pytest.mark.offline
+def test_legacy_empty_file_paths_do_not_block_unsourced_insert(tmp_path):
+    async def _run():
+        rag = _new_rag(tmp_path)
+        await rag.initialize_storages()
+        try:
+            await rag.doc_status.upsert(
+                {
+                    "legacy-empty": {
+                        "status": DocStatus.PROCESSED,
+                        "content_summary": "legacy empty",
+                        "content_length": 0,
+                        "file_path": "",
+                        "track_id": "legacy",
+                        "created_at": "2025-01-01T00:00:00+00:00",
+                        "updated_at": "2025-01-01T00:00:00+00:00",
+                        "chunks_list": [],
+                    },
+                    "legacy-no-file": {
+                        "status": DocStatus.PROCESSED,
+                        "content_summary": "legacy no-file",
+                        "content_length": 0,
+                        "file_path": "no-file-path",
+                        "track_id": "legacy",
+                        "created_at": "2025-01-01T00:00:00+00:00",
+                        "updated_at": "2025-01-01T00:00:00+00:00",
+                        "chunks_list": [],
+                    },
+                }
+            )
+
+            content = "fresh unsourced body"
+            await rag.apipeline_enqueue_documents(content, track_id="track-fresh")
+            doc_id = compute_mdhash_id(content, prefix="doc-")
+            full_doc = await rag.full_docs.get_by_id(doc_id)
+            status = await rag.doc_status.get_by_id(doc_id)
+            assert full_doc is not None
+            assert status is not None
+            assert full_doc["file_path"] == "unknown_source"
+            assert status["file_path"] == "unknown_source"
+        finally:
+            await rag.finalize_storages()
+
+    asyncio.run(_run())
+
+
+@pytest.mark.offline
+def test_basename_lookup_finds_legacy_full_path_records(tmp_path):
+    async def _run():
+        rag = _new_rag(tmp_path)
+        await rag.initialize_storages()
+        try:
+            # Simulate a legacy doc_status row whose file_path still holds a
+            # full path; the new basename lookup should still resolve it.
+            legacy_id = "doc-legacy-1"
+            await rag.doc_status.upsert(
+                {
+                    legacy_id: {
+                        "status": DocStatus.PROCESSED,
+                        "content_summary": "legacy",
+                        "content_length": 7,
+                        "file_path": "/inputs/legacy.txt",
+                        "track_id": "legacy-track",
+                        "created_at": "2025-01-01T00:00:00+00:00",
+                        "updated_at": "2025-01-01T00:00:00+00:00",
+                        "chunks_list": [],
+                    }
+                }
+            )
+
+            match = await rag.doc_status.get_doc_by_file_basename("legacy.txt")
+            assert match is not None
+            doc_id, doc = match
+            assert doc_id == legacy_id
+            assert doc["file_path"] == "/inputs/legacy.txt"
+
+            # Re-enqueueing the same basename hits the filename guard.
+            await rag.apipeline_enqueue_documents(
+                "fresh body",
+                file_paths="legacy.txt",
+                track_id="track-x",
+            )
+            new_id = compute_mdhash_id("legacy.txt", prefix="doc-")
+            assert await rag.full_docs.get_by_id(new_id) is None
+        finally:
+            await rag.finalize_storages()
+
+    asyncio.run(_run())
+
+
+@pytest.mark.offline
+def test_content_hash_lookup_via_storage(tmp_path):
+    async def _run():
+        rag = _new_rag(tmp_path)
+        await rag.initialize_storages()
+        try:
+            await rag.apipeline_enqueue_documents(
+                "shared body",
+                file_paths="alpha.txt",
+                track_id="track-a",
+            )
+            alpha_id = compute_mdhash_id("alpha.txt", prefix="doc-")
+            alpha_full = await rag.full_docs.get_by_id(alpha_id)
+            assert alpha_full is not None
+            content_hash = alpha_full["content_hash"]
+
+            match = await rag.doc_status.get_doc_by_content_hash(content_hash)
+            assert match is not None
+            doc_id, _ = match
+            assert doc_id == alpha_id
+        finally:
+            await rag.finalize_storages()
+
+    asyncio.run(_run())
+
+
+@pytest.mark.offline
+def test_lightrag_format_uses_blocks_file_hash(tmp_path, monkeypatch):
+    async def _run():
+        input_dir = tmp_path / "input"
+        parsed_dir = input_dir / "__parsed__"
+        parsed_dir.mkdir(parents=True)
+        monkeypatch.setenv("INPUT_DIR", str(input_dir))
+
+        rag = _new_rag(tmp_path / "work")
+        rag.workspace = "test-pending-parse-duplicate"
+        await rag.initialize_storages()
+        try:
+            blocks_path = parsed_dir / "doc.blocks.jsonl"
+            blocks_path.write_text(
+                json.dumps({"type": "header"})
+                + "\n"
+                + json.dumps({"type": "content", "text": "hello"})
+                + "\n",
+                encoding="utf-8",
+            )
+
+            # Enqueue twice with different filenames pointing at the same
+            # blocks file: the second one must be rejected as content_hash dup.
+            await rag.apipeline_enqueue_documents(
+                FULL_DOCS_CONTENT_STORED_IN_LIGHTRAG_DOCUMENT,
+                file_paths="first.lightrag",
+                docs_format="lightrag",
+                lightrag_document_paths="__parsed__/doc.blocks.jsonl",
+                track_id="track-a",
+            )
+            await rag.apipeline_enqueue_documents(
+                FULL_DOCS_CONTENT_STORED_IN_LIGHTRAG_DOCUMENT,
+                file_paths="second.lightrag",
+                docs_format="lightrag",
+                lightrag_document_paths="__parsed__/doc.blocks.jsonl",
+                track_id="track-b",
+            )
+            second_id = compute_mdhash_id("second.lightrag", prefix="doc-")
+            assert await rag.full_docs.get_by_id(second_id) is None
+
+            failed = await rag.doc_status.get_docs_by_status(DocStatus.FAILED)
+            kinds = {
+                getattr(doc, "metadata", {}).get("duplicate_kind")
+                for doc in failed.values()
+                if getattr(doc, "metadata", {}).get("is_duplicate")
+            }
+            assert "content_hash" in kinds
+        finally:
+            await rag.finalize_storages()
+
+    asyncio.run(_run())
+
+
+@pytest.mark.offline
+def test_persist_parsed_full_docs_syncs_hash_to_doc_status(tmp_path):
+    async def _run():
+        rag = _new_rag(tmp_path)
+        await rag.initialize_storages()
+        try:
+            # Enqueue a pending_parse record: no content_hash should exist yet.
+            await rag.apipeline_enqueue_documents(
+                "",
+                file_paths="pending.txt",
+                docs_format="pending_parse",
+                track_id="track-pending",
+            )
+            doc_id = compute_mdhash_id("pending.txt", prefix="doc-")
+            full_doc = await rag.full_docs.get_by_id(doc_id)
+            assert full_doc is not None
+            assert full_doc.get("content_hash") in (None, "")
+            status_pre = await rag.doc_status.get_by_id(doc_id)
+            assert (status_pre or {}).get("content_hash") in (None, "")
+
+            # Simulate a parse_* completion that converts the record to RAW.
+            content = "extracted body text"
+            await rag._persist_parsed_full_docs(
+                doc_id,
+                {
+                    "content": content,
+                    "file_path": "pending.txt",
+                    "format": "raw",
+                    "parsed_engine": "native",
+                },
+            )
+
+            full_doc = await rag.full_docs.get_by_id(doc_id)
+            status_post = await rag.doc_status.get_by_id(doc_id)
+            expected_hash = compute_mdhash_id(content, prefix="")
+            assert full_doc["content_hash"] == expected_hash
+            assert (status_post or {}).get("content_hash") == expected_hash
+
+            # The hash should be queryable via the storage index.
+            match = await rag.doc_status.get_doc_by_content_hash(expected_hash)
+            assert match is not None
+            assert match[0] == doc_id
+        finally:
+            await rag.finalize_storages()
+
+    asyncio.run(_run())
+
+
+@pytest.mark.offline
+def test_state_machine_upsert_preserves_content_hash(tmp_path):
+    async def _run():
+        rag = _new_rag(tmp_path)
+        await rag.initialize_storages()
+        try:
+            await rag.apipeline_enqueue_documents(
+                "raw body",
+                file_paths="alpha.txt",
+                track_id="track-state",
+            )
+            doc_id = compute_mdhash_id("alpha.txt", prefix="doc-")
+            initial_hash = (await rag.doc_status.get_by_id(doc_id))["content_hash"]
+            assert initial_hash
+
+            # Simulate the production state-machine upsert pattern: read
+            # status_doc, then write a new payload that includes content_hash.
+            status_doc = (await rag.doc_status.get_docs_by_status(DocStatus.PENDING))[
+                doc_id
+            ]
+            for next_status in (
+                DocStatus.PARSING,
+                DocStatus.ANALYZING,
+                DocStatus.PROCESSED,
+            ):
+                await rag.doc_status.upsert(
+                    {
+                        doc_id: {
+                            "status": next_status,
+                            "content_summary": status_doc.content_summary,
+                            "content_length": status_doc.content_length,
+                            "created_at": status_doc.created_at,
+                            "updated_at": "now",
+                            "file_path": status_doc.file_path,
+                            "track_id": status_doc.track_id,
+                            "content_hash": status_doc.content_hash,
+                        }
+                    }
+                )
+                current = await rag.doc_status.get_by_id(doc_id)
+                assert current.get("content_hash") == initial_hash
+                # And the index lookup must still return this doc.
+                match = await rag.doc_status.get_doc_by_content_hash(initial_hash)
+                assert match is not None and match[0] == doc_id
+        finally:
+            await rag.finalize_storages()
+
+    asyncio.run(_run())
+
+
+@pytest.mark.offline
+def test_pending_parse_duplicate_hash_fails_and_archives_source(tmp_path, monkeypatch):
+    async def _run():
+        input_dir = tmp_path / "input"
+        input_dir.mkdir()
+        monkeypatch.setenv("INPUT_DIR", str(input_dir))
+        rag = _new_rag(tmp_path / "work")
+        await rag.initialize_storages()
+        try:
+            content = "same extracted body"
+            await rag.apipeline_enqueue_documents(
+                content,
+                file_paths="existing.txt",
+                track_id="track-original",
+            )
+            original_id = compute_mdhash_id("existing.txt", prefix="doc-")
+            original_status = await rag.doc_status.get_by_id(original_id)
+            original_status["status"] = DocStatus.PROCESSED
+            await rag.doc_status.upsert({original_id: original_status})
+
+            source_path = input_dir / "duplicate.docx"
+            source_path.write_bytes(b"docx bytes")
+            parse_document = __import__(
+                "lightrag.extraction.parse_document",
+                fromlist=["parse_docx_to_interchange_jsonl"],
+            )
+            monkeypatch.setattr(
+                parse_document,
+                "parse_docx_to_interchange_jsonl",
+                lambda file_bytes, source_file, doc_id, output_dir: content,
+            )
+
+            async def _fail_extract(*args, **kwargs):
+                raise AssertionError("duplicate document should not reach extraction")
+
+            monkeypatch.setattr(rag, "_process_extract_entities", _fail_extract)
+
+            await rag.apipeline_enqueue_documents(
+                "",
+                file_paths=str(source_path),
+                docs_format=FULL_DOCS_FORMAT_PENDING_PARSE,
+                parsed_engine=PARSER_ENGINE_NATIVE,
+                track_id="track-dup",
+            )
+            await rag.apipeline_process_enqueue_documents()
+
+            duplicate_id = compute_mdhash_id("duplicate.docx", prefix="doc-")
+            duplicate_status = await rag.doc_status.get_by_id(duplicate_id)
+            assert duplicate_status["status"] == DocStatus.FAILED
+            assert duplicate_status["metadata"]["is_duplicate"] is True
+            assert duplicate_status["metadata"]["duplicate_kind"] == "content_hash"
+            assert duplicate_status["metadata"]["original_doc_id"] == original_id
+            assert not source_path.exists()
+            assert (input_dir / PARSED_DIR_NAME / source_path.name).exists()
+        finally:
+            await rag.finalize_storages()
+
+    asyncio.run(_run())
 
 
 @pytest.mark.offline
@@ -594,10 +1021,14 @@ def test_analyze_multimodal_table_without_image_uses_textual_analysis(tmp_path):
 @pytest.mark.offline
 def test_parse_mineru_to_lightrag_document(tmp_path, monkeypatch):
     async def _run():
-        rag = _new_rag(tmp_path)
+        input_dir = tmp_path / "input"
+        input_dir.mkdir()
+        monkeypatch.setenv("INPUT_DIR", str(input_dir))
+
+        rag = _new_rag(tmp_path / "work")
         await rag.initialize_storages()
 
-        src_file = tmp_path / "demo.pdf"
+        src_file = input_dir / "demo.pdf"
         src_file.write_bytes(b"fake-pdf")
 
         async def _fake_service(protocol, file_path):
@@ -663,7 +1094,7 @@ def test_parse_mineru_to_lightrag_document(tmp_path, monkeypatch):
         assert full_doc["format"] == "lightrag"
         assert full_doc["content"] == FULL_DOCS_CONTENT_STORED_IN_LIGHTRAG_DOCUMENT
         assert full_doc["lightrag_document_path"] == str(
-            blocks_path.relative_to(Path(rag.working_dir))
+            blocks_path.relative_to(input_dir)
         )
 
         await rag.finalize_storages()
