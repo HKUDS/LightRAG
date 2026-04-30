@@ -70,7 +70,24 @@ async def _ollama_model_if_cache(
         logger.debug("enable_cot=True is not supported for ollama and will be ignored.")
     stream = True if kwargs.get("stream") else False
 
-    kwargs.pop("max_tokens", None)
+    max_tokens = kwargs.pop("max_tokens", None)
+    options = kwargs.pop("options", None)
+    if max_tokens is not None:
+        try:
+            max_tokens_limit = int(max_tokens)
+        except (TypeError, ValueError):
+            max_tokens_limit = 0
+        if max_tokens_limit > 0:
+            options = dict(options or {})
+            try:
+                existing_limit = int(options.get("num_predict") or 0)
+            except (TypeError, ValueError):
+                existing_limit = 0
+            options["num_predict"] = (
+                min(existing_limit, max_tokens_limit)
+                if existing_limit > 0
+                else max_tokens_limit
+            )
     # kwargs.pop("response_format", None) # allow json
     host = kwargs.pop("host", None)
     timeout = kwargs.pop("timeout", None)
@@ -99,6 +116,8 @@ async def _ollama_model_if_cache(
         messages.extend(history_messages)
         messages.append({"role": "user", "content": prompt})
 
+        if options is not None:
+            kwargs["options"] = options
         response = await ollama_client.chat(model=model, messages=messages, **kwargs)
         if stream:
             """cannot cache stream response and process reasoning"""

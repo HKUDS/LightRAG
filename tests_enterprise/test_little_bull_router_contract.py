@@ -130,13 +130,35 @@ def test_little_bull_agent_builder_and_context_budget_routes_exist_contract():
 
     openapi = app.openapi()
 
+    assert "/little-bull/context/estimate" in openapi["paths"]
+    assert "/little-bull/costs/summary" in openapi["paths"]
     assert "/little-bull/admin/agent-builder/sessions" in openapi["paths"]
     assert "/little-bull/admin/agent-builder/sessions/{agent_builder_session_id}/publish" in openapi["paths"]
     assert "/little-bull/admin/agents/context-budgets" in openapi["paths"]
     assert "/little-bull/admin/models" in openapi["paths"]
+    assert "post" in openapi["paths"]["/little-bull/context/estimate"]
+    assert "get" in openapi["paths"]["/little-bull/costs/summary"]
     assert {"get", "post"}.issubset(openapi["paths"]["/little-bull/admin/agent-builder/sessions"])
     assert "post" in openapi["paths"][
         "/little-bull/admin/agent-builder/sessions/{agent_builder_session_id}/publish"
     ]
     assert {"get", "post"}.issubset(openapi["paths"]["/little-bull/admin/agents/context-budgets"])
     assert {"get", "post"}.issubset(openapi["paths"]["/little-bull/admin/models"])
+
+    schemas = openapi["components"]["schemas"]
+    query_props = schemas["LittleBullQueryRequest"]["properties"]
+    estimate_request_props = schemas["LittleBullContextEstimateRequest"]["properties"]
+    estimate_response_props = schemas["LittleBullContextEstimateResponse"]["properties"]
+    cost_response_props = schemas["LittleBullCostSummaryResponse"]["properties"]
+
+    assert {"group_id", "subgroup_id", "document_ids", "top_k"}.issubset(query_props)
+    assert {"document_ids", "top_k", "reserved_response_tokens"}.issubset(estimate_request_props)
+    assert {
+        "available_context_tokens",
+        "overflow_tokens",
+        "retrieval_chunk_limit",
+        "reserved_response_tokens",
+    }.issubset(estimate_response_props)
+    assert {"periods", "by_user", "by_agent", "by_model", "by_group_subgroup", "by_operation"}.issubset(
+        cost_response_props
+    )

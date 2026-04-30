@@ -313,6 +313,8 @@ CREATE TABLE IF NOT EXISTS little_bull_llm_usage_ledger (
     usage_ledger_id TEXT PRIMARY KEY,
     tenant_id TEXT NOT NULL REFERENCES system_tenants(tenant_id) ON DELETE CASCADE,
     workspace_id TEXT NOT NULL REFERENCES system_workspaces(workspace_id) ON DELETE CASCADE,
+    group_id TEXT REFERENCES little_bull_knowledge_groups(group_id) ON DELETE SET NULL,
+    subgroup_id TEXT REFERENCES little_bull_knowledge_subgroups(subgroup_id) ON DELETE SET NULL,
     user_id TEXT REFERENCES system_users(user_id) ON DELETE SET NULL,
     agent_id TEXT REFERENCES little_bull_agent_configs(agent_id) ON DELETE SET NULL,
     conversation_id TEXT REFERENCES little_bull_conversations(conversation_id) ON DELETE SET NULL,
@@ -339,8 +341,17 @@ CREATE TABLE IF NOT EXISTS little_bull_llm_usage_ledger (
     CHECK (updated_by = created_by)
 );
 
+ALTER TABLE little_bull_llm_usage_ledger
+    ADD COLUMN IF NOT EXISTS group_id TEXT REFERENCES little_bull_knowledge_groups(group_id) ON DELETE SET NULL;
+
+ALTER TABLE little_bull_llm_usage_ledger
+    ADD COLUMN IF NOT EXISTS subgroup_id TEXT REFERENCES little_bull_knowledge_subgroups(subgroup_id) ON DELETE SET NULL;
+
 CREATE INDEX IF NOT EXISTS idx_little_bull_llm_usage_ledger_scope
     ON little_bull_llm_usage_ledger(tenant_id, workspace_id, provider, model_id, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_little_bull_llm_usage_ledger_group_scope
+    ON little_bull_llm_usage_ledger(tenant_id, workspace_id, group_id, subgroup_id, operation, created_at DESC);
 
 CREATE OR REPLACE FUNCTION little_bull_prevent_usage_ledger_update()
 RETURNS trigger AS $$

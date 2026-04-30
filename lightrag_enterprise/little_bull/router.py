@@ -23,6 +23,9 @@ from .models import (
     LittleBullCanvasEdgeRequest,
     LittleBullCanvasNodeRequest,
     LittleBullContentMapRequest,
+    LittleBullContextEstimateRequest,
+    LittleBullContextEstimateResponse,
+    LittleBullCostSummaryResponse,
     LittleBullDailyNoteRequest,
     LittleBullEmbeddingCostEstimateRequest,
     LittleBullInboxItemRequest,
@@ -601,6 +604,34 @@ def create_little_bull_router(rag, doc_manager) -> APIRouter:
     @router.post("/query")
     async def query(request: LittleBullQueryRequest, principal=Depends(require_principal)):
         return (await service().query(principal, request)).model_dump()
+
+    @router.post("/context/estimate", response_model=LittleBullContextEstimateResponse)
+    async def estimate_context(request: LittleBullContextEstimateRequest, principal=Depends(require_principal)):
+        return (await service().estimate_context(principal, request)).model_dump()
+
+    @router.get("/costs/summary", response_model=LittleBullCostSummaryResponse)
+    async def summarize_costs(
+        workspace_id: str,
+        user_id: str | None = None,
+        agent_id: str | None = None,
+        model_id: str | None = None,
+        operation: str | None = None,
+        group_id: str | None = None,
+        subgroup_id: str | None = None,
+        principal=Depends(require_principal),
+    ):
+        return (
+            await service().summarize_costs(
+                principal,
+                workspace_id=workspace_id,
+                user_id=user_id,
+                agent_id=agent_id,
+                model_id=model_id,
+                operation=operation,
+                group_id=group_id,
+                subgroup_id=subgroup_id,
+            )
+        ).model_dump()
 
     @router.get("/activity")
     async def list_activity(

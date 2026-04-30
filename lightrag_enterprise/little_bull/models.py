@@ -50,7 +50,10 @@ class LittleBullQueryRequest(BaseModel):
     query: str = Field(min_length=3)
     mode: Literal["local", "global", "hybrid", "naive", "mix", "bypass"] = "mix"
     response_type: str = "Multiple Paragraphs"
-    top_k: int | None = None
+    top_k: int | None = Field(default=None, ge=1)
+    group_id: str | None = None
+    subgroup_id: str | None = None
+    document_ids: list[str] = Field(default_factory=list)
     include_references: bool = True
     include_chunk_content: bool = False
     conversation_history: list[dict[str, Any]] = Field(default_factory=list)
@@ -64,6 +67,44 @@ class LittleBullQueryResponse(BaseModel):
     references: list[dict[str, Any]] = Field(default_factory=list)
     workspace_id: str
     model_profile: str
+
+
+class LittleBullContextEstimateRequest(BaseModel):
+    workspace_id: str
+    query: str = Field(min_length=3)
+    conversation_history: list[dict[str, Any]] = Field(default_factory=list)
+    agent_id: str | None = None
+    group_id: str | None = None
+    subgroup_id: str | None = None
+    document_ids: list[str] = Field(default_factory=list)
+    model_profile: str = "equilibrado"
+    mode: Literal["local", "global", "hybrid", "naive", "mix", "bypass"] = "mix"
+    top_k: int | None = Field(default=None, ge=1)
+    reserved_response_tokens: int | None = Field(default=None, ge=0)
+
+
+class LittleBullContextEstimateResponse(BaseModel):
+    workspace_id: str
+    agent_id: str | None = None
+    group_id: str | None = None
+    subgroup_id: str | None = None
+    model_setting_id: str | None = None
+    model_id: str | None = None
+    context_window_tokens: int
+    query_tokens: int
+    history_tokens: int
+    agent_prompt_tokens: int
+    document_tokens: int
+    chunk_tokens: int
+    reserved_response_tokens: int
+    total_estimated_tokens: int
+    available_context_tokens: int
+    overflow: bool
+    overflow_tokens: int = 0
+    document_count: int = 0
+    chunk_count: int = 0
+    retrieval_chunk_limit: int = 0
+    notes: list[str] = Field(default_factory=list)
 
 
 class LittleBullUploadResponse(BaseModel):
@@ -638,6 +679,8 @@ class IndexingJob(ScopedContract):
 
 class LlmUsageLedger(ScopedContract):
     usage_ledger_id: str | None = None
+    group_id: str | None = None
+    subgroup_id: str | None = None
     user_id: str | None = None
     agent_id: str | None = None
     conversation_id: str | None = None
@@ -656,6 +699,44 @@ class LlmUsageLedger(ScopedContract):
     metadata: dict[str, Any] = Field(default_factory=dict)
     previous_ledger_hash: str = ""
     ledger_hash: str
+
+
+class LittleBullCostPeriodSummary(BaseModel):
+    name: str
+    since: str | None = None
+    request_count: int = 0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+    estimated_cost_usd: float = 0
+    actual_cost_usd: float = 0
+    cost_usd: float = 0
+
+
+class LittleBullCostBreakdownItem(BaseModel):
+    key: str
+    label: str = ""
+    request_count: int = 0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+    estimated_cost_usd: float = 0
+    actual_cost_usd: float = 0
+    cost_usd: float = 0
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class LittleBullCostSummaryResponse(BaseModel):
+    workspace_id: str
+    currency: str = "USD"
+    generated_at: str
+    filters: dict[str, Any] = Field(default_factory=dict)
+    periods: dict[str, LittleBullCostPeriodSummary] = Field(default_factory=dict)
+    by_user: list[LittleBullCostBreakdownItem] = Field(default_factory=list)
+    by_agent: list[LittleBullCostBreakdownItem] = Field(default_factory=list)
+    by_model: list[LittleBullCostBreakdownItem] = Field(default_factory=list)
+    by_group_subgroup: list[LittleBullCostBreakdownItem] = Field(default_factory=list)
+    by_operation: list[LittleBullCostBreakdownItem] = Field(default_factory=list)
 
 
 class GraphEdgeOrigin(ScopedContract):

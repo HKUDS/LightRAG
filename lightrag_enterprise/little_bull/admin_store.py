@@ -1423,6 +1423,64 @@ class LittleBullAdminStore:
         )
         return float(cost or 0)
 
+    async def list_llm_usage_ledger(
+        self,
+        *,
+        tenant_id: str | None,
+        workspace_id: str,
+        user_id: str | None = None,
+        agent_id: str | None = None,
+        model_id: str | None = None,
+        operation: str | None = None,
+    ) -> list[dict[str, Any]]:
+        pool = await self._get_pool()
+        rows = await pool.fetch(
+            """
+            SELECT
+                usage_ledger_id, tenant_id, workspace_id, user_id, agent_id,
+                conversation_id, model_setting_id, provider, model_id, operation,
+                prompt_tokens, completion_tokens, total_tokens, estimated_cost_usd,
+                actual_cost_usd, currency, metadata, created_at
+            FROM little_bull_llm_usage_ledger
+            WHERE tenant_id IS NOT DISTINCT FROM $1
+              AND workspace_id=$2
+              AND ($3::text IS NULL OR user_id=$3)
+              AND ($4::text IS NULL OR agent_id=$4)
+              AND ($5::text IS NULL OR model_id=$5)
+              AND ($6::text IS NULL OR operation=$6)
+            ORDER BY created_at DESC
+            """,
+            tenant_id,
+            workspace_id,
+            user_id,
+            agent_id,
+            model_id,
+            operation,
+        )
+        return [
+            {
+                "usage_ledger_id": row["usage_ledger_id"],
+                "tenant_id": row["tenant_id"],
+                "workspace_id": row["workspace_id"],
+                "user_id": row["user_id"],
+                "agent_id": row["agent_id"],
+                "conversation_id": row["conversation_id"],
+                "model_setting_id": row["model_setting_id"],
+                "provider": row["provider"],
+                "model_id": row["model_id"],
+                "operation": row["operation"],
+                "prompt_tokens": int(row["prompt_tokens"] or 0),
+                "completion_tokens": int(row["completion_tokens"] or 0),
+                "total_tokens": int(row["total_tokens"] or 0),
+                "estimated_cost_usd": float(row["estimated_cost_usd"] or 0),
+                "actual_cost_usd": float(row["actual_cost_usd"]) if row["actual_cost_usd"] is not None else None,
+                "currency": row["currency"],
+                "metadata": self._json(row["metadata"], {}),
+                "created_at": row["created_at"],
+            }
+            for row in rows
+        ]
+
     async def insert_llm_usage_ledger(
         self,
         payload: dict[str, Any],

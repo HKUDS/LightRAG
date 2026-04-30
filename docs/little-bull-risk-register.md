@@ -92,3 +92,31 @@ This register tracks residual risks that must be reduced or closed before a late
 - Daily notes are created through classified Markdown notes and cannot be moved across group/subgroup after creation.
 - Daily note slugs are checked before markdown creation so a daily note cannot hijack or move an existing non-daily note.
 - Daily note auto-pending collection only includes open inbox items from the same group/subgroup.
+
+## Phase 10 Risk Controls Added
+
+- Agent Builder and Agent Studio remain PostgreSQL control-plane only; Neo4j/Qdrant are not activated in this phase.
+- Builder sessions keep `agent_builder` model settings separate from runtime agent model settings.
+- Published/runtime agents only accept enabled model settings with `usage` `chat` or `agent`.
+- Model settings, agent configs, builder sessions and context budgets cannot be moved across tenant/workspace scope by reusing ids.
+- Agent Builder publish requires explicit human approval and readiness validation before creating or enabling an agent.
+- Context budgets validate agent/model scope, token windows and cost caps before persistence.
+- Query runtime enforces prompt/context ceilings before RAG and applies `QueryParam.max_total_tokens`/entity/relation caps.
+- Cost-limited query budgets require `max_context_tokens` and pricing metadata so retrieved context cannot be underpriced.
+- Cost-limited agent queries reserve/debit the LLM usage ledger before RAG through a Postgres transaction plus advisory lock.
+- Successful non-cost budgeted agent queries append scoped ledger rows; blocked queries do not create extra debits.
+- Concurrency coverage proves two same-agent queries under a one-request daily limit produce one RAG call and one ledger row.
+- Subagents Hegel, Peirce and Russell reaudited Fase 10 with no P0/P1 blockers after fixes.
+
+## Phase 11 Risk Controls Added
+
+- Context calculator is backend/control-plane only; Neo4j/Qdrant are not activated in this phase.
+- Estimates validate workspace, agent, group, subgroup and explicit document scope before computing token windows.
+- Estimates report query, history, agent prompt, document, chunk and reserved response token slices plus overflow and available capacity.
+- Budget caps override larger model windows in calculator output and are covered by exact overflow invariants.
+- Runtime query now keeps `top_k` and `chunk_top_k` aligned with calculator assumptions.
+- Runtime query accepts the same group/subgroup/document contract, validates it, and fails closed until the data plane explicitly supports scoped retrieval filters.
+- Agent `reserved_response_tokens` is enforced through model function limits or the query is blocked before RAG.
+- Ollama local/private completion maps `max_tokens` to `options.num_predict`, preserving any lower existing limit.
+- OpenAPI contracts pin query scope fields and context calculator request/response fields.
+- Subagents Hegel, Peirce and Russell reaudited Fase 11 with no P0/P1 blockers after fixes.

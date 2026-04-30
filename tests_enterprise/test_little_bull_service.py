@@ -1,3 +1,5 @@
+import asyncio
+from datetime import timedelta
 from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
@@ -11,6 +13,7 @@ from lightrag_enterprise.little_bull.models import (
     LittleBullCanvasEdgeRequest,
     LittleBullCanvasNodeRequest,
     LittleBullContentMapRequest,
+    LittleBullContextEstimateRequest,
     LittleBullDailyNoteRequest,
     LittleBullEmbeddingCostEstimateRequest,
     LittleBullAgentBuilderPublishRequest,
@@ -44,6 +47,7 @@ from lightrag_enterprise.system.repositories import (
     InMemorySystemRepository,
     membership_for_master,
 )
+from lightrag_enterprise.system.models import utc_now
 
 
 class FakeDocStatus:
@@ -148,6 +152,12 @@ class FakeRag:
         }
 
 
+class SlowFakeRag(FakeRag):
+    async def aquery_llm(self, query, param):
+        await asyncio.sleep(0.05)
+        return await super().aquery_llm(query, param)
+
+
 class FakeDocManager:
     def __init__(self, tmp_path: Path):
         self.input_dir = tmp_path
@@ -163,6 +173,7 @@ class FakeAdminStore:
         self.agent_builder_sessions: dict[str, dict] = {}
         self.agent_context_budgets: dict[str, dict] = {}
         self.usage_ledger: list[dict] = []
+        self.budget_lock = asyncio.Lock()
         self.groups: dict[str, dict] = {}
         self.subgroups: dict[str, dict] = {}
         self.documents: dict[str, dict] = {}
@@ -381,6 +392,27 @@ class FakeAdminStore:
             total += float(entry.get("actual_cost_usd") or entry.get("estimated_cost_usd") or 0)
         return total
 
+    async def list_llm_usage_ledger(
+        self,
+        *,
+        tenant_id: str | None,
+        workspace_id: str,
+        user_id: str | None = None,
+        agent_id: str | None = None,
+        model_id: str | None = None,
+        operation: str | None = None,
+    ):
+        return [
+            entry
+            for entry in self.usage_ledger
+            if entry.get("tenant_id") == tenant_id
+            and entry.get("workspace_id") == workspace_id
+            and (user_id is None or entry.get("user_id") == user_id)
+            and (agent_id is None or entry.get("agent_id") == agent_id)
+            and (model_id is None or entry.get("model_id") == model_id)
+            and (operation is None or entry.get("operation") == operation)
+        ]
+
     async def insert_llm_usage_ledger(
         self,
         payload: dict,
@@ -400,8 +432,8 @@ class FakeAdminStore:
             "ledger_hash": f"sha256:ledger-{len(self.usage_ledger) + 1}",
             "created_by": user_id,
             "updated_by": user_id,
-            "created_at": "2026-04-29T00:00:00Z",
-            "updated_at": "2026-04-29T00:00:00Z",
+            "created_at": payload.get("created_at") or "2026-04-29T00:00:00Z",
+            "updated_at": payload.get("created_at") or "2026-04-29T00:00:00Z",
         }
         self.usage_ledger.append(row)
         return row
@@ -419,29 +451,30 @@ class FakeAdminStore:
         daily_since,
         monthly_since,
     ):
-        estimate = float(payload.get("estimated_cost_usd") or 0)
-        daily_used = await self.sum_llm_usage_cost(
-            tenant_id=tenant_id,
-            workspace_id=workspace_id,
-            agent_id=agent_id,
-            since=daily_since,
-        )
-        if daily_limit_usd is not None and daily_used + estimate > daily_limit_usd:
-            raise ValueError("daily_cost_budget_exceeded")
-        monthly_used = await self.sum_llm_usage_cost(
-            tenant_id=tenant_id,
-            workspace_id=workspace_id,
-            agent_id=agent_id,
-            since=monthly_since,
-        )
-        if monthly_limit_usd is not None and monthly_used + estimate > monthly_limit_usd:
-            raise ValueError("monthly_cost_budget_exceeded")
-        return await self.insert_llm_usage_ledger(
-            payload,
-            tenant_id=tenant_id,
-            workspace_id=workspace_id,
-            user_id=user_id,
-        )
+        async with self.budget_lock:
+            estimate = float(payload.get("estimated_cost_usd") or 0)
+            daily_used = await self.sum_llm_usage_cost(
+                tenant_id=tenant_id,
+                workspace_id=workspace_id,
+                agent_id=agent_id,
+                since=daily_since,
+            )
+            if daily_limit_usd is not None and daily_used + estimate > daily_limit_usd:
+                raise ValueError("daily_cost_budget_exceeded")
+            monthly_used = await self.sum_llm_usage_cost(
+                tenant_id=tenant_id,
+                workspace_id=workspace_id,
+                agent_id=agent_id,
+                since=monthly_since,
+            )
+            if monthly_limit_usd is not None and monthly_used + estimate > monthly_limit_usd:
+                raise ValueError("monthly_cost_budget_exceeded")
+            return await self.insert_llm_usage_ledger(
+                payload,
+                tenant_id=tenant_id,
+                workspace_id=workspace_id,
+                user_id=user_id,
+            )
 
     async def list_knowledge_groups(self, *, tenant_id: str | None, workspace_id: str):
         return [
@@ -3762,6 +3795,61 @@ async def test_little_bull_query_uses_scoped_runtime_agent_model(tmp_path, monke
 
 
 @pytest.mark.asyncio
+async def test_little_bull_query_clamps_agent_max_tokens_to_reserved_budget(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    principal, service = await _principal_and_service_with_admin_store(tmp_path)
+    runtime_model = await service.upsert_model_setting(
+        principal,
+        workspace_id="default",
+        payload=LittleBullModelSetting(
+            usage="agent",
+            provider="openrouter",
+            binding="openai",
+            binding_host="https://openrouter.ai/api/v1",
+            model_id="openai/runtime-clamp",
+            display_name="Runtime Clamp",
+        ),
+    )
+    agent = await service.upsert_agent_config(
+        principal,
+        workspace_id="default",
+        payload=LittleBullAgentConfig(
+            name="Agente Clamp",
+            description="Agente com max_tokens maior que budget reservado",
+            enabled=True,
+            model_setting_id=runtime_model.model_setting_id,
+            tools=["query_knowledge"],
+            config={
+                "identity": {"mission": "Responder com fontes."},
+                "model": {"max_tokens": 2000},
+                "tests": [{"name": "clamp", "input": "Pergunta", "expected_behavior": "Limitar resposta"}],
+            },
+        ),
+    )
+    await service.upsert_agent_context_budget(
+        principal,
+        workspace_id="default",
+        payload=LittleBullAgentContextBudgetRequest(
+            agent_id=agent.agent_id,
+            max_context_tokens=9000,
+            reserved_response_tokens=120,
+        ),
+    )
+
+    await service.query(
+        principal,
+        LittleBullQueryRequest(
+            workspace_id="default",
+            agent_id=agent.agent_id,
+            query="Explique com fontes.",
+        ),
+    )
+
+    assert service.rag.last_query_param.model_func is not None
+    assert service.rag.last_query_param.model_func.keywords["max_tokens"] == 120
+
+
+@pytest.mark.asyncio
 async def test_little_bull_agent_context_budget_validates_agent_and_window(tmp_path):
     principal, service = await _principal_and_service_with_admin_store(tmp_path)
     agent = await service.upsert_agent_config(
@@ -3977,10 +4065,13 @@ async def test_little_bull_query_enforces_agent_context_budget_before_rag(tmp_pa
             workspace_id="default",
             agent_id=agent.agent_id,
             query="Explique o contrato com fontes.",
+            top_k=1,
         ),
     )
     assert response.response.startswith("Answer for")
     assert service.rag.last_query_param.max_total_tokens < 9000
+    assert service.rag.last_query_param.top_k == 1
+    assert service.rag.last_query_param.chunk_top_k == 1
     events = await service.audit.list(tenant_id="default", workspace_id="default")
     success = next(event for event in events if event.result == "success")
     assert success.metadata["agent_context_budget"]["agent_context_budget_id"] == budget.agent_context_budget_id
@@ -3989,8 +4080,21 @@ async def test_little_bull_query_enforces_agent_context_budget_before_rag(tmp_pa
 
 
 @pytest.mark.asyncio
-async def test_little_bull_query_blocks_agent_context_budget_cost_overflow(tmp_path):
+async def test_little_bull_query_blocks_agent_context_budget_cost_overflow(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
     principal, service = await _principal_and_service_with_admin_store(tmp_path)
+    runtime_model = await service.upsert_model_setting(
+        principal,
+        workspace_id="default",
+        payload=LittleBullModelSetting(
+            usage="agent",
+            provider="openrouter",
+            binding="openai",
+            binding_host="https://openrouter.ai/api/v1",
+            model_id="openai/runtime-cost-budget",
+            display_name="Runtime Cost Budget",
+        ),
+    )
     agent = await service.upsert_agent_config(
         principal,
         workspace_id="default",
@@ -3998,6 +4102,7 @@ async def test_little_bull_query_blocks_agent_context_budget_cost_overflow(tmp_p
             name="Agente Budget Custo",
             description="Agente com teto de custo em runtime",
             enabled=True,
+            model_setting_id=runtime_model.model_setting_id,
             tools=["query_knowledge"],
             config={
                 "identity": {"mission": "Responder com fontes e respeitar custo."},
@@ -4043,6 +4148,81 @@ async def test_little_bull_query_blocks_agent_context_budget_cost_overflow(tmp_p
     assert "daily cost budget" in exc.value.detail
     assert service.rag.query_calls == 1
     assert len(service.admin_store.usage_ledger) == 1
+
+
+@pytest.mark.asyncio
+async def test_little_bull_query_reserves_cost_budget_before_concurrent_rag(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    rag = SlowFakeRag()
+    principal, service = await _principal_and_service(tmp_path, rag=rag)
+    service.admin_store = FakeAdminStore()
+    runtime_model = await service.upsert_model_setting(
+        principal,
+        workspace_id="default",
+        payload=LittleBullModelSetting(
+            usage="agent",
+            provider="openrouter",
+            binding="openai",
+            binding_host="https://openrouter.ai/api/v1",
+            model_id="openai/runtime-concurrent-budget",
+            display_name="Runtime Concurrent Budget",
+        ),
+    )
+    agent = await service.upsert_agent_config(
+        principal,
+        workspace_id="default",
+        payload=LittleBullAgentConfig(
+            name="Agente Budget Concorrente",
+            description="Agente com teto de uma requisicao",
+            enabled=True,
+            model_setting_id=runtime_model.model_setting_id,
+            tools=["query_knowledge"],
+            config={
+                "identity": {"mission": "Responder com fontes e respeitar custo."},
+                "tests": [{"name": "concorrencia", "input": "Pergunta", "expected_behavior": "Reservar antes"}],
+            },
+        ),
+    )
+    await service.upsert_agent_context_budget(
+        principal,
+        workspace_id="default",
+        payload=LittleBullAgentContextBudgetRequest(
+            agent_id=agent.agent_id,
+            max_context_tokens=9000,
+            reserved_response_tokens=1000,
+            daily_cost_limit_usd=0.02,
+            policy={"estimated_request_cost_usd": 0.02},
+        ),
+    )
+
+    results = await asyncio.gather(
+        service.query(
+            principal,
+            LittleBullQueryRequest(
+                workspace_id="default",
+                agent_id=agent.agent_id,
+                query="Explique o contrato com fontes.",
+            ),
+        ),
+        service.query(
+            principal,
+            LittleBullQueryRequest(
+                workspace_id="default",
+                agent_id=agent.agent_id,
+                query="Explique o contrato com fontes.",
+            ),
+        ),
+        return_exceptions=True,
+    )
+
+    successes = [result for result in results if not isinstance(result, Exception)]
+    failures = [result for result in results if isinstance(result, HTTPException)]
+    assert len(successes) == 1
+    assert len(failures) == 1
+    assert failures[0].status_code == 422
+    assert rag.query_calls == 1
+    assert len(service.admin_store.usage_ledger) == 1
+    assert service.admin_store.usage_ledger[0]["metadata"]["status"] == "reserved"
 
 
 @pytest.mark.asyncio
@@ -4093,6 +4273,451 @@ async def test_little_bull_query_blocks_legacy_cost_budget_without_context_cap(t
     assert exc.value.status_code == 422
     assert "max_context_tokens" in exc.value.detail
     assert service.rag.query_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_little_bull_cost_summary_aggregates_periods_and_dimensions(tmp_path):
+    principal, service = await _principal_and_service_with_admin_store(tmp_path)
+    group, subgroup = await _create_group_and_subgroup(service, principal)
+    agent = await service.upsert_agent_config(
+        principal,
+        workspace_id="default",
+        payload=LittleBullAgentConfig(
+            name="Agente Custos",
+            description="Agente para sumarizar custos",
+            enabled=True,
+            tools=["query_knowledge"],
+            config={
+                "identity": {"mission": "Responder com fontes."},
+                "tests": [{"name": "custos", "input": "Pergunta", "expected_behavior": "Somar"}],
+            },
+        ),
+    )
+    now = utc_now()
+    service.admin_store.usage_ledger.extend(
+        [
+            {
+                "usage_ledger_id": "ledger-today",
+                "tenant_id": "default",
+                "workspace_id": "default",
+                "user_id": principal.user_id,
+                "agent_id": agent.agent_id,
+                "provider": "openrouter",
+                "model_id": "openai/model-a",
+                "operation": "agent_query",
+                "prompt_tokens": 100,
+                "completion_tokens": 50,
+                "total_tokens": 150,
+                "estimated_cost_usd": 0.02,
+                "actual_cost_usd": None,
+                "currency": "USD",
+                "metadata": {"group_id": group.group_id, "subgroup_id": subgroup.subgroup_id},
+                "created_at": now - timedelta(hours=1),
+            },
+            {
+                "usage_ledger_id": "ledger-week",
+                "tenant_id": "default",
+                "workspace_id": "default",
+                "user_id": principal.user_id,
+                "agent_id": agent.agent_id,
+                "provider": "openrouter",
+                "model_id": "openai/model-b",
+                "operation": "agent_query",
+                "prompt_tokens": 200,
+                "completion_tokens": 100,
+                "total_tokens": 300,
+                "estimated_cost_usd": 0.06,
+                "actual_cost_usd": 0.05,
+                "currency": "USD",
+                "metadata": {"group_id": group.group_id, "subgroup_id": subgroup.subgroup_id},
+                "created_at": now - timedelta(days=3),
+            },
+            {
+                "usage_ledger_id": "ledger-old",
+                "tenant_id": "default",
+                "workspace_id": "default",
+                "user_id": "other-user",
+                "agent_id": None,
+                "provider": "openrouter",
+                "model_id": "openai/model-old",
+                "operation": "embedding_reindex",
+                "prompt_tokens": 300,
+                "completion_tokens": 0,
+                "total_tokens": 300,
+                "estimated_cost_usd": 0.10,
+                "actual_cost_usd": None,
+                "currency": "USD",
+                "metadata": {},
+                "created_at": now - timedelta(days=40),
+            },
+            {
+                "usage_ledger_id": "ledger-other-workspace",
+                "tenant_id": "default",
+                "workspace_id": "other",
+                "user_id": principal.user_id,
+                "agent_id": agent.agent_id,
+                "provider": "openrouter",
+                "model_id": "openai/model-a",
+                "operation": "agent_query",
+                "prompt_tokens": 999,
+                "completion_tokens": 999,
+                "total_tokens": 1998,
+                "estimated_cost_usd": 9.99,
+                "actual_cost_usd": None,
+                "currency": "USD",
+                "metadata": {"group_id": group.group_id, "subgroup_id": subgroup.subgroup_id},
+                "created_at": now,
+            },
+        ]
+    )
+
+    summary = await service.summarize_costs(principal, workspace_id="default")
+
+    assert summary.periods["total"].request_count == 3
+    assert summary.periods["total"].cost_usd == 0.17
+    assert summary.periods["month"].cost_usd == 0.07
+    assert summary.periods["last_7_days"].cost_usd == 0.07
+    assert summary.periods["today"].cost_usd == 0.02
+    principal_user = next(item for item in summary.by_user if item.key == principal.user_id)
+    assert principal_user.cost_usd == 0.07
+    assert summary.by_model[0].key == "openai/model-old"
+    scoped_group = next(
+        item for item in summary.by_group_subgroup if item.key == f"{group.group_id}:{subgroup.subgroup_id}"
+    )
+    assert scoped_group.cost_usd == 0.07
+    assert {item.key for item in summary.by_operation} == {"agent_query", "embedding_reindex"}
+
+    scoped = await service.summarize_costs(
+        principal,
+        workspace_id="default",
+        group_id=group.group_id,
+        subgroup_id=subgroup.subgroup_id,
+    )
+
+    assert scoped.periods["total"].request_count == 2
+    assert scoped.periods["total"].cost_usd == 0.07
+    assert scoped.by_operation[0].key == "agent_query"
+    events = await service.audit.list(tenant_id="default", workspace_id="default")
+    assert any(event.result == "cost_summary" for event in events)
+
+
+@pytest.mark.asyncio
+async def test_little_bull_query_budget_fails_closed_when_reserved_response_cannot_be_enforced(tmp_path):
+    rag = FakeRag(
+        llm_binding="openai",
+        llm_model="openai/gpt-4o-mini",
+        llm_host="https://openrouter.ai/api/v1",
+    )
+    principal, service = await _principal_and_service(tmp_path, rag=rag)
+    service.admin_store = FakeAdminStore()
+    await service.repository.set_policy(
+        PRIVATE_DATA_HOSTED_LLM_EXCEPTION_POLICY,
+        {
+            "schema_version": 1,
+            "enabled": True,
+            "provider": "openrouter",
+            "binding": "openai",
+            "binding_host": "https://openrouter.ai/api/v1",
+            "allowed_model_ids": ["openai/gpt-4o-mini"],
+            "allowed_confidentiality": ["privado"],
+            "expires_at": "2099-01-01T00:00:00Z",
+            "approved_by": principal.user_id,
+            "approved_at": "2026-04-28T00:00:00Z",
+            "approval_id": "apr_reserved_response",
+            "reason": "Hosted exception for fail-closed reserved response test.",
+        },
+        tenant_id="default",
+        workspace_id="default",
+    )
+    agent = await service.upsert_agent_config(
+        principal,
+        workspace_id="default",
+        payload=LittleBullAgentConfig(
+            name="Agente Sem Func",
+            description="Agente com budget mas rota hospedada sem model_func enforceable",
+            enabled=True,
+            tools=["query_knowledge"],
+            config={
+                "identity": {"mission": "Responder com fontes."},
+                "tests": [{"name": "reserved", "input": "Pergunta", "expected_behavior": "Bloquear"}],
+            },
+        ),
+    )
+    await service.upsert_agent_context_budget(
+        principal,
+        workspace_id="default",
+        payload=LittleBullAgentContextBudgetRequest(
+            agent_id=agent.agent_id,
+            max_context_tokens=9000,
+            reserved_response_tokens=120,
+        ),
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        await service.query(
+            principal,
+            LittleBullQueryRequest(
+                workspace_id="default",
+                agent_id=agent.agent_id,
+                query="Explique com fontes.",
+                confidentiality="privado",
+                model_profile="equilibrado",
+            ),
+        )
+
+    assert exc.value.status_code == 422
+    assert "reserved response token limit" in exc.value.detail
+    assert rag.query_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_little_bull_context_estimate_scopes_documents_and_flags_overflow(tmp_path):
+    principal, service = await _principal_and_service_with_admin_store(tmp_path)
+    group, subgroup = await _create_group_and_subgroup(service, principal)
+    other_subgroup = await service.upsert_knowledge_subgroup(
+        principal,
+        workspace_id="default",
+        payload=LittleBullKnowledgeSubgroupRequest(
+            group_id=group.group_id,
+            name="Outro",
+            slug="outro",
+        ),
+    )
+    runtime_model = await service.upsert_model_setting(
+        principal,
+        workspace_id="default",
+        payload=LittleBullModelSetting(
+            usage="agent",
+            provider="openrouter",
+            binding="openai",
+            binding_host="https://openrouter.ai/api/v1",
+            model_id="openai/context-window",
+            display_name="Context Window",
+            config={"context_window": 200},
+        ),
+    )
+    agent = await service.upsert_agent_config(
+        principal,
+        workspace_id="default",
+        payload=LittleBullAgentConfig(
+            name="Agente Contexto",
+            description="Agente para estimar contexto",
+            enabled=True,
+            model_setting_id=runtime_model.model_setting_id,
+            tools=["query_knowledge"],
+            config={
+                "identity": {"mission": "Responder com fontes."},
+                "model": {"max_tokens": 40},
+                "tests": [{"name": "contexto", "input": "Pergunta", "expected_behavior": "Calcular"}],
+            },
+        ),
+    )
+    await service.upsert_agent_context_budget(
+        principal,
+        workspace_id="default",
+        payload=LittleBullAgentContextBudgetRequest(
+            agent_id=agent.agent_id,
+            max_context_tokens=120,
+            reserved_response_tokens=30,
+        ),
+    )
+    doc = await service.admin_store.register_document(
+        {
+            "group_id": group.group_id,
+            "subgroup_id": subgroup.subgroup_id,
+            "title": "contrato.md",
+            "source_uri": "contrato.md",
+            "source_kind": "upload",
+            "mime_type": "text/markdown",
+            "content_hash": "hash-context",
+            "confidentiality": "normal",
+            "status": "processed",
+            "chunk_count": 4,
+            "metadata": {"estimated_tokens": 400},
+        },
+        tenant_id="default",
+        workspace_id="default",
+        user_id=principal.user_id,
+    )
+    other_doc = await service.admin_store.register_document(
+        {
+            "group_id": group.group_id,
+            "subgroup_id": other_subgroup.subgroup_id,
+            "title": "fora.md",
+            "source_uri": "fora.md",
+            "source_kind": "upload",
+            "mime_type": "text/markdown",
+            "content_hash": "hash-other-context",
+            "confidentiality": "normal",
+            "status": "processed",
+            "chunk_count": 10,
+            "metadata": {"estimated_tokens": 2000},
+        },
+        tenant_id="default",
+        workspace_id="default",
+        user_id=principal.user_id,
+    )
+
+    estimate = await service.estimate_context(
+        principal,
+        LittleBullContextEstimateRequest(
+            workspace_id="default",
+            agent_id=agent.agent_id,
+            group_id=group.group_id,
+            subgroup_id=subgroup.subgroup_id,
+            query="Explique o contrato com fontes.",
+            conversation_history=[{"role": "user", "content": "Histórico " * 40}],
+            top_k=2,
+        ),
+    )
+
+    assert estimate.model_setting_id == runtime_model.model_setting_id
+    assert estimate.context_window_tokens == 200
+    assert estimate.document_count == 1
+    assert estimate.chunk_count == 2
+    assert estimate.chunk_tokens == 200
+    assert estimate.reserved_response_tokens == 30
+    assert estimate.overflow is True
+    assert estimate.overflow_tokens > 0
+    assert estimate.available_context_tokens == 120 - estimate.total_estimated_tokens
+    assert estimate.overflow_tokens == estimate.total_estimated_tokens - 120
+    assert any("budget caps" in note for note in estimate.notes)
+    events = await service.audit.list(tenant_id="default", workspace_id="default")
+    assert events[0].result == "context_estimate"
+
+    with pytest.raises(HTTPException) as exc:
+        await service.estimate_context(
+            principal,
+            LittleBullContextEstimateRequest(
+                workspace_id="default",
+                group_id=group.group_id,
+                subgroup_id=subgroup.subgroup_id,
+                document_ids=[other_doc["document_id"]],
+                query="Explique documento fora do subgrupo.",
+            ),
+        )
+    assert exc.value.status_code == 422
+
+    narrow = await service.estimate_context(
+        principal,
+        LittleBullContextEstimateRequest(
+            workspace_id="default",
+            group_id=group.group_id,
+            subgroup_id=subgroup.subgroup_id,
+            document_ids=[doc["document_id"]],
+            query="Resumo.",
+            top_k=1,
+            reserved_response_tokens=10,
+        ),
+    )
+    assert narrow.document_count == 1
+    assert narrow.chunk_count == 1
+    assert narrow.retrieval_chunk_limit == 1
+    assert narrow.reserved_response_tokens == 10
+
+
+@pytest.mark.asyncio
+async def test_little_bull_query_validates_scope_and_fails_closed_until_filters_exist(tmp_path):
+    principal, service = await _principal_and_service_with_admin_store(tmp_path)
+    group, subgroup = await _create_group_and_subgroup(service, principal)
+    other_subgroup = await service.upsert_knowledge_subgroup(
+        principal,
+        workspace_id="default",
+        payload=LittleBullKnowledgeSubgroupRequest(
+            group_id=group.group_id,
+            name="Outro",
+            slug="outro-query",
+        ),
+    )
+    doc = await service.admin_store.register_document(
+        {
+            "group_id": group.group_id,
+            "subgroup_id": subgroup.subgroup_id,
+            "title": "contrato-query.md",
+            "source_uri": "contrato-query.md",
+            "source_kind": "upload",
+            "mime_type": "text/markdown",
+            "content_hash": "hash-query-scope",
+            "confidentiality": "normal",
+            "status": "processed",
+            "chunk_count": 2,
+            "metadata": {"estimated_tokens": 120},
+        },
+        tenant_id="default",
+        workspace_id="default",
+        user_id=principal.user_id,
+    )
+    other_doc = await service.admin_store.register_document(
+        {
+            "group_id": group.group_id,
+            "subgroup_id": other_subgroup.subgroup_id,
+            "title": "fora-query.md",
+            "source_uri": "fora-query.md",
+            "source_kind": "upload",
+            "mime_type": "text/markdown",
+            "content_hash": "hash-query-other",
+            "confidentiality": "normal",
+            "status": "processed",
+            "chunk_count": 2,
+            "metadata": {"estimated_tokens": 120},
+        },
+        tenant_id="default",
+        workspace_id="default",
+        user_id=principal.user_id,
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        await service.query(
+            principal,
+            LittleBullQueryRequest(
+                workspace_id="default",
+                query="Explique somente este documento.",
+                group_id=group.group_id,
+                subgroup_id=subgroup.subgroup_id,
+                document_ids=[doc["document_id"]],
+            ),
+        )
+
+    assert exc.value.status_code == 422
+    assert "Scoped Little Bull queries require data-plane filter support" in exc.value.detail
+    assert service.rag.query_calls == 0
+    events = await service.audit.list(tenant_id="default", workspace_id="default")
+    blocked = next(event for event in events if event.result == "blocked")
+    assert blocked.metadata["reason"] == "scoped_query_filters_unavailable"
+    assert blocked.metadata["scope"]["document_ids"] == [doc["document_id"]]
+
+    with pytest.raises(HTTPException) as exc:
+        await service.query(
+            principal,
+            LittleBullQueryRequest(
+                workspace_id="default",
+                query="Explique documento fora.",
+                group_id=group.group_id,
+                subgroup_id=subgroup.subgroup_id,
+                document_ids=[other_doc["document_id"]],
+            ),
+        )
+
+    assert exc.value.status_code == 422
+    assert "outside subgroup scope" in exc.value.detail
+    assert service.rag.query_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_little_bull_context_estimate_requires_group_for_subgroup(tmp_path):
+    principal, service = await _principal_and_service_with_admin_store(tmp_path)
+
+    with pytest.raises(HTTPException) as exc:
+        await service.estimate_context(
+            principal,
+            LittleBullContextEstimateRequest(
+                workspace_id="default",
+                subgroup_id="subgroup-1",
+                query="Pergunta com contexto.",
+            ),
+        )
+
+    assert exc.value.status_code == 422
 
 
 @pytest.mark.asyncio

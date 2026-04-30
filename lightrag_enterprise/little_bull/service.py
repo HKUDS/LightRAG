@@ -7,7 +7,7 @@ import json
 import os
 import re
 import shutil
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from functools import partial
 from io import BytesIO
 from pathlib import Path
@@ -26,6 +26,7 @@ from lightrag_enterprise.system import (
     ACTIVITY_AGENT_MANAGE,
     ACTIVITY_AREA_READ,
     ACTIVITY_ASSISTANTS_READ,
+    ACTIVITY_AUDIT_READ,
     ACTIVITY_DOCUMENT_DELETE,
     ACTIVITY_DOCUMENT_READ,
     ACTIVITY_DOCUMENT_REINDEX,
@@ -82,6 +83,11 @@ from .models import (
     LittleBullCanvasEdgeRequest,
     LittleBullCanvasNodeRequest,
     LittleBullContentMapRequest,
+    LittleBullContextEstimateRequest,
+    LittleBullContextEstimateResponse,
+    LittleBullCostBreakdownItem,
+    LittleBullCostPeriodSummary,
+    LittleBullCostSummaryResponse,
     LittleBullConversation,
     LittleBullConversationSaveRequest,
     LittleBullCorrelationSuggestion,
@@ -2710,6 +2716,11 @@ class LittleBullService:
         self._require(principal, ACTIVITY_QUERY, request.workspace_id)
         rag = await self._require_data_plane(request.workspace_id)
         tenant_id = await self._workspace_tenant(request.workspace_id)
+        scope_metadata = await self._query_scope_metadata(
+            tenant_id=tenant_id,
+            workspace_id=request.workspace_id,
+            request=request,
+        )
         agent_config = await self._agent_config_for_query(
             tenant_id=tenant_id,
             workspace_id=request.workspace_id,
@@ -2777,6 +2788,26 @@ class LittleBullService:
                     "workspace_contains_private_data": workspace_contains_private_data,
                 },
             )
+        if scope_metadata["scoped"] and not getattr(rag, "little_bull_scoped_query_supported", False):
+            await self.audit.record(
+                principal=principal,
+                action=ACTIVITY_QUERY,
+                tenant_id=tenant_id,
+                workspace_id=request.workspace_id,
+                result="blocked",
+                model=effective_model_profile,
+                metadata={
+                    "reason": "scoped_query_filters_unavailable",
+                    "scope": scope_metadata,
+                },
+            )
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=(
+                    "Scoped Little Bull queries require data-plane filter support. "
+                    "Use /little-bull/context/estimate as a control-plane preflight until scoped retrieval is enabled."
+                ),
+            )
 
         param = QueryParam(
             mode=self._effective_query_mode(request.mode, agent_config),
@@ -2784,6 +2815,8 @@ class LittleBullService:
             stream=False,
             conversation_history=request.conversation_history,
         )
+        if scope_metadata["scoped"]:
+            setattr(param, "little_bull_scope", scope_metadata)
         if agent_config:
             param.user_prompt = build_agent_studio_prompt(agent_config)
         budget = await self._agent_context_budget_for_query(
@@ -2822,20 +2855,44 @@ class LittleBullService:
             )
             raise
         self._apply_agent_context_budget_to_query_param(param, budget_metadata)
+        reserved_response_tokens = int(budget_metadata.get("reserved_response_tokens") or 0)
         if route_decision.requires_private_runtime:
             if route_decision.model_func is not None:
-                param.model_func = route_decision.model_func
+                param.model_func = self._model_func_with_reserved_response_limit(
+                    route_decision.model_func,
+                    reserved_response_tokens,
+                )
         elif not route_decision.hosted_private_exception:
             model_func = await self._model_func_for_profile(
                 tenant_id=tenant_id,
                 workspace_id=request.workspace_id,
                 model_profile=effective_model_profile,
                 agent_config=agent_config,
+                reserved_response_tokens=reserved_response_tokens,
             )
             if model_func is not None:
                 param.model_func = model_func
+        if budget and reserved_response_tokens and agent_config and param.model_func is None:
+            await self.audit.record(
+                principal=principal,
+                action=ACTIVITY_QUERY,
+                tenant_id=tenant_id,
+                workspace_id=request.workspace_id,
+                result="blocked",
+                model=effective_model_profile,
+                metadata={
+                    "reason": "agent_context_budget",
+                    "detail": "Agent context budget requires an enforceable reserved response token limit.",
+                    "agent_id": request.agent_id,
+                },
+            )
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="Agent context budget requires an enforceable reserved response token limit.",
+            )
         if request.top_k is not None:
             param.top_k = request.top_k
+            param.chunk_top_k = request.top_k
         usage_ledger_id = await self._reserve_agent_query_budget_ledger(
             tenant_id=tenant_id,
             workspace_id=request.workspace_id,
@@ -2845,6 +2902,7 @@ class LittleBullService:
             budget_metadata=budget_metadata,
             effective_model_profile=effective_model_profile,
             query=request.query,
+            scope_metadata=scope_metadata,
         )
         result = await self._aquery_with_private_cache_guard(
             request.query,
@@ -2868,6 +2926,7 @@ class LittleBullService:
                 effective_model_profile=effective_model_profile,
                 query=request.query,
                 response=response_content,
+                scope_metadata=scope_metadata,
             )
         await self.audit.record(
             principal=principal,
@@ -2884,6 +2943,7 @@ class LittleBullService:
                 "effective_model_profile": effective_model_profile,
                 "reference_count": len(references),
                 "agent_context_budget": budget_metadata,
+                "scope": scope_metadata,
                 "private_gateway": {
                     **route_decision.audit_metadata(),
                     "cache_disabled": cache_disabled,
@@ -2896,6 +2956,514 @@ class LittleBullService:
             workspace_id=request.workspace_id,
             model_profile=effective_model_profile,
         )
+
+    async def summarize_costs(
+        self,
+        principal: Principal,
+        *,
+        workspace_id: str,
+        user_id: str | None = None,
+        agent_id: str | None = None,
+        model_id: str | None = None,
+        operation: str | None = None,
+        group_id: str | None = None,
+        subgroup_id: str | None = None,
+    ) -> LittleBullCostSummaryResponse:
+        self._require(principal, ACTIVITY_AUDIT_READ, workspace_id)
+        tenant_id, workspace_id = await self._existing_workspace_scope(workspace_id)
+        if subgroup_id and not group_id:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="subgroup_id requires group_id for cost summaries.",
+            )
+        if group_id:
+            await self._require_existing_group(
+                tenant_id=tenant_id,
+                workspace_id=workspace_id,
+                group_id=group_id,
+            )
+        if subgroup_id:
+            await self._require_existing_subgroup(
+                tenant_id=tenant_id,
+                workspace_id=workspace_id,
+                group_id=group_id,
+                subgroup_id=subgroup_id,
+            )
+        if not hasattr(self.admin_store, "list_llm_usage_ledger"):
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="LLM usage ledger is unavailable for cost summaries.",
+            )
+        rows = await self.admin_store.list_llm_usage_ledger(
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            user_id=user_id,
+            agent_id=agent_id,
+            model_id=model_id,
+            operation=operation,
+        )
+        filters = {
+            "user_id": user_id,
+            "agent_id": agent_id,
+            "model_id": model_id,
+            "operation": operation,
+            "group_id": group_id,
+            "subgroup_id": subgroup_id,
+        }
+        filtered_rows = [
+            row
+            for row in rows
+            if self._ledger_row_matches_scope(row, group_id=group_id, subgroup_id=subgroup_id)
+        ]
+        now = utc_now()
+        today = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        periods = {
+            "total": self._cost_period_summary("total", filtered_rows, since=None),
+            "month": self._cost_period_summary("month", filtered_rows, since=today.replace(day=1)),
+            "last_7_days": self._cost_period_summary("last_7_days", filtered_rows, since=now - timedelta(days=7)),
+            "today": self._cost_period_summary("today", filtered_rows, since=today),
+        }
+        await self.audit.record(
+            principal=principal,
+            action=ACTIVITY_AUDIT_READ,
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            result="cost_summary",
+            metadata={
+                "filters": {key: value for key, value in filters.items() if value},
+                "request_count": periods["total"].request_count,
+                "cost_usd": periods["total"].cost_usd,
+            },
+        )
+        return LittleBullCostSummaryResponse(
+            workspace_id=workspace_id,
+            generated_at=now.isoformat(),
+            filters=filters,
+            periods=periods,
+            by_user=self._cost_breakdown(filtered_rows, "user"),
+            by_agent=self._cost_breakdown(filtered_rows, "agent"),
+            by_model=self._cost_breakdown(filtered_rows, "model"),
+            by_group_subgroup=self._cost_breakdown(filtered_rows, "group_subgroup"),
+            by_operation=self._cost_breakdown(filtered_rows, "operation"),
+        )
+
+    async def estimate_context(
+        self,
+        principal: Principal,
+        request: LittleBullContextEstimateRequest,
+    ) -> LittleBullContextEstimateResponse:
+        self._require(principal, ACTIVITY_QUERY, request.workspace_id)
+        tenant_id, workspace_id = await self._existing_workspace_scope(request.workspace_id)
+        if request.subgroup_id and not request.group_id:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="subgroup_id requires group_id for context estimates.",
+            )
+        if request.group_id:
+            await self._require_existing_group(
+                tenant_id=tenant_id,
+                workspace_id=workspace_id,
+                group_id=request.group_id,
+            )
+        if request.subgroup_id:
+            await self._require_existing_subgroup(
+                tenant_id=tenant_id,
+                workspace_id=workspace_id,
+                group_id=request.group_id,
+                subgroup_id=request.subgroup_id,
+            )
+        agent_config = await self._agent_config_for_query(
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            agent_id=request.agent_id,
+        )
+        await self._require_agent_runtime_model_setting(
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            agent_config=agent_config,
+        )
+        model_setting = await self._context_model_setting_for_estimate(
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            model_profile=request.model_profile,
+            agent_config=agent_config,
+        )
+        budget = await self._agent_context_budget_for_query(
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            agent_config=agent_config,
+        )
+        query_tokens = estimate_tokens_from_characters(len(request.query))
+        history_text = "\n".join(str(item.get("content") or "") for item in request.conversation_history)
+        history_tokens = estimate_tokens_from_characters(len(history_text))
+        agent_prompt = build_agent_studio_prompt(agent_config) if agent_config else ""
+        agent_prompt_tokens = estimate_tokens_from_characters(len(agent_prompt))
+        documents, document_tokens, chunk_count, chunk_tokens, doc_notes = await self._document_context_estimate(
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            group_id=request.group_id,
+            subgroup_id=request.subgroup_id,
+            document_ids=request.document_ids,
+            top_k=request.top_k,
+        )
+        agent_model_config = (
+            normalize_agent_studio_config(agent_config.get("config"), agent_config.get("tools") or []).get("model", {})
+            if agent_config
+            else {}
+        )
+        reserved_response_tokens = int(
+            request.reserved_response_tokens
+            if request.reserved_response_tokens is not None
+            else (budget or {}).get("reserved_response_tokens")
+            or agent_model_config.get("max_tokens")
+            or 1200
+        )
+        context_window_tokens, window_notes = self._context_window_tokens(
+            model_setting=model_setting,
+        )
+        budget_context_tokens = int((budget or {}).get("max_context_tokens") or 0)
+        effective_context_window = (
+            min(context_window_tokens, budget_context_tokens)
+            if budget_context_tokens
+            else context_window_tokens
+        )
+        total_estimated_tokens = (
+            query_tokens
+            + history_tokens
+            + agent_prompt_tokens
+            + chunk_tokens
+            + reserved_response_tokens
+        )
+        available_context_tokens = effective_context_window - total_estimated_tokens
+        overflow_tokens = max(0, -available_context_tokens)
+        notes = [*window_notes, *doc_notes]
+        if budget_context_tokens:
+            notes.append("Agent context budget caps the effective context window.")
+        if overflow_tokens:
+            notes.append("Estimated context exceeds the effective window; reduce history, scope, chunks or reserved response.")
+        await self.audit.record(
+            principal=principal,
+            action=ACTIVITY_QUERY,
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            result="context_estimate",
+            model=(model_setting or {}).get("model_id") or request.model_profile,
+            metadata={
+                "agent_id": request.agent_id,
+                "group_id": request.group_id,
+                "subgroup_id": request.subgroup_id,
+                "document_count": len(documents),
+                "overflow": bool(overflow_tokens),
+            },
+        )
+        return LittleBullContextEstimateResponse(
+            workspace_id=workspace_id,
+            agent_id=request.agent_id,
+            group_id=request.group_id,
+            subgroup_id=request.subgroup_id,
+            model_setting_id=(model_setting or {}).get("model_setting_id"),
+            model_id=(model_setting or {}).get("model_id"),
+            context_window_tokens=context_window_tokens,
+            query_tokens=query_tokens,
+            history_tokens=history_tokens,
+            agent_prompt_tokens=agent_prompt_tokens,
+            document_tokens=document_tokens,
+            chunk_tokens=chunk_tokens,
+            reserved_response_tokens=reserved_response_tokens,
+            total_estimated_tokens=total_estimated_tokens,
+            available_context_tokens=available_context_tokens,
+            overflow=bool(overflow_tokens),
+            overflow_tokens=overflow_tokens,
+            document_count=len(documents),
+            chunk_count=chunk_count,
+            retrieval_chunk_limit=int(request.top_k or QueryParam().chunk_top_k),
+            notes=notes,
+        )
+
+    async def _context_model_setting_for_estimate(
+        self,
+        *,
+        tenant_id: str | None,
+        workspace_id: str,
+        model_profile: str,
+        agent_config: dict[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        if agent_config and agent_config.get("model_setting_id"):
+            return await self._model_setting_for_agent_config(
+                tenant_id=tenant_id,
+                workspace_id=workspace_id,
+                agent_config=agent_config,
+            )
+        settings = await self._model_settings_for_workspace(
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+        )
+        return next(
+            (
+                model
+                for model in settings
+                if model.get("usage") in {"chat", "agent"}
+                and model.get("enabled", True)
+                and (
+                    model.get("model_setting_id") == model_profile
+                    or model.get("config", {}).get("profile") == model_profile
+                )
+            ),
+            self._default_model(settings, "agent") or self._default_model(settings, "chat"),
+        )
+
+    @staticmethod
+    def _context_window_tokens(*, model_setting: dict[str, Any] | None) -> tuple[int, list[str]]:
+        config = (model_setting or {}).get("config") or {}
+        raw_window = (
+            config.get("context_window")
+            or config.get("context_length")
+            or config.get("max_context_tokens")
+            or (model_setting or {}).get("context_window")
+        )
+        try:
+            window = int(raw_window or 0)
+        except (TypeError, ValueError):
+            window = 0
+        if window > 0:
+            return window, []
+        return QueryParam().max_total_tokens, ["Model context window unavailable; using LightRAG max_total_tokens fallback."]
+
+    async def _query_scope_metadata(
+        self,
+        *,
+        tenant_id: str | None,
+        workspace_id: str,
+        request: LittleBullQueryRequest,
+    ) -> dict[str, Any]:
+        document_ids = [document_id for document_id in request.document_ids if document_id]
+        if request.subgroup_id and not request.group_id:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="subgroup_id requires group_id for scoped queries.",
+            )
+        if request.group_id:
+            await self._require_existing_group(
+                tenant_id=tenant_id,
+                workspace_id=workspace_id,
+                group_id=request.group_id,
+            )
+        if request.subgroup_id:
+            await self._require_existing_subgroup(
+                tenant_id=tenant_id,
+                workspace_id=workspace_id,
+                group_id=request.group_id,
+                subgroup_id=request.subgroup_id,
+            )
+        if document_ids:
+            await self._document_context_estimate(
+                tenant_id=tenant_id,
+                workspace_id=workspace_id,
+                group_id=request.group_id,
+                subgroup_id=request.subgroup_id,
+                document_ids=document_ids,
+                top_k=request.top_k,
+            )
+        return {
+            "group_id": request.group_id,
+            "subgroup_id": request.subgroup_id,
+            "document_ids": document_ids,
+            "scoped": bool(request.group_id or request.subgroup_id or document_ids),
+        }
+
+    @classmethod
+    def _cost_period_summary(
+        cls,
+        name: str,
+        rows: list[dict[str, Any]],
+        *,
+        since: datetime | None,
+    ) -> LittleBullCostPeriodSummary:
+        acc = cls._empty_cost_accumulator()
+        for row in rows:
+            created_at = cls._ledger_created_at(row)
+            if since is not None and created_at is not None and created_at < since:
+                continue
+            cls._add_cost_row(acc, row)
+        return LittleBullCostPeriodSummary(name=name, since=since.isoformat() if since else None, **acc)
+
+    @classmethod
+    def _cost_breakdown(cls, rows: list[dict[str, Any]], dimension: str) -> list[LittleBullCostBreakdownItem]:
+        buckets: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            key, label, metadata = cls._cost_breakdown_key(row, dimension)
+            bucket = buckets.setdefault(
+                key,
+                {
+                    "label": label,
+                    "metadata": metadata,
+                    **cls._empty_cost_accumulator(),
+                },
+            )
+            cls._add_cost_row(bucket, row)
+        items = [
+            LittleBullCostBreakdownItem(key=key, label=bucket.pop("label"), metadata=bucket.pop("metadata"), **bucket)
+            for key, bucket in buckets.items()
+        ]
+        return sorted(items, key=lambda item: (-item.cost_usd, item.key))
+
+    @staticmethod
+    def _empty_cost_accumulator() -> dict[str, Any]:
+        return {
+            "request_count": 0,
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
+            "estimated_cost_usd": 0.0,
+            "actual_cost_usd": 0.0,
+            "cost_usd": 0.0,
+        }
+
+    @classmethod
+    def _add_cost_row(cls, acc: dict[str, Any], row: dict[str, Any]) -> None:
+        estimated_cost = cls._float_or_none(row.get("estimated_cost_usd")) or 0.0
+        actual_cost = cls._float_or_none(row.get("actual_cost_usd"))
+        acc["request_count"] += 1
+        acc["prompt_tokens"] += int(row.get("prompt_tokens") or 0)
+        acc["completion_tokens"] += int(row.get("completion_tokens") or 0)
+        acc["total_tokens"] += int(row.get("total_tokens") or 0)
+        acc["estimated_cost_usd"] = round(float(acc["estimated_cost_usd"]) + estimated_cost, 8)
+        if actual_cost is not None:
+            acc["actual_cost_usd"] = round(float(acc["actual_cost_usd"]) + actual_cost, 8)
+        acc["cost_usd"] = round(float(acc["cost_usd"]) + (actual_cost if actual_cost is not None else estimated_cost), 8)
+
+    @classmethod
+    def _cost_breakdown_key(cls, row: dict[str, Any], dimension: str) -> tuple[str, str, dict[str, Any]]:
+        metadata = cls._ledger_metadata(row)
+        if dimension == "user":
+            key = str(row.get("user_id") or "unassigned")
+            return key, key, {"user_id": row.get("user_id")}
+        if dimension == "agent":
+            key = str(row.get("agent_id") or "unassigned")
+            return key, key, {"agent_id": row.get("agent_id")}
+        if dimension == "model":
+            provider = str(row.get("provider") or "")
+            model_id = str(row.get("model_id") or "unknown")
+            label = f"{provider}/{model_id}" if provider else model_id
+            return model_id, label, {"provider": provider, "model_id": model_id}
+        if dimension == "group_subgroup":
+            group_id = metadata.get("group_id") or "unscoped"
+            subgroup_id = metadata.get("subgroup_id") or "unscoped"
+            key = f"{group_id}:{subgroup_id}"
+            return key, key, {"group_id": metadata.get("group_id"), "subgroup_id": metadata.get("subgroup_id")}
+        key = str(row.get("operation") or "unknown")
+        return key, key, {"operation": row.get("operation")}
+
+    @classmethod
+    def _ledger_row_matches_scope(
+        cls,
+        row: dict[str, Any],
+        *,
+        group_id: str | None,
+        subgroup_id: str | None,
+    ) -> bool:
+        metadata = cls._ledger_metadata(row)
+        if group_id and metadata.get("group_id") != group_id:
+            return False
+        if subgroup_id and metadata.get("subgroup_id") != subgroup_id:
+            return False
+        return True
+
+    @staticmethod
+    def _ledger_metadata(row: dict[str, Any]) -> dict[str, Any]:
+        metadata = row.get("metadata") or {}
+        if isinstance(metadata, str):
+            try:
+                loaded = json.loads(metadata)
+            except json.JSONDecodeError:
+                return {}
+            return loaded if isinstance(loaded, dict) else {}
+        return metadata if isinstance(metadata, dict) else {}
+
+    @staticmethod
+    def _ledger_created_at(row: dict[str, Any]) -> datetime | None:
+        value = row.get("created_at")
+        if isinstance(value, datetime):
+            return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+        if isinstance(value, str) and value:
+            try:
+                parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            except ValueError:
+                return None
+            return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+        return None
+
+    async def _document_context_estimate(
+        self,
+        *,
+        tenant_id: str | None,
+        workspace_id: str,
+        group_id: str | None,
+        subgroup_id: str | None,
+        document_ids: list[str],
+        top_k: int | None,
+    ) -> tuple[list[dict[str, Any]], int, int, int, list[str]]:
+        rows = await self.admin_store.list_document_registry(
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+        )
+        by_id = {row["document_id"]: row for row in rows}
+        requested_ids = {item for item in document_ids if item}
+        if requested_ids:
+            missing = sorted(requested_ids - set(by_id))
+            if missing:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found in workspace.")
+            rows = [by_id[document_id] for document_id in document_ids if document_id in by_id]
+        filtered = []
+        for row in rows:
+            if group_id and row.get("group_id") != group_id:
+                if requested_ids:
+                    raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Document is outside group scope.")
+                continue
+            if subgroup_id and row.get("subgroup_id") != subgroup_id:
+                if requested_ids:
+                    raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Document is outside subgroup scope.")
+                continue
+            filtered.append(row)
+        notes: list[str] = []
+        document_tokens = 0
+        chunk_count = 0
+        for row in filtered:
+            metadata = row.get("metadata") or {}
+            tokens = self._int_from_any(
+                metadata.get("estimated_tokens")
+                or metadata.get("token_count")
+                or row.get("estimated_tokens")
+            )
+            if tokens <= 0:
+                content_length = self._int_from_any(
+                    row.get("content_length")
+                    or metadata.get("content_length")
+                    or metadata.get("source_size_bytes")
+                )
+                tokens = estimate_tokens_from_characters(content_length) if content_length > 0 else 0
+            if tokens <= 0:
+                notes.append(f"Document {row['document_id']} has no token estimate; counted as 0 tokens.")
+            document_tokens += tokens
+            chunk_count += max(
+                0,
+                self._int_from_any(row.get("chunk_count") or row.get("chunks_count") or metadata.get("chunk_count")),
+            )
+        retrieval_chunk_limit = int(top_k or QueryParam().chunk_top_k)
+        if chunk_count > 0 and document_tokens > 0:
+            selected_chunks = min(chunk_count, retrieval_chunk_limit)
+            chunk_tokens = int((document_tokens / chunk_count) * selected_chunks)
+        else:
+            selected_chunks = 0
+            chunk_tokens = 0
+        return filtered, document_tokens, selected_chunks, chunk_tokens, notes
+
+    @staticmethod
+    def _int_from_any(value: Any) -> int:
+        try:
+            return int(value or 0)
+        except (TypeError, ValueError):
+            return 0
 
     async def _agent_context_budget_for_query(
         self,
@@ -2931,6 +3499,7 @@ class LittleBullService:
         budget_metadata: dict[str, Any],
         effective_model_profile: str,
         query: str,
+        scope_metadata: dict[str, Any] | None = None,
     ) -> str | None:
         if not agent_config or not budget_metadata or not budget:
             return None
@@ -2952,6 +3521,7 @@ class LittleBullService:
             effective_model_profile=effective_model_profile,
             query=query,
             response="",
+            scope_metadata=scope_metadata,
             metadata_extra={"status": "reserved"},
         )
         today = utc_now().replace(hour=0, minute=0, second=0, microsecond=0)
@@ -2994,6 +3564,7 @@ class LittleBullService:
         effective_model_profile: str,
         query: str,
         response: str,
+        scope_metadata: dict[str, Any] | None = None,
     ) -> str | None:
         if not agent_config or not budget_metadata:
             return None
@@ -3011,6 +3582,7 @@ class LittleBullService:
             effective_model_profile=effective_model_profile,
             query=query,
             response=response,
+            scope_metadata=scope_metadata,
         )
         row = await self.admin_store.insert_llm_usage_ledger(
             payload,
@@ -3031,6 +3603,7 @@ class LittleBullService:
         effective_model_profile: str,
         query: str,
         response: str,
+        scope_metadata: dict[str, Any] | None = None,
         metadata_extra: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         model_setting = await self._model_setting_for_agent_config(
@@ -3045,6 +3618,7 @@ class LittleBullService:
         total_tokens = prompt_tokens + completion_tokens
         request_hash = "sha256:" + hashlib.sha256(query.encode("utf-8")).hexdigest()
         response_hash = "sha256:" + hashlib.sha256(response.encode("utf-8")).hexdigest()
+        scope_metadata = scope_metadata or {}
         return {
             "user_id": user_id,
             "agent_id": agent_config.get("agent_id"),
@@ -3061,6 +3635,9 @@ class LittleBullService:
             "metadata": {
                 "agent_context_budget_id": budget_metadata.get("agent_context_budget_id"),
                 "effective_model_profile": effective_model_profile,
+                "group_id": scope_metadata.get("group_id"),
+                "subgroup_id": scope_metadata.get("subgroup_id"),
+                "document_ids": scope_metadata.get("document_ids") or [],
                 **(metadata_extra or {}),
             },
         }
@@ -3326,6 +3903,25 @@ class LittleBullService:
             int(getattr(param, "max_relation_tokens", available_context_tokens)),
             available_context_tokens,
         )
+
+    @staticmethod
+    def _model_func_with_reserved_response_limit(model_func: Any, reserved_response_tokens: int) -> Any:
+        if not model_func or reserved_response_tokens <= 0:
+            return model_func
+
+        async def limited_model_func(*args, **kwargs):
+            configured = LittleBullService._int_from_any(kwargs.get("max_tokens"))
+            kwargs["max_tokens"] = (
+                min(configured, reserved_response_tokens)
+                if configured > 0
+                else reserved_response_tokens
+            )
+            result = model_func(*args, **kwargs)
+            if hasattr(result, "__await__"):
+                return await result
+            return result
+
+        return limited_model_func
 
     async def delete_document(self, principal: Principal, *, workspace_id: str, document_id: str) -> dict[str, Any]:
         self._require(principal, ACTIVITY_DOCUMENT_DELETE, workspace_id)
@@ -5110,6 +5706,7 @@ class LittleBullService:
         workspace_id: str,
         model_profile: str,
         agent_config: dict[str, Any] | None,
+        reserved_response_tokens: int = 0,
     ) -> Any | None:
         try:
             models = await self.admin_store.list_model_settings(
@@ -5169,8 +5766,13 @@ class LittleBullService:
         model_kwargs: dict[str, Any] = {}
         if agent_model_config.get("temperature") is not None:
             model_kwargs["temperature"] = float(agent_model_config["temperature"])
-        if agent_model_config.get("max_tokens"):
-            model_kwargs["max_tokens"] = int(agent_model_config["max_tokens"])
+        configured_max_tokens = int(agent_model_config.get("max_tokens") or 0)
+        if configured_max_tokens and reserved_response_tokens:
+            model_kwargs["max_tokens"] = min(configured_max_tokens, reserved_response_tokens)
+        elif configured_max_tokens:
+            model_kwargs["max_tokens"] = configured_max_tokens
+        elif reserved_response_tokens:
+            model_kwargs["max_tokens"] = reserved_response_tokens
         return partial(
             openai_complete_if_cache,
             selected["model_id"],
