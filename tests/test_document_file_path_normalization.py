@@ -27,22 +27,34 @@ class DummyRAG:
 
 
 @pytest.mark.asyncio
-async def test_pipeline_index_texts_normalizes_missing_file_sources():
+async def test_pipeline_index_texts_rejects_missing_file_sources():
+    rag = DummyRAG()
+
+    with pytest.raises(ValueError, match="valid file source"):
+        await pipeline_index_texts(
+            rag,
+            texts=["alpha"],
+            file_sources=[None],
+            track_id="track-1",
+        )
+
+    assert rag.enqueued_calls == []
+    assert rag.processed is False
+
+
+@pytest.mark.asyncio
+async def test_pipeline_index_texts_normalizes_file_sources_to_basename():
     rag = DummyRAG()
 
     await pipeline_index_texts(
         rag,
         texts=["alpha"],
-        file_sources=[None],
+        file_sources=["/tmp/source/alpha.txt"],
         track_id="track-1",
     )
 
     assert rag.enqueued_calls == [
-        {
-            "input": ["alpha"],
-            "file_paths": ["unknown_source"],
-            "track_id": "track-1",
-        }
+        {"input": ["alpha"], "file_paths": ["alpha.txt"], "track_id": "track-1"}
     ]
     assert rag.processed is True
 

@@ -319,7 +319,7 @@ async def test_extract_failure_preserves_chunks_and_allows_delete_with_cache_cle
     try:
         content = "extract failure document"
         file_path = "extract_failure.txt"
-        doc_id = compute_mdhash_id(content, prefix="doc-")
+        doc_id = compute_mdhash_id(file_path, prefix="doc-")
         await rag.apipeline_enqueue_documents(input=content, file_paths=file_path)
 
         async def fail_extract(self, chunks, pipeline_status, pipeline_status_lock):
@@ -360,7 +360,7 @@ async def test_extract_failure_before_chunking_preserves_previous_chunk_snapshot
     try:
         content = "chunking failure document"
         file_path = "chunking_failure.txt"
-        doc_id = compute_mdhash_id(content, prefix="doc-")
+        doc_id = compute_mdhash_id(file_path, prefix="doc-")
         await rag.apipeline_enqueue_documents(input=content, file_paths=file_path)
 
         previous_chunks = ["chunk-old-1", "chunk-old-2", "chunk-old-3"]
@@ -405,7 +405,7 @@ async def test_merge_failure_preserves_chunks_and_skip_cache_cleanup_when_disabl
     try:
         content = "merge failure document"
         file_path = "merge_failure.txt"
-        doc_id = compute_mdhash_id(content, prefix="doc-")
+        doc_id = compute_mdhash_id(file_path, prefix="doc-")
         await rag.apipeline_enqueue_documents(input=content, file_paths=file_path)
 
         async def ok_extract(self, chunks, pipeline_status, pipeline_status_lock):
@@ -1207,7 +1207,7 @@ async def test_pipeline_cancellation_preserves_file_path_for_queued_docs(
         release_first_doc.set()
         await asyncio.wait_for(pipeline_task, timeout=5)
 
-        second_doc_id = compute_mdhash_id(contents[1], prefix="doc-")
+        second_doc_id = compute_mdhash_id(file_paths[1], prefix="doc-")
         second_status = await rag.doc_status.get_by_id(second_doc_id)
         assert second_status is not None
         assert _status_to_text(second_status["status"]) == "failed"
@@ -1232,7 +1232,7 @@ async def test_pipeline_cancellation_repairs_placeholder_file_path_for_queued_do
         file_paths = ["first.md", "second.md"]
         await rag.apipeline_enqueue_documents(input=contents, file_paths=file_paths)
 
-        second_doc_id = compute_mdhash_id(contents[1], prefix="doc-")
+        second_doc_id = compute_mdhash_id(file_paths[1], prefix="doc-")
         second_status = await rag.doc_status.get_by_id(second_doc_id)
         assert second_status is not None
         second_status["file_path"] = "unknown_source"

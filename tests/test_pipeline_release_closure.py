@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 
 from lightrag import LightRAG, ROLES, RoleLLMConfig
+from lightrag.base import DocStatus
 from lightrag.constants import FULL_DOCS_CONTENT_STORED_IN_LIGHTRAG_DOCUMENT
 from lightrag.operate import _get_relationship_vdb_timeout_seconds
 from lightrag.parser_routing import (
@@ -13,7 +14,12 @@ from lightrag.parser_routing import (
     resolve_file_parser_engine,
     validate_parser_routing_config,
 )
-from lightrag.utils import EmbeddingFunc, Tokenizer, safe_vdb_operation_with_exception
+from lightrag.utils import (
+    EmbeddingFunc,
+    Tokenizer,
+    compute_mdhash_id,
+    safe_vdb_operation_with_exception,
+)
 
 
 class _SimpleTokenizerImpl:
@@ -94,6 +100,43 @@ def test_parse_engine_rule_fallback_and_default_legacy(tmp_path, monkeypatch):
     monkeypatch.delenv("LIGHTRAG_PARSER", raising=False)
     monkeypatch.setenv("MINERU_ENDPOINT", "")
     assert rag._resolve_parser_engine("slides.pptx", {}) == "legacy"
+
+
+@pytest.mark.offline
+def test_enqueue_uses_filename_for_document_identity(tmp_path):
+    async def _run():
+        rag = _new_rag(tmp_path)
+        await rag.initialize_storages()
+        try:
+            await rag.apipeline_enqueue_documents(
+                ["same content", "same content"],
+                file_paths=["first.txt", "second.txt"],
+                track_id="track-a",
+            )
+
+            first_id = compute_mdhash_id("first.txt", prefix="doc-")
+            second_id = compute_mdhash_id("second.txt", prefix="doc-")
+            assert await rag.full_docs.get_by_id(first_id) is not None
+            assert await rag.full_docs.get_by_id(second_id) is not None
+
+            await rag.apipeline_enqueue_documents(
+                "changed content",
+                file_paths="/tmp/first.txt",
+                track_id="track-b",
+            )
+
+            first_doc = await rag.full_docs.get_by_id(first_id)
+            assert first_doc["content"] == "same content"
+            failed_docs = await rag.doc_status.get_docs_by_status(DocStatus.FAILED)
+            assert any(
+                getattr(doc, "metadata", {}).get("is_duplicate")
+                and getattr(doc, "file_path", "") == "first.txt"
+                for doc in failed_docs.values()
+            )
+        finally:
+            await rag.finalize_storages()
+
+    asyncio.run(_run())
 
 
 @pytest.mark.offline

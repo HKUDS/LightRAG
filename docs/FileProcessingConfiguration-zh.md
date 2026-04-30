@@ -52,6 +52,16 @@ report.[legacy].pdf
 
 文件名 hint 的优先级高于 `LIGHTRAG_PARSER`。如果指定的引擎不支持该后缀，系统会回退到默认规则继续选择可用引擎。如果所有规则都不可用，文件内容提取方式会回退到 `legacy`，如果legacy也不支持对应的文件后缀，会向系统加一个错误条目，上传文件保留在`INPUT`目录。
 
+## 文件重复判定规则
+
+文件上传、目录扫描、文件解析入队和文本接口都会按照文件名判断文档是否已经存在，不再依赖内容 hash 判断重复。
+
+- 判断粒度为 basename，不包含目录路径和 workspace 路径。例如 `/data/a.pdf`、`inputs/a.pdf` 和 `a.pdf` 都视为同一个文件名 `a.pdf`。
+- 只要 `doc_status` 中已经存在同名文件记录，无论该记录当前处于 `PENDING`、`PARSING`、`ANALYZING`、`PROCESSING`、`FAILED` 还是 `PROCESSED`，同名文件都会被视为重复，不会覆盖已有 `full_docs`。
+- 同名文件即使内容已经变化，也需要先删除旧文档记录后再重新上传或入队。
+- 不同文件名即使内容完全相同，也允许作为不同文档入队。
+- 文本接口必须提供有效的 `file_source`，并按 `file_source` 的 basename 判断重复；缺少有效 `file_source` 时不再使用内容 hash 兜底。
+
 ## 推荐配置
 
 ### 保持旧版行为
@@ -95,6 +105,8 @@ DOCLING_ENDPOINT=http://localhost:8081/v1/convert/file/async
 | `content` | `raw` 时保存抽取文本；`pending_parse` 时为空字符串；`lightrag` 时固定为 `{{stored-in-lightrag-doucment}}`。 |
 | `lightrag_document_path` | `format=lightrag` 时保存结构化 LightRAG Document 的相对路径。 |
 
+其中 `file_path` 是文件名重复判定和内容溯源的关键字段，建议保持稳定、可读的文件名来源。
+
 `pending_parse` 表示文件已经入队，但还没有完成抽取。抽取成功后会改写为 `raw` 或 `lightrag`。抽取失败时保留 `pending_parse` 和空 `content`，便于后续排查和重试。
 
 ## 原始文件归档
@@ -102,3 +114,4 @@ DOCLING_ENDPOINT=http://localhost:8081/v1/convert/file/async
 - `legacy`：本地抽取成功并入队后，原文件会移动到同级 `__parsed__` 目录。
 - `native` / `mineru` / `docling`：文件先保留在原位置供 pipeline 解析；解析成功并写入 `full_docs` 后，原文件再移动到 `__parsed__`。
 - 解析失败时，原文件不会移动，便于修复配置后重新处理。
+- 同名重复文件不会作为新文档入队，也不应为了重复判定而覆盖或移动既有文档源文件。

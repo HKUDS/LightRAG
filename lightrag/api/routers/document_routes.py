@@ -32,8 +32,6 @@ from lightrag.constants import (
 from lightrag.parser_routing import resolve_file_parser_engine
 from lightrag.utils import (
     generate_track_id,
-    compute_mdhash_id,
-    sanitize_text_for_encoding,
     move_file_to_parsed_dir,
 )
 from lightrag.api.utils_api import get_combined_auth_dependency
@@ -85,7 +83,13 @@ def normalize_file_path(file_path: str | None) -> str:
     if normalized in LEGACY_EMPTY_FILE_PATH_SENTINELS:
         return UNKNOWN_FILE_SOURCE
 
-    return normalized
+    return Path(normalized).name or UNKNOWN_FILE_SOURCE
+
+
+def is_valid_file_source(file_source: str | None) -> bool:
+    if file_source is None:
+        return False
+    return normalize_file_path(file_source) != UNKNOWN_FILE_SOURCE
 
 
 def sanitize_filename(filename: str, input_dir: Path) -> str:
@@ -968,9 +972,22 @@ async def get_existing_doc_by_file_path_candidates(
     doc_status: Any, file_path: Path | str
 ) -> dict[str, Any] | None:
     """Find an existing document using filename and full-path variants."""
+    target_name = normalize_file_path(str(file_path))
     for candidate in build_file_path_lookup_candidates(file_path):
         existing_doc_data = await doc_status.get_doc_by_file_path(candidate)
         if existing_doc_data:
+            return existing_doc_data
+    try:
+        docs = await doc_status.get_docs_by_statuses(list(DocStatus))
+    except Exception:
+        return None
+    for existing_doc_data in docs.values():
+        existing_path = (
+            existing_doc_data.get("file_path")
+            if isinstance(existing_doc_data, dict)
+            else getattr(existing_doc_data, "file_path", None)
+        )
+        if normalize_file_path(existing_path) == target_name:
             return existing_doc_data
     return None
 
@@ -1701,17 +1718,14 @@ async def pipeline_index_texts(
     if not texts:
         return
 
-    normalized_file_sources: list[str] | None = None
-    if file_sources:
-        normalized_file_sources = [
-            normalize_file_path(source) for source in file_sources
-        ]
-        if len(normalized_file_sources) > len(texts):
-            raise ValueError("Number of file sources must not exceed number of texts")
-        if len(normalized_file_sources) < len(texts):
-            normalized_file_sources.extend(
-                [UNKNOWN_FILE_SOURCE] * (len(texts) - len(normalized_file_sources))
-            )
+    if not file_sources or len(file_sources) != len(texts):
+        raise ValueError("A valid file source is required for each text")
+
+    normalized_file_sources = [normalize_file_path(source) for source in file_sources]
+    if any(source == UNKNOWN_FILE_SOURCE for source in normalized_file_sources):
+        raise ValueError("A valid file source is required for each text")
+    if len(set(normalized_file_sources)) != len(normalized_file_sources):
+        raise ValueError("File sources must be unique by filename")
 
     await rag.apipeline_enqueue_documents(
         input=texts, file_paths=normalized_file_sources, track_id=track_id
@@ -2270,36 +2284,24 @@ def create_document_routes(
         """
         try:
             # Check if file_source already exists in doc_status storage
-            if (
-                request.file_source
-                and request.file_source.strip()
-                and request.file_source != "unknown_source"
-            ):
-                existing_doc_data = await rag.doc_status.get_doc_by_file_path(
-                    request.file_source
+            if not is_valid_file_source(request.file_source):
+                raise HTTPException(
+                    status_code=400,
+                    detail="A valid file_source is required for text insertion",
                 )
-                if existing_doc_data:
-                    # Get document status and track_id from existing document
-                    status = existing_doc_data.get("status", "unknown")
-                    # Use `or ""` to handle both missing key and None value (e.g., legacy rows without track_id)
-                    existing_track_id = existing_doc_data.get("track_id") or ""
-                    return InsertResponse(
-                        status="duplicated",
-                        message=f"File source '{request.file_source}' already exists in document storage (Status: {status}).",
-                        track_id=existing_track_id,
-                    )
 
-            # Check if content already exists by computing content hash (doc_id)
-            sanitized_text = sanitize_text_for_encoding(request.text)
-            content_doc_id = compute_mdhash_id(sanitized_text, prefix="doc-")
-            existing_doc = await rag.doc_status.get_by_id(content_doc_id)
-            if existing_doc:
-                # Content already exists, return duplicated with existing track_id
-                status = existing_doc.get("status", "unknown")
-                existing_track_id = existing_doc.get("track_id") or ""
+            normalized_file_source = normalize_file_path(request.file_source)
+            existing_doc_data = await get_existing_doc_by_file_path_candidates(
+                rag.doc_status, normalized_file_source
+            )
+            if existing_doc_data:
+                # Get document status and track_id from existing document
+                status = get_doc_status_value(existing_doc_data) or "unknown"
+                # Use `or ""` to handle both missing key and None value (e.g., legacy rows without track_id)
+                existing_track_id = get_doc_track_id(existing_doc_data)
                 return InsertResponse(
                     status="duplicated",
-                    message=f"Identical content already exists in document storage (doc_id: {content_doc_id}, Status: {status}).",
+                    message=f"File source '{normalized_file_source}' already exists in document storage (Status: {status}).",
                     track_id=existing_track_id,
                 )
 
@@ -2310,7 +2312,7 @@ def create_document_routes(
                 pipeline_index_texts,
                 rag,
                 [request.text],
-                file_sources=[request.file_source],
+                file_sources=[normalized_file_source],
                 track_id=track_id,
             )
 
@@ -2319,6 +2321,8 @@ def create_document_routes(
                 message="Text successfully received. Processing will continue in background.",
                 track_id=track_id,
             )
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error(f"Error /documents/text: {str(e)}")
             logger.error(traceback.format_exc())
@@ -2350,39 +2354,43 @@ def create_document_routes(
         """
         try:
             # Check if any file_sources already exist in doc_status storage
-            if request.file_sources:
-                for file_source in request.file_sources:
-                    if (
-                        file_source
-                        and file_source.strip()
-                        and file_source != "unknown_source"
-                    ):
-                        existing_doc_data = await rag.doc_status.get_doc_by_file_path(
-                            file_source
-                        )
-                        if existing_doc_data:
-                            # Get document status and track_id from existing document
-                            status = existing_doc_data.get("status", "unknown")
-                            # Use `or ""` to handle both missing key and None value (e.g., legacy rows without track_id)
-                            existing_track_id = existing_doc_data.get("track_id") or ""
-                            return InsertResponse(
-                                status="duplicated",
-                                message=f"File source '{file_source}' already exists in document storage (Status: {status}).",
-                                track_id=existing_track_id,
-                            )
+            if not request.file_sources or len(request.file_sources) != len(
+                request.texts
+            ):
+                raise HTTPException(
+                    status_code=400,
+                    detail="A valid file_source is required for each text",
+                )
 
-            # Check if any content already exists by computing content hash (doc_id)
-            for text in request.texts:
-                sanitized_text = sanitize_text_for_encoding(text)
-                content_doc_id = compute_mdhash_id(sanitized_text, prefix="doc-")
-                existing_doc = await rag.doc_status.get_by_id(content_doc_id)
-                if existing_doc:
-                    # Content already exists, return duplicated with existing track_id
-                    status = existing_doc.get("status", "unknown")
-                    existing_track_id = existing_doc.get("track_id") or ""
+            normalized_file_sources = [
+                normalize_file_path(file_source) for file_source in request.file_sources
+            ]
+            if any(
+                file_source == UNKNOWN_FILE_SOURCE
+                for file_source in normalized_file_sources
+            ):
+                raise HTTPException(
+                    status_code=400,
+                    detail="A valid file_source is required for each text",
+                )
+            if len(set(normalized_file_sources)) != len(normalized_file_sources):
+                raise HTTPException(
+                    status_code=400,
+                    detail="file_sources must be unique by filename",
+                )
+
+            for file_source in normalized_file_sources:
+                existing_doc_data = await get_existing_doc_by_file_path_candidates(
+                    rag.doc_status, file_source
+                )
+                if existing_doc_data:
+                    # Get document status and track_id from existing document
+                    status = get_doc_status_value(existing_doc_data) or "unknown"
+                    # Use `or ""` to handle both missing key and None value (e.g., legacy rows without track_id)
+                    existing_track_id = get_doc_track_id(existing_doc_data)
                     return InsertResponse(
                         status="duplicated",
-                        message=f"Identical content already exists in document storage (doc_id: {content_doc_id}, Status: {status}).",
+                        message=f"File source '{file_source}' already exists in document storage (Status: {status}).",
                         track_id=existing_track_id,
                     )
 
@@ -2393,7 +2401,7 @@ def create_document_routes(
                 pipeline_index_texts,
                 rag,
                 request.texts,
-                file_sources=request.file_sources,
+                file_sources=normalized_file_sources,
                 track_id=track_id,
             )
 
@@ -2402,6 +2410,8 @@ def create_document_routes(
                 message="Texts successfully received. Processing will continue in background.",
                 track_id=track_id,
             )
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error(f"Error /documents/texts: {str(e)}")
             logger.error(traceback.format_exc())

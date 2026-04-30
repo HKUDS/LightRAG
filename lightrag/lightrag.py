@@ -215,6 +215,63 @@ def _resolve_doc_file_path(
     return "unknown_source"
 
 
+def _document_source_key(file_path: Any) -> str:
+    """Return the filename-level key used for document uniqueness."""
+    source = str(file_path or "").strip()
+    filename = Path(source).name.strip()
+    return filename or "unknown_source"
+
+
+def _file_path_lookup_candidates(file_path: Any, source_path: Any = None) -> list[str]:
+    candidates = [
+        _document_source_key(file_path),
+        str(file_path or "").strip(),
+        str(source_path or "").strip(),
+    ]
+    for raw_path in [file_path, source_path]:
+        try:
+            resolved = str(Path(str(raw_path)).resolve())
+        except Exception:
+            resolved = ""
+        candidates.append(resolved)
+
+    seen: set[str] = set()
+    unique: list[str] = []
+    for candidate in candidates:
+        if candidate and candidate not in seen:
+            seen.add(candidate)
+            unique.append(candidate)
+    return unique
+
+
+def _doc_status_field(doc: Any, field: str, default: Any = "") -> Any:
+    if isinstance(doc, dict):
+        return doc.get(field, default)
+    return getattr(doc, field, default)
+
+
+async def _get_existing_doc_by_file_path_candidates(
+    doc_status: DocStatusStorage, file_path: Any, source_path: Any = None
+) -> Any | None:
+    """Find an existing doc_status record by filename, including legacy paths."""
+    target_name = _document_source_key(file_path)
+    for candidate in _file_path_lookup_candidates(file_path, source_path):
+        existing_doc = await doc_status.get_doc_by_file_path(candidate)
+        if existing_doc:
+            return existing_doc
+
+    try:
+        docs = await doc_status.get_docs_by_statuses(list(DocStatus))
+    except Exception:
+        return None
+
+    for existing_doc in docs.values():
+        existing_path = _doc_status_field(existing_doc, "file_path", "")
+        if _document_source_key(existing_path) == target_name:
+            return existing_doc
+    return None
+
+
 def _normalize_string_list(raw_values: Any, context: str = "") -> list[str]:
     """Return a list of non-empty strings from raw_values.
 
@@ -2463,77 +2520,85 @@ class LightRAG:
             if len(ids) != len(set(ids)):
                 raise ValueError("IDs must be unique")
 
+        source_keys = [_document_source_key(path) for path in file_paths]
+        contents: dict[str, dict[str, Any]] = {}
+        source_to_doc_id: dict[str, str] = {}
+        duplicate_attempts: list[dict[str, Any]] = []
+
+        def _add_content(
+            index: int,
+            content: str,
+            doc_format: str,
+            *,
+            lightrag_document_path: str | None = None,
+        ) -> None:
+            source_key = source_keys[index]
+            source_path = file_paths[index]
+            doc_id = (
+                ids[index]
+                if ids is not None
+                else compute_mdhash_id(source_key, prefix="doc-")
+            )
+
+            if source_key in source_to_doc_id:
+                duplicate_attempts.append(
+                    {
+                        "doc_id": doc_id,
+                        "original_doc_id": source_to_doc_id[source_key],
+                        "file_path": source_key,
+                        "content_length": len(content or ""),
+                        "existing_status": "batch_duplicate",
+                        "existing_track_id": "",
+                    }
+                )
+                return
+
+            source_to_doc_id[source_key] = doc_id
+            content_data = {
+                "content": content,
+                "file_path": source_key,
+                "format": doc_format,
+            }
+            if str(source_path).strip() and str(source_path).strip() != source_key:
+                content_data["source_path"] = source_path
+            if lightrag_document_path:
+                content_data["lightrag_document_path"] = lightrag_document_path
+            if engine := _parsed_engine_at(index):
+                content_data["parsed_engine"] = engine
+            contents[doc_id] = content_data
+
         if is_lightrag_format:
             # LightRAG Document: no content hash dedup; content may be empty
-            contents = {}
             for i in range(len(file_paths)):
                 path = file_paths[i]
-                doc_id = (
-                    ids[i]
-                    if ids is not None
-                    else compute_mdhash_id(path, prefix="doc-")
-                )
                 lightrag_path = (
                     lightrag_document_paths[i] if lightrag_document_paths else ""
                 ) or path
-                contents[doc_id] = {
-                    "content": FULL_DOCS_CONTENT_STORED_IN_LIGHTRAG_DOCUMENT,
-                    "file_path": path,
-                    "format": FULL_DOCS_FORMAT_LIGHTRAG,
-                    "lightrag_document_path": lightrag_path,
-                }
-                if engine := _parsed_engine_at(i):
-                    contents[doc_id]["parsed_engine"] = engine
-        elif ids is not None:
-            # Generate contents dict and remove duplicates in one pass
-            unique_contents = {}
-            for id_, doc, path in zip(ids, input, file_paths):
-                cleaned_content = sanitize_text_for_encoding(doc)
-                if cleaned_content not in unique_contents:
-                    unique_contents[cleaned_content] = (id_, path)
-
-            contents = {}
-            for i, (content, (id_, file_path)) in enumerate(unique_contents.items()):
-                contents[id_] = {
-                    "content": content,
-                    "file_path": file_path,
-                    "format": FULL_DOCS_FORMAT_RAW,
-                }
-                if engine := _parsed_engine_at(i):
-                    contents[id_]["parsed_engine"] = engine
-        elif docs_format == FULL_DOCS_FORMAT_PENDING_PARSE:
-            contents = {}
-            for i, (doc, path) in enumerate(zip(input, file_paths)):
-                doc_id = (
-                    ids[i]
-                    if ids is not None
-                    else compute_mdhash_id(path, prefix="doc-")
+                _add_content(
+                    i,
+                    FULL_DOCS_CONTENT_STORED_IN_LIGHTRAG_DOCUMENT,
+                    FULL_DOCS_FORMAT_LIGHTRAG,
+                    lightrag_document_path=lightrag_path,
                 )
-                contents[doc_id] = {
-                    "content": doc or "",
-                    "file_path": path,
-                    "format": FULL_DOCS_FORMAT_PENDING_PARSE,
-                }
-                if engine := _parsed_engine_at(i):
-                    contents[doc_id]["parsed_engine"] = engine
-        else:
-            # Clean input text and remove duplicates in one pass
-            unique_content_with_paths = {}
-            for doc, path in zip(input, file_paths):
+        elif ids is not None:
+            for i, doc in enumerate(input):
                 cleaned_content = sanitize_text_for_encoding(doc)
-                if cleaned_content not in unique_content_with_paths:
-                    unique_content_with_paths[cleaned_content] = path
-
-            contents = {}
-            for i, (content, path) in enumerate(unique_content_with_paths.items()):
-                doc_id = compute_mdhash_id(content, prefix="doc-")
-                contents[doc_id] = {
-                    "content": content,
-                    "file_path": path,
-                    "format": FULL_DOCS_FORMAT_RAW,
-                }
-                if engine := _parsed_engine_at(i):
-                    contents[doc_id]["parsed_engine"] = engine
+                _add_content(
+                    i,
+                    cleaned_content,
+                    FULL_DOCS_FORMAT_RAW,
+                )
+        elif docs_format == FULL_DOCS_FORMAT_PENDING_PARSE:
+            for i, doc in enumerate(input):
+                _add_content(
+                    i,
+                    doc or "",
+                    FULL_DOCS_FORMAT_PENDING_PARSE,
+                )
+        else:
+            for i, doc in enumerate(input):
+                cleaned_content = sanitize_text_for_encoding(doc)
+                _add_content(i, cleaned_content, FULL_DOCS_FORMAT_RAW)
 
         # 2. Generate document initial status (without content)
         new_docs: dict[str, Any] = {
@@ -2555,42 +2620,94 @@ class LightRAG:
         # Exclude IDs of documents that are already enqueued
         unique_new_doc_ids = await self.doc_status.filter_keys(all_new_doc_ids)
 
+        for doc_id in list(unique_new_doc_ids):
+            content_data = contents[doc_id]
+            existing_doc = await _get_existing_doc_by_file_path_candidates(
+                self.doc_status,
+                content_data["file_path"],
+                content_data.get("source_path"),
+            )
+            if existing_doc:
+                unique_new_doc_ids.discard(doc_id)
+                duplicate_attempts.append(
+                    {
+                        "doc_id": doc_id,
+                        "original_doc_id": _doc_status_field(
+                            existing_doc, "_id", doc_id
+                        ),
+                        "file_path": content_data["file_path"],
+                        "content_length": new_docs.get(doc_id, {}).get(
+                            "content_length", 0
+                        ),
+                        "existing_status": _doc_status_field(
+                            existing_doc, "status", "unknown"
+                        ),
+                        "existing_track_id": _doc_status_field(
+                            existing_doc, "track_id", ""
+                        ),
+                    }
+                )
+
         # Handle duplicate documents - create trackable records with current track_id
         ignored_ids = list(all_new_doc_ids - unique_new_doc_ids)
-        if ignored_ids:
+        for doc_id in ignored_ids:
+            if any(attempt.get("doc_id") == doc_id for attempt in duplicate_attempts):
+                continue
+            existing_doc = await self.doc_status.get_by_id(doc_id)
+            duplicate_attempts.append(
+                {
+                    "doc_id": doc_id,
+                    "original_doc_id": doc_id,
+                    "file_path": new_docs.get(doc_id, {}).get(
+                        "file_path", "unknown_source"
+                    ),
+                    "content_length": new_docs.get(doc_id, {}).get(
+                        "content_length", 0
+                    ),
+                    "existing_status": (
+                        existing_doc.get("status", "unknown")
+                        if existing_doc
+                        else "unknown"
+                    ),
+                    "existing_track_id": (
+                        existing_doc.get("track_id", "") if existing_doc else ""
+                    ),
+                }
+            )
+
+        if duplicate_attempts:
             duplicate_docs: dict[str, Any] = {}
-            for doc_id in ignored_ids:
-                file_path = (
-                    new_docs.get(doc_id, {}).get("file_path") or "unknown_source"
-                )
+            for index, attempt in enumerate(duplicate_attempts):
+                doc_id = attempt["doc_id"]
+                file_path = attempt.get("file_path") or "unknown_source"
                 logger.warning(f"Duplicate document detected: {doc_id} ({file_path})")
 
-                # Get existing document info for reference
-                existing_doc = await self.doc_status.get_by_id(doc_id)
-                existing_status = (
-                    existing_doc.get("status", "unknown") if existing_doc else "unknown"
-                )
-                existing_track_id = (
-                    existing_doc.get("track_id", "") if existing_doc else ""
-                )
-
                 # Create a new record with unique ID for this duplicate attempt
-                dup_record_id = compute_mdhash_id(f"{doc_id}-{track_id}", prefix="dup-")
+                dup_record_id = compute_mdhash_id(
+                    f"{doc_id}-{track_id}-{index}-{file_path}", prefix="dup-"
+                )
                 duplicate_docs[dup_record_id] = {
                     "status": DocStatus.FAILED,
-                    "content_summary": f"[DUPLICATE] Original document: {doc_id}",
-                    "content_length": new_docs.get(doc_id, {}).get("content_length", 0),
+                    "content_summary": (
+                        f"[DUPLICATE] Original document: "
+                        f"{attempt.get('original_doc_id', doc_id)}"
+                    ),
+                    "content_length": attempt.get("content_length", 0),
                     "chunks_count": 0,
                     "chunks_list": [],
                     "created_at": datetime.now(timezone.utc).isoformat(),
                     "updated_at": datetime.now(timezone.utc).isoformat(),
                     "file_path": file_path,
                     "track_id": track_id,  # Use current track_id for tracking
-                    "error_msg": f"Content already exists. Original doc_id: {doc_id}, Status: {existing_status}",
+                    "error_msg": (
+                        "File name already exists. "
+                        f"Original doc_id: {attempt.get('original_doc_id', doc_id)}, "
+                        f"Status: {attempt.get('existing_status', 'unknown')}"
+                    ),
                     "metadata": {
                         "is_duplicate": True,
-                        "original_doc_id": doc_id,
-                        "original_track_id": existing_track_id,
+                        "original_doc_id": attempt.get("original_doc_id", doc_id),
+                        "original_track_id": attempt.get("existing_track_id", ""),
                     },
                 }
 
@@ -2622,6 +2739,10 @@ class LightRAG:
             for doc_id in new_docs.keys()
         }
         for doc_id in new_docs.keys():
+            if contents[doc_id].get("source_path"):
+                full_docs_data[doc_id]["source_path"] = contents[doc_id][
+                    "source_path"
+                ]
             if contents[doc_id].get("lightrag_document_path"):
                 full_docs_data[doc_id]["lightrag_document_path"] = contents[doc_id][
                     "lightrag_document_path"
@@ -4839,7 +4960,9 @@ class LightRAG:
             }
 
         if doc_format == FULL_DOCS_FORMAT_PENDING_PARSE:
-            source_path = self._resolve_source_file_for_parser(file_path)
+            source_path = self._resolve_source_file_for_parser(
+                str(content_data.get("source_path") or file_path)
+            )
             p = Path(source_path)
             if p.exists() and p.is_file() and p.suffix.lower() == ".docx":
                 from lightrag.extraction.parse_document import (
@@ -4924,7 +5047,9 @@ class LightRAG:
             ),
             "max_polls": int(os.getenv("MINERU_MAX_POLLS", "180")),
         }
-        source_file_path = self._resolve_source_file_for_parser(file_path)
+        source_file_path = self._resolve_source_file_for_parser(
+            str(content_data.get("source_path") or file_path)
+        )
         result_text = await self._call_protocol_parse_service(
             protocol=protocol,
             file_path=source_file_path,
@@ -4989,7 +5114,9 @@ class LightRAG:
             ),
             "max_polls": int(os.getenv("DOCLING_MAX_POLLS", "180")),
         }
-        source_file_path = self._resolve_source_file_for_parser(file_path)
+        source_file_path = self._resolve_source_file_for_parser(
+            str(content_data.get("source_path") or file_path)
+        )
         result_text = await self._call_protocol_parse_service(
             protocol=protocol,
             file_path=source_file_path,
