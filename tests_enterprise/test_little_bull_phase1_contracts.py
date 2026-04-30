@@ -153,6 +153,19 @@ def test_phase8_admin_store_upserts_have_id_update_paths_and_scope_guards():
         assert guard_token in source, name
 
 
+def test_little_bull_conversation_upsert_is_scoped_before_rewriting_messages():
+    source = inspect.getsource(admin_store.LittleBullAdminStore.save_conversation)
+
+    assert "scope_snapshot JSONB" in LITTLE_BULL_ADMIN_SCHEMA_SQL
+    assert "conversation_scope_mismatch" in source
+    assert "scope_snapshot" in source
+    assert "little_bull_conversations.tenant_id IS NOT DISTINCT FROM EXCLUDED.tenant_id" in source
+    assert "little_bull_conversations.workspace_id = EXCLUDED.workspace_id" in source
+    assert "little_bull_conversations.user_id = EXCLUDED.user_id" in source
+    assert "little_bull_conversations.scope_snapshot = EXCLUDED.scope_snapshot" in source
+    assert source.index("if row is None") < source.index("DELETE FROM little_bull_conversation_messages")
+
+
 def test_phase1_contracts_serialize_minimal_payloads_without_secret_values():
     base = {
         "tenant_id": "default",

@@ -116,12 +116,31 @@ def test_little_bull_inbox_and_daily_note_routes_exist_contract():
 
     assert "/little-bull/inbox" in openapi["paths"]
     assert "/little-bull/inbox/{inbox_item_id}/status" in openapi["paths"]
+    assert "/little-bull/curator/suggestions" in openapi["paths"]
+    assert "/little-bull/curator/suggestions/{inbox_item_id}/apply" in openapi["paths"]
     assert "/little-bull/daily-notes" in openapi["paths"]
     assert "/little-bull/daily-notes/ensure" in openapi["paths"]
     assert {"get", "post"}.issubset(openapi["paths"]["/little-bull/inbox"])
     assert "post" in openapi["paths"]["/little-bull/inbox/{inbox_item_id}/status"]
+    assert {"get", "post"}.issubset(openapi["paths"]["/little-bull/curator/suggestions"])
+    assert "post" in openapi["paths"]["/little-bull/curator/suggestions/{inbox_item_id}/apply"]
     assert "get" in openapi["paths"]["/little-bull/daily-notes"]
     assert "post" in openapi["paths"]["/little-bull/daily-notes/ensure"]
+
+    schemas = openapi["components"]["schemas"]
+    curator_request_props = schemas["LittleBullCuratorSuggestionRequest"]["properties"]
+    curator_response_props = schemas["LittleBullCuratorSuggestionResponse"]["properties"]
+
+    assert {
+        "suggestion_kind",
+        "group_id",
+        "subgroup_id",
+        "source_kind",
+        "source_id",
+        "target_kind",
+        "target_id",
+    }.issubset(curator_request_props)
+    assert {"inbox_item", "requires_approval", "allowed_actions"}.issubset(curator_response_props)
 
 
 def test_little_bull_agent_builder_and_context_budget_routes_exist_contract():
@@ -133,6 +152,8 @@ def test_little_bull_agent_builder_and_context_budget_routes_exist_contract():
     assert "/little-bull/context/estimate" in openapi["paths"]
     assert "/little-bull/costs/summary" in openapi["paths"]
     assert "/little-bull/graph/obsidian" in openapi["paths"]
+    assert "/little-bull/chat/operational" in openapi["paths"]
+    assert "/little-bull/operational-chat" in openapi["paths"]
     assert "/little-bull/admin/agent-builder/sessions" in openapi["paths"]
     assert "/little-bull/admin/agent-builder/sessions/{agent_builder_session_id}/publish" in openapi["paths"]
     assert "/little-bull/admin/agents/context-budgets" in openapi["paths"]
@@ -140,6 +161,8 @@ def test_little_bull_agent_builder_and_context_budget_routes_exist_contract():
     assert "post" in openapi["paths"]["/little-bull/context/estimate"]
     assert "get" in openapi["paths"]["/little-bull/costs/summary"]
     assert "get" in openapi["paths"]["/little-bull/graph/obsidian"]
+    assert "post" in openapi["paths"]["/little-bull/chat/operational"]
+    assert "post" in openapi["paths"]["/little-bull/operational-chat"]
     cost_params = {
         parameter["name"]
         for parameter in openapi["paths"]["/little-bull/costs/summary"]["get"]["parameters"]
@@ -161,6 +184,8 @@ def test_little_bull_agent_builder_and_context_budget_routes_exist_contract():
     estimate_response_props = schemas["LittleBullContextEstimateResponse"]["properties"]
     cost_response_props = schemas["LittleBullCostSummaryResponse"]["properties"]
     graph_response_props = schemas["LittleBullObsidianGraphResponse"]["properties"]
+    operational_request_props = schemas["LittleBullOperationalChatRequest"]["properties"]
+    operational_response_props = schemas["LittleBullOperationalChatResponse"]["properties"]
     graph_params = {
         parameter["name"]
         for parameter in openapi["paths"]["/little-bull/graph/obsidian"]["get"]["parameters"]
@@ -182,3 +207,15 @@ def test_little_bull_agent_builder_and_context_budget_routes_exist_contract():
         graph_params
     )
     assert {"nodes", "edges", "clusters", "trails", "chat_context"}.issubset(graph_response_props)
+    assert {
+        "agent_id",
+        "group_id",
+        "subgroup_id",
+        "document_ids",
+        "conversation_id",
+        "save_conversation",
+        "transform_to",
+    }.issubset(operational_request_props)
+    assert {"sources", "context", "cost_estimate", "conversation", "note", "suggestion"}.issubset(
+        operational_response_props
+    )

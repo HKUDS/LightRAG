@@ -13,7 +13,9 @@ from lightrag_enterprise.little_bull.models import (
     LittleBullCanvasEdgeRequest,
     LittleBullCanvasNodeRequest,
     LittleBullContentMapRequest,
+    LittleBullConversationSaveRequest,
     LittleBullContextEstimateRequest,
+    LittleBullCuratorSuggestionRequest,
     LittleBullDailyNoteRequest,
     LittleBullEmbeddingCostEstimateRequest,
     LittleBullAgentBuilderPublishRequest,
@@ -31,6 +33,7 @@ from lightrag_enterprise.little_bull.models import (
     LittleBullKnowledgeTrailStepRequest,
     LittleBullMarkdownNoteRequest,
     LittleBullModelSetting,
+    LittleBullOperationalChatRequest,
     LittleBullQueryRequest,
     LittleBullSourceProvenanceRequest,
 )
@@ -1425,8 +1428,105 @@ class FakeAdminStore:
     async def get_conversation(self, conversation_id: str):
         return self.conversations.get(conversation_id)
 
+    async def save_conversation(
+        self,
+        payload: dict,
+        *,
+        tenant_id: str | None,
+        workspace_id: str,
+        user_id: str,
+    ):
+        conversation_id = payload.get("conversation_id") or f"conversation-{len(self.conversations) + 1}"
+        existing = self.conversations.get(conversation_id)
+        if existing and (
+            existing["tenant_id"] != tenant_id
+            or existing["workspace_id"] != workspace_id
+            or existing["user_id"] != user_id
+            or existing.get("scope_snapshot", {}) != (payload.get("scope_snapshot") or {})
+        ):
+            raise ValueError("conversation_scope_mismatch")
+        messages = []
+        for index, message in enumerate(payload.get("messages") or [], start=1):
+            messages.append(
+                {
+                    "message_id": message.get("message_id") or message.get("id") or f"message-{index}",
+                    "role": message["role"],
+                    "content": message["content"],
+                    "references": message.get("references", []),
+                    "metadata": message.get("metadata", {}),
+                    "created_at": "2026-04-29T00:00:00Z",
+                }
+            )
+        row = {
+            "conversation_id": conversation_id,
+            "tenant_id": tenant_id,
+            "workspace_id": workspace_id,
+            "user_id": user_id,
+            "title": payload.get("title") or "Conversa Little Bull",
+            "agent_id": payload.get("agent_id"),
+            "model_profile": payload.get("model_profile", "equilibrado"),
+            "confidentiality": payload.get("confidentiality", "normal"),
+            "scope_snapshot": payload.get("scope_snapshot") or {},
+            "message_count": len(messages),
+            "messages": messages,
+            "created_at": existing.get("created_at") if existing else "2026-04-29T00:00:00Z",
+            "updated_at": "2026-04-29T00:00:00Z",
+        }
+        self.conversations[conversation_id] = row
+        return row
+
+    async def list_conversations(self, *, tenant_id: str | None, workspace_id: str, user_id: str | None = None):
+        return [
+            conversation
+            for conversation in self.conversations.values()
+            if conversation["tenant_id"] == tenant_id
+            and conversation["workspace_id"] == workspace_id
+            and (user_id is None or conversation["user_id"] == user_id)
+        ]
+
     async def get_correlation_suggestion(self, suggestion_id: str):
         return self.suggestions.get(suggestion_id)
+
+    async def create_correlation_suggestion(
+        self,
+        payload: dict,
+        *,
+        tenant_id: str | None,
+        workspace_id: str,
+        user_id: str,
+    ):
+        suggestion_id = payload.get("suggestion_id") or f"suggestion-{len(self.suggestions) + 1}"
+        row = {
+            "suggestion_id": suggestion_id,
+            "tenant_id": tenant_id,
+            "workspace_id": workspace_id,
+            "user_id": user_id,
+            "source_label": payload["source_label"],
+            "target_label": payload["target_label"],
+            "reason": payload.get("reason", ""),
+            "status": payload.get("status", "pending"),
+            "metadata": payload.get("metadata", {}),
+            "created_at": "2026-04-29T00:00:00Z",
+            "decided_at": None,
+            "decided_by": None,
+        }
+        self.suggestions[suggestion_id] = row
+        return row
+
+    async def list_correlation_suggestions(
+        self,
+        *,
+        tenant_id: str | None,
+        workspace_id: str,
+        status: str | None = None,
+    ):
+        return [
+            suggestion
+            for suggestion in self.suggestions.values()
+            if suggestion["tenant_id"] == tenant_id
+            and suggestion["workspace_id"] == workspace_id
+            and (status is None or suggestion["status"] == status)
+        ]
 
 
 async def _principal_and_service(tmp_path: Path, *, rag: FakeRag | None = None):
@@ -1794,7 +1894,6 @@ async def test_little_bull_markdown_note_rejects_cross_subgroup_source_document(
         workspace_id="default",
         user_id=principal.user_id,
     )
-
     with pytest.raises(HTTPException) as exc:
         await service.upsert_markdown_note(
             principal,
@@ -2032,6 +2131,38 @@ async def test_little_bull_backlink_rejects_unscoped_graph_edge_origin(tmp_path)
         )
 
     assert exc.value.status_code == 422
+    assert service.admin_store.backlinks == {}
+
+
+@pytest.mark.parametrize("target_kind", ["canvas", "trail", "content_map", "conversation", "agent"])
+@pytest.mark.asyncio
+async def test_little_bull_backlink_rejects_missing_graph_node_refs(tmp_path, target_kind):
+    principal, service = await _principal_and_service_with_admin_store(tmp_path)
+    group, subgroup = await _create_group_and_subgroup(service, principal)
+    note = await service.upsert_markdown_note(
+        principal,
+        workspace_id="default",
+        payload=LittleBullMarkdownNoteRequest(
+            title="Nota",
+            group_id=group.group_id,
+            subgroup_id=subgroup.subgroup_id,
+            markdown="# Nota",
+        ),
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        await service.upsert_backlink(
+            principal,
+            workspace_id="default",
+            payload=LittleBullBacklinkRequest(
+                source_kind="note",
+                source_id=note.registry.note_id,
+                target_kind=target_kind,
+                target_id="missing-ref",
+            ),
+        )
+
+    assert exc.value.status_code == 404
     assert service.admin_store.backlinks == {}
 
 
@@ -3184,6 +3315,10 @@ async def test_little_bull_obsidian_graph_scopes_filters_and_focus_without_data_
         ),
     )
 
+    async def fail_data_plane(*_args, **_kwargs):
+        raise AssertionError("Obsidian graph must not activate the data plane")
+
+    service._require_data_plane = fail_data_plane
     central_node_id = f"note:{note_a.registry.note_id}"
     graph = await service.get_obsidian_graph(
         principal,
@@ -3222,6 +3357,24 @@ async def test_little_bull_obsidian_graph_scopes_filters_and_focus_without_data_
             "node_ids": [central_node_id],
         }
     ]
+
+    group_graph = await service.get_obsidian_graph(
+        principal,
+        workspace_id="default",
+        scope="group",
+        group_id=group.group_id,
+    )
+    group_node_ids = {node.node_id for node in group_graph.nodes}
+    assert f"note:{other_note.registry.note_id}" in group_node_ids
+    assert central_node_id in group_node_ids
+    assert group_graph.filters["group_id"] == group.group_id
+
+    workspace_graph = await service.get_obsidian_graph(
+        principal,
+        workspace_id="default",
+        scope="workspace",
+    )
+    assert group_node_ids.issubset({node.node_id for node in workspace_graph.nodes})
 
     manual_graph = await service.get_obsidian_graph(
         principal,
@@ -3506,6 +3659,188 @@ async def test_little_bull_inbox_validates_refs_status_and_filters(tmp_path):
         )
 
     assert exc.value.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_little_bull_curator_suggestions_are_pending_and_do_not_mutate_graph(tmp_path):
+    principal, service = await _principal_and_service_with_admin_store(tmp_path)
+    group, subgroup = await _create_group_and_subgroup(service, principal)
+    source = await service.upsert_markdown_note(
+        principal,
+        workspace_id="default",
+        payload=LittleBullMarkdownNoteRequest(
+            title="Fonte",
+            group_id=group.group_id,
+            subgroup_id=subgroup.subgroup_id,
+            markdown="# Fonte",
+        ),
+    )
+    target = await service.upsert_markdown_note(
+        principal,
+        workspace_id="default",
+        payload=LittleBullMarkdownNoteRequest(
+            title="Alvo",
+            group_id=group.group_id,
+            subgroup_id=subgroup.subgroup_id,
+            markdown="# Alvo",
+        ),
+    )
+    conversation = await service.save_conversation(
+        principal,
+        LittleBullConversationSaveRequest(
+            workspace_id="default",
+            scope_snapshot={
+                "group_id": group.group_id,
+                "subgroup_id": subgroup.subgroup_id,
+            },
+            messages=[{"role": "user", "content": "Transforme em nota"}],
+        ),
+    )
+    board = await service.upsert_canvas_board(
+        principal,
+        workspace_id="default",
+        payload=LittleBullCanvasBoardRequest(
+            title="Canvas Curador",
+            group_id=group.group_id,
+            subgroup_id=subgroup.subgroup_id,
+        ),
+    )
+
+    backlink = await service.create_curator_suggestion(
+        principal,
+        LittleBullCuratorSuggestionRequest(
+            workspace_id="default",
+            suggestion_kind="backlink",
+            source_kind="note",
+            source_id=source.registry.note_id,
+            target_kind="note",
+            target_id=target.registry.note_id,
+            title="Ligar Fonte ao Alvo",
+        ),
+    )
+    moc = await service.create_curator_suggestion(
+        principal,
+        LittleBullCuratorSuggestionRequest(
+            workspace_id="default",
+            suggestion_kind="content_map",
+            group_id=group.group_id,
+            subgroup_id=subgroup.subgroup_id,
+            title="Criar MOC do caso",
+        ),
+    )
+    subgroup_suggestion = await service.create_curator_suggestion(
+        principal,
+        LittleBullCuratorSuggestionRequest(
+            workspace_id="default",
+            suggestion_kind="subgroup",
+            group_id=group.group_id,
+            title="Criar subgrupo de prazos",
+            metadata={"proposed_slug": "prazos"},
+        ),
+    )
+    conversation_note = await service.create_curator_suggestion(
+        principal,
+        LittleBullCuratorSuggestionRequest(
+            workspace_id="default",
+            suggestion_kind="conversation_note",
+            source_kind="conversation",
+            source_id=conversation.conversation_id,
+        ),
+    )
+    canvas_dossier = await service.create_curator_suggestion(
+        principal,
+        LittleBullCuratorSuggestionRequest(
+            workspace_id="default",
+            suggestion_kind="canvas_dossier",
+            source_kind="canvas",
+            source_id=board.canvas_board_id,
+        ),
+    )
+
+    assert backlink.requires_approval is True
+    assert backlink.inbox_item["metadata"]["critical_graph_mutation"] is True
+    assert backlink.inbox_item["metadata"]["target_id"] == target.registry.note_id
+    assert moc.inbox_item["metadata"]["curator_kind"] == "content_map"
+    assert subgroup_suggestion.inbox_item["metadata"]["curator_kind"] == "subgroup"
+    assert conversation_note.inbox_item["metadata"]["conversation_id"] == conversation.conversation_id
+    assert canvas_dossier.inbox_item["metadata"]["canvas_board_id"] == board.canvas_board_id
+    assert service.admin_store.backlinks == {}
+    assert service.admin_store.content_maps == {}
+    assert service.admin_store.dossiers == {}
+    listed = await service.list_curator_suggestions(
+        principal,
+        workspace_id="default",
+    )
+    assert {item.inbox_item_id for item in listed} == {
+        backlink.inbox_item["inbox_item_id"],
+        moc.inbox_item["inbox_item_id"],
+        subgroup_suggestion.inbox_item["inbox_item_id"],
+        conversation_note.inbox_item["inbox_item_id"],
+        canvas_dossier.inbox_item["inbox_item_id"],
+    }
+    with pytest.raises(HTTPException) as exc:
+        await service.apply_curator_suggestion(
+            principal,
+            workspace_id="default",
+            inbox_item_id=backlink.inbox_item["inbox_item_id"],
+        )
+
+    assert exc.value.status_code == 409
+    assert service.admin_store.backlinks == {}
+    assert service.admin_store.content_maps == {}
+    assert service.admin_store.dossiers == {}
+
+
+@pytest.mark.asyncio
+async def test_little_bull_curator_rejects_cross_scope_backlink_suggestion_without_mutation(tmp_path):
+    principal, service = await _principal_and_service_with_admin_store(tmp_path)
+    group, subgroup = await _create_group_and_subgroup(service, principal)
+    other_subgroup = await service.upsert_knowledge_subgroup(
+        principal,
+        workspace_id="default",
+        payload=LittleBullKnowledgeSubgroupRequest(
+            group_id=group.group_id,
+            name="Outro",
+            slug="outro-curador",
+        ),
+    )
+    source = await service.upsert_markdown_note(
+        principal,
+        workspace_id="default",
+        payload=LittleBullMarkdownNoteRequest(
+            title="Fonte",
+            group_id=group.group_id,
+            subgroup_id=subgroup.subgroup_id,
+            markdown="# Fonte",
+        ),
+    )
+    target = await service.upsert_markdown_note(
+        principal,
+        workspace_id="default",
+        payload=LittleBullMarkdownNoteRequest(
+            title="Alvo externo",
+            group_id=group.group_id,
+            subgroup_id=other_subgroup.subgroup_id,
+            markdown="# Alvo",
+        ),
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        await service.create_curator_suggestion(
+            principal,
+            LittleBullCuratorSuggestionRequest(
+                workspace_id="default",
+                suggestion_kind="backlink",
+                source_kind="note",
+                source_id=source.registry.note_id,
+                target_kind="note",
+                target_id=target.registry.note_id,
+            ),
+        )
+
+    assert exc.value.status_code == 422
+    assert service.admin_store.inbox_items == {}
+    assert service.admin_store.backlinks == {}
 
 
 @pytest.mark.asyncio
@@ -4485,6 +4820,195 @@ async def test_little_bull_query_blocks_legacy_cost_budget_without_context_cap(t
     assert exc.value.status_code == 422
     assert "max_context_tokens" in exc.value.detail
     assert service.rag.query_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_little_bull_operational_chat_saves_context_and_transforms_to_note(tmp_path):
+    principal, service = await _principal_and_service_with_admin_store(tmp_path)
+    service.rag.little_bull_scoped_query_supported = True
+    group, subgroup = await _create_group_and_subgroup(service, principal)
+    document = await service.admin_store.register_document(
+        {
+            "group_id": group.group_id,
+            "subgroup_id": subgroup.subgroup_id,
+            "title": "contrato.md",
+            "source_uri": "contrato.md",
+            "source_kind": "upload",
+            "mime_type": "text/markdown",
+            "content_hash": "chat-hash",
+            "confidentiality": "normal",
+            "status": "processed",
+            "content_length": 1200,
+            "chunk_count": 3,
+            "metadata": {},
+        },
+        tenant_id="default",
+        workspace_id="default",
+        user_id=principal.user_id,
+    )
+    other_subgroup = await service.upsert_knowledge_subgroup(
+        principal,
+        workspace_id="default",
+        payload=LittleBullKnowledgeSubgroupRequest(
+            group_id=group.group_id,
+            name="Outro Chat",
+            slug="outro-chat",
+        ),
+    )
+    other_document = await service.admin_store.register_document(
+        {
+            "group_id": group.group_id,
+            "subgroup_id": other_subgroup.subgroup_id,
+            "title": "fora.md",
+            "source_uri": "fora.md",
+            "source_kind": "upload",
+            "mime_type": "text/markdown",
+            "content_hash": "outside-chat-hash",
+            "confidentiality": "normal",
+            "status": "processed",
+            "content_length": 300,
+            "chunk_count": 1,
+            "metadata": {},
+        },
+        tenant_id="default",
+        workspace_id="default",
+        user_id=principal.user_id,
+    )
+    agent = await service.upsert_agent_config(
+        principal,
+        workspace_id="default",
+        payload=LittleBullAgentConfig(
+            name="Agente Chat",
+            description="Agente para chat operacional",
+            enabled=True,
+            tools=["query_knowledge"],
+            config={
+                "identity": {"mission": "Responder com fontes."},
+                "tests": [{"name": "fontes", "input": "Pergunta", "expected_behavior": "Citar fontes"}],
+            },
+        ),
+    )
+    await service.upsert_agent_context_budget(
+        principal,
+        workspace_id="default",
+        payload=LittleBullAgentContextBudgetRequest(
+            agent_id=agent.agent_id,
+            max_context_tokens=9000,
+            policy={"estimated_request_cost_usd": 0.012},
+        ),
+    )
+
+    response = await service.operational_chat(
+        principal,
+        LittleBullOperationalChatRequest(
+            workspace_id="default",
+            agent_id=agent.agent_id,
+            group_id=group.group_id,
+            subgroup_id=subgroup.subgroup_id,
+            document_ids=[document["document_id"]],
+            top_k=2,
+            query="Explique o contrato com fontes.",
+            title="Analise do contrato",
+            transform_to="note",
+            note_title="Nota da conversa",
+        ),
+    )
+
+    assert response.response.startswith("Answer for")
+    assert response.sources[0]["file_path"] == "manual.pdf"
+    assert response.context["agent_id"] == agent.agent_id
+    assert response.context["estimate"]["document_count"] == 1
+    assert response.cost_estimate["estimated_request_cost_usd"] == 0.012
+    assert response.conversation is not None
+    assert response.conversation.message_count == 2
+    assert response.conversation.agent_id == agent.agent_id
+    assert response.conversation.scope_snapshot == {
+        "group_id": group.group_id,
+        "subgroup_id": subgroup.subgroup_id,
+        "document_ids": [document["document_id"]],
+    }
+    assert response.note is not None
+    assert response.note["registry"]["title"] == "Nota da conversa"
+    assert response.note["registry"]["metadata"]["source_kind"] == "conversation"
+    assert service.rag.query_calls == 1
+
+    conversation_count = len(service.admin_store.conversations)
+    note_count = len(service.admin_store.notes)
+    with pytest.raises(HTTPException) as exc:
+        await service.operational_chat(
+            principal,
+            LittleBullOperationalChatRequest(
+                workspace_id="default",
+                agent_id=agent.agent_id,
+                group_id=group.group_id,
+                subgroup_id=subgroup.subgroup_id,
+                document_ids=[other_document["document_id"]],
+                query="Tente usar documento de outro subgrupo.",
+                transform_to="note",
+            ),
+        )
+
+    assert exc.value.status_code == 422
+    assert service.rag.query_calls == 1
+    assert len(service.admin_store.conversations) == conversation_count
+    assert len(service.admin_store.notes) == note_count
+
+
+@pytest.mark.asyncio
+async def test_little_bull_operational_chat_transforms_to_suggestion(tmp_path):
+    principal, service = await _principal_and_service_with_admin_store(tmp_path)
+
+    response = await service.operational_chat(
+        principal,
+        LittleBullOperationalChatRequest(
+            workspace_id="default",
+            query="Relacione o memorando com a tese principal.",
+            transform_to="suggestion",
+            suggestion_target_label="Tese principal",
+        ),
+    )
+
+    assert response.conversation is not None
+    assert response.suggestion is not None
+    assert response.suggestion.target_label == "Tese principal"
+    assert response.suggestion.metadata["conversation_id"] == response.conversation.conversation_id
+    assert service.rag.query_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_little_bull_operational_chat_note_transform_requires_scope_before_rag(tmp_path):
+    principal, service = await _principal_and_service_with_admin_store(tmp_path)
+
+    with pytest.raises(HTTPException) as exc:
+        await service.operational_chat(
+            principal,
+            LittleBullOperationalChatRequest(
+                workspace_id="default",
+                query="Transforme esta conversa em nota.",
+                transform_to="note",
+            ),
+        )
+
+    assert exc.value.status_code == 422
+    assert service.rag.query_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_little_bull_save_conversation_rejects_unvalidated_agent(tmp_path):
+    principal, service = await _principal_and_service_with_admin_store(tmp_path)
+
+    with pytest.raises(HTTPException) as exc:
+        await service.save_conversation(
+            principal,
+            LittleBullConversationSaveRequest(
+                workspace_id="default",
+                agent_id="missing-agent",
+                messages=[{"role": "user", "content": "Oi"}],
+            ),
+        )
+
+    assert exc.value.status_code == 404
+    assert service.admin_store.conversations == {}
 
 
 @pytest.mark.asyncio

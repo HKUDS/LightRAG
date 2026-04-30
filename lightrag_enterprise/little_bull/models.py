@@ -308,6 +308,27 @@ class LittleBullInboxItemStatusRequest(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class LittleBullCuratorSuggestionRequest(BaseModel):
+    workspace_id: str
+    suggestion_kind: Literal["backlink", "content_map", "subgroup", "conversation_note", "canvas_dossier"]
+    title: str = ""
+    body: str = ""
+    group_id: str | None = None
+    subgroup_id: str | None = None
+    source_kind: str = ""
+    source_id: str = ""
+    target_kind: str = ""
+    target_id: str = ""
+    priority: str = "normal"
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class LittleBullCuratorSuggestionResponse(BaseModel):
+    inbox_item: dict[str, Any]
+    requires_approval: bool = True
+    allowed_actions: list[str] = Field(default_factory=lambda: ["review", "approve", "reject"])
+
+
 class LittleBullDailyNoteRequest(BaseModel):
     daily_note_id: str | None = None
     note_date: str | None = None
@@ -511,6 +532,7 @@ class LittleBullConversationSaveRequest(BaseModel):
     agent_id: str | None = None
     model_profile: str = "equilibrado"
     confidentiality: Literal["normal", "sensivel", "privado"] = "normal"
+    scope_snapshot: dict[str, Any] = Field(default_factory=dict)
     messages: list[LittleBullConversationMessage] = Field(default_factory=list)
 
 
@@ -523,6 +545,7 @@ class LittleBullConversation(BaseModel):
     agent_id: str | None = None
     model_profile: str
     confidentiality: str
+    scope_snapshot: dict[str, Any] = Field(default_factory=dict)
     message_count: int = 0
     messages: list[LittleBullConversationMessage] = Field(default_factory=list)
     created_at: str | None = None
@@ -550,6 +573,28 @@ class LittleBullCorrelationSuggestion(BaseModel):
     created_at: str | None = None
     decided_at: str | None = None
     decided_by: str | None = None
+
+
+class LittleBullOperationalChatRequest(LittleBullQueryRequest):
+    conversation_id: str | None = None
+    title: str = ""
+    save_conversation: bool = True
+    transform_to: Literal["none", "note", "suggestion"] = "none"
+    note_title: str | None = None
+    note_slug: str | None = None
+    suggestion_target_label: str | None = None
+
+
+class LittleBullOperationalChatResponse(BaseModel):
+    response: str
+    sources: list[dict[str, Any]] = Field(default_factory=list)
+    workspace_id: str
+    model_profile: str
+    context: dict[str, Any] = Field(default_factory=dict)
+    cost_estimate: dict[str, Any] = Field(default_factory=dict)
+    conversation: LittleBullConversation | None = None
+    note: dict[str, Any] | None = None
+    suggestion: LittleBullCorrelationSuggestion | None = None
 
 
 class ScopedContract(BaseModel):

@@ -133,3 +133,29 @@ This register tracks residual risks that must be reduced or closed before a late
 - Cost-budget reservations also acquire the ledger-chain lock before computing the previous hash, keeping the append-only chain linear.
 - Summary tests cover workspace decoys, period windows, actual-vs-estimated fallback, by-agent/model/user/group/operation and legacy metadata-only scope.
 - Subagents Hegel, Peirce and Russell reaudited Fase 12 with no P0/P1 blockers after fixes.
+
+## Phase 13 Risk Controls Added
+
+- The Obsidian-like graph endpoint is a dedicated PostgreSQL control-plane route and does not call the LightRAG data plane.
+- Graph reads are workspace-bounded even when the requested graph scope is `global`.
+- Group and subgroup scopes are validated before graph assembly; subgroup scope requires both `group_id` and `subgroup_id`.
+- Nodes are composed from note, document and trail control-plane registries; backlinks and trail steps become typed edges with origin filters.
+- Central-node focus returns a one-hop graph snapshot plus chat-context metadata without opening an LLM/chat session.
+- In-memory clusters are derived from the filtered graph response, not from Neo4j/Qdrant.
+- Backlink creation now validates canvas, trail, content map, conversation and agent references instead of treating them as implicitly scope-compatible.
+- Conversation saves now fail closed when a supplied conversation id already belongs to another tenant/workspace/user before messages are rewritten.
+- Tests cover no-data-plane graph assembly, subgroup isolation, group/workspace views, central-node focus, origin filters, missing graph refs and scoped conversation upsert guards.
+- Subagents Hegel, Peirce and Russell audited Fase 13; P0/P1 findings were either fixed or reduced to already-documented non-blocking legacy-route risk.
+
+## Phase 14 Risk Controls Added
+
+- Operational Chat now has a server-owned envelope at `/little-bull/operational-chat` and `/little-bull/chat/operational`.
+- The response returns visible context, token/cost estimate metadata, sources, optional saved conversation, optional note and optional suggestion.
+- Agent selection is validated server-side before conversation persistence; missing or disabled agents cannot be saved into chat history.
+- Conversation saves no longer require a data-plane attachment and now persist an immutable `scope_snapshot` with group, subgroup and document scope.
+- Conversation upserts fail closed when tenant, workspace, user or scope snapshot differs before any messages are deleted/reinserted.
+- Transform-to-note requires group/subgroup before RAG and creates Markdown notes through the scoped note service with conversation provenance.
+- Transform-to-suggestion creates a pending suggestion with conversation/source metadata and does not send anything externally.
+- Cross-subgroup document scope fails before RAG and before conversation/note mutation.
+- Operational chat still uses the existing query data plane for answer generation; no new Neo4j/Qdrant services are started or globally configured in this phase.
+- Tests cover OpenAPI contracts, operational chat context/cost/sources, conversation save, note/suggestion transforms, invalid agent saves, scope snapshot guards and failed-scope no-mutation behavior.

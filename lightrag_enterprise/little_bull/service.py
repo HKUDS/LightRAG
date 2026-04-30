@@ -92,6 +92,8 @@ from .models import (
     LittleBullConversationSaveRequest,
     LittleBullCorrelationSuggestion,
     LittleBullCorrelationSuggestionRequest,
+    LittleBullCuratorSuggestionRequest,
+    LittleBullCuratorSuggestionResponse,
     LittleBullDocument,
     LittleBullDocumentsResponse,
     LittleBullEmbeddingCatalogItem,
@@ -119,6 +121,8 @@ from .models import (
     LittleBullGraphEdge,
     LittleBullGraphNode,
     LittleBullObsidianGraphResponse,
+    LittleBullOperationalChatRequest,
+    LittleBullOperationalChatResponse,
     LittleBullProvenancePanel,
     LittleBullQueryRequest,
     LittleBullQueryResponse,
@@ -840,7 +844,36 @@ class LittleBullService:
             if not document:
                 raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document reference not found.")
             return document
-        if normalized_kind in {"note_label", "answer", "conversation", "agent", "canvas", "trail", "content_map"}:
+        if normalized_kind == "canvas":
+            return await self._require_canvas_board(
+                canvas_board_id=ref_id,
+                tenant_id=tenant_id,
+                workspace_id=workspace_id,
+            )
+        if normalized_kind == "trail":
+            return await self._require_knowledge_trail(
+                knowledge_trail_id=ref_id,
+                tenant_id=tenant_id,
+                workspace_id=workspace_id,
+            )
+        if normalized_kind == "content_map":
+            return await self._require_content_map(
+                content_map_id=ref_id,
+                tenant_id=tenant_id,
+                workspace_id=workspace_id,
+            )
+        if normalized_kind == "conversation":
+            conversation = await self.admin_store.get_conversation(ref_id)
+            if not conversation or conversation["tenant_id"] != tenant_id or conversation["workspace_id"] != workspace_id:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Conversation reference not found.")
+            return conversation
+        if normalized_kind == "agent":
+            agents = await self.admin_store.list_agent_configs(tenant_id=tenant_id, workspace_id=workspace_id)
+            agent = next((item for item in agents if item["agent_id"] == ref_id), None)
+            if not agent:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent reference not found.")
+            return agent
+        if normalized_kind in {"note_label", "answer"}:
             return None
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Unsupported reference kind.")
 
@@ -2022,6 +2055,218 @@ class LittleBullService:
         )
         return KnowledgeInboxItem(**row)
 
+    async def list_curator_suggestions(
+        self,
+        principal: Principal,
+        *,
+        workspace_id: str,
+        status_filter: str | None = None,
+        group_id: str | None = None,
+        subgroup_id: str | None = None,
+        limit: int = 100,
+    ) -> list[KnowledgeInboxItem]:
+        items = await self.list_inbox_items(
+            principal,
+            workspace_id=workspace_id,
+            status_filter=status_filter,
+            group_id=group_id,
+            subgroup_id=subgroup_id,
+            limit=limit,
+        )
+        return [item for item in items if item.item_kind == "curator_suggestion"]
+
+    async def create_curator_suggestion(
+        self,
+        principal: Principal,
+        request: LittleBullCuratorSuggestionRequest,
+    ) -> LittleBullCuratorSuggestionResponse:
+        self._require(principal, ACTIVITY_DOCUMENT_UPLOAD, request.workspace_id)
+        tenant_id, workspace_id = await self._existing_workspace_scope(request.workspace_id)
+        group_id, subgroup_id, source_kind, source_id, metadata = await self._curator_suggestion_context(
+            principal=principal,
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            request=request,
+        )
+        item = await self.upsert_inbox_item(
+            principal,
+            workspace_id=workspace_id,
+            payload=LittleBullInboxItemRequest(
+                group_id=group_id,
+                subgroup_id=subgroup_id,
+                item_kind="curator_suggestion",
+                title=request.title or self._curator_default_title(request.suggestion_kind),
+                body=request.body,
+                source_kind=source_kind,
+                source_id=source_id,
+                status="open",
+                priority=request.priority,
+                metadata={
+                    **request.metadata,
+                    **metadata,
+                    "curator_kind": request.suggestion_kind,
+                    "requires_approval": True,
+                    "critical_graph_mutation": request.suggestion_kind in {"backlink", "content_map", "subgroup"},
+                },
+            ),
+        )
+        await self.audit.record(
+            principal=principal,
+            action=ACTIVITY_DOCUMENT_UPLOAD,
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            result="curator_suggestion_created",
+            metadata={
+                "inbox_item_id": item.inbox_item_id,
+                "suggestion_kind": request.suggestion_kind,
+                "group_id": group_id,
+                "subgroup_id": subgroup_id,
+            },
+        )
+        return LittleBullCuratorSuggestionResponse(inbox_item=item.model_dump())
+
+    async def apply_curator_suggestion(
+        self,
+        principal: Principal,
+        *,
+        workspace_id: str,
+        inbox_item_id: str,
+    ) -> dict[str, Any]:
+        self._require(principal, ACTIVITY_DOCUMENT_UPLOAD, workspace_id)
+        tenant_id, workspace_id = await self._existing_workspace_scope(workspace_id)
+        item = await self.admin_store.get_knowledge_inbox_item(
+            inbox_item_id,
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+        )
+        if not item or item.get("item_kind") != "curator_suggestion":
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Curator suggestion not found.")
+        metadata = item.get("metadata") or {}
+        if metadata.get("requires_approval", True):
+            await self.audit.record(
+                principal=principal,
+                action=ACTIVITY_DOCUMENT_UPLOAD,
+                tenant_id=tenant_id,
+                workspace_id=workspace_id,
+                result="curator_suggestion_apply_blocked",
+                metadata={"inbox_item_id": inbox_item_id, "reason": "human_review_required"},
+            )
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Curator suggestions require human review before apply.",
+            )
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Curator suggestion apply is not enabled for this phase.",
+        )
+
+    async def _curator_suggestion_context(
+        self,
+        *,
+        principal: Principal,
+        tenant_id: str | None,
+        workspace_id: str,
+        request: LittleBullCuratorSuggestionRequest,
+    ) -> tuple[str | None, str | None, str, str, dict[str, Any]]:
+        group_id = request.group_id
+        subgroup_id = request.subgroup_id
+        source_kind = canonical_ref_kind(request.source_kind) if request.source_kind else ""
+        source_id = request.source_id
+        metadata: dict[str, Any] = {
+            "target_kind": canonical_ref_kind(request.target_kind) if request.target_kind else "",
+            "target_id": request.target_id,
+        }
+        if request.suggestion_kind == "backlink":
+            if not source_kind or not source_id or not request.target_kind or not request.target_id:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                    detail="Backlink curator suggestions require source and target refs.",
+                )
+            source_ref = await self._require_workspace_ref(
+                ref_kind=source_kind,
+                ref_id=source_id,
+                tenant_id=tenant_id,
+                workspace_id=workspace_id,
+            )
+            target_ref = await self._require_workspace_ref(
+                ref_kind=request.target_kind,
+                ref_id=request.target_id,
+                tenant_id=tenant_id,
+                workspace_id=workspace_id,
+            )
+            if not self._refs_share_group_scope(source_ref, target_ref):
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                    detail="Curator backlink suggestions must stay within one group/subgroup scope.",
+                )
+            group_id = group_id or (source_ref or target_ref or {}).get("group_id")
+            subgroup_id = subgroup_id or (source_ref or target_ref or {}).get("subgroup_id")
+        elif request.suggestion_kind == "content_map":
+            if not group_id or not subgroup_id:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                    detail="Content map curator suggestions require group_id and subgroup_id.",
+                )
+        elif request.suggestion_kind == "subgroup":
+            if not group_id:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                    detail="Subgroup curator suggestions require group_id.",
+                )
+        elif request.suggestion_kind == "conversation_note":
+            if source_kind and source_kind != "conversation":
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                    detail="Conversation note suggestions require conversation source_kind.",
+                )
+            source_kind = "conversation"
+            conversation = await self.admin_store.get_conversation(source_id)
+            if not conversation or conversation["tenant_id"] != tenant_id or conversation["workspace_id"] != workspace_id:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Conversation source not found.")
+            if not principal.is_master_global and conversation["user_id"] != principal.user_id:
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Conversation belongs to another user.")
+            snapshot = conversation.get("scope_snapshot") or {}
+            group_id = group_id or snapshot.get("group_id")
+            subgroup_id = subgroup_id or snapshot.get("subgroup_id")
+            if not group_id or not subgroup_id:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                    detail="Conversation note curator suggestions require a scoped conversation.",
+                )
+            metadata["conversation_id"] = source_id
+        elif request.suggestion_kind == "canvas_dossier":
+            if source_kind and source_kind != "canvas":
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                    detail="Canvas dossier suggestions require canvas source_kind.",
+                )
+            source_kind = "canvas"
+            board = await self._require_canvas_board(
+                canvas_board_id=source_id,
+                tenant_id=tenant_id,
+                workspace_id=workspace_id,
+            )
+            group_id = group_id or board.get("group_id")
+            subgroup_id = subgroup_id or board.get("subgroup_id")
+            metadata["canvas_board_id"] = source_id
+        await self._require_optional_group_scope(
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            group_id=group_id,
+            subgroup_id=subgroup_id,
+        )
+        return group_id, subgroup_id, source_kind, source_id, metadata
+
+    @staticmethod
+    def _curator_default_title(suggestion_kind: str) -> str:
+        return {
+            "backlink": "Sugestao de backlink",
+            "content_map": "Sugestao de MOC",
+            "subgroup": "Sugestao de subgrupo",
+            "conversation_note": "Sugestao de nota a partir de conversa",
+            "canvas_dossier": "Sugestao de dossie a partir de canvas",
+        }.get(suggestion_kind, "Sugestao do curador")
+
     @staticmethod
     def _daily_note_markdown(note_date: str, payload: LittleBullDailyNoteRequest) -> str:
         decisions = payload.decisions or []
@@ -2959,6 +3204,278 @@ class LittleBullService:
             references=references,
             workspace_id=request.workspace_id,
             model_profile=effective_model_profile,
+        )
+
+    async def operational_chat(
+        self,
+        principal: Principal,
+        request: LittleBullOperationalChatRequest,
+    ) -> LittleBullOperationalChatResponse:
+        if request.transform_to == "note" and (not request.group_id or not request.subgroup_id):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="Transforming operational chat to a note requires group_id and subgroup_id.",
+            )
+        estimate = await self.estimate_context(
+            principal,
+            LittleBullContextEstimateRequest(
+                workspace_id=request.workspace_id,
+                query=request.query,
+                conversation_history=request.conversation_history,
+                agent_id=request.agent_id,
+                group_id=request.group_id,
+                subgroup_id=request.subgroup_id,
+                document_ids=request.document_ids,
+                model_profile=request.model_profile,
+                mode=request.mode,
+                top_k=request.top_k,
+            ),
+        )
+        if estimate.overflow:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="Operational chat context estimate exceeds the effective context window.",
+            )
+        tenant_id, workspace_id = await self._existing_workspace_scope(request.workspace_id)
+        agent_config = await self._agent_config_for_query(
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            agent_id=request.agent_id,
+        )
+        budget = await self._agent_context_budget_for_query(
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            agent_config=agent_config,
+        )
+        cost_state = await self._agent_context_budget_cost_state(
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            agent_config=agent_config,
+            budget=budget,
+            query=request.query,
+            user_prompt=build_agent_studio_prompt(agent_config) if agent_config else "",
+            conversation_history=request.conversation_history,
+        )
+        query_response = await self.query(
+            principal,
+            LittleBullQueryRequest(
+                workspace_id=request.workspace_id,
+                query=request.query,
+                mode=request.mode,
+                response_type=request.response_type,
+                top_k=request.top_k,
+                group_id=request.group_id,
+                subgroup_id=request.subgroup_id,
+                document_ids=request.document_ids,
+                include_references=request.include_references,
+                include_chunk_content=request.include_chunk_content,
+                conversation_history=request.conversation_history,
+                confidentiality=request.confidentiality,
+                model_profile=request.model_profile,
+                agent_id=request.agent_id,
+            ),
+        )
+        conversation: LittleBullConversation | None = None
+        scope_snapshot = {
+            "group_id": request.group_id,
+            "subgroup_id": request.subgroup_id,
+            "document_ids": request.document_ids,
+        }
+        if request.save_conversation or request.transform_to != "none":
+            conversation = await self.save_conversation(
+                principal,
+                LittleBullConversationSaveRequest(
+                    conversation_id=request.conversation_id,
+                    workspace_id=request.workspace_id,
+                    title=request.title or request.query[:120],
+                    agent_id=request.agent_id,
+                    model_profile=query_response.model_profile,
+                    confidentiality=request.confidentiality,
+                    scope_snapshot=scope_snapshot,
+                    messages=self._operational_chat_messages(
+                        request.conversation_history,
+                        query=request.query,
+                        response=query_response.response,
+                        references=query_response.references,
+                    ),
+                ),
+            )
+        note_payload: dict[str, Any] | None = None
+        suggestion: LittleBullCorrelationSuggestion | None = None
+        if request.transform_to == "note":
+            conversation = conversation or await self.save_conversation(
+                principal,
+                LittleBullConversationSaveRequest(
+                    conversation_id=request.conversation_id,
+                    workspace_id=request.workspace_id,
+                    title=request.title or request.query[:120],
+                    agent_id=request.agent_id,
+                    model_profile=query_response.model_profile,
+                    confidentiality=request.confidentiality,
+                    scope_snapshot=scope_snapshot,
+                    messages=self._operational_chat_messages(
+                        request.conversation_history,
+                        query=request.query,
+                        response=query_response.response,
+                        references=query_response.references,
+                    ),
+                ),
+            )
+            note = await self.upsert_markdown_note(
+                principal,
+                workspace_id=request.workspace_id,
+                payload=LittleBullMarkdownNoteRequest(
+                    title=request.note_title or conversation.title,
+                    slug=request.note_slug,
+                    group_id=request.group_id,
+                    subgroup_id=request.subgroup_id,
+                    markdown=self._operational_chat_markdown(
+                        conversation,
+                        context={**estimate.model_dump(), "document_ids": request.document_ids},
+                        references=query_response.references,
+                    ),
+                    metadata={
+                        "source_kind": "conversation",
+                        "source_id": conversation.conversation_id,
+                        "operational_chat": True,
+                    },
+                ),
+            )
+            note_payload = note.model_dump()
+        elif request.transform_to == "suggestion":
+            conversation = conversation or await self.save_conversation(
+                principal,
+                LittleBullConversationSaveRequest(
+                    conversation_id=request.conversation_id,
+                    workspace_id=request.workspace_id,
+                    title=request.title or request.query[:120],
+                    agent_id=request.agent_id,
+                    model_profile=query_response.model_profile,
+                    confidentiality=request.confidentiality,
+                    scope_snapshot=scope_snapshot,
+                    messages=self._operational_chat_messages(
+                        request.conversation_history,
+                        query=request.query,
+                        response=query_response.response,
+                        references=query_response.references,
+                    ),
+                ),
+            )
+            suggestion = await self.create_correlation_suggestion(
+                principal,
+                LittleBullCorrelationSuggestionRequest(
+                    workspace_id=request.workspace_id,
+                    source_label=f"conversation:{conversation.conversation_id}",
+                    target_label=request.suggestion_target_label or request.query[:120],
+                    reason="Operational chat transform request.",
+                    metadata={
+                        "conversation_id": conversation.conversation_id,
+                        "agent_id": request.agent_id,
+                        "group_id": request.group_id,
+                        "subgroup_id": request.subgroup_id,
+                        "document_ids": request.document_ids,
+                    },
+                ),
+            )
+        await self.audit.record(
+            principal=principal,
+            action=ACTIVITY_QUERY,
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            result="operational_chat",
+            model=query_response.model_profile,
+            metadata={
+                "agent_id": request.agent_id,
+                "group_id": request.group_id,
+                "subgroup_id": request.subgroup_id,
+                "document_ids": request.document_ids,
+                "saved_conversation": conversation.conversation_id if conversation else None,
+                "transform_to": request.transform_to,
+            },
+        )
+        return LittleBullOperationalChatResponse(
+            response=query_response.response,
+            sources=query_response.references,
+            workspace_id=query_response.workspace_id,
+            model_profile=query_response.model_profile,
+            context={
+                "agent_id": request.agent_id,
+                "group_id": request.group_id,
+                "subgroup_id": request.subgroup_id,
+                "document_ids": request.document_ids,
+                "mode": request.mode,
+                "top_k": request.top_k,
+                "estimate": estimate.model_dump(),
+            },
+            cost_estimate={
+                "estimated_request_cost_usd": cost_state["estimated_request_cost_usd"],
+                "daily_cost_used_usd": cost_state["daily_cost_used_usd"],
+                "monthly_cost_used_usd": cost_state["monthly_cost_used_usd"],
+                "total_estimated_tokens": estimate.total_estimated_tokens,
+                "reserved_response_tokens": estimate.reserved_response_tokens,
+            },
+            conversation=conversation,
+            note=note_payload,
+            suggestion=suggestion,
+        )
+
+    @staticmethod
+    def _operational_chat_messages(
+        history: list[dict[str, Any]],
+        *,
+        query: str,
+        response: str,
+        references: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        messages: list[dict[str, Any]] = []
+        for item in history:
+            role = str(item.get("role") or "user")
+            messages.append(
+                {
+                    "role": role if role in {"user", "assistant", "system"} else "user",
+                    "content": str(item.get("content") or ""),
+                    "references": item.get("references") or [],
+                    "metadata": item.get("metadata") or {},
+                }
+            )
+        messages.append({"role": "user", "content": query, "references": [], "metadata": {}})
+        messages.append(
+            {
+                "role": "assistant",
+                "content": response,
+                "references": references,
+                "metadata": {"source": "operational_chat"},
+            }
+        )
+        return messages
+
+    def _operational_chat_markdown(
+        self,
+        conversation: LittleBullConversation,
+        *,
+        context: dict[str, Any],
+        references: list[dict[str, Any]],
+    ) -> str:
+        body = self._conversation_markdown(conversation)
+        return "\n".join(
+            [
+                body,
+                "",
+                "## Contexto operacional",
+                "",
+                f"- Agent: {context.get('agent_id') or ''}",
+                f"- Grupo: {context.get('group_id') or ''}",
+                f"- Subgrupo: {context.get('subgroup_id') or ''}",
+                f"- Documentos: {', '.join(context.get('document_ids') or [])}",
+                f"- Tokens estimados: {context.get('total_estimated_tokens') or 0}",
+                "",
+                "## Fontes",
+                "",
+                *[
+                    f"- {reference.get('file_path') or reference.get('reference_id') or reference}"
+                    for reference in references
+                ],
+            ]
         )
 
     async def summarize_costs(
@@ -5414,13 +5931,37 @@ class LittleBullService:
         request: LittleBullConversationSaveRequest,
     ) -> LittleBullConversation:
         self._require(principal, ACTIVITY_CONVERSATION_SAVE, request.workspace_id)
-        tenant_id, workspace_id = await self._scope_for_workspace(request.workspace_id)
-        saved = await self.admin_store.save_conversation(
-            request.model_dump(exclude_none=True),
+        tenant_id, workspace_id = await self._existing_workspace_scope(request.workspace_id)
+        if request.agent_id:
+            agent_config = await self._agent_config_for_query(
+                tenant_id=tenant_id,
+                workspace_id=workspace_id,
+                agent_id=request.agent_id,
+            )
+            await self._require_agent_runtime_model_setting(
+                tenant_id=tenant_id,
+                workspace_id=workspace_id,
+                agent_config=agent_config,
+            )
+        scope_snapshot = await self._conversation_scope_snapshot(
             tenant_id=tenant_id,
             workspace_id=workspace_id,
-            user_id=principal.user_id,
+            payload=request.scope_snapshot,
         )
+        try:
+            saved = await self.admin_store.save_conversation(
+                {**request.model_dump(exclude_none=True), "scope_snapshot": scope_snapshot},
+                tenant_id=tenant_id,
+                workspace_id=workspace_id,
+                user_id=principal.user_id,
+            )
+        except ValueError as exc:
+            if "conversation_scope_mismatch" not in str(exc):
+                raise
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Conversation id already belongs to another scope.",
+            ) from exc
         await self.audit.record(
             principal=principal,
             action=ACTIVITY_CONVERSATION_SAVE,
@@ -5434,11 +5975,58 @@ class LittleBullService:
         )
         return LittleBullConversation(**saved)
 
+    async def _conversation_scope_snapshot(
+        self,
+        *,
+        tenant_id: str | None,
+        workspace_id: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        group_id = str(payload.get("group_id") or "").strip() or None
+        subgroup_id = str(payload.get("subgroup_id") or "").strip() or None
+        document_ids = [str(document_id) for document_id in payload.get("document_ids") or [] if document_id]
+        if subgroup_id and not group_id:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="Conversation subgroup scope requires group_id.",
+            )
+        if group_id:
+            await self._require_existing_group(
+                tenant_id=tenant_id,
+                workspace_id=workspace_id,
+                group_id=group_id,
+            )
+        if subgroup_id:
+            await self._require_existing_subgroup(
+                tenant_id=tenant_id,
+                workspace_id=workspace_id,
+                group_id=group_id,
+                subgroup_id=subgroup_id,
+            )
+        if document_ids:
+            await self._document_context_estimate(
+                tenant_id=tenant_id,
+                workspace_id=workspace_id,
+                group_id=group_id,
+                subgroup_id=subgroup_id,
+                document_ids=document_ids,
+                top_k=None,
+            )
+        return {
+            key: value
+            for key, value in {
+                "group_id": group_id,
+                "subgroup_id": subgroup_id,
+                "document_ids": document_ids,
+            }.items()
+            if value
+        }
+
     async def list_conversations(
         self, principal: Principal, *, workspace_id: str
     ) -> list[LittleBullConversation]:
         self._require(principal, ACTIVITY_CONVERSATION_READ, workspace_id)
-        tenant_id, workspace_id = await self._scope_for_workspace(workspace_id)
+        tenant_id, workspace_id = await self._existing_workspace_scope(workspace_id)
         user_id = None if principal.is_master_global else principal.user_id
         conversations = await self.admin_store.list_conversations(
             tenant_id=tenant_id,
@@ -5505,7 +6093,7 @@ class LittleBullService:
         request: LittleBullCorrelationSuggestionRequest,
     ) -> LittleBullCorrelationSuggestion:
         self._require(principal, ACTIVITY_CORRELATION_SUGGEST, request.workspace_id)
-        tenant_id, workspace_id = await self._scope_for_workspace(request.workspace_id)
+        tenant_id, workspace_id = await self._existing_workspace_scope(request.workspace_id)
         if request.source_label.strip() == request.target_label.strip():
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Source and target must differ")
         saved = await self.admin_store.create_correlation_suggestion(
@@ -5532,7 +6120,7 @@ class LittleBullService:
         self, principal: Principal, *, workspace_id: str, suggestion_status: str | None = None
     ) -> list[LittleBullCorrelationSuggestion]:
         self._require(principal, ACTIVITY_CORRELATION_SUGGEST, workspace_id)
-        tenant_id, workspace_id = await self._scope_for_workspace(workspace_id)
+        tenant_id, workspace_id = await self._existing_workspace_scope(workspace_id)
         suggestions = await self.admin_store.list_correlation_suggestions(
             tenant_id=tenant_id,
             workspace_id=workspace_id,

@@ -54,9 +54,13 @@ CREATE TABLE IF NOT EXISTS little_bull_conversations (
     agent_id TEXT,
     model_profile TEXT NOT NULL DEFAULT 'equilibrado',
     confidentiality TEXT NOT NULL DEFAULT 'normal',
+    scope_snapshot JSONB NOT NULL DEFAULT '{}'::jsonb,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+ALTER TABLE little_bull_conversations
+    ADD COLUMN IF NOT EXISTS scope_snapshot JSONB NOT NULL DEFAULT '{}'::jsonb;
 
 CREATE INDEX IF NOT EXISTS idx_little_bull_conversations_scope
     ON little_bull_conversations(tenant_id, workspace_id, updated_at DESC);

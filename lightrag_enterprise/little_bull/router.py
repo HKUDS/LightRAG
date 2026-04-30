@@ -26,6 +26,8 @@ from .models import (
     LittleBullContextEstimateRequest,
     LittleBullContextEstimateResponse,
     LittleBullCostSummaryResponse,
+    LittleBullCuratorSuggestionRequest,
+    LittleBullCuratorSuggestionResponse,
     LittleBullDailyNoteRequest,
     LittleBullEmbeddingCostEstimateRequest,
     LittleBullInboxItemRequest,
@@ -40,6 +42,8 @@ from .models import (
     LittleBullMarkdownNoteRequest,
     LittleBullModelSetting,
     LittleBullObsidianGraphResponse,
+    LittleBullOperationalChatRequest,
+    LittleBullOperationalChatResponse,
     LittleBullQueryRequest,
     LittleBullSourceProvenanceRequest,
 )
@@ -513,6 +517,48 @@ def create_little_bull_router(rag, doc_manager) -> APIRouter:
             )
         ).model_dump()
 
+    @router.get("/curator/suggestions")
+    async def list_curator_suggestions(
+        workspace_id: str,
+        status: str | None = None,
+        group_id: str | None = None,
+        subgroup_id: str | None = None,
+        limit: int = Query(default=100, ge=1, le=500),
+        principal=Depends(require_principal),
+    ):
+        return {
+            "suggestions": [
+                item.model_dump()
+                for item in await service().list_curator_suggestions(
+                    principal,
+                    workspace_id=workspace_id,
+                    status_filter=status,
+                    group_id=group_id,
+                    subgroup_id=subgroup_id,
+                    limit=limit,
+                )
+            ]
+        }
+
+    @router.post("/curator/suggestions", response_model=LittleBullCuratorSuggestionResponse)
+    async def create_curator_suggestion(
+        request: LittleBullCuratorSuggestionRequest,
+        principal=Depends(require_principal),
+    ):
+        return (await service().create_curator_suggestion(principal, request)).model_dump()
+
+    @router.post("/curator/suggestions/{inbox_item_id}/apply")
+    async def apply_curator_suggestion(
+        inbox_item_id: str,
+        workspace_id: str,
+        principal=Depends(require_principal),
+    ):
+        return await service().apply_curator_suggestion(
+            principal,
+            workspace_id=workspace_id,
+            inbox_item_id=inbox_item_id,
+        )
+
     @router.get("/daily-notes")
     async def list_daily_notes(
         workspace_id: str,
@@ -605,6 +651,11 @@ def create_little_bull_router(rag, doc_manager) -> APIRouter:
     @router.post("/query")
     async def query(request: LittleBullQueryRequest, principal=Depends(require_principal)):
         return (await service().query(principal, request)).model_dump()
+
+    @router.post("/operational-chat", response_model=LittleBullOperationalChatResponse)
+    @router.post("/chat/operational", response_model=LittleBullOperationalChatResponse)
+    async def operational_chat(request: LittleBullOperationalChatRequest, principal=Depends(require_principal)):
+        return (await service().operational_chat(principal, request)).model_dump()
 
     @router.post("/context/estimate", response_model=LittleBullContextEstimateResponse)
     async def estimate_context(request: LittleBullContextEstimateRequest, principal=Depends(require_principal)):

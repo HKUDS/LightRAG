@@ -489,6 +489,7 @@ class LittleBullAdminStore:
             "agent_id": row_data["agent_id"],
             "model_profile": row_data["model_profile"],
             "confidentiality": row_data["confidentiality"],
+            "scope_snapshot": self._json(row_data.get("scope_snapshot"), {}),
             "message_count": int(row_data.get("message_count") or 0),
             "created_at": self._dt(row_data["created_at"]),
             "updated_at": self._dt(row_data["updated_at"]),
@@ -2904,15 +2905,20 @@ class LittleBullAdminStore:
                     """
                     INSERT INTO little_bull_conversations (
                         conversation_id, tenant_id, workspace_id, user_id, title, agent_id,
-                        model_profile, confidentiality, created_at, updated_at
+                        model_profile, confidentiality, scope_snapshot, created_at, updated_at
                     )
-                    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$9)
+                    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10,$10)
                     ON CONFLICT (conversation_id) DO UPDATE SET
                         title=EXCLUDED.title,
                         agent_id=EXCLUDED.agent_id,
                         model_profile=EXCLUDED.model_profile,
                         confidentiality=EXCLUDED.confidentiality,
+                        scope_snapshot=EXCLUDED.scope_snapshot,
                         updated_at=EXCLUDED.updated_at
+                    WHERE little_bull_conversations.tenant_id IS NOT DISTINCT FROM EXCLUDED.tenant_id
+                      AND little_bull_conversations.workspace_id = EXCLUDED.workspace_id
+                      AND little_bull_conversations.user_id = EXCLUDED.user_id
+                      AND little_bull_conversations.scope_snapshot = EXCLUDED.scope_snapshot
                     RETURNING *, 0::int AS message_count
                     """,
                     conversation_id,
@@ -2923,8 +2929,11 @@ class LittleBullAdminStore:
                     payload.get("agent_id") or None,
                     str(payload.get("model_profile") or "equilibrado"),
                     str(payload.get("confidentiality") or "normal"),
+                    json.dumps(payload.get("scope_snapshot") or {}),
                     utc_now(),
                 )
+                if row is None:
+                    raise ValueError("conversation_scope_mismatch")
                 await conn.execute(
                     "DELETE FROM little_bull_conversation_messages WHERE conversation_id=$1",
                     conversation_id,
