@@ -308,12 +308,17 @@ def test_content_hash_lookup_via_storage(tmp_path):
 
 
 @pytest.mark.offline
-def test_lightrag_format_uses_blocks_file_hash(tmp_path):
+def test_lightrag_format_uses_blocks_file_hash(tmp_path, monkeypatch):
     async def _run():
-        rag = _new_rag(tmp_path)
+        input_dir = tmp_path / "input"
+        parsed_dir = input_dir / "__parsed__"
+        parsed_dir.mkdir(parents=True)
+        monkeypatch.setenv("INPUT_DIR", str(input_dir))
+
+        rag = _new_rag(tmp_path / "work")
         await rag.initialize_storages()
         try:
-            blocks_path = tmp_path / "doc.blocks.jsonl"
+            blocks_path = parsed_dir / "doc.blocks.jsonl"
             blocks_path.write_text(
                 json.dumps({"type": "header"})
                 + "\n"
@@ -328,14 +333,14 @@ def test_lightrag_format_uses_blocks_file_hash(tmp_path):
                 FULL_DOCS_CONTENT_STORED_IN_LIGHTRAG_DOCUMENT,
                 file_paths="first.lightrag",
                 docs_format="lightrag",
-                lightrag_document_paths=str(blocks_path),
+                lightrag_document_paths="__parsed__/doc.blocks.jsonl",
                 track_id="track-a",
             )
             await rag.apipeline_enqueue_documents(
                 FULL_DOCS_CONTENT_STORED_IN_LIGHTRAG_DOCUMENT,
                 file_paths="second.lightrag",
                 docs_format="lightrag",
-                lightrag_document_paths=str(blocks_path),
+                lightrag_document_paths="__parsed__/doc.blocks.jsonl",
                 track_id="track-b",
             )
             second_id = compute_mdhash_id("second.lightrag", prefix="doc-")
@@ -950,10 +955,14 @@ def test_analyze_multimodal_table_without_image_uses_textual_analysis(tmp_path):
 @pytest.mark.offline
 def test_parse_mineru_to_lightrag_document(tmp_path, monkeypatch):
     async def _run():
-        rag = _new_rag(tmp_path)
+        input_dir = tmp_path / "input"
+        input_dir.mkdir()
+        monkeypatch.setenv("INPUT_DIR", str(input_dir))
+
+        rag = _new_rag(tmp_path / "work")
         await rag.initialize_storages()
 
-        src_file = tmp_path / "demo.pdf"
+        src_file = input_dir / "demo.pdf"
         src_file.write_bytes(b"fake-pdf")
 
         async def _fake_service(protocol, file_path):
@@ -1019,7 +1028,7 @@ def test_parse_mineru_to_lightrag_document(tmp_path, monkeypatch):
         assert full_doc["format"] == "lightrag"
         assert full_doc["content"] == FULL_DOCS_CONTENT_STORED_IN_LIGHTRAG_DOCUMENT
         assert full_doc["lightrag_document_path"] == str(
-            blocks_path.relative_to(Path(rag.working_dir))
+            blocks_path.relative_to(input_dir)
         )
 
         await rag.finalize_storages()

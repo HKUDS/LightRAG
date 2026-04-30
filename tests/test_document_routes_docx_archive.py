@@ -150,6 +150,9 @@ class _ParseRag:
         LightRAG._archive_docx_source_after_full_docs_sync
     )
     _persist_parsed_full_docs = LightRAG._persist_parsed_full_docs
+    _input_dir_path = LightRAG._input_dir_path
+    _parsed_dir_for_source = LightRAG._parsed_dir_for_source
+    _resolve_lightrag_document_path = LightRAG._resolve_lightrag_document_path
 
     def __init__(self, working_dir, source_path):
         self.working_dir = str(working_dir)

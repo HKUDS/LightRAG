@@ -277,6 +277,11 @@ def _compute_file_content_hash(path_str: str) -> str | None:
         return None
 
 
+def _configured_input_dir() -> Path:
+    input_dir = os.getenv("INPUT_DIR", "").strip()
+    return Path(input_dir) if input_dir else Path.cwd() / "inputs"
+
+
 async def _get_existing_doc_by_file_basename(
     doc_status: DocStatusStorage, file_path: Any
 ) -> tuple[str, Any] | None:
@@ -2570,7 +2575,9 @@ class LightRAG:
             if doc_format == FULL_DOCS_FORMAT_RAW:
                 content_hash = _compute_text_content_hash(content or "")
             elif doc_format == FULL_DOCS_FORMAT_LIGHTRAG and lightrag_document_path:
-                content_hash = _compute_file_content_hash(lightrag_document_path)
+                content_hash = _compute_file_content_hash(
+                    self._resolve_lightrag_document_path(lightrag_document_path)
+                )
 
             known_source = _has_known_document_source(source_key)
             if ids is not None:
@@ -4618,12 +4625,9 @@ class LightRAG:
         elif fmt == FULL_DOCS_FORMAT_LIGHTRAG:
             blocks_path = record.get("lightrag_document_path") or ""
             if blocks_path:
-                absolute = (
-                    blocks_path
-                    if Path(blocks_path).is_absolute()
-                    else str(Path(self.working_dir) / blocks_path)
+                content_hash = _compute_file_content_hash(
+                    self._resolve_lightrag_document_path(blocks_path)
                 )
-                content_hash = _compute_file_content_hash(absolute)
 
         payload = dict(record)
         if content_hash:
@@ -4641,6 +4645,29 @@ class LightRAG:
                 await self.doc_status.upsert({doc_id: patched})
         return content_hash
 
+    def _input_dir_path(self) -> Path:
+        return _configured_input_dir()
+
+    def _parsed_dir_for_source(self, source_path: str | None = None) -> Path:
+        if not source_path:
+            return self._input_dir_path() / PARSED_DIR_NAME
+
+        source = Path(source_path)
+        if source.is_absolute():
+            return source.parent / PARSED_DIR_NAME
+
+        source_parent = source.parent
+        if str(source_parent) == ".":
+            return self._input_dir_path() / PARSED_DIR_NAME
+        return self._input_dir_path() / source_parent / PARSED_DIR_NAME
+
+    def _resolve_lightrag_document_path(self, document_path: str) -> str:
+        path = Path(document_path)
+        if path.is_absolute():
+            return str(path)
+
+        return str(self._input_dir_path() / path)
+
     def _resolve_source_file_for_parser(self, file_path: str) -> str:
         """Resolve a readable source file path for parser upload."""
         p = Path(file_path)
@@ -4649,11 +4676,9 @@ class LightRAG:
 
         name = p.name
         candidates: list[Path] = []
-        input_dir = os.getenv("INPUT_DIR", "").strip()
-        if input_dir:
-            input_path = Path(input_dir)
-            candidates.append(input_path / name)
-            candidates.append(input_path / PARSED_DIR_NAME / name)
+        input_path = self._input_dir_path()
+        candidates.append(input_path / name)
+        candidates.append(input_path / PARSED_DIR_NAME / name)
 
         # Common local defaults used by API server.
         cwd = Path.cwd()
@@ -4703,7 +4728,7 @@ class LightRAG:
         source_path: str | None = None,
     ) -> dict[str, Any]:
         """Convert parser content list to LightRAG Document files and return parsed_data."""
-        parsed_dir = Path(self.working_dir) / PARSED_DIR_NAME
+        parsed_dir = self._parsed_dir_for_source(source_path)
         parsed_dir.mkdir(parents=True, exist_ok=True)
 
         source_name = Path(file_path).name or f"{doc_id}.bin"
@@ -5088,7 +5113,7 @@ class LightRAG:
         # Keep full_docs in sync so restart/reprocess can directly use LightRAG Document.
         stored_blocks_path = str(blocks_path)
         try:
-            stored_blocks_path = str(blocks_path.relative_to(Path(self.working_dir)))
+            stored_blocks_path = str(blocks_path.relative_to(self._input_dir_path()))
         except ValueError:
             pass
         await self._persist_parsed_full_docs(
@@ -5139,9 +5164,7 @@ class LightRAG:
         doc_format = content_data.get("format", FULL_DOCS_FORMAT_RAW)
         if doc_format == FULL_DOCS_FORMAT_LIGHTRAG:
             doc_path = content_data.get("lightrag_document_path") or file_path
-            doc_path = Path(str(doc_path))
-            if not doc_path.is_absolute():
-                doc_path = Path(self.working_dir) / doc_path
+            doc_path = Path(self._resolve_lightrag_document_path(str(doc_path)))
             merged_text, blocks_path = await self._load_lightrag_document_content(
                 str(doc_path)
             )
@@ -5164,7 +5187,7 @@ class LightRAG:
                 )
 
                 file_bytes = await asyncio.to_thread(p.read_bytes)
-                parsed_dir = Path(self.working_dir) / PARSED_DIR_NAME
+                parsed_dir = self._parsed_dir_for_source(str(p))
                 parsed_dir.mkdir(parents=True, exist_ok=True)
                 output_dir = str(parsed_dir)
                 interchange_text = await asyncio.to_thread(

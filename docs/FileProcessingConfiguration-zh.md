@@ -73,7 +73,7 @@ report.[legacy].pdf
 - 文件名不同但内容完全相同的文档同样视为重复，不会再次入队。
 - `full_docs` 与 `doc_status` 在入队时都会写入 `content_hash` 字段：
   - `format=raw`：取经过 `sanitize_text_for_encoding` 之后的文本 MD5。
-  - `format=lightrag`：取 `lightrag_document_path` 解析出的 `*.blocks.jsonl` 文件 MD5（与 `_load_lightrag_document_content` 的解析规则一致）。
+  - `format=lightrag`：取 `lightrag_document_path` 解析出的 `*.blocks.jsonl` 文件 MD5。相对路径按 `INPUT_DIR` 解析。
   - `format=pending_parse`：暂不写入 hash，等到真正完成解析后由后续步骤补上（避免按空内容误判）。
 - 重复记录会在 `metadata.duplicate_kind` 中标记为 `filename` 或 `content_hash`，便于排查。
 - 存储后端通过 `get_doc_by_content_hash` 进行 hash 直查；命名约定与 `get_doc_by_file_basename` 一致。
@@ -123,7 +123,7 @@ DOCLING_ENDPOINT=http://localhost:8081/v1/convert/file/async
 | `format` | 内容格式：`pending_parse`, `raw`, `lightrag`。 |
 | `content` | `raw` 时保存抽取文本；`pending_parse` 时为空字符串；`lightrag` 时固定为 `{{stored-in-lightrag-doucment}}`。 |
 | `content_hash` | 内容 MD5，用于跨文件名查重。`format=raw` 取 `sanitize_text_for_encoding` 后文本的 hash；`format=lightrag` 取 `*.blocks.jsonl` 文件 hash；`format=pending_parse` 不写入，待抽取完成后补上。 |
-| `lightrag_document_path` | `format=lightrag` 时保存结构化 LightRAG Document 的相对路径。 |
+| `lightrag_document_path` | `format=lightrag` 时保存结构化 LightRAG Document 的路径；新记录优先保存为相对 `INPUT_DIR` 的路径，例如 `__parsed__/doc.blocks.jsonl`。 |
 | `parsed_engine` | 实际完成抽取的引擎：`legacy`, `native`, `mineru`, `docling`。对于待抽取文件，也可暂存目标引擎。 |
 
 `pending_parse` 表示文件已经入队，但还没有完成抽取。抽取成功后会改写为 `raw` 或 `lightrag`，并补齐 `content_hash`。抽取失败时保留 `pending_parse` 和空 `content`，便于后续排查和重试。
