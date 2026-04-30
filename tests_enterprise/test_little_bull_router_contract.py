@@ -133,8 +133,10 @@ def test_little_bull_agent_builder_and_context_budget_routes_exist_contract():
     assert "/little-bull/admin/agent-builder/sessions" in openapi["paths"]
     assert "/little-bull/admin/agent-builder/sessions/{agent_builder_session_id}/publish" in openapi["paths"]
     assert "/little-bull/admin/agents/context-budgets" in openapi["paths"]
+    assert "/little-bull/admin/models" in openapi["paths"]
     assert {"get", "post"}.issubset(openapi["paths"]["/little-bull/admin/agent-builder/sessions"])
     assert "post" in openapi["paths"][
         "/little-bull/admin/agent-builder/sessions/{agent_builder_session_id}/publish"
     ]
     assert {"get", "post"}.issubset(openapi["paths"]["/little-bull/admin/agents/context-budgets"])
+    assert {"get", "post"}.issubset(openapi["paths"]["/little-bull/admin/models"])

@@ -2715,6 +2715,11 @@ class LittleBullService:
             workspace_id=request.workspace_id,
             agent_id=request.agent_id,
         )
+        await self._require_agent_runtime_model_setting(
+            tenant_id=tenant_id,
+            workspace_id=request.workspace_id,
+            agent_config=agent_config,
+        )
         effective_model_profile = self._effective_model_profile(request.model_profile, agent_config)
         workspace_contains_private_data = bool(
             await self.repository.get_policy(
@@ -2786,12 +2791,24 @@ class LittleBullService:
             workspace_id=request.workspace_id,
             agent_config=agent_config,
         )
+        budget_cost_state = await self._agent_context_budget_cost_state(
+            tenant_id=tenant_id,
+            workspace_id=request.workspace_id,
+            agent_config=agent_config,
+            budget=budget,
+            query=request.query,
+            user_prompt=getattr(param, "user_prompt", ""),
+            conversation_history=request.conversation_history,
+        )
         try:
             budget_metadata = self._enforce_agent_context_budget(
                 budget=budget,
                 query=request.query,
                 user_prompt=getattr(param, "user_prompt", ""),
                 conversation_history=request.conversation_history,
+                estimated_request_cost_usd=budget_cost_state["estimated_request_cost_usd"],
+                daily_cost_used_usd=budget_cost_state["daily_cost_used_usd"],
+                monthly_cost_used_usd=budget_cost_state["monthly_cost_used_usd"],
             )
         except HTTPException as exc:
             await self.audit.record(
@@ -2804,6 +2821,7 @@ class LittleBullService:
                 metadata={"reason": "agent_context_budget", "detail": exc.detail, "agent_id": request.agent_id},
             )
             raise
+        self._apply_agent_context_budget_to_query_param(param, budget_metadata)
         if route_decision.requires_private_runtime:
             if route_decision.model_func is not None:
                 param.model_func = route_decision.model_func
@@ -2818,6 +2836,16 @@ class LittleBullService:
                 param.model_func = model_func
         if request.top_k is not None:
             param.top_k = request.top_k
+        usage_ledger_id = await self._reserve_agent_query_budget_ledger(
+            tenant_id=tenant_id,
+            workspace_id=request.workspace_id,
+            user_id=principal.user_id,
+            agent_config=agent_config,
+            budget=budget,
+            budget_metadata=budget_metadata,
+            effective_model_profile=effective_model_profile,
+            query=request.query,
+        )
         result = await self._aquery_with_private_cache_guard(
             request.query,
             param,
@@ -2830,6 +2858,17 @@ class LittleBullService:
         references = data.get("references", []) if request.include_references else []
         if request.include_references and request.include_chunk_content:
             references = self._enrich_references(references, data.get("chunks", []))
+        if usage_ledger_id is None:
+            usage_ledger_id = await self._append_agent_query_usage_ledger(
+                tenant_id=tenant_id,
+                workspace_id=request.workspace_id,
+                user_id=principal.user_id,
+                agent_config=agent_config,
+                budget_metadata=budget_metadata,
+                effective_model_profile=effective_model_profile,
+                query=request.query,
+                response=response_content,
+            )
         await self.audit.record(
             principal=principal,
             action=ACTIVITY_QUERY,
@@ -2840,6 +2879,7 @@ class LittleBullService:
             metadata={
                 "mode": param.mode,
                 "agent_id": request.agent_id,
+                "usage_ledger_id": usage_ledger_id,
                 "requested_model_profile": request.model_profile,
                 "effective_model_profile": effective_model_profile,
                 "reference_count": len(references),
@@ -2866,6 +2906,8 @@ class LittleBullService:
     ) -> dict[str, Any] | None:
         if not agent_config or not agent_config.get("agent_id"):
             return None
+        if not hasattr(self.admin_store, "list_agent_context_budgets"):
+            return None
         budgets = await self.admin_store.list_agent_context_budgets(
             tenant_id=tenant_id,
             workspace_id=workspace_id,
@@ -2878,6 +2920,328 @@ class LittleBullService:
         default = next((budget for budget in budgets if budget.get("model_setting_id") is None), None)
         return exact or default or budgets[0]
 
+    async def _reserve_agent_query_budget_ledger(
+        self,
+        *,
+        tenant_id: str | None,
+        workspace_id: str,
+        user_id: str,
+        agent_config: dict[str, Any] | None,
+        budget: dict[str, Any] | None,
+        budget_metadata: dict[str, Any],
+        effective_model_profile: str,
+        query: str,
+    ) -> str | None:
+        if not agent_config or not budget_metadata or not budget:
+            return None
+        daily_limit = self._float_or_none(budget.get("daily_cost_limit_usd"))
+        monthly_limit = self._float_or_none(budget.get("monthly_cost_limit_usd"))
+        if daily_limit is None and monthly_limit is None:
+            return None
+        if not hasattr(self.admin_store, "reserve_llm_usage_budget"):
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="LLM usage ledger is unavailable for atomic budget reservation.",
+            )
+        payload = await self._agent_query_usage_payload(
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            user_id=user_id,
+            agent_config=agent_config,
+            budget_metadata=budget_metadata,
+            effective_model_profile=effective_model_profile,
+            query=query,
+            response="",
+            metadata_extra={"status": "reserved"},
+        )
+        today = utc_now().replace(hour=0, minute=0, second=0, microsecond=0)
+        month_start = today.replace(day=1)
+        try:
+            row = await self.admin_store.reserve_llm_usage_budget(
+                payload,
+                tenant_id=tenant_id,
+                workspace_id=workspace_id,
+                user_id=user_id,
+                agent_id=agent_config.get("agent_id"),
+                daily_limit_usd=daily_limit,
+                monthly_limit_usd=monthly_limit,
+                daily_since=today,
+                monthly_since=month_start,
+            )
+        except ValueError as exc:
+            reason = str(exc)
+            if "daily_cost_budget_exceeded" in reason:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                    detail="Agent query exceeds daily cost budget.",
+                ) from exc
+            if "monthly_cost_budget_exceeded" in reason:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                    detail="Agent query exceeds monthly cost budget.",
+                ) from exc
+            raise
+        return row.get("usage_ledger_id")
+
+    async def _append_agent_query_usage_ledger(
+        self,
+        *,
+        tenant_id: str | None,
+        workspace_id: str,
+        user_id: str,
+        agent_config: dict[str, Any] | None,
+        budget_metadata: dict[str, Any],
+        effective_model_profile: str,
+        query: str,
+        response: str,
+    ) -> str | None:
+        if not agent_config or not budget_metadata:
+            return None
+        if not hasattr(self.admin_store, "insert_llm_usage_ledger"):
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="LLM usage ledger is unavailable for budget debit.",
+            )
+        payload = await self._agent_query_usage_payload(
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            user_id=user_id,
+            agent_config=agent_config,
+            budget_metadata=budget_metadata,
+            effective_model_profile=effective_model_profile,
+            query=query,
+            response=response,
+        )
+        row = await self.admin_store.insert_llm_usage_ledger(
+            payload,
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            user_id=user_id,
+        )
+        return row.get("usage_ledger_id")
+
+    async def _agent_query_usage_payload(
+        self,
+        *,
+        tenant_id: str | None,
+        workspace_id: str,
+        user_id: str,
+        agent_config: dict[str, Any],
+        budget_metadata: dict[str, Any],
+        effective_model_profile: str,
+        query: str,
+        response: str,
+        metadata_extra: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        model_setting = await self._model_setting_for_agent_config(
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            agent_config=agent_config,
+        )
+        prompt_tokens = int(budget_metadata.get("estimated_prompt_tokens") or 0) + int(
+            budget_metadata.get("available_context_tokens") or 0
+        )
+        completion_tokens = int(budget_metadata.get("reserved_response_tokens") or 0)
+        total_tokens = prompt_tokens + completion_tokens
+        request_hash = "sha256:" + hashlib.sha256(query.encode("utf-8")).hexdigest()
+        response_hash = "sha256:" + hashlib.sha256(response.encode("utf-8")).hexdigest()
+        return {
+            "user_id": user_id,
+            "agent_id": agent_config.get("agent_id"),
+            "model_setting_id": (model_setting or {}).get("model_setting_id"),
+            "provider": (model_setting or {}).get("provider") or "runtime",
+            "model_id": (model_setting or {}).get("model_id") or effective_model_profile,
+            "operation": "agent_query",
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": total_tokens,
+            "estimated_cost_usd": float(budget_metadata.get("estimated_request_cost_usd") or 0),
+            "request_hash": request_hash,
+            "response_hash": response_hash,
+            "metadata": {
+                "agent_context_budget_id": budget_metadata.get("agent_context_budget_id"),
+                "effective_model_profile": effective_model_profile,
+                **(metadata_extra or {}),
+            },
+        }
+
+    async def _agent_context_budget_cost_state(
+        self,
+        *,
+        tenant_id: str | None,
+        workspace_id: str,
+        agent_config: dict[str, Any] | None,
+        budget: dict[str, Any] | None,
+        query: str,
+        user_prompt: str,
+        conversation_history: list[dict[str, Any]],
+    ) -> dict[str, float | None]:
+        if not budget:
+            return {
+                "estimated_request_cost_usd": None,
+                "daily_cost_used_usd": 0.0,
+                "monthly_cost_used_usd": 0.0,
+            }
+        model_setting = await self._model_setting_for_agent_config(
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            agent_config=agent_config,
+        )
+        prompt_tokens = self._estimate_agent_prompt_tokens(
+            query=query,
+            user_prompt=user_prompt,
+            conversation_history=conversation_history,
+        )
+        reserved_response_tokens = int(budget.get("reserved_response_tokens") or 0)
+        max_context_tokens = int(budget.get("max_context_tokens") or 0)
+        available_context_tokens = max(0, max_context_tokens - prompt_tokens - reserved_response_tokens)
+        estimated_cost = self._estimate_agent_request_cost_usd(
+            budget=budget,
+            model_setting=model_setting,
+            input_tokens=prompt_tokens + available_context_tokens,
+            output_tokens=reserved_response_tokens,
+        )
+        today = utc_now().replace(hour=0, minute=0, second=0, microsecond=0)
+        month_start = today.replace(day=1)
+        daily_used = await self._sum_agent_usage_cost(
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            agent_id=(agent_config or {}).get("agent_id"),
+            since=today,
+        )
+        monthly_used = await self._sum_agent_usage_cost(
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            agent_id=(agent_config or {}).get("agent_id"),
+            since=month_start,
+        )
+        return {
+            "estimated_request_cost_usd": estimated_cost,
+            "daily_cost_used_usd": daily_used,
+            "monthly_cost_used_usd": monthly_used,
+        }
+
+    async def _model_setting_for_agent_config(
+        self,
+        *,
+        tenant_id: str | None,
+        workspace_id: str,
+        agent_config: dict[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        model_setting_id = (agent_config or {}).get("model_setting_id")
+        if not model_setting_id:
+            return None
+        settings = await self._model_settings_for_workspace(
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+        )
+        return next((setting for setting in settings if setting.get("model_setting_id") == model_setting_id), None)
+
+    async def _require_agent_runtime_model_setting(
+        self,
+        *,
+        tenant_id: str | None,
+        workspace_id: str,
+        agent_config: dict[str, Any] | None,
+    ) -> None:
+        model_setting = await self._model_setting_for_agent_config(
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            agent_config=agent_config,
+        )
+        model_setting_id = (agent_config or {}).get("model_setting_id")
+        if not model_setting_id:
+            return
+        if not model_setting:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent runtime model setting not found.")
+        if not model_setting.get("enabled", True) or model_setting.get("usage") not in {"chat", "agent"}:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="Agent runtime model setting must be enabled and use chat or agent.",
+            )
+
+    async def _sum_agent_usage_cost(
+        self,
+        *,
+        tenant_id: str | None,
+        workspace_id: str,
+        agent_id: str | None,
+        since: datetime,
+    ) -> float:
+        if not hasattr(self.admin_store, "sum_llm_usage_cost"):
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="LLM usage ledger is unavailable for budget enforcement.",
+            )
+        return float(
+            await self.admin_store.sum_llm_usage_cost(
+                tenant_id=tenant_id,
+                workspace_id=workspace_id,
+                agent_id=agent_id,
+                since=since,
+            )
+        )
+
+    @staticmethod
+    def _estimate_agent_prompt_tokens(
+        *,
+        query: str,
+        user_prompt: str,
+        conversation_history: list[dict[str, Any]],
+    ) -> int:
+        history_text = "\n".join(str(item.get("content") or "") for item in conversation_history)
+        return estimate_tokens_from_characters(len("\n".join([query, user_prompt, history_text])))
+
+    @classmethod
+    def _estimate_agent_request_cost_usd(
+        cls,
+        *,
+        budget: dict[str, Any],
+        model_setting: dict[str, Any] | None,
+        input_tokens: int,
+        output_tokens: int,
+    ) -> float | None:
+        policy = budget.get("policy") or {}
+        explicit_estimate = cls._float_or_none(policy.get("estimated_request_cost_usd"))
+        if explicit_estimate is not None:
+            return explicit_estimate
+        pricing = dict((model_setting or {}).get("config") or {})
+        pricing.update(policy)
+        input_per_token = cls._float_or_none(pricing.get("input_price"))
+        output_per_token = cls._float_or_none(pricing.get("output_price"))
+        request_price = cls._float_or_none(pricing.get("request_price")) or 0.0
+        if input_per_token is None:
+            input_per_million = cls._float_or_none(
+                pricing.get("prompt_cost_per_million_tokens")
+                or pricing.get("input_cost_per_million_tokens")
+                or pricing.get("cost_per_million_tokens")
+            )
+            input_per_token = input_per_million / 1_000_000 if input_per_million is not None else None
+        if output_per_token is None:
+            output_per_million = cls._float_or_none(
+                pricing.get("completion_cost_per_million_tokens")
+                or pricing.get("output_cost_per_million_tokens")
+                or pricing.get("cost_per_million_tokens")
+            )
+            output_per_token = output_per_million / 1_000_000 if output_per_million is not None else None
+        if input_per_token is None and output_per_token is None and not request_price:
+            return None
+        return round(
+            (input_per_token or 0.0) * max(0, input_tokens)
+            + (output_per_token or 0.0) * max(0, output_tokens)
+            + request_price,
+            8,
+        )
+
+    @staticmethod
+    def _float_or_none(value: Any) -> float | None:
+        if value is None or value == "":
+            return None
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
     @staticmethod
     def _enforce_agent_context_budget(
         *,
@@ -2885,14 +3249,21 @@ class LittleBullService:
         query: str,
         user_prompt: str,
         conversation_history: list[dict[str, Any]],
+        estimated_request_cost_usd: float | None,
+        daily_cost_used_usd: float,
+        monthly_cost_used_usd: float,
     ) -> dict[str, Any]:
         if not budget:
             return {}
-        history_text = "\n".join(str(item.get("content") or "") for item in conversation_history)
-        prompt_tokens = estimate_tokens_from_characters(len("\n".join([query, user_prompt, history_text])))
+        prompt_tokens = LittleBullService._estimate_agent_prompt_tokens(
+            query=query,
+            user_prompt=user_prompt,
+            conversation_history=conversation_history,
+        )
         reserved_response_tokens = int(budget.get("reserved_response_tokens") or 0)
         max_prompt_tokens = int(budget.get("max_prompt_tokens") or 0)
         max_context_tokens = int(budget.get("max_context_tokens") or 0)
+        available_context_tokens = 0
         if max_prompt_tokens and prompt_tokens > max_prompt_tokens:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -2903,10 +3274,34 @@ class LittleBullService:
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail="Agent prompt plus reserved response exceeds max_context_tokens budget.",
             )
-        if budget.get("daily_cost_limit_usd") == 0 or budget.get("monthly_cost_limit_usd") == 0:
+        if max_context_tokens:
+            available_context_tokens = max_context_tokens - prompt_tokens - reserved_response_tokens
+        daily_limit = LittleBullService._float_or_none(budget.get("daily_cost_limit_usd"))
+        monthly_limit = LittleBullService._float_or_none(budget.get("monthly_cost_limit_usd"))
+        if (daily_limit is not None or monthly_limit is not None) and not max_context_tokens:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="Cost-limited agent context budgets require max_context_tokens.",
+            )
+        if (daily_limit is not None or monthly_limit is not None) and estimated_request_cost_usd is None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="Agent cost budget requires pricing metadata before runtime query.",
+            )
+        if daily_limit == 0 or monthly_limit == 0:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail="Agent cost budget is exhausted.",
+            )
+        if daily_limit is not None and daily_cost_used_usd + (estimated_request_cost_usd or 0.0) > daily_limit:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="Agent query exceeds daily cost budget.",
+            )
+        if monthly_limit is not None and monthly_cost_used_usd + (estimated_request_cost_usd or 0.0) > monthly_limit:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="Agent query exceeds monthly cost budget.",
             )
         return {
             "agent_context_budget_id": budget.get("agent_context_budget_id"),
@@ -2914,7 +3309,23 @@ class LittleBullService:
             "reserved_response_tokens": reserved_response_tokens,
             "max_prompt_tokens": max_prompt_tokens,
             "max_context_tokens": max_context_tokens,
+            "available_context_tokens": available_context_tokens,
+            "estimated_request_cost_usd": estimated_request_cost_usd,
+            "daily_cost_used_usd": daily_cost_used_usd,
+            "monthly_cost_used_usd": monthly_cost_used_usd,
         }
+
+    @staticmethod
+    def _apply_agent_context_budget_to_query_param(param: QueryParam, budget_metadata: dict[str, Any]) -> None:
+        available_context_tokens = int(budget_metadata.get("available_context_tokens") or 0)
+        if available_context_tokens <= 0:
+            return
+        param.max_total_tokens = min(int(getattr(param, "max_total_tokens", available_context_tokens)), available_context_tokens)
+        param.max_entity_tokens = min(int(getattr(param, "max_entity_tokens", available_context_tokens)), available_context_tokens)
+        param.max_relation_tokens = min(
+            int(getattr(param, "max_relation_tokens", available_context_tokens)),
+            available_context_tokens,
+        )
 
     async def delete_document(self, principal: Principal, *, workspace_id: str, document_id: str) -> dict[str, Any]:
         self._require(principal, ACTIVITY_DOCUMENT_DELETE, workspace_id)
@@ -3588,6 +3999,22 @@ class LittleBullService:
         self._require(principal, ACTIVITY_MODEL_MANAGE, workspace_id)
         self._require_master(principal)
         tenant_id, workspace_id = await self._existing_workspace_scope(workspace_id)
+        if payload.model_setting_id:
+            settings = await self._model_settings_for_workspace(
+                tenant_id=tenant_id,
+                workspace_id=workspace_id,
+            )
+            existing = next(
+                (setting for setting in settings if setting.get("model_setting_id") == payload.model_setting_id),
+                None,
+            )
+            if not existing:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Model setting not found.")
+            if existing.get("tenant_id") != tenant_id or existing.get("workspace_id") != workspace_id:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                    detail="Model settings cannot be moved across workspace scope.",
+                )
         if payload.usage == "embedding" and payload.is_default:
             settings = await self._model_settings_for_workspace(
                 tenant_id=tenant_id,
@@ -3604,12 +4031,20 @@ class LittleBullService:
                 "runtime_note",
                 "Changing embeddings affects new indexing; existing vectors require reindexing.",
             )
-        saved = await self.admin_store.upsert_model_setting(
-            payload.model_dump(exclude_none=True),
-            tenant_id=tenant_id,
-            workspace_id=workspace_id,
-            user_id=principal.user_id,
-        )
+        try:
+            saved = await self.admin_store.upsert_model_setting(
+                payload.model_dump(exclude_none=True),
+                tenant_id=tenant_id,
+                workspace_id=workspace_id,
+                user_id=principal.user_id,
+            )
+        except ValueError as exc:
+            if "model_setting_scope_mismatch" not in str(exc):
+                raise
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="Model settings cannot be moved across workspace scope.",
+            ) from exc
         await self.audit.record(
             principal=principal,
             action=ACTIVITY_MODEL_MANAGE,
@@ -3657,7 +4092,7 @@ class LittleBullService:
             tenant_id=tenant_id,
             workspace_id=workspace_id,
             model_setting_id=payload_data.get("model_setting_id"),
-            usage=None,
+            usage={"chat", "agent"},
         )
         issues, score = validate_agent_studio_config(payload_data)
         errors = [issue for issue in issues if issue["severity"] == "error"]
@@ -3795,7 +4230,7 @@ class LittleBullService:
             tenant_id=tenant_id,
             workspace_id=workspace_id,
             model_setting_id=payload.model_setting_id,
-            usage={"agent_builder", "agent", "chat"},
+            usage="agent_builder",
         )
         existing = None
         transcript: list[dict[str, Any]] = []
@@ -3814,7 +4249,12 @@ class LittleBullService:
             user_message=payload.user_message,
             existing_config=payload.generated_config or (existing or {}).get("generated_config") or {},
         )
-        generated_config["model_setting_id"] = payload.model_setting_id or (existing or {}).get("model_setting_id")
+        await self._require_scoped_model_setting(
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            model_setting_id=generated_config.get("model_setting_id"),
+            usage={"chat", "agent"},
+        )
         preview = agent_studio_preview(generated_config)
         transcript.append(
             {
@@ -3880,7 +4320,7 @@ class LittleBullService:
             tenant_id=tenant_id,
             workspace_id=workspace_id,
             model_setting_id=generated_config.get("model_setting_id"),
-            usage=None,
+            usage={"chat", "agent"},
         )
         preview = agent_studio_preview(generated_config)
         if not preview["ready_to_publish"]:
@@ -4037,6 +4477,13 @@ class LittleBullService:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail="max_prompt_tokens must fit inside context after reserved response tokens.",
+            )
+        if (payload.daily_cost_limit_usd is not None or payload.monthly_cost_limit_usd is not None) and (
+            payload.max_context_tokens <= 0
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="Cost-limited agent context budgets require max_context_tokens.",
             )
         try:
             row = await self.admin_store.upsert_agent_context_budget(
@@ -4675,6 +5122,13 @@ class LittleBullService:
         selected = None
         if selected_id:
             selected = next((model for model in models if model.get("model_setting_id") == selected_id), None)
+            if selected is None:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent runtime model setting not found.")
+            if not selected.get("enabled", True) or selected.get("usage") not in {"chat", "agent"}:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                    detail="Agent runtime model setting must be enabled and use chat or agent.",
+                )
         if selected is None:
             selected = next(
                 (
