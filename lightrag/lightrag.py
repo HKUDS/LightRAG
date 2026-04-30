@@ -215,11 +215,22 @@ def _resolve_doc_file_path(
     return "unknown_source"
 
 
+PLACEHOLDER_DOCUMENT_SOURCES = {"", "no-file-path", "unknown_source"}
+
+
 def _document_source_key(file_path: Any) -> str:
     """Return the filename-level key used for document uniqueness."""
     source = str(file_path or "").strip()
+    if source in PLACEHOLDER_DOCUMENT_SOURCES:
+        return "unknown_source"
     filename = Path(source).name.strip()
+    if filename in PLACEHOLDER_DOCUMENT_SOURCES:
+        return "unknown_source"
     return filename or "unknown_source"
+
+
+def _has_known_document_source(source_key: str) -> bool:
+    return source_key not in PLACEHOLDER_DOCUMENT_SOURCES
 
 
 def _doc_status_field(doc: Any, field: str, default: Any = "") -> Any:
@@ -2553,13 +2564,29 @@ class LightRAG:
         ) -> None:
             source_key = source_keys[index]
             source_path = file_paths[index]
-            doc_id = (
-                ids[index]
-                if ids is not None
-                else compute_mdhash_id(source_key, prefix="doc-")
-            )
 
-            if source_key in source_to_doc_id:
+            # Compute content hash: skip for pending_parse (content extracted later).
+            content_hash: str | None = None
+            if doc_format == FULL_DOCS_FORMAT_RAW:
+                content_hash = _compute_text_content_hash(content or "")
+            elif doc_format == FULL_DOCS_FORMAT_LIGHTRAG and lightrag_document_path:
+                content_hash = _compute_file_content_hash(lightrag_document_path)
+
+            known_source = _has_known_document_source(source_key)
+            if ids is not None:
+                doc_id = ids[index]
+            elif known_source:
+                doc_id = compute_mdhash_id(source_key, prefix="doc-")
+            elif doc_format == FULL_DOCS_FORMAT_RAW:
+                doc_id = compute_mdhash_id(content or "", prefix="doc-")
+            elif content_hash:
+                doc_id = compute_mdhash_id(content_hash, prefix="doc-")
+            else:
+                doc_id = compute_mdhash_id(
+                    f"{source_key}-{track_id}-{index}", prefix="doc-"
+                )
+
+            if known_source and source_key in source_to_doc_id:
                 duplicate_attempts.append(
                     {
                         "doc_id": doc_id,
@@ -2572,13 +2599,6 @@ class LightRAG:
                     }
                 )
                 return
-
-            # Compute content hash: skip for pending_parse (content extracted later).
-            content_hash: str | None = None
-            if doc_format == FULL_DOCS_FORMAT_RAW:
-                content_hash = _compute_text_content_hash(content or "")
-            elif doc_format == FULL_DOCS_FORMAT_LIGHTRAG and lightrag_document_path:
-                content_hash = _compute_file_content_hash(lightrag_document_path)
 
             if content_hash and content_hash in content_hash_to_doc_id:
                 duplicate_attempts.append(
@@ -2594,7 +2614,8 @@ class LightRAG:
                 )
                 return
 
-            source_to_doc_id[source_key] = doc_id
+            if known_source:
+                source_to_doc_id[source_key] = doc_id
             if content_hash:
                 content_hash_to_doc_id[content_hash] = doc_id
 

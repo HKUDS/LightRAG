@@ -157,6 +157,87 @@ def test_enqueue_dedupes_by_filename_and_content_hash(tmp_path):
 
 
 @pytest.mark.offline
+def test_enqueue_without_file_paths_uses_content_ids(tmp_path):
+    async def _run():
+        rag = _new_rag(tmp_path)
+        await rag.initialize_storages()
+        try:
+            docs = ["alpha without source", "beta without source"]
+            await rag.apipeline_enqueue_documents(docs, track_id="track-no-source")
+
+            for content in docs:
+                doc_id = compute_mdhash_id(content, prefix="doc-")
+                full_doc = await rag.full_docs.get_by_id(doc_id)
+                status = await rag.doc_status.get_by_id(doc_id)
+                assert full_doc is not None
+                assert status is not None
+                assert full_doc["content"] == content
+                assert full_doc["file_path"] == "unknown_source"
+                assert status["file_path"] == "unknown_source"
+                assert full_doc.get("content_hash")
+                assert status.get("content_hash") == full_doc.get("content_hash")
+
+            failed_docs = await rag.doc_status.get_docs_by_status(DocStatus.FAILED)
+            duplicate_failures = [
+                doc
+                for doc in failed_docs.values()
+                if getattr(doc, "track_id", "") == "track-no-source"
+                and getattr(doc, "metadata", {}).get("is_duplicate")
+            ]
+            assert duplicate_failures == []
+        finally:
+            await rag.finalize_storages()
+
+    asyncio.run(_run())
+
+
+@pytest.mark.offline
+def test_legacy_empty_file_paths_do_not_block_unsourced_insert(tmp_path):
+    async def _run():
+        rag = _new_rag(tmp_path)
+        await rag.initialize_storages()
+        try:
+            await rag.doc_status.upsert(
+                {
+                    "legacy-empty": {
+                        "status": DocStatus.PROCESSED,
+                        "content_summary": "legacy empty",
+                        "content_length": 0,
+                        "file_path": "",
+                        "track_id": "legacy",
+                        "created_at": "2025-01-01T00:00:00+00:00",
+                        "updated_at": "2025-01-01T00:00:00+00:00",
+                        "chunks_list": [],
+                    },
+                    "legacy-no-file": {
+                        "status": DocStatus.PROCESSED,
+                        "content_summary": "legacy no-file",
+                        "content_length": 0,
+                        "file_path": "no-file-path",
+                        "track_id": "legacy",
+                        "created_at": "2025-01-01T00:00:00+00:00",
+                        "updated_at": "2025-01-01T00:00:00+00:00",
+                        "chunks_list": [],
+                    },
+                }
+            )
+
+            content = "fresh unsourced body"
+            await rag.apipeline_enqueue_documents(content, track_id="track-fresh")
+            doc_id = compute_mdhash_id(content, prefix="doc-")
+            full_doc = await rag.full_docs.get_by_id(doc_id)
+            status = await rag.doc_status.get_by_id(doc_id)
+            assert full_doc is not None
+            assert status is not None
+            assert full_doc["file_path"] == "unknown_source"
+            assert status["file_path"] == "unknown_source"
+        finally:
+            await rag.finalize_storages()
+
+    asyncio.run(_run())
+
+
+@pytest.mark.offline
 def test_basename_lookup_finds_legacy_full_path_records(tmp_path):
     async def _run():
         rag = _new_rag(tmp_path)

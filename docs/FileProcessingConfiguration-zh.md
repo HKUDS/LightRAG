@@ -62,6 +62,9 @@ report.[legacy].pdf
 - 只要 `doc_status` 中已经存在同名文件记录，无论该记录当前处于 `PENDING`、`PARSING`、`ANALYZING`、`PROCESSING`、`FAILED` 还是 `PROCESSED`，同名文件都会被视为重复。
 - 同名文件即使内容已经变化，也需要先删除旧文档记录后再重新上传或入队。
 - 文本接口必须提供有效的 `file_source`，并按 `file_source` 的 basename 判断重复；缺少有效 `file_source` 时直接返回 400。
+- 核心 API `insert` / `ainsert` / `apipeline_enqueue_documents` 仍兼容未传 `file_paths` 的调用；这类文档的 `file_path` 会保存为 `unknown_source`，不会参与文件名查重，文档 ID 继续按文本内容生成。
+- 为兼容遗留数据，空字符串、`no-file-path` 和 `unknown_source` 都会被视为未知来源；它们不会阻止新的无来源文本入队，也不会作为同名文件互相去重。
+- 遗留数据中如果存在多个有效 basename 相同的 `file_path`，系统不会自动合并或清理；后续再次入队同名文件时会命中第一条匹配记录并按重复处理，建议先删除或修正旧记录。
 
 存储后端通过 `get_doc_by_file_basename` 提供 basename 直查能力。`JsonDocStatusStorage` 已经实现了内存级遍历；其它后端目前回落到默认实现（扫描全部状态后比对 basename），将在后续 PR 中补齐原生索引。
 
@@ -75,7 +78,7 @@ report.[legacy].pdf
 - 重复记录会在 `metadata.duplicate_kind` 中标记为 `filename` 或 `content_hash`，便于排查。
 - 存储后端通过 `get_doc_by_content_hash` 进行 hash 直查；命名约定与 `get_doc_by_file_basename` 一致。
 
-> 入队批次内（同一次 `apipeline_enqueue_documents` 调用）也会做 basename 与 content_hash 去重，命中时把后续条目直接写为 `FAILED` 并标记 `existing_status=batch_duplicate`。
+> 入队批次内（同一次 `apipeline_enqueue_documents` 调用）也会做 basename 与 content_hash 去重，命中时把后续条目直接写为 `FAILED` 并标记 `existing_status=batch_duplicate`。其中 basename 去重只对有效文件名生效；`unknown_source`、`no-file-path` 和空来源只参与内容 hash 去重。
 
 ## 推荐配置
 
@@ -115,7 +118,7 @@ DOCLING_ENDPOINT=http://localhost:8081/v1/convert/file/async
 
 | 字段 | 说明 |
 | --- | --- |
-| `file_path` | 文件名 basename（不含目录），文件名重复判定与内容溯源都基于该字段。 |
+| `file_path` | 文件名 basename（不含目录）。未提供有效来源时保存为 `unknown_source`；有效文件名的重复判定与内容溯源都基于该字段。 |
 | `source_path` | 入队时提供的原始路径（仅当与 `file_path` 不同才会写入），供 `native` / `mineru` / `docling` 解析器定位真实文件位置。 |
 | `format` | 内容格式：`pending_parse`, `raw`, `lightrag`。 |
 | `content` | `raw` 时保存抽取文本；`pending_parse` 时为空字符串；`lightrag` 时固定为 `{{stored-in-lightrag-doucment}}`。 |
