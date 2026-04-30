@@ -122,8 +122,9 @@ class WorkspaceManager:
             if len(self._cache) >= self._max_instances:
                 await self._evict_one()
 
-            # Create new instance
-            instance = await self._factory(workspace)
+            # Create new instance and initialize all its storages
+            instance = self._factory(workspace)
+            await instance.initialize_storages()
 
             # Store in cache
             self._cache[workspace] = instance

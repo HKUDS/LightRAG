@@ -346,149 +346,7 @@ def create_app(args):
     # Initialize document manager with workspace support for data isolation
     doc_manager = DocumentManager(args.input_dir, workspace=args.workspace)
 
-    @asynccontextmanager
-    async def lifespan(app: FastAPI):
-        """Lifespan context manager for startup and shutdown events"""
-        # Store background tasks
-        app.state.background_tasks = set()
-
-        try:
-            # Initialize database connections for pre-warmed default workspace
-            # Note: initialize_storages() now auto-initializes pipeline_status for default_rag.workspace
-            await default_rag.initialize_storages()
-
-            # Data migration regardless of storage implementation
-            await default_rag.check_and_migrate_data()
-
-            ASCIIColors.green("\nServer is ready to accept connections! 🚀\n")
-
-            yield
-
-        finally:
-            # Shutdown WorkspaceManager to finalize all cached instances
-            await workspace_mgr.shutdown()
-
-            if "LIGHTRAG_GUNICORN_MODE" not in os.environ:
-                # Only perform cleanup in Uvicorn single-process mode
-                logger.debug("Unvicorn Mode: finalizing shared storage...")
-                finalize_share_data()
-            else:
-                # In Gunicorn mode with preload_app=True, cleanup is handled by on_exit hooks
-                logger.debug(
-                    "Gunicorn Mode: postpone shared storage finalization to master process"
-                )
-
     # Initialize FastAPI
-    base_description = (
-        "Providing API for LightRAG core, Web UI and Ollama Model Emulation"
-    )
-    swagger_description = (
-        base_description
-        + (" (API-Key Enabled)" if api_key else "")
-        + "\n\n[View ReDoc documentation](/redoc)"
-    )
-    app_kwargs = {
-        "title": "LightRAG Server API",
-        "description": swagger_description,
-        "version": __api_version__,
-        "openapi_url": "/openapi.json",  # Explicitly set OpenAPI schema URL
-        "docs_url": None,  # Disable default docs, we'll create custom endpoint
-        "redoc_url": "/redoc",  # Explicitly set redoc URL
-        "lifespan": lifespan,
-    }
-
-    # Configure Swagger UI parameters
-    # Enable persistAuthorization and tryItOutEnabled for better user experience
-    app_kwargs["swagger_ui_parameters"] = {
-        "persistAuthorization": True,
-        "tryItOutEnabled": True,
-    }
-
-    app = FastAPI(**app_kwargs)
-
-    # Add custom validation error handler for /query/data endpoint
-    @app.exception_handler(RequestValidationError)
-    async def validation_exception_handler(
-        request: Request, exc: RequestValidationError
-    ):
-        # Check if this is a request to /query/data endpoint
-        if request.url.path.endswith("/query/data"):
-            # Extract error details
-            error_details = []
-            for error in exc.errors():
-                field_path = " -> ".join(str(loc) for loc in error["loc"])
-                error_details.append(f"{field_path}: {error['msg']}")
-
-            error_message = "; ".join(error_details)
-
-            # Return in the expected format for /query/data
-            return JSONResponse(
-                status_code=400,
-                content={
-                    "status": "failure",
-                    "message": f"Validation error: {error_message}",
-                    "data": {},
-                    "metadata": {},
-                },
-            )
-        else:
-            # For other endpoints, return the default FastAPI validation error
-            return JSONResponse(status_code=422, content={"detail": exc.errors()})
-
-    def get_cors_origins():
-        """Get allowed origins from global_args
-        Returns a list of allowed origins, defaults to ["*"] if not set
-        """
-        origins_str = global_args.cors_origins
-        if origins_str == "*":
-            return ["*"]
-        return [origin.strip() for origin in origins_str.split(",")]
-
-    # Add CORS middleware
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=get_cors_origins(),
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-        expose_headers=[
-            "X-New-Token"
-        ],  # Expose token renewal header for cross-origin requests
-    )
-
-    # Create combined auth dependency for all endpoints
-    combined_auth = get_combined_auth_dependency(api_key)
-
-    def get_workspace_from_request(request: Request) -> str | None:
-        """
-        Extract workspace from HTTP request header or use default.
-
-        This enables multi-workspace API support by checking the custom
-        'LIGHTRAG-WORKSPACE' header. If not present, falls back to the
-        server's default workspace configuration.
-
-        Args:
-            request: FastAPI Request object
-
-        Returns:
-            Workspace identifier (may be empty string for global namespace),
-            or JSONResponse with HTTP 400 if the workspace name is invalid.
-        """
-        # Check custom header first
-        raw_workspace = request.headers.get("LIGHTRAG-WORKSPACE", "").strip()
-
-        if raw_workspace:
-            try:
-                workspace = sanitize_workspace_name(raw_workspace)
-            except WorkspaceNameError as e:
-                return JSONResponse(status_code=400, content={"error": str(e)})
-        else:
-            workspace = None
-
-        return workspace
-
-    # Create working directory if it doesn't exist
-    Path(args.working_dir).mkdir(parents=True, exist_ok=True)
 
     def create_optimized_openai_llm_func(
         config_cache: LLMConfigCache, args, llm_timeout: int
@@ -1168,20 +1026,165 @@ def create_app(args):
                 "language": args.summary_language,
                 "entity_types": args.entity_types,
             },
-            ollama_server_infos=ollama_server_infos,
-        )
+        ollama_server_infos=ollama_server_infos,
+    )
 
-    # Initialize RAG with unified configuration via WorkspaceManager
+    # Initialize WorkspaceManager for workspace lifecycle management
     try:
         workspace_mgr = WorkspaceManager(factory=create_lightrag, max_instances=10)
-        # Pre-warm default workspace.
-        # Intentionally keeps ref_count=1 permanently — the default workspace is never evicted.
-        # This ensures backward compatibility: requests without the LIGHTRAG-WORKSPACE header
-        # always find a ready instance.
-        default_rag = workspace_mgr.get_or_create(args.workspace)
     except Exception as e:
         logger.error(f"Failed to initialize WorkspaceManager: {e}")
         raise
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        """Lifespan context manager for startup and shutdown events"""
+        # Store background tasks
+        app.state.background_tasks = set()
+
+        try:
+            # Pre-warm default workspace.
+            # Intentionally keeps ref_count=1 permanently — the default workspace is never evicted.
+            # This ensures backward compatibility: requests without the LIGHTRAG-WORKSPACE header
+            # always find a ready instance.
+            default_rag = await workspace_mgr.get_or_create(args.workspace)
+
+            # Initialize database connections for pre-warmed default workspace
+            # Note: initialize_storages() now auto-initializes pipeline_status for default_rag.workspace
+            await default_rag.initialize_storages()
+
+            # Data migration regardless of storage implementation
+            await default_rag.check_and_migrate_data()
+
+            ASCIIColors.green("\nServer is ready to accept connections! 🚀\n")
+
+            yield
+
+        finally:
+            # Shutdown WorkspaceManager to finalize all cached instances
+            await workspace_mgr.shutdown()
+
+            if "LIGHTRAG_GUNICORN_MODE" not in os.environ:
+                # Only perform cleanup in Uvicorn single-process mode
+                logger.debug("Unvicorn Mode: finalizing shared storage...")
+                finalize_share_data()
+            else:
+                # In Gunicorn mode with preload_app=True, cleanup is handled by on_exit hooks
+                logger.debug(
+                    "Gunicorn Mode: postpone shared storage finalization to master process"
+                )
+
+    # Initialize FastAPI
+    base_description = (
+        "Providing API for LightRAG core, Web UI and Ollama Model Emulation"
+    )
+    swagger_description = (
+        base_description
+        + (" (API-Key Enabled)" if api_key else "")
+        + "\n\n[View ReDoc documentation](/redoc)"
+    )
+    app_kwargs = {
+        "title": "LightRAG Server API",
+        "description": swagger_description,
+        "version": __api_version__,
+        "openapi_url": "/openapi.json",  # Explicitly set OpenAPI schema URL
+        "docs_url": None,  # Disable default docs, we'll create custom endpoint
+        "redoc_url": "/redoc",  # Explicitly set redoc URL
+        "lifespan": lifespan,
+    }
+
+    # Configure Swagger UI parameters
+    # Enable persistAuthorization and tryItOutEnabled for better user experience
+    app_kwargs["swagger_ui_parameters"] = {
+        "persistAuthorization": True,
+        "tryItOutEnabled": True,
+    }
+
+    app = FastAPI(**app_kwargs)
+
+    # Add custom validation error handler for /query/data endpoint
+    @app.exception_handler(RequestValidationError)
+    async def validation_exception_handler(
+        request: Request, exc: RequestValidationError
+    ):
+        # Check if this is a request to /query/data endpoint
+        if request.url.path.endswith("/query/data"):
+            # Extract error details
+            error_details = []
+            for error in exc.errors():
+                field_path = " -> ".join(str(loc) for loc in error["loc"])
+                error_details.append(f"{field_path}: {error['msg']}")
+
+            error_message = "; ".join(error_details)
+
+            # Return in the expected format for /query/data
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "status": "failure",
+                    "message": f"Validation error: {error_message}",
+                    "data": {},
+                    "metadata": {},
+                },
+            )
+        else:
+            # For other endpoints, return the default FastAPI validation error
+            return JSONResponse(status_code=422, content={"detail": exc.errors()})
+
+    def get_cors_origins():
+        """Get allowed origins from global_args
+        Returns a list of allowed origins, defaults to ["*"] if not set
+        """
+        origins_str = global_args.cors_origins
+        if origins_str == "*":
+            return ["*"]
+        return [origin.strip() for origin in origins_str.split(",")]
+
+    # Add CORS middleware
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=get_cors_origins(),
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+        expose_headers=[
+            "X-New-Token"
+        ],  # Expose token renewal header for cross-origin requests
+    )
+
+    # Create combined auth dependency for all endpoints
+    combined_auth = get_combined_auth_dependency(api_key)
+
+    def get_workspace_from_request(request: Request) -> str | None:
+        """
+        Extract workspace from HTTP request header or use default.
+
+        This enables multi-workspace API support by checking the custom
+        'LIGHTRAG-WORKSPACE' header. If not present, falls back to the
+        server's default workspace configuration.
+
+        Args:
+            request: FastAPI Request object
+
+        Returns:
+            Workspace identifier (may be empty string for global namespace),
+            or JSONResponse with HTTP 400 if the workspace name is invalid.
+        """
+        # Check custom header first
+        raw_workspace = request.headers.get("LIGHTRAG-WORKSPACE", "").strip()
+
+        if raw_workspace:
+            try:
+                workspace = sanitize_workspace_name(raw_workspace)
+            except WorkspaceNameError as e:
+                return JSONResponse(status_code=400, content={"error": str(e)})
+        else:
+            workspace = None
+
+        return workspace
+
+    # Create working directory if it doesn't exist
+    Path(args.working_dir).mkdir(parents=True, exist_ok=True)
 
     # Add routes
     app.include_router(
