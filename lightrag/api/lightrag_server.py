@@ -1168,7 +1168,7 @@ def create_app(args):
 
         Returns:
             Workspace identifier (may be empty string for global namespace),
-            or JSONResponse with HTTP 400 if the workspace name is invalid.
+            or None if no workspace header is present.
         """
         # Check custom header first
         raw_workspace = request.headers.get("LIGHTRAG-WORKSPACE", "").strip()
@@ -1177,7 +1177,7 @@ def create_app(args):
             try:
                 workspace = sanitize_workspace_name(raw_workspace)
             except WorkspaceNameError as e:
-                return JSONResponse(status_code=400, content={"error": str(e)})
+                raise HTTPException(status_code=400, detail=str(e))
         else:
             workspace = None
 
