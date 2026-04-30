@@ -2102,7 +2102,9 @@ def create_document_routes(
     @router.post(
         "/scan", response_model=ScanResponse, dependencies=[Depends(combined_auth)]
     )
-    async def scan_for_new_documents(http_request: Request, background_tasks: BackgroundTasks):
+    async def scan_for_new_documents(
+        http_request: Request, background_tasks: BackgroundTasks
+    ):
         """
         Trigger the scanning process for new documents.
 
@@ -2125,7 +2127,13 @@ def create_document_routes(
         )
 
         # Start the scanning process in the background with track_id
-        background_tasks.add_task(_run_scan_with_workspace, workspace_mgr, workspace, workspace_doc_manager, track_id)
+        background_tasks.add_task(
+            _run_scan_with_workspace,
+            workspace_mgr,
+            workspace,
+            workspace_doc_manager,
+            track_id,
+        )
         return ScanResponse(
             status="scanning_started",
             message="Scanning process has been initiated in the background",
@@ -2212,7 +2220,9 @@ def create_document_routes(
             )
 
             # Sanitize filename to prevent Path Traversal attacks
-            safe_filename = sanitize_filename(file.filename, workspace_doc_manager.input_dir)
+            safe_filename = sanitize_filename(
+                file.filename, workspace_doc_manager.input_dir
+            )
 
             if not workspace_doc_manager.is_supported_file(safe_filename):
                 raise HTTPException(
@@ -2305,7 +2315,13 @@ def create_document_routes(
             track_id = generate_track_id("upload")
 
             # Add to background tasks with workspace isolation
-            background_tasks.add_task(_run_upload_with_workspace, workspace_mgr, workspace, file_path, track_id)
+            background_tasks.add_task(
+                _run_upload_with_workspace,
+                workspace_mgr,
+                workspace,
+                file_path,
+                track_id,
+            )
 
             return InsertResponse(
                 status="success",
@@ -2323,10 +2339,14 @@ def create_document_routes(
         finally:
             workspace_mgr.release(workspace)
 
-    async def _run_insert_text_with_workspace(workspace_mgr, workspace, text, file_source, track_id):
+    async def _run_insert_text_with_workspace(
+        workspace_mgr, workspace, text, file_source, track_id
+    ):
         rag = await workspace_mgr.get_or_create(workspace)
         try:
-            await pipeline_index_texts(rag, [text], file_sources=[file_source], track_id=track_id)
+            await pipeline_index_texts(
+                rag, [text], file_sources=[file_source], track_id=track_id
+            )
         finally:
             workspace_mgr.release(workspace)
 
@@ -2412,10 +2432,14 @@ def create_document_routes(
         finally:
             workspace_mgr.release(workspace)
 
-    async def _run_insert_texts_with_workspace(workspace_mgr, workspace, texts, file_sources, track_id):
+    async def _run_insert_texts_with_workspace(
+        workspace_mgr, workspace, texts, file_sources, track_id
+    ):
         rag = await workspace_mgr.get_or_create(workspace)
         try:
-            await pipeline_index_texts(rag, texts, file_sources=file_sources, track_id=track_id)
+            await pipeline_index_texts(
+                rag, texts, file_sources=file_sources, track_id=track_id
+            )
         finally:
             workspace_mgr.release(workspace)
 
@@ -2933,7 +2957,13 @@ def create_document_routes(
         doc_id: str = Field(description="The ID of the document to delete")
 
     async def _run_delete_with_workspace(
-        workspace_mgr, workspace, doc_ids, delete_file, delete_llm_cache, base_input_dir, supported_extensions
+        workspace_mgr,
+        workspace,
+        doc_ids,
+        delete_file,
+        delete_llm_cache,
+        base_input_dir,
+        supported_extensions,
     ):
         rag = await workspace_mgr.get_or_create(workspace)
         try:
@@ -3154,7 +3184,9 @@ def create_document_routes(
         response_model=TrackStatusResponse,
         dependencies=[Depends(combined_auth)],
     )
-    async def get_track_status(http_request: Request, track_id: str) -> TrackStatusResponse:
+    async def get_track_status(
+        http_request: Request, track_id: str
+    ) -> TrackStatusResponse:
         """
         Get the processing status of documents by tracking ID.
 
@@ -3263,7 +3295,9 @@ def create_document_routes(
             trace_id = uuid4().hex[:8]
             request_start = time.perf_counter()
             status_filter_value = (
-                request.status_filter.value if request.status_filter is not None else None
+                request.status_filter.value
+                if request.status_filter is not None
+                else None
             )
 
             performance_timing_log(
@@ -3447,7 +3481,9 @@ def create_document_routes(
         response_model=ReprocessResponse,
         dependencies=[Depends(combined_auth)],
     )
-    async def reprocess_failed_documents(http_request: Request, background_tasks: BackgroundTasks):
+    async def reprocess_failed_documents(
+        http_request: Request, background_tasks: BackgroundTasks
+    ):
         """
         Reprocess failed and pending documents.
 
@@ -3479,7 +3515,9 @@ def create_document_routes(
         workspace = extract_workspace_from_header(http_request)
         # Start the reprocessing in the background
         # Note: Reprocessed documents retain their original track_id from initial upload
-        background_tasks.add_task(_run_reprocess_with_workspace, workspace_mgr, workspace)
+        background_tasks.add_task(
+            _run_reprocess_with_workspace, workspace_mgr, workspace
+        )
         logger.info("Reprocessing of failed documents initiated")
 
         return ReprocessResponse(

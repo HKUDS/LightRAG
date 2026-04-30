@@ -9,7 +9,6 @@ import httpx
 import os
 import sys
 import time
-from pathlib import Path
 
 BASE_URL = "http://localhost:9621"
 WORKING_DIR = "/tmp/lightrag_ws_test"
@@ -82,14 +81,15 @@ def wait_for_pipeline_complete(
     while time.time() - start < REQUEST_TIMEOUT:
         attempt += 1
         try:
-            resp = client.get("/documents/pipeline_status", headers=headers, timeout=5.0)
+            resp = client.get(
+                "/documents/pipeline_status", headers=headers, timeout=5.0
+            )
             if resp.status_code == 200:
                 data = resp.json()
                 # Check if pipeline is complete (no pending items)
                 # Adjust based on actual API response structure
                 is_complete = (
-                    data.get("pending", 0) == 0
-                    and data.get("processing", 0) == 0
+                    data.get("pending", 0) == 0 and data.get("processing", 0) == 0
                     if isinstance(data, dict)
                     else True
                 )
@@ -141,7 +141,9 @@ def t1_insert_query_alpha(client: httpx.Client) -> bool:
     # Query
     query_body = {"query": "Who is Alice and where does she work?", "mode": "mix"}
     print_request("POST", "/query", headers, query_body)
-    resp = client.post("/query", json=query_body, headers=headers, timeout=QUERY_TIMEOUT)
+    resp = client.post(
+        "/query", json=query_body, headers=headers, timeout=QUERY_TIMEOUT
+    )
     print_response(resp.status_code, resp.json())
 
     # Assert
@@ -194,7 +196,9 @@ def t3_insert_beta_verify_alpha(client: httpx.Client) -> bool:
     # Query beta for Bob
     query_body = {"query": "Who is Bob and where does he work?", "mode": "mix"}
     print_request("POST", "/query", headers, query_body)
-    resp = client.post("/query", json=query_body, headers=headers, timeout=QUERY_TIMEOUT)
+    resp = client.post(
+        "/query", json=query_body, headers=headers, timeout=QUERY_TIMEOUT
+    )
     print_response(resp.status_code, resp.json())
 
     response_text = resp.json().get("response", "").lower()
@@ -205,7 +209,9 @@ def t3_insert_beta_verify_alpha(client: httpx.Client) -> bool:
     # Query beta for Alice (should not find alpha data)
     query_body = {"query": "Tell me about Alice", "mode": "mix"}
     print_request("POST", "/query", headers, query_body)
-    resp = client.post("/query", json=query_body, headers=headers, timeout=QUERY_TIMEOUT)
+    resp = client.post(
+        "/query", json=query_body, headers=headers, timeout=QUERY_TIMEOUT
+    )
     print_response(resp.status_code, resp.json())
 
     response_text = resp.json().get("response", "").lower()
@@ -217,7 +223,9 @@ def t3_insert_beta_verify_alpha(client: httpx.Client) -> bool:
     headers_alpha = {"LIGHTRAG-WORKSPACE": "alpha"}
     query_body = {"query": "Tell me about Bob", "mode": "mix"}
     print_request("POST", "/query", headers_alpha, query_body)
-    resp = client.post("/query", json=query_body, headers=headers_alpha, timeout=QUERY_TIMEOUT)
+    resp = client.post(
+        "/query", json=query_body, headers=headers_alpha, timeout=QUERY_TIMEOUT
+    )
     print_response(resp.status_code, resp.json())
 
     response_text = resp.json().get("response", "").lower()
@@ -284,14 +292,11 @@ def t6_filesystem_check() -> bool:
     entries = os.listdir(WORKING_DIR)
     print(f"\nDirectory entries: {entries}\n")
 
-    # Check for workspace directories
-    has_alpha = any("alpha" in e.lower() for e in entries)
-    has_beta = any("beta" in e.lower() for e in entries)
-    has_default = any("default" in e.lower() or (e not in ["alpha", "beta"]) for e in entries)
-
     # More flexible check - at least verify directories exist
     check1 = len(entries) >= 3  # alpha, beta, default directories
-    print_assertion(f"at least 3 workspace directories exist (found {len(entries)})", check1)
+    print_assertion(
+        f"at least 3 workspace directories exist (found {len(entries)})", check1
+    )
 
     # Print tree structure
     print("Directory tree:")
@@ -351,7 +356,10 @@ def main():
         # Run all tests
         run_test("T1: Insert & Query Alpha", lambda: t1_insert_query_alpha(client))
         run_test("T2: Query Empty Beta", lambda: t2_query_empty_beta(client))
-        run_test("T3: Insert Beta, Verify Alpha Unaffected", lambda: t3_insert_beta_verify_alpha(client))
+        run_test(
+            "T3: Insert Beta, Verify Alpha Unaffected",
+            lambda: t3_insert_beta_verify_alpha(client),
+        )
         run_test("T4: Query Default (Empty)", lambda: t4_query_default_empty(client))
         run_test("T5: Insert & Query Default", lambda: t5_insert_query_default(client))
         run_test("T6: File System Check", t6_filesystem_check)

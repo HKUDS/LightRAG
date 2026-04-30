@@ -326,7 +326,15 @@ class OllamaAPI:
                 if request.stream:
                     # Generator's finally handles release
                     return StreamingResponse(
-                        self._stream_generate(workspace, rag, infos, request, query, start_time, prompt_tokens),
+                        self._stream_generate(
+                            workspace,
+                            rag,
+                            infos,
+                            request,
+                            query,
+                            start_time,
+                            prompt_tokens,
+                        ),
                         media_type="application/x-ndjson",
                         headers={
                             "Cache-Control": "no-cache",
@@ -339,7 +347,10 @@ class OllamaAPI:
                     try:
                         first_chunk_time = time.time_ns()
                         if request.system:
-                            kwargs = {**rag.llm_model_kwargs, "system_prompt": request.system}
+                            kwargs = {
+                                **rag.llm_model_kwargs,
+                                "system_prompt": request.system,
+                            }
                         else:
                             kwargs = rag.llm_model_kwargs
                         response_text = await rag.llm_model_func(
@@ -442,16 +453,28 @@ class OllamaAPI:
                             cleaned_query,
                             stream=True,
                             history_messages=conversation_history,
-                            **{**rag.llm_model_kwargs, "system_prompt": system_prompt} if system_prompt else rag.llm_model_kwargs,
+                            **{**rag.llm_model_kwargs, "system_prompt": system_prompt}
+                            if system_prompt
+                            else rag.llm_model_kwargs,
                         )
                     else:
-                        response = await rag.aquery(
-                            cleaned_query, param=query_param
-                        )
+                        response = await rag.aquery(cleaned_query, param=query_param)
 
                     # Generator's finally handles release
                     return StreamingResponse(
-                        self._stream_chat(workspace, rag, infos, response, request, mode, cleaned_query, conversation_history, start_time, prompt_tokens, query_param),
+                        self._stream_chat(
+                            workspace,
+                            rag,
+                            infos,
+                            response,
+                            request,
+                            mode,
+                            cleaned_query,
+                            conversation_history,
+                            start_time,
+                            prompt_tokens,
+                            query_param,
+                        ),
                         media_type="application/x-ndjson",
                         headers={
                             "Cache-Control": "no-cache",
@@ -470,7 +493,10 @@ class OllamaAPI:
                         )
                         if match_result or mode == SearchMode.bypass:
                             if request.system:
-                                kwargs = {**rag.llm_model_kwargs, "system_prompt": request.system}
+                                kwargs = {
+                                    **rag.llm_model_kwargs,
+                                    "system_prompt": request.system,
+                                }
                             else:
                                 kwargs = rag.llm_model_kwargs
                             response_text = await rag.llm_model_func(

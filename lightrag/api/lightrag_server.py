@@ -1026,8 +1026,8 @@ def create_app(args):
                 "language": args.summary_language,
                 "entity_types": args.entity_types,
             },
-        ollama_server_infos=ollama_server_infos,
-    )
+            ollama_server_infos=ollama_server_infos,
+        )
 
     # Initialize WorkspaceManager for workspace lifecycle management
     try:
@@ -1384,7 +1384,9 @@ def create_app(args):
                         # Rerank configuration
                         "enable_rerank": rerank_model_func is not None,
                         "rerank_binding": args.rerank_binding,
-                        "rerank_model": args.rerank_model if rerank_model_func else None,
+                        "rerank_model": args.rerank_model
+                        if rerank_model_func
+                        else None,
                         "rerank_binding_host": args.rerank_binding_host
                         if rerank_model_func
                         else None,
