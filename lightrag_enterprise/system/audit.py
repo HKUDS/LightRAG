@@ -40,7 +40,12 @@ class AuditService:
         *,
         tenant_id: str | None = None,
         workspace_id: str | None = None,
+        workspace_ids: tuple[str, ...] | None = None,
         limit: int = 100,
     ) -> list[AuditEvent]:
-        return await self.repository.list_audit_events(tenant_id, workspace_id, limit)
-
+        return await self.repository.list_audit_events(
+            tenant_id,
+            workspace_id,
+            limit,
+            workspace_ids,
+        )

@@ -183,7 +183,7 @@
   "graphPanel": {
     "dataIsTruncated": "Dữ liệu đồ thị bị cắt bớt đến số Nút tối Đa",
     "statusDialog": {
-      "title": "Cài Đặt Máy Chủ LightRAG",
+      "title": "Cài Đặt Máy Chủ Little Bull",
       "description": "Xem trạng thái hệ thống hiện tại và thông tin kết nối"
     },
     "legend": "Chú thích",

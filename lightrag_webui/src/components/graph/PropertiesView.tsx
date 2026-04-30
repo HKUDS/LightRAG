@@ -1,8 +1,7 @@
-import { useMemo } from 'react'
+import { useCallback, useMemo } from 'react'
 import { useGraphStore, RawNodeType, RawEdgeType } from '@/stores/graph'
 import Text from '@/components/ui/Text'
 import Button from '@/components/ui/Button'
-import useLightragGraph from '@/hooks/useLightragGraph'
 import { useTranslation } from 'react-i18next'
 import { GitBranchPlus, Scissors } from 'lucide-react'
 import EditablePropertyRow from './EditablePropertyRow'
@@ -10,13 +9,21 @@ import EditablePropertyRow from './EditablePropertyRow'
 /**
  * Component that view properties of elements in graph.
  */
-const PropertiesView = () => {
-  const { getNode, getEdge } = useLightragGraph()
+const PropertiesView = ({ readOnly = false }: { readOnly?: boolean }) => {
+  const rawGraph = useGraphStore.use.rawGraph()
   const selectedNode = useGraphStore.use.selectedNode()
   const focusedNode = useGraphStore.use.focusedNode()
   const selectedEdge = useGraphStore.use.selectedEdge()
   const focusedEdge = useGraphStore.use.focusedEdge()
   const graphDataVersion = useGraphStore.use.graphDataVersion()
+  const getNode = useCallback(
+    (nodeId: string) => rawGraph?.getNode(nodeId) || null,
+    [rawGraph]
+  )
+  const getEdge = useCallback(
+    (edgeId: string, dynamicId: boolean = true) => rawGraph?.getEdge(edgeId, dynamicId) || null,
+    [rawGraph]
+  )
 
   const { currentElement, currentType } = useMemo(() => {
     let type: 'node' | 'edge' | null = null
@@ -53,9 +60,9 @@ const PropertiesView = () => {
   return (
     <div className="bg-background/80 max-w-xs rounded-lg border-2 p-2 text-xs backdrop-blur-lg">
       {currentType == 'node' ? (
-        <NodePropertiesView node={currentElement as any} />
+        <NodePropertiesView node={currentElement as any} readOnly={readOnly} />
       ) : (
-        <EdgePropertiesView edge={currentElement as any} />
+        <EdgePropertiesView edge={currentElement as any} readOnly={readOnly} />
       )}
     </div>
   )
@@ -249,7 +256,7 @@ const PropertyRow = ({
   )
 }
 
-const NodePropertiesView = ({ node }: { node: NodeType }) => {
+const NodePropertiesView = ({ node, readOnly }: { node: NodeType; readOnly: boolean }) => {
   const { t } = useTranslation()
 
   const handleExpandNode = () => {
@@ -310,7 +317,7 @@ const NodePropertiesView = ({ node }: { node: NodeType }) => {
                 nodeId={String(node.id)}
                 entityId={node.properties['entity_id']}
                 entityType="node"
-                isEditable={name === 'description' || name === 'entity_id' || name === 'entity_type'}
+                isEditable={!readOnly && (name === 'description' || name === 'entity_id' || name === 'entity_type')}
                 truncate={node.properties['truncate']}
               />
             )
@@ -341,7 +348,7 @@ const NodePropertiesView = ({ node }: { node: NodeType }) => {
   )
 }
 
-const EdgePropertiesView = ({ edge }: { edge: EdgeType }) => {
+const EdgePropertiesView = ({ edge, readOnly }: { edge: EdgeType; readOnly: boolean }) => {
   const { t } = useTranslation()
   return (
     <div className="flex flex-col gap-2">
@@ -380,7 +387,7 @@ const EdgePropertiesView = ({ edge }: { edge: EdgeType }) => {
                 entityType="edge"
                 sourceId={edge.sourceNode?.properties['entity_id'] || edge.source}
                 targetId={edge.targetNode?.properties['entity_id'] || edge.target}
-                isEditable={name === 'description' || name === 'keywords'}
+                isEditable={!readOnly && (name === 'description' || name === 'keywords')}
                 truncate={edge.properties['truncate']}
               />
             )

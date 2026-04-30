@@ -675,7 +675,7 @@ export const internalAgentsFixture: InternalAgentFixture[] = [
     id: 'orchestrator_agent',
     displayName: 'Coordenador',
     mission: 'Escolhe a melhor rota segura entre pergunta, busca, ação e auditoria.',
-    allowedSkills: ['query_lightrag', 'route_model_by_policy', 'audit_action'],
+    allowedSkills: ['query_knowledge', 'route_model_by_policy', 'audit_action'],
     visibleToHomeUsers: false,
     homeLabel: 'Organiza o trabalho por trás da tela',
     riskLevel: 'medium'
@@ -692,10 +692,10 @@ export const internalAgentsFixture: InternalAgentFixture[] = [
   {
     id: 'retrieval_agent',
     displayName: 'Buscador de conhecimento',
-    mission: 'Consulta o LightRAG como motor de memória e recuperação com fontes.',
+    mission: 'Consulta o motor de memória e recuperação com fontes.',
     allowedSkills: [
-      'query_lightrag',
-      'query_lightrag_context_only',
+      'query_knowledge',
+      'query_knowledge_context_only',
       'ingest_document',
       'ingest_batch'
     ],
@@ -770,7 +770,7 @@ export const internalSubagentsFixture: InternalSubagentFixture[] = [
 
 export const skillActionsFixture: SkillActionFixture[] = [
   {
-    id: 'query_lightrag',
+    id: 'query_knowledge',
     label: 'Perguntar aos documentos',
     description: 'Busca resposta na área selecionada e mostra fontes usadas.',
     inputKind: 'question',
@@ -780,7 +780,7 @@ export const skillActionsFixture: SkillActionFixture[] = [
     homeVisible: true
   },
   {
-    id: 'query_lightrag_context_only',
+    id: 'query_knowledge_context_only',
     label: 'Ver contexto encontrado',
     description: 'Mostra somente os trechos encontrados, sem gerar resposta final.',
     inputKind: 'question',
@@ -957,7 +957,7 @@ export const criticFindingsFixture: CriticFindingFixture[] = [
     severity: 'critical',
     message: 'Um documento tentou instruir o assistente a ignorar fontes e políticas.',
     workspaceId: 'pequeno_negocio',
-    relatedActionId: 'query_lightrag'
+    relatedActionId: 'query_knowledge'
   }
 ]
 
@@ -974,7 +974,7 @@ export const auditTrailFixture: AuditTrailFixture[] = [
   {
     id: 'audit_query_garantia',
     actor: 'Organizador da Casa',
-    action: 'query_lightrag',
+    action: 'query_knowledge',
     workspaceId: 'casa',
     tenantId: 'little_bull_home_demo',
     createdAtLabel: 'há 12 minutos',

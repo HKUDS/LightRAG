@@ -24,7 +24,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 from lightrag.api.utils_api import (
+    ENTERPRISE_AUTH_CONFIGURED,
+    ENTERPRISE_AUTH_UNAVAILABLE,
     get_combined_auth_dependency,
+    get_enterprise_auth_state,
     display_splash_screen,
     check_env_file,
 )
@@ -53,6 +56,11 @@ from lightrag.api.routers.query_routes import create_query_routes
 from lightrag.api.routers.graph_routes import create_graph_routes
 from lightrag.api.routers.ollama_api import OllamaAPI
 from lightrag_enterprise.little_bull import create_little_bull_router
+from lightrag_enterprise.admin.api import create_enterprise_admin_router
+from lightrag_enterprise.system.approval_execution import (
+    ApprovalActionExecutor,
+    ApprovalExecutionOutcome,
+)
 from lightrag_enterprise.system.router import create_system_router, ensure_default_scope
 from lightrag_enterprise.system.runtime import (
     get_system_auth_service,
@@ -363,10 +371,7 @@ def create_app(args):
             await rag.check_and_migrate_data()
 
             if little_bull_functional_enabled():
-                try:
-                    await ensure_default_scope()
-                except Exception as exc:
-                    logger.warning(f"Little Bull system scope initialization skipped: {exc}")
+                await ensure_default_scope()
 
             ASCIIColors.green("\nServer is ready to accept connections! 🚀\n")
 
@@ -1103,6 +1108,9 @@ def create_app(args):
             },
             ollama_server_infos=ollama_server_infos,
         )
+        rag.little_bull_llm_binding = args.llm_binding
+        rag.little_bull_llm_model = args.llm_model
+        rag.little_bull_llm_host = args.llm_binding_host
     except Exception as e:
         logger.error(f"Failed to initialize LightRAG: {e}")
         raise
@@ -1117,7 +1125,92 @@ def create_app(args):
     )
     app.include_router(create_query_routes(rag, api_key, args.top_k))
     app.include_router(create_graph_routes(rag, api_key))
-    app.include_router(create_system_router())
+
+    def little_bull_service():
+        from lightrag_enterprise.little_bull.service import LittleBullService
+        from lightrag_enterprise.system.runtime import (
+            get_access_service,
+            get_approval_service,
+            get_audit_service,
+            get_system_repository,
+        )
+
+        return LittleBullService(
+            rag=rag,
+            doc_manager=doc_manager,
+            repository=get_system_repository(),
+            access=get_access_service(),
+            audit=get_audit_service(),
+            approvals=get_approval_service(),
+        )
+
+    async def resolve_little_bull_workspace_rag(workspace_id: str):
+        return await little_bull_service()._require_data_plane(workspace_id)
+
+    class ImmediateBackgroundTasks:
+        def __init__(self) -> None:
+            self.tasks = []
+
+        def add_task(self, func, *args, **kwargs) -> None:
+            self.tasks.append((func, args, kwargs))
+
+        async def run(self) -> None:
+            import inspect
+
+            for func, task_args, task_kwargs in self.tasks:
+                result = func(*task_args, **task_kwargs)
+                if inspect.isawaitable(result):
+                    await result
+
+    async def execute_little_bull_reindex_approval(*, approval, approvals, principal):
+        from lightrag_enterprise.little_bull.models import LittleBullKnowledgeBaseReindexRequest
+        from lightrag_enterprise.system import ACTIVITY_DOCUMENT_REINDEX
+
+        if approval.action != ACTIVITY_DOCUMENT_REINDEX:
+            return ApprovalExecutionOutcome(
+                approval=approval,
+                audit_result="approved",
+                action_executed=False,
+                metadata={"executor": "unsupported_action"},
+            )
+        if not approval.workspace_id:
+            raise ValueError("Reindex approval is missing workspace_id.")
+        background_tasks = ImmediateBackgroundTasks()
+        payload = approval.metadata or {}
+        response = await little_bull_service().reindex_knowledge_base(
+            principal,
+            workspace_id=approval.workspace_id,
+            request=LittleBullKnowledgeBaseReindexRequest(
+                approval_id=approval.approval_id,
+                include_archived=bool(payload.get("include_archived", True)),
+                include_input_root=bool(payload.get("include_input_root", True)),
+                destructive_rebuild=bool(payload.get("destructive_rebuild", False)),
+            ),
+            background_tasks=background_tasks,
+        )
+        await background_tasks.run()
+        current_approval = await approvals.get(approval.approval_id) or approval
+        metadata = response.model_dump()
+        audit_result = "already_executed" if response.status == "already_executed" else "executed"
+        return ApprovalExecutionOutcome(
+            approval=current_approval,
+            audit_result=audit_result,
+            action_executed=audit_result == "executed",
+            metadata=metadata,
+        )
+
+    from lightrag_enterprise.system import ACTIVITY_DOCUMENT_REINDEX
+
+    app.include_router(
+        create_system_router(
+            ApprovalActionExecutor(
+                rag,
+                workspace_rag_resolver=resolve_little_bull_workspace_rag,
+                action_handlers={ACTIVITY_DOCUMENT_REINDEX: execute_little_bull_reindex_approval},
+            )
+        )
+    )
+    app.include_router(create_enterprise_admin_router())
     app.include_router(create_little_bull_router(rag, doc_manager))
 
     # Add Ollama API routes
@@ -1154,14 +1247,14 @@ def create_app(args):
     @app.get("/auth-status")
     async def get_auth_status():
         """Get authentication status and guest token if auth is not configured"""
-        enterprise_auth_configured = False
-        if little_bull_functional_enabled():
-            try:
-                enterprise_auth_configured = await get_system_auth_service().has_users()
-            except Exception as exc:
-                logger.warning(f"Little Bull auth status check failed: {exc}")
+        enterprise_auth_state = await get_enterprise_auth_state()
+        if enterprise_auth_state == ENTERPRISE_AUTH_UNAVAILABLE:
+            raise HTTPException(
+                status_code=503,
+                detail="Little Bull enterprise authentication is unavailable.",
+            )
 
-        if enterprise_auth_configured:
+        if enterprise_auth_state == ENTERPRISE_AUTH_CONFIGURED:
             return {
                 "auth_configured": True,
                 "auth_mode": "enterprise",
@@ -1199,30 +1292,39 @@ def create_app(args):
 
     @app.post("/login")
     async def login(form_data: OAuth2PasswordRequestForm = Depends()):
-        if little_bull_functional_enabled():
+        enterprise_auth_state = await get_enterprise_auth_state()
+        if enterprise_auth_state == ENTERPRISE_AUTH_UNAVAILABLE:
+            raise HTTPException(
+                status_code=503,
+                detail="Little Bull enterprise authentication is unavailable.",
+            )
+        if enterprise_auth_state == ENTERPRISE_AUTH_CONFIGURED:
             try:
                 system_auth = get_system_auth_service()
-                if await system_auth.has_users():
-                    _, principal = await system_auth.authenticate(
-                        form_data.username, form_data.password
-                    )
-                    system_auth.require_token_secret()
-                    return {
-                        "access_token": system_auth.create_token(principal),
-                        "token_type": "bearer",
-                        "auth_mode": "enterprise",
-                        "core_version": core_version,
-                        "api_version": api_version_display,
-                        "webui_title": webui_title,
-                        "webui_description": webui_description,
-                        "principal": principal.to_token_payload(),
-                    }
+                _, principal = await system_auth.authenticate(
+                    form_data.username, form_data.password
+                )
+                system_auth.require_token_secret()
+                return {
+                    "access_token": system_auth.create_token(principal),
+                    "token_type": "bearer",
+                    "auth_mode": "enterprise",
+                    "core_version": core_version,
+                    "api_version": api_version_display,
+                    "webui_title": webui_title,
+                    "webui_description": webui_description,
+                    "principal": principal.to_token_payload(),
+                }
             except ValueError:
                 raise HTTPException(status_code=401, detail="Incorrect credentials")
             except RuntimeError as exc:
                 raise HTTPException(status_code=503, detail=str(exc))
             except Exception as exc:
                 logger.warning(f"Little Bull enterprise login unavailable: {exc}")
+                raise HTTPException(
+                    status_code=503,
+                    detail="Little Bull enterprise authentication is unavailable.",
+                ) from exc
 
         if not auth_handler.accounts:
             # Authentication not configured, return guest token

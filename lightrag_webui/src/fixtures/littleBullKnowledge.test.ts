@@ -91,7 +91,7 @@ describe('littleBullKnowledge fixtures', () => {
     expect(internalSubagentsFixture.map((subagent) => subagent.id)).toContain(
       'prompt_injection_guard_subagent'
     )
-    expect(skillActionsFixture.map((skill) => skill.id)).toContain('query_lightrag')
+    expect(skillActionsFixture.map((skill) => skill.id)).toContain('query_knowledge')
     expect(skillActionsFixture.map((skill) => skill.id)).toContain('sync_model_catalog')
   })
 

@@ -90,7 +90,7 @@ export type EdgeType = {
   hidden?: boolean
 }
 
-const fetchGraph = async (label: string, maxDepth: number, maxNodes: number) => {
+const fetchGraph = async (label: string, maxDepth: number, maxNodes: number, workspaceId?: string) => {
   let rawData: any;
 
   // Trigger GraphLabels component to check if the label is valid
@@ -102,7 +102,7 @@ const fetchGraph = async (label: string, maxDepth: number, maxNodes: number) => 
 
   try {
     console.log(`Fetching graph label: ${queryLabel}, depth: ${maxDepth}, nodes: ${maxNodes}`);
-    rawData = await queryGraphs(queryLabel, maxDepth, maxNodes);
+    rawData = await queryGraphs(queryLabel, maxDepth, maxNodes, workspaceId);
   } catch (e) {
     useBackendState.getState().setErrorMessage(errorMessage(e), 'Query Graphs Error!');
     return null;
@@ -258,7 +258,7 @@ const createSigmaGraph = (rawGraph: RawGraph | null) => {
   return graph
 }
 
-const useLightrangeGraph = () => {
+const useLightrangeGraph = (workspaceId?: string) => {
   const { t } = useTranslation()
   const queryLabel = useSettingsStore.use.queryLabel()
   const rawGraph = useGraphStore.use.rawGraph()
@@ -293,6 +293,17 @@ const useLightrangeGraph = () => {
 
   // Track if a fetch is in progress to prevent multiple simultaneous fetches
   const fetchInProgressRef = useRef(false)
+
+  useEffect(() => {
+    const state = useGraphStore.getState()
+    state.reset()
+    state.setGraphDataFetchAttempted(false)
+    state.setLabelsFetchAttempted(false)
+    dataLoadedRef.current = false
+    initialLoadRef.current = false
+    emptyDataHandledRef.current = false
+    fetchInProgressRef.current = false
+  }, [workspaceId])
 
   // Reset graph when query label is cleared
   useEffect(() => {
@@ -348,7 +359,7 @@ const useLightrangeGraph = () => {
 
       // 1. If query label is not empty, use fetchGraph
       if (currentQueryLabel) {
-        dataPromise = fetchGraph(currentQueryLabel, currentMaxQueryDepth, currentMaxNodes);
+        dataPromise = fetchGraph(currentQueryLabel, currentMaxQueryDepth, currentMaxNodes, workspaceId);
       } else {
         // 2. If query label is empty, set data to null
         console.log('Query label is empty, show empty graph')
@@ -455,7 +466,7 @@ const useLightrangeGraph = () => {
         state.setLastSuccessfulQueryLabel('') // Clear last successful query label on error
       })
     }
-  }, [queryLabel, maxQueryDepth, maxNodes, isFetching, t, graphDataVersion])
+  }, [queryLabel, maxQueryDepth, maxNodes, isFetching, t, graphDataVersion, workspaceId])
 
   // Handle node expansion
   useEffect(() => {
@@ -482,7 +493,7 @@ const useLightrangeGraph = () => {
         }
 
         // Fetch the extended subgraph with depth 2
-        const extendedGraph = await queryGraphs(label, 2, 1000);
+        const extendedGraph = await queryGraphs(label, 2, 1000, workspaceId);
 
         if (!extendedGraph || !extendedGraph.nodes || !extendedGraph.edges) {
           console.error('Failed to fetch extended graph');
@@ -820,7 +831,7 @@ const useLightrangeGraph = () => {
     window.setTimeout(() => {
       useGraphStore.getState().triggerNodeExpand(null);
     }, 0);
-  }, [nodeToExpand, sigmaGraph, rawGraph, t]);
+  }, [nodeToExpand, sigmaGraph, rawGraph, t, workspaceId]);
 
   // Helper function to get all nodes that will be deleted
   const getNodesThatWillBeDeleted = useCallback((nodeId: string, graph: UndirectedGraph) => {

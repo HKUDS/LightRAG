@@ -23,6 +23,7 @@ import LegendButton from '@/components/graph/LegendButton'
 
 import { useSettingsStore } from '@/stores/settings'
 import { useGraphStore } from '@/stores/graph'
+import useLightragGraph from '@/hooks/useLightragGraph'
 import { labelColorDarkTheme, labelColorLightTheme } from '@/lib/constants'
 
 import '@react-sigma/core/lib/style.css'
@@ -107,7 +108,9 @@ const GraphEvents = () => {
   return null
 }
 
-const GraphViewer = () => {
+const GraphViewer = ({ workspaceId }: { workspaceId?: string }) => {
+  useLightragGraph(workspaceId)
+
   const sigmaRef = useRef<any>(null)
   const prevTheme = useRef<string>('')
 
@@ -211,7 +214,7 @@ const GraphViewer = () => {
         <FocusOnNode node={autoFocusedNode} move={moveToSelectedNode} />
 
         <div className="absolute top-2 left-2 flex items-start gap-2">
-          <GraphLabels />
+          <GraphLabels workspaceId={workspaceId} />
           {showNodeSearchBar && !isThemeSwitching && (
             <GraphSearch
               value={searchInitSelectedNode}
@@ -232,7 +235,7 @@ const GraphViewer = () => {
 
         {showPropertyPanel && (
           <div className="absolute top-2 right-2 z-10">
-            <PropertiesView />
+            <PropertiesView readOnly={Boolean(workspaceId)} />
           </div>
         )}
 
@@ -254,7 +257,7 @@ const GraphViewer = () => {
         <div className="absolute inset-0 flex items-center justify-center bg-background/80 z-10">
           <div className="text-center">
             <div className="mb-2 h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent mx-auto"></div>
-            <p>{isThemeSwitching ? 'Switching Theme...' : 'Loading Graph Data...'}</p>
+            <p>{isThemeSwitching ? 'Alternando tema...' : 'Carregando grafo...'}</p>
           </div>
         </div>
       )}

@@ -40,7 +40,7 @@ class ApprovalService:
         )
         return await self.repository.create_approval_request(approval)
 
-    def _can_decide(self, approval: ApprovalRequest, principal: Principal) -> None:
+    def _check_decider_scope(self, approval: ApprovalRequest, principal: Principal) -> None:
         if not principal.is_master_global and ACTIVITY_APPROVAL_DECIDE not in principal.permissions:
             raise PermissionError("Principal cannot approve requests.")
         if not principal.is_master_global:
@@ -48,16 +48,49 @@ class ApprovalService:
                 raise PermissionError("Approval tenant is outside principal scope.")
             if approval.workspace_id and approval.workspace_id not in principal.workspace_ids:
                 raise PermissionError("Approval workspace is outside principal scope.")
+
+    def _can_decide(self, approval: ApprovalRequest, principal: Principal) -> None:
+        self._check_decider_scope(approval, principal)
         if approval.status != ApprovalStatus.PENDING:
             raise ValueError("Approval request is no longer pending.")
+
+    async def get(self, approval_id: str) -> ApprovalRequest | None:
+        return await self.repository.get_approval_request(approval_id)
 
     async def approve(self, approval_id: str, principal: Principal) -> ApprovalRequest:
         approval = await self.repository.get_approval_request(approval_id)
         if approval is None:
             raise KeyError(approval_id)
-        self._can_decide(approval, principal)
+        self._check_decider_scope(approval, principal)
+        if approval.status in {
+            ApprovalStatus.APPROVED,
+            ApprovalStatus.EXECUTING,
+            ApprovalStatus.EXECUTED,
+            ApprovalStatus.FAILED,
+        }:
+            return approval
+        if approval.status != ApprovalStatus.PENDING:
+            raise ValueError("Approval request is no longer pending.")
         return await self.repository.update_approval_status(
             approval_id, ApprovalStatus.APPROVED, principal.user_id
+        )
+
+    async def begin_execution(self, approval_id: str, principal: Principal) -> ApprovalRequest | None:
+        return await self.repository.transition_approval_status(
+            approval_id,
+            ApprovalStatus.APPROVED,
+            ApprovalStatus.EXECUTING,
+            principal.user_id,
+        )
+
+    async def mark_executed(self, approval_id: str, principal: Principal) -> ApprovalRequest:
+        return await self.repository.update_approval_status(
+            approval_id, ApprovalStatus.EXECUTED, principal.user_id
+        )
+
+    async def mark_failed(self, approval_id: str, principal: Principal) -> ApprovalRequest:
+        return await self.repository.update_approval_status(
+            approval_id, ApprovalStatus.FAILED, principal.user_id
         )
 
     async def reject(self, approval_id: str, principal: Principal) -> ApprovalRequest:

@@ -34,13 +34,24 @@ class SystemRepository(Protocol):
     async def list_memberships_for_user(self, user_id: str) -> list[Membership]: ...
     async def write_audit_event(self, event: AuditEvent) -> AuditEvent: ...
     async def list_audit_events(
-        self, tenant_id: str | None = None, workspace_id: str | None = None, limit: int = 100
+        self,
+        tenant_id: str | None = None,
+        workspace_id: str | None = None,
+        limit: int = 100,
+        workspace_ids: tuple[str, ...] | None = None,
     ) -> list[AuditEvent]: ...
     async def create_approval_request(self, approval: ApprovalRequest) -> ApprovalRequest: ...
     async def get_approval_request(self, approval_id: str) -> ApprovalRequest | None: ...
     async def update_approval_status(
         self, approval_id: str, status: ApprovalStatus, decided_by: str
     ) -> ApprovalRequest: ...
+    async def transition_approval_status(
+        self,
+        approval_id: str,
+        from_status: ApprovalStatus,
+        to_status: ApprovalStatus,
+        decided_by: str,
+    ) -> ApprovalRequest | None: ...
     async def list_approval_requests(
         self, tenant_id: str | None = None, workspace_id: str | None = None, status: ApprovalStatus | None = None
     ) -> list[ApprovalRequest]: ...
@@ -124,13 +135,20 @@ class InMemorySystemRepository:
         return event
 
     async def list_audit_events(
-        self, tenant_id: str | None = None, workspace_id: str | None = None, limit: int = 100
+        self,
+        tenant_id: str | None = None,
+        workspace_id: str | None = None,
+        limit: int = 100,
+        workspace_ids: tuple[str, ...] | None = None,
     ) -> list[AuditEvent]:
         events = self.audit_events
         if tenant_id:
             events = [event for event in events if event.tenant_id == tenant_id]
         if workspace_id:
             events = [event for event in events if event.workspace_id == workspace_id]
+        if workspace_ids is not None:
+            allowed_workspace_ids = set(workspace_ids)
+            events = [event for event in events if event.workspace_id in allowed_workspace_ids]
         return list(reversed(events))[:limit]
 
     async def create_approval_request(self, approval: ApprovalRequest) -> ApprovalRequest:
@@ -147,6 +165,22 @@ class InMemorySystemRepository:
         if approval is None:
             raise KeyError(approval_id)
         updated = replace(approval, status=status, decided_by=decided_by, decided_at=utc_now())
+        self.approvals[approval_id] = updated
+        return updated
+
+    async def transition_approval_status(
+        self,
+        approval_id: str,
+        from_status: ApprovalStatus,
+        to_status: ApprovalStatus,
+        decided_by: str,
+    ) -> ApprovalRequest | None:
+        approval = self.approvals.get(approval_id)
+        if approval is None:
+            raise KeyError(approval_id)
+        if approval.status != from_status:
+            return None
+        updated = replace(approval, status=to_status, decided_by=decided_by, decided_at=utc_now())
         self.approvals[approval_id] = updated
         return updated
 
@@ -404,7 +438,11 @@ class PostgresSystemRepository:
         return self._audit_from_row(row)
 
     async def list_audit_events(
-        self, tenant_id: str | None = None, workspace_id: str | None = None, limit: int = 100
+        self,
+        tenant_id: str | None = None,
+        workspace_id: str | None = None,
+        limit: int = 100,
+        workspace_ids: tuple[str, ...] | None = None,
     ) -> list[AuditEvent]:
         pool = await self._get_pool()
         clauses: list[str] = []
@@ -415,6 +453,9 @@ class PostgresSystemRepository:
         if workspace_id:
             args.append(workspace_id)
             clauses.append(f"workspace_id=${len(args)}")
+        if workspace_ids is not None:
+            args.append(list(workspace_ids))
+            clauses.append(f"workspace_id = ANY(${len(args)}::text[])")
         args.append(limit)
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         rows = await pool.fetch(
@@ -471,6 +512,29 @@ class PostgresSystemRepository:
         if row is None:
             raise KeyError(approval_id)
         return self._approval_from_row(row)
+
+    async def transition_approval_status(
+        self,
+        approval_id: str,
+        from_status: ApprovalStatus,
+        to_status: ApprovalStatus,
+        decided_by: str,
+    ) -> ApprovalRequest | None:
+        pool = await self._get_pool()
+        row = await pool.fetchrow(
+            """
+            UPDATE system_approval_requests
+            SET status=$3, decided_by=$4, decided_at=$5
+            WHERE approval_id=$1 AND status=$2
+            RETURNING *
+            """,
+            approval_id,
+            from_status.value,
+            to_status.value,
+            decided_by,
+            utc_now(),
+        )
+        return self._approval_from_row(row) if row else None
 
     async def list_approval_requests(
         self, tenant_id: str | None = None, workspace_id: str | None = None, status: ApprovalStatus | None = None

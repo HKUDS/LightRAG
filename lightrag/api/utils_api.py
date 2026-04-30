@@ -8,6 +8,7 @@ from typing import Optional, List, Tuple
 import sys
 import time
 import logging
+import jwt
 from ascii_colors import ASCIIColors
 from .._version import __api_version__ as api_version
 from .._version import __version__ as core_version
@@ -87,8 +88,13 @@ for path in whitelist_paths:
 # Global authentication configuration
 auth_configured = bool(auth_handler.accounts)
 
+ENTERPRISE_AUTH_DISABLED = "disabled"
+ENTERPRISE_AUTH_NO_USERS = "no_users"
+ENTERPRISE_AUTH_CONFIGURED = "configured"
+ENTERPRISE_AUTH_UNAVAILABLE = "unavailable"
 
-async def _enterprise_auth_configured() -> bool:
+
+async def get_enterprise_auth_state() -> str:
     try:
         from lightrag_enterprise.system.runtime import (
             get_system_auth_service,
@@ -96,11 +102,13 @@ async def _enterprise_auth_configured() -> bool:
         )
 
         if not little_bull_functional_enabled():
-            return False
-        return await get_system_auth_service().has_users()
+            return ENTERPRISE_AUTH_DISABLED
+        if await get_system_auth_service().has_users():
+            return ENTERPRISE_AUTH_CONFIGURED
+        return ENTERPRISE_AUTH_NO_USERS
     except Exception as exc:
         logger.warning(f"Little Bull enterprise auth check failed: {exc}")
-        return False
+        return ENTERPRISE_AUTH_UNAVAILABLE
 
 
 async def _validate_enterprise_token(token: str, request: Request) -> bool:
@@ -110,12 +118,20 @@ async def _validate_enterprise_token(token: str, request: Request) -> bool:
         principal = await get_system_auth_service().principal_from_token(token)
         request.state.little_bull_principal = principal
         return True
-    except Exception as exc:
+    except (jwt.PyJWTError, KeyError, ValueError) as exc:
         logger.debug(f"Little Bull enterprise token validation failed: {exc}")
         return False
+    except Exception as exc:
+        logger.warning(f"Little Bull enterprise token validation unavailable: {exc}")
+        raise RuntimeError("Little Bull enterprise authentication is unavailable.") from exc
 
 
-def get_combined_auth_dependency(api_key: Optional[str] = None):
+def get_combined_auth_dependency(
+    api_key: Optional[str] = None,
+    *,
+    enterprise_activity: str | None = None,
+    enterprise_requires_approval: bool = False,
+):
     """
     Create a combined authentication dependency that implements authentication logic
     based on API key, OAuth2 token, and whitelist paths.
@@ -152,13 +168,35 @@ def get_combined_auth_dependency(api_key: Optional[str] = None):
         if api_key_header is None
         else Security(api_key_header),
     ):
-        enterprise_auth_configured = await _enterprise_auth_configured()
+        enterprise_auth_state = await get_enterprise_auth_state()
 
         # 1. Check if path is in whitelist
         path = request.url.path
-        if enterprise_auth_configured:
-            if token and await _validate_enterprise_token(token, request):
-                return
+        if enterprise_auth_state == ENTERPRISE_AUTH_UNAVAILABLE:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Little Bull enterprise authentication is unavailable.",
+            )
+        if enterprise_auth_state == ENTERPRISE_AUTH_CONFIGURED:
+            if token:
+                try:
+                    if await _validate_enterprise_token(token, request):
+                        if enterprise_activity:
+                            from lightrag_enterprise.system.core_governance import (
+                                enforce_core_route_activity,
+                            )
+
+                            await enforce_core_route_activity(
+                                request,
+                                activity=enterprise_activity,
+                                require_approval=enterprise_requires_approval,
+                            )
+                        return
+                except RuntimeError as exc:
+                    raise HTTPException(
+                        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                        detail=str(exc),
+                    ) from exc
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Enterprise authentication required.",

@@ -7,9 +7,9 @@
     "system": "System"
   },
   "header": {
-    "documents": "Documents",
-    "knowledgeGraph": "Knowledge Graph",
-    "retrieval": "Retrieval",
+    "documents": "Conhecimento",
+    "knowledgeGraph": "Grafo",
+    "retrieval": "Perguntar",
     "api": "API",
     "projectRepository": "Project Repository",
     "logout": "Logout",
@@ -20,16 +20,16 @@
     }
   },
   "login": {
-    "description": "Please enter your account and password to log in to the system",
-    "username": "Username",
-    "usernamePlaceholder": "Please input a username",
-    "password": "Password",
-    "passwordPlaceholder": "Please input a password",
-    "loginButton": "Login",
-    "loggingIn": "Logging in...",
-    "successMessage": "Login succeeded",
-    "errorEmptyFields": "Please enter your username and password",
-    "errorInvalidCredentials": "Login failed, please check username and password",
+    "description": "Acesse o ambiente operacional Little Bull",
+    "username": "Usuário",
+    "usernamePlaceholder": "Digite seu usuário",
+    "password": "Senha",
+    "passwordPlaceholder": "Digite sua senha",
+    "loginButton": "Entrar",
+    "loggingIn": "Entrando...",
+    "successMessage": "Login realizado",
+    "errorEmptyFields": "Digite usuário e senha",
+    "errorInvalidCredentials": "Login falhou, confira usuário e senha",
     "authDisabled": "Authentication is disabled. Using login free mode.",
     "guestMode": "Login Free"
   },
@@ -183,7 +183,7 @@
   "graphPanel": {
     "dataIsTruncated": "Graph data is truncated to Max Nodes",
     "statusDialog": {
-      "title": "LightRAG Server Settings",
+      "title": "Configurações do servidor Little Bull",
       "description": "View current system status and connection information"
     },
     "legend": "Legend",

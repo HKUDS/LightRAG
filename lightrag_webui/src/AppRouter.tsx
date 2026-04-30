@@ -1,10 +1,9 @@
 import '@/lib/extensions'; // Import all global extensions
-import { HashRouter as Router, Routes, Route, useLocation, useNavigate } from 'react-router-dom'
+import { HashRouter as Router, Routes, Route, Navigate, useLocation, useNavigate } from 'react-router-dom'
 import { useEffect, useState } from 'react'
 import { useAuthStore } from '@/stores/state'
 import { navigationService } from '@/services/navigation'
 import { Toaster } from 'sonner'
-import App from './App'
 import LoginPage from '@/features/LoginPage'
 import LittleBullPreview from '@/features/LittleBullPreview'
 import ThemeProvider from '@/components/ThemeProvider'
@@ -73,6 +72,8 @@ const AppContent = () => {
         navigate(pendingLittleBullPath, { replace: true })
         return
       }
+      navigate('/little-bull', { replace: true })
+      return
     }
 
     if (!isAuthenticated || isGuestMode) {
@@ -97,8 +98,12 @@ const AppContent = () => {
     <Routes>
       <Route path="/login" element={<LoginPage />} />
       <Route
+        path="/"
+        element={isAuthenticated && !isGuestMode ? <Navigate to="/little-bull" replace /> : <Navigate to="/login" replace />}
+      />
+      <Route
         path="/little-bull-preview"
-        element={isAuthenticated && !isGuestMode ? <LittleBullPreview /> : null}
+        element={<Navigate to="/little-bull" replace />}
       />
       <Route
         path="/little-bull"
@@ -106,7 +111,7 @@ const AppContent = () => {
       />
       <Route
         path="/*"
-        element={isAuthenticated ? <App /> : null}
+        element={isAuthenticated && !isGuestMode ? <Navigate to="/little-bull" replace /> : <Navigate to="/login" replace />}
       />
     </Routes>
   )

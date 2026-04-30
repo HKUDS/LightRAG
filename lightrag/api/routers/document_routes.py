@@ -31,6 +31,13 @@ from lightrag.utils import (
     sanitize_text_for_encoding,
 )
 from lightrag.api.utils_api import get_combined_auth_dependency
+from lightrag_enterprise.system import (
+    ACTIVITY_CORE_CACHE_CLEAR,
+    ACTIVITY_CORE_GRAPH_MUTATE,
+    ACTIVITY_CORE_PIPELINE_MANAGE,
+    ACTIVITY_DOCUMENT_DELETE,
+    ACTIVITY_DOCUMENT_UPLOAD,
+)
 from ..config import global_args
 
 
@@ -2089,9 +2096,32 @@ def create_document_routes(
 ):
     # Create combined auth dependency for document routes
     combined_auth = get_combined_auth_dependency(api_key)
+    document_delete_auth = get_combined_auth_dependency(
+        api_key,
+        enterprise_activity=ACTIVITY_DOCUMENT_DELETE,
+        enterprise_requires_approval=True,
+    )
+    core_graph_mutate_auth = get_combined_auth_dependency(
+        api_key,
+        enterprise_activity=ACTIVITY_CORE_GRAPH_MUTATE,
+        enterprise_requires_approval=True,
+    )
+    core_cache_clear_auth = get_combined_auth_dependency(
+        api_key,
+        enterprise_activity=ACTIVITY_CORE_CACHE_CLEAR,
+        enterprise_requires_approval=True,
+    )
+    document_upload_auth = get_combined_auth_dependency(
+        api_key,
+        enterprise_activity=ACTIVITY_DOCUMENT_UPLOAD,
+    )
+    pipeline_manage_auth = get_combined_auth_dependency(
+        api_key,
+        enterprise_activity=ACTIVITY_CORE_PIPELINE_MANAGE,
+    )
 
     @router.post(
-        "/scan", response_model=ScanResponse, dependencies=[Depends(combined_auth)]
+        "/scan", response_model=ScanResponse, dependencies=[Depends(document_upload_auth)]
     )
     async def scan_for_new_documents(background_tasks: BackgroundTasks):
         """
@@ -2116,7 +2146,7 @@ def create_document_routes(
         )
 
     @router.post(
-        "/upload", response_model=InsertResponse, dependencies=[Depends(combined_auth)]
+        "/upload", response_model=InsertResponse, dependencies=[Depends(document_upload_auth)]
     )
     async def upload_to_input_dir(
         background_tasks: BackgroundTasks, file: UploadFile = File(...)
@@ -2284,7 +2314,7 @@ def create_document_routes(
             raise HTTPException(status_code=500, detail=str(e))
 
     @router.post(
-        "/text", response_model=InsertResponse, dependencies=[Depends(combined_auth)]
+        "/text", response_model=InsertResponse, dependencies=[Depends(document_upload_auth)]
     )
     async def insert_text(
         request: InsertTextRequest, background_tasks: BackgroundTasks
@@ -2364,7 +2394,7 @@ def create_document_routes(
     @router.post(
         "/texts",
         response_model=InsertResponse,
-        dependencies=[Depends(combined_auth)],
+        dependencies=[Depends(document_upload_auth)],
     )
     async def insert_texts(
         request: InsertTextsRequest, background_tasks: BackgroundTasks
@@ -2445,7 +2475,7 @@ def create_document_routes(
             raise HTTPException(status_code=500, detail=str(e))
 
     @router.delete(
-        "", response_model=ClearDocumentsResponse, dependencies=[Depends(combined_auth)]
+        "", response_model=ClearDocumentsResponse, dependencies=[Depends(document_delete_auth)]
     )
     async def clear_documents():
         """
@@ -2852,7 +2882,7 @@ def create_document_routes(
     @router.delete(
         "/delete_document",
         response_model=DeleteDocByIdResponse,
-        dependencies=[Depends(combined_auth)],
+        dependencies=[Depends(document_delete_auth)],
         summary="Delete a document and all its associated data by its ID.",
     )
     async def delete_document(
@@ -2931,7 +2961,7 @@ def create_document_routes(
     @router.post(
         "/clear_cache",
         response_model=ClearCacheResponse,
-        dependencies=[Depends(combined_auth)],
+        dependencies=[Depends(core_cache_clear_auth)],
     )
     async def clear_cache(request: ClearCacheRequest):
         """
@@ -2965,7 +2995,7 @@ def create_document_routes(
     @router.delete(
         "/delete_entity",
         response_model=DeletionResult,
-        dependencies=[Depends(combined_auth)],
+        dependencies=[Depends(core_graph_mutate_auth)],
     )
     async def delete_entity(request: DeleteEntityRequest):
         """
@@ -3000,7 +3030,7 @@ def create_document_routes(
     @router.delete(
         "/delete_relation",
         response_model=DeletionResult,
-        dependencies=[Depends(combined_auth)],
+        dependencies=[Depends(core_graph_mutate_auth)],
     )
     async def delete_relation(request: DeleteRelationRequest):
         """
@@ -3318,7 +3348,7 @@ def create_document_routes(
     @router.post(
         "/reprocess_failed",
         response_model=ReprocessResponse,
-        dependencies=[Depends(combined_auth)],
+        dependencies=[Depends(pipeline_manage_auth)],
     )
     async def reprocess_failed_documents(background_tasks: BackgroundTasks):
         """
@@ -3364,7 +3394,7 @@ def create_document_routes(
     @router.post(
         "/cancel_pipeline",
         response_model=CancelPipelineResponse,
-        dependencies=[Depends(combined_auth)],
+        dependencies=[Depends(pipeline_manage_auth)],
     )
     async def cancel_pipeline():
         """

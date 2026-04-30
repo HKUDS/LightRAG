@@ -18,6 +18,9 @@ def new_id(prefix: str) -> str:
 class ApprovalStatus(str, Enum):
     PENDING = "pending"
     APPROVED = "approved"
+    EXECUTING = "executing"
+    EXECUTED = "executed"
+    FAILED = "failed"
     REJECTED = "rejected"
 
 
@@ -141,4 +144,3 @@ class AuditEvent:
         data = asdict(self)
         data["created_at"] = self.created_at.isoformat()
         return data
-

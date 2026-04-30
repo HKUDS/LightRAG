@@ -183,7 +183,7 @@
   "graphPanel": {
     "dataIsTruncated": "Graphdaten wurden auf maximale Knotenanzahl gekürzt",
     "statusDialog": {
-      "title": "LightRAG Server-Einstellungen",
+      "title": "Little Bull Server-Einstellungen",
       "description": "Aktuellen Systemstatus und Verbindungsinformationen anzeigen"
     },
     "legend": "Legende",

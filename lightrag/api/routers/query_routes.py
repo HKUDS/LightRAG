@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Literal, Optional
 from fastapi import APIRouter, Depends, HTTPException
 from lightrag.base import QueryParam
 from lightrag.api.utils_api import get_combined_auth_dependency
+from lightrag_enterprise.system import ACTIVITY_CORE_QUERY_DATA, ACTIVITY_QUERY
 from lightrag.utils import logger
 from pydantic import BaseModel, Field, field_validator
 
@@ -191,12 +192,19 @@ class StreamChunkResponse(BaseModel):
 
 
 def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
-    combined_auth = get_combined_auth_dependency(api_key)
+    query_auth = get_combined_auth_dependency(
+        api_key,
+        enterprise_activity=ACTIVITY_QUERY,
+    )
+    query_data_auth = get_combined_auth_dependency(
+        api_key,
+        enterprise_activity=ACTIVITY_CORE_QUERY_DATA,
+    )
 
     @router.post(
         "/query",
         response_model=QueryResponse,
-        dependencies=[Depends(combined_auth)],
+        dependencies=[Depends(query_auth)],
         responses={
             200: {
                 "description": "Successful RAG query response",
@@ -455,7 +463,7 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
 
     @router.post(
         "/query/stream",
-        dependencies=[Depends(combined_auth)],
+        dependencies=[Depends(query_auth)],
         responses={
             200: {
                 "description": "Flexible RAG query response - format depends on stream parameter",
@@ -742,7 +750,7 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
     @router.post(
         "/query/data",
         response_model=QueryDataResponse,
-        dependencies=[Depends(combined_auth)],
+        dependencies=[Depends(query_data_auth)],
         responses={
             200: {
                 "description": "Successful data retrieval response with structured RAG data",

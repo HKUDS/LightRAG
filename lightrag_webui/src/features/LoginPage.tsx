@@ -8,7 +8,7 @@ import { useTranslation } from 'react-i18next'
 import { Card, CardContent, CardHeader } from '@/components/ui/Card'
 import Input from '@/components/ui/Input'
 import Button from '@/components/ui/Button'
-import { ZapIcon } from 'lucide-react'
+import { ShieldCheckIcon } from 'lucide-react'
 import AppSettings from '@/components/AppSettings'
 
 const LoginPage = () => {
@@ -129,8 +129,8 @@ const LoginPage = () => {
         toast.success(t('login.successMessage'))
       }
 
-      // Navigate to home page after successful login
-      navigate('/')
+      // Navigate to Little Bull after successful login
+      navigate('/little-bull')
     } catch (error) {
       console.error('Login failed...', error)
       toast.error(t('login.errorInvalidCredentials'))
@@ -145,19 +145,18 @@ const LoginPage = () => {
   }
 
   return (
-    <div className="flex h-screen w-screen items-center justify-center bg-gradient-to-br from-emerald-50 to-teal-100 dark:from-gray-900 dark:to-gray-800">
+    <div className="flex h-screen w-screen items-center justify-center bg-slate-50 text-slate-950">
       <div className="absolute top-4 right-4 flex items-center gap-2">
         <AppSettings className="bg-white/30 dark:bg-gray-800/30 backdrop-blur-sm rounded-md" />
       </div>
       <Card className="w-full max-w-[480px] shadow-lg mx-4">
         <CardHeader className="flex items-center justify-center space-y-2 pb-8 pt-6">
           <div className="flex flex-col items-center space-y-4">
-            <div className="flex items-center gap-3">
-              <img src="logo.svg" alt="LightRAG Logo" className="h-12 w-12" />
-              <ZapIcon className="size-10 text-emerald-400" aria-hidden="true" />
+            <div className="grid size-16 place-items-center rounded-lg bg-slate-950 text-yellow-300">
+              <ShieldCheckIcon className="size-9" aria-hidden="true" />
             </div>
             <div className="text-center space-y-2">
-              <h1 className="text-3xl font-bold tracking-tight">LightRAG</h1>
+              <h1 className="text-3xl font-bold tracking-tight">Little Bull</h1>
               <p className="text-muted-foreground text-sm">
                 {t('login.description')}
               </p>

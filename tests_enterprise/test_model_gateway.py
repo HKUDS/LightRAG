@@ -78,6 +78,25 @@ def test_policy_router_blocks_hosted_for_private_data_and_uses_local():
     assert decision.model.provider == "local"
 
 
+def test_policy_router_blocks_hosted_only_catalog_for_private_data():
+    catalog = ModelCatalog(entries=[ModelCatalogEntry.from_openrouter_model(OPENROUTER_SAMPLE)])
+    router = PolicyModelRouter(catalog, ModelPolicy())
+
+    decision = router.route(
+        ModelRoutingContext(
+            tenant_id="t1",
+            workspace="private_ws",
+            purpose="internal_rag",
+            contains_private_data=True,
+            requested_profile=ModelProfile.LOCAL_PRIVATE,
+        )
+    )
+
+    assert decision.allowed is False
+    assert decision.model is None
+    assert "No permitted model" in decision.reason
+
+
 def test_cost_estimate_uses_catalog_prices_only():
     entry = ModelCatalogEntry.from_openrouter_model(OPENROUTER_SAMPLE)
 

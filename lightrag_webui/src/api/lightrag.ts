@@ -299,6 +299,10 @@ export type LittleBullArea = {
   processing_count: number
   accent: string
   emoji: string
+  data_plane_attached?: boolean
+  chat_model_id?: string | null
+  embedding_model_id?: string | null
+  embedding_reindex_required?: boolean
 }
 
 export type LittleBullDocument = {
@@ -332,6 +336,7 @@ export type LittleBullQueryRequest = {
   conversation_history?: Message[]
   confidentiality?: 'normal' | 'sensivel' | 'privado'
   model_profile?: string
+  agent_id?: string | null
 }
 
 export type LittleBullQueryResponse = {
@@ -346,6 +351,16 @@ export type LittleBullUploadResponse = {
   message: string
   track_id?: string | null
   workspace_id: string
+}
+
+export type LittleBullReindexArchivedResponse = {
+  status: string
+  message: string
+  track_id?: string | null
+  workspace_id: string
+  recovered_count: number
+  skipped_count: number
+  files: string[]
 }
 
 export type LittleBullActivityItem = {
@@ -366,6 +381,259 @@ export type LittleBullAssistant = {
   response_rules: string[]
 }
 
+export type LittleBullModelUsage = 'chat' | 'embedding' | 'rerank' | 'agent'
+
+export type LittleBullModelSetting = {
+  model_setting_id?: string | null
+  tenant_id?: string | null
+  workspace_id?: string | null
+  usage: LittleBullModelUsage
+  provider: string
+  binding: string
+  binding_host: string
+  model_id: string
+  display_name: string
+  enabled: boolean
+  is_default: boolean
+  config: Record<string, any>
+  created_by?: string | null
+  updated_by?: string | null
+  created_at?: string | null
+  updated_at?: string | null
+}
+
+export type LittleBullEmbeddingCatalogItem = {
+  model_id: string
+  display_name: string
+  provider: string
+  binding: string
+  binding_host: string
+  context_length: number
+  prompt_cost_per_million_tokens: number
+  prompt_cost_per_token: number
+  estimated_cost_100k_tokens: number
+  estimated_cost_200k_tokens: number
+  quality_tier: string
+  recommended_chunk_tokens: number
+  notes: string
+}
+
+export type LittleBullKnowledgeBase = {
+  workspace_id: string
+  tenant_id?: string | null
+  name: string
+  slug: string
+  description: string
+  privacy: string
+  data_plane_attached: boolean
+  document_count: number
+  ready_count: number
+  processing_count: number
+  chat_model?: LittleBullModelSetting | null
+  embedding_model?: LittleBullModelSetting | null
+  embedding_reindex_required: boolean
+  embedding_estimated_tokens: number
+  embedding_estimated_cost_usd: number
+}
+
+export type LittleBullKnowledgeBaseUpsertRequest = {
+  workspace_id?: string | null
+  name: string
+  slug?: string | null
+  description?: string
+  privacy?: string
+  embedding_model_id?: string | null
+  estimated_tokens?: number | null
+}
+
+export type LittleBullKnowledgeBaseAttachResponse = {
+  status: string
+  message: string
+  workspace_id: string
+  data_plane_attached: boolean
+  input_dir?: string | null
+  working_dir?: string | null
+}
+
+export type LittleBullKnowledgeBaseReindexResponse = {
+  status: string
+  message: string
+  workspace_id: string
+  track_id?: string | null
+  approval?: LittleBullApproval | null
+  destructive_rebuild?: boolean
+  snapshot_id?: string | null
+  snapshot_path?: string | null
+  rollback_available?: boolean
+  queued_count: number
+  skipped_count: number
+  files: string[]
+}
+
+export type LittleBullEmbeddingCostEstimateRequest = {
+  workspace_id: string
+  model_id: string
+  estimated_tokens?: number | null
+  page_count?: number | null
+  words_per_page?: number
+}
+
+export type LittleBullEmbeddingCostEstimateResponse = {
+  workspace_id: string
+  model_id: string
+  display_name: string
+  estimated_tokens: number
+  estimated_cost_usd: number
+  prompt_cost_per_million_tokens: number
+  context_length: number
+  recommended_chunk_tokens: number
+  reindex_required: boolean
+  notes: string[]
+}
+
+export type LittleBullAgentStudioConfig = {
+  schema_version?: number
+  identity?: {
+    mission?: string
+    when_to_use?: string
+    when_not_to_use?: string
+    audience?: string
+  }
+  model?: {
+    profile?: string
+    temperature?: number
+    max_tokens?: number
+    cost_limit?: string
+    fallback_model_setting_id?: string
+  }
+  knowledge?: {
+    retrieval_mode?: QueryMode
+    allowed_workspace_ids?: string[]
+    allowed_labels?: string[]
+    require_sources?: boolean
+    block_without_context?: boolean
+  }
+  persona?: {
+    tone?: string
+    formality?: string
+    verbosity?: string
+    technical_level?: string
+    humor?: string
+    posture?: string
+  }
+  ethics?: {
+    principles?: string[]
+    refusal_rules?: string[]
+    human_approval_triggers?: string[]
+    sensitive_topics?: string[]
+    privacy_rules?: string[]
+  }
+  vocabulary?: {
+    preferred_terms?: string[]
+    forbidden_terms?: string[]
+    required_phrases?: string[]
+    forbidden_phrases?: string[]
+  }
+  tools_policy?: {
+    allowed_tools?: string[]
+    approval_required_tools?: string[]
+    disabled_tools?: string[]
+  }
+  memory?: {
+    enabled?: boolean
+    scope?: 'conversation' | 'user' | 'workspace'
+    retention_days?: number
+    never_save?: string[]
+  }
+  output?: {
+    default_format?: string
+    include_sources?: boolean
+    include_next_steps?: boolean
+    include_uncertainty?: boolean
+    template?: string
+  }
+  tests?: Array<{
+    name?: string
+    input?: string
+    expected_behavior?: string
+    forbidden_behavior?: string
+  }>
+} & Record<string, any>
+
+export type LittleBullAgentConfig = {
+  agent_id?: string | null
+  tenant_id?: string | null
+  workspace_id?: string | null
+  name: string
+  description: string
+  enabled: boolean
+  model_setting_id?: string | null
+  system_prompt: string
+  response_rules: string[]
+  tools: string[]
+  config: LittleBullAgentStudioConfig
+  created_by?: string | null
+  updated_by?: string | null
+  created_at?: string | null
+  updated_at?: string | null
+}
+
+export type LittleBullAgentStudioIssue = {
+  severity: 'error' | 'warning'
+  field: string
+  message: string
+}
+
+export type LittleBullAgentStudioPreviewResponse = {
+  agent: LittleBullAgentConfig
+  issues: LittleBullAgentStudioIssue[]
+  readiness_score: number
+  ready_to_publish: boolean
+  compiled_prompt: string
+  test_input: string
+  test_summary: string
+}
+
+export type LittleBullConversationMessage = {
+  message_id?: string | null
+  id?: string | null
+  role: 'user' | 'assistant' | 'system'
+  content: string
+  references: Array<Record<string, any>>
+  metadata?: Record<string, any>
+  created_at?: string | null
+}
+
+export type LittleBullConversation = {
+  conversation_id: string
+  tenant_id?: string | null
+  workspace_id: string
+  user_id: string
+  title: string
+  agent_id?: string | null
+  model_profile: string
+  confidentiality: string
+  message_count: number
+  messages?: LittleBullConversationMessage[]
+  created_at?: string | null
+  updated_at?: string | null
+}
+
+export type LittleBullCorrelationSuggestion = {
+  suggestion_id: string
+  tenant_id?: string | null
+  workspace_id: string
+  user_id: string
+  source_label: string
+  target_label: string
+  reason: string
+  status: 'pending' | 'approved' | 'rejected'
+  metadata: Record<string, any>
+  created_at?: string | null
+  decided_at?: string | null
+  decided_by?: string | null
+}
+
 export type LittleBullApproval = {
   approval_id: string
   action: string
@@ -374,7 +642,7 @@ export type LittleBullApproval = {
   workspace_id: string | null
   payload_hash: string
   reason: string
-  status: 'pending' | 'approved' | 'rejected'
+  status: 'pending' | 'approved' | 'executing' | 'executed' | 'failed' | 'rejected'
   requested_at: string
   decided_at?: string | null
   decided_by?: string | null
@@ -584,24 +852,42 @@ axiosInstance.interceptors.response.use(
 export const queryGraphs = async (
   label: string,
   maxDepth: number,
-  maxNodes: number
+  maxNodes: number,
+  workspaceId?: string
 ): Promise<LightragGraphType> => {
-  const response = await axiosInstance.get(`/graphs?label=${encodeURIComponent(label)}&max_depth=${maxDepth}&max_nodes=${maxNodes}`)
+  const response = workspaceId
+    ? await axiosInstance.get('/little-bull/graph', {
+      params: { workspace_id: workspaceId, label, max_depth: maxDepth, max_nodes: maxNodes }
+    })
+    : await axiosInstance.get(`/graphs?label=${encodeURIComponent(label)}&max_depth=${maxDepth}&max_nodes=${maxNodes}`)
   return response.data
 }
 
-export const getGraphLabels = async (): Promise<string[]> => {
-  const response = await axiosInstance.get('/graph/label/list')
+export const getGraphLabels = async (workspaceId?: string): Promise<string[]> => {
+  const response = workspaceId
+    ? await axiosInstance.get('/little-bull/graph/label/list', { params: { workspace_id: workspaceId } })
+    : await axiosInstance.get('/graph/label/list')
   return response.data
 }
 
-export const getPopularLabels = async (limit: number = popularLabelsDefaultLimit): Promise<string[]> => {
-  const response = await axiosInstance.get(`/graph/label/popular?limit=${limit}`)
+export const getPopularLabels = async (
+  limit: number = popularLabelsDefaultLimit,
+  workspaceId?: string
+): Promise<string[]> => {
+  const response = workspaceId
+    ? await axiosInstance.get('/little-bull/graph/label/popular', { params: { workspace_id: workspaceId, limit } })
+    : await axiosInstance.get(`/graph/label/popular?limit=${limit}`)
   return response.data
 }
 
-export const searchLabels = async (query: string, limit: number = searchLabelsDefaultLimit): Promise<string[]> => {
-  const response = await axiosInstance.get(`/graph/label/search?q=${encodeURIComponent(query)}&limit=${limit}`)
+export const searchLabels = async (
+  query: string,
+  limit: number = searchLabelsDefaultLimit,
+  workspaceId?: string
+): Promise<string[]> => {
+  const response = workspaceId
+    ? await axiosInstance.get('/little-bull/graph/label/search', { params: { workspace_id: workspaceId, q: query, limit } })
+    : await axiosInstance.get(`/graph/label/search?q=${encodeURIComponent(query)}&limit=${limit}`)
   return response.data
 }
 
@@ -1107,6 +1393,15 @@ export const uploadLittleBullDocument = async (
   return response.data
 }
 
+export const reindexLittleBullArchivedDocuments = async (
+  workspaceId: string
+): Promise<LittleBullReindexArchivedResponse> => {
+  const response = await axiosInstance.post('/little-bull/documents/reindex-archived', null, {
+    params: { workspace_id: workspaceId }
+  })
+  return response.data
+}
+
 export const deleteLittleBullDocument = async (
   workspaceId: string,
   documentId: string
@@ -1141,6 +1436,159 @@ export const getLittleBullAssistants = async (
     params: { workspace_id: workspaceId }
   })
   return response.data.assistants
+}
+
+export const getLittleBullAdminModels = async (
+  workspaceId: string
+): Promise<LittleBullModelSetting[]> => {
+  const response = await axiosInstance.get('/little-bull/admin/models', {
+    params: { workspace_id: workspaceId }
+  })
+  return response.data.models
+}
+
+export const saveLittleBullAdminModel = async (
+  workspaceId: string,
+  model: LittleBullModelSetting
+): Promise<LittleBullModelSetting> => {
+  const response = await axiosInstance.post('/little-bull/admin/models', model, {
+    params: { workspace_id: workspaceId }
+  })
+  return response.data
+}
+
+export const getLittleBullEmbeddingCatalog = async (): Promise<LittleBullEmbeddingCatalogItem[]> => {
+  const response = await axiosInstance.get('/little-bull/admin/embedding-models')
+  return response.data.models
+}
+
+export const getLittleBullKnowledgeBases = async (): Promise<LittleBullKnowledgeBase[]> => {
+  const response = await axiosInstance.get('/little-bull/admin/knowledge-bases')
+  return response.data.knowledge_bases
+}
+
+export const saveLittleBullKnowledgeBase = async (
+  payload: LittleBullKnowledgeBaseUpsertRequest
+): Promise<LittleBullKnowledgeBase> => {
+  const response = await axiosInstance.post('/little-bull/admin/knowledge-bases', payload)
+  return response.data
+}
+
+export const estimateLittleBullEmbeddingCost = async (
+  payload: LittleBullEmbeddingCostEstimateRequest
+): Promise<LittleBullEmbeddingCostEstimateResponse> => {
+  const response = await axiosInstance.post('/little-bull/admin/embedding-cost-estimate', payload)
+  return response.data
+}
+
+export const attachLittleBullKnowledgeBaseDataPlane = async (
+  workspaceId: string
+): Promise<LittleBullKnowledgeBaseAttachResponse> => {
+  const response = await axiosInstance.post(`/little-bull/admin/knowledge-bases/${encodeURIComponent(workspaceId)}/attach-data-plane`)
+  return response.data
+}
+
+export const reindexLittleBullKnowledgeBase = async (
+  workspaceId: string,
+  approvalId?: string | null,
+  destructiveRebuild = false
+): Promise<LittleBullKnowledgeBaseReindexResponse> => {
+  const response = await axiosInstance.post(`/little-bull/admin/knowledge-bases/${encodeURIComponent(workspaceId)}/reindex`, {
+    approval_id: approvalId ?? null,
+    include_archived: true,
+    include_input_root: true,
+    destructive_rebuild: destructiveRebuild
+  })
+  return response.data
+}
+
+export const getLittleBullAdminAgents = async (
+  workspaceId: string
+): Promise<LittleBullAgentConfig[]> => {
+  const response = await axiosInstance.get('/little-bull/admin/agents', {
+    params: { workspace_id: workspaceId }
+  })
+  return response.data.agents
+}
+
+export const saveLittleBullAdminAgent = async (
+  workspaceId: string,
+  agent: LittleBullAgentConfig
+): Promise<LittleBullAgentConfig> => {
+  const response = await axiosInstance.post('/little-bull/admin/agents', agent, {
+    params: { workspace_id: workspaceId }
+  })
+  return response.data
+}
+
+export const previewLittleBullAdminAgent = async (
+  workspaceId: string,
+  agent: LittleBullAgentConfig,
+  testInput: string = ''
+): Promise<LittleBullAgentStudioPreviewResponse> => {
+  const response = await axiosInstance.post('/little-bull/admin/agents/preview', {
+    workspace_id: workspaceId,
+    agent,
+    test_input: testInput
+  })
+  return response.data
+}
+
+export const getLittleBullConversations = async (
+  workspaceId: string
+): Promise<LittleBullConversation[]> => {
+  const response = await axiosInstance.get('/little-bull/conversations', {
+    params: { workspace_id: workspaceId }
+  })
+  return response.data.conversations
+}
+
+export const saveLittleBullConversation = async (
+  conversation: Omit<LittleBullConversation, 'conversation_id' | 'user_id' | 'message_count'> & {
+    conversation_id?: string | null
+  }
+): Promise<LittleBullConversation> => {
+  const response = await axiosInstance.post('/little-bull/conversations', conversation)
+  return response.data
+}
+
+export const exportLittleBullConversation = async (
+  conversationId: string,
+  format: 'md' | 'txt' | 'docx'
+): Promise<Blob> => {
+  const response = await axiosInstance.get(`/little-bull/conversations/${encodeURIComponent(conversationId)}/export`, {
+    params: { format },
+    responseType: 'blob'
+  })
+  return response.data
+}
+
+export const getLittleBullCorrelationSuggestions = async (
+  workspaceId: string
+): Promise<LittleBullCorrelationSuggestion[]> => {
+  const response = await axiosInstance.get('/little-bull/correlation-suggestions', {
+    params: { workspace_id: workspaceId }
+  })
+  return response.data.suggestions
+}
+
+export const createLittleBullCorrelationSuggestion = async (
+  payload: Pick<LittleBullCorrelationSuggestion, 'workspace_id' | 'source_label' | 'target_label' | 'reason'> & {
+    metadata?: Record<string, any>
+  }
+): Promise<LittleBullCorrelationSuggestion> => {
+  const response = await axiosInstance.post('/little-bull/correlation-suggestions', payload)
+  return response.data
+}
+
+export const decideLittleBullCorrelationSuggestion = async (
+  suggestionId: string,
+  decision: 'approve' | 'reject'
+): Promise<LittleBullCorrelationSuggestion> => {
+  const response = await axiosInstance.post(
+    `/little-bull/correlation-suggestions/${encodeURIComponent(suggestionId)}/${decision}`
+  )
+  return response.data
 }
 
 export const getLittleBullApprovals = async (): Promise<LittleBullApproval[]> => {

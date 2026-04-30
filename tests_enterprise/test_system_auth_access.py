@@ -22,6 +22,13 @@ from lightrag_enterprise.system.repositories import (
 )
 
 
+def _clear_runtime_caches(runtime):
+    runtime.get_system_repository.cache_clear()
+    runtime.get_system_auth_service.cache_clear()
+    runtime.get_audit_service.cache_clear()
+    runtime.get_approval_service.cache_clear()
+
+
 @pytest.mark.asyncio
 async def test_master_bootstrap_token_contains_enterprise_claims():
     repo = InMemorySystemRepository()
@@ -199,3 +206,85 @@ async def test_core_auth_dependency_requires_enterprise_token_when_users_exist(m
         await dependency(request=request, response=response, token=None)
 
     assert exc.value.status_code == 401
+
+
+def test_runtime_requires_postgres_when_functional_enabled(monkeypatch):
+    import lightrag_enterprise.system.runtime as runtime
+
+    monkeypatch.setenv("LITTLE_BULL_FUNCTIONAL_ENABLED", "true")
+    monkeypatch.delenv("LIGHTRAG_SYSTEM_DATABASE_URL", raising=False)
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.delenv("LIGHTRAG_SYSTEM_ALLOW_IN_MEMORY_REPOSITORY", raising=False)
+    _clear_runtime_caches(runtime)
+
+    try:
+        with pytest.raises(RuntimeError, match="requires LIGHTRAG_SYSTEM_DATABASE_URL"):
+            runtime.get_system_repository()
+    finally:
+        _clear_runtime_caches(runtime)
+
+
+def test_runtime_allows_in_memory_repository_only_with_explicit_flag(monkeypatch):
+    import lightrag_enterprise.system.runtime as runtime
+
+    monkeypatch.setenv("LITTLE_BULL_FUNCTIONAL_ENABLED", "true")
+    monkeypatch.setenv("LIGHTRAG_SYSTEM_ALLOW_IN_MEMORY_REPOSITORY", "true")
+    monkeypatch.delenv("LIGHTRAG_SYSTEM_DATABASE_URL", raising=False)
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    _clear_runtime_caches(runtime)
+
+    try:
+        assert isinstance(runtime.get_system_repository(), InMemorySystemRepository)
+    finally:
+        _clear_runtime_caches(runtime)
+
+
+@pytest.mark.asyncio
+async def test_enterprise_auth_state_is_unavailable_without_required_repository(monkeypatch):
+    import lightrag.api.utils_api as utils_api
+    import lightrag_enterprise.system.runtime as runtime
+
+    monkeypatch.setenv("LITTLE_BULL_FUNCTIONAL_ENABLED", "true")
+    monkeypatch.delenv("LIGHTRAG_SYSTEM_DATABASE_URL", raising=False)
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.delenv("LIGHTRAG_SYSTEM_ALLOW_IN_MEMORY_REPOSITORY", raising=False)
+    _clear_runtime_caches(runtime)
+
+    try:
+        assert await utils_api.get_enterprise_auth_state() == utils_api.ENTERPRISE_AUTH_UNAVAILABLE
+    finally:
+        _clear_runtime_caches(runtime)
+
+
+@pytest.mark.asyncio
+async def test_core_auth_dependency_fails_closed_when_enterprise_check_is_unavailable(monkeypatch):
+    import sys
+
+    monkeypatch.setattr(sys, "argv", ["pytest"])
+    from lightrag.api.utils_api import get_combined_auth_dependency
+    import lightrag_enterprise.system.runtime as runtime
+
+    class BrokenEnterpriseAuth:
+        async def has_users(self):
+            raise RuntimeError("database unavailable")
+
+    monkeypatch.setattr(runtime, "get_system_auth_service", lambda: BrokenEnterpriseAuth())
+    monkeypatch.setattr(runtime, "little_bull_functional_enabled", lambda: True)
+
+    dependency = get_combined_auth_dependency(api_key="test-api-key")
+    request = type(
+        "Request",
+        (),
+        {"url": type("Url", (), {"path": "/query"})(), "state": type("State", (), {})()},
+    )()
+    response = type("Response", (), {"headers": {}})()
+
+    with pytest.raises(HTTPException) as exc:
+        await dependency(
+            request=request,
+            response=response,
+            token=None,
+            api_key_header_value="test-api-key",
+        )
+
+    assert exc.value.status_code == 503

@@ -11,6 +11,7 @@ import asyncio
 from lightrag import LightRAG, QueryParam
 from lightrag.utils import TiktokenTokenizer
 from lightrag.api.utils_api import get_combined_auth_dependency
+from lightrag_enterprise.system import ACTIVITY_CORE_OLLAMA_USE
 from fastapi import Depends
 
 
@@ -227,15 +228,18 @@ class OllamaAPI:
         self.setup_routes()
 
     def setup_routes(self):
-        # Create combined auth dependency for Ollama API routes
-        combined_auth = get_combined_auth_dependency(self.api_key)
+        # Create enterprise-governed auth dependency for Ollama API routes
+        ollama_use_auth = get_combined_auth_dependency(
+            self.api_key,
+            enterprise_activity=ACTIVITY_CORE_OLLAMA_USE,
+        )
 
-        @self.router.get("/version", dependencies=[Depends(combined_auth)])
+        @self.router.get("/version", dependencies=[Depends(ollama_use_auth)])
         async def get_version():
             """Get Ollama version information"""
             return OllamaVersionResponse(version="0.9.3")
 
-        @self.router.get("/tags", dependencies=[Depends(combined_auth)])
+        @self.router.get("/tags", dependencies=[Depends(ollama_use_auth)])
         async def get_tags():
             """Return available models acting as an Ollama server"""
             return OllamaTagResponse(
@@ -258,7 +262,7 @@ class OllamaAPI:
                 ]
             )
 
-        @self.router.get("/ps", dependencies=[Depends(combined_auth)])
+        @self.router.get("/ps", dependencies=[Depends(ollama_use_auth)])
         async def get_running_models():
             """List Running Models - returns currently running models"""
             return OllamaPsResponse(
@@ -283,7 +287,7 @@ class OllamaAPI:
             )
 
         @self.router.post(
-            "/generate", dependencies=[Depends(combined_auth)], include_in_schema=True
+            "/generate", dependencies=[Depends(ollama_use_auth)], include_in_schema=True
         )
         async def generate(raw_request: Request):
             """Handle generate completion requests acting as an Ollama model
@@ -460,7 +464,7 @@ class OllamaAPI:
                 raise HTTPException(status_code=500, detail=str(e))
 
         @self.router.post(
-            "/chat", dependencies=[Depends(combined_auth)], include_in_schema=True
+            "/chat", dependencies=[Depends(ollama_use_auth)], include_in_schema=True
         )
         async def chat(raw_request: Request):
             """Process chat completion requests by acting as an Ollama model.

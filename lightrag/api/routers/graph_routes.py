@@ -9,6 +9,10 @@ from pydantic import BaseModel, Field
 
 from lightrag.utils import logger
 from ..utils_api import get_combined_auth_dependency
+from lightrag_enterprise.system import (
+    ACTIVITY_CORE_GRAPH_CREATE,
+    ACTIVITY_CORE_GRAPH_MUTATE,
+)
 
 router = APIRouter(tags=["graph"])
 
@@ -88,6 +92,15 @@ class RelationCreateRequest(BaseModel):
 
 def create_graph_routes(rag, api_key: Optional[str] = None):
     combined_auth = get_combined_auth_dependency(api_key)
+    graph_mutate_auth = get_combined_auth_dependency(
+        api_key,
+        enterprise_activity=ACTIVITY_CORE_GRAPH_MUTATE,
+        enterprise_requires_approval=True,
+    )
+    graph_create_auth = get_combined_auth_dependency(
+        api_key,
+        enterprise_activity=ACTIVITY_CORE_GRAPH_CREATE,
+    )
 
     @router.get("/graph/label/list", dependencies=[Depends(combined_auth)])
     async def get_graph_labels():
@@ -217,7 +230,7 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
                 status_code=500, detail=f"Error checking entity existence: {str(e)}"
             )
 
-    @router.post("/graph/entity/edit", dependencies=[Depends(combined_auth)])
+    @router.post("/graph/entity/edit", dependencies=[Depends(graph_mutate_auth)])
     async def update_entity(request: EntityUpdateRequest):
         """
         Update an entity's properties in the knowledge graph
@@ -407,7 +420,7 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
                 status_code=500, detail=f"Error updating entity: {str(e)}"
             )
 
-    @router.post("/graph/relation/edit", dependencies=[Depends(combined_auth)])
+    @router.post("/graph/relation/edit", dependencies=[Depends(graph_mutate_auth)])
     async def update_relation(request: RelationUpdateRequest):
         """Update a relation's properties in the knowledge graph
 
@@ -442,7 +455,7 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
                 status_code=500, detail=f"Error updating relation: {str(e)}"
             )
 
-    @router.post("/graph/entity/create", dependencies=[Depends(combined_auth)])
+    @router.post("/graph/entity/create", dependencies=[Depends(graph_create_auth)])
     async def create_entity(request: EntityCreateRequest):
         """
         Create a new entity in the knowledge graph
@@ -515,7 +528,7 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
                 status_code=500, detail=f"Error creating entity: {str(e)}"
             )
 
-    @router.post("/graph/relation/create", dependencies=[Depends(combined_auth)])
+    @router.post("/graph/relation/create", dependencies=[Depends(graph_create_auth)])
     async def create_relation(request: RelationCreateRequest):
         """
         Create a new relationship between two entities in the knowledge graph
@@ -604,7 +617,7 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
                 status_code=500, detail=f"Error creating relation: {str(e)}"
             )
 
-    @router.post("/graph/entities/merge", dependencies=[Depends(combined_auth)])
+    @router.post("/graph/entities/merge", dependencies=[Depends(graph_mutate_auth)])
     async def merge_entities(request: EntityMergeRequest):
         """
         Merge multiple entities into a single entity, preserving all relationships

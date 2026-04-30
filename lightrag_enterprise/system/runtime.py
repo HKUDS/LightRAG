@@ -24,6 +24,10 @@ def little_bull_functional_enabled() -> bool:
     return env_flag("LITTLE_BULL_FUNCTIONAL_ENABLED", True)
 
 
+def in_memory_system_repository_allowed() -> bool:
+    return env_flag("LIGHTRAG_SYSTEM_ALLOW_IN_MEMORY_REPOSITORY", False)
+
+
 def private_strict_enabled() -> bool:
     return env_flag("LITTLE_BULL_PRIVATE_STRICT", True)
 
@@ -37,6 +41,12 @@ def get_system_repository() -> SystemRepository:
     database_url = get_database_url()
     if database_url:
         return PostgresSystemRepository(database_url)
+    if little_bull_functional_enabled() and not in_memory_system_repository_allowed():
+        raise RuntimeError(
+            "LITTLE_BULL_FUNCTIONAL_ENABLED=true requires LIGHTRAG_SYSTEM_DATABASE_URL "
+            "or DATABASE_URL. Set LIGHTRAG_SYSTEM_ALLOW_IN_MEMORY_REPOSITORY=true only "
+            "for local tests or throwaway development."
+        )
     return InMemorySystemRepository()
 
 
@@ -72,4 +82,3 @@ async def require_principal(request: Request):
         return await get_system_auth_service().principal_from_token(token)
     except Exception as exc:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid Little Bull token") from exc
-

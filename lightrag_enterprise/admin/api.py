@@ -10,18 +10,29 @@ from lightrag_enterprise.model_gateway.policy import (
     ModelRoutingContext,
     PolicyModelRouter,
 )
+from lightrag_enterprise.system import ACTIVITY_MODEL_MANAGE
+from lightrag_enterprise.system.runtime import get_access_service, require_principal
 
 
 def create_enterprise_admin_router(client: OpenRouterCatalogClient | None = None):
     """Create an optional FastAPI router for enterprise model catalog operations."""
 
-    from fastapi import APIRouter, HTTPException, Query
+    from fastapi import APIRouter, Depends, HTTPException, Query
 
     router = APIRouter(prefix="/enterprise", tags=["enterprise"])
     catalog_client = client or OpenRouterCatalogClient.from_env()
 
+    def require_model_admin(principal=Depends(require_principal)):
+        decision = get_access_service().require(
+            principal,
+            activity=ACTIVITY_MODEL_MANAGE,
+        )
+        if not decision.allowed or not principal.is_master_global:
+            raise HTTPException(status_code=403, detail="MASTER model administration required.")
+        return principal
+
     @router.post("/model-catalog/sync")
-    async def sync_catalog() -> dict[str, Any]:
+    async def sync_catalog(principal=Depends(require_model_admin)) -> dict[str, Any]:
         catalog = await catalog_client.fetch_catalog(force=True, account_scoped=True)
         return catalog.to_dict()
 
@@ -33,6 +44,7 @@ def create_enterprise_admin_router(client: OpenRouterCatalogClient | None = None
         min_context_window: int | None = None,
         requires_tools: bool | None = None,
         requires_structured_output: bool | None = None,
+        principal=Depends(require_model_admin),
     ) -> dict[str, Any]:
         catalog = await catalog_client.fetch_catalog(account_scoped=True)
         entries = catalog.filter(
@@ -55,7 +67,7 @@ def create_enterprise_admin_router(client: OpenRouterCatalogClient | None = None
         }
 
     @router.post("/model-route")
-    async def route_model(payload: dict[str, Any]) -> dict[str, Any]:
+    async def route_model(payload: dict[str, Any], principal=Depends(require_model_admin)) -> dict[str, Any]:
         try:
             catalog = await catalog_client.fetch_catalog(account_scoped=True)
             router_ = PolicyModelRouter(catalog, ModelPolicy())

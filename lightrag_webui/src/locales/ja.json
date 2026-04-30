@@ -183,7 +183,7 @@
   "graphPanel": {
     "dataIsTruncated": "グラフデータは最大ノード数に切り詰められました",
     "statusDialog": {
-      "title": "LightRAGサーバー設定",
+      "title": "Little Bullサーバー設定",
       "description": "現在のシステムステータスと接続情報を表示"
     },
     "legend": "凡例",

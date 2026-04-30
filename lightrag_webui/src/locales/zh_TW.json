@@ -183,7 +183,7 @@
   "graphPanel": {
     "dataIsTruncated": "圖資料已截斷至最大回傳節點數",
     "statusDialog": {
-      "title": "LightRAG 伺服器設定",
+      "title": "Little Bull 伺服器設定",
       "description": "查看目前系統狀態和連線資訊"
     },
     "legend": "圖例",

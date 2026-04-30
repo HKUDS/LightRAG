@@ -183,7 +183,7 @@
   "graphPanel": {
     "dataIsTruncated": "그래프 데이터가 최대 노드 수로 제한되었습니다",
     "statusDialog": {
-      "title": "LightRAG 서버 설정",
+      "title": "Little Bull 서버 설정",
       "description": "현재 시스템 상태 및 연결 정보 보기"
     },
     "legend": "범례",
