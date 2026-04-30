@@ -107,10 +107,10 @@ def parse_docx_to_interchange_jsonl(
 
     asset_dir_created = False
     if output_dir and images:
-        prefix = (
+        asset_base = Path(source_file).stem or (
             doc_id.strip() if doc_id and doc_id.strip() else f"doc-{source_hash[:12]}"
         )
-        assets_dir = Path(output_dir) / f"{prefix}.{source_file}.blocks.assets"
+        assets_dir = Path(output_dir) / f"{asset_base}.blocks.assets"
         try:
             assets_dir.mkdir(parents=True, exist_ok=True)
             for _rel_id, (filename, blob) in images.items():
