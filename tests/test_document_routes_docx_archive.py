@@ -46,7 +46,13 @@ class _FakeRag:
         self.errors = []
 
     async def apipeline_enqueue_documents(
-        self, input, ids=None, file_paths=None, track_id=None, docs_format=None
+        self,
+        input,
+        ids=None,
+        file_paths=None,
+        track_id=None,
+        docs_format=None,
+        parsed_engine=None,
     ):
         self.enqueued.append(
             {
@@ -54,6 +60,7 @@ class _FakeRag:
                 "file_path": file_paths,
                 "track_id": track_id,
                 "docs_format": docs_format,
+                "parsed_engine": parsed_engine,
             }
         )
         return track_id
@@ -131,7 +138,7 @@ class _ParseRag:
 async def test_pipeline_index_file_leaves_lightrag_document_docx_for_parser_archive(
     tmp_path, monkeypatch
 ):
-    monkeypatch.setenv("DOCX_PARSING_DEFAULT_METHOD", "lightrag_document")
+    monkeypatch.setenv("LIGHTRAG_PARSER", "docx:native")
     file_path = tmp_path / "sample.[docling].docx"
     file_path.write_bytes(b"docx bytes")
     rag = _FakeRag()
@@ -142,12 +149,13 @@ async def test_pipeline_index_file_leaves_lightrag_document_docx_for_parser_arch
     assert not (tmp_path / PARSED_DIR_NAME / file_path.name).exists()
     assert rag.enqueued[0]["file_path"] == str(file_path)
     assert rag.enqueued[0]["docs_format"] == FULL_DOCS_FORMAT_PENDING_PARSE
+    assert rag.enqueued[0]["parsed_engine"] == "native"
 
 
 async def test_pipeline_enqueue_lightrag_document_docx_does_not_move_source(
     tmp_path, monkeypatch
 ):
-    monkeypatch.setenv("DOCX_PARSING_DEFAULT_METHOD", "lightrag_document")
+    monkeypatch.setenv("LIGHTRAG_PARSER", "docx:native")
     file_path = tmp_path / "pending.docx"
     file_path.write_bytes(b"docx bytes")
     rag = _FakeRag()
@@ -162,12 +170,13 @@ async def test_pipeline_enqueue_lightrag_document_docx_does_not_move_source(
     assert not (tmp_path / PARSED_DIR_NAME / file_path.name).exists()
     assert rag.enqueued[0]["file_path"] == str(file_path)
     assert rag.enqueued[0]["docs_format"] == FULL_DOCS_FORMAT_PENDING_PARSE
+    assert rag.enqueued[0]["parsed_engine"] == "native"
 
 
 async def test_pipeline_enqueue_docx_plain_text_extracts_before_enqueue(
     tmp_path, monkeypatch
 ):
-    monkeypatch.setenv("DOCX_PARSING_DEFAULT_METHOD", "plain_text")
+    monkeypatch.setenv("LIGHTRAG_PARSER", "docx:legacy")
     monkeypatch.setattr(
         _document_routes, "_extract_docx", lambda file_bytes: "plain docx content"
     )
@@ -187,6 +196,7 @@ async def test_pipeline_enqueue_docx_plain_text_extracts_before_enqueue(
             "file_path": file_path.name,
             "track_id": "track-docx",
             "docs_format": None,
+            "parsed_engine": "legacy",
         }
     ]
     assert not file_path.exists()
@@ -194,7 +204,7 @@ async def test_pipeline_enqueue_docx_plain_text_extracts_before_enqueue(
 
 
 async def test_pipeline_enqueue_md_moves_after_enqueue(tmp_path, monkeypatch):
-    monkeypatch.setenv("DOCX_PARSING_DEFAULT_METHOD", "plain_text")
+    monkeypatch.delenv("LIGHTRAG_PARSER", raising=False)
     file_path = tmp_path / "notes.md"
     file_path.write_text("# Notes\n\nmarkdown content", encoding="utf-8")
     rag = _FakeRag()
@@ -209,16 +219,49 @@ async def test_pipeline_enqueue_md_moves_after_enqueue(tmp_path, monkeypatch):
             "file_path": file_path.name,
             "track_id": "track-md",
             "docs_format": None,
+            "parsed_engine": "legacy",
         }
     ]
     assert not file_path.exists()
     assert (tmp_path / PARSED_DIR_NAME / file_path.name).exists()
 
 
+async def test_pipeline_enqueue_parser_routed_pdf_defers_without_extraction(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("LIGHTRAG_PARSER", "pdf:mineru,*:legacy")
+    monkeypatch.setenv("MINERU_ENDPOINT", "http://fake-mineru")
+
+    def _fail_pdf_extract(*args, **kwargs):
+        raise AssertionError("parser-routed PDF should not be extracted before enqueue")
+
+    monkeypatch.setattr(_document_routes, "_extract_pdf_pypdf", _fail_pdf_extract)
+    file_path = tmp_path / "paper.pdf"
+    file_path.write_bytes(b"fake-pdf")
+    rag = _FakeRag()
+
+    success, returned_track_id = await pipeline_enqueue_file(
+        rag, file_path, "track-pdf"
+    )
+
+    assert success is True
+    assert returned_track_id == "track-pdf"
+    assert file_path.exists()
+    assert rag.enqueued == [
+        {
+            "input": "",
+            "file_path": str(file_path),
+            "track_id": "track-pdf",
+            "docs_format": FULL_DOCS_FORMAT_PENDING_PARSE,
+            "parsed_engine": "mineru",
+        }
+    ]
+
+
 async def test_pipeline_index_files_leaves_lightrag_document_docx_batch(
     tmp_path, monkeypatch
 ):
-    monkeypatch.setenv("DOCX_PARSING_DEFAULT_METHOD", "lightrag_document")
+    monkeypatch.setenv("LIGHTRAG_PARSER", "docx:native")
     first = tmp_path / "first.docx"
     second = tmp_path / "second.[mineru].docx"
     first.write_bytes(b"first docx bytes")
@@ -234,6 +277,7 @@ async def test_pipeline_index_files_leaves_lightrag_document_docx_batch(
     assert all(
         item["docs_format"] == FULL_DOCS_FORMAT_PENDING_PARSE for item in rag.enqueued
     )
+    assert all(item["parsed_engine"] == "native" for item in rag.enqueued)
 
 
 async def test_scan_existing_full_path_docx_does_not_reenqueue(tmp_path, monkeypatch):

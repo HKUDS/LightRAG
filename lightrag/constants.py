@@ -84,9 +84,84 @@ FULL_DOCS_FORMAT_LIGHTRAG = "lightrag"  # content in LightRAG Document files
 FULL_DOCS_FORMAT_PENDING_PARSE = (
     "pending_parse"  # file saved but not yet parsed; parse_native will read from disk
 )
-DOCX_PARSING_METHOD_PLAIN_TEXT = "plain_text"
-DOCX_PARSING_METHOD_LIGHTRAG_DOCUMENT = "lightrag_document"
-DEFAULT_DOCX_PARSING_METHOD = DOCX_PARSING_METHOD_PLAIN_TEXT
+FULL_DOCS_CONTENT_STORED_IN_LIGHTRAG_DOCUMENT = "{{stored-in-lightrag-doucment}}"
+PARSER_ENGINE_LEGACY = "legacy"
+PARSER_ENGINE_NATIVE = "native"
+PARSER_ENGINE_MINERU = "mineru"
+PARSER_ENGINE_DOCLING = "docling"
+SUPPORTED_PARSER_ENGINES = frozenset(
+    {
+        PARSER_ENGINE_LEGACY,
+        PARSER_ENGINE_NATIVE,
+        PARSER_ENGINE_MINERU,
+        PARSER_ENGINE_DOCLING,
+    }
+)
+PARSER_ENGINE_SUFFIX_CAPABILITIES = {
+    PARSER_ENGINE_LEGACY: frozenset(
+        {
+            "txt",
+            "md",
+            "mdx",
+            "pdf",
+            "docx",
+            "pptx",
+            "xlsx",
+            "rtf",
+            "odt",
+            "tex",
+            "epub",
+            "html",
+            "htm",
+            "csv",
+            "json",
+            "xml",
+            "yaml",
+            "yml",
+            "log",
+            "conf",
+            "ini",
+            "properties",
+            "sql",
+            "bat",
+            "sh",
+            "c",
+            "h",
+            "cpp",
+            "hpp",
+            "py",
+            "java",
+            "js",
+            "ts",
+            "swift",
+            "go",
+            "rb",
+            "php",
+            "css",
+            "scss",
+            "less",
+        }
+    ),
+    PARSER_ENGINE_NATIVE: frozenset({"docx"}),
+    PARSER_ENGINE_MINERU: frozenset({"pdf", "docx", "pptx", "xlsx"}),
+    PARSER_ENGINE_DOCLING: frozenset(
+        {
+            "pdf",
+            "docx",
+            "pptx",
+            "xlsx",
+            "md",
+            "html",
+            "xhtml",
+            "png",
+            "jpg",
+            "jpeg",
+            "tiff",
+            "webp",
+            "bmp",
+        }
+    ),
+}
 PARSED_DIR_NAME = "__parsed__"  # Dir for parsed files (renamed from __enqueued__)
 
 DEFAULT_MAX_PARALLEL_ANALYZE = 2  # Multimodal analysis (VLM) concurrency

@@ -6,7 +6,13 @@ import numpy as np
 import pytest
 
 from lightrag import LightRAG, ROLES, RoleLLMConfig
+from lightrag.constants import FULL_DOCS_CONTENT_STORED_IN_LIGHTRAG_DOCUMENT
 from lightrag.operate import _get_relationship_vdb_timeout_seconds
+from lightrag.parser_routing import (
+    ParserRoutingConfigError,
+    resolve_file_parser_engine,
+    validate_parser_routing_config,
+)
 from lightrag.utils import EmbeddingFunc, Tokenizer, safe_vdb_operation_with_exception
 
 
@@ -64,29 +70,70 @@ def _new_rag(tmp_path: Path, **kwargs) -> LightRAG:
 @pytest.mark.offline
 def test_parse_engine_routing_by_filename_and_env(tmp_path, monkeypatch):
     rag = _new_rag(tmp_path)
-    assert rag._resolve_parser_engine("a.[docling-iet].pdf", {}) == "docling"
+    monkeypatch.setenv("DOCLING_ENDPOINT", "http://fake-docling")
+    assert rag._resolve_parser_engine("a.[docling-iet].docx", {}) == "docling"
 
+    monkeypatch.setenv("MINERU_ENDPOINT", "http://fake-mineru")
     monkeypatch.setenv("LIGHTRAG_PARSER", "pdf:mineru-iet,*:native")
     assert rag._resolve_parser_engine("paper.pdf", {}) == "mineru"
     assert (
-        rag._resolve_parser_engine("paper.pdf", {"parsed_engine": "native"}) == "native"
+        rag._resolve_parser_engine("paper.pdf", {"parsed_engine": "native"}) == "legacy"
     )
 
 
 @pytest.mark.offline
-def test_parse_engine_auto_routing_without_filename_hint(tmp_path, monkeypatch):
+def test_parse_engine_rule_fallback_and_default_legacy(tmp_path, monkeypatch):
     rag = _new_rag(tmp_path)
+    monkeypatch.setenv("LIGHTRAG_PARSER", "pdf:native,*:legacy")
+    assert rag._resolve_parser_engine("paper.pdf", {}) == "legacy"
+
+    monkeypatch.setenv("LIGHTRAG_PARSER", "pptx:docling,*:legacy")
+    monkeypatch.delenv("DOCLING_ENDPOINT", raising=False)
+    assert rag._resolve_parser_engine("slides.pptx", {}) == "legacy"
+
     monkeypatch.delenv("LIGHTRAG_PARSER", raising=False)
+    monkeypatch.setenv("MINERU_ENDPOINT", "")
+    assert rag._resolve_parser_engine("slides.pptx", {}) == "legacy"
+
+
+@pytest.mark.offline
+def test_parser_routing_accepts_semicolon_rules(monkeypatch):
     monkeypatch.setenv("MINERU_ENDPOINT", "http://fake-mineru")
     monkeypatch.setenv("DOCLING_ENDPOINT", "http://fake-docling")
-    assert rag._resolve_parser_engine("slides.pptx", {}) == "docling"
-    assert rag._resolve_parser_engine("paper.pdf", {}) == "mineru"
 
-    monkeypatch.setenv("DOCLING_ENDPOINT", "")
-    assert rag._resolve_parser_engine("slides.pptx", {}) == "mineru"
+    rules = "*:mineru;html:docling"
+    validate_parser_routing_config(rules)
+    assert resolve_file_parser_engine("paper.pdf", parser_rules=rules) == "mineru"
+    assert resolve_file_parser_engine("index.html", parser_rules=rules) == "docling"
+    assert resolve_file_parser_engine("notes.txt", parser_rules=rules) == "legacy"
 
-    monkeypatch.setenv("MINERU_ENDPOINT", "")
-    assert rag._resolve_parser_engine("slides.pptx", {}) == "native"
+
+@pytest.mark.offline
+def test_parser_routing_validation_requires_external_endpoints(monkeypatch):
+    monkeypatch.delenv("MINERU_ENDPOINT", raising=False)
+    monkeypatch.setenv("DOCLING_ENDPOINT", "http://fake-docling")
+
+    with pytest.raises(ParserRoutingConfigError, match="MINERU_ENDPOINT"):
+        validate_parser_routing_config("*:mineru;html:docling")
+
+    monkeypatch.setenv("MINERU_ENDPOINT", "http://fake-mineru")
+    monkeypatch.delenv("DOCLING_ENDPOINT", raising=False)
+    with pytest.raises(ParserRoutingConfigError, match="DOCLING_ENDPOINT"):
+        validate_parser_routing_config("*:mineru;html:docling")
+
+
+@pytest.mark.offline
+def test_parser_routing_validation_rejects_invalid_rules(monkeypatch):
+    monkeypatch.setenv("MINERU_ENDPOINT", "http://fake-mineru")
+
+    with pytest.raises(ParserRoutingConfigError, match=r"\*\.pdf"):
+        validate_parser_routing_config("*.pdf:mineru")
+
+    with pytest.raises(ParserRoutingConfigError, match="unsupported parser engine"):
+        validate_parser_routing_config("pdf:unknown")
+
+    with pytest.raises(ParserRoutingConfigError, match="does not match any suffix"):
+        validate_parser_routing_config("pdf:native")
 
 
 @pytest.mark.offline
@@ -614,7 +661,10 @@ def test_parse_mineru_to_lightrag_document(tmp_path, monkeypatch):
 
         full_doc = await rag.full_docs.get_by_id("doc-1")
         assert full_doc["format"] == "lightrag"
-        assert full_doc["lightrag_document_path"] == str(blocks_path)
+        assert full_doc["content"] == FULL_DOCS_CONTENT_STORED_IN_LIGHTRAG_DOCUMENT
+        assert full_doc["lightrag_document_path"] == str(
+            blocks_path.relative_to(Path(rag.working_dir))
+        )
 
         await rag.finalize_storages()
 
@@ -724,7 +774,9 @@ def test_mm_chunks_and_modality_relations_from_sidecars(tmp_path):
 
 
 @pytest.mark.offline
-def test_parse_mineru_empty_service_result_falls_back_native(tmp_path, monkeypatch):
+def test_parse_mineru_empty_service_result_raises_without_fallback(
+    tmp_path, monkeypatch
+):
     async def _run():
         rag = _new_rag(tmp_path)
         await rag.initialize_storages()
@@ -738,14 +790,12 @@ def test_parse_mineru_empty_service_result_falls_back_native(tmp_path, monkeypat
         monkeypatch.setattr(rag, "_call_protocol_parse_service", _fake_service)
         monkeypatch.setenv("MINERU_ENDPOINT", "http://fake")
 
-        parsed = await rag.parse_mineru(
-            doc_id="doc-local-1",
-            file_path=str(src_file),
-            content_data={"content": "native fallback content"},
-        )
-        assert parsed["format"] == "raw"
-        assert parsed["content"] == "native fallback content"
-        assert parsed["blocks_path"] == ""
+        with pytest.raises(ValueError, match="empty content"):
+            await rag.parse_mineru(
+                doc_id="doc-local-1",
+                file_path=str(src_file),
+                content_data={"content": "native fallback content"},
+            )
 
         await rag.finalize_storages()
 
@@ -753,7 +803,9 @@ def test_parse_mineru_empty_service_result_falls_back_native(tmp_path, monkeypat
 
 
 @pytest.mark.offline
-def test_parse_docling_empty_service_result_falls_back_native(tmp_path, monkeypatch):
+def test_parse_docling_empty_service_result_raises_without_fallback(
+    tmp_path, monkeypatch
+):
     async def _run():
         rag = _new_rag(tmp_path)
         await rag.initialize_storages()
@@ -767,14 +819,12 @@ def test_parse_docling_empty_service_result_falls_back_native(tmp_path, monkeypa
         monkeypatch.setattr(rag, "_call_protocol_parse_service", _fake_service)
         monkeypatch.setenv("DOCLING_ENDPOINT", "http://fake")
 
-        parsed = await rag.parse_docling(
-            doc_id="doc-local-2",
-            file_path=str(src_file),
-            content_data={"content": "native fallback content"},
-        )
-        assert parsed["format"] == "raw"
-        assert parsed["content"] == "native fallback content"
-        assert parsed["blocks_path"] == ""
+        with pytest.raises(ValueError, match="empty content"):
+            await rag.parse_docling(
+                doc_id="doc-local-2",
+                file_path=str(src_file),
+                content_data={"content": "native fallback content"},
+            )
 
         await rag.finalize_storages()
 
