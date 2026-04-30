@@ -19,6 +19,7 @@ from fastapi import (
     Depends,
     File,
     HTTPException,
+    Request,
     UploadFile,
 )
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -2085,15 +2086,31 @@ async def background_delete_documents(
 
 
 def create_document_routes(
-    workspace_mgr, rag: LightRAG, doc_manager: DocumentManager, api_key: Optional[str] = None
+    workspace_mgr, doc_manager: DocumentManager, api_key: Optional[str] = None
 ):
     # Create combined auth dependency for document routes
     combined_auth = get_combined_auth_dependency(api_key)
 
+    def _get_workspace(request: Request) -> str:
+        """Extract workspace from request header or use default."""
+        from lightrag.api.lightrag_server import get_workspace_from_request
+        result = get_workspace_from_request(request)
+        if isinstance(result, str) or result is None:
+            return result or ""
+        # If it's a JSONResponse (error), we can't proceed — this shouldn't happen in normal use
+        return ""
+
+    async def _run_scan_with_workspace(workspace_mgr, workspace, doc_manager, track_id):
+        rag = await workspace_mgr.get_or_create(workspace)
+        try:
+            await run_scanning_process(rag, doc_manager, track_id)
+        finally:
+            workspace_mgr.release(workspace)
+
     @router.post(
         "/scan", response_model=ScanResponse, dependencies=[Depends(combined_auth)]
     )
-    async def scan_for_new_documents(background_tasks: BackgroundTasks):
+    async def scan_for_new_documents(http_request: Request, background_tasks: BackgroundTasks):
         """
         Trigger the scanning process for new documents.
 
@@ -2105,21 +2122,38 @@ def create_document_routes(
             ScanResponse: A response object containing the scanning status and track_id
         """
         # Generate track_id with "scan" prefix for scanning operation
+        workspace = _get_workspace(http_request)
         track_id = generate_track_id("scan")
 
+        # Create workspace-specific doc_manager
+        workspace_doc_manager = DocumentManager(
+            input_dir=doc_manager.base_input_dir,
+            workspace=workspace,
+            supported_extensions=doc_manager.supported_extensions,
+        )
+
         # Start the scanning process in the background with track_id
-        background_tasks.add_task(run_scanning_process, rag, doc_manager, track_id)
+        background_tasks.add_task(_run_scan_with_workspace, workspace_mgr, workspace, workspace_doc_manager, track_id)
         return ScanResponse(
             status="scanning_started",
             message="Scanning process has been initiated in the background",
             track_id=track_id,
         )
 
+    async def _run_upload_with_workspace(workspace_mgr, workspace, file_path, track_id):
+        rag = await workspace_mgr.get_or_create(workspace)
+        try:
+            await pipeline_index_file(rag, file_path, track_id)
+        finally:
+            workspace_mgr.release(workspace)
+
     @router.post(
         "/upload", response_model=InsertResponse, dependencies=[Depends(combined_auth)]
     )
     async def upload_to_input_dir(
-        background_tasks: BackgroundTasks, file: UploadFile = File(...)
+        http_request: Request,
+        background_tasks: BackgroundTasks,
+        file: UploadFile = File(...),
     ):
         """
         Upload a file to the input directory and index it.
@@ -2161,6 +2195,7 @@ def create_document_routes(
         - This design prevents blocking the client during expensive operations
 
         Args:
+            http_request: FastAPI Request object for workspace extraction
             background_tasks: FastAPI BackgroundTasks for async processing
             file (UploadFile): The file to be uploaded. It must have an allowed extension.
 
@@ -2173,107 +2208,120 @@ def create_document_routes(
             HTTPException: If the file type is not supported (400), file too large (413), or other errors occur (500).
         """
         try:
-            # Sanitize filename to prevent Path Traversal attacks
-            safe_filename = sanitize_filename(file.filename, doc_manager.input_dir)
-
-            if not doc_manager.is_supported_file(safe_filename):
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Unsupported file type. Supported types: {doc_manager.supported_extensions}",
+            # Get workspace first for duplicate check and file operations
+            workspace = _get_workspace(http_request)
+            rag = await workspace_mgr.get_or_create(workspace)
+            try:
+                # Create workspace-specific doc_manager for file operations
+                workspace_doc_manager = DocumentManager(
+                    input_dir=doc_manager.base_input_dir,
+                    workspace=workspace,
+                    supported_extensions=doc_manager.supported_extensions,
                 )
 
-            # Check file size limit (if configured)
-            if (
-                global_args.max_upload_size is not None
-                and global_args.max_upload_size > 0
-            ):
-                # Safe access to file size (not available in older Starlette versions)
-                file_size = getattr(file, "size", None)
+                # Sanitize filename to prevent Path Traversal attacks
+                safe_filename = sanitize_filename(file.filename, workspace_doc_manager.input_dir)
 
-                # Pre-flight size check (only if size is available)
-                if file_size is not None:
-                    if file_size > global_args.max_upload_size:
-                        raise HTTPException(
-                            status_code=413,
-                            detail=f"File too large. Maximum size: {global_args.max_upload_size / 1024 / 1024:.1f}MB, uploaded: {file_size / 1024 / 1024:.1f}MB",
-                        )
-                else:
-                    # If size not available, we'll check during streaming
-                    logger.debug(
-                        f"File size not available in UploadFile for {safe_filename}, will check during streaming"
+                if not workspace_doc_manager.is_supported_file(safe_filename):
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Unsupported file type. Supported types: {workspace_doc_manager.supported_extensions}",
                     )
 
-            # Check if filename already exists in doc_status storage
-            existing_doc_data = await rag.doc_status.get_doc_by_file_path(safe_filename)
-            if existing_doc_data:
-                # Get document status and track_id from existing document
-                status = existing_doc_data.get("status", "unknown")
-                # Use `or ""` to handle both missing key and None value (e.g., legacy rows without track_id)
-                existing_track_id = existing_doc_data.get("track_id") or ""
-                return InsertResponse(
-                    status="duplicated",
-                    message=f"File '{safe_filename}' already exists in document storage (Status: {status}).",
-                    track_id=existing_track_id,
-                )
+                # Check file size limit (if configured)
+                if (
+                    global_args.max_upload_size is not None
+                    and global_args.max_upload_size > 0
+                ):
+                    # Safe access to file size (not available in older Starlette versions)
+                    file_size = getattr(file, "size", None)
 
-            file_path = doc_manager.input_dir / safe_filename
-            # Check if file already exists in file system
-            if file_path.exists():
-                return InsertResponse(
-                    status="duplicated",
-                    message=f"File '{safe_filename}' already exists in the input directory.",
-                    track_id="",
-                )
+                    # Pre-flight size check (only if size is available)
+                    if file_size is not None:
+                        if file_size > global_args.max_upload_size:
+                            raise HTTPException(
+                                status_code=413,
+                                detail=f"File too large. Maximum size: {global_args.max_upload_size / 1024 / 1024:.1f}MB, uploaded: {file_size / 1024 / 1024:.1f}MB",
+                            )
+                    else:
+                        # If size not available, we'll check during streaming
+                        logger.debug(
+                            f"File size not available in UploadFile for {safe_filename}, will check during streaming"
+                        )
 
-            # Async streaming write with size check
-            bytes_written = 0
-            chunk_size = 1024 * 1024  # 1MB chunks
-            needs_cleanup = False
+                # Check if filename already exists in doc_status storage
+                existing_doc_data = await rag.doc_status.get_doc_by_file_path(safe_filename)
+                if existing_doc_data:
+                    # Get document status and track_id from existing document
+                    status = existing_doc_data.get("status", "unknown")
+                    # Use `or ""` to handle both missing key and None value (e.g., legacy rows without track_id)
+                    existing_track_id = existing_doc_data.get("track_id") or ""
+                    return InsertResponse(
+                        status="duplicated",
+                        message=f"File '{safe_filename}' already exists in document storage (Status: {status}).",
+                        track_id=existing_track_id,
+                    )
 
-            async with aiofiles.open(file_path, "wb") as out_file:
-                while True:
-                    # Read chunk from upload stream
-                    chunk = await file.read(chunk_size)
-                    if not chunk:
-                        break
+                file_path = workspace_doc_manager.input_dir / safe_filename
+                # Check if file already exists in file system
+                if file_path.exists():
+                    return InsertResponse(
+                        status="duplicated",
+                        message=f"File '{safe_filename}' already exists in the input directory.",
+                        track_id="",
+                    )
 
-                    # Check size limit during streaming (if not checked before)
-                    if (
-                        global_args.max_upload_size is not None
-                        and global_args.max_upload_size > 0
-                    ):
-                        bytes_written += len(chunk)
-                        if bytes_written > global_args.max_upload_size:
-                            needs_cleanup = True
+                # Async streaming write with size check
+                bytes_written = 0
+                chunk_size = 1024 * 1024  # 1MB chunks
+                needs_cleanup = False
+
+                async with aiofiles.open(file_path, "wb") as out_file:
+                    while True:
+                        # Read chunk from upload stream
+                        chunk = await file.read(chunk_size)
+                        if not chunk:
                             break
 
-                    # Write chunk to file
-                    await out_file.write(chunk)
+                        # Check size limit during streaming (if not checked before)
+                        if (
+                            global_args.max_upload_size is not None
+                            and global_args.max_upload_size > 0
+                        ):
+                            bytes_written += len(chunk)
+                            if bytes_written > global_args.max_upload_size:
+                                needs_cleanup = True
+                                break
 
-            # Cleanup after file is closed
-            if needs_cleanup:
-                try:
-                    file_path.unlink()
-                except Exception as cleanup_error:
-                    logger.error(
-                        f"Error cleaning up oversized file {safe_filename}: {cleanup_error}"
+                        # Write chunk to file
+                        await out_file.write(chunk)
+
+                # Cleanup after file is closed
+                if needs_cleanup:
+                    try:
+                        file_path.unlink()
+                    except Exception as cleanup_error:
+                        logger.error(
+                            f"Error cleaning up oversized file {safe_filename}: {cleanup_error}"
+                        )
+
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"File too large. Maximum size: {global_args.max_upload_size / 1024 / 1024:.1f}MB, uploaded: {bytes_written / 1024 / 1024:.1f}MB",
                     )
 
-                raise HTTPException(
-                    status_code=413,
-                    detail=f"File too large. Maximum size: {global_args.max_upload_size / 1024 / 1024:.1f}MB, uploaded: {bytes_written / 1024 / 1024:.1f}MB",
+                track_id = generate_track_id("upload")
+
+                # Add to background tasks with workspace isolation
+                background_tasks.add_task(_run_upload_with_workspace, workspace_mgr, workspace, file_path, track_id)
+
+                return InsertResponse(
+                    status="success",
+                    message=f"File '{safe_filename}' uploaded successfully. Processing will continue in background.",
+                    track_id=track_id,
                 )
-
-            track_id = generate_track_id("upload")
-
-            # Add to background tasks and get track_id
-            background_tasks.add_task(pipeline_index_file, rag, file_path, track_id)
-
-            return InsertResponse(
-                status="success",
-                message=f"File '{safe_filename}' uploaded successfully. Processing will continue in background.",
-                track_id=track_id,
-            )
+            finally:
+                pass
 
         except HTTPException:
             # Re-raise HTTP exceptions (400, 413, etc.)
@@ -2282,12 +2330,23 @@ def create_document_routes(
             logger.error(f"Error /documents/upload: {file.filename}: {str(e)}")
             logger.error(traceback.format_exc())
             raise HTTPException(status_code=500, detail=str(e))
+        finally:
+            workspace_mgr.release(workspace)
+
+    async def _run_insert_text_with_workspace(workspace_mgr, workspace, text, file_source, track_id):
+        rag = await workspace_mgr.get_or_create(workspace)
+        try:
+            await pipeline_index_texts(rag, [text], file_sources=[file_source], track_id=track_id)
+        finally:
+            workspace_mgr.release(workspace)
 
     @router.post(
         "/text", response_model=InsertResponse, dependencies=[Depends(combined_auth)]
     )
     async def insert_text(
-        request: InsertTextRequest, background_tasks: BackgroundTasks
+        http_request: Request,
+        request: InsertTextRequest,
+        background_tasks: BackgroundTasks,
     ):
         """
         Insert text into the RAG system.
@@ -2296,6 +2355,7 @@ def create_document_routes(
         and use in generating responses.
 
         Args:
+            http_request: FastAPI Request object for workspace extraction
             request (InsertTextRequest): The request body containing the text to be inserted.
             background_tasks: FastAPI BackgroundTasks for async processing
 
@@ -2305,6 +2365,8 @@ def create_document_routes(
         Raises:
             HTTPException: If an error occurs during text processing (500).
         """
+        workspace = _get_workspace(http_request)
+        rag = await workspace_mgr.get_or_create(workspace)
         try:
             # Check if file_source already exists in doc_status storage
             if (
@@ -2344,11 +2406,12 @@ def create_document_routes(
             track_id = generate_track_id("insert")
 
             background_tasks.add_task(
-                pipeline_index_texts,
-                rag,
-                [request.text],
-                file_sources=[request.file_source],
-                track_id=track_id,
+                _run_insert_text_with_workspace,
+                workspace_mgr,
+                workspace,
+                request.text,
+                request.file_source,
+                track_id,
             )
 
             return InsertResponse(
@@ -2356,10 +2419,15 @@ def create_document_routes(
                 message="Text successfully received. Processing will continue in background.",
                 track_id=track_id,
             )
-        except Exception as e:
-            logger.error(f"Error /documents/text: {str(e)}")
-            logger.error(traceback.format_exc())
-            raise HTTPException(status_code=500, detail=str(e))
+        finally:
+            workspace_mgr.release(workspace)
+
+    async def _run_insert_texts_with_workspace(workspace_mgr, workspace, texts, file_sources, track_id):
+        rag = await workspace_mgr.get_or_create(workspace)
+        try:
+            await pipeline_index_texts(rag, texts, file_sources=file_sources, track_id=track_id)
+        finally:
+            workspace_mgr.release(workspace)
 
     @router.post(
         "/texts",
@@ -2367,7 +2435,9 @@ def create_document_routes(
         dependencies=[Depends(combined_auth)],
     )
     async def insert_texts(
-        request: InsertTextsRequest, background_tasks: BackgroundTasks
+        http_request: Request,
+        request: InsertTextsRequest,
+        background_tasks: BackgroundTasks,
     ):
         """
         Insert multiple texts into the RAG system.
@@ -2376,6 +2446,7 @@ def create_document_routes(
         in a single request.
 
         Args:
+            http_request: FastAPI Request object for workspace extraction
             request (InsertTextsRequest): The request body containing the list of texts.
             background_tasks: FastAPI BackgroundTasks for async processing
 
@@ -2385,6 +2456,8 @@ def create_document_routes(
         Raises:
             HTTPException: If an error occurs during text processing (500).
         """
+        workspace = _get_workspace(http_request)
+        rag = await workspace_mgr.get_or_create(workspace)
         try:
             # Check if any file_sources already exist in doc_status storage
             if request.file_sources:
@@ -2427,11 +2500,12 @@ def create_document_routes(
             track_id = generate_track_id("insert")
 
             background_tasks.add_task(
-                pipeline_index_texts,
-                rag,
+                _run_insert_texts_with_workspace,
+                workspace_mgr,
+                workspace,
                 request.texts,
-                file_sources=request.file_sources,
-                track_id=track_id,
+                request.file_sources,
+                track_id,
             )
 
             return InsertResponse(
@@ -2439,21 +2513,22 @@ def create_document_routes(
                 message="Texts successfully received. Processing will continue in background.",
                 track_id=track_id,
             )
-        except Exception as e:
-            logger.error(f"Error /documents/texts: {str(e)}")
-            logger.error(traceback.format_exc())
-            raise HTTPException(status_code=500, detail=str(e))
+        finally:
+            workspace_mgr.release(workspace)
 
     @router.delete(
         "", response_model=ClearDocumentsResponse, dependencies=[Depends(combined_auth)]
     )
-    async def clear_documents():
+    async def clear_documents(http_request: Request):
         """
         Clear all documents from the RAG system.
 
         This endpoint deletes all documents, entities, relationships, and files from the system.
         It uses the storage drop methods to properly clean up all data and removes all files
         from the input directory.
+
+        Args:
+            http_request: FastAPI Request object for workspace extraction
 
         Returns:
             ClearDocumentsResponse: A response object containing the status and message.
@@ -2468,187 +2543,202 @@ def create_document_routes(
             HTTPException: Raised when a serious error occurs during the clearing process,
                           with status code 500 and error details in the detail field.
         """
-        from lightrag.kg.shared_storage import (
-            get_namespace_data,
-            get_namespace_lock,
-        )
-
-        # Get pipeline status and lock
-        pipeline_status = await get_namespace_data(
-            "pipeline_status", workspace=rag.workspace
-        )
-        pipeline_status_lock = get_namespace_lock(
-            "pipeline_status", workspace=rag.workspace
-        )
-
-        # Check and set status with lock
-        async with pipeline_status_lock:
-            if pipeline_status.get("busy", False):
-                return ClearDocumentsResponse(
-                    status="busy",
-                    message="Cannot clear documents while pipeline is busy",
-                )
-            # Set busy to true
-            pipeline_status.update(
-                {
-                    "busy": True,
-                    "job_name": "Clearing Documents",
-                    "job_start": datetime.now().isoformat(),
-                    "docs": 0,
-                    "batchs": 0,
-                    "cur_batch": 0,
-                    "request_pending": False,  # Clear any previous request
-                    "latest_message": "Starting document clearing process",
-                }
-            )
-            # Cleaning history_messages without breaking it as a shared list object
-            del pipeline_status["history_messages"][:]
-            pipeline_status["history_messages"].append(
-                "Starting document clearing process"
-            )
-
+        workspace = _get_workspace(http_request)
+        rag = await workspace_mgr.get_or_create(workspace)
         try:
-            # Use drop method to clear all data
-            drop_tasks = []
-            storages = [
-                rag.text_chunks,
-                rag.full_docs,
-                rag.full_entities,
-                rag.full_relations,
-                rag.entity_chunks,
-                rag.relation_chunks,
-                rag.entities_vdb,
-                rag.relationships_vdb,
-                rag.chunks_vdb,
-                rag.chunk_entity_relation_graph,
-                rag.doc_status,
-            ]
+            from lightrag.kg.shared_storage import (
+                get_namespace_data,
+                get_namespace_lock,
+            )
 
-            # Log storage drop start
-            if "history_messages" in pipeline_status:
-                pipeline_status["history_messages"].append(
-                    "Starting to drop storage components"
-                )
+            # Create workspace-specific doc_manager for file operations
+            workspace_doc_manager = DocumentManager(
+                input_dir=doc_manager.base_input_dir,
+                workspace=workspace,
+                supported_extensions=doc_manager.supported_extensions,
+            )
 
-            for storage in storages:
-                if storage is not None:
-                    drop_tasks.append(storage.drop())
+            # Get pipeline status and lock
+            pipeline_status = await get_namespace_data(
+                "pipeline_status", workspace=rag.workspace
+            )
+            pipeline_status_lock = get_namespace_lock(
+                "pipeline_status", workspace=rag.workspace
+            )
 
-            # Wait for all drop tasks to complete
-            drop_results = await asyncio.gather(*drop_tasks, return_exceptions=True)
-
-            # Check for errors and log results
-            errors = []
-            storage_success_count = 0
-            storage_error_count = 0
-
-            for i, result in enumerate(drop_results):
-                storage_name = storages[i].__class__.__name__
-                if isinstance(result, Exception):
-                    error_msg = f"Error dropping {storage_name}: {str(result)}"
-                    errors.append(error_msg)
-                    logger.error(error_msg)
-                    storage_error_count += 1
-                else:
-                    namespace = storages[i].namespace
-                    workspace = storages[i].workspace
-                    logger.info(
-                        f"Successfully dropped {storage_name}: {workspace}/{namespace}"
-                    )
-                    storage_success_count += 1
-
-            # Log storage drop results
-            if "history_messages" in pipeline_status:
-                if storage_error_count > 0:
-                    pipeline_status["history_messages"].append(
-                        f"Dropped {storage_success_count} storage components with {storage_error_count} errors"
-                    )
-                else:
-                    pipeline_status["history_messages"].append(
-                        f"Successfully dropped all {storage_success_count} storage components"
-                    )
-
-            # If all storage operations failed, return error status and don't proceed with file deletion
-            if storage_success_count == 0 and storage_error_count > 0:
-                error_message = "All storage drop operations failed. Aborting document clearing process."
-                logger.error(error_message)
-                if "history_messages" in pipeline_status:
-                    pipeline_status["history_messages"].append(error_message)
-                return ClearDocumentsResponse(status="fail", message=error_message)
-
-            # Log file deletion start
-            if "history_messages" in pipeline_status:
-                pipeline_status["history_messages"].append(
-                    "Starting to delete files in input directory"
-                )
-
-            # Delete only files in the current directory, preserve files in subdirectories
-            deleted_files_count = 0
-            file_errors_count = 0
-
-            for file_path in doc_manager.input_dir.glob("*"):
-                if file_path.is_file():
-                    try:
-                        file_path.unlink()
-                        deleted_files_count += 1
-                    except Exception as e:
-                        logger.error(f"Error deleting file {file_path}: {str(e)}")
-                        file_errors_count += 1
-
-            # Log file deletion results
-            if "history_messages" in pipeline_status:
-                if file_errors_count > 0:
-                    pipeline_status["history_messages"].append(
-                        f"Deleted {deleted_files_count} files with {file_errors_count} errors"
-                    )
-                    errors.append(f"Failed to delete {file_errors_count} files")
-                else:
-                    pipeline_status["history_messages"].append(
-                        f"Successfully deleted {deleted_files_count} files"
-                    )
-
-            # Prepare final result message
-            final_message = ""
-            if errors:
-                final_message = f"Cleared documents with some errors. Deleted {deleted_files_count} files."
-                status = "partial_success"
-            else:
-                final_message = f"All documents cleared successfully. Deleted {deleted_files_count} files."
-                status = "success"
-
-            # Log final result
-            if "history_messages" in pipeline_status:
-                pipeline_status["history_messages"].append(final_message)
-
-            # Return response based on results
-            return ClearDocumentsResponse(status=status, message=final_message)
-        except Exception as e:
-            error_msg = f"Error clearing documents: {str(e)}"
-            logger.error(error_msg)
-            logger.error(traceback.format_exc())
-            if "history_messages" in pipeline_status:
-                pipeline_status["history_messages"].append(error_msg)
-            raise HTTPException(status_code=500, detail=str(e))
-        finally:
-            # Reset busy status after completion
+            # Check and set status with lock
             async with pipeline_status_lock:
-                pipeline_status["busy"] = False
-                completion_msg = "Document clearing process completed"
-                pipeline_status["latest_message"] = completion_msg
+                if pipeline_status.get("busy", False):
+                    return ClearDocumentsResponse(
+                        status="busy",
+                        message="Cannot clear documents while pipeline is busy",
+                    )
+                # Set busy to true
+                pipeline_status.update(
+                    {
+                        "busy": True,
+                        "job_name": "Clearing Documents",
+                        "job_start": datetime.now().isoformat(),
+                        "docs": 0,
+                        "batchs": 0,
+                        "cur_batch": 0,
+                        "request_pending": False,  # Clear any previous request
+                        "latest_message": "Starting document clearing process",
+                    }
+                )
+                # Cleaning history_messages without breaking it as a shared list object
+                del pipeline_status["history_messages"][:]
+                pipeline_status["history_messages"].append(
+                    "Starting document clearing process"
+                )
+
+            try:
+                # Use drop method to clear all data
+                drop_tasks = []
+                storages = [
+                    rag.text_chunks,
+                    rag.full_docs,
+                    rag.full_entities,
+                    rag.full_relations,
+                    rag.entity_chunks,
+                    rag.relation_chunks,
+                    rag.entities_vdb,
+                    rag.relationships_vdb,
+                    rag.chunks_vdb,
+                    rag.chunk_entity_relation_graph,
+                    rag.doc_status,
+                ]
+
+                # Log storage drop start
                 if "history_messages" in pipeline_status:
-                    pipeline_status["history_messages"].append(completion_msg)
+                    pipeline_status["history_messages"].append(
+                        "Starting to drop storage components"
+                    )
+
+                for storage in storages:
+                    if storage is not None:
+                        drop_tasks.append(storage.drop())
+
+                # Wait for all drop tasks to complete
+                drop_results = await asyncio.gather(*drop_tasks, return_exceptions=True)
+
+                # Check for errors and log results
+                errors = []
+                storage_success_count = 0
+                storage_error_count = 0
+
+                for i, result in enumerate(drop_results):
+                    storage_name = storages[i].__class__.__name__
+                    if isinstance(result, Exception):
+                        error_msg = f"Error dropping {storage_name}: {str(result)}"
+                        errors.append(error_msg)
+                        logger.error(error_msg)
+                        storage_error_count += 1
+                    else:
+                        namespace = storages[i].namespace
+                        storage_workspace = storages[i].workspace
+                        logger.info(
+                            f"Successfully dropped {storage_name}: {storage_workspace}/{namespace}"
+                        )
+                        storage_success_count += 1
+
+                # Log storage drop results
+                if "history_messages" in pipeline_status:
+                    if storage_error_count > 0:
+                        pipeline_status["history_messages"].append(
+                            f"Dropped {storage_success_count} storage components with {storage_error_count} errors"
+                        )
+                    else:
+                        pipeline_status["history_messages"].append(
+                            f"Successfully dropped all {storage_success_count} storage components"
+                        )
+
+                # If all storage operations failed, return error status and don't proceed with file deletion
+                if storage_success_count == 0 and storage_error_count > 0:
+                    error_message = "All storage drop operations failed. Aborting document clearing process."
+                    logger.error(error_message)
+                    if "history_messages" in pipeline_status:
+                        pipeline_status["history_messages"].append(error_message)
+                    return ClearDocumentsResponse(status="fail", message=error_message)
+
+                # Log file deletion start
+                if "history_messages" in pipeline_status:
+                    pipeline_status["history_messages"].append(
+                        "Starting to delete files in input directory"
+                    )
+
+                # Delete only files in the current directory, preserve files in subdirectories
+                deleted_files_count = 0
+                file_errors_count = 0
+
+                for file_path in workspace_doc_manager.input_dir.glob("*"):
+                    if file_path.is_file():
+                        try:
+                            file_path.unlink()
+                            deleted_files_count += 1
+                        except Exception as e:
+                            logger.error(f"Error deleting file {file_path}: {str(e)}")
+                            file_errors_count += 1
+
+                # Log file deletion results
+                if "history_messages" in pipeline_status:
+                    if file_errors_count > 0:
+                        pipeline_status["history_messages"].append(
+                            f"Deleted {deleted_files_count} files with {file_errors_count} errors"
+                        )
+                        errors.append(f"Failed to delete {file_errors_count} files")
+                    else:
+                        pipeline_status["history_messages"].append(
+                            f"Successfully deleted {deleted_files_count} files"
+                        )
+
+                # Prepare final result message
+                final_message = ""
+                if errors:
+                    final_message = f"Cleared documents with some errors. Deleted {deleted_files_count} files."
+                    status = "partial_success"
+                else:
+                    final_message = f"All documents cleared successfully. Deleted {deleted_files_count} files."
+                    status = "success"
+
+                # Log final result
+                if "history_messages" in pipeline_status:
+                    pipeline_status["history_messages"].append(final_message)
+
+                # Return response based on results
+                return ClearDocumentsResponse(status=status, message=final_message)
+            except Exception as e:
+                error_msg = f"Error clearing documents: {str(e)}"
+                logger.error(error_msg)
+                logger.error(traceback.format_exc())
+                if "history_messages" in pipeline_status:
+                    pipeline_status["history_messages"].append(error_msg)
+                raise HTTPException(status_code=500, detail=str(e))
+            finally:
+                # Reset busy status after completion
+                async with pipeline_status_lock:
+                    pipeline_status["busy"] = False
+                    completion_msg = "Document clearing process completed"
+                    pipeline_status["latest_message"] = completion_msg
+                    if "history_messages" in pipeline_status:
+                        pipeline_status["history_messages"].append(completion_msg)
+        finally:
+            workspace_mgr.release(workspace)
 
     @router.get(
         "/pipeline_status",
         dependencies=[Depends(combined_auth)],
         response_model=PipelineStatusResponse,
     )
-    async def get_pipeline_status() -> PipelineStatusResponse:
+    async def get_pipeline_status(http_request: Request) -> PipelineStatusResponse:
         """
         Get the current status of the document indexing pipeline.
 
         This endpoint returns information about the current state of the document processing pipeline,
         including the processing status, progress information, and history messages.
+
+        Args:
+            http_request: FastAPI Request object for workspace extraction
 
         Returns:
             PipelineStatusResponse: A response object containing:
@@ -2667,6 +2757,8 @@ def create_document_routes(
         Raises:
             HTTPException: If an error occurs while retrieving pipeline status (500)
         """
+        workspace = _get_workspace(http_request)
+        rag = await workspace_mgr.get_or_create(workspace)
         try:
             from lightrag.kg.shared_storage import (
                 get_namespace_data,
@@ -2733,16 +2825,14 @@ def create_document_routes(
                 status_dict["job_start"] = format_datetime(status_dict["job_start"])
 
             return PipelineStatusResponse(**status_dict)
-        except Exception as e:
-            logger.error(f"Error getting pipeline status: {str(e)}")
-            logger.error(traceback.format_exc())
-            raise HTTPException(status_code=500, detail=str(e))
+        finally:
+            workspace_mgr.release(workspace)
 
     # TODO: Deprecated, use /documents/paginated instead
     @router.get(
         "", response_model=DocsStatusesResponse, dependencies=[Depends(combined_auth)]
     )
-    async def documents() -> DocsStatusesResponse:
+    async def documents(http_request: Request) -> DocsStatusesResponse:
         """
         Get the status of all documents in the system. This endpoint is deprecated; use /documents/paginated instead.
         To prevent excessive resource consumption, a maximum of 1,000 records is returned.
@@ -2750,6 +2840,9 @@ def create_document_routes(
         This endpoint retrieves the current status of all documents, grouped by their
         processing status (PENDING, PROCESSING, PREPROCESSED, PROCESSED, FAILED). The results are
         limited to 1000 total documents with fair distribution across all statuses.
+
+        Args:
+            http_request: FastAPI Request object for workspace extraction
 
         Returns:
             DocsStatusesResponse: A response object containing a dictionary where keys are
@@ -2760,6 +2853,8 @@ def create_document_routes(
         Raises:
             HTTPException: If an error occurs while retrieving document statuses (500).
         """
+        workspace = _get_workspace(http_request)
+        rag = await workspace_mgr.get_or_create(workspace)
         try:
             statuses = (
                 DocStatus.PENDING,
@@ -2835,10 +2930,8 @@ def create_document_routes(
                 current_status_idx = (current_status_idx + 1) % len(status_documents)
 
             return response
-        except Exception as e:
-            logger.error(f"Error GET /documents: {str(e)}")
-            logger.error(traceback.format_exc())
-            raise HTTPException(status_code=500, detail=str(e))
+        finally:
+            workspace_mgr.release(workspace)
 
     class DeleteDocByIdResponse(BaseModel):
         """Response model for single document deletion operation."""
@@ -2849,6 +2942,23 @@ def create_document_routes(
         message: str = Field(description="Message describing the operation result")
         doc_id: str = Field(description="The ID of the document to delete")
 
+    async def _run_delete_with_workspace(
+        workspace_mgr, workspace, doc_ids, delete_file, delete_llm_cache, base_input_dir, supported_extensions
+    ):
+        rag = await workspace_mgr.get_or_create(workspace)
+        try:
+            # Create workspace-specific doc_manager
+            workspace_doc_manager = DocumentManager(
+                input_dir=base_input_dir,
+                workspace=workspace,
+                supported_extensions=supported_extensions,
+            )
+            await background_delete_documents(
+                rag, workspace_doc_manager, doc_ids, delete_file, delete_llm_cache
+            )
+        finally:
+            workspace_mgr.release(workspace)
+
     @router.delete(
         "/delete_document",
         response_model=DeleteDocByIdResponse,
@@ -2856,6 +2966,7 @@ def create_document_routes(
         summary="Delete a document and all its associated data by its ID.",
     )
     async def delete_document(
+        http_request: Request,
         delete_request: DeleteDocRequest,
         background_tasks: BackgroundTasks,
     ) -> DeleteDocByIdResponse:
@@ -2870,6 +2981,7 @@ def create_document_routes(
         This operation is irreversible and will interact with the pipeline status.
 
         Args:
+            http_request: FastAPI Request object for workspace extraction
             delete_request (DeleteDocRequest): The request containing the document IDs and deletion options.
             background_tasks: FastAPI BackgroundTasks for async processing
 
@@ -2882,8 +2994,10 @@ def create_document_routes(
             HTTPException:
               - 500: If an unexpected internal error occurs during initialization.
         """
+        workspace = _get_workspace(http_request)
         doc_ids = delete_request.doc_ids
 
+        rag = await workspace_mgr.get_or_create(workspace)
         try:
             from lightrag.kg.shared_storage import (
                 get_namespace_data,
@@ -2906,14 +3020,16 @@ def create_document_routes(
                         doc_id=", ".join(doc_ids),
                     )
 
-            # Add deletion task to background tasks
+            # Add deletion task to background tasks with workspace isolation
             background_tasks.add_task(
-                background_delete_documents,
-                rag,
-                doc_manager,
+                _run_delete_with_workspace,
+                workspace_mgr,
+                workspace,
                 doc_ids,
                 delete_request.delete_file,
                 delete_request.delete_llm_cache,
+                doc_manager.base_input_dir,
+                doc_manager.supported_extensions,
             )
 
             return DeleteDocByIdResponse(
@@ -2922,18 +3038,15 @@ def create_document_routes(
                 doc_id=", ".join(doc_ids),
             )
 
-        except Exception as e:
-            error_msg = f"Error initiating document deletion for {delete_request.doc_ids}: {str(e)}"
-            logger.error(error_msg)
-            logger.error(traceback.format_exc())
-            raise HTTPException(status_code=500, detail=error_msg)
+        finally:
+            workspace_mgr.release(workspace)
 
     @router.post(
         "/clear_cache",
         response_model=ClearCacheResponse,
         dependencies=[Depends(combined_auth)],
     )
-    async def clear_cache(request: ClearCacheRequest):
+    async def clear_cache(http_request: Request, request: ClearCacheRequest):
         """
         Clear all cache data from the LLM response cache storage.
 
@@ -2941,6 +3054,7 @@ def create_document_routes(
         The request body is accepted for API compatibility but is ignored.
 
         Args:
+            http_request: FastAPI Request object for workspace extraction
             request (ClearCacheRequest): The request body (ignored for compatibility).
 
         Returns:
@@ -2949,6 +3063,8 @@ def create_document_routes(
         Raises:
             HTTPException: If an error occurs during cache clearing (500).
         """
+        workspace = _get_workspace(http_request)
+        rag = await workspace_mgr.get_or_create(workspace)
         try:
             # Call the aclear_cache method (no modes parameter)
             await rag.aclear_cache()
@@ -2957,21 +3073,20 @@ def create_document_routes(
             message = "Successfully cleared all cache"
 
             return ClearCacheResponse(status="success", message=message)
-        except Exception as e:
-            logger.error(f"Error clearing cache: {str(e)}")
-            logger.error(traceback.format_exc())
-            raise HTTPException(status_code=500, detail=str(e))
+        finally:
+            workspace_mgr.release(workspace)
 
     @router.delete(
         "/delete_entity",
         response_model=DeletionResult,
         dependencies=[Depends(combined_auth)],
     )
-    async def delete_entity(request: DeleteEntityRequest):
+    async def delete_entity(http_request: Request, request: DeleteEntityRequest):
         """
         Delete an entity and all its relationships from the knowledge graph.
 
         Args:
+            http_request: FastAPI Request object for workspace extraction
             request (DeleteEntityRequest): The request body containing the entity name.
 
         Returns:
@@ -2980,6 +3095,8 @@ def create_document_routes(
         Raises:
             HTTPException: If the entity is not found (404) or an error occurs (500).
         """
+        workspace = _get_workspace(http_request)
+        rag = await workspace_mgr.get_or_create(workspace)
         try:
             result = await rag.adelete_by_entity(entity_name=request.entity_name)
             if result.status == "not_found":
@@ -2996,17 +3113,20 @@ def create_document_routes(
             logger.error(error_msg)
             logger.error(traceback.format_exc())
             raise HTTPException(status_code=500, detail=error_msg)
+        finally:
+            workspace_mgr.release(workspace)
 
     @router.delete(
         "/delete_relation",
         response_model=DeletionResult,
         dependencies=[Depends(combined_auth)],
     )
-    async def delete_relation(request: DeleteRelationRequest):
+    async def delete_relation(http_request: Request, request: DeleteRelationRequest):
         """
         Delete a relationship between two entities from the knowledge graph.
 
         Args:
+            http_request: FastAPI Request object for workspace extraction
             request (DeleteRelationRequest): The request body containing the source and target entity names.
 
         Returns:
@@ -3015,6 +3135,8 @@ def create_document_routes(
         Raises:
             HTTPException: If the relation is not found (404) or an error occurs (500).
         """
+        workspace = _get_workspace(http_request)
+        rag = await workspace_mgr.get_or_create(workspace)
         try:
             result = await rag.adelete_by_relation(
                 source_entity=request.source_entity,
@@ -3034,13 +3156,15 @@ def create_document_routes(
             logger.error(error_msg)
             logger.error(traceback.format_exc())
             raise HTTPException(status_code=500, detail=error_msg)
+        finally:
+            workspace_mgr.release(workspace)
 
     @router.get(
         "/track_status/{track_id}",
         response_model=TrackStatusResponse,
         dependencies=[Depends(combined_auth)],
     )
-    async def get_track_status(track_id: str) -> TrackStatusResponse:
+    async def get_track_status(http_request: Request, track_id: str) -> TrackStatusResponse:
         """
         Get the processing status of documents by tracking ID.
 
@@ -3048,6 +3172,7 @@ def create_document_routes(
         allowing users to monitor the processing progress of their uploaded files or inserted texts.
 
         Args:
+            http_request: FastAPI Request object for workspace extraction
             track_id (str): The tracking ID returned from upload, text, or texts endpoints
 
         Returns:
@@ -3059,6 +3184,8 @@ def create_document_routes(
         Raises:
             HTTPException: If track_id is invalid (400) or an error occurs (500).
         """
+        workspace = _get_workspace(http_request)
+        rag = await workspace_mgr.get_or_create(workspace)
         try:
             # Validate track_id
             if not track_id or not track_id.strip():
@@ -3108,6 +3235,8 @@ def create_document_routes(
             logger.error(f"Error getting track status for {track_id}: {str(e)}")
             logger.error(traceback.format_exc())
             raise HTTPException(status_code=500, detail=str(e))
+        finally:
+            workspace_mgr.release(workspace)
 
     @router.post(
         "/paginated",
@@ -3115,6 +3244,7 @@ def create_document_routes(
         dependencies=[Depends(combined_auth)],
     )
     async def get_documents_paginated(
+        http_request: Request,
         request: DocumentsRequest,
     ) -> PaginatedDocsResponse:
         """
@@ -3125,6 +3255,7 @@ def create_document_routes(
         requested page of data.
 
         Args:
+            http_request: FastAPI Request object for workspace extraction
             request (DocumentsRequest): The request body containing pagination parameters
 
         Returns:
@@ -3136,24 +3267,25 @@ def create_document_routes(
         Raises:
             HTTPException: If an error occurs while retrieving documents (500).
         """
-        trace_id = uuid4().hex[:8]
-        request_start = time.perf_counter()
-        status_filter_value = (
-            request.status_filter.value if request.status_filter is not None else None
-        )
-
-        performance_timing_log(
-            "[documents/paginated][%s] Request start workspace=%s status_filter=%s page=%s page_size=%s sort_field=%s sort_direction=%s",
-            trace_id,
-            rag.workspace,
-            status_filter_value,
-            request.page,
-            request.page_size,
-            request.sort_field,
-            request.sort_direction,
-        )
-
+        workspace = _get_workspace(http_request)
+        rag = await workspace_mgr.get_or_create(workspace)
         try:
+            trace_id = uuid4().hex[:8]
+            request_start = time.perf_counter()
+            status_filter_value = (
+                request.status_filter.value if request.status_filter is not None else None
+            )
+
+            performance_timing_log(
+                "[documents/paginated][%s] Request start workspace=%s status_filter=%s page=%s page_size=%s sort_field=%s sort_direction=%s",
+                trace_id,
+                rag.workspace,
+                status_filter_value,
+                request.page,
+                request.page_size,
+                request.sort_field,
+                request.sort_direction,
+            )
 
             async def _timed_call(operation_name: str, operation):
                 operation_start = time.perf_counter()
@@ -3278,27 +3410,26 @@ def create_document_routes(
             return response
 
         except Exception as e:
-            total_elapsed = time.perf_counter() - request_start
-            performance_timing_log(
-                "[documents/paginated][%s] Request failed after %.4fs",
-                trace_id,
-                total_elapsed,
-            )
             logger.error(f"Error getting paginated documents: {str(e)}")
             logger.error(traceback.format_exc())
             raise HTTPException(status_code=500, detail=str(e))
+        finally:
+            workspace_mgr.release(workspace)
 
     @router.get(
         "/status_counts",
         response_model=StatusCountsResponse,
         dependencies=[Depends(combined_auth)],
     )
-    async def get_document_status_counts() -> StatusCountsResponse:
+    async def get_document_status_counts(http_request: Request) -> StatusCountsResponse:
         """
         Get counts of documents by status.
 
         This endpoint retrieves the count of documents in each processing status
         (PENDING, PROCESSING, PROCESSED, FAILED) for all documents in the system.
+
+        Args:
+            http_request: FastAPI Request object for workspace extraction
 
         Returns:
             StatusCountsResponse: A response object containing status counts
@@ -3306,21 +3437,27 @@ def create_document_routes(
         Raises:
             HTTPException: If an error occurs while retrieving status counts (500).
         """
+        workspace = _get_workspace(http_request)
+        rag = await workspace_mgr.get_or_create(workspace)
         try:
             status_counts = await rag.doc_status.get_all_status_counts()
             return StatusCountsResponse(status_counts=status_counts)
+        finally:
+            workspace_mgr.release(workspace)
 
-        except Exception as e:
-            logger.error(f"Error getting document status counts: {str(e)}")
-            logger.error(traceback.format_exc())
-            raise HTTPException(status_code=500, detail=str(e))
+    async def _run_reprocess_with_workspace(workspace_mgr, workspace):
+        rag = await workspace_mgr.get_or_create(workspace)
+        try:
+            await rag.apipeline_process_enqueue_documents()
+        finally:
+            workspace_mgr.release(workspace)
 
     @router.post(
         "/reprocess_failed",
         response_model=ReprocessResponse,
         dependencies=[Depends(combined_auth)],
     )
-    async def reprocess_failed_documents(background_tasks: BackgroundTasks):
+    async def reprocess_failed_documents(http_request: Request, background_tasks: BackgroundTasks):
         """
         Reprocess failed and pending documents.
 
@@ -3337,6 +3474,10 @@ def create_document_routes(
         pipeline status. The reprocessed documents retain their original track_id from
         initial upload, so use their original track_id to monitor progress.
 
+        Args:
+            http_request: FastAPI Request object for workspace extraction
+            background_tasks: FastAPI BackgroundTasks for async processing
+
         Returns:
             ReprocessResponse: Response with status and message.
                 track_id is always empty string because reprocessed documents retain
@@ -3345,28 +3486,23 @@ def create_document_routes(
         Raises:
             HTTPException: If an error occurs while initiating reprocessing (500).
         """
-        try:
-            # Start the reprocessing in the background
-            # Note: Reprocessed documents retain their original track_id from initial upload
-            background_tasks.add_task(rag.apipeline_process_enqueue_documents)
-            logger.info("Reprocessing of failed documents initiated")
+        workspace = _get_workspace(http_request)
+        # Start the reprocessing in the background
+        # Note: Reprocessed documents retain their original track_id from initial upload
+        background_tasks.add_task(_run_reprocess_with_workspace, workspace_mgr, workspace)
+        logger.info("Reprocessing of failed documents initiated")
 
-            return ReprocessResponse(
-                status="reprocessing_started",
-                message="Reprocessing of failed documents has been initiated in background. Documents retain their original track_id.",
-            )
-
-        except Exception as e:
-            logger.error(f"Error initiating reprocessing of failed documents: {str(e)}")
-            logger.error(traceback.format_exc())
-            raise HTTPException(status_code=500, detail=str(e))
+        return ReprocessResponse(
+            status="reprocessing_started",
+            message="Reprocessing of failed documents has been initiated in background. Documents retain their original track_id.",
+        )
 
     @router.post(
         "/cancel_pipeline",
         response_model=CancelPipelineResponse,
         dependencies=[Depends(combined_auth)],
     )
-    async def cancel_pipeline():
+    async def cancel_pipeline(http_request: Request):
         """
         Request cancellation of the currently running pipeline.
 
@@ -3379,6 +3515,9 @@ def create_document_routes(
         The cancellation is graceful and ensures data consistency. Documents that have
         completed processing will remain in PROCESSED status.
 
+        Args:
+            http_request: FastAPI Request object for workspace extraction
+
         Returns:
             CancelPipelineResponse: Response with status and message
                 - status="cancellation_requested": Cancellation flag has been set
@@ -3387,6 +3526,8 @@ def create_document_routes(
         Raises:
             HTTPException: If an error occurs while setting cancellation flag (500).
         """
+        workspace = _get_workspace(http_request)
+        rag = await workspace_mgr.get_or_create(workspace)
         try:
             from lightrag.kg.shared_storage import (
                 get_namespace_data,
@@ -3423,5 +3564,7 @@ def create_document_routes(
             logger.error(f"Error requesting pipeline cancellation: {str(e)}")
             logger.error(traceback.format_exc())
             raise HTTPException(status_code=500, detail=str(e))
+        finally:
+            workspace_mgr.release(workspace)
 
     return router

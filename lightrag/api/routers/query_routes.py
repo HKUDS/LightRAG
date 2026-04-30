@@ -4,8 +4,9 @@ This module contains all query-related routes for the LightRAG API.
 
 import json
 from typing import Any, Dict, List, Literal, Optional
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from lightrag.base import QueryParam
+from lightrag.api.utils import sanitize_workspace_name, WorkspaceNameError
 from lightrag.api.utils_api import get_combined_auth_dependency
 from lightrag.utils import logger
 from pydantic import BaseModel, Field, field_validator
@@ -190,8 +191,17 @@ class StreamChunkResponse(BaseModel):
     )
 
 
-def create_query_routes(workspace_mgr, rag, api_key: Optional[str] = None, top_k: int = 60):
+def create_query_routes(workspace_mgr, api_key: Optional[str] = None, top_k: int = 60):
     combined_auth = get_combined_auth_dependency(api_key)
+
+    def _get_workspace(request: Request) -> str:
+        """Extract workspace from request headers."""
+        raw_workspace = request.headers.get("LIGHTRAG-WORKSPACE", "").strip()
+        if raw_workspace:
+            workspace = sanitize_workspace_name(raw_workspace)
+        else:
+            workspace = ""
+        return workspace
 
     @router.post(
         "/query",
@@ -322,7 +332,7 @@ def create_query_routes(workspace_mgr, rag, api_key: Optional[str] = None, top_k
             },
         },
     )
-    async def query_text(request: QueryRequest):
+    async def query_text(http_request: Request, request: QueryRequest):
         """
         Comprehensive RAG query endpoint with non-streaming response. Parameter "stream" is ignored.
 
@@ -401,6 +411,8 @@ def create_query_routes(workspace_mgr, rag, api_key: Optional[str] = None, top_k
                 - 400: Invalid input parameters (e.g., query too short)
                 - 500: Internal processing error (e.g., LLM service unavailable)
         """
+        workspace = _get_workspace(http_request)
+        rag = await workspace_mgr.get_or_create(workspace)
         try:
             param = request.to_query_params(
                 False
@@ -452,6 +464,8 @@ def create_query_routes(workspace_mgr, rag, api_key: Optional[str] = None, top_k
         except Exception as e:
             logger.error(f"Error processing query: {str(e)}", exc_info=True)
             raise HTTPException(status_code=500, detail=str(e))
+        finally:
+            workspace_mgr.release(workspace)
 
     @router.post(
         "/query/stream",
@@ -532,7 +546,7 @@ def create_query_routes(workspace_mgr, rag, api_key: Optional[str] = None, top_k
             },
         },
     )
-    async def query_text_stream(request: QueryRequest):
+    async def query_text_stream(http_request: Request, request: QueryRequest):
         """
         Advanced RAG query endpoint with flexible streaming response.
 
@@ -659,46 +673,45 @@ def create_query_routes(workspace_mgr, rag, api_key: Optional[str] = None, top_k
             This endpoint is ideal for applications requiring flexible response delivery.
             Use streaming mode for real-time interfaces and non-streaming for batch processing.
         """
-        try:
-            # Use the stream parameter from the request, defaulting to True if not specified
-            stream_mode = request.stream if request.stream is not None else True
-            param = request.to_query_params(stream_mode)
+        from fastapi.responses import StreamingResponse
 
-            from fastapi.responses import StreamingResponse
+        workspace = _get_workspace(http_request)
+        rag = await workspace_mgr.get_or_create(workspace)
 
-            # Unified approach: always use aquery_llm for all cases
-            result = await rag.aquery_llm(request.query, param=param)
+        stream_mode = request.stream if request.stream is not None else True
+        param = request.to_query_params(stream_mode)
 
-            async def stream_generator():
-                # Extract references and LLM response from unified result
-                references = result.get("data", {}).get("references", [])
-                llm_response = result.get("llm_response", {})
+        # Call aquery_llm here (before returning StreamingResponse)
+        result = await rag.aquery_llm(request.query, param=param)
 
-                # Enrich references with chunk content if requested
-                if request.include_references and request.include_chunk_content:
-                    data = result.get("data", {})
-                    chunks = data.get("chunks", [])
-                    # Create a mapping from reference_id to chunk content
-                    ref_id_to_content = {}
-                    for chunk in chunks:
-                        ref_id = chunk.get("reference_id", "")
-                        content = chunk.get("content", "")
-                        if ref_id and content:
-                            # Collect chunk content
-                            ref_id_to_content.setdefault(ref_id, []).append(content)
+        # Extract what we need before returning StreamingResponse
+        references = result.get("data", {}).get("references", [])
+        llm_response = result.get("llm_response", {})
+        is_streaming = llm_response.get("is_streaming", False)
 
-                    # Add content to references
-                    enriched_references = []
-                    for ref in references:
-                        ref_copy = ref.copy()
-                        ref_id = ref.get("reference_id", "")
-                        if ref_id in ref_id_to_content:
-                            # Keep content as a list of chunks (one file may have multiple chunks)
-                            ref_copy["content"] = ref_id_to_content[ref_id]
-                        enriched_references.append(ref_copy)
-                    references = enriched_references
+        # Enrich references with chunk content if requested
+        if request.include_references and request.include_chunk_content:
+            data = result.get("data", {})
+            chunks = data.get("chunks", [])
+            ref_id_to_content = {}
+            for chunk in chunks:
+                ref_id = chunk.get("reference_id", "")
+                content = chunk.get("content", "")
+                if ref_id and content:
+                    ref_id_to_content.setdefault(ref_id, []).append(content)
 
-                if llm_response.get("is_streaming"):
+            enriched_references = []
+            for ref in references:
+                ref_copy = ref.copy()
+                ref_id = ref.get("reference_id", "")
+                if ref_id in ref_id_to_content:
+                    ref_copy["content"] = ref_id_to_content[ref_id]
+                enriched_references.append(ref_copy)
+            references = enriched_references
+
+        async def stream_generator():
+            try:
+                if is_streaming:
                     # Streaming mode: send references first, then stream response chunks
                     if request.include_references:
                         yield f"{json.dumps({'references': references})}\n"
@@ -707,7 +720,7 @@ def create_query_routes(workspace_mgr, rag, api_key: Optional[str] = None, top_k
                     if response_stream:
                         try:
                             async for chunk in response_stream:
-                                if chunk:  # Only send non-empty content
+                                if chunk:
                                     yield f"{json.dumps({'response': chunk})}\n"
                         except Exception as e:
                             logger.error(f"Streaming error: {str(e)}")
@@ -718,26 +731,24 @@ def create_query_routes(workspace_mgr, rag, api_key: Optional[str] = None, top_k
                     if not response_content:
                         response_content = "No relevant context found for the query."
 
-                    # Create complete response object
                     complete_response = {"response": response_content}
                     if request.include_references:
                         complete_response["references"] = references
 
                     yield f"{json.dumps(complete_response)}\n"
+            finally:
+                workspace_mgr.release(workspace)
 
-            return StreamingResponse(
-                stream_generator(),
-                media_type="application/x-ndjson",
-                headers={
-                    "Cache-Control": "no-cache",
-                    "Connection": "keep-alive",
-                    "Content-Type": "application/x-ndjson",
-                    "X-Accel-Buffering": "no",  # Ensure proper handling of streaming response when proxied by Nginx
-                },
-            )
-        except Exception as e:
-            logger.error(f"Error processing streaming query: {str(e)}", exc_info=True)
-            raise HTTPException(status_code=500, detail=str(e))
+        return StreamingResponse(
+            stream_generator(),
+            media_type="application/x-ndjson",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "Content-Type": "application/x-ndjson",
+                "X-Accel-Buffering": "no",
+            },
+        )
 
     @router.post(
         "/query/data",
@@ -1035,7 +1046,7 @@ def create_query_routes(workspace_mgr, rag, api_key: Optional[str] = None, top_k
             },
         },
     )
-    async def query_data(request: QueryRequest):
+    async def query_data(http_request: Request, request: QueryRequest):
         """
         Advanced data retrieval endpoint for structured RAG analysis.
 
@@ -1138,6 +1149,8 @@ def create_query_routes(workspace_mgr, rag, api_key: Optional[str] = None, top_k
             This endpoint always includes references regardless of the include_references parameter,
             as structured data analysis typically requires source attribution.
         """
+        workspace = _get_workspace(http_request)
+        rag = await workspace_mgr.get_or_create(workspace)
         try:
             param = request.to_query_params(False)  # No streaming for data endpoint
             response = await rag.aquery_data(request.query, param=param)
@@ -1156,5 +1169,7 @@ def create_query_routes(workspace_mgr, rag, api_key: Optional[str] = None, top_k
         except Exception as e:
             logger.error(f"Error processing data query: {str(e)}", exc_info=True)
             raise HTTPException(status_code=500, detail=str(e))
+        finally:
+            workspace_mgr.release(workspace)
 
     return router

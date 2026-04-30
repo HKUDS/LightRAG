@@ -4,10 +4,11 @@ This module contains all graph-related routes for the LightRAG API.
 
 from typing import Optional, Dict, Any
 import traceback
-from fastapi import APIRouter, Depends, Query, HTTPException
+from fastapi import APIRouter, Depends, Query, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from lightrag.utils import logger
+from lightrag.api.utils import sanitize_workspace_name
 from ..utils_api import get_combined_auth_dependency
 
 router = APIRouter(tags=["graph"])
@@ -86,17 +87,24 @@ class RelationCreateRequest(BaseModel):
     )
 
 
-def create_graph_routes(workspace_mgr, rag, api_key: Optional[str] = None):
+def create_graph_routes(workspace_mgr, api_key: Optional[str] = None):
     combined_auth = get_combined_auth_dependency(api_key)
 
+    def _get_workspace(http_request: Request) -> str:
+        """Extract workspace name from LIGHTRAG-WORKSPACE header."""
+        ws = http_request.headers.get("LIGHTRAG-WORKSPACE", "")
+        return sanitize_workspace_name(ws)
+
     @router.get("/graph/label/list", dependencies=[Depends(combined_auth)])
-    async def get_graph_labels():
+    async def get_graph_labels(http_request: Request):
         """
         Get all graph labels
 
         Returns:
             List[str]: List of graph labels
         """
+        workspace = _get_workspace(http_request)
+        rag = await workspace_mgr.get_or_create(workspace)
         try:
             return await rag.get_graph_labels()
         except Exception as e:
@@ -105,9 +113,12 @@ def create_graph_routes(workspace_mgr, rag, api_key: Optional[str] = None):
             raise HTTPException(
                 status_code=500, detail=f"Error getting graph labels: {str(e)}"
             )
+        finally:
+            workspace_mgr.release(workspace)
 
     @router.get("/graph/label/popular", dependencies=[Depends(combined_auth)])
     async def get_popular_labels(
+        http_request: Request,
         limit: int = Query(
             300, description="Maximum number of popular labels to return", ge=1, le=1000
         ),
@@ -121,6 +132,8 @@ def create_graph_routes(workspace_mgr, rag, api_key: Optional[str] = None):
         Returns:
             List[str]: List of popular labels sorted by degree (highest first)
         """
+        workspace = _get_workspace(http_request)
+        rag = await workspace_mgr.get_or_create(workspace)
         try:
             return await rag.chunk_entity_relation_graph.get_popular_labels(limit)
         except Exception as e:
@@ -129,9 +142,12 @@ def create_graph_routes(workspace_mgr, rag, api_key: Optional[str] = None):
             raise HTTPException(
                 status_code=500, detail=f"Error getting popular labels: {str(e)}"
             )
+        finally:
+            workspace_mgr.release(workspace)
 
     @router.get("/graph/label/search", dependencies=[Depends(combined_auth)])
     async def search_labels(
+        http_request: Request,
         q: str = Query(..., description="Search query string"),
         limit: int = Query(
             50, description="Maximum number of search results to return", ge=1, le=100
@@ -147,6 +163,8 @@ def create_graph_routes(workspace_mgr, rag, api_key: Optional[str] = None):
         Returns:
             List[str]: List of matching labels sorted by relevance
         """
+        workspace = _get_workspace(http_request)
+        rag = await workspace_mgr.get_or_create(workspace)
         try:
             return await rag.chunk_entity_relation_graph.search_labels(q, limit)
         except Exception as e:
@@ -155,9 +173,12 @@ def create_graph_routes(workspace_mgr, rag, api_key: Optional[str] = None):
             raise HTTPException(
                 status_code=500, detail=f"Error searching labels: {str(e)}"
             )
+        finally:
+            workspace_mgr.release(workspace)
 
     @router.get("/graphs", dependencies=[Depends(combined_auth)])
     async def get_knowledge_graph(
+        http_request: Request,
         label: str = Query(..., description="Label to get knowledge graph for"),
         max_depth: int = Query(3, description="Maximum depth of graph", ge=1),
         max_nodes: int = Query(1000, description="Maximum nodes to return", ge=1),
@@ -176,6 +197,8 @@ def create_graph_routes(workspace_mgr, rag, api_key: Optional[str] = None):
         Returns:
             Dict[str, List[str]]: Knowledge graph for label
         """
+        workspace = _get_workspace(http_request)
+        rag = await workspace_mgr.get_or_create(workspace)
         try:
             # Log the label parameter to check for leading spaces
             logger.debug(
@@ -193,9 +216,12 @@ def create_graph_routes(workspace_mgr, rag, api_key: Optional[str] = None):
             raise HTTPException(
                 status_code=500, detail=f"Error getting knowledge graph: {str(e)}"
             )
+        finally:
+            workspace_mgr.release(workspace)
 
     @router.get("/graph/entity/exists", dependencies=[Depends(combined_auth)])
     async def check_entity_exists(
+        http_request: Request,
         name: str = Query(..., description="Entity name to check"),
     ):
         """
@@ -207,6 +233,8 @@ def create_graph_routes(workspace_mgr, rag, api_key: Optional[str] = None):
         Returns:
             Dict[str, bool]: Dictionary with 'exists' key indicating if entity exists
         """
+        workspace = _get_workspace(http_request)
+        rag = await workspace_mgr.get_or_create(workspace)
         try:
             exists = await rag.chunk_entity_relation_graph.has_node(name)
             return {"exists": exists}
@@ -216,9 +244,11 @@ def create_graph_routes(workspace_mgr, rag, api_key: Optional[str] = None):
             raise HTTPException(
                 status_code=500, detail=f"Error checking entity existence: {str(e)}"
             )
+        finally:
+            workspace_mgr.release(workspace)
 
     @router.post("/graph/entity/edit", dependencies=[Depends(combined_auth)])
-    async def update_entity(request: EntityUpdateRequest):
+    async def update_entity(http_request: Request, request: EntityUpdateRequest):
         """
         Update an entity's properties in the knowledge graph
 
@@ -226,7 +256,7 @@ def create_graph_routes(workspace_mgr, rag, api_key: Optional[str] = None):
         When renaming to an existing entity name, the behavior depends on allow_merge:
 
         Args:
-            request (EntityUpdateRequest): Request containing:
+            request: Request containing:
                 - entity_name (str): Name of the entity to update
                 - updated_data (Dict[str, Any]): Dictionary of properties to update
                 - allow_rename (bool): Whether to allow entity renaming (default: False)
@@ -352,6 +382,8 @@ def create_graph_routes(workspace_mgr, rag, api_key: Optional[str] = None):
                 }
             }
         """
+        workspace = _get_workspace(http_request)
+        rag = await workspace_mgr.get_or_create(workspace)
         try:
             result = await rag.aedit_entity(
                 entity_name=request.entity_name,
@@ -406,17 +438,21 @@ def create_graph_routes(workspace_mgr, rag, api_key: Optional[str] = None):
             raise HTTPException(
                 status_code=500, detail=f"Error updating entity: {str(e)}"
             )
+        finally:
+            workspace_mgr.release(workspace)
 
     @router.post("/graph/relation/edit", dependencies=[Depends(combined_auth)])
-    async def update_relation(request: RelationUpdateRequest):
+    async def update_relation(http_request: Request, request: RelationUpdateRequest):
         """Update a relation's properties in the knowledge graph
 
         Args:
-            request (RelationUpdateRequest): Request containing source ID, target ID and updated data
+            request: Request containing source ID, target ID and updated data
 
         Returns:
             Dict: Updated relation information
         """
+        workspace = _get_workspace(http_request)
+        rag = await workspace_mgr.get_or_create(workspace)
         try:
             result = await rag.aedit_relation(
                 source_entity=request.source_id,
@@ -441,9 +477,11 @@ def create_graph_routes(workspace_mgr, rag, api_key: Optional[str] = None):
             raise HTTPException(
                 status_code=500, detail=f"Error updating relation: {str(e)}"
             )
+        finally:
+            workspace_mgr.release(workspace)
 
     @router.post("/graph/entity/create", dependencies=[Depends(combined_auth)])
-    async def create_entity(request: EntityCreateRequest):
+    async def create_entity(http_request: Request, request: EntityCreateRequest):
         """
         Create a new entity in the knowledge graph
 
@@ -487,6 +525,8 @@ def create_graph_routes(workspace_mgr, rag, api_key: Optional[str] = None):
                 }
             }
         """
+        workspace = _get_workspace(http_request)
+        rag = await workspace_mgr.get_or_create(workspace)
         try:
             # Use the proper acreate_entity method which handles:
             # - Graph lock for concurrency
@@ -514,9 +554,11 @@ def create_graph_routes(workspace_mgr, rag, api_key: Optional[str] = None):
             raise HTTPException(
                 status_code=500, detail=f"Error creating entity: {str(e)}"
             )
+        finally:
+            workspace_mgr.release(workspace)
 
     @router.post("/graph/relation/create", dependencies=[Depends(combined_auth)])
-    async def create_relation(request: RelationCreateRequest):
+    async def create_relation(http_request: Request, request: RelationCreateRequest):
         """
         Create a new relationship between two entities in the knowledge graph
 
@@ -572,6 +614,8 @@ def create_graph_routes(workspace_mgr, rag, api_key: Optional[str] = None):
                 }
             }
         """
+        workspace = _get_workspace(http_request)
+        rag = await workspace_mgr.get_or_create(workspace)
         try:
             # Use the proper acreate_relation method which handles:
             # - Graph lock for concurrency
@@ -603,9 +647,11 @@ def create_graph_routes(workspace_mgr, rag, api_key: Optional[str] = None):
             raise HTTPException(
                 status_code=500, detail=f"Error creating relation: {str(e)}"
             )
+        finally:
+            workspace_mgr.release(workspace)
 
     @router.post("/graph/entities/merge", dependencies=[Depends(combined_auth)])
-    async def merge_entities(request: EntityMergeRequest):
+    async def merge_entities(http_request: Request, request: EntityMergeRequest):
         """
         Merge multiple entities into a single entity, preserving all relationships
 
@@ -661,6 +707,8 @@ def create_graph_routes(workspace_mgr, rag, api_key: Optional[str] = None):
             - Source entities will be permanently deleted after the merge
             - This operation cannot be undone, so verify entity names before merging
         """
+        workspace = _get_workspace(http_request)
+        rag = await workspace_mgr.get_or_create(workspace)
         try:
             result = await rag.amerge_entities(
                 source_entities=request.entities_to_change,
@@ -684,5 +732,7 @@ def create_graph_routes(workspace_mgr, rag, api_key: Optional[str] = None):
             raise HTTPException(
                 status_code=500, detail=f"Error merging entities: {str(e)}"
             )
+        finally:
+            workspace_mgr.release(workspace)
 
     return router
