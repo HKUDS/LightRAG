@@ -6832,10 +6832,6 @@ class LightRAG:
         try:
             # 1. Get the document status and related data
             doc_status_data = await self.doc_status.get_by_id(doc_id)
-            file_path = doc_status_data.get("file_path") if doc_status_data else None
-            full_doc_data = await self.full_docs.get_by_id(doc_id) or {}
-            if isinstance(full_doc_data, dict):
-                source_path = full_doc_data.get("source_path")
             if not doc_status_data:
                 logger.warning(f"Document {doc_id} not found")
                 return DeletionResult(
@@ -6845,6 +6841,10 @@ class LightRAG:
                     status_code=404,
                     file_path="",
                 )
+            file_path = doc_status_data.get("file_path")
+            full_doc_data = await self.full_docs.get_by_id(doc_id)
+            if isinstance(full_doc_data, dict):
+                source_path = full_doc_data.get("source_path")
 
             # Check document status and log warning for non-completed documents
             raw_status = doc_status_data.get("status")
