@@ -66,10 +66,11 @@ READ_RETRY = retry(
 class Neo4JStorage(BaseGraphStorage):
     def __init__(self, namespace, global_config, embedding_func, workspace=None):
         # Read env and override the arg if present
-        neo4j_workspace = os.environ.get("NEO4J_WORKSPACE")
-        original_workspace = workspace  # Save original value for logging
-        if neo4j_workspace and neo4j_workspace.strip():
-            workspace = neo4j_workspace
+        if not os.environ.get("WORKSPACE_ISOLATION", "").lower() == "true":
+            neo4j_workspace = os.environ.get("NEO4J_WORKSPACE")
+            original_workspace = workspace  # Save original value for logging
+            if neo4j_workspace and neo4j_workspace.strip():
+                workspace = neo4j_workspace
 
         # Default to 'base' when both arg and env are empty
         if not workspace or not str(workspace).strip():

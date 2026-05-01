@@ -1374,20 +1374,23 @@ class MilvusVectorDBStorage(BaseVectorStorage):
 
         # Check for MILVUS_WORKSPACE environment variable first (higher priority)
         # This allows administrators to force a specific workspace for all Milvus storage instances
-        milvus_workspace = os.environ.get("MILVUS_WORKSPACE")
-        if milvus_workspace and milvus_workspace.strip():
-            # Use environment variable value, overriding the passed workspace parameter
-            effective_workspace = milvus_workspace.strip()
-            logger.info(
-                f"Using MILVUS_WORKSPACE environment variable: '{effective_workspace}' (overriding '{self.workspace}/{self.namespace}')"
-            )
-        else:
-            # Use the workspace parameter passed during initialization
-            effective_workspace = self.workspace
-            if effective_workspace:
-                logger.debug(
-                    f"Using passed workspace parameter: '{effective_workspace}'"
+        if not os.environ.get("WORKSPACE_ISOLATION", "").lower() == "true":
+            milvus_workspace = os.environ.get("MILVUS_WORKSPACE")
+            if milvus_workspace and milvus_workspace.strip():
+                # Use environment variable value, overriding the passed workspace parameter
+                effective_workspace = milvus_workspace.strip()
+                logger.info(
+                    f"Using MILVUS_WORKSPACE environment variable: '{effective_workspace}' (overriding '{self.workspace}/{self.namespace}')"
                 )
+            else:
+                # Use the workspace parameter passed during initialization
+                effective_workspace = self.workspace
+                if effective_workspace:
+                    logger.debug(
+                        f"Using passed workspace parameter: '{effective_workspace}'"
+                    )
+        else:
+            effective_workspace = self.workspace
 
         # Build final_namespace with workspace prefix for data isolation
         # Keep original namespace unchanged for type detection logic

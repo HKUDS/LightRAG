@@ -1988,7 +1988,9 @@ class ClientManager:
                 "POSTGRES_DATABASE",
                 config.get("postgres", "database", fallback="postgres"),
             ),
-            "workspace": os.environ.get(
+            "workspace": None
+            if os.environ.get("WORKSPACE_ISOLATION", "").lower() == "true"
+            else os.environ.get(
                 "POSTGRES_WORKSPACE",
                 config.get("postgres", "workspace", fallback=None),
             ),
@@ -3240,18 +3242,19 @@ class PGVectorStorage(BaseVectorStorage):
                 )
 
             # Implement workspace priority: PostgreSQLDB.workspace > self.workspace > "default"
-            if self.db.workspace:
-                # Use PostgreSQLDB's workspace (highest priority)
-                logger.info(
-                    f"Using PG_WORKSPACE environment variable: '{self.db.workspace}' (overriding '{self.workspace}/{self.namespace}')"
-                )
-                self.workspace = self.db.workspace
-            elif hasattr(self, "workspace") and self.workspace:
-                # Use storage class's workspace (medium priority)
-                pass
-            else:
-                # Use "default" for compatibility (lowest priority)
-                self.workspace = "default"
+            if not os.environ.get("WORKSPACE_ISOLATION", "").lower() == "true":
+                if self.db.workspace:
+                    # Use PostgreSQLDB's workspace (highest priority)
+                    logger.info(
+                        f"Using PG_WORKSPACE environment variable: '{self.db.workspace}' (overriding '{self.workspace}/{self.namespace}')"
+                    )
+                    self.workspace = self.db.workspace
+                elif hasattr(self, "workspace") and self.workspace:
+                    # Use storage class's workspace (medium priority)
+                    pass
+                else:
+                    # Use "default" for compatibility (lowest priority)
+                    self.workspace = "default"
 
             # Setup table (create if not exists and handle migration)
             await PGVectorStorage.setup_table(
@@ -3770,18 +3773,19 @@ class PGDocStatusStorage(DocStatusStorage):
                 )
 
             # Implement workspace priority: PostgreSQLDB.workspace > self.workspace > "default"
-            if self.db.workspace:
-                # Use PostgreSQLDB's workspace (highest priority)
-                logger.info(
-                    f"Using PG_WORKSPACE environment variable: '{self.db.workspace}' (overriding '{self.workspace}/{self.namespace}')"
-                )
-                self.workspace = self.db.workspace
-            elif hasattr(self, "workspace") and self.workspace:
-                # Use storage class's workspace (medium priority)
-                pass
-            else:
-                # Use "default" for compatibility (lowest priority)
-                self.workspace = "default"
+            if not os.environ.get("WORKSPACE_ISOLATION", "").lower() == "true":
+                if self.db.workspace:
+                    # Use PostgreSQLDB's workspace (highest priority)
+                    logger.info(
+                        f"Using PG_WORKSPACE environment variable: '{self.db.workspace}' (overriding '{self.workspace}/{self.namespace}')"
+                    )
+                    self.workspace = self.db.workspace
+                elif hasattr(self, "workspace") and self.workspace:
+                    # Use storage class's workspace (medium priority)
+                    pass
+                else:
+                    # Use "default" for compatibility (lowest priority)
+                    self.workspace = "default"
 
             # NOTE: Table creation is handled by PostgreSQLDB.initdb() during initialization
             # No need to create table here as it's already created in the TABLES dict
@@ -4668,18 +4672,19 @@ class PGGraphStorage(BaseGraphStorage):
                 )
 
             # Implement workspace priority: PostgreSQLDB.workspace > self.workspace > "default"
-            if self.db.workspace:
-                # Use PostgreSQLDB's workspace (highest priority)
-                logger.info(
-                    f"Using PG_WORKSPACE environment variable: '{self.db.workspace}' (overriding '{self.workspace}/{self.namespace}')"
-                )
-                self.workspace = self.db.workspace
-            elif hasattr(self, "workspace") and self.workspace:
-                # Use storage class's workspace (medium priority)
-                pass
-            else:
-                # Use "default" for compatibility (lowest priority)
-                self.workspace = "default"
+            if not os.environ.get("WORKSPACE_ISOLATION", "").lower() == "true":
+                if self.db.workspace:
+                    # Use PostgreSQLDB's workspace (highest priority)
+                    logger.info(
+                        f"Using PG_WORKSPACE environment variable: '{self.db.workspace}' (overriding '{self.workspace}/{self.namespace}')"
+                    )
+                    self.workspace = self.db.workspace
+                elif hasattr(self, "workspace") and self.workspace:
+                    # Use storage class's workspace (medium priority)
+                    pass
+                else:
+                    # Use "default" for compatibility (lowest priority)
+                    self.workspace = "default"
 
             # Dynamically generate graph name based on workspace
             self.graph_name = self._get_workspace_graph_name()
