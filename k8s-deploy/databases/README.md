@@ -51,6 +51,16 @@ Make sure the following tools are installed and configured:
 3. **(Optional) Modify database settings**
    Before deployment you can edit the `values.yaml` file inside each `<db>/` directory to change `version`, `replicas`, `CPU`, `memory`, `storage size`, etc.
 
+   > **DocumentDB note:** DocumentDB ships its own Kubernetes operator and is
+   > not a KubeBlocks addon. When `ENABLE_DOCUMENTDB=true`,
+   > `01-prepare.sh` automatically installs cert-manager (if missing) and the
+   > [DocumentDB operator](https://github.com/documentdb/documentdb-kubernetes-operator)
+   > into the `documentdb-operator` namespace, and `02-install-database.sh`
+   > applies the `DocumentDB` CR + credentials Secret from
+   > `documentdb/values.yaml` into the `rag` namespace. Replace the placeholder
+   > password in `documentdb/values.yaml` before applying. Requires
+   > Kubernetes 1.35+ (the operator uses the `ImageVolume` feature).
+
 4. **Install the database clusters**
 
    ```bash

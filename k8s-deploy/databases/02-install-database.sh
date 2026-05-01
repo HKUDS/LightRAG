@@ -15,6 +15,8 @@ print "Installing database clusters..."
 [ "$ENABLE_QDRANT" = true ] && print "Installing Qdrant cluster..." && helm upgrade --install qdrant-cluster kubeblocks/qdrant-cluster -f "$DATABASE_SCRIPT_DIR/qdrant/values.yaml" --namespace $NAMESPACE --version $ADDON_CLUSTER_CHART_VERSION
 [ "$ENABLE_MONGODB" = true ] && print "Installing MongoDB cluster..." && helm upgrade --install mongodb-cluster kubeblocks/mongodb-cluster -f "$DATABASE_SCRIPT_DIR/mongodb/values.yaml" --namespace $NAMESPACE --version $ADDON_CLUSTER_CHART_VERSION
 [ "$ENABLE_NEO4J" = true ] && print "Installing Neo4j cluster..." && helm upgrade --install neo4j-cluster kubeblocks/neo4j-cluster -f "$DATABASE_SCRIPT_DIR/neo4j/values.yaml" --namespace $NAMESPACE --version $ADDON_CLUSTER_CHART_VERSION
+# DocumentDB has its own operator; apply the CR directly instead of via Helm.
+[ "$ENABLE_DOCUMENTDB" = true ] && print "Installing DocumentDB cluster..." && kubectl apply -f "$DATABASE_SCRIPT_DIR/documentdb/values.yaml" --namespace $NAMESPACE
 
 # Wait for databases to be ready
 print "Waiting for databases to be ready..."
@@ -38,6 +40,7 @@ while true; do
   [ "$ENABLE_QDRANT" = true ] && WAIT_CONDITIONS+=("kubectl wait --for=condition=ready pods -l app.kubernetes.io/instance=qdrant-cluster -n $NAMESPACE --timeout=10s")
   [ "$ENABLE_MONGODB" = true ] && WAIT_CONDITIONS+=("kubectl wait --for=condition=ready pods -l app.kubernetes.io/instance=mongodb-cluster -n $NAMESPACE --timeout=10s")
   [ "$ENABLE_NEO4J" = true ] && WAIT_CONDITIONS+=("kubectl wait --for=condition=ready pods -l app.kubernetes.io/instance=neo4j-cluster -n $NAMESPACE --timeout=10s")
+  [ "$ENABLE_DOCUMENTDB" = true ] && WAIT_CONDITIONS+=("kubectl wait --for=jsonpath='{.status.status}'='Cluster in healthy state' documentdb/documentdb-cluster -n $NAMESPACE --timeout=10s")
 
   # Check if all enabled databases are ready
   ALL_READY=true

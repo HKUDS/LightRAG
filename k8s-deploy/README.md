@@ -189,3 +189,46 @@ env:
 - Lightweight deployment is suitable for testing and small-scale usage, but data persistence and performance may be limited
 - Production deployment (PostgreSQL + Neo4J) is recommended for production environments and large-scale usage
 - For more customized configurations, please refer to the official LightRAG documentation
+
+## Preview / Experimental: DocumentDB Backend
+
+> ⚠️ **Not for production use.** The
+> [DocumentDB Kubernetes operator](https://github.com/documentdb/documentdb-kubernetes-operator)
+> is in active development and not yet GA. The integration below is provided as
+> a playground so you can try a single MongoDB-compatible backend in place of
+> running PostgreSQL **and** Neo4j separately.
+
+Edit [databases/00-config.sh](databases/00-config.sh):
+
+```bash
+ENABLE_POSTGRESQL=false
+ENABLE_NEO4J=false
+ENABLE_DOCUMENTDB=true
+```
+
+Optionally edit the placeholder password in
+[databases/documentdb/values.yaml](databases/documentdb/values.yaml), then run
+the same install flow as the production path (`01-prepare.sh` →
+`02-install-database.sh` → `install_lightrag.sh`). The scripts will:
+
+1. Install cert-manager (if missing) and the DocumentDB operator into the
+   `documentdb-operator` namespace via Helm — DocumentDB ships its own
+   operator and is not a KubeBlocks addon.
+2. Apply a single-node `DocumentDB` CR + credentials Secret into `rag`.
+3. Read `status.connectionString` from the resulting DocumentDB resource and
+   wire LightRAG with `LIGHTRAG_KV_STORAGE=MongoKVStorage`,
+   `LIGHTRAG_GRAPH_STORAGE=MongoGraphStorage`,
+   `LIGHTRAG_DOC_STATUS_STORAGE=MongoDocStatusStorage`, and
+   `LIGHTRAG_VECTOR_STORAGE=NanoVectorDBStorage`.
+
+**Caveats:**
+
+- **Vectors are not stored in DocumentDB.** DocumentDB does not implement the
+  MongoDB Atlas `$vectorSearch` operator that `MongoVectorDBStorage` requires,
+  so embeddings stay on the LightRAG PVC (`/app/data/rag_storage`). KV / graph
+  / doc-status data **do** live in DocumentDB collections.
+- **Kubernetes 1.35+ required** — the DocumentDB operator uses the
+  `ImageVolume` feature.
+- Two non-fatal startup warnings are expected and safe to ignore:
+  `createIndex.collation is not implemented yet` and
+  `Pipeline stage name not recognized: $listSearchIndexes`.
