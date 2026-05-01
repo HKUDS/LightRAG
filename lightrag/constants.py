@@ -84,7 +84,11 @@ FULL_DOCS_FORMAT_LIGHTRAG = "lightrag"  # content in LightRAG Document files
 FULL_DOCS_FORMAT_PENDING_PARSE = (
     "pending_parse"  # file saved but not yet parsed; parse_native will read from disk
 )
-FULL_DOCS_CONTENT_STORED_IN_LIGHTRAG_DOCUMENT = "{{stored-in-lightrag-doucment}}"
+# Marker prefix for full_docs.content when format=lightrag.
+# Per docs/FileProcessingConfiguration-zh.md, the content is "{{LRdoc}}" + a
+# leading summary of the parsed document so paginated APIs can show a real
+# preview without loading the full LightRAG Document file.
+LIGHTRAG_DOC_CONTENT_PREFIX = "{{LRdoc}}"
 PARSER_ENGINE_LEGACY = "legacy"
 PARSER_ENGINE_NATIVE = "native"
 PARSER_ENGINE_MINERU = "mineru"

@@ -75,7 +75,6 @@ from lightrag.constants import (
     FULL_DOCS_FORMAT_RAW,
     FULL_DOCS_FORMAT_LIGHTRAG,
     FULL_DOCS_FORMAT_PENDING_PARSE,
-    FULL_DOCS_CONTENT_STORED_IN_LIGHTRAG_DOCUMENT,
     PARSED_DIR_NAME,
     DEFAULT_MAX_PARALLEL_ANALYZE,
     DEFAULT_FILE_PATH_MORE_PLACEHOLDER,
@@ -133,6 +132,7 @@ from lightrag.utils import (
     lazy_external_import,
     priority_limit_async_func_call,
     get_content_summary,
+    make_lightrag_doc_content,
     sanitize_text_for_encoding,
     check_storage_env_vars,
     generate_track_id,
@@ -2686,9 +2686,28 @@ class LightRAG:
                 lightrag_path = (
                     lightrag_document_paths[i] if lightrag_document_paths else ""
                 ) or path
+                # Per docs/FileProcessingConfiguration-zh.md, full_docs.content
+                # for format=lightrag must be "{{LRdoc}}" + a leading summary.
+                # Read the blocks file and derive the summary; if the file is
+                # not yet readable (rare, e.g. mid-rotation), fall back to an
+                # empty summary so enqueue is never blocked by I/O issues.
+                try:
+                    resolved_path = str(
+                        Path(self._resolve_lightrag_document_path(str(lightrag_path)))
+                    )
+                    merged_text, _ = await self._load_lightrag_document_content(
+                        resolved_path
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        f"[apipeline_enqueue] failed to load LightRAG Document "
+                        f"for summary ({lightrag_path}): {exc}"
+                    )
+                    merged_text = ""
+                summary_content = make_lightrag_doc_content(merged_text)
                 _add_content(
                     i,
-                    FULL_DOCS_CONTENT_STORED_IN_LIGHTRAG_DOCUMENT,
+                    summary_content,
                     FULL_DOCS_FORMAT_LIGHTRAG,
                     lightrag_document_path=lightrag_path,
                 )
@@ -5305,7 +5324,7 @@ class LightRAG:
         await self._persist_parsed_full_docs(
             doc_id,
             {
-                "content": FULL_DOCS_CONTENT_STORED_IN_LIGHTRAG_DOCUMENT,
+                "content": make_lightrag_doc_content(merged_text),
                 "file_path": file_path,
                 "format": FULL_DOCS_FORMAT_LIGHTRAG,
                 "lightrag_document_path": stored_blocks_path,
@@ -5369,45 +5388,49 @@ class LightRAG:
             p = Path(source_path)
             if p.exists() and p.is_file() and p.suffix.lower() == ".docx":
                 from lightrag.extraction.parse_document import (
-                    parse_docx_to_interchange_jsonl,
+                    parse_docx_to_lightrag_content_list,
                 )
 
                 file_bytes = await asyncio.to_thread(p.read_bytes)
-                parsed_dir = self._parsed_artifact_dir_for_source(str(p), file_path)
-                output_dir = str(parsed_dir)
-                interchange_text = await asyncio.to_thread(
-                    parse_docx_to_interchange_jsonl,
+                content_list, asset_blobs = await asyncio.to_thread(
+                    parse_docx_to_lightrag_content_list,
                     file_bytes,
                     p.name,
                     doc_id,
-                    output_dir,
                 )
-                if not interchange_text or not interchange_text.strip():
+                if not content_list:
                     raise ValueError(
                         f"DOCX parser returned empty content for {file_path}"
                     )
 
-                await self._persist_parsed_full_docs(
-                    doc_id,
-                    {
-                        "content": interchange_text,
-                        "file_path": file_path,
-                        "format": FULL_DOCS_FORMAT_RAW,
-                        "parsed_engine": PARSER_ENGINE_NATIVE,
-                        "update_time": int(time.time()),
-                    },
+                # Write image assets into <parsed_dir>/<base>.blocks.assets/
+                # so the LightRAG Document writer's drawing item paths resolve.
+                if asset_blobs:
+                    parsed_dir = self._parsed_artifact_dir_for_source(
+                        str(p), file_path
+                    )
+                    parsed_dir.mkdir(parents=True, exist_ok=True)
+                    base_stem = Path(p.name).stem or doc_id
+                    asset_dir = parsed_dir / f"{base_stem}.blocks.assets"
+                    asset_dir.mkdir(parents=True, exist_ok=True)
+                    for filename, blob in asset_blobs.items():
+                        (asset_dir / filename).write_bytes(blob)
+
+                # Reuse the shared writer that mineru/docling already use.
+                # It produces .blocks.jsonl + sidecar JSONs, persists
+                # full_docs as LIGHTRAG format, and archives the source.
+                parsed_data = await self._write_lightrag_document_from_content_list(
+                    doc_id=doc_id,
+                    file_path=file_path,
+                    content_list=content_list,
+                    engine=PARSER_ENGINE_NATIVE,
+                    source_path=str(p),
                 )
-                await self._archive_docx_source_after_full_docs_sync(str(p))
                 logger.info(
-                    f"[parse_native] pending_parse completed for {file_path} via interchange JSONL"
+                    f"[parse_native] pending_parse completed for {file_path} "
+                    f"via LightRAG Document ({len(content_list)} content_list items)"
                 )
-                return {
-                    "doc_id": doc_id,
-                    "file_path": file_path,
-                    "format": FULL_DOCS_FORMAT_RAW,
-                    "content": interchange_text,
-                    "blocks_path": "",
-                }
+                return parsed_data
             raise ValueError(
                 f"Native parser does not support pending file: {file_path}"
             )
