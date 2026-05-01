@@ -89,6 +89,7 @@ import {
   canAccessLittleBullPage,
   canUseLittleBullClassifiedUpload,
   fallbackLittleBullPageFor,
+  fallbackLittleBullAreasForPrincipal,
   filterLittleBullSubgroupsForGroup,
   hasAnyLittleBullPermission,
   hasLittleBullPermission,
@@ -2589,7 +2590,9 @@ export default function LittleBullPreview() {
 
   const refreshAreas = useCallback(async () => {
     const me = await getLittleBullMe()
-    const loadedAreas = hasPermission(me, permissionMap.readAreas) ? await getLittleBullAreas() : []
+    const loadedAreas = hasPermission(me, permissionMap.readAreas)
+      ? await getLittleBullAreas()
+      : fallbackLittleBullAreasForPrincipal(me)
     const loadedWorkspaceIds = new Set(loadedAreas.map((area) => area.id))
     setPrincipal(me)
     setAreas(loadedAreas)

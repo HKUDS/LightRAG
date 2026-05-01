@@ -1,4 +1,5 @@
 import type {
+  LittleBullArea,
   LittleBullKnowledgeGroup,
   LittleBullKnowledgeSubgroup,
   LittleBullPrincipal
@@ -109,6 +110,24 @@ export const canUseLittleBullClassifiedUpload = (
   hasLittleBullPermission(principal, littleBullPermissionMap.uploadDocuments)
   && canLoadLittleBullKnowledgeTaxonomy(principal)
 )
+
+export const fallbackLittleBullAreasForPrincipal = (
+  principal: LittleBullPrincipal | null
+): LittleBullArea[] => {
+  if (!principal || hasLittleBullPermission(principal, littleBullPermissionMap.readAreas)) return []
+  return principal.workspace_ids.map((workspaceId) => ({
+    id: workspaceId,
+    label: workspaceId,
+    slug: workspaceId,
+    description: 'Workspace permitido pelo escopo do usuário',
+    privacy: 'scoped',
+    document_count: 0,
+    ready_count: 0,
+    processing_count: 0,
+    accent: '#2563eb',
+    emoji: 'LB'
+  }))
+}
 
 export const canAccessLittleBullPage = (
   principal: LittleBullPrincipal | null,

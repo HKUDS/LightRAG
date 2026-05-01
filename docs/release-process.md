@@ -11,3 +11,4 @@
 
 - READY is declared only after all release gates pass.
 - Residual risks are documented with owners or blockers.
+- Phase-specific release notes and cleanup inventories should be linked when diagnostic smokes create additive artifacts.

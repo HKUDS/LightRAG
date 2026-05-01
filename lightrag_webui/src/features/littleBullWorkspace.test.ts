@@ -9,6 +9,7 @@ import {
   canAccessLittleBullPage,
   canUseLittleBullClassifiedUpload,
   fallbackLittleBullPageFor,
+  fallbackLittleBullAreasForPrincipal,
   filterLittleBullSubgroupsForGroup,
   hasLittleBullPermission,
   isLittleBullUploadReady,
@@ -101,6 +102,20 @@ describe('littleBullWorkspace classified upload helpers', () => {
     expect(canLoadLittleBullKnowledgeTaxonomy(docsOnly)).toBe(false)
     expect(canUseLittleBullClassifiedUpload(uploaderWithoutTaxonomy)).toBe(false)
     expect(canUseLittleBullClassifiedUpload(classifiedUploader)).toBe(true)
+  })
+
+  test('derives scoped workspace choices when area listing is not allowed', () => {
+    const docsOnly = principal([littleBullPermissionMap.readDocuments])
+    const areaReader = principal([littleBullPermissionMap.readDocuments, littleBullPermissionMap.readAreas])
+
+    expect(fallbackLittleBullAreasForPrincipal(areaReader)).toEqual([])
+    expect(fallbackLittleBullAreasForPrincipal(docsOnly)).toMatchObject([
+      {
+        id: 'workspace-1',
+        label: 'workspace-1',
+        privacy: 'scoped'
+      }
+    ])
   })
 
   test('clears stale group or subgroup selections', () => {
