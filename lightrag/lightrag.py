@@ -9,6 +9,7 @@ import re
 import hashlib
 import base64
 import mimetypes
+import shutil
 import time
 import warnings
 from copy import deepcopy
@@ -4912,6 +4913,8 @@ class LightRAG:
     ) -> dict[str, Any]:
         """Convert parser content list to LightRAG Document files and return parsed_data."""
         parsed_dir = self._parsed_artifact_dir_for_source(source_path, file_path)
+        if parsed_dir.exists():
+            shutil.rmtree(parsed_dir)
         parsed_dir.mkdir(parents=True, exist_ok=True)
 
         source_name = canonicalize_parser_hinted_basename(file_path) or f"{doc_id}.bin"
