@@ -29,7 +29,10 @@ from lightrag.constants import (
     PARSER_ENGINE_LEGACY,
     PARSED_DIR_NAME,
 )
-from lightrag.parser_routing import resolve_file_parser_engine
+from lightrag.parser_routing import (
+    canonicalize_parser_hinted_basename,
+    resolve_file_parser_engine,
+)
 from lightrag.utils import (
     generate_track_id,
     move_file_to_parsed_dir,
@@ -83,7 +86,7 @@ def normalize_file_path(file_path: str | None) -> str:
     if normalized in LEGACY_EMPTY_FILE_PATH_SENTINELS:
         return UNKNOWN_FILE_SOURCE
 
-    return Path(normalized).name or UNKNOWN_FILE_SOURCE
+    return canonicalize_parser_hinted_basename(normalized) or UNKNOWN_FILE_SOURCE
 
 
 def is_valid_file_source(file_source: str | None) -> bool:
@@ -953,7 +956,7 @@ def get_doc_track_id(doc_status: Any) -> str:
 async def get_existing_doc_by_file_path_candidates(
     doc_status: Any, file_path: Path | str
 ) -> dict[str, Any] | None:
-    """Find an existing document by file basename via the storage backend."""
+    """Find an existing document by canonical basename."""
     basename = normalize_file_path(str(file_path))
     if basename == UNKNOWN_FILE_SOURCE:
         return None
@@ -962,6 +965,23 @@ async def get_existing_doc_by_file_path_candidates(
         return None
     _, existing_doc_data = match
     return existing_doc_data
+
+
+def find_existing_file_by_canonical_basename(
+    input_dir: Path, canonical_basename: str
+) -> Path | None:
+    """Find an input-dir file whose canonical basename matches."""
+    if not canonical_basename or canonical_basename == UNKNOWN_FILE_SOURCE:
+        return None
+    try:
+        for candidate in input_dir.iterdir():
+            if not candidate.is_file():
+                continue
+            if normalize_file_path(candidate.name) == canonical_basename:
+                return candidate
+    except FileNotFoundError:
+        return None
+    return None
 
 
 async def record_scan_warning(rag: LightRAG, message: str) -> None:
@@ -1778,11 +1798,35 @@ async def run_scanning_process(
         logger.info(f"Found {total_files} files to index.")
 
         if new_files:
+            unique_files = []
+            files_by_canonical_name: dict[str, Path] = {}
+            for file_path in sorted(
+                new_files, key=lambda p: get_pinyin_sort_key(str(p))
+            ):
+                canonical_name = normalize_file_path(str(file_path))
+                first_file = files_by_canonical_name.get(canonical_name)
+                if first_file is None:
+                    files_by_canonical_name[canonical_name] = file_path
+                    unique_files.append(file_path)
+                    continue
+
+                warning = (
+                    "Skipping duplicate file in scan batch: "
+                    f"{file_path.name} duplicates {first_file.name}"
+                )
+                await record_scan_warning(rag, warning)
+                try:
+                    await move_file_to_parsed_dir(file_path)
+                except Exception as move_error:
+                    logger.error(
+                        f"Failed to move duplicate scan file {file_path.name} to {PARSED_DIR_NAME}: {move_error}"
+                    )
+
             # Check for files with PROCESSED status and filter them out
             valid_files = []
             processed_files = []
 
-            for file_path in new_files:
+            for file_path in unique_files:
                 filename = file_path.name
                 existing_doc_data = await get_existing_doc_by_file_path_candidates(
                     rag.doc_status, file_path
@@ -2233,8 +2277,12 @@ def create_document_routes(
                     track_id=existing_track_id,
                 )
 
-            # Check if file already exists in file system
-            if file_path.exists():
+            # Check if file already exists in file system, using canonical parser-hint names.
+            canonical_filename = normalize_file_path(safe_filename)
+            existing_input_file = find_existing_file_by_canonical_basename(
+                doc_manager.input_dir, canonical_filename
+            )
+            if existing_input_file:
                 return InsertResponse(
                     status="duplicated",
                     message=f"File '{safe_filename}' already exists in the input directory.",

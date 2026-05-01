@@ -373,6 +373,66 @@ async def test_scan_processed_same_name_archives_with_unique_name(
     assert (parsed_dir / "already-parsed_001.docx").read_bytes() == b"docx bytes"
 
 
+async def test_scan_processed_canonical_name_archives_hinted_file(
+    tmp_path, monkeypatch
+):
+    file_path = tmp_path / "already-parsed.[native].docx"
+    file_path.write_bytes(b"docx bytes")
+    doc_manager = DocumentManager(str(tmp_path))
+    rag = _ScanRag(
+        {
+            "already-parsed.docx": {
+                "status": DocStatus.PROCESSED.value,
+                "file_path": "already-parsed.docx",
+                "track_id": "track-existing",
+            }
+        }
+    )
+
+    async def fail_if_reenqueue(*args, **kwargs):
+        raise AssertionError("canonical duplicate should not be re-enqueued")
+
+    monkeypatch.setattr(_document_routes, "pipeline_index_files", fail_if_reenqueue)
+
+    await run_scanning_process(rag, doc_manager, "track-scan")
+
+    assert not file_path.exists()
+    assert (tmp_path / PARSED_DIR_NAME / file_path.name).read_bytes() == b"docx bytes"
+
+
+async def test_scan_archives_same_batch_canonical_duplicates(tmp_path, monkeypatch):
+    plain_file = tmp_path / "same.docx"
+    hinted_file = tmp_path / "same.[native].docx"
+    plain_file.write_bytes(b"plain docx bytes")
+    hinted_file.write_bytes(b"hinted docx bytes")
+    doc_manager = DocumentManager(str(tmp_path))
+    rag = _ScanRag({})
+    calls = []
+
+    async def capture_pipeline(rag_arg, file_paths, track_id, **kwargs):
+        calls.append(
+            {
+                "rag": rag_arg,
+                "file_paths": file_paths,
+                "track_id": track_id,
+                "kwargs": kwargs,
+            }
+        )
+
+    monkeypatch.setattr(_document_routes, "pipeline_index_files", capture_pipeline)
+
+    await run_scanning_process(rag, doc_manager, "track-scan")
+
+    assert len(calls) == 1
+    assert len(calls[0]["file_paths"]) == 1
+    assert calls[0]["kwargs"] == {"reprocess_existing_non_processed": True}
+    archived_names = {
+        path.name for path in (tmp_path / PARSED_DIR_NAME).iterdir() if path.is_file()
+    }
+    assert archived_names in ({"same.docx"}, {"same.[native].docx"})
+    assert sum(path.exists() for path in (plain_file, hinted_file)) == 1
+
+
 async def test_scan_existing_non_processed_reprocesses_file(tmp_path, monkeypatch):
     file_path = tmp_path / "retry.docx"
     file_path.write_bytes(b"docx bytes")
@@ -449,6 +509,31 @@ async def test_upload_rejects_same_name_failed_doc_status_without_full_docs(
     assert response.track_id == "track-failed"
     assert "Status: failed" in response.message
     assert not (tmp_path / "failed.docx").exists()
+
+
+async def test_upload_rejects_parser_hinted_filesystem_duplicate(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        _document_routes, "global_args", SimpleNamespace(max_upload_size=None)
+    )
+    (tmp_path / "existing.docx").write_bytes(b"existing docx bytes")
+    doc_manager = DocumentManager(str(tmp_path))
+    rag = _DuplicateUploadRag({})
+    router = create_document_routes(rag, doc_manager)
+    upload_endpoint = [
+        route.endpoint
+        for route in router.routes
+        if getattr(route, "name", "") == "upload_to_input_dir"
+    ][-1]
+    upload_file = _document_routes.UploadFile(
+        filename="existing.[native].docx",
+        file=BytesIO(b"replacement docx bytes"),
+    )
+
+    response = await upload_endpoint(_document_routes.BackgroundTasks(), upload_file)
+
+    assert response.status == "duplicated"
+    assert response.track_id == ""
+    assert not (tmp_path / "existing.[native].docx").exists()
 
 
 async def test_docx_archive_failure_is_best_effort(tmp_path, monkeypatch):

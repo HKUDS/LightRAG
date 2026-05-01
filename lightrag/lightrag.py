@@ -146,7 +146,10 @@ from lightrag.utils import (
 from lightrag.types import KnowledgeGraph
 from dotenv import load_dotenv
 from lightrag.extraction.interchange import parse_interchange_jsonl
-from lightrag.parser_routing import resolve_stored_document_parser_engine
+from lightrag.parser_routing import (
+    canonicalize_parser_hinted_basename,
+    resolve_stored_document_parser_engine,
+)
 
 # use the .env that is inside the current folder
 # allows to use different .env file for each lightrag instance
@@ -223,7 +226,7 @@ def _document_source_key(file_path: Any) -> str:
     source = str(file_path or "").strip()
     if source in PLACEHOLDER_DOCUMENT_SOURCES:
         return "unknown_source"
-    filename = Path(source).name.strip()
+    filename = canonicalize_parser_hinted_basename(source).strip()
     if filename in PLACEHOLDER_DOCUMENT_SOURCES:
         return "unknown_source"
     return filename or "unknown_source"
@@ -294,9 +297,8 @@ async def _get_existing_doc_by_file_basename(
 ) -> tuple[str, Any] | None:
     """Find an existing doc_status record by file basename.
 
-    Delegates to the storage backend's basename index when available so the
-    lookup avoids scanning every record. Backends without a native index fall
-    back to the default scan implemented in DocStatusStorage.
+    Parser hints are canonicalized before lookup, so storage backends only need
+    to compare stored values.
     """
     basename = _document_source_key(file_path)
     if basename == "unknown_source":
@@ -4824,7 +4826,10 @@ class LightRAG:
         self, source_path: str | None = None, file_path: str | None = None
     ) -> Path:
         parsed_dir = self._parsed_dir_for_source(source_path)
-        source_name = Path(source_path or file_path or "document").name or "document"
+        source_name = (
+            canonicalize_parser_hinted_basename(source_path or file_path or "document")
+            or "document"
+        )
         artifact_name = f"{source_name}.parsed"
         artifact_dir = parsed_dir / artifact_name
         if not artifact_dir.exists() or artifact_dir.is_dir():
@@ -4907,7 +4912,7 @@ class LightRAG:
         parsed_dir = self._parsed_artifact_dir_for_source(source_path, file_path)
         parsed_dir.mkdir(parents=True, exist_ok=True)
 
-        source_name = Path(file_path).name or f"{doc_id}.bin"
+        source_name = canonicalize_parser_hinted_basename(file_path) or f"{doc_id}.bin"
         base_name = Path(source_name).stem or source_name
         blocks_path = parsed_dir / f"{base_name}.blocks.jsonl"
         tables_path = parsed_dir / f"{base_name}.tables.json"

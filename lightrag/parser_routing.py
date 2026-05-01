@@ -74,6 +74,22 @@ def filename_parser_hint(file_path: str | Path) -> str | None:
     return engine if engine in SUPPORTED_PARSER_ENGINES else None
 
 
+def canonicalize_parser_hinted_basename(file_path: str | Path) -> str:
+    """Return basename with a supported parser hint removed.
+
+    Only the final ``.[engine].ext`` segment is stripped, and only when the
+    bracketed value normalizes to a supported parser engine.
+    """
+    basename = Path(file_path).name
+    m = re.search(r"\.\[([^\]]+)\](\.[^.]+)$", basename)
+    if not m:
+        return basename
+    engine = normalize_parser_engine(m.group(1))
+    if engine not in SUPPORTED_PARSER_ENGINES:
+        return basename
+    return f"{basename[: m.start()]}{m.group(2)}"
+
+
 def parser_rules_from_env() -> str:
     return os.getenv("LIGHTRAG_PARSER", "").strip()
 
