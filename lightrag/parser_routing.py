@@ -77,8 +77,10 @@ def filename_parser_hint(file_path: str | Path) -> str | None:
 def canonicalize_parser_hinted_basename(file_path: str | Path) -> str:
     """Return basename with a supported parser hint removed.
 
-    Only the final ``.[engine].ext`` segment is stripped, and only when the
-    bracketed value normalizes to a supported parser engine.
+    Only the final ``.[engine].ext`` segment is stripped, exactly once, and
+    only when the bracketed value normalizes to a supported parser engine.
+    Nested hints such as ``name.[native].[mineru].pdf`` therefore become
+    ``name.[native].pdf`` — additional outer hints are not unwrapped.
     """
     basename = Path(file_path).name
     m = re.search(r"\.\[([^\]]+)\](\.[^.]+)$", basename)

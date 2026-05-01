@@ -297,8 +297,10 @@ async def _get_existing_doc_by_file_basename(
 ) -> tuple[str, Any] | None:
     """Find an existing doc_status record by file basename.
 
-    Parser hints are canonicalized before lookup, so storage backends only need
-    to compare stored values.
+    Both write and lookup paths feed file_path through ``_document_source_key``
+    first, so stored basenames are already canonical (parser hints stripped).
+    Storage backends therefore compare canonical-vs-canonical and do not need
+    to re-run any normalization themselves.
     """
     basename = _document_source_key(file_path)
     if basename == "unknown_source":

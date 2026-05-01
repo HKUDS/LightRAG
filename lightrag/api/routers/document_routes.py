@@ -1812,7 +1812,8 @@ async def run_scanning_process(
 
                 warning = (
                     "Skipping duplicate file in scan batch: "
-                    f"{file_path.name} duplicates {first_file.name}"
+                    f"{file_path.name} duplicates {first_file.name} "
+                    f"(canonical: {canonical_name})"
                 )
                 await record_scan_warning(rag, warning)
                 try:
@@ -2278,10 +2279,14 @@ def create_document_routes(
                 )
 
             # Check if file already exists in file system, using canonical parser-hint names.
+            # Fast path: exact filename match avoids iterdir on large input directories.
             canonical_filename = normalize_file_path(safe_filename)
-            existing_input_file = find_existing_file_by_canonical_basename(
-                doc_manager.input_dir, canonical_filename
-            )
+            if file_path.exists():
+                existing_input_file: Path | None = file_path
+            else:
+                existing_input_file = find_existing_file_by_canonical_basename(
+                    doc_manager.input_dir, canonical_filename
+                )
             if existing_input_file:
                 return InsertResponse(
                     status="duplicated",
