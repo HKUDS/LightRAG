@@ -572,9 +572,16 @@ def test_delete_file_variants_removes_canonical_hint_variants(tmp_path):
     ]
     for path in unrelated_files:
         path.write_bytes(b"keep me")
-    artifact_dir = parsed_dir / "report.docx.parsed"
-    artifact_dir.mkdir()
-    (artifact_dir / "report.blocks.jsonl").write_text("{}", encoding="utf-8")
+    artifact_dirs = [
+        parsed_dir / "report.docx.parsed",
+        parsed_dir / "report.docx.parsed_001",
+    ]
+    for artifact_dir in artifact_dirs:
+        artifact_dir.mkdir()
+        (artifact_dir / "report.blocks.jsonl").write_text("{}", encoding="utf-8")
+    unrelated_artifact_dir = parsed_dir / "other.docx.parsed"
+    unrelated_artifact_dir.mkdir()
+    (unrelated_artifact_dir / "other.blocks.jsonl").write_text("{}", encoding="utf-8")
 
     deleted_files, errors = _document_routes.delete_file_variants_by_canonical_basename(
         tmp_path,
@@ -589,10 +596,13 @@ def test_delete_file_variants_removes_canonical_hint_variants(tmp_path):
         str(Path(PARSED_DIR_NAME) / "report.[mineru].docx"),
         str(Path(PARSED_DIR_NAME) / "report.[native]_001.docx"),
         str(Path(PARSED_DIR_NAME) / "report_001.docx"),
+        str(Path(PARSED_DIR_NAME) / "report.docx.parsed"),
+        str(Path(PARSED_DIR_NAME) / "report.docx.parsed_001"),
     }
     assert all(not path.exists() for path in files_to_delete)
     assert all(path.exists() for path in unrelated_files)
-    assert artifact_dir.is_dir()
+    assert all(not artifact_dir.exists() for artifact_dir in artifact_dirs)
+    assert unrelated_artifact_dir.is_dir()
 
 
 async def test_background_delete_removes_parser_hint_file_variants(tmp_path):

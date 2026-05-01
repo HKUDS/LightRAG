@@ -4,6 +4,7 @@ This module contains all document-related routes for the LightRAG API.
 
 import asyncio
 import re
+import shutil
 import time
 from uuid import uuid4
 from lightrag.utils import logger, get_pinyin_sort_key, performance_timing_log
@@ -1000,6 +1001,17 @@ def canonicalize_archived_file_variant_basename(
     return normalize_file_path(f"{stem}{path.suffix}")
 
 
+def _canonical_basename_for_parsed_artifact_dir(dir_name: str) -> str | None:
+    """Return the canonical source basename for a `<basename>.parsed[_NNN]` dir."""
+    stripped = ARCHIVED_FILE_SUFFIX_RE.sub("", dir_name)
+    if not stripped.endswith(".parsed"):
+        return None
+    basename = stripped[: -len(".parsed")]
+    if not basename:
+        return None
+    return normalize_file_path(basename)
+
+
 def delete_file_variants_by_canonical_basename(
     input_dir: Path,
     file_path: str | None,
@@ -1030,33 +1042,60 @@ def delete_file_variants_by_canonical_basename(
             errors.append(f"Failed to scan {candidate_dir}: {e}")
             continue
 
+        in_parsed_dir = candidate_dir.name == PARSED_DIR_NAME
         for candidate in candidates:
-            if not candidate.is_file():
-                continue
             if candidate in seen_paths:
                 continue
-            if (
-                canonicalize_archived_file_variant_basename(
-                    candidate.name,
-                    strip_archive_suffix=candidate_dir.name == PARSED_DIR_NAME,
+
+            if candidate.is_file():
+                if (
+                    canonicalize_archived_file_variant_basename(
+                        candidate.name,
+                        strip_archive_suffix=in_parsed_dir,
+                    )
+                    not in canonical_names
+                ):
+                    continue
+
+                safe_candidate = validate_file_path_security(
+                    candidate.name, candidate_dir
                 )
-                not in canonical_names
-            ):
+                if safe_candidate is None:
+                    errors.append(f"Unsafe file path skipped: {candidate.name}")
+                    continue
+
+                try:
+                    safe_candidate.unlink()
+                    seen_paths.add(candidate)
+                    deleted_files.append(
+                        str(safe_candidate.relative_to(input_dir_resolved))
+                    )
+                except Exception as e:
+                    errors.append(f"Failed to delete {candidate.name}: {e}")
                 continue
 
-            safe_candidate = validate_file_path_security(candidate.name, candidate_dir)
-            if safe_candidate is None:
-                errors.append(f"Unsafe file path skipped: {candidate.name}")
-                continue
-
-            try:
-                safe_candidate.unlink()
-                seen_paths.add(candidate)
-                deleted_files.append(
-                    str(safe_candidate.relative_to(input_dir_resolved))
+            if in_parsed_dir and candidate.is_dir():
+                canonical_for_dir = _canonical_basename_for_parsed_artifact_dir(
+                    candidate.name
                 )
-            except Exception as e:
-                errors.append(f"Failed to delete {candidate.name}: {e}")
+                if canonical_for_dir is None or canonical_for_dir not in canonical_names:
+                    continue
+
+                safe_candidate = validate_file_path_security(
+                    candidate.name, candidate_dir
+                )
+                if safe_candidate is None:
+                    errors.append(f"Unsafe artifact dir skipped: {candidate.name}")
+                    continue
+
+                try:
+                    shutil.rmtree(safe_candidate)
+                    seen_paths.add(candidate)
+                    deleted_files.append(
+                        str(safe_candidate.relative_to(input_dir_resolved))
+                    )
+                except Exception as e:
+                    errors.append(f"Failed to delete artifact dir {candidate.name}: {e}")
 
     return deleted_files, errors
 
