@@ -48,7 +48,9 @@ from lightrag_enterprise.system import (
     SystemAuthService,
     Workspace,
 )
-from lightrag_enterprise.system.policy_keys import PRIVATE_DATA_HOSTED_LLM_EXCEPTION_POLICY
+from lightrag_enterprise.system.policy_keys import (
+    PRIVATE_DATA_HOSTED_LLM_EXCEPTION_POLICY,
+)
 from lightrag_enterprise.system.repositories import (
     InMemorySystemRepository,
     membership_for_master,
@@ -150,7 +152,9 @@ class FakeRag:
     async def aquery_llm(self, query, param):
         self.query_calls += 1
         self.last_query_param = param
-        self.cache_states_during_query.append(self.llm_response_cache.global_config["enable_llm_cache"])
+        self.cache_states_during_query.append(
+            self.llm_response_cache.global_config["enable_llm_cache"]
+        )
         return {
             "llm_response": {"content": f"Answer for {query} in {param.mode}"},
             "data": {"references": [{"reference_id": "1", "file_path": "manual.pdf"}]},
@@ -201,12 +205,17 @@ class FakeAdminStore:
         self.conversations: dict[str, dict] = {}
         self.suggestions: dict[str, dict] = {}
 
-    async def list_model_settings(self, *, tenant_id: str | None, workspace_id: str | None):
+    async def list_model_settings(
+        self, *, tenant_id: str | None, workspace_id: str | None
+    ):
         return [
             model
             for model in self.models.values()
             if (model.get("tenant_id") is None or model.get("tenant_id") == tenant_id)
-            and (model.get("workspace_id") is None or model.get("workspace_id") == workspace_id)
+            and (
+                model.get("workspace_id") is None
+                or model.get("workspace_id") == workspace_id
+            )
         ]
 
     async def upsert_model_setting(
@@ -217,7 +226,9 @@ class FakeAdminStore:
         workspace_id: str | None,
         user_id: str,
     ):
-        model_setting_id = payload.get("model_setting_id") or f"model-{len(self.models) + 1}"
+        model_setting_id = (
+            payload.get("model_setting_id") or f"model-{len(self.models) + 1}"
+        )
         if payload.get("is_default"):
             for model in self.models.values():
                 if (
@@ -239,7 +250,9 @@ class FakeAdminStore:
         self.models[model_setting_id] = row
         return row
 
-    async def list_agent_configs(self, *, tenant_id: str | None, workspace_id: str | None):
+    async def list_agent_configs(
+        self, *, tenant_id: str | None, workspace_id: str | None
+    ):
         return [
             agent
             for agent in self.agents.values()
@@ -300,7 +313,11 @@ class FakeAdminStore:
         workspace_id: str,
     ):
         session = self.agent_builder_sessions.get(agent_builder_session_id)
-        if session and session["tenant_id"] == tenant_id and session["workspace_id"] == workspace_id:
+        if (
+            session
+            and session["tenant_id"] == tenant_id
+            and session["workspace_id"] == workspace_id
+        ):
             return session
         return None
 
@@ -312,7 +329,10 @@ class FakeAdminStore:
         workspace_id: str,
         user_id: str,
     ):
-        agent_builder_session_id = payload.get("agent_builder_session_id") or f"builder-{len(self.agent_builder_sessions) + 1}"
+        agent_builder_session_id = (
+            payload.get("agent_builder_session_id")
+            or f"builder-{len(self.agent_builder_sessions) + 1}"
+        )
         row = {
             "agent_builder_session_id": agent_builder_session_id,
             "tenant_id": tenant_id,
@@ -357,7 +377,10 @@ class FakeAdminStore:
         workspace_id: str,
         user_id: str,
     ):
-        budget_id = payload.get("agent_context_budget_id") or f"budget-{len(self.agent_context_budgets) + 1}"
+        budget_id = (
+            payload.get("agent_context_budget_id")
+            or f"budget-{len(self.agent_context_budgets) + 1}"
+        )
         row = {
             "agent_context_budget_id": budget_id,
             "tenant_id": tenant_id,
@@ -388,14 +411,24 @@ class FakeAdminStore:
     ):
         total = 0.0
         for entry in self.usage_ledger:
-            if entry.get("tenant_id") != tenant_id or entry.get("workspace_id") != workspace_id:
+            if (
+                entry.get("tenant_id") != tenant_id
+                or entry.get("workspace_id") != workspace_id
+            ):
                 continue
             if agent_id is not None and entry.get("agent_id") != agent_id:
                 continue
             created_at = entry.get("created_at")
-            if since is not None and created_at is not None and hasattr(created_at, "tzinfo") and created_at < since:
+            if (
+                since is not None
+                and created_at is not None
+                and hasattr(created_at, "tzinfo")
+                and created_at < since
+            ):
                 continue
-            total += float(entry.get("actual_cost_usd") or entry.get("estimated_cost_usd") or 0)
+            total += float(
+                entry.get("actual_cost_usd") or entry.get("estimated_cost_usd") or 0
+            )
         return total
 
     async def list_llm_usage_ledger(
@@ -419,7 +452,11 @@ class FakeAdminStore:
             and (agent_id is None or entry.get("agent_id") == agent_id)
             and (model_id is None or entry.get("model_id") == model_id)
             and (operation is None or entry.get("operation") == operation)
-            and (group_id is None or entry.get("group_id") == group_id or entry.get("metadata", {}).get("group_id") == group_id)
+            and (
+                group_id is None
+                or entry.get("group_id") == group_id
+                or entry.get("metadata", {}).get("group_id") == group_id
+            )
             and (
                 subgroup_id is None
                 or entry.get("subgroup_id") == subgroup_id
@@ -435,10 +472,13 @@ class FakeAdminStore:
         workspace_id: str,
         user_id: str,
     ):
-        previous_hash = self.usage_ledger[-1]["ledger_hash"] if self.usage_ledger else ""
+        previous_hash = (
+            self.usage_ledger[-1]["ledger_hash"] if self.usage_ledger else ""
+        )
         row = {
             **payload,
-            "usage_ledger_id": payload.get("usage_ledger_id") or f"ledger-{len(self.usage_ledger) + 1}",
+            "usage_ledger_id": payload.get("usage_ledger_id")
+            or f"ledger-{len(self.usage_ledger) + 1}",
             "tenant_id": tenant_id,
             "workspace_id": workspace_id,
             "group_id": payload.get("group_id"),
@@ -483,7 +523,10 @@ class FakeAdminStore:
                 agent_id=agent_id,
                 since=monthly_since,
             )
-            if monthly_limit_usd is not None and monthly_used + estimate > monthly_limit_usd:
+            if (
+                monthly_limit_usd is not None
+                and monthly_used + estimate > monthly_limit_usd
+            ):
                 raise ValueError("monthly_cost_budget_exceeded")
             return await self.insert_llm_usage_ledger(
                 payload,
@@ -499,9 +542,15 @@ class FakeAdminStore:
             if group["tenant_id"] == tenant_id and group["workspace_id"] == workspace_id
         ]
 
-    async def get_knowledge_group(self, group_id: str, *, tenant_id: str | None, workspace_id: str):
+    async def get_knowledge_group(
+        self, group_id: str, *, tenant_id: str | None, workspace_id: str
+    ):
         group = self.groups.get(group_id)
-        if group and group["tenant_id"] == tenant_id and group["workspace_id"] == workspace_id:
+        if (
+            group
+            and group["tenant_id"] == tenant_id
+            and group["workspace_id"] == workspace_id
+        ):
             return group
         return None
 
@@ -569,7 +618,9 @@ class FakeAdminStore:
         workspace_id: str,
         user_id: str,
     ):
-        subgroup_id = payload.get("subgroup_id") or f"subgroup-{len(self.subgroups) + 1}"
+        subgroup_id = (
+            payload.get("subgroup_id") or f"subgroup-{len(self.subgroups) + 1}"
+        )
         row = {
             "subgroup_id": subgroup_id,
             "tenant_id": tenant_id,
@@ -600,7 +651,9 @@ class FakeAdminStore:
             not payload.get("group_id") or not payload.get("subgroup_id")
         ):
             raise ValueError("Upload documents require group_id and subgroup_id.")
-        document_id = payload.get("document_id") or f"registry-doc-{len(self.documents) + 1}"
+        document_id = (
+            payload.get("document_id") or f"registry-doc-{len(self.documents) + 1}"
+        )
         row = {
             "document_id": document_id,
             "tenant_id": tenant_id,
@@ -620,12 +673,19 @@ class FakeAdminStore:
         return [
             document
             for document in self.documents.values()
-            if document["tenant_id"] == tenant_id and document["workspace_id"] == workspace_id
+            if document["tenant_id"] == tenant_id
+            and document["workspace_id"] == workspace_id
         ]
 
-    async def get_document_registry(self, document_id: str, *, tenant_id: str | None, workspace_id: str):
+    async def get_document_registry(
+        self, document_id: str, *, tenant_id: str | None, workspace_id: str
+    ):
         document = self.documents.get(document_id)
-        if document and document["tenant_id"] == tenant_id and document["workspace_id"] == workspace_id:
+        if (
+            document
+            and document["tenant_id"] == tenant_id
+            and document["workspace_id"] == workspace_id
+        ):
             return document
         return None
 
@@ -646,9 +706,15 @@ class FakeAdminStore:
             and (subgroup_id is None or note["subgroup_id"] == subgroup_id)
         ]
 
-    async def get_note_registry(self, note_id: str, *, tenant_id: str | None, workspace_id: str):
+    async def get_note_registry(
+        self, note_id: str, *, tenant_id: str | None, workspace_id: str
+    ):
         note = self.notes.get(note_id)
-        if note and note["tenant_id"] == tenant_id and note["workspace_id"] == workspace_id:
+        if (
+            note
+            and note["tenant_id"] == tenant_id
+            and note["workspace_id"] == workspace_id
+        ):
             return note
         return None
 
@@ -680,7 +746,10 @@ class FakeAdminStore:
         note_id = payload.get("note_id")
         if not note_id:
             for note in self.notes.values():
-                if note["workspace_id"] == workspace_id and note["slug"] == payload["slug"]:
+                if (
+                    note["workspace_id"] == workspace_id
+                    and note["slug"] == payload["slug"]
+                ):
                     note_id = note["note_id"]
                     break
         note_id = note_id or f"note-{len(self.notes) + 1}"
@@ -737,7 +806,9 @@ class FakeAdminStore:
         versions.append(row)
         return row
 
-    async def get_latest_markdown_note(self, note_id: str, *, tenant_id: str | None, workspace_id: str):
+    async def get_latest_markdown_note(
+        self, note_id: str, *, tenant_id: str | None, workspace_id: str
+    ):
         versions = [
             note
             for note in self.markdown_notes.get(note_id, [])
@@ -776,7 +847,9 @@ class FakeAdminStore:
         self.wiki_links[source_note_id] = rows
         return rows
 
-    async def list_wiki_links(self, *, source_note_id: str, tenant_id: str | None, workspace_id: str):
+    async def list_wiki_links(
+        self, *, source_note_id: str, tenant_id: str | None, workspace_id: str
+    ):
         return [
             link
             for link in self.wiki_links.get(source_note_id, [])
@@ -793,7 +866,8 @@ class FakeAdminStore:
     ):
         tag = payload["tag"]
         row = {
-            "tag_id": self.tags.get(tag, {}).get("tag_id") or f"tag-{len(self.tags) + 1}",
+            "tag_id": self.tags.get(tag, {}).get("tag_id")
+            or f"tag-{len(self.tags) + 1}",
             "tenant_id": tenant_id,
             "workspace_id": workspace_id,
             "tag": tag,
@@ -824,7 +898,9 @@ class FakeAdminStore:
         workspace_id: str,
         user_id: str,
     ):
-        backlink_id = payload.get("backlink_id") or f"backlink-{len(self.backlinks) + 1}"
+        backlink_id = (
+            payload.get("backlink_id") or f"backlink-{len(self.backlinks) + 1}"
+        )
         row = {
             "backlink_id": backlink_id,
             "tenant_id": tenant_id,
@@ -920,7 +996,9 @@ class FakeAdminStore:
         workspace_id: str,
         user_id: str,
     ):
-        source_provenance_id = payload.get("source_provenance_id") or f"prov-{len(self.provenance) + 1}"
+        source_provenance_id = (
+            payload.get("source_provenance_id") or f"prov-{len(self.provenance) + 1}"
+        )
         row = {
             "source_provenance_id": source_provenance_id,
             "tenant_id": tenant_id,
@@ -982,9 +1060,15 @@ class FakeAdminStore:
             and (subgroup_id is None or board["subgroup_id"] == subgroup_id)
         ]
 
-    async def get_canvas_board(self, canvas_board_id: str, *, tenant_id: str | None, workspace_id: str):
+    async def get_canvas_board(
+        self, canvas_board_id: str, *, tenant_id: str | None, workspace_id: str
+    ):
         board = self.canvas_boards.get(canvas_board_id)
-        if board and board["tenant_id"] == tenant_id and board["workspace_id"] == workspace_id:
+        if (
+            board
+            and board["tenant_id"] == tenant_id
+            and board["workspace_id"] == workspace_id
+        ):
             return board
         return None
 
@@ -996,7 +1080,9 @@ class FakeAdminStore:
         workspace_id: str,
         user_id: str,
     ):
-        canvas_board_id = payload.get("canvas_board_id") or f"canvas-{len(self.canvas_boards) + 1}"
+        canvas_board_id = (
+            payload.get("canvas_board_id") or f"canvas-{len(self.canvas_boards) + 1}"
+        )
         row = {
             "canvas_board_id": canvas_board_id,
             "tenant_id": tenant_id,
@@ -1023,7 +1109,9 @@ class FakeAdminStore:
         workspace_id: str,
         user_id: str,
     ):
-        canvas_node_id = payload.get("canvas_node_id") or f"node-{len(self.canvas_nodes) + 1}"
+        canvas_node_id = (
+            payload.get("canvas_node_id") or f"node-{len(self.canvas_nodes) + 1}"
+        )
         row = {
             "canvas_node_id": canvas_node_id,
             "tenant_id": tenant_id,
@@ -1045,13 +1133,21 @@ class FakeAdminStore:
         self.canvas_nodes[canvas_node_id] = row
         return row
 
-    async def get_canvas_node(self, canvas_node_id: str, *, tenant_id: str | None, workspace_id: str):
+    async def get_canvas_node(
+        self, canvas_node_id: str, *, tenant_id: str | None, workspace_id: str
+    ):
         node = self.canvas_nodes.get(canvas_node_id)
-        if node and node["tenant_id"] == tenant_id and node["workspace_id"] == workspace_id:
+        if (
+            node
+            and node["tenant_id"] == tenant_id
+            and node["workspace_id"] == workspace_id
+        ):
             return node
         return None
 
-    async def list_canvas_nodes(self, *, canvas_board_id: str, tenant_id: str | None, workspace_id: str):
+    async def list_canvas_nodes(
+        self, *, canvas_board_id: str, tenant_id: str | None, workspace_id: str
+    ):
         return [
             node
             for node in self.canvas_nodes.values()
@@ -1068,7 +1164,9 @@ class FakeAdminStore:
         workspace_id: str,
         user_id: str,
     ):
-        canvas_edge_id = payload.get("canvas_edge_id") or f"edge-{len(self.canvas_edges) + 1}"
+        canvas_edge_id = (
+            payload.get("canvas_edge_id") or f"edge-{len(self.canvas_edges) + 1}"
+        )
         row = {
             "canvas_edge_id": canvas_edge_id,
             "tenant_id": tenant_id,
@@ -1087,7 +1185,9 @@ class FakeAdminStore:
         self.canvas_edges[canvas_edge_id] = row
         return row
 
-    async def list_canvas_edges(self, *, canvas_board_id: str, tenant_id: str | None, workspace_id: str):
+    async def list_canvas_edges(
+        self, *, canvas_board_id: str, tenant_id: str | None, workspace_id: str
+    ):
         return [
             edge
             for edge in self.canvas_edges.values()
@@ -1104,7 +1204,9 @@ class FakeAdminStore:
         workspace_id: str,
         user_id: str,
     ):
-        knowledge_dossier_id = payload.get("knowledge_dossier_id") or f"dossier-{len(self.dossiers) + 1}"
+        knowledge_dossier_id = (
+            payload.get("knowledge_dossier_id") or f"dossier-{len(self.dossiers) + 1}"
+        )
         row = {
             "knowledge_dossier_id": knowledge_dossier_id,
             "tenant_id": tenant_id,
@@ -1155,7 +1257,11 @@ class FakeAdminStore:
         workspace_id: str,
     ):
         dossier = self.dossiers.get(knowledge_dossier_id)
-        if dossier and dossier["tenant_id"] == tenant_id and dossier["workspace_id"] == workspace_id:
+        if (
+            dossier
+            and dossier["tenant_id"] == tenant_id
+            and dossier["workspace_id"] == workspace_id
+        ):
             return dossier
         return None
 
@@ -1233,9 +1339,15 @@ class FakeAdminStore:
             and (subgroup_id is None or trail["subgroup_id"] == subgroup_id)
         ]
 
-    async def get_knowledge_trail(self, knowledge_trail_id: str, *, tenant_id: str | None, workspace_id: str):
+    async def get_knowledge_trail(
+        self, knowledge_trail_id: str, *, tenant_id: str | None, workspace_id: str
+    ):
         trail = self.trails.get(knowledge_trail_id)
-        if trail and trail["tenant_id"] == tenant_id and trail["workspace_id"] == workspace_id:
+        if (
+            trail
+            and trail["tenant_id"] == tenant_id
+            and trail["workspace_id"] == workspace_id
+        ):
             return trail
         return None
 
@@ -1305,7 +1417,10 @@ class FakeAdminStore:
         workspace_id: str,
         user_id: str,
     ):
-        knowledge_trail_step_id = payload.get("knowledge_trail_step_id") or f"step-{len(self.trail_steps) + 1}"
+        knowledge_trail_step_id = (
+            payload.get("knowledge_trail_step_id")
+            or f"step-{len(self.trail_steps) + 1}"
+        )
         row = {
             "knowledge_trail_step_id": knowledge_trail_step_id,
             "tenant_id": tenant_id,
@@ -1355,9 +1470,15 @@ class FakeAdminStore:
         ]
         return items[:limit]
 
-    async def get_knowledge_inbox_item(self, inbox_item_id: str, *, tenant_id: str | None, workspace_id: str):
+    async def get_knowledge_inbox_item(
+        self, inbox_item_id: str, *, tenant_id: str | None, workspace_id: str
+    ):
         item = self.inbox_items.get(inbox_item_id)
-        if item and item["tenant_id"] == tenant_id and item["workspace_id"] == workspace_id:
+        if (
+            item
+            and item["tenant_id"] == tenant_id
+            and item["workspace_id"] == workspace_id
+        ):
             return item
         return None
 
@@ -1369,7 +1490,9 @@ class FakeAdminStore:
         workspace_id: str,
         user_id: str,
     ):
-        inbox_item_id = payload.get("inbox_item_id") or f"inbox-{len(self.inbox_items) + 1}"
+        inbox_item_id = (
+            payload.get("inbox_item_id") or f"inbox-{len(self.inbox_items) + 1}"
+        )
         row = {
             "inbox_item_id": inbox_item_id,
             "tenant_id": tenant_id,
@@ -1419,17 +1542,26 @@ class FakeAdminStore:
         self.inbox_items[inbox_item_id] = item
         return item
 
-    async def list_daily_notes(self, *, tenant_id: str | None, workspace_id: str, limit: int = 30):
+    async def list_daily_notes(
+        self, *, tenant_id: str | None, workspace_id: str, limit: int = 30
+    ):
         rows = [
             daily_note
             for daily_note in self.daily_notes.values()
-            if daily_note["tenant_id"] == tenant_id and daily_note["workspace_id"] == workspace_id
+            if daily_note["tenant_id"] == tenant_id
+            and daily_note["workspace_id"] == workspace_id
         ]
         return rows[:limit]
 
-    async def get_daily_note(self, note_date: str, *, tenant_id: str | None, workspace_id: str):
+    async def get_daily_note(
+        self, note_date: str, *, tenant_id: str | None, workspace_id: str
+    ):
         daily_note = self.daily_notes.get(note_date)
-        if daily_note and daily_note["tenant_id"] == tenant_id and daily_note["workspace_id"] == workspace_id:
+        if (
+            daily_note
+            and daily_note["tenant_id"] == tenant_id
+            and daily_note["workspace_id"] == workspace_id
+        ):
             return daily_note
         return None
 
@@ -1442,7 +1574,9 @@ class FakeAdminStore:
         user_id: str,
     ):
         note_date = payload["note_date"]
-        daily_note_id = payload.get("daily_note_id") or self.daily_notes.get(note_date, {}).get("daily_note_id")
+        daily_note_id = payload.get("daily_note_id") or self.daily_notes.get(
+            note_date, {}
+        ).get("daily_note_id")
         row = {
             "daily_note_id": daily_note_id or f"daily-{len(self.daily_notes) + 1}",
             "tenant_id": tenant_id,
@@ -1469,7 +1603,10 @@ class FakeAdminStore:
         workspace_id: str,
         user_id: str,
     ):
-        run_id = payload.get("legal_matter_extraction_run_id") or f"legal-run-{len(self.legal_matter_extractions) + 1}"
+        run_id = (
+            payload.get("legal_matter_extraction_run_id")
+            or f"legal-run-{len(self.legal_matter_extractions) + 1}"
+        )
         row = {
             "legal_matter_extraction_run_id": run_id,
             "tenant_id": tenant_id,
@@ -1520,7 +1657,9 @@ class FakeAdminStore:
         ]
         return rows[:limit]
 
-    async def get_legal_matter_extraction_run(self, legal_matter_extraction_run_id: str):
+    async def get_legal_matter_extraction_run(
+        self, legal_matter_extraction_run_id: str
+    ):
         return self.legal_matter_extractions.get(legal_matter_extraction_run_id)
 
     async def review_legal_matter_extraction_run(
@@ -1538,8 +1677,12 @@ class FakeAdminStore:
             **row,
             "review_status": review_status,
             "run_status": "reviewed" if review_status == "approved" else review_status,
-            "approved_by": reviewed_by if review_status == "approved" else row.get("approved_by"),
-            "approved_at": "2026-04-29T00:00:00Z" if review_status == "approved" else row.get("approved_at"),
+            "approved_by": reviewed_by
+            if review_status == "approved"
+            else row.get("approved_by"),
+            "approved_at": "2026-04-29T00:00:00Z"
+            if review_status == "approved"
+            else row.get("approved_at"),
             "error_message": error_message,
             "updated_by": reviewed_by,
             "updated_at": "2026-04-29T00:00:00Z",
@@ -1558,20 +1701,26 @@ class FakeAdminStore:
         workspace_id: str,
         user_id: str,
     ):
-        conversation_id = payload.get("conversation_id") or f"conversation-{len(self.conversations) + 1}"
+        conversation_id = (
+            payload.get("conversation_id")
+            or f"conversation-{len(self.conversations) + 1}"
+        )
         existing = self.conversations.get(conversation_id)
         if existing and (
             existing["tenant_id"] != tenant_id
             or existing["workspace_id"] != workspace_id
             or existing["user_id"] != user_id
-            or existing.get("scope_snapshot", {}) != (payload.get("scope_snapshot") or {})
+            or existing.get("scope_snapshot", {})
+            != (payload.get("scope_snapshot") or {})
         ):
             raise ValueError("conversation_scope_mismatch")
         messages = []
         for index, message in enumerate(payload.get("messages") or [], start=1):
             messages.append(
                 {
-                    "message_id": message.get("message_id") or message.get("id") or f"message-{index}",
+                    "message_id": message.get("message_id")
+                    or message.get("id")
+                    or f"message-{index}",
                     "role": message["role"],
                     "content": message["content"],
                     "references": message.get("references", []),
@@ -1591,13 +1740,17 @@ class FakeAdminStore:
             "scope_snapshot": payload.get("scope_snapshot") or {},
             "message_count": len(messages),
             "messages": messages,
-            "created_at": existing.get("created_at") if existing else "2026-04-29T00:00:00Z",
+            "created_at": existing.get("created_at")
+            if existing
+            else "2026-04-29T00:00:00Z",
             "updated_at": "2026-04-29T00:00:00Z",
         }
         self.conversations[conversation_id] = row
         return row
 
-    async def list_conversations(self, *, tenant_id: str | None, workspace_id: str, user_id: str | None = None):
+    async def list_conversations(
+        self, *, tenant_id: str | None, workspace_id: str, user_id: str | None = None
+    ):
         return [
             conversation
             for conversation in self.conversations.values()
@@ -1617,7 +1770,9 @@ class FakeAdminStore:
         workspace_id: str,
         user_id: str,
     ):
-        suggestion_id = payload.get("suggestion_id") or f"suggestion-{len(self.suggestions) + 1}"
+        suggestion_id = (
+            payload.get("suggestion_id") or f"suggestion-{len(self.suggestions) + 1}"
+        )
         row = {
             "suggestion_id": suggestion_id,
             "tenant_id": tenant_id,
@@ -1705,7 +1860,9 @@ async def test_little_bull_lists_documents_and_audits(tmp_path):
 
     assert response.total_count == 0
     assert response.documents == []
-    assert (await service.list_activity(principal, workspace_id="default"))[0].result == "success"
+    assert (await service.list_activity(principal, workspace_id="default"))[
+        0
+    ].result == "success"
 
 
 @pytest.mark.asyncio
@@ -1809,8 +1966,12 @@ async def test_little_bull_upload_registers_document_with_group_subgroup(tmp_pat
     assert registry["source_kind"] == "upload"
     assert registry["content_hash"]
     events = await service.audit.list(tenant_id="default", workspace_id="default")
-    upload_event = next(event for event in events if event.action == "little_bull.documents.upload")
-    assert upload_event.metadata["registry_document_id"] == response.registry_document_id
+    upload_event = next(
+        event for event in events if event.action == "little_bull.documents.upload"
+    )
+    assert (
+        upload_event.metadata["registry_document_id"] == response.registry_document_id
+    )
     assert upload_event.metadata["group_id"] == group.group_id
 
 
@@ -1818,8 +1979,10 @@ async def test_little_bull_upload_registers_document_with_group_subgroup(tmp_pat
 async def test_little_bull_user_resubmission_creates_new_registry_entry(tmp_path):
     principal, service = await _principal_and_service_with_admin_store(tmp_path)
     group, subgroup = await _create_group_and_subgroup(service, principal)
-    service._queue_pipeline_index_file = lambda background_tasks, file_path, track_id, *, rag: background_tasks.add_task(
-        lambda: None
+    service._queue_pipeline_index_file = (
+        lambda background_tasks, file_path, track_id, *, rag: background_tasks.add_task(
+            lambda: None
+        )
     )
 
     first = await service.upload_document(
@@ -1899,7 +2062,9 @@ async def test_little_bull_list_documents_filters_legacy_when_registry_exists(tm
         user_id=principal.user_id,
     )
 
-    response = await service.list_documents(principal, workspace_id="default", page_size=1)
+    response = await service.list_documents(
+        principal, workspace_id="default", page_size=1
+    )
 
     assert response.total_count == 1
     assert [document.title for document in response.documents] == ["manual.pdf"]
@@ -1958,9 +2123,14 @@ async def test_little_bull_markdown_note_extracts_wikilinks_tags_and_versions(tm
     assert updated.note.version_number == 2
     versions = service.admin_store.markdown_notes[source.registry.note_id]
     assert [version["status"] for version in versions] == ["superseded", "current"]
-    fetched = await service.get_markdown_note(principal, workspace_id="default", note_id=source.registry.note_id)
+    fetched = await service.get_markdown_note(
+        principal, workspace_id="default", note_id=source.registry.note_id
+    )
     assert fetched.note.markdown.startswith("# Peticao atualizada")
-    assert [note.note_id for note in await service.list_notes(principal, workspace_id="default")] == [
+    assert [
+        note.note_id
+        for note in await service.list_notes(principal, workspace_id="default")
+    ] == [
         target.registry.note_id,
         source.registry.note_id,
     ]
@@ -1987,7 +2157,9 @@ async def test_little_bull_markdown_note_requires_group_and_subgroup(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_little_bull_markdown_note_rejects_cross_subgroup_source_document(tmp_path):
+async def test_little_bull_markdown_note_rejects_cross_subgroup_source_document(
+    tmp_path,
+):
     principal, service = await _principal_and_service_with_admin_store(tmp_path)
     group, subgroup = await _create_group_and_subgroup(service, principal)
     other_subgroup = await service.upsert_knowledge_subgroup(
@@ -2077,7 +2249,9 @@ async def test_little_bull_wikilinks_create_backlinks_and_panel(tmp_path):
         target_kind="note",
         target_id=target.registry.note_id,
     )
-    assert [item.backlink_id for item in panel.mentioned_in] == [backlinks[0].backlink_id]
+    assert [item.backlink_id for item in panel.mentioned_in] == [
+        backlinks[0].backlink_id
+    ]
     assert [item.backlink_id for item in panel.cited_by] == [backlinks[0].backlink_id]
     assert panel.used_in_responses == []
 
@@ -2093,12 +2267,15 @@ async def test_little_bull_wikilinks_create_backlinks_and_panel(tmp_path):
             markdown="Sem wikilink nesta versao.",
         ),
     )
-    assert await service.list_backlinks(
-        principal,
-        workspace_id="default",
-        source_kind="note",
-        source_id=source.registry.note_id,
-    ) == []
+    assert (
+        await service.list_backlinks(
+            principal,
+            workspace_id="default",
+            source_kind="note",
+            source_id=source.registry.note_id,
+        )
+        == []
+    )
 
 
 @pytest.mark.asyncio
@@ -2256,9 +2433,13 @@ async def test_little_bull_backlink_rejects_unscoped_graph_edge_origin(tmp_path)
     assert service.admin_store.backlinks == {}
 
 
-@pytest.mark.parametrize("target_kind", ["canvas", "trail", "content_map", "conversation", "agent"])
+@pytest.mark.parametrize(
+    "target_kind", ["canvas", "trail", "content_map", "conversation", "agent"]
+)
 @pytest.mark.asyncio
-async def test_little_bull_backlink_rejects_missing_graph_node_refs(tmp_path, target_kind):
+async def test_little_bull_backlink_rejects_missing_graph_node_refs(
+    tmp_path, target_kind
+):
     principal, service = await _principal_and_service_with_admin_store(tmp_path)
     group, subgroup = await _create_group_and_subgroup(service, principal)
     note = await service.upsert_markdown_note(
@@ -2473,7 +2654,9 @@ async def test_little_bull_source_provenance_rejects_cross_subgroup_refs(tmp_pat
 
 
 @pytest.mark.asyncio
-async def test_little_bull_source_provenance_rejects_unscoped_agent_and_ledger(tmp_path):
+async def test_little_bull_source_provenance_rejects_unscoped_agent_and_ledger(
+    tmp_path,
+):
     principal, service = await _principal_and_service_with_admin_store(tmp_path)
     group, subgroup = await _create_group_and_subgroup(service, principal)
     document = await service.admin_store.register_document(
@@ -2603,8 +2786,13 @@ async def test_little_bull_canvas_board_nodes_edges_analysis_and_dossier(tmp_pat
         ),
     )
 
-    detail = await service.get_canvas_board(principal, workspace_id="default", canvas_board_id=board.canvas_board_id)
-    assert [node.canvas_node_id for node in detail.nodes] == [note_node.canvas_node_id, doc_node.canvas_node_id]
+    detail = await service.get_canvas_board(
+        principal, workspace_id="default", canvas_board_id=board.canvas_board_id
+    )
+    assert [node.canvas_node_id for node in detail.nodes] == [
+        note_node.canvas_node_id,
+        doc_node.canvas_node_id,
+    ]
     assert [item.canvas_edge_id for item in detail.edges] == [edge.canvas_edge_id]
     analysis = await service.analyze_canvas_board(
         principal,
@@ -2625,7 +2813,9 @@ async def test_little_bull_canvas_board_nodes_edges_analysis_and_dossier(tmp_pat
 
 
 @pytest.mark.asyncio
-async def test_little_bull_dossier_export_masks_pii_and_gates_external_approval(tmp_path):
+async def test_little_bull_dossier_export_masks_pii_and_gates_external_approval(
+    tmp_path,
+):
     principal, service = await _principal_and_service_with_admin_store(tmp_path)
     group, subgroup = await _create_group_and_subgroup(service, principal)
     note = await service.upsert_markdown_note(
@@ -2693,17 +2883,25 @@ async def test_little_bull_dossier_export_masks_pii_and_gates_external_approval(
         ),
     )
 
-    assert exported.media_type == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    assert (
+        exported.media_type
+        == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
     assert exported.body.startswith(b"PK")
     approval = await service.approvals.get(approval_id)
     assert approval.status.value == "executed"
     events = await service.audit.list(tenant_id="default", workspace_id="default")
     assert any(event.result == "pending_lgpd_approval" for event in events)
-    assert any(event.result == "dossier_exported" and event.approval_id == approval_id for event in events)
+    assert any(
+        event.result == "dossier_exported" and event.approval_id == approval_id
+        for event in events
+    )
 
 
 @pytest.mark.asyncio
-async def test_little_bull_dossier_export_rejects_approval_drift_and_legal_review_is_not_export_approval(tmp_path):
+async def test_little_bull_dossier_export_rejects_approval_drift_and_legal_review_is_not_export_approval(
+    tmp_path,
+):
     principal, service = await _principal_and_service_with_admin_store(tmp_path)
     group, subgroup = await _create_group_and_subgroup(service, principal)
     document = await service.admin_store.register_document(
@@ -2743,7 +2941,12 @@ async def test_little_bull_dossier_export_rejects_approval_drift_and_legal_revie
             "dossier_kind": "legal",
             "status": "draft",
             "content_refs": [{"kind": "document", "id": document["document_id"]}],
-            "export_policy": {"requires_lgpd_review": True, "legal_extraction_run_id": extraction.run["legal_matter_extraction_run_id"]},
+            "export_policy": {
+                "requires_lgpd_review": True,
+                "legal_extraction_run_id": extraction.run[
+                    "legal_matter_extraction_run_id"
+                ],
+            },
         },
         tenant_id="default",
         workspace_id="default",
@@ -2776,7 +2979,9 @@ async def test_little_bull_dossier_export_rejects_approval_drift_and_legal_revie
 
 
 @pytest.mark.asyncio
-async def test_little_bull_canvas_rejects_cross_subgroup_ref_and_cross_board_edge(tmp_path):
+async def test_little_bull_canvas_rejects_cross_subgroup_ref_and_cross_board_edge(
+    tmp_path,
+):
     principal, service = await _principal_and_service_with_admin_store(tmp_path)
     group, subgroup = await _create_group_and_subgroup(service, principal)
     other_subgroup = await service.upsert_knowledge_subgroup(
@@ -2859,7 +3064,9 @@ async def test_little_bull_canvas_rejects_cross_subgroup_ref_and_cross_board_edg
 
 
 @pytest.mark.asyncio
-async def test_little_bull_canvas_rejects_cross_board_node_and_edge_id_mutation(tmp_path):
+async def test_little_bull_canvas_rejects_cross_board_node_and_edge_id_mutation(
+    tmp_path,
+):
     principal, service = await _principal_and_service_with_admin_store(tmp_path)
     group, subgroup = await _create_group_and_subgroup(service, principal)
     board = await service.upsert_canvas_board(
@@ -2896,7 +3103,9 @@ async def test_little_bull_canvas_rejects_cross_board_node_and_edge_id_mutation(
         principal,
         workspace_id="default",
         canvas_board_id=other_board.canvas_board_id,
-        payload=LittleBullCanvasNodeRequest(node_kind="card", content={"text": "Other"}),
+        payload=LittleBullCanvasNodeRequest(
+            node_kind="card", content={"text": "Other"}
+        ),
     )
     other_edge = await service.upsert_canvas_edge(
         principal,
@@ -2921,7 +3130,9 @@ async def test_little_bull_canvas_rejects_cross_board_node_and_edge_id_mutation(
         )
 
     assert exc.value.status_code == 404
-    assert service.admin_store.canvas_nodes[other_node.canvas_node_id]["content"] == {"text": "Other"}
+    assert service.admin_store.canvas_nodes[other_node.canvas_node_id]["content"] == {
+        "text": "Other"
+    }
 
     with pytest.raises(HTTPException) as exc:
         await service.upsert_canvas_edge(
@@ -2936,7 +3147,10 @@ async def test_little_bull_canvas_rejects_cross_board_node_and_edge_id_mutation(
         )
 
     assert exc.value.status_code == 404
-    assert service.admin_store.canvas_edges[other_edge.canvas_edge_id]["canvas_board_id"] == other_board.canvas_board_id
+    assert (
+        service.admin_store.canvas_edges[other_edge.canvas_edge_id]["canvas_board_id"]
+        == other_board.canvas_board_id
+    )
 
 
 @pytest.mark.asyncio
@@ -2976,7 +3190,10 @@ async def test_little_bull_canvas_board_scope_cannot_move_by_slug(tmp_path):
         )
 
     assert exc.value.status_code == 422
-    assert service.admin_store.canvas_boards[board.canvas_board_id]["subgroup_id"] == subgroup.subgroup_id
+    assert (
+        service.admin_store.canvas_boards[board.canvas_board_id]["subgroup_id"]
+        == subgroup.subgroup_id
+    )
 
     renamed = await service.upsert_canvas_board(
         principal,
@@ -3078,7 +3295,10 @@ async def test_little_bull_content_map_root_note_scope_and_slug_guard(tmp_path):
         )
 
     assert exc.value.status_code == 422
-    assert service.admin_store.content_maps[content_map.content_map_id]["subgroup_id"] == subgroup.subgroup_id
+    assert (
+        service.admin_store.content_maps[content_map.content_map_id]["subgroup_id"]
+        == subgroup.subgroup_id
+    )
 
     with pytest.raises(HTTPException) as exc:
         await service.upsert_content_map(
@@ -3095,7 +3315,10 @@ async def test_little_bull_content_map_root_note_scope_and_slug_guard(tmp_path):
         )
 
     assert exc.value.status_code == 422
-    assert service.admin_store.content_maps[content_map.content_map_id]["subgroup_id"] == subgroup.subgroup_id
+    assert (
+        service.admin_store.content_maps[content_map.content_map_id]["subgroup_id"]
+        == subgroup.subgroup_id
+    )
 
     other_content_map = await service.upsert_content_map(
         principal,
@@ -3121,7 +3344,9 @@ async def test_little_bull_content_map_root_note_scope_and_slug_guard(tmp_path):
         subgroup_id=other_subgroup.subgroup_id,
     )
     assert [item.content_map_id for item in listed] == [content_map.content_map_id]
-    assert [item.content_map_id for item in other_listed] == [other_content_map.content_map_id]
+    assert [item.content_map_id for item in other_listed] == [
+        other_content_map.content_map_id
+    ]
 
     renamed = await service.upsert_content_map(
         principal,
@@ -3331,7 +3556,9 @@ async def test_little_bull_knowledge_trail_steps_validate_refs_and_order(tmp_pat
 
 
 @pytest.mark.asyncio
-async def test_little_bull_knowledge_trail_scope_and_step_ids_cannot_cross_trails(tmp_path):
+async def test_little_bull_knowledge_trail_scope_and_step_ids_cannot_cross_trails(
+    tmp_path,
+):
     principal, service = await _principal_and_service_with_admin_store(tmp_path)
     group, subgroup = await _create_group_and_subgroup(service, principal)
     other_subgroup = await service.upsert_knowledge_subgroup(
@@ -3397,7 +3624,10 @@ async def test_little_bull_knowledge_trail_scope_and_step_ids_cannot_cross_trail
         )
 
     assert exc.value.status_code == 422
-    assert service.admin_store.trails[trail.knowledge_trail_id]["subgroup_id"] == subgroup.subgroup_id
+    assert (
+        service.admin_store.trails[trail.knowledge_trail_id]["subgroup_id"]
+        == subgroup.subgroup_id
+    )
 
     with pytest.raises(HTTPException) as exc:
         await service.upsert_knowledge_trail(
@@ -3413,7 +3643,10 @@ async def test_little_bull_knowledge_trail_scope_and_step_ids_cannot_cross_trail
         )
 
     assert exc.value.status_code == 422
-    assert service.admin_store.trails[trail.knowledge_trail_id]["subgroup_id"] == subgroup.subgroup_id
+    assert (
+        service.admin_store.trails[trail.knowledge_trail_id]["subgroup_id"]
+        == subgroup.subgroup_id
+    )
 
     renamed = await service.upsert_knowledge_trail(
         principal,
@@ -3445,7 +3678,9 @@ async def test_little_bull_knowledge_trail_scope_and_step_ids_cannot_cross_trail
         trail.knowledge_trail_id,
         other_trail.knowledge_trail_id,
     }
-    assert [item.knowledge_trail_id for item in other_listed] == [scoped_other_trail.knowledge_trail_id]
+    assert [item.knowledge_trail_id for item in other_listed] == [
+        scoped_other_trail.knowledge_trail_id
+    ]
 
     with pytest.raises(HTTPException) as exc:
         await service.upsert_knowledge_trail_step(
@@ -3460,13 +3695,18 @@ async def test_little_bull_knowledge_trail_scope_and_step_ids_cannot_cross_trail
         )
 
     assert exc.value.status_code == 404
-    assert service.admin_store.trail_steps[other_step.knowledge_trail_step_id][
-        "knowledge_trail_id"
-    ] == other_trail.knowledge_trail_id
+    assert (
+        service.admin_store.trail_steps[other_step.knowledge_trail_step_id][
+            "knowledge_trail_id"
+        ]
+        == other_trail.knowledge_trail_id
+    )
 
 
 @pytest.mark.asyncio
-async def test_little_bull_obsidian_graph_scopes_filters_and_focus_without_data_plane(tmp_path):
+async def test_little_bull_obsidian_graph_scopes_filters_and_focus_without_data_plane(
+    tmp_path,
+):
     principal, service = await _principal_and_service_with_admin_store(tmp_path)
     group, subgroup = await _create_group_and_subgroup(service, principal)
     other_subgroup = await service.upsert_knowledge_subgroup(
@@ -3610,8 +3850,14 @@ async def test_little_bull_obsidian_graph_scopes_filters_and_focus_without_data_
         f"document:{document['document_id']}",
         f"trail:{trail.knowledge_trail_id}",
     }
-    assert f"note:{other_note.registry.note_id}" not in {node.node_id for node in graph.nodes}
-    assert {edge.origin_type for edge in graph.edges} == {"manual", "wikilink", "trail_step"}
+    assert f"note:{other_note.registry.note_id}" not in {
+        node.node_id for node in graph.nodes
+    }
+    assert {edge.origin_type for edge in graph.edges} == {
+        "manual",
+        "wikilink",
+        "trail_step",
+    }
     assert graph.chat_context == {
         "enabled": True,
         "focus_node_id": central_node_id,
@@ -3758,17 +4004,22 @@ async def test_little_bull_inbox_validates_refs_status_and_filters(tmp_path):
         principal,
         workspace_id="default",
         inbox_item_id=item.inbox_item_id,
-        payload=LittleBullInboxItemStatusRequest(status="done", metadata={"resolved_by": "test"}),
+        payload=LittleBullInboxItemStatusRequest(
+            status="done", metadata={"resolved_by": "test"}
+        ),
     )
     assert updated.status == "done"
     assert updated.metadata["resolved_by"] == "test"
-    assert await service.list_inbox_items(
-        principal,
-        workspace_id="default",
-        status_filter="open",
-        group_id=group.group_id,
-        subgroup_id=subgroup.subgroup_id,
-    ) == []
+    assert (
+        await service.list_inbox_items(
+            principal,
+            workspace_id="default",
+            status_filter="open",
+            group_id=group.group_id,
+            subgroup_id=subgroup.subgroup_id,
+        )
+        == []
+    )
 
     target_open = await service.upsert_inbox_item(
         principal,
@@ -3797,7 +4048,9 @@ async def test_little_bull_inbox_validates_refs_status_and_filters(tmp_path):
         group_id=group.group_id,
         subgroup_id=subgroup.subgroup_id,
     )
-    assert [inbox_item.inbox_item_id for inbox_item in listed] == [target_open.inbox_item_id]
+    assert [inbox_item.inbox_item_id for inbox_item in listed] == [
+        target_open.inbox_item_id
+    ]
 
     with pytest.raises(HTTPException) as exc:
         await service.upsert_inbox_item(
@@ -3935,7 +4188,9 @@ async def test_little_bull_inbox_validates_refs_status_and_filters(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_little_bull_curator_suggestions_are_pending_and_do_not_mutate_graph(tmp_path):
+async def test_little_bull_curator_suggestions_are_pending_and_do_not_mutate_graph(
+    tmp_path,
+):
     principal, service = await _principal_and_service_with_admin_store(tmp_path)
     group, subgroup = await _create_group_and_subgroup(service, principal)
     source = await service.upsert_markdown_note(
@@ -4035,8 +4290,14 @@ async def test_little_bull_curator_suggestions_are_pending_and_do_not_mutate_gra
     assert backlink.inbox_item["metadata"]["target_id"] == target.registry.note_id
     assert moc.inbox_item["metadata"]["curator_kind"] == "content_map"
     assert subgroup_suggestion.inbox_item["metadata"]["curator_kind"] == "subgroup"
-    assert conversation_note.inbox_item["metadata"]["conversation_id"] == conversation.conversation_id
-    assert canvas_dossier.inbox_item["metadata"]["canvas_board_id"] == board.canvas_board_id
+    assert (
+        conversation_note.inbox_item["metadata"]["conversation_id"]
+        == conversation.conversation_id
+    )
+    assert (
+        canvas_dossier.inbox_item["metadata"]["canvas_board_id"]
+        == board.canvas_board_id
+    )
     assert service.admin_store.backlinks == {}
     assert service.admin_store.content_maps == {}
     assert service.admin_store.dossiers == {}
@@ -4065,7 +4326,9 @@ async def test_little_bull_curator_suggestions_are_pending_and_do_not_mutate_gra
 
 
 @pytest.mark.asyncio
-async def test_little_bull_curator_rejects_cross_scope_backlink_suggestion_without_mutation(tmp_path):
+async def test_little_bull_curator_rejects_cross_scope_backlink_suggestion_without_mutation(
+    tmp_path,
+):
     principal, service = await _principal_and_service_with_admin_store(tmp_path)
     group, subgroup = await _create_group_and_subgroup(service, principal)
     other_subgroup = await service.upsert_knowledge_subgroup(
@@ -4180,7 +4443,9 @@ async def test_little_bull_daily_note_creates_markdown_and_uses_open_inbox(tmp_p
     )
 
     assert daily.note_date == "2026-04-30"
-    assert [item["inbox_item_id"] for item in daily.pending_items] == [inbox_item.inbox_item_id]
+    assert [item["inbox_item_id"] for item in daily.pending_items] == [
+        inbox_item.inbox_item_id
+    ]
     latest = await service.admin_store.get_latest_markdown_note(
         daily.note_id,
         tenant_id="default",
@@ -4247,7 +4512,10 @@ async def test_little_bull_daily_note_creates_markdown_and_uses_open_inbox(tmp_p
         )
 
     assert exc.value.status_code == 409
-    assert service.admin_store.notes[conflicting.registry.note_id]["subgroup_id"] == other_subgroup.subgroup_id
+    assert (
+        service.admin_store.notes[conflicting.registry.note_id]["subgroup_id"]
+        == other_subgroup.subgroup_id
+    )
 
     with pytest.raises(HTTPException) as exc:
         await service.ensure_daily_note(
@@ -4264,7 +4532,9 @@ async def test_little_bull_daily_note_creates_markdown_and_uses_open_inbox(tmp_p
 
 
 @pytest.mark.asyncio
-async def test_little_bull_legal_matter_extraction_requires_review_and_provenance(tmp_path):
+async def test_little_bull_legal_matter_extraction_requires_review_and_provenance(
+    tmp_path,
+):
     principal, service = await _principal_and_service_with_admin_store(tmp_path)
     group, subgroup = await _create_group_and_subgroup(service, principal)
     document = await service.admin_store.register_document(
@@ -4329,7 +4599,10 @@ async def test_little_bull_legal_matter_extraction_requires_review_and_provenanc
         principal,
         legal_matter_extraction_run_id=response.run["legal_matter_extraction_run_id"],
     )
-    assert fetched.run["legal_matter_extraction_run_id"] == response.run["legal_matter_extraction_run_id"]
+    assert (
+        fetched.run["legal_matter_extraction_run_id"]
+        == response.run["legal_matter_extraction_run_id"]
+    )
     assert fetched.requires_human_review is True
 
     reviewed = await service.review_legal_matter_extraction(
@@ -4348,7 +4621,9 @@ async def test_little_bull_legal_matter_extraction_requires_review_and_provenanc
 
 
 @pytest.mark.asyncio
-async def test_little_bull_legal_matter_extraction_rejects_cross_scope_and_weak_source_refs(tmp_path):
+async def test_little_bull_legal_matter_extraction_rejects_cross_scope_and_weak_source_refs(
+    tmp_path,
+):
     principal, service = await _principal_and_service_with_admin_store(tmp_path)
     group, subgroup = await _create_group_and_subgroup(service, principal)
     other_subgroup = await service.upsert_knowledge_subgroup(
@@ -4378,7 +4653,9 @@ async def test_little_bull_legal_matter_extraction_rejects_cross_scope_and_weak_
         "subgroup_id": subgroup.subgroup_id,
         "document_id": document["document_id"],
         "extracted_payload": {"processos": [{"numero": "PROC-2"}]},
-        "source_refs": [{"document_id": document["document_id"], "chunk_id": "chunk-1"}],
+        "source_refs": [
+            {"document_id": document["document_id"], "chunk_id": "chunk-1"}
+        ],
     }
 
     with pytest.raises(HTTPException) as exc:
@@ -4409,7 +4686,9 @@ async def test_little_bull_legal_matter_extraction_rejects_cross_scope_and_weak_
                 **{
                     **request_payload,
                     "document_id": same_scope_document["document_id"],
-                    "source_refs": [{"document_id": same_scope_document["document_id"]}],
+                    "source_refs": [
+                        {"document_id": same_scope_document["document_id"]}
+                    ],
                 }
             ),
         )
@@ -4420,7 +4699,9 @@ async def test_little_bull_legal_matter_extraction_rejects_cross_scope_and_weak_
 
 
 @pytest.mark.asyncio
-async def test_little_bull_legal_matter_extraction_rejects_unsupported_schema_and_empty_payload(tmp_path):
+async def test_little_bull_legal_matter_extraction_rejects_unsupported_schema_and_empty_payload(
+    tmp_path,
+):
     principal, service = await _principal_and_service_with_admin_store(tmp_path)
     group, subgroup = await _create_group_and_subgroup(service, principal)
     document = await service.admin_store.register_document(
@@ -4516,10 +4797,19 @@ async def test_little_bull_agent_builder_requires_review_before_publish(tmp_path
     assert session.requires_review is True
     assert session.readiness_score >= 80
     assert session.generated_config["enabled"] is False
-    assert session.generated_config["model_setting_id"] == runtime_model.model_setting_id
-    assert [entry["role"] for entry in session.builder_transcript] == ["user", "assistant"]
-    listed = await service.list_agent_builder_sessions(principal, workspace_id="default", status_filter="draft")
-    assert [item.agent_builder_session_id for item in listed] == [session.agent_builder_session_id]
+    assert (
+        session.generated_config["model_setting_id"] == runtime_model.model_setting_id
+    )
+    assert [entry["role"] for entry in session.builder_transcript] == [
+        "user",
+        "assistant",
+    ]
+    listed = await service.list_agent_builder_sessions(
+        principal, workspace_id="default", status_filter="draft"
+    )
+    assert [item.agent_builder_session_id for item in listed] == [
+        session.agent_builder_session_id
+    ]
     decoy = await service.upsert_agent_builder_session(
         principal,
         workspace_id="default",
@@ -4549,9 +4839,16 @@ async def test_little_bull_agent_builder_requires_review_before_publish(tmp_path
     assert published.requires_review is False
     assert published.agent_id in service.admin_store.agents
     assert service.admin_store.agents[published.agent_id]["enabled"] is True
-    assert service.admin_store.agents[published.agent_id]["model_setting_id"] == runtime_model.model_setting_id
-    listed = await service.list_agent_builder_sessions(principal, workspace_id="default", status_filter="draft")
-    assert [item.agent_builder_session_id for item in listed] == [decoy.agent_builder_session_id]
+    assert (
+        service.admin_store.agents[published.agent_id]["model_setting_id"]
+        == runtime_model.model_setting_id
+    )
+    listed = await service.list_agent_builder_sessions(
+        principal, workspace_id="default", status_filter="draft"
+    )
+    assert [item.agent_builder_session_id for item in listed] == [
+        decoy.agent_builder_session_id
+    ]
 
     not_ready = await service.upsert_agent_builder_session(
         principal,
@@ -4638,7 +4935,13 @@ async def test_little_bull_agent_config_cannot_update_foreign_workspace_agent(tm
             tools=["query_knowledge"],
             config={
                 "identity": {"mission": "Responder no workspace atual."},
-                "tests": [{"name": "escopo", "input": "Pergunta", "expected_behavior": "Manter workspace"}],
+                "tests": [
+                    {
+                        "name": "escopo",
+                        "input": "Pergunta",
+                        "expected_behavior": "Manter workspace",
+                    }
+                ],
             },
         ),
     )
@@ -4660,7 +4963,13 @@ async def test_little_bull_agent_config_cannot_update_foreign_workspace_agent(tm
                 tools=["query_knowledge"],
                 config={
                     "identity": {"mission": "Invadir escopo."},
-                    "tests": [{"name": "escopo", "input": "Pergunta", "expected_behavior": "Bloquear"}],
+                    "tests": [
+                        {
+                            "name": "escopo",
+                            "input": "Pergunta",
+                            "expected_behavior": "Bloquear",
+                        }
+                    ],
                 },
             ),
         )
@@ -4669,7 +4978,9 @@ async def test_little_bull_agent_config_cannot_update_foreign_workspace_agent(tm
 
 
 @pytest.mark.asyncio
-async def test_little_bull_model_setting_cannot_update_foreign_workspace_setting(tmp_path):
+async def test_little_bull_model_setting_cannot_update_foreign_workspace_setting(
+    tmp_path,
+):
     principal, service = await _principal_and_service_with_admin_store(tmp_path)
     service.admin_store.models["foreign-model"] = {
         "model_setting_id": "foreign-model",
@@ -4737,7 +5048,13 @@ async def test_little_bull_agent_runtime_models_must_be_chat_or_agent(tmp_path):
                 tools=["query_knowledge"],
                 config={
                     "identity": {"mission": "Responder com fontes."},
-                    "tests": [{"name": "runtime", "input": "Pergunta", "expected_behavior": "Bloquear"}],
+                    "tests": [
+                        {
+                            "name": "runtime",
+                            "input": "Pergunta",
+                            "expected_behavior": "Bloquear",
+                        }
+                    ],
                 },
             ),
         )
@@ -4757,7 +5074,13 @@ async def test_little_bull_agent_runtime_models_must_be_chat_or_agent(tmp_path):
         "tools": ["query_knowledge"],
         "config": {
             "identity": {"mission": "Responder com fontes."},
-            "tests": [{"name": "runtime", "input": "Pergunta", "expected_behavior": "Bloquear"}],
+            "tests": [
+                {
+                    "name": "runtime",
+                    "input": "Pergunta",
+                    "expected_behavior": "Bloquear",
+                }
+            ],
         },
         "created_by": principal.user_id,
         "updated_by": principal.user_id,
@@ -4805,7 +5128,13 @@ async def test_little_bull_query_uses_scoped_runtime_agent_model(tmp_path, monke
             tools=["query_knowledge"],
             config={
                 "identity": {"mission": "Responder com fontes."},
-                "tests": [{"name": "runtime", "input": "Pergunta", "expected_behavior": "Usar modelo scoped"}],
+                "tests": [
+                    {
+                        "name": "runtime",
+                        "input": "Pergunta",
+                        "expected_behavior": "Usar modelo scoped",
+                    }
+                ],
             },
         ),
     )
@@ -4825,7 +5154,9 @@ async def test_little_bull_query_uses_scoped_runtime_agent_model(tmp_path, monke
 
 
 @pytest.mark.asyncio
-async def test_little_bull_query_clamps_agent_max_tokens_to_reserved_budget(tmp_path, monkeypatch):
+async def test_little_bull_query_clamps_agent_max_tokens_to_reserved_budget(
+    tmp_path, monkeypatch
+):
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
     principal, service = await _principal_and_service_with_admin_store(tmp_path)
     runtime_model = await service.upsert_model_setting(
@@ -4852,7 +5183,13 @@ async def test_little_bull_query_clamps_agent_max_tokens_to_reserved_budget(tmp_
             config={
                 "identity": {"mission": "Responder com fontes."},
                 "model": {"max_tokens": 2000},
-                "tests": [{"name": "clamp", "input": "Pergunta", "expected_behavior": "Limitar resposta"}],
+                "tests": [
+                    {
+                        "name": "clamp",
+                        "input": "Pergunta",
+                        "expected_behavior": "Limitar resposta",
+                    }
+                ],
             },
         ),
     )
@@ -4892,7 +5229,13 @@ async def test_little_bull_agent_context_budget_validates_agent_and_window(tmp_p
             tools=["query_knowledge"],
             config={
                 "identity": {"mission": "Responder com fontes."},
-                "tests": [{"name": "fontes", "input": "Pergunta", "expected_behavior": "Citar fontes"}],
+                "tests": [
+                    {
+                        "name": "fontes",
+                        "input": "Pergunta",
+                        "expected_behavior": "Citar fontes",
+                    }
+                ],
             },
         ),
     )
@@ -4922,7 +5265,13 @@ async def test_little_bull_agent_context_budget_validates_agent_and_window(tmp_p
             tools=["query_knowledge"],
             config={
                 "identity": {"mission": "Responder com fontes."},
-                "tests": [{"name": "fontes", "input": "Pergunta", "expected_behavior": "Citar fontes"}],
+                "tests": [
+                    {
+                        "name": "fontes",
+                        "input": "Pergunta",
+                        "expected_behavior": "Citar fontes",
+                    }
+                ],
             },
         ),
     )
@@ -4935,14 +5284,20 @@ async def test_little_bull_agent_context_budget_validates_agent_and_window(tmp_p
             reserved_response_tokens=500,
         ),
     )
-    listed = await service.list_agent_context_budgets(principal, workspace_id="default", agent_id=agent.agent_id)
-    assert [item.agent_context_budget_id for item in listed] == [budget.agent_context_budget_id]
+    listed = await service.list_agent_context_budgets(
+        principal, workspace_id="default", agent_id=agent.agent_id
+    )
+    assert [item.agent_context_budget_id for item in listed] == [
+        budget.agent_context_budget_id
+    ]
     listed = await service.list_agent_context_budgets(
         principal,
         workspace_id="default",
         agent_id=other_agent.agent_id,
     )
-    assert [item.agent_context_budget_id for item in listed] == [other_budget.agent_context_budget_id]
+    assert [item.agent_context_budget_id for item in listed] == [
+        other_budget.agent_context_budget_id
+    ]
 
     with pytest.raises(HTTPException) as exc:
         await service.upsert_agent_context_budget(
@@ -5055,7 +5410,13 @@ async def test_little_bull_query_enforces_agent_context_budget_before_rag(tmp_pa
             tools=["query_knowledge"],
             config={
                 "identity": {"mission": "Responder com fontes e respeitar budget."},
-                "tests": [{"name": "budget", "input": "Pergunta", "expected_behavior": "Respeitar budget"}],
+                "tests": [
+                    {
+                        "name": "budget",
+                        "input": "Pergunta",
+                        "expected_behavior": "Respeitar budget",
+                    }
+                ],
             },
         ),
     )
@@ -5087,8 +5448,12 @@ async def test_little_bull_query_enforces_agent_context_budget_before_rag(tmp_pa
     assert blocked.metadata["reason"] == "agent_context_budget"
     assert blocked.metadata["agent_id"] == agent.agent_id
 
-    service.admin_store.agent_context_budgets[budget.agent_context_budget_id]["max_prompt_tokens"] = 8000
-    service.admin_store.agent_context_budgets[budget.agent_context_budget_id]["max_context_tokens"] = 9000
+    service.admin_store.agent_context_budgets[budget.agent_context_budget_id][
+        "max_prompt_tokens"
+    ] = 8000
+    service.admin_store.agent_context_budgets[budget.agent_context_budget_id][
+        "max_context_tokens"
+    ] = 9000
     response = await service.query(
         principal,
         LittleBullQueryRequest(
@@ -5104,13 +5469,18 @@ async def test_little_bull_query_enforces_agent_context_budget_before_rag(tmp_pa
     assert service.rag.last_query_param.chunk_top_k == 1
     events = await service.audit.list(tenant_id="default", workspace_id="default")
     success = next(event for event in events if event.result == "success")
-    assert success.metadata["agent_context_budget"]["agent_context_budget_id"] == budget.agent_context_budget_id
+    assert (
+        success.metadata["agent_context_budget"]["agent_context_budget_id"]
+        == budget.agent_context_budget_id
+    )
     assert success.metadata["usage_ledger_id"] == "ledger-1"
     assert service.admin_store.usage_ledger[0]["operation"] == "agent_query"
 
 
 @pytest.mark.asyncio
-async def test_little_bull_query_blocks_agent_context_budget_cost_overflow(tmp_path, monkeypatch):
+async def test_little_bull_query_blocks_agent_context_budget_cost_overflow(
+    tmp_path, monkeypatch
+):
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
     principal, service = await _principal_and_service_with_admin_store(tmp_path)
     runtime_model = await service.upsert_model_setting(
@@ -5136,7 +5506,13 @@ async def test_little_bull_query_blocks_agent_context_budget_cost_overflow(tmp_p
             tools=["query_knowledge"],
             config={
                 "identity": {"mission": "Responder com fontes e respeitar custo."},
-                "tests": [{"name": "custo", "input": "Pergunta", "expected_behavior": "Respeitar custo"}],
+                "tests": [
+                    {
+                        "name": "custo",
+                        "input": "Pergunta",
+                        "expected_behavior": "Respeitar custo",
+                    }
+                ],
             },
         ),
     )
@@ -5181,7 +5557,9 @@ async def test_little_bull_query_blocks_agent_context_budget_cost_overflow(tmp_p
 
 
 @pytest.mark.asyncio
-async def test_little_bull_query_reserves_cost_budget_before_concurrent_rag(tmp_path, monkeypatch):
+async def test_little_bull_query_reserves_cost_budget_before_concurrent_rag(
+    tmp_path, monkeypatch
+):
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
     rag = SlowFakeRag()
     principal, service = await _principal_and_service(tmp_path, rag=rag)
@@ -5209,7 +5587,13 @@ async def test_little_bull_query_reserves_cost_budget_before_concurrent_rag(tmp_
             tools=["query_knowledge"],
             config={
                 "identity": {"mission": "Responder com fontes e respeitar custo."},
-                "tests": [{"name": "concorrencia", "input": "Pergunta", "expected_behavior": "Reservar antes"}],
+                "tests": [
+                    {
+                        "name": "concorrencia",
+                        "input": "Pergunta",
+                        "expected_behavior": "Reservar antes",
+                    }
+                ],
             },
         ),
     )
@@ -5256,7 +5640,9 @@ async def test_little_bull_query_reserves_cost_budget_before_concurrent_rag(tmp_
 
 
 @pytest.mark.asyncio
-async def test_little_bull_query_blocks_legacy_cost_budget_without_context_cap(tmp_path):
+async def test_little_bull_query_blocks_legacy_cost_budget_without_context_cap(
+    tmp_path,
+):
     principal, service = await _principal_and_service_with_admin_store(tmp_path)
     agent = await service.upsert_agent_config(
         principal,
@@ -5268,7 +5654,13 @@ async def test_little_bull_query_blocks_legacy_cost_budget_without_context_cap(t
             tools=["query_knowledge"],
             config={
                 "identity": {"mission": "Responder com fontes e respeitar custo."},
-                "tests": [{"name": "legado", "input": "Pergunta", "expected_behavior": "Bloquear"}],
+                "tests": [
+                    {
+                        "name": "legado",
+                        "input": "Pergunta",
+                        "expected_behavior": "Bloquear",
+                    }
+                ],
             },
         ),
     )
@@ -5306,7 +5698,9 @@ async def test_little_bull_query_blocks_legacy_cost_budget_without_context_cap(t
 
 
 @pytest.mark.asyncio
-async def test_little_bull_operational_chat_saves_context_and_transforms_to_note(tmp_path):
+async def test_little_bull_operational_chat_saves_context_and_transforms_to_note(
+    tmp_path,
+):
     principal, service = await _principal_and_service_with_admin_store(tmp_path)
     service.rag.little_bull_scoped_query_supported = True
     group, subgroup = await _create_group_and_subgroup(service, principal)
@@ -5367,7 +5761,13 @@ async def test_little_bull_operational_chat_saves_context_and_transforms_to_note
             tools=["query_knowledge"],
             config={
                 "identity": {"mission": "Responder com fontes."},
-                "tests": [{"name": "fontes", "input": "Pergunta", "expected_behavior": "Citar fontes"}],
+                "tests": [
+                    {
+                        "name": "fontes",
+                        "input": "Pergunta",
+                        "expected_behavior": "Citar fontes",
+                    }
+                ],
             },
         ),
     )
@@ -5454,12 +5854,17 @@ async def test_little_bull_operational_chat_transforms_to_suggestion(tmp_path):
     assert response.conversation is not None
     assert response.suggestion is not None
     assert response.suggestion.target_label == "Tese principal"
-    assert response.suggestion.metadata["conversation_id"] == response.conversation.conversation_id
+    assert (
+        response.suggestion.metadata["conversation_id"]
+        == response.conversation.conversation_id
+    )
     assert service.rag.query_calls == 1
 
 
 @pytest.mark.asyncio
-async def test_little_bull_operational_chat_note_transform_requires_scope_before_rag(tmp_path):
+async def test_little_bull_operational_chat_note_transform_requires_scope_before_rag(
+    tmp_path,
+):
     principal, service = await _principal_and_service_with_admin_store(tmp_path)
 
     with pytest.raises(HTTPException) as exc:
@@ -5495,7 +5900,9 @@ async def test_little_bull_save_conversation_rejects_unvalidated_agent(tmp_path)
 
 
 @pytest.mark.asyncio
-async def test_little_bull_cost_summary_aggregates_periods_and_dimensions(tmp_path, monkeypatch):
+async def test_little_bull_cost_summary_aggregates_periods_and_dimensions(
+    tmp_path, monkeypatch
+):
     principal, service = await _principal_and_service_with_admin_store(tmp_path)
     group, subgroup = await _create_group_and_subgroup(service, principal)
     agent = await service.upsert_agent_config(
@@ -5508,7 +5915,13 @@ async def test_little_bull_cost_summary_aggregates_periods_and_dimensions(tmp_pa
             tools=["query_knowledge"],
             config={
                 "identity": {"mission": "Responder com fontes."},
-                "tests": [{"name": "custos", "input": "Pergunta", "expected_behavior": "Somar"}],
+                "tests": [
+                    {
+                        "name": "custos",
+                        "input": "Pergunta",
+                        "expected_behavior": "Somar",
+                    }
+                ],
             },
         ),
     )
@@ -5533,7 +5946,10 @@ async def test_little_bull_cost_summary_aggregates_periods_and_dimensions(tmp_pa
                 "estimated_cost_usd": 0.02,
                 "actual_cost_usd": None,
                 "currency": "USD",
-                "metadata": {"group_id": group.group_id, "subgroup_id": subgroup.subgroup_id},
+                "metadata": {
+                    "group_id": group.group_id,
+                    "subgroup_id": subgroup.subgroup_id,
+                },
                 "created_at": now - timedelta(hours=1),
             },
             {
@@ -5553,7 +5969,10 @@ async def test_little_bull_cost_summary_aggregates_periods_and_dimensions(tmp_pa
                 "estimated_cost_usd": 0.06,
                 "actual_cost_usd": 0.05,
                 "currency": "USD",
-                "metadata": {"group_id": group.group_id, "subgroup_id": subgroup.subgroup_id},
+                "metadata": {
+                    "group_id": group.group_id,
+                    "subgroup_id": subgroup.subgroup_id,
+                },
                 "created_at": now - timedelta(days=3),
             },
             {
@@ -5573,7 +5992,10 @@ async def test_little_bull_cost_summary_aggregates_periods_and_dimensions(tmp_pa
                 "estimated_cost_usd": 0.03,
                 "actual_cost_usd": None,
                 "currency": "USD",
-                "metadata": {"group_id": group.group_id, "subgroup_id": subgroup.subgroup_id},
+                "metadata": {
+                    "group_id": group.group_id,
+                    "subgroup_id": subgroup.subgroup_id,
+                },
                 "created_at": now - timedelta(days=2),
             },
             {
@@ -5613,7 +6035,10 @@ async def test_little_bull_cost_summary_aggregates_periods_and_dimensions(tmp_pa
                 "estimated_cost_usd": 9.99,
                 "actual_cost_usd": None,
                 "currency": "USD",
-                "metadata": {"group_id": group.group_id, "subgroup_id": subgroup.subgroup_id},
+                "metadata": {
+                    "group_id": group.group_id,
+                    "subgroup_id": subgroup.subgroup_id,
+                },
                 "created_at": now,
             },
         ]
@@ -5628,16 +6053,23 @@ async def test_little_bull_cost_summary_aggregates_periods_and_dimensions(tmp_pa
     assert summary.periods["month"].cost_usd == 0.10
     assert summary.periods["last_7_days"].cost_usd == 0.10
     assert summary.periods["today"].cost_usd == 0.02
-    principal_user = next(item for item in summary.by_user if item.key == principal.user_id)
+    principal_user = next(
+        item for item in summary.by_user if item.key == principal.user_id
+    )
     assert principal_user.cost_usd == 0.10
     agent_bucket = next(item for item in summary.by_agent if item.key == agent.agent_id)
     assert agent_bucket.cost_usd == 0.10
     assert summary.by_model[0].key == "openai/model-old"
     scoped_group = next(
-        item for item in summary.by_group_subgroup if item.key == f"{group.group_id}:{subgroup.subgroup_id}"
+        item
+        for item in summary.by_group_subgroup
+        if item.key == f"{group.group_id}:{subgroup.subgroup_id}"
     )
     assert scoped_group.cost_usd == 0.10
-    assert {item.key for item in summary.by_operation} == {"agent_query", "embedding_reindex"}
+    assert {item.key for item in summary.by_operation} == {
+        "agent_query",
+        "embedding_reindex",
+    }
 
     scoped = await service.summarize_costs(
         principal,
@@ -5654,7 +6086,9 @@ async def test_little_bull_cost_summary_aggregates_periods_and_dimensions(tmp_pa
 
 
 @pytest.mark.asyncio
-async def test_little_bull_query_budget_fails_closed_when_reserved_response_cannot_be_enforced(tmp_path):
+async def test_little_bull_query_budget_fails_closed_when_reserved_response_cannot_be_enforced(
+    tmp_path,
+):
     rag = FakeRag(
         llm_binding="openai",
         llm_model="openai/gpt-4o-mini",
@@ -5691,7 +6125,13 @@ async def test_little_bull_query_budget_fails_closed_when_reserved_response_cann
             tools=["query_knowledge"],
             config={
                 "identity": {"mission": "Responder com fontes."},
-                "tests": [{"name": "reserved", "input": "Pergunta", "expected_behavior": "Bloquear"}],
+                "tests": [
+                    {
+                        "name": "reserved",
+                        "input": "Pergunta",
+                        "expected_behavior": "Bloquear",
+                    }
+                ],
             },
         ),
     )
@@ -5723,7 +6163,9 @@ async def test_little_bull_query_budget_fails_closed_when_reserved_response_cann
 
 
 @pytest.mark.asyncio
-async def test_little_bull_context_estimate_scopes_documents_and_flags_overflow(tmp_path):
+async def test_little_bull_context_estimate_scopes_documents_and_flags_overflow(
+    tmp_path,
+):
     principal, service = await _principal_and_service_with_admin_store(tmp_path)
     group, subgroup = await _create_group_and_subgroup(service, principal)
     other_subgroup = await service.upsert_knowledge_subgroup(
@@ -5760,7 +6202,13 @@ async def test_little_bull_context_estimate_scopes_documents_and_flags_overflow(
             config={
                 "identity": {"mission": "Responder com fontes."},
                 "model": {"max_tokens": 40},
-                "tests": [{"name": "contexto", "input": "Pergunta", "expected_behavior": "Calcular"}],
+                "tests": [
+                    {
+                        "name": "contexto",
+                        "input": "Pergunta",
+                        "expected_behavior": "Calcular",
+                    }
+                ],
             },
         ),
     )
@@ -5869,7 +6317,9 @@ async def test_little_bull_context_estimate_scopes_documents_and_flags_overflow(
 
 
 @pytest.mark.asyncio
-async def test_little_bull_query_validates_scope_and_fails_closed_until_filters_exist(tmp_path):
+async def test_little_bull_query_validates_scope_and_fails_closed_until_filters_exist(
+    tmp_path,
+):
     principal, service = await _principal_and_service_with_admin_store(tmp_path)
     group, subgroup = await _create_group_and_subgroup(service, principal)
     other_subgroup = await service.upsert_knowledge_subgroup(
@@ -5931,7 +6381,10 @@ async def test_little_bull_query_validates_scope_and_fails_closed_until_filters_
         )
 
     assert exc.value.status_code == 422
-    assert "Scoped Little Bull queries require data-plane filter support" in exc.value.detail
+    assert (
+        "Scoped Little Bull queries require data-plane filter support"
+        in exc.value.detail
+    )
     assert service.rag.query_calls == 0
     events = await service.audit.list(tenant_id="default", workspace_id="default")
     blocked = next(event for event in events if event.result == "blocked")
@@ -5996,7 +6449,9 @@ async def test_little_bull_query_blocks_hosted_profile_for_private_data(tmp_path
 
 
 @pytest.mark.asyncio
-async def test_little_bull_query_private_profile_unavailable_blocks_before_rag(tmp_path):
+async def test_little_bull_query_private_profile_unavailable_blocks_before_rag(
+    tmp_path,
+):
     rag = FakeRag(llm_binding="openai", llm_model="gpt-hosted")
     principal, service = await _principal_and_service(tmp_path, rag=rag)
 
@@ -6050,7 +6505,9 @@ async def test_little_bull_query_private_profile_uses_configured_local_model_and
 
 
 @pytest.mark.asyncio
-async def test_little_bull_query_blocks_hosted_profile_when_workspace_has_private_data(tmp_path):
+async def test_little_bull_query_blocks_hosted_profile_when_workspace_has_private_data(
+    tmp_path,
+):
     rag = FakeRag(llm_binding="openai", llm_model="gpt-hosted")
     principal, service = await _principal_and_service(tmp_path, rag=rag)
     await service.repository.set_policy(
@@ -6233,9 +6690,9 @@ async def test_little_bull_blocks_unbacked_workspace_data_plane(tmp_path):
             slug="other",
         )
     )
-    principal = await SystemAuthService(service.repository, secret="test-secret").principal_for_user(
-        await service.repository.get_user(principal.user_id)
-    )
+    principal = await SystemAuthService(
+        service.repository, secret="test-secret"
+    ).principal_for_user(await service.repository.get_user(principal.user_id))
 
     with pytest.raises(HTTPException) as exc:
         await service.list_documents(principal, workspace_id="other")
@@ -6261,9 +6718,15 @@ async def test_little_bull_delete_creates_pending_approval(tmp_path):
 async def test_little_bull_delete_reuses_pending_approval(tmp_path):
     principal, service = await _principal_and_service(tmp_path)
 
-    first = await service.delete_document(principal, workspace_id="default", document_id="doc-1")
-    second = await service.delete_document(principal, workspace_id="default", document_id="doc-1")
-    approvals = await service.approvals.list(tenant_id="default", workspace_id="default")
+    first = await service.delete_document(
+        principal, workspace_id="default", document_id="doc-1"
+    )
+    second = await service.delete_document(
+        principal, workspace_id="default", document_id="doc-1"
+    )
+    approvals = await service.approvals.list(
+        tenant_id="default", workspace_id="default"
+    )
 
     assert first["approval"]["approval_id"] == second["approval"]["approval_id"]
     assert len(approvals) == 1
@@ -6305,7 +6768,9 @@ async def test_little_bull_lists_embedding_catalog_and_estimates_cost(tmp_path):
     principal, service = await _principal_and_service_with_admin_store(tmp_path)
 
     catalog = await service.list_embedding_catalog(principal)
-    qwen = next(model for model in catalog if model.model_id == "qwen/qwen3-embedding-8b")
+    qwen = next(
+        model for model in catalog if model.model_id == "qwen/qwen3-embedding-8b"
+    )
     estimate = await service.estimate_embedding_cost_for_workspace(
         principal,
         request=LittleBullEmbeddingCostEstimateRequest(
@@ -6321,7 +6786,9 @@ async def test_little_bull_lists_embedding_catalog_and_estimates_cost(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_little_bull_upserts_knowledge_base_with_default_embedding_and_reindex_flag(tmp_path):
+async def test_little_bull_upserts_knowledge_base_with_default_embedding_and_reindex_flag(
+    tmp_path,
+):
     principal, service = await _principal_and_service_with_admin_store(tmp_path)
 
     base = await service.upsert_knowledge_base(
@@ -6422,7 +6889,9 @@ async def test_little_bull_reindex_approval_rejects_payload_drift(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_little_bull_reindex_knowledge_base_queues_workspace_sources(tmp_path, monkeypatch):
+async def test_little_bull_reindex_knowledge_base_queues_workspace_sources(
+    tmp_path, monkeypatch
+):
     monkeypatch.setenv("LITTLE_BULL_APPROVALS_ENFORCED", "false")
     principal, service = await _principal_and_service_with_admin_store(tmp_path)
     await service.upsert_knowledge_base(
@@ -6553,7 +7022,9 @@ async def test_little_bull_destructive_rebuild_snapshots_storage_and_queues_sour
     assert response.rollback_available is True
     assert queued["workspace"] == "artigos"
     assert response.files == ["fonte.md"]
-    assert (Path(response.snapshot_path) / "storage" / "kv_store_full_docs.json").exists()
+    assert (
+        Path(response.snapshot_path) / "storage" / "kv_store_full_docs.json"
+    ).exists()
     assert workspace_rag.full_docs.dropped is True
     assert not stored_doc.exists()
     settings = await service.admin_store.list_model_settings(
@@ -6646,4 +7117,6 @@ async def test_little_bull_reindex_pending_approval_reuse_is_payload_scoped(
 
     assert non_destructive.approval is not None
     assert destructive.approval is not None
-    assert destructive.approval["approval_id"] != non_destructive.approval["approval_id"]
+    assert (
+        destructive.approval["approval_id"] != non_destructive.approval["approval_id"]
+    )

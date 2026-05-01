@@ -79,7 +79,9 @@ def test_policy_router_blocks_hosted_for_private_data_and_uses_local():
 
 
 def test_policy_router_blocks_hosted_only_catalog_for_private_data():
-    catalog = ModelCatalog(entries=[ModelCatalogEntry.from_openrouter_model(OPENROUTER_SAMPLE)])
+    catalog = ModelCatalog(
+        entries=[ModelCatalogEntry.from_openrouter_model(OPENROUTER_SAMPLE)]
+    )
     router = PolicyModelRouter(catalog, ModelPolicy())
 
     decision = router.route(

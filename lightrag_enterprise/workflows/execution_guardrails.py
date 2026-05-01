@@ -21,7 +21,9 @@ DESTRUCTIVE_ACTIONS = {
 }
 
 
-def evaluate_execution_guardrails(action: str, user_text: str = "") -> GuardrailDecision:
+def evaluate_execution_guardrails(
+    action: str, user_text: str = ""
+) -> GuardrailDecision:
     if detect_prompt_injection(user_text):
         return GuardrailDecision(False, "Prompt-injection pattern detected.")
     if action in DESTRUCTIVE_ACTIONS:

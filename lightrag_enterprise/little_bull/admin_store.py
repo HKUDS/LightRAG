@@ -17,11 +17,15 @@ class LittleBullAdminStore:
 
     async def _get_pool(self) -> Any:
         if not self.database_url:
-            raise RuntimeError("Little Bull Admin requires LIGHTRAG_SYSTEM_DATABASE_URL or DATABASE_URL.")
+            raise RuntimeError(
+                "Little Bull Admin requires LIGHTRAG_SYSTEM_DATABASE_URL or DATABASE_URL."
+            )
         if self._pool is None:
             import asyncpg
 
-            self._pool = await asyncpg.create_pool(self.database_url, min_size=1, max_size=5)
+            self._pool = await asyncpg.create_pool(
+                self.database_url, min_size=1, max_size=5
+            )
         if not self._schema_ready:
             async with self._pool.acquire() as conn:
                 await conn.execute(SCHEMA_SQL)
@@ -206,7 +210,9 @@ class LittleBullAdminStore:
             "link_text": row["link_text"],
             "origin_type": row["origin_type"],
             "graph_edge_origin_id": row["graph_edge_origin_id"],
-            "confidence": float(row["confidence"]) if row["confidence"] is not None else None,
+            "confidence": float(row["confidence"])
+            if row["confidence"] is not None
+            else None,
             "metadata": self._json(row["metadata"], {}),
             "created_by": row["created_by"],
             "updated_by": row["updated_by"],
@@ -227,7 +233,9 @@ class LittleBullAdminStore:
             "model_id": row["model_id"],
             "agent_id": row["agent_id"],
             "usage_ledger_id": row["usage_ledger_id"],
-            "confidence": float(row["confidence"]) if row["confidence"] is not None else None,
+            "confidence": float(row["confidence"])
+            if row["confidence"] is not None
+            else None,
             "locator": self._json(row["locator"], {}),
             "metadata": self._json(row["metadata"], {}),
             "created_by": row["created_by"],
@@ -456,10 +464,14 @@ class LittleBullAdminStore:
             "reserved_response_tokens": row["reserved_response_tokens"],
             "max_prompt_tokens": row["max_prompt_tokens"],
             "daily_cost_limit_usd": (
-                float(row["daily_cost_limit_usd"]) if row["daily_cost_limit_usd"] is not None else None
+                float(row["daily_cost_limit_usd"])
+                if row["daily_cost_limit_usd"] is not None
+                else None
             ),
             "monthly_cost_limit_usd": (
-                float(row["monthly_cost_limit_usd"]) if row["monthly_cost_limit_usd"] is not None else None
+                float(row["monthly_cost_limit_usd"])
+                if row["monthly_cost_limit_usd"] is not None
+                else None
             ),
             "policy": self._json(row["policy"], {}),
             "created_by": row["created_by"],
@@ -478,7 +490,9 @@ class LittleBullAdminStore:
             "created_at": self._dt(row["created_at"]),
         }
 
-    def _conversation_from_row(self, row: Any, messages: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    def _conversation_from_row(
+        self, row: Any, messages: list[dict[str, Any]] | None = None
+    ) -> dict[str, Any]:
         row_data = dict(row)
         data = {
             "conversation_id": row_data["conversation_id"],
@@ -528,7 +542,9 @@ class LittleBullAdminStore:
             "run_status": row["run_status"],
             "extracted_payload": self._json(row["extracted_payload"], {}),
             "source_refs": self._json(row["source_refs"], []),
-            "confidence": float(row["confidence"]) if row["confidence"] is not None else None,
+            "confidence": float(row["confidence"])
+            if row["confidence"] is not None
+            else None,
             "review_status": row["review_status"],
             "requires_human_review": bool(row["requires_human_review"]),
             "approved_by": row["approved_by"],
@@ -540,7 +556,9 @@ class LittleBullAdminStore:
             "updated_at": self._dt(row["updated_at"]),
         }
 
-    async def list_model_settings(self, *, tenant_id: str | None, workspace_id: str | None) -> list[dict[str, Any]]:
+    async def list_model_settings(
+        self, *, tenant_id: str | None, workspace_id: str | None
+    ) -> list[dict[str, Any]]:
         pool = await self._get_pool()
         rows = await pool.fetch(
             """
@@ -615,7 +633,11 @@ class LittleBullAdminStore:
                     str(payload.get("binding") or "openai").strip().lower(),
                     str(payload.get("binding_host") or "").strip(),
                     str(payload.get("model_id") or "").strip(),
-                    str(payload.get("display_name") or payload.get("model_id") or "Modelo").strip(),
+                    str(
+                        payload.get("display_name")
+                        or payload.get("model_id")
+                        or "Modelo"
+                    ).strip(),
                     bool(payload.get("enabled", True)),
                     is_default,
                     json.dumps(payload.get("config") or {}),
@@ -626,7 +648,9 @@ class LittleBullAdminStore:
                     raise ValueError("model_setting_scope_mismatch")
         return self._model_from_row(row)
 
-    async def list_knowledge_groups(self, *, tenant_id: str | None, workspace_id: str) -> list[dict[str, Any]]:
+    async def list_knowledge_groups(
+        self, *, tenant_id: str | None, workspace_id: str
+    ) -> list[dict[str, Any]]:
         pool = await self._get_pool()
         rows = await pool.fetch(
             """
@@ -792,7 +816,9 @@ class LittleBullAdminStore:
         user_id: str,
     ) -> dict[str, Any]:
         source_kind = str(payload.get("source_kind") or "upload").strip()
-        if source_kind == "upload" and (not payload.get("group_id") or not payload.get("subgroup_id")):
+        if source_kind == "upload" and (
+            not payload.get("group_id") or not payload.get("subgroup_id")
+        ):
             raise ValueError("Upload documents require group_id and subgroup_id.")
         pool = await self._get_pool()
         document_id = str(payload.get("document_id") or new_id("lbdoc"))
@@ -1508,7 +1534,9 @@ class LittleBullAdminStore:
                 "completion_tokens": int(row["completion_tokens"] or 0),
                 "total_tokens": int(row["total_tokens"] or 0),
                 "estimated_cost_usd": float(row["estimated_cost_usd"] or 0),
-                "actual_cost_usd": float(row["actual_cost_usd"]) if row["actual_cost_usd"] is not None else None,
+                "actual_cost_usd": float(row["actual_cost_usd"])
+                if row["actual_cost_usd"] is not None
+                else None,
                 "currency": row["currency"],
                 "metadata": self._json(row["metadata"], {}),
                 "created_at": row["created_at"],
@@ -1528,7 +1556,9 @@ class LittleBullAdminStore:
         lock_key = f"{tenant_id or ''}:{workspace_id}:llm_usage_ledger"
         async with pool.acquire() as conn:
             async with conn.transaction():
-                await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", lock_key)
+                await conn.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext($1))", lock_key
+                )
                 created_at = utc_now()
                 previous_hash = await conn.fetchval(
                     """
@@ -1567,9 +1597,14 @@ class LittleBullAdminStore:
                     "previous_ledger_hash": previous_hash or "",
                     "created_at": created_at.isoformat(),
                 }
-                ledger_hash = "sha256:" + hashlib.sha256(
-                    json.dumps(ledger_material, sort_keys=True, default=str).encode("utf-8")
-                ).hexdigest()
+                ledger_hash = (
+                    "sha256:"
+                    + hashlib.sha256(
+                        json.dumps(ledger_material, sort_keys=True, default=str).encode(
+                            "utf-8"
+                        )
+                    ).hexdigest()
+                )
                 row = await conn.fetchrow(
                     """
                     INSERT INTO little_bull_llm_usage_ledger (
@@ -1638,8 +1673,12 @@ class LittleBullAdminStore:
         ledger_lock_key = f"{tenant_id or ''}:{workspace_id}:llm_usage_ledger"
         async with pool.acquire() as conn:
             async with conn.transaction():
-                await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", lock_key)
-                await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", ledger_lock_key)
+                await conn.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext($1))", lock_key
+                )
+                await conn.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext($1))", ledger_lock_key
+                )
                 created_at = utc_now()
                 daily_used = await conn.fetchval(
                     """
@@ -1655,7 +1694,10 @@ class LittleBullAdminStore:
                     agent_id,
                     daily_since,
                 )
-                if daily_limit_usd is not None and float(daily_used or 0) + estimate > daily_limit_usd:
+                if (
+                    daily_limit_usd is not None
+                    and float(daily_used or 0) + estimate > daily_limit_usd
+                ):
                     raise ValueError("daily_cost_budget_exceeded")
                 monthly_used = await conn.fetchval(
                     """
@@ -1671,7 +1713,10 @@ class LittleBullAdminStore:
                     agent_id,
                     monthly_since,
                 )
-                if monthly_limit_usd is not None and float(monthly_used or 0) + estimate > monthly_limit_usd:
+                if (
+                    monthly_limit_usd is not None
+                    and float(monthly_used or 0) + estimate > monthly_limit_usd
+                ):
                     raise ValueError("monthly_cost_budget_exceeded")
                 previous_hash = await conn.fetchval(
                     """
@@ -1711,9 +1756,14 @@ class LittleBullAdminStore:
                     "previous_ledger_hash": previous_hash or "",
                     "created_at": created_at.isoformat(),
                 }
-                ledger_hash = "sha256:" + hashlib.sha256(
-                    json.dumps(ledger_material, sort_keys=True, default=str).encode("utf-8")
-                ).hexdigest()
+                ledger_hash = (
+                    "sha256:"
+                    + hashlib.sha256(
+                        json.dumps(ledger_material, sort_keys=True, default=str).encode(
+                            "utf-8"
+                        )
+                    ).hexdigest()
+                )
                 row = await conn.fetchrow(
                     """
                     INSERT INTO little_bull_llm_usage_ledger (
@@ -2082,7 +2132,9 @@ class LittleBullAdminStore:
         user_id: str,
     ) -> dict[str, Any]:
         pool = await self._get_pool()
-        knowledge_dossier_id = str(payload.get("knowledge_dossier_id") or new_id("lbdos"))
+        knowledge_dossier_id = str(
+            payload.get("knowledge_dossier_id") or new_id("lbdos")
+        )
         row = await pool.fetchrow(
             """
             INSERT INTO little_bull_knowledge_dossiers (
@@ -2449,7 +2501,9 @@ class LittleBullAdminStore:
         user_id: str,
     ) -> dict[str, Any]:
         pool = await self._get_pool()
-        knowledge_trail_step_id = str(payload.get("knowledge_trail_step_id") or new_id("lbtrails"))
+        knowledge_trail_step_id = str(
+            payload.get("knowledge_trail_step_id") or new_id("lbtrails")
+        )
         row = await pool.fetchrow(
             """
             INSERT INTO little_bull_knowledge_trail_steps (
@@ -2709,7 +2763,9 @@ class LittleBullAdminStore:
         )
         return self._daily_note_from_row(row)
 
-    async def list_agent_configs(self, *, tenant_id: str | None, workspace_id: str | None) -> list[dict[str, Any]]:
+    async def list_agent_configs(
+        self, *, tenant_id: str | None, workspace_id: str | None
+    ) -> list[dict[str, Any]]:
         pool = await self._get_pool()
         rows = await pool.fetch(
             """
@@ -2828,7 +2884,9 @@ class LittleBullAdminStore:
         user_id: str,
     ) -> dict[str, Any]:
         pool = await self._get_pool()
-        agent_builder_session_id = str(payload.get("agent_builder_session_id") or new_id("lbbuild"))
+        agent_builder_session_id = str(
+            payload.get("agent_builder_session_id") or new_id("lbbuild")
+        )
         row = await pool.fetchrow(
             """
             INSERT INTO little_bull_agent_builder_sessions (
@@ -2975,7 +3033,14 @@ class LittleBullAdminStore:
         messages = list(payload.get("messages") or [])
         title = str(payload.get("title") or "").strip()
         if not title:
-            first_user = next((message.get("content") for message in messages if message.get("role") == "user"), "")
+            first_user = next(
+                (
+                    message.get("content")
+                    for message in messages
+                    if message.get("role") == "user"
+                ),
+                "",
+            )
             title = str(first_user or "Conversa Little Bull").strip()[:120]
         async with pool.acquire() as conn:
             async with conn.transaction():
@@ -3024,7 +3089,11 @@ class LittleBullAdminStore:
                         )
                         VALUES ($1,$2,$3,$4,$5::jsonb,$6::jsonb,$7)
                         """,
-                        str(message.get("message_id") or message.get("id") or new_id("lbmsg")),
+                        str(
+                            message.get("message_id")
+                            or message.get("id")
+                            or new_id("lbmsg")
+                        ),
                         conversation_id,
                         str(message.get("role") or "user"),
                         str(message.get("content") or ""),
@@ -3032,7 +3101,9 @@ class LittleBullAdminStore:
                         json.dumps({"order": index, **(message.get("metadata") or {})}),
                         utc_now(),
                     )
-        saved = self._conversation_from_row(row, messages=await self.list_messages(conversation_id))
+        saved = self._conversation_from_row(
+            row, messages=await self.list_messages(conversation_id)
+        )
         saved["message_count"] = len(saved["messages"])
         return saved
 
@@ -3071,7 +3142,9 @@ class LittleBullAdminStore:
         )
         if row is None:
             return None
-        return self._conversation_from_row(row, messages=await self.list_messages(conversation_id))
+        return self._conversation_from_row(
+            row, messages=await self.list_messages(conversation_id)
+        )
 
     async def list_messages(self, conversation_id: str) -> list[dict[str, Any]]:
         pool = await self._get_pool()
@@ -3133,7 +3206,9 @@ class LittleBullAdminStore:
         )
         return [self._suggestion_from_row(row) for row in rows]
 
-    async def get_correlation_suggestion(self, suggestion_id: str) -> dict[str, Any] | None:
+    async def get_correlation_suggestion(
+        self, suggestion_id: str
+    ) -> dict[str, Any] | None:
         pool = await self._get_pool()
         row = await pool.fetchrow(
             "SELECT * FROM little_bull_correlation_suggestions WHERE suggestion_id=$1",

@@ -4,12 +4,18 @@ import argparse
 import asyncio
 
 from .db import get_database_url, run_schema
-from .repositories import PostgresSystemRepository, default_tenant_and_workspace, membership_for_master
+from .repositories import (
+    PostgresSystemRepository,
+    default_tenant_and_workspace,
+    membership_for_master,
+)
 from .auth import SystemAuthService
 
 
 async def _main() -> int:
-    parser = argparse.ArgumentParser(description="Bootstrap the global Little Bull MASTER user.")
+    parser = argparse.ArgumentParser(
+        description="Bootstrap the global Little Bull MASTER user."
+    )
     parser.add_argument("--username", required=True)
     parser.add_argument("--password", required=True)
     parser.add_argument("--display-name", default=None)
@@ -17,7 +23,9 @@ async def _main() -> int:
 
     database_url = get_database_url()
     if not database_url:
-        print("LIGHTRAG_SYSTEM_DATABASE_URL/DATABASE_URL not set; bootstrap requires Postgres.")
+        print(
+            "LIGHTRAG_SYSTEM_DATABASE_URL/DATABASE_URL not set; bootstrap requires Postgres."
+        )
         return 1
 
     await run_schema(database_url)
@@ -42,4 +50,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

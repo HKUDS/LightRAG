@@ -91,19 +91,23 @@ class PrivateLocalGateway:
             ModelProfile.BALANCED_GENERAL,
         )
         contains_private_data = (
-            confidentiality in {"sensivel", "privado"} or workspace_contains_private_data
+            confidentiality in {"sensivel", "privado"}
+            or workspace_contains_private_data
         )
         effective_confidentiality = (
             confidentiality if confidentiality in {"sensivel", "privado"} else "privado"
         )
-        explicitly_private_profile = requested_gateway_profile == ModelProfile.LOCAL_PRIVATE
+        explicitly_private_profile = (
+            requested_gateway_profile == ModelProfile.LOCAL_PRIVATE
+        )
         hosted_private_exception = (
             not explicitly_private_profile
             and self._hosted_private_exception_allowed(
-            hosted_private_policy,
-            contains_private_data=contains_private_data or explicitly_private_profile,
+                hosted_private_policy,
+                contains_private_data=contains_private_data
+                or explicitly_private_profile,
                 confidentiality=effective_confidentiality,
-        )
+            )
         )
         requires_private_runtime = (
             strict
@@ -111,7 +115,12 @@ class PrivateLocalGateway:
             and not hosted_private_exception
         )
 
-        if strict and contains_private_data and not explicitly_private_profile and not hosted_private_exception:
+        if (
+            strict
+            and contains_private_data
+            and not explicitly_private_profile
+            and not hosted_private_exception
+        ):
             return self._blocked(
                 result="private_local_required",
                 reason="Private/local profile is required for sensitive or private documents.",
@@ -129,8 +138,12 @@ class PrivateLocalGateway:
             contains_private_data=requires_private_runtime,
             requested_profile=requested_gateway_profile,
         )
-        route_policy = ModelPolicy(require_private_for_private_data=requires_private_runtime)
-        route = PolicyModelRouter(self._runtime_catalog(), route_policy).route(route_context)
+        route_policy = ModelPolicy(
+            require_private_for_private_data=requires_private_runtime
+        )
+        route = PolicyModelRouter(self._runtime_catalog(), route_policy).route(
+            route_context
+        )
 
         if requires_private_runtime and not route.allowed:
             return self._blocked(
@@ -156,11 +169,17 @@ class PrivateLocalGateway:
             contains_private_data=contains_private_data,
             requires_private_runtime=requires_private_runtime,
             hosted_private_exception=hosted_private_exception,
-            hosted_private_provider=self._active_provider() if hosted_private_exception else None,
-            hosted_private_approval_id=self._hosted_private_policy_approval_id(hosted_private_policy)
+            hosted_private_provider=self._active_provider()
             if hosted_private_exception
             else None,
-            hosted_private_reason=self._hosted_private_policy_reason(hosted_private_policy)
+            hosted_private_approval_id=self._hosted_private_policy_approval_id(
+                hosted_private_policy
+            )
+            if hosted_private_exception
+            else None,
+            hosted_private_reason=self._hosted_private_policy_reason(
+                hosted_private_policy
+            )
             if hosted_private_exception
             else None,
             hosted_private_policy_hash=stable_policy_hash(hosted_private_policy)
@@ -217,7 +236,11 @@ class PrivateLocalGateway:
         policy_host = str(policy.get("binding_host", "")).strip().rstrip("/")
         if policy_host != self._active_host().rstrip("/"):
             return False
-        allowed_models = {str(model).strip() for model in policy.get("allowed_model_ids", []) if str(model).strip()}
+        allowed_models = {
+            str(model).strip()
+            for model in policy.get("allowed_model_ids", [])
+            if str(model).strip()
+        }
         if self._active_model_name() not in allowed_models:
             return False
         allowed_confidentiality = {
@@ -227,7 +250,11 @@ class PrivateLocalGateway:
         }
         if confidentiality not in allowed_confidentiality:
             return False
-        if not policy.get("approved_by") or not policy.get("approved_at") or not policy.get("reason"):
+        if (
+            not policy.get("approved_by")
+            or not policy.get("approved_at")
+            or not policy.get("reason")
+        ):
             return False
         expires_at = self._parse_datetime(policy.get("expires_at"))
         if expires_at is None or expires_at <= datetime.now(timezone.utc):
@@ -235,14 +262,18 @@ class PrivateLocalGateway:
         return True
 
     @staticmethod
-    def _hosted_private_policy_reason(policy: dict[str, Any] | bool | None) -> str | None:
+    def _hosted_private_policy_reason(
+        policy: dict[str, Any] | bool | None,
+    ) -> str | None:
         if isinstance(policy, dict):
             raw = policy.get("reason")
             return str(raw) if raw else None
         return None
 
     @staticmethod
-    def _hosted_private_policy_approval_id(policy: dict[str, Any] | bool | None) -> str | None:
+    def _hosted_private_policy_approval_id(
+        policy: dict[str, Any] | bool | None,
+    ) -> str | None:
         if isinstance(policy, dict):
             raw = policy.get("approval_id")
             return str(raw) if raw else None
@@ -285,7 +316,11 @@ class PrivateLocalGateway:
                     provider=provider,
                     family=binding,
                     context_window=getattr(self.rag, "summary_context_size", None),
-                    modalities={"input": ["text"], "output": ["text"], "raw": ["text->text"]},
+                    modalities={
+                        "input": ["text"],
+                        "output": ["text"],
+                        "raw": ["text->text"],
+                    },
                     privacy_flags={"hosted": True, "local": False, "private": False},
                 )
             )
@@ -300,7 +335,9 @@ class PrivateLocalGateway:
             )
         return ModelCatalog(entries=entries, source="lightrag-runtime")
 
-    def _model_func_for(self, model: ModelCatalogEntry | None) -> Callable[..., object] | None:
+    def _model_func_for(
+        self, model: ModelCatalogEntry | None
+    ) -> Callable[..., object] | None:
         configured_private_model = self._configured_private_local_model()
         if model is None or not configured_private_model:
             return None
@@ -323,8 +360,12 @@ class PrivateLocalGateway:
             if keyword_extraction:
                 kwargs["format"] = "json"
             kwargs.pop("hashing_kv", None)
-            kwargs["host"] = os.getenv("LITTLE_BULL_PRIVATE_LOCAL_HOST", "http://localhost:11434")
-            kwargs["timeout"] = int(os.getenv("LITTLE_BULL_PRIVATE_LOCAL_TIMEOUT", "60"))
+            kwargs["host"] = os.getenv(
+                "LITTLE_BULL_PRIVATE_LOCAL_HOST", "http://localhost:11434"
+            )
+            kwargs["timeout"] = int(
+                os.getenv("LITTLE_BULL_PRIVATE_LOCAL_TIMEOUT", "60")
+            )
             api_key = os.getenv("LITTLE_BULL_PRIVATE_LOCAL_API_KEY")
             if api_key:
                 kwargs["api_key"] = api_key
@@ -340,11 +381,15 @@ class PrivateLocalGateway:
         return private_ollama_model_complete
 
     def _active_binding(self) -> str:
-        return str(
-            getattr(self.rag, "little_bull_llm_binding", None)
-            or os.getenv("LLM_BINDING")
-            or "ollama"
-        ).strip().lower()
+        return (
+            str(
+                getattr(self.rag, "little_bull_llm_binding", None)
+                or os.getenv("LLM_BINDING")
+                or "ollama"
+            )
+            .strip()
+            .lower()
+        )
 
     def _active_model_name(self) -> str:
         return str(
@@ -375,7 +420,11 @@ class PrivateLocalGateway:
         model = raw.strip()
         if not model:
             return None
-        return model if "/" in model else f"{PrivateLocalGateway._configured_private_local_binding()}/{model}"
+        return (
+            model
+            if "/" in model
+            else f"{PrivateLocalGateway._configured_private_local_binding()}/{model}"
+        )
 
     @staticmethod
     def _configured_private_local_binding() -> str:

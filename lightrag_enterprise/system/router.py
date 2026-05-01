@@ -48,26 +48,36 @@ class HostedPrivateLlmExceptionPolicyRequest(BaseModel):
     binding: str = "openai"
     binding_host: str = "https://openrouter.ai/api/v1"
     allowed_model_ids: list[str] = Field(default_factory=list)
-    allowed_confidentiality: list[str] = Field(default_factory=lambda: ["sensivel", "privado"])
+    allowed_confidentiality: list[str] = Field(
+        default_factory=lambda: ["sensivel", "privado"]
+    )
     expires_at: str | None = None
     approval_id: str | None = None
     reason: str = Field(min_length=8)
     ticket_id: str | None = None
 
 
-def create_system_router(approval_executor: ApprovalActionExecutor | None = None) -> APIRouter:
+def create_system_router(
+    approval_executor: ApprovalActionExecutor | None = None,
+) -> APIRouter:
     router = APIRouter(tags=["little-bull-system"])
 
     @router.post("/auth/login")
     async def auth_login(form_data: OAuth2PasswordRequestForm = Depends()):
         auth = get_system_auth_service()
         try:
-            _, principal = await auth.authenticate(form_data.username, form_data.password)
+            _, principal = await auth.authenticate(
+                form_data.username, form_data.password
+            )
             auth.require_token_secret()
         except ValueError as exc:
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Incorrect credentials") from exc
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED, detail="Incorrect credentials"
+            ) from exc
         except RuntimeError as exc:
-            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
+            ) from exc
         return {
             "access_token": auth.create_token(principal),
             "token_type": "bearer",
@@ -92,14 +102,18 @@ def create_system_router(approval_executor: ApprovalActionExecutor | None = None
                 detail="LITTLE_BULL_BOOTSTRAP_TOKEN must be set for HTTP bootstrap; use the CLI for local bootstrap.",
             )
         if x_little_bull_bootstrap_token != expected:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid bootstrap token")
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN, detail="Invalid bootstrap token"
+            )
 
         repo = get_system_repository()
         auth = get_system_auth_service()
         try:
             auth.require_token_secret()
         except RuntimeError as exc:
-            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
+            ) from exc
         tenant = Tenant(tenant_id="default", name=request.tenant_name)
         workspace = Workspace(
             workspace_id="default",
@@ -117,7 +131,9 @@ def create_system_router(approval_executor: ApprovalActionExecutor | None = None
                 display_name=request.display_name,
             )
         except ValueError as exc:
-            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT, detail=str(exc)
+            ) from exc
         await repo.create_membership(membership_for_master(user.user_id))
         principal = await auth.principal_for_user(user)
         await get_audit_service().record(
@@ -126,7 +142,9 @@ def create_system_router(approval_executor: ApprovalActionExecutor | None = None
             tenant_id=tenant.tenant_id,
             workspace_id=workspace.workspace_id,
             result="success",
-            metadata={"client_host": raw_request.client.host if raw_request.client else None},
+            metadata={
+                "client_host": raw_request.client.host if raw_request.client else None
+            },
         )
         return {
             "user": user.public_dict(),
@@ -139,26 +157,46 @@ def create_system_router(approval_executor: ApprovalActionExecutor | None = None
     @router.get("/system/tenants")
     async def list_tenants(principal=Depends(require_principal)):
         if not principal.is_master_global:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="MASTER required")
-        return {"tenants": [tenant.__dict__ for tenant in await get_system_repository().list_tenants()]}
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN, detail="MASTER required"
+            )
+        return {
+            "tenants": [
+                tenant.__dict__
+                for tenant in await get_system_repository().list_tenants()
+            ]
+        }
 
     @router.get("/system/workspaces")
     async def list_workspaces(principal=Depends(require_principal)):
         repo = get_system_repository()
-        workspaces = await repo.list_workspaces(None if principal.is_master_global else principal.tenant_id)
+        workspaces = await repo.list_workspaces(
+            None if principal.is_master_global else principal.tenant_id
+        )
         if not principal.is_master_global:
-            workspaces = [workspace for workspace in workspaces if workspace.workspace_id in principal.workspace_ids]
+            workspaces = [
+                workspace
+                for workspace in workspaces
+                if workspace.workspace_id in principal.workspace_ids
+            ]
         return {"workspaces": [workspace.__dict__ for workspace in workspaces]}
 
     @router.post("/system/users")
-    async def create_user(request: CreateUserRequest, principal=Depends(require_principal)):
+    async def create_user(
+        request: CreateUserRequest, principal=Depends(require_principal)
+    ):
         if not principal.is_master_global:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="MASTER required")
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN, detail="MASTER required"
+            )
         from .auth import hash_password
         from .models import SystemUser
 
         if request.role not in {OPERATOR_ROLE, MANAGER_ROLE}:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unsupported role preset")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Unsupported role preset",
+            )
         repo = get_system_repository()
         user = await repo.create_user(
             SystemUser(
@@ -185,16 +223,30 @@ def create_system_router(approval_executor: ApprovalActionExecutor | None = None
         principal=Depends(require_principal),
     ):
         if not principal.is_master_global:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="MASTER required")
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN, detail="MASTER required"
+            )
         if request.schema_version != 1:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unsupported policy schema_version")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Unsupported policy schema_version",
+            )
         normalized_confidentiality = sorted(
-            {item.strip().lower() for item in request.allowed_confidentiality if item.strip()}
+            {
+                item.strip().lower()
+                for item in request.allowed_confidentiality
+                if item.strip()
+            }
         )
         if not set(normalized_confidentiality).issubset({"sensivel", "privado"}):
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unsupported confidentiality scope")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Unsupported confidentiality scope",
+            )
         if request.enabled and not request.expires_at:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="expires_at is required")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST, detail="expires_at is required"
+            )
         try:
             expires_at = (
                 datetime.fromisoformat(request.expires_at.replace("Z", "+00:00"))
@@ -202,11 +254,18 @@ def create_system_router(approval_executor: ApprovalActionExecutor | None = None
                 else datetime.now(timezone.utc)
             )
         except ValueError as exc:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid expires_at") from exc
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid expires_at"
+            ) from exc
         if expires_at.tzinfo is None:
             expires_at = expires_at.replace(tzinfo=timezone.utc)
-        if request.enabled and expires_at.astimezone(timezone.utc) <= datetime.now(timezone.utc):
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="expires_at must be in the future")
+        if request.enabled and expires_at.astimezone(timezone.utc) <= datetime.now(
+            timezone.utc
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="expires_at must be in the future",
+            )
         previous_policy = await get_system_repository().get_policy(
             PRIVATE_DATA_HOSTED_LLM_EXCEPTION_POLICY,
             tenant_id=request.tenant_id,
@@ -218,17 +277,26 @@ def create_system_router(approval_executor: ApprovalActionExecutor | None = None
             "provider": request.provider.strip().lower(),
             "binding": request.binding.strip().lower(),
             "binding_host": request.binding_host.strip().rstrip("/"),
-            "allowed_model_ids": sorted({model.strip() for model in request.allowed_model_ids if model.strip()}),
+            "allowed_model_ids": sorted(
+                {model.strip() for model in request.allowed_model_ids if model.strip()}
+            ),
             "allowed_confidentiality": normalized_confidentiality,
-            "expires_at": expires_at.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "expires_at": expires_at.astimezone(timezone.utc)
+            .isoformat()
+            .replace("+00:00", "Z"),
             "approved_by": principal.user_id,
-            "approved_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "approved_at": datetime.now(timezone.utc)
+            .isoformat()
+            .replace("+00:00", "Z"),
             "approval_id": request.approval_id,
             "reason": request.reason,
             "ticket_id": request.ticket_id,
         }
         if request.enabled and not policy["allowed_model_ids"]:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="At least one model id is required")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="At least one model id is required",
+            )
         await get_system_repository().set_policy(
             PRIVATE_DATA_HOSTED_LLM_EXCEPTION_POLICY,
             policy,
@@ -253,7 +321,9 @@ def create_system_router(approval_executor: ApprovalActionExecutor | None = None
                 "reason": policy["reason"],
                 "ticket_id": policy["ticket_id"],
                 "policy_hash": policy_hash,
-                "previous_policy_hash": stable_policy_hash(previous_policy) if previous_policy else None,
+                "previous_policy_hash": stable_policy_hash(previous_policy)
+                if previous_policy
+                else None,
             },
         )
         return {"policy": policy, "policy_hash": policy_hash}
@@ -265,7 +335,9 @@ def create_system_router(approval_executor: ApprovalActionExecutor | None = None
             activity=ACTIVITY_APPROVAL_READ,
         )
         if not decision.allowed:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=decision.reason)
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN, detail=decision.reason
+            )
         approvals = await get_approval_service().list(
             tenant_id=None if principal.is_master_global else principal.tenant_id,
             workspace_id=None,
@@ -274,7 +346,8 @@ def create_system_router(approval_executor: ApprovalActionExecutor | None = None
             approvals = [
                 approval
                 for approval in approvals
-                if approval.workspace_id is None or approval.workspace_id in principal.workspace_ids
+                if approval.workspace_id is None
+                or approval.workspace_id in principal.workspace_ids
             ]
         return {"approvals": [approval.to_dict() for approval in approvals]}
 
@@ -294,9 +367,13 @@ def create_system_router(approval_executor: ApprovalActionExecutor | None = None
                 audit_result = outcome.audit_result
                 audit_metadata = outcome.metadata
         except PermissionError as exc:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)
+            ) from exc
         except ValueError as exc:
-            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT, detail=str(exc)
+            ) from exc
         except ApprovalExecutionError as exc:
             await get_audit_service().record(
                 principal=principal,
@@ -316,9 +393,13 @@ def create_system_router(approval_executor: ApprovalActionExecutor | None = None
                 approval_id=exc.approval.approval_id,
                 metadata=exc.metadata,
             )
-            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)) from exc
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)
+            ) from exc
         except KeyError as exc:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Approval not found") from exc
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Approval not found"
+            ) from exc
         if audit_result == "executed":
             await get_audit_service().record(
                 principal=principal,
@@ -345,11 +426,17 @@ def create_system_router(approval_executor: ApprovalActionExecutor | None = None
         try:
             approval = await get_approval_service().reject(approval_id, principal)
         except PermissionError as exc:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)
+            ) from exc
         except ValueError as exc:
-            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT, detail=str(exc)
+            ) from exc
         except KeyError as exc:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Approval not found") from exc
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Approval not found"
+            ) from exc
         await get_audit_service().record(
             principal=principal,
             action="little_bull.approvals.reject",
@@ -368,11 +455,15 @@ def create_system_router(approval_executor: ApprovalActionExecutor | None = None
             workspace_id=None,
         )
         if not decision.allowed:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=decision.reason)
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN, detail=decision.reason
+            )
         events = await get_audit_service().list(
             tenant_id=None if principal.is_master_global else principal.tenant_id,
             workspace_id=None,
-            workspace_ids=None if principal.is_master_global else principal.workspace_ids,
+            workspace_ids=None
+            if principal.is_master_global
+            else principal.workspace_ids,
             limit=min(max(limit, 1), 500),
         )
         return {"events": [event.to_dict() for event in events]}

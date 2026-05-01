@@ -89,8 +89,12 @@ async def test_operator_permission_and_workspace_scope_are_enforced():
     principal = await auth.principal_for_user(user)
     access = AccessControlService()
 
-    assert access.require(principal, activity=ACTIVITY_QUERY, workspace_id="workspace-a").allowed
-    assert not access.require(principal, activity=ACTIVITY_QUERY, workspace_id="workspace-b").allowed
+    assert access.require(
+        principal, activity=ACTIVITY_QUERY, workspace_id="workspace-a"
+    ).allowed
+    assert not access.require(
+        principal, activity=ACTIVITY_QUERY, workspace_id="workspace-b"
+    ).allowed
     assert not access.require(
         principal, activity=ACTIVITY_DOCUMENT_DELETE, workspace_id="workspace-a"
     ).allowed
@@ -180,7 +184,9 @@ async def test_approval_decision_requires_scope_and_pending_status():
 
 
 @pytest.mark.asyncio
-async def test_core_auth_dependency_requires_enterprise_token_when_users_exist(monkeypatch):
+async def test_core_auth_dependency_requires_enterprise_token_when_users_exist(
+    monkeypatch,
+):
     import sys
 
     monkeypatch.setattr(sys, "argv", ["pytest"])
@@ -191,14 +197,19 @@ async def test_core_auth_dependency_requires_enterprise_token_when_users_exist(m
         async def has_users(self):
             return True
 
-    monkeypatch.setattr(runtime, "get_system_auth_service", lambda: FakeEnterpriseAuth())
+    monkeypatch.setattr(
+        runtime, "get_system_auth_service", lambda: FakeEnterpriseAuth()
+    )
     monkeypatch.setattr(runtime, "little_bull_functional_enabled", lambda: True)
 
     dependency = get_combined_auth_dependency()
     request = type(
         "Request",
         (),
-        {"url": type("Url", (), {"path": "/query"})(), "state": type("State", (), {})()},
+        {
+            "url": type("Url", (), {"path": "/query"})(),
+            "state": type("State", (), {})(),
+        },
     )()
     response = type("Response", (), {"headers": {}})()
 
@@ -240,7 +251,9 @@ def test_runtime_allows_in_memory_repository_only_with_explicit_flag(monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_enterprise_auth_state_is_unavailable_without_required_repository(monkeypatch):
+async def test_enterprise_auth_state_is_unavailable_without_required_repository(
+    monkeypatch,
+):
     import lightrag.api.utils_api as utils_api
     import lightrag_enterprise.system.runtime as runtime
 
@@ -251,13 +264,18 @@ async def test_enterprise_auth_state_is_unavailable_without_required_repository(
     _clear_runtime_caches(runtime)
 
     try:
-        assert await utils_api.get_enterprise_auth_state() == utils_api.ENTERPRISE_AUTH_UNAVAILABLE
+        assert (
+            await utils_api.get_enterprise_auth_state()
+            == utils_api.ENTERPRISE_AUTH_UNAVAILABLE
+        )
     finally:
         _clear_runtime_caches(runtime)
 
 
 @pytest.mark.asyncio
-async def test_core_auth_dependency_fails_closed_when_enterprise_check_is_unavailable(monkeypatch):
+async def test_core_auth_dependency_fails_closed_when_enterprise_check_is_unavailable(
+    monkeypatch,
+):
     import sys
 
     monkeypatch.setattr(sys, "argv", ["pytest"])
@@ -268,14 +286,19 @@ async def test_core_auth_dependency_fails_closed_when_enterprise_check_is_unavai
         async def has_users(self):
             raise RuntimeError("database unavailable")
 
-    monkeypatch.setattr(runtime, "get_system_auth_service", lambda: BrokenEnterpriseAuth())
+    monkeypatch.setattr(
+        runtime, "get_system_auth_service", lambda: BrokenEnterpriseAuth()
+    )
     monkeypatch.setattr(runtime, "little_bull_functional_enabled", lambda: True)
 
     dependency = get_combined_auth_dependency(api_key="test-api-key")
     request = type(
         "Request",
         (),
-        {"url": type("Url", (), {"path": "/query"})(), "state": type("State", (), {})()},
+        {
+            "url": type("Url", (), {"path": "/query"})(),
+            "state": type("State", (), {})(),
+        },
     )()
     response = type("Response", (), {"headers": {}})()
 

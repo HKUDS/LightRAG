@@ -9,7 +9,9 @@ import pytest
 
 from lightrag_enterprise.little_bull import admin_store
 from lightrag_enterprise.little_bull import models
-from lightrag_enterprise.system.little_bull_admin_schema import LITTLE_BULL_ADMIN_SCHEMA_SQL
+from lightrag_enterprise.system.little_bull_admin_schema import (
+    LITTLE_BULL_ADMIN_SCHEMA_SQL,
+)
 
 
 PHASE1_TABLES = {
@@ -53,7 +55,13 @@ WORKSPACE_NULLABLE_TABLES = {
 }
 
 ALLOWED_SECRET_COLUMNS = {"secret_ref", "secret_fingerprint", "credential_kind"}
-FORBIDDEN_RAW_SECRET_COLUMNS = {"api_key", "access_token", "refresh_token", "password", "secret_value"}
+FORBIDDEN_RAW_SECRET_COLUMNS = {
+    "api_key",
+    "access_token",
+    "refresh_token",
+    "password",
+    "secret_value",
+}
 
 
 def _table_blocks() -> dict[str, str]:
@@ -99,7 +107,10 @@ def test_phase1_schema_has_no_raw_secret_columns():
             for match in re.finditer(r"^\s+([a-z_]+)\s+[A-Z]", block, re.MULTILINE)
         }
         for column_name in column_names - ALLOWED_SECRET_COLUMNS:
-            assert column_name not in FORBIDDEN_RAW_SECRET_COLUMNS, (table_name, column_name)
+            assert column_name not in FORBIDDEN_RAW_SECRET_COLUMNS, (
+                table_name,
+                column_name,
+            )
 
 
 def test_phase1_schema_guards_append_only_and_nullable_uniques():
@@ -121,11 +132,19 @@ def test_phase1_schema_guards_append_only_and_nullable_uniques():
     assert "idx_little_bull_knowledge_trail_steps_document" in sql
     assert "idx_little_bull_knowledge_trail_steps_canvas" in sql
     assert "idx_little_bull_knowledge_inbox_items_source" in sql
-    insert_source = inspect.getsource(admin_store.LittleBullAdminStore.insert_llm_usage_ledger)
-    reserve_source = inspect.getsource(admin_store.LittleBullAdminStore.reserve_llm_usage_budget)
+    insert_source = inspect.getsource(
+        admin_store.LittleBullAdminStore.insert_llm_usage_ledger
+    )
+    reserve_source = inspect.getsource(
+        admin_store.LittleBullAdminStore.reserve_llm_usage_budget
+    )
     assert "llm_usage_ledger" in insert_source
-    assert insert_source.index("pg_advisory_xact_lock") < insert_source.index("created_at = utc_now()")
-    assert reserve_source.index("llm_usage_ledger") < reserve_source.index("created_at = utc_now()")
+    assert insert_source.index("pg_advisory_xact_lock") < insert_source.index(
+        "created_at = utc_now()"
+    )
+    assert reserve_source.index("llm_usage_ledger") < reserve_source.index(
+        "created_at = utc_now()"
+    )
 
 
 def test_phase8_admin_store_upserts_have_id_update_paths_and_scope_guards():
@@ -159,11 +178,18 @@ def test_little_bull_conversation_upsert_is_scoped_before_rewriting_messages():
     assert "scope_snapshot JSONB" in LITTLE_BULL_ADMIN_SCHEMA_SQL
     assert "conversation_scope_mismatch" in source
     assert "scope_snapshot" in source
-    assert "little_bull_conversations.tenant_id IS NOT DISTINCT FROM EXCLUDED.tenant_id" in source
+    assert (
+        "little_bull_conversations.tenant_id IS NOT DISTINCT FROM EXCLUDED.tenant_id"
+        in source
+    )
     assert "little_bull_conversations.workspace_id = EXCLUDED.workspace_id" in source
     assert "little_bull_conversations.user_id = EXCLUDED.user_id" in source
-    assert "little_bull_conversations.scope_snapshot = EXCLUDED.scope_snapshot" in source
-    assert source.index("if row is None") < source.index("DELETE FROM little_bull_conversation_messages")
+    assert (
+        "little_bull_conversations.scope_snapshot = EXCLUDED.scope_snapshot" in source
+    )
+    assert source.index("if row is None") < source.index(
+        "DELETE FROM little_bull_conversation_messages"
+    )
 
 
 def test_phase1_contracts_serialize_minimal_payloads_without_secret_values():
@@ -191,7 +217,9 @@ def test_phase1_contracts_serialize_minimal_payloads_without_secret_values():
             updated_by="usr_master",
         ),
         models.KnowledgeGroup(**base, slug="juridico", name="Juridico"),
-        models.KnowledgeSubgroup(**base, group_id="grp_1", slug="inicial", name="Inicial"),
+        models.KnowledgeSubgroup(
+            **base, group_id="grp_1", slug="inicial", name="Inicial"
+        ),
         models.DocumentRegistry(**base, title="Peticao inicial"),
         models.NoteRegistry(**base, title="Mapa do caso", slug="mapa-do-caso"),
         models.EmbeddingIndexVersion(
@@ -224,18 +252,33 @@ def test_phase1_contracts_serialize_minimal_payloads_without_secret_values():
             step_order=1,
             title="Comece aqui",
         ),
-        models.Backlink(**base, source_kind="note", source_id="note_1", target_kind="doc", target_id="doc_1"),
+        models.Backlink(
+            **base,
+            source_kind="note",
+            source_id="note_1",
+            target_kind="doc",
+            target_id="doc_1",
+        ),
         models.GraphChatSession(**base),
         models.AgentBuilderSession(**base, user_id="usr_master"),
         models.AgentContextBudget(**base, agent_id="agent_1"),
-        models.MarkdownNote(**base, note_id="note_1", markdown="# Nota", content_hash="sha256:note"),
+        models.MarkdownNote(
+            **base, note_id="note_1", markdown="# Nota", content_hash="sha256:note"
+        ),
         models.WikiLink(**base, source_note_id="note_1", target_label="Mapa"),
         models.TagRegistry(**base, tag="#juridico", label="Juridico"),
         models.ContentMap(**base, title="MOC Juridico", slug="moc-juridico"),
         models.CanvasBoard(**base, title="Canvas do caso", slug="canvas-caso"),
         models.CanvasNode(**base, canvas_board_id="canvas_1", node_kind="note"),
-        models.CanvasEdge(**base, canvas_board_id="canvas_1", source_node_id="node_1", target_node_id="node_2"),
-        models.KnowledgeInboxItem(**base, item_kind="quick_note", title="Triar documento"),
+        models.CanvasEdge(
+            **base,
+            canvas_board_id="canvas_1",
+            source_node_id="node_1",
+            target_node_id="node_2",
+        ),
+        models.KnowledgeInboxItem(
+            **base, item_kind="quick_note", title="Triar documento"
+        ),
         models.DailyNote(**base, note_id="note_daily", note_date="2026-04-30"),
         models.NoteTemplate(**base, title="Ata", slug="ata", markdown_template="# Ata"),
         models.CommandPaletteAction(
@@ -302,11 +345,15 @@ async def test_little_bull_admin_store_bootstraps_full_system_schema(monkeypatch
     async def create_pool(*_args, **_kwargs):
         return FakePool()
 
-    monkeypatch.setitem(sys.modules, "asyncpg", SimpleNamespace(create_pool=create_pool))
+    monkeypatch.setitem(
+        sys.modules, "asyncpg", SimpleNamespace(create_pool=create_pool)
+    )
 
     store = admin_store.LittleBullAdminStore("postgresql://app:secret@localhost/db")
     await store._get_pool()
 
     assert executed_sql
     assert "CREATE TABLE IF NOT EXISTS system_users" in executed_sql[0]
-    assert "CREATE TABLE IF NOT EXISTS little_bull_provider_credentials" in executed_sql[0]
+    assert (
+        "CREATE TABLE IF NOT EXISTS little_bull_provider_credentials" in executed_sql[0]
+    )

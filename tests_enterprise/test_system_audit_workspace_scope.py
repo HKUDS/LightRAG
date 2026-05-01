@@ -14,7 +14,9 @@ from lightrag_enterprise.system.repositories import InMemorySystemRepository
 from lightrag_enterprise.system.router import create_system_router
 
 
-def _principal(role: str, *, workspace_ids: tuple[str, ...], master: bool = False) -> Principal:
+def _principal(
+    role: str, *, workspace_ids: tuple[str, ...], master: bool = False
+) -> Principal:
     roles = (MASTER_ROLE,) if master else (role,)
     return Principal(
         user_id=f"usr_{role}",
@@ -30,7 +32,9 @@ def _principal(role: str, *, workspace_ids: tuple[str, ...], master: bool = Fals
 
 async def _seed_audit_events(repo: InMemorySystemRepository):
     audit = AuditService(repo)
-    master = _principal(MASTER_ROLE, workspace_ids=("workspace-a", "workspace-b"), master=True)
+    master = _principal(
+        MASTER_ROLE, workspace_ids=("workspace-a", "workspace-b"), master=True
+    )
     await audit.record(
         principal=master,
         action="little_bull.query",
@@ -65,7 +69,9 @@ async def _seed_audit_events(repo: InMemorySystemRepository):
     )
 
 
-def _client_for_principal(repo: InMemorySystemRepository, principal: Principal) -> TestClient:
+def _client_for_principal(
+    repo: InMemorySystemRepository, principal: Principal
+) -> TestClient:
     from fastapi import FastAPI
     import lightrag_enterprise.system.router as system_router
 
@@ -81,7 +87,9 @@ async def test_audit_events_manager_is_scoped_to_own_workspaces(monkeypatch):
 
     repo = InMemorySystemRepository()
     await _seed_audit_events(repo)
-    monkeypatch.setattr(system_router, "get_access_service", lambda: AccessControlService())
+    monkeypatch.setattr(
+        system_router, "get_access_service", lambda: AccessControlService()
+    )
     monkeypatch.setattr(system_router, "get_audit_service", lambda: AuditService(repo))
     manager = _principal(MANAGER_ROLE, workspace_ids=("workspace-a",))
 
@@ -98,9 +106,13 @@ async def test_audit_events_master_sees_all_workspaces(monkeypatch):
 
     repo = InMemorySystemRepository()
     await _seed_audit_events(repo)
-    monkeypatch.setattr(system_router, "get_access_service", lambda: AccessControlService())
+    monkeypatch.setattr(
+        system_router, "get_access_service", lambda: AccessControlService()
+    )
     monkeypatch.setattr(system_router, "get_audit_service", lambda: AuditService(repo))
-    master = _principal(MASTER_ROLE, workspace_ids=("workspace-a", "workspace-b"), master=True)
+    master = _principal(
+        MASTER_ROLE, workspace_ids=("workspace-a", "workspace-b"), master=True
+    )
 
     response = _client_for_principal(repo, master).get("/audit/events")
 
@@ -115,7 +127,9 @@ async def test_audit_events_manager_limit_is_applied_after_scope_filter(monkeypa
 
     repo = InMemorySystemRepository()
     audit = AuditService(repo)
-    master = _principal(MASTER_ROLE, workspace_ids=("workspace-a", "workspace-b"), master=True)
+    master = _principal(
+        MASTER_ROLE, workspace_ids=("workspace-a", "workspace-b"), master=True
+    )
     await audit.record(
         principal=master,
         action=ACTIVITY_AUDIT_READ,
@@ -133,7 +147,9 @@ async def test_audit_events_manager_limit_is_applied_after_scope_filter(monkeypa
             result="success",
             metadata={"marker": f"foreign-new-{index}"},
         )
-    monkeypatch.setattr(system_router, "get_access_service", lambda: AccessControlService())
+    monkeypatch.setattr(
+        system_router, "get_access_service", lambda: AccessControlService()
+    )
     monkeypatch.setattr(system_router, "get_audit_service", lambda: audit)
     manager = _principal(MANAGER_ROLE, workspace_ids=("workspace-a",))
 

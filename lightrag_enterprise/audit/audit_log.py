@@ -31,8 +31,7 @@ class AuditSink(Protocol):
         tenant_id: str,
         workspace: str,
         metadata: dict[str, Any] | None = None,
-    ) -> AuditEvent:
-        ...
+    ) -> AuditEvent: ...
 
 
 @dataclass

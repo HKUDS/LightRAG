@@ -42,8 +42,14 @@ class SystemAuthService:
         expire_hours: int = 24,
     ) -> None:
         self.repository = repository
-        self.secret = secret or os.getenv("LIGHTRAG_SYSTEM_TOKEN_SECRET") or os.getenv("TOKEN_SECRET")
-        if self.secret is None and os.getenv("LIGHTRAG_SYSTEM_ALLOW_INSECURE_DEV_SECRET", "").lower() in {
+        self.secret = (
+            secret
+            or os.getenv("LIGHTRAG_SYSTEM_TOKEN_SECRET")
+            or os.getenv("TOKEN_SECRET")
+        )
+        if self.secret is None and os.getenv(
+            "LIGHTRAG_SYSTEM_ALLOW_INSECURE_DEV_SECRET", ""
+        ).lower() in {
             "1",
             "true",
             "yes",
@@ -80,21 +86,33 @@ class SystemAuthService:
         )
         return await self.repository.create_user(user)
 
-    async def authenticate(self, username: str, password: str) -> tuple[SystemUser, Principal]:
+    async def authenticate(
+        self, username: str, password: str
+    ) -> tuple[SystemUser, Principal]:
         user = await self.repository.get_user_by_username(username)
-        if user is None or not user.is_active or not verify_password(password, user.password_hash):
+        if (
+            user is None
+            or not user.is_active
+            or not verify_password(password, user.password_hash)
+        ):
             raise ValueError("Incorrect credentials")
         return user, await self.principal_for_user(user)
 
     async def principal_for_user(self, user: SystemUser) -> Principal:
         memberships = await self.repository.list_memberships_for_user(user.user_id)
-        roles: set[str] = {role for membership in memberships for role in membership.roles}
-        workspace_ids = tuple(sorted({membership.workspace_id for membership in memberships}))
+        roles: set[str] = {
+            role for membership in memberships for role in membership.roles
+        }
+        workspace_ids = tuple(
+            sorted({membership.workspace_id for membership in memberships})
+        )
         tenant_id = memberships[0].tenant_id if memberships else None
         if user.is_master_global:
             roles.add(MASTER_ROLE)
             workspaces = await self.repository.list_workspaces()
-            workspace_ids = tuple(sorted({workspace.workspace_id for workspace in workspaces}))
+            workspace_ids = tuple(
+                sorted({workspace.workspace_id for workspace in workspaces})
+            )
             if tenant_id is None and workspaces:
                 tenant_id = workspaces[0].tenant_id
         permissions = permissions_for_roles(roles)
@@ -114,7 +132,11 @@ class SystemAuthService:
         expire = datetime.now(timezone.utc) + timedelta(hours=self.expire_hours)
         payload: dict[str, Any] = principal.to_token_payload()
         payload["exp"] = expire
-        payload["role"] = "master" if principal.is_master_global else (principal.roles[0] if principal.roles else "user")
+        payload["role"] = (
+            "master"
+            if principal.is_master_global
+            else (principal.roles[0] if principal.roles else "user")
+        )
         payload["metadata"] = {"auth_mode": "enterprise"}
         return jwt.encode(payload, self.secret, algorithm=self.algorithm)
 

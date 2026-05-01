@@ -7,7 +7,12 @@ from .catalog import (
     ModelProfile,
 )
 from .openrouter import OpenRouterCatalogClient, sync_openrouter_catalog
-from .policy import ModelPolicy, ModelRouteDecision, ModelRoutingContext, PolicyModelRouter
+from .policy import (
+    ModelPolicy,
+    ModelRouteDecision,
+    ModelRoutingContext,
+    PolicyModelRouter,
+)
 
 __all__ = [
     "ModelCatalog",

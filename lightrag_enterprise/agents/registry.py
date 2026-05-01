@@ -21,7 +21,11 @@ AGENT_SPECS: dict[str, AgentSpec] = {
     "planner_agent": AgentSpec(
         name="planner_agent",
         mission="Compare bounded execution plans and emit only decisions, trade-offs, and validations.",
-        allowed_skills=("route_model_by_policy", "validate_json_output", "audit_action"),
+        allowed_skills=(
+            "route_model_by_policy",
+            "validate_json_output",
+            "audit_action",
+        ),
     ),
     "retrieval_agent": AgentSpec(
         name="retrieval_agent",
@@ -56,7 +60,11 @@ AGENT_SPECS: dict[str, AgentSpec] = {
     "model_router_agent": AgentSpec(
         name="model_router_agent",
         mission="Select runtime-visible and policy-permitted models.",
-        allowed_skills=("sync_model_catalog", "get_model_catalog", "route_model_by_policy"),
+        allowed_skills=(
+            "sync_model_catalog",
+            "get_model_catalog",
+            "route_model_by_policy",
+        ),
     ),
     "compliance_audit_agent": AgentSpec(
         name="compliance_audit_agent",

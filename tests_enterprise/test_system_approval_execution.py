@@ -12,7 +12,10 @@ from lightrag_enterprise.system import (
     MANAGER_ROLE,
     Principal,
 )
-from lightrag_enterprise.system.approval_execution import ApprovalActionExecutor, ApprovalExecutionOutcome
+from lightrag_enterprise.system.approval_execution import (
+    ApprovalActionExecutor,
+    ApprovalExecutionOutcome,
+)
 from lightrag_enterprise.system.permissions import permissions_for_roles
 from lightrag_enterprise.system.repositories import InMemorySystemRepository
 from lightrag_enterprise.system.router import create_system_router
@@ -52,11 +55,17 @@ def _client(
 
     approvals = ApprovalService(repo)
     audit = AuditService(repo)
-    monkeypatch.setattr(system_router, "get_access_service", lambda: AccessControlService())
+    monkeypatch.setattr(
+        system_router, "get_access_service", lambda: AccessControlService()
+    )
     monkeypatch.setattr(system_router, "get_approval_service", lambda: approvals)
     monkeypatch.setattr(system_router, "get_audit_service", lambda: audit)
     app = FastAPI()
-    app.include_router(create_system_router(ApprovalActionExecutor(rag, action_handlers=action_handlers)))
+    app.include_router(
+        create_system_router(
+            ApprovalActionExecutor(rag, action_handlers=action_handlers)
+        )
+    )
     app.dependency_overrides[system_router.require_principal] = lambda: principal
     return TestClient(app)
 
@@ -91,13 +100,17 @@ async def test_approval_approve_executes_document_delete_and_audits(monkeypatch)
     assert response.json()["status"] == "executed"
     assert rag.deleted_doc_ids == ["doc-1"]
     events = await repo.list_audit_events(tenant_id="default")
-    approval_events = [event for event in events if event.approval_id == approval.approval_id]
+    approval_events = [
+        event for event in events if event.approval_id == approval.approval_id
+    ]
     assert {event.action for event in approval_events} >= {
         "little_bull.approvals.approve",
         ACTIVITY_DOCUMENT_DELETE,
     }
     assert any(event.result == "executed" for event in approval_events)
-    assert any(event.metadata.get("document_id") == "doc-1" for event in approval_events)
+    assert any(
+        event.metadata.get("document_id") == "doc-1" for event in approval_events
+    )
 
 
 @pytest.mark.asyncio
@@ -157,7 +170,11 @@ async def test_approval_approve_executes_registered_reindex_handler(monkeypatch)
         tenant_id="default",
         workspace_id="default",
         reason="Knowledge base reindex requires approval.",
-        payload={"workspace_id": "default", "include_archived": True, "include_input_root": True},
+        payload={
+            "workspace_id": "default",
+            "include_archived": True,
+            "include_input_root": True,
+        },
     )
     executed: list[str] = []
 

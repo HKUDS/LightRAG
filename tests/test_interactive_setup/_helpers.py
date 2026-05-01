@@ -53,7 +53,9 @@ def _resolve_bash() -> str:
 BASH_BIN = _resolve_bash()
 
 if Path(BASH_BIN).is_absolute():
-    os.environ["PATH"] = f"{Path(BASH_BIN).parent}{os.pathsep}{os.environ.get('PATH', '')}"
+    os.environ["PATH"] = (
+        f"{Path(BASH_BIN).parent}{os.pathsep}{os.environ.get('PATH', '')}"
+    )
 
 
 def run_bash_process(

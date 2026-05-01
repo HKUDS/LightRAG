@@ -84,7 +84,9 @@ ROLE_PERMISSIONS: dict[str, frozenset[str]] = {
 }
 
 
-def permissions_for_roles(roles: tuple[str, ...] | list[str] | set[str]) -> frozenset[str]:
+def permissions_for_roles(
+    roles: tuple[str, ...] | list[str] | set[str],
+) -> frozenset[str]:
     permissions: set[str] = set()
     for role in roles:
         permissions.update(ROLE_PERMISSIONS.get(str(role), frozenset()))

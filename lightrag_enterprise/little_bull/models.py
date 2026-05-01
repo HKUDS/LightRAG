@@ -310,7 +310,9 @@ class LittleBullInboxItemStatusRequest(BaseModel):
 
 class LittleBullCuratorSuggestionRequest(BaseModel):
     workspace_id: str
-    suggestion_kind: Literal["backlink", "content_map", "subgroup", "conversation_note", "canvas_dossier"]
+    suggestion_kind: Literal[
+        "backlink", "content_map", "subgroup", "conversation_note", "canvas_dossier"
+    ]
     title: str = ""
     body: str = ""
     group_id: str | None = None
@@ -326,7 +328,9 @@ class LittleBullCuratorSuggestionRequest(BaseModel):
 class LittleBullCuratorSuggestionResponse(BaseModel):
     inbox_item: dict[str, Any]
     requires_approval: bool = True
-    allowed_actions: list[str] = Field(default_factory=lambda: ["review", "approve", "reject"])
+    allowed_actions: list[str] = Field(
+        default_factory=lambda: ["review", "approve", "reject"]
+    )
 
 
 class LegalMatterExtractionPayload(BaseModel):
@@ -356,7 +360,9 @@ class LittleBullLegalMatterExtractionRequest(BaseModel):
     matter_reference: str = ""
     extraction_model_id: str = ""
     schema_version: str = "legal-matter/v1"
-    extracted_payload: LegalMatterExtractionPayload = Field(default_factory=LegalMatterExtractionPayload)
+    extracted_payload: LegalMatterExtractionPayload = Field(
+        default_factory=LegalMatterExtractionPayload
+    )
     source_refs: list[dict[str, Any]] = Field(min_length=1)
     confidence: float | None = Field(default=None, ge=0, le=1)
 

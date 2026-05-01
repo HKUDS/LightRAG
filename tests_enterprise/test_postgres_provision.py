@@ -59,14 +59,19 @@ async def test_provision_uses_existing_database_url_without_admin_connection():
         return True
 
     result = await provision_postgres(
-        PostgresProvisionConfig(database_url="postgresql://app:secret@localhost:5432/lightrag_e2e"),
+        PostgresProvisionConfig(
+            database_url="postgresql://app:secret@localhost:5432/lightrag_e2e"
+        ),
         connector=connector,
         schema_runner=schema_runner,
     )
 
     assert result.mode == "existing"
     assert result.schema_applied is True
-    assert result.redacted_database_url == "postgresql://app:***@localhost:5432/lightrag_e2e"
+    assert (
+        result.redacted_database_url
+        == "postgresql://app:***@localhost:5432/lightrag_e2e"
+    )
     assert connector.urls == ["postgresql://app:secret@localhost:5432/lightrag_e2e"]
     assert schema_calls == ["postgresql://app:secret@localhost:5432/lightrag_e2e"]
 
@@ -96,14 +101,16 @@ async def test_provision_creates_role_database_grants_and_runs_schema():
     assert result.created_database is True
     assert result.created_role is True
     assert "CREATE ROLE \"little_bull\" LOGIN PASSWORD 'app-secret'" in executed_sql
-    assert "CREATE DATABASE \"little_bull_e2e\" OWNER \"little_bull\"" in executed_sql
+    assert 'CREATE DATABASE "little_bull_e2e" OWNER "little_bull"' in executed_sql
     assert any("GRANT ALL ON SCHEMA public" in sql for sql in executed_sql)
     assert connector.urls == [
         "postgresql://postgres:admin@localhost:5432/postgres",
         "postgresql://postgres:admin@localhost:5432/little_bull_e2e",
         "postgresql://little_bull:app-secret@localhost:5432/little_bull_e2e",
     ]
-    assert schema_calls == ["postgresql://little_bull:app-secret@localhost:5432/little_bull_e2e"]
+    assert schema_calls == [
+        "postgresql://little_bull:app-secret@localhost:5432/little_bull_e2e"
+    ]
 
 
 @pytest.mark.asyncio
@@ -143,7 +150,10 @@ def test_url_helpers_redact_and_replace_database():
     )
 
     assert url == "postgresql://little%20bull:p%40ss%2Fword@localhost:5432/db%20one"
-    assert redact_database_url(url) == "postgresql://little%20bull:***@localhost:5432/db%20one"
+    assert (
+        redact_database_url(url)
+        == "postgresql://little%20bull:***@localhost:5432/db%20one"
+    )
     assert replace_database(url, "db two") == (
         "postgresql://little%20bull:p%40ss%2Fword@localhost:5432/db%20two"
     )

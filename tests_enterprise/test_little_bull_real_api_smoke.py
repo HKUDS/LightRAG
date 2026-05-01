@@ -45,7 +45,10 @@ def _assert_local_test_database(database_url: str) -> None:
 
     database_name = lowered.rsplit("/", maxsplit=1)[-1].split("?", maxsplit=1)[0]
     test_markers = ("test", "e2e", "smoke")
-    if not any(marker in database_name for marker in test_markers) and not allow_non_test:
+    if (
+        not any(marker in database_name for marker in test_markers)
+        and not allow_non_test
+    ):
         pytest.skip(
             "Little Bull E2E requires a dedicated test/e2e/smoke database name, or "
             "LITTLE_BULL_E2E_ALLOW_NON_TEST_DB=1 for an explicit override"
@@ -219,8 +222,12 @@ def _ensure_phase4_classification(
 
 
 def _query_payload(workspace_id: str) -> dict[str, Any]:
-    confidentiality = os.getenv("LITTLE_BULL_E2E_CONFIDENTIALITY", "normal").strip().lower()
-    model_profile = os.getenv("LITTLE_BULL_E2E_MODEL_PROFILE", "equilibrado").strip().lower()
+    confidentiality = (
+        os.getenv("LITTLE_BULL_E2E_CONFIDENTIALITY", "normal").strip().lower()
+    )
+    model_profile = (
+        os.getenv("LITTLE_BULL_E2E_MODEL_PROFILE", "equilibrado").strip().lower()
+    )
     return {
         "workspace_id": workspace_id,
         "query": "Reply with one short sentence confirming Little Bull API smoke is working.",
@@ -235,7 +242,10 @@ def _query_payload(workspace_id: str) -> dict[str, Any]:
 def _expects_private_runtime(payload: dict[str, Any]) -> bool:
     if _truthy(os.getenv("LITTLE_BULL_E2E_HOSTED_PRIVATE_EXCEPTION")):
         return payload["model_profile"] == "privado"
-    return payload["confidentiality"] in {"sensivel", "privado"} or payload["model_profile"] == "privado"
+    return (
+        payload["confidentiality"] in {"sensivel", "privado"}
+        or payload["model_profile"] == "privado"
+    )
 
 
 def _expects_hosted_private_exception(payload: dict[str, Any]) -> bool:
@@ -255,7 +265,9 @@ def _assert_smoke_response_proves_llm_call(response: str) -> None:
     )
 
 
-def _upload_smoke_document(client: Any, headers: dict[str, str], workspace_id: str) -> tuple[str, str]:
+def _upload_smoke_document(
+    client: Any, headers: dict[str, str], workspace_id: str
+) -> tuple[str, str]:
     group_id, subgroup_id = _ensure_phase4_classification(client, headers, workspace_id)
     phrase = f"little bull indexed smoke phrase {uuid4().hex}"
     filename = f"little-bull-smoke-{uuid4().hex}.txt"
@@ -284,7 +296,9 @@ def _wait_for_processed_document(
     workspace_id: str,
     filename: str,
 ) -> dict[str, Any]:
-    deadline = time.monotonic() + int(os.getenv("LITTLE_BULL_E2E_UPLOAD_TIMEOUT_SECONDS", "180"))
+    deadline = time.monotonic() + int(
+        os.getenv("LITTLE_BULL_E2E_UPLOAD_TIMEOUT_SECONDS", "180")
+    )
     last_payload: dict[str, Any] | None = None
     while time.monotonic() < deadline:
         response = client.get(
@@ -303,7 +317,9 @@ def _wait_for_processed_document(
                 if status == "failed" or status.endswith(".failed"):
                     pytest.fail(f"Uploaded smoke document failed indexing: {document}")
         time.sleep(2)
-    pytest.fail(f"Uploaded smoke document was not processed in time. Last documents payload: {last_payload}")
+    pytest.fail(
+        f"Uploaded smoke document was not processed in time. Last documents payload: {last_payload}"
+    )
 
 
 def test_little_bull_real_api_data_plane_attach_smoke():
@@ -328,7 +344,9 @@ def test_little_bull_real_api_data_plane_attach_smoke():
         workspace_id = _phase3_workspace_id(client, headers)
         _attach_data_plane(client, headers, workspace_id)
 
-        bases_response = client.get("/little-bull/admin/knowledge-bases", headers=headers)
+        bases_response = client.get(
+            "/little-bull/admin/knowledge-bases", headers=headers
+        )
         if bases_response.status_code != 200:
             _fail_response(bases_response, "little-bull/admin/knowledge-bases")
         bases = bases_response.json()["knowledge_bases"]
@@ -362,7 +380,9 @@ def test_little_bull_real_api_data_plane_attach_smoke():
             for event in activity
         )
 
-        audit_response = client.get("/audit/events", headers=headers, params={"limit": 100})
+        audit_response = client.get(
+            "/audit/events", headers=headers, params={"limit": 100}
+        )
         if audit_response.status_code != 200:
             _fail_response(audit_response, "audit/events")
         events = audit_response.json()["events"]
@@ -376,7 +396,9 @@ def test_little_bull_real_api_data_plane_attach_smoke():
 
 def test_little_bull_real_api_upload_queue_audit_smoke():
     if not _truthy(os.getenv("LITTLE_BULL_E2E_UPLOAD_QUEUE")):
-        pytest.skip("Set LITTLE_BULL_E2E_UPLOAD_QUEUE=1 to run upload queue/audit smoke")
+        pytest.skip(
+            "Set LITTLE_BULL_E2E_UPLOAD_QUEUE=1 to run upload queue/audit smoke"
+        )
     httpx = pytest.importorskip("httpx")
     base_url, username, password = _require_smoke_config(require_llm=False)
 
@@ -396,9 +418,14 @@ def test_little_bull_real_api_upload_queue_audit_smoke():
         if documents_response.status_code != 200:
             _fail_response(documents_response, "little-bull/documents")
         documents = documents_response.json()["documents"]
-        assert any(filename in {document.get("title"), document.get("file_path")} for document in documents)
+        assert any(
+            filename in {document.get("title"), document.get("file_path")}
+            for document in documents
+        )
 
-        audit_response = client.get("/audit/events", headers=headers, params={"limit": 100})
+        audit_response = client.get(
+            "/audit/events", headers=headers, params={"limit": 100}
+        )
         if audit_response.status_code != 200:
             _fail_response(audit_response, "audit/events")
         events = audit_response.json()["events"]
@@ -436,7 +463,9 @@ def test_little_bull_real_api_query_smoke():
         anonymous_response = client.post("/little-bull/query", json=payload)
         assert anonymous_response.status_code in {401, 403}
 
-        query_response = client.post("/little-bull/query", headers=headers, json=payload)
+        query_response = client.post(
+            "/little-bull/query", headers=headers, json=payload
+        )
         if query_response.status_code != 200:
             _fail_response(query_response, "little-bull/query")
         query_payload = query_response.json()
@@ -457,7 +486,9 @@ def test_little_bull_real_api_query_smoke():
             for event in activity
         )
 
-        audit_response = client.get("/audit/events", headers=headers, params={"limit": 100})
+        audit_response = client.get(
+            "/audit/events", headers=headers, params={"limit": 100}
+        )
         if audit_response.status_code != 200:
             _fail_response(audit_response, "audit/events")
         events = audit_response.json()["events"]
@@ -467,7 +498,9 @@ def test_little_bull_real_api_query_smoke():
             if event["action"] == "little_bull.query"
             and event["workspace_id"] == workspace_id
         ]
-        success_events = [event for event in query_events if event["result"] == "success"]
+        success_events = [
+            event for event in query_events if event["result"] == "success"
+        ]
         assert success_events
         private_gateway = success_events[0]["metadata"]["private_gateway"]
         if _expects_hosted_private_exception(payload):
@@ -504,16 +537,18 @@ def test_little_bull_real_api_upload_index_query_smoke():
             "include_references": True,
             "include_chunk_content": True,
             "confidentiality": "normal",
-            "model_profile": os.getenv("LITTLE_BULL_E2E_MODEL_PROFILE", "equilibrado").strip().lower(),
+            "model_profile": os.getenv("LITTLE_BULL_E2E_MODEL_PROFILE", "equilibrado")
+            .strip()
+            .lower(),
         }
         response = client.post("/little-bull/query", headers=headers, json=payload)
         if response.status_code != 200:
             _fail_response(response, "little-bull/query indexed")
         query_payload = response.json()
         _assert_smoke_response_proves_llm_call(query_payload["response"])
-        assert query_payload["references"], (
-            "Indexed query returned no references, so it did not prove retrieval against the uploaded document."
-        )
+        assert query_payload[
+            "references"
+        ], "Indexed query returned no references, so it did not prove retrieval against the uploaded document."
         assert any(
             phrase in str(reference) or document["id"] in str(reference)
             for reference in query_payload["references"]

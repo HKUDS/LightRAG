@@ -21,6 +21,7 @@ class AccessControlService:
         if not permission_allowed(principal.permissions, activity):
             return AccessDecision(False, "Role lacks required activity permission.")
         if require_approval or activity in DESTRUCTIVE_ACTIVITIES:
-            return AccessDecision(True, "Allowed after approval gate.", requires_approval=True)
+            return AccessDecision(
+                True, "Allowed after approval gate.", requires_approval=True
+            )
         return AccessDecision(True, "Allowed by RBAC policy.")
-

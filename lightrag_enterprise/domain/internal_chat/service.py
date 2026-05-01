@@ -20,7 +20,9 @@ class InMemoryChatRepository:
         self.messages[message.message_id] = message
         return message
 
-    def search_messages(self, tenant_id: str, workspace_id: str, text: str) -> list[ChatMessage]:
+    def search_messages(
+        self, tenant_id: str, workspace_id: str, text: str
+    ) -> list[ChatMessage]:
         needle = text.lower()
         return [
             message

@@ -36,8 +36,7 @@ class OpenRouterCatalogClient:
     @classmethod
     def from_env(cls) -> "OpenRouterCatalogClient":
         return cls(
-            api_key=os.getenv("OPENROUTER_API_KEY")
-            or os.getenv("LLM_BINDING_API_KEY"),
+            api_key=os.getenv("OPENROUTER_API_KEY") or os.getenv("LLM_BINDING_API_KEY"),
             base_url=os.getenv("OPENROUTER_BASE_URL", OPENROUTER_BASE_URL),
             app_referer=os.getenv("OPENROUTER_APP_REFERER"),
             app_title=os.getenv("OPENROUTER_APP_TITLE", "LightRAG Enterprise"),
@@ -72,7 +71,11 @@ class OpenRouterCatalogClient:
             ModelCatalogEntry.from_openrouter_model(item, synced_at=now)
             for item in payload.get("data", [])
         ]
-        source = "openrouter:/models/user" if account_scoped and self.api_key else "openrouter:/models"
+        source = (
+            "openrouter:/models/user"
+            if account_scoped and self.api_key
+            else "openrouter:/models"
+        )
         catalog = ModelCatalog(entries=entries, synced_at=now, source=source)
         self._catalog = catalog
         self._expires_at = now + timedelta(seconds=self.ttl_seconds)
@@ -96,7 +99,9 @@ class OpenRouterCatalogClient:
                             continue
                         response.raise_for_status()
                         return await response.json()
-                except Exception as exc:  # pragma: no cover - exercised by fallback tests
+                except (
+                    Exception
+                ) as exc:  # pragma: no cover - exercised by fallback tests
                     last_error = exc
                     continue
         if self._catalog is not None:
@@ -119,5 +124,7 @@ async def sync_openrouter_catalog(
     )
     path = Path(output_path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(catalog.to_dict(), indent=2, sort_keys=True), encoding="utf-8")
+    path.write_text(
+        json.dumps(catalog.to_dict(), indent=2, sort_keys=True), encoding="utf-8"
+    )
     return catalog

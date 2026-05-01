@@ -52,7 +52,10 @@ from lightrag_enterprise.system.policy_keys import (
     WORKSPACE_DATA_PLANE_POLICY,
     WORKSPACE_PRIVATE_POLICY,
 )
-from lightrag_enterprise.system.runtime import approvals_enforced, private_strict_enabled
+from lightrag_enterprise.system.runtime import (
+    approvals_enforced,
+    private_strict_enabled,
+)
 from lightrag_enterprise.system.models import utc_now
 from lightrag_enterprise.security import mask_pii
 
@@ -213,7 +216,9 @@ def extract_markdown_tags(markdown: str) -> list[str]:
 def markdown_summary(markdown: str, limit: int = 240) -> str:
     lines = [line.strip() for line in markdown.splitlines() if line.strip()]
     summary = " ".join(lines)
-    summary = WIKI_LINK_RE.sub(lambda match: (match.group(2) or match.group(1)).strip(), summary)
+    summary = WIKI_LINK_RE.sub(
+        lambda match: (match.group(2) or match.group(1)).strip(), summary
+    )
     summary = re.sub(r"\s+", " ", summary).strip(" #")
     return summary[:limit]
 
@@ -229,16 +234,24 @@ def canonical_ref_kind(ref_kind: str) -> str:
 
 def sanitize_upload_filename(filename: str, input_dir: Path) -> str:
     clean_name = filename.replace("/", "").replace("\\", "").replace("..", "")
-    clean_name = "".join(char for char in clean_name if ord(char) >= 32 and char != "\x7f")
+    clean_name = "".join(
+        char for char in clean_name if ord(char) >= 32 and char != "\x7f"
+    )
     clean_name = clean_name.strip().strip(".")
     if not clean_name:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid filename")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid filename"
+        )
     try:
         final_path = (input_dir / clean_name).resolve()
         if not final_path.is_relative_to(input_dir.resolve()):
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unsafe filename")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST, detail="Unsafe filename"
+            )
     except OSError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid filename") from exc
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid filename"
+        ) from exc
     return clean_name
 
 
@@ -307,14 +320,22 @@ class LittleBullService:
         self.private_gateway = private_gateway or PrivateLocalGateway(rag)
         self.admin_store = admin_store or LittleBullAdminStore()
 
-    def _require(self, principal: Principal, activity: str, workspace_id: str | None = None) -> None:
-        decision = self.access.require(principal, activity=activity, workspace_id=workspace_id)
+    def _require(
+        self, principal: Principal, activity: str, workspace_id: str | None = None
+    ) -> None:
+        decision = self.access.require(
+            principal, activity=activity, workspace_id=workspace_id
+        )
         if not decision.allowed:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=decision.reason)
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN, detail=decision.reason
+            )
 
     def _require_master(self, principal: Principal) -> None:
         if not principal.is_master_global:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="MASTER global required.")
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN, detail="MASTER global required."
+            )
 
     def _require_backed_workspace(self, workspace_id: str) -> None:
         current_workspace = getattr(self.rag, "workspace", None) or "default"
@@ -374,7 +395,10 @@ class LittleBullService:
             return cache[workspace_id]
         workspace = await self.repository.get_workspace(workspace_id)
         if workspace is None:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Workspace '{workspace_id}' not found.")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Workspace '{workspace_id}' not found.",
+            )
         try:
             workspace_rag = await self._create_workspace_rag(workspace_id)
         except Exception as exc:
@@ -420,11 +444,13 @@ class LittleBullService:
             self.rag.graph_storage_cls,
             global_config,
         )
-        workspace_rag.llm_response_cache = workspace_rag.key_string_value_json_storage_cls(
-            namespace=NameSpace.KV_STORE_LLM_RESPONSE_CACHE,
-            workspace=workspace_id,
-            global_config=global_config,
-            embedding_func=workspace_rag.embedding_func,
+        workspace_rag.llm_response_cache = (
+            workspace_rag.key_string_value_json_storage_cls(
+                namespace=NameSpace.KV_STORE_LLM_RESPONSE_CACHE,
+                workspace=workspace_id,
+                global_config=global_config,
+                embedding_func=workspace_rag.embedding_func,
+            )
         )
         workspace_rag.text_chunks = workspace_rag.key_string_value_json_storage_cls(
             namespace=NameSpace.KV_STORE_TEXT_CHUNKS,
@@ -500,7 +526,9 @@ class LittleBullService:
                 break
         global_config = dict(source)
         global_config["workspace"] = workspace_id
-        global_config.setdefault("working_dir", getattr(self.rag, "working_dir", "./rag_storage"))
+        global_config.setdefault(
+            "working_dir", getattr(self.rag, "working_dir", "./rag_storage")
+        )
         return global_config
 
     @staticmethod
@@ -531,7 +559,9 @@ class LittleBullService:
         await self._require_data_plane(workspace_id)
         return await self._workspace_tenant(workspace_id), workspace_id
 
-    async def _existing_workspace_scope(self, workspace_id: str) -> tuple[str | None, str]:
+    async def _existing_workspace_scope(
+        self, workspace_id: str
+    ) -> tuple[str | None, str]:
         workspace = await self.repository.get_workspace(workspace_id)
         if workspace is None:
             raise HTTPException(
@@ -593,7 +623,10 @@ class LittleBullService:
         return str(getattr(self.rag, "workspace", None) or "default")
 
     def _is_backed_workspace(self, workspace_id: str) -> bool:
-        return workspace_id == self._current_workspace_id() or workspace_id in self._workspace_rag_cache()
+        return (
+            workspace_id == self._current_workspace_id()
+            or workspace_id in self._workspace_rag_cache()
+        )
 
     async def _model_settings_for_workspace(
         self,
@@ -613,13 +646,18 @@ class LittleBullService:
         return settings
 
     @staticmethod
-    def _default_model(settings: list[dict[str, Any]], usage: str) -> dict[str, Any] | None:
+    def _default_model(
+        settings: list[dict[str, Any]], usage: str
+    ) -> dict[str, Any] | None:
         scoped = [
             setting
             for setting in settings
             if setting.get("usage") == usage and setting.get("enabled", True)
         ]
-        return next((setting for setting in scoped if setting.get("is_default")), scoped[0] if scoped else None)
+        return next(
+            (setting for setting in scoped if setting.get("is_default")),
+            scoped[0] if scoped else None,
+        )
 
     async def _status_counts_for_workspace(self, workspace_id: str) -> dict[str, int]:
         if not await self._data_plane_attached(workspace_id):
@@ -652,7 +690,9 @@ class LittleBullService:
         )
         if not principal.is_master_global:
             workspaces = [
-                workspace for workspace in workspaces if workspace.workspace_id in principal.workspace_ids
+                workspace
+                for workspace in workspaces
+                if workspace.workspace_id in principal.workspace_ids
             ]
         areas: list[LittleBullArea] = []
         for workspace in workspaces:
@@ -676,20 +716,29 @@ class LittleBullService:
                     privacy=workspace.privacy,
                     document_count=sum(counts.values()),
                     ready_count=counts.get("processed", 0),
-                    processing_count=counts.get("processing", 0) + counts.get("pending", 0),
+                    processing_count=counts.get("processing", 0)
+                    + counts.get("pending", 0),
                     accent=accent,
                     emoji=emoji,
-                    data_plane_attached=await self._data_plane_attached(workspace.workspace_id),
+                    data_plane_attached=await self._data_plane_attached(
+                        workspace.workspace_id
+                    ),
                     chat_model_id=chat_model.get("model_id") if chat_model else None,
-                    embedding_model_id=embedding_model.get("model_id") if embedding_model else None,
+                    embedding_model_id=embedding_model.get("model_id")
+                    if embedding_model
+                    else None,
                     embedding_reindex_required=bool(
-                        (embedding_model or {}).get("config", {}).get("reindex_required")
+                        (embedding_model or {})
+                        .get("config", {})
+                        .get("reindex_required")
                     ),
                 )
             )
         return areas
 
-    async def list_knowledge_groups(self, principal: Principal, *, workspace_id: str) -> list[KnowledgeGroup]:
+    async def list_knowledge_groups(
+        self, principal: Principal, *, workspace_id: str
+    ) -> list[KnowledgeGroup]:
         self._require(principal, ACTIVITY_AREA_READ, workspace_id)
         tenant_id, workspace_id = await self._existing_workspace_scope(workspace_id)
         groups = await self.admin_store.list_knowledge_groups(
@@ -814,7 +863,9 @@ class LittleBullService:
         )
         return [NoteRegistry(**row) for row in rows]
 
-    async def list_tags(self, principal: Principal, *, workspace_id: str) -> list[TagRegistry]:
+    async def list_tags(
+        self, principal: Principal, *, workspace_id: str
+    ) -> list[TagRegistry]:
         self._require(principal, ACTIVITY_DOCUMENT_READ, workspace_id)
         tenant_id, workspace_id = await self._existing_workspace_scope(workspace_id)
         rows = await self.admin_store.list_tag_registry(
@@ -839,7 +890,10 @@ class LittleBullService:
                 workspace_id=workspace_id,
             )
             if not note:
-                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Note reference not found.")
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Note reference not found.",
+                )
             return note
         if normalized_kind == "document":
             document = await self.admin_store.get_document_registry(
@@ -848,7 +902,10 @@ class LittleBullService:
                 workspace_id=workspace_id,
             )
             if not document:
-                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document reference not found.")
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Document reference not found.",
+                )
             return document
         if normalized_kind == "canvas":
             return await self._require_canvas_board(
@@ -870,24 +927,45 @@ class LittleBullService:
             )
         if normalized_kind == "conversation":
             conversation = await self.admin_store.get_conversation(ref_id)
-            if not conversation or conversation["tenant_id"] != tenant_id or conversation["workspace_id"] != workspace_id:
-                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Conversation reference not found.")
+            if (
+                not conversation
+                or conversation["tenant_id"] != tenant_id
+                or conversation["workspace_id"] != workspace_id
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Conversation reference not found.",
+                )
             return conversation
         if normalized_kind == "agent":
-            agents = await self.admin_store.list_agent_configs(tenant_id=tenant_id, workspace_id=workspace_id)
+            agents = await self.admin_store.list_agent_configs(
+                tenant_id=tenant_id, workspace_id=workspace_id
+            )
             agent = next((item for item in agents if item["agent_id"] == ref_id), None)
             if not agent:
-                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent reference not found.")
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Agent reference not found.",
+                )
             return agent
         if normalized_kind in {"note_label", "answer"}:
             return None
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Unsupported reference kind.")
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Unsupported reference kind.",
+        )
 
     @staticmethod
-    def _refs_share_group_scope(left: dict[str, Any] | None, right: dict[str, Any] | None) -> bool:
+    def _refs_share_group_scope(
+        left: dict[str, Any] | None, right: dict[str, Any] | None
+    ) -> bool:
         if not left or not right:
             return True
-        if left.get("group_id") and right.get("group_id") and left.get("group_id") != right.get("group_id"):
+        if (
+            left.get("group_id")
+            and right.get("group_id")
+            and left.get("group_id") != right.get("group_id")
+        ):
             return False
         if (
             left.get("subgroup_id")
@@ -1086,7 +1164,8 @@ class LittleBullService:
         cited_by = [
             row
             for row in backlinks
-            if row.get("origin_type") in {"citation", "wikilink", "manual", "source_provenance"}
+            if row.get("origin_type")
+            in {"citation", "wikilink", "manual", "source_provenance"}
         ]
         provenance = await self.admin_store.list_source_provenance(
             tenant_id=tenant_id,
@@ -1097,7 +1176,8 @@ class LittleBullService:
         used_in_responses = [
             row
             for row in provenance
-            if row.get("source_kind") in {"answer", "query_response", "conversation_message"}
+            if row.get("source_kind")
+            in {"answer", "query_response", "conversation_message"}
         ]
         return LittleBullProvenancePanel(
             target_kind=canonical_target_kind,
@@ -1166,7 +1246,10 @@ class LittleBullService:
                 workspace_id=workspace_id,
             )
             if not existing_by_id:
-                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Canvas board not found.")
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Canvas board not found.",
+                )
         existing_boards = await self.admin_store.list_canvas_boards(
             tenant_id=tenant_id,
             workspace_id=workspace_id,
@@ -1175,19 +1258,31 @@ class LittleBullService:
         for existing in existing_boards:
             if existing["canvas_board_id"] == payload.canvas_board_id:
                 found_canvas_board_id = True
-            if payload.canvas_board_id and existing["slug"] == slug and existing["canvas_board_id"] != payload.canvas_board_id:
+            if (
+                payload.canvas_board_id
+                and existing["slug"] == slug
+                and existing["canvas_board_id"] != payload.canvas_board_id
+            ):
                 raise HTTPException(
                     status_code=status.HTTP_409_CONFLICT,
                     detail="Canvas board slug is already used by another board.",
                 )
-            if existing["slug"] == slug or existing["canvas_board_id"] == payload.canvas_board_id:
-                if existing["group_id"] != payload.group_id or existing["subgroup_id"] != payload.subgroup_id:
+            if (
+                existing["slug"] == slug
+                or existing["canvas_board_id"] == payload.canvas_board_id
+            ):
+                if (
+                    existing["group_id"] != payload.group_id
+                    or existing["subgroup_id"] != payload.subgroup_id
+                ):
                     raise HTTPException(
                         status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                         detail="Existing canvas boards cannot be moved across group/subgroup scope.",
                     )
         if payload.canvas_board_id and not found_canvas_board_id:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Canvas board not found.")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Canvas board not found."
+            )
         try:
             row = await self.admin_store.upsert_canvas_board(
                 {
@@ -1228,7 +1323,9 @@ class LittleBullService:
             workspace_id=workspace_id,
         )
         if not board:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Canvas board not found.")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Canvas board not found."
+            )
         return board
 
     async def get_canvas_board(
@@ -1321,7 +1418,10 @@ class LittleBullService:
             tenant_id=tenant_id,
             workspace_id=workspace_id,
             result="canvas_node_upserted",
-            metadata={"canvas_board_id": canvas_board_id, "canvas_node_id": row["canvas_node_id"]},
+            metadata={
+                "canvas_board_id": canvas_board_id,
+                "canvas_node_id": row["canvas_node_id"],
+            },
         )
         return CanvasNode(**row)
 
@@ -1350,7 +1450,12 @@ class LittleBullService:
             tenant_id=tenant_id,
             workspace_id=workspace_id,
         )
-        if not source or not target or source["canvas_board_id"] != canvas_board_id or target["canvas_board_id"] != canvas_board_id:
+        if (
+            not source
+            or not target
+            or source["canvas_board_id"] != canvas_board_id
+            or target["canvas_board_id"] != canvas_board_id
+        ):
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Canvas edge endpoints must be nodes on the same board.",
@@ -1361,7 +1466,10 @@ class LittleBullService:
                 tenant_id=tenant_id,
                 workspace_id=workspace_id,
             )
-            if not any(edge["canvas_edge_id"] == payload.canvas_edge_id for edge in existing_edges):
+            if not any(
+                edge["canvas_edge_id"] == payload.canvas_edge_id
+                for edge in existing_edges
+            ):
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
                     detail="Canvas edge id is not available on this board.",
@@ -1381,7 +1489,10 @@ class LittleBullService:
             tenant_id=tenant_id,
             workspace_id=workspace_id,
             result="canvas_edge_upserted",
-            metadata={"canvas_board_id": canvas_board_id, "canvas_edge_id": row["canvas_edge_id"]},
+            metadata={
+                "canvas_board_id": canvas_board_id,
+                "canvas_edge_id": row["canvas_edge_id"],
+            },
         )
         return CanvasEdge(**row)
 
@@ -1392,12 +1503,18 @@ class LittleBullService:
         workspace_id: str,
         canvas_board_id: str,
     ) -> LittleBullCanvasAnalysis:
-        detail = await self.get_canvas_board(principal, workspace_id=workspace_id, canvas_board_id=canvas_board_id)
+        detail = await self.get_canvas_board(
+            principal, workspace_id=workspace_id, canvas_board_id=canvas_board_id
+        )
         node_kind_counts: dict[str, int] = {}
         for node in detail.nodes:
-            node_kind_counts[node.node_kind] = node_kind_counts.get(node.node_kind, 0) + 1
+            node_kind_counts[node.node_kind] = (
+                node_kind_counts.get(node.node_kind, 0) + 1
+            )
 
-        adjacency: dict[str, set[str]] = {node.canvas_node_id or "": set() for node in detail.nodes}
+        adjacency: dict[str, set[str]] = {
+            node.canvas_node_id or "": set() for node in detail.nodes
+        }
         for edge in detail.edges:
             adjacency.setdefault(edge.source_node_id, set()).add(edge.target_node_id)
             adjacency.setdefault(edge.target_node_id, set()).add(edge.source_node_id)
@@ -1416,7 +1533,12 @@ class LittleBullService:
                     if neighbor not in seen:
                         seen.add(neighbor)
                         stack.append(neighbor)
-            clusters.append({"cluster_id": f"cluster-{len(clusters) + 1}", "node_ids": sorted(cluster_nodes)})
+            clusters.append(
+                {
+                    "cluster_id": f"cluster-{len(clusters) + 1}",
+                    "node_ids": sorted(cluster_nodes),
+                }
+            )
         warnings = []
         if not detail.nodes:
             warnings.append("canvas_empty")
@@ -1440,8 +1562,12 @@ class LittleBullService:
     ) -> KnowledgeDossier:
         self._require(principal, ACTIVITY_DOCUMENT_UPLOAD, workspace_id)
         tenant_id, workspace_id = await self._existing_workspace_scope(workspace_id)
-        detail = await self.get_canvas_board(principal, workspace_id=workspace_id, canvas_board_id=canvas_board_id)
-        analysis = await self.analyze_canvas_board(principal, workspace_id=workspace_id, canvas_board_id=canvas_board_id)
+        detail = await self.get_canvas_board(
+            principal, workspace_id=workspace_id, canvas_board_id=canvas_board_id
+        )
+        analysis = await self.analyze_canvas_board(
+            principal, workspace_id=workspace_id, canvas_board_id=canvas_board_id
+        )
         row = await self.admin_store.upsert_knowledge_dossier(
             {
                 "group_id": detail.board.group_id,
@@ -1453,7 +1579,10 @@ class LittleBullService:
                 "content_refs": [
                     {"kind": "canvas_board", "id": canvas_board_id},
                     *[
-                        {"kind": node.node_kind, "id": node.ref_id or node.canvas_node_id}
+                        {
+                            "kind": node.node_kind,
+                            "id": node.ref_id or node.canvas_node_id,
+                        }
                         for node in detail.nodes
                     ],
                 ],
@@ -1473,7 +1602,10 @@ class LittleBullService:
             tenant_id=tenant_id,
             workspace_id=workspace_id,
             result="canvas_dossier_exported",
-            metadata={"canvas_board_id": canvas_board_id, "knowledge_dossier_id": row["knowledge_dossier_id"]},
+            metadata={
+                "canvas_board_id": canvas_board_id,
+                "knowledge_dossier_id": row["knowledge_dossier_id"],
+            },
         )
         return KnowledgeDossier(**row)
 
@@ -1532,7 +1664,9 @@ class LittleBullService:
             workspace_id=workspace_id,
         )
         if not dossier:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Dossier not found.")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Dossier not found."
+            )
         return KnowledgeDossier(**dossier)
 
     @staticmethod
@@ -1550,7 +1684,9 @@ class LittleBullService:
             "subgroup_id": dossier.subgroup_id,
             "content_refs": dossier.content_refs,
             "redaction_policy": "mask_pii",
-            "requires_lgpd_review": bool(dossier.export_policy.get("requires_lgpd_review", True)),
+            "requires_lgpd_review": bool(
+                dossier.export_policy.get("requires_lgpd_review", True)
+            ),
         }
 
     async def export_knowledge_dossier(
@@ -1595,22 +1731,41 @@ class LittleBullService:
                 }
             approval = await self.approvals.get(request.approval_id)
             if not approval:
-                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Approval not found.")
-            if approval.action != ACTIVITY_CONVERSATION_EXPORT or approval.metadata != approval_payload:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND, detail="Approval not found."
+                )
+            if (
+                approval.action != ACTIVITY_CONVERSATION_EXPORT
+                or approval.metadata != approval_payload
+            ):
                 raise HTTPException(
                     status_code=status.HTTP_409_CONFLICT,
                     detail="Approval does not match the dossier export request.",
                 )
             if approval.status != ApprovalStatus.APPROVED:
-                raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Approval must be approved first.")
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Approval must be approved first.",
+                )
 
-        sections = await self._dossier_export_sections(dossier, include_audit=request.include_audit)
-        content, media_type, suffix = self._render_dossier_export(dossier, sections, request.format)
+        sections = await self._dossier_export_sections(
+            dossier, include_audit=request.include_audit
+        )
+        content, media_type, suffix = self._render_dossier_export(
+            dossier, sections, request.format
+        )
         if approval is not None:
-            executing = await self.approvals.begin_execution(approval.approval_id, principal)
+            executing = await self.approvals.begin_execution(
+                approval.approval_id, principal
+            )
             if executing is None:
-                raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Approval is no longer executable.")
-            approval = await self.approvals.mark_executed(executing.approval_id, principal)
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Approval is no longer executable.",
+                )
+            approval = await self.approvals.mark_executed(
+                executing.approval_id, principal
+            )
         await self.audit.record(
             principal=principal,
             action=ACTIVITY_CONVERSATION_EXPORT,
@@ -1622,7 +1777,9 @@ class LittleBullService:
                 "knowledge_dossier_id": dossier.knowledge_dossier_id,
                 "format": request.format,
                 "destination": request.destination,
-                "requires_lgpd_review": bool(dossier.export_policy.get("requires_lgpd_review", True)),
+                "requires_lgpd_review": bool(
+                    dossier.export_policy.get("requires_lgpd_review", True)
+                ),
             },
         )
         filename = f"little-bull-dossier-{dossier.knowledge_dossier_id}.{suffix}"
@@ -1647,7 +1804,9 @@ class LittleBullService:
             {
                 "kind": "lgpd",
                 "title": "LGPD e governanca",
-                "content": json.dumps(dossier.export_policy, sort_keys=True, ensure_ascii=False),
+                "content": json.dumps(
+                    dossier.export_policy, sort_keys=True, ensure_ascii=False
+                ),
             },
         ]
         for ref in dossier.content_refs:
@@ -1655,7 +1814,9 @@ class LittleBullService:
             ref_id = str(ref.get("id") or "")
             if not kind or not ref_id:
                 continue
-            sections.append(await self._dossier_ref_section(dossier, kind=kind, ref_id=ref_id))
+            sections.append(
+                await self._dossier_ref_section(dossier, kind=kind, ref_id=ref_id)
+            )
         if include_audit:
             sections.append(
                 {
@@ -1682,7 +1843,11 @@ class LittleBullService:
                 tenant_id=dossier.tenant_id,
                 workspace_id=dossier.workspace_id,
             )
-            if note and note.get("group_id") == dossier.group_id and note.get("subgroup_id") == dossier.subgroup_id:
+            if (
+                note
+                and note.get("group_id") == dossier.group_id
+                and note.get("subgroup_id") == dossier.subgroup_id
+            ):
                 latest = await self.admin_store.get_latest_markdown_note(
                     ref_id,
                     tenant_id=dossier.tenant_id,
@@ -1691,7 +1856,9 @@ class LittleBullService:
                 return {
                     "kind": kind,
                     "title": note.get("title") or ref_id,
-                    "content": (latest or {}).get("markdown") or note.get("summary") or "",
+                    "content": (latest or {}).get("markdown")
+                    or note.get("summary")
+                    or "",
                 }
         if kind == "document":
             document = await self.admin_store.get_document_registry(
@@ -1699,10 +1866,16 @@ class LittleBullService:
                 tenant_id=dossier.tenant_id,
                 workspace_id=dossier.workspace_id,
             )
-            if document and document.get("group_id") == dossier.group_id and document.get("subgroup_id") == dossier.subgroup_id:
+            if (
+                document
+                and document.get("group_id") == dossier.group_id
+                and document.get("subgroup_id") == dossier.subgroup_id
+            ):
                 return {
                     "kind": kind,
-                    "title": document.get("title") or document.get("source_uri") or ref_id,
+                    "title": document.get("title")
+                    or document.get("source_uri")
+                    or ref_id,
                     "content": json.dumps(
                         {
                             "source_uri": document.get("source_uri"),
@@ -1713,7 +1886,11 @@ class LittleBullService:
                         ensure_ascii=False,
                     ),
                 }
-        return {"kind": kind, "title": ref_id, "content": "Reference retained by id; rich renderer unavailable."}
+        return {
+            "kind": kind,
+            "title": ref_id,
+            "content": "Reference retained by id; rich renderer unavailable.",
+        }
 
     @staticmethod
     def _render_dossier_export(
@@ -1746,23 +1923,32 @@ class LittleBullService:
                 "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 "xlsx",
             )
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unsupported dossier export format.")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Unsupported dossier export format.",
+        )
 
     @staticmethod
     def _dossier_redact(value: Any) -> str:
         text = str(value or "")
         text = re.sub(r"\b\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2}\b", "[MASKED_CNPJ]", text)
         text = re.sub(r"\b\d{3}\.\d{3}\.\d{3}-\d{2}\b", "[MASKED_CPF]", text)
-        text = re.sub(r"\b\d{7}-\d{2}\.\d{4}\.\d\.\d{2}\.\d{4}\b", "[MASKED_PROCESS]", text)
+        text = re.sub(
+            r"\b\d{7}-\d{2}\.\d{4}\.\d\.\d{2}\.\d{4}\b", "[MASKED_PROCESS]", text
+        )
         text = re.sub(r"\bOAB/[A-Z]{2}\s*\d{3,6}\b", "[MASKED_OAB]", text)
         text = mask_pii(text)
         text = re.sub(r"\b\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2}\b", "[MASKED_CNPJ]", text)
-        text = re.sub(r"\b\d{7}-\d{2}\.\d{4}\.\d\.\d{2}\.\d{4}\b", "[MASKED_PROCESS]", text)
+        text = re.sub(
+            r"\b\d{7}-\d{2}\.\d{4}\.\d\.\d{2}\.\d{4}\b", "[MASKED_PROCESS]", text
+        )
         text = re.sub(r"\bOAB/[A-Z]{2}\s*\d{3,6}\b", "[MASKED_OAB]", text)
         return text
 
     @staticmethod
-    def _dossier_markdown(dossier: KnowledgeDossier, sections: list[dict[str, Any]]) -> str:
+    def _dossier_markdown(
+        dossier: KnowledgeDossier, sections: list[dict[str, Any]]
+    ) -> str:
         lines = [
             f"# {LittleBullService._dossier_redact(dossier.title)}",
             "",
@@ -1806,11 +1992,16 @@ class LittleBullService:
         return "\n".join(parts).strip() + "\n"
 
     @staticmethod
-    def _dossier_docx(dossier: KnowledgeDossier, sections: list[dict[str, Any]]) -> bytes:
+    def _dossier_docx(
+        dossier: KnowledgeDossier, sections: list[dict[str, Any]]
+    ) -> bytes:
         try:
             from docx import Document
         except ImportError as exc:
-            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="python-docx is not installed") from exc
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="python-docx is not installed",
+            ) from exc
 
         document = Document()
         document.add_heading(LittleBullService._dossier_redact(dossier.title), level=1)
@@ -1819,18 +2010,27 @@ class LittleBullService:
         document.add_paragraph(f"Subgrupo: {dossier.subgroup_id or ''}")
         document.add_paragraph("Redacao LGPD: mask_pii")
         for section in sections:
-            document.add_heading(LittleBullService._dossier_redact(section.get("title")), level=2)
-            document.add_paragraph(LittleBullService._dossier_redact(section.get("content")))
+            document.add_heading(
+                LittleBullService._dossier_redact(section.get("title")), level=2
+            )
+            document.add_paragraph(
+                LittleBullService._dossier_redact(section.get("content"))
+            )
         buffer = BytesIO()
         document.save(buffer)
         return buffer.getvalue()
 
     @staticmethod
-    def _dossier_xlsx(dossier: KnowledgeDossier, sections: list[dict[str, Any]]) -> bytes:
+    def _dossier_xlsx(
+        dossier: KnowledgeDossier, sections: list[dict[str, Any]]
+    ) -> bytes:
         try:
             import xlsxwriter
         except ImportError as exc:
-            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="xlsxwriter is not installed") from exc
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="xlsxwriter is not installed",
+            ) from exc
 
         buffer = BytesIO()
         workbook = xlsxwriter.Workbook(buffer, {"in_memory": True})
@@ -1850,9 +2050,15 @@ class LittleBullService:
         sections_sheet = workbook.add_worksheet("Sections")
         sections_sheet.write_row(0, 0, ["kind", "title", "content"])
         for row_index, section in enumerate(sections, start=1):
-            sections_sheet.write(row_index, 0, LittleBullService._dossier_redact(section.get("kind")))
-            sections_sheet.write(row_index, 1, LittleBullService._dossier_redact(section.get("title")))
-            sections_sheet.write(row_index, 2, LittleBullService._dossier_redact(section.get("content")))
+            sections_sheet.write(
+                row_index, 0, LittleBullService._dossier_redact(section.get("kind"))
+            )
+            sections_sheet.write(
+                row_index, 1, LittleBullService._dossier_redact(section.get("title"))
+            )
+            sections_sheet.write(
+                row_index, 2, LittleBullService._dossier_redact(section.get("content"))
+            )
         workbook.close()
         buffer.seek(0)
         return buffer.getvalue()
@@ -1933,19 +2139,31 @@ class LittleBullService:
         for existing in existing_maps:
             if existing["content_map_id"] == payload.content_map_id:
                 found_content_map_id = True
-            if payload.content_map_id and existing["slug"] == slug and existing["content_map_id"] != payload.content_map_id:
+            if (
+                payload.content_map_id
+                and existing["slug"] == slug
+                and existing["content_map_id"] != payload.content_map_id
+            ):
                 raise HTTPException(
                     status_code=status.HTTP_409_CONFLICT,
                     detail="Content map slug is already used by another content map.",
                 )
-            if existing["slug"] == slug or existing["content_map_id"] == payload.content_map_id:
-                if existing["group_id"] != payload.group_id or existing["subgroup_id"] != payload.subgroup_id:
+            if (
+                existing["slug"] == slug
+                or existing["content_map_id"] == payload.content_map_id
+            ):
+                if (
+                    existing["group_id"] != payload.group_id
+                    or existing["subgroup_id"] != payload.subgroup_id
+                ):
                     raise HTTPException(
                         status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                         detail="Existing content maps cannot be moved across group/subgroup scope.",
                     )
         if payload.content_map_id and not found_content_map_id:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Content map not found.")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Content map not found."
+            )
         try:
             row = await self.admin_store.upsert_content_map(
                 {
@@ -2042,14 +2260,23 @@ class LittleBullService:
                     status_code=status.HTTP_409_CONFLICT,
                     detail="Knowledge trail slug is already used by another trail.",
                 )
-            if existing["slug"] == slug or existing["knowledge_trail_id"] == payload.knowledge_trail_id:
-                if existing["group_id"] != payload.group_id or existing["subgroup_id"] != payload.subgroup_id:
+            if (
+                existing["slug"] == slug
+                or existing["knowledge_trail_id"] == payload.knowledge_trail_id
+            ):
+                if (
+                    existing["group_id"] != payload.group_id
+                    or existing["subgroup_id"] != payload.subgroup_id
+                ):
                     raise HTTPException(
                         status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                         detail="Existing knowledge trails cannot be moved across group/subgroup scope.",
                     )
         if payload.knowledge_trail_id and not found_knowledge_trail_id:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Knowledge trail not found.")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Knowledge trail not found.",
+            )
         try:
             row = await self.admin_store.upsert_knowledge_trail(
                 {
@@ -2073,7 +2300,10 @@ class LittleBullService:
             tenant_id=tenant_id,
             workspace_id=workspace_id,
             result="knowledge_trail_upserted",
-            metadata={"knowledge_trail_id": row["knowledge_trail_id"], "slug": row["slug"]},
+            metadata={
+                "knowledge_trail_id": row["knowledge_trail_id"],
+                "slug": row["slug"],
+            },
         )
         return KnowledgeTrail(**row)
 
@@ -2090,7 +2320,10 @@ class LittleBullService:
             workspace_id=workspace_id,
         )
         if not trail:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Knowledge trail not found.")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Knowledge trail not found.",
+            )
         return trail
 
     async def get_knowledge_trail(
@@ -2138,13 +2371,17 @@ class LittleBullService:
             workspace_id=workspace_id,
         )
         if payload.knowledge_trail_step_id and not any(
-            step["knowledge_trail_step_id"] == payload.knowledge_trail_step_id for step in existing_steps
+            step["knowledge_trail_step_id"] == payload.knowledge_trail_step_id
+            for step in existing_steps
         ):
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Knowledge trail step id is not available on this trail.",
             )
-        trail_scope = {"group_id": trail.get("group_id"), "subgroup_id": trail.get("subgroup_id")}
+        trail_scope = {
+            "group_id": trail.get("group_id"),
+            "subgroup_id": trail.get("subgroup_id"),
+        }
         for ref_kind, ref_id in (
             ("note", payload.note_id),
             ("document", payload.document_id),
@@ -2252,7 +2489,9 @@ class LittleBullService:
             None,
         )
         if not content_map:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Content map not found.")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Content map not found."
+            )
         return content_map
 
     async def _validate_inbox_source(
@@ -2300,20 +2539,43 @@ class LittleBullService:
             )
         elif source_kind == "conversation":
             ref = await self.admin_store.get_conversation(source_id)
-            if not ref or ref["tenant_id"] != tenant_id or ref["workspace_id"] != workspace_id:
-                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Conversation source not found.")
+            if (
+                not ref
+                or ref["tenant_id"] != tenant_id
+                or ref["workspace_id"] != workspace_id
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Conversation source not found.",
+                )
             if not principal.is_master_global and ref["user_id"] != principal.user_id:
-                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Conversation belongs to another user.")
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Conversation belongs to another user.",
+                )
             return source_kind
         elif source_kind == "suggestion":
             ref = await self.admin_store.get_correlation_suggestion(source_id)
-            if not ref or ref["tenant_id"] != tenant_id or ref["workspace_id"] != workspace_id:
-                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Suggestion source not found.")
+            if (
+                not ref
+                or ref["tenant_id"] != tenant_id
+                or ref["workspace_id"] != workspace_id
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Suggestion source not found.",
+                )
             if not principal.is_master_global and ref["user_id"] != principal.user_id:
-                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Suggestion belongs to another user.")
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Suggestion belongs to another user.",
+                )
             return source_kind
         else:
-            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Unsupported inbox source.")
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="Unsupported inbox source.",
+            )
         if (ref.get("group_id") or ref.get("subgroup_id")) and not (
             group_scope.get("group_id") and group_scope.get("subgroup_id")
         ):
@@ -2386,8 +2648,14 @@ class LittleBullService:
                 workspace_id=workspace_id,
             )
             if not existing:
-                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Inbox item not found.")
-            if existing["group_id"] != payload.group_id or existing["subgroup_id"] != payload.subgroup_id:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Inbox item not found.",
+                )
+            if (
+                existing["group_id"] != payload.group_id
+                or existing["subgroup_id"] != payload.subgroup_id
+            ):
                 raise HTTPException(
                     status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                     detail="Existing inbox items cannot be moved across group/subgroup scope.",
@@ -2407,7 +2675,10 @@ class LittleBullService:
             tenant_id=tenant_id,
             workspace_id=workspace_id,
             result="inbox_item_upserted",
-            metadata={"inbox_item_id": row["inbox_item_id"], "item_kind": row["item_kind"]},
+            metadata={
+                "inbox_item_id": row["inbox_item_id"],
+                "item_kind": row["item_kind"],
+            },
         )
         return KnowledgeInboxItem(**row)
 
@@ -2430,7 +2701,9 @@ class LittleBullService:
             user_id=principal.user_id,
         )
         if not row:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Inbox item not found.")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Inbox item not found."
+            )
         await self.audit.record(
             principal=principal,
             action=ACTIVITY_DOCUMENT_UPLOAD,
@@ -2467,8 +2740,16 @@ class LittleBullService:
         request: LittleBullCuratorSuggestionRequest,
     ) -> LittleBullCuratorSuggestionResponse:
         self._require(principal, ACTIVITY_DOCUMENT_UPLOAD, request.workspace_id)
-        tenant_id, workspace_id = await self._existing_workspace_scope(request.workspace_id)
-        group_id, subgroup_id, source_kind, source_id, metadata = await self._curator_suggestion_context(
+        tenant_id, workspace_id = await self._existing_workspace_scope(
+            request.workspace_id
+        )
+        (
+            group_id,
+            subgroup_id,
+            source_kind,
+            source_id,
+            metadata,
+        ) = await self._curator_suggestion_context(
             principal=principal,
             tenant_id=tenant_id,
             workspace_id=workspace_id,
@@ -2481,7 +2762,8 @@ class LittleBullService:
                 group_id=group_id,
                 subgroup_id=subgroup_id,
                 item_kind="curator_suggestion",
-                title=request.title or self._curator_default_title(request.suggestion_kind),
+                title=request.title
+                or self._curator_default_title(request.suggestion_kind),
                 body=request.body,
                 source_kind=source_kind,
                 source_id=source_id,
@@ -2492,7 +2774,8 @@ class LittleBullService:
                     **metadata,
                     "curator_kind": request.suggestion_kind,
                     "requires_approval": True,
-                    "critical_graph_mutation": request.suggestion_kind in {"backlink", "content_map", "subgroup"},
+                    "critical_graph_mutation": request.suggestion_kind
+                    in {"backlink", "content_map", "subgroup"},
                 },
             ),
         )
@@ -2526,7 +2809,10 @@ class LittleBullService:
             workspace_id=workspace_id,
         )
         if not item or item.get("item_kind") != "curator_suggestion":
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Curator suggestion not found.")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Curator suggestion not found.",
+            )
         metadata = item.get("metadata") or {}
         if metadata.get("requires_approval", True):
             await self.audit.record(
@@ -2535,7 +2821,10 @@ class LittleBullService:
                 tenant_id=tenant_id,
                 workspace_id=workspace_id,
                 result="curator_suggestion_apply_blocked",
-                metadata={"inbox_item_id": inbox_item_id, "reason": "human_review_required"},
+                metadata={
+                    "inbox_item_id": inbox_item_id,
+                    "reason": "human_review_required",
+                },
             )
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
@@ -2556,14 +2845,23 @@ class LittleBullService:
     ) -> tuple[str | None, str | None, str, str, dict[str, Any]]:
         group_id = request.group_id
         subgroup_id = request.subgroup_id
-        source_kind = canonical_ref_kind(request.source_kind) if request.source_kind else ""
+        source_kind = (
+            canonical_ref_kind(request.source_kind) if request.source_kind else ""
+        )
         source_id = request.source_id
         metadata: dict[str, Any] = {
-            "target_kind": canonical_ref_kind(request.target_kind) if request.target_kind else "",
+            "target_kind": canonical_ref_kind(request.target_kind)
+            if request.target_kind
+            else "",
             "target_id": request.target_id,
         }
         if request.suggestion_kind == "backlink":
-            if not source_kind or not source_id or not request.target_kind or not request.target_id:
+            if (
+                not source_kind
+                or not source_id
+                or not request.target_kind
+                or not request.target_id
+            ):
                 raise HTTPException(
                     status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                     detail="Backlink curator suggestions require source and target refs.",
@@ -2586,7 +2884,9 @@ class LittleBullService:
                     detail="Curator backlink suggestions must stay within one group/subgroup scope.",
                 )
             group_id = group_id or (source_ref or target_ref or {}).get("group_id")
-            subgroup_id = subgroup_id or (source_ref or target_ref or {}).get("subgroup_id")
+            subgroup_id = subgroup_id or (source_ref or target_ref or {}).get(
+                "subgroup_id"
+            )
         elif request.suggestion_kind == "content_map":
             if not group_id or not subgroup_id:
                 raise HTTPException(
@@ -2607,10 +2907,23 @@ class LittleBullService:
                 )
             source_kind = "conversation"
             conversation = await self.admin_store.get_conversation(source_id)
-            if not conversation or conversation["tenant_id"] != tenant_id or conversation["workspace_id"] != workspace_id:
-                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Conversation source not found.")
-            if not principal.is_master_global and conversation["user_id"] != principal.user_id:
-                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Conversation belongs to another user.")
+            if (
+                not conversation
+                or conversation["tenant_id"] != tenant_id
+                or conversation["workspace_id"] != workspace_id
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Conversation source not found.",
+                )
+            if (
+                not principal.is_master_global
+                and conversation["user_id"] != principal.user_id
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Conversation belongs to another user.",
+                )
             snapshot = conversation.get("scope_snapshot") or {}
             group_id = group_id or snapshot.get("group_id")
             subgroup_id = subgroup_id or snapshot.get("subgroup_id")
@@ -2654,12 +2967,26 @@ class LittleBullService:
         }.get(suggestion_kind, "Sugestao do curador")
 
     @staticmethod
-    def _daily_note_markdown(note_date: str, payload: LittleBullDailyNoteRequest) -> str:
+    def _daily_note_markdown(
+        note_date: str, payload: LittleBullDailyNoteRequest
+    ) -> str:
         decisions = payload.decisions or []
         pending_items = payload.pending_items or []
-        decision_lines = "\n".join(f"- {item.get('title') or item}" for item in decisions) or "- Nenhuma decisão registrada."
-        pending_lines = "\n".join(f"- {item.get('title') or item}" for item in pending_items) or "- Nenhuma pendência aberta."
-        cost_lines = "\n".join(f"- {key}: {value}" for key, value in sorted(payload.cost_snapshot.items())) or "- Sem custos registrados."
+        decision_lines = (
+            "\n".join(f"- {item.get('title') or item}" for item in decisions)
+            or "- Nenhuma decisão registrada."
+        )
+        pending_lines = (
+            "\n".join(f"- {item.get('title') or item}" for item in pending_items)
+            or "- Nenhuma pendência aberta."
+        )
+        cost_lines = (
+            "\n".join(
+                f"- {key}: {value}"
+                for key, value in sorted(payload.cost_snapshot.items())
+            )
+            or "- Sem custos registrados."
+        )
         summary = payload.summary.strip() or "Sem resumo registrado."
         return (
             f"# Daily Note {note_date}\n\n"
@@ -2730,7 +3057,11 @@ class LittleBullService:
                 tenant_id=tenant_id,
                 workspace_id=workspace_id,
             )
-            if not registry or registry["group_id"] != payload.group_id or registry["subgroup_id"] != payload.subgroup_id:
+            if (
+                not registry
+                or registry["group_id"] != payload.group_id
+                or registry["subgroup_id"] != payload.subgroup_id
+            ):
                 raise HTTPException(
                     status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                     detail="Existing daily notes cannot be moved across group/subgroup scope.",
@@ -2745,7 +3076,11 @@ class LittleBullService:
                 limit=25,
             )
             payload.pending_items.extend(
-                {"inbox_item_id": item["inbox_item_id"], "title": item["title"], "priority": item["priority"]}
+                {
+                    "inbox_item_id": item["inbox_item_id"],
+                    "title": item["title"],
+                    "priority": item["priority"],
+                }
                 for item in open_items
             )
         markdown_note = await self.upsert_markdown_note(
@@ -2763,7 +3098,8 @@ class LittleBullService:
         )
         row = await self.admin_store.upsert_daily_note(
             {
-                "daily_note_id": payload.daily_note_id or (existing or {}).get("daily_note_id"),
+                "daily_note_id": payload.daily_note_id
+                or (existing or {}).get("daily_note_id"),
                 "note_id": markdown_note.registry.note_id,
                 "note_date": note_date,
                 "summary": payload.summary,
@@ -2781,7 +3117,11 @@ class LittleBullService:
             tenant_id=tenant_id,
             workspace_id=workspace_id,
             result="daily_note_upserted",
-            metadata={"daily_note_id": row["daily_note_id"], "note_id": row["note_id"], "note_date": row["note_date"]},
+            metadata={
+                "daily_note_id": row["daily_note_id"],
+                "note_id": row["note_id"],
+                "note_date": row["note_date"],
+            },
         )
         return DailyNote(**row)
 
@@ -2809,11 +3149,22 @@ class LittleBullService:
             ],
             "review": {
                 "requires_human_review": True,
-                "allowed_statuses": ["pending", "approved", "rejected", "needs_changes"],
+                "allowed_statuses": [
+                    "pending",
+                    "approved",
+                    "rejected",
+                    "needs_changes",
+                ],
             },
             "provenance": {
                 "source_refs_required": True,
-                "accepted_locators": ["locator", "page", "chunk_id", "span", "paragraph"],
+                "accepted_locators": [
+                    "locator",
+                    "page",
+                    "chunk_id",
+                    "span",
+                    "paragraph",
+                ],
             },
             "external_enrichment": {
                 "datajud": "planned_not_called",
@@ -2822,7 +3173,9 @@ class LittleBullService:
         }
 
     @staticmethod
-    def _validate_legal_source_refs(document_id: str, source_refs: list[dict[str, Any]]) -> None:
+    def _validate_legal_source_refs(
+        document_id: str, source_refs: list[dict[str, Any]]
+    ) -> None:
         if not source_refs:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -2843,7 +3196,9 @@ class LittleBullService:
                 )
 
     @staticmethod
-    def _validate_legal_extraction_payload(payload: LittleBullLegalMatterExtractionRequest) -> None:
+    def _validate_legal_extraction_payload(
+        payload: LittleBullLegalMatterExtractionRequest,
+    ) -> None:
         if payload.schema_version != "legal-matter/v1":
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -2853,7 +3208,8 @@ class LittleBullService:
         populated = [
             value
             for key, value in extracted.items()
-            if key != "jurimetria" and ((isinstance(value, list | dict) and bool(value)) or value)
+            if key != "jurimetria"
+            and ((isinstance(value, list | dict) and bool(value)) or value)
         ]
         if not populated:
             raise HTTPException(
@@ -2899,7 +3255,9 @@ class LittleBullService:
                 workspace_id=workspace_id,
             )
             if not document:
-                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found.")
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND, detail="Document not found."
+                )
             if group_id and document.get("group_id") != group_id:
                 raise HTTPException(
                     status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -2926,9 +3284,14 @@ class LittleBullService:
         *,
         legal_matter_extraction_run_id: str,
     ) -> LittleBullLegalMatterExtractionResponse:
-        run = await self.admin_store.get_legal_matter_extraction_run(legal_matter_extraction_run_id)
+        run = await self.admin_store.get_legal_matter_extraction_run(
+            legal_matter_extraction_run_id
+        )
         if not run:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Legal extraction run not found.")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Legal extraction run not found.",
+            )
         self._require(principal, ACTIVITY_DOCUMENT_READ, run["workspace_id"])
         return LittleBullLegalMatterExtractionResponse(
             run=run,
@@ -2943,7 +3306,9 @@ class LittleBullService:
         payload: LittleBullLegalMatterExtractionRequest,
     ) -> LittleBullLegalMatterExtractionResponse:
         self._require(principal, ACTIVITY_DOCUMENT_UPLOAD, payload.workspace_id)
-        tenant_id, workspace_id = await self._existing_workspace_scope(payload.workspace_id)
+        tenant_id, workspace_id = await self._existing_workspace_scope(
+            payload.workspace_id
+        )
         await self._require_existing_group(
             tenant_id=tenant_id,
             workspace_id=workspace_id,
@@ -2961,8 +3326,13 @@ class LittleBullService:
             workspace_id=workspace_id,
         )
         if not document:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found.")
-        if document.get("group_id") != payload.group_id or document.get("subgroup_id") != payload.subgroup_id:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Document not found."
+            )
+        if (
+            document.get("group_id") != payload.group_id
+            or document.get("subgroup_id") != payload.subgroup_id
+        ):
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail="Document is outside the requested legal extraction group/subgroup scope.",
@@ -3013,9 +3383,14 @@ class LittleBullService:
         legal_matter_extraction_run_id: str,
         payload: LittleBullLegalMatterReviewRequest,
     ) -> dict[str, Any]:
-        run = await self.admin_store.get_legal_matter_extraction_run(legal_matter_extraction_run_id)
+        run = await self.admin_store.get_legal_matter_extraction_run(
+            legal_matter_extraction_run_id
+        )
         if not run:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Legal extraction run not found.")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Legal extraction run not found.",
+            )
         self._require(principal, ACTIVITY_DOCUMENT_UPLOAD, run["workspace_id"])
         if payload.review_status == "approved":
             self._require(principal, ACTIVITY_APPROVAL_DECIDE, run["workspace_id"])
@@ -3026,7 +3401,10 @@ class LittleBullService:
             reviewed_by=principal.user_id,
         )
         if not reviewed:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Legal extraction run not found.")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Legal extraction run not found.",
+            )
         await self.audit.record(
             principal=principal,
             action=ACTIVITY_DOCUMENT_UPLOAD,
@@ -3057,14 +3435,18 @@ class LittleBullService:
             workspace_id=workspace_id,
         )
         if not registry:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Note not found.")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Note not found."
+            )
         note = await self.admin_store.get_latest_markdown_note(
             note_id,
             tenant_id=tenant_id,
             workspace_id=workspace_id,
         )
         if not note:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Markdown note not found.")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Markdown note not found."
+            )
         wiki_links = await self.admin_store.list_wiki_links(
             source_note_id=note_id,
             tenant_id=tenant_id,
@@ -3126,8 +3508,14 @@ class LittleBullService:
                 workspace_id=workspace_id,
             )
             if not document:
-                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Source document not found.")
-            if document.get("group_id") != payload.group_id or document.get("subgroup_id") != payload.subgroup_id:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Source document not found.",
+                )
+            if (
+                document.get("group_id") != payload.group_id
+                or document.get("subgroup_id") != payload.subgroup_id
+            ):
                 raise HTTPException(
                     status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                     detail="Source document must belong to the same group and subgroup as the note.",
@@ -3209,8 +3597,11 @@ class LittleBullService:
                 {
                     "source_kind": "note",
                     "source_id": registry["note_id"],
-                    "target_kind": "note" if link.get("target_note_id") else "note_label",
-                    "target_id": link.get("target_note_id") or slugify_workspace(link["target_label"]),
+                    "target_kind": "note"
+                    if link.get("target_note_id")
+                    else "note_label",
+                    "target_id": link.get("target_note_id")
+                    or slugify_workspace(link["target_label"]),
                     "link_text": link.get("link_text", ""),
                     "origin_type": "wikilink",
                     "confidence": 1.0 if link.get("target_note_id") else None,
@@ -3232,7 +3623,10 @@ class LittleBullService:
                 await self.admin_store.upsert_tag_registry(
                     {
                         "tag": tag,
-                        "label": tag.removeprefix("#").replace("-", " ").replace("_", " ").title(),
+                        "label": tag.removeprefix("#")
+                        .replace("-", " ")
+                        .replace("_", " ")
+                        .title(),
                         "description": "",
                         "color": "#64748B",
                         "metadata": {},
@@ -3266,7 +3660,12 @@ class LittleBullService:
         )
 
     async def list_documents(
-        self, principal: Principal, *, workspace_id: str, page: int = 1, page_size: int = 50
+        self,
+        principal: Principal,
+        *,
+        workspace_id: str,
+        page: int = 1,
+        page_size: int = 50,
     ) -> LittleBullDocumentsResponse:
         self._require(principal, ACTIVITY_DOCUMENT_READ, workspace_id)
         tenant_id = await self._workspace_tenant(workspace_id)
@@ -3290,13 +3689,18 @@ class LittleBullService:
                 status_counts[row_status] = status_counts.get(row_status, 0) + 1
 
             try:
-                (status_documents, _ignored_total), _ignored_counts = await self._documents_paginated(
+                (
+                    (status_documents, _ignored_total),
+                    _ignored_counts,
+                ) = await self._documents_paginated(
                     rag=rag,
                     page=1,
                     page_size=min(max(page_size, len(page_rows), 200), 200),
                 )
             except Exception as exc:
-                raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)) from exc
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)
+                ) from exc
 
             status_by_source: dict[str, tuple[str, Any]] = {}
             status_by_title: dict[str, tuple[str, Any]] = {}
@@ -3333,16 +3737,34 @@ class LittleBullService:
                         id=doc_id,
                         file_path=source_name or title,
                         title=title,
-                        status=str(getattr(doc, "status", "") or registry.get("status") or "registered"),
+                        status=str(
+                            getattr(doc, "status", "")
+                            or registry.get("status")
+                            or "registered"
+                        ),
                         group_id=registry["group_id"],
                         subgroup_id=registry["subgroup_id"],
                         registry_document_id=registry["document_id"],
                         content_summary=str(getattr(doc, "content_summary", "") or ""),
                         content_length=int(getattr(doc, "content_length", 0) or 0),
-                        updated_at=str(getattr(doc, "updated_at", "") or registry.get("updated_at") or "") or None,
-                        created_at=str(getattr(doc, "created_at", "") or registry.get("created_at") or "") or None,
-                        track_id=getattr(doc, "track_id", None) if doc else registry.get("metadata", {}).get("track_id"),
-                        chunks_count=getattr(doc, "chunks_count", None) if doc else registry.get("chunk_count"),
+                        updated_at=str(
+                            getattr(doc, "updated_at", "")
+                            or registry.get("updated_at")
+                            or ""
+                        )
+                        or None,
+                        created_at=str(
+                            getattr(doc, "created_at", "")
+                            or registry.get("created_at")
+                            or ""
+                        )
+                        or None,
+                        track_id=getattr(doc, "track_id", None)
+                        if doc
+                        else registry.get("metadata", {}).get("track_id"),
+                        chunks_count=getattr(doc, "chunks_count", None)
+                        if doc
+                        else registry.get("chunk_count"),
                         metadata=metadata,
                     )
                 )
@@ -3361,13 +3783,18 @@ class LittleBullService:
             )
 
         try:
-            (documents_with_ids, total_count), status_counts = await self._documents_paginated(
+            (
+                (documents_with_ids, total_count),
+                status_counts,
+            ) = await self._documents_paginated(
                 rag=rag,
                 page=page,
                 page_size=page_size,
             )
         except Exception as exc:
-            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)) from exc
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)
+            ) from exc
 
         documents: list[LittleBullDocument] = []
         for doc_id, doc in documents_with_ids:
@@ -3432,7 +3859,9 @@ class LittleBullService:
             group_id=group_id,
             subgroup_id=subgroup_id,
         )
-        if not hasattr(self.admin_store, "register_document") or not hasattr(self.admin_store, "list_document_registry"):
+        if not hasattr(self.admin_store, "register_document") or not hasattr(
+            self.admin_store, "list_document_registry"
+        ):
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="Document registry is unavailable.",
@@ -3441,8 +3870,12 @@ class LittleBullService:
         input_dir = self._input_dir_for_workspace(workspace_id)
         input_dir.mkdir(parents=True, exist_ok=True)
         safe_filename = sanitize_upload_filename(file.filename or "document", input_dir)
-        if hasattr(self.doc_manager, "is_supported_file") and not self.doc_manager.is_supported_file(safe_filename):
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unsupported file type")
+        if hasattr(
+            self.doc_manager, "is_supported_file"
+        ) and not self.doc_manager.is_supported_file(safe_filename):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST, detail="Unsupported file type"
+            )
         registry_rows = await self.admin_store.list_document_registry(
             tenant_id=tenant_id,
             workspace_id=workspace_id,
@@ -3552,10 +3985,14 @@ class LittleBullService:
         input_dir.mkdir(parents=True, exist_ok=True)
         copied_paths: list[Path] = []
         skipped: list[str] = []
-        for source_path in sorted(archived_dir.iterdir(), key=lambda path: path.name.lower()):
+        for source_path in sorted(
+            archived_dir.iterdir(), key=lambda path: path.name.lower()
+        ):
             if not source_path.is_file():
                 continue
-            if hasattr(self.doc_manager, "is_supported_file") and not self.doc_manager.is_supported_file(source_path.name):
+            if hasattr(
+                self.doc_manager, "is_supported_file"
+            ) and not self.doc_manager.is_supported_file(source_path.name):
                 skipped.append(source_path.name)
                 continue
             safe_name = unique_input_filename(source_path.name, input_dir)
@@ -3580,7 +4017,9 @@ class LittleBullService:
             )
 
         track_id = generate_track_id("little_bull_reindex_archived")
-        self._queue_pipeline_index_files(background_tasks, copied_paths, track_id, rag=rag)
+        self._queue_pipeline_index_files(
+            background_tasks, copied_paths, track_id, rag=rag
+        )
         await self.audit.record(
             principal=principal,
             action=ACTIVITY_DOCUMENT_UPLOAD,
@@ -3604,7 +4043,9 @@ class LittleBullService:
             files=[path.name for path in copied_paths],
         )
 
-    async def query(self, principal: Principal, request: LittleBullQueryRequest) -> LittleBullQueryResponse:
+    async def query(
+        self, principal: Principal, request: LittleBullQueryRequest
+    ) -> LittleBullQueryResponse:
         self._require(principal, ACTIVITY_QUERY, request.workspace_id)
         rag = await self._require_data_plane(request.workspace_id)
         tenant_id = await self._workspace_tenant(request.workspace_id)
@@ -3623,7 +4064,9 @@ class LittleBullService:
             workspace_id=request.workspace_id,
             agent_config=agent_config,
         )
-        effective_model_profile = self._effective_model_profile(request.model_profile, agent_config)
+        effective_model_profile = self._effective_model_profile(
+            request.model_profile, agent_config
+        )
         workspace_contains_private_data = bool(
             await self.repository.get_policy(
                 WORKSPACE_PRIVATE_POLICY,
@@ -3664,7 +4107,10 @@ class LittleBullService:
                 detail=route_decision.reason,
             )
 
-        cache_disabled = route_decision.requires_private_runtime or route_decision.hosted_private_exception
+        cache_disabled = (
+            route_decision.requires_private_runtime
+            or route_decision.hosted_private_exception
+        )
         if cache_disabled:
             await self.audit.record(
                 principal=principal,
@@ -3680,7 +4126,9 @@ class LittleBullService:
                     "workspace_contains_private_data": workspace_contains_private_data,
                 },
             )
-        if scope_metadata["scoped"] and not getattr(rag, "little_bull_scoped_query_supported", False):
+        if scope_metadata["scoped"] and not getattr(
+            rag, "little_bull_scoped_query_supported", False
+        ):
             await self.audit.record(
                 principal=principal,
                 action=ACTIVITY_QUERY,
@@ -3703,7 +4151,9 @@ class LittleBullService:
 
         param = QueryParam(
             mode=self._effective_query_mode(request.mode, agent_config),
-            response_type=self._effective_response_type(request.response_type, agent_config),
+            response_type=self._effective_response_type(
+                request.response_type, agent_config
+            ),
             stream=False,
             conversation_history=request.conversation_history,
         )
@@ -3731,7 +4181,9 @@ class LittleBullService:
                 query=request.query,
                 user_prompt=getattr(param, "user_prompt", ""),
                 conversation_history=request.conversation_history,
-                estimated_request_cost_usd=budget_cost_state["estimated_request_cost_usd"],
+                estimated_request_cost_usd=budget_cost_state[
+                    "estimated_request_cost_usd"
+                ],
                 daily_cost_used_usd=budget_cost_state["daily_cost_used_usd"],
                 monthly_cost_used_usd=budget_cost_state["monthly_cost_used_usd"],
             )
@@ -3743,11 +4195,17 @@ class LittleBullService:
                 workspace_id=request.workspace_id,
                 result="blocked",
                 model=effective_model_profile,
-                metadata={"reason": "agent_context_budget", "detail": exc.detail, "agent_id": request.agent_id},
+                metadata={
+                    "reason": "agent_context_budget",
+                    "detail": exc.detail,
+                    "agent_id": request.agent_id,
+                },
             )
             raise
         self._apply_agent_context_budget_to_query_param(param, budget_metadata)
-        reserved_response_tokens = int(budget_metadata.get("reserved_response_tokens") or 0)
+        reserved_response_tokens = int(
+            budget_metadata.get("reserved_response_tokens") or 0
+        )
         if route_decision.requires_private_runtime:
             if route_decision.model_func is not None:
                 param.model_func = self._model_func_with_reserved_response_limit(
@@ -3764,7 +4222,12 @@ class LittleBullService:
             )
             if model_func is not None:
                 param.model_func = model_func
-        if budget and reserved_response_tokens and agent_config and param.model_func is None:
+        if (
+            budget
+            and reserved_response_tokens
+            and agent_config
+            and param.model_func is None
+        ):
             await self.audit.record(
                 principal=principal,
                 action=ACTIVITY_QUERY,
@@ -3802,9 +4265,13 @@ class LittleBullService:
             private_runtime=cache_disabled,
             rag=rag,
         )
-        llm_response = result.get("llm_response", {}) if isinstance(result, dict) else {}
+        llm_response = (
+            result.get("llm_response", {}) if isinstance(result, dict) else {}
+        )
         data = result.get("data", {}) if isinstance(result, dict) else {}
-        response_content = llm_response.get("content") or "No relevant context found for the query."
+        response_content = (
+            llm_response.get("content") or "No relevant context found for the query."
+        )
         references = data.get("references", []) if request.include_references else []
         if request.include_references and request.include_chunk_content:
             references = self._enrich_references(references, data.get("chunks", []))
@@ -3854,7 +4321,9 @@ class LittleBullService:
         principal: Principal,
         request: LittleBullOperationalChatRequest,
     ) -> LittleBullOperationalChatResponse:
-        if request.transform_to == "note" and (not request.group_id or not request.subgroup_id):
+        if request.transform_to == "note" and (
+            not request.group_id or not request.subgroup_id
+        ):
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail="Transforming operational chat to a note requires group_id and subgroup_id.",
@@ -3879,7 +4348,9 @@ class LittleBullService:
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail="Operational chat context estimate exceeds the effective context window.",
             )
-        tenant_id, workspace_id = await self._existing_workspace_scope(request.workspace_id)
+        tenant_id, workspace_id = await self._existing_workspace_scope(
+            request.workspace_id
+        )
         agent_config = await self._agent_config_for_query(
             tenant_id=tenant_id,
             workspace_id=workspace_id,
@@ -3974,7 +4445,10 @@ class LittleBullService:
                     subgroup_id=request.subgroup_id,
                     markdown=self._operational_chat_markdown(
                         conversation,
-                        context={**estimate.model_dump(), "document_ids": request.document_ids},
+                        context={
+                            **estimate.model_dump(),
+                            "document_ids": request.document_ids,
+                        },
                         references=query_response.references,
                     ),
                     metadata={
@@ -4032,7 +4506,9 @@ class LittleBullService:
                 "group_id": request.group_id,
                 "subgroup_id": request.subgroup_id,
                 "document_ids": request.document_ids,
-                "saved_conversation": conversation.conversation_id if conversation else None,
+                "saved_conversation": conversation.conversation_id
+                if conversation
+                else None,
                 "transform_to": request.transform_to,
             },
         )
@@ -4081,7 +4557,9 @@ class LittleBullService:
                     "metadata": item.get("metadata") or {},
                 }
             )
-        messages.append({"role": "user", "content": query, "references": [], "metadata": {}})
+        messages.append(
+            {"role": "user", "content": query, "references": [], "metadata": {}}
+        )
         messages.append(
             {
                 "role": "assistant",
@@ -4179,14 +4657,20 @@ class LittleBullService:
         filtered_rows = [
             row
             for row in rows
-            if self._ledger_row_matches_scope(row, group_id=group_id, subgroup_id=subgroup_id)
+            if self._ledger_row_matches_scope(
+                row, group_id=group_id, subgroup_id=subgroup_id
+            )
         ]
         now = utc_now()
         today = now.replace(hour=0, minute=0, second=0, microsecond=0)
         periods = {
             "total": self._cost_period_summary("total", filtered_rows, since=None),
-            "month": self._cost_period_summary("month", filtered_rows, since=today.replace(day=1)),
-            "last_7_days": self._cost_period_summary("last_7_days", filtered_rows, since=now - timedelta(days=7)),
+            "month": self._cost_period_summary(
+                "month", filtered_rows, since=today.replace(day=1)
+            ),
+            "last_7_days": self._cost_period_summary(
+                "last_7_days", filtered_rows, since=now - timedelta(days=7)
+            ),
             "today": self._cost_period_summary("today", filtered_rows, since=today),
         }
         await self.audit.record(
@@ -4219,7 +4703,9 @@ class LittleBullService:
         request: LittleBullContextEstimateRequest,
     ) -> LittleBullContextEstimateResponse:
         self._require(principal, ACTIVITY_QUERY, request.workspace_id)
-        tenant_id, workspace_id = await self._existing_workspace_scope(request.workspace_id)
+        tenant_id, workspace_id = await self._existing_workspace_scope(
+            request.workspace_id
+        )
         if request.subgroup_id and not request.group_id:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -4260,11 +4746,19 @@ class LittleBullService:
             agent_config=agent_config,
         )
         query_tokens = estimate_tokens_from_characters(len(request.query))
-        history_text = "\n".join(str(item.get("content") or "") for item in request.conversation_history)
+        history_text = "\n".join(
+            str(item.get("content") or "") for item in request.conversation_history
+        )
         history_tokens = estimate_tokens_from_characters(len(history_text))
         agent_prompt = build_agent_studio_prompt(agent_config) if agent_config else ""
         agent_prompt_tokens = estimate_tokens_from_characters(len(agent_prompt))
-        documents, document_tokens, chunk_count, chunk_tokens, doc_notes = await self._document_context_estimate(
+        (
+            documents,
+            document_tokens,
+            chunk_count,
+            chunk_tokens,
+            doc_notes,
+        ) = await self._document_context_estimate(
             tenant_id=tenant_id,
             workspace_id=workspace_id,
             group_id=request.group_id,
@@ -4273,7 +4767,9 @@ class LittleBullService:
             top_k=request.top_k,
         )
         agent_model_config = (
-            normalize_agent_studio_config(agent_config.get("config"), agent_config.get("tools") or []).get("model", {})
+            normalize_agent_studio_config(
+                agent_config.get("config"), agent_config.get("tools") or []
+            ).get("model", {})
             if agent_config
             else {}
         )
@@ -4306,7 +4802,9 @@ class LittleBullService:
         if budget_context_tokens:
             notes.append("Agent context budget caps the effective context window.")
         if overflow_tokens:
-            notes.append("Estimated context exceeds the effective window; reduce history, scope, chunks or reserved response.")
+            notes.append(
+                "Estimated context exceeds the effective window; reduce history, scope, chunks or reserved response."
+            )
         await self.audit.record(
             principal=principal,
             action=ACTIVITY_QUERY,
@@ -4375,11 +4873,14 @@ class LittleBullService:
                     or model.get("config", {}).get("profile") == model_profile
                 )
             ),
-            self._default_model(settings, "agent") or self._default_model(settings, "chat"),
+            self._default_model(settings, "agent")
+            or self._default_model(settings, "chat"),
         )
 
     @staticmethod
-    def _context_window_tokens(*, model_setting: dict[str, Any] | None) -> tuple[int, list[str]]:
+    def _context_window_tokens(
+        *, model_setting: dict[str, Any] | None
+    ) -> tuple[int, list[str]]:
         config = (model_setting or {}).get("config") or {}
         raw_window = (
             config.get("context_window")
@@ -4393,7 +4894,9 @@ class LittleBullService:
             window = 0
         if window > 0:
             return window, []
-        return QueryParam().max_total_tokens, ["Model context window unavailable; using LightRAG max_total_tokens fallback."]
+        return QueryParam().max_total_tokens, [
+            "Model context window unavailable; using LightRAG max_total_tokens fallback."
+        ]
 
     async def _query_scope_metadata(
         self,
@@ -4402,7 +4905,9 @@ class LittleBullService:
         workspace_id: str,
         request: LittleBullQueryRequest,
     ) -> dict[str, Any]:
-        document_ids = [document_id for document_id in request.document_ids if document_id]
+        document_ids = [
+            document_id for document_id in request.document_ids if document_id
+        ]
         if request.subgroup_id and not request.group_id:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -4451,10 +4956,14 @@ class LittleBullService:
             if since is not None and created_at is not None and created_at < since:
                 continue
             cls._add_cost_row(acc, row)
-        return LittleBullCostPeriodSummary(name=name, since=since.isoformat() if since else None, **acc)
+        return LittleBullCostPeriodSummary(
+            name=name, since=since.isoformat() if since else None, **acc
+        )
 
     @classmethod
-    def _cost_breakdown(cls, rows: list[dict[str, Any]], dimension: str) -> list[LittleBullCostBreakdownItem]:
+    def _cost_breakdown(
+        cls, rows: list[dict[str, Any]], dimension: str
+    ) -> list[LittleBullCostBreakdownItem]:
         buckets: dict[str, dict[str, Any]] = {}
         for row in rows:
             key, label, metadata = cls._cost_breakdown_key(row, dimension)
@@ -4468,7 +4977,12 @@ class LittleBullService:
             )
             cls._add_cost_row(bucket, row)
         items = [
-            LittleBullCostBreakdownItem(key=key, label=bucket.pop("label"), metadata=bucket.pop("metadata"), **bucket)
+            LittleBullCostBreakdownItem(
+                key=key,
+                label=bucket.pop("label"),
+                metadata=bucket.pop("metadata"),
+                **bucket,
+            )
             for key, bucket in buckets.items()
         ]
         return sorted(items, key=lambda item: (-item.cost_usd, item.key))
@@ -4493,13 +5007,23 @@ class LittleBullService:
         acc["prompt_tokens"] += int(row.get("prompt_tokens") or 0)
         acc["completion_tokens"] += int(row.get("completion_tokens") or 0)
         acc["total_tokens"] += int(row.get("total_tokens") or 0)
-        acc["estimated_cost_usd"] = round(float(acc["estimated_cost_usd"]) + estimated_cost, 8)
+        acc["estimated_cost_usd"] = round(
+            float(acc["estimated_cost_usd"]) + estimated_cost, 8
+        )
         if actual_cost is not None:
-            acc["actual_cost_usd"] = round(float(acc["actual_cost_usd"]) + actual_cost, 8)
-        acc["cost_usd"] = round(float(acc["cost_usd"]) + (actual_cost if actual_cost is not None else estimated_cost), 8)
+            acc["actual_cost_usd"] = round(
+                float(acc["actual_cost_usd"]) + actual_cost, 8
+            )
+        acc["cost_usd"] = round(
+            float(acc["cost_usd"])
+            + (actual_cost if actual_cost is not None else estimated_cost),
+            8,
+        )
 
     @classmethod
-    def _cost_breakdown_key(cls, row: dict[str, Any], dimension: str) -> tuple[str, str, dict[str, Any]]:
+    def _cost_breakdown_key(
+        cls, row: dict[str, Any], dimension: str
+    ) -> tuple[str, str, dict[str, Any]]:
         metadata = cls._ledger_metadata(row)
         if dimension == "user":
             key = str(row.get("user_id") or "unassigned")
@@ -4582,17 +5106,30 @@ class LittleBullService:
         if requested_ids:
             missing = sorted(requested_ids - set(by_id))
             if missing:
-                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found in workspace.")
-            rows = [by_id[document_id] for document_id in document_ids if document_id in by_id]
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Document not found in workspace.",
+                )
+            rows = [
+                by_id[document_id]
+                for document_id in document_ids
+                if document_id in by_id
+            ]
         filtered = []
         for row in rows:
             if group_id and row.get("group_id") != group_id:
                 if requested_ids:
-                    raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Document is outside group scope.")
+                    raise HTTPException(
+                        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                        detail="Document is outside group scope.",
+                    )
                 continue
             if subgroup_id and row.get("subgroup_id") != subgroup_id:
                 if requested_ids:
-                    raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Document is outside subgroup scope.")
+                    raise HTTPException(
+                        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                        detail="Document is outside subgroup scope.",
+                    )
                 continue
             filtered.append(row)
         notes: list[str] = []
@@ -4611,13 +5148,23 @@ class LittleBullService:
                     or metadata.get("content_length")
                     or metadata.get("source_size_bytes")
                 )
-                tokens = estimate_tokens_from_characters(content_length) if content_length > 0 else 0
+                tokens = (
+                    estimate_tokens_from_characters(content_length)
+                    if content_length > 0
+                    else 0
+                )
             if tokens <= 0:
-                notes.append(f"Document {row['document_id']} has no token estimate; counted as 0 tokens.")
+                notes.append(
+                    f"Document {row['document_id']} has no token estimate; counted as 0 tokens."
+                )
             document_tokens += tokens
             chunk_count += max(
                 0,
-                self._int_from_any(row.get("chunk_count") or row.get("chunks_count") or metadata.get("chunk_count")),
+                self._int_from_any(
+                    row.get("chunk_count")
+                    or row.get("chunks_count")
+                    or metadata.get("chunk_count")
+                ),
             )
         retrieval_chunk_limit = int(top_k or QueryParam().chunk_top_k)
         if chunk_count > 0 and document_tokens > 0:
@@ -4654,8 +5201,18 @@ class LittleBullService:
         if not budgets:
             return None
         model_setting_id = agent_config.get("model_setting_id")
-        exact = next((budget for budget in budgets if budget.get("model_setting_id") == model_setting_id), None)
-        default = next((budget for budget in budgets if budget.get("model_setting_id") is None), None)
+        exact = next(
+            (
+                budget
+                for budget in budgets
+                if budget.get("model_setting_id") == model_setting_id
+            ),
+            None,
+        )
+        default = next(
+            (budget for budget in budgets if budget.get("model_setting_id") is None),
+            None,
+        )
         return exact or default or budgets[0]
 
     async def _reserve_agent_query_budget_ledger(
@@ -4796,16 +5353,21 @@ class LittleBullService:
             "subgroup_id": scope_metadata.get("subgroup_id"),
             "model_setting_id": (model_setting or {}).get("model_setting_id"),
             "provider": (model_setting or {}).get("provider") or "runtime",
-            "model_id": (model_setting or {}).get("model_id") or effective_model_profile,
+            "model_id": (model_setting or {}).get("model_id")
+            or effective_model_profile,
             "operation": "agent_query",
             "prompt_tokens": prompt_tokens,
             "completion_tokens": completion_tokens,
             "total_tokens": total_tokens,
-            "estimated_cost_usd": float(budget_metadata.get("estimated_request_cost_usd") or 0),
+            "estimated_cost_usd": float(
+                budget_metadata.get("estimated_request_cost_usd") or 0
+            ),
             "request_hash": request_hash,
             "response_hash": response_hash,
             "metadata": {
-                "agent_context_budget_id": budget_metadata.get("agent_context_budget_id"),
+                "agent_context_budget_id": budget_metadata.get(
+                    "agent_context_budget_id"
+                ),
                 "effective_model_profile": effective_model_profile,
                 "group_id": scope_metadata.get("group_id"),
                 "subgroup_id": scope_metadata.get("subgroup_id"),
@@ -4843,7 +5405,9 @@ class LittleBullService:
         )
         reserved_response_tokens = int(budget.get("reserved_response_tokens") or 0)
         max_context_tokens = int(budget.get("max_context_tokens") or 0)
-        available_context_tokens = max(0, max_context_tokens - prompt_tokens - reserved_response_tokens)
+        available_context_tokens = max(
+            0, max_context_tokens - prompt_tokens - reserved_response_tokens
+        )
         estimated_cost = self._estimate_agent_request_cost_usd(
             budget=budget,
             model_setting=model_setting,
@@ -4884,7 +5448,14 @@ class LittleBullService:
             tenant_id=tenant_id,
             workspace_id=workspace_id,
         )
-        return next((setting for setting in settings if setting.get("model_setting_id") == model_setting_id), None)
+        return next(
+            (
+                setting
+                for setting in settings
+                if setting.get("model_setting_id") == model_setting_id
+            ),
+            None,
+        )
 
     async def _require_agent_runtime_model_setting(
         self,
@@ -4902,8 +5473,14 @@ class LittleBullService:
         if not model_setting_id:
             return
         if not model_setting:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent runtime model setting not found.")
-        if not model_setting.get("enabled", True) or model_setting.get("usage") not in {"chat", "agent"}:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Agent runtime model setting not found.",
+            )
+        if not model_setting.get("enabled", True) or model_setting.get("usage") not in {
+            "chat",
+            "agent",
+        }:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail="Agent runtime model setting must be enabled and use chat or agent.",
@@ -4938,8 +5515,12 @@ class LittleBullService:
         user_prompt: str,
         conversation_history: list[dict[str, Any]],
     ) -> int:
-        history_text = "\n".join(str(item.get("content") or "") for item in conversation_history)
-        return estimate_tokens_from_characters(len("\n".join([query, user_prompt, history_text])))
+        history_text = "\n".join(
+            str(item.get("content") or "") for item in conversation_history
+        )
+        return estimate_tokens_from_characters(
+            len("\n".join([query, user_prompt, history_text]))
+        )
 
     @classmethod
     def _estimate_agent_request_cost_usd(
@@ -4965,14 +5546,20 @@ class LittleBullService:
                 or pricing.get("input_cost_per_million_tokens")
                 or pricing.get("cost_per_million_tokens")
             )
-            input_per_token = input_per_million / 1_000_000 if input_per_million is not None else None
+            input_per_token = (
+                input_per_million / 1_000_000 if input_per_million is not None else None
+            )
         if output_per_token is None:
             output_per_million = cls._float_or_none(
                 pricing.get("completion_cost_per_million_tokens")
                 or pricing.get("output_cost_per_million_tokens")
                 or pricing.get("cost_per_million_tokens")
             )
-            output_per_token = output_per_million / 1_000_000 if output_per_million is not None else None
+            output_per_token = (
+                output_per_million / 1_000_000
+                if output_per_million is not None
+                else None
+            )
         if input_per_token is None and output_per_token is None and not request_price:
             return None
         return round(
@@ -5018,21 +5605,34 @@ class LittleBullService:
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail="Agent prompt exceeds max_prompt_tokens budget.",
             )
-        if max_context_tokens and prompt_tokens + reserved_response_tokens > max_context_tokens:
+        if (
+            max_context_tokens
+            and prompt_tokens + reserved_response_tokens > max_context_tokens
+        ):
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail="Agent prompt plus reserved response exceeds max_context_tokens budget.",
             )
         if max_context_tokens:
-            available_context_tokens = max_context_tokens - prompt_tokens - reserved_response_tokens
-        daily_limit = LittleBullService._float_or_none(budget.get("daily_cost_limit_usd"))
-        monthly_limit = LittleBullService._float_or_none(budget.get("monthly_cost_limit_usd"))
-        if (daily_limit is not None or monthly_limit is not None) and not max_context_tokens:
+            available_context_tokens = (
+                max_context_tokens - prompt_tokens - reserved_response_tokens
+            )
+        daily_limit = LittleBullService._float_or_none(
+            budget.get("daily_cost_limit_usd")
+        )
+        monthly_limit = LittleBullService._float_or_none(
+            budget.get("monthly_cost_limit_usd")
+        )
+        if (
+            daily_limit is not None or monthly_limit is not None
+        ) and not max_context_tokens:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail="Cost-limited agent context budgets require max_context_tokens.",
             )
-        if (daily_limit is not None or monthly_limit is not None) and estimated_request_cost_usd is None:
+        if (
+            daily_limit is not None or monthly_limit is not None
+        ) and estimated_request_cost_usd is None:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail="Agent cost budget requires pricing metadata before runtime query.",
@@ -5042,12 +5642,19 @@ class LittleBullService:
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail="Agent cost budget is exhausted.",
             )
-        if daily_limit is not None and daily_cost_used_usd + (estimated_request_cost_usd or 0.0) > daily_limit:
+        if (
+            daily_limit is not None
+            and daily_cost_used_usd + (estimated_request_cost_usd or 0.0) > daily_limit
+        ):
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail="Agent query exceeds daily cost budget.",
             )
-        if monthly_limit is not None and monthly_cost_used_usd + (estimated_request_cost_usd or 0.0) > monthly_limit:
+        if (
+            monthly_limit is not None
+            and monthly_cost_used_usd + (estimated_request_cost_usd or 0.0)
+            > monthly_limit
+        ):
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail="Agent query exceeds monthly cost budget.",
@@ -5065,19 +5672,31 @@ class LittleBullService:
         }
 
     @staticmethod
-    def _apply_agent_context_budget_to_query_param(param: QueryParam, budget_metadata: dict[str, Any]) -> None:
-        available_context_tokens = int(budget_metadata.get("available_context_tokens") or 0)
+    def _apply_agent_context_budget_to_query_param(
+        param: QueryParam, budget_metadata: dict[str, Any]
+    ) -> None:
+        available_context_tokens = int(
+            budget_metadata.get("available_context_tokens") or 0
+        )
         if available_context_tokens <= 0:
             return
-        param.max_total_tokens = min(int(getattr(param, "max_total_tokens", available_context_tokens)), available_context_tokens)
-        param.max_entity_tokens = min(int(getattr(param, "max_entity_tokens", available_context_tokens)), available_context_tokens)
+        param.max_total_tokens = min(
+            int(getattr(param, "max_total_tokens", available_context_tokens)),
+            available_context_tokens,
+        )
+        param.max_entity_tokens = min(
+            int(getattr(param, "max_entity_tokens", available_context_tokens)),
+            available_context_tokens,
+        )
         param.max_relation_tokens = min(
             int(getattr(param, "max_relation_tokens", available_context_tokens)),
             available_context_tokens,
         )
 
     @staticmethod
-    def _model_func_with_reserved_response_limit(model_func: Any, reserved_response_tokens: int) -> Any:
+    def _model_func_with_reserved_response_limit(
+        model_func: Any, reserved_response_tokens: int
+    ) -> Any:
         if not model_func or reserved_response_tokens <= 0:
             return model_func
 
@@ -5095,7 +5714,9 @@ class LittleBullService:
 
         return limited_model_func
 
-    async def delete_document(self, principal: Principal, *, workspace_id: str, document_id: str) -> dict[str, Any]:
+    async def delete_document(
+        self, principal: Principal, *, workspace_id: str, document_id: str
+    ) -> dict[str, Any]:
         self._require(principal, ACTIVITY_DOCUMENT_DELETE, workspace_id)
         rag = await self._require_data_plane(workspace_id)
         tenant_id = await self._workspace_tenant(workspace_id)
@@ -5152,9 +5773,15 @@ class LittleBullService:
             result="success",
             metadata={"document_id": document_id},
         )
-        return {"status": "success", "message": "Document deleted.", "doc_id": document_id}
+        return {
+            "status": "success",
+            "message": "Document deleted.",
+            "doc_id": document_id,
+        }
 
-    async def list_activity(self, principal: Principal, *, workspace_id: str, limit: int = 50) -> list[LittleBullActivityItem]:
+    async def list_activity(
+        self, principal: Principal, *, workspace_id: str, limit: int = 50
+    ) -> list[LittleBullActivityItem]:
         self._require(principal, ACTIVITY_ACTIVITY_READ, workspace_id)
         events = await self.audit.list(
             tenant_id=await self._workspace_tenant(workspace_id),
@@ -5174,7 +5801,9 @@ class LittleBullService:
             for event in events
         ]
 
-    async def list_assistants(self, principal: Principal, *, workspace_id: str) -> list[LittleBullAssistant]:
+    async def list_assistants(
+        self, principal: Principal, *, workspace_id: str
+    ) -> list[LittleBullAssistant]:
         self._require(principal, ACTIVITY_ASSISTANTS_READ, workspace_id)
         tenant_id = await self._workspace_tenant(workspace_id)
         try:
@@ -5200,7 +5829,10 @@ class LittleBullService:
                 id="simple_answer",
                 name="Resposta simples",
                 description="Responde em linguagem direta usando o workspace ativo.",
-                response_rules=["Usar fontes quando disponiveis", "Evitar resposta sem contexto"],
+                response_rules=[
+                    "Usar fontes quando disponiveis",
+                    "Evitar resposta sem contexto",
+                ],
             ),
             LittleBullAssistant(
                 id="checklist",
@@ -5212,7 +5844,10 @@ class LittleBullService:
                 id="private_local",
                 name="Privado/local",
                 description="Perfil exigido para dados sensiveis ou privados.",
-                response_rules=["Nao usar modelo hospedado por padrao", "Registrar auditoria"],
+                response_rules=[
+                    "Nao usar modelo hospedado por padrao",
+                    "Registrar auditoria",
+                ],
             ),
         ]
 
@@ -5235,7 +5870,9 @@ class LittleBullService:
                 max_nodes=max_nodes,
             )
         except Exception as exc:
-            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)) from exc
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)
+            ) from exc
         await self.audit.record(
             principal=principal,
             action="little_bull.graph.read",
@@ -5260,18 +5897,30 @@ class LittleBullService:
     ) -> LittleBullObsidianGraphResponse:
         self._require(principal, ACTIVITY_DOCUMENT_READ, workspace_id)
         tenant_id, workspace_id = await self._existing_workspace_scope(workspace_id)
-        normalized_scope = scope if scope in {"global", "workspace", "group", "subgroup"} else "workspace"
+        normalized_scope = (
+            scope
+            if scope in {"global", "workspace", "group", "subgroup"}
+            else "workspace"
+        )
         if normalized_scope == "group" and not group_id:
-            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="group scope requires group_id.")
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="group scope requires group_id.",
+            )
         if normalized_scope == "subgroup" and (not group_id or not subgroup_id):
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail="subgroup scope requires group_id and subgroup_id.",
             )
         if subgroup_id and not group_id:
-            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="subgroup_id requires group_id.")
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="subgroup_id requires group_id.",
+            )
         if group_id:
-            await self._require_existing_group(tenant_id=tenant_id, workspace_id=workspace_id, group_id=group_id)
+            await self._require_existing_group(
+                tenant_id=tenant_id, workspace_id=workspace_id, group_id=group_id
+            )
         if subgroup_id:
             await self._require_existing_subgroup(
                 tenant_id=tenant_id,
@@ -5297,27 +5946,42 @@ class LittleBullService:
                 subgroup_id=note.get("subgroup_id"),
                 metadata={"slug": note.get("slug"), "privacy": note.get("privacy")},
             )
-        documents = await self.admin_store.list_document_registry(tenant_id=tenant_id, workspace_id=workspace_id)
+        documents = await self.admin_store.list_document_registry(
+            tenant_id=tenant_id, workspace_id=workspace_id
+        )
         for document in documents:
-            if not self._graph_scope_matches(document, group_id=group_id, subgroup_id=subgroup_id):
+            if not self._graph_scope_matches(
+                document, group_id=group_id, subgroup_id=subgroup_id
+            ):
                 continue
             self._add_graph_node(
                 node_map,
                 kind="document",
                 ref_id=document["document_id"],
-                label=document.get("title") or document.get("source_uri") or document["document_id"],
+                label=document.get("title")
+                or document.get("source_uri")
+                or document["document_id"],
                 group_id=document.get("group_id"),
                 subgroup_id=document.get("subgroup_id"),
-                metadata={"status": document.get("status"), "chunk_count": document.get("chunk_count")},
+                metadata={
+                    "status": document.get("status"),
+                    "chunk_count": document.get("chunk_count"),
+                },
             )
 
         edges: list[LittleBullGraphEdge] = []
-        backlinks = await self.admin_store.list_backlinks(tenant_id=tenant_id, workspace_id=workspace_id)
+        backlinks = await self.admin_store.list_backlinks(
+            tenant_id=tenant_id, workspace_id=workspace_id
+        )
         for backlink in backlinks:
             if origin_type and backlink.get("origin_type") != origin_type:
                 continue
-            source_node_id = self._graph_node_id(backlink["source_kind"], backlink["source_id"])
-            target_node_id = self._graph_node_id(backlink["target_kind"], backlink["target_id"])
+            source_node_id = self._graph_node_id(
+                backlink["source_kind"], backlink["source_id"]
+            )
+            target_node_id = self._graph_node_id(
+                backlink["target_kind"], backlink["target_id"]
+            )
             if source_node_id not in node_map or target_node_id not in node_map:
                 continue
             edges.append(
@@ -5352,7 +6016,10 @@ class LittleBullService:
                 label=trail.get("title") or trail["knowledge_trail_id"],
                 group_id=trail.get("group_id"),
                 subgroup_id=trail.get("subgroup_id"),
-                metadata={"trail_type": trail.get("trail_type"), "status": trail.get("status")},
+                metadata={
+                    "trail_type": trail.get("trail_type"),
+                    "status": trail.get("status"),
+                },
             )
             steps = await self.admin_store.list_knowledge_trail_steps(
                 knowledge_trail_id=trail["knowledge_trail_id"],
@@ -5363,7 +6030,10 @@ class LittleBullService:
             for step in steps:
                 target_node_id = self._graph_node_id(
                     step.get("step_kind") or "note",
-                    step.get("note_id") or step.get("document_id") or step.get("canvas_board_id") or "",
+                    step.get("note_id")
+                    or step.get("document_id")
+                    or step.get("canvas_board_id")
+                    or "",
                 )
                 if target_node_id not in node_map:
                     continue
@@ -5376,7 +6046,10 @@ class LittleBullService:
                             target_node_id=target_node_id,
                             origin_type="trail_step",
                             edge_type="trail",
-                            metadata={"knowledge_trail_id": trail["knowledge_trail_id"], "step_order": step["step_order"]},
+                            metadata={
+                                "knowledge_trail_id": trail["knowledge_trail_id"],
+                                "step_order": step["step_order"],
+                            },
                         )
                     )
             trails_payload.append(
@@ -5392,8 +6065,14 @@ class LittleBullService:
             node_map, edges = self._focus_graph(node_map, edges, central_node_id)
         if len(node_map) > max_nodes:
             kept = set(list(node_map)[:max_nodes])
-            node_map = {node_id: node for node_id, node in node_map.items() if node_id in kept}
-            edges = [edge for edge in edges if edge.source_node_id in kept and edge.target_node_id in kept]
+            node_map = {
+                node_id: node for node_id, node in node_map.items() if node_id in kept
+            }
+            edges = [
+                edge
+                for edge in edges
+                if edge.source_node_id in kept and edge.target_node_id in kept
+            ]
         clusters = self._graph_clusters(edges, set(node_map))
         chat_context = self._graph_chat_context(node_map, edges, central_node_id)
         await self.audit.record(
@@ -5416,7 +6095,12 @@ class LittleBullService:
             workspace_id=workspace_id,
             scope=normalized_scope,
             central_node_id=central_node_id,
-            filters={"group_id": group_id, "subgroup_id": subgroup_id, "origin_type": origin_type, "max_nodes": max_nodes},
+            filters={
+                "group_id": group_id,
+                "subgroup_id": subgroup_id,
+                "origin_type": origin_type,
+                "max_nodes": max_nodes,
+            },
             nodes=list(node_map.values()),
             edges=edges,
             clusters=clusters,
@@ -5452,7 +6136,9 @@ class LittleBullService:
         )
 
     @staticmethod
-    def _graph_scope_matches(row: dict[str, Any], *, group_id: str | None, subgroup_id: str | None) -> bool:
+    def _graph_scope_matches(
+        row: dict[str, Any], *, group_id: str | None, subgroup_id: str | None
+    ) -> bool:
         if group_id and row.get("group_id") != group_id:
             return False
         if subgroup_id and row.get("subgroup_id") != subgroup_id:
@@ -5470,20 +6156,30 @@ class LittleBullService:
         focused_edges = [
             edge
             for edge in edges
-            if edge.source_node_id == central_node_id or edge.target_node_id == central_node_id
+            if edge.source_node_id == central_node_id
+            or edge.target_node_id == central_node_id
         ]
         focused_node_ids = {central_node_id}
         for edge in focused_edges:
             focused_node_ids.add(edge.source_node_id)
             focused_node_ids.add(edge.target_node_id)
-        return {node_id: node for node_id, node in node_map.items() if node_id in focused_node_ids}, focused_edges
+        return {
+            node_id: node
+            for node_id, node in node_map.items()
+            if node_id in focused_node_ids
+        }, focused_edges
 
     @staticmethod
-    def _graph_clusters(edges: list[LittleBullGraphEdge], node_ids: set[str]) -> list[LittleBullGraphClusterSummary]:
+    def _graph_clusters(
+        edges: list[LittleBullGraphEdge], node_ids: set[str]
+    ) -> list[LittleBullGraphClusterSummary]:
         adjacency = {node_id: set() for node_id in node_ids}
         edge_counts: dict[str, int] = {node_id: 0 for node_id in node_ids}
         for edge in edges:
-            if edge.source_node_id not in adjacency or edge.target_node_id not in adjacency:
+            if (
+                edge.source_node_id not in adjacency
+                or edge.target_node_id not in adjacency
+            ):
                 continue
             adjacency[edge.source_node_id].add(edge.target_node_id)
             adjacency[edge.target_node_id].add(edge.source_node_id)
@@ -5509,7 +6205,8 @@ class LittleBullService:
                     cluster_id=f"cluster-{len(clusters) + 1}",
                     node_ids=sorted(cluster_nodes),
                     node_count=len(cluster_nodes),
-                    edge_count=sum(edge_counts.get(item, 0) for item in cluster_nodes) // 2,
+                    edge_count=sum(edge_counts.get(item, 0) for item in cluster_nodes)
+                    // 2,
                     label=sorted(cluster_nodes)[0] if cluster_nodes else "",
                 )
             )
@@ -5531,19 +6228,25 @@ class LittleBullService:
         return {
             "enabled": bool(central_node_id and central_node_id in node_map),
             "focus_node_id": central_node_id,
-            "focus_label": node_map[central_node_id].label if central_node_id in node_map else "",
+            "focus_label": node_map[central_node_id].label
+            if central_node_id in node_map
+            else "",
             "neighbor_count": len(neighbor_ids),
             "edge_count": len(edges),
             "context_kind": "obsidian_graph",
         }
 
-    async def list_graph_labels(self, principal: Principal, *, workspace_id: str) -> list[str]:
+    async def list_graph_labels(
+        self, principal: Principal, *, workspace_id: str
+    ) -> list[str]:
         self._require(principal, ACTIVITY_DOCUMENT_READ, workspace_id)
         rag = await self._require_data_plane(workspace_id)
         try:
             return await rag.chunk_entity_relation_graph.get_all_labels()
         except Exception as exc:
-            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)) from exc
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)
+            ) from exc
 
     async def list_popular_graph_labels(
         self, principal: Principal, *, workspace_id: str, limit: int
@@ -5553,7 +6256,9 @@ class LittleBullService:
         try:
             return await rag.chunk_entity_relation_graph.get_popular_labels(limit)
         except Exception as exc:
-            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)) from exc
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)
+            ) from exc
 
     async def search_graph_labels(
         self,
@@ -5568,7 +6273,9 @@ class LittleBullService:
         try:
             return await rag.chunk_entity_relation_graph.search_labels(query, limit)
         except Exception as exc:
-            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)) from exc
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)
+            ) from exc
 
     async def list_model_settings(
         self, principal: Principal, *, workspace_id: str
@@ -5584,12 +6291,16 @@ class LittleBullService:
             settings = self._runtime_model_defaults(workspace_id=workspace_id)
         return [LittleBullModelSetting(**setting) for setting in settings]
 
-    async def list_embedding_catalog(self, principal: Principal) -> list[LittleBullEmbeddingCatalogItem]:
+    async def list_embedding_catalog(
+        self, principal: Principal
+    ) -> list[LittleBullEmbeddingCatalogItem]:
         self._require(principal, ACTIVITY_MODEL_MANAGE)
         self._require_master(principal)
         return [LittleBullEmbeddingCatalogItem(**item) for item in embedding_catalog()]
 
-    async def list_knowledge_bases(self, principal: Principal) -> list[LittleBullKnowledgeBase]:
+    async def list_knowledge_bases(
+        self, principal: Principal
+    ) -> list[LittleBullKnowledgeBase]:
         self._require(principal, ACTIVITY_WORKSPACE_MANAGE)
         self._require_master(principal)
         workspaces = await self.repository.list_workspaces(None)
@@ -5602,9 +6313,13 @@ class LittleBullService:
             )
             chat_model = self._default_model(settings, "chat")
             embedding_model = self._default_model(settings, "embedding")
-            estimated_tokens = await self._estimated_tokens_for_workspace(workspace.workspace_id)
+            estimated_tokens = await self._estimated_tokens_for_workspace(
+                workspace.workspace_id
+            )
             embedding_config = (embedding_model or {}).get("config", {})
-            prompt_cost = float(embedding_config.get("prompt_cost_per_million_tokens") or 0)
+            prompt_cost = float(
+                embedding_config.get("prompt_cost_per_million_tokens") or 0
+            )
             bases.append(
                 LittleBullKnowledgeBase(
                     workspace_id=workspace.workspace_id,
@@ -5613,15 +6328,26 @@ class LittleBullService:
                     slug=workspace.slug,
                     description=workspace.description,
                     privacy=workspace.privacy,
-                    data_plane_attached=await self._data_plane_attached(workspace.workspace_id),
+                    data_plane_attached=await self._data_plane_attached(
+                        workspace.workspace_id
+                    ),
                     document_count=sum(counts.values()),
                     ready_count=counts.get("processed", 0),
-                    processing_count=counts.get("processing", 0) + counts.get("pending", 0),
-                    chat_model=LittleBullModelSetting(**chat_model) if chat_model else None,
-                    embedding_model=LittleBullModelSetting(**embedding_model) if embedding_model else None,
-                    embedding_reindex_required=bool(embedding_config.get("reindex_required")),
+                    processing_count=counts.get("processing", 0)
+                    + counts.get("pending", 0),
+                    chat_model=LittleBullModelSetting(**chat_model)
+                    if chat_model
+                    else None,
+                    embedding_model=LittleBullModelSetting(**embedding_model)
+                    if embedding_model
+                    else None,
+                    embedding_reindex_required=bool(
+                        embedding_config.get("reindex_required")
+                    ),
                     embedding_estimated_tokens=estimated_tokens,
-                    embedding_estimated_cost_usd=estimate_embedding_cost(estimated_tokens, prompt_cost),
+                    embedding_estimated_cost_usd=estimate_embedding_cost(
+                        estimated_tokens, prompt_cost
+                    ),
                 )
             )
         return bases
@@ -5686,9 +6412,17 @@ class LittleBullService:
             "schema_version": 1,
             "attached": True,
             "workspace_id": workspace_id,
-            "working_dir": str(getattr(rag, "working_dir", getattr(self.rag, "working_dir", "./rag_storage"))),
+            "working_dir": str(
+                getattr(
+                    rag,
+                    "working_dir",
+                    getattr(self.rag, "working_dir", "./rag_storage"),
+                )
+            ),
             "input_dir": str(input_dir),
-            "attached_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "attached_at": datetime.now(timezone.utc)
+            .isoformat()
+            .replace("+00:00", "Z"),
             "attached_by": principal.user_id,
         }
         await self.repository.set_policy(
@@ -5788,15 +6522,27 @@ class LittleBullService:
 
             approval = await self.approvals.get(request.approval_id)
             if approval is None:
-                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Approval not found.")
-            if approval.action != ACTIVITY_DOCUMENT_REINDEX or approval.workspace_id != workspace_id:
-                raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Approval does not match this reindex request.")
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND, detail="Approval not found."
+                )
+            if (
+                approval.action != ACTIVITY_DOCUMENT_REINDEX
+                or approval.workspace_id != workspace_id
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Approval does not match this reindex request.",
+                )
             approved_payload = approval.metadata or {}
             if (
-                request.include_archived != coerce_payload_bool(approved_payload.get("include_archived"), True)
-                or request.include_input_root != coerce_payload_bool(approved_payload.get("include_input_root"), True)
+                request.include_archived
+                != coerce_payload_bool(approved_payload.get("include_archived"), True)
+                or request.include_input_root
+                != coerce_payload_bool(approved_payload.get("include_input_root"), True)
                 or request.destructive_rebuild
-                != coerce_payload_bool(approved_payload.get("destructive_rebuild"), False)
+                != coerce_payload_bool(
+                    approved_payload.get("destructive_rebuild"), False
+                )
             ):
                 raise HTTPException(
                     status_code=status.HTTP_409_CONFLICT,
@@ -5810,9 +6556,16 @@ class LittleBullService:
                     approval=approval.to_dict(),
                 )
             if approval.status != ApprovalStatus.APPROVED:
-                raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Approval must be approved before execution.")
-            executing = await self.approvals.begin_execution(approval.approval_id, principal)
-            approval = executing or await self.approvals.get(approval.approval_id) or approval
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Approval must be approved before execution.",
+                )
+            executing = await self.approvals.begin_execution(
+                approval.approval_id, principal
+            )
+            approval = (
+                executing or await self.approvals.get(approval.approval_id) or approval
+            )
 
         snapshot_id = None
         snapshot_path = None
@@ -5860,7 +6613,9 @@ class LittleBullService:
                 include_input_root=request.include_input_root,
             )
         if approval is not None and approval.status == ApprovalStatus.EXECUTING:
-            approval = await self.approvals.mark_executed(approval.approval_id, principal)
+            approval = await self.approvals.mark_executed(
+                approval.approval_id, principal
+            )
         await self._mark_embedding_reindex_queued(
             principal=principal,
             tenant_id=tenant_id,
@@ -5905,7 +6660,9 @@ class LittleBullService:
         snapshot_dir = self._snapshot_root_for_workspace(workspace_id) / snapshot_id
         snapshot_storage_dir = snapshot_dir / "storage"
         if not snapshot_dir.exists() or not snapshot_storage_dir.exists():
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Snapshot not found.")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Snapshot not found."
+            )
         if workspace_id == self._current_workspace_id():
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
@@ -5972,10 +6729,16 @@ class LittleBullService:
             )
             notes.append("Estimate based on page count and average words per page.")
         else:
-            estimated_tokens = await self._estimated_tokens_for_workspace(request.workspace_id)
-            notes.append("Estimate based on indexed document content length when the data plane is attached.")
+            estimated_tokens = await self._estimated_tokens_for_workspace(
+                request.workspace_id
+            )
+            notes.append(
+                "Estimate based on indexed document content length when the data plane is attached."
+            )
         if not await self._data_plane_attached(request.workspace_id):
-            notes.append("Workspace is configured but not attached to the current LightRAG data plane.")
+            notes.append(
+                "Workspace is configured but not attached to the current LightRAG data plane."
+            )
         return LittleBullEmbeddingCostEstimateResponse(
             workspace_id=request.workspace_id,
             model_id=entry.model_id,
@@ -6014,7 +6777,11 @@ class LittleBullService:
         current = self._default_model(settings, "embedding")
         current_config = dict((current or {}).get("config", {}) or {})
         changed = current is None or current.get("model_id") != entry.model_id
-        tokens = estimated_tokens if estimated_tokens is not None else await self._estimated_tokens_for_workspace(workspace_id)
+        tokens = (
+            estimated_tokens
+            if estimated_tokens is not None
+            else await self._estimated_tokens_for_workspace(workspace_id)
+        )
         config = {
             **current_config,
             "runtime_default": False,
@@ -6024,7 +6791,9 @@ class LittleBullService:
             "context_length": entry.context_length,
             "recommended_chunk_tokens": entry.recommended_chunk_tokens,
             "estimated_reindex_tokens": tokens,
-            "estimated_reindex_cost_usd": estimate_embedding_cost(tokens, entry.prompt_cost_per_million_tokens),
+            "estimated_reindex_cost_usd": estimate_embedding_cost(
+                tokens, entry.prompt_cost_per_million_tokens
+            ),
             "runtime_note": "Changing embeddings affects new indexing; existing vectors require reindexing.",
         }
         payload = {
@@ -6064,12 +6833,22 @@ class LittleBullService:
                 workspace_id=workspace_id,
             )
             existing = next(
-                (setting for setting in settings if setting.get("model_setting_id") == payload.model_setting_id),
+                (
+                    setting
+                    for setting in settings
+                    if setting.get("model_setting_id") == payload.model_setting_id
+                ),
                 None,
             )
             if not existing:
-                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Model setting not found.")
-            if existing.get("tenant_id") != tenant_id or existing.get("workspace_id") != workspace_id:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Model setting not found.",
+                )
+            if (
+                existing.get("tenant_id") != tenant_id
+                or existing.get("workspace_id") != workspace_id
+            ):
                 raise HTTPException(
                     status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                     detail="Model settings cannot be moved across workspace scope.",
@@ -6127,7 +6906,10 @@ class LittleBullService:
         )
         if not configs:
             configs = self._default_agent_configs(workspace_id=workspace_id)
-        return [LittleBullAgentConfig(**self._normalize_agent_config(config)) for config in configs]
+        return [
+            LittleBullAgentConfig(**self._normalize_agent_config(config))
+            for config in configs
+        ]
 
     async def upsert_agent_config(
         self,
@@ -6144,9 +6926,16 @@ class LittleBullService:
                 tenant_id=tenant_id,
                 workspace_id=workspace_id,
             )
-            if not any(agent.get("agent_id") == payload.agent_id for agent in existing_agents):
-                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found in workspace.")
-        payload_data = self._normalize_agent_config(payload.model_dump(exclude_none=True))
+            if not any(
+                agent.get("agent_id") == payload.agent_id for agent in existing_agents
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Agent not found in workspace.",
+                )
+        payload_data = self._normalize_agent_config(
+            payload.model_dump(exclude_none=True)
+        )
         await self._require_scoped_model_setting(
             tenant_id=tenant_id,
             workspace_id=workspace_id,
@@ -6196,7 +6985,10 @@ class LittleBullService:
             tenant_id=tenant_id,
             workspace_id=workspace_id,
             result="success",
-            metadata={"agent_id": saved.get("agent_id"), "model_setting_id": saved.get("model_setting_id")},
+            metadata={
+                "agent_id": saved.get("agent_id"),
+                "model_setting_id": saved.get("model_setting_id"),
+            },
         )
         return LittleBullAgentConfig(**self._normalize_agent_config(saved))
 
@@ -6210,15 +7002,23 @@ class LittleBullService:
     ) -> None:
         if not model_setting_id:
             return
-        settings = await self._model_settings_for_workspace(tenant_id=tenant_id, workspace_id=workspace_id)
+        settings = await self._model_settings_for_workspace(
+            tenant_id=tenant_id, workspace_id=workspace_id
+        )
         allowed_usage = {usage} if isinstance(usage, str) else usage
         for setting in settings:
             if setting.get("model_setting_id") != model_setting_id:
                 continue
             if allowed_usage and setting.get("usage") not in allowed_usage:
-                raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Model usage mismatch.")
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                    detail="Model usage mismatch.",
+                )
             return
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Model setting not found in workspace.")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Model setting not found in workspace.",
+        )
 
     async def preview_agent_studio(
         self,
@@ -6300,13 +7100,24 @@ class LittleBullService:
                 workspace_id=workspace_id,
             )
             if not existing:
-                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent builder session not found.")
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Agent builder session not found.",
+                )
             transcript = list(existing.get("builder_transcript") or [])
-        transcript.append({"role": "user", "content": payload.user_message.strip(), "created_at": utc_now()})
+        transcript.append(
+            {
+                "role": "user",
+                "content": payload.user_message.strip(),
+                "created_at": utc_now(),
+            }
+        )
         generated_config = self._agent_builder_generated_config(
             workspace_id=workspace_id,
             user_message=payload.user_message,
-            existing_config=payload.generated_config or (existing or {}).get("generated_config") or {},
+            existing_config=payload.generated_config
+            or (existing or {}).get("generated_config")
+            or {},
         )
         await self._require_scoped_model_setting(
             tenant_id=tenant_id,
@@ -6328,7 +7139,8 @@ class LittleBullService:
                 "agent_builder_session_id": payload.agent_builder_session_id,
                 "user_id": principal.user_id,
                 "agent_id": (existing or {}).get("agent_id"),
-                "model_setting_id": payload.model_setting_id or (existing or {}).get("model_setting_id"),
+                "model_setting_id": payload.model_setting_id
+                or (existing or {}).get("model_setting_id"),
                 "status": "draft",
                 "current_step": payload.current_step,
                 "builder_transcript": transcript,
@@ -6370,10 +7182,18 @@ class LittleBullService:
             workspace_id=workspace_id,
         )
         if not session:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent builder session not found.")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Agent builder session not found.",
+            )
         if not payload.approved:
-            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Human approval is required to publish.")
-        generated_config = self._normalize_agent_config(session.get("generated_config") or {})
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Human approval is required to publish.",
+            )
+        generated_config = self._normalize_agent_config(
+            session.get("generated_config") or {}
+        )
         generated_config["enabled"] = payload.enabled
         await self._require_scoped_model_setting(
             tenant_id=tenant_id,
@@ -6426,7 +7246,10 @@ class LittleBullService:
             tenant_id=tenant_id,
             workspace_id=workspace_id,
             result="agent_builder_published",
-            metadata={"agent_builder_session_id": agent_builder_session_id, "agent_id": saved["agent_id"]},
+            metadata={
+                "agent_builder_session_id": agent_builder_session_id,
+                "agent_id": saved["agent_id"],
+            },
         )
         return AgentBuilderSession(**row)
 
@@ -6437,16 +7260,22 @@ class LittleBullService:
         user_message: str,
         existing_config: dict[str, Any],
     ) -> dict[str, Any]:
-        title = str(existing_config.get("name") or user_message.strip().splitlines()[0]).strip()[:80]
+        title = str(
+            existing_config.get("name") or user_message.strip().splitlines()[0]
+        ).strip()[:80]
         if not title:
             title = "Agente Little Bull"
         config = normalize_agent_studio_config(existing_config.get("config"))
         config["identity"].update(
             {
-                "mission": config["identity"].get("mission") or user_message.strip()[:500],
-                "when_to_use": config["identity"].get("when_to_use") or "Quando a tarefa estiver dentro do escopo configurado.",
-                "when_not_to_use": config["identity"].get("when_not_to_use") or "Quando faltar contexto ou aprovação humana.",
-                "audience": config["identity"].get("audience") or "Usuários do workspace Little Bull.",
+                "mission": config["identity"].get("mission")
+                or user_message.strip()[:500],
+                "when_to_use": config["identity"].get("when_to_use")
+                or "Quando a tarefa estiver dentro do escopo configurado.",
+                "when_not_to_use": config["identity"].get("when_not_to_use")
+                or "Quando faltar contexto ou aprovação humana.",
+                "audience": config["identity"].get("audience")
+                or "Usuários do workspace Little Bull.",
             }
         )
         config["knowledge"]["allowed_workspace_ids"] = [workspace_id]
@@ -6460,11 +7289,14 @@ class LittleBullService:
         ]
         return {
             "name": title,
-            "description": str(existing_config.get("description") or user_message.strip()[:240]).strip(),
+            "description": str(
+                existing_config.get("description") or user_message.strip()[:240]
+            ).strip(),
             "enabled": False,
             "model_setting_id": existing_config.get("model_setting_id"),
             "system_prompt": str(existing_config.get("system_prompt") or "").strip(),
-            "response_rules": existing_config.get("response_rules") or ["Citar fontes quando usar conhecimento recuperado."],
+            "response_rules": existing_config.get("response_rules")
+            or ["Citar fontes quando usar conhecimento recuperado."],
             "tools": existing_config.get("tools") or ["query_knowledge"],
             "config": config,
         }
@@ -6496,9 +7328,13 @@ class LittleBullService:
         self._require(principal, ACTIVITY_AGENT_MANAGE, workspace_id)
         self._require_master(principal)
         tenant_id, workspace_id = await self._existing_workspace_scope(workspace_id)
-        agents = await self.admin_store.list_agent_configs(tenant_id=tenant_id, workspace_id=workspace_id)
+        agents = await self.admin_store.list_agent_configs(
+            tenant_id=tenant_id, workspace_id=workspace_id
+        )
         if not any(agent.get("agent_id") == payload.agent_id for agent in agents):
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found.")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found."
+            )
         if payload.agent_context_budget_id:
             existing_budgets = await self.admin_store.list_agent_context_budgets(
                 tenant_id=tenant_id,
@@ -6508,12 +7344,16 @@ class LittleBullService:
                 (
                     budget
                     for budget in existing_budgets
-                    if budget["agent_context_budget_id"] == payload.agent_context_budget_id
+                    if budget["agent_context_budget_id"]
+                    == payload.agent_context_budget_id
                 ),
                 None,
             )
             if not existing_budget:
-                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent context budget not found.")
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Agent context budget not found.",
+                )
             if existing_budget["agent_id"] != payload.agent_id:
                 raise HTTPException(
                     status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -6537,9 +7377,10 @@ class LittleBullService:
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail="max_prompt_tokens must fit inside context after reserved response tokens.",
             )
-        if (payload.daily_cost_limit_usd is not None or payload.monthly_cost_limit_usd is not None) and (
-            payload.max_context_tokens <= 0
-        ):
+        if (
+            payload.daily_cost_limit_usd is not None
+            or payload.monthly_cost_limit_usd is not None
+        ) and (payload.max_context_tokens <= 0):
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail="Cost-limited agent context budgets require max_context_tokens.",
@@ -6564,7 +7405,10 @@ class LittleBullService:
             tenant_id=tenant_id,
             workspace_id=workspace_id,
             result="agent_context_budget_upserted",
-            metadata={"agent_id": row["agent_id"], "agent_context_budget_id": row["agent_context_budget_id"]},
+            metadata={
+                "agent_id": row["agent_id"],
+                "agent_context_budget_id": row["agent_context_budget_id"],
+            },
         )
         return AgentContextBudget(**row)
 
@@ -6574,7 +7418,9 @@ class LittleBullService:
         request: LittleBullConversationSaveRequest,
     ) -> LittleBullConversation:
         self._require(principal, ACTIVITY_CONVERSATION_SAVE, request.workspace_id)
-        tenant_id, workspace_id = await self._existing_workspace_scope(request.workspace_id)
+        tenant_id, workspace_id = await self._existing_workspace_scope(
+            request.workspace_id
+        )
         if request.agent_id:
             agent_config = await self._agent_config_for_query(
                 tenant_id=tenant_id,
@@ -6593,7 +7439,10 @@ class LittleBullService:
         )
         try:
             saved = await self.admin_store.save_conversation(
-                {**request.model_dump(exclude_none=True), "scope_snapshot": scope_snapshot},
+                {
+                    **request.model_dump(exclude_none=True),
+                    "scope_snapshot": scope_snapshot,
+                },
                 tenant_id=tenant_id,
                 workspace_id=workspace_id,
                 user_id=principal.user_id,
@@ -6627,7 +7476,11 @@ class LittleBullService:
     ) -> dict[str, Any]:
         group_id = str(payload.get("group_id") or "").strip() or None
         subgroup_id = str(payload.get("subgroup_id") or "").strip() or None
-        document_ids = [str(document_id) for document_id in payload.get("document_ids") or [] if document_id]
+        document_ids = [
+            str(document_id)
+            for document_id in payload.get("document_ids") or []
+            if document_id
+        ]
         if subgroup_id and not group_id:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -6676,17 +7529,29 @@ class LittleBullService:
             workspace_id=workspace_id,
             user_id=user_id,
         )
-        return [LittleBullConversation(**conversation) for conversation in conversations]
+        return [
+            LittleBullConversation(**conversation) for conversation in conversations
+        ]
 
     async def get_conversation(
         self, principal: Principal, *, conversation_id: str
     ) -> LittleBullConversation:
         conversation = await self.admin_store.get_conversation(conversation_id)
         if not conversation:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found")
-        self._require(principal, ACTIVITY_CONVERSATION_READ, conversation["workspace_id"])
-        if not principal.is_master_global and conversation["user_id"] != principal.user_id:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Conversation belongs to another user.")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found"
+            )
+        self._require(
+            principal, ACTIVITY_CONVERSATION_READ, conversation["workspace_id"]
+        )
+        if (
+            not principal.is_master_global
+            and conversation["user_id"] != principal.user_id
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Conversation belongs to another user.",
+            )
         return LittleBullConversation(**conversation)
 
     async def export_conversation(
@@ -6696,8 +7561,12 @@ class LittleBullService:
         conversation_id: str,
         export_format: str,
     ) -> Response:
-        conversation = await self.get_conversation(principal, conversation_id=conversation_id)
-        self._require(principal, ACTIVITY_CONVERSATION_EXPORT, conversation.workspace_id)
+        conversation = await self.get_conversation(
+            principal, conversation_id=conversation_id
+        )
+        self._require(
+            principal, ACTIVITY_CONVERSATION_EXPORT, conversation.workspace_id
+        )
         normalized = export_format.lower().strip()
         if normalized == "md":
             body = self._conversation_markdown(conversation)
@@ -6714,7 +7583,10 @@ class LittleBullService:
             media_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
             suffix = "docx"
         else:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unsupported export format")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Unsupported export format",
+            )
         await self.audit.record(
             principal=principal,
             action=ACTIVITY_CONVERSATION_EXPORT,
@@ -6736,9 +7608,14 @@ class LittleBullService:
         request: LittleBullCorrelationSuggestionRequest,
     ) -> LittleBullCorrelationSuggestion:
         self._require(principal, ACTIVITY_CORRELATION_SUGGEST, request.workspace_id)
-        tenant_id, workspace_id = await self._existing_workspace_scope(request.workspace_id)
+        tenant_id, workspace_id = await self._existing_workspace_scope(
+            request.workspace_id
+        )
         if request.source_label.strip() == request.target_label.strip():
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Source and target must differ")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Source and target must differ",
+            )
         saved = await self.admin_store.create_correlation_suggestion(
             request.model_dump(exclude_none=True),
             tenant_id=tenant_id,
@@ -6760,7 +7637,11 @@ class LittleBullService:
         return LittleBullCorrelationSuggestion(**saved)
 
     async def list_correlation_suggestions(
-        self, principal: Principal, *, workspace_id: str, suggestion_status: str | None = None
+        self,
+        principal: Principal,
+        *,
+        workspace_id: str,
+        suggestion_status: str | None = None,
     ) -> list[LittleBullCorrelationSuggestion]:
         self._require(principal, ACTIVITY_CORRELATION_SUGGEST, workspace_id)
         tenant_id, workspace_id = await self._existing_workspace_scope(workspace_id)
@@ -6769,7 +7650,9 @@ class LittleBullService:
             workspace_id=workspace_id,
             status=suggestion_status,
         )
-        return [LittleBullCorrelationSuggestion(**suggestion) for suggestion in suggestions]
+        return [
+            LittleBullCorrelationSuggestion(**suggestion) for suggestion in suggestions
+        ]
 
     async def decide_correlation_suggestion(
         self,
@@ -6781,10 +7664,14 @@ class LittleBullService:
         self._require(principal, ACTIVITY_CORRELATION_DECIDE)
         normalized = decision.strip().lower()
         if normalized not in {"approved", "rejected"}:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid decision")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid decision"
+            )
         current = await self.admin_store.get_correlation_suggestion(suggestion_id)
         if not current:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Suggestion not found")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Suggestion not found"
+            )
         self._require(principal, ACTIVITY_CORRELATION_DECIDE, current["workspace_id"])
         saved = await self.admin_store.decide_correlation_suggestion(
             suggestion_id,
@@ -6816,7 +7703,9 @@ class LittleBullService:
         for approval in pending:
             if approval.action != ACTIVITY_DOCUMENT_DELETE:
                 continue
-            approved_document = approval.metadata.get("document_id") or approval.metadata.get("doc_id")
+            approved_document = approval.metadata.get(
+                "document_id"
+            ) or approval.metadata.get("doc_id")
             if str(approved_document or "") == document_id:
                 return approval
         return None
@@ -6838,7 +7727,8 @@ class LittleBullService:
                 continue
             metadata = approval.metadata or {}
             if (
-                str(metadata.get("workspace_id") or "") == str(payload.get("workspace_id") or "")
+                str(metadata.get("workspace_id") or "")
+                == str(payload.get("workspace_id") or "")
                 and coerce_payload_bool(metadata.get("include_archived"), True)
                 == coerce_payload_bool(payload.get("include_archived"), True)
                 and coerce_payload_bool(metadata.get("include_input_root"), True)
@@ -6890,13 +7780,19 @@ class LittleBullService:
         if include_archived:
             archived_dir = input_dir / "__enqueued__"
             if archived_dir.exists():
-                for source_path in sorted(archived_dir.iterdir(), key=lambda item: item.name.lower()):
+                for source_path in sorted(
+                    archived_dir.iterdir(), key=lambda item: item.name.lower()
+                ):
                     if not source_path.is_file():
                         continue
-                    if hasattr(self.doc_manager, "is_supported_file") and not self.doc_manager.is_supported_file(source_path.name):
+                    if hasattr(
+                        self.doc_manager, "is_supported_file"
+                    ) and not self.doc_manager.is_supported_file(source_path.name):
                         skipped.append(source_path.name)
                         continue
-                    target_path = input_dir / unique_input_filename(source_path.name, input_dir)
+                    target_path = input_dir / unique_input_filename(
+                        source_path.name, input_dir
+                    )
                     await asyncio.to_thread(shutil.copy2, source_path, target_path)
                     candidates.append(target_path)
 
@@ -6906,7 +7802,9 @@ class LittleBullService:
             if path in seen:
                 continue
             seen.add(path)
-            if hasattr(self.doc_manager, "is_supported_file") and not self.doc_manager.is_supported_file(path.name):
+            if hasattr(
+                self.doc_manager, "is_supported_file"
+            ) and not self.doc_manager.is_supported_file(path.name):
                 skipped.append(path.name)
                 continue
             supported.append(path)
@@ -6963,7 +7861,9 @@ class LittleBullService:
         )
 
     def _workspace_storage_dir(self, workspace_id: str) -> Path:
-        working_root = Path(getattr(self.rag, "working_dir", "./rag_storage")).expanduser()
+        working_root = Path(
+            getattr(self.rag, "working_dir", "./rag_storage")
+        ).expanduser()
         raw_current_workspace = str(getattr(self.rag, "workspace", "") or "")
         if workspace_id == self._current_workspace_id() and not raw_current_workspace:
             candidate = working_root
@@ -6971,7 +7871,10 @@ class LittleBullService:
             candidate = working_root / workspace_id
         root_resolved = working_root.resolve()
         candidate_resolved = candidate.resolve()
-        if candidate_resolved != root_resolved and not candidate_resolved.is_relative_to(root_resolved):
+        if (
+            candidate_resolved != root_resolved
+            and not candidate_resolved.is_relative_to(root_resolved)
+        ):
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Unsafe workspace storage path.",
@@ -6980,13 +7883,19 @@ class LittleBullService:
 
     def _snapshot_root_for_workspace(self, workspace_id: str) -> Path:
         safe_workspace = slugify_workspace(workspace_id)
-        return Path(getattr(self.rag, "working_dir", "./rag_storage")).expanduser() / "__little_bull_snapshots__" / safe_workspace
+        return (
+            Path(getattr(self.rag, "working_dir", "./rag_storage")).expanduser()
+            / "__little_bull_snapshots__"
+            / safe_workspace
+        )
 
     @staticmethod
     def _safe_snapshot_id(snapshot_id: str) -> str:
         value = snapshot_id.strip()
         if not re.fullmatch(r"[A-Za-z0-9_.-]+", value):
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid snapshot id.")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid snapshot id."
+            )
         return value
 
     async def _snapshot_workspace_storage(
@@ -7010,7 +7919,9 @@ class LittleBullService:
                 ignore=shutil.ignore_patterns("__little_bull_snapshots__"),
             )
         else:
-            await asyncio.to_thread(snapshot_storage_dir.mkdir, parents=True, exist_ok=True)
+            await asyncio.to_thread(
+                snapshot_storage_dir.mkdir, parents=True, exist_ok=True
+            )
         metadata = {
             "schema_version": 1,
             "snapshot_id": snapshot_id,
@@ -7109,7 +8020,9 @@ class LittleBullService:
             if not embedding_model:
                 return
             config = dict(embedding_model.get("config", {}) or {})
-            config["last_reindex_queued_at"] = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+            config["last_reindex_queued_at"] = (
+                datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+            )
             config["last_reindex_track_id"] = track_id
             config["last_reindex_file_count"] = queued_count
             embedding_model["config"] = config
@@ -7122,7 +8035,9 @@ class LittleBullService:
         except Exception:
             return
 
-    async def _documents_paginated(self, *, rag: Any, page: int, page_size: int) -> tuple[tuple[list[tuple[str, Any]], int], dict[str, int]]:
+    async def _documents_paginated(
+        self, *, rag: Any, page: int, page_size: int
+    ) -> tuple[tuple[list[tuple[str, Any]], int], dict[str, int]]:
         docs_task = rag.doc_status.get_docs_paginated(
             status_filter=None,
             page=page,
@@ -7180,9 +8095,19 @@ class LittleBullService:
             ) from exc
         if not agents:
             agents = self._default_agent_configs(workspace_id=workspace_id)
-        agent = next((agent for agent in agents if agent.get("agent_id") == agent_id and agent.get("enabled")), None)
+        agent = next(
+            (
+                agent
+                for agent in agents
+                if agent.get("agent_id") == agent_id and agent.get("enabled")
+            ),
+            None,
+        )
         if not agent:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found or disabled.")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Agent not found or disabled.",
+            )
         return self._normalize_agent_config(agent)
 
     @staticmethod
@@ -7196,7 +8121,9 @@ class LittleBullService:
             agent_config.get("config"),
             agent_config.get("tools") or [],
         ).get("model", {})
-        return str(model_config.get("profile") or requested_profile or "equilibrado").strip()
+        return str(
+            model_config.get("profile") or requested_profile or "equilibrado"
+        ).strip()
 
     @staticmethod
     def _effective_query_mode(
@@ -7252,10 +8179,23 @@ class LittleBullService:
         selected_id = agent_config.get("model_setting_id") if agent_config else None
         selected = None
         if selected_id:
-            selected = next((model for model in models if model.get("model_setting_id") == selected_id), None)
+            selected = next(
+                (
+                    model
+                    for model in models
+                    if model.get("model_setting_id") == selected_id
+                ),
+                None,
+            )
             if selected is None:
-                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent runtime model setting not found.")
-            if not selected.get("enabled", True) or selected.get("usage") not in {"chat", "agent"}:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Agent runtime model setting not found.",
+                )
+            if not selected.get("enabled", True) or selected.get("usage") not in {
+                "chat",
+                "agent",
+            }:
                 raise HTTPException(
                     status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                     detail="Agent runtime model setting must be enabled and use chat or agent.",
@@ -7279,7 +8219,9 @@ class LittleBullService:
                 (
                     model
                     for model in models
-                    if model.get("usage") in {"chat", "agent"} and model.get("enabled") and model.get("is_default")
+                    if model.get("usage") in {"chat", "agent"}
+                    and model.get("enabled")
+                    and model.get("is_default")
                 ),
                 None,
             )
@@ -7287,13 +8229,21 @@ class LittleBullService:
             return None
         if selected.get("binding") != "openai":
             return None
-        api_key_ref = str(selected.get("config", {}).get("api_key_ref") or "OPENROUTER_API_KEY")
+        api_key_ref = str(
+            selected.get("config", {}).get("api_key_ref") or "OPENROUTER_API_KEY"
+        )
         api_key_ref = api_key_ref.removeprefix("env:")
-        api_key = os.getenv(api_key_ref) or os.getenv("LLM_BINDING_API_KEY") or os.getenv("OPENAI_API_KEY")
+        api_key = (
+            os.getenv(api_key_ref)
+            or os.getenv("LLM_BINDING_API_KEY")
+            or os.getenv("OPENAI_API_KEY")
+        )
         if not api_key:
             return None
         agent_model_config = (
-            normalize_agent_studio_config(agent_config.get("config"), agent_config.get("tools") or []).get("model", {})
+            normalize_agent_studio_config(
+                agent_config.get("config"), agent_config.get("tools") or []
+            ).get("model", {})
             if agent_config
             else {}
         )
@@ -7302,7 +8252,9 @@ class LittleBullService:
             model_kwargs["temperature"] = float(agent_model_config["temperature"])
         configured_max_tokens = int(agent_model_config.get("max_tokens") or 0)
         if configured_max_tokens and reserved_response_tokens:
-            model_kwargs["max_tokens"] = min(configured_max_tokens, reserved_response_tokens)
+            model_kwargs["max_tokens"] = min(
+                configured_max_tokens, reserved_response_tokens
+            )
         elif configured_max_tokens:
             model_kwargs["max_tokens"] = configured_max_tokens
         elif reserved_response_tokens:
@@ -7316,11 +8268,25 @@ class LittleBullService:
         )
 
     def _runtime_model_defaults(self, *, workspace_id: str) -> list[dict[str, Any]]:
-        llm_model = str(getattr(self.rag, "little_bull_llm_model", None) or os.getenv("LLM_MODEL") or "openai/gpt-4o-mini")
-        llm_host = str(getattr(self.rag, "little_bull_llm_host", None) or os.getenv("LLM_BINDING_HOST") or "https://openrouter.ai/api/v1")
-        embedding_model = str(os.getenv("EMBEDDING_MODEL") or getattr(self.rag, "embedding_model_name", None) or "runtime-embedding")
+        llm_model = str(
+            getattr(self.rag, "little_bull_llm_model", None)
+            or os.getenv("LLM_MODEL")
+            or "openai/gpt-4o-mini"
+        )
+        llm_host = str(
+            getattr(self.rag, "little_bull_llm_host", None)
+            or os.getenv("LLM_BINDING_HOST")
+            or "https://openrouter.ai/api/v1"
+        )
+        embedding_model = str(
+            os.getenv("EMBEDDING_MODEL")
+            or getattr(self.rag, "embedding_model_name", None)
+            or "runtime-embedding"
+        )
         embedding_binding = str(os.getenv("EMBEDDING_BINDING") or "openai")
-        embedding_host = str(os.getenv("EMBEDDING_BINDING_HOST") or os.getenv("LLM_BINDING_HOST") or "")
+        embedding_host = str(
+            os.getenv("EMBEDDING_BINDING_HOST") or os.getenv("LLM_BINDING_HOST") or ""
+        )
         return [
             {
                 "model_setting_id": "runtime_chat_default",
@@ -7328,20 +8294,30 @@ class LittleBullService:
                 "workspace_id": workspace_id,
                 "usage": "chat",
                 "provider": "openrouter" if "openrouter.ai" in llm_host else "runtime",
-                "binding": str(getattr(self.rag, "little_bull_llm_binding", None) or os.getenv("LLM_BINDING") or "openai"),
+                "binding": str(
+                    getattr(self.rag, "little_bull_llm_binding", None)
+                    or os.getenv("LLM_BINDING")
+                    or "openai"
+                ),
                 "binding_host": llm_host,
                 "model_id": llm_model,
                 "display_name": f"Chat padrão ({llm_model})",
                 "enabled": True,
                 "is_default": True,
-                "config": {"profile": "equilibrado", "api_key_ref": "env:OPENROUTER_API_KEY", "runtime_default": True},
+                "config": {
+                    "profile": "equilibrado",
+                    "api_key_ref": "env:OPENROUTER_API_KEY",
+                    "runtime_default": True,
+                },
             },
             {
                 "model_setting_id": "runtime_embedding_default",
                 "tenant_id": None,
                 "workspace_id": workspace_id,
                 "usage": "embedding",
-                "provider": "openrouter" if "openrouter.ai" in embedding_host else "runtime",
+                "provider": "openrouter"
+                if "openrouter.ai" in embedding_host
+                else "runtime",
                 "binding": embedding_binding,
                 "binding_host": embedding_host,
                 "model_id": embedding_model,
@@ -7367,7 +8343,10 @@ class LittleBullService:
                 "enabled": True,
                 "model_setting_id": None,
                 "system_prompt": "Responda de forma direta, com fontes quando disponíveis, sem inventar contexto.",
-                "response_rules": ["Usar fontes quando disponiveis", "Evitar resposta sem contexto"],
+                "response_rules": [
+                    "Usar fontes quando disponiveis",
+                    "Evitar resposta sem contexto",
+                ],
                 "tools": ["query_knowledge"],
                 "config": {"profile": "equilibrado"},
             },
@@ -7391,7 +8370,10 @@ class LittleBullService:
                 "enabled": True,
                 "model_setting_id": None,
                 "system_prompt": "Trate dados privados com minimização e não use modelo hospedado sem política MASTER válida.",
-                "response_rules": ["Nao usar modelo hospedado por padrao", "Registrar auditoria"],
+                "response_rules": [
+                    "Nao usar modelo hospedado por padrao",
+                    "Registrar auditoria",
+                ],
                 "tools": ["query_knowledge"],
                 "config": {"profile": "privado"},
             },
@@ -7401,33 +8383,59 @@ class LittleBullService:
     @staticmethod
     def _normalize_agent_config(agent: dict[str, Any]) -> dict[str, Any]:
         copy = dict(agent)
-        copy["tools"] = [normalize_tool_id(item) for item in copy.get("tools") or [] if normalize_tool_id(item)]
+        copy["tools"] = [
+            normalize_tool_id(item)
+            for item in copy.get("tools") or []
+            if normalize_tool_id(item)
+        ]
         copy["response_rules"] = [
             str(item) for item in copy.get("response_rules") or [] if str(item).strip()
         ]
-        copy["config"] = normalize_agent_studio_config(copy.get("config"), copy["tools"])
+        copy["config"] = normalize_agent_studio_config(
+            copy.get("config"), copy["tools"]
+        )
         return copy
 
     @staticmethod
     def _conversation_markdown(conversation: LittleBullConversation) -> str:
-        lines = [f"# {conversation.title}", "", f"- Workspace: {conversation.workspace_id}", f"- Modelo: {conversation.model_profile}", ""]
+        lines = [
+            f"# {conversation.title}",
+            "",
+            f"- Workspace: {conversation.workspace_id}",
+            f"- Modelo: {conversation.model_profile}",
+            "",
+        ]
         for message in conversation.messages:
             role = "Usuário" if message.role == "user" else "Assistente"
             lines.extend([f"## {role}", "", message.content, ""])
             for index, reference in enumerate(message.references, start=1):
-                lines.append(f"- Fonte {index}: {reference.get('file_path') or reference.get('reference_id') or 'sem identificador'}")
+                lines.append(
+                    f"- Fonte {index}: {reference.get('file_path') or reference.get('reference_id') or 'sem identificador'}"
+                )
             if message.references:
                 lines.append("")
         return "\n".join(lines).strip() + "\n"
 
     @staticmethod
     def _conversation_text(conversation: LittleBullConversation) -> str:
-        parts = [conversation.title, f"Workspace: {conversation.workspace_id}", f"Modelo: {conversation.model_profile}", ""]
+        parts = [
+            conversation.title,
+            f"Workspace: {conversation.workspace_id}",
+            f"Modelo: {conversation.model_profile}",
+            "",
+        ]
         for message in conversation.messages:
             role = "Usuario" if message.role == "user" else "Assistente"
             parts.append(f"{role}: {message.content}")
             if message.references:
-                refs = ", ".join(str(ref.get("file_path") or ref.get("reference_id") or "sem identificador") for ref in message.references)
+                refs = ", ".join(
+                    str(
+                        ref.get("file_path")
+                        or ref.get("reference_id")
+                        or "sem identificador"
+                    )
+                    for ref in message.references
+                )
                 parts.append(f"Fontes: {refs}")
             parts.append("")
         return "\n".join(parts).strip() + "\n"
@@ -7437,7 +8445,10 @@ class LittleBullService:
         try:
             from docx import Document
         except ImportError as exc:
-            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="python-docx is not installed") from exc
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="python-docx is not installed",
+            ) from exc
 
         document = Document()
         document.add_heading(conversation.title, level=1)
@@ -7474,7 +8485,10 @@ class LittleBullService:
             return await rag.aquery_llm(query, param=param)
         cache = getattr(rag, "llm_response_cache", None)
         global_config = getattr(cache, "global_config", None)
-        if not isinstance(global_config, dict) or "enable_llm_cache" not in global_config:
+        if (
+            not isinstance(global_config, dict)
+            or "enable_llm_cache" not in global_config
+        ):
             return await rag.aquery_llm(query, param=param)
         previous = global_config.get("enable_llm_cache")
         global_config["enable_llm_cache"] = False
@@ -7484,7 +8498,9 @@ class LittleBullService:
             global_config["enable_llm_cache"] = previous
 
     @staticmethod
-    def _enrich_references(references: list[dict[str, Any]], chunks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def _enrich_references(
+        references: list[dict[str, Any]], chunks: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
         ref_id_to_content: dict[str, list[str]] = {}
         for chunk in chunks:
             ref_id = chunk.get("reference_id")

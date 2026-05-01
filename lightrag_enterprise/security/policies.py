@@ -90,7 +90,5 @@ def mask_pii(text: str) -> str:
 
 def detect_prompt_injection(text: str) -> list[str]:
     return [
-        pattern.pattern
-        for pattern in PROMPT_INJECTION_PATTERNS
-        if pattern.search(text)
+        pattern.pattern for pattern in PROMPT_INJECTION_PATTERNS if pattern.search(text)
     ]

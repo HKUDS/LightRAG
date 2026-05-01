@@ -10,7 +10,11 @@ from .approvals import ApprovalService
 from .audit import AuditService
 from .auth import SystemAuthService
 from .db import get_database_url
-from .repositories import InMemorySystemRepository, PostgresSystemRepository, SystemRepository
+from .repositories import (
+    InMemorySystemRepository,
+    PostgresSystemRepository,
+    SystemRepository,
+)
 
 
 def env_flag(name: str, default: bool) -> bool:
@@ -96,13 +100,20 @@ def get_approval_service() -> ApprovalService:
 
 async def require_principal(request: Request):
     if not little_bull_functional_enabled():
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Little Bull functional API is disabled")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Little Bull functional API is disabled",
+        )
 
     authorization = request.headers.get("authorization", "")
     scheme, _, token = authorization.partition(" ")
     if scheme.lower() != "bearer" or not token:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Bearer token required")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Bearer token required"
+        )
     try:
         return await get_system_auth_service().principal_from_token(token)
     except Exception as exc:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid Little Bull token") from exc
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid Little Bull token"
+        ) from exc

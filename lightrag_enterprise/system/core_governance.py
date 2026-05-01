@@ -55,7 +55,11 @@ async def enforce_core_route_activity(
         )
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=access.reason)
 
-    if access.requires_approval and runtime.approvals_enforced() and not principal.is_master_global:
+    if (
+        access.requires_approval
+        and runtime.approvals_enforced()
+        and not principal.is_master_global
+    ):
         approval = await runtime.get_approval_service().request(
             principal=principal,
             action=activity,

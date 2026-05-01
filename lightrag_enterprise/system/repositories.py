@@ -29,7 +29,9 @@ class SystemRepository(Protocol):
     async def list_tenants(self) -> list[Tenant]: ...
     async def create_workspace(self, workspace: Workspace) -> Workspace: ...
     async def get_workspace(self, workspace_id: str) -> Workspace | None: ...
-    async def list_workspaces(self, tenant_id: str | None = None) -> list[Workspace]: ...
+    async def list_workspaces(
+        self, tenant_id: str | None = None
+    ) -> list[Workspace]: ...
     async def create_membership(self, membership: Membership) -> Membership: ...
     async def list_memberships_for_user(self, user_id: str) -> list[Membership]: ...
     async def write_audit_event(self, event: AuditEvent) -> AuditEvent: ...
@@ -40,8 +42,12 @@ class SystemRepository(Protocol):
         limit: int = 100,
         workspace_ids: tuple[str, ...] | None = None,
     ) -> list[AuditEvent]: ...
-    async def create_approval_request(self, approval: ApprovalRequest) -> ApprovalRequest: ...
-    async def get_approval_request(self, approval_id: str) -> ApprovalRequest | None: ...
+    async def create_approval_request(
+        self, approval: ApprovalRequest
+    ) -> ApprovalRequest: ...
+    async def get_approval_request(
+        self, approval_id: str
+    ) -> ApprovalRequest | None: ...
     async def update_approval_status(
         self, approval_id: str, status: ApprovalStatus, decided_by: str
     ) -> ApprovalRequest: ...
@@ -53,10 +59,21 @@ class SystemRepository(Protocol):
         decided_by: str,
     ) -> ApprovalRequest | None: ...
     async def list_approval_requests(
-        self, tenant_id: str | None = None, workspace_id: str | None = None, status: ApprovalStatus | None = None
+        self,
+        tenant_id: str | None = None,
+        workspace_id: str | None = None,
+        status: ApprovalStatus | None = None,
     ) -> list[ApprovalRequest]: ...
-    async def get_policy(self, key: str, tenant_id: str | None = None, workspace_id: str | None = None) -> Any: ...
-    async def set_policy(self, key: str, value: Any, tenant_id: str | None = None, workspace_id: str | None = None) -> None: ...
+    async def get_policy(
+        self, key: str, tenant_id: str | None = None, workspace_id: str | None = None
+    ) -> Any: ...
+    async def set_policy(
+        self,
+        key: str,
+        value: Any,
+        tenant_id: str | None = None,
+        workspace_id: str | None = None,
+    ) -> None: ...
 
 
 class InMemorySystemRepository:
@@ -92,7 +109,9 @@ class InMemorySystemRepository:
         return user
 
     async def get_user_by_username(self, username: str) -> SystemUser | None:
-        return next((user for user in self.users.values() if user.username == username), None)
+        return next(
+            (user for user in self.users.values() if user.username == username), None
+        )
 
     async def get_user(self, user_id: str) -> SystemUser | None:
         return self.users.get(user_id)
@@ -120,7 +139,11 @@ class InMemorySystemRepository:
     async def list_workspaces(self, tenant_id: str | None = None) -> list[Workspace]:
         workspaces = list(self.workspaces.values())
         if tenant_id:
-            workspaces = [workspace for workspace in workspaces if workspace.tenant_id == tenant_id]
+            workspaces = [
+                workspace
+                for workspace in workspaces
+                if workspace.tenant_id == tenant_id
+            ]
         return workspaces
 
     async def create_membership(self, membership: Membership) -> Membership:
@@ -128,7 +151,11 @@ class InMemorySystemRepository:
         return membership
 
     async def list_memberships_for_user(self, user_id: str) -> list[Membership]:
-        return [membership for membership in self.memberships.values() if membership.user_id == user_id]
+        return [
+            membership
+            for membership in self.memberships.values()
+            if membership.user_id == user_id
+        ]
 
     async def write_audit_event(self, event: AuditEvent) -> AuditEvent:
         self.audit_events.append(event)
@@ -148,10 +175,14 @@ class InMemorySystemRepository:
             events = [event for event in events if event.workspace_id == workspace_id]
         if workspace_ids is not None:
             allowed_workspace_ids = set(workspace_ids)
-            events = [event for event in events if event.workspace_id in allowed_workspace_ids]
+            events = [
+                event for event in events if event.workspace_id in allowed_workspace_ids
+            ]
         return list(reversed(events))[:limit]
 
-    async def create_approval_request(self, approval: ApprovalRequest) -> ApprovalRequest:
+    async def create_approval_request(
+        self, approval: ApprovalRequest
+    ) -> ApprovalRequest:
         self.approvals[approval.approval_id] = approval
         return approval
 
@@ -164,7 +195,9 @@ class InMemorySystemRepository:
         approval = self.approvals.get(approval_id)
         if approval is None:
             raise KeyError(approval_id)
-        updated = replace(approval, status=status, decided_by=decided_by, decided_at=utc_now())
+        updated = replace(
+            approval, status=status, decided_by=decided_by, decided_at=utc_now()
+        )
         self.approvals[approval_id] = updated
         return updated
 
@@ -180,26 +213,47 @@ class InMemorySystemRepository:
             raise KeyError(approval_id)
         if approval.status != from_status:
             return None
-        updated = replace(approval, status=to_status, decided_by=decided_by, decided_at=utc_now())
+        updated = replace(
+            approval, status=to_status, decided_by=decided_by, decided_at=utc_now()
+        )
         self.approvals[approval_id] = updated
         return updated
 
     async def list_approval_requests(
-        self, tenant_id: str | None = None, workspace_id: str | None = None, status: ApprovalStatus | None = None
+        self,
+        tenant_id: str | None = None,
+        workspace_id: str | None = None,
+        status: ApprovalStatus | None = None,
     ) -> list[ApprovalRequest]:
         approvals = list(self.approvals.values())
         if tenant_id:
-            approvals = [approval for approval in approvals if approval.tenant_id == tenant_id]
+            approvals = [
+                approval for approval in approvals if approval.tenant_id == tenant_id
+            ]
         if workspace_id:
-            approvals = [approval for approval in approvals if approval.workspace_id == workspace_id]
+            approvals = [
+                approval
+                for approval in approvals
+                if approval.workspace_id == workspace_id
+            ]
         if status:
-            approvals = [approval for approval in approvals if approval.status == status]
+            approvals = [
+                approval for approval in approvals if approval.status == status
+            ]
         return list(reversed(approvals))
 
-    async def get_policy(self, key: str, tenant_id: str | None = None, workspace_id: str | None = None) -> Any:
+    async def get_policy(
+        self, key: str, tenant_id: str | None = None, workspace_id: str | None = None
+    ) -> Any:
         return self.policies.get((tenant_id, workspace_id, key))
 
-    async def set_policy(self, key: str, value: Any, tenant_id: str | None = None, workspace_id: str | None = None) -> None:
+    async def set_policy(
+        self,
+        key: str,
+        value: Any,
+        tenant_id: str | None = None,
+        workspace_id: str | None = None,
+    ) -> None:
         self.policies[(tenant_id, workspace_id, key)] = value
 
 
@@ -212,7 +266,9 @@ class PostgresSystemRepository:
         if self._pool is None:
             import asyncpg
 
-            self._pool = await asyncpg.create_pool(self.database_url, min_size=1, max_size=5)
+            self._pool = await asyncpg.create_pool(
+                self.database_url, min_size=1, max_size=5
+            )
         return self._pool
 
     @staticmethod
@@ -322,17 +378,26 @@ class PostgresSystemRepository:
 
     async def get_user_by_username(self, username: str) -> SystemUser | None:
         pool = await self._get_pool()
-        row = await pool.fetchrow("SELECT * FROM system_users WHERE username=$1", username)
+        row = await pool.fetchrow(
+            "SELECT * FROM system_users WHERE username=$1", username
+        )
         return self._user_from_row(row) if row else None
 
     async def get_user(self, user_id: str) -> SystemUser | None:
         pool = await self._get_pool()
-        row = await pool.fetchrow("SELECT * FROM system_users WHERE user_id=$1", user_id)
+        row = await pool.fetchrow(
+            "SELECT * FROM system_users WHERE user_id=$1", user_id
+        )
         return self._user_from_row(row) if row else None
 
     async def list_users(self) -> list[SystemUser]:
         pool = await self._get_pool()
-        return [self._user_from_row(row) for row in await pool.fetch("SELECT * FROM system_users ORDER BY created_at DESC")]
+        return [
+            self._user_from_row(row)
+            for row in await pool.fetch(
+                "SELECT * FROM system_users ORDER BY created_at DESC"
+            )
+        ]
 
     async def create_tenant(self, tenant: Tenant) -> Tenant:
         pool = await self._get_pool()
@@ -351,12 +416,17 @@ class PostgresSystemRepository:
 
     async def get_tenant(self, tenant_id: str) -> Tenant | None:
         pool = await self._get_pool()
-        row = await pool.fetchrow("SELECT * FROM system_tenants WHERE tenant_id=$1", tenant_id)
+        row = await pool.fetchrow(
+            "SELECT * FROM system_tenants WHERE tenant_id=$1", tenant_id
+        )
         return self._tenant_from_row(row) if row else None
 
     async def list_tenants(self) -> list[Tenant]:
         pool = await self._get_pool()
-        return [self._tenant_from_row(row) for row in await pool.fetch("SELECT * FROM system_tenants ORDER BY name")]
+        return [
+            self._tenant_from_row(row)
+            for row in await pool.fetch("SELECT * FROM system_tenants ORDER BY name")
+        ]
 
     async def create_workspace(self, workspace: Workspace) -> Workspace:
         pool = await self._get_pool()
@@ -381,13 +451,18 @@ class PostgresSystemRepository:
 
     async def get_workspace(self, workspace_id: str) -> Workspace | None:
         pool = await self._get_pool()
-        row = await pool.fetchrow("SELECT * FROM system_workspaces WHERE workspace_id=$1", workspace_id)
+        row = await pool.fetchrow(
+            "SELECT * FROM system_workspaces WHERE workspace_id=$1", workspace_id
+        )
         return self._workspace_from_row(row) if row else None
 
     async def list_workspaces(self, tenant_id: str | None = None) -> list[Workspace]:
         pool = await self._get_pool()
         if tenant_id:
-            rows = await pool.fetch("SELECT * FROM system_workspaces WHERE tenant_id=$1 ORDER BY name", tenant_id)
+            rows = await pool.fetch(
+                "SELECT * FROM system_workspaces WHERE tenant_id=$1 ORDER BY name",
+                tenant_id,
+            )
         else:
             rows = await pool.fetch("SELECT * FROM system_workspaces ORDER BY name")
         return [self._workspace_from_row(row) for row in rows]
@@ -412,7 +487,9 @@ class PostgresSystemRepository:
 
     async def list_memberships_for_user(self, user_id: str) -> list[Membership]:
         pool = await self._get_pool()
-        rows = await pool.fetch("SELECT * FROM system_memberships WHERE user_id=$1", user_id)
+        rows = await pool.fetch(
+            "SELECT * FROM system_memberships WHERE user_id=$1", user_id
+        )
         return [self._membership_from_row(row) for row in rows]
 
     async def write_audit_event(self, event: AuditEvent) -> AuditEvent:
@@ -464,7 +541,9 @@ class PostgresSystemRepository:
         )
         return [self._audit_from_row(row) for row in rows]
 
-    async def create_approval_request(self, approval: ApprovalRequest) -> ApprovalRequest:
+    async def create_approval_request(
+        self, approval: ApprovalRequest
+    ) -> ApprovalRequest:
         pool = await self._get_pool()
         row = await pool.fetchrow(
             """
@@ -490,7 +569,9 @@ class PostgresSystemRepository:
 
     async def get_approval_request(self, approval_id: str) -> ApprovalRequest | None:
         pool = await self._get_pool()
-        row = await pool.fetchrow("SELECT * FROM system_approval_requests WHERE approval_id=$1", approval_id)
+        row = await pool.fetchrow(
+            "SELECT * FROM system_approval_requests WHERE approval_id=$1", approval_id
+        )
         return self._approval_from_row(row) if row else None
 
     async def update_approval_status(
@@ -537,7 +618,10 @@ class PostgresSystemRepository:
         return self._approval_from_row(row) if row else None
 
     async def list_approval_requests(
-        self, tenant_id: str | None = None, workspace_id: str | None = None, status: ApprovalStatus | None = None
+        self,
+        tenant_id: str | None = None,
+        workspace_id: str | None = None,
+        status: ApprovalStatus | None = None,
     ) -> list[ApprovalRequest]:
         pool = await self._get_pool()
         clauses: list[str] = []
@@ -558,7 +642,9 @@ class PostgresSystemRepository:
         )
         return [self._approval_from_row(row) for row in rows]
 
-    async def get_policy(self, key: str, tenant_id: str | None = None, workspace_id: str | None = None) -> Any:
+    async def get_policy(
+        self, key: str, tenant_id: str | None = None, workspace_id: str | None = None
+    ) -> Any:
         pool = await self._get_pool()
         row = await pool.fetchrow(
             """
@@ -576,7 +662,13 @@ class PostgresSystemRepository:
         value = row["value"]
         return json.loads(value) if isinstance(value, str) else value
 
-    async def set_policy(self, key: str, value: Any, tenant_id: str | None = None, workspace_id: str | None = None) -> None:
+    async def set_policy(
+        self,
+        key: str,
+        value: Any,
+        tenant_id: str | None = None,
+        workspace_id: str | None = None,
+    ) -> None:
         pool = await self._get_pool()
         await pool.execute(
             """
@@ -604,7 +696,9 @@ def default_tenant_and_workspace() -> tuple[Tenant, Workspace]:
     return tenant, workspace
 
 
-def membership_for_master(user_id: str, tenant_id: str = "default", workspace_id: str = "default") -> Membership:
+def membership_for_master(
+    user_id: str, tenant_id: str = "default", workspace_id: str = "default"
+) -> Membership:
     return Membership(
         membership_id=new_id("mbr"),
         user_id=user_id,

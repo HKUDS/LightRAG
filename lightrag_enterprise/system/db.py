@@ -9,7 +9,8 @@ def get_database_url() -> str | None:
     return os.getenv("LIGHTRAG_SYSTEM_DATABASE_URL") or os.getenv("DATABASE_URL")
 
 
-SCHEMA_SQL = """
+SCHEMA_SQL = (
+    """
 CREATE TABLE IF NOT EXISTS system_users (
     user_id TEXT PRIMARY KEY,
     username TEXT NOT NULL UNIQUE,
@@ -107,7 +108,9 @@ CREATE INDEX IF NOT EXISTS idx_system_memberships_user ON system_memberships(use
 CREATE INDEX IF NOT EXISTS idx_system_workspaces_tenant ON system_workspaces(tenant_id);
 CREATE INDEX IF NOT EXISTS idx_system_approvals_scope ON system_approval_requests(tenant_id, workspace_id, status);
 CREATE INDEX IF NOT EXISTS idx_system_audit_scope ON system_audit_events(tenant_id, workspace_id, created_at DESC);
-""" + LITTLE_BULL_ADMIN_SCHEMA_SQL
+"""
+    + LITTLE_BULL_ADMIN_SCHEMA_SQL
+)
 
 
 async def run_schema(database_url: str | None = None) -> bool:

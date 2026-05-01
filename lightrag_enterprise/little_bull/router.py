@@ -70,10 +70,16 @@ def create_little_bull_router(rag, doc_manager) -> APIRouter:
 
     @router.get("/areas")
     async def list_areas(principal=Depends(require_principal)):
-        return {"areas": [area.model_dump() for area in await service().list_areas(principal)]}
+        return {
+            "areas": [
+                area.model_dump() for area in await service().list_areas(principal)
+            ]
+        }
 
     @router.get("/knowledge-groups")
-    async def list_knowledge_groups(workspace_id: str, principal=Depends(require_principal)):
+    async def list_knowledge_groups(
+        workspace_id: str, principal=Depends(require_principal)
+    ):
         return {
             "groups": [
                 item.model_dump()
@@ -163,7 +169,9 @@ def create_little_bull_router(rag, doc_manager) -> APIRouter:
         ).model_dump()
 
     @router.get("/notes/{note_id}/markdown")
-    async def get_markdown_note(note_id: str, workspace_id: str, principal=Depends(require_principal)):
+    async def get_markdown_note(
+        note_id: str, workspace_id: str, principal=Depends(require_principal)
+    ):
         return (
             await service().get_markdown_note(
                 principal,
@@ -308,7 +316,9 @@ def create_little_bull_router(rag, doc_manager) -> APIRouter:
         ).model_dump()
 
     @router.get("/canvas/boards/{canvas_board_id}")
-    async def get_canvas_board(canvas_board_id: str, workspace_id: str, principal=Depends(require_principal)):
+    async def get_canvas_board(
+        canvas_board_id: str, workspace_id: str, principal=Depends(require_principal)
+    ):
         return (
             await service().get_canvas_board(
                 principal,
@@ -350,7 +360,9 @@ def create_little_bull_router(rag, doc_manager) -> APIRouter:
         ).model_dump()
 
     @router.get("/canvas/boards/{canvas_board_id}/analysis")
-    async def analyze_canvas_board(canvas_board_id: str, workspace_id: str, principal=Depends(require_principal)):
+    async def analyze_canvas_board(
+        canvas_board_id: str, workspace_id: str, principal=Depends(require_principal)
+    ):
         return (
             await service().analyze_canvas_board(
                 principal,
@@ -359,7 +371,9 @@ def create_little_bull_router(rag, doc_manager) -> APIRouter:
             )
         ).model_dump()
 
-    @router.post("/canvas/boards/{canvas_board_id}/dossier", response_model=KnowledgeDossier)
+    @router.post(
+        "/canvas/boards/{canvas_board_id}/dossier", response_model=KnowledgeDossier
+    )
     async def export_canvas_board_dossier(
         canvas_board_id: str,
         workspace_id: str,
@@ -596,12 +610,16 @@ def create_little_bull_router(rag, doc_manager) -> APIRouter:
             ]
         }
 
-    @router.post("/curator/suggestions", response_model=LittleBullCuratorSuggestionResponse)
+    @router.post(
+        "/curator/suggestions", response_model=LittleBullCuratorSuggestionResponse
+    )
     async def create_curator_suggestion(
         request: LittleBullCuratorSuggestionRequest,
         principal=Depends(require_principal),
     ):
-        return (await service().create_curator_suggestion(principal, request)).model_dump()
+        return (
+            await service().create_curator_suggestion(principal, request)
+        ).model_dump()
 
     @router.post("/curator/suggestions/{inbox_item_id}/apply")
     async def apply_curator_suggestion(
@@ -671,7 +689,10 @@ def create_little_bull_router(rag, doc_manager) -> APIRouter:
             ]
         }
 
-    @router.get("/legal/extractions/{legal_matter_extraction_run_id}", response_model=LittleBullLegalMatterExtractionResponse)
+    @router.get(
+        "/legal/extractions/{legal_matter_extraction_run_id}",
+        response_model=LittleBullLegalMatterExtractionResponse,
+    )
     async def get_legal_matter_extraction(
         legal_matter_extraction_run_id: str,
         principal=Depends(require_principal),
@@ -683,12 +704,16 @@ def create_little_bull_router(rag, doc_manager) -> APIRouter:
             )
         ).model_dump()
 
-    @router.post("/legal/extractions", response_model=LittleBullLegalMatterExtractionResponse)
+    @router.post(
+        "/legal/extractions", response_model=LittleBullLegalMatterExtractionResponse
+    )
     async def create_legal_matter_extraction(
         request: LittleBullLegalMatterExtractionRequest,
         principal=Depends(require_principal),
     ):
-        return (await service().create_legal_matter_extraction(principal, payload=request)).model_dump()
+        return (
+            await service().create_legal_matter_extraction(principal, payload=request)
+        ).model_dump()
 
     @router.post("/legal/extractions/{legal_matter_extraction_run_id}/review")
     async def review_legal_matter_extraction(
@@ -709,12 +734,14 @@ def create_little_bull_router(rag, doc_manager) -> APIRouter:
         page_size: int = Query(default=50, ge=1, le=200),
         principal=Depends(require_principal),
     ):
-        return (await service().list_documents(
-            principal,
-            workspace_id=workspace_id,
-            page=page,
-            page_size=page_size,
-        )).model_dump()
+        return (
+            await service().list_documents(
+                principal,
+                workspace_id=workspace_id,
+                page=page,
+                page_size=page_size,
+            )
+        ).model_dump()
 
     @router.post("/documents/upload")
     async def upload_document(
@@ -726,15 +753,17 @@ def create_little_bull_router(rag, doc_manager) -> APIRouter:
         file: UploadFile = File(...),
         principal=Depends(require_principal),
     ):
-        return (await service().upload_document(
-            principal,
-            workspace_id=workspace_id,
-            group_id=group_id,
-            subgroup_id=subgroup_id,
-            file=file,
-            background_tasks=background_tasks,
-            confidentiality=confidentiality,
-        )).model_dump()
+        return (
+            await service().upload_document(
+                principal,
+                workspace_id=workspace_id,
+                group_id=group_id,
+                subgroup_id=subgroup_id,
+                file=file,
+                background_tasks=background_tasks,
+                confidentiality=confidentiality,
+            )
+        ).model_dump()
 
     @router.post("/documents/reindex-archived")
     async def reindex_archived_documents(
@@ -742,11 +771,13 @@ def create_little_bull_router(rag, doc_manager) -> APIRouter:
         workspace_id: str,
         principal=Depends(require_principal),
     ):
-        return (await service().reindex_archived_documents(
-            principal,
-            workspace_id=workspace_id,
-            background_tasks=background_tasks,
-        )).model_dump()
+        return (
+            await service().reindex_archived_documents(
+                principal,
+                workspace_id=workspace_id,
+                background_tasks=background_tasks,
+            )
+        ).model_dump()
 
     @router.delete("/documents/{document_id}")
     async def delete_document(
@@ -761,16 +792,22 @@ def create_little_bull_router(rag, doc_manager) -> APIRouter:
         )
 
     @router.post("/query")
-    async def query(request: LittleBullQueryRequest, principal=Depends(require_principal)):
+    async def query(
+        request: LittleBullQueryRequest, principal=Depends(require_principal)
+    ):
         return (await service().query(principal, request)).model_dump()
 
     @router.post("/operational-chat", response_model=LittleBullOperationalChatResponse)
     @router.post("/chat/operational", response_model=LittleBullOperationalChatResponse)
-    async def operational_chat(request: LittleBullOperationalChatRequest, principal=Depends(require_principal)):
+    async def operational_chat(
+        request: LittleBullOperationalChatRequest, principal=Depends(require_principal)
+    ):
         return (await service().operational_chat(principal, request)).model_dump()
 
     @router.post("/context/estimate", response_model=LittleBullContextEstimateResponse)
-    async def estimate_context(request: LittleBullContextEstimateRequest, principal=Depends(require_principal)):
+    async def estimate_context(
+        request: LittleBullContextEstimateRequest, principal=Depends(require_principal)
+    ):
         return (await service().estimate_context(principal, request)).model_dump()
 
     @router.get("/costs/summary", response_model=LittleBullCostSummaryResponse)
@@ -845,7 +882,9 @@ def create_little_bull_router(rag, doc_manager) -> APIRouter:
     @router.get("/graph/obsidian", response_model=LittleBullObsidianGraphResponse)
     async def get_obsidian_graph(
         workspace_id: str,
-        scope: str = Query("workspace", description="Graph scope: global, workspace, group or subgroup"),
+        scope: str = Query(
+            "workspace", description="Graph scope: global, workspace, group or subgroup"
+        ),
         group_id: str | None = None,
         subgroup_id: str | None = None,
         central_node_id: str | None = None,
@@ -867,7 +906,9 @@ def create_little_bull_router(rag, doc_manager) -> APIRouter:
         ).model_dump()
 
     @router.get("/graph/label/list")
-    async def list_graph_labels(workspace_id: str, principal=Depends(require_principal)):
+    async def list_graph_labels(
+        workspace_id: str, principal=Depends(require_principal)
+    ):
         return await service().list_graph_labels(principal, workspace_id=workspace_id)
 
     @router.get("/graph/label/popular")
@@ -901,7 +942,9 @@ def create_little_bull_router(rag, doc_manager) -> APIRouter:
         )
 
     @router.get("/admin/models")
-    async def list_model_settings(workspace_id: str, principal=Depends(require_principal)):
+    async def list_model_settings(
+        workspace_id: str, principal=Depends(require_principal)
+    ):
         return {
             "models": [
                 item.model_dump()
@@ -1011,7 +1054,9 @@ def create_little_bull_router(rag, doc_manager) -> APIRouter:
         ).model_dump()
 
     @router.get("/admin/agents")
-    async def list_agent_configs(workspace_id: str, principal=Depends(require_principal)):
+    async def list_agent_configs(
+        workspace_id: str, principal=Depends(require_principal)
+    ):
         return {
             "agents": [
                 item.model_dump()
@@ -1122,7 +1167,9 @@ def create_little_bull_router(rag, doc_manager) -> APIRouter:
         ).model_dump()
 
     @router.get("/conversations")
-    async def list_conversations(workspace_id: str, principal=Depends(require_principal)):
+    async def list_conversations(
+        workspace_id: str, principal=Depends(require_principal)
+    ):
         return {
             "conversations": [
                 item.model_dump()
@@ -1141,7 +1188,9 @@ def create_little_bull_router(rag, doc_manager) -> APIRouter:
         return (await service().save_conversation(principal, request)).model_dump()
 
     @router.get("/conversations/{conversation_id}")
-    async def get_conversation(conversation_id: str, principal=Depends(require_principal)):
+    async def get_conversation(
+        conversation_id: str, principal=Depends(require_principal)
+    ):
         return (
             await service().get_conversation(
                 principal,
@@ -1183,10 +1232,14 @@ def create_little_bull_router(rag, doc_manager) -> APIRouter:
         request: LittleBullCorrelationSuggestionRequest,
         principal=Depends(require_principal),
     ):
-        return (await service().create_correlation_suggestion(principal, request)).model_dump()
+        return (
+            await service().create_correlation_suggestion(principal, request)
+        ).model_dump()
 
     @router.post("/correlation-suggestions/{suggestion_id}/approve")
-    async def approve_correlation_suggestion(suggestion_id: str, principal=Depends(require_principal)):
+    async def approve_correlation_suggestion(
+        suggestion_id: str, principal=Depends(require_principal)
+    ):
         return (
             await service().decide_correlation_suggestion(
                 principal,
@@ -1196,7 +1249,9 @@ def create_little_bull_router(rag, doc_manager) -> APIRouter:
         ).model_dump()
 
     @router.post("/correlation-suggestions/{suggestion_id}/reject")
-    async def reject_correlation_suggestion(suggestion_id: str, principal=Depends(require_principal)):
+    async def reject_correlation_suggestion(
+        suggestion_id: str, principal=Depends(require_principal)
+    ):
         return (
             await service().decide_correlation_suggestion(
                 principal,

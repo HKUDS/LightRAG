@@ -10,11 +10,11 @@ import pytest
 
 def _pilot_module() -> ModuleType:
     module_path = (
-        Path(__file__).resolve().parents[1]
-        / "scripts"
-        / "little_bull_phase3_pilot.py"
+        Path(__file__).resolve().parents[1] / "scripts" / "little_bull_phase3_pilot.py"
     )
-    spec = importlib.util.spec_from_file_location("little_bull_phase3_pilot", module_path)
+    spec = importlib.util.spec_from_file_location(
+        "little_bull_phase3_pilot", module_path
+    )
     assert spec is not None
     assert spec.loader is not None
     module = importlib.util.module_from_spec(spec)

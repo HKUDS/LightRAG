@@ -16,7 +16,9 @@ async def run_sync_openrouter_catalog(
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Sync OpenRouter runtime model catalog")
+    parser = argparse.ArgumentParser(
+        description="Sync OpenRouter runtime model catalog"
+    )
     parser.add_argument(
         "--output",
         default="rag_storage/model_catalog/openrouter_catalog.json",

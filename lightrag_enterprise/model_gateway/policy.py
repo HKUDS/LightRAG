@@ -115,7 +115,9 @@ class PolicyModelRouter:
         for profile in chain:
             pinned = self.policy.pinned_models.get(profile)
             if pinned:
-                match = next((entry for entry in permitted if entry.model_id == pinned), None)
+                match = next(
+                    (entry for entry in permitted if entry.model_id == pinned), None
+                )
                 if match:
                     return ModelRouteDecision(
                         model=match,
@@ -142,7 +144,9 @@ class PolicyModelRouter:
             fallback_chain=list(chain),
         )
 
-    def _profile_chain(self, requested: ModelProfile | None) -> tuple[ModelProfile, ...]:
+    def _profile_chain(
+        self, requested: ModelProfile | None
+    ) -> tuple[ModelProfile, ...]:
         if requested is None:
             return ESCALATION_ORDER
         start = ESCALATION_ORDER.index(requested)
@@ -153,14 +157,18 @@ class PolicyModelRouter:
     ) -> list[ModelCatalogEntry]:
         candidates = list(entries)
         if profile == ModelProfile.LOCAL_PRIVATE:
-            candidates = [entry for entry in candidates if entry.privacy_flags.get("local")]
+            candidates = [
+                entry for entry in candidates if entry.privacy_flags.get("local")
+            ]
         elif profile == ModelProfile.CHEAP_HIGH_VOLUME:
             candidates = [
                 entry
                 for entry in candidates
                 if entry.input_price is not None or entry.privacy_flags.get("local")
             ]
-            candidates.sort(key=lambda e: (e.input_price is None, e.input_price or Decimal("0")))
+            candidates.sort(
+                key=lambda e: (e.input_price is None, e.input_price or Decimal("0"))
+            )
         elif profile == ModelProfile.BALANCED_GENERAL:
             candidates.sort(key=lambda e: (e.context_window or 0), reverse=True)
         elif profile == ModelProfile.PREMIUM_REASONING:

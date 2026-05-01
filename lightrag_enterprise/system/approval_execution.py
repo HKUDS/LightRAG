@@ -49,7 +49,10 @@ class ApprovalActionExecutor:
         self.action_handlers = action_handlers or {}
 
     def supports(self, approval: ApprovalRequest) -> bool:
-        return approval.action == ACTIVITY_DOCUMENT_DELETE or approval.action in self.action_handlers
+        return (
+            approval.action == ACTIVITY_DOCUMENT_DELETE
+            or approval.action in self.action_handlers
+        )
 
     async def execute_if_supported(
         self,
@@ -102,7 +105,10 @@ class ApprovalActionExecutor:
                 raise ApprovalExecutionError(
                     str(exc),
                     approval=failed,
-                    metadata={"action": approval.action, "executor": "registered_handler"},
+                    metadata={
+                        "action": approval.action,
+                        "executor": "registered_handler",
+                    },
                 ) from exc
 
         executing = await approvals.begin_execution(approval.approval_id, principal)
@@ -137,7 +143,9 @@ class ApprovalActionExecutor:
         )
 
     def _document_delete_metadata(self, approval: ApprovalRequest) -> dict[str, Any]:
-        document_id = approval.metadata.get("document_id") or approval.metadata.get("doc_id")
+        document_id = approval.metadata.get("document_id") or approval.metadata.get(
+            "doc_id"
+        )
         if not document_id:
             raise ApprovalExecutionError(
                 "Document deletion approval is missing document_id.",
@@ -146,7 +154,9 @@ class ApprovalActionExecutor:
             )
         return {"document_id": str(document_id)}
 
-    async def _delete_document(self, document_id: str, workspace_id: str | None) -> None:
+    async def _delete_document(
+        self, document_id: str, workspace_id: str | None
+    ) -> None:
         rag = self.rag
         if workspace_id and self.workspace_rag_resolver is not None:
             rag = await self.workspace_rag_resolver(workspace_id)

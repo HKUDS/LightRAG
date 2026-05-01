@@ -2121,7 +2121,9 @@ def create_document_routes(
     )
 
     @router.post(
-        "/scan", response_model=ScanResponse, dependencies=[Depends(document_upload_auth)]
+        "/scan",
+        response_model=ScanResponse,
+        dependencies=[Depends(document_upload_auth)],
     )
     async def scan_for_new_documents(background_tasks: BackgroundTasks):
         """
@@ -2146,7 +2148,9 @@ def create_document_routes(
         )
 
     @router.post(
-        "/upload", response_model=InsertResponse, dependencies=[Depends(document_upload_auth)]
+        "/upload",
+        response_model=InsertResponse,
+        dependencies=[Depends(document_upload_auth)],
     )
     async def upload_to_input_dir(
         background_tasks: BackgroundTasks, file: UploadFile = File(...)
@@ -2314,7 +2318,9 @@ def create_document_routes(
             raise HTTPException(status_code=500, detail=str(e))
 
     @router.post(
-        "/text", response_model=InsertResponse, dependencies=[Depends(document_upload_auth)]
+        "/text",
+        response_model=InsertResponse,
+        dependencies=[Depends(document_upload_auth)],
     )
     async def insert_text(
         request: InsertTextRequest, background_tasks: BackgroundTasks
@@ -2475,7 +2481,9 @@ def create_document_routes(
             raise HTTPException(status_code=500, detail=str(e))
 
     @router.delete(
-        "", response_model=ClearDocumentsResponse, dependencies=[Depends(document_delete_auth)]
+        "",
+        response_model=ClearDocumentsResponse,
+        dependencies=[Depends(document_delete_auth)],
     )
     async def clear_documents():
         """

@@ -176,14 +176,18 @@ class ModelCatalogEntry:
             "capabilities": sorted(self.capabilities),
             "tool_calling": self.tool_calling,
             "structured_output": self.structured_output,
-            "input_price": str(self.input_price) if self.input_price is not None else None,
+            "input_price": str(self.input_price)
+            if self.input_price is not None
+            else None,
             "output_price": str(self.output_price)
             if self.output_price is not None
             else None,
             "request_price": str(self.request_price)
             if self.request_price is not None
             else None,
-            "image_price": str(self.image_price) if self.image_price is not None else None,
+            "image_price": str(self.image_price)
+            if self.image_price is not None
+            else None,
             "privacy_flags": self.privacy_flags,
             "synced_at": self.synced_at.isoformat(),
         }
@@ -212,7 +216,9 @@ class ModelCatalog:
     synced_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     source: str = "runtime"
 
-    def filter(self, criteria: ModelCatalogFilter | None = None) -> list[ModelCatalogEntry]:
+    def filter(
+        self, criteria: ModelCatalogFilter | None = None
+    ) -> list[ModelCatalogEntry]:
         criteria = criteria or ModelCatalogFilter()
         result: list[ModelCatalogEntry] = []
         for entry in self.entries:
@@ -247,7 +253,10 @@ class ModelCatalog:
                 continue
             if criteria.requires_tools is False and entry.tool_calling:
                 continue
-            if criteria.requires_structured_output is True and not entry.structured_output:
+            if (
+                criteria.requires_structured_output is True
+                and not entry.structured_output
+            ):
                 continue
             if criteria.capabilities and not criteria.capabilities.issubset(
                 entry.capabilities
@@ -257,7 +266,9 @@ class ModelCatalog:
         return result
 
     def by_id(self, model_id: str) -> ModelCatalogEntry | None:
-        return next((entry for entry in self.entries if entry.model_id == model_id), None)
+        return next(
+            (entry for entry in self.entries if entry.model_id == model_id), None
+        )
 
     def to_dict(self) -> dict[str, Any]:
         return {

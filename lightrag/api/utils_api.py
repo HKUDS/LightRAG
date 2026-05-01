@@ -123,7 +123,9 @@ async def _validate_enterprise_token(token: str, request: Request) -> bool:
         return False
     except Exception as exc:
         logger.warning(f"Little Bull enterprise token validation unavailable: {exc}")
-        raise RuntimeError("Little Bull enterprise authentication is unavailable.") from exc
+        raise RuntimeError(
+            "Little Bull enterprise authentication is unavailable."
+        ) from exc
 
 
 def get_combined_auth_dependency(

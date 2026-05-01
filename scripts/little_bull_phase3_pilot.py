@@ -290,7 +290,9 @@ async def run_pilot(config: Phase3PilotConfig) -> dict[str, object]:
                 QueryParam(mode=config.query_mode, top_k=3),
             )
             data_section = data.get("data", {}) if isinstance(data, dict) else {}
-            chunks = data_section.get("chunks", []) if isinstance(data_section, dict) else []
+            chunks = (
+                data_section.get("chunks", []) if isinstance(data_section, dict) else []
+            )
             references = (
                 data_section.get("references", [])
                 if isinstance(data_section, dict)

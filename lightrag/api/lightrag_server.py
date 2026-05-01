@@ -1163,7 +1163,9 @@ def create_app(args):
                     await result
 
     async def execute_little_bull_reindex_approval(*, approval, approvals, principal):
-        from lightrag_enterprise.little_bull.models import LittleBullKnowledgeBaseReindexRequest
+        from lightrag_enterprise.little_bull.models import (
+            LittleBullKnowledgeBaseReindexRequest,
+        )
         from lightrag_enterprise.system import ACTIVITY_DOCUMENT_REINDEX
 
         if approval.action != ACTIVITY_DOCUMENT_REINDEX:
@@ -1191,7 +1193,9 @@ def create_app(args):
         await background_tasks.run()
         current_approval = await approvals.get(approval.approval_id) or approval
         metadata = response.model_dump()
-        audit_result = "already_executed" if response.status == "already_executed" else "executed"
+        audit_result = (
+            "already_executed" if response.status == "already_executed" else "executed"
+        )
         return ApprovalExecutionOutcome(
             approval=current_approval,
             audit_result=audit_result,
@@ -1206,7 +1210,9 @@ def create_app(args):
             ApprovalActionExecutor(
                 rag,
                 workspace_rag_resolver=resolve_little_bull_workspace_rag,
-                action_handlers={ACTIVITY_DOCUMENT_REINDEX: execute_little_bull_reindex_approval},
+                action_handlers={
+                    ACTIVITY_DOCUMENT_REINDEX: execute_little_bull_reindex_approval
+                },
             )
         )
     )

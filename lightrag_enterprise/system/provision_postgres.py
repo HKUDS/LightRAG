@@ -38,7 +38,9 @@ def redact_database_url(url: str) -> str:
 def replace_database(url: str, database: str) -> str:
     parts = urlsplit(url)
     path = f"/{quote(database, safe='')}"
-    return urlunsplit((parts.scheme or "postgresql", parts.netloc, path, parts.query, parts.fragment))
+    return urlunsplit(
+        (parts.scheme or "postgresql", parts.netloc, path, parts.query, parts.fragment)
+    )
 
 
 def build_postgres_url(
@@ -57,9 +59,7 @@ def build_postgres_url(
 
 def quote_identifier(identifier: str) -> str:
     if not SAFE_IDENTIFIER_RE.fullmatch(identifier):
-        raise ValueError(
-            "Postgres identifier must match ^[a-z_][a-z0-9_]{0,62}$"
-        )
+        raise ValueError("Postgres identifier must match ^[a-z_][a-z0-9_]{0,62}$")
     return '"' + identifier.replace('"', '""') + '"'
 
 
@@ -109,14 +109,20 @@ SchemaRunner = Callable[[str | None], Awaitable[bool]]
 def config_from_env(args: argparse.Namespace | None = None) -> PostgresProvisionConfig:
     args = args or argparse.Namespace()
     database_url = getattr(args, "database_url", None) or get_database_url()
-    admin_url = getattr(args, "admin_url", None) or os.getenv("LIGHTRAG_SYSTEM_POSTGRES_ADMIN_URL")
+    admin_url = getattr(args, "admin_url", None) or os.getenv(
+        "LIGHTRAG_SYSTEM_POSTGRES_ADMIN_URL"
+    )
     database = (
         getattr(args, "database", None)
         or os.getenv("LIGHTRAG_SYSTEM_POSTGRES_DATABASE")
         or DEFAULT_DATABASE
     )
-    app_user = getattr(args, "app_user", None) or os.getenv("LIGHTRAG_SYSTEM_POSTGRES_USER")
-    app_password = getattr(args, "app_password", None) or os.getenv("LIGHTRAG_SYSTEM_POSTGRES_PASSWORD")
+    app_user = getattr(args, "app_user", None) or os.getenv(
+        "LIGHTRAG_SYSTEM_POSTGRES_USER"
+    )
+    app_password = getattr(args, "app_password", None) or os.getenv(
+        "LIGHTRAG_SYSTEM_POSTGRES_PASSWORD"
+    )
     run_schema_enabled = not getattr(args, "no_schema", False) and not _truthy(
         os.getenv("LIGHTRAG_SYSTEM_POSTGRES_SKIP_SCHEMA")
     )
@@ -145,8 +151,14 @@ def admin_url_from_env(args: argparse.Namespace | None = None) -> str:
         or DEFAULT_ADMIN_USER,
         password=getattr(args, "admin_password", None)
         or os.getenv("LIGHTRAG_SYSTEM_POSTGRES_ADMIN_PASSWORD"),
-        host=getattr(args, "host", None) or os.getenv("LIGHTRAG_SYSTEM_POSTGRES_HOST") or DEFAULT_HOST,
-        port=int(getattr(args, "port", None) or os.getenv("LIGHTRAG_SYSTEM_POSTGRES_PORT") or DEFAULT_PORT),
+        host=getattr(args, "host", None)
+        or os.getenv("LIGHTRAG_SYSTEM_POSTGRES_HOST")
+        or DEFAULT_HOST,
+        port=int(
+            getattr(args, "port", None)
+            or os.getenv("LIGHTRAG_SYSTEM_POSTGRES_PORT")
+            or DEFAULT_PORT
+        ),
         database=getattr(args, "admin_database", None)
         or os.getenv("LIGHTRAG_SYSTEM_POSTGRES_ADMIN_DATABASE")
         or DEFAULT_ADMIN_DATABASE,
@@ -175,7 +187,9 @@ async def _role_exists(conn: Any, role: str) -> bool:
 
 
 async def _database_exists(conn: Any, database: str) -> bool:
-    return bool(await conn.fetchval("SELECT 1 FROM pg_database WHERE datname = $1", database))
+    return bool(
+        await conn.fetchval("SELECT 1 FROM pg_database WHERE datname = $1", database)
+    )
 
 
 async def provision_postgres(
@@ -187,7 +201,9 @@ async def provision_postgres(
     connector = connector or AsyncpgConnector()
     if config.database_url:
         await _assert_connectable(connector, config.database_url)
-        schema_applied = await schema_runner(config.database_url) if config.run_schema else False
+        schema_applied = (
+            await schema_runner(config.database_url) if config.run_schema else False
+        )
         result = PostgresProvisionResult(
             database_url=config.database_url,
             mode="existing",
@@ -205,11 +221,15 @@ async def provision_postgres(
 
     admin_url = config.admin_url or admin_url_from_env()
     database = config.database
-    app_user = config.app_user or unquote(urlsplit(admin_url).username or DEFAULT_ADMIN_USER)
+    app_user = config.app_user or unquote(
+        urlsplit(admin_url).username or DEFAULT_ADMIN_USER
+    )
     app_password = config.app_password
     app_url = build_postgres_url(
         user=app_user,
-        password=app_password if app_password is not None else urlsplit(admin_url).password,
+        password=app_password
+        if app_password is not None
+        else urlsplit(admin_url).password,
         host=urlsplit(admin_url).hostname or DEFAULT_HOST,
         port=urlsplit(admin_url).port or DEFAULT_PORT,
         database=database,
@@ -235,8 +255,12 @@ async def provision_postgres(
     database_admin_url = replace_database(admin_url, database)
     db_conn = await connector.connect(database_admin_url)
     try:
-        await db_conn.execute(f"GRANT ALL PRIVILEGES ON DATABASE {quote_identifier(database)} TO {quote_identifier(app_user)}")
-        await db_conn.execute(f"GRANT ALL ON SCHEMA public TO {quote_identifier(app_user)}")
+        await db_conn.execute(
+            f"GRANT ALL PRIVILEGES ON DATABASE {quote_identifier(database)} TO {quote_identifier(app_user)}"
+        )
+        await db_conn.execute(
+            f"GRANT ALL ON SCHEMA public TO {quote_identifier(app_user)}"
+        )
         await db_conn.execute(
             f"ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO {quote_identifier(app_user)}"
         )
@@ -269,7 +293,9 @@ async def provision_postgres(
     return result
 
 
-def write_env_file(path: Path, database_url: str, *, functional_enabled: bool = True) -> None:
+def write_env_file(
+    path: Path, database_url: str, *, functional_enabled: bool = True
+) -> None:
     updates = {"LIGHTRAG_SYSTEM_DATABASE_URL": database_url}
     if functional_enabled:
         updates["LITTLE_BULL_FUNCTIONAL_ENABLED"] = "true"
@@ -280,7 +306,11 @@ def write_env_file(path: Path, database_url: str, *, functional_enabled: bool = 
     output: list[str] = []
     for line in lines:
         stripped = line.strip()
-        key = stripped.split("=", 1)[0] if "=" in stripped and not stripped.startswith("#") else None
+        key = (
+            stripped.split("=", 1)[0]
+            if "=" in stripped and not stripped.startswith("#")
+            else None
+        )
         if key in updates:
             output.append(f"{key}={updates[key]}")
             seen.add(key)
@@ -296,18 +326,60 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Provision or link the Little Bull system PostgreSQL database."
     )
-    parser.add_argument("--database-url", help="Existing system database URL to validate and migrate.")
-    parser.add_argument("--admin-url", help="Admin PostgreSQL URL used to create/link the dedicated database.")
-    parser.add_argument("--host", default=None, help="Admin PostgreSQL host when --admin-url is not supplied.")
-    parser.add_argument("--port", type=int, default=None, help="Admin PostgreSQL port when --admin-url is not supplied.")
-    parser.add_argument("--admin-user", default=None, help="Admin PostgreSQL user when --admin-url is not supplied.")
-    parser.add_argument("--admin-password", default=None, help="Admin PostgreSQL password when --admin-url is not supplied.")
-    parser.add_argument("--admin-database", default=None, help="Admin maintenance database.")
-    parser.add_argument("--database", default=None, help="Dedicated Little Bull database to create or link.")
-    parser.add_argument("--app-user", default=None, help="Dedicated application role to create or use.")
-    parser.add_argument("--app-password", default=None, help="Password for the dedicated application role.")
-    parser.add_argument("--write-env", default=None, help="Optional .env path to update with LIGHTRAG_SYSTEM_DATABASE_URL.")
-    parser.add_argument("--no-schema", action="store_true", help="Do not run the Little Bull system schema.")
+    parser.add_argument(
+        "--database-url", help="Existing system database URL to validate and migrate."
+    )
+    parser.add_argument(
+        "--admin-url",
+        help="Admin PostgreSQL URL used to create/link the dedicated database.",
+    )
+    parser.add_argument(
+        "--host",
+        default=None,
+        help="Admin PostgreSQL host when --admin-url is not supplied.",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=None,
+        help="Admin PostgreSQL port when --admin-url is not supplied.",
+    )
+    parser.add_argument(
+        "--admin-user",
+        default=None,
+        help="Admin PostgreSQL user when --admin-url is not supplied.",
+    )
+    parser.add_argument(
+        "--admin-password",
+        default=None,
+        help="Admin PostgreSQL password when --admin-url is not supplied.",
+    )
+    parser.add_argument(
+        "--admin-database", default=None, help="Admin maintenance database."
+    )
+    parser.add_argument(
+        "--database",
+        default=None,
+        help="Dedicated Little Bull database to create or link.",
+    )
+    parser.add_argument(
+        "--app-user", default=None, help="Dedicated application role to create or use."
+    )
+    parser.add_argument(
+        "--app-password",
+        default=None,
+        help="Password for the dedicated application role.",
+    )
+    parser.add_argument(
+        "--write-env",
+        default=None,
+        help="Optional .env path to update with LIGHTRAG_SYSTEM_DATABASE_URL.",
+    )
+    parser.add_argument(
+        "--no-schema",
+        action="store_true",
+        help="Do not run the Little Bull system schema.",
+    )
     parser.add_argument(
         "--no-functional-enabled",
         action="store_true",

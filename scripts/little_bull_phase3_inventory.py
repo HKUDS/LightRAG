@@ -58,7 +58,9 @@ def _model_suffix(workspace: str) -> str:
     return f"{safe_model}_{EMBEDDING_DIM}d"
 
 
-def expected_artifacts(workspace: str, working_dir: str | None = None) -> dict[str, Any]:
+def expected_artifacts(
+    workspace: str, working_dir: str | None = None
+) -> dict[str, Any]:
     safe_workspace = _safe_workspace(workspace)
     suffix = _model_suffix(safe_workspace)
     return {
@@ -95,13 +97,16 @@ async def _qdrant_existing(expected: dict[str, Any]) -> list[str]:
         for item in response.json().get("result", {}).get("collections", [])
         if isinstance(item, dict) and item.get("name")
     }
-    return [
-        name for name in expected["qdrant"]["collections"] if name in names
-    ]
+    return [name for name in expected["qdrant"]["collections"] if name in names]
 
 
 async def _postgres_counts(workspace: str) -> dict[str, int]:
-    required = ("POSTGRES_HOST", "POSTGRES_USER", "POSTGRES_PASSWORD", "POSTGRES_DATABASE")
+    required = (
+        "POSTGRES_HOST",
+        "POSTGRES_USER",
+        "POSTGRES_PASSWORD",
+        "POSTGRES_DATABASE",
+    )
     if any(not os.getenv(name) for name in required):
         return {}
     try:
@@ -144,7 +149,9 @@ async def _neo4j_indexes(expected: dict[str, Any]) -> list[str]:
         auth=(os.environ["NEO4J_USERNAME"], os.environ["NEO4J_PASSWORD"]),
     )
     try:
-        async with driver.session(database=os.getenv("NEO4J_DATABASE", "neo4j")) as session:
+        async with driver.session(
+            database=os.getenv("NEO4J_DATABASE", "neo4j")
+        ) as session:
             result = await session.run(
                 "SHOW INDEXES YIELD name WHERE name = $name RETURN name",
                 name=expected["neo4j"]["fulltext_index"],

@@ -274,11 +274,22 @@ def embedding_catalog() -> list[dict[str, object]]:
 
 def find_embedding_model(model_id: str) -> EmbeddingCatalogEntry | None:
     normalized = model_id.strip()
-    return next((entry for entry in OPENROUTER_EMBEDDING_CATALOG if entry.model_id == normalized), None)
+    return next(
+        (
+            entry
+            for entry in OPENROUTER_EMBEDDING_CATALOG
+            if entry.model_id == normalized
+        ),
+        None,
+    )
 
 
-def estimate_embedding_cost(estimated_tokens: int, prompt_cost_per_million_tokens: float) -> float:
-    return round((max(0, estimated_tokens) / 1_000_000) * prompt_cost_per_million_tokens, 8)
+def estimate_embedding_cost(
+    estimated_tokens: int, prompt_cost_per_million_tokens: float
+) -> float:
+    return round(
+        (max(0, estimated_tokens) / 1_000_000) * prompt_cost_per_million_tokens, 8
+    )
 
 
 def estimate_tokens_from_pages(page_count: int, words_per_page: int = 400) -> int:

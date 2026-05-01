@@ -24,5 +24,4 @@ class EnterpriseConnector(Protocol):
     name: str
     allowed_actions: set[str]
 
-    async def execute(self, action: ConnectorAction) -> ConnectorResult:
-        ...
+    async def execute(self, action: ConnectorAction) -> ConnectorResult: ...

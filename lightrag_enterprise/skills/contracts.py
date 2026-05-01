@@ -7,7 +7,9 @@ from typing import Any
 JsonSchema = dict[str, Any]
 
 
-def object_schema(properties: JsonSchema, required: list[str] | None = None) -> JsonSchema:
+def object_schema(
+    properties: JsonSchema, required: list[str] | None = None
+) -> JsonSchema:
     return {
         "type": "object",
         "properties": properties,
@@ -103,23 +105,51 @@ def build_default_skill_registry() -> SkillRegistry:
     )
 
     for name, description, schema in [
-        ("query_lightrag", "Query LightRAG with governed model and ACL policy.", query_schema),
+        (
+            "query_lightrag",
+            "Query LightRAG with governed model and ACL policy.",
+            query_schema,
+        ),
         (
             "query_lightrag_context_only",
             "Return retrieved context and citations without LLM generation.",
             query_schema,
         ),
-        ("ingest_document", "Ingest one document through LightRAG pipeline.", doc_schema),
+        (
+            "ingest_document",
+            "Ingest one document through LightRAG pipeline.",
+            doc_schema,
+        ),
         ("ingest_batch", "Ingest a batch of documents.", doc_schema),
-        ("reindex_workspace", "Rebuild workspace knowledge from chunks.", simple_id_schema),
-        ("delete_document_by_id", "Delete a document and derived KG/vector data.", simple_id_schema),
-        ("delete_entity", "Delete an entity from KG and vector storage.", simple_id_schema),
+        (
+            "reindex_workspace",
+            "Rebuild workspace knowledge from chunks.",
+            simple_id_schema,
+        ),
+        (
+            "delete_document_by_id",
+            "Delete a document and derived KG/vector data.",
+            simple_id_schema,
+        ),
+        (
+            "delete_entity",
+            "Delete an entity from KG and vector storage.",
+            simple_id_schema,
+        ),
         ("delete_relation", "Delete a relation between two entities.", crm_schema),
-        ("merge_entities", "Merge duplicate entities with explicit strategy.", crm_schema),
+        (
+            "merge_entities",
+            "Merge duplicate entities with explicit strategy.",
+            crm_schema,
+        ),
         ("sync_model_catalog", "Sync hosted/local model catalog.", crm_schema),
         ("get_model_catalog", "Read visible and permitted model catalog.", crm_schema),
         ("route_model_by_policy", "Select model profile by policy.", crm_schema),
-        ("check_cost_policy", "Validate request estimate against tenant caps.", crm_schema),
+        (
+            "check_cost_policy",
+            "Validate request estimate against tenant caps.",
+            crm_schema,
+        ),
         ("create_crm_contact", "Create CRM contact record.", crm_schema),
         ("update_crm_contact", "Update CRM contact record.", crm_schema),
         ("create_ticket", "Create help desk ticket.", crm_schema),
@@ -128,7 +158,11 @@ def build_default_skill_registry() -> SkillRegistry:
         ("summarize_thread", "Summarize a chat thread with citations.", crm_schema),
         ("generate_report", "Generate auditable business report.", crm_schema),
         ("audit_action", "Append structured audit event.", crm_schema),
-        ("validate_json_output", "Validate model output against a JSON schema.", crm_schema),
+        (
+            "validate_json_output",
+            "Validate model output against a JSON schema.",
+            crm_schema,
+        ),
     ]:
         registry.register(_contract(name, description, schema))
     return registry

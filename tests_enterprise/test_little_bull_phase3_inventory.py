@@ -14,7 +14,9 @@ def _inventory_module() -> ModuleType:
         / "scripts"
         / "little_bull_phase3_inventory.py"
     )
-    spec = importlib.util.spec_from_file_location("little_bull_phase3_inventory", module_path)
+    spec = importlib.util.spec_from_file_location(
+        "little_bull_phase3_inventory", module_path
+    )
     assert spec is not None
     assert spec.loader is not None
     module = importlib.util.module_from_spec(spec)

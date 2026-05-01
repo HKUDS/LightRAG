@@ -13,7 +13,9 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_FIXTURE_DIR = REPO_ROOT / "fixtures" / "little_bull_knowledge"
 DEFAULT_INPUT_DIR = REPO_ROOT / "inputs"
-WORKSPACE_PATTERN = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_")
+WORKSPACE_PATTERN = set(
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_"
+)
 
 
 @dataclass(frozen=True)

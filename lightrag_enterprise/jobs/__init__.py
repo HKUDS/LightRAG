@@ -8,4 +8,5 @@ async def run_sync_openrouter_catalog(
 
     return await run(output_path)
 
+
 __all__ = ["run_sync_openrouter_catalog"]
