@@ -5374,7 +5374,6 @@ class LightRAG:
 
                 file_bytes = await asyncio.to_thread(p.read_bytes)
                 parsed_dir = self._parsed_artifact_dir_for_source(str(p), file_path)
-                parsed_dir.mkdir(parents=True, exist_ok=True)
                 output_dir = str(parsed_dir)
                 interchange_text = await asyncio.to_thread(
                     parse_docx_to_interchange_jsonl,

@@ -107,18 +107,23 @@ def parse_docx_to_interchange_jsonl(
         capabilities.append("i")
 
     asset_dir_created = False
-    if output_dir and images:
-        asset_base = Path(source_file).stem or (
-            doc_id.strip() if doc_id and doc_id.strip() else f"doc-{source_hash[:12]}"
-        )
-        assets_dir = Path(output_dir) / f"{asset_base}.blocks.assets"
+    if output_dir:
+        output_path = Path(output_dir)
         try:
-            if assets_dir.exists():
-                shutil.rmtree(assets_dir)
-            assets_dir.mkdir(parents=True, exist_ok=True)
-            for _rel_id, (filename, blob) in images.items():
-                (assets_dir / filename).write_bytes(blob)
-            asset_dir_created = True
+            if output_path.exists():
+                shutil.rmtree(output_path)
+            output_path.mkdir(parents=True, exist_ok=True)
+            if images:
+                asset_base = Path(source_file).stem or (
+                    doc_id.strip()
+                    if doc_id and doc_id.strip()
+                    else f"doc-{source_hash[:12]}"
+                )
+                assets_dir = output_path / f"{asset_base}.blocks.assets"
+                assets_dir.mkdir(parents=True, exist_ok=True)
+                for _rel_id, (filename, blob) in images.items():
+                    (assets_dir / filename).write_bytes(blob)
+                asset_dir_created = True
         except Exception:
             pass
 
