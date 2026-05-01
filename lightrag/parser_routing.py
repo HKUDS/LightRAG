@@ -24,6 +24,12 @@ _PARSER_ENGINE_ENDPOINT_ENV = {
     PARSER_ENGINE_DOCLING: "DOCLING_ENDPOINT",
 }
 
+# Trailing parser-hint pattern: matches ``.[engine].ext`` at end of basename.
+# Group 1 captures the raw engine token (still needs normalize_parser_engine
+# and SUPPORTED_PARSER_ENGINES validation); group 2 captures ``.ext`` so it
+# can be reattached when stripping the hint.
+_PARSER_HINT_RE = re.compile(r"\.\[([^\]]+)\](\.[^.]+)$")
+
 
 class ParserRoutingConfigError(ValueError):
     """Raised when LIGHTRAG_PARSER contains an invalid routing rule."""
@@ -67,11 +73,29 @@ def _engine_is_usable(
 
 
 def filename_parser_hint(file_path: str | Path) -> str | None:
-    m = re.search(r"\.\[([^\]]+)\]\.[^.]+$", Path(file_path).name)
+    m = _PARSER_HINT_RE.search(Path(file_path).name)
     if not m:
         return None
     engine = normalize_parser_engine(m.group(1))
     return engine if engine in SUPPORTED_PARSER_ENGINES else None
+
+
+def canonicalize_parser_hinted_basename(file_path: str | Path) -> str:
+    """Return basename with a supported parser hint removed.
+
+    Only the final ``.[engine].ext`` segment is stripped, exactly once, and
+    only when the bracketed value normalizes to a supported parser engine.
+    Nested hints such as ``name.[native].[mineru].pdf`` therefore become
+    ``name.[native].pdf`` — additional outer hints are not unwrapped.
+    """
+    basename = Path(file_path).name
+    m = _PARSER_HINT_RE.search(basename)
+    if not m:
+        return basename
+    engine = normalize_parser_engine(m.group(1))
+    if engine not in SUPPORTED_PARSER_ENGINES:
+        return basename
+    return f"{basename[: m.start()]}{m.group(2)}"
 
 
 def parser_rules_from_env() -> str:

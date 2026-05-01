@@ -16,6 +16,7 @@ from lightrag.constants import (
 from lightrag.operate import _get_relationship_vdb_timeout_seconds
 from lightrag.parser_routing import (
     ParserRoutingConfigError,
+    canonicalize_parser_hinted_basename,
     resolve_file_parser_engine,
     validate_parser_routing_config,
 )
@@ -108,6 +109,28 @@ def test_parse_engine_rule_fallback_and_default_legacy(tmp_path, monkeypatch):
 
 
 @pytest.mark.offline
+def test_canonicalize_parser_hinted_basename():
+    assert canonicalize_parser_hinted_basename("abc.[native].docx") == "abc.docx"
+    assert canonicalize_parser_hinted_basename("/tmp/a.b.[mineru].pdf") == "a.b.pdf"
+    assert canonicalize_parser_hinted_basename("abc.[draft].docx") == "abc.[draft].docx"
+    # Engine token is case-insensitive (normalize_parser_engine lower-cases).
+    assert canonicalize_parser_hinted_basename("abc.[NATIVE].docx") == "abc.docx"
+    # Engine sub-variants like "mineru-iet" normalize to a base engine.
+    assert canonicalize_parser_hinted_basename("abc.[mineru-iet].pdf") == "abc.pdf"
+    # No extension after the bracket: pattern requires ``.[engine].ext``.
+    assert canonicalize_parser_hinted_basename("abc.[native]") == "abc.[native]"
+    # Plain basename without any hint is returned unchanged.
+    assert canonicalize_parser_hinted_basename("abc.docx") == "abc.docx"
+    # Bracket without a leading dot is not a hint.
+    assert canonicalize_parser_hinted_basename("[native].docx") == "[native].docx"
+    # Nested hints: only the outermost segment is stripped.
+    assert (
+        canonicalize_parser_hinted_basename("name.[native].[mineru].pdf")
+        == "name.[native].pdf"
+    )
+
+
+@pytest.mark.offline
 def test_enqueue_dedupes_by_filename_and_content_hash(tmp_path):
     async def _run():
         rag = _new_rag(tmp_path)
@@ -155,6 +178,67 @@ def test_enqueue_dedupes_by_filename_and_content_hash(tmp_path):
                 if getattr(doc, "metadata", {}).get("is_duplicate")
             }
             assert {"filename", "content_hash"}.issubset(kinds)
+        finally:
+            await rag.finalize_storages()
+
+    asyncio.run(_run())
+
+
+@pytest.mark.offline
+def test_enqueue_dedupes_parser_hinted_filename_variants(tmp_path):
+    async def _run():
+        rag = _new_rag(tmp_path)
+        await rag.initialize_storages()
+        try:
+            await rag.apipeline_enqueue_documents(
+                "alpha body",
+                file_paths="abc.docx",
+                track_id="track-a",
+            )
+            first_id = compute_mdhash_id("abc.docx", prefix="doc-")
+            first_doc = await rag.full_docs.get_by_id(first_id)
+            assert first_doc is not None
+
+            await rag.apipeline_enqueue_documents(
+                "changed body",
+                file_paths="/tmp/abc.[native].docx",
+                track_id="track-b",
+            )
+            assert (await rag.full_docs.get_by_id(first_id))["content"] == "alpha body"
+
+            failed_docs = await rag.doc_status.get_docs_by_status(DocStatus.FAILED)
+            assert any(
+                getattr(doc, "metadata", {}).get("duplicate_kind") == "filename"
+                and getattr(doc, "file_path", "") == "abc.docx"
+                for doc in failed_docs.values()
+            )
+        finally:
+            await rag.finalize_storages()
+
+    asyncio.run(_run())
+
+
+@pytest.mark.offline
+def test_delete_result_preserves_parser_hinted_source_path(tmp_path):
+    async def _run():
+        rag = _new_rag(tmp_path)
+        await rag.initialize_storages()
+        try:
+            source_path = str(tmp_path / "abc.[native].docx")
+            await rag.apipeline_enqueue_documents(
+                "",
+                file_paths=source_path,
+                docs_format=FULL_DOCS_FORMAT_PENDING_PARSE,
+                parsed_engine=PARSER_ENGINE_NATIVE,
+                track_id="track-delete-source",
+            )
+
+            doc_id = compute_mdhash_id("abc.docx", prefix="doc-")
+            result = await rag.adelete_by_doc_id(doc_id)
+
+            assert result.status == "success"
+            assert result.file_path == "abc.docx"
+            assert result.source_path == source_path
         finally:
             await rag.finalize_storages()
 
@@ -964,6 +1048,42 @@ def test_write_lightrag_document_preserves_headings_and_table_dimensions(
         )
 
         await rag.finalize_storages()
+
+    asyncio.run(_run())
+
+
+@pytest.mark.offline
+def test_write_lightrag_document_strips_parser_hint_from_artifact_names(
+    tmp_path, monkeypatch
+):
+    async def _run():
+        monkeypatch.setenv("INPUT_DIR", str(tmp_path))
+        rag = _new_rag(tmp_path)
+        await rag.initialize_storages()
+        try:
+            source_path = tmp_path / "demo.[native].docx"
+            source_path.write_bytes(b"docx bytes")
+
+            parsed = await rag._write_lightrag_document_from_content_list(
+                doc_id="doc-hinted",
+                file_path="demo.[native].docx",
+                content_list=[{"type": "text", "text": "body"}],
+                engine="native",
+                source_path=str(source_path),
+            )
+
+            blocks_path = Path(parsed["blocks_path"])
+            assert blocks_path == (
+                tmp_path / PARSED_DIR_NAME / "demo.docx.parsed" / "demo.blocks.jsonl"
+            )
+            assert not source_path.exists()
+            assert (tmp_path / PARSED_DIR_NAME / source_path.name).exists()
+            full_doc = await rag.full_docs.get_by_id("doc-hinted")
+            assert full_doc["lightrag_document_path"] == (
+                "__parsed__/demo.docx.parsed/demo.blocks.jsonl"
+            )
+        finally:
+            await rag.finalize_storages()
 
     asyncio.run(_run())
 

@@ -146,7 +146,10 @@ from lightrag.utils import (
 from lightrag.types import KnowledgeGraph
 from dotenv import load_dotenv
 from lightrag.extraction.interchange import parse_interchange_jsonl
-from lightrag.parser_routing import resolve_stored_document_parser_engine
+from lightrag.parser_routing import (
+    canonicalize_parser_hinted_basename,
+    resolve_stored_document_parser_engine,
+)
 
 # use the .env that is inside the current folder
 # allows to use different .env file for each lightrag instance
@@ -223,7 +226,7 @@ def _document_source_key(file_path: Any) -> str:
     source = str(file_path or "").strip()
     if source in PLACEHOLDER_DOCUMENT_SOURCES:
         return "unknown_source"
-    filename = Path(source).name.strip()
+    filename = canonicalize_parser_hinted_basename(source).strip()
     if filename in PLACEHOLDER_DOCUMENT_SOURCES:
         return "unknown_source"
     return filename or "unknown_source"
@@ -294,9 +297,10 @@ async def _get_existing_doc_by_file_basename(
 ) -> tuple[str, Any] | None:
     """Find an existing doc_status record by file basename.
 
-    Delegates to the storage backend's basename index when available so the
-    lookup avoids scanning every record. Backends without a native index fall
-    back to the default scan implemented in DocStatusStorage.
+    Both write and lookup paths feed file_path through ``_document_source_key``
+    first, so stored basenames are already canonical (parser hints stripped).
+    Storage backends therefore compare canonical-vs-canonical and do not need
+    to re-run any normalization themselves.
     """
     basename = _document_source_key(file_path)
     if basename == "unknown_source":
@@ -4824,7 +4828,10 @@ class LightRAG:
         self, source_path: str | None = None, file_path: str | None = None
     ) -> Path:
         parsed_dir = self._parsed_dir_for_source(source_path)
-        source_name = Path(source_path or file_path or "document").name or "document"
+        source_name = (
+            canonicalize_parser_hinted_basename(source_path or file_path or "document")
+            or "document"
+        )
         artifact_name = f"{source_name}.parsed"
         artifact_dir = parsed_dir / artifact_name
         if not artifact_dir.exists() or artifact_dir.is_dir():
@@ -4907,7 +4914,7 @@ class LightRAG:
         parsed_dir = self._parsed_artifact_dir_for_source(source_path, file_path)
         parsed_dir.mkdir(parents=True, exist_ok=True)
 
-        source_name = Path(file_path).name or f"{doc_id}.bin"
+        source_name = canonicalize_parser_hinted_basename(file_path) or f"{doc_id}.bin"
         base_name = Path(source_name).stem or source_name
         blocks_path = parsed_dir / f"{base_name}.blocks.jsonl"
         tables_path = parsed_dir / f"{base_name}.tables.json"
@@ -6814,6 +6821,7 @@ class LightRAG:
         deletion_stage = "initializing"
         doc_status_data: dict[str, Any] | None = None
         file_path: str | None = None
+        source_path: str | None = None
 
         async with pipeline_status_lock:
             log_message = f"Starting deletion process for document {doc_id}"
@@ -6824,7 +6832,6 @@ class LightRAG:
         try:
             # 1. Get the document status and related data
             doc_status_data = await self.doc_status.get_by_id(doc_id)
-            file_path = doc_status_data.get("file_path") if doc_status_data else None
             if not doc_status_data:
                 logger.warning(f"Document {doc_id} not found")
                 return DeletionResult(
@@ -6834,6 +6841,10 @@ class LightRAG:
                     status_code=404,
                     file_path="",
                 )
+            file_path = doc_status_data.get("file_path")
+            full_doc_data = await self.full_docs.get_by_id(doc_id)
+            if isinstance(full_doc_data, dict):
+                source_path = full_doc_data.get("source_path")
 
             # Check document status and log warning for non-completed documents
             raw_status = doc_status_data.get("status")
@@ -6957,6 +6968,7 @@ class LightRAG:
                     message=log_message,
                     status_code=200,
                     file_path=file_path,
+                    source_path=source_path,
                 )
 
             # Mark that deletion operations have started
@@ -7540,6 +7552,7 @@ class LightRAG:
                 message=log_message,
                 status_code=200,
                 file_path=file_path,
+                source_path=source_path,
             )
 
         except Exception as e:
@@ -7578,6 +7591,7 @@ class LightRAG:
                 message=error_message,
                 status_code=500,
                 file_path=file_path,
+                source_path=source_path,
             )
 
         finally:
