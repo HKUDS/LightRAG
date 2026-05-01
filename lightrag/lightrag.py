@@ -6821,6 +6821,7 @@ class LightRAG:
         deletion_stage = "initializing"
         doc_status_data: dict[str, Any] | None = None
         file_path: str | None = None
+        source_path: str | None = None
 
         async with pipeline_status_lock:
             log_message = f"Starting deletion process for document {doc_id}"
@@ -6832,6 +6833,9 @@ class LightRAG:
             # 1. Get the document status and related data
             doc_status_data = await self.doc_status.get_by_id(doc_id)
             file_path = doc_status_data.get("file_path") if doc_status_data else None
+            full_doc_data = await self.full_docs.get_by_id(doc_id) or {}
+            if isinstance(full_doc_data, dict):
+                source_path = full_doc_data.get("source_path")
             if not doc_status_data:
                 logger.warning(f"Document {doc_id} not found")
                 return DeletionResult(
@@ -6964,6 +6968,7 @@ class LightRAG:
                     message=log_message,
                     status_code=200,
                     file_path=file_path,
+                    source_path=source_path,
                 )
 
             # Mark that deletion operations have started
@@ -7547,6 +7552,7 @@ class LightRAG:
                 message=log_message,
                 status_code=200,
                 file_path=file_path,
+                source_path=source_path,
             )
 
         except Exception as e:
@@ -7585,6 +7591,7 @@ class LightRAG:
                 message=error_message,
                 status_code=500,
                 file_path=file_path,
+                source_path=source_path,
             )
 
         finally:

@@ -999,6 +999,7 @@ class DeletionResult:
     message: str
     status_code: int = 200
     file_path: str | None = None
+    source_path: str | None = None
 
 
 # Unified Query Result Data Structures for Reference List Support

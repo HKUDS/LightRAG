@@ -1,7 +1,9 @@
 import importlib
 import sys
 from io import BytesIO
+from pathlib import Path
 from types import SimpleNamespace
+from uuid import uuid4
 
 import pytest
 
@@ -15,6 +17,7 @@ _utils = importlib.import_module("lightrag.utils")
 sys.argv = _original_argv
 
 DocStatus = _base.DocStatus
+DeletionResult = _base.DeletionResult
 FULL_DOCS_FORMAT_LIGHTRAG = _constants.FULL_DOCS_FORMAT_LIGHTRAG
 FULL_DOCS_FORMAT_PENDING_PARSE = _constants.FULL_DOCS_FORMAT_PENDING_PARSE
 PARSED_DIR_NAME = _constants.PARSED_DIR_NAME
@@ -116,6 +119,20 @@ class _ScanRag:
 class _DuplicateUploadRag:
     def __init__(self, docs_by_path):
         self.doc_status = _ScanDocStatus(docs_by_path)
+
+
+class _DeleteRag:
+    def __init__(self, result):
+        self.result = result
+        self.workspace = f"delete-test-{uuid4().hex}"
+        self.deleted_doc_ids = []
+
+    async def adelete_by_doc_id(self, doc_id, delete_llm_cache=False):
+        self.deleted_doc_ids.append((doc_id, delete_llm_cache))
+        return self.result
+
+    async def apipeline_process_enqueue_documents(self):
+        return None
 
 
 class _ArchiveFailureRag:
@@ -534,6 +551,85 @@ async def test_upload_rejects_parser_hinted_filesystem_duplicate(tmp_path, monke
     assert response.status == "duplicated"
     assert response.track_id == ""
     assert not (tmp_path / "existing.[native].docx").exists()
+
+
+def test_delete_file_variants_removes_canonical_hint_variants(tmp_path):
+    parsed_dir = tmp_path / PARSED_DIR_NAME
+    parsed_dir.mkdir()
+    files_to_delete = [
+        tmp_path / "report.docx",
+        tmp_path / "report.[native].docx",
+        parsed_dir / "report.[mineru].docx",
+        parsed_dir / "report.[native]_001.docx",
+        parsed_dir / "report_001.docx",
+    ]
+    for path in files_to_delete:
+        path.write_bytes(b"delete me")
+    unrelated_files = [
+        tmp_path / "report_001.docx",
+        tmp_path / "report_2024.docx",
+        parsed_dir / "other.[native].docx",
+    ]
+    for path in unrelated_files:
+        path.write_bytes(b"keep me")
+    artifact_dir = parsed_dir / "report.docx.parsed"
+    artifact_dir.mkdir()
+    (artifact_dir / "report.blocks.jsonl").write_text("{}", encoding="utf-8")
+
+    deleted_files, errors = _document_routes.delete_file_variants_by_canonical_basename(
+        tmp_path,
+        "report.docx",
+        str(tmp_path / "report.[native].docx"),
+    )
+
+    assert errors == []
+    assert set(deleted_files) == {
+        "report.docx",
+        "report.[native].docx",
+        str(Path(PARSED_DIR_NAME) / "report.[mineru].docx"),
+        str(Path(PARSED_DIR_NAME) / "report.[native]_001.docx"),
+        str(Path(PARSED_DIR_NAME) / "report_001.docx"),
+    }
+    assert all(not path.exists() for path in files_to_delete)
+    assert all(path.exists() for path in unrelated_files)
+    assert artifact_dir.is_dir()
+
+
+async def test_background_delete_removes_parser_hint_file_variants(tmp_path):
+    shared_storage = importlib.import_module("lightrag.kg.shared_storage")
+    parsed_dir = tmp_path / PARSED_DIR_NAME
+    parsed_dir.mkdir()
+    source_file = tmp_path / "paper.[native].docx"
+    source_file.write_bytes(b"source")
+    parsed_variant = parsed_dir / "paper.[mineru]_001.docx"
+    parsed_variant.write_bytes(b"parsed")
+    unrelated_file = tmp_path / "other.[native].docx"
+    unrelated_file.write_bytes(b"keep")
+    doc_manager = DocumentManager(str(tmp_path))
+    rag = _DeleteRag(
+        DeletionResult(
+            status="success",
+            doc_id="doc-paper",
+            message="deleted",
+            file_path="paper.docx",
+            source_path=str(source_file),
+        )
+    )
+    shared_storage.initialize_share_data()
+    await shared_storage.initialize_pipeline_status(workspace=rag.workspace)
+
+    await _document_routes.background_delete_documents(
+        rag,
+        doc_manager,
+        ["doc-paper"],
+        delete_file=True,
+        delete_llm_cache=True,
+    )
+
+    assert rag.deleted_doc_ids == [("doc-paper", True)]
+    assert not source_file.exists()
+    assert not parsed_variant.exists()
+    assert unrelated_file.exists()
 
 
 async def test_docx_archive_failure_is_best_effort(tmp_path, monkeypatch):

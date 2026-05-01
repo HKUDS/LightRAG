@@ -204,6 +204,33 @@ def test_enqueue_dedupes_parser_hinted_filename_variants(tmp_path):
 
 
 @pytest.mark.offline
+def test_delete_result_preserves_parser_hinted_source_path(tmp_path):
+    async def _run():
+        rag = _new_rag(tmp_path)
+        await rag.initialize_storages()
+        try:
+            source_path = str(tmp_path / "abc.[native].docx")
+            await rag.apipeline_enqueue_documents(
+                "",
+                file_paths=source_path,
+                docs_format=FULL_DOCS_FORMAT_PENDING_PARSE,
+                parsed_engine=PARSER_ENGINE_NATIVE,
+                track_id="track-delete-source",
+            )
+
+            doc_id = compute_mdhash_id("abc.docx", prefix="doc-")
+            result = await rag.adelete_by_doc_id(doc_id)
+
+            assert result.status == "success"
+            assert result.file_path == "abc.docx"
+            assert result.source_path == source_path
+        finally:
+            await rag.finalize_storages()
+
+    asyncio.run(_run())
+
+
+@pytest.mark.offline
 def test_enqueue_without_file_paths_uses_content_ids(tmp_path):
     async def _run():
         rag = _new_rag(tmp_path)
