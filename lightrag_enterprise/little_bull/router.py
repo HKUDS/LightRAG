@@ -11,6 +11,7 @@ from lightrag_enterprise.system.runtime import (
 )
 
 from .models import (
+    KnowledgeDossier,
     LittleBullAgentConfig,
     LittleBullAgentBuilderPublishRequest,
     LittleBullAgentBuilderSessionRequest,
@@ -29,6 +30,7 @@ from .models import (
     LittleBullCuratorSuggestionRequest,
     LittleBullCuratorSuggestionResponse,
     LittleBullDailyNoteRequest,
+    LittleBullDossierExportRequest,
     LittleBullEmbeddingCostEstimateRequest,
     LittleBullInboxItemRequest,
     LittleBullInboxItemStatusRequest,
@@ -39,6 +41,9 @@ from .models import (
     LittleBullKnowledgeSubgroupRequest,
     LittleBullKnowledgeTrailRequest,
     LittleBullKnowledgeTrailStepRequest,
+    LittleBullLegalMatterExtractionRequest,
+    LittleBullLegalMatterExtractionResponse,
+    LittleBullLegalMatterReviewRequest,
     LittleBullMarkdownNoteRequest,
     LittleBullModelSetting,
     LittleBullObsidianGraphResponse,
@@ -354,7 +359,7 @@ def create_little_bull_router(rag, doc_manager) -> APIRouter:
             )
         ).model_dump()
 
-    @router.post("/canvas/boards/{canvas_board_id}/dossier")
+    @router.post("/canvas/boards/{canvas_board_id}/dossier", response_model=KnowledgeDossier)
     async def export_canvas_board_dossier(
         canvas_board_id: str,
         workspace_id: str,
@@ -367,6 +372,57 @@ def create_little_bull_router(rag, doc_manager) -> APIRouter:
                 canvas_board_id=canvas_board_id,
             )
         ).model_dump()
+
+    @router.get("/dossiers")
+    async def list_knowledge_dossiers(
+        workspace_id: str,
+        group_id: str | None = None,
+        subgroup_id: str | None = None,
+        dossier_kind: str | None = None,
+        limit: int = Query(default=100, ge=1, le=500),
+        principal=Depends(require_principal),
+    ):
+        return {
+            "dossiers": [
+                item.model_dump()
+                for item in await service().list_knowledge_dossiers(
+                    principal,
+                    workspace_id=workspace_id,
+                    group_id=group_id,
+                    subgroup_id=subgroup_id,
+                    dossier_kind=dossier_kind,
+                    limit=limit,
+                )
+            ]
+        }
+
+    @router.get("/dossiers/{knowledge_dossier_id}", response_model=KnowledgeDossier)
+    async def get_knowledge_dossier(
+        knowledge_dossier_id: str,
+        workspace_id: str,
+        principal=Depends(require_principal),
+    ):
+        return (
+            await service().get_knowledge_dossier(
+                principal,
+                workspace_id=workspace_id,
+                knowledge_dossier_id=knowledge_dossier_id,
+            )
+        ).model_dump()
+
+    @router.post("/dossiers/{knowledge_dossier_id}/export")
+    async def export_knowledge_dossier(
+        knowledge_dossier_id: str,
+        request: LittleBullDossierExportRequest,
+        workspace_id: str,
+        principal=Depends(require_principal),
+    ):
+        return await service().export_knowledge_dossier(
+            principal,
+            workspace_id=workspace_id,
+            knowledge_dossier_id=knowledge_dossier_id,
+            request=request,
+        )
 
     @router.get("/content-maps")
     async def list_content_maps(
@@ -589,6 +645,62 @@ def create_little_bull_router(rag, doc_manager) -> APIRouter:
                 payload=request,
             )
         ).model_dump()
+
+    @router.get("/legal/extractions")
+    async def list_legal_matter_extractions(
+        workspace_id: str,
+        group_id: str | None = None,
+        subgroup_id: str | None = None,
+        document_id: str | None = None,
+        review_status: str | None = None,
+        limit: int = Query(default=100, ge=1, le=500),
+        principal=Depends(require_principal),
+    ):
+        return {
+            "runs": [
+                item
+                for item in await service().list_legal_matter_extractions(
+                    principal,
+                    workspace_id=workspace_id,
+                    group_id=group_id,
+                    subgroup_id=subgroup_id,
+                    document_id=document_id,
+                    review_status=review_status,
+                    limit=limit,
+                )
+            ]
+        }
+
+    @router.get("/legal/extractions/{legal_matter_extraction_run_id}", response_model=LittleBullLegalMatterExtractionResponse)
+    async def get_legal_matter_extraction(
+        legal_matter_extraction_run_id: str,
+        principal=Depends(require_principal),
+    ):
+        return (
+            await service().get_legal_matter_extraction(
+                principal,
+                legal_matter_extraction_run_id=legal_matter_extraction_run_id,
+            )
+        ).model_dump()
+
+    @router.post("/legal/extractions", response_model=LittleBullLegalMatterExtractionResponse)
+    async def create_legal_matter_extraction(
+        request: LittleBullLegalMatterExtractionRequest,
+        principal=Depends(require_principal),
+    ):
+        return (await service().create_legal_matter_extraction(principal, payload=request)).model_dump()
+
+    @router.post("/legal/extractions/{legal_matter_extraction_run_id}/review")
+    async def review_legal_matter_extraction(
+        legal_matter_extraction_run_id: str,
+        request: LittleBullLegalMatterReviewRequest,
+        principal=Depends(require_principal),
+    ):
+        return await service().review_legal_matter_extraction(
+            principal,
+            legal_matter_extraction_run_id=legal_matter_extraction_run_id,
+            payload=request,
+        )
 
     @router.get("/documents")
     async def list_documents(

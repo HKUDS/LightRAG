@@ -514,6 +514,32 @@ class LittleBullAdminStore:
             "decided_by": row["decided_by"],
         }
 
+    def _legal_matter_extraction_run_from_row(self, row: Any) -> dict[str, Any]:
+        return {
+            "legal_matter_extraction_run_id": row["legal_matter_extraction_run_id"],
+            "tenant_id": row["tenant_id"],
+            "workspace_id": row["workspace_id"],
+            "group_id": row["group_id"],
+            "subgroup_id": row["subgroup_id"],
+            "document_id": row["document_id"],
+            "matter_reference": row["matter_reference"],
+            "extraction_model_id": row["extraction_model_id"],
+            "schema_version": row["schema_version"],
+            "run_status": row["run_status"],
+            "extracted_payload": self._json(row["extracted_payload"], {}),
+            "source_refs": self._json(row["source_refs"], []),
+            "confidence": float(row["confidence"]) if row["confidence"] is not None else None,
+            "review_status": row["review_status"],
+            "requires_human_review": bool(row["requires_human_review"]),
+            "approved_by": row["approved_by"],
+            "approved_at": self._dt(row["approved_at"]),
+            "error_message": row["error_message"],
+            "created_by": row["created_by"],
+            "updated_by": row["updated_by"],
+            "created_at": self._dt(row["created_at"]),
+            "updated_at": self._dt(row["updated_at"]),
+        }
+
     async def list_model_settings(self, *, tenant_id: str | None, workspace_id: str | None) -> list[dict[str, Any]]:
         pool = await self._get_pool()
         rows = await pool.fetch(
@@ -2095,6 +2121,58 @@ class LittleBullAdminStore:
         )
         return self._knowledge_dossier_from_row(row)
 
+    async def list_knowledge_dossiers(
+        self,
+        *,
+        tenant_id: str | None,
+        workspace_id: str,
+        group_id: str | None = None,
+        subgroup_id: str | None = None,
+        dossier_kind: str | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        pool = await self._get_pool()
+        rows = await pool.fetch(
+            """
+            SELECT * FROM little_bull_knowledge_dossiers
+            WHERE tenant_id IS NOT DISTINCT FROM $1
+              AND workspace_id=$2
+              AND ($3::text IS NULL OR group_id=$3)
+              AND ($4::text IS NULL OR subgroup_id=$4)
+              AND ($5::text IS NULL OR dossier_kind=$5)
+            ORDER BY updated_at DESC, created_at DESC
+            LIMIT $6
+            """,
+            tenant_id,
+            workspace_id,
+            group_id,
+            subgroup_id,
+            dossier_kind,
+            limit,
+        )
+        return [self._knowledge_dossier_from_row(row) for row in rows]
+
+    async def get_knowledge_dossier(
+        self,
+        knowledge_dossier_id: str,
+        *,
+        tenant_id: str | None,
+        workspace_id: str,
+    ) -> dict[str, Any] | None:
+        pool = await self._get_pool()
+        row = await pool.fetchrow(
+            """
+            SELECT * FROM little_bull_knowledge_dossiers
+            WHERE knowledge_dossier_id=$1
+              AND tenant_id IS NOT DISTINCT FROM $2
+              AND workspace_id=$3
+            """,
+            knowledge_dossier_id,
+            tenant_id,
+            workspace_id,
+        )
+        return self._knowledge_dossier_from_row(row) if row else None
+
     async def list_content_maps(
         self,
         *,
@@ -3080,3 +3158,117 @@ class LittleBullAdminStore:
             utc_now(),
         )
         return self._suggestion_from_row(row) if row else None
+
+    async def create_legal_matter_extraction_run(
+        self,
+        payload: dict[str, Any],
+        *,
+        tenant_id: str | None,
+        workspace_id: str,
+        user_id: str,
+    ) -> dict[str, Any]:
+        pool = await self._get_pool()
+        row = await pool.fetchrow(
+            """
+            INSERT INTO little_bull_legal_matter_extraction_runs (
+                legal_matter_extraction_run_id, tenant_id, workspace_id, group_id, subgroup_id,
+                document_id, matter_reference, extraction_model_id, schema_version, run_status,
+                extracted_payload, source_refs, confidence, review_status, requires_human_review,
+                error_message, created_by, updated_by, created_at, updated_at
+            )
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'completed',$10::jsonb,$11::jsonb,$12,'pending',TRUE,$13,$14,$14,$15,$15)
+            RETURNING *
+            """,
+            str(payload.get("legal_matter_extraction_run_id") or new_id("lblm")),
+            tenant_id,
+            workspace_id,
+            payload.get("group_id"),
+            payload.get("subgroup_id"),
+            payload.get("document_id"),
+            str(payload.get("matter_reference") or ""),
+            str(payload.get("extraction_model_id") or ""),
+            str(payload.get("schema_version") or "legal-matter/v1"),
+            json.dumps(payload.get("extracted_payload") or {}),
+            json.dumps(payload.get("source_refs") or []),
+            payload.get("confidence"),
+            str(payload.get("error_message") or ""),
+            user_id,
+            utc_now(),
+        )
+        return self._legal_matter_extraction_run_from_row(row)
+
+    async def list_legal_matter_extraction_runs(
+        self,
+        *,
+        tenant_id: str | None,
+        workspace_id: str,
+        group_id: str | None = None,
+        subgroup_id: str | None = None,
+        document_id: str | None = None,
+        review_status: str | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        pool = await self._get_pool()
+        rows = await pool.fetch(
+            """
+            SELECT * FROM little_bull_legal_matter_extraction_runs
+            WHERE tenant_id IS NOT DISTINCT FROM $1
+              AND workspace_id=$2
+              AND ($3::text IS NULL OR group_id=$3)
+              AND ($4::text IS NULL OR subgroup_id=$4)
+              AND ($5::text IS NULL OR document_id=$5)
+              AND ($6::text IS NULL OR review_status=$6)
+            ORDER BY created_at DESC
+            LIMIT $7
+            """,
+            tenant_id,
+            workspace_id,
+            group_id,
+            subgroup_id,
+            document_id,
+            review_status,
+            limit,
+        )
+        return [self._legal_matter_extraction_run_from_row(row) for row in rows]
+
+    async def get_legal_matter_extraction_run(
+        self, legal_matter_extraction_run_id: str
+    ) -> dict[str, Any] | None:
+        pool = await self._get_pool()
+        row = await pool.fetchrow(
+            "SELECT * FROM little_bull_legal_matter_extraction_runs WHERE legal_matter_extraction_run_id=$1",
+            legal_matter_extraction_run_id,
+        )
+        return self._legal_matter_extraction_run_from_row(row) if row else None
+
+    async def review_legal_matter_extraction_run(
+        self,
+        legal_matter_extraction_run_id: str,
+        *,
+        review_status: str,
+        error_message: str,
+        reviewed_by: str,
+    ) -> dict[str, Any] | None:
+        pool = await self._get_pool()
+        run_status = "reviewed" if review_status == "approved" else review_status
+        row = await pool.fetchrow(
+            """
+            UPDATE little_bull_legal_matter_extraction_runs
+            SET review_status=$2,
+                run_status=$3,
+                approved_by=CASE WHEN $2='approved' THEN $4 ELSE approved_by END,
+                approved_at=CASE WHEN $2='approved' THEN $5 ELSE approved_at END,
+                error_message=$6,
+                updated_by=$4,
+                updated_at=$5
+            WHERE legal_matter_extraction_run_id=$1
+            RETURNING *
+            """,
+            legal_matter_extraction_run_id,
+            review_status,
+            run_status,
+            reviewed_by,
+            utc_now(),
+            error_message,
+        )
+        return self._legal_matter_extraction_run_from_row(row) if row else None

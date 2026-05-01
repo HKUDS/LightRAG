@@ -242,3 +242,67 @@ describe('getDocumentsPaginated', () => {
     })
   })
 })
+
+describe('uploadLittleBullDocument', () => {
+  test('posts a classified Little Bull upload with workspace, group, subgroup, and progress', async () => {
+    type UploadTestConfig = {
+      params: Record<string, string>
+      headers: Record<string, string>
+      onUploadProgress?: (progressEvent: any) => void
+    }
+
+    const progressValues: number[] = []
+    let capturedFormData: FormData | null = null
+    let capturedConfig: UploadTestConfig | null = null
+
+    apiModule.__setLittleBullUploadPostForTests(async (formData, config) => {
+      capturedFormData = formData
+      capturedConfig = config
+      config.onUploadProgress?.({ loaded: 42, total: 84 } as any)
+      return {
+        status: 'success',
+        message: 'queued',
+        track_id: 'track-1',
+        workspace_id: 'workspace-1',
+        group_id: 'group-1',
+        subgroup_id: 'subgroup-1',
+        registry_document_id: 'registry-document-1'
+      }
+    })
+
+    const file = new File(['case text'], 'case.txt', { type: 'text/plain' })
+    const response = await apiModule.uploadLittleBullDocument(
+      'workspace-1',
+      'group-1',
+      'subgroup-1',
+      file,
+      'privado',
+      (percent) => progressValues.push(percent)
+    )
+
+    const config = capturedConfig as UploadTestConfig | null
+    const formData = capturedFormData as FormData | null
+
+    expect(config?.params).toEqual({
+      workspace_id: 'workspace-1',
+      group_id: 'group-1',
+      subgroup_id: 'subgroup-1',
+      confidentiality: 'privado'
+    })
+    expect(config?.headers).toEqual({ 'Content-Type': 'multipart/form-data' })
+    const uploadedFile = formData?.get('file') as File | null
+    expect(uploadedFile?.name).toBe('case.txt')
+    expect(uploadedFile?.type).toBe('text/plain;charset=utf-8')
+    await expect(uploadedFile?.text()).resolves.toBe('case text')
+    expect(progressValues).toEqual([50])
+    expect(response).toEqual({
+      status: 'success',
+      message: 'queued',
+      track_id: 'track-1',
+      workspace_id: 'workspace-1',
+      group_id: 'group-1',
+      subgroup_id: 'subgroup-1',
+      registry_document_id: 'registry-document-1'
+    })
+  })
+})

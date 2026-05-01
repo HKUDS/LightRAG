@@ -87,3 +87,7 @@ CLAUDE.md
 
 # Google Jules
 .jules/
+
+# Playwright local artifacts
+/lightrag_webui/test-results/
+/lightrag_webui/playwright-report/

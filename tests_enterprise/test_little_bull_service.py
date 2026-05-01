@@ -1,5 +1,5 @@
 import asyncio
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
@@ -17,6 +17,7 @@ from lightrag_enterprise.little_bull.models import (
     LittleBullContextEstimateRequest,
     LittleBullCuratorSuggestionRequest,
     LittleBullDailyNoteRequest,
+    LittleBullDossierExportRequest,
     LittleBullEmbeddingCostEstimateRequest,
     LittleBullAgentBuilderPublishRequest,
     LittleBullAgentBuilderSessionRequest,
@@ -31,6 +32,8 @@ from lightrag_enterprise.little_bull.models import (
     LittleBullKnowledgeSubgroupRequest,
     LittleBullKnowledgeTrailRequest,
     LittleBullKnowledgeTrailStepRequest,
+    LittleBullLegalMatterExtractionRequest,
+    LittleBullLegalMatterReviewRequest,
     LittleBullMarkdownNoteRequest,
     LittleBullModelSetting,
     LittleBullOperationalChatRequest,
@@ -50,7 +53,6 @@ from lightrag_enterprise.system.repositories import (
     InMemorySystemRepository,
     membership_for_master,
 )
-from lightrag_enterprise.system.models import utc_now
 
 
 class FakeDocStatus:
@@ -195,6 +197,7 @@ class FakeAdminStore:
         self.trail_steps: dict[str, dict] = {}
         self.inbox_items: dict[str, dict] = {}
         self.daily_notes: dict[str, dict] = {}
+        self.legal_matter_extractions: dict[str, dict] = {}
         self.conversations: dict[str, dict] = {}
         self.suggestions: dict[str, dict] = {}
 
@@ -1123,6 +1126,39 @@ class FakeAdminStore:
         self.dossiers[knowledge_dossier_id] = row
         return row
 
+    async def list_knowledge_dossiers(
+        self,
+        *,
+        tenant_id: str | None,
+        workspace_id: str,
+        group_id: str | None = None,
+        subgroup_id: str | None = None,
+        dossier_kind: str | None = None,
+        limit: int = 100,
+    ):
+        rows = [
+            dossier
+            for dossier in self.dossiers.values()
+            if dossier["tenant_id"] == tenant_id
+            and dossier["workspace_id"] == workspace_id
+            and (group_id is None or dossier["group_id"] == group_id)
+            and (subgroup_id is None or dossier["subgroup_id"] == subgroup_id)
+            and (dossier_kind is None or dossier["dossier_kind"] == dossier_kind)
+        ]
+        return rows[:limit]
+
+    async def get_knowledge_dossier(
+        self,
+        knowledge_dossier_id: str,
+        *,
+        tenant_id: str | None,
+        workspace_id: str,
+    ):
+        dossier = self.dossiers.get(knowledge_dossier_id)
+        if dossier and dossier["tenant_id"] == tenant_id and dossier["workspace_id"] == workspace_id:
+            return dossier
+        return None
+
     async def list_content_maps(
         self,
         *,
@@ -1424,6 +1460,92 @@ class FakeAdminStore:
         }
         self.daily_notes[note_date] = row
         return row
+
+    async def create_legal_matter_extraction_run(
+        self,
+        payload: dict,
+        *,
+        tenant_id: str | None,
+        workspace_id: str,
+        user_id: str,
+    ):
+        run_id = payload.get("legal_matter_extraction_run_id") or f"legal-run-{len(self.legal_matter_extractions) + 1}"
+        row = {
+            "legal_matter_extraction_run_id": run_id,
+            "tenant_id": tenant_id,
+            "workspace_id": workspace_id,
+            "group_id": payload["group_id"],
+            "subgroup_id": payload["subgroup_id"],
+            "document_id": payload["document_id"],
+            "matter_reference": payload.get("matter_reference", ""),
+            "extraction_model_id": payload.get("extraction_model_id", ""),
+            "schema_version": payload.get("schema_version", "legal-matter/v1"),
+            "run_status": "completed",
+            "extracted_payload": payload.get("extracted_payload", {}),
+            "source_refs": payload.get("source_refs", []),
+            "confidence": payload.get("confidence"),
+            "review_status": "pending",
+            "requires_human_review": True,
+            "approved_by": None,
+            "approved_at": None,
+            "error_message": payload.get("error_message", ""),
+            "created_by": user_id,
+            "updated_by": user_id,
+            "created_at": "2026-04-29T00:00:00Z",
+            "updated_at": "2026-04-29T00:00:00Z",
+        }
+        self.legal_matter_extractions[run_id] = row
+        return row
+
+    async def list_legal_matter_extraction_runs(
+        self,
+        *,
+        tenant_id: str | None,
+        workspace_id: str,
+        group_id: str | None = None,
+        subgroup_id: str | None = None,
+        document_id: str | None = None,
+        review_status: str | None = None,
+        limit: int = 100,
+    ):
+        rows = [
+            run
+            for run in self.legal_matter_extractions.values()
+            if run["tenant_id"] == tenant_id
+            and run["workspace_id"] == workspace_id
+            and (group_id is None or run["group_id"] == group_id)
+            and (subgroup_id is None or run["subgroup_id"] == subgroup_id)
+            and (document_id is None or run["document_id"] == document_id)
+            and (review_status is None or run["review_status"] == review_status)
+        ]
+        return rows[:limit]
+
+    async def get_legal_matter_extraction_run(self, legal_matter_extraction_run_id: str):
+        return self.legal_matter_extractions.get(legal_matter_extraction_run_id)
+
+    async def review_legal_matter_extraction_run(
+        self,
+        legal_matter_extraction_run_id: str,
+        *,
+        review_status: str,
+        error_message: str,
+        reviewed_by: str,
+    ):
+        row = self.legal_matter_extractions.get(legal_matter_extraction_run_id)
+        if not row:
+            return None
+        updated = {
+            **row,
+            "review_status": review_status,
+            "run_status": "reviewed" if review_status == "approved" else review_status,
+            "approved_by": reviewed_by if review_status == "approved" else row.get("approved_by"),
+            "approved_at": "2026-04-29T00:00:00Z" if review_status == "approved" else row.get("approved_at"),
+            "error_message": error_message,
+            "updated_by": reviewed_by,
+            "updated_at": "2026-04-29T00:00:00Z",
+        }
+        self.legal_matter_extractions[legal_matter_extraction_run_id] = updated
+        return updated
 
     async def get_conversation(self, conversation_id: str):
         return self.conversations.get(conversation_id)
@@ -2500,6 +2622,157 @@ async def test_little_bull_canvas_board_nodes_edges_analysis_and_dossier(tmp_pat
     assert dossier.dossier_kind == "canvas"
     assert dossier.export_policy["requires_lgpd_review"] is True
     assert dossier.export_policy["analysis"]["node_count"] == 2
+
+
+@pytest.mark.asyncio
+async def test_little_bull_dossier_export_masks_pii_and_gates_external_approval(tmp_path):
+    principal, service = await _principal_and_service_with_admin_store(tmp_path)
+    group, subgroup = await _create_group_and_subgroup(service, principal)
+    note = await service.upsert_markdown_note(
+        principal,
+        workspace_id="default",
+        payload=LittleBullMarkdownNoteRequest(
+            title="Nota sensivel",
+            group_id=group.group_id,
+            subgroup_id=subgroup.subgroup_id,
+            markdown="Contato joao@example.com CPF 123.456.789-09 CNPJ 12.345.678/0001-90 OAB/SP 123456.",
+        ),
+    )
+    dossier = await service.admin_store.upsert_knowledge_dossier(
+        {
+            "group_id": group.group_id,
+            "subgroup_id": subgroup.subgroup_id,
+            "title": "Dossie Exportavel",
+            "slug": "dossie-exportavel",
+            "dossier_kind": "knowledge",
+            "status": "draft",
+            "content_refs": [{"kind": "note", "id": note.registry.note_id}],
+            "export_policy": {"requires_lgpd_review": True},
+        },
+        tenant_id="default",
+        workspace_id="default",
+        user_id=principal.user_id,
+    )
+
+    internal = await service.export_knowledge_dossier(
+        principal,
+        workspace_id="default",
+        knowledge_dossier_id=dossier["knowledge_dossier_id"],
+        request=LittleBullDossierExportRequest(format="md", destination="internal"),
+    )
+
+    assert internal.media_type == "text/markdown; charset=utf-8"
+    body = internal.body.decode("utf-8")
+    assert "joao@example.com" not in body
+    assert "123.456.789-09" not in body
+    assert "12.345.678/0001-90" not in body
+    assert "OAB/SP 123456" not in body
+    assert "[MASKED_EMAIL]" in body
+    assert "[MASKED_CPF]" in body
+    assert "[MASKED_CNPJ]" in body
+    assert "[MASKED_OAB]" in body
+
+    pending = await service.export_knowledge_dossier(
+        principal,
+        workspace_id="default",
+        knowledge_dossier_id=dossier["knowledge_dossier_id"],
+        request=LittleBullDossierExportRequest(format="xlsx", destination="external"),
+    )
+
+    assert pending["status"] == "pending_approval"
+    approval_id = pending["approval"]["approval_id"]
+    await service.approvals.approve(approval_id, principal)
+    exported = await service.export_knowledge_dossier(
+        principal,
+        workspace_id="default",
+        knowledge_dossier_id=dossier["knowledge_dossier_id"],
+        request=LittleBullDossierExportRequest(
+            format="xlsx",
+            destination="external",
+            approval_id=approval_id,
+        ),
+    )
+
+    assert exported.media_type == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    assert exported.body.startswith(b"PK")
+    approval = await service.approvals.get(approval_id)
+    assert approval.status.value == "executed"
+    events = await service.audit.list(tenant_id="default", workspace_id="default")
+    assert any(event.result == "pending_lgpd_approval" for event in events)
+    assert any(event.result == "dossier_exported" and event.approval_id == approval_id for event in events)
+
+
+@pytest.mark.asyncio
+async def test_little_bull_dossier_export_rejects_approval_drift_and_legal_review_is_not_export_approval(tmp_path):
+    principal, service = await _principal_and_service_with_admin_store(tmp_path)
+    group, subgroup = await _create_group_and_subgroup(service, principal)
+    document = await service.admin_store.register_document(
+        {
+            "title": "Peticao inicial",
+            "source_uri": "peticao.pdf",
+            "source_kind": "upload",
+            "group_id": group.group_id,
+            "subgroup_id": subgroup.subgroup_id,
+        },
+        tenant_id="default",
+        workspace_id="default",
+        user_id=principal.user_id,
+    )
+    extraction = await service.create_legal_matter_extraction(
+        principal,
+        payload=LittleBullLegalMatterExtractionRequest(
+            workspace_id="default",
+            group_id=group.group_id,
+            subgroup_id=subgroup.subgroup_id,
+            document_id=document["document_id"],
+            extracted_payload={"processos": [{"numero": "0000000-00.0000.0.00.0000"}]},
+            source_refs=[{"document_id": document["document_id"], "page": 1}],
+        ),
+    )
+    await service.review_legal_matter_extraction(
+        principal,
+        legal_matter_extraction_run_id=extraction.run["legal_matter_extraction_run_id"],
+        payload=LittleBullLegalMatterReviewRequest(review_status="approved"),
+    )
+    dossier = await service.admin_store.upsert_knowledge_dossier(
+        {
+            "group_id": group.group_id,
+            "subgroup_id": subgroup.subgroup_id,
+            "title": "Dossie Juridico",
+            "slug": "dossie-juridico",
+            "dossier_kind": "legal",
+            "status": "draft",
+            "content_refs": [{"kind": "document", "id": document["document_id"]}],
+            "export_policy": {"requires_lgpd_review": True, "legal_extraction_run_id": extraction.run["legal_matter_extraction_run_id"]},
+        },
+        tenant_id="default",
+        workspace_id="default",
+        user_id=principal.user_id,
+    )
+
+    pending = await service.export_knowledge_dossier(
+        principal,
+        workspace_id="default",
+        knowledge_dossier_id=dossier["knowledge_dossier_id"],
+        request=LittleBullDossierExportRequest(format="md", destination="external"),
+    )
+
+    assert pending["status"] == "pending_approval"
+    approval_id = pending["approval"]["approval_id"]
+    await service.approvals.approve(approval_id, principal)
+    with pytest.raises(HTTPException) as exc:
+        await service.export_knowledge_dossier(
+            principal,
+            workspace_id="default",
+            knowledge_dossier_id=dossier["knowledge_dossier_id"],
+            request=LittleBullDossierExportRequest(
+                format="txt",
+                destination="external",
+                approval_id=approval_id,
+            ),
+        )
+
+    assert exc.value.status_code == 409
 
 
 @pytest.mark.asyncio
@@ -3991,6 +4264,216 @@ async def test_little_bull_daily_note_creates_markdown_and_uses_open_inbox(tmp_p
 
 
 @pytest.mark.asyncio
+async def test_little_bull_legal_matter_extraction_requires_review_and_provenance(tmp_path):
+    principal, service = await _principal_and_service_with_admin_store(tmp_path)
+    group, subgroup = await _create_group_and_subgroup(service, principal)
+    document = await service.admin_store.register_document(
+        {
+            "title": "Peticao inicial",
+            "source_uri": "peticao.pdf",
+            "source_kind": "upload",
+            "group_id": group.group_id,
+            "subgroup_id": subgroup.subgroup_id,
+        },
+        tenant_id="default",
+        workspace_id="default",
+        user_id=principal.user_id,
+    )
+
+    response = await service.create_legal_matter_extraction(
+        principal,
+        payload=LittleBullLegalMatterExtractionRequest(
+            workspace_id="default",
+            group_id=group.group_id,
+            subgroup_id=subgroup.subgroup_id,
+            document_id=document["document_id"],
+            matter_reference="PROC-1",
+            extraction_model_id="legal-extractor",
+            extracted_payload={
+                "processos": [{"numero": "0000000-00.0000.0.00.0000"}],
+                "partes": [{"nome": "Parte A", "polo": "ativo"}],
+                "advogados": [{"nome": "Advogada", "oab": "OAB/SP 123456"}],
+                "juizo": {"nome": "1 Vara"},
+                "tribunal": {"sigla": "TJSP"},
+                "pedidos": [{"descricao": "indenizacao"}],
+                "valores": [{"tipo": "causa", "valor": 1000}],
+                "prazos": [{"descricao": "contestacao", "data": "2026-05-10"}],
+            },
+            source_refs=[
+                {
+                    "document_id": document["document_id"],
+                    "locator": {"page": 1},
+                    "chunk_id": "chunk-1",
+                }
+            ],
+            confidence=0.91,
+        ),
+    )
+
+    assert response.requires_human_review is True
+    assert response.run["review_status"] == "pending"
+    assert response.run["requires_human_review"] is True
+    assert response.run["source_refs"][0]["chunk_id"] == "chunk-1"
+    assert "processos" in response.schema_contract["required_entities"]
+    listed = await service.list_legal_matter_extractions(
+        principal,
+        workspace_id="default",
+        group_id=group.group_id,
+        subgroup_id=subgroup.subgroup_id,
+        review_status="pending",
+    )
+    assert [run["legal_matter_extraction_run_id"] for run in listed] == [
+        response.run["legal_matter_extraction_run_id"]
+    ]
+    fetched = await service.get_legal_matter_extraction(
+        principal,
+        legal_matter_extraction_run_id=response.run["legal_matter_extraction_run_id"],
+    )
+    assert fetched.run["legal_matter_extraction_run_id"] == response.run["legal_matter_extraction_run_id"]
+    assert fetched.requires_human_review is True
+
+    reviewed = await service.review_legal_matter_extraction(
+        principal,
+        legal_matter_extraction_run_id=response.run["legal_matter_extraction_run_id"],
+        payload=LittleBullLegalMatterReviewRequest(review_status="approved"),
+    )
+
+    assert reviewed["review_status"] == "approved"
+    assert reviewed["approved_by"] == principal.user_id
+    assert reviewed["requires_human_review"] is True
+    assert service.rag.query_calls == 0
+    events = await service.audit.list(tenant_id="default", workspace_id="default")
+    assert any(event.result == "legal_matter_extraction_created" for event in events)
+    assert any(event.result == "legal_matter_extraction_reviewed" for event in events)
+
+
+@pytest.mark.asyncio
+async def test_little_bull_legal_matter_extraction_rejects_cross_scope_and_weak_source_refs(tmp_path):
+    principal, service = await _principal_and_service_with_admin_store(tmp_path)
+    group, subgroup = await _create_group_and_subgroup(service, principal)
+    other_subgroup = await service.upsert_knowledge_subgroup(
+        principal,
+        workspace_id="default",
+        payload=LittleBullKnowledgeSubgroupRequest(
+            group_id=group.group_id,
+            name="Outro",
+            slug="outro",
+        ),
+    )
+    document = await service.admin_store.register_document(
+        {
+            "title": "Contestacao",
+            "source_uri": "contestacao.pdf",
+            "source_kind": "upload",
+            "group_id": group.group_id,
+            "subgroup_id": other_subgroup.subgroup_id,
+        },
+        tenant_id="default",
+        workspace_id="default",
+        user_id=principal.user_id,
+    )
+    request_payload = {
+        "workspace_id": "default",
+        "group_id": group.group_id,
+        "subgroup_id": subgroup.subgroup_id,
+        "document_id": document["document_id"],
+        "extracted_payload": {"processos": [{"numero": "PROC-2"}]},
+        "source_refs": [{"document_id": document["document_id"], "chunk_id": "chunk-1"}],
+    }
+
+    with pytest.raises(HTTPException) as exc:
+        await service.create_legal_matter_extraction(
+            principal,
+            payload=LittleBullLegalMatterExtractionRequest(**request_payload),
+        )
+
+    assert exc.value.status_code == 422
+    assert service.admin_store.legal_matter_extractions == {}
+
+    same_scope_document = await service.admin_store.register_document(
+        {
+            "title": "Sentenca",
+            "source_uri": "sentenca.pdf",
+            "source_kind": "upload",
+            "group_id": group.group_id,
+            "subgroup_id": subgroup.subgroup_id,
+        },
+        tenant_id="default",
+        workspace_id="default",
+        user_id=principal.user_id,
+    )
+    with pytest.raises(HTTPException) as exc:
+        await service.create_legal_matter_extraction(
+            principal,
+            payload=LittleBullLegalMatterExtractionRequest(
+                **{
+                    **request_payload,
+                    "document_id": same_scope_document["document_id"],
+                    "source_refs": [{"document_id": same_scope_document["document_id"]}],
+                }
+            ),
+        )
+
+    assert exc.value.status_code == 422
+    assert service.admin_store.legal_matter_extractions == {}
+    assert service.rag.query_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_little_bull_legal_matter_extraction_rejects_unsupported_schema_and_empty_payload(tmp_path):
+    principal, service = await _principal_and_service_with_admin_store(tmp_path)
+    group, subgroup = await _create_group_and_subgroup(service, principal)
+    document = await service.admin_store.register_document(
+        {
+            "title": "Acordao",
+            "source_uri": "acordao.pdf",
+            "source_kind": "upload",
+            "group_id": group.group_id,
+            "subgroup_id": subgroup.subgroup_id,
+        },
+        tenant_id="default",
+        workspace_id="default",
+        user_id=principal.user_id,
+    )
+    base_payload = {
+        "workspace_id": "default",
+        "group_id": group.group_id,
+        "subgroup_id": subgroup.subgroup_id,
+        "document_id": document["document_id"],
+        "source_refs": [{"document_id": document["document_id"], "page": 1}],
+    }
+
+    with pytest.raises(HTTPException) as exc:
+        await service.create_legal_matter_extraction(
+            principal,
+            payload=LittleBullLegalMatterExtractionRequest(
+                **{
+                    **base_payload,
+                    "schema_version": "legal-matter/v2",
+                    "extracted_payload": {"processos": [{"numero": "PROC-3"}]},
+                }
+            ),
+        )
+
+    assert exc.value.status_code == 422
+
+    with pytest.raises(HTTPException) as exc:
+        await service.create_legal_matter_extraction(
+            principal,
+            payload=LittleBullLegalMatterExtractionRequest(
+                **{
+                    **base_payload,
+                    "extracted_payload": {},
+                }
+            ),
+        )
+
+    assert exc.value.status_code == 422
+    assert service.admin_store.legal_matter_extractions == {}
+    assert service.rag.query_calls == 0
+
+
+@pytest.mark.asyncio
 async def test_little_bull_agent_builder_requires_review_before_publish(tmp_path):
     principal, service = await _principal_and_service_with_admin_store(tmp_path)
     builder_model = await service.upsert_model_setting(
@@ -5012,7 +5495,7 @@ async def test_little_bull_save_conversation_rejects_unvalidated_agent(tmp_path)
 
 
 @pytest.mark.asyncio
-async def test_little_bull_cost_summary_aggregates_periods_and_dimensions(tmp_path):
+async def test_little_bull_cost_summary_aggregates_periods_and_dimensions(tmp_path, monkeypatch):
     principal, service = await _principal_and_service_with_admin_store(tmp_path)
     group, subgroup = await _create_group_and_subgroup(service, principal)
     agent = await service.upsert_agent_config(
@@ -5029,7 +5512,8 @@ async def test_little_bull_cost_summary_aggregates_periods_and_dimensions(tmp_pa
             },
         ),
     )
-    now = utc_now()
+    now = datetime(2026, 4, 30, 15, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr("lightrag_enterprise.little_bull.service.utc_now", lambda: now)
     service.admin_store.usage_ledger.extend(
         [
             {

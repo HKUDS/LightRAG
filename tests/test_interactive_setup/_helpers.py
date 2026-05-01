@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import re
+import os
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -15,12 +17,51 @@ PRESERVED_NOTICE = (
 )
 
 
+def _bash_major_version(candidate: str) -> int:
+    try:
+        result = subprocess.run(
+            [candidate, "-c", 'printf "%s" "${BASH_VERSINFO[0]}"'],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return 0
+    if result.returncode != 0 or not result.stdout.strip().isdigit():
+        return 0
+    return int(result.stdout.strip())
+
+
+def _resolve_bash() -> str:
+    candidates = [
+        "/opt/homebrew/bin/bash",
+        "/usr/local/bin/bash",
+        "/opt/local/bin/bash",
+    ]
+    path_bash = shutil.which("bash")
+    if path_bash:
+        candidates.append(path_bash)
+    candidates.append("bash")
+
+    for candidate in candidates:
+        resolved = shutil.which(candidate) or candidate
+        if _bash_major_version(resolved) >= 4:
+            return resolved
+    return shutil.which("bash") or "bash"
+
+
+BASH_BIN = _resolve_bash()
+
+if Path(BASH_BIN).is_absolute():
+    os.environ["PATH"] = f"{Path(BASH_BIN).parent}{os.pathsep}{os.environ.get('PATH', '')}"
+
+
 def run_bash_process(
     script: str, cwd: Path | None = None, stdin: str | None = ""
 ) -> subprocess.CompletedProcess[str]:
     """Run a bash snippet and return the completed process."""
     return subprocess.run(
-        ["bash", "--norc", "--noprofile", "-c", script],
+        [BASH_BIN, "--norc", "--noprofile", "-c", script],
         cwd=cwd or REPO_ROOT,
         input=stdin,
         capture_output=True,

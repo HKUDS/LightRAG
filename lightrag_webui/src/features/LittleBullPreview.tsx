@@ -31,6 +31,7 @@ import {
   decideLittleBullCorrelationSuggestion,
   deleteLittleBullDocument,
   exportLittleBullConversation,
+  exportLittleBullDossier,
   estimateLittleBullEmbeddingCost,
   getLittleBullActivity,
   getLittleBullAdminAgents,
@@ -41,9 +42,14 @@ import {
   getLittleBullAuditEvents,
   getLittleBullConversations,
   getLittleBullCorrelationSuggestions,
+  getLittleBullCostSummary,
+  getLittleBullDossiers,
   getLittleBullDocuments,
   getLittleBullEmbeddingCatalog,
+  getLittleBullKnowledgeGroups,
+  getLittleBullKnowledgeSubgroups,
   getLittleBullKnowledgeBases,
+  getLittleBullLegalExtractions,
   getLittleBullMe,
   previewLittleBullAdminAgent,
   queryLittleBull,
@@ -65,18 +71,35 @@ import {
   type LittleBullAuditEvent,
   type LittleBullConversation,
   type LittleBullCorrelationSuggestion,
+  type LittleBullCostSummaryResponse,
   type LittleBullDocument,
   type LittleBullEmbeddingCatalogItem,
   type LittleBullEmbeddingCostEstimateResponse,
+  type LittleBullKnowledgeDossier,
+  type LittleBullKnowledgeGroup,
   type LittleBullKnowledgeBase,
+  type LittleBullKnowledgeSubgroup,
+  type LittleBullLegalMatterExtractionRun,
   type LittleBullModelSetting,
   type LittleBullPrincipal,
   type QueryMode
 } from '@/api/lightrag'
 import GraphViewer from '@/features/GraphViewer'
+import {
+  canAccessLittleBullPage,
+  canUseLittleBullClassifiedUpload,
+  fallbackLittleBullPageFor,
+  filterLittleBullSubgroupsForGroup,
+  hasAnyLittleBullPermission,
+  hasLittleBullPermission,
+  isLittleBullUploadReady,
+  littleBullPermissionMap,
+  type LittleBullPage,
+  sanitizeLittleBullUploadSelection
+} from '@/features/littleBullWorkspace'
 import { cn, errorMessage } from '@/lib/utils'
 
-type Page = 'inicio' | 'perguntar' | 'conhecimento' | 'grafo' | 'areas' | 'assistentes' | 'atividade' | 'admin'
+type Page = LittleBullPage
 
 type ChatMessage = {
   id: string
@@ -87,98 +110,90 @@ type ChatMessage = {
 
 type WorkspaceUiState = {
   docs: LittleBullDocument[]
+  groups: LittleBullKnowledgeGroup[]
+  subgroups: LittleBullKnowledgeSubgroup[]
   activity: LittleBullActivityItem[]
   assistants: LittleBullAssistant[]
   messages: ChatMessage[]
   prompt: string
+  dossiers: LittleBullKnowledgeDossier[]
+  legalExtractions: LittleBullLegalMatterExtractionRun[]
+  costSummary: LittleBullCostSummaryResponse | null
 }
 
 const createWorkspaceUiState = (): WorkspaceUiState => ({
   docs: [],
+  groups: [],
+  subgroups: [],
   activity: [],
   assistants: [],
   messages: [],
-  prompt: ''
+  prompt: '',
+  dossiers: [],
+  legalExtractions: [],
+  costSummary: null
 })
 
 const emptyWorkspaceUiState = createWorkspaceUiState()
 
 const pageLabels: Record<Page, string> = {
-  inicio: 'Início',
-  perguntar: 'Perguntar',
-  conhecimento: 'Conhecimento',
+  inicio: 'Dashboard',
+  workspaces: 'Workspaces',
+  grupos: 'Grupos',
+  subgrupos: 'Subgrupos',
+  conhecimento: 'Documentos',
+  notas: 'Notas',
+  inbox: 'Inbox',
+  daily: 'Daily Notes',
+  canvas: 'Canvas',
+  mocs: 'MOCs',
+  trilhas: 'Trilhas',
   grafo: 'Grafo',
-  areas: 'Áreas',
+  perguntar: 'Chat',
+  'agent-builder': 'Agent Builder',
   assistentes: 'Assistentes',
+  modelos: 'Modelos',
+  custos: 'Custos',
+  jobs: 'Jobs',
+  juridico: 'Jurídico',
+  relatorios: 'Relatórios',
   atividade: 'Atividade',
+  auditoria: 'Auditoria',
+  aprovacoes: 'Aprovações',
   admin: 'Admin'
 }
 
 const navItems: Array<{ id: Page; icon: LucideIcon }> = [
   { id: 'inicio', icon: HomeIcon },
-  { id: 'perguntar', icon: MessageCircleIcon },
+  { id: 'workspaces', icon: FolderOpenIcon },
+  { id: 'grupos', icon: FolderOpenIcon },
+  { id: 'subgrupos', icon: FolderOpenIcon },
   { id: 'conhecimento', icon: FolderOpenIcon },
+  { id: 'notas', icon: FileTextIcon },
+  { id: 'inbox', icon: ArchiveRestoreIcon },
+  { id: 'daily', icon: FileTextIcon },
+  { id: 'canvas', icon: GitMergeIcon },
+  { id: 'mocs', icon: NetworkIcon },
+  { id: 'trilhas', icon: GitMergeIcon },
   { id: 'grafo', icon: NetworkIcon },
-  { id: 'areas', icon: FolderOpenIcon },
+  { id: 'perguntar', icon: MessageCircleIcon },
+  { id: 'agent-builder', icon: BotIcon },
   { id: 'assistentes', icon: BotIcon },
+  { id: 'modelos', icon: CpuIcon },
+  { id: 'custos', icon: ActivityIcon },
+  { id: 'jobs', icon: RefreshCwIcon },
+  { id: 'juridico', icon: ShieldCheckIcon },
+  { id: 'relatorios', icon: DownloadIcon },
   { id: 'atividade', icon: ActivityIcon },
+  { id: 'auditoria', icon: ShieldCheckIcon },
+  { id: 'aprovacoes', icon: CheckCircle2Icon },
   { id: 'admin', icon: SettingsIcon }
 ]
 
-const permissionMap = {
-  readAreas: 'little_bull.areas.read',
-  manageWorkspaces: 'little_bull.workspaces.manage',
-  readDocuments: 'little_bull.documents.read',
-  uploadDocuments: 'little_bull.documents.upload',
-  deleteDocuments: 'little_bull.documents.delete',
-  query: 'little_bull.query',
-  readAssistants: 'little_bull.assistants.read',
-  readActivity: 'little_bull.activity.read',
-  readApprovals: 'little_bull.approvals.read',
-  decideApprovals: 'little_bull.approvals.decide',
-  readAudit: 'little_bull.audit.read',
-  manageModels: 'little_bull.models.manage',
-  manageAgents: 'little_bull.agents.manage',
-  readConversations: 'little_bull.conversations.read',
-  saveConversations: 'little_bull.conversations.save',
-  exportConversations: 'little_bull.conversations.export',
-  suggestCorrelations: 'little_bull.correlations.suggest',
-  decideCorrelations: 'little_bull.correlations.decide'
-}
-
-const pagePermissionRules: Partial<Record<Page, string[]>> = {
-  perguntar: [permissionMap.query],
-  conhecimento: [permissionMap.readDocuments],
-  grafo: [permissionMap.readDocuments],
-  areas: [permissionMap.readAreas],
-  assistentes: [permissionMap.readAssistants],
-  atividade: [permissionMap.readActivity],
-  admin: [
-    permissionMap.readApprovals,
-    permissionMap.decideApprovals,
-    permissionMap.readAudit,
-    permissionMap.manageModels,
-    permissionMap.manageAgents,
-    permissionMap.readConversations,
-    permissionMap.suggestCorrelations,
-    permissionMap.decideCorrelations
-  ]
-}
-
-const hasPermission = (principal: LittleBullPrincipal | null, permission: string) => {
-  if (!principal) return false
-  return principal.is_master_global || principal.permissions.includes('*') || principal.permissions.includes(permission)
-}
-
-const hasAnyPermission = (principal: LittleBullPrincipal | null, permissions: string[]) => {
-  return permissions.some((permission) => hasPermission(principal, permission))
-}
-
-const canAccessPage = (principal: LittleBullPrincipal | null, page: Page) => {
-  const permissions = pagePermissionRules[page]
-  if (!permissions) return true
-  return hasAnyPermission(principal, permissions)
-}
+const permissionMap = littleBullPermissionMap
+const hasPermission = hasLittleBullPermission
+const hasAnyPermission = hasAnyLittleBullPermission
+const canAccessPage = canAccessLittleBullPage
 
 const visibleNavItemsFor = (principal: LittleBullPrincipal | null) => {
   return navItems.filter((item) => canAccessPage(principal, item.id))
@@ -264,6 +279,38 @@ function Stat({ label, value, helper }: { label: string; value: string; helper: 
   )
 }
 
+function MiniList({
+  title,
+  items,
+  emptyLabel,
+  render
+}: {
+  title: string
+  items: any[]
+  emptyLabel: string
+  render: (item: any) => React.ReactNode
+}) {
+  return (
+    <section className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <h3 className="text-sm font-semibold text-slate-950">{title}</h3>
+        <span className="rounded-full bg-slate-100 px-2 py-1 text-xs font-semibold text-slate-600">{items.length}</span>
+      </div>
+      {items.length ? (
+        <div className="space-y-2">
+          {items.slice(0, 6).map((item, index) => (
+            <div key={item.id || item.knowledge_dossier_id || item.legal_matter_extraction_run_id || index} className="rounded-lg border border-slate-100 bg-slate-50 p-3">
+              {render(item)}
+            </div>
+          ))}
+        </div>
+      ) : (
+        <p className="rounded-lg border border-dashed border-slate-200 p-4 text-sm text-slate-500">{emptyLabel}</p>
+      )}
+    </section>
+  )
+}
+
 function EmptyState({ icon: Icon, label }: { icon: LucideIcon; label: string }) {
   return (
     <div className="grid min-h-32 place-items-center rounded-lg border border-dashed border-slate-300 bg-white p-6 text-center text-sm text-slate-500">
@@ -304,7 +351,7 @@ function Shell({
   return (
     <div className="min-h-screen bg-slate-50 text-slate-950">
       <div className="flex min-h-screen">
-        <aside className="hidden w-72 shrink-0 border-r border-slate-200 bg-white p-4 lg:block">
+        <aside className="hidden max-h-screen w-72 shrink-0 overflow-y-auto border-r border-slate-200 bg-white p-4 lg:block">
           <div className="flex items-center gap-3 rounded-lg bg-slate-950 p-3 text-white">
             <ShieldCheckIcon className="size-6 text-yellow-300" />
             <div>
@@ -710,6 +757,8 @@ function AskPage({
 function KnowledgePage({
   activeWorkspaceId,
   docs,
+  groups,
+  subgroups,
   setDocs,
   principal,
   setPage,
@@ -717,6 +766,8 @@ function KnowledgePage({
 }: {
   activeWorkspaceId: string
   docs: LittleBullDocument[]
+  groups: LittleBullKnowledgeGroup[]
+  subgroups: LittleBullKnowledgeSubgroup[]
   setDocs: (docs: LittleBullDocument[]) => void
   principal: LittleBullPrincipal | null
   setPage: (page: Page) => void
@@ -726,10 +777,19 @@ function KnowledgePage({
   const [recovering, setRecovering] = useState(false)
   const [deletingDocumentIds, setDeletingDocumentIds] = useState<Set<string>>(new Set())
   const [uploadProgress, setUploadProgress] = useState<Record<string, number>>({})
+  const [selectedGroupId, setSelectedGroupId] = useState('')
+  const [selectedSubgroupId, setSelectedSubgroupId] = useState('')
   const activeWorkspaceRef = useRef(activeWorkspaceId)
   const canUpload = hasPermission(principal, permissionMap.uploadDocuments)
+  const canClassifyUpload = canUseLittleBullClassifiedUpload(principal)
   const canDelete = hasPermission(principal, permissionMap.deleteDocuments)
   const canViewGraph = hasPermission(principal, permissionMap.readDocuments)
+  const filteredSubgroups = filterLittleBullSubgroupsForGroup(subgroups, selectedGroupId)
+  const uploadReady = isLittleBullUploadReady({
+    canUpload: canClassifyUpload,
+    groupId: selectedGroupId,
+    subgroupId: selectedSubgroupId
+  })
 
   useEffect(() => {
     activeWorkspaceRef.current = activeWorkspaceId
@@ -737,7 +797,24 @@ function KnowledgePage({
     setRecovering(false)
     setDeletingDocumentIds(new Set())
     setUploadProgress({})
+    setSelectedGroupId('')
+    setSelectedSubgroupId('')
   }, [activeWorkspaceId])
+
+  useEffect(() => {
+    const sanitized = sanitizeLittleBullUploadSelection({
+      groupId: selectedGroupId,
+      subgroupId: selectedSubgroupId,
+      groups,
+      subgroups
+    })
+    if (sanitized.groupId !== selectedGroupId) {
+      setSelectedGroupId(sanitized.groupId)
+    }
+    if (sanitized.subgroupId !== selectedSubgroupId) {
+      setSelectedSubgroupId(sanitized.subgroupId)
+    }
+  }, [groups, selectedGroupId, selectedSubgroupId, subgroups])
 
   const refreshDocuments = useCallback(async () => {
     if (!activeWorkspaceId) return
@@ -746,12 +823,16 @@ function KnowledgePage({
   }, [activeWorkspaceId, setDocs])
 
   const uploadFiles = async (files: FileList | null) => {
-    if (!files?.length || !canUpload) return
+    if (!files?.length || !canClassifyUpload) return
+    if (!selectedGroupId || !selectedSubgroupId) {
+      toast.error('Selecione grupo e subgrupo antes do upload.')
+      return
+    }
     const workspaceId = activeWorkspaceId
     setLoading(true)
     try {
       for (const file of Array.from(files)) {
-        await uploadLittleBullDocument(workspaceId, file, 'normal', (percent) => {
+        await uploadLittleBullDocument(workspaceId, selectedGroupId, selectedSubgroupId, file, 'normal', (percent) => {
           if (activeWorkspaceRef.current === workspaceId) {
             setUploadProgress((current) => ({ ...current, [file.name]: percent }))
           }
@@ -856,17 +937,56 @@ function KnowledgePage({
             </IconButton>
           </div>
         </div>
+        <div className="mt-5 grid gap-3 md:grid-cols-2">
+          <label className="grid gap-2 text-sm font-semibold text-slate-700">
+            Grupo
+            <select
+              value={selectedGroupId}
+              onChange={(event) => {
+                setSelectedGroupId(event.target.value)
+                setSelectedSubgroupId('')
+              }}
+              disabled={!canClassifyUpload || loading || groups.length === 0}
+              className="h-10 rounded-lg border border-slate-200 bg-white px-3 text-sm font-normal text-slate-700"
+            >
+              <option value="">Selecione um grupo</option>
+              {groups.map((group) => (
+                <option key={group.group_id} value={group.group_id}>{group.name}</option>
+              ))}
+            </select>
+          </label>
+          <label className="grid gap-2 text-sm font-semibold text-slate-700">
+            Subgrupo
+            <select
+              value={selectedSubgroupId}
+              onChange={(event) => setSelectedSubgroupId(event.target.value)}
+              disabled={!canClassifyUpload || loading || !selectedGroupId || filteredSubgroups.length === 0}
+              className="h-10 rounded-lg border border-slate-200 bg-white px-3 text-sm font-normal text-slate-700"
+            >
+              <option value="">Selecione um subgrupo</option>
+              {filteredSubgroups.map((subgroup) => (
+                <option key={subgroup.subgroup_id} value={subgroup.subgroup_id}>{subgroup.name}</option>
+              ))}
+            </select>
+          </label>
+        </div>
         <label className={cn(
           'mt-5 grid cursor-pointer place-items-center rounded-lg border border-dashed border-slate-300 bg-slate-50 p-8 text-center',
-          !canUpload && 'cursor-not-allowed opacity-60'
+          !uploadReady && 'cursor-not-allowed opacity-60'
         )}>
           <UploadCloudIcon className="mb-2 size-8 text-blue-600" />
-          <span className="text-sm font-semibold">{canUpload ? 'Selecionar arquivos' : 'Upload bloqueado por permissão'}</span>
+          <span className="text-sm font-semibold">
+            {!canUpload
+              ? 'Upload bloqueado por permissão'
+              : !canClassifyUpload
+                ? 'Listagem de grupos bloqueada por permissão'
+                : uploadReady ? 'Selecionar arquivos' : 'Classifique em grupo e subgrupo'}
+          </span>
           <input
             type="file"
             multiple
             className="hidden"
-            disabled={!canUpload || loading}
+            disabled={!uploadReady || loading}
             onChange={(event) => uploadFiles(event.target.files)}
           />
         </label>
@@ -2246,6 +2366,151 @@ function AdminPage({
   )
 }
 
+function PremiumModulePage({
+  page,
+  activeWorkspaceId,
+  areas,
+  docs,
+  activity,
+  approvals,
+  auditEvents,
+  knowledgeBases,
+  models,
+  agents,
+  conversations,
+  dossiers,
+  legalExtractions,
+  costSummary,
+  exportDossier
+}: {
+  page: Page
+  activeWorkspaceId: string
+  areas: LittleBullArea[]
+  docs: LittleBullDocument[]
+  activity: LittleBullActivityItem[]
+  approvals: LittleBullApproval[]
+  auditEvents: LittleBullAuditEvent[]
+  knowledgeBases: LittleBullKnowledgeBase[]
+  models: LittleBullModelSetting[]
+  agents: LittleBullAgentConfig[]
+  conversations: LittleBullConversation[]
+  dossiers: LittleBullKnowledgeDossier[]
+  legalExtractions: LittleBullLegalMatterExtractionRun[]
+  costSummary: LittleBullCostSummaryResponse | null
+  exportDossier: (dossier: LittleBullKnowledgeDossier, format: 'md' | 'txt' | 'docx' | 'xlsx') => Promise<void>
+}) {
+  const title = pageLabels[page]
+  const totalCost = costSummary?.periods?.total?.cost_usd ?? 0
+  const moduleCards = [
+    { label: 'Workspaces', value: areas.length.toString(), helper: `${activeWorkspaceId || 'sem workspace'} ativo` },
+    { label: 'Documentos', value: docs.length.toString(), helper: `${docs.filter((doc) => statusLabel(doc.status) === 'Processado').length} processados` },
+    { label: 'Dossiês', value: dossiers.length.toString(), helper: 'LGPD e approval externo' },
+    { label: 'Jurídico', value: legalExtractions.length.toString(), helper: `${legalExtractions.filter((run) => run.review_status === 'pending').length} pendentes` },
+    { label: 'Custos', value: formatUsd(totalCost), helper: `${costSummary?.periods?.total?.request_count ?? 0} chamadas` },
+    { label: 'Aprovações', value: approvals.length.toString(), helper: `${approvals.filter((approval) => approval.status === 'pending').length} pendentes` }
+  ]
+
+  return (
+    <div className="space-y-5">
+      <section className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-wide text-blue-700">Little Bull Premium</p>
+            <h2 className="mt-1 text-2xl font-semibold text-slate-950">{title}</h2>
+            <p className="mt-2 max-w-3xl text-sm text-slate-600">
+              Workspace operacional com conhecimento, grafo, agentes, custos, jurídico, dossiês e governança em uma superfície única.
+            </p>
+          </div>
+          <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-800">
+            Control-plane ativo
+          </div>
+        </div>
+      </section>
+
+      <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+        {moduleCards.map((card) => (
+          <Stat key={card.label} label={card.label} value={card.value} helper={card.helper} />
+        ))}
+      </section>
+
+      <section className="grid gap-4 xl:grid-cols-2">
+        <MiniList
+          title="Dossiês"
+          items={dossiers}
+          emptyLabel="Nenhum dossiê neste workspace."
+          render={(dossier: LittleBullKnowledgeDossier) => (
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="min-w-0">
+                <p className="truncate text-sm font-semibold text-slate-950">{dossier.title}</p>
+                <p className="text-xs text-slate-500">{dossier.dossier_kind} · {dossier.status}</p>
+              </div>
+              <IconButton tone="light" onClick={() => exportDossier(dossier, 'md')}>
+                <DownloadIcon className="size-4" />
+                MD
+              </IconButton>
+            </div>
+          )}
+        />
+        <MiniList
+          title="Jurídico-processual"
+          items={legalExtractions}
+          emptyLabel="Nenhuma extração jurídica registrada."
+          render={(run: LittleBullLegalMatterExtractionRun) => (
+            <div>
+              <p className="text-sm font-semibold text-slate-950">{run.matter_reference || run.document_id || run.legal_matter_extraction_run_id}</p>
+              <p className="text-xs text-slate-500">{run.review_status} · {run.schema_version}</p>
+            </div>
+          )}
+        />
+        <MiniList
+          title="Aprovações"
+          items={approvals}
+          emptyLabel="Nenhuma aprovação disponível."
+          render={(approval: LittleBullApproval) => (
+            <div>
+              <p className="text-sm font-semibold text-slate-950">{approval.action}</p>
+              <p className="text-xs text-slate-500">{approval.status} · {formatDate(approval.requested_at)}</p>
+            </div>
+          )}
+        />
+        <MiniList
+          title="Auditoria"
+          items={auditEvents}
+          emptyLabel="Nenhum evento de auditoria carregado."
+          render={(event: LittleBullAuditEvent) => (
+            <div>
+              <p className="text-sm font-semibold text-slate-950">{event.result}</p>
+              <p className="text-xs text-slate-500">{event.action} · {formatDate(event.created_at)}</p>
+            </div>
+          )}
+        />
+        <MiniList
+          title="Modelos e agentes"
+          items={[...models, ...agents]}
+          emptyLabel="Nenhum modelo ou agente carregado."
+          render={(item: LittleBullModelSetting | LittleBullAgentConfig) => (
+            <div>
+              <p className="text-sm font-semibold text-slate-950">{'display_name' in item ? item.display_name : item.name}</p>
+              <p className="text-xs text-slate-500">{'usage' in item ? item.usage : item.enabled ? 'enabled' : 'disabled'}</p>
+            </div>
+          )}
+        />
+        <MiniList
+          title="Conversas e jobs"
+          items={[...conversations, ...activity, ...knowledgeBases]}
+          emptyLabel="Nenhuma conversa, job ou workspace administrativo carregado."
+          render={(item: LittleBullConversation | LittleBullActivityItem | LittleBullKnowledgeBase) => (
+            <div>
+              <p className="text-sm font-semibold text-slate-950">{'title' in item ? item.title : 'name' in item ? item.name : item.action}</p>
+              <p className="text-xs text-slate-500">{'status' in item ? String(item.status) : 'message_count' in item ? `${item.message_count} mensagens` : item.workspace_id}</p>
+            </div>
+          )}
+        />
+      </section>
+    </div>
+  )
+}
+
 export default function LittleBullPreview() {
   const [page, setPage] = useState<Page>('inicio')
   const [principal, setPrincipal] = useState<LittleBullPrincipal | null>(null)
@@ -2264,9 +2529,12 @@ export default function LittleBullPreview() {
   const [loading, setLoading] = useState(true)
   const [fatalError, setFatalError] = useState<string | null>(null)
   const activeWorkspaceState = workspaceStateById[activeWorkspaceId] ?? emptyWorkspaceUiState
-  const visibleNavItems = useMemo(() => visibleNavItemsFor(principal), [principal])
-  const fallbackPage = visibleNavItems[0]?.id ?? 'inicio'
+  const fallbackPage = fallbackLittleBullPageFor(
+    principal,
+    navItems.map((item) => item.id)
+  )
   const canReadDocuments = hasPermission(principal, permissionMap.readDocuments)
+  const canReadAreas = hasPermission(principal, permissionMap.readAreas)
   const canQuery = hasPermission(principal, permissionMap.query)
   const canReadActivity = hasPermission(principal, permissionMap.readActivity)
   const canReadAssistants = hasPermission(principal, permissionMap.readAssistants)
@@ -2280,6 +2548,7 @@ export default function LittleBullPreview() {
   const canManageAgents = hasPermission(principal, permissionMap.manageAgents)
   const canReadConversations = hasPermission(principal, permissionMap.readConversations)
   const canSaveConversations = hasPermission(principal, permissionMap.saveConversations)
+  const canExportConversations = hasPermission(principal, permissionMap.exportConversations)
   const canReadCorrelations = hasAnyPermission(principal, [
     permissionMap.suggestCorrelations,
     permissionMap.decideCorrelations
@@ -2336,9 +2605,13 @@ export default function LittleBullPreview() {
 
   const refreshDocuments = useCallback(async (workspaceId = activeWorkspaceId) => {
     if (!workspaceId || !canReadDocuments) return
-    const response = await getLittleBullDocuments(workspaceId)
-    patchWorkspaceState(workspaceId, { docs: response.documents })
-  }, [activeWorkspaceId, canReadDocuments, patchWorkspaceState])
+    const [response, groups, subgroups] = await Promise.all([
+      getLittleBullDocuments(workspaceId),
+      canReadAreas ? getLittleBullKnowledgeGroups(workspaceId) : Promise.resolve([]),
+      canReadAreas ? getLittleBullKnowledgeSubgroups(workspaceId) : Promise.resolve([])
+    ])
+    patchWorkspaceState(workspaceId, { docs: response.documents, groups, subgroups })
+  }, [activeWorkspaceId, canReadAreas, canReadDocuments, patchWorkspaceState])
 
   const refreshActivity = useCallback(async (workspaceId = activeWorkspaceId) => {
     if (!workspaceId || !canReadActivity) return
@@ -2349,6 +2622,20 @@ export default function LittleBullPreview() {
     if (!workspaceId || !canReadAssistants) return
     patchWorkspaceState(workspaceId, { assistants: await getLittleBullAssistants(workspaceId) })
   }, [activeWorkspaceId, canReadAssistants, patchWorkspaceState])
+
+  const refreshPremiumWorkspace = useCallback(async (workspaceId = activeWorkspaceId) => {
+    if (!workspaceId) return
+    const [dossierItems, legalItems, costItem] = await Promise.all([
+      canReadDocuments ? getLittleBullDossiers(workspaceId) : Promise.resolve([]),
+      canReadDocuments ? getLittleBullLegalExtractions(workspaceId) : Promise.resolve([]),
+      canReadAudit ? getLittleBullCostSummary(workspaceId) : Promise.resolve(null)
+    ])
+    patchWorkspaceState(workspaceId, {
+      dossiers: dossierItems,
+      legalExtractions: legalItems,
+      costSummary: costItem
+    })
+  }, [activeWorkspaceId, canReadAudit, canReadDocuments, patchWorkspaceState])
 
   const refreshAdmin = useCallback(async () => {
     const [approvalItems, auditItems, baseItems, catalogItems, modelItems, agentItems, conversationItems, suggestionItems] = await Promise.all([
@@ -2379,6 +2666,35 @@ export default function LittleBullPreview() {
     canReadConversations,
     canReadCorrelations
   ])
+
+  const exportDossier = useCallback(async (dossier: LittleBullKnowledgeDossier, format: 'md' | 'txt' | 'docx' | 'xlsx') => {
+    if (!canExportConversations) {
+      toast.error('Você não tem permissão para exportar dossiês.')
+      return
+    }
+    try {
+      const response = await exportLittleBullDossier(activeWorkspaceId, dossier.knowledge_dossier_id, {
+        format,
+        destination: 'internal',
+        include_audit: true
+      })
+      if (!(response instanceof Blob)) {
+        toast.info(response.message)
+        return
+      }
+      const url = URL.createObjectURL(response)
+      const anchor = document.createElement('a')
+      anchor.href = url
+      anchor.download = `little-bull-dossier-${dossier.knowledge_dossier_id}.${format}`
+      document.body.appendChild(anchor)
+      anchor.click()
+      anchor.remove()
+      URL.revokeObjectURL(url)
+      toast.success('Dossiê exportado com redaction LGPD.')
+    } catch (error) {
+      toast.error(errorMessage(error))
+    }
+  }, [activeWorkspaceId, canExportConversations])
 
   const refreshActiveActivity = useCallback(() => {
     return refreshActivity(activeWorkspaceId)
@@ -2426,6 +2742,7 @@ export default function LittleBullPreview() {
     } else {
       patchWorkspaceState(activeWorkspaceId, { assistants: [] })
     }
+    refreshPremiumWorkspace(activeWorkspaceId).catch((error) => toast.error(errorMessage(error)))
   }, [
     activeWorkspaceId,
     canReadActivity,
@@ -2434,11 +2751,21 @@ export default function LittleBullPreview() {
     patchWorkspaceState,
     refreshActivity,
     refreshAssistants,
-    refreshDocuments
+    refreshDocuments,
+    refreshPremiumWorkspace
   ])
 
   useEffect(() => {
-    if (page === 'admin') {
+    if ([
+      'admin',
+      'agent-builder',
+      'modelos',
+      'custos',
+      'jobs',
+      'relatorios',
+      'auditoria',
+      'aprovacoes'
+    ].includes(page)) {
       refreshAdmin().catch((error) => toast.error(errorMessage(error)))
     }
   }, [page, refreshAdmin])
@@ -2510,6 +2837,8 @@ export default function LittleBullPreview() {
           <KnowledgePage
             activeWorkspaceId={activeWorkspaceId}
             docs={activeWorkspaceState.docs}
+            groups={activeWorkspaceState.groups}
+            subgroups={activeWorkspaceState.subgroups}
             setDocs={setActiveDocs}
             principal={principal}
             setPage={setPage}
@@ -2518,7 +2847,7 @@ export default function LittleBullPreview() {
         )
       case 'grafo':
         return <GraphPage activeWorkspaceId={activeWorkspaceId} docs={activeWorkspaceState.docs} />
-      case 'areas':
+      case 'workspaces':
         return (
           <AreasPage
             areas={areas}
@@ -2526,6 +2855,41 @@ export default function LittleBullPreview() {
             principal={principal}
             setActiveWorkspaceId={setActiveWorkspaceId}
             setPage={setPage}
+          />
+        )
+      case 'grupos':
+      case 'subgrupos':
+      case 'notas':
+      case 'inbox':
+      case 'daily':
+      case 'canvas':
+      case 'mocs':
+      case 'trilhas':
+      case 'agent-builder':
+      case 'modelos':
+      case 'custos':
+      case 'jobs':
+      case 'juridico':
+      case 'relatorios':
+      case 'auditoria':
+      case 'aprovacoes':
+        return (
+          <PremiumModulePage
+            page={page}
+            activeWorkspaceId={activeWorkspaceId}
+            areas={areas}
+            docs={activeWorkspaceState.docs}
+            activity={activeWorkspaceState.activity}
+            approvals={approvals}
+            auditEvents={auditEvents}
+            knowledgeBases={knowledgeBases}
+            models={adminModels}
+            agents={adminAgents}
+            conversations={conversations}
+            dossiers={activeWorkspaceState.dossiers}
+            legalExtractions={activeWorkspaceState.legalExtractions}
+            costSummary={activeWorkspaceState.costSummary}
+            exportDossier={exportDossier}
           />
         )
       case 'assistentes':
@@ -2563,6 +2927,7 @@ export default function LittleBullPreview() {
     embeddingCatalog,
     canSaveConversations,
     canQuery,
+    exportDossier,
     conversations,
     correlationSuggestions,
     fatalError,

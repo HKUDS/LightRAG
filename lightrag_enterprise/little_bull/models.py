@@ -329,6 +329,56 @@ class LittleBullCuratorSuggestionResponse(BaseModel):
     allowed_actions: list[str] = Field(default_factory=lambda: ["review", "approve", "reject"])
 
 
+class LegalMatterExtractionPayload(BaseModel):
+    processos: list[dict[str, Any]] = Field(default_factory=list)
+    partes: list[dict[str, Any]] = Field(default_factory=list)
+    advogados: list[dict[str, Any]] = Field(default_factory=list)
+    juizo: dict[str, Any] = Field(default_factory=dict)
+    tribunal: dict[str, Any] = Field(default_factory=dict)
+    magistrados: list[dict[str, Any]] = Field(default_factory=list)
+    testemunhas: list[dict[str, Any]] = Field(default_factory=list)
+    causa_de_pedir: list[dict[str, Any]] = Field(default_factory=list)
+    pedidos: list[dict[str, Any]] = Field(default_factory=list)
+    valores: list[dict[str, Any]] = Field(default_factory=list)
+    decisoes: list[dict[str, Any]] = Field(default_factory=list)
+    sentencas: list[dict[str, Any]] = Field(default_factory=list)
+    acordaos: list[dict[str, Any]] = Field(default_factory=list)
+    liquidacoes: list[dict[str, Any]] = Field(default_factory=list)
+    prazos: list[dict[str, Any]] = Field(default_factory=list)
+    jurimetria: dict[str, Any] = Field(default_factory=dict)
+
+
+class LittleBullLegalMatterExtractionRequest(BaseModel):
+    workspace_id: str
+    group_id: str
+    subgroup_id: str
+    document_id: str
+    matter_reference: str = ""
+    extraction_model_id: str = ""
+    schema_version: str = "legal-matter/v1"
+    extracted_payload: LegalMatterExtractionPayload = Field(default_factory=LegalMatterExtractionPayload)
+    source_refs: list[dict[str, Any]] = Field(min_length=1)
+    confidence: float | None = Field(default=None, ge=0, le=1)
+
+
+class LittleBullLegalMatterReviewRequest(BaseModel):
+    review_status: Literal["approved", "rejected", "needs_changes"]
+    error_message: str = ""
+
+
+class LittleBullLegalMatterExtractionResponse(BaseModel):
+    run: dict[str, Any]
+    requires_human_review: bool = True
+    schema_contract: dict[str, Any] = Field(default_factory=dict)
+
+
+class LittleBullDossierExportRequest(BaseModel):
+    format: Literal["txt", "md", "docx", "xlsx"] = "md"
+    destination: Literal["internal", "external"] = "internal"
+    approval_id: str | None = None
+    include_audit: bool = True
+
+
 class LittleBullDailyNoteRequest(BaseModel):
     daily_note_id: str | None = None
     note_date: str | None = None

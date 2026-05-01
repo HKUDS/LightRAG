@@ -1,4 +1,5 @@
 import axios, { AxiosError } from 'axios'
+import type { AxiosProgressEvent } from 'axios'
 import { backendBaseUrl, popularLabelsDefaultLimit, searchLabelsDefaultLimit } from '@/lib/constants'
 import { errorMessage } from '@/lib/utils'
 import { useSettingsStore } from '@/stores/settings'
@@ -305,6 +306,34 @@ export type LittleBullArea = {
   embedding_reindex_required?: boolean
 }
 
+export type LittleBullKnowledgeGroup = {
+  group_id: string
+  tenant_id?: string | null
+  workspace_id: string
+  slug: string
+  name: string
+  description: string
+  privacy: string
+  color: string
+  metadata: Record<string, any>
+  created_at?: string | null
+  updated_at?: string | null
+}
+
+export type LittleBullKnowledgeSubgroup = {
+  subgroup_id: string
+  tenant_id?: string | null
+  workspace_id: string
+  group_id: string
+  slug: string
+  name: string
+  description: string
+  privacy: string
+  metadata: Record<string, any>
+  created_at?: string | null
+  updated_at?: string | null
+}
+
 export type LittleBullDocument = {
   id: string
   file_path: string
@@ -312,6 +341,9 @@ export type LittleBullDocument = {
   status: string
   content_summary: string
   content_length: number
+  group_id?: string | null
+  subgroup_id?: string | null
+  registry_document_id?: string | null
   updated_at?: string | null
   created_at?: string | null
   track_id?: string | null
@@ -351,6 +383,9 @@ export type LittleBullUploadResponse = {
   message: string
   track_id?: string | null
   workspace_id: string
+  group_id?: string | null
+  subgroup_id?: string | null
+  registry_document_id?: string | null
 }
 
 export type LittleBullReindexArchivedResponse = {
@@ -672,6 +707,82 @@ export type LittleBullAuditEvent = {
   model?: string | null
   metadata: Record<string, any>
   created_at: string
+}
+
+export type LittleBullCostPeriodSummary = {
+  name: string
+  since?: string | null
+  request_count: number
+  prompt_tokens: number
+  completion_tokens: number
+  total_tokens: number
+  estimated_cost_usd: number
+  actual_cost_usd: number
+  cost_usd: number
+}
+
+export type LittleBullCostBreakdownItem = {
+  key: string
+  label: string
+  request_count: number
+  prompt_tokens: number
+  completion_tokens: number
+  total_tokens: number
+  estimated_cost_usd: number
+  actual_cost_usd: number
+  cost_usd: number
+  metadata?: Record<string, any>
+}
+
+export type LittleBullCostSummaryResponse = {
+  workspace_id: string
+  currency: string
+  periods: Record<string, LittleBullCostPeriodSummary>
+  by_user: LittleBullCostBreakdownItem[]
+  by_agent: LittleBullCostBreakdownItem[]
+  by_model: LittleBullCostBreakdownItem[]
+  by_group_subgroup: LittleBullCostBreakdownItem[]
+  by_operation: LittleBullCostBreakdownItem[]
+}
+
+export type LittleBullKnowledgeDossier = {
+  knowledge_dossier_id: string
+  tenant_id?: string | null
+  workspace_id: string
+  group_id?: string | null
+  subgroup_id?: string | null
+  title: string
+  slug: string
+  dossier_kind: string
+  status: string
+  content_refs: Array<Record<string, any>>
+  export_policy: Record<string, any>
+  approval_id?: string | null
+  created_at?: string | null
+  updated_at?: string | null
+}
+
+export type LittleBullLegalMatterExtractionRun = {
+  legal_matter_extraction_run_id: string
+  tenant_id?: string | null
+  workspace_id: string
+  group_id?: string | null
+  subgroup_id?: string | null
+  document_id?: string | null
+  matter_reference: string
+  extraction_model_id: string
+  schema_version: string
+  run_status: string
+  extracted_payload: Record<string, any>
+  source_refs: Array<Record<string, any>>
+  confidence?: number | null
+  review_status: 'pending' | 'approved' | 'rejected' | 'needs_changes'
+  requires_human_review: boolean
+  approved_by?: string | null
+  approved_at?: string | null
+  error_message?: string
+  created_at?: string | null
+  updated_at?: string | null
 }
 
 export const InvalidApiKeyError = 'Invalid API Key'
@@ -1359,6 +1470,25 @@ export const getLittleBullAreas = async (): Promise<LittleBullArea[]> => {
   return response.data.areas
 }
 
+export const getLittleBullKnowledgeGroups = async (
+  workspaceId: string
+): Promise<LittleBullKnowledgeGroup[]> => {
+  const response = await axiosInstance.get('/little-bull/knowledge-groups', {
+    params: { workspace_id: workspaceId }
+  })
+  return response.data.groups
+}
+
+export const getLittleBullKnowledgeSubgroups = async (
+  workspaceId: string,
+  groupId?: string | null
+): Promise<LittleBullKnowledgeSubgroup[]> => {
+  const response = await axiosInstance.get('/little-bull/knowledge-subgroups', {
+    params: { workspace_id: workspaceId, group_id: groupId || undefined }
+  })
+  return response.data.subgroups
+}
+
 export const getLittleBullDocuments = async (
   workspaceId: string,
   page: number = 1,
@@ -1370,17 +1500,42 @@ export const getLittleBullDocuments = async (
   return response.data
 }
 
+type LittleBullDocumentConfidentiality = 'normal' | 'sensivel' | 'privado'
+
+type LittleBullUploadDocumentConfig = {
+  params: {
+    workspace_id: string
+    group_id: string
+    subgroup_id: string
+    confidentiality: LittleBullDocumentConfidentiality
+  }
+  headers: { 'Content-Type': string }
+  onUploadProgress?: (progressEvent: AxiosProgressEvent) => void
+}
+
+const defaultLittleBullUploadPost = async (
+  formData: FormData,
+  config: LittleBullUploadDocumentConfig
+): Promise<LittleBullUploadResponse> => {
+  const response = await axiosInstance.post('/little-bull/documents/upload', formData, config)
+  return response.data
+}
+
+let littleBullUploadPost = defaultLittleBullUploadPost
+
 export const uploadLittleBullDocument = async (
   workspaceId: string,
+  groupId: string,
+  subgroupId: string,
   file: File,
-  confidentiality: 'normal' | 'sensivel' | 'privado' = 'normal',
+  confidentiality: LittleBullDocumentConfidentiality = 'normal',
   onUploadProgress?: (percentCompleted: number) => void
 ): Promise<LittleBullUploadResponse> => {
   const formData = new FormData()
   formData.append('file', file)
 
-  const response = await axiosInstance.post('/little-bull/documents/upload', formData, {
-    params: { workspace_id: workspaceId, confidentiality },
+  return littleBullUploadPost(formData, {
+    params: { workspace_id: workspaceId, group_id: groupId, subgroup_id: subgroupId, confidentiality },
     headers: { 'Content-Type': 'multipart/form-data' },
     onUploadProgress:
       onUploadProgress !== undefined
@@ -1390,7 +1545,6 @@ export const uploadLittleBullDocument = async (
         }
         : undefined
   })
-  return response.data
 }
 
 export const reindexLittleBullArchivedDocuments = async (
@@ -1617,6 +1771,54 @@ export const getLittleBullAuditEvents = async (
   return response.data.events
 }
 
+export const getLittleBullCostSummary = async (
+  workspaceId: string
+): Promise<LittleBullCostSummaryResponse> => {
+  const response = await axiosInstance.get('/little-bull/costs/summary', {
+    params: { workspace_id: workspaceId }
+  })
+  return response.data
+}
+
+export const getLittleBullDossiers = async (
+  workspaceId: string
+): Promise<LittleBullKnowledgeDossier[]> => {
+  const response = await axiosInstance.get('/little-bull/dossiers', {
+    params: { workspace_id: workspaceId }
+  })
+  return response.data.dossiers
+}
+
+export const exportLittleBullDossier = async (
+  workspaceId: string,
+  dossierId: string,
+  payload: {
+    format: 'txt' | 'md' | 'docx' | 'xlsx'
+    destination: 'internal' | 'external'
+    approval_id?: string | null
+    include_audit?: boolean
+  }
+): Promise<Blob | { status: 'pending_approval'; message: string; approval: LittleBullApproval }> => {
+  const response = await axiosInstance.post(
+    `/little-bull/dossiers/${encodeURIComponent(dossierId)}/export`,
+    payload,
+    {
+      params: { workspace_id: workspaceId },
+      responseType: payload.destination === 'internal' || payload.approval_id ? 'blob' : 'json'
+    }
+  )
+  return response.data
+}
+
+export const getLittleBullLegalExtractions = async (
+  workspaceId: string
+): Promise<LittleBullLegalMatterExtractionRun[]> => {
+  const response = await axiosInstance.get('/little-bull/legal/extractions', {
+    params: { workspace_id: workspaceId }
+  })
+  return response.data.runs
+}
+
 /**
  * Updates an entity's properties in the knowledge graph
  * @param entityName The name of the entity to update
@@ -1799,12 +2001,19 @@ export const __resetPaginatedDocumentRequestsForTests = (): void => {
   }
   inFlightPaginatedDocumentRequests.clear()
   paginatedDocumentsPost = defaultPaginatedDocumentsPost
+  littleBullUploadPost = defaultLittleBullUploadPost
 }
 
 export const __setPaginatedDocumentsPostForTests = (
   post: typeof defaultPaginatedDocumentsPost
 ): void => {
   paginatedDocumentsPost = post
+}
+
+export const __setLittleBullUploadPostForTests = (
+  post: typeof defaultLittleBullUploadPost
+): void => {
+  littleBullUploadPost = post
 }
 
 /**

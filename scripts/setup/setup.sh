@@ -2,8 +2,22 @@
 set -euo pipefail
 
 if [[ -z "${BASH_VERSINFO+x}" || "${BASH_VERSINFO[0]}" -lt 4 ]]; then
+  if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then
+    echo "Error: scripts/setup/setup.sh requires Bash 4 or newer when sourced." >&2
+    echo "Hint: run with Bash 4+ (macOS: brew install bash) or use make env-* targets." >&2
+    return 1
+  fi
+  for candidate in "${LIGHTRAG_SETUP_BASH:-}" /opt/homebrew/bin/bash /usr/local/bin/bash /opt/local/bin/bash bash; do
+    [[ -n "$candidate" ]] || continue
+    resolved="$(command -v "$candidate" 2>/dev/null || true)"
+    [[ -n "$resolved" ]] || [[ ! -x "$candidate" ]] || resolved="$candidate"
+    [[ -n "$resolved" ]] || continue
+    if "$resolved" -c '[[ ${BASH_VERSINFO[0]} -ge 4 ]]' >/dev/null 2>&1; then
+      exec "$resolved" "$0" "$@"
+    fi
+  done
   echo "Error: scripts/setup/setup.sh requires Bash 4 or newer." >&2
-  echo "Hint: install a newer bash and run it via 'bash scripts/setup/setup.sh ...'." >&2
+  echo "Hint: install Bash 4+ (macOS: brew install bash) or set LIGHTRAG_SETUP_BASH=/opt/homebrew/bin/bash." >&2
   exit 1
 fi
 

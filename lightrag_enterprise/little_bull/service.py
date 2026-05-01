@@ -23,6 +23,7 @@ from lightrag.utils import generate_track_id
 
 from lightrag_enterprise.system import (
     ACTIVITY_ACTIVITY_READ,
+    ACTIVITY_APPROVAL_DECIDE,
     ACTIVITY_AGENT_MANAGE,
     ACTIVITY_AREA_READ,
     ACTIVITY_ASSISTANTS_READ,
@@ -53,6 +54,7 @@ from lightrag_enterprise.system.policy_keys import (
 )
 from lightrag_enterprise.system.runtime import approvals_enforced, private_strict_enabled
 from lightrag_enterprise.system.models import utc_now
+from lightrag_enterprise.security import mask_pii
 
 from .models import (
     AgentBuilderSession,
@@ -96,6 +98,7 @@ from .models import (
     LittleBullCuratorSuggestionResponse,
     LittleBullDocument,
     LittleBullDocumentsResponse,
+    LittleBullDossierExportRequest,
     LittleBullEmbeddingCatalogItem,
     LittleBullEmbeddingCostEstimateRequest,
     LittleBullEmbeddingCostEstimateResponse,
@@ -110,6 +113,9 @@ from .models import (
     LittleBullDailyNoteRequest,
     LittleBullInboxItemRequest,
     LittleBullInboxItemStatusRequest,
+    LittleBullLegalMatterExtractionRequest,
+    LittleBullLegalMatterExtractionResponse,
+    LittleBullLegalMatterReviewRequest,
     LittleBullKnowledgeSubgroupRequest,
     LittleBullKnowledgeTrailDetail,
     LittleBullKnowledgeTrailRequest,
@@ -1471,6 +1477,386 @@ class LittleBullService:
         )
         return KnowledgeDossier(**row)
 
+    async def list_knowledge_dossiers(
+        self,
+        principal: Principal,
+        *,
+        workspace_id: str,
+        group_id: str | None = None,
+        subgroup_id: str | None = None,
+        dossier_kind: str | None = None,
+        limit: int = 100,
+    ) -> list[KnowledgeDossier]:
+        self._require(principal, ACTIVITY_DOCUMENT_READ, workspace_id)
+        tenant_id, workspace_id = await self._existing_workspace_scope(workspace_id)
+        if subgroup_id and not group_id:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="subgroup_id requires group_id.",
+            )
+        if group_id:
+            await self._require_existing_group(
+                tenant_id=tenant_id,
+                workspace_id=workspace_id,
+                group_id=group_id,
+            )
+        if group_id and subgroup_id:
+            await self._require_existing_subgroup(
+                tenant_id=tenant_id,
+                workspace_id=workspace_id,
+                group_id=group_id,
+                subgroup_id=subgroup_id,
+            )
+        rows = await self.admin_store.list_knowledge_dossiers(
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            group_id=group_id,
+            subgroup_id=subgroup_id,
+            dossier_kind=dossier_kind,
+            limit=limit,
+        )
+        return [KnowledgeDossier(**row) for row in rows]
+
+    async def get_knowledge_dossier(
+        self,
+        principal: Principal,
+        *,
+        workspace_id: str,
+        knowledge_dossier_id: str,
+    ) -> KnowledgeDossier:
+        self._require(principal, ACTIVITY_DOCUMENT_READ, workspace_id)
+        tenant_id, workspace_id = await self._existing_workspace_scope(workspace_id)
+        dossier = await self.admin_store.get_knowledge_dossier(
+            knowledge_dossier_id,
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+        )
+        if not dossier:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Dossier not found.")
+        return KnowledgeDossier(**dossier)
+
+    @staticmethod
+    def _dossier_export_approval_payload(
+        dossier: KnowledgeDossier,
+        request: LittleBullDossierExportRequest,
+    ) -> dict[str, Any]:
+        return {
+            "knowledge_dossier_id": dossier.knowledge_dossier_id,
+            "format": request.format,
+            "destination": request.destination,
+            "tenant_id": dossier.tenant_id,
+            "workspace_id": dossier.workspace_id,
+            "group_id": dossier.group_id,
+            "subgroup_id": dossier.subgroup_id,
+            "content_refs": dossier.content_refs,
+            "redaction_policy": "mask_pii",
+            "requires_lgpd_review": bool(dossier.export_policy.get("requires_lgpd_review", True)),
+        }
+
+    async def export_knowledge_dossier(
+        self,
+        principal: Principal,
+        *,
+        workspace_id: str,
+        knowledge_dossier_id: str,
+        request: LittleBullDossierExportRequest,
+    ) -> Response | dict[str, Any]:
+        dossier = await self.get_knowledge_dossier(
+            principal,
+            workspace_id=workspace_id,
+            knowledge_dossier_id=knowledge_dossier_id,
+        )
+        self._require(principal, ACTIVITY_CONVERSATION_EXPORT, dossier.workspace_id)
+        approval = None
+        approval_payload = self._dossier_export_approval_payload(dossier, request)
+        if request.destination == "external":
+            if not request.approval_id:
+                approval = await self.approvals.request(
+                    principal=principal,
+                    action=ACTIVITY_CONVERSATION_EXPORT,
+                    tenant_id=dossier.tenant_id,
+                    workspace_id=dossier.workspace_id,
+                    reason="External dossier export requires human LGPD approval.",
+                    payload=approval_payload,
+                )
+                await self.audit.record(
+                    principal=principal,
+                    action=ACTIVITY_CONVERSATION_EXPORT,
+                    tenant_id=dossier.tenant_id,
+                    workspace_id=dossier.workspace_id,
+                    result="pending_lgpd_approval",
+                    approval_id=approval.approval_id,
+                    metadata=approval_payload,
+                )
+                return {
+                    "status": "pending_approval",
+                    "message": "External dossier export is waiting for LGPD approval.",
+                    "approval": approval.to_dict(),
+                }
+            approval = await self.approvals.get(request.approval_id)
+            if not approval:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Approval not found.")
+            if approval.action != ACTIVITY_CONVERSATION_EXPORT or approval.metadata != approval_payload:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Approval does not match the dossier export request.",
+                )
+            if approval.status != ApprovalStatus.APPROVED:
+                raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Approval must be approved first.")
+
+        sections = await self._dossier_export_sections(dossier, include_audit=request.include_audit)
+        content, media_type, suffix = self._render_dossier_export(dossier, sections, request.format)
+        if approval is not None:
+            executing = await self.approvals.begin_execution(approval.approval_id, principal)
+            if executing is None:
+                raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Approval is no longer executable.")
+            approval = await self.approvals.mark_executed(executing.approval_id, principal)
+        await self.audit.record(
+            principal=principal,
+            action=ACTIVITY_CONVERSATION_EXPORT,
+            tenant_id=dossier.tenant_id,
+            workspace_id=dossier.workspace_id,
+            result="dossier_exported",
+            approval_id=approval.approval_id if approval else None,
+            metadata={
+                "knowledge_dossier_id": dossier.knowledge_dossier_id,
+                "format": request.format,
+                "destination": request.destination,
+                "requires_lgpd_review": bool(dossier.export_policy.get("requires_lgpd_review", True)),
+            },
+        )
+        filename = f"little-bull-dossier-{dossier.knowledge_dossier_id}.{suffix}"
+        return Response(
+            content=content,
+            media_type=media_type,
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+
+    async def _dossier_export_sections(
+        self,
+        dossier: KnowledgeDossier,
+        *,
+        include_audit: bool,
+    ) -> list[dict[str, Any]]:
+        sections: list[dict[str, Any]] = [
+            {
+                "kind": "summary",
+                "title": dossier.title,
+                "content": f"Dossier {dossier.dossier_kind} em status {dossier.status}.",
+            },
+            {
+                "kind": "lgpd",
+                "title": "LGPD e governanca",
+                "content": json.dumps(dossier.export_policy, sort_keys=True, ensure_ascii=False),
+            },
+        ]
+        for ref in dossier.content_refs:
+            kind = str(ref.get("kind") or "")
+            ref_id = str(ref.get("id") or "")
+            if not kind or not ref_id:
+                continue
+            sections.append(await self._dossier_ref_section(dossier, kind=kind, ref_id=ref_id))
+        if include_audit:
+            sections.append(
+                {
+                    "kind": "audit",
+                    "title": "Auditoria",
+                    "content": (
+                        f"tenant={dossier.tenant_id or ''}; workspace={dossier.workspace_id}; "
+                        f"group={dossier.group_id or ''}; subgroup={dossier.subgroup_id or ''}"
+                    ),
+                }
+            )
+        return sections
+
+    async def _dossier_ref_section(
+        self,
+        dossier: KnowledgeDossier,
+        *,
+        kind: str,
+        ref_id: str,
+    ) -> dict[str, Any]:
+        if kind in {"note", "markdown_note"}:
+            note = await self.admin_store.get_note_registry(
+                ref_id,
+                tenant_id=dossier.tenant_id,
+                workspace_id=dossier.workspace_id,
+            )
+            if note and note.get("group_id") == dossier.group_id and note.get("subgroup_id") == dossier.subgroup_id:
+                latest = await self.admin_store.get_latest_markdown_note(
+                    ref_id,
+                    tenant_id=dossier.tenant_id,
+                    workspace_id=dossier.workspace_id,
+                )
+                return {
+                    "kind": kind,
+                    "title": note.get("title") or ref_id,
+                    "content": (latest or {}).get("markdown") or note.get("summary") or "",
+                }
+        if kind == "document":
+            document = await self.admin_store.get_document_registry(
+                ref_id,
+                tenant_id=dossier.tenant_id,
+                workspace_id=dossier.workspace_id,
+            )
+            if document and document.get("group_id") == dossier.group_id and document.get("subgroup_id") == dossier.subgroup_id:
+                return {
+                    "kind": kind,
+                    "title": document.get("title") or document.get("source_uri") or ref_id,
+                    "content": json.dumps(
+                        {
+                            "source_uri": document.get("source_uri"),
+                            "mime_type": document.get("mime_type"),
+                            "chunk_count": document.get("chunk_count", 0),
+                        },
+                        sort_keys=True,
+                        ensure_ascii=False,
+                    ),
+                }
+        return {"kind": kind, "title": ref_id, "content": "Reference retained by id; rich renderer unavailable."}
+
+    @staticmethod
+    def _render_dossier_export(
+        dossier: KnowledgeDossier,
+        sections: list[dict[str, Any]],
+        export_format: str,
+    ) -> tuple[bytes, str, str]:
+        normalized = export_format.lower().strip()
+        if normalized == "md":
+            return (
+                LittleBullService._dossier_markdown(dossier, sections).encode("utf-8"),
+                "text/markdown; charset=utf-8",
+                "md",
+            )
+        if normalized == "txt":
+            return (
+                LittleBullService._dossier_text(dossier, sections).encode("utf-8"),
+                "text/plain; charset=utf-8",
+                "txt",
+            )
+        if normalized == "docx":
+            return (
+                LittleBullService._dossier_docx(dossier, sections),
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                "docx",
+            )
+        if normalized == "xlsx":
+            return (
+                LittleBullService._dossier_xlsx(dossier, sections),
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                "xlsx",
+            )
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unsupported dossier export format.")
+
+    @staticmethod
+    def _dossier_redact(value: Any) -> str:
+        text = str(value or "")
+        text = re.sub(r"\b\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2}\b", "[MASKED_CNPJ]", text)
+        text = re.sub(r"\b\d{3}\.\d{3}\.\d{3}-\d{2}\b", "[MASKED_CPF]", text)
+        text = re.sub(r"\b\d{7}-\d{2}\.\d{4}\.\d\.\d{2}\.\d{4}\b", "[MASKED_PROCESS]", text)
+        text = re.sub(r"\bOAB/[A-Z]{2}\s*\d{3,6}\b", "[MASKED_OAB]", text)
+        text = mask_pii(text)
+        text = re.sub(r"\b\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2}\b", "[MASKED_CNPJ]", text)
+        text = re.sub(r"\b\d{7}-\d{2}\.\d{4}\.\d\.\d{2}\.\d{4}\b", "[MASKED_PROCESS]", text)
+        text = re.sub(r"\bOAB/[A-Z]{2}\s*\d{3,6}\b", "[MASKED_OAB]", text)
+        return text
+
+    @staticmethod
+    def _dossier_markdown(dossier: KnowledgeDossier, sections: list[dict[str, Any]]) -> str:
+        lines = [
+            f"# {LittleBullService._dossier_redact(dossier.title)}",
+            "",
+            f"- Workspace: {dossier.workspace_id}",
+            f"- Grupo: {dossier.group_id or ''}",
+            f"- Subgrupo: {dossier.subgroup_id or ''}",
+            f"- Tipo: {dossier.dossier_kind}",
+            "- Redacao LGPD: mask_pii",
+            "",
+        ]
+        for section in sections:
+            lines.extend(
+                [
+                    f"## {LittleBullService._dossier_redact(section.get('title'))}",
+                    "",
+                    LittleBullService._dossier_redact(section.get("content")),
+                    "",
+                ]
+            )
+        return "\n".join(lines).strip() + "\n"
+
+    @staticmethod
+    def _dossier_text(dossier: KnowledgeDossier, sections: list[dict[str, Any]]) -> str:
+        parts = [
+            LittleBullService._dossier_redact(dossier.title),
+            f"Workspace: {dossier.workspace_id}",
+            f"Grupo: {dossier.group_id or ''}",
+            f"Subgrupo: {dossier.subgroup_id or ''}",
+            f"Tipo: {dossier.dossier_kind}",
+            "Redacao LGPD: mask_pii",
+            "",
+        ]
+        for section in sections:
+            parts.extend(
+                [
+                    LittleBullService._dossier_redact(section.get("title")),
+                    LittleBullService._dossier_redact(section.get("content")),
+                    "",
+                ]
+            )
+        return "\n".join(parts).strip() + "\n"
+
+    @staticmethod
+    def _dossier_docx(dossier: KnowledgeDossier, sections: list[dict[str, Any]]) -> bytes:
+        try:
+            from docx import Document
+        except ImportError as exc:
+            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="python-docx is not installed") from exc
+
+        document = Document()
+        document.add_heading(LittleBullService._dossier_redact(dossier.title), level=1)
+        document.add_paragraph(f"Workspace: {dossier.workspace_id}")
+        document.add_paragraph(f"Grupo: {dossier.group_id or ''}")
+        document.add_paragraph(f"Subgrupo: {dossier.subgroup_id or ''}")
+        document.add_paragraph("Redacao LGPD: mask_pii")
+        for section in sections:
+            document.add_heading(LittleBullService._dossier_redact(section.get("title")), level=2)
+            document.add_paragraph(LittleBullService._dossier_redact(section.get("content")))
+        buffer = BytesIO()
+        document.save(buffer)
+        return buffer.getvalue()
+
+    @staticmethod
+    def _dossier_xlsx(dossier: KnowledgeDossier, sections: list[dict[str, Any]]) -> bytes:
+        try:
+            import xlsxwriter
+        except ImportError as exc:
+            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="xlsxwriter is not installed") from exc
+
+        buffer = BytesIO()
+        workbook = xlsxwriter.Workbook(buffer, {"in_memory": True})
+        sheet = workbook.add_worksheet("Dossier")
+        sheet.write_row(0, 0, ["field", "value"])
+        metadata = [
+            ("title", dossier.title),
+            ("workspace_id", dossier.workspace_id),
+            ("group_id", dossier.group_id or ""),
+            ("subgroup_id", dossier.subgroup_id or ""),
+            ("dossier_kind", dossier.dossier_kind),
+            ("redaction_policy", "mask_pii"),
+        ]
+        for row_index, (field, value) in enumerate(metadata, start=1):
+            sheet.write(row_index, 0, field)
+            sheet.write(row_index, 1, LittleBullService._dossier_redact(value))
+        sections_sheet = workbook.add_worksheet("Sections")
+        sections_sheet.write_row(0, 0, ["kind", "title", "content"])
+        for row_index, section in enumerate(sections, start=1):
+            sections_sheet.write(row_index, 0, LittleBullService._dossier_redact(section.get("kind")))
+            sections_sheet.write(row_index, 1, LittleBullService._dossier_redact(section.get("title")))
+            sections_sheet.write(row_index, 2, LittleBullService._dossier_redact(section.get("content")))
+        workbook.close()
+        buffer.seek(0)
+        return buffer.getvalue()
+
     async def list_content_maps(
         self,
         principal: Principal,
@@ -2398,6 +2784,263 @@ class LittleBullService:
             metadata={"daily_note_id": row["daily_note_id"], "note_id": row["note_id"], "note_date": row["note_date"]},
         )
         return DailyNote(**row)
+
+    @staticmethod
+    def _legal_matter_schema_contract() -> dict[str, Any]:
+        return {
+            "schema_version": "legal-matter/v1",
+            "required_entities": [
+                "processos",
+                "partes",
+                "advogados",
+                "juizo",
+                "tribunal",
+                "magistrados",
+                "testemunhas",
+                "causa_de_pedir",
+                "pedidos",
+                "valores",
+                "decisoes",
+                "sentencas",
+                "acordaos",
+                "liquidacoes",
+                "prazos",
+                "jurimetria",
+            ],
+            "review": {
+                "requires_human_review": True,
+                "allowed_statuses": ["pending", "approved", "rejected", "needs_changes"],
+            },
+            "provenance": {
+                "source_refs_required": True,
+                "accepted_locators": ["locator", "page", "chunk_id", "span", "paragraph"],
+            },
+            "external_enrichment": {
+                "datajud": "planned_not_called",
+                "tpu": "planned_not_called",
+            },
+        }
+
+    @staticmethod
+    def _validate_legal_source_refs(document_id: str, source_refs: list[dict[str, Any]]) -> None:
+        if not source_refs:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="Legal extraction requires at least one source reference.",
+            )
+        locator_keys = {"locator", "page", "chunk_id", "span", "paragraph"}
+        for index, source_ref in enumerate(source_refs):
+            ref_document_id = source_ref.get("document_id")
+            if ref_document_id and ref_document_id != document_id:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                    detail=f"Source reference {index} points to a different document.",
+                )
+            if not any(source_ref.get(key) for key in locator_keys):
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                    detail=f"Source reference {index} requires a locator, page, chunk_id, span or paragraph.",
+                )
+
+    @staticmethod
+    def _validate_legal_extraction_payload(payload: LittleBullLegalMatterExtractionRequest) -> None:
+        if payload.schema_version != "legal-matter/v1":
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="Unsupported legal extraction schema version.",
+            )
+        extracted = payload.extracted_payload.model_dump()
+        populated = [
+            value
+            for key, value in extracted.items()
+            if key != "jurimetria" and ((isinstance(value, list | dict) and bool(value)) or value)
+        ]
+        if not populated:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="Legal extraction payload must contain at least one extracted legal entity.",
+            )
+
+    async def list_legal_matter_extractions(
+        self,
+        principal: Principal,
+        *,
+        workspace_id: str,
+        group_id: str | None = None,
+        subgroup_id: str | None = None,
+        document_id: str | None = None,
+        review_status: str | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        self._require(principal, ACTIVITY_DOCUMENT_READ, workspace_id)
+        tenant_id, workspace_id = await self._existing_workspace_scope(workspace_id)
+        if subgroup_id and not group_id:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="subgroup_id requires group_id.",
+            )
+        if group_id:
+            await self._require_existing_group(
+                tenant_id=tenant_id,
+                workspace_id=workspace_id,
+                group_id=group_id,
+            )
+        if group_id and subgroup_id:
+            await self._require_existing_subgroup(
+                tenant_id=tenant_id,
+                workspace_id=workspace_id,
+                group_id=group_id,
+                subgroup_id=subgroup_id,
+            )
+        if document_id:
+            document = await self.admin_store.get_document_registry(
+                document_id,
+                tenant_id=tenant_id,
+                workspace_id=workspace_id,
+            )
+            if not document:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found.")
+            if group_id and document.get("group_id") != group_id:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                    detail="Document is outside the requested legal extraction group scope.",
+                )
+            if subgroup_id and document.get("subgroup_id") != subgroup_id:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                    detail="Document is outside the requested legal extraction subgroup scope.",
+                )
+        return await self.admin_store.list_legal_matter_extraction_runs(
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            group_id=group_id,
+            subgroup_id=subgroup_id,
+            document_id=document_id,
+            review_status=review_status,
+            limit=limit,
+        )
+
+    async def get_legal_matter_extraction(
+        self,
+        principal: Principal,
+        *,
+        legal_matter_extraction_run_id: str,
+    ) -> LittleBullLegalMatterExtractionResponse:
+        run = await self.admin_store.get_legal_matter_extraction_run(legal_matter_extraction_run_id)
+        if not run:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Legal extraction run not found.")
+        self._require(principal, ACTIVITY_DOCUMENT_READ, run["workspace_id"])
+        return LittleBullLegalMatterExtractionResponse(
+            run=run,
+            requires_human_review=bool(run["requires_human_review"]),
+            schema_contract=self._legal_matter_schema_contract(),
+        )
+
+    async def create_legal_matter_extraction(
+        self,
+        principal: Principal,
+        *,
+        payload: LittleBullLegalMatterExtractionRequest,
+    ) -> LittleBullLegalMatterExtractionResponse:
+        self._require(principal, ACTIVITY_DOCUMENT_UPLOAD, payload.workspace_id)
+        tenant_id, workspace_id = await self._existing_workspace_scope(payload.workspace_id)
+        await self._require_existing_group(
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            group_id=payload.group_id,
+        )
+        await self._require_existing_subgroup(
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            group_id=payload.group_id,
+            subgroup_id=payload.subgroup_id,
+        )
+        document = await self.admin_store.get_document_registry(
+            payload.document_id,
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+        )
+        if not document:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found.")
+        if document.get("group_id") != payload.group_id or document.get("subgroup_id") != payload.subgroup_id:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="Document is outside the requested legal extraction group/subgroup scope.",
+            )
+        self._validate_legal_source_refs(payload.document_id, payload.source_refs)
+        self._validate_legal_extraction_payload(payload)
+        row = await self.admin_store.create_legal_matter_extraction_run(
+            {
+                "workspace_id": workspace_id,
+                "group_id": payload.group_id,
+                "subgroup_id": payload.subgroup_id,
+                "document_id": payload.document_id,
+                "matter_reference": payload.matter_reference,
+                "extraction_model_id": payload.extraction_model_id,
+                "schema_version": payload.schema_version,
+                "extracted_payload": payload.extracted_payload.model_dump(),
+                "source_refs": payload.source_refs,
+                "confidence": payload.confidence,
+            },
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            user_id=principal.user_id,
+        )
+        await self.audit.record(
+            principal=principal,
+            action=ACTIVITY_DOCUMENT_UPLOAD,
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            result="legal_matter_extraction_created",
+            metadata={
+                "legal_matter_extraction_run_id": row["legal_matter_extraction_run_id"],
+                "document_id": row["document_id"],
+                "group_id": row["group_id"],
+                "subgroup_id": row["subgroup_id"],
+                "requires_human_review": True,
+            },
+        )
+        return LittleBullLegalMatterExtractionResponse(
+            run=row,
+            requires_human_review=True,
+            schema_contract=self._legal_matter_schema_contract(),
+        )
+
+    async def review_legal_matter_extraction(
+        self,
+        principal: Principal,
+        *,
+        legal_matter_extraction_run_id: str,
+        payload: LittleBullLegalMatterReviewRequest,
+    ) -> dict[str, Any]:
+        run = await self.admin_store.get_legal_matter_extraction_run(legal_matter_extraction_run_id)
+        if not run:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Legal extraction run not found.")
+        self._require(principal, ACTIVITY_DOCUMENT_UPLOAD, run["workspace_id"])
+        if payload.review_status == "approved":
+            self._require(principal, ACTIVITY_APPROVAL_DECIDE, run["workspace_id"])
+        reviewed = await self.admin_store.review_legal_matter_extraction_run(
+            legal_matter_extraction_run_id,
+            review_status=payload.review_status,
+            error_message=payload.error_message,
+            reviewed_by=principal.user_id,
+        )
+        if not reviewed:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Legal extraction run not found.")
+        await self.audit.record(
+            principal=principal,
+            action=ACTIVITY_DOCUMENT_UPLOAD,
+            tenant_id=reviewed["tenant_id"],
+            workspace_id=reviewed["workspace_id"],
+            result="legal_matter_extraction_reviewed",
+            metadata={
+                "legal_matter_extraction_run_id": legal_matter_extraction_run_id,
+                "review_status": reviewed["review_status"],
+                "document_id": reviewed["document_id"],
+                "requires_human_review": reviewed["requires_human_review"],
+            },
+        )
+        return reviewed
 
     async def get_markdown_note(
         self,

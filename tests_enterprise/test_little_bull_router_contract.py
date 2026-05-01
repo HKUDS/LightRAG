@@ -84,12 +84,24 @@ def test_little_bull_canvas_routes_exist_contract():
     assert "/little-bull/canvas/boards/{canvas_board_id}/edges" in openapi["paths"]
     assert "/little-bull/canvas/boards/{canvas_board_id}/analysis" in openapi["paths"]
     assert "/little-bull/canvas/boards/{canvas_board_id}/dossier" in openapi["paths"]
+    assert "/little-bull/dossiers" in openapi["paths"]
+    assert "/little-bull/dossiers/{knowledge_dossier_id}" in openapi["paths"]
+    assert "/little-bull/dossiers/{knowledge_dossier_id}/export" in openapi["paths"]
     assert {"get", "post"}.issubset(openapi["paths"]["/little-bull/canvas/boards"])
     assert "get" in openapi["paths"]["/little-bull/canvas/boards/{canvas_board_id}"]
     assert "post" in openapi["paths"]["/little-bull/canvas/boards/{canvas_board_id}/nodes"]
     assert "post" in openapi["paths"]["/little-bull/canvas/boards/{canvas_board_id}/edges"]
     assert "get" in openapi["paths"]["/little-bull/canvas/boards/{canvas_board_id}/analysis"]
     assert "post" in openapi["paths"]["/little-bull/canvas/boards/{canvas_board_id}/dossier"]
+    assert "get" in openapi["paths"]["/little-bull/dossiers"]
+    assert "get" in openapi["paths"]["/little-bull/dossiers/{knowledge_dossier_id}"]
+    assert "post" in openapi["paths"]["/little-bull/dossiers/{knowledge_dossier_id}/export"]
+
+    schemas = openapi["components"]["schemas"]
+    dossier_export_props = schemas["LittleBullDossierExportRequest"]["properties"]
+    dossier_props = schemas["KnowledgeDossier"]["properties"]
+    assert {"format", "destination", "approval_id", "include_audit"}.issubset(dossier_export_props)
+    assert {"content_refs", "export_policy", "approval_id"}.issubset(dossier_props)
 
 
 def test_little_bull_content_map_and_trail_routes_exist_contract():
@@ -141,6 +153,54 @@ def test_little_bull_inbox_and_daily_note_routes_exist_contract():
         "target_id",
     }.issubset(curator_request_props)
     assert {"inbox_item", "requires_approval", "allowed_actions"}.issubset(curator_response_props)
+
+
+def test_little_bull_legal_matter_extraction_routes_exist_contract():
+    app = FastAPI()
+    app.include_router(create_little_bull_router(rag=object(), doc_manager=object()))
+
+    openapi = app.openapi()
+
+    assert "/little-bull/legal/extractions" in openapi["paths"]
+    assert "/little-bull/legal/extractions/{legal_matter_extraction_run_id}/review" in openapi["paths"]
+    assert "/little-bull/legal/extractions/{legal_matter_extraction_run_id}" in openapi["paths"]
+    assert {"get", "post"}.issubset(openapi["paths"]["/little-bull/legal/extractions"])
+    assert "get" in openapi["paths"]["/little-bull/legal/extractions/{legal_matter_extraction_run_id}"]
+    assert "post" in openapi["paths"]["/little-bull/legal/extractions/{legal_matter_extraction_run_id}/review"]
+
+    schemas = openapi["components"]["schemas"]
+    request_props = schemas["LittleBullLegalMatterExtractionRequest"]["properties"]
+    response_props = schemas["LittleBullLegalMatterExtractionResponse"]["properties"]
+    payload_props = schemas["LegalMatterExtractionPayload"]["properties"]
+
+    assert {
+        "workspace_id",
+        "group_id",
+        "subgroup_id",
+        "document_id",
+        "extracted_payload",
+        "source_refs",
+        "confidence",
+    }.issubset(request_props)
+    assert {
+        "processos",
+        "partes",
+        "advogados",
+        "juizo",
+        "tribunal",
+        "magistrados",
+        "testemunhas",
+        "causa_de_pedir",
+        "pedidos",
+        "valores",
+        "decisoes",
+        "sentencas",
+        "acordaos",
+        "liquidacoes",
+        "prazos",
+        "jurimetria",
+    }.issubset(payload_props)
+    assert {"run", "requires_human_review", "schema_contract"}.issubset(response_props)
 
 
 def test_little_bull_agent_builder_and_context_budget_routes_exist_contract():
