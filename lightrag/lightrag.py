@@ -5392,10 +5392,17 @@ class LightRAG:
                 )
 
                 file_bytes = await asyncio.to_thread(p.read_bytes)
+                # Use the canonical (hint-stripped) basename so the image
+                # asset path embedded in content_list matches the directory
+                # _write_lightrag_document_from_content_list will create
+                # below (it also calls canonicalize_parser_hinted_basename).
+                canonical_basename = (
+                    canonicalize_parser_hinted_basename(file_path) or p.name
+                )
                 content_list, asset_blobs = await asyncio.to_thread(
                     parse_docx_to_lightrag_content_list,
                     file_bytes,
-                    p.name,
+                    canonical_basename,
                     doc_id,
                 )
                 if not content_list:
@@ -5403,20 +5410,11 @@ class LightRAG:
                         f"DOCX parser returned empty content for {file_path}"
                     )
 
-                # Write image assets into <parsed_dir>/<base>.blocks.assets/
-                # so the LightRAG Document writer's drawing item paths resolve.
-                if asset_blobs:
-                    parsed_dir = self._parsed_artifact_dir_for_source(str(p), file_path)
-                    parsed_dir.mkdir(parents=True, exist_ok=True)
-                    base_stem = Path(p.name).stem or doc_id
-                    asset_dir = parsed_dir / f"{base_stem}.blocks.assets"
-                    asset_dir.mkdir(parents=True, exist_ok=True)
-                    for filename, blob in asset_blobs.items():
-                        (asset_dir / filename).write_bytes(blob)
-
                 # Reuse the shared writer that mineru/docling already use.
                 # It produces .blocks.jsonl + sidecar JSONs, persists
                 # full_docs as LIGHTRAG format, and archives the source.
+                # NOTE: this writer wipes parsed_dir at the start, so any
+                # image bytes must be written AFTER it returns.
                 parsed_data = await self._write_lightrag_document_from_content_list(
                     doc_id=doc_id,
                     file_path=file_path,
@@ -5424,6 +5422,21 @@ class LightRAG:
                     engine=PARSER_ENGINE_NATIVE,
                     source_path=str(p),
                 )
+
+                # Now drop image assets into <parsed_dir>/<base>.blocks.assets/
+                # so the drawing items' img_path resolve correctly.
+                if asset_blobs:
+                    parsed_dir = self._parsed_artifact_dir_for_source(
+                        str(p), file_path
+                    )
+                    base_stem = (
+                        Path(canonicalize_parser_hinted_basename(file_path) or p.name).stem
+                        or doc_id
+                    )
+                    asset_dir = parsed_dir / f"{base_stem}.blocks.assets"
+                    asset_dir.mkdir(parents=True, exist_ok=True)
+                    for filename, blob in asset_blobs.items():
+                        (asset_dir / filename).write_bytes(blob)
                 logger.info(
                     f"[parse_native] pending_parse completed for {file_path} "
                     f"via LightRAG Document ({len(content_list)} content_list items)"

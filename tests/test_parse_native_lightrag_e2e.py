@@ -199,3 +199,69 @@ def test_native_lightrag_path_writes_blocks_jsonl_and_skips_meta_on_load(
         assert result["content"].strip() == "the body"
 
     asyncio.run(_run())
+
+
+@pytest.mark.offline
+def test_native_lightrag_path_writes_image_assets_to_blocks_assets_dir(
+    tmp_path, monkeypatch
+):
+    """Native parsing must drop image bytes into ``<base>.blocks.assets/``
+    after the LightRAG Document writer creates the parsed dir — the writer
+    wipes the directory at the start, so a naive "write images first" would
+    leave the assets dir empty.
+    """
+    from pathlib import Path
+
+    async def _run():
+        input_dir = tmp_path / "input"
+        input_dir.mkdir()
+        monkeypatch.setenv("INPUT_DIR", str(input_dir))
+
+        source_path = input_dir / "with_pics.docx"
+        source_path.write_bytes(b"fake")
+
+        parse_document = importlib.import_module("lightrag.extraction.parse_document")
+
+        def _stub_parse(file_bytes, source_file, doc_id):
+            base_stem = Path(source_file).stem
+            asset_dir_rel = f"{base_stem}.blocks.assets"
+            content_list = [
+                {"type": "text", "text": "intro"},
+                {
+                    "type": "image",
+                    "id": "1",
+                    "img_path": f"{asset_dir_rel}/pic.png",
+                    "image_caption": ["pic"],
+                },
+                {"type": "text", "text": "outro"},
+            ]
+            asset_blobs = {"pic.png": b"PNG-BYTES"}
+            return content_list, asset_blobs
+
+        monkeypatch.setattr(
+            parse_document, "parse_docx_to_lightrag_content_list", _stub_parse
+        )
+
+        rag = _MiniRag(tmp_path / "work")
+        result = await LightRAG.parse_native(
+            rag,
+            "doc-pic",
+            str(source_path),
+            {"format": FULL_DOCS_FORMAT_PENDING_PARSE, "content": ""},
+        )
+
+        blocks_path = Path(result["blocks_path"])
+        parsed_dir = blocks_path.parent
+        asset_dir = parsed_dir / "with_pics.blocks.assets"
+        # Asset dir must exist alongside .blocks.jsonl, and the image
+        # bytes must survive the writer's parsed_dir cleanup step.
+        assert asset_dir.is_dir(), (
+            f"asset dir not created at {asset_dir}; parsed_dir contents: "
+            f"{list(parsed_dir.iterdir())}"
+        )
+        assert (asset_dir / "pic.png").read_bytes() == b"PNG-BYTES"
+        # And drawings.json sidecar should also be there since the
+        # content_list contained an image item.
+        assert (parsed_dir / "with_pics.drawings.json").is_file()
+
+    asyncio.run(_run())
