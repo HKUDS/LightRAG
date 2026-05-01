@@ -33,6 +33,7 @@ from lightrag.constants import (
 )
 from lightrag.parser_routing import (
     canonicalize_parser_hinted_basename,
+    filename_parser_hint,
     resolve_file_parser_engine,
 )
 from lightrag.utils import (
@@ -1029,7 +1030,6 @@ def delete_file_variants_by_canonical_basename(
 
     deleted_files: list[str] = []
     errors: list[str] = []
-    seen_paths: set[Path] = set()
     candidate_dirs = [input_dir, input_dir / PARSED_DIR_NAME]
     input_dir_resolved = input_dir.resolve()
 
@@ -1044,9 +1044,6 @@ def delete_file_variants_by_canonical_basename(
 
         in_parsed_dir = candidate_dir.name == PARSED_DIR_NAME
         for candidate in candidates:
-            if candidate in seen_paths:
-                continue
-
             if candidate.is_file():
                 if (
                     canonicalize_archived_file_variant_basename(
@@ -1066,7 +1063,6 @@ def delete_file_variants_by_canonical_basename(
 
                 try:
                     safe_candidate.unlink()
-                    seen_paths.add(candidate)
                     deleted_files.append(
                         str(safe_candidate.relative_to(input_dir_resolved))
                     )
@@ -1078,7 +1074,10 @@ def delete_file_variants_by_canonical_basename(
                 canonical_for_dir = _canonical_basename_for_parsed_artifact_dir(
                     candidate.name
                 )
-                if canonical_for_dir is None or canonical_for_dir not in canonical_names:
+                if (
+                    canonical_for_dir is None
+                    or canonical_for_dir not in canonical_names
+                ):
                     continue
 
                 safe_candidate = validate_file_path_security(
@@ -1090,12 +1089,13 @@ def delete_file_variants_by_canonical_basename(
 
                 try:
                     shutil.rmtree(safe_candidate)
-                    seen_paths.add(candidate)
                     deleted_files.append(
                         str(safe_candidate.relative_to(input_dir_resolved))
                     )
                 except Exception as e:
-                    errors.append(f"Failed to delete artifact dir {candidate.name}: {e}")
+                    errors.append(
+                        f"Failed to delete artifact dir {candidate.name}: {e}"
+                    )
 
     return deleted_files, errors
 
@@ -1914,30 +1914,41 @@ async def run_scanning_process(
         logger.info(f"Found {total_files} files to index.")
 
         if new_files:
-            unique_files = []
-            files_by_canonical_name: dict[str, Path] = {}
+            # Group canonical-equivalent files so we can prefer hint-bearing
+            # variants over plain ones. Within each group sort order is
+            # preserved as a deterministic tiebreaker.
+            files_by_canonical_name: dict[str, list[Path]] = {}
             for file_path in sorted(
                 new_files, key=lambda p: get_pinyin_sort_key(str(p))
             ):
                 canonical_name = normalize_file_path(str(file_path))
-                first_file = files_by_canonical_name.get(canonical_name)
-                if first_file is None:
-                    files_by_canonical_name[canonical_name] = file_path
-                    unique_files.append(file_path)
-                    continue
+                files_by_canonical_name.setdefault(canonical_name, []).append(file_path)
 
-                warning = (
-                    "Skipping duplicate file in scan batch: "
-                    f"{file_path.name} duplicates {first_file.name} "
-                    f"(canonical: {canonical_name})"
+            unique_files: list[Path] = []
+            for canonical_name, group in files_by_canonical_name.items():
+                # Prefer the first file carrying a supported parser hint so
+                # the user's explicit engine choice wins over plain variants;
+                # otherwise fall back to the first sorted entry.
+                chosen = next(
+                    (f for f in group if filename_parser_hint(f.name) is not None),
+                    group[0],
                 )
-                await record_scan_warning(rag, warning)
-                try:
-                    await move_file_to_parsed_dir(file_path)
-                except Exception as move_error:
-                    logger.error(
-                        f"Failed to move duplicate scan file {file_path.name} to {PARSED_DIR_NAME}: {move_error}"
+                unique_files.append(chosen)
+                for duplicate in group:
+                    if duplicate is chosen:
+                        continue
+                    warning = (
+                        "Skipping duplicate file in scan batch: "
+                        f"{duplicate.name} duplicates {chosen.name} "
+                        f"(canonical: {canonical_name})"
                     )
+                    await record_scan_warning(rag, warning)
+                    try:
+                        await move_file_to_parsed_dir(duplicate)
+                    except Exception as move_error:
+                        logger.error(
+                            f"Failed to move duplicate scan file {duplicate.name} to {PARSED_DIR_NAME}: {move_error}"
+                        )
 
             # Check for files with PROCESSED status and filter them out
             valid_files = []

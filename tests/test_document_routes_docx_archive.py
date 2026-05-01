@@ -440,14 +440,17 @@ async def test_scan_archives_same_batch_canonical_duplicates(tmp_path, monkeypat
 
     await run_scanning_process(rag, doc_manager, "track-scan")
 
+    # Hinted variant is preferred so the user's explicit engine choice wins;
+    # the plain variant is the one that gets archived.
     assert len(calls) == 1
-    assert len(calls[0]["file_paths"]) == 1
+    assert calls[0]["file_paths"] == [hinted_file]
     assert calls[0]["kwargs"] == {"reprocess_existing_non_processed": True}
     archived_names = {
         path.name for path in (tmp_path / PARSED_DIR_NAME).iterdir() if path.is_file()
     }
-    assert archived_names in ({"same.docx"}, {"same.[native].docx"})
-    assert sum(path.exists() for path in (plain_file, hinted_file)) == 1
+    assert archived_names == {"same.docx"}
+    assert hinted_file.exists()
+    assert not plain_file.exists()
 
 
 async def test_scan_existing_non_processed_reprocesses_file(tmp_path, monkeypatch):

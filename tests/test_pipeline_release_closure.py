@@ -113,6 +113,21 @@ def test_canonicalize_parser_hinted_basename():
     assert canonicalize_parser_hinted_basename("abc.[native].docx") == "abc.docx"
     assert canonicalize_parser_hinted_basename("/tmp/a.b.[mineru].pdf") == "a.b.pdf"
     assert canonicalize_parser_hinted_basename("abc.[draft].docx") == "abc.[draft].docx"
+    # Engine token is case-insensitive (normalize_parser_engine lower-cases).
+    assert canonicalize_parser_hinted_basename("abc.[NATIVE].docx") == "abc.docx"
+    # Engine sub-variants like "mineru-iet" normalize to a base engine.
+    assert canonicalize_parser_hinted_basename("abc.[mineru-iet].pdf") == "abc.pdf"
+    # No extension after the bracket: pattern requires ``.[engine].ext``.
+    assert canonicalize_parser_hinted_basename("abc.[native]") == "abc.[native]"
+    # Plain basename without any hint is returned unchanged.
+    assert canonicalize_parser_hinted_basename("abc.docx") == "abc.docx"
+    # Bracket without a leading dot is not a hint.
+    assert canonicalize_parser_hinted_basename("[native].docx") == "[native].docx"
+    # Nested hints: only the outermost segment is stripped.
+    assert (
+        canonicalize_parser_hinted_basename("name.[native].[mineru].pdf")
+        == "name.[native].pdf"
+    )
 
 
 @pytest.mark.offline

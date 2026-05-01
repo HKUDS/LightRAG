@@ -111,7 +111,7 @@ DOCLING_ENDPOINT=http://localhost:8081/v1/convert/file/async
 - 分析结果文件：LightRAG Document blocks 文件使用规范化文件名的主干命名，例如 `__parsed__/report.docx.parsed/report.blocks.jsonl`；同一目录下还可能包含 `report.tables.json`、`report.drawings.json`、`report.equations.json` 和 `report.blocks.assets/` 图片资源目录。
 - 解析失败时，原文件不会移动，便于修复配置后重新处理。
 - `/documents/scan` 扫描到同名且已 `PROCESSED` 的文件时，该输入文件会被视为已处理并移动到 `__parsed__`，不会作为新文档入队。
-- `/documents/scan` 同一次扫描中发现多个规范化后同名的文件时，只会按排序处理第一个文件，其余文件会输出 warning 并移动到 `__parsed__`，避免同批文件互相覆盖。例如 `abc.docx` 和 `abc.[native].docx` 同时存在时只处理其中一个。
+- `/documents/scan` 同一次扫描中发现多个规范化后同名的文件时，会优先保留带支持引擎 hint 的文件以尊重用户的引擎选择；如果没有任何变体带 hint，则按排序处理第一个文件。其余变体会输出 warning 并移动到 `__parsed__`，避免同批文件互相覆盖。例如 `abc.docx` 和 `abc.[native].docx` 同时存在时只会处理 `abc.[native].docx`。
 - 扫描或解析过程中发现内容 hash 重复时，该输入文件同样会移动到 `__parsed__`；本次 `doc_status` 保留为 `FAILED duplicate` 以便追踪。
 - 移动文件只作用于当前输入文件，不会覆盖或移动既有文档源文件。若目标目录已存在同名文件，系统会自动追加 `_001`、`_002` 等编号，例如 `report.pdf` 会依次归档为 `report_001.pdf`、`report_002.pdf`。若分析结果目录名已被普通文件占用，也会追加编号，例如 `report.docx.parsed_001/`。
 
@@ -125,7 +125,7 @@ DOCLING_ENDPOINT=http://localhost:8081/v1/convert/file/async
 - 文件名查重会去掉文件名末尾的支持引擎处理指引 hint，即认为 `abc.docx` 与 `abc.[native].docx` 是文件名重复；不支持的 hint 不会被剥离，例如 `abc.[draft].docx` 仍按原文件名处理。
 - 对普通上传、文本接口和核心入队 API，只要 `doc_status` 中已经存在同名文件记录，无论该记录当前处于 `PENDING`、`PARSING`、`ANALYZING`、`PROCESSING`、`FAILED` 还是 `PROCESSED`，同名文件都会被视为重复。
 - 对 `/documents/scan` 目录扫描：
-  - 同一次扫描中如果有多个文件规范化后同名，只处理排序后的第一个文件，其余文件会归档到 `__parsed__` 并跳过。
+  - 同一次扫描中如果有多个文件规范化后同名，优先处理带支持引擎 hint 的文件；若无任何 hint 变体，则处理排序后的第一个文件，其余文件会归档到 `__parsed__` 并跳过。
   - 如果同名记录已经是 `PROCESSED`，当前扫描到的文件视为已处理文件，系统会输出 warning，将该输入文件移动到同级 `__parsed__` 目录，并跳过入队。
   - 如果同名记录不是 `PROCESSED`，当前扫描文件不会仅因文件名相同而跳过；系统会按新的扫描文件从头提取、入队并覆盖/重置未完成的同名状态。
 - 普通上传和核心入队 API 中，同名文件即使内容已经变化，也需要先删除旧文档记录后再重新上传或入队；扫描路径的非 `PROCESSED` 同名重处理只用于目录扫描自动恢复。
