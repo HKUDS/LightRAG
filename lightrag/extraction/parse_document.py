@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import shutil
 from datetime import datetime, timezone
 from typing import Any
 
@@ -112,6 +113,8 @@ def parse_docx_to_interchange_jsonl(
         )
         assets_dir = Path(output_dir) / f"{asset_base}.blocks.assets"
         try:
+            if assets_dir.exists():
+                shutil.rmtree(assets_dir)
             assets_dir.mkdir(parents=True, exist_ok=True)
             for _rel_id, (filename, blob) in images.items():
                 (assets_dir / filename).write_bytes(blob)
