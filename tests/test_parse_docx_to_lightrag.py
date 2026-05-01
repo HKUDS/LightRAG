@@ -160,7 +160,9 @@ def test_parse_docx_to_lightrag_content_list_filters_unreferenced_assets(monkeyp
 
 
 @pytest.mark.offline
-def test_parse_docx_to_lightrag_content_list_uses_source_stem_for_asset_dir(monkeypatch):
+def test_parse_docx_to_lightrag_content_list_uses_source_stem_for_asset_dir(
+    monkeypatch,
+):
     """Asset paths must use ``<source-stem>.blocks.assets`` so they line up
     with ``LightRAG._write_lightrag_document_from_content_list``."""
     from lightrag.extraction import parse_document as pd
@@ -173,9 +175,7 @@ def test_parse_docx_to_lightrag_content_list_uses_source_stem_for_asset_dir(monk
         )
     ]
     monkeypatch.setattr(pd, "extract_docx_paragraphs", lambda _b: paragraphs)
-    monkeypatch.setattr(
-        pd, "extract_docx_images", lambda _b: {"r1": ("p.png", b"x")}
-    )
+    monkeypatch.setattr(pd, "extract_docx_images", lambda _b: {"r1": ("p.png", b"x")})
 
     content_list, _ = pd.parse_docx_to_lightrag_content_list(
         b"docx", source_file="MI012 技术说明书.docx", doc_id="doc-1"

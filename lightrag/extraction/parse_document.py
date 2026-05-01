@@ -40,7 +40,7 @@ def _sha256_hex(data: bytes) -> str:
 #   - ``<equation>...</equation>`` for OMML formulas
 _INLINE_DRAWING_OR_EQUATION = re.compile(
     r'<drawing\s+id="(?P<dr_id>[^"]*)"\s+name="(?P<dr_name>[^"]*)"\s*/>'
-    r'|<equation>(?P<eq>.*?)</equation>'
+    r"|<equation>(?P<eq>.*?)</equation>"
 )
 
 
@@ -65,11 +65,7 @@ def _split_inline_paragraph(
         if m.group("dr_id") is not None:
             dr_id = m.group("dr_id") or ""
             dr_name = m.group("dr_name") or ""
-            rid = (
-                drawing_rids[drawing_idx]
-                if drawing_idx < len(drawing_rids)
-                else ""
-            )
+            rid = drawing_rids[drawing_idx] if drawing_idx < len(drawing_rids) else ""
             drawing_idx += 1
             img_info = images.get(rid)
             if img_info is not None:
@@ -79,9 +75,7 @@ def _split_inline_paragraph(
                         "type": "image",
                         "id": dr_id,
                         "img_path": (
-                            f"{asset_dir_rel}/{filename}"
-                            if asset_dir_rel
-                            else filename
+                            f"{asset_dir_rel}/{filename}" if asset_dir_rel else filename
                         ),
                         "image_caption": [dr_name] if dr_name else [],
                     }

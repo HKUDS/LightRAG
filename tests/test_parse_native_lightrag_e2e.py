@@ -89,9 +89,7 @@ def test_native_lightrag_path_produces_stable_merged_text(tmp_path, monkeypatch)
         # times — the real cache stability guarantee comes from LightRAG
         # writing a stable .blocks.jsonl content section, not from the
         # parser itself being deterministic.
-        parse_document = importlib.import_module(
-            "lightrag.extraction.parse_document"
-        )
+        parse_document = importlib.import_module("lightrag.extraction.parse_document")
         stable_content_list = [
             {"type": "section_header", "text": "Title", "text_level": 1},
             {"type": "text", "text": "First paragraph body."},
@@ -125,9 +123,7 @@ def test_native_lightrag_path_produces_stable_merged_text(tmp_path, monkeypatch)
         # both meta (with a fresh parsed_time) and content lines.
         source_path.write_bytes(b"fake docx bytes")
         rag.full_docs.data.clear()
-        parsed_artifact_dir = (
-            input_dir / PARSED_DIR_NAME / f"{source_path.name}.parsed"
-        )
+        parsed_artifact_dir = input_dir / PARSED_DIR_NAME / f"{source_path.name}.parsed"
         if parsed_artifact_dir.exists():
             import shutil
 
@@ -179,9 +175,7 @@ def test_native_lightrag_path_writes_blocks_jsonl_and_skips_meta_on_load(
         source_path = input_dir / "skipmeta.docx"
         source_path.write_bytes(b"fake")
 
-        parse_document = importlib.import_module(
-            "lightrag.extraction.parse_document"
-        )
+        parse_document = importlib.import_module("lightrag.extraction.parse_document")
         monkeypatch.setattr(
             parse_document,
             "parse_docx_to_lightrag_content_list",

@@ -5406,9 +5406,7 @@ class LightRAG:
                 # Write image assets into <parsed_dir>/<base>.blocks.assets/
                 # so the LightRAG Document writer's drawing item paths resolve.
                 if asset_blobs:
-                    parsed_dir = self._parsed_artifact_dir_for_source(
-                        str(p), file_path
-                    )
+                    parsed_dir = self._parsed_artifact_dir_for_source(str(p), file_path)
                     parsed_dir.mkdir(parents=True, exist_ok=True)
                     base_stem = Path(p.name).stem or doc_id
                     asset_dir = parsed_dir / f"{base_stem}.blocks.assets"
