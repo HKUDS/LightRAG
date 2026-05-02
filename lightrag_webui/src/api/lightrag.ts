@@ -5,6 +5,10 @@ import { useSettingsStore } from '@/stores/settings'
 import { useAuthStore } from '@/stores/state'
 import { navigationService } from '@/services/navigation'
 
+// CRLF injection sanitization for header values
+const sanitizeHeader = (value: string | null): string | null =>
+  value?.replace(/[\r\n]/g, '') ?? null
+
 // Types
 export type LightragNodeType = {
   id: string
@@ -359,7 +363,7 @@ axiosInstance.interceptors.request.use((config) => {
     config.headers['X-API-Key'] = apiKey
   }
   // Workspace header
-  const workspace = useSettingsStore.getState().currentWorkspace
+  const workspace = sanitizeHeader(useSettingsStore.getState().currentWorkspace)
   if (workspace) {
     config.headers['LIGHTRAG-WORKSPACE'] = workspace
   }
@@ -541,7 +545,7 @@ export const queryTextStream = async (
   if (apiKey) {
     headers['X-API-Key'] = apiKey;
   }
-  const workspace = useSettingsStore.getState().currentWorkspace;
+  const workspace = sanitizeHeader(useSettingsStore.getState().currentWorkspace);
   if (workspace) {
     headers['LIGHTRAG-WORKSPACE'] = workspace;
   }
@@ -1197,6 +1201,9 @@ export const getDocumentStatusCounts = async (): Promise<StatusCountsResponse> =
 }
 
 export const getWorkspaces = async (): Promise<Workspace[]> => {
-  const response = await axiosInstance.get<{ workspaces: Workspace[] }>('/workspaces')
+  const response = await axiosInstance.get('/workspaces')
+  if (!response.data?.workspaces || !Array.isArray(response.data.workspaces)) {
+    throw new Error('Invalid workspaces response')
+  }
   return response.data.workspaces
 }

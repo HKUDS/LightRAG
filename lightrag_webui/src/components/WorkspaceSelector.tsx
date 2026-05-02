@@ -18,6 +18,11 @@ export default function WorkspaceSelector() {
     try {
       const data = await getWorkspaces()
       setWorkspaces(data)
+      // Check if current workspace is still in the list
+      const current = useSettingsStore.getState().currentWorkspace
+      if (current && !data.some((w: { name: string }) => w.name === current)) {
+        useSettingsStore.getState().setCurrentWorkspace(null)
+      }
     } catch {
       // Graceful degradation: keep empty list, show only "None" option
       setWorkspaces([])
