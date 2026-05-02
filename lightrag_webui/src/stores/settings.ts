@@ -82,6 +82,10 @@ interface SettingsState {
   // Search label dropdown refresh trigger (non-persistent, runtime only)
   searchLabelDropdownRefreshTrigger: number
   triggerSearchLabelDropdownRefresh: () => void
+
+  // Workspace settings
+  currentWorkspace: string | null
+  setCurrentWorkspace: (workspace: string | null) => void
 }
 
 const useSettingsStoreBase = create<SettingsState>()(
@@ -233,12 +237,15 @@ const useSettingsStoreBase = create<SettingsState>()(
       triggerSearchLabelDropdownRefresh: () =>
         set((state) => ({
           searchLabelDropdownRefreshTrigger: state.searchLabelDropdownRefreshTrigger + 1
-        }))
+        })),
+
+      currentWorkspace: null,
+      setCurrentWorkspace: (workspace: string | null) => set({ currentWorkspace: workspace })
     }),
     {
       name: 'settings-storage',
       storage: createJSONStorage(() => localStorage),
-      version: 19,
+      version: 20,
       migrate: (state: any, version: number) => {
         if (version < 2) {
           state.showEdgeLabel = false
@@ -340,6 +347,9 @@ const useSettingsStoreBase = create<SettingsState>()(
           if (state.querySettings) {
             delete state.querySettings.response_type
           }
+        }
+        if (version < 20) {
+          state.currentWorkspace = null
         }
         return state
       }

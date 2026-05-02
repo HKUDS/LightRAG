@@ -78,6 +78,12 @@ export type LightragStatus = {
   webui_description?: string
 }
 
+export type Workspace = {
+  name: string
+  first_seen: string
+  last_seen: string
+}
+
 export type LightragDocumentsScanProgress = {
   is_scanning: boolean
   current_file: string
@@ -352,6 +358,11 @@ axiosInstance.interceptors.request.use((config) => {
   if (apiKey) {
     config.headers['X-API-Key'] = apiKey
   }
+  // Workspace header
+  const workspace = useSettingsStore.getState().currentWorkspace
+  if (workspace) {
+    config.headers['LIGHTRAG-WORKSPACE'] = workspace
+  }
   return config
 })
 
@@ -529,6 +540,10 @@ export const queryTextStream = async (
   }
   if (apiKey) {
     headers['X-API-Key'] = apiKey;
+  }
+  const workspace = useSettingsStore.getState().currentWorkspace;
+  if (workspace) {
+    headers['LIGHTRAG-WORKSPACE'] = workspace;
   }
 
   try {
@@ -1179,4 +1194,9 @@ export const getDocumentsPaginatedWithTimeout = (
 export const getDocumentStatusCounts = async (): Promise<StatusCountsResponse> => {
   const response = await axiosInstance.get('/documents/status_counts')
   return response.data
+}
+
+export const getWorkspaces = async (): Promise<Workspace[]> => {
+  const response = await axiosInstance.get<{ workspaces: Workspace[] }>('/workspaces')
+  return response.data.workspaces
 }

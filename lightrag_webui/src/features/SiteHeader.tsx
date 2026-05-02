@@ -1,6 +1,7 @@
 import Button from '@/components/ui/Button'
 import { SiteInfo, webuiPrefix } from '@/lib/constants'
 import AppSettings from '@/components/AppSettings'
+import WorkspaceSelector from '@/components/WorkspaceSelector'
 import { TabsList, TabsTrigger } from '@/components/ui/Tabs'
 import { useSettingsStore } from '@/stores/settings'
 import { useAuthStore } from '@/stores/state'
@@ -99,6 +100,10 @@ export default function SiteHeader() {
             </TooltipProvider>
           </div>
         )}
+        {!webuiTitle && (
+          <span className="mx-1 text-xs text-gray-500 dark:text-gray-400">|</span>
+        )}
+        <WorkspaceSelector />
       </div>
 
       <div className="flex h-10 flex-1 items-center justify-center">
