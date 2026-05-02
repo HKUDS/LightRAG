@@ -50,6 +50,7 @@ RUN --mount=type=cache,target=/root/.local/share/uv \
 
 # Copy project sources after dependency layer
 COPY lightrag/ ./lightrag/
+COPY lightrag_enterprise/ ./lightrag_enterprise/
 
 # Include pre-built frontend assets from the previous stage
 COPY --from=frontend-builder /app/lightrag/api/webui ./lightrag/api/webui
@@ -79,6 +80,7 @@ ENV UV_SYSTEM_PYTHON=1
 COPY --from=builder /root/.local /root/.local
 COPY --from=builder /app/.venv /app/.venv
 COPY --from=builder /app/lightrag ./lightrag
+COPY --from=builder /app/lightrag_enterprise ./lightrag_enterprise
 COPY pyproject.toml .
 COPY setup.py .
 COPY uv.lock .
