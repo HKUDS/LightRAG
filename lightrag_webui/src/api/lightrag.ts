@@ -6,7 +6,7 @@ import { useAuthStore } from '@/stores/state'
 import { navigationService } from '@/services/navigation'
 
 // CRLF injection sanitization for header values
-const sanitizeHeader = (value: string | null): string | null =>
+export const sanitizeHeader = (value: string | null): string | null =>
   value?.replace(/[\r\n]/g, '') ?? null
 
 // Types
@@ -289,7 +289,7 @@ export const InvalidApiKeyError = 'Invalid API Key'
 export const RequireApiKeError = 'API Key required'
 
 // Axios instance
-const axiosInstance = axios.create({
+export const axiosInstance = axios.create({
   baseURL: backendBaseUrl,
   headers: {
     'Content-Type': 'application/json'
