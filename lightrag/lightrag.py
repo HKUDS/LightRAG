@@ -3418,7 +3418,7 @@ class LightRAG:
                                         f"Document content not found in full_docs for doc_id: {doc_id}"
                                     )
 
-                                parse_engine = self._resolve_parser_engine(
+                                parse_engine = resolve_stored_document_parser_engine(
                                     file_path=file_path, content_data=content_data
                                 )
                                 if parse_engine == "mineru":
@@ -4111,7 +4111,7 @@ class LightRAG:
 
                 for doc_id, status_doc in to_process_docs.items():
                     content_data = await self.full_docs.get_by_id(doc_id) or {}
-                    engine = self._resolve_parser_engine(
+                    engine = resolve_stored_document_parser_engine(
                         file_path=getattr(status_doc, "file_path", "unknown_source"),
                         content_data=content_data,
                     )
@@ -4564,11 +4564,6 @@ class LightRAG:
                     merged_parts.append(content)
 
         return "\n\n".join(merged_parts), str(blocks_path)
-
-    def _resolve_parser_engine(
-        self, file_path: str, content_data: dict[str, Any]
-    ) -> str:
-        return resolve_stored_document_parser_engine(file_path, content_data)
 
     def _get_by_path(self, payload: Any, path: str) -> Any:
         if not path:
@@ -5426,11 +5421,11 @@ class LightRAG:
                 # Now drop image assets into <parsed_dir>/<base>.blocks.assets/
                 # so the drawing items' img_path resolve correctly.
                 if asset_blobs:
-                    parsed_dir = self._parsed_artifact_dir_for_source(
-                        str(p), file_path
-                    )
+                    parsed_dir = self._parsed_artifact_dir_for_source(str(p), file_path)
                     base_stem = (
-                        Path(canonicalize_parser_hinted_basename(file_path) or p.name).stem
+                        Path(
+                            canonicalize_parser_hinted_basename(file_path) or p.name
+                        ).stem
                         or doc_id
                     )
                     asset_dir = parsed_dir / f"{base_stem}.blocks.assets"

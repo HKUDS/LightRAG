@@ -14,6 +14,7 @@ _lightrag = importlib.import_module("lightrag.lightrag")
 _base = importlib.import_module("lightrag.base")
 _constants = importlib.import_module("lightrag.constants")
 _utils = importlib.import_module("lightrag.utils")
+_parser_routing = importlib.import_module("lightrag.parser_routing")
 sys.argv = _original_argv
 
 DocStatus = _base.DocStatus
@@ -23,6 +24,9 @@ FULL_DOCS_FORMAT_PENDING_PARSE = _constants.FULL_DOCS_FORMAT_PENDING_PARSE
 PARSED_DIR_NAME = _constants.PARSED_DIR_NAME
 compute_mdhash_id = _utils.compute_mdhash_id
 LightRAG = _lightrag.LightRAG
+resolve_stored_document_parser_engine = (
+    _parser_routing.resolve_stored_document_parser_engine
+)
 pipeline_index_file = _document_routes.pipeline_index_file
 pipeline_index_files = _document_routes.pipeline_index_files
 pipeline_enqueue_file = _document_routes.pipeline_enqueue_file
@@ -796,8 +800,7 @@ async def test_parse_native_docx_empty_interchange_result_raises_without_fallbac
 
 
 def test_lightrag_document_reprocess_uses_full_docs_without_reparse():
-    engine = LightRAG._resolve_parser_engine(
-        object(),
+    engine = resolve_stored_document_parser_engine(
         "report.[mineru].docx",
         {
             "format": FULL_DOCS_FORMAT_LIGHTRAG,

@@ -17,6 +17,7 @@ from lightrag.parser_routing import (
     ParserRoutingConfigError,
     canonicalize_parser_hinted_basename,
     resolve_file_parser_engine,
+    resolve_stored_document_parser_engine,
     validate_parser_routing_config,
 )
 from lightrag.utils import (
@@ -79,32 +80,33 @@ def _new_rag(tmp_path: Path, **kwargs) -> LightRAG:
 
 
 @pytest.mark.offline
-def test_parse_engine_routing_by_filename_and_env(tmp_path, monkeypatch):
-    rag = _new_rag(tmp_path)
+def test_parse_engine_routing_by_filename_and_env(monkeypatch):
     monkeypatch.setenv("DOCLING_ENDPOINT", "http://fake-docling")
-    assert rag._resolve_parser_engine("a.[docling-iet].docx", {}) == "docling"
+    assert (
+        resolve_stored_document_parser_engine("a.[docling-iet].docx", {}) == "docling"
+    )
 
     monkeypatch.setenv("MINERU_ENDPOINT", "http://fake-mineru")
     monkeypatch.setenv("LIGHTRAG_PARSER", "pdf:mineru-iet,*:native")
-    assert rag._resolve_parser_engine("paper.pdf", {}) == "mineru"
+    assert resolve_stored_document_parser_engine("paper.pdf", {}) == "mineru"
     assert (
-        rag._resolve_parser_engine("paper.pdf", {"parsed_engine": "native"}) == "legacy"
+        resolve_stored_document_parser_engine("paper.pdf", {"parsed_engine": "native"})
+        == "legacy"
     )
 
 
 @pytest.mark.offline
-def test_parse_engine_rule_fallback_and_default_legacy(tmp_path, monkeypatch):
-    rag = _new_rag(tmp_path)
+def test_parse_engine_rule_fallback_and_default_legacy(monkeypatch):
     monkeypatch.setenv("LIGHTRAG_PARSER", "pdf:native,*:legacy")
-    assert rag._resolve_parser_engine("paper.pdf", {}) == "legacy"
+    assert resolve_stored_document_parser_engine("paper.pdf", {}) == "legacy"
 
     monkeypatch.setenv("LIGHTRAG_PARSER", "pptx:docling,*:legacy")
     monkeypatch.delenv("DOCLING_ENDPOINT", raising=False)
-    assert rag._resolve_parser_engine("slides.pptx", {}) == "legacy"
+    assert resolve_stored_document_parser_engine("slides.pptx", {}) == "legacy"
 
     monkeypatch.delenv("LIGHTRAG_PARSER", raising=False)
     monkeypatch.setenv("MINERU_ENDPOINT", "")
-    assert rag._resolve_parser_engine("slides.pptx", {}) == "legacy"
+    assert resolve_stored_document_parser_engine("slides.pptx", {}) == "legacy"
 
 
 @pytest.mark.offline
