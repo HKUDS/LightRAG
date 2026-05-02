@@ -13,7 +13,7 @@ import AppSettings from '@/components/AppSettings'
 
 const LoginPage = () => {
   const navigate = useNavigate()
-  const { login, isAuthenticated } = useAuthStore()
+  const { login, logout, isAuthenticated } = useAuthStore()
   const { t } = useTranslation()
   const [loading, setLoading] = useState(false)
   const [username, setUsername] = useState('')
@@ -36,9 +36,13 @@ const LoginPage = () => {
       authCheckRef.current = true;
 
       try {
-        // If already authenticated, redirect to home
+        // If the user explicitly opens login with a stale token, reset the local
+        // session and render the form instead of leaving a blank redirect loop.
         if (isAuthenticated) {
-          navigate('/')
+          logout()
+          localStorage.removeItem('LIGHTRAG-API-TOKEN')
+          sessionStorage.removeItem('VERSION_CHECKED_FROM_LOGIN')
+          setCheckingAuth(false)
           return
         }
 
@@ -77,7 +81,7 @@ const LoginPage = () => {
     // Cleanup function to prevent state updates after unmount
     return () => {
     }
-  }, [isAuthenticated, login, navigate])
+  }, [isAuthenticated, login, logout, navigate])
 
   // Don't render anything while checking auth
   if (checkingAuth) {
