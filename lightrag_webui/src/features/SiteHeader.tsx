@@ -76,7 +76,7 @@ export default function SiteHeader() {
 
   return (
     <header className="border-border/40 bg-background/95 supports-[backdrop-filter]:bg-background/60 sticky top-0 z-50 flex h-10 w-full border-b px-4 backdrop-blur">
-      <div className="min-w-[200px] w-auto flex items-center gap-2">
+      <div className="min-w-[200px] w-auto flex items-center">
         <a href={webuiPrefix} className="flex items-center gap-2">
           <ZapIcon className="size-4 text-emerald-400" aria-hidden="true" />
           <span className="font-bold md:inline-block">{SiteInfo.name}</span>
@@ -103,7 +103,7 @@ export default function SiteHeader() {
         {!webuiTitle && (
           <span className="mx-1 text-xs text-gray-500 dark:text-gray-400">|</span>
         )}
-        <WorkspaceSelector />
+        <WorkspaceSelector className="ms-4" />
       </div>
 
       <div className="flex h-10 flex-1 items-center justify-center">
