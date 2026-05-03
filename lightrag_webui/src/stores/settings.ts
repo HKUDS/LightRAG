@@ -86,6 +86,10 @@ interface SettingsState {
   // Workspace settings
   currentWorkspace: string | null
   setCurrentWorkspace: (workspace: string | null) => void
+
+  // Workspace refresh trigger (non-persistent, runtime only)
+  workspaceRefreshTrigger: number
+  triggerWorkspaceRefresh: () => void
 }
 
 const useSettingsStoreBase = create<SettingsState>()(
@@ -240,7 +244,14 @@ const useSettingsStoreBase = create<SettingsState>()(
         })),
 
       currentWorkspace: null,
-      setCurrentWorkspace: (workspace: string | null) => set({ currentWorkspace: workspace })
+      setCurrentWorkspace: (workspace: string | null) => set({ currentWorkspace: workspace }),
+
+      // Workspace refresh trigger (not persisted)
+      workspaceRefreshTrigger: 0,
+      triggerWorkspaceRefresh: () =>
+        set((state) => ({
+          workspaceRefreshTrigger: state.workspaceRefreshTrigger + 1
+        })),
     }),
     {
       name: 'settings-storage',

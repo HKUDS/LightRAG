@@ -291,6 +291,8 @@ export default function DocumentManager() {
   const activeRefreshPromiseRef = useRef<Promise<void> | null>(null);
   const pendingRefreshRequestRef = useRef<RefreshRequest | null>(null);
   const latestRefreshRequestVersionRef = useRef(0);
+  // Ref to store enqueueRefresh function for workspace change effect
+  const enqueueRefreshRef = useRef<((request: RefreshRequest) => Promise<void>) | null>(null);
 
   // Add retry mechanism state
   const [retryState, setRetryState] = useState({
@@ -583,6 +585,62 @@ export default function DocumentManager() {
     };
   }, [docs]);
 
+  // Watch workspace refresh trigger to reset document state when workspace changes
+  const workspaceRefreshTrigger = useSettingsStore.use.workspaceRefreshTrigger()
+
+  useEffect(() => {
+    if (workspaceRefreshTrigger > 0) {
+      console.log('Workspace changed, clearing document state')
+
+      // Get current page size from store to avoid stale closure
+      const currentPageSize = useSettingsStore.getState().documentsPageSize
+
+      // Clear document state
+      setDocs(null)
+      setCurrentPageDocs([])
+      setPagination({
+        page: 1,
+        page_size: currentPageSize,
+        total_count: 0,
+        total_pages: 0,
+        has_next: false,
+        has_prev: false
+      })
+      setStatusCounts({ all: 0 })
+      setSelectedDocIds([])
+
+      // Stop any ongoing polling by directly manipulating the interval ref
+      if (pollingIntervalRef.current) {
+        clearInterval(pollingIntervalRef.current)
+        pollingIntervalRef.current = null
+      }
+
+      // Reset version counter to ensure new fetch is not ignored
+      latestRefreshRequestVersionRef.current += 1
+
+      // Trigger a new fetch using the ref to avoid dependency issues
+      const versionRef = latestRefreshRequestVersionRef
+      const enqueueRef = enqueueRefreshRef
+
+      // Postpone the refresh slightly to allow state clearing to complete
+      setTimeout(() => {
+        if (enqueueRef.current) {
+          enqueueRef.current({
+            type: 'intelligent',
+            query: {
+              statusFilter: 'all',
+              page: 1,
+              pageSize: currentPageSize,
+              sortField: 'updated_at',
+              sortDirection: 'desc'
+            },
+            requestVersion: versionRef.current
+          })
+        }
+      }, 0)
+    }
+  }, [workspaceRefreshTrigger])
+
   const buildQuerySnapshot = useCallback((
     overrides: Partial<QuerySnapshot> = {}
   ): QuerySnapshot => ({
@@ -851,6 +909,11 @@ export default function DocumentManager() {
       pendingRefreshRequestRef.current = null;
     }
   }, [runRefreshRequest]);
+
+  // Store enqueueRefresh in ref for use in workspace change effect
+  useEffect(() => {
+    enqueueRefreshRef.current = enqueueRefresh
+  }, [enqueueRefresh])
 
   // Intelligent refresh function: handles all boundary cases
   const handleIntelligentRefresh = useCallback(async (

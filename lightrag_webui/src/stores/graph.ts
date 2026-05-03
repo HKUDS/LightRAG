@@ -198,7 +198,8 @@ const useGraphStoreBase = create<GraphState>()((set, get) => ({
       sigmaGraph: null,  // to avoid other components from acccessing graph objects
       searchEngine: null,
       moveToSelectedNode: false,
-      graphIsEmpty: false
+      graphIsEmpty: false,
+      isFetching: false,
     });
   },
 

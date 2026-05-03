@@ -15,10 +15,13 @@ import GraphViewer from '@/features/GraphViewer'
 import DocumentManager from '@/features/DocumentManager'
 import RetrievalTesting from '@/features/RetrievalTesting'
 import ApiSite from '@/features/ApiSite'
+import useWorkspaceChange from '@/hooks/useWorkspaceChange'
 
 import { Tabs, TabsContent } from '@/components/ui/Tabs'
 
 function App() {
+  // Handle workspace changes - clears all workspace-dependent data when workspace changes
+  useWorkspaceChange()
   const message = useBackendState.use.message()
   const enableHealthCheck = useSettingsStore.use.enableHealthCheck()
   const currentTab = useSettingsStore.use.currentTab()

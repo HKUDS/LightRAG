@@ -528,15 +528,14 @@ export default function RetrievalTesting() {
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const messagesContainerRef = useRef<HTMLDivElement>(null)
 
-  // Add cleanup effect for memory leak prevention
+  // Watch workspace refresh trigger to clear messages when workspace changes
+  const workspaceRefreshTrigger = useSettingsStore.use.workspaceRefreshTrigger()
+
   useEffect(() => {
-    // Component cleanup - reset timer state to prevent memory leaks
-    return () => {
-      if (thinkingStartTime.current) {
-        thinkingStartTime.current = null;
-      }
-    };
-  }, []);
+    if (workspaceRefreshTrigger > 0) {
+      setMessages([])
+    }
+  }, [workspaceRefreshTrigger])
 
   // Add event listeners to detect when user manually interacts with the container
   useEffect(() => {
