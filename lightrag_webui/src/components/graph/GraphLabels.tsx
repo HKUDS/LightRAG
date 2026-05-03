@@ -116,6 +116,42 @@ const GraphLabels = () => {
     }
   }, [])
 
+  // Watch workspace refresh trigger to reset label state when workspace changes
+  const workspaceRefreshTrigger = useSettingsStore.use.workspaceRefreshTrigger()
+
+  useEffect(() => {
+    if (workspaceRefreshTrigger > 0) {
+      console.log('Workspace changed, clearing label history and re-fetching popular labels')
+
+      // Clear search history for the old workspace
+      SearchHistoryManager.clearHistory()
+
+      // Re-fetch popular labels for the new workspace
+      const fetchPopularLabels = async () => {
+        try {
+          const popularLabels = await getPopularLabels(popularLabelsDefaultLimit)
+
+          if (popularLabels.length === 0) {
+            const fallbackLabels = ['entity', 'relationship', 'document', 'concept']
+            await SearchHistoryManager.initializeWithDefaults(fallbackLabels)
+          } else {
+            await SearchHistoryManager.initializeWithDefaults(popularLabels)
+          }
+        } catch (error) {
+          console.error('Failed to re-fetch popular labels after workspace change:', error)
+          const fallbackLabels = ['entity', 'relationship', 'document']
+          SearchHistoryManager.clearHistory()
+          await SearchHistoryManager.initializeWithDefaults(fallbackLabels)
+        }
+      }
+
+      fetchPopularLabels()
+
+      // Trigger dropdown refresh
+      bumpDropdownData({ forceSelectKey: true })
+    }
+  }, [workspaceRefreshTrigger, bumpDropdownData])
+
   const fetchData = useCallback(
     async (query?: string): Promise<string[]> => {
       let results: string[];
