@@ -373,8 +373,12 @@ const useLightrangeGraph = () => {
           toast.info(t('graphPanel.dataIsTruncated', 'Graph data is truncated to Max Nodes'));
         }
 
-        // Reset state
-        state.reset()
+        // Clear selection and graph data, but preserve fetch flags to avoid re-triggering the fetch useEffect
+        state.clearSelection()
+        state.setRawGraph(null)
+        state.setSigmaGraph(null)
+        state.setSearchEngine(null)
+        state.setGraphIsEmpty(false)
 
         // Check if data is empty or invalid
         if (!data || !data.nodes || data.nodes.length === 0) {
