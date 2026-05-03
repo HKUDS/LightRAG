@@ -120,13 +120,11 @@ const GraphLabels = () => {
   const workspaceRefreshTrigger = useSettingsStore.use.workspaceRefreshTrigger()
 
   useEffect(() => {
-    if (workspaceRefreshTrigger > 0) {
-      console.log('Workspace changed, clearing label history and re-fetching popular labels')
+    if (workspaceRefreshTrigger === 0) return
 
-      // Clear search history for the old workspace
+    const loadLabels = async () => {
       SearchHistoryManager.clearHistory()
 
-      // Re-fetch popular labels for the new workspace
       const fetchPopularLabels = async () => {
         try {
           const popularLabels = await getPopularLabels(popularLabelsDefaultLimit)
@@ -146,11 +144,10 @@ const GraphLabels = () => {
       }
 
       await fetchPopularLabels()
-
-      // Trigger dropdown refresh (must be AFTER fetchPopularLabels completes so
-      // AsyncSelect reads the updated SearchHistoryManager on remount)
       bumpDropdownData({ forceSelectKey: true })
     }
+
+    loadLabels()
   }, [workspaceRefreshTrigger, bumpDropdownData])
 
   const fetchData = useCallback(
