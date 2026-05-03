@@ -29,9 +29,6 @@ const useWorkspaceChange = () => {
       // 1. Clear graph store state
       const graphState = useGraphStore.getState()
       graphState.reset()
-      graphState.setGraphDataFetchAttempted(false)
-      graphState.setLabelsFetchAttempted(false)
-      graphState.incrementGraphDataVersion()
 
       // 2. Clear retrieval history
       useSettingsStore.getState().setRetrievalHistory([])

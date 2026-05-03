@@ -256,6 +256,18 @@ const useSettingsStoreBase = create<SettingsState>()(
     {
       name: 'settings-storage',
       storage: createJSONStorage(() => localStorage),
+      /* eslint-disable @typescript-eslint/no-unused-vars */
+      partialize: (state) => {
+        const {
+          workspaceRefreshTrigger,
+          triggerWorkspaceRefresh,
+          searchLabelDropdownRefreshTrigger,
+          triggerSearchLabelDropdownRefresh,
+          ...rest
+        } = state
+        return rest
+      },
+      /* eslint-enable @typescript-eslint/no-unused-vars */
       version: 20,
       migrate: (state: any, version: number) => {
         if (version < 2) {

@@ -200,7 +200,10 @@ const useGraphStoreBase = create<GraphState>()((set, get) => ({
       moveToSelectedNode: false,
       graphIsEmpty: false,
       isFetching: false,
+      graphDataFetchAttempted: false,
+      labelsFetchAttempted: false,
     });
+    get().incrementGraphDataVersion();
   },
 
   setRawGraph: (rawGraph: RawGraph | null) =>
