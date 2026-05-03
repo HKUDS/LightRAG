@@ -195,7 +195,7 @@ const useGraphStoreBase = create<GraphState>()((set, get) => ({
       selectedEdge: null,
       focusedEdge: null,
       rawGraph: null,
-      sigmaGraph: null,  // to avoid other components from acccessing graph objects
+      sigmaGraph: null, // to avoid other components from acccessing graph objects
       searchEngine: null,
       moveToSelectedNode: false,
       graphIsEmpty: false,
@@ -203,7 +203,6 @@ const useGraphStoreBase = create<GraphState>()((set, get) => ({
       graphDataFetchAttempted: false,
       labelsFetchAttempted: false,
     });
-    get().incrementGraphDataVersion();
   },
 
   setRawGraph: (rawGraph: RawGraph | null) =>

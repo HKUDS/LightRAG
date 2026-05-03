@@ -71,10 +71,8 @@ describe('graphDataVersion state', () => {
 })
 
 describe('graph.reset() - completeness', () => {
-  test('resets all graph state fields to defaults and increments version', () => {
+  test('resets all graph state fields to defaults', () => {
     // Setup: populate state with various values
-    const initialVersion = useGraphStore.getState().graphDataVersion
-
     useGraphStore.setState({
       selectedNode: 'node-1',
       focusedNode: 'node-2',
@@ -122,27 +120,6 @@ describe('graph.reset() - completeness', () => {
     expect(resetState.isFetching).toBe(false)
     expect(resetState.graphDataFetchAttempted).toBe(false)
     expect(resetState.labelsFetchAttempted).toBe(false)
-
-    // Verify version incremented
-    expect(resetState.graphDataVersion).toBe(initialVersion + 1)
-  })
-})
-
-describe('graph.reset() also increments version', () => {
-  test('reset increments graphDataVersion even when called multiple times', () => {
-    useGraphStore.setState({ graphDataVersion: 0 })
-
-    // First reset
-    useGraphStore.getState().reset()
-    expect(useGraphStore.getState().graphDataVersion).toBe(1)
-
-    // Second reset
-    useGraphStore.getState().reset()
-    expect(useGraphStore.getState().graphDataVersion).toBe(2)
-
-    // Third reset
-    useGraphStore.getState().reset()
-    expect(useGraphStore.getState().graphDataVersion).toBe(3)
   })
 })
 
