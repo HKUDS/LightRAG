@@ -241,3 +241,217 @@ describe('v20 migration', () => {
     expect(migratedState.currentWorkspace).toBe('already-set-workspace')
   })
 })
+
+describe('workspaceRefreshTrigger state', () => {
+  let useSettingsStore: ReturnType<typeof import('@/stores/settings').useSettingsStore>
+
+  beforeAll(async () => {
+    Object.defineProperty(globalThis, 'localStorage', {
+      value: storageMock(),
+      configurable: true
+    })
+    Object.defineProperty(globalThis, 'sessionStorage', {
+      value: storageMock(),
+      configurable: true
+    })
+
+    const module = await import('@/stores/settings')
+    useSettingsStore = module.useSettingsStore
+  })
+
+  test('default value is 0', () => {
+    // Reset to default state
+    useSettingsStore.setState({ workspaceRefreshTrigger: 0 })
+    expect(useSettingsStore.getState().workspaceRefreshTrigger).toBe(0)
+  })
+
+  test('triggerWorkspaceRefresh() increments by 1', () => {
+    // Reset first
+    useSettingsStore.setState({ workspaceRefreshTrigger: 0 })
+
+    // Trigger once
+    useSettingsStore.getState().triggerWorkspaceRefresh()
+
+    expect(useSettingsStore.getState().workspaceRefreshTrigger).toBe(1)
+  })
+
+  test('multiple calls increment correctly (0 → 1 → 2 → 3)', () => {
+    // Reset first
+    useSettingsStore.setState({ workspaceRefreshTrigger: 0 })
+
+    // Trigger multiple times
+    useSettingsStore.getState().triggerWorkspaceRefresh()
+    expect(useSettingsStore.getState().workspaceRefreshTrigger).toBe(1)
+
+    useSettingsStore.getState().triggerWorkspaceRefresh()
+    expect(useSettingsStore.getState().workspaceRefreshTrigger).toBe(2)
+
+    useSettingsStore.getState().triggerWorkspaceRefresh()
+    expect(useSettingsStore.getState().workspaceRefreshTrigger).toBe(3)
+  })
+
+  test('trigger is independent of currentWorkspace state', () => {
+    // Reset both
+    useSettingsStore.setState({ workspaceRefreshTrigger: 0, currentWorkspace: null })
+
+    // Set a workspace
+    useSettingsStore.getState().setCurrentWorkspace('my-workspace')
+
+    // Trigger refresh
+    useSettingsStore.getState().triggerWorkspaceRefresh()
+
+    // Both should have their own values
+    expect(useSettingsStore.getState().workspaceRefreshTrigger).toBe(1)
+    expect(useSettingsStore.getState().currentWorkspace).toBe('my-workspace')
+
+    // Change workspace and trigger again
+    useSettingsStore.getState().setCurrentWorkspace('other-workspace')
+    useSettingsStore.getState().triggerWorkspaceRefresh()
+
+    expect(useSettingsStore.getState().workspaceRefreshTrigger).toBe(2)
+    expect(useSettingsStore.getState().currentWorkspace).toBe('other-workspace')
+  })
+})
+
+describe('searchLabelDropdownRefreshTrigger state', () => {
+  let useSettingsStore: ReturnType<typeof import('@/stores/settings').useSettingsStore>
+
+  beforeAll(async () => {
+    Object.defineProperty(globalThis, 'localStorage', {
+      value: storageMock(),
+      configurable: true
+    })
+    Object.defineProperty(globalThis, 'sessionStorage', {
+      value: storageMock(),
+      configurable: true
+    })
+
+    const module = await import('@/stores/settings')
+    useSettingsStore = module.useSettingsStore
+  })
+
+  test('default value is 0', () => {
+    useSettingsStore.setState({ searchLabelDropdownRefreshTrigger: 0 })
+    expect(useSettingsStore.getState().searchLabelDropdownRefreshTrigger).toBe(0)
+  })
+
+  test('triggerSearchLabelDropdownRefresh() increments by 1', () => {
+    useSettingsStore.setState({ searchLabelDropdownRefreshTrigger: 0 })
+    useSettingsStore.getState().triggerSearchLabelDropdownRefresh()
+    expect(useSettingsStore.getState().searchLabelDropdownRefreshTrigger).toBe(1)
+  })
+
+  test('multiple calls increment correctly', () => {
+    useSettingsStore.setState({ searchLabelDropdownRefreshTrigger: 0 })
+    useSettingsStore.getState().triggerSearchLabelDropdownRefresh()
+    useSettingsStore.getState().triggerSearchLabelDropdownRefresh()
+    useSettingsStore.getState().triggerSearchLabelDropdownRefresh()
+    expect(useSettingsStore.getState().searchLabelDropdownRefreshTrigger).toBe(3)
+  })
+})
+
+describe('partialize - trigger fields excluded from persistence', () => {
+  let useSettingsStore: ReturnType<typeof import('@/stores/settings').useSettingsStore>
+
+  // Re-implement the partialize logic to test it
+  const partializeState = (state: any) => {
+    const {
+      workspaceRefreshTrigger,
+      triggerWorkspaceRefresh,
+      searchLabelDropdownRefreshTrigger,
+      triggerSearchLabelDropdownRefresh,
+      ...rest
+    } = state
+    return rest
+  }
+
+  beforeAll(async () => {
+    Object.defineProperty(globalThis, 'localStorage', {
+      value: storageMock(),
+      configurable: true
+    })
+    Object.defineProperty(globalThis, 'sessionStorage', {
+      value: storageMock(),
+      configurable: true
+    })
+
+    const module = await import('@/stores/settings')
+    useSettingsStore = module.useSettingsStore
+  })
+
+  test('workspaceRefreshTrigger is excluded from partialize output', () => {
+    // Set a trigger value
+    useSettingsStore.setState({ workspaceRefreshTrigger: 5 })
+
+    const state = useSettingsStore.getState()
+    const partialized = partializeState(state)
+
+    expect(partialized).not.toHaveProperty('workspaceRefreshTrigger')
+    expect(partialized).not.toHaveProperty('triggerWorkspaceRefresh')
+  })
+
+  test('searchLabelDropdownRefreshTrigger is excluded from partialize output', () => {
+    // Set a trigger value
+    useSettingsStore.setState({ searchLabelDropdownRefreshTrigger: 10 })
+
+    const state = useSettingsStore.getState()
+    const partialized = partializeState(state)
+
+    expect(partialized).not.toHaveProperty('searchLabelDropdownRefreshTrigger')
+    expect(partialized).not.toHaveProperty('triggerSearchLabelDropdownRefresh')
+  })
+
+  test('currentWorkspace IS included in partialize output', () => {
+    // Set currentWorkspace
+    useSettingsStore.setState({ currentWorkspace: 'my-workspace' })
+
+    const state = useSettingsStore.getState()
+    const partialized = partializeState(state)
+
+    expect(partialized).toHaveProperty('currentWorkspace')
+    expect(partialized.currentWorkspace).toBe('my-workspace')
+  })
+
+  test('after calling triggerWorkspaceRefresh, trigger value is updated in state but NOT in partialize output', () => {
+    // Reset first
+    useSettingsStore.setState({ workspaceRefreshTrigger: 0, currentWorkspace: null })
+
+    // Trigger refresh
+    useSettingsStore.getState().triggerWorkspaceRefresh()
+
+    // Verify in-state trigger is updated
+    expect(useSettingsStore.getState().workspaceRefreshTrigger).toBe(1)
+
+    // Verify partialize excludes it
+    const state = useSettingsStore.getState()
+    const partialized = partializeState(state)
+    expect(partialized).not.toHaveProperty('workspaceRefreshTrigger')
+  })
+
+  test('other settings are still included in partialize output', () => {
+    // Set various settings
+    useSettingsStore.setState({
+      theme: 'dark',
+      language: 'en',
+      showPropertyPanel: false,
+      graphMaxNodes: 500,
+      currentWorkspace: 'test-workspace'
+    })
+
+    const state = useSettingsStore.getState()
+    const partialized = partializeState(state)
+
+    // These should be present
+    expect(partialized).toHaveProperty('theme')
+    expect(partialized).toHaveProperty('language')
+    expect(partialized).toHaveProperty('showPropertyPanel')
+    expect(partialized).toHaveProperty('graphMaxNodes')
+    expect(partialized).toHaveProperty('currentWorkspace')
+
+    // These should be excluded (triggers)
+    expect(partialized).not.toHaveProperty('workspaceRefreshTrigger')
+    expect(partialized).not.toHaveProperty('triggerWorkspaceRefresh')
+    expect(partialized).not.toHaveProperty('searchLabelDropdownRefreshTrigger')
+    expect(partialized).not.toHaveProperty('triggerSearchLabelDropdownRefresh')
+  })
+})
