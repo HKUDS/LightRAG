@@ -145,9 +145,10 @@ const GraphLabels = () => {
         }
       }
 
-      fetchPopularLabels()
+      await fetchPopularLabels()
 
-      // Trigger dropdown refresh
+      // Trigger dropdown refresh (must be AFTER fetchPopularLabels completes so
+      // AsyncSelect reads the updated SearchHistoryManager on remount)
       bumpDropdownData({ forceSelectKey: true })
     }
   }, [workspaceRefreshTrigger, bumpDropdownData])
