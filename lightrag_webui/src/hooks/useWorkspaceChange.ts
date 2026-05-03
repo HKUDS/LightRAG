@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react'
 import { useSettingsStore } from '@/stores/settings'
+import { defaultQueryLabel } from '@/lib/constants'
 import { useGraphStore } from '@/stores/graph'
 
 /**
@@ -30,10 +31,20 @@ const useWorkspaceChange = () => {
       const graphState = useGraphStore.getState()
       graphState.reset()
 
-      // 2. Clear retrieval history
+      // 2. Increment graphDataVersion to trigger the fetch useEffect
+      // reset() sets graphDataFetchAttempted=false but doesn't change any
+      // useEffect dependency, so we must bump the version to trigger re-fetch
+      graphState.incrementGraphDataVersion()
+
+      // 3. Reset queryLabel to default so the graph fetches for the new workspace
+      // When graph data is empty, the fetch handler clears queryLabel to ''
+      // Without resetting it, the fetch useEffect won't enter the fetch path
+      useSettingsStore.getState().setQueryLabel(defaultQueryLabel)
+
+      // 4. Clear retrieval history
       useSettingsStore.getState().setRetrievalHistory([])
 
-      // 3. Trigger workspace refresh for DocumentManager and other components
+      // 5. Trigger workspace refresh for DocumentManager and other components
       triggerWorkspaceRefresh()
     }
   }, [currentWorkspace, triggerWorkspaceRefresh])
