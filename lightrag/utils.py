@@ -1713,6 +1713,162 @@ def truncate_list_by_token_size(
     return list_data
 
 
+def normalize_string_list(raw_values: Any, context: str = "") -> list[str]:
+    """Return a list of non-empty strings from raw_values.
+
+    Non-string elements are dropped and logged as warnings. If raw_values is
+    not a list, an empty list is returned.
+    """
+    if not isinstance(raw_values, list):
+        return []
+    result = []
+    for i, value in enumerate(raw_values):
+        if isinstance(value, str) and value:
+            result.append(value)
+        else:
+            logger.warning(
+                "Non-string element dropped from list%s at index %d: %r",
+                f" ({context})" if context else "",
+                i,
+                value,
+            )
+    return result
+
+
+def split_text_units_for_hard_fallback(text: str) -> list[str]:
+    """Split text into sentence/paragraph-like units for fallback chunking."""
+    if not text:
+        return []
+    units: list[str] = []
+    for para in text.split("\n\n"):
+        p = para.strip()
+        if not p:
+            continue
+        for sentence in re.split(r"(?<=[。！？；.!?])", p):
+            s = sentence.strip()
+            if s:
+                units.append(s)
+    return units if units else [text]
+
+
+def split_text_by_token_limit(
+    text: str, tokenizer: Tokenizer, max_tokens: int
+) -> list[str]:
+    """Split text by token limit with sentence-first, token-window fallback."""
+    if not text:
+        return []
+
+    try:
+        total_tokens = len(tokenizer.encode(text))
+    except Exception:
+        total_tokens = 0
+
+    if total_tokens > 0 and total_tokens <= max_tokens:
+        return [text]
+
+    units = split_text_units_for_hard_fallback(text)
+    out: list[str] = []
+    cur_parts: list[str] = []
+    cur_tokens = 0
+
+    for unit in units:
+        try:
+            unit_tokens = len(tokenizer.encode(unit))
+        except Exception:
+            unit_tokens = 0
+
+        # Sentence itself is oversize: token-window split directly.
+        if unit_tokens > max_tokens:
+            if cur_parts:
+                out.append("\n\n".join(cur_parts))
+                cur_parts = []
+                cur_tokens = 0
+
+            token_ids = tokenizer.encode(unit)
+            for start in range(0, len(token_ids), max_tokens):
+                piece = tokenizer.decode(token_ids[start : start + max_tokens]).strip()
+                if piece:
+                    out.append(piece)
+            continue
+
+        if cur_parts and cur_tokens + unit_tokens > max_tokens:
+            out.append("\n\n".join(cur_parts))
+            cur_parts = [unit]
+            cur_tokens = unit_tokens
+        else:
+            cur_parts.append(unit)
+            cur_tokens += unit_tokens
+
+    if cur_parts:
+        out.append("\n\n".join(cur_parts))
+
+    return [x for x in out if x.strip()]
+
+
+def enforce_chunk_token_limit_before_embedding(
+    chunking_result: list[dict[str, Any]] | tuple[dict[str, Any], ...],
+    tokenizer: Tokenizer,
+    max_tokens: int,
+) -> list[dict[str, Any]]:
+    """Hard fallback split before embedding while preserving heading hierarchy."""
+    if max_tokens <= 0:
+        return list(chunking_result)
+
+    normalized: list[dict[str, Any]] = []
+
+    for dp in chunking_result:
+        if not isinstance(dp, dict):
+            continue
+
+        content = dp.get("content", "")
+        if not isinstance(content, str) or not content.strip():
+            continue
+
+        try:
+            token_count = len(tokenizer.encode(content))
+        except Exception:
+            token_count = (
+                dp.get("tokens", 0) if isinstance(dp.get("tokens"), int) else 0
+            )
+
+        if token_count <= max_tokens:
+            ndp = dict(dp)
+            ndp["tokens"] = token_count if token_count > 0 else ndp.get("tokens", 0)
+            normalized.append(ndp)
+            continue
+
+        pieces = split_text_by_token_limit(content, tokenizer, max_tokens)
+        if not pieces:
+            ndp = dict(dp)
+            ndp["tokens"] = token_count
+            normalized.append(ndp)
+            continue
+
+        base_chunk_id = dp.get("chunk_id")
+        total_parts = len(pieces)
+        for i, piece in enumerate(pieces, 1):
+            new_dp = dict(dp)
+            new_dp["content"] = piece
+            try:
+                new_dp["tokens"] = len(tokenizer.encode(piece))
+            except Exception:
+                new_dp["tokens"] = max(1, int(len(piece) * 0.5))
+
+            # Keep heading/parent_headings/level unchanged; only split payload.
+            if isinstance(base_chunk_id, str) and base_chunk_id.strip():
+                new_dp["chunk_id"] = f"{base_chunk_id}-s{i:02d}"
+
+            new_dp["split_type"] = "hard_fallback"
+            new_dp["split_part"] = i
+            new_dp["split_total"] = total_parts
+            normalized.append(new_dp)
+
+    # Rebuild order index to keep continuity after splitting.
+    for idx, item in enumerate(normalized):
+        item["chunk_order_index"] = idx
+    return normalized
+
+
 def cosine_similarity(v1, v2):
     """Calculate cosine similarity between two vectors"""
     dot_product = np.dot(v1, v2)
@@ -2495,20 +2651,6 @@ def get_content_summary(content: str, max_length: int = 250) -> str:
     if len(content) <= max_length:
         return content
     return content[:max_length] + "..."
-
-
-def make_lightrag_doc_content(merged_text: str, max_length: int = 250) -> str:
-    """Build the ``full_docs.content`` value for ``format=lightrag`` records.
-
-    The result has shape ``"{{LRdoc}}<summary>"`` where ``<summary>`` is the
-    same leading-text snippet that paginated APIs return in
-    ``content_summary`` (see ``get_content_summary``). This keeps the
-    behaviour mandated by ``docs/FileProcessingConfiguration-zh.md``.
-    """
-    from lightrag.constants import LIGHTRAG_DOC_CONTENT_PREFIX
-
-    summary = get_content_summary(merged_text or "", max_length=max_length)
-    return f"{LIGHTRAG_DOC_CONTENT_PREFIX}{summary}"
 
 
 def sanitize_and_normalize_extracted_text(

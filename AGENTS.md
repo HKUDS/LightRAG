@@ -3,7 +3,11 @@
 LightRAG is an advanced Retrieval-Augmented Generation (RAG) framework designed to enhance information retrieval and generation through graph-based knowledge representation.
 
 ## Project Structure & Module Organization
-- `lightrag/`: Core Python package with orchestrators (`lightrag/lightrag.py`), storage adapters in `kg/`, LLM bindings in `llm/`, and helpers such as `operate.py` and `utils_*.py`.
+- `lightrag/`: Core Python package. `lightrag/lightrag.py` remains the public `LightRAG` class and compatibility entry point, while larger responsibilities are split into mixins and focused helpers: `pipeline.py` owns document ingestion, parse/enqueue/extract flow; `llm_roles.py` owns role-specific LLM routing and queues; `storage_migrations.py` owns startup data migrations; `utils_pipeline.py` holds ingestion/status helper functions.
+- `lightrag/extraction/`: Native document parsing layer, including `.docx` extraction (`docx_extractor.py`) and conversion to LightRAG content-list artifacts (`parse_document.py`, `interchange.py`, `smart_chunker.py`).
+- `lightrag/kg/`: Storage adapters and factories for KV, vector, graph, document status, and shared namespace storage.
+- `lightrag/llm/`: LLM and embedding provider bindings; route role-specific behavior through `llm_roles.py` rather than adding role logic to provider modules.
+- `lightrag/operate.py`, `lightrag/base.py`, `lightrag/utils.py`, `lightrag/utils_graph.py`: Core retrieval/extraction operations, shared protocols, general utilities, and graph helpers used across the split modules.
 - `lightrag-api/`: FastAPI service (`lightrag_server.py`) with routers under `routers/` and Gunicorn launcher `run_with_gunicorn.py`.
 - `lightrag_webui/`: React 19 + TypeScript client driven by Bun + Vite; UI components live in `src/`.
 - `scripts/setup/`: Interactive environment setup wizard. `setup.sh` orchestrates staged `--base` / `--storage` / `--server` / validation flows, `lib/` holds prompt/validation/file helpers, and `templates/*.yml` contains compose fragments for bundled services.

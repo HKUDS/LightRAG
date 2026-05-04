@@ -7,6 +7,7 @@ import numpy as np
 import pytest
 
 import lightrag.lightrag as lightrag_module
+import lightrag.pipeline as pipeline_module
 from lightrag.base import DocStatus
 from lightrag.constants import GRAPH_FIELD_SEP
 from lightrag.kg.shared_storage import get_namespace_data, get_namespace_lock
@@ -415,7 +416,7 @@ async def test_merge_failure_preserves_chunks_and_skip_cache_cleanup_when_disabl
             raise RuntimeError("merge fail sentinel")
 
         rag._process_extract_entities = MethodType(ok_extract, rag)
-        monkeypatch.setattr(lightrag_module, "merge_nodes_and_edges", fail_merge)
+        monkeypatch.setattr(pipeline_module, "merge_nodes_and_edges", fail_merge)
 
         await rag.apipeline_process_enqueue_documents()
 
