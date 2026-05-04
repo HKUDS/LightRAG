@@ -1135,6 +1135,94 @@ async def test_reserve_enqueue_slot_blocks_concurrent_scan_until_release(tmp_pat
     assert pipeline_status["scanning"] is True
 
 
+async def test_release_enqueue_slot_returns_was_last_only_for_final(tmp_path):
+    """Two-reservation cohort: the first release returns False (sibling
+    still pending), the second returns True (last out → drain owner).
+    Closes the dual-bg-task race where both bg tasks could otherwise
+    independently trigger process_enqueue and the second's enqueue
+    would hit the busy guard set by the first's processing.
+    """
+    import importlib
+
+    rag = _ScanRag({})
+    shared_storage = importlib.import_module("lightrag.kg.shared_storage")
+    await shared_storage.initialize_pipeline_status(workspace=rag.workspace)
+    pipeline_status = await shared_storage.get_namespace_data(
+        "pipeline_status", workspace=rag.workspace
+    )
+    pipeline_status["busy"] = False
+    pipeline_status["scanning"] = False
+    pipeline_status["pending_enqueues"] = 0
+
+    # Two concurrent reservations from /upload + /text — both pass the
+    # idle preflight because busy=F, scanning=F at reservation time.
+    assert await _document_routes._reserve_enqueue_slot(rag) is True
+    assert await _document_routes._reserve_enqueue_slot(rag) is True
+    assert pipeline_status["pending_enqueues"] == 2
+
+    # First release: a sibling reservation is still in flight → no drain.
+    assert await _document_routes._release_enqueue_slot(rag) is False
+    assert pipeline_status["pending_enqueues"] == 1
+
+    # Second (final) release: caller owns the drain.
+    assert await _document_routes._release_enqueue_slot(rag) is True
+    assert pipeline_status["pending_enqueues"] == 0
+
+
+async def test_release_and_drain_only_runs_process_on_last_release(tmp_path):
+    """End-to-end on the drain wrapper: two siblings each release once;
+    only the last release calls apipeline_process_enqueue_documents,
+    so the busy phase never starts while a sibling's enqueue is still
+    pending.
+    """
+    import importlib
+
+    rag = _ScanRag({})
+    shared_storage = importlib.import_module("lightrag.kg.shared_storage")
+    await shared_storage.initialize_pipeline_status(workspace=rag.workspace)
+    pipeline_status = await shared_storage.get_namespace_data(
+        "pipeline_status", workspace=rag.workspace
+    )
+    pipeline_status["busy"] = False
+    pipeline_status["scanning"] = False
+    pipeline_status["pending_enqueues"] = 0
+
+    await _document_routes._reserve_enqueue_slot(rag)
+    await _document_routes._reserve_enqueue_slot(rag)
+    assert rag.process_calls == 0
+
+    # Sibling A finishes first → no drain.
+    await _document_routes._release_enqueue_slot_and_drain_if_last(rag)
+    assert rag.process_calls == 0
+
+    # Sibling B finishes → final release triggers drain exactly once.
+    await _document_routes._release_enqueue_slot_and_drain_if_last(rag)
+    assert rag.process_calls == 1
+
+
+async def test_release_and_drain_solo_release_drains_immediately(tmp_path):
+    """Single reservation (no concurrency): the lone release is also the
+    final one and must trigger drain so the enqueued doc actually gets
+    processed.
+    """
+    import importlib
+
+    rag = _ScanRag({})
+    shared_storage = importlib.import_module("lightrag.kg.shared_storage")
+    await shared_storage.initialize_pipeline_status(workspace=rag.workspace)
+    pipeline_status = await shared_storage.get_namespace_data(
+        "pipeline_status", workspace=rag.workspace
+    )
+    pipeline_status["busy"] = False
+    pipeline_status["scanning"] = False
+    pipeline_status["pending_enqueues"] = 0
+
+    await _document_routes._reserve_enqueue_slot(rag)
+    await _document_routes._release_enqueue_slot_and_drain_if_last(rag)
+    assert rag.process_calls == 1
+    assert pipeline_status["pending_enqueues"] == 0
+
+
 async def test_reserve_enqueue_slot_raises_409_when_busy_or_scanning(tmp_path):
     """The reservation helper must surface 409 (not silently increment)
     when the pipeline is already busy or scanning, so endpoints fail

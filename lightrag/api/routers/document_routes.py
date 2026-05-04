@@ -1045,12 +1045,27 @@ async def _reserve_enqueue_slot(rag: LightRAG) -> bool:
     return True
 
 
-async def _release_enqueue_slot(rag: LightRAG) -> None:
+async def _release_enqueue_slot(rag: LightRAG) -> bool:
     """Release a slot reserved by ``_reserve_enqueue_slot``.  Never raises.
 
     Decrement is clamped at 0 so a stray release (e.g. from a
     not-yet-bootstrapped workspace whose reservation returned False but
     whose bg task wrapper still calls release) is harmless.
+
+    Returns:
+        True when this release dropped ``pending_enqueues`` to 0 — the
+        caller is the *last* of a (possibly concurrent) reservation
+        cohort and is responsible for triggering
+        ``apipeline_process_enqueue_documents`` so all sibling enqueues
+        get drained.  Deferring drain until every reserved enqueue has
+        finished closes the dual-bg-task race: if a sibling's
+        process_enqueue ran first it would set ``busy=True`` and the
+        last-line busy guard inside ``apipeline_enqueue_documents``
+        would reject the next sibling's enqueue after the client had
+        already received success.
+
+        False otherwise (other reservations still in flight, or
+        pipeline_status not bootstrapped — nothing to drain).
     """
     from lightrag.exceptions import PipelineNotInitializedError
     from lightrag.kg.shared_storage import get_namespace_data, get_namespace_lock
@@ -1060,14 +1075,38 @@ async def _release_enqueue_slot(rag: LightRAG) -> None:
             "pipeline_status", workspace=rag.workspace
         )
     except PipelineNotInitializedError:
-        return
+        return False
     pipeline_status_lock = get_namespace_lock(
         "pipeline_status", workspace=rag.workspace
     )
     async with pipeline_status_lock:
         current = pipeline_status.get("pending_enqueues", 0)
         if current > 0:
-            pipeline_status["pending_enqueues"] = current - 1
+            new_count = current - 1
+            pipeline_status["pending_enqueues"] = new_count
+            return new_count == 0
+        return False
+
+
+async def _release_enqueue_slot_and_drain_if_last(rag: LightRAG) -> None:
+    """Release a reserved slot and trigger pipeline draining when last.
+
+    Wrapper around ``_release_enqueue_slot`` that fires
+    ``apipeline_process_enqueue_documents`` exactly once per reservation
+    cohort — only on the release that drops the counter to 0.  Any
+    enqueue errors during draining are logged, never re-raised, so the
+    bg task's finally chain stays clean.
+    """
+    was_last = await _release_enqueue_slot(rag)
+    if was_last:
+        try:
+            await rag.apipeline_process_enqueue_documents()
+        except Exception as drain_error:
+            logger.error(
+                "Error draining pipeline after final enqueue release: "
+                f"{drain_error}"
+            )
+            logger.error(traceback.format_exc())
 
 
 def find_existing_file_by_canonical_basename(
@@ -2721,14 +2760,19 @@ def create_document_routes(
             track_id = generate_track_id("upload")
 
             # Wrap the bg task so the reserved slot is released exactly once
-            # — when the enqueue completes (success or failure).  Capturing
-            # ``rag``, ``file_path`` and ``track_id`` in the closure keeps
-            # the call shape identical to the pre-fix code path.
+            # — when the enqueue completes (success or failure).  ONLY the
+            # last release in a concurrent reservation cohort triggers
+            # apipeline_process_enqueue_documents so the busy phase never
+            # overlaps with a sibling's still-pending enqueue (which would
+            # otherwise be rejected by the busy guard inside
+            # apipeline_enqueue_documents).  pipeline_enqueue_file is called
+            # directly here instead of pipeline_index_file because the
+            # latter would trigger process_enqueue per-task.
             async def _indexing_task():
                 try:
-                    await pipeline_index_file(rag, file_path, track_id)
+                    await pipeline_enqueue_file(rag, file_path, track_id)
                 finally:
-                    await _release_enqueue_slot(rag)
+                    await _release_enqueue_slot_and_drain_if_last(rag)
 
             background_tasks.add_task(_indexing_task)
             # Ownership of the slot transferred to the bg task — the
@@ -2751,11 +2795,11 @@ def create_document_routes(
         finally:
             # If we reserved a slot but never scheduled the bg task (e.g.
             # an early validation rejection or a streaming-write failure),
-            # release here so the next scan / upload is not permanently
-            # blocked.  When the bg task owns the slot, ``slot_reserved``
-            # was reset to False before returning.
+            # release here.  We use the drain-if-last variant so a sibling
+            # bg task whose enqueue completed first does not get stranded
+            # in PENDING when we are the last reservation to clear.
             if slot_reserved:
-                await _release_enqueue_slot(rag)
+                await _release_enqueue_slot_and_drain_if_last(rag)
 
     @router.post(
         "/text", response_model=InsertResponse, dependencies=[Depends(combined_auth)]
@@ -2809,16 +2853,19 @@ def create_document_routes(
             # Generate track_id for text insertion
             track_id = generate_track_id("insert")
 
+            # Bypass pipeline_index_texts: it would trigger
+            # apipeline_process_enqueue_documents per task, defeating the
+            # "drain only on last release" coordination that prevents the
+            # dual-bg-task busy-guard race.
             async def _indexing_task():
                 try:
-                    await pipeline_index_texts(
-                        rag,
-                        [request.text],
-                        file_sources=[normalized_file_source],
+                    await rag.apipeline_enqueue_documents(
+                        input=[request.text],
+                        file_paths=[normalized_file_source],
                         track_id=track_id,
                     )
                 finally:
-                    await _release_enqueue_slot(rag)
+                    await _release_enqueue_slot_and_drain_if_last(rag)
 
             background_tasks.add_task(_indexing_task)
             slot_reserved = False
@@ -2836,7 +2883,7 @@ def create_document_routes(
             raise HTTPException(status_code=500, detail=str(e))
         finally:
             if slot_reserved:
-                await _release_enqueue_slot(rag)
+                await _release_enqueue_slot_and_drain_if_last(rag)
 
     @router.post(
         "/texts",
@@ -2911,16 +2958,16 @@ def create_document_routes(
             # Generate track_id for texts insertion
             track_id = generate_track_id("insert")
 
+            # Bypass pipeline_index_texts — see /text for the rationale.
             async def _indexing_task():
                 try:
-                    await pipeline_index_texts(
-                        rag,
-                        request.texts,
-                        file_sources=normalized_file_sources,
+                    await rag.apipeline_enqueue_documents(
+                        input=request.texts,
+                        file_paths=normalized_file_sources,
                         track_id=track_id,
                     )
                 finally:
-                    await _release_enqueue_slot(rag)
+                    await _release_enqueue_slot_and_drain_if_last(rag)
 
             background_tasks.add_task(_indexing_task)
             slot_reserved = False
@@ -2938,7 +2985,7 @@ def create_document_routes(
             raise HTTPException(status_code=500, detail=str(e))
         finally:
             if slot_reserved:
-                await _release_enqueue_slot(rag)
+                await _release_enqueue_slot_and_drain_if_last(rag)
 
     @router.delete(
         "", response_model=ClearDocumentsResponse, dependencies=[Depends(combined_auth)]
