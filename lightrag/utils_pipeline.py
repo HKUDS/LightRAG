@@ -133,6 +133,54 @@ def doc_status_field(doc: Any, field: str, default: Any = "") -> Any:
     return getattr(doc, field, default)
 
 
+# Long-lived per-document metadata fields that must survive every
+# doc_status state transition.  ``process_options`` records the user's
+# per-file processing strategy at enqueue time and is read by analyze /
+# chunk / KG-skip stages and by admin/list APIs throughout the document's
+# lifetime, so we cannot let an intermediate transition (PARSING /
+# ANALYZING / PROCESSING / PROCESSED / FAILED upsert) clobber it.
+_DOC_STATUS_METADATA_CARRY_OVER_KEYS: tuple[str, ...] = ("process_options",)
+
+
+def doc_status_metadata_carry_over(status_doc: Any) -> dict[str, Any]:
+    """Return the subset of ``status_doc.metadata`` to preserve across upserts.
+
+    ``doc_status`` storage backends generally treat the ``metadata`` field
+    as an opaque blob and **replace** it on every upsert, so callers must
+    explicitly carry forward fields they want to keep.  This helper centralises
+    the list of fields we always carry: today only ``process_options``, but
+    new long-lived metadata can be added by extending
+    ``_DOC_STATUS_METADATA_CARRY_OVER_KEYS``.
+    """
+    if status_doc is None:
+        return {}
+    raw_metadata = doc_status_field(status_doc, "metadata", {})
+    if not isinstance(raw_metadata, dict):
+        return {}
+    carry: dict[str, Any] = {}
+    for key in _DOC_STATUS_METADATA_CARRY_OVER_KEYS:
+        if key in raw_metadata and raw_metadata[key] not in (None, ""):
+            carry[key] = raw_metadata[key]
+    return carry
+
+
+def doc_status_transition_metadata(
+    status_doc: Any,
+    *,
+    extra: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build a doc_status ``metadata`` payload that preserves carry-over fields.
+
+    Use at every state-transition upsert site so the user's
+    ``process_options`` (and any future long-lived metadata fields) survive
+    PENDING → PARSING → ANALYZING → PROCESSING → PROCESSED / FAILED.
+    """
+    payload = doc_status_metadata_carry_over(status_doc)
+    if extra:
+        payload.update(extra)
+    return payload
+
+
 def doc_status_value(doc: Any) -> str:
     status = doc_status_field(doc, "status", "")
     if isinstance(status, DocStatus):

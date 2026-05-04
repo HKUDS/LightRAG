@@ -66,6 +66,7 @@ from lightrag.utils_pipeline import (
     compute_file_content_hash,
     compute_text_content_hash,
     doc_status_field,
+    doc_status_transition_metadata,
     document_canonical_key,
     document_source_key,
     get_by_path,
@@ -789,9 +790,11 @@ class _PipelineMixin:
                         "file_path": resolved_file_path,
                         "track_id": getattr(status_doc, "track_id", ""),
                         "content_hash": getattr(status_doc, "content_hash", None),
-                        # Clear any error messages and processing metadata
+                        # Clear transient error / processing fields but preserve
+                        # long-lived per-doc metadata (process_options) seeded
+                        # at enqueue time.
                         "error_msg": "",
-                        "metadata": {},
+                        "metadata": doc_status_transition_metadata(status_doc),
                     }
 
                     # Update the status in to_process_docs as well
@@ -1064,6 +1067,9 @@ class _PipelineMixin:
                                             "file_path": file_path,
                                             "track_id": status_doc.track_id,
                                             "content_hash": status_doc.content_hash,
+                                            "metadata": doc_status_transition_metadata(
+                                                status_doc
+                                            ),
                                         }
                                     }
                                 )
@@ -1135,6 +1141,9 @@ class _PipelineMixin:
                                             "file_path": file_path,
                                             "track_id": status_doc.track_id,
                                             "content_hash": status_doc.content_hash,
+                                            "metadata": doc_status_transition_metadata(
+                                                status_doc
+                                            ),
                                         }
                                     }
                                 )
@@ -1450,10 +1459,13 @@ class _PipelineMixin:
                                             "file_path": file_path,
                                             "track_id": status_doc.track_id,  # Preserve existing track_id
                                             "content_hash": status_doc.content_hash,
-                                            "metadata": {
-                                                "processing_start_time": processing_start_time,
-                                                **extraction_meta,
-                                            },
+                                            "metadata": doc_status_transition_metadata(
+                                                status_doc,
+                                                extra={
+                                                    "processing_start_time": processing_start_time,
+                                                    **extraction_meta,
+                                                },
+                                            ),
                                         }
                                     }
                                 )
@@ -1566,10 +1578,13 @@ class _PipelineMixin:
                                         "file_path": file_path,
                                         "track_id": status_doc.track_id,  # Preserve existing track_id
                                         "content_hash": status_doc.content_hash,
-                                        "metadata": {
-                                            "processing_start_time": processing_start_time,
-                                            "processing_end_time": processing_end_time,
-                                        },
+                                        "metadata": doc_status_transition_metadata(
+                                            status_doc,
+                                            extra={
+                                                "processing_start_time": processing_start_time,
+                                                "processing_end_time": processing_end_time,
+                                            },
+                                        ),
                                     }
                                 }
                             )
@@ -1629,11 +1644,14 @@ class _PipelineMixin:
                                             "file_path": file_path,
                                             "track_id": status_doc.track_id,  # Preserve existing track_id
                                             "content_hash": status_doc.content_hash,
-                                            "metadata": {
-                                                "processing_start_time": processing_start_time,
-                                                "processing_end_time": processing_end_time,
-                                                **extraction_meta,
-                                            },
+                                            "metadata": doc_status_transition_metadata(
+                                                status_doc,
+                                                extra={
+                                                    "processing_start_time": processing_start_time,
+                                                    "processing_end_time": processing_end_time,
+                                                    **extraction_meta,
+                                                },
+                                            ),
                                         }
                                     }
                                 )
@@ -1706,11 +1724,14 @@ class _PipelineMixin:
                                             "file_path": file_path,
                                             "track_id": status_doc.track_id,  # Preserve existing track_id
                                             "content_hash": status_doc.content_hash,
-                                            "metadata": {
-                                                "processing_start_time": processing_start_time,
-                                                "processing_end_time": processing_end_time,
-                                                **extraction_meta,
-                                            },
+                                            "metadata": doc_status_transition_metadata(
+                                                status_doc,
+                                                extra={
+                                                    "processing_start_time": processing_start_time,
+                                                    "processing_end_time": processing_end_time,
+                                                    **extraction_meta,
+                                                },
+                                            ),
                                         }
                                     }
                                 )
@@ -1741,6 +1762,9 @@ class _PipelineMixin:
                                         "file_path": file_path_w,
                                         "track_id": status_doc_w.track_id,
                                         "content_hash": status_doc_w.content_hash,
+                                        "metadata": doc_status_transition_metadata(
+                                            status_doc_w
+                                        ),
                                     }
                                 }
                             )
@@ -1803,6 +1827,9 @@ class _PipelineMixin:
                                             ),
                                             "track_id": status_doc_w.track_id,
                                             "content_hash": status_doc_w.content_hash,
+                                            "metadata": doc_status_transition_metadata(
+                                                status_doc_w
+                                            ),
                                         }
                                     }
                                 )
@@ -1834,6 +1861,9 @@ class _PipelineMixin:
                                         "file_path": file_path_w,
                                         "track_id": status_doc_w.track_id,
                                         "content_hash": status_doc_w.content_hash,
+                                        "metadata": doc_status_transition_metadata(
+                                            status_doc_w
+                                        ),
                                     }
                                 }
                             )
@@ -2556,12 +2586,15 @@ class _PipelineMixin:
                     "track_id": status_doc.track_id,
                     "content_hash": content_hash,
                     "error_msg": message,
-                    "metadata": {
-                        "is_duplicate": True,
-                        "duplicate_kind": "content_hash",
-                        "original_doc_id": original_doc_id,
-                        "original_track_id": original_track_id,
-                    },
+                    "metadata": doc_status_transition_metadata(
+                        status_doc,
+                        extra={
+                            "is_duplicate": True,
+                            "duplicate_kind": "content_hash",
+                            "original_doc_id": original_doc_id,
+                            "original_track_id": original_track_id,
+                        },
+                    ),
                 }
             }
         )

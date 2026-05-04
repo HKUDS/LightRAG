@@ -257,6 +257,99 @@ def test_resolve_file_parser_directives_priority(monkeypatch):
 
 
 @pytest.mark.offline
+def test_doc_status_metadata_carry_over_helper():
+    """``doc_status_transition_metadata`` preserves long-lived per-doc fields
+    (currently ``process_options``) and layers in any transition-specific
+    extras passed via ``extra=``.  Empty / missing carry-over fields are
+    dropped, not written as null.
+    """
+    from lightrag.utils_pipeline import doc_status_transition_metadata
+
+    class _StubStatusDoc:
+        def __init__(self, metadata):
+            self.metadata = metadata
+
+    # Carries process_options forward.
+    md = doc_status_transition_metadata(
+        _StubStatusDoc({"process_options": "iet"})
+    )
+    assert md == {"process_options": "iet"}
+
+    # Layers in transition extras while keeping the carry-over.
+    md = doc_status_transition_metadata(
+        _StubStatusDoc({"process_options": "R!"}),
+        extra={"processing_start_time": 12345},
+    )
+    assert md == {"process_options": "R!", "processing_start_time": 12345}
+
+    # No carry-over when metadata is missing or empty.
+    assert doc_status_transition_metadata(_StubStatusDoc({})) == {}
+    assert doc_status_transition_metadata(None) == {}
+
+    # Empty / None process_options are not written as null.
+    assert doc_status_transition_metadata(
+        _StubStatusDoc({"process_options": ""})
+    ) == {}
+    assert doc_status_transition_metadata(
+        _StubStatusDoc({"process_options": None})
+    ) == {}
+
+
+def _status_value_text(status):
+    """Helper: extract the value of a DocStatus enum or raw status string."""
+    if hasattr(status, "value"):
+        return status.value
+    return str(status)
+
+
+@pytest.mark.offline
+def test_doc_status_metadata_survives_processed_transition(tmp_path):
+    """End-to-end: a document enqueued with process_options must keep
+    ``metadata.process_options`` set in ``doc_status`` after the pipeline
+    drives it all the way to PROCESSED.  This exercises the full state
+    machine (PENDING → PARSING → ANALYZING → PROCESSING → PROCESSED) and
+    asserts the carry-over works at every transition.
+    """
+
+    async def _run():
+        rag = _new_rag(tmp_path)
+        await rag.initialize_storages()
+        try:
+            await rag.apipeline_enqueue_documents(
+                "Some content body for chunking.",
+                file_paths="metadata_carry.txt",
+                track_id="track-md-carry",
+                process_options="iet!",
+            )
+
+            doc_id = compute_mdhash_id("metadata_carry.txt", prefix="doc-")
+            pending_status = await rag.doc_status.get_by_id(doc_id)
+            assert pending_status is not None
+            assert (
+                (pending_status.get("metadata") or {}).get("process_options")
+                == "iet!"
+            )
+
+            # Run the pipeline through to PROCESSED.
+            await rag.apipeline_process_enqueue_documents()
+
+            final_status = await rag.doc_status.get_by_id(doc_id)
+            assert final_status is not None
+            assert (
+                _status_value_text(final_status.get("status")) == "processed"
+            )
+            metadata = final_status.get("metadata") or {}
+            assert metadata.get("process_options") == "iet!", (
+                f"process_options dropped during state-machine transitions; "
+                f"final metadata: {metadata!r}"
+            )
+        finally:
+            await rag.finalize_storages()
+
+    asyncio.run(_run())
+
+
+@pytest.mark.offline
 def test_apipeline_enqueue_persists_process_options(tmp_path):
     async def _run():
         rag = _new_rag(tmp_path)
