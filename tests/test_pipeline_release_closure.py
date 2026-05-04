@@ -291,6 +291,287 @@ def test_apipeline_enqueue_persists_process_options(tmp_path):
 
 
 @pytest.mark.offline
+def test_purge_doc_chunks_and_kg_is_noop_for_empty_chunks(tmp_path):
+    """``_purge_doc_chunks_and_kg`` with an empty chunk_ids set must be a
+    no-op so callers (including the resume branch) can invoke it
+    unconditionally without first checking for non-empty chunks_list.
+    """
+
+    async def _run():
+        from lightrag.kg.shared_storage import (
+            get_namespace_data,
+            get_namespace_lock,
+        )
+
+        rag = _new_rag(tmp_path)
+        await rag.initialize_storages()
+        try:
+            pipeline_status = await get_namespace_data(
+                "pipeline_status", workspace=rag.workspace
+            )
+            pipeline_status_lock = get_namespace_lock(
+                "pipeline_status", workspace=rag.workspace
+            )
+            # Empty set: must return immediately without touching storage.
+            await rag._purge_doc_chunks_and_kg(
+                "doc-empty",
+                set(),
+                pipeline_status=pipeline_status,
+                pipeline_status_lock=pipeline_status_lock,
+            )
+            # No exceptions → success.  Calling twice in a row is also fine
+            # since the helper is idempotent on the empty input.
+            await rag._purge_doc_chunks_and_kg(
+                "doc-empty",
+                set(),
+                pipeline_status=pipeline_status,
+                pipeline_status_lock=pipeline_status_lock,
+            )
+        finally:
+            await rag.finalize_storages()
+
+    asyncio.run(_run())
+
+
+@pytest.mark.offline
+def test_purge_doc_chunks_and_kg_clears_chunks_for_unknown_doc(tmp_path):
+    """When the doc has chunk_ids but no graph contributions yet
+    (full_entities / full_relations empty), the helper must still clear
+    the chunks from chunks_vdb / text_chunks without raising.  This
+    exercises the resume path for documents whose previous run was
+    interrupted between chunking and entity extraction.
+    """
+
+    async def _run():
+        from lightrag.kg.shared_storage import (
+            get_namespace_data,
+            get_namespace_lock,
+        )
+
+        rag = _new_rag(tmp_path)
+        await rag.initialize_storages()
+        try:
+            # Seed text_chunks + chunks_vdb with two stale chunks.
+            await rag.text_chunks.upsert(
+                {
+                    "doc-X-chunk-0": {
+                        "content": "stale chunk 0",
+                        "chunk_order_index": 0,
+                        "full_doc_id": "doc-X",
+                        "tokens": 4,
+                        "file_path": "x.txt",
+                    },
+                    "doc-X-chunk-1": {
+                        "content": "stale chunk 1",
+                        "chunk_order_index": 1,
+                        "full_doc_id": "doc-X",
+                        "tokens": 4,
+                        "file_path": "x.txt",
+                    },
+                }
+            )
+            await rag.chunks_vdb.upsert(
+                {
+                    "doc-X-chunk-0": {
+                        "content": "stale chunk 0",
+                        "chunk_order_index": 0,
+                        "full_doc_id": "doc-X",
+                        "tokens": 4,
+                        "file_path": "x.txt",
+                    },
+                    "doc-X-chunk-1": {
+                        "content": "stale chunk 1",
+                        "chunk_order_index": 1,
+                        "full_doc_id": "doc-X",
+                        "tokens": 4,
+                        "file_path": "x.txt",
+                    },
+                }
+            )
+            await rag.text_chunks.index_done_callback()
+            await rag.chunks_vdb.index_done_callback()
+
+            pipeline_status = await get_namespace_data(
+                "pipeline_status", workspace=rag.workspace
+            )
+            pipeline_status_lock = get_namespace_lock(
+                "pipeline_status", workspace=rag.workspace
+            )
+
+            await rag._purge_doc_chunks_and_kg(
+                "doc-X",
+                {"doc-X-chunk-0", "doc-X-chunk-1"},
+                pipeline_status=pipeline_status,
+                pipeline_status_lock=pipeline_status_lock,
+            )
+
+            # Both chunks gone from text_chunks.
+            remaining = await rag.text_chunks.get_by_ids(
+                ["doc-X-chunk-0", "doc-X-chunk-1"]
+            )
+            assert remaining == [None, None]
+        finally:
+            await rag.finalize_storages()
+
+    asyncio.run(_run())
+
+
+@pytest.mark.offline
+def test_resume_purges_old_chunks_when_content_already_extracted(tmp_path):
+    """When ``apipeline_process_enqueue_documents`` picks up a document
+    whose content is already extracted (full_docs.format=raw with content)
+    and whose doc_status carries a non-empty chunks_list from a previous
+    half-finished run, the resume branch must call
+    ``_purge_doc_chunks_and_kg`` with the old chunk-IDs *before* the
+    chunking and entity-extraction stages run.  This test wraps the
+    helper so we can assert it is invoked exactly once with the expected
+    inputs, then bails out so we don't have to mock the whole VLM /
+    entity-extract stack.
+    """
+
+    async def _run():
+        rag = _new_rag(tmp_path)
+        await rag.initialize_storages()
+        try:
+            doc_id = compute_mdhash_id("resume.txt", prefix="doc-")
+
+            # Seed full_docs as if extraction already completed.
+            await rag.full_docs.upsert(
+                {
+                    doc_id: {
+                        "content": "previously extracted body",
+                        "file_path": "resume.txt",
+                        "canonical_basename": "resume.txt",
+                        "format": "raw",
+                        "parsed_engine": "legacy",
+                        "content_hash": "deadbeef",
+                    }
+                }
+            )
+            # Seed doc_status as PROCESSING with chunks_list from a prior
+            # half-finished run so the resume branch has something to purge.
+            stale_chunks = [f"{doc_id}-chunk-{i:03d}" for i in range(2)]
+            await rag.doc_status.upsert(
+                {
+                    doc_id: {
+                        "status": DocStatus.PROCESSING,
+                        "content_summary": "previously extracted body",
+                        "content_length": len("previously extracted body"),
+                        "created_at": "2026-01-01T00:00:00+00:00",
+                        "updated_at": "2026-01-01T00:00:01+00:00",
+                        "file_path": "resume.txt",
+                        "canonical_basename": "resume.txt",
+                        "track_id": "track-resume",
+                        "content_hash": "deadbeef",
+                        "chunks_list": stale_chunks,
+                        "chunks_count": len(stale_chunks),
+                    }
+                }
+            )
+
+            # Wrap the helper to record invocations, and raise after the call
+            # so the test exits cleanly without exercising downstream stages.
+            calls: list[tuple[str, set[str]]] = []
+            original = rag._purge_doc_chunks_and_kg
+
+            class _ResumePurged(Exception):
+                pass
+
+            async def _wrapped(doc_id_arg, chunk_ids_arg, **kwargs):
+                calls.append((doc_id_arg, set(chunk_ids_arg)))
+                # Run the real helper so the side-effects (chunks gone from
+                # storage) are observable, then short-circuit.
+                await original(doc_id_arg, chunk_ids_arg, **kwargs)
+                raise _ResumePurged()
+
+            rag._purge_doc_chunks_and_kg = _wrapped  # type: ignore[method-assign]
+
+            # Pipeline will pick up the PROCESSING document, hit the resume
+            # branch, call our wrapped purge, and our wrapper raises.
+            await rag.apipeline_process_enqueue_documents()
+
+            # Helper was invoked exactly once with the stale chunk-IDs.
+            assert len(calls) == 1
+            invoked_doc_id, invoked_chunks = calls[0]
+            assert invoked_doc_id == doc_id
+            assert invoked_chunks == set(stale_chunks)
+        finally:
+            await rag.finalize_storages()
+
+    asyncio.run(_run())
+
+
+@pytest.mark.offline
+def test_resume_skips_purge_when_chunks_list_empty(tmp_path):
+    """If the doc was extracted but never chunked (chunks_list empty),
+    the resume branch must NOT call the purge helper — there's nothing
+    to clean up.
+    """
+
+    async def _run():
+        rag = _new_rag(tmp_path)
+        await rag.initialize_storages()
+        try:
+            doc_id = compute_mdhash_id("noskip.txt", prefix="doc-")
+
+            await rag.full_docs.upsert(
+                {
+                    doc_id: {
+                        "content": "fresh body",
+                        "file_path": "noskip.txt",
+                        "canonical_basename": "noskip.txt",
+                        "format": "raw",
+                        "parsed_engine": "legacy",
+                        "content_hash": "fresh",
+                    }
+                }
+            )
+            await rag.doc_status.upsert(
+                {
+                    doc_id: {
+                        "status": DocStatus.PARSING,
+                        "content_summary": "fresh body",
+                        "content_length": len("fresh body"),
+                        "created_at": "2026-01-01T00:00:00+00:00",
+                        "updated_at": "2026-01-01T00:00:01+00:00",
+                        "file_path": "noskip.txt",
+                        "canonical_basename": "noskip.txt",
+                        "track_id": "track-noskip",
+                        "content_hash": "fresh",
+                        "chunks_list": [],
+                        "chunks_count": 0,
+                    }
+                }
+            )
+
+            calls: list[tuple[str, set[str]]] = []
+
+            async def _spy(doc_id_arg, chunk_ids_arg, **kwargs):
+                calls.append((doc_id_arg, set(chunk_ids_arg)))
+                # Don't actually purge; just record the call and let the
+                # pipeline continue past this test boundary.
+                raise RuntimeError("test stop after purge check")
+
+            rag._purge_doc_chunks_and_kg = _spy  # type: ignore[method-assign]
+
+            try:
+                await rag.apipeline_process_enqueue_documents()
+            except Exception:
+                # Whether the pipeline reaches our spy or fails downstream
+                # doesn't matter for this test; we only care that the spy
+                # was NOT called for an empty chunks_list.
+                pass
+
+            assert (
+                calls == []
+            ), "purge helper should not be called when chunks_list is empty"
+        finally:
+            await rag.finalize_storages()
+
+    asyncio.run(_run())
+
+
+@pytest.mark.offline
 def test_apipeline_enqueue_rejects_when_pipeline_busy(tmp_path):
     """Pipeline busy / scanning state forbids any new enqueue.  This is the
     last-line guard inside ``apipeline_enqueue_documents``; HTTP endpoints

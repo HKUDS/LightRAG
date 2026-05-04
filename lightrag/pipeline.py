@@ -47,6 +47,7 @@ from lightrag.operate import merge_nodes_and_edges
 from lightrag.extraction.interchange import parse_interchange_jsonl
 from lightrag.parser_routing import (
     canonicalize_parser_hinted_basename,
+    resolve_file_parser_directives,
     resolve_stored_document_parser_engine,
 )
 from lightrag.utils import (
@@ -1158,6 +1159,97 @@ class _PipelineMixin:
                             doc_process_opts = parse_process_options(
                                 (content_data or {}).get("process_options", "")
                             )
+
+                            # ---- Resume guard ----
+                            # When the pipeline picks up a non-fresh document whose
+                            # content has already been extracted into full_docs, we
+                            # must purge any stale chunks / entities / relations
+                            # from a previous interrupted attempt BEFORE re-running
+                            # chunking + entity extraction under the *current*
+                            # process_options.  Skipping this would either leave
+                            # orphaned chunk-IDs in the vector DB or mix old and
+                            # new chunks together, neither of which is safe.
+                            #
+                            # Both pipeline entry points (worker-driven and inline)
+                            # converge here, so this is the single canonical place
+                            # to do the purge regardless of which path got us here.
+                            content_already_extracted = isinstance(
+                                content_data, dict
+                            ) and (
+                                (
+                                    content_data.get("format")
+                                    == FULL_DOCS_FORMAT_LIGHTRAG
+                                    and content_data.get("lightrag_document_path")
+                                )
+                                or (
+                                    content_data.get("format") == FULL_DOCS_FORMAT_RAW
+                                    and (content_data.get("content") or "").strip()
+                                )
+                            )
+                            stored_chunk_ids = set(
+                                chunk_id
+                                for chunk_id in (status_doc.chunks_list or [])
+                                if isinstance(chunk_id, str) and chunk_id
+                            )
+                            if content_already_extracted:
+                                # Engine-mismatch warning: changing the parser engine
+                                # after extraction is *not* honoured — the extracted
+                                # content is the source of truth.  Users wanting to
+                                # re-extract with a new engine must delete +
+                                # re-upload.
+                                intended_engine, _ = resolve_file_parser_directives(
+                                    file_path
+                                )
+                                stored_engine = (
+                                    content_data.get("parsed_engine") or ""
+                                ).lower()
+                                if (
+                                    intended_engine
+                                    and stored_engine
+                                    and intended_engine != stored_engine
+                                ):
+                                    log_message = (
+                                        f"[resume] {doc_id}: filename hint / "
+                                        f"LIGHTRAG_PARSER implies engine="
+                                        f"{intended_engine!r} but full_docs "
+                                        f"already has parsed_engine="
+                                        f"{stored_engine!r}; keeping the existing "
+                                        f"extraction.  Delete + re-upload to "
+                                        f"switch engines."
+                                    )
+                                    logger.warning(log_message)
+                                    async with pipeline_status_lock:
+                                        pipeline_status["latest_message"] = log_message
+                                        pipeline_status["history_messages"].append(
+                                            log_message
+                                        )
+
+                                if stored_chunk_ids:
+                                    log_message = (
+                                        f"[resume] {doc_id}: purging "
+                                        f"{len(stored_chunk_ids)} chunk(s) and "
+                                        f"associated KG entries from a previous run "
+                                        f"before rebuilding under current "
+                                        f"process_options"
+                                    )
+                                    logger.info(log_message)
+                                    async with pipeline_status_lock:
+                                        pipeline_status["latest_message"] = log_message
+                                        pipeline_status["history_messages"].append(
+                                            log_message
+                                        )
+                                    await self._purge_doc_chunks_and_kg(
+                                        doc_id,
+                                        stored_chunk_ids,
+                                        pipeline_status=pipeline_status,
+                                        pipeline_status_lock=pipeline_status_lock,
+                                    )
+                                    # The status_doc carries chunks_list / chunks_count
+                                    # from the prior run; clear them so subsequent
+                                    # state-machine upserts don't accidentally
+                                    # re-write stale IDs.
+                                    status_doc.chunks_list = []
+                                    status_doc.chunks_count = 0
 
                             # Try to parse as interchange JSONL (smart extraction output)
                             parsed_interchange = parse_interchange_jsonl(
