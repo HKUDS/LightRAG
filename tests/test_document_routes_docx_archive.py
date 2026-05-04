@@ -1044,6 +1044,129 @@ async def test_scan_endpoint_acquires_and_releases_scanning_flag(tmp_path, monke
     assert pipeline_status["scanning"] is False
 
 
+async def test_scan_endpoint_returns_skipped_when_enqueue_pending(tmp_path):
+    """The preflight-to-background race: an upload/insert endpoint may
+    have passed the idle check, reserved a pending-enqueue slot, and
+    returned success — but its bg task has not yet called
+    apipeline_enqueue_documents.  A scan that arrives in this window must
+    refuse, otherwise it would set scanning=True and the bg enqueue would
+    fail the busy guard after the client already saw success.
+    """
+    import importlib
+
+    doc_manager = DocumentManager(str(tmp_path))
+    rag = _ScanRag({})
+
+    shared_storage = importlib.import_module("lightrag.kg.shared_storage")
+    await shared_storage.initialize_pipeline_status(workspace=rag.workspace)
+    pipeline_status = await shared_storage.get_namespace_data(
+        "pipeline_status", workspace=rag.workspace
+    )
+    # The "scan-test" workspace is shared across tests; reset all guarded
+    # flags so we start from a clean idle state.
+    pipeline_status["busy"] = False
+    pipeline_status["scanning"] = False
+    pipeline_status["pending_enqueues"] = 0
+    # Simulate a reservation made by /upload that has not yet released.
+    pipeline_status["pending_enqueues"] = 1
+
+    router = create_document_routes(rag, doc_manager)
+    scan_endpoint = [
+        route.endpoint
+        for route in router.routes
+        if getattr(route, "name", "") == "scan_for_new_documents"
+    ][-1]
+
+    bg = _document_routes.BackgroundTasks()
+    response = await scan_endpoint(bg)
+
+    assert response.status == "scanning_skipped_pipeline_busy"
+    # No background task scheduled; scanning flag untouched.
+    assert len(bg.tasks) == 0
+    assert pipeline_status.get("scanning") is False
+    # Reservation count is preserved — only the owning bg task may release it.
+    assert pipeline_status["pending_enqueues"] == 1
+
+
+async def test_reserve_enqueue_slot_blocks_concurrent_scan_until_release(tmp_path):
+    """End-to-end on the reservation primitive: reserving a slot makes
+    the scan endpoint refuse; releasing it lets the next scan in.  This
+    is the contract the upload/text endpoints rely on to close the
+    preflight-to-background race.
+    """
+    import importlib
+
+    doc_manager = DocumentManager(str(tmp_path))
+    rag = _ScanRag({})
+
+    shared_storage = importlib.import_module("lightrag.kg.shared_storage")
+    await shared_storage.initialize_pipeline_status(workspace=rag.workspace)
+    pipeline_status = await shared_storage.get_namespace_data(
+        "pipeline_status", workspace=rag.workspace
+    )
+    pipeline_status["busy"] = False
+    pipeline_status["scanning"] = False
+    pipeline_status["pending_enqueues"] = 0
+
+    # Reserve a slot — mirrors what /upload, /text and /texts do
+    # synchronously before scheduling their bg tasks.
+    reserved = await _document_routes._reserve_enqueue_slot(rag)
+    assert reserved is True
+    assert pipeline_status["pending_enqueues"] == 1
+
+    router = create_document_routes(rag, doc_manager)
+    scan_endpoint = [
+        route.endpoint
+        for route in router.routes
+        if getattr(route, "name", "") == "scan_for_new_documents"
+    ][-1]
+
+    bg = _document_routes.BackgroundTasks()
+    blocked = await scan_endpoint(bg)
+    assert blocked.status == "scanning_skipped_pipeline_busy"
+
+    # Release: bg task wrapper would do this in finally.
+    await _document_routes._release_enqueue_slot(rag)
+    assert pipeline_status["pending_enqueues"] == 0
+
+    bg2 = _document_routes.BackgroundTasks()
+    allowed = await scan_endpoint(bg2)
+    assert allowed.status == "scanning_started"
+    assert pipeline_status["scanning"] is True
+
+
+async def test_reserve_enqueue_slot_raises_409_when_busy_or_scanning(tmp_path):
+    """The reservation helper must surface 409 (not silently increment)
+    when the pipeline is already busy or scanning, so endpoints fail
+    fast and the caller sees a normal error response.
+    """
+    import importlib
+
+    rag = _ScanRag({})
+    shared_storage = importlib.import_module("lightrag.kg.shared_storage")
+    await shared_storage.initialize_pipeline_status(workspace=rag.workspace)
+    pipeline_status = await shared_storage.get_namespace_data(
+        "pipeline_status", workspace=rag.workspace
+    )
+    pipeline_status["busy"] = False
+    pipeline_status["scanning"] = False
+    pipeline_status["pending_enqueues"] = 0
+
+    pipeline_status["busy"] = True
+    with pytest.raises(_document_routes.HTTPException) as exc:
+        await _document_routes._reserve_enqueue_slot(rag)
+    assert exc.value.status_code == 409
+    # No leak when guard rejects.
+    assert pipeline_status["pending_enqueues"] == 0
+    pipeline_status["busy"] = False
+
+    pipeline_status["scanning"] = True
+    with pytest.raises(_document_routes.HTTPException) as exc:
+        await _document_routes._reserve_enqueue_slot(rag)
+    assert exc.value.status_code == 409
+    assert pipeline_status["pending_enqueues"] == 0
+
+
 def test_delete_file_variants_removes_canonical_hint_variants(tmp_path):
     parsed_dir = tmp_path / PARSED_DIR_NAME
     parsed_dir.mkdir()

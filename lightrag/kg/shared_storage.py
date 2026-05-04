@@ -1290,6 +1290,12 @@ async def initialize_pipeline_status(workspace: str | None = None):
                 "autoscanned": False,  # Auto-scan started
                 "busy": False,  # Control concurrent processes
                 "scanning": False,  # /documents/scan in progress (independent of busy)
+                # Counter of upload/insert endpoints that have passed the
+                # idle preflight but whose background enqueue has not yet
+                # run.  Closes the preflight-to-background race: scan
+                # refuses to start while this is > 0 so the bg task is
+                # guaranteed to see scanning=False at enqueue time.
+                "pending_enqueues": 0,
                 "job_name": "-",  # Current job name (indexing files/indexing texts)
                 "job_start": None,  # Job start time
                 "docs": 0,  # Total number of documents to be indexed

@@ -977,18 +977,32 @@ async def get_existing_doc_by_file_path_candidates(
     return existing_doc_data
 
 
-async def _ensure_pipeline_idle(rag: LightRAG) -> None:
-    """Reject upload/insert/scan calls while indexing or scanning is running.
+async def _reserve_enqueue_slot(rag: LightRAG) -> bool:
+    """Atomically check pipeline idleness and reserve a pending-enqueue slot.
 
-    The concurrency contract states that no write to ``doc_status`` /
-    ``full_docs`` may interleave with an in-flight pipeline run.  Endpoints
-    that would otherwise persist new state must call this guard first and
-    surface a 409 to clients.
+    Closes the preflight-to-background race: when an endpoint passes the
+    idle check, schedules a BackgroundTask that calls
+    ``apipeline_enqueue_documents``, and returns success to the client, a
+    /documents/scan request that arrived in between would otherwise set
+    ``pipeline_status['scanning']=True`` before the bg task runs — so the
+    enqueue's busy guard would reject the work after the client already
+    saw success.  By incrementing ``pending_enqueues`` under the same lock
+    that the scan endpoint takes, we guarantee scan refuses with
+    ``scanning_skipped_pipeline_busy`` until every reserved slot is
+    released.
+
+    The concurrency contract still holds: no write to ``doc_status`` /
+    ``full_docs`` may interleave with an in-flight pipeline run.
 
     A workspace whose ``pipeline_status`` has never been initialised (via
-    ``initialize_pipeline_status``) is treated as idle: production code
-    always runs ``rag.initialize_storages`` during startup, but mocked
-    test rigs may skip that step.
+    ``initialize_pipeline_status``) is treated as idle and no slot is
+    reserved: production code always runs ``rag.initialize_storages``
+    during startup, but mocked test rigs may skip that step.
+
+    Returns:
+        True when a slot was reserved (caller MUST pair with
+        ``_release_enqueue_slot``); False when pipeline_status is not
+        bootstrapped and there is no slot to release.
 
     Raises:
         HTTPException(409): when ``pipeline_status['busy']`` or
@@ -1003,7 +1017,8 @@ async def _ensure_pipeline_idle(rag: LightRAG) -> None:
         )
     except PipelineNotInitializedError:
         # Workspace pipeline_status not yet bootstrapped → treat as idle.
-        return
+        # Nothing to reserve and nothing to release.
+        return False
     pipeline_status_lock = get_namespace_lock(
         "pipeline_status", workspace=rag.workspace
     )
@@ -1024,6 +1039,35 @@ async def _ensure_pipeline_idle(rag: LightRAG) -> None:
                     "Wait for the scan to complete before submitting new work."
                 ),
             )
+        pipeline_status["pending_enqueues"] = (
+            pipeline_status.get("pending_enqueues", 0) + 1
+        )
+    return True
+
+
+async def _release_enqueue_slot(rag: LightRAG) -> None:
+    """Release a slot reserved by ``_reserve_enqueue_slot``.  Never raises.
+
+    Decrement is clamped at 0 so a stray release (e.g. from a
+    not-yet-bootstrapped workspace whose reservation returned False but
+    whose bg task wrapper still calls release) is harmless.
+    """
+    from lightrag.exceptions import PipelineNotInitializedError
+    from lightrag.kg.shared_storage import get_namespace_data, get_namespace_lock
+
+    try:
+        pipeline_status = await get_namespace_data(
+            "pipeline_status", workspace=rag.workspace
+        )
+    except PipelineNotInitializedError:
+        return
+    pipeline_status_lock = get_namespace_lock(
+        "pipeline_status", workspace=rag.workspace
+    )
+    async with pipeline_status_lock:
+        current = pipeline_status.get("pending_enqueues", 0)
+        if current > 0:
+            pipeline_status["pending_enqueues"] = current - 1
 
 
 def find_existing_file_by_canonical_basename(
@@ -2432,7 +2476,11 @@ def create_document_routes(
         )
 
         # Atomically acquire the scanning flag: if the pipeline is busy or
-        # another scan is in flight, refuse without scheduling.
+        # another scan is in flight, refuse without scheduling.  Also
+        # refuse while any /upload, /text or /texts endpoint has reserved
+        # a pending-enqueue slot (see _reserve_enqueue_slot) — those bg
+        # tasks have not yet enqueued and would otherwise be killed by the
+        # scanning busy guard inside apipeline_enqueue_documents.
         async with pipeline_status_lock:
             if pipeline_status.get("busy"):
                 logger.warning(
@@ -2455,6 +2503,21 @@ def create_document_routes(
                     message=(
                         "Another scan is already in progress. "
                         "Wait for it to finish before triggering a new one."
+                    ),
+                    track_id=track_id,
+                )
+            pending_enqueues = pipeline_status.get("pending_enqueues", 0)
+            if pending_enqueues > 0:
+                logger.warning(
+                    "Scan request skipped: "
+                    f"{pending_enqueues} pending enqueue(s) reserved by "
+                    "upload/insert endpoints"
+                )
+                return ScanResponse(
+                    status="scanning_skipped_pipeline_busy",
+                    message=(
+                        "Document upload/insert is being enqueued. "
+                        "Wait for in-flight work to complete before triggering a scan."
                     ),
                     track_id=track_id,
                 )
@@ -2538,11 +2601,14 @@ def create_document_routes(
             HTTPException: 400 unsupported file type, 409 same-name conflict
                 or pipeline busy/scanning, 413 file too large, 500 other errors.
         """
+        slot_reserved = False
         try:
-            # Reject upload while pipeline is busy or scanning.  The strict
-            # name pre-check below would otherwise race with in-flight writes
-            # to doc_status, leading to inconsistent state.
-            await _ensure_pipeline_idle(rag)
+            # Reject upload while pipeline is busy or scanning AND reserve a
+            # pending-enqueue slot so a /documents/scan request that arrives
+            # before the bg task runs cannot transition scanning=True under
+            # us — which would force apipeline_enqueue_documents to reject
+            # the work after the client already received success.
+            slot_reserved = await _reserve_enqueue_slot(rag)
 
             # Sanitize filename to prevent Path Traversal attacks
             safe_filename = sanitize_filename(file.filename, doc_manager.input_dir)
@@ -2654,8 +2720,20 @@ def create_document_routes(
 
             track_id = generate_track_id("upload")
 
-            # Add to background tasks and get track_id
-            background_tasks.add_task(pipeline_index_file, rag, file_path, track_id)
+            # Wrap the bg task so the reserved slot is released exactly once
+            # — when the enqueue completes (success or failure).  Capturing
+            # ``rag``, ``file_path`` and ``track_id`` in the closure keeps
+            # the call shape identical to the pre-fix code path.
+            async def _indexing_task():
+                try:
+                    await pipeline_index_file(rag, file_path, track_id)
+                finally:
+                    await _release_enqueue_slot(rag)
+
+            background_tasks.add_task(_indexing_task)
+            # Ownership of the slot transferred to the bg task — the
+            # finally block below must NOT release it again.
+            slot_reserved = False
 
             return InsertResponse(
                 status="success",
@@ -2670,6 +2748,14 @@ def create_document_routes(
             logger.error(f"Error /documents/upload: {file.filename}: {str(e)}")
             logger.error(traceback.format_exc())
             raise HTTPException(status_code=500, detail=str(e))
+        finally:
+            # If we reserved a slot but never scheduled the bg task (e.g.
+            # an early validation rejection or a streaming-write failure),
+            # release here so the next scan / upload is not permanently
+            # blocked.  When the bg task owns the slot, ``slot_reserved``
+            # was reset to False before returning.
+            if slot_reserved:
+                await _release_enqueue_slot(rag)
 
     @router.post(
         "/text", response_model=InsertResponse, dependencies=[Depends(combined_auth)]
@@ -2693,9 +2779,11 @@ def create_document_routes(
         Raises:
             HTTPException: If an error occurs during text processing (500).
         """
+        slot_reserved = False
         try:
-            # Reject text insertion while pipeline is busy or scanning.
-            await _ensure_pipeline_idle(rag)
+            # Reject text insertion while pipeline is busy or scanning AND
+            # reserve a pending-enqueue slot — see /upload for the rationale.
+            slot_reserved = await _reserve_enqueue_slot(rag)
 
             # Check if file_source already exists in doc_status storage
             if not is_valid_file_source(request.file_source):
@@ -2721,13 +2809,19 @@ def create_document_routes(
             # Generate track_id for text insertion
             track_id = generate_track_id("insert")
 
-            background_tasks.add_task(
-                pipeline_index_texts,
-                rag,
-                [request.text],
-                file_sources=[normalized_file_source],
-                track_id=track_id,
-            )
+            async def _indexing_task():
+                try:
+                    await pipeline_index_texts(
+                        rag,
+                        [request.text],
+                        file_sources=[normalized_file_source],
+                        track_id=track_id,
+                    )
+                finally:
+                    await _release_enqueue_slot(rag)
+
+            background_tasks.add_task(_indexing_task)
+            slot_reserved = False
 
             return InsertResponse(
                 status="success",
@@ -2740,6 +2834,9 @@ def create_document_routes(
             logger.error(f"Error /documents/text: {str(e)}")
             logger.error(traceback.format_exc())
             raise HTTPException(status_code=500, detail=str(e))
+        finally:
+            if slot_reserved:
+                await _release_enqueue_slot(rag)
 
     @router.post(
         "/texts",
@@ -2765,9 +2862,11 @@ def create_document_routes(
         Raises:
             HTTPException: If an error occurs during text processing (500).
         """
+        slot_reserved = False
         try:
-            # Reject batch text insertion while pipeline is busy or scanning.
-            await _ensure_pipeline_idle(rag)
+            # Reject batch text insertion while pipeline is busy or scanning
+            # AND reserve a pending-enqueue slot — see /upload for the rationale.
+            slot_reserved = await _reserve_enqueue_slot(rag)
 
             # Check if any file_sources already exist in doc_status storage
             if not request.file_sources or len(request.file_sources) != len(
@@ -2812,13 +2911,19 @@ def create_document_routes(
             # Generate track_id for texts insertion
             track_id = generate_track_id("insert")
 
-            background_tasks.add_task(
-                pipeline_index_texts,
-                rag,
-                request.texts,
-                file_sources=normalized_file_sources,
-                track_id=track_id,
-            )
+            async def _indexing_task():
+                try:
+                    await pipeline_index_texts(
+                        rag,
+                        request.texts,
+                        file_sources=normalized_file_sources,
+                        track_id=track_id,
+                    )
+                finally:
+                    await _release_enqueue_slot(rag)
+
+            background_tasks.add_task(_indexing_task)
+            slot_reserved = False
 
             return InsertResponse(
                 status="success",
@@ -2831,6 +2936,9 @@ def create_document_routes(
             logger.error(f"Error /documents/texts: {str(e)}")
             logger.error(traceback.format_exc())
             raise HTTPException(status_code=500, detail=str(e))
+        finally:
+            if slot_reserved:
+                await _release_enqueue_slot(rag)
 
     @router.delete(
         "", response_model=ClearDocumentsResponse, dependencies=[Depends(combined_auth)]
