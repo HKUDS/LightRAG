@@ -3297,6 +3297,26 @@ class LightRAG:
                 pipeline_status["latest_message"] = log_message
                 pipeline_status["history_messages"].append(log_message)
 
+                # Three cascading layers of queues:
+                # Layer 1: Content Parsing - parse_native/parse_mineru/parse_docling
+                # Layer 2: Multimoldal Ananlyze - analyze_multimodal
+                # Layer 3: Entity and Relation Extraction - process_document
+
+                # Content Parsing Queues
+                q_native: asyncio.Queue = asyncio.Queue(maxsize=self.queue_size_default)
+                q_mineru: asyncio.Queue = asyncio.Queue(maxsize=self.queue_size_default)
+                q_docling: asyncio.Queue = asyncio.Queue(
+                    maxsize=self.queue_size_default
+                )
+                # Multimoldal Anlyaze Queue
+                q_analyze: asyncio.Queue = asyncio.Queue(
+                    maxsize=self.queue_size_default
+                )
+                # Entity and Relation Extraction Queue
+                q_process: asyncio.Queue = asyncio.Queue(maxsize=self.queue_size_insert)
+
+                workers: list[asyncio.Task] = []
+
                 # Get first document's file path and total count for job name
                 first_doc_id, first_doc = next(iter(to_process_docs.items()))
                 first_doc_path = first_doc.file_path
@@ -3927,20 +3947,6 @@ class LightRAG:
                                     }
                                 )
 
-                # Three-stage worker queues:
-                # parse_native/mineru/docling -> analyze_multimodal -> process_document
-                q_native: asyncio.Queue = asyncio.Queue(maxsize=self.queue_size_default)
-                q_mineru: asyncio.Queue = asyncio.Queue(maxsize=self.queue_size_default)
-                q_docling: asyncio.Queue = asyncio.Queue(
-                    maxsize=self.queue_size_default
-                )
-                q_analyze: asyncio.Queue = asyncio.Queue(
-                    maxsize=self.queue_size_default
-                )
-                q_process: asyncio.Queue = asyncio.Queue(maxsize=self.queue_size_insert)
-
-                workers: list[asyncio.Task] = []
-
                 async def parse_worker(engine: str, in_q: asyncio.Queue):
                     while True:
                         item = await in_q.get()
@@ -4092,6 +4098,7 @@ class LightRAG:
                         finally:
                             q_process.task_done()
 
+                # Create workers for each queue of pipeline layer
                 for _ in range(max(1, self.max_parallel_parse_native)):
                     workers.append(
                         asyncio.create_task(parse_worker("native", q_native))
@@ -4109,6 +4116,7 @@ class LightRAG:
                 for _ in range(max(1, self.max_parallel_insert)):
                     workers.append(asyncio.create_task(process_worker()))
 
+                # Add pending files to the correct parsing queue
                 for doc_id, status_doc in to_process_docs.items():
                     content_data = await self.full_docs.get_by_id(doc_id) or {}
                     engine = resolve_stored_document_parser_engine(
