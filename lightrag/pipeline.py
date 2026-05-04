@@ -65,7 +65,6 @@ from lightrag.utils_pipeline import (
     compute_file_content_hash,
     compute_text_content_hash,
     doc_status_field,
-    doc_status_value,
     document_canonical_key,
     document_source_key,
     get_by_path,
@@ -103,7 +102,6 @@ class _PipelineMixin:
         lightrag_document_paths: str | list[str] | None = None,
         parsed_engine: str | list[str] | None = None,
         process_options: str | list[str] | None = None,
-        reprocess_existing_non_processed: bool = False,
     ) -> str:
         """
         Pipeline for Processing Documents
@@ -125,12 +123,35 @@ class _PipelineMixin:
                 accepted as a single string broadcast to every input or as a list
                 aligned with ``input``. Stored verbatim on ``full_docs`` and
                 mirrored to ``doc_status.metadata['process_options']``.
-            reprocess_existing_non_processed: allow scan retries to overwrite
-                existing same-name records that have not reached PROCESSED.
 
         Returns:
             str: tracking ID for monitoring processing status
+
+        Raises:
+            RuntimeError: if the pipeline is already busy or a scan is in
+                progress.  Per the concurrency contract, all writes to
+                ``doc_status`` / ``full_docs`` must wait for the in-flight
+                indexing or scanning to finish.  Callers from HTTP endpoints
+                should pre-check ``pipeline_status['busy']`` /
+                ``pipeline_status['scanning']`` and surface a 409 to clients
+                long before reaching this last-line guard.
         """
+        # Pipeline-busy guard: refuse to mutate doc_status / full_docs while
+        # any indexing or scanning job is running.  This is the last line of
+        # defence — endpoints should fail fast with 409 before getting here.
+        pipeline_status = await get_namespace_data(
+            "pipeline_status", workspace=self.workspace
+        )
+        pipeline_status_lock = get_namespace_lock(
+            "pipeline_status", workspace=self.workspace
+        )
+        async with pipeline_status_lock:
+            if pipeline_status.get("busy") or pipeline_status.get("scanning"):
+                raise RuntimeError(
+                    "Cannot enqueue while pipeline is busy or scanning; "
+                    "wait for the running job to finish before retrying."
+                )
+
         # Generate track_id if not provided
         if track_id is None or track_id.strip() == "":
             track_id = generate_track_id("enqueue")
@@ -382,18 +403,13 @@ class _PipelineMixin:
         # 3. Filter out already processed documents
         # Get docs ids
         all_new_doc_ids = set(new_docs.keys())
-        # Exclude IDs of documents that are already enqueued
+        # Exclude IDs of documents that are already enqueued.  The previous
+        # ``reprocess_existing_non_processed`` flag has been removed: any
+        # same-name record (regardless of status) is treated as a duplicate
+        # here.  Recovering half-processed documents is now the job of the
+        # pipeline's resume logic, which runs in apipeline_process_enqueue_documents
+        # rather than this enqueue path.
         unique_new_doc_ids = await self.doc_status.filter_keys(all_new_doc_ids)
-        reprocess_doc_ids: set[str] = set()
-        if reprocess_existing_non_processed:
-            for doc_id in all_new_doc_ids - unique_new_doc_ids:
-                existing_doc = await self.doc_status.get_by_id(doc_id)
-                if (
-                    existing_doc
-                    and doc_status_value(existing_doc) != DocStatus.PROCESSED.value
-                ):
-                    unique_new_doc_ids.add(doc_id)
-                    reprocess_doc_ids.add(doc_id)
 
         for doc_id in list(unique_new_doc_ids):
             content_data = contents[doc_id]
@@ -404,18 +420,6 @@ class _PipelineMixin:
             )
             if match:
                 existing_doc_id, existing_doc = match
-                if (
-                    reprocess_existing_non_processed
-                    and doc_status_value(existing_doc) != DocStatus.PROCESSED.value
-                ):
-                    reprocess_doc_ids.add(doc_id)
-                    if existing_doc_id != doc_id:
-                        await self.doc_status.delete([existing_doc_id])
-                        try:
-                            await self.full_docs.delete([existing_doc_id])
-                        except Exception:
-                            pass
-                    continue
                 unique_new_doc_ids.discard(doc_id)
                 duplicate_attempts.append(
                     {
@@ -445,8 +449,6 @@ class _PipelineMixin:
             )
             if hash_match:
                 existing_doc_id, existing_doc = hash_match
-                if existing_doc_id == doc_id and doc_id in reprocess_doc_ids:
-                    continue
                 unique_new_doc_ids.discard(doc_id)
                 duplicate_attempts.append(
                     {
@@ -470,8 +472,6 @@ class _PipelineMixin:
         ignored_ids = list(all_new_doc_ids - unique_new_doc_ids)
         for doc_id in ignored_ids:
             if any(attempt.get("doc_id") == doc_id for attempt in duplicate_attempts):
-                continue
-            if doc_id in reprocess_doc_ids:
                 continue
             existing_doc = await self.doc_status.get_by_id(doc_id)
             duplicate_attempts.append(
@@ -1861,13 +1861,21 @@ class _PipelineMixin:
         *,
         process_options: str | None = None,
     ) -> dict[str, Any]:
-        """Phase 2: Multimodal analysis (VLM). Writes llm_analyze_result and analyze_time to LightRAG Document.
+        """Phase 2: Multimodal analysis (VLM). Writes llm_analyze_result to LightRAG Document.
 
         Per-document ``i`` / ``t`` / ``e`` flags from
         ``full_docs.process_options`` decide which modalities are sent to the
         VLM.  Sidecars are always written by the parser regardless of these
         flags so toggling options later does not require re-parsing — only
         the ``llm_analyze_result`` payload is gated here.
+
+        Idempotent by design: ``meta.analyze_time`` is treated as the
+        timestamp of the most recent successful pass rather than a
+        "completed" sentinel, and per-item ``llm_analyze_result`` already
+        present is not re-computed.  This lets users incrementally enable
+        new modalities (e.g. add ``t`` after a prior ``i``-only pass) and
+        re-trigger analysis without redundant VLM calls or losing prior
+        results.
 
         Args:
             process_options: Optional override that bypasses the
@@ -1942,13 +1950,12 @@ class _PipelineMixin:
             meta = json.loads(lines[0])
             if not isinstance(meta, dict) or meta.get("type") != "meta":
                 return parsed_data
-            if meta.get("analyze_time"):
-                return parsed_data
 
+            # ``analyze_time`` is now the "most recent successful pass"
+            # timestamp.  We refresh it after the body finishes successfully
+            # rather than using it as an early-return gate, so re-triggering
+            # analyze_multimodal with newly-enabled i/t/e options proceeds.
             now_iso = datetime.now(timezone.utc).isoformat()
-            meta["analyze_time"] = now_iso
-            lines[0] = json.dumps(meta, ensure_ascii=False)
-            block_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
             # Analyze sidecar multimodal items by VLM model role.
             use_vlm_func = self.role_llm_funcs["vlm"]
@@ -2216,12 +2223,26 @@ class _PipelineMixin:
                     if isinstance(items, dict):
                         analyze_tasks = []
                         valid_keys = []
+                        skipped_existing = 0
                         for item_id, item in items.items():
-                            if isinstance(item, dict):
-                                valid_keys.append(item_id)
-                                analyze_tasks.append(
-                                    _analyze_item(root_key, item_id, item)
-                                )
+                            if not isinstance(item, dict):
+                                continue
+                            # Idempotency: skip items that already have a VLM
+                            # result from a prior pass.  A user re-enabling
+                            # additional modalities should not re-spend tokens
+                            # on items that were already analyzed.
+                            if isinstance(item.get("llm_analyze_result"), dict):
+                                skipped_existing += 1
+                                continue
+                            valid_keys.append(item_id)
+                            analyze_tasks.append(_analyze_item(root_key, item_id, item))
+                        if skipped_existing:
+                            logger.debug(
+                                f"[analyze_multimodal] {root_key}: "
+                                f"{skipped_existing} item(s) already have "
+                                f"llm_analyze_result, skipping; "
+                                f"{len(analyze_tasks)} item(s) to analyze"
+                            )
                         analyzed_results = await asyncio.gather(
                             *analyze_tasks, return_exceptions=True
                         )
@@ -2244,6 +2265,14 @@ class _PipelineMixin:
                     logger.warning(
                         f"[analyze_multimodal] failed to write sidecar {sidecar_path}: {sidecar_error}"
                     )
+
+            # Refresh ``meta.analyze_time`` to record the most-recent successful
+            # pass.  This happens after the sidecar loop so a crash mid-loop
+            # does not falsely advertise completion; on the next run the same
+            # already-analyzed items will be skipped anyway.
+            meta["analyze_time"] = now_iso
+            lines[0] = json.dumps(meta, ensure_ascii=False)
+            block_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
             parsed_data["analyze_time"] = now_iso
             parsed_data["multimodal_processed"] = True

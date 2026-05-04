@@ -201,13 +201,13 @@ export type EntityUpdateResponse = {
 }
 
 export type DocActionResponse = {
-  status: 'success' | 'partial_success' | 'failure' | 'duplicated'
+  status: 'success' | 'partial_success' | 'failure'
   message: string
   track_id?: string
 }
 
 export type ScanResponse = {
-  status: 'scanning_started'
+  status: 'scanning_started' | 'scanning_skipped_pipeline_busy'
   message: string
   track_id: string
 }

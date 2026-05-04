@@ -148,12 +148,15 @@ class ScanResponse(BaseModel):
     """Response model for document scanning operation
 
     Attributes:
-        status: Status of the scanning operation
+        status: Status of the scanning operation.  ``scanning_started`` when
+            a new background scan has been scheduled;
+            ``scanning_skipped_pipeline_busy`` when the request was rejected
+            because indexing or another scan is already running.
         message: Optional message with additional details
         track_id: Tracking ID for monitoring scanning progress
     """
 
-    status: Literal["scanning_started"] = Field(
+    status: Literal["scanning_started", "scanning_skipped_pipeline_busy"] = Field(
         description="Status of the scanning operation"
     )
     message: Optional[str] = Field(
@@ -310,12 +313,15 @@ class InsertResponse(BaseModel):
     """Response model for document insertion operations
 
     Attributes:
-        status: Status of the operation (success, duplicated, partial_success, failure)
+        status: Status of the operation (success, partial_success, failure).
+            Same-name conflicts are rejected with HTTP 409 rather than being
+            reported as a "duplicated" 200 response, so this field never
+            takes that value any more.
         message: Detailed message describing the operation result
         track_id: Tracking ID for monitoring processing status
     """
 
-    status: Literal["success", "duplicated", "partial_success", "failure"] = Field(
+    status: Literal["success", "partial_success", "failure"] = Field(
         description="Status of the operation"
     )
     message: str = Field(description="Message describing the operation result")
@@ -971,6 +977,55 @@ async def get_existing_doc_by_file_path_candidates(
     return existing_doc_data
 
 
+async def _ensure_pipeline_idle(rag: LightRAG) -> None:
+    """Reject upload/insert/scan calls while indexing or scanning is running.
+
+    The concurrency contract states that no write to ``doc_status`` /
+    ``full_docs`` may interleave with an in-flight pipeline run.  Endpoints
+    that would otherwise persist new state must call this guard first and
+    surface a 409 to clients.
+
+    A workspace whose ``pipeline_status`` has never been initialised (via
+    ``initialize_pipeline_status``) is treated as idle: production code
+    always runs ``rag.initialize_storages`` during startup, but mocked
+    test rigs may skip that step.
+
+    Raises:
+        HTTPException(409): when ``pipeline_status['busy']`` or
+            ``pipeline_status['scanning']`` is set.
+    """
+    from lightrag.exceptions import PipelineNotInitializedError
+    from lightrag.kg.shared_storage import get_namespace_data, get_namespace_lock
+
+    try:
+        pipeline_status = await get_namespace_data(
+            "pipeline_status", workspace=rag.workspace
+        )
+    except PipelineNotInitializedError:
+        # Workspace pipeline_status not yet bootstrapped → treat as idle.
+        return
+    pipeline_status_lock = get_namespace_lock(
+        "pipeline_status", workspace=rag.workspace
+    )
+    async with pipeline_status_lock:
+        if pipeline_status.get("busy"):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Pipeline is currently busy processing documents. "
+                    "Wait for the running job to finish before submitting new work."
+                ),
+            )
+        if pipeline_status.get("scanning"):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Document scan is in progress. "
+                    "Wait for the scan to complete before submitting new work."
+                ),
+            )
+
+
 def find_existing_file_by_canonical_basename(
     input_dir: Path, canonical_basename: str
 ) -> Path | None:
@@ -1375,7 +1430,6 @@ async def pipeline_enqueue_file(
     rag: LightRAG,
     file_path: Path,
     track_id: str = None,
-    reprocess_existing_non_processed: bool = False,
 ) -> tuple[bool, str]:
     """Add a file to the queue for processing
 
@@ -1414,8 +1468,6 @@ async def pipeline_enqueue_file(
                 }
                 if process_options:
                     enqueue_kwargs["process_options"] = process_options
-                if reprocess_existing_non_processed:
-                    enqueue_kwargs["reprocess_existing_non_processed"] = True
                 enqueue_result = await rag.apipeline_enqueue_documents(
                     "", **enqueue_kwargs
                 )
@@ -1729,8 +1781,6 @@ async def pipeline_enqueue_file(
                 }
                 if process_options:
                     enqueue_kwargs["process_options"] = process_options
-                if reprocess_existing_non_processed:
-                    enqueue_kwargs["reprocess_existing_non_processed"] = True
                 enqueue_result = await rag.apipeline_enqueue_documents(
                     content, **enqueue_kwargs
                 )
@@ -1832,7 +1882,6 @@ async def pipeline_index_files(
     rag: LightRAG,
     file_paths: List[Path],
     track_id: str = None,
-    reprocess_existing_non_processed: bool = False,
 ):
     """Index multiple files sequentially to avoid high CPU load
 
@@ -1857,7 +1906,6 @@ async def pipeline_index_files(
                 rag,
                 file_path,
                 track_id,
-                reprocess_existing_non_processed=reprocess_existing_non_processed,
             )
             if success:
                 enqueued = True
@@ -1912,6 +1960,26 @@ async def run_scanning_process(
         doc_manager: DocumentManager instance
         track_id: Optional tracking ID to pass to all scanned files
     """
+    # The scan endpoint set ``pipeline_status['scanning']=True`` synchronously
+    # before scheduling this task; we MUST clear it in finally so subsequent
+    # uploads / scans can proceed even if the body raises.  When pipeline_status
+    # is not initialised (mocked test rigs), the flag was never set so there's
+    # nothing to clear — track that here to skip the namespace fetch.
+    from lightrag.exceptions import PipelineNotInitializedError
+    from lightrag.kg.shared_storage import get_namespace_data, get_namespace_lock
+
+    pipeline_status = None
+    pipeline_status_lock = None
+    try:
+        pipeline_status = await get_namespace_data(
+            "pipeline_status", workspace=rag.workspace
+        )
+        pipeline_status_lock = get_namespace_lock(
+            "pipeline_status", workspace=rag.workspace
+        )
+    except PipelineNotInitializedError:
+        pass
+
     try:
         new_files = doc_manager.scan_directory_for_new_files()
         total_files = len(new_files)
@@ -1989,13 +2057,17 @@ async def run_scanning_process(
                     # File is new or in non-PROCESSED status, add to processing list
                     valid_files.append(file_path)
 
-            # Process valid files (new files + non-PROCESSED status files)
+            # Process valid files (new files + non-PROCESSED status files).
+            # The previous reprocess_existing_non_processed=True flag has been
+            # removed: scan no longer overwrites in-flight or half-finished
+            # records.  Recovery of non-PROCESSED documents is handled by the
+            # pipeline's resume logic when apipeline_process_enqueue_documents
+            # picks them up.
             if valid_files:
                 await pipeline_index_files(
                     rag,
                     valid_files,
                     track_id,
-                    reprocess_existing_non_processed=True,
                 )
                 if processed_files:
                     logger.info(
@@ -2019,6 +2091,13 @@ async def run_scanning_process(
     except Exception as e:
         logger.error(f"Error during scanning process: {str(e)}")
         logger.error(traceback.format_exc())
+    finally:
+        # Always release the scanning flag so future uploads / scans are
+        # not blocked by a crashed task.  Skip when pipeline_status was
+        # never initialised for this workspace (test rigs).
+        if pipeline_status is not None and pipeline_status_lock is not None:
+            async with pipeline_status_lock:
+                pipeline_status["scanning"] = False
 
 
 async def background_delete_documents(
@@ -2235,17 +2314,72 @@ def create_document_routes(
         """
         Trigger the scanning process for new documents.
 
-        This endpoint initiates a background task that scans the input directory for new documents
-        and processes them. If a scanning process is already running, it returns a status indicating
-        that fact.
+        Refuses to start a new scan when ``pipeline_status['busy']`` (indexing
+        or deletion in flight) or ``pipeline_status['scanning']`` (another
+        scan already running) is set; in that case returns
+        ``status='scanning_skipped_pipeline_busy'`` immediately and does not
+        schedule a background task.  The ``scanning`` flag is acquired
+        synchronously here so a subsequent fast-follow request hits the
+        guard rather than racing against the not-yet-started task.
 
         Returns:
             ScanResponse: A response object containing the scanning status and track_id
         """
+        from lightrag.exceptions import PipelineNotInitializedError
+        from lightrag.kg.shared_storage import get_namespace_data, get_namespace_lock
+
         # Generate track_id with "scan" prefix for scanning operation
         track_id = generate_track_id("scan")
 
-        # Start the scanning process in the background with track_id
+        try:
+            pipeline_status = await get_namespace_data(
+                "pipeline_status", workspace=rag.workspace
+            )
+        except PipelineNotInitializedError:
+            # Workspace pipeline_status not yet bootstrapped (e.g. mocked
+            # test rigs).  Treat as idle and allow the scan to proceed; the
+            # scanning flag has nowhere to live so it is effectively skipped.
+            background_tasks.add_task(run_scanning_process, rag, doc_manager, track_id)
+            return ScanResponse(
+                status="scanning_started",
+                message="Scanning process has been initiated in the background",
+                track_id=track_id,
+            )
+        pipeline_status_lock = get_namespace_lock(
+            "pipeline_status", workspace=rag.workspace
+        )
+
+        # Atomically acquire the scanning flag: if the pipeline is busy or
+        # another scan is in flight, refuse without scheduling.
+        async with pipeline_status_lock:
+            if pipeline_status.get("busy"):
+                logger.warning(
+                    "Scan request skipped: pipeline is busy processing documents"
+                )
+                return ScanResponse(
+                    status="scanning_skipped_pipeline_busy",
+                    message=(
+                        "Pipeline is currently busy processing documents. "
+                        "Wait for the running job to finish before triggering another scan."
+                    ),
+                    track_id=track_id,
+                )
+            if pipeline_status.get("scanning"):
+                logger.warning(
+                    "Scan request skipped: another scan is already in progress"
+                )
+                return ScanResponse(
+                    status="scanning_skipped_pipeline_busy",
+                    message=(
+                        "Another scan is already in progress. "
+                        "Wait for it to finish before triggering a new one."
+                    ),
+                    track_id=track_id,
+                )
+            pipeline_status["scanning"] = True
+
+        # Start the scanning process in the background with track_id.  The
+        # task is responsible for clearing the flag in its finally block.
         background_tasks.add_task(run_scanning_process, rag, doc_manager, track_id)
         return ScanResponse(
             status="scanning_started",
@@ -2276,13 +2410,17 @@ def create_document_routes(
         This endpoint handles two types of duplicate scenarios differently:
 
         1. **Filename Duplicate (Synchronous Detection)**:
-           - Detected immediately before file processing
-           - File name is treated as the unique document key; an existing
-             document storage row rejects the upload regardless of status
-           - Returns `status="duplicated"` with the existing document's track_id
-           - Two cases:
-             - If filename exists in document storage: returns existing track_id
-             - If filename exists in file system only: returns empty track_id ("")
+           - Detected immediately, before any file is written.
+           - File name is treated as the unique document key.  Both
+             ``doc_status`` and the INPUT directory are checked under the
+             canonical (parser-hint stripped) basename so ``abc.docx`` and
+             ``abc.[native].docx`` map to the same record.
+           - **HTTP 409** is returned when a same-name record already exists.
+             The response detail names the conflict source ("Document
+             storage already contains ..." or "Input directory already
+             contains ...").  Clients must delete the existing document
+             (``DELETE /documents/{doc_id}``) before re-uploading; there is
+             no longer a 200 ``status="duplicated"`` soft-fail response.
 
         2. **Content Duplicate (Asynchronous Detection)**:
            - Detected during background processing after content extraction
@@ -2300,6 +2438,12 @@ def create_document_routes(
         - Content extraction is expensive (PDF/DOCX parsing), done asynchronously
         - This design prevents blocking the client during expensive operations
 
+        **Concurrency Constraint:**
+        - The endpoint refuses with HTTP 409 while
+          ``pipeline_status['busy']`` (indexing in flight) or
+          ``pipeline_status['scanning']`` (a scan is running) is set.
+          Wait for the running job to finish before re-submitting.
+
         Args:
             background_tasks: FastAPI BackgroundTasks for async processing
             file (UploadFile): The file to be uploaded. It must have an allowed extension.
@@ -2307,12 +2451,17 @@ def create_document_routes(
         Returns:
             InsertResponse: A response object containing the upload status and a message.
                 - status="success": File accepted and queued for processing
-                - status="duplicated": Filename already exists (see track_id for existing document)
 
         Raises:
-            HTTPException: If the file type is not supported (400), file too large (413), or other errors occur (500).
+            HTTPException: 400 unsupported file type, 409 same-name conflict
+                or pipeline busy/scanning, 413 file too large, 500 other errors.
         """
         try:
+            # Reject upload while pipeline is busy or scanning.  The strict
+            # name pre-check below would otherwise race with in-flight writes
+            # to doc_status, leading to inconsistent state.
+            await _ensure_pipeline_idle(rag)
+
             # Sanitize filename to prevent Path Traversal attacks
             safe_filename = sanitize_filename(file.filename, doc_manager.input_dir)
 
@@ -2345,22 +2494,25 @@ def create_document_routes(
 
             file_path = doc_manager.input_dir / safe_filename
 
-            # Check if filename already exists in doc_status storage
+            # Strict name pre-check.  Both the INPUT directory and doc_status
+            # must be free of any same-canonical-basename record before we
+            # accept the upload.  Replacing an existing document requires an
+            # explicit DELETE first; we no longer write a "duplicated" 200
+            # response that silently no-ops.
             existing_doc_data = await get_existing_doc_by_file_path_candidates(
                 rag.doc_status, file_path
             )
             if existing_doc_data:
-                # Get document status and track_id from existing document
                 status = get_doc_status_value(existing_doc_data) or "unknown"
-                # Use `or ""` to handle both missing key and None value (e.g., legacy rows without track_id)
-                existing_track_id = get_doc_track_id(existing_doc_data)
-                return InsertResponse(
-                    status="duplicated",
-                    message=f"File '{safe_filename}' already exists in document storage (Status: {status}).",
-                    track_id=existing_track_id,
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"Document storage already contains '{safe_filename}' "
+                        f"(Status: {status}). Delete the existing record before re-uploading."
+                    ),
                 )
 
-            # Check if file already exists in file system, using canonical parser-hint names.
+            # INPUT directory check, using canonical parser-hint names.
             # Fast path: exact filename match avoids iterdir on large input directories.
             canonical_filename = normalize_file_path(safe_filename)
             if file_path.exists():
@@ -2370,10 +2522,13 @@ def create_document_routes(
                     doc_manager.input_dir, canonical_filename
                 )
             if existing_input_file:
-                return InsertResponse(
-                    status="duplicated",
-                    message=f"File '{safe_filename}' already exists in the input directory.",
-                    track_id="",
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"Input directory already contains a file with the same "
+                        f"canonical basename ('{existing_input_file.name}'). "
+                        f"Remove or rename it before re-uploading."
+                    ),
                 )
 
             # Async streaming write with size check
@@ -2457,6 +2612,9 @@ def create_document_routes(
             HTTPException: If an error occurs during text processing (500).
         """
         try:
+            # Reject text insertion while pipeline is busy or scanning.
+            await _ensure_pipeline_idle(rag)
+
             # Check if file_source already exists in doc_status storage
             if not is_valid_file_source(request.file_source):
                 raise HTTPException(
@@ -2469,14 +2627,13 @@ def create_document_routes(
                 rag.doc_status, normalized_file_source
             )
             if existing_doc_data:
-                # Get document status and track_id from existing document
                 status = get_doc_status_value(existing_doc_data) or "unknown"
-                # Use `or ""` to handle both missing key and None value (e.g., legacy rows without track_id)
-                existing_track_id = get_doc_track_id(existing_doc_data)
-                return InsertResponse(
-                    status="duplicated",
-                    message=f"File source '{normalized_file_source}' already exists in document storage (Status: {status}).",
-                    track_id=existing_track_id,
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"Document storage already contains '{normalized_file_source}' "
+                        f"(Status: {status}). Delete the existing record before re-inserting."
+                    ),
                 )
 
             # Generate track_id for text insertion
@@ -2527,6 +2684,9 @@ def create_document_routes(
             HTTPException: If an error occurs during text processing (500).
         """
         try:
+            # Reject batch text insertion while pipeline is busy or scanning.
+            await _ensure_pipeline_idle(rag)
+
             # Check if any file_sources already exist in doc_status storage
             if not request.file_sources or len(request.file_sources) != len(
                 request.texts
@@ -2558,14 +2718,13 @@ def create_document_routes(
                     rag.doc_status, file_source
                 )
                 if existing_doc_data:
-                    # Get document status and track_id from existing document
                     status = get_doc_status_value(existing_doc_data) or "unknown"
-                    # Use `or ""` to handle both missing key and None value (e.g., legacy rows without track_id)
-                    existing_track_id = get_doc_track_id(existing_doc_data)
-                    return InsertResponse(
-                        status="duplicated",
-                        message=f"File source '{file_source}' already exists in document storage (Status: {status}).",
-                        track_id=existing_track_id,
+                    raise HTTPException(
+                        status_code=409,
+                        detail=(
+                            f"Document storage already contains '{file_source}' "
+                            f"(Status: {status}). Delete the existing record before re-inserting."
+                        ),
                     )
 
             # Generate track_id for texts insertion

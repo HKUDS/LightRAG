@@ -213,3 +213,69 @@ DOCLING_ENDPOINT=http://localhost:8081/v1/convert/file/async
 - 存储后端通过 `get_doc_by_content_hash` 进行 hash 直查；命名约定与 `get_doc_by_file_basename` 一致。
 
 > 入队批次内（同一次 `apipeline_enqueue_documents` 调用）也会做 basename 与 content_hash 去重，命中时把后续条目直接写为 `FAILED` 并标记 `existing_status=batch_duplicate`。其中 basename 去重只对有效文件名生效；`unknown_source`、`no-file-path` 和空来源只参与内容 hash 去重。
+
+## 并发与重入约束
+
+为防止 `scan` / `upload` 与运行中的流水线相互覆盖 `doc_status` / `full_docs` 记录，所有写入入口都以 `pipeline_status["busy"]`（加 scan 自身的 `pipeline_status["scanning"]` 旗标）为唯一闸门。
+
+### 入口行为
+
+| 入口 | 流水线 busy 或 scanning 中 | 否则 |
+| --- | --- | --- |
+| `/documents/upload` / `/documents/file` / `/documents/text` / `/documents/insert*` | 直接返回 HTTP 409 错误，不写文件、不调入队 | 进入下文"严格名字预检"后再保存与入队 |
+| `/documents/scan` | 落 warning 后立即返回 `scanning_skipped_pipeline_busy`，不 schedule 后台任务 | 设 `scanning=True` 后 schedule，task 结束统一清旗 |
+| `apipeline_enqueue_documents` 内部 | 抛 `RuntimeError("Cannot enqueue while pipeline is busy")` 作为最后一道闸 | 正常入队 |
+
+> 流水线启动后无法可靠判断 `INPUT` 目录中各文件具体处理到哪个阶段，对运行中的 `doc_status` 做任何修改（哪怕仅"重置 PENDING/FAILED"）都可能与 parse / analyze / process 工作线程的写入交错，导致存储记录与实际处理逻辑不一致。规则采用最严：busy 期间一律拒绝写入，让流水线跑完再说。
+
+### 严格名字预检（upload 路径，busy=False 时）
+
+upload 在保存文件前必须双道检查：
+
+1. **INPUT 目录扫描**：把要保存的 basename 经 `canonicalize_parser_hinted_basename` 规范化，遍历 INPUT 目录里现有任何同 canonical 变体（含 hint / 不含 hint），命中即 409。
+2. **doc_status 查重**：用规范化 basename 调 `get_existing_doc_by_file_basename`，命中即 409。
+
+两道都过 → 保存文件 → 调 `apipeline_enqueue_documents`。
+
+> 旧版本曾允许 upload 在已有同名记录时悄悄写入 FAILED 重复条目；新规则改为 fail-fast，不在 doc_status 留下任何重复痕迹。如需替换同名文档，请先调用 `/documents/{doc_id}` 的删除接口。
+
+### 移除 `reprocess_existing_non_processed`
+
+旧 `apipeline_enqueue_documents` 的 `reprocess_existing_non_processed=True` 行为会在 scan 时直接删除非 PROCESSED 的旧记录并重建，与本规则相冲突，已整段移除。scan 中遇到非 PROCESSED 同名文件直接归档到 `__parsed__/` 跳过，由"流水线启动时的续跑规则"在下一次流水线启动时统一接管。
+
+## 流水线启动时的续跑规则
+
+每次 `apipeline_process_enqueue_documents` 起步时，会拉取所有处于 `PARSING` / `ANALYZING` / `PROCESSING` / `PENDING` / `FAILED` 状态的文档继续处理。续跑路径**根据"内容是否已抽取"分流**，保证同一个文档无论之前进度如何，按当前 `process_options` 续跑都有幂等结果。
+
+### 判断"内容已抽取"
+
+读 `full_docs[doc_id]`：
+
+| `format` | 判定 |
+| --- | --- |
+| `lightrag` 且 `lightrag_document_path` 文件存在 | ✅ 已抽取 |
+| `raw` 且 `content` 非空 | ✅ 已抽取 |
+| 其它（含 `pending_parse`、记录缺失） | ❌ 未抽取 |
+
+### 分支 A：未抽取
+
+走完整流水线（`parse_native` / `parse_mineru` / `parse_docling` → `analyze_multimodal` → 分块 → 实体抽取），按 `full_docs.process_options` 决定每一阶段的行为。这是"首次入队"的常规流。
+
+### 分支 B：已抽取
+
+**一律跳过解析**（不重新调 `parse_*`），从 ANALYZING 阶段重启，并清光旧 chunks / entities 后按当前 `process_options` 重做：
+
+| 子步骤 | 行为 |
+| --- | --- |
+| 引擎对比 | 若 `process_options` 隐含的引擎 ≠ `full_docs.parsed_engine`，**仅 warn**，不重新解析。已抽取的内容是不可变事实，重新跑不同引擎会产生不一致。要切换引擎请先 delete 整个文档再重传。 |
+| 旧 chunks 清理 | 读 `doc_status.chunks_list`，从 `chunks_vdb` 与 `text_chunks` 全部 delete。理由：流水线产物中无法可靠区分"普通文本块 vs 多模态附加块"，按 chunk id 一律重新生成最简单也最可靠 |
+| 旧实体 / 关系清理 | 复用 `adelete_by_doc_id` 内部清理逻辑（抽出为 `_purge_doc_chunks_and_kg(doc_id)` helper），删除 `entity_chunks` / `relation_chunks` 中以这些 chunk id 为 source 的条目，并把图谱里因之失去全部源的孤立节点一并删除 |
+| `analyze_multimodal` | **不再看 `meta.analyze_time`**：按新 `process_options.{i,t,e}` 与 sidecar 中各 item 的 `llm_analyze_result` 取交集做增量分析（已分析的 item 跳过，新启用的模态从空状态开始分析）。`analyze_time` 改为"最近一次成功分析时间"语义，仅供观测 |
+| 重新分块 | 按新 `process_options.chunking` 重跑（interchange path 用 native heading-driven，legacy path 用 fixed） |
+| 实体抽取 / KG-skip | 按新 `process_options.skip_kg` 决定 |
+
+> 这条规则保证：用户改 `i/t/e` 重传同名文档（先删旧 doc 再上传带新 hint 的文件）时，多模态分析能增量补齐；改 `F`/`R`/`S` 时 chunks 与图谱重建；改 `!` 时停掉或恢复 KG 构建。引擎变更被视为"重大变更"，统一由 delete + 重传完成，不在续跑路径里隐式发生。
+
+### 与"文档重复判定规则"的关系
+
+续跑规则只对 `doc_id` 已经存在于 `doc_status` 的文档生效。新文件入队仍然走"并发与重入约束"中的严格名字预检 + "文档重复判定规则"中的 `canonical_basename` / `content_hash` 查重；续跑分支不会被用来"新文件挤掉旧 PROCESSED 记录"。

@@ -291,6 +291,186 @@ def test_apipeline_enqueue_persists_process_options(tmp_path):
 
 
 @pytest.mark.offline
+def test_apipeline_enqueue_rejects_when_pipeline_busy(tmp_path):
+    """Pipeline busy / scanning state forbids any new enqueue.  This is the
+    last-line guard inside ``apipeline_enqueue_documents``; HTTP endpoints
+    catch this earlier and return 409, but core API callers must surface the
+    invariant violation as a RuntimeError.
+    """
+
+    async def _run():
+        from lightrag.kg.shared_storage import (
+            get_namespace_data,
+            get_namespace_lock,
+        )
+
+        rag = _new_rag(tmp_path)
+        await rag.initialize_storages()
+        try:
+            pipeline_status = await get_namespace_data(
+                "pipeline_status", workspace=rag.workspace
+            )
+            pipeline_status_lock = get_namespace_lock(
+                "pipeline_status", workspace=rag.workspace
+            )
+
+            # Simulate an in-flight indexing job.
+            async with pipeline_status_lock:
+                pipeline_status["busy"] = True
+            try:
+                with pytest.raises(RuntimeError, match="busy"):
+                    await rag.apipeline_enqueue_documents(
+                        "should not enqueue",
+                        file_paths="busy.txt",
+                        track_id="track-busy",
+                    )
+            finally:
+                async with pipeline_status_lock:
+                    pipeline_status["busy"] = False
+
+            # Same guard fires for in-flight scans.
+            async with pipeline_status_lock:
+                pipeline_status["scanning"] = True
+            try:
+                with pytest.raises(RuntimeError, match="scanning"):
+                    await rag.apipeline_enqueue_documents(
+                        "should not enqueue",
+                        file_paths="scan.txt",
+                        track_id="track-scan",
+                    )
+            finally:
+                async with pipeline_status_lock:
+                    pipeline_status["scanning"] = False
+
+            # When idle, the same call succeeds — proving the guard is the
+            # only thing blocking, not some side effect of the test setup.
+            await rag.apipeline_enqueue_documents(
+                "now allowed",
+                file_paths="ok.txt",
+                track_id="track-ok",
+            )
+        finally:
+            await rag.finalize_storages()
+
+    asyncio.run(_run())
+
+
+@pytest.mark.offline
+def test_analyze_multimodal_skips_already_analyzed_items(tmp_path):
+    """Re-running analyze_multimodal must not re-analyze items that already
+    carry an ``llm_analyze_result`` from a prior pass.  This makes
+    enabling a new modality (e.g. add ``t`` after a prior ``i``-only pass)
+    cheap: the drawings sidecar is fully populated and skipped, while the
+    tables sidecar is newly populated.
+    """
+
+    async def _run():
+        call_count = {"n": 0}
+
+        async def _vlm(_prompt, **_kwargs):
+            call_count["n"] += 1
+            return json.dumps(
+                {
+                    "name": "Item",
+                    "summary": "ok",
+                    "detail_description": "details",
+                    "grounded": True,
+                    "grounding_reason": "visual_evidence",
+                }
+            )
+
+        rag = _new_rag(tmp_path, vlm_llm_model_func=_vlm)
+
+        # Minimal blocks file with valid meta.
+        blocks = tmp_path / "demo.blocks.jsonl"
+        blocks.write_text(
+            "\n".join(
+                [
+                    json.dumps({"type": "meta", "format_version": "1.0"}),
+                    json.dumps({"type": "content", "content": "body"}),
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        # Drawings sidecar with ONE item that already has llm_analyze_result
+        # (simulates a prior pass).
+        drawings = tmp_path / "demo.drawings.json"
+        drawings.write_text(
+            json.dumps(
+                {
+                    "version": "1.0",
+                    "drawings": {
+                        "id1": {
+                            "id": "id1",
+                            "caption": "fig1",
+                            "llm_analyze_result": {
+                                "name": "Existing",
+                                "summary": "from prior run",
+                                "detail_description": "kept as-is",
+                                "grounded": True,
+                            },
+                        }
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        # Tables sidecar with one fresh item (no prior result).
+        tables = tmp_path / "demo.tables.json"
+        tables.write_text(
+            json.dumps(
+                {
+                    "version": "1.0",
+                    "tables": {
+                        "tbl1": {
+                            "id": "tbl1",
+                            "caption": "tbl",
+                            "content": "Header|Row",
+                        }
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        parsed = {
+            "doc_id": "doc-1",
+            "file_path": "demo.pdf",
+            "blocks_path": str(blocks),
+            "content": "body",
+        }
+        # Second pass enables BOTH images and tables; drawings should be
+        # skipped (already analyzed) and only tables should hit the VLM.
+        await rag.analyze_multimodal("doc-1", "demo.pdf", parsed, process_options="it")
+
+        drawings_payload = json.loads(drawings.read_text(encoding="utf-8"))
+        existing = drawings_payload["drawings"]["id1"]["llm_analyze_result"]
+        # Existing result preserved verbatim — VLM was NOT called for this item.
+        assert existing["name"] == "Existing"
+        assert existing["summary"] == "from prior run"
+
+        tables_payload = json.loads(tables.read_text(encoding="utf-8"))
+        new_result = tables_payload["tables"]["tbl1"]["llm_analyze_result"]
+        # The newly-enabled modality was analyzed.
+        assert new_result["name"] == "Item"
+        assert new_result["summary"] == "ok"
+
+        # Exactly ONE VLM call total (for the table).  If analyze_time had
+        # short-circuited the function, the call count would be 0; if the
+        # idempotency check was missing, it would be 2.
+        assert call_count["n"] == 1
+
+        # meta.analyze_time was refreshed to reflect this most-recent pass.
+        meta = json.loads(blocks.read_text(encoding="utf-8").splitlines()[0])
+        assert meta.get("analyze_time")
+
+    asyncio.run(_run())
+
+
+@pytest.mark.offline
 def test_enqueue_dedupes_by_filename_and_content_hash(tmp_path):
     async def _run():
         rag = _new_rag(tmp_path)

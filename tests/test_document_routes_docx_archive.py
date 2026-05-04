@@ -38,6 +38,33 @@ create_document_routes = _document_routes.create_document_routes
 pytestmark = pytest.mark.offline
 
 
+@pytest.fixture(autouse=True)
+def _ensure_shared_storage_initialized():
+    """Initialize the shared_storage module-level dicts before each test.
+
+    The scan endpoint and pipeline-busy guards introduced for the
+    reentrancy / resume work read ``pipeline_status`` via
+    ``get_namespace_data``, which raises if shared dicts have never been
+    initialized.  Tests using mocked ``LightRAG`` instances don't run
+    ``initialize_storages``, so we set up the shared store here and reset
+    pipeline_status state per-test to avoid leakage.
+    """
+    import importlib
+
+    shared_storage = importlib.import_module("lightrag.kg.shared_storage")
+    shared_storage.initialize_share_data()
+    yield
+    # Reset pipeline_status to a clean state so subsequent tests don't
+    # inherit ``busy`` / ``scanning`` flags set by prior runs.
+    if shared_storage._shared_dicts is not None:
+        for key in list(shared_storage._shared_dicts.keys()):
+            if key.endswith("pipeline_status") or key == "pipeline_status":
+                ns = shared_storage._shared_dicts[key]
+                if isinstance(ns, dict):
+                    ns["busy"] = False
+                    ns["scanning"] = False
+
+
 class _FakeDocStatus:
     def __init__(self):
         self.docs = {}
@@ -62,7 +89,6 @@ class _FakeRag:
         docs_format=None,
         parsed_engine=None,
         process_options=None,
-        reprocess_existing_non_processed=False,
     ):
         item = {
             "input": input,
@@ -72,8 +98,6 @@ class _FakeRag:
             "parsed_engine": parsed_engine,
             "process_options": process_options,
         }
-        if reprocess_existing_non_processed:
-            item["reprocess_existing_non_processed"] = True
         self.enqueued.append(item)
         return track_id
 
@@ -126,6 +150,7 @@ class _ScanRag:
 class _DuplicateUploadRag:
     def __init__(self, docs_by_path):
         self.doc_status = _ScanDocStatus(docs_by_path)
+        self.workspace = f"upload-test-{uuid4().hex}"
 
 
 class _DeleteRag:
@@ -501,7 +526,9 @@ async def test_scan_archives_same_batch_canonical_duplicates(tmp_path, monkeypat
     # the plain variant is the one that gets archived.
     assert len(calls) == 1
     assert calls[0]["file_paths"] == [hinted_file]
-    assert calls[0]["kwargs"] == {"reprocess_existing_non_processed": True}
+    # The reprocess_existing_non_processed flag was removed; pipeline_index_files
+    # is now invoked without any extra kwargs.
+    assert calls[0]["kwargs"] == {}
     archived_names = {
         path.name for path in (tmp_path / PARSED_DIR_NAME).iterdir() if path.is_file()
     }
@@ -539,12 +566,16 @@ async def test_scan_existing_non_processed_reprocesses_file(tmp_path, monkeypatc
 
     await run_scanning_process(rag, doc_manager, "track-scan")
 
+    # Non-PROCESSED records are still passed through to pipeline_index_files;
+    # the now-removed reprocess_existing_non_processed flag is no longer set.
+    # Recovery of half-finished documents is performed by the pipeline's
+    # resume logic, not by re-enqueueing them here.
     assert calls == [
         {
             "rag": rag,
             "file_paths": [file_path],
             "track_id": "track-scan",
-            "kwargs": {"reprocess_existing_non_processed": True},
+            "kwargs": {},
         }
     ]
     assert file_path.exists()
@@ -580,11 +611,14 @@ async def test_upload_rejects_same_name_failed_doc_status_without_full_docs(
         file=BytesIO(b"replacement docx bytes"),
     )
 
-    response = await upload_endpoint(_document_routes.BackgroundTasks(), upload_file)
-
-    assert response.status == "duplicated"
-    assert response.track_id == "track-failed"
-    assert "Status: failed" in response.message
+    # Strict name pre-check: same-canonical record in doc_status now raises 409
+    # rather than returning a "duplicated" 200 response.  Clients must delete
+    # the existing record before re-uploading.
+    with pytest.raises(_document_routes.HTTPException) as excinfo:
+        await upload_endpoint(_document_routes.BackgroundTasks(), upload_file)
+    assert excinfo.value.status_code == 409
+    assert "failed.docx" in excinfo.value.detail
+    assert "Status: failed" in excinfo.value.detail
     assert not (tmp_path / "failed.docx").exists()
 
 
@@ -606,11 +640,186 @@ async def test_upload_rejects_parser_hinted_filesystem_duplicate(tmp_path, monke
         file=BytesIO(b"replacement docx bytes"),
     )
 
-    response = await upload_endpoint(_document_routes.BackgroundTasks(), upload_file)
-
-    assert response.status == "duplicated"
-    assert response.track_id == ""
+    # Strict name pre-check: an INPUT directory file with the same canonical
+    # basename now blocks the upload with 409.
+    with pytest.raises(_document_routes.HTTPException) as excinfo:
+        await upload_endpoint(_document_routes.BackgroundTasks(), upload_file)
+    assert excinfo.value.status_code == 409
+    assert "existing.docx" in excinfo.value.detail
     assert not (tmp_path / "existing.[native].docx").exists()
+
+
+async def test_upload_returns_409_when_pipeline_busy(tmp_path, monkeypatch):
+    """Upload must refuse with 409 while ``pipeline_status['busy']`` is set,
+    independent of any name dedup.  The strict name pre-check happens AFTER
+    the busy guard, so the 409 detail is about the pipeline, not the file.
+    """
+    import importlib
+
+    monkeypatch.setattr(
+        _document_routes, "global_args", SimpleNamespace(max_upload_size=None)
+    )
+    doc_manager = DocumentManager(str(tmp_path))
+    rag = _DuplicateUploadRag({})
+
+    shared_storage = importlib.import_module("lightrag.kg.shared_storage")
+    await shared_storage.initialize_pipeline_status(workspace=rag.workspace)
+    pipeline_status = await shared_storage.get_namespace_data(
+        "pipeline_status", workspace=rag.workspace
+    )
+    pipeline_status["busy"] = True
+
+    router = create_document_routes(rag, doc_manager)
+    upload_endpoint = [
+        route.endpoint
+        for route in router.routes
+        if getattr(route, "name", "") == "upload_to_input_dir"
+    ][-1]
+    upload_file = _document_routes.UploadFile(
+        filename="while_busy.docx",
+        file=BytesIO(b"docx bytes"),
+    )
+
+    with pytest.raises(_document_routes.HTTPException) as excinfo:
+        await upload_endpoint(_document_routes.BackgroundTasks(), upload_file)
+    assert excinfo.value.status_code == 409
+    assert "busy" in excinfo.value.detail.lower()
+    assert not (tmp_path / "while_busy.docx").exists()
+
+
+async def test_upload_returns_409_when_scanning(tmp_path, monkeypatch):
+    """Upload must refuse with 409 when a scan is in progress."""
+    import importlib
+
+    monkeypatch.setattr(
+        _document_routes, "global_args", SimpleNamespace(max_upload_size=None)
+    )
+    doc_manager = DocumentManager(str(tmp_path))
+    rag = _DuplicateUploadRag({})
+
+    shared_storage = importlib.import_module("lightrag.kg.shared_storage")
+    await shared_storage.initialize_pipeline_status(workspace=rag.workspace)
+    pipeline_status = await shared_storage.get_namespace_data(
+        "pipeline_status", workspace=rag.workspace
+    )
+    pipeline_status["scanning"] = True
+
+    router = create_document_routes(rag, doc_manager)
+    upload_endpoint = [
+        route.endpoint
+        for route in router.routes
+        if getattr(route, "name", "") == "upload_to_input_dir"
+    ][-1]
+    upload_file = _document_routes.UploadFile(
+        filename="while_scanning.docx",
+        file=BytesIO(b"docx bytes"),
+    )
+
+    with pytest.raises(_document_routes.HTTPException) as excinfo:
+        await upload_endpoint(_document_routes.BackgroundTasks(), upload_file)
+    assert excinfo.value.status_code == 409
+    assert "scan" in excinfo.value.detail.lower()
+    assert not (tmp_path / "while_scanning.docx").exists()
+
+
+async def test_scan_endpoint_returns_skipped_when_pipeline_busy(tmp_path):
+    """Scan endpoint must return ``scanning_skipped_pipeline_busy`` and NOT
+    schedule a background task while the pipeline is busy."""
+    import importlib
+
+    doc_manager = DocumentManager(str(tmp_path))
+    rag = _ScanRag({})
+
+    shared_storage = importlib.import_module("lightrag.kg.shared_storage")
+    await shared_storage.initialize_pipeline_status(workspace=rag.workspace)
+    pipeline_status = await shared_storage.get_namespace_data(
+        "pipeline_status", workspace=rag.workspace
+    )
+    pipeline_status["busy"] = True
+
+    router = create_document_routes(rag, doc_manager)
+    scan_endpoint = [
+        route.endpoint
+        for route in router.routes
+        if getattr(route, "name", "") == "scan_for_new_documents"
+    ][-1]
+
+    bg = _document_routes.BackgroundTasks()
+    response = await scan_endpoint(bg)
+
+    assert response.status == "scanning_skipped_pipeline_busy"
+    # No background task should have been scheduled.
+    assert len(bg.tasks) == 0
+    # And ``scanning`` is left unchanged at False (we didn't acquire it).
+    assert pipeline_status.get("scanning") is False
+
+
+async def test_scan_endpoint_returns_skipped_when_already_scanning(tmp_path):
+    """Scan endpoint must reject overlapping scans by checking the
+    ``scanning`` flag, not just ``busy``."""
+    import importlib
+
+    doc_manager = DocumentManager(str(tmp_path))
+    rag = _ScanRag({})
+
+    shared_storage = importlib.import_module("lightrag.kg.shared_storage")
+    await shared_storage.initialize_pipeline_status(workspace=rag.workspace)
+    pipeline_status = await shared_storage.get_namespace_data(
+        "pipeline_status", workspace=rag.workspace
+    )
+    pipeline_status["scanning"] = True
+
+    router = create_document_routes(rag, doc_manager)
+    scan_endpoint = [
+        route.endpoint
+        for route in router.routes
+        if getattr(route, "name", "") == "scan_for_new_documents"
+    ][-1]
+
+    bg = _document_routes.BackgroundTasks()
+    response = await scan_endpoint(bg)
+
+    assert response.status == "scanning_skipped_pipeline_busy"
+    assert len(bg.tasks) == 0
+
+
+async def test_scan_endpoint_acquires_and_releases_scanning_flag(tmp_path, monkeypatch):
+    """The scan endpoint must atomically set ``scanning=True`` and
+    ``run_scanning_process`` must clear it in finally — even when the body
+    raises — so successive scans aren't permanently blocked.
+    """
+    import importlib
+
+    doc_manager = DocumentManager(str(tmp_path))
+    rag = _ScanRag({})
+
+    shared_storage = importlib.import_module("lightrag.kg.shared_storage")
+    await shared_storage.initialize_pipeline_status(workspace=rag.workspace)
+    pipeline_status = await shared_storage.get_namespace_data(
+        "pipeline_status", workspace=rag.workspace
+    )
+    pipeline_status["busy"] = False
+    pipeline_status["scanning"] = False
+
+    router = create_document_routes(rag, doc_manager)
+    scan_endpoint = [
+        route.endpoint
+        for route in router.routes
+        if getattr(route, "name", "") == "scan_for_new_documents"
+    ][-1]
+
+    bg = _document_routes.BackgroundTasks()
+    response = await scan_endpoint(bg)
+
+    # Endpoint scheduled the task and acquired the flag synchronously.
+    assert response.status == "scanning_started"
+    assert pipeline_status["scanning"] is True
+    assert len(bg.tasks) == 1
+
+    # Run the scheduled task; finally-block must clear the flag.
+    task = bg.tasks[0]
+    await task.func(*task.args, **task.kwargs)
+    assert pipeline_status["scanning"] is False
 
 
 def test_delete_file_variants_removes_canonical_hint_variants(tmp_path):

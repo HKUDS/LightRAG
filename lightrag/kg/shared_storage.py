@@ -1289,6 +1289,7 @@ async def initialize_pipeline_status(workspace: str | None = None):
             {
                 "autoscanned": False,  # Auto-scan started
                 "busy": False,  # Control concurrent processes
+                "scanning": False,  # /documents/scan in progress (independent of busy)
                 "job_name": "-",  # Current job name (indexing files/indexing texts)
                 "job_start": None,  # Job start time
                 "docs": 0,  # Total number of documents to be indexed
