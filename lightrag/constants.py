@@ -168,6 +168,37 @@ PARSER_ENGINE_SUFFIX_CAPABILITIES = {
 }
 PARSED_DIR_NAME = "__parsed__"  # Dir for parsed files (renamed from __enqueued__)
 
+# Per-file processing options carried by filename hints / LIGHTRAG_PARSER rules.
+# See docs/FileProcessingConfiguration-zh.md for the full specification.
+PROCESS_OPTION_IMAGES = "i"  # Enable VLM analysis for drawings/images
+PROCESS_OPTION_TABLES = "t"  # Enable VLM analysis for tables
+PROCESS_OPTION_EQUATIONS = "e"  # Enable VLM analysis for equations
+PROCESS_OPTION_SKIP_KG = "!"  # Skip entity/relation extraction (no KG build)
+PROCESS_OPTION_CHUNK_FIXED = "F"  # Fixed-length / separator chunking (default)
+PROCESS_OPTION_CHUNK_RECURSIVE = (
+    "R"  # Recursive semantic chunking (currently aliased to F)
+)
+PROCESS_OPTION_CHUNK_HEADING = "S"  # Heading-driven semantic chunking
+
+PROCESS_OPTION_CHUNK_CHARS = frozenset(
+    {
+        PROCESS_OPTION_CHUNK_FIXED,
+        PROCESS_OPTION_CHUNK_RECURSIVE,
+        PROCESS_OPTION_CHUNK_HEADING,
+    }
+)
+SUPPORTED_PROCESS_OPTIONS = frozenset(
+    {
+        PROCESS_OPTION_IMAGES,
+        PROCESS_OPTION_TABLES,
+        PROCESS_OPTION_EQUATIONS,
+        PROCESS_OPTION_SKIP_KG,
+        PROCESS_OPTION_CHUNK_FIXED,
+        PROCESS_OPTION_CHUNK_RECURSIVE,
+        PROCESS_OPTION_CHUNK_HEADING,
+    }
+)
+
 DEFAULT_MAX_PARALLEL_ANALYZE = 2  # Multimodal analysis (VLM) concurrency
 
 # Embedding configuration defaults

@@ -66,6 +66,7 @@ from lightrag.utils_pipeline import (
     compute_text_content_hash,
     doc_status_field,
     doc_status_value,
+    document_canonical_key,
     document_source_key,
     get_by_path,
     get_duplicate_doc_by_content_hash,
@@ -101,6 +102,7 @@ class _PipelineMixin:
         docs_format: str = FULL_DOCS_FORMAT_RAW,
         lightrag_document_paths: str | list[str] | None = None,
         parsed_engine: str | list[str] | None = None,
+        process_options: str | list[str] | None = None,
         reprocess_existing_non_processed: bool = False,
     ) -> str:
         """
@@ -119,6 +121,10 @@ class _PipelineMixin:
             docs_format: "raw" (default) or "lightrag"; when "lightrag" content may be empty and content-dedup is skipped
             lightrag_document_paths: paths to LightRAG Document (e.g. .blocks.jsonl dir or base path), when docs_format is lightrag
             parsed_engine: file extraction engine already used or target engine for pending_parse
+            process_options: per-document processing options string (i/t/e/!/F/R/S);
+                accepted as a single string broadcast to every input or as a list
+                aligned with ``input``. Stored verbatim on ``full_docs`` and
+                mirrored to ``doc_status.metadata['process_options']``.
             reprocess_existing_non_processed: allow scan retries to overwrite
                 existing same-name records that have not reached PROCESSED.
 
@@ -140,6 +146,8 @@ class _PipelineMixin:
             )
         if isinstance(parsed_engine, str):
             parsed_engine = [parsed_engine] * len(input)
+        if isinstance(process_options, str):
+            process_options = [process_options] * len(input)
 
         # If file_paths is provided, ensure it matches the number of documents
         if file_paths is not None:
@@ -166,12 +174,23 @@ class _PipelineMixin:
             raise ValueError(
                 "Number of parsed engines must match the number of documents"
             )
+        if process_options is not None and len(process_options) != len(input):
+            raise ValueError(
+                "Number of process options must match the number of documents"
+            )
 
         def _parsed_engine_at(index: int) -> str | None:
             if parsed_engine is None:
                 return None
             engine = str(parsed_engine[index] or "").strip().lower()
             return engine or None
+
+        def _process_options_at(index: int) -> str:
+            if process_options is None:
+                return ""
+            from lightrag.parser_routing import sanitize_process_options
+
+            return sanitize_process_options(process_options[index])
 
         # 1. Validate ids and build contents (when lightrag: no content dedup, content may be empty)
         if ids is not None:
@@ -180,7 +199,15 @@ class _PipelineMixin:
             if len(ids) != len(set(ids)):
                 raise ValueError("IDs must be unique")
 
+        # Two basenames per file:
+        #  - source_keys: user-visible name preserved verbatim, written as
+        #    full_docs.file_path / doc_status.file_path so the UI can render
+        #    the user's original ``[hint]`` choice.
+        #  - canonical_keys: parser-hint stripped basename used for filename
+        #    dedup and as the seed for deterministic doc_ids; written as
+        #    full_docs.canonical_basename / doc_status.canonical_basename.
         source_keys = [document_source_key(path) for path in file_paths]
+        canonical_keys = [document_canonical_key(path) for path in file_paths]
         contents: dict[str, dict[str, Any]] = {}
         source_to_doc_id: dict[str, str] = {}
         content_hash_to_doc_id: dict[str, str] = {}
@@ -194,6 +221,7 @@ class _PipelineMixin:
             lightrag_document_path: str | None = None,
         ) -> None:
             source_key = source_keys[index]
+            canonical_key = canonical_keys[index]
             source_path = file_paths[index]
 
             # Compute content hash: skip for pending_parse (content extracted later).
@@ -205,25 +233,25 @@ class _PipelineMixin:
                     resolve_lightrag_document_path(lightrag_document_path)
                 )
 
-            known_source = has_known_document_source(source_key)
+            known_source = has_known_document_source(canonical_key)
             if ids is not None:
                 doc_id = ids[index]
             elif known_source:
-                doc_id = compute_mdhash_id(source_key, prefix="doc-")
+                doc_id = compute_mdhash_id(canonical_key, prefix="doc-")
             elif doc_format == FULL_DOCS_FORMAT_RAW:
                 doc_id = compute_mdhash_id(content or "", prefix="doc-")
             elif content_hash:
                 doc_id = compute_mdhash_id(content_hash, prefix="doc-")
             else:
                 doc_id = compute_mdhash_id(
-                    f"{source_key}-{track_id}-{index}", prefix="doc-"
+                    f"{canonical_key}-{track_id}-{index}", prefix="doc-"
                 )
 
-            if known_source and source_key in source_to_doc_id:
+            if known_source and canonical_key in source_to_doc_id:
                 duplicate_attempts.append(
                     {
                         "doc_id": doc_id,
-                        "original_doc_id": source_to_doc_id[source_key],
+                        "original_doc_id": source_to_doc_id[canonical_key],
                         "file_path": source_key,
                         "content_length": len(content or ""),
                         "existing_status": "batch_duplicate",
@@ -248,23 +276,31 @@ class _PipelineMixin:
                 return
 
             if known_source:
-                source_to_doc_id[source_key] = doc_id
+                source_to_doc_id[canonical_key] = doc_id
             if content_hash:
                 content_hash_to_doc_id[content_hash] = doc_id
 
-            content_data = {
+            content_data: dict[str, Any] = {
                 "content": content,
                 "file_path": source_key,
+                "canonical_basename": canonical_key,
                 "format": doc_format,
             }
             if content_hash:
                 content_data["content_hash"] = content_hash
-            if str(source_path).strip() and str(source_path).strip() != source_key:
+            # Persist the original path only when it actually carries directory
+            # information (absolute path or contains a separator); a plain
+            # basename is already captured by ``file_path``.
+            raw_source = str(source_path).strip()
+            if raw_source and (os.sep in raw_source or "/" in raw_source):
                 content_data["source_path"] = source_path
             if lightrag_document_path:
                 content_data["lightrag_document_path"] = lightrag_document_path
             if engine := _parsed_engine_at(index):
                 content_data["parsed_engine"] = engine
+            options_str = _process_options_at(index)
+            if options_str:
+                content_data["process_options"] = options_str
             contents[doc_id] = content_data
 
         if is_lightrag_format:
@@ -318,21 +354,28 @@ class _PipelineMixin:
                 _add_content(i, cleaned_content, FULL_DOCS_FORMAT_RAW)
 
         # 2. Generate document initial status (without content)
-        new_docs: dict[str, Any] = {
-            id_: {
+        def _initial_doc_status(content_data: dict[str, Any]) -> dict[str, Any]:
+            base: dict[str, Any] = {
                 "status": DocStatus.PENDING,
                 "content_summary": get_content_summary(content_data.get("content", "")),
                 "content_length": len(content_data.get("content", "")),
                 "created_at": datetime.now(timezone.utc).isoformat(),
                 "updated_at": datetime.now(timezone.utc).isoformat(),
                 "file_path": content_data["file_path"],
+                "canonical_basename": content_data.get("canonical_basename"),
                 "track_id": track_id,
-                **(
-                    {"content_hash": content_data["content_hash"]}
-                    if content_data.get("content_hash")
-                    else {}
-                ),
             }
+            if content_data.get("content_hash"):
+                base["content_hash"] = content_data["content_hash"]
+            options_str = content_data.get("process_options") or ""
+            if options_str:
+                # Mirror process_options into doc_status.metadata so admin UIs
+                # can surface the per-document strategy without a full_docs lookup.
+                base["metadata"] = {"process_options": options_str}
+            return base
+
+        new_docs: dict[str, Any] = {
+            id_: _initial_doc_status(content_data)
             for id_, content_data in contents.items()
         }
 
@@ -521,6 +564,7 @@ class _PipelineMixin:
             doc_id: {
                 "content": contents[doc_id].get("content", ""),
                 "file_path": contents[doc_id]["file_path"],
+                "canonical_basename": contents[doc_id].get("canonical_basename"),
                 "format": contents[doc_id].get("format", FULL_DOCS_FORMAT_RAW),
             }
             for doc_id in new_docs.keys()
@@ -539,6 +583,10 @@ class _PipelineMixin:
             if contents[doc_id].get("parsed_engine"):
                 full_docs_data[doc_id]["parsed_engine"] = contents[doc_id][
                     "parsed_engine"
+                ]
+            if contents[doc_id].get("process_options"):
+                full_docs_data[doc_id]["process_options"] = contents[doc_id][
+                    "process_options"
                 ]
         await self.full_docs.upsert(full_docs_data)
         # Persist data to disk immediately
@@ -1100,6 +1148,17 @@ class _PipelineMixin:
 
                             extraction_meta: dict[str, Any] = {}
 
+                            # Decode per-document processing options once; later
+                            # stages (multimodal hook / KG extraction) re-read
+                            # them from full_docs as well.
+                            from lightrag.parser_routing import (
+                                parse_process_options,
+                            )
+
+                            doc_process_opts = parse_process_options(
+                                (content_data or {}).get("process_options", "")
+                            )
+
                             # Try to parse as interchange JSONL (smart extraction output)
                             parsed_interchange = parse_interchange_jsonl(
                                 content, self.tokenizer
@@ -1118,14 +1177,26 @@ class _PipelineMixin:
                                         "format_version"
                                     ),
                                     "engine": interchange_meta.get("engine"),
-                                    "engine_capabilities": interchange_meta.get(
-                                        "engine_capabilities", []
-                                    ),
                                     "chunking_method": interchange_meta.get(
                                         "chunking_method"
                                     ),
                                 }
                             else:
+                                # Per-document chunking strategy:
+                                #  - 'F' (default): use the configured chunking_func
+                                #    (chunking_by_token_size).
+                                #  - 'S' / 'R': require structured input which the
+                                #    legacy text path cannot provide; fall back to
+                                #    'F' and log a warning so the user knows their
+                                #    selection had no effect for this document.
+                                if doc_process_opts.chunking != "F":
+                                    logger.warning(
+                                        f"[chunking] process_options chunking="
+                                        f"{doc_process_opts.chunking!r} requested for d-id: "
+                                        f"{doc_id}, file: {file_path}, but no structured "
+                                        f"interchange output is available; falling back to "
+                                        f"fixed chunking ('F')."
+                                    )
                                 # Call chunking function, supporting both sync and async implementations
                                 chunking_result = self.chunking_func(
                                     self.tokenizer,
@@ -1149,6 +1220,11 @@ class _PipelineMixin:
                                 extraction_meta = {
                                     "extraction_format": "plain_text_chunking",
                                     "engine": "legacy",
+                                    "chunking_method": (
+                                        "fixed_token_fallback"
+                                        if doc_process_opts.chunking != "F"
+                                        else "fixed_token"
+                                    ),
                                 }
 
                             # Multimodal post-process hook entrypoint:
@@ -1308,18 +1384,29 @@ class _PipelineMixin:
                             # Execute first stage tasks
                             await asyncio.gather(*first_stage_tasks)
 
-                            # Stage 2: Process entity relation graph (after text_chunks are saved)
-                            entity_relation_task = asyncio.create_task(
-                                self._process_extract_entities(
-                                    chunks, pipeline_status, pipeline_status_lock
+                            # Stage 2: Process entity relation graph (after text_chunks are saved).
+                            # When the user opted out via process_options '!', skip
+                            # entity/relation extraction entirely; chunks remain in
+                            # the vector store so naive / mix retrieval still works.
+                            if doc_process_opts.skip_kg:
+                                logger.info(
+                                    f"[skip_kg] process_options '!' set for d-id: {doc_id}; "
+                                    f"skipping entity/relation extraction"
                                 )
-                            )
-                            chunk_results = await entity_relation_task
-                            chunk_results = augment_chunk_results_with_mm_entities(
-                                chunk_results=chunk_results,
-                                mm_specs=mm_specs,
-                                file_path=file_path,
-                            )
+                                chunk_results = []
+                                extraction_meta["skip_kg"] = True
+                            else:
+                                entity_relation_task = asyncio.create_task(
+                                    self._process_extract_entities(
+                                        chunks, pipeline_status, pipeline_status_lock
+                                    )
+                                )
+                                chunk_results = await entity_relation_task
+                                chunk_results = augment_chunk_results_with_mm_entities(
+                                    chunk_results=chunk_results,
+                                    mm_specs=mm_specs,
+                                    file_path=file_path,
+                                )
                             file_extraction_stage_ok = True
 
                         except Exception as e:
@@ -1407,25 +1494,30 @@ class _PipelineMixin:
                                             "User cancelled"
                                         )
 
-                                # Use chunk_results from entity_relation_task
-                                await merge_nodes_and_edges(
-                                    chunk_results=chunk_results,  # result collected from entity_relation_task
-                                    knowledge_graph_inst=self.chunk_entity_relation_graph,
-                                    entity_vdb=self.entities_vdb,
-                                    relationships_vdb=self.relationships_vdb,
-                                    global_config=self._build_global_config(),
-                                    full_entities_storage=self.full_entities,
-                                    full_relations_storage=self.full_relations,
-                                    doc_id=doc_id,
-                                    pipeline_status=pipeline_status,
-                                    pipeline_status_lock=pipeline_status_lock,
-                                    llm_response_cache=self.llm_response_cache,
-                                    entity_chunks_storage=self.entity_chunks,
-                                    relation_chunks_storage=self.relation_chunks,
-                                    current_file_number=current_file_number,
-                                    total_files=total_files,
-                                    file_path=file_path,
-                                )
+                                # Use chunk_results from entity_relation_task.
+                                # When skip_kg is set, chunk_results is empty so
+                                # there are no nodes/edges to merge — but we
+                                # still need to flush the chunks_vdb / text_chunks
+                                # writes (already done above) and reach PROCESSED.
+                                if not doc_process_opts.skip_kg:
+                                    await merge_nodes_and_edges(
+                                        chunk_results=chunk_results,  # result collected from entity_relation_task
+                                        knowledge_graph_inst=self.chunk_entity_relation_graph,
+                                        entity_vdb=self.entities_vdb,
+                                        relationships_vdb=self.relationships_vdb,
+                                        global_config=self._build_global_config(),
+                                        full_entities_storage=self.full_entities,
+                                        full_relations_storage=self.full_relations,
+                                        doc_id=doc_id,
+                                        pipeline_status=pipeline_status,
+                                        pipeline_status_lock=pipeline_status_lock,
+                                        llm_response_cache=self.llm_response_cache,
+                                        entity_chunks_storage=self.entity_chunks,
+                                        relation_chunks_storage=self.relation_chunks,
+                                        current_file_number=current_file_number,
+                                        total_files=total_files,
+                                        file_path=file_path,
+                                    )
 
                                 # Record processing end time
                                 processing_end_time = int(time.time())
@@ -1766,11 +1858,25 @@ class _PipelineMixin:
         doc_id: str,
         file_path: str,
         parsed_data: dict[str, Any],
+        *,
+        process_options: str | None = None,
     ) -> dict[str, Any]:
         """Phase 2: Multimodal analysis (VLM). Writes llm_analyze_result and analyze_time to LightRAG Document.
-        Uses vlm_llm_model_func (VLM role). When Ray-Anything merges, bind VLM model here.
-        Default: no-op, returns parsed_data unchanged.
+
+        Per-document ``i`` / ``t`` / ``e`` flags from
+        ``full_docs.process_options`` decide which modalities are sent to the
+        VLM.  Sidecars are always written by the parser regardless of these
+        flags so toggling options later does not require re-parsing — only
+        the ``llm_analyze_result`` payload is gated here.
+
+        Args:
+            process_options: Optional override that bypasses the
+                ``full_docs.process_options`` lookup; primarily used by unit
+                tests that exercise the VLM analysis path without going
+                through the enqueue pipeline.
         """
+        from lightrag.parser_routing import parse_process_options
+
         blocks_path = parsed_data.get("blocks_path")
         if not blocks_path:
             return parsed_data
@@ -1778,6 +1884,56 @@ class _PipelineMixin:
         block_file = Path(blocks_path)
         if not block_file.exists():
             return parsed_data
+
+        # Resolve which modalities the user opted into for this document.
+        if process_options is None:
+            try:
+                content_data = await self.full_docs.get_by_id(doc_id) or {}
+            except Exception:
+                content_data = {}
+            options_str = (
+                content_data.get("process_options")
+                if isinstance(content_data, dict)
+                else ""
+            ) or ""
+        else:
+            options_str = process_options
+        process_opts = parse_process_options(options_str)
+        if not (process_opts.images or process_opts.tables or process_opts.equations):
+            logger.debug(
+                f"[analyze_multimodal] no i/t/e options set for d-id: {doc_id}; "
+                f"skipping VLM analysis"
+            )
+            return parsed_data
+
+        # Diagnose opt-in vs sidecar mismatch up-front so users investigating
+        # "why did VLM not run on my images" see a one-line INFO per document
+        # instead of silent skips.  Empty sidecars are a normal outcome
+        # (some documents simply have no images/tables/equations), so this is
+        # informational rather than a warning.
+        sidecar_base = str(block_file)
+        if sidecar_base.endswith(".blocks.jsonl"):
+            sidecar_base = sidecar_base[: -len(".blocks.jsonl")]
+        opt_in_missing: list[str] = []
+        for opt_char, modality, suffix in (
+            ("i", "drawings", ".drawings.json"),
+            ("t", "tables", ".tables.json"),
+            ("e", "equations", ".equations.json"),
+        ):
+            enabled = {
+                "i": process_opts.images,
+                "t": process_opts.tables,
+                "e": process_opts.equations,
+            }[opt_char]
+            if enabled and not Path(sidecar_base + suffix).exists():
+                opt_in_missing.append(f"{opt_char}:{modality}")
+        if opt_in_missing:
+            logger.info(
+                f"[analyze_multimodal] process_options opted into "
+                f"{','.join(opt_in_missing)} for d-id: {doc_id} (file={file_path}), "
+                f"but the parser produced no such sidecar; VLM analysis skipped "
+                f"for those modalities."
+            )
 
         try:
             lines = block_file.read_text(encoding="utf-8").splitlines()
@@ -2041,11 +2197,17 @@ class _PipelineMixin:
             if base_name.endswith(".blocks.jsonl"):
                 base_name = base_name[: -len(".blocks.jsonl")]
             sidecars = [
-                (Path(base_name + ".drawings.json"), "drawings"),
-                (Path(base_name + ".tables.json"), "tables"),
-                (Path(base_name + ".equations.json"), "equations"),
+                (Path(base_name + ".drawings.json"), "drawings", process_opts.images),
+                (Path(base_name + ".tables.json"), "tables", process_opts.tables),
+                (
+                    Path(base_name + ".equations.json"),
+                    "equations",
+                    process_opts.equations,
+                ),
             ]
-            for sidecar_path, root_key in sidecars:
+            for sidecar_path, root_key, enabled in sidecars:
+                if not enabled:
+                    continue
                 if not sidecar_path.exists():
                     continue
                 try:
@@ -2186,6 +2348,15 @@ class _PipelineMixin:
         ``get_doc_by_content_hash`` lookups can dedupe across pending_parse
         records that did not have a hash at enqueue time. Also patches the
         existing ``doc_status`` row so both storages stay aligned.
+
+        The original ``pending_parse`` record carries metadata seeded at
+        enqueue time (``process_options``, ``canonical_basename``,
+        ``source_path``, ...) that downstream stages still need after parsing.
+        ``full_docs`` upserts overwrite the entire row, so we merge the
+        existing record with the new ``record`` payload before upserting:
+        fresh fields from ``record`` (``content`` / ``format`` /
+        ``lightrag_document_path`` / ``parsed_engine`` / ``update_time``)
+        take precedence, while pre-existing fields are preserved.
         """
         fmt = record.get("format")
         content_hash: str | None = None
@@ -2198,7 +2369,11 @@ class _PipelineMixin:
                     resolve_lightrag_document_path(blocks_path)
                 )
 
-        payload = dict(record)
+        existing = await self.full_docs.get_by_id(doc_id)
+        if isinstance(existing, dict):
+            payload = {**existing, **record}
+        else:
+            payload = dict(record)
         if content_hash:
             payload["content_hash"] = content_hash
 
@@ -2970,21 +3145,45 @@ class _PipelineMixin:
 
         Default behavior is no-op. This method defines a stable extension point
         for built-in multimodal processors.
+
+        Activates when the per-document ``process_options`` opts into at least
+        one of ``i`` / ``t`` / ``e``.  Per-modality work in subsequent steps
+        (``_build_mm_chunks_from_sidecars``, ``analyze_multimodal``) decides
+        whether to act based on whether ``drawings.json`` / ``tables.json`` /
+        ``equations.json`` actually exist on disk — the parser declares
+        modality availability by writing those sidecars, not by listing
+        capabilities in meta.
         """
-        addon_params = self.addon_params
-        if not addon_params.get("enable_multimodal_pipeline", False):
-            return chunking_result
+        from lightrag.parser_routing import parse_process_options
 
         extraction_format = extraction_meta.get("extraction_format")
-        capabilities = set(extraction_meta.get("engine_capabilities", []) or [])
         if extraction_format != "interchange_jsonl":
             return chunking_result
-        if not capabilities.intersection({"i", "e", "t"}):
+
+        try:
+            content_data = await self.full_docs.get_by_id(doc_id) or {}
+        except Exception:
+            content_data = {}
+        process_opts = parse_process_options(
+            content_data.get("process_options")
+            if isinstance(content_data, dict)
+            else ""
+        )
+        active = {
+            ch
+            for ch, enabled in (
+                ("i", process_opts.images),
+                ("t", process_opts.tables),
+                ("e", process_opts.equations),
+            )
+            if enabled
+        }
+        if not active:
             return chunking_result
 
         logger.info(
             f"[multimodal-hook] enabled for d-id: {doc_id}, file: {file_path}, "
-            f"engine={extraction_meta.get('engine')}, caps={sorted(capabilities)}"
+            f"engine={extraction_meta.get('engine')}, opts={sorted(active)}"
         )
 
         # TODO(multimodal pipeline):

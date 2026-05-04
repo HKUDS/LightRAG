@@ -34,7 +34,7 @@ from lightrag.constants import (
 from lightrag.parser_routing import (
     canonicalize_parser_hinted_basename,
     filename_parser_hint,
-    resolve_file_parser_engine,
+    resolve_file_parser_directives,
 )
 from lightrag.utils import (
     generate_track_id,
@@ -1403,7 +1403,7 @@ async def pipeline_enqueue_file(
         except Exception:
             file_size = 0
 
-        extraction_engine = resolve_file_parser_engine(file_path)
+        extraction_engine, process_options = resolve_file_parser_directives(file_path)
         if extraction_engine != PARSER_ENGINE_LEGACY:
             try:
                 enqueue_kwargs = {
@@ -1412,6 +1412,8 @@ async def pipeline_enqueue_file(
                     "docs_format": FULL_DOCS_FORMAT_PENDING_PARSE,
                     "parsed_engine": extraction_engine,
                 }
+                if process_options:
+                    enqueue_kwargs["process_options"] = process_options
                 if reprocess_existing_non_processed:
                     enqueue_kwargs["reprocess_existing_non_processed"] = True
                 enqueue_result = await rag.apipeline_enqueue_documents(
@@ -1725,6 +1727,8 @@ async def pipeline_enqueue_file(
                     "track_id": track_id,
                     "parsed_engine": PARSER_ENGINE_LEGACY,
                 }
+                if process_options:
+                    enqueue_kwargs["process_options"] = process_options
                 if reprocess_existing_non_processed:
                     enqueue_kwargs["reprocess_existing_non_processed"] = True
                 enqueue_result = await rag.apipeline_enqueue_documents(
