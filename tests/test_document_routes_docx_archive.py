@@ -126,6 +126,7 @@ class _DuplicateEnqueueRag(_FakeRag):
 class _ScanDocStatus:
     def __init__(self, docs_by_path):
         self.docs_by_path = docs_by_path
+        self.deleted_ids: list[str] = []
 
     async def get_doc_by_file_path(self, file_path):
         return self.docs_by_path.get(file_path)
@@ -138,10 +139,39 @@ class _ScanDocStatus:
                 return stored_path, doc
         return None
 
+    async def delete(self, ids):
+        for doc_id in ids:
+            self.docs_by_path.pop(doc_id, None)
+            self.deleted_ids.append(doc_id)
+
+
+class _ScanFullDocs:
+    """Minimal full_docs double for run_scanning_process.
+
+    The scan now consults ``full_docs.get_by_id`` to distinguish a
+    resumable FAILED row (content was stored, only a downstream step
+    failed) from an extraction-error stub recorded by
+    ``apipeline_enqueue_error_documents`` (no full_docs entry exists).
+    """
+
+    def __init__(self, docs_by_id):
+        self.docs_by_id = docs_by_id
+
+    async def get_by_id(self, doc_id):
+        return self.docs_by_id.get(doc_id)
+
 
 class _ScanRag:
-    def __init__(self, docs_by_path):
+    def __init__(self, docs_by_path, full_docs_by_id=None):
         self.doc_status = _ScanDocStatus(docs_by_path)
+        # Default: every doc_status row has a corresponding full_docs entry,
+        # i.e. the "resumable" FAILED case.  Tests simulating extraction-error
+        # stubs pass ``full_docs_by_id={}`` (or omit specific doc_ids) so the
+        # scan classifies them as retry-as-new instead of resume.  The mock
+        # uses the doc_status path-as-doc_id convention from _ScanDocStatus.
+        if full_docs_by_id is None:
+            full_docs_by_id = {path: {"content": ""} for path in docs_by_path}
+        self.full_docs = _ScanFullDocs(full_docs_by_id)
         self.process_calls = 0
         self.workspace = "scan-test"
 
@@ -639,6 +669,91 @@ async def test_scan_mixed_new_and_resume_routes_only_new_through_enqueue(
     assert rag.process_calls == 1
     assert resume_file.exists()
     assert new_file.exists()
+
+
+async def test_scan_failed_extraction_record_without_full_docs_is_retried(
+    tmp_path, monkeypatch
+):
+    """Stub doc_status rows recorded by apipeline_enqueue_error_documents
+    have no full_docs entry — _validate_and_fix_document_consistency
+    preserves them for manual review and excludes them from processing,
+    so the resume path can never advance them.  When the user fixes the
+    file and re-scans we must drop the stale stub and route the file
+    through the normal new-file enqueue, otherwise the fix never lands.
+    """
+    file_path = tmp_path / "fixed.docx"
+    file_path.write_bytes(b"now-readable bytes")
+    doc_manager = DocumentManager(str(tmp_path))
+    rag = _ScanRag(
+        {
+            str(file_path): {
+                "status": DocStatus.FAILED.value,
+                "file_path": str(file_path),
+                "track_id": "track-old",
+                "metadata": {"error_type": "file_extraction_error"},
+            }
+        },
+        full_docs_by_id={},  # Extraction error: no full_docs entry was ever written.
+    )
+    calls = []
+
+    async def capture_pipeline(rag_arg, file_paths, track_id, **kwargs):
+        calls.append(
+            {
+                "rag": rag_arg,
+                "file_paths": file_paths,
+                "track_id": track_id,
+                "kwargs": kwargs,
+            }
+        )
+
+    monkeypatch.setattr(_document_routes, "pipeline_index_files", capture_pipeline)
+
+    await run_scanning_process(rag, doc_manager, "track-scan")
+
+    # The stale FAILED stub is deleted and the file is routed as new so
+    # the standard enqueue path can re-extract content.  No resume
+    # trigger fires because there are no resume targets.
+    assert rag.doc_status.deleted_ids == [str(file_path)]
+    assert len(calls) == 1
+    assert calls[0]["file_paths"] == [file_path]
+    assert calls[0]["kwargs"] == {"from_scan": True}
+    assert rag.process_calls == 0
+    assert file_path.exists()
+
+
+async def test_scan_failed_with_full_docs_resumes_normally(tmp_path, monkeypatch):
+    """A FAILED row that DOES have a full_docs entry came from a downstream
+    failure after content was successfully stored; the pipeline's resume
+    logic resets it to PENDING and replays.  The scan must not delete it.
+    """
+    file_path = tmp_path / "downstream-failed.docx"
+    file_path.write_bytes(b"docx bytes")
+    doc_manager = DocumentManager(str(tmp_path))
+    rag = _ScanRag(
+        {
+            str(file_path): {
+                "status": DocStatus.FAILED.value,
+                "file_path": str(file_path),
+                "track_id": "track-old",
+            }
+        }
+        # full_docs default-seeded for the path → resumable FAILED.
+    )
+    calls = []
+
+    async def capture_pipeline(rag_arg, file_paths, track_id, **kwargs):
+        calls.append(file_paths)
+
+    monkeypatch.setattr(_document_routes, "pipeline_index_files", capture_pipeline)
+
+    await run_scanning_process(rag, doc_manager, "track-scan")
+
+    # No stub deletion; resume path runs.
+    assert rag.doc_status.deleted_ids == []
+    assert calls == []
+    assert rag.process_calls == 1
+    assert file_path.exists()
 
 
 async def test_scan_resume_runs_when_all_new_files_fail_to_enqueue(

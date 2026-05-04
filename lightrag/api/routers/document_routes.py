@@ -2058,8 +2058,17 @@ async def run_scanning_process(
 
             for file_path in unique_files:
                 filename = file_path.name
-                existing_doc_data = await get_existing_doc_by_file_path_candidates(
-                    rag.doc_status, file_path
+                # Inline the canonical-basename lookup so we keep both the
+                # doc_id and the data: the FAILED-without-full_docs sub-case
+                # below needs the doc_id to delete the stale stub.
+                basename = normalize_file_path(str(file_path))
+                existing_match = (
+                    await rag.doc_status.get_doc_by_file_basename(basename)
+                    if basename != UNKNOWN_FILE_SOURCE
+                    else None
+                )
+                existing_doc_id, existing_doc_data = (
+                    existing_match if existing_match else (None, None)
                 )
 
                 if (
@@ -2078,9 +2087,41 @@ async def run_scanning_process(
                             f"Failed to move already processed file {filename} to {PARSED_DIR_NAME}: {move_error}"
                         )
                 elif existing_doc_data:
+                    # FAILED rows recorded by apipeline_enqueue_error_documents
+                    # never write a full_docs entry — extraction blew up before
+                    # any content was stored.  _validate_and_fix_document_consistency
+                    # preserves them for manual review and removes them from the
+                    # processing list, so the resume path can never advance them.
+                    # When the user fixes the file and re-scans we want a real
+                    # retry: drop the stale stub and treat the file as new so
+                    # the standard enqueue path re-extracts content.
+                    status_value = get_doc_status_value(existing_doc_data)
+                    if status_value == DocStatus.FAILED.value:
+                        full_doc = await rag.full_docs.get_by_id(existing_doc_id)
+                        if full_doc is None:
+                            try:
+                                await rag.doc_status.delete([existing_doc_id])
+                            except Exception as delete_error:
+                                logger.error(
+                                    "Failed to delete stale failed-extraction "
+                                    f"doc_status stub {existing_doc_id} "
+                                    f"({filename}): {delete_error}"
+                                )
+                                # Fall through to resume — at worst the row
+                                # remains preserved (current behaviour) rather
+                                # than re-enqueued.
+                                resume_files.append(file_path)
+                                continue
+                            logger.info(
+                                "Retrying previously failed extraction; "
+                                f"removed stale doc_status stub: {filename} "
+                                f"(doc_id: {existing_doc_id})"
+                            )
+                            new_files.append(file_path)
+                            continue
                     logger.info(
                         "Resuming previously unfinished file from scan: "
-                        f"{filename} (Status: {get_doc_status_value(existing_doc_data)})"
+                        f"{filename} (Status: {status_value})"
                     )
                     resume_files.append(file_path)
                 else:
