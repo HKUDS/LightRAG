@@ -44,6 +44,9 @@ COPY pyproject.toml .
 COPY setup.py .
 COPY uv.lock .
 
+# add for AWS deployment defaults
+COPY env.bedrock.dev ./.env
+
 # Install project dependencies (base + API extras) without the project to improve caching
 RUN --mount=type=cache,target=/root/.local/share/uv \
     uv sync --frozen --no-dev --extra api --no-install-project --no-editable
@@ -82,6 +85,9 @@ COPY --from=builder /app/lightrag ./lightrag
 COPY pyproject.toml .
 COPY setup.py .
 COPY uv.lock .
+
+# add for AWS deployment defaults
+COPY env.bedrock.dev ./.env
 
 # Ensure the installed scripts are on PATH
 ENV PATH=/app/.venv/bin:/root/.local/bin:$PATH
