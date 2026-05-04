@@ -406,9 +406,7 @@ def test_chunk_lightrag_blocks_by_heading_splits_oversize_group(tmp_path):
     assert len(chunks) >= 3
     assert all(chunk["heading"] == "Solo" for chunk in chunks)
     # chunk_order_index runs 0..n-1 contiguously.
-    assert [chunk["chunk_order_index"] for chunk in chunks] == list(
-        range(len(chunks))
-    )
+    assert [chunk["chunk_order_index"] for chunk in chunks] == list(range(len(chunks)))
 
 
 @pytest.mark.offline

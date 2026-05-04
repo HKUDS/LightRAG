@@ -450,9 +450,7 @@ def chunk_lightrag_blocks_by_heading(
         first = current_blocks[0]
         heading = str(first.get("heading") or "")
         level = int(first.get("level") or 0)
-        parent_headings = [
-            str(p) for p in (first.get("parent_headings") or [])
-        ]
+        parent_headings = [str(p) for p in (first.get("parent_headings") or [])]
         # Build text with heading preface to keep retrieval contexts
         # self-contained.
         body_parts: list[str] = []
