@@ -1430,6 +1430,7 @@ async def pipeline_enqueue_file(
     rag: LightRAG,
     file_path: Path,
     track_id: str = None,
+    from_scan: bool = False,
 ) -> tuple[bool, str]:
     """Add a file to the queue for processing
 
@@ -1437,6 +1438,10 @@ async def pipeline_enqueue_file(
         rag: LightRAG instance
         file_path: Path to the saved file
         track_id: Optional tracking ID, if not provided will be generated
+        from_scan: True only when invoked by the scan-owned background task,
+            which already holds ``pipeline_status['scanning']``.  Forwarded to
+            ``apipeline_enqueue_documents`` so the scan can enqueue the files
+            it just discovered without tripping the scanning busy guard.
     Returns:
         tuple: (success: bool, track_id: str)
     """
@@ -1465,6 +1470,7 @@ async def pipeline_enqueue_file(
                     "track_id": track_id,
                     "docs_format": FULL_DOCS_FORMAT_PENDING_PARSE,
                     "parsed_engine": extraction_engine,
+                    "from_scan": from_scan,
                 }
                 if process_options:
                     enqueue_kwargs["process_options"] = process_options
@@ -1778,6 +1784,7 @@ async def pipeline_enqueue_file(
                     "file_paths": file_path.name,
                     "track_id": track_id,
                     "parsed_engine": PARSER_ENGINE_LEGACY,
+                    "from_scan": from_scan,
                 }
                 if process_options:
                     enqueue_kwargs["process_options"] = process_options
@@ -1882,6 +1889,7 @@ async def pipeline_index_files(
     rag: LightRAG,
     file_paths: List[Path],
     track_id: str = None,
+    from_scan: bool = False,
 ):
     """Index multiple files sequentially to avoid high CPU load
 
@@ -1889,6 +1897,10 @@ async def pipeline_index_files(
         rag: LightRAG instance
         file_paths: Paths to the files to index
         track_id: Optional tracking ID to pass to all files
+        from_scan: True only when invoked by the scan-owned background task.
+            Forwarded to ``pipeline_enqueue_file`` so the per-file enqueue
+            calls bypass the scanning busy guard whose ``scanning`` flag the
+            scan task itself owns.
     """
     if not file_paths:
         return
@@ -1906,6 +1918,7 @@ async def pipeline_index_files(
                 rag,
                 file_path,
                 track_id,
+                from_scan=from_scan,
             )
             if success:
                 enqueued = True
@@ -2068,6 +2081,7 @@ async def run_scanning_process(
                     rag,
                     valid_files,
                     track_id,
+                    from_scan=True,
                 )
                 if processed_files:
                     logger.info(

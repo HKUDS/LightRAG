@@ -89,6 +89,7 @@ class _FakeRag:
         docs_format=None,
         parsed_engine=None,
         process_options=None,
+        from_scan=False,
     ):
         item = {
             "input": input,
@@ -97,6 +98,7 @@ class _FakeRag:
             "docs_format": docs_format,
             "parsed_engine": parsed_engine,
             "process_options": process_options,
+            "from_scan": from_scan,
         }
         self.enqueued.append(item)
         return track_id
@@ -285,6 +287,7 @@ async def test_pipeline_enqueue_docx_plain_text_extracts_before_enqueue(
             "docs_format": None,
             "parsed_engine": "legacy",
             "process_options": None,
+            "from_scan": False,
         }
     ]
     assert not file_path.exists()
@@ -309,6 +312,7 @@ async def test_pipeline_enqueue_md_moves_after_enqueue(tmp_path, monkeypatch):
             "docs_format": None,
             "parsed_engine": "legacy",
             "process_options": None,
+            "from_scan": False,
         }
     ]
     assert not file_path.exists()
@@ -368,6 +372,7 @@ async def test_pipeline_enqueue_parser_routed_pdf_defers_without_extraction(
             "docs_format": FULL_DOCS_FORMAT_PENDING_PARSE,
             "parsed_engine": "mineru",
             "process_options": None,
+            "from_scan": False,
         }
     ]
 
@@ -395,6 +400,7 @@ async def test_pipeline_enqueue_passes_process_options_from_filename_hint(
             "docs_format": FULL_DOCS_FORMAT_PENDING_PARSE,
             "parsed_engine": "native",
             "process_options": "iet",
+            "from_scan": False,
         }
     ]
     # Native engine deferral keeps the source file in place for the parser.
@@ -526,9 +532,9 @@ async def test_scan_archives_same_batch_canonical_duplicates(tmp_path, monkeypat
     # the plain variant is the one that gets archived.
     assert len(calls) == 1
     assert calls[0]["file_paths"] == [hinted_file]
-    # The reprocess_existing_non_processed flag was removed; pipeline_index_files
-    # is now invoked without any extra kwargs.
-    assert calls[0]["kwargs"] == {}
+    # The scan-owned background task forwards from_scan=True so per-file
+    # enqueues bypass the scanning busy guard the scan itself holds.
+    assert calls[0]["kwargs"] == {"from_scan": True}
     archived_names = {
         path.name for path in (tmp_path / PARSED_DIR_NAME).iterdir() if path.is_file()
     }
@@ -567,15 +573,15 @@ async def test_scan_existing_non_processed_reprocesses_file(tmp_path, monkeypatc
     await run_scanning_process(rag, doc_manager, "track-scan")
 
     # Non-PROCESSED records are still passed through to pipeline_index_files;
-    # the now-removed reprocess_existing_non_processed flag is no longer set.
-    # Recovery of half-finished documents is performed by the pipeline's
-    # resume logic, not by re-enqueueing them here.
+    # recovery of half-finished documents is performed by the pipeline's
+    # resume logic, not by re-enqueueing them here.  The scan task forwards
+    # from_scan=True so per-file enqueues bypass the scanning busy guard.
     assert calls == [
         {
             "rag": rag,
             "file_paths": [file_path],
             "track_id": "track-scan",
-            "kwargs": {},
+            "kwargs": {"from_scan": True},
         }
     ]
     assert file_path.exists()

@@ -102,6 +102,7 @@ class _PipelineMixin:
         lightrag_document_paths: str | list[str] | None = None,
         parsed_engine: str | list[str] | None = None,
         process_options: str | list[str] | None = None,
+        from_scan: bool = False,
     ) -> str:
         """
         Pipeline for Processing Documents
@@ -123,6 +124,12 @@ class _PipelineMixin:
                 accepted as a single string broadcast to every input or as a list
                 aligned with ``input``. Stored verbatim on ``full_docs`` and
                 mirrored to ``doc_status.metadata['process_options']``.
+            from_scan: when True, the caller is the scan-owned background task
+                that already holds ``pipeline_status['scanning']``.  In that
+                case the scanning portion of the busy guard is bypassed so
+                the scan can enqueue the files it just discovered.  External
+                callers must leave this False; the busy guard still rejects
+                concurrent indexing.
 
         Returns:
             str: tracking ID for monitoring processing status
@@ -139,6 +146,10 @@ class _PipelineMixin:
         # Pipeline-busy guard: refuse to mutate doc_status / full_docs while
         # any indexing or scanning job is running.  This is the last line of
         # defence — endpoints should fail fast with 409 before getting here.
+        # The scan-owned background task sets ``scanning=True`` itself before
+        # enqueuing the files it just discovered, so it passes
+        # ``from_scan=True`` to skip the scanning check while still being
+        # blocked by an unrelated in-flight indexing job.
         pipeline_status = await get_namespace_data(
             "pipeline_status", workspace=self.workspace
         )
@@ -146,10 +157,15 @@ class _PipelineMixin:
             "pipeline_status", workspace=self.workspace
         )
         async with pipeline_status_lock:
-            if pipeline_status.get("busy") or pipeline_status.get("scanning"):
+            if pipeline_status.get("busy"):
                 raise RuntimeError(
-                    "Cannot enqueue while pipeline is busy or scanning; "
+                    "Cannot enqueue while pipeline is busy; "
                     "wait for the running job to finish before retrying."
+                )
+            if not from_scan and pipeline_status.get("scanning"):
+                raise RuntimeError(
+                    "Cannot enqueue while pipeline is scanning; "
+                    "wait for the running scan to finish before retrying."
                 )
 
         # Generate track_id if not provided

@@ -356,6 +356,75 @@ def test_apipeline_enqueue_rejects_when_pipeline_busy(tmp_path):
 
 
 @pytest.mark.offline
+def test_apipeline_enqueue_from_scan_bypasses_scanning_guard(tmp_path):
+    """The scan-owned background task sets ``scanning=True`` itself, so its
+    own enqueue calls must be allowed through.  External callers (without
+    ``from_scan=True``) remain blocked, and an in-flight indexing job
+    (``busy=True``) still rejects even scan-owned enqueues.
+    """
+
+    async def _run():
+        from lightrag.kg.shared_storage import (
+            get_namespace_data,
+            get_namespace_lock,
+        )
+
+        rag = _new_rag(tmp_path)
+        await rag.initialize_storages()
+        try:
+            pipeline_status = await get_namespace_data(
+                "pipeline_status", workspace=rag.workspace
+            )
+            pipeline_status_lock = get_namespace_lock(
+                "pipeline_status", workspace=rag.workspace
+            )
+
+            # Scan owner: scanning=True, but the call is from_scan=True so it
+            # passes the guard.  The non-scan caller is still rejected.
+            async with pipeline_status_lock:
+                pipeline_status["scanning"] = True
+            try:
+                returned_track_id = await rag.apipeline_enqueue_documents(
+                    "scan-owned content",
+                    file_paths="scan_owned.txt",
+                    track_id="track-scan-owned",
+                    from_scan=True,
+                )
+                assert returned_track_id == "track-scan-owned"
+
+                with pytest.raises(RuntimeError, match="scanning"):
+                    await rag.apipeline_enqueue_documents(
+                        "external content",
+                        file_paths="external.txt",
+                        track_id="track-external",
+                    )
+            finally:
+                async with pipeline_status_lock:
+                    pipeline_status["scanning"] = False
+
+            # busy=True must still reject even scan-owned callers, because
+            # an indexing job is in flight and concurrent doc_status writes
+            # would race.
+            async with pipeline_status_lock:
+                pipeline_status["busy"] = True
+            try:
+                with pytest.raises(RuntimeError, match="busy"):
+                    await rag.apipeline_enqueue_documents(
+                        "should not enqueue",
+                        file_paths="busy_scan.txt",
+                        track_id="track-busy-scan",
+                        from_scan=True,
+                    )
+            finally:
+                async with pipeline_status_lock:
+                    pipeline_status["busy"] = False
+        finally:
+            await rag.finalize_storages()
+
+    asyncio.run(_run())
+
+
+@pytest.mark.offline
 def test_analyze_multimodal_skips_already_analyzed_items(tmp_path):
     """Re-running analyze_multimodal must not re-analyze items that already
     carry an ``llm_analyze_result`` from a prior pass.  This makes
