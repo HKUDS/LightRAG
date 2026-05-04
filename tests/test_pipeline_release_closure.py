@@ -129,6 +129,165 @@ def test_canonicalize_parser_hinted_basename():
         canonicalize_parser_hinted_basename("name.[native].[mineru].pdf")
         == "name.[native].pdf"
     )
+    # New options-only and engine+options forms strip cleanly too.
+    assert canonicalize_parser_hinted_basename("foo.[!].docx") == "foo.docx"
+    assert canonicalize_parser_hinted_basename("foo.[native-iet].docx") == "foo.docx"
+    assert canonicalize_parser_hinted_basename("foo.[mineru-R!].pdf") == "foo.pdf"
+    # Invalid options-only hint (unknown chars) is left alone.
+    assert canonicalize_parser_hinted_basename("foo.[xyz].docx") == "foo.[xyz].docx"
+
+
+@pytest.mark.offline
+def test_filename_parser_directives_decodes_engine_and_options():
+    from lightrag.parser_routing import filename_parser_directives
+
+    assert filename_parser_directives("paper.[native-iet].docx") == ("native", "iet")
+    assert filename_parser_directives("memo.[native-R!].md") == ("native", "R!")
+    assert filename_parser_directives("report.[!].pdf") == (None, "!")
+    assert filename_parser_directives("doc.[mineru].docx") == ("mineru", "")
+    assert filename_parser_directives("foo.docx") == (None, "")
+    # Unsupported tokens leave the hint untouched and unparsed.
+    assert filename_parser_directives("foo.[draft].docx") == (None, "")
+
+
+@pytest.mark.offline
+def test_filename_hint_rejects_invalid_engine_qualified_options():
+    """Engine-qualified hints with bad option chars must fail validation
+    the same way options-only hints do, so the documented behaviour
+    "invalid characters → whole hint fails → defaults apply" holds across
+    all hint shapes (otherwise foo.[native-FR].docx would be canonicalised
+    even though its options conflict).
+    """
+    from lightrag.parser_routing import (
+        canonicalize_parser_hinted_basename,
+        filename_parser_directives,
+    )
+
+    # F+R conflict → hint dropped; engine and options are NOT applied.
+    assert filename_parser_directives("foo.[native-FR].docx") == (None, "")
+    # Unknown char Q → hint dropped; engine native is also NOT applied.
+    assert filename_parser_directives("foo.[native-Q].docx") == (None, "")
+
+    # The basename must remain unchanged so the documented "defaults apply"
+    # path in the dedup index reflects the literal file the user supplied.
+    assert (
+        canonicalize_parser_hinted_basename("foo.[native-FR].docx")
+        == "foo.[native-FR].docx"
+    )
+    assert (
+        canonicalize_parser_hinted_basename("foo.[native-Q].docx")
+        == "foo.[native-Q].docx"
+    )
+
+
+@pytest.mark.offline
+def test_parse_process_options_decodes_flags():
+    from lightrag.parser_routing import parse_process_options
+
+    opts = parse_process_options("iet")
+    assert opts.images and opts.tables and opts.equations
+    assert not opts.skip_kg
+    assert opts.chunking == "F"
+
+    opts = parse_process_options("R!")
+    assert opts.skip_kg and opts.chunking == "R"
+    assert not opts.images and not opts.tables and not opts.equations
+
+    opts = parse_process_options("S")
+    assert opts.chunking == "S"
+
+    opts = parse_process_options("")
+    assert not (opts.images or opts.tables or opts.equations or opts.skip_kg)
+    assert opts.chunking == "F"
+
+
+@pytest.mark.offline
+def test_validate_process_options_rejects_invalid_combos():
+    from lightrag.parser_routing import validate_process_options
+
+    assert validate_process_options("iet") == []
+    assert validate_process_options("R!") == []
+    # F+R conflict is reported.
+    errs = validate_process_options("FR")
+    assert any("multiple chunking modes" in m for m in errs)
+    # Lowercase chunking selectors are not valid.
+    errs = validate_process_options("f")
+    assert any("'f'" in m for m in errs)
+    # Unknown chars are reported individually.
+    errs = validate_process_options("xyz")
+    assert sum(1 for m in errs if "unsupported character" in m) == 3
+
+
+@pytest.mark.offline
+def test_lightrag_parser_rule_supports_options_suffix(monkeypatch):
+    monkeypatch.setenv("MINERU_ENDPOINT", "http://fake-mineru")
+    monkeypatch.delenv("DOCLING_ENDPOINT", raising=False)
+    # Valid options suffix passes validation.
+    validate_parser_routing_config("docx:native-iet,*:legacy")
+
+    # Invalid options suffix is rejected with the rule label and message.
+    with pytest.raises(ParserRoutingConfigError, match="multiple chunking modes"):
+        validate_parser_routing_config("docx:native-FR,*:legacy")
+
+    with pytest.raises(ParserRoutingConfigError, match="unsupported character"):
+        validate_parser_routing_config("docx:native-Q,*:legacy")
+
+
+@pytest.mark.offline
+def test_resolve_file_parser_directives_priority(monkeypatch):
+    from lightrag.parser_routing import resolve_file_parser_directives
+
+    monkeypatch.setenv("MINERU_ENDPOINT", "http://fake-mineru")
+    monkeypatch.setenv("LIGHTRAG_PARSER", "docx:native-iet,*:legacy")
+
+    # Filename hint takes precedence for engine and options.
+    engine, options = resolve_file_parser_directives("paper.[native-R!].docx")
+    assert engine == "native"
+    assert options == "R!"
+
+    # No filename hint → fall through to LIGHTRAG_PARSER defaults for both.
+    engine, options = resolve_file_parser_directives("plain.docx")
+    assert engine == "native"
+    assert options == "iet"
+
+    # Options-only hint keeps engine from rule but uses hinted options.
+    engine, options = resolve_file_parser_directives("plain.[!].docx")
+    assert engine == "native"
+    assert options == "!"
+
+
+@pytest.mark.offline
+def test_apipeline_enqueue_persists_process_options(tmp_path):
+    async def _run():
+        rag = _new_rag(tmp_path)
+        await rag.initialize_storages()
+        try:
+            await rag.apipeline_enqueue_documents(
+                "alpha body",
+                file_paths="abc.[native-R!].docx",
+                track_id="track-opts",
+                process_options="R!",
+            )
+            doc_id = compute_mdhash_id("abc.docx", prefix="doc-")
+            full_doc = await rag.full_docs.get_by_id(doc_id)
+            assert full_doc is not None
+            # full_docs preserves the user-visible name and the canonical key.
+            assert full_doc["file_path"] == "abc.[native-R!].docx"
+            assert full_doc.get("canonical_basename") == "abc.docx"
+            assert full_doc.get("process_options") == "R!"
+
+            status_doc = await rag.doc_status.get_by_id(doc_id)
+            assert status_doc is not None
+            metadata = (
+                status_doc.get("metadata")
+                if isinstance(status_doc, dict)
+                else getattr(status_doc, "metadata", {})
+            )
+            assert metadata.get("process_options") == "R!"
+        finally:
+            await rag.finalize_storages()
+
+    asyncio.run(_run())
 
 
 @pytest.mark.offline
@@ -199,6 +358,10 @@ def test_enqueue_dedupes_parser_hinted_filename_variants(tmp_path):
             first_id = compute_mdhash_id("abc.docx", prefix="doc-")
             first_doc = await rag.full_docs.get_by_id(first_id)
             assert first_doc is not None
+            # file_path keeps the user's original basename verbatim, while
+            # canonical_basename carries the dedup key.
+            assert first_doc["file_path"] == "abc.docx"
+            assert first_doc.get("canonical_basename") == "abc.docx"
 
             await rag.apipeline_enqueue_documents(
                 "changed body",
@@ -208,9 +371,12 @@ def test_enqueue_dedupes_parser_hinted_filename_variants(tmp_path):
             assert (await rag.full_docs.get_by_id(first_id))["content"] == "alpha body"
 
             failed_docs = await rag.doc_status.get_docs_by_status(DocStatus.FAILED)
+            # The duplicate record reflects the second attempt's user-visible
+            # basename (hint preserved); the canonical dedup happened against
+            # ``abc.docx`` regardless.
             assert any(
                 getattr(doc, "metadata", {}).get("duplicate_kind") == "filename"
-                and getattr(doc, "file_path", "") == "abc.docx"
+                and getattr(doc, "file_path", "") == "abc.[native].docx"
                 for doc in failed_docs.values()
             )
         finally:
@@ -238,7 +404,9 @@ def test_delete_result_preserves_parser_hinted_source_path(tmp_path):
             result = await rag.adelete_by_doc_id(doc_id)
 
             assert result.status == "success"
-            assert result.file_path == "abc.docx"
+            # ``file_path`` now preserves the parser-hint segment for UI
+            # display; canonicalisation only affects the dedup key.
+            assert result.file_path == "abc.[native].docx"
             assert result.source_path == source_path
         finally:
             await rag.finalize_storages()
@@ -495,6 +663,67 @@ def test_persist_parsed_full_docs_syncs_hash_to_doc_status(tmp_path):
             match = await rag.doc_status.get_doc_by_content_hash(expected_hash)
             assert match is not None
             assert match[0] == doc_id
+        finally:
+            await rag.finalize_storages()
+
+    asyncio.run(_run())
+
+
+@pytest.mark.offline
+def test_persist_parsed_full_docs_preserves_pending_metadata(tmp_path):
+    """``_persist_parsed_full_docs`` must keep process_options / canonical_basename
+    seeded at enqueue time so downstream stages (analyze_multimodal,
+    chunking selection, KG-skip) still see the user's original opt-ins after
+    the parse-result record overwrites the pending_parse row.
+    """
+
+    async def _run():
+        rag = _new_rag(tmp_path)
+        await rag.initialize_storages()
+        try:
+            await rag.apipeline_enqueue_documents(
+                "",
+                file_paths="report.[native-iet!].docx",
+                docs_format=FULL_DOCS_FORMAT_PENDING_PARSE,
+                parsed_engine=PARSER_ENGINE_NATIVE,
+                process_options="iet!",
+                track_id="track-merge",
+            )
+            doc_id = compute_mdhash_id("report.docx", prefix="doc-")
+
+            pre = await rag.full_docs.get_by_id(doc_id)
+            assert pre is not None
+            assert pre.get("process_options") == "iet!"
+            assert pre.get("canonical_basename") == "report.docx"
+            assert pre.get("file_path") == "report.[native-iet!].docx"
+
+            # Simulate a parse_* completion: pass only the fresh fields the
+            # parsers actually emit and verify that pre-existing metadata
+            # survives the upsert.
+            await rag._persist_parsed_full_docs(
+                doc_id,
+                {
+                    "content": "extracted body",
+                    "file_path": "report.[native-iet!].docx",
+                    "format": "raw",
+                    "parsed_engine": PARSER_ENGINE_NATIVE,
+                    "update_time": 12345,
+                },
+            )
+
+            post = await rag.full_docs.get_by_id(doc_id)
+            assert post is not None
+            # Parser-supplied fields take precedence...
+            assert post["content"] == "extracted body"
+            assert post["format"] == "raw"
+            # ...while metadata seeded at enqueue time is preserved.
+            assert post.get("process_options") == "iet!"
+            assert post.get("canonical_basename") == "report.docx"
+            assert post.get("file_path") == "report.[native-iet!].docx"
+            # And content_hash is freshly computed from the parsed body.
+            assert post["content_hash"] == compute_mdhash_id(
+                "extracted body", prefix=""
+            )
         finally:
             await rag.finalize_storages()
 
@@ -814,7 +1043,7 @@ def test_analyze_multimodal_json_retry_and_writeback(tmp_path):
             "blocks_path": str(blocks),
             "content": "body",
         }
-        await rag.analyze_multimodal("doc-1", "demo.pdf", parsed)
+        await rag.analyze_multimodal("doc-1", "demo.pdf", parsed, process_options="ite")
 
         meta = json.loads(blocks.read_text(encoding="utf-8").splitlines()[0])
         assert meta.get("analyze_time")
@@ -849,7 +1078,9 @@ def test_analyze_multimodal_uses_effective_vlm_max_async_when_role_none(tmp_path
             "blocks_path": str(blocks),
             "content": "body",
         }
-        result = await rag.analyze_multimodal("doc-1", "demo.pdf", parsed)
+        result = await rag.analyze_multimodal(
+            "doc-1", "demo.pdf", parsed, process_options="ite"
+        )
 
         meta = json.loads(blocks.read_text(encoding="utf-8").splitlines()[0])
         assert meta.get("analyze_time")
@@ -956,7 +1187,7 @@ def test_analyze_multimodal_normalizes_string_grounded_to_bool(tmp_path):
             "blocks_path": str(blocks),
             "content": "body",
         }
-        await rag.analyze_multimodal("doc-1", "demo.pdf", parsed)
+        await rag.analyze_multimodal("doc-1", "demo.pdf", parsed, process_options="ite")
 
         payload = json.loads(drawings.read_text(encoding="utf-8"))
         result = payload["drawings"]["id1"]["llm_analyze_result"]
@@ -1006,7 +1237,7 @@ def test_analyze_multimodal_without_image_uses_conservative_output(tmp_path):
             "blocks_path": str(blocks),
             "content": "body",
         }
-        await rag.analyze_multimodal("doc-1", "demo.pdf", parsed)
+        await rag.analyze_multimodal("doc-1", "demo.pdf", parsed, process_options="ite")
 
         payload = json.loads(drawings.read_text(encoding="utf-8"))
         result = payload["drawings"]["id1"]["llm_analyze_result"]
@@ -1197,7 +1428,7 @@ def test_analyze_multimodal_table_without_image_uses_textual_analysis(tmp_path):
             "blocks_path": str(blocks),
             "content": "body",
         }
-        await rag.analyze_multimodal("doc-1", "demo.pdf", parsed)
+        await rag.analyze_multimodal("doc-1", "demo.pdf", parsed, process_options="ite")
 
         payload = json.loads(tables.read_text(encoding="utf-8"))
         result = payload["tables"]["id1"]["llm_analyze_result"]

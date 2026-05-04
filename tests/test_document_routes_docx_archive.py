@@ -61,6 +61,7 @@ class _FakeRag:
         track_id=None,
         docs_format=None,
         parsed_engine=None,
+        process_options=None,
         reprocess_existing_non_processed=False,
     ):
         item = {
@@ -69,6 +70,7 @@ class _FakeRag:
             "track_id": track_id,
             "docs_format": docs_format,
             "parsed_engine": parsed_engine,
+            "process_options": process_options,
         }
         if reprocess_existing_non_processed:
             item["reprocess_existing_non_processed"] = True
@@ -145,6 +147,14 @@ class _ParseFullDocs:
         self.source_path = source_path
         self.events = []
         self.data = {}
+
+    async def get_by_id(self, doc_id):
+        # ``_persist_parsed_full_docs`` merges with the existing pending_parse
+        # record so metadata seeded at enqueue time (process_options,
+        # canonical_basename, ...) survives the parse-result overwrite. These
+        # tests only seed the row via the parser, so returning None is fine.
+        record = self.data.get(doc_id)
+        return dict(record) if record is not None else None
 
     async def upsert(self, data):
         self.events.append("upsert")
@@ -249,6 +259,7 @@ async def test_pipeline_enqueue_docx_plain_text_extracts_before_enqueue(
             "track_id": "track-docx",
             "docs_format": None,
             "parsed_engine": "legacy",
+            "process_options": None,
         }
     ]
     assert not file_path.exists()
@@ -272,6 +283,7 @@ async def test_pipeline_enqueue_md_moves_after_enqueue(tmp_path, monkeypatch):
             "track_id": "track-md",
             "docs_format": None,
             "parsed_engine": "legacy",
+            "process_options": None,
         }
     ]
     assert not file_path.exists()
@@ -330,8 +342,56 @@ async def test_pipeline_enqueue_parser_routed_pdf_defers_without_extraction(
             "track_id": "track-pdf",
             "docs_format": FULL_DOCS_FORMAT_PENDING_PARSE,
             "parsed_engine": "mineru",
+            "process_options": None,
         }
     ]
+
+
+async def test_pipeline_enqueue_passes_process_options_from_filename_hint(
+    tmp_path, monkeypatch
+):
+    """Filename hint ``[native-iet]`` flows into apipeline_enqueue_documents."""
+    monkeypatch.setenv("LIGHTRAG_PARSER", "docx:native")
+    file_path = tmp_path / "report.[native-iet].docx"
+    file_path.write_bytes(b"docx-bytes")
+    rag = _FakeRag()
+
+    success, returned_track_id = await pipeline_enqueue_file(
+        rag, file_path, "track-options"
+    )
+
+    assert success is True
+    assert returned_track_id == "track-options"
+    assert rag.enqueued == [
+        {
+            "input": "",
+            "file_path": str(file_path),
+            "track_id": "track-options",
+            "docs_format": FULL_DOCS_FORMAT_PENDING_PARSE,
+            "parsed_engine": "native",
+            "process_options": "iet",
+        }
+    ]
+    # Native engine deferral keeps the source file in place for the parser.
+    assert file_path.exists()
+
+
+async def test_pipeline_enqueue_lightrag_parser_rule_provides_default_options(
+    tmp_path, monkeypatch
+):
+    """LIGHTRAG_PARSER ``docx:native-iet`` becomes the default ``process_options``."""
+    monkeypatch.setenv("LIGHTRAG_PARSER", "docx:native-iet,*:legacy")
+    file_path = tmp_path / "rule_default.docx"
+    file_path.write_bytes(b"docx-bytes")
+    rag = _FakeRag()
+
+    success, _ = await pipeline_enqueue_file(rag, file_path, "track-rule-default")
+
+    assert success is True
+    assert len(rag.enqueued) == 1
+    enqueued = rag.enqueued[0]
+    assert enqueued["parsed_engine"] == "native"
+    assert enqueued["process_options"] == "iet"
 
 
 async def test_pipeline_index_files_leaves_lightrag_document_docx_batch(

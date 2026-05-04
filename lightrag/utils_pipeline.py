@@ -92,14 +92,35 @@ def resolve_doc_file_path(
 
 
 def document_source_key(file_path: Any) -> str:
-    """Return the filename-level key used for document uniqueness."""
+    """Return the user-visible basename for ``full_docs.file_path``.
+
+    Preserves any ``[hint]`` segment so the UI can show users their original
+    naming intent.  Use :func:`document_canonical_key` to get the canonical
+    form used for filename-based deduplication.
+    """
     source = str(file_path or "").strip()
     if source in PLACEHOLDER_DOCUMENT_SOURCES:
         return "unknown_source"
-    filename = canonicalize_parser_hinted_basename(source).strip()
-    if filename in PLACEHOLDER_DOCUMENT_SOURCES:
+    basename = Path(source).name.strip()
+    if basename in PLACEHOLDER_DOCUMENT_SOURCES:
         return "unknown_source"
-    return filename or "unknown_source"
+    return basename or "unknown_source"
+
+
+def document_canonical_key(file_path: Any) -> str:
+    """Return the canonical basename used for filename dedup / doc_id seeding.
+
+    Strips any supported ``[hint]`` segment so ``abc.docx`` and
+    ``abc.[native-iet].docx`` map to the same key.  Returns
+    ``"unknown_source"`` for placeholder sources.
+    """
+    source = str(file_path or "").strip()
+    if source in PLACEHOLDER_DOCUMENT_SOURCES:
+        return "unknown_source"
+    canonical = canonicalize_parser_hinted_basename(source).strip()
+    if canonical in PLACEHOLDER_DOCUMENT_SOURCES:
+        return "unknown_source"
+    return canonical or "unknown_source"
 
 
 def has_known_document_source(source_key: str) -> bool:
@@ -165,14 +186,14 @@ def configured_input_dir() -> Path:
 async def get_existing_doc_by_file_basename(
     doc_status: DocStatusStorage, file_path: Any
 ) -> tuple[str, Any] | None:
-    """Find an existing doc_status record by file basename.
+    """Find an existing doc_status record by canonical file basename.
 
-    Both write and lookup paths feed file_path through ``document_source_key``
-    first, so stored basenames are already canonical (parser hints stripped).
-    Storage backends therefore compare canonical-vs-canonical and do not need
-    to re-run any normalization themselves.
+    Stored ``file_path`` values keep any ``[hint]`` segment intact so the UI
+    can surface the user's original naming.  Filename-based dedup, however,
+    operates on the canonical (hint-stripped) basename so ``abc.docx`` and
+    ``abc.[native-iet].docx`` are treated as the same logical document.
     """
-    basename = document_source_key(file_path)
+    basename = document_canonical_key(file_path)
     if basename == "unknown_source":
         return None
     return await doc_status.get_doc_by_file_basename(basename)

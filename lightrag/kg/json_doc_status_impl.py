@@ -404,23 +404,33 @@ class JsonDocStatusStorage(DocStatusStorage):
     async def get_doc_by_file_basename(
         self, basename: str
     ) -> Union[tuple[str, dict[str, Any]], None]:
-        """Find an existing record whose file_path basename matches.
+        """Find an existing record whose canonical basename matches.
 
-        Compares against the stored file_path's basename so legacy records
-        that still hold a full path are matched the same way as new records
-        whose file_path is already a basename.
+        Compares against the stored ``canonical_basename`` field, falling
+        back to ``canonicalize_parser_hinted_basename(file_path)`` for
+        legacy records that pre-date the field.  Inputs are likewise
+        canonicalized so callers can pass either ``abc.docx`` or
+        ``abc.[native].docx``.
         """
         if not basename:
             return None
         if self._storage_lock is None:
             raise StorageNotInitializedError("JsonDocStatusStorage")
 
+        from lightrag.parser_routing import canonicalize_parser_hinted_basename
+
+        target = canonicalize_parser_hinted_basename(basename)
         async with self._storage_lock:
             for doc_id, doc_data in self._data.items():
-                stored_path = doc_data.get("file_path")
-                if not stored_path:
-                    continue
-                if Path(str(stored_path)).name == basename:
+                stored_canonical = doc_data.get("canonical_basename")
+                if not stored_canonical:
+                    stored_path = doc_data.get("file_path")
+                    if not stored_path:
+                        continue
+                    stored_canonical = canonicalize_parser_hinted_basename(
+                        Path(str(stored_path)).name
+                    )
+                if stored_canonical == target:
                     return doc_id, doc_data
         return None
 

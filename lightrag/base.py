@@ -806,6 +806,12 @@ class DocProcessingStatus:
     Used together with file_path basename for duplicate detection. Empty for
     pending_parse records whose content has not been extracted yet.
     """
+    canonical_basename: str | None = None
+    """Canonical (parser-hint stripped) basename used as the dedup index key.
+
+    Stored alongside the original ``file_path`` so backends can look records
+    up by ``abc.docx`` even when the user-visible name is ``abc.[native].docx``.
+    """
     """Internal field: indicates if multimodal processing is complete. Not shown in repr() but accessible for debugging."""
 
     def __post_init__(self):
@@ -917,9 +923,12 @@ class DocStatusStorage(BaseKVStorage, ABC):
     ) -> tuple[str, dict[str, Any]] | None:
         """Get document by file basename (filename without directory).
 
-        Used for filename-based deduplication. Backends that can index by
-        basename should override this for efficiency. The default implementation
-        scans all documents via get_docs_by_statuses().
+        Used for filename-based deduplication.  Comparison is performed
+        against the canonical (parser-hint stripped) basename, so callers may
+        pass either the original or the canonical form.  Backends that can
+        index by ``canonical_basename`` should override this for efficiency.
+        The default implementation scans all documents via
+        :meth:`get_docs_by_statuses`.
 
         Args:
             basename: The filename basename to search for (e.g. "report.pdf").
@@ -929,6 +938,11 @@ class DocStatusStorage(BaseKVStorage, ABC):
         """
         if not basename:
             return None
+        # Imported lazily to avoid a hard dependency at module-load time and
+        # because parser_routing already depends on lightrag.constants.
+        from lightrag.parser_routing import canonicalize_parser_hinted_basename
+
+        target = canonicalize_parser_hinted_basename(basename)
         try:
             docs = await self.get_docs_by_statuses(list(DocStatus))
         except NotImplementedError:
@@ -936,14 +950,23 @@ class DocStatusStorage(BaseKVStorage, ABC):
         except Exception:
             return None
         for doc_id, doc in docs.items():
-            existing_path = (
-                doc.get("file_path")
+            stored_canonical = (
+                doc.get("canonical_basename")
                 if isinstance(doc, dict)
-                else getattr(doc, "file_path", None)
+                else getattr(doc, "canonical_basename", None)
             )
-            if not existing_path:
-                continue
-            if Path(str(existing_path)).name == basename:
+            if not stored_canonical:
+                existing_path = (
+                    doc.get("file_path")
+                    if isinstance(doc, dict)
+                    else getattr(doc, "file_path", None)
+                )
+                if not existing_path:
+                    continue
+                stored_canonical = canonicalize_parser_hinted_basename(
+                    Path(str(existing_path)).name
+                )
+            if stored_canonical == target:
                 return doc_id, (doc if isinstance(doc, dict) else asdict(doc))
         return None
 

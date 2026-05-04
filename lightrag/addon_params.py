@@ -17,7 +17,25 @@ from __future__ import annotations
 from typing import Any, Callable, Mapping
 
 from lightrag.constants import DEFAULT_SUMMARY_LANGUAGE
-from lightrag.utils import get_env_value
+from lightrag.utils import get_env_value, logger
+
+
+# Keys that used to live in addon_params but have been superseded by
+# per-document ``process_options``.  We log once when callers still pass them
+# so existing configs surface their drift without breaking.
+_DEPRECATED_ADDON_PARAM_KEYS: tuple[str, ...] = ("enable_multimodal_pipeline",)
+_warned_deprecated_keys: set[str] = set()
+
+
+def _emit_deprecated_addon_warnings(params: Mapping[str, Any]) -> None:
+    for key in _DEPRECATED_ADDON_PARAM_KEYS:
+        if key in params and key not in _warned_deprecated_keys:
+            logger.warning(
+                f"addon_params['{key}'] is deprecated and ignored; per-document "
+                f"behaviour is now controlled by filename-hint process_options "
+                f"(see docs/FileProcessingConfiguration-zh.md)."
+            )
+            _warned_deprecated_keys.add(key)
 
 
 def default_addon_params() -> dict[str, Any]:
@@ -32,7 +50,12 @@ def normalize_addon_params(addon_params: Mapping[str, Any] | None) -> dict[str, 
     if addon_params is None:
         normalized = default_addon_params()
     elif isinstance(addon_params, Mapping):
-        normalized = dict(addon_params)
+        _emit_deprecated_addon_warnings(addon_params)
+        normalized = {
+            k: v
+            for k, v in addon_params.items()
+            if k not in _DEPRECATED_ADDON_PARAM_KEYS
+        }
     else:
         raise TypeError(
             "addon_params must be a Mapping or None, got "
