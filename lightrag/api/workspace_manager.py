@@ -4,8 +4,19 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from collections import OrderedDict
 from typing import Any, Awaitable, Callable
+
+# LIGHTRAG_WORKSPACE_CACHE_LIMIT: max number of workspace instances to cache (default: 10)
+try:
+    _WORKSPACE_CACHE_LIMIT = int(
+        os.environ.get("LIGHTRAG_WORKSPACE_CACHE_LIMIT", "10") or "10"
+    )
+    if _WORKSPACE_CACHE_LIMIT <= 0:
+        _WORKSPACE_CACHE_LIMIT = 10
+except (ValueError, TypeError):
+    _WORKSPACE_CACHE_LIMIT = 10
 
 from lightrag.api.utils import sanitize_workspace_name
 
@@ -32,7 +43,7 @@ class WorkspaceManager:
     def __init__(
         self,
         factory: Callable[[str], Awaitable[Any]],
-        max_instances: int = 10,
+        max_instances: int = _WORKSPACE_CACHE_LIMIT,
     ) -> None:
         """Initialize the WorkspaceManager.
 
