@@ -572,19 +572,69 @@ async def test_scan_existing_non_processed_reprocesses_file(tmp_path, monkeypatc
 
     await run_scanning_process(rag, doc_manager, "track-scan")
 
-    # Non-PROCESSED records are still passed through to pipeline_index_files;
-    # recovery of half-finished documents is performed by the pipeline's
-    # resume logic, not by re-enqueueing them here.  The scan task forwards
-    # from_scan=True so per-file enqueues bypass the scanning busy guard.
-    assert calls == [
-        {
-            "rag": rag,
-            "file_paths": [file_path],
-            "track_id": "track-scan",
-            "kwargs": {"from_scan": True},
-        }
-    ]
+    # Resume targets bypass pipeline_index_files entirely: routing them
+    # through apipeline_enqueue_documents would treat the same canonical
+    # basename as a duplicate (returning None), causing the source to be
+    # archived as if it were a duplicate while leaving the unfinished
+    # doc_status row untouched.  Instead, the scan kicks off
+    # apipeline_process_enqueue_documents directly so the existing PARSING
+    # row is picked up by the pipeline's resume logic, and the source file
+    # stays in place for any pending-parse engine that still needs it.
+    assert calls == []
+    assert rag.process_calls == 1
     assert file_path.exists()
+
+
+async def test_scan_mixed_new_and_resume_routes_only_new_through_enqueue(
+    tmp_path, monkeypatch
+):
+    """When a scan finds both a new file and one matching an unfinished
+    doc_status row, only the new file goes through pipeline_index_files;
+    the resume target is left for the pipeline's resume logic, which
+    pipeline_index_files's internal apipeline_process_enqueue_documents
+    triggers as part of its normal post-enqueue step.
+    """
+    new_file = tmp_path / "fresh.docx"
+    resume_file = tmp_path / "retry.docx"
+    new_file.write_bytes(b"fresh docx bytes")
+    resume_file.write_bytes(b"retry docx bytes")
+    doc_manager = DocumentManager(str(tmp_path))
+    rag = _ScanRag(
+        {
+            str(resume_file): {
+                "status": DocStatus.FAILED.value,
+                "file_path": str(resume_file),
+                "track_id": "track-existing",
+            }
+        }
+    )
+    calls = []
+
+    async def capture_pipeline(rag_arg, file_paths, track_id, **kwargs):
+        calls.append(
+            {
+                "rag": rag_arg,
+                "file_paths": file_paths,
+                "track_id": track_id,
+                "kwargs": kwargs,
+            }
+        )
+
+    monkeypatch.setattr(_document_routes, "pipeline_index_files", capture_pipeline)
+
+    await run_scanning_process(rag, doc_manager, "track-scan")
+
+    # Only the new file goes through the enqueue path; the resume file
+    # stays in input/ and relies on pipeline_index_files's internal
+    # process_enqueue (which selects by doc_status state) to resume it.
+    assert len(calls) == 1
+    assert calls[0]["file_paths"] == [new_file]
+    assert calls[0]["kwargs"] == {"from_scan": True}
+    # No explicit second process_enqueue is needed when new files were
+    # enqueued — pipeline_index_files (mocked here) owns that call.
+    assert rag.process_calls == 0
+    assert resume_file.exists()
+    assert new_file.exists()
 
 
 async def test_upload_rejects_same_name_failed_doc_status_without_full_docs(

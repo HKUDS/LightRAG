@@ -2035,9 +2035,26 @@ async def run_scanning_process(
                             f"Failed to move duplicate scan file {duplicate.name} to {PARSED_DIR_NAME}: {move_error}"
                         )
 
-            # Check for files with PROCESSED status and filter them out
-            valid_files = []
-            processed_files = []
+            # Partition unique_files into:
+            #   * processed_files — already PROCESSED, archived and skipped.
+            #   * resume_files    — same canonical basename matches an existing
+            #                       non-PROCESSED doc_status row (PARSING /
+            #                       FAILED / PROCESSING / ANALYZING / PENDING).
+            #                       These must NOT go through pipeline_enqueue_file
+            #                       because apipeline_enqueue_documents would
+            #                       treat the same canonical name as a duplicate
+            #                       (returning None) and pipeline_enqueue_file
+            #                       would then archive the source as if it were
+            #                       a duplicate — corrupting pending-parse cases
+            #                       that still need the source on disk.  The
+            #                       pipeline's resume logic, triggered via
+            #                       apipeline_process_enqueue_documents, will
+            #                       advance them based on their existing
+            #                       doc_status row.
+            #   * new_files       — no existing record; standard enqueue path.
+            new_files: list[Path] = []
+            resume_files: list[Path] = []
+            processed_files: list[str] = []
 
             for file_path in unique_files:
                 filename = file_path.name
@@ -2062,35 +2079,40 @@ async def run_scanning_process(
                         )
                 elif existing_doc_data:
                     logger.info(
-                        "Reprocessing previously unfinished file from scan: "
+                        "Resuming previously unfinished file from scan: "
                         f"{filename} (Status: {get_doc_status_value(existing_doc_data)})"
                     )
-                    valid_files.append(file_path)
+                    resume_files.append(file_path)
                 else:
-                    # File is new or in non-PROCESSED status, add to processing list
-                    valid_files.append(file_path)
+                    new_files.append(file_path)
 
-            # Process valid files (new files + non-PROCESSED status files).
-            # The previous reprocess_existing_non_processed=True flag has been
-            # removed: scan no longer overwrites in-flight or half-finished
-            # records.  Recovery of non-PROCESSED documents is handled by the
-            # pipeline's resume logic when apipeline_process_enqueue_documents
-            # picks them up.
-            if valid_files:
+            # New files take the standard enqueue + process path.  When at
+            # least one new file is successfully enqueued, pipeline_index_files
+            # internally invokes apipeline_process_enqueue_documents, which
+            # selects work by doc_status state and so will also pick up any
+            # resume_files in the same run.
+            if new_files:
                 await pipeline_index_files(
                     rag,
-                    valid_files,
+                    new_files,
                     track_id,
                     from_scan=True,
                 )
+            elif resume_files:
+                # No new enqueue happens; we must explicitly trigger the
+                # pipeline so the resume entries advance.  Without this,
+                # PARSING / FAILED rows whose only on-disk re-confirmation is
+                # this scan stay stuck until an unrelated indexing run.
+                await rag.apipeline_process_enqueue_documents()
+
+            total_active = len(new_files) + len(resume_files)
+            if total_active or processed_files:
+                summary_parts: list[str] = []
+                if total_active:
+                    summary_parts.append(f"{total_active} files Processed")
                 if processed_files:
-                    logger.info(
-                        f"Scanning process completed: {len(valid_files)} files Processed {len(processed_files)} skipped."
-                    )
-                else:
-                    logger.info(
-                        f"Scanning process completed: {len(valid_files)} files Processed."
-                    )
+                    summary_parts.append(f"{len(processed_files)} skipped")
+                logger.info(f"Scanning process completed: {' '.join(summary_parts)}.")
             else:
                 logger.info(
                     "No files to process after filtering already processed files."
