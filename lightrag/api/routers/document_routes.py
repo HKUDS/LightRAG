@@ -2098,11 +2098,16 @@ async def run_scanning_process(
                     track_id,
                     from_scan=True,
                 )
-            elif resume_files:
-                # No new enqueue happens; we must explicitly trigger the
-                # pipeline so the resume entries advance.  Without this,
-                # PARSING / FAILED rows whose only on-disk re-confirmation is
-                # this scan stay stuck until an unrelated indexing run.
+
+            # Resume targets must always trigger the pipeline explicitly:
+            # pipeline_index_files only runs apipeline_process_enqueue_documents
+            # after at least one new file successfully enqueues, so when every
+            # new file is rejected (unsupported extension, empty body, content
+            # / filename duplicate, ...) the resume rows would otherwise stay
+            # stuck until an unrelated indexing run.  When new files DID
+            # enqueue, the inner call already drained the queue and this is a
+            # cheap no-op that returns "No documents to process".
+            if resume_files:
                 await rag.apipeline_process_enqueue_documents()
 
             total_active = len(new_files) + len(resume_files)

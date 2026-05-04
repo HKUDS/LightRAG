@@ -590,9 +590,12 @@ async def test_scan_mixed_new_and_resume_routes_only_new_through_enqueue(
 ):
     """When a scan finds both a new file and one matching an unfinished
     doc_status row, only the new file goes through pipeline_index_files;
-    the resume target is left for the pipeline's resume logic, which
-    pipeline_index_files's internal apipeline_process_enqueue_documents
-    triggers as part of its normal post-enqueue step.
+    the resume target stays in place.  run_scanning_process always
+    triggers apipeline_process_enqueue_documents whenever resume targets
+    exist — even when new files were also enqueued — because
+    pipeline_index_files only runs that call after at least one new file
+    successfully enqueues.  Without the unconditional trigger, an all-
+    failed batch of new files would silently strand the resume rows.
     """
     new_file = tmp_path / "fresh.docx"
     resume_file = tmp_path / "retry.docx"
@@ -625,14 +628,62 @@ async def test_scan_mixed_new_and_resume_routes_only_new_through_enqueue(
     await run_scanning_process(rag, doc_manager, "track-scan")
 
     # Only the new file goes through the enqueue path; the resume file
-    # stays in input/ and relies on pipeline_index_files's internal
-    # process_enqueue (which selects by doc_status state) to resume it.
+    # stays in input/ for any pending-parse engine that still needs the
+    # source on disk.
     assert len(calls) == 1
     assert calls[0]["file_paths"] == [new_file]
     assert calls[0]["kwargs"] == {"from_scan": True}
-    # No explicit second process_enqueue is needed when new files were
-    # enqueued — pipeline_index_files (mocked here) owns that call.
-    assert rag.process_calls == 0
+    # The unconditional trigger fires once — guaranteeing the resume row
+    # advances even if pipeline_index_files's internal trigger were to be
+    # skipped (e.g. if every new file was rejected by enqueue).
+    assert rag.process_calls == 1
+    assert resume_file.exists()
+    assert new_file.exists()
+
+
+async def test_scan_resume_runs_when_all_new_files_fail_to_enqueue(
+    tmp_path, monkeypatch
+):
+    """The exact P2 scenario: a scan batch contains a resume target plus
+    new files that all fail / are rejected during enqueue.
+    pipeline_index_files's internal process_enqueue is gated on at least
+    one successful enqueue; without the unconditional resume trigger in
+    run_scanning_process the PARSING/FAILED row would stay stuck.
+
+    We simulate "all new files rejected" with a pipeline_index_files mock
+    that records its invocation but does not call process_enqueue (mirroring
+    the real helper's behaviour when every per-file enqueue returns False).
+    """
+    new_file = tmp_path / "fresh.docx"
+    resume_file = tmp_path / "retry.docx"
+    new_file.write_bytes(b"fresh docx bytes")
+    resume_file.write_bytes(b"retry docx bytes")
+    doc_manager = DocumentManager(str(tmp_path))
+    rag = _ScanRag(
+        {
+            str(resume_file): {
+                "status": DocStatus.PARSING.value,
+                "file_path": str(resume_file),
+                "track_id": "track-existing",
+            }
+        }
+    )
+
+    async def index_files_all_rejected(rag_arg, file_paths, track_id, **kwargs):
+        # Real pipeline_index_files skips its internal
+        # apipeline_process_enqueue_documents call when no per-file enqueue
+        # succeeded; the mock omits the call entirely to mirror that.
+        return None
+
+    monkeypatch.setattr(
+        _document_routes, "pipeline_index_files", index_files_all_rejected
+    )
+
+    await run_scanning_process(rag, doc_manager, "track-scan")
+
+    # Even though pipeline_index_files's internal trigger never fired, the
+    # scan still kicks process_enqueue once so the resume row advances.
+    assert rag.process_calls == 1
     assert resume_file.exists()
     assert new_file.exists()
 
