@@ -270,9 +270,7 @@ def test_doc_status_metadata_carry_over_helper():
             self.metadata = metadata
 
     # Carries process_options forward.
-    md = doc_status_transition_metadata(
-        _StubStatusDoc({"process_options": "iet"})
-    )
+    md = doc_status_transition_metadata(_StubStatusDoc({"process_options": "iet"}))
     assert md == {"process_options": "iet"}
 
     # Layers in transition extras while keeping the carry-over.
@@ -287,12 +285,10 @@ def test_doc_status_metadata_carry_over_helper():
     assert doc_status_transition_metadata(None) == {}
 
     # Empty / None process_options are not written as null.
-    assert doc_status_transition_metadata(
-        _StubStatusDoc({"process_options": ""})
-    ) == {}
-    assert doc_status_transition_metadata(
-        _StubStatusDoc({"process_options": None})
-    ) == {}
+    assert doc_status_transition_metadata(_StubStatusDoc({"process_options": ""})) == {}
+    assert (
+        doc_status_transition_metadata(_StubStatusDoc({"process_options": None})) == {}
+    )
 
 
 def _status_value_text(status):
@@ -325,19 +321,16 @@ def test_doc_status_metadata_survives_processed_transition(tmp_path):
             doc_id = compute_mdhash_id("metadata_carry.txt", prefix="doc-")
             pending_status = await rag.doc_status.get_by_id(doc_id)
             assert pending_status is not None
-            assert (
-                (pending_status.get("metadata") or {}).get("process_options")
-                == "iet!"
-            )
+            assert (pending_status.get("metadata") or {}).get(
+                "process_options"
+            ) == "iet!"
 
             # Run the pipeline through to PROCESSED.
             await rag.apipeline_process_enqueue_documents()
 
             final_status = await rag.doc_status.get_by_id(doc_id)
             assert final_status is not None
-            assert (
-                _status_value_text(final_status.get("status")) == "processed"
-            )
+            assert _status_value_text(final_status.get("status")) == "processed"
             metadata = final_status.get("metadata") or {}
             assert metadata.get("process_options") == "iet!", (
                 f"process_options dropped during state-machine transitions; "
