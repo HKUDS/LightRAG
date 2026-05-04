@@ -50,18 +50,10 @@ class _MiniDocStatus:
 class _MiniRag:
     """Just enough surface for parse_native + _write_lightrag_document_*."""
 
-    _archive_docx_source_after_full_docs_sync = (
-        LightRAG._archive_docx_source_after_full_docs_sync
-    )
     _persist_parsed_full_docs = LightRAG._persist_parsed_full_docs
-    _input_dir_path = LightRAG._input_dir_path
-    _parsed_dir_for_source = LightRAG._parsed_dir_for_source
-    _parsed_artifact_dir_for_source = LightRAG._parsed_artifact_dir_for_source
-    _resolve_lightrag_document_path = LightRAG._resolve_lightrag_document_path
     _write_lightrag_document_from_content_list = (
         LightRAG._write_lightrag_document_from_content_list
     )
-    _load_lightrag_document_content = LightRAG._load_lightrag_document_content
 
     def __init__(self, working_dir):
         self.working_dir = str(working_dir)

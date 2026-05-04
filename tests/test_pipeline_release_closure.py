@@ -585,6 +585,7 @@ def test_pending_parse_duplicate_hash_fails_and_archives_source(tmp_path, monkey
             from datetime import datetime, timezone
 
             import lightrag.lightrag as lightrag_module
+            import lightrag.pipeline as pipeline_module
 
             class _FrozenDateTime(datetime):
                 @classmethod
@@ -592,6 +593,7 @@ def test_pending_parse_duplicate_hash_fails_and_archives_source(tmp_path, monkey
                     return datetime(2026, 1, 1, tzinfo=tz or timezone.utc)
 
             monkeypatch.setattr(lightrag_module, "datetime", _FrozenDateTime)
+            monkeypatch.setattr(pipeline_module, "datetime", _FrozenDateTime)
 
             parse_document = __import__(
                 "lightrag.extraction.parse_document",
@@ -726,7 +728,7 @@ def test_three_phase_status_flow(tmp_path, monkeypatch):
             return parsed_data
 
         monkeypatch.setattr(rag, "_process_extract_entities", _fake_extract)
-        monkeypatch.setattr("lightrag.lightrag.merge_nodes_and_edges", _fake_merge)
+        monkeypatch.setattr("lightrag.pipeline.merge_nodes_and_edges", _fake_merge)
         monkeypatch.setattr(rag, "parse_native", _fake_parse_native)
         monkeypatch.setattr(rag, "analyze_multimodal", _fake_analyze)
 
@@ -1380,7 +1382,9 @@ def test_mm_chunks_and_modality_relations_from_sidecars(tmp_path):
                 {},
             )
         ]
-        augmented = rag._augment_chunk_results_with_mm_entities(
+        from lightrag.utils_pipeline import augment_chunk_results_with_mm_entities
+
+        augmented = augment_chunk_results_with_mm_entities(
             chunk_results=chunk_results,
             mm_specs=mm_specs,
             file_path="demo.pdf",

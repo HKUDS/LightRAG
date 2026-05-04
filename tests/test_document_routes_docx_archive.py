@@ -11,6 +11,7 @@ _original_argv = sys.argv[:]
 sys.argv = [sys.argv[0]]
 _document_routes = importlib.import_module("lightrag.api.routers.document_routes")
 _lightrag = importlib.import_module("lightrag.lightrag")
+_pipeline = importlib.import_module("lightrag.pipeline")
 _base = importlib.import_module("lightrag.base")
 _constants = importlib.import_module("lightrag.constants")
 _utils = importlib.import_module("lightrag.utils")
@@ -139,12 +140,6 @@ class _DeleteRag:
         return None
 
 
-class _ArchiveFailureRag:
-    _archive_docx_source_after_full_docs_sync = (
-        LightRAG._archive_docx_source_after_full_docs_sync
-    )
-
-
 class _ParseFullDocs:
     def __init__(self, source_path):
         self.source_path = source_path
@@ -176,14 +171,7 @@ class _ParseDocStatus:
 
 
 class _ParseRag:
-    _archive_docx_source_after_full_docs_sync = (
-        LightRAG._archive_docx_source_after_full_docs_sync
-    )
     _persist_parsed_full_docs = LightRAG._persist_parsed_full_docs
-    _input_dir_path = LightRAG._input_dir_path
-    _parsed_dir_for_source = LightRAG._parsed_dir_for_source
-    _parsed_artifact_dir_for_source = LightRAG._parsed_artifact_dir_for_source
-    _resolve_lightrag_document_path = LightRAG._resolve_lightrag_document_path
     # parse_native now delegates to the LightRAG Document writer, which the
     # tests need to exercise to validate archive + full_docs side effects.
     _write_lightrag_document_from_content_list = (
@@ -657,16 +645,20 @@ async def test_background_delete_removes_parser_hint_file_variants(tmp_path):
 async def test_docx_archive_failure_is_best_effort(tmp_path, monkeypatch):
     file_path = tmp_path / "archive-failure.docx"
     file_path.write_bytes(b"docx bytes")
-    rag = _ArchiveFailureRag()
 
     async def _raise_archive_failure(*args, **kwargs):
         raise OSError("simulated archive failure")
 
-    monkeypatch.setattr(_lightrag, "move_file_to_parsed_dir", _raise_archive_failure)
-
-    archived_path = await LightRAG._archive_docx_source_after_full_docs_sync(
-        rag, str(file_path)
+    from lightrag.utils_pipeline import (
+        archive_docx_source_after_full_docs_sync,
     )
+    import lightrag.utils_pipeline as _utils_pipeline
+
+    monkeypatch.setattr(
+        _utils_pipeline, "move_file_to_parsed_dir", _raise_archive_failure
+    )
+
+    archived_path = await archive_docx_source_after_full_docs_sync(str(file_path))
 
     assert archived_path is None
     assert file_path.exists()
@@ -715,25 +707,27 @@ async def test_parse_native_archives_docx_after_full_docs_sync(tmp_path, monkeyp
 
 
 def test_parsed_artifact_dir_uses_unique_suffix_when_path_is_file(tmp_path):
+    from lightrag.utils_pipeline import parsed_artifact_dir_for_source
+
     source_path = tmp_path / "demo.docx"
     parsed_dir = tmp_path / PARSED_DIR_NAME
     parsed_dir.mkdir()
     (parsed_dir / "demo.docx.parsed").write_text("legacy file", encoding="utf-8")
-    rag = _ParseRag(tmp_path / "work", source_path)
 
-    artifact_dir = LightRAG._parsed_artifact_dir_for_source(rag, str(source_path))
+    artifact_dir = parsed_artifact_dir_for_source(str(source_path))
 
     assert artifact_dir == parsed_dir / "demo.docx.parsed_001"
 
 
 def test_parsed_artifact_dir_reuses_existing_parsed_parent(tmp_path):
+    from lightrag.utils_pipeline import parsed_artifact_dir_for_source
+
     parsed_dir = tmp_path / PARSED_DIR_NAME
     parsed_dir.mkdir()
     source_path = parsed_dir / "demo.docx"
     source_path.write_bytes(b"docx bytes")
-    rag = _ParseRag(tmp_path / "work", source_path)
 
-    artifact_dir = LightRAG._parsed_artifact_dir_for_source(rag, str(source_path))
+    artifact_dir = parsed_artifact_dir_for_source(str(source_path))
 
     assert artifact_dir == parsed_dir / "demo.docx.parsed"
 
