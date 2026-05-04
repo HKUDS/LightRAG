@@ -1,278 +1,199 @@
-"""End-to-end document parser: .docx → _blocks.jsonl content.
+"""End-to-end document parser: .docx → LightRAG content_list.
 
 Public API:
-    parse_docx_to_jsonl(file_bytes, source_file) → str  (JSONL text)
-    parse_docx_to_blocks(file_bytes)              → list[dict]
+    parse_docx_to_lightrag_content_list(file_bytes, source_file, doc_id)
+        → (content_list, asset_blobs)  — feed into
+        ``LightRAG._write_lightrag_document_from_content_list`` to emit the
+        canonical ``.blocks.jsonl`` + ``tables.json`` + ``drawings.json``
+        + ``.blocks.assets/`` artifacts.
+    paragraphs_to_content_list(paragraphs, images, asset_dir_rel)
+        → list[dict]  — pure conversion helper (used internally and by tests).
 """
 
 from __future__ import annotations
 
 import hashlib
-import json
 import re
-import shutil
-from datetime import datetime, timezone
 from typing import Any
 
 from pathlib import Path
 
 from .docx_extractor import extract_docx_images, extract_docx_paragraphs
-from .smart_chunker import Block, smart_chunk
-from .token_estimation import estimate_tokens
 
 
 def _sha256_hex(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def _block_to_dict(block: Block, index: int) -> dict[str, Any]:
-    """Convert a Block to the _blocks.jsonl chunk dict."""
-    return {
-        "uuid": block.uuid,
-        "uuid_end": block.uuid_end,
-        "heading": block.heading,
-        "content": block.content,
-        "type": "text",
-        "parent_headings": block.parent_headings,
-        "level": block.level,
-        "table_chunk_role": block.table_chunk_role,
-        **({"table_header": block.table_header} if block.table_header else {}),
-    }
+# ─────────────────────────────────────────────────────────────────────
+# LightRAG Document content_list builders
+#
+# These build the same ``content_list`` schema that the mineru/docling
+# bindings emit, so the native docx parser can hand off to
+# ``LightRAG._write_lightrag_document_from_content_list`` and produce
+# the standard ``.blocks.jsonl`` + ``tables.json`` + ``drawings.json``
+# + ``.blocks.assets/`` artifacts.
+# ─────────────────────────────────────────────────────────────────────
+
+# Inline tags emitted into paragraph text by ``docx_extractor``:
+#   - ``<drawing id="N" name="..." />`` for each picture
+#   - ``<equation>...</equation>`` for OMML formulas
+_INLINE_DRAWING_OR_EQUATION = re.compile(
+    r'<drawing\s+id="(?P<dr_id>[^"]*)"\s+name="(?P<dr_name>[^"]*)"\s*/>'
+    r"|<equation>(?P<eq>.*?)</equation>"
+)
 
 
-def _build_meta(source_file: str, source_hash: str) -> dict[str, Any]:
-    """Build the meta line for _blocks.jsonl."""
-    return {
-        "type": "meta",
-        "source_file": source_file,
-        "source_hash": f"sha256:{source_hash}",
-        "parsed_at": datetime.now().isoformat(),
-    }
+def _split_inline_paragraph(
+    text: str,
+    drawing_rids: list[str],
+    images: dict[str, tuple[str, bytes]],
+    asset_dir_rel: str,
+) -> list[dict[str, Any]]:
+    """Split a body paragraph into ordered text/image/equation items.
 
-
-# ── Public API ───────────────────────────────────────────────────────
-def parse_docx_to_blocks(file_bytes: bytes) -> list[dict[str, Any]]:
-    """Parse .docx bytes into a list of block dicts (without meta line).
-
-    Each dict matches the _blocks.jsonl chunk schema.
+    ``drawing_rids`` is consumed in document order — ``<drawing>`` tag #i
+    inside the paragraph maps to ``drawing_rids[i]``.
     """
-    paragraphs = extract_docx_paragraphs(file_bytes)
-    blocks = smart_chunk(paragraphs)
-    return [_block_to_dict(b, i) for i, b in enumerate(blocks)]
+    items: list[dict[str, Any]] = []
+    last_end = 0
+    drawing_idx = 0
+    for m in _INLINE_DRAWING_OR_EQUATION.finditer(text):
+        before = text[last_end : m.start()].strip()
+        if before:
+            items.append({"type": "text", "text": before})
+        if m.group("dr_id") is not None:
+            dr_id = m.group("dr_id") or ""
+            dr_name = m.group("dr_name") or ""
+            rid = drawing_rids[drawing_idx] if drawing_idx < len(drawing_rids) else ""
+            drawing_idx += 1
+            img_info = images.get(rid)
+            if img_info is not None:
+                filename, _ = img_info
+                items.append(
+                    {
+                        "type": "image",
+                        "id": dr_id,
+                        "img_path": (
+                            f"{asset_dir_rel}/{filename}" if asset_dir_rel else filename
+                        ),
+                        "image_caption": [dr_name] if dr_name else [],
+                    }
+                )
+        elif m.group("eq") is not None:
+            eq_text = (m.group("eq") or "").strip()
+            if eq_text:
+                items.append({"type": "equation", "text": eq_text})
+        last_end = m.end()
+    trailing = text[last_end:].strip()
+    if trailing:
+        items.append({"type": "text", "text": trailing})
+    if not items and text and text.strip():
+        items.append({"type": "text", "text": text.strip()})
+    return items
 
 
-def parse_docx_to_jsonl(
-    file_bytes: bytes,
-    source_file: str = "document.docx",
-) -> str:
-    """Parse .docx bytes into a complete JSONL string (meta + chunks).
+def paragraphs_to_content_list(
+    paragraphs: list,
+    images: dict[str, tuple[str, bytes]],
+    asset_dir_rel: str,
+) -> list[dict[str, Any]]:
+    """Convert docx paragraphs (+ extracted images) into a mineru-style content_list.
 
-    The returned string can be:
-    - Written directly to a .jsonl file
-    - Fed into LightRAG interchange format consumer
+    Mapping rules:
+      * ``outline_level <= 8``  → ``section_header`` (heading text);
+        ``_write_lightrag_document_from_content_list`` will manage
+        the heading stack and emit ``parent_headings`` automatically.
+      * ``is_table`` w/ ``table_json``  → ``table`` item with parsed rows.
+      * Body paragraph text containing ``<drawing>`` / ``<equation>`` tags
+        is split in document order so picture and formula items appear
+        between the surrounding text fragments (preserving reading order).
+      * Empty / whitespace-only paragraphs are skipped.
     """
-    source_hash = _sha256_hex(file_bytes)
-    meta = _build_meta(source_file, source_hash)
+    content_list: list[dict[str, Any]] = []
+    for para in paragraphs:
+        if getattr(para, "is_table", False) and getattr(para, "table_json", None):
+            rows = para.table_json or []
+            content_list.append(
+                {
+                    "type": "table",
+                    "rows": rows,
+                    "table_caption": [],
+                    "num_rows": len(rows),
+                    "num_cols": max((len(r) for r in rows), default=0),
+                }
+            )
+            continue
 
-    paragraphs = extract_docx_paragraphs(file_bytes)
-    blocks = smart_chunk(paragraphs)
+        text = (getattr(para, "text", "") or "").strip()
+        if not text:
+            continue
 
-    lines: list[str] = [json.dumps(meta, ensure_ascii=False)]
-    for i, block in enumerate(blocks):
-        chunk_dict = _block_to_dict(block, i)
-        lines.append(json.dumps(chunk_dict, ensure_ascii=False))
+        # Note: don't use ``or 9`` here — outline_level==0 (top heading) is
+        # falsy in Python and would be silently demoted to body level.
+        raw_level = getattr(para, "outline_level", 9)
+        outline_level = int(9 if raw_level is None else raw_level)
+        if outline_level <= 8:
+            content_list.append(
+                {
+                    "type": "section_header",
+                    "text": text,
+                    # docx outline_level is 0-based (0 = top heading).
+                    # content_list ``text_level`` is 1-based.
+                    "text_level": outline_level + 1,
+                }
+            )
+            continue
 
-    return "\n".join(lines)
+        drawing_rids = list(getattr(para, "drawing_rIds", []) or [])
+        items = _split_inline_paragraph(text, drawing_rids, images, asset_dir_rel)
+        content_list.extend(items)
+
+    return content_list
 
 
-def parse_docx_to_interchange_jsonl(
+def parse_docx_to_lightrag_content_list(
     file_bytes: bytes,
     source_file: str = "document.docx",
     doc_id: str = "",
-    output_dir: str | None = None,
-) -> str:
-    """Parse .docx into LightRAG 2.0 interchange format JSONL.
+) -> tuple[list[dict[str, Any]], dict[str, bytes]]:
+    """Parse a .docx into a LightRAG-style content_list plus its asset blobs.
 
-    Compatible with extraction_interchange.py consumer.
-    Adds chunk_id, chunk_order_index, tokens, content_type fields.
-    When output_dir is provided, embedded images are extracted to an assets subdirectory.
+    Returns:
+        ``(content_list, asset_filename_to_bytes)``. The caller is responsible
+        for writing the asset bytes into the parsed-artifact directory's
+        ``<base>.blocks.assets/`` folder, and for handing the content_list
+        to ``LightRAG._write_lightrag_document_from_content_list`` which
+        produces the canonical ``.blocks.jsonl`` + sidecar files.
+
+    Asset directory naming matches the convention used by
+    ``_write_lightrag_document_from_content_list``: ``<source-stem>.blocks.assets``.
     """
     source_hash = _sha256_hex(file_bytes)
-
     images = extract_docx_images(file_bytes)
-    has_images = bool(images)
-
-    capabilities = ["t"]
-    if has_images:
-        capabilities.append("i")
-
-    asset_dir_created = False
-    if output_dir:
-        output_path = Path(output_dir)
-        try:
-            if output_path.exists():
-                shutil.rmtree(output_path)
-            output_path.mkdir(parents=True, exist_ok=True)
-            if images:
-                asset_base = Path(source_file).stem or (
-                    doc_id.strip()
-                    if doc_id and doc_id.strip()
-                    else f"doc-{source_hash[:12]}"
-                )
-                assets_dir = output_path / f"{asset_base}.blocks.assets"
-                assets_dir.mkdir(parents=True, exist_ok=True)
-                for _rel_id, (filename, blob) in images.items():
-                    (assets_dir / filename).write_bytes(blob)
-                asset_dir_created = True
-        except Exception:
-            pass
-
-    meta = {
-        "type": "meta",
-        "format_version": "2.0",
-        "source_file": source_file,
-        "source_hash": f"sha256:{source_hash}",
-        "doc_id": doc_id,
-        "engine": "default",
-        "engine_capabilities": capabilities,
-        "chunking_method": "heading_semantic",
-        "parsed_at": datetime.now(timezone.utc).isoformat(),
-        "asset_dir": asset_dir_created,
-    }
-
     paragraphs = extract_docx_paragraphs(file_bytes)
-    blocks = smart_chunk(paragraphs)
 
-    meta["total_chunks"] = len(blocks)
-    chunk_id_prefix = (
-        doc_id.strip()
-        if isinstance(doc_id, str) and doc_id.strip()
-        else f"doc-{source_hash[:12]}"
-    )
-
-    lines: list[str] = [json.dumps(meta, ensure_ascii=False)]
-    table_group_ids: dict[str, str] = {}
-
-    for i, block in enumerate(blocks):
-        content = block.content
-        is_table_block = block.table_chunk_role != "none" or (
-            content.startswith("<table>") and content.endswith("</table>")
+    base_stem = Path(source_file).stem if source_file else ""
+    if not base_stem:
+        base_stem = (
+            doc_id.strip()
+            if isinstance(doc_id, str) and doc_id.strip()
+            else f"doc-{source_hash[:12]}"
         )
+    asset_dir_rel = f"{base_stem}.blocks.assets"
 
-        table_fragment_num = None
-        table_meta = None
-        content_md = None
+    content_list = paragraphs_to_content_list(paragraphs, images, asset_dir_rel)
 
-        if is_table_block:
-            rows = _extract_table_rows_from_content(content)
-            content_md = _table_rows_to_markdown(rows) if rows is not None else None
+    referenced: set[str] = set()
+    for item in content_list:
+        if item.get("type") == "image":
+            img_path = str(item.get("img_path") or "")
+            if img_path:
+                referenced.add(Path(img_path).name)
 
-            # For fragmented tables, try to keep one ID shared across fragments
-            heading_base = re.sub(r"\s*\[表格片段\d+\]\s*$", "", block.heading or "")
-            group_key = f"{block.uuid}|{heading_base}|{'/'.join(block.parent_headings)}"
-            if group_key not in table_group_ids:
-                table_group_ids[group_key] = _make_table_id(group_key, source_hash, i)
-            table_id = table_group_ids[group_key]
+    asset_blobs: dict[str, bytes] = {}
+    for filename, blob in images.values():
+        if filename in referenced and filename not in asset_blobs:
+            asset_blobs[filename] = blob
 
-            if block.table_chunk_role in {"first", "middle", "last"}:
-                table_fragment_num = _extract_fragment_num(block.heading)
-            else:
-                table_fragment_num = None
-
-            num_rows = len(rows) - 1 if rows else 0
-            num_cols = len(rows[0]) if rows and rows[0] else 0
-            has_header = bool(block.table_header)
-
-            table_meta = {
-                "table_id": table_id,
-                "table_title": heading_base,
-                "format": "json",
-                "num_rows": max(num_rows, 0),
-                "num_cols": max(num_cols, 0),
-                "has_header": has_header,
-                "table_header": block.table_header or [],
-                "summary": "",
-            }
-
-        positions = []
-        if block.uuid or block.uuid_end:
-            positions.append(
-                {
-                    "type": "paraid",
-                    "anchor": "",
-                    "range": [block.uuid or "", block.uuid_end or block.uuid or ""],
-                    "charspan": [],
-                }
-            )
-
-        chunk = {
-            "type": "text",
-            "chunk_id": f"{chunk_id_prefix}-chunk-{i:03d}",
-            "chunk_order_index": i,
-            "content": content,
-            "content_md": content_md,
-            "tokens": estimate_tokens(content),
-            "heading": block.heading,
-            "parent_headings": block.parent_headings,
-            "level": block.level,
-            "content_type": "table" if is_table_block else "body",
-            "uuid": block.uuid,
-            "uuid_end": block.uuid_end,
-            "positions": positions,
-            "table_chunk_role": block.table_chunk_role,
-            "table_fragment_num": table_fragment_num,
-            "table_meta": table_meta,
-        }
-        if block.table_header:
-            chunk["table_header"] = block.table_header
-
-        lines.append(json.dumps(chunk, ensure_ascii=False))
-
-    return "\n".join(lines)
-
-
-def _extract_table_rows_from_content(content: str) -> list[list[str]] | None:
-    if not (content.startswith("<table>") and content.endswith("</table>")):
-        return None
-    raw = content[7:-8]
-    try:
-        rows = json.loads(raw)
-        if isinstance(rows, list):
-            return rows
-    except Exception:
-        return None
-    return None
-
-
-def _table_rows_to_markdown(rows: list[list[str]] | None) -> str | None:
-    if not rows or not rows[0]:
-        return None
-    header = [str(x) for x in rows[0]]
-    body = rows[1:] if len(rows) > 1 else []
-    md_lines = [
-        "| " + " | ".join(header) + " |",
-        "| " + " | ".join(["---"] * len(header)) + " |",
-    ]
-    for r in body:
-        cells = [str(x) for x in r]
-        if len(cells) < len(header):
-            cells.extend([""] * (len(header) - len(cells)))
-        md_lines.append("| " + " | ".join(cells[: len(header)]) + " |")
-    return "\n".join(md_lines)
-
-
-def _make_table_id(group_key: str, source_hash: str, idx: int) -> str:
-    digest = hashlib.sha256(
-        f"{group_key}|{source_hash}|{idx}".encode("utf-8")
-    ).hexdigest()
-    return f"tb-{digest[:8].upper()}"
-
-
-def _extract_fragment_num(heading: str) -> int | None:
-    m = re.search(r"\[表格片段(\d+)\]\s*$", heading or "")
-    if not m:
-        return None
-    try:
-        return int(m.group(1))
-    except Exception:
-        return None
+    return content_list, asset_blobs

@@ -75,7 +75,6 @@ from lightrag.constants import (
     FULL_DOCS_FORMAT_RAW,
     FULL_DOCS_FORMAT_LIGHTRAG,
     FULL_DOCS_FORMAT_PENDING_PARSE,
-    FULL_DOCS_CONTENT_STORED_IN_LIGHTRAG_DOCUMENT,
     PARSED_DIR_NAME,
     DEFAULT_MAX_PARALLEL_ANALYZE,
     DEFAULT_FILE_PATH_MORE_PLACEHOLDER,
@@ -133,6 +132,7 @@ from lightrag.utils import (
     lazy_external_import,
     priority_limit_async_func_call,
     get_content_summary,
+    make_lightrag_doc_content,
     sanitize_text_for_encoding,
     check_storage_env_vars,
     generate_track_id,
@@ -2686,9 +2686,28 @@ class LightRAG:
                 lightrag_path = (
                     lightrag_document_paths[i] if lightrag_document_paths else ""
                 ) or path
+                # Per docs/FileProcessingConfiguration-zh.md, full_docs.content
+                # for format=lightrag must be "{{LRdoc}}" + a leading summary.
+                # Read the blocks file and derive the summary; if the file is
+                # not yet readable (rare, e.g. mid-rotation), fall back to an
+                # empty summary so enqueue is never blocked by I/O issues.
+                try:
+                    resolved_path = str(
+                        Path(self._resolve_lightrag_document_path(str(lightrag_path)))
+                    )
+                    merged_text, _ = await self._load_lightrag_document_content(
+                        resolved_path
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        f"[apipeline_enqueue] failed to load LightRAG Document "
+                        f"for summary ({lightrag_path}): {exc}"
+                    )
+                    merged_text = ""
+                summary_content = make_lightrag_doc_content(merged_text)
                 _add_content(
                     i,
-                    FULL_DOCS_CONTENT_STORED_IN_LIGHTRAG_DOCUMENT,
+                    summary_content,
                     FULL_DOCS_FORMAT_LIGHTRAG,
                     lightrag_document_path=lightrag_path,
                 )
@@ -3278,6 +3297,26 @@ class LightRAG:
                 pipeline_status["latest_message"] = log_message
                 pipeline_status["history_messages"].append(log_message)
 
+                # Three cascading layers of queues:
+                # Layer 1: Content Parsing - parse_native/parse_mineru/parse_docling
+                # Layer 2: Multimoldal Ananlyze - analyze_multimodal
+                # Layer 3: Entity and Relation Extraction - process_document
+
+                # Content Parsing Queues
+                q_native: asyncio.Queue = asyncio.Queue(maxsize=self.queue_size_default)
+                q_mineru: asyncio.Queue = asyncio.Queue(maxsize=self.queue_size_default)
+                q_docling: asyncio.Queue = asyncio.Queue(
+                    maxsize=self.queue_size_default
+                )
+                # Multimoldal Anlyaze Queue
+                q_analyze: asyncio.Queue = asyncio.Queue(
+                    maxsize=self.queue_size_default
+                )
+                # Entity and Relation Extraction Queue
+                q_process: asyncio.Queue = asyncio.Queue(maxsize=self.queue_size_insert)
+
+                workers: list[asyncio.Task] = []
+
                 # Get first document's file path and total count for job name
                 first_doc_id, first_doc = next(iter(to_process_docs.items()))
                 first_doc_path = first_doc.file_path
@@ -3399,7 +3438,7 @@ class LightRAG:
                                         f"Document content not found in full_docs for doc_id: {doc_id}"
                                     )
 
-                                parse_engine = self._resolve_parser_engine(
+                                parse_engine = resolve_stored_document_parser_engine(
                                     file_path=file_path, content_data=content_data
                                 )
                                 if parse_engine == "mineru":
@@ -3908,20 +3947,6 @@ class LightRAG:
                                     }
                                 )
 
-                # Three-stage worker queues:
-                # parse_native/mineru/docling -> analyze_multimodal -> process_document
-                q_native: asyncio.Queue = asyncio.Queue(maxsize=self.queue_size_default)
-                q_mineru: asyncio.Queue = asyncio.Queue(maxsize=self.queue_size_default)
-                q_docling: asyncio.Queue = asyncio.Queue(
-                    maxsize=self.queue_size_default
-                )
-                q_analyze: asyncio.Queue = asyncio.Queue(
-                    maxsize=self.queue_size_default
-                )
-                q_process: asyncio.Queue = asyncio.Queue(maxsize=self.queue_size_insert)
-
-                workers: list[asyncio.Task] = []
-
                 async def parse_worker(engine: str, in_q: asyncio.Queue):
                     while True:
                         item = await in_q.get()
@@ -4073,6 +4098,7 @@ class LightRAG:
                         finally:
                             q_process.task_done()
 
+                # Create workers for each queue of pipeline layer
                 for _ in range(max(1, self.max_parallel_parse_native)):
                     workers.append(
                         asyncio.create_task(parse_worker("native", q_native))
@@ -4090,9 +4116,10 @@ class LightRAG:
                 for _ in range(max(1, self.max_parallel_insert)):
                     workers.append(asyncio.create_task(process_worker()))
 
+                # Add pending files to the correct parsing queue
                 for doc_id, status_doc in to_process_docs.items():
                     content_data = await self.full_docs.get_by_id(doc_id) or {}
-                    engine = self._resolve_parser_engine(
+                    engine = resolve_stored_document_parser_engine(
                         file_path=getattr(status_doc, "file_path", "unknown_source"),
                         content_data=content_data,
                     )
@@ -4545,11 +4572,6 @@ class LightRAG:
                     merged_parts.append(content)
 
         return "\n\n".join(merged_parts), str(blocks_path)
-
-    def _resolve_parser_engine(
-        self, file_path: str, content_data: dict[str, Any]
-    ) -> str:
-        return resolve_stored_document_parser_engine(file_path, content_data)
 
     def _get_by_path(self, payload: Any, path: str) -> Any:
         if not path:
@@ -5305,7 +5327,7 @@ class LightRAG:
         await self._persist_parsed_full_docs(
             doc_id,
             {
-                "content": FULL_DOCS_CONTENT_STORED_IN_LIGHTRAG_DOCUMENT,
+                "content": make_lightrag_doc_content(merged_text),
                 "file_path": file_path,
                 "format": FULL_DOCS_FORMAT_LIGHTRAG,
                 "lightrag_document_path": stored_blocks_path,
@@ -5369,45 +5391,60 @@ class LightRAG:
             p = Path(source_path)
             if p.exists() and p.is_file() and p.suffix.lower() == ".docx":
                 from lightrag.extraction.parse_document import (
-                    parse_docx_to_interchange_jsonl,
+                    parse_docx_to_lightrag_content_list,
                 )
 
                 file_bytes = await asyncio.to_thread(p.read_bytes)
-                parsed_dir = self._parsed_artifact_dir_for_source(str(p), file_path)
-                output_dir = str(parsed_dir)
-                interchange_text = await asyncio.to_thread(
-                    parse_docx_to_interchange_jsonl,
-                    file_bytes,
-                    p.name,
-                    doc_id,
-                    output_dir,
+                # Use the canonical (hint-stripped) basename so the image
+                # asset path embedded in content_list matches the directory
+                # _write_lightrag_document_from_content_list will create
+                # below (it also calls canonicalize_parser_hinted_basename).
+                canonical_basename = (
+                    canonicalize_parser_hinted_basename(file_path) or p.name
                 )
-                if not interchange_text or not interchange_text.strip():
+                content_list, asset_blobs = await asyncio.to_thread(
+                    parse_docx_to_lightrag_content_list,
+                    file_bytes,
+                    canonical_basename,
+                    doc_id,
+                )
+                if not content_list:
                     raise ValueError(
                         f"DOCX parser returned empty content for {file_path}"
                     )
 
-                await self._persist_parsed_full_docs(
-                    doc_id,
-                    {
-                        "content": interchange_text,
-                        "file_path": file_path,
-                        "format": FULL_DOCS_FORMAT_RAW,
-                        "parsed_engine": PARSER_ENGINE_NATIVE,
-                        "update_time": int(time.time()),
-                    },
+                # Reuse the shared writer that mineru/docling already use.
+                # It produces .blocks.jsonl + sidecar JSONs, persists
+                # full_docs as LIGHTRAG format, and archives the source.
+                # NOTE: this writer wipes parsed_dir at the start, so any
+                # image bytes must be written AFTER it returns.
+                parsed_data = await self._write_lightrag_document_from_content_list(
+                    doc_id=doc_id,
+                    file_path=file_path,
+                    content_list=content_list,
+                    engine=PARSER_ENGINE_NATIVE,
+                    source_path=str(p),
                 )
-                await self._archive_docx_source_after_full_docs_sync(str(p))
+
+                # Now drop image assets into <parsed_dir>/<base>.blocks.assets/
+                # so the drawing items' img_path resolve correctly.
+                if asset_blobs:
+                    parsed_dir = self._parsed_artifact_dir_for_source(str(p), file_path)
+                    base_stem = (
+                        Path(
+                            canonicalize_parser_hinted_basename(file_path) or p.name
+                        ).stem
+                        or doc_id
+                    )
+                    asset_dir = parsed_dir / f"{base_stem}.blocks.assets"
+                    asset_dir.mkdir(parents=True, exist_ok=True)
+                    for filename, blob in asset_blobs.items():
+                        (asset_dir / filename).write_bytes(blob)
                 logger.info(
-                    f"[parse_native] pending_parse completed for {file_path} via interchange JSONL"
+                    f"[parse_native] pending_parse completed for {file_path} "
+                    f"via LightRAG Document ({len(content_list)} content_list items)"
                 )
-                return {
-                    "doc_id": doc_id,
-                    "file_path": file_path,
-                    "format": FULL_DOCS_FORMAT_RAW,
-                    "content": interchange_text,
-                    "blocks_path": "",
-                }
+                return parsed_data
             raise ValueError(
                 f"Native parser does not support pending file: {file_path}"
             )

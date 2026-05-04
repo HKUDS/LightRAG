@@ -634,11 +634,22 @@ def _stage_e_extraction_safety_split(blocks: list[Block]) -> list[Block]:
 
 
 # ── Public API ───────────────────────────────────────────────────────
-def smart_chunk(paragraphs: list[Paragraph]) -> list[Block]:
-    """Run the full smart chunking pipeline."""
+def smart_chunk(
+    paragraphs: list[Paragraph], *, skip_merge: bool = False
+) -> list[Block]:
+    """Run the full smart chunking pipeline.
+
+    When ``skip_merge`` is True, stage D (small-block merge + tail absorption)
+    is skipped. Use this from callers that hand the resulting blocks to a
+    downstream chunker (e.g. ``chunking_func`` after LightRAG Document load) —
+    a second merge round there would be redundant, and stage D's
+    ``[续N]`` heading mutation is what historically broke the interchange
+    parser's ``[表格片段N]`` anchor.
+    """
     blocks = _stage_a_heading_split(paragraphs)
     blocks = _stage_b_table_slice(blocks)
     blocks = _stage_c_anchor_split(blocks)
-    blocks = _stage_d_merge(blocks)
+    if not skip_merge:
+        blocks = _stage_d_merge(blocks)
     blocks = _stage_e_extraction_safety_split(blocks)
     return blocks

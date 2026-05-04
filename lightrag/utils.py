@@ -2497,6 +2497,20 @@ def get_content_summary(content: str, max_length: int = 250) -> str:
     return content[:max_length] + "..."
 
 
+def make_lightrag_doc_content(merged_text: str, max_length: int = 250) -> str:
+    """Build the ``full_docs.content`` value for ``format=lightrag`` records.
+
+    The result has shape ``"{{LRdoc}}<summary>"`` where ``<summary>`` is the
+    same leading-text snippet that paginated APIs return in
+    ``content_summary`` (see ``get_content_summary``). This keeps the
+    behaviour mandated by ``docs/FileProcessingConfiguration-zh.md``.
+    """
+    from lightrag.constants import LIGHTRAG_DOC_CONTENT_PREFIX
+
+    summary = get_content_summary(merged_text or "", max_length=max_length)
+    return f"{LIGHTRAG_DOC_CONTENT_PREFIX}{summary}"
+
+
 def sanitize_and_normalize_extracted_text(
     input_text: str, remove_inner_quotes=False
 ) -> str:
