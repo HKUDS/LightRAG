@@ -63,6 +63,7 @@ from lightrag.utils_pipeline import (
     archive_source_after_full_docs_sync,
     augment_chunk_results_with_mm_entities,
     chunk_fields_from_status_doc,
+    chunk_lightrag_blocks_by_heading,
     compute_file_content_hash,
     compute_text_content_hash,
     doc_status_field,
@@ -1255,6 +1256,9 @@ class _PipelineMixin:
                             parsed_interchange = parse_interchange_jsonl(
                                 content, self.tokenizer
                             )
+                            structured_blocks_path = str(
+                                parsed_data.get("blocks_path") or ""
+                            ).strip()
                             if parsed_interchange is not None:
                                 interchange_meta, interchange_chunks = (
                                     parsed_interchange
@@ -1273,21 +1277,77 @@ class _PipelineMixin:
                                         "chunking_method"
                                     ),
                                 }
+                            elif (
+                                doc_process_opts.chunking == "S"
+                                and structured_blocks_path
+                            ):
+                                # ``S`` mode against the native / mineru / docling
+                                # structured-output path: chunk by heading
+                                # boundaries straight from the ``*.blocks.jsonl``
+                                # file produced by the parser.  ``content`` here is
+                                # the merged-text view of those blocks (joined
+                                # with blank lines), which has lost the heading
+                                # metadata; the blocks file still has it.
+                                heading_chunks = chunk_lightrag_blocks_by_heading(
+                                    structured_blocks_path,
+                                    self.tokenizer,
+                                    doc_id=doc_id,
+                                    max_tokens=self.chunk_token_size,
+                                    overlap_tokens=self.chunk_overlap_token_size,
+                                )
+                                if heading_chunks:
+                                    logger.info(
+                                        f"[chunking] heading-driven chunking for "
+                                        f"d-id: {doc_id}: {len(heading_chunks)} "
+                                        f"chunks from {structured_blocks_path}"
+                                    )
+                                    chunking_result = heading_chunks
+                                    extraction_meta = {
+                                        "extraction_format": "heading_driven",
+                                        "engine": (content_data or {}).get(
+                                            "parsed_engine", "native"
+                                        ),
+                                        "chunking_method": "heading_driven",
+                                    }
+                                else:
+                                    logger.warning(
+                                        f"[chunking] process_options chunking='S' "
+                                        f"requested for d-id: {doc_id}, file: "
+                                        f"{file_path}, but {structured_blocks_path!r} "
+                                        f"yielded no heading-driven chunks; falling "
+                                        f"back to fixed chunking ('F')."
+                                    )
+                                    chunking_result = self.chunking_func(
+                                        self.tokenizer,
+                                        content,
+                                        split_by_character,
+                                        split_by_character_only,
+                                        self.chunk_overlap_token_size,
+                                        self.chunk_token_size,
+                                    )
+                                    if inspect.isawaitable(chunking_result):
+                                        chunking_result = await chunking_result
+                                    extraction_meta = {
+                                        "extraction_format": "plain_text_chunking",
+                                        "engine": "legacy",
+                                        "chunking_method": "fixed_token_fallback",
+                                    }
                             else:
                                 # Per-document chunking strategy:
                                 #  - 'F' (default): use the configured chunking_func
                                 #    (chunking_by_token_size).
-                                #  - 'S' / 'R': require structured input which the
-                                #    legacy text path cannot provide; fall back to
-                                #    'F' and log a warning so the user knows their
-                                #    selection had no effect for this document.
+                                #  - 'S' without a structured blocks file (e.g.
+                                #    legacy text path): cannot honour heading
+                                #    chunking; fall back to 'F' and warn.
+                                #  - 'R': recursive semantic chunking is not yet
+                                #    implemented; fall back to 'F' and warn.
                                 if doc_process_opts.chunking != "F":
                                     logger.warning(
                                         f"[chunking] process_options chunking="
                                         f"{doc_process_opts.chunking!r} requested for d-id: "
                                         f"{doc_id}, file: {file_path}, but no structured "
-                                        f"interchange output is available; falling back to "
-                                        f"fixed chunking ('F')."
+                                        f"interchange / blocks output is available; "
+                                        f"falling back to fixed chunking ('F')."
                                     )
                                 # Call chunking function, supporting both sync and async implementations
                                 chunking_result = self.chunking_func(

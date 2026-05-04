@@ -330,6 +330,187 @@ async def archive_source_after_full_docs_sync(source_path: str) -> str | None:
 # ---------------------------------------------------------------------------
 
 
+def chunk_lightrag_blocks_by_heading(
+    blocks_path: str,
+    tokenizer: Any,
+    *,
+    doc_id: str,
+    max_tokens: int,
+    overlap_tokens: int = 100,
+) -> list[dict[str, Any]]:
+    """Heading-driven chunking over a LightRAG Document ``*.blocks.jsonl`` file.
+
+    Implements the documented ``S`` chunking mode for the native / mineru /
+    docling structured-output path: groups consecutive content blocks under
+    the same ``heading`` (and ancestor ``parent_headings``) into a chunk,
+    using the heading boundary as a hard split point.  Heading lines are
+    inserted as a "Heading: <title>" preface inside each chunk so retrieval
+    contexts stay self-describing.
+
+    Within a single heading group, the accumulated text may still exceed
+    ``max_tokens``; in that case the group is split into multiple chunks
+    along block boundaries (each block is the smallest atomic unit) with
+    ``overlap_tokens`` of overlap.  Splits never cross into a different
+    heading group.
+
+    Each output chunk is a dict ready for downstream consumption (matches
+    the shape produced by ``parse_interchange_jsonl``):
+
+        {
+            "chunk_id": "...",
+            "chunk_order_index": int,
+            "content": str,
+            "content_type": "body",
+            "tokens": int,
+            "table_chunk_role": "none",
+            "heading": str,
+            "parent_headings": list[str],
+            "level": int,
+        }
+
+    Returns an empty list if the blocks file is missing or contains only
+    the meta line.
+    """
+    path = Path(blocks_path)
+    if not path.exists() or not path.is_file():
+        return []
+
+    # Read blocks; first line is meta (skipped), the rest are content blocks.
+    content_blocks: list[dict[str, Any]] = []
+    with path.open("r", encoding="utf-8") as f:
+        for i, line in enumerate(f):
+            text = line.strip()
+            if not text:
+                continue
+            try:
+                obj = json.loads(text)
+            except Exception:
+                continue
+            if i == 0:
+                # Meta line; skip.
+                continue
+            if obj.get("type") != "content":
+                continue
+            content = obj.get("content")
+            if not isinstance(content, str) or not content.strip():
+                continue
+            content_blocks.append(obj)
+
+    if not content_blocks:
+        return []
+
+    def _heading_key(block: dict[str, Any]) -> tuple:
+        # Group by (level, heading, tuple(parent_headings)) so blocks under
+        # the same heading boundary share a key.
+        return (
+            int(block.get("level") or 0),
+            str(block.get("heading") or ""),
+            tuple(str(p) for p in (block.get("parent_headings") or [])),
+        )
+
+    def _emit_chunk(
+        chunks: list[dict[str, Any]],
+        *,
+        text: str,
+        heading: str,
+        level: int,
+        parent_headings: list[str],
+    ) -> None:
+        text = text.strip()
+        if not text:
+            return
+        idx = len(chunks)
+        chunk_id = f"{doc_id}-h-{idx:03d}"
+        try:
+            tokens = len(tokenizer.encode(text))
+        except Exception:
+            tokens = max(1, int(len(text) * 0.5))
+        chunks.append(
+            {
+                "chunk_id": chunk_id,
+                "chunk_order_index": idx,
+                "content": text,
+                "content_type": "body",
+                "tokens": tokens,
+                "table_chunk_role": "none",
+                "heading": heading,
+                "parent_headings": list(parent_headings),
+                "level": level,
+            }
+        )
+
+    # Group consecutive blocks by heading, then split each group as needed.
+    chunks: list[dict[str, Any]] = []
+    current_key: tuple | None = None
+    current_blocks: list[dict[str, Any]] = []
+
+    def _flush_group() -> None:
+        if not current_blocks:
+            return
+        first = current_blocks[0]
+        heading = str(first.get("heading") or "")
+        level = int(first.get("level") or 0)
+        parent_headings = [
+            str(p) for p in (first.get("parent_headings") or [])
+        ]
+        # Build text with heading preface to keep retrieval contexts
+        # self-contained.
+        body_parts: list[str] = []
+        if heading:
+            body_parts.append(f"Heading: {heading}")
+        for blk in current_blocks:
+            body_parts.append(str(blk.get("content") or "").strip())
+        full_text = "\n\n".join(p for p in body_parts if p)
+
+        try:
+            full_tokens_ids = tokenizer.encode(full_text)
+        except Exception:
+            full_tokens_ids = []
+
+        if not full_tokens_ids or len(full_tokens_ids) <= max_tokens:
+            # Fits in one chunk.
+            _emit_chunk(
+                chunks,
+                text=full_text,
+                heading=heading,
+                level=level,
+                parent_headings=parent_headings,
+            )
+            return
+
+        # Group is too large; split with token-window + overlap, but keep
+        # heading boundary intact (no cross-heading splits).
+        step = max(1, max_tokens - max(0, overlap_tokens))
+        for start in range(0, len(full_tokens_ids), step):
+            window = full_tokens_ids[start : start + max_tokens]
+            try:
+                segment_text = tokenizer.decode(window).strip()
+            except Exception:
+                segment_text = ""
+            if not segment_text:
+                continue
+            _emit_chunk(
+                chunks,
+                text=segment_text,
+                heading=heading,
+                level=level,
+                parent_headings=parent_headings,
+            )
+            if start + max_tokens >= len(full_tokens_ids):
+                break
+
+    for block in content_blocks:
+        key = _heading_key(block)
+        if current_key is None or key != current_key:
+            _flush_group()
+            current_blocks = []
+            current_key = key
+        current_blocks.append(block)
+    _flush_group()
+
+    return chunks
+
+
 async def load_lightrag_document_content(
     lightrag_document_path: str,
 ) -> tuple[str, str]:

@@ -291,6 +291,260 @@ def test_apipeline_enqueue_persists_process_options(tmp_path):
 
 
 @pytest.mark.offline
+def test_chunk_lightrag_blocks_by_heading_groups_consecutive_blocks(tmp_path):
+    """``chunk_lightrag_blocks_by_heading`` groups blocks under the same
+    heading into a single chunk, with the heading rendered as a "Heading:"
+    preface so retrieval contexts stay self-describing.  A heading change
+    creates a new chunk; ``chunk_order_index`` is sequential.
+    """
+    from lightrag.utils_pipeline import chunk_lightrag_blocks_by_heading
+
+    blocks_path = tmp_path / "doc.blocks.jsonl"
+    blocks_path.write_text(
+        "\n".join(
+            [
+                json.dumps({"type": "meta", "format_version": "1.0"}),
+                json.dumps(
+                    {
+                        "type": "content",
+                        "content": "Intro paragraph one.",
+                        "heading": "Introduction",
+                        "level": 1,
+                        "parent_headings": [],
+                    }
+                ),
+                json.dumps(
+                    {
+                        "type": "content",
+                        "content": "Intro paragraph two.",
+                        "heading": "Introduction",
+                        "level": 1,
+                        "parent_headings": [],
+                    }
+                ),
+                json.dumps(
+                    {
+                        "type": "content",
+                        "content": "Methods paragraph.",
+                        "heading": "Methods",
+                        "level": 1,
+                        "parent_headings": [],
+                    }
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    chunks = chunk_lightrag_blocks_by_heading(
+        str(blocks_path),
+        Tokenizer("mock-tokenizer", _SimpleTokenizerImpl()),
+        doc_id="doc-test",
+        max_tokens=10000,
+        overlap_tokens=0,
+    )
+
+    assert len(chunks) == 2
+    # First chunk: both intro paragraphs under "Introduction".
+    assert chunks[0]["chunk_order_index"] == 0
+    assert chunks[0]["chunk_id"] == "doc-test-h-000"
+    assert chunks[0]["heading"] == "Introduction"
+    assert chunks[0]["content_type"] == "body"
+    assert "Heading: Introduction" in chunks[0]["content"]
+    assert "Intro paragraph one." in chunks[0]["content"]
+    assert "Intro paragraph two." in chunks[0]["content"]
+    # Heading boundary creates the second chunk.
+    assert chunks[1]["chunk_order_index"] == 1
+    assert chunks[1]["chunk_id"] == "doc-test-h-001"
+    assert chunks[1]["heading"] == "Methods"
+    assert "Methods paragraph." in chunks[1]["content"]
+    # The second chunk does NOT carry over the first heading's content.
+    assert "Intro paragraph" not in chunks[1]["content"]
+
+
+@pytest.mark.offline
+def test_chunk_lightrag_blocks_by_heading_splits_oversize_group(tmp_path):
+    """If the accumulated text under a single heading exceeds ``max_tokens``,
+    the group is split into multiple chunks (each carrying the same
+    heading metadata) using a sliding window with overlap, but splits
+    never cross into another heading.
+    """
+    from lightrag.utils_pipeline import chunk_lightrag_blocks_by_heading
+
+    long_body = "x" * 200  # mock tokenizer returns one token per char
+    blocks_path = tmp_path / "long.blocks.jsonl"
+    blocks_path.write_text(
+        "\n".join(
+            [
+                json.dumps({"type": "meta", "format_version": "1.0"}),
+                json.dumps(
+                    {
+                        "type": "content",
+                        "content": long_body,
+                        "heading": "Solo",
+                        "level": 1,
+                        "parent_headings": [],
+                    }
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    chunks = chunk_lightrag_blocks_by_heading(
+        str(blocks_path),
+        Tokenizer("mock-tokenizer", _SimpleTokenizerImpl()),
+        doc_id="doc-long",
+        max_tokens=80,
+        overlap_tokens=10,
+    )
+
+    # 200-token body under one heading with max_tokens=80 + overlap=10
+    # → at least 3 windows.  All chunks share the same heading metadata.
+    assert len(chunks) >= 3
+    assert all(chunk["heading"] == "Solo" for chunk in chunks)
+    # chunk_order_index runs 0..n-1 contiguously.
+    assert [chunk["chunk_order_index"] for chunk in chunks] == list(
+        range(len(chunks))
+    )
+
+
+@pytest.mark.offline
+def test_chunk_lightrag_blocks_by_heading_returns_empty_for_missing_file(tmp_path):
+    """Missing or empty blocks file returns ``[]``; the caller falls back
+    to fixed chunking with a warning.
+    """
+    from lightrag.utils_pipeline import chunk_lightrag_blocks_by_heading
+
+    chunks = chunk_lightrag_blocks_by_heading(
+        str(tmp_path / "does_not_exist.blocks.jsonl"),
+        Tokenizer("mock-tokenizer", _SimpleTokenizerImpl()),
+        doc_id="doc-missing",
+        max_tokens=1000,
+    )
+    assert chunks == []
+
+
+@pytest.mark.offline
+def test_pipeline_uses_heading_chunker_for_native_S_with_blocks(tmp_path):
+    """End-to-end: when ``process_options`` sets chunking='S' AND the
+    parsed_data carries a ``blocks_path`` (native / mineru / docling
+    structured output), the pipeline must invoke the heading-driven
+    chunker instead of falling through to fixed chunking.
+
+    Wraps ``chunk_lightrag_blocks_by_heading`` with a spy and seeds a
+    minimal blocks file + full_docs row + doc_status so we can drive
+    ``apipeline_process_enqueue_documents`` to the chunking branch.
+    The spy raises after recording the call so the test exits cleanly
+    without exercising downstream embedding / entity stages.
+    """
+
+    async def _run():
+        rag = _new_rag(tmp_path)
+        await rag.initialize_storages()
+        try:
+            doc_id = compute_mdhash_id("native-s.docx", prefix="doc-")
+            blocks_path = tmp_path / "native-s.docx.parsed" / "native-s.blocks.jsonl"
+            blocks_path.parent.mkdir(parents=True, exist_ok=True)
+            blocks_path.write_text(
+                "\n".join(
+                    [
+                        json.dumps(
+                            {
+                                "type": "meta",
+                                "format": "lightrag",
+                                "version": "1.0",
+                                "format_version": "1.0",
+                            }
+                        ),
+                        json.dumps(
+                            {
+                                "type": "content",
+                                "content": "Body under heading.",
+                                "heading": "Section A",
+                                "level": 1,
+                                "parent_headings": [],
+                            }
+                        ),
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            await rag.full_docs.upsert(
+                {
+                    doc_id: {
+                        "content": "{{LRdoc}}Body under heading.",
+                        "file_path": "native-s.docx",
+                        "canonical_basename": "native-s.docx",
+                        "format": "lightrag",
+                        "lightrag_document_path": str(blocks_path),
+                        "parsed_engine": "native",
+                        "process_options": "S",
+                        "content_hash": "lr-1",
+                    }
+                }
+            )
+            await rag.doc_status.upsert(
+                {
+                    doc_id: {
+                        "status": DocStatus.PENDING,
+                        "content_summary": "Body under heading.",
+                        "content_length": 20,
+                        "created_at": "2026-01-01T00:00:00+00:00",
+                        "updated_at": "2026-01-01T00:00:01+00:00",
+                        "file_path": "native-s.docx",
+                        "canonical_basename": "native-s.docx",
+                        "track_id": "track-s",
+                        "content_hash": "lr-1",
+                        "chunks_list": [],
+                        "chunks_count": 0,
+                        "metadata": {"process_options": "S"},
+                    }
+                }
+            )
+
+            calls: list[dict] = []
+            import lightrag.pipeline as pipeline_module
+
+            original = pipeline_module.chunk_lightrag_blocks_by_heading
+
+            class _ChunkerCalled(Exception):
+                pass
+
+            def _spy(blocks_path_arg, tokenizer, **kwargs):
+                calls.append(
+                    {
+                        "blocks_path": blocks_path_arg,
+                        "doc_id": kwargs.get("doc_id"),
+                    }
+                )
+                # Run the real chunker so chunks_result is non-empty
+                # (otherwise the pipeline would fall back to F), then
+                # short-circuit before downstream stages.
+                result = original(blocks_path_arg, tokenizer, **kwargs)
+                raise _ChunkerCalled(repr(result))
+
+            pipeline_module.chunk_lightrag_blocks_by_heading = _spy
+            try:
+                await rag.apipeline_process_enqueue_documents()
+            finally:
+                pipeline_module.chunk_lightrag_blocks_by_heading = original
+
+            # Spy was invoked exactly once, with our blocks path + doc_id.
+            assert len(calls) == 1
+            assert calls[0]["doc_id"] == doc_id
+            assert calls[0]["blocks_path"].endswith("native-s.blocks.jsonl")
+        finally:
+            await rag.finalize_storages()
+
+    asyncio.run(_run())
+
+
+@pytest.mark.offline
 def test_purge_doc_chunks_and_kg_is_noop_for_empty_chunks(tmp_path):
     """``_purge_doc_chunks_and_kg`` with an empty chunk_ids set must be a
     no-op so callers (including the resume branch) can invoke it
