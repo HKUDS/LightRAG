@@ -77,6 +77,8 @@ The contract permits **concurrent enqueue + processing**: a freshly-uploaded doc
 
 Write order matters: `apipeline_enqueue_documents` writes `full_docs` BEFORE `doc_status`, so the consistency check (`_validate_and_fix_document_consistency`) at the start of each batch never sees a `doc_status` row without backing `full_docs` content.
 
+The dedup-and-upsert section inside `apipeline_enqueue_documents` is serialised by a workspace-scoped `enqueue_serialize` lock so two concurrent enqueues for the same content (different filenames) cannot both pass the `content_hash` dedup check and both write PENDING. The lock holds across `filter_keys` → basename / content_hash dedup → duplicate FAILED upserts → `full_docs.upsert` → `doc_status.upsert`. It does NOT block the processing loop's reads (those happen outside the lock and tolerate either snapshot of the row).
+
 `from_scan=True` is the scan task's bypass for the scanning guard inside `apipeline_enqueue_documents` — scan owns the `scanning` flag and must be allowed to enqueue the files it just discovered.
 
 ### Query Modes

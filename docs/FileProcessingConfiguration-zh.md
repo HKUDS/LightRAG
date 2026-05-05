@@ -213,6 +213,8 @@ DOCLING_ENDPOINT=http://localhost:8081/v1/convert/file/async
 - 存储后端通过 `get_doc_by_content_hash` 进行 hash 直查；命名约定与 `get_doc_by_file_basename` 一致。
 
 > 入队批次内（同一次 `apipeline_enqueue_documents` 调用）也会做 basename 与 content_hash 去重，命中时把后续条目直接写为 `FAILED` 并标记 `existing_status=batch_duplicate`。其中 basename 去重只对有效文件名生效；`unknown_source`、`no-file-path` 和空来源只参与内容 hash 去重。
+>
+> **跨调用并发去重**也由 workspace 级串行锁保证（详见 [enqueue 串行锁（防并发去重穿透）](#enqueue-串行锁防并发去重穿透)）：两次相同内容、不同文件名的并发入队不会双双穿透 `content_hash` 检查。
 
 ## 并发与重入约束
 
@@ -286,6 +288,26 @@ upload 通过 reservation 后、保存文件前必须双道检查：
 7. 全部完成后 `busy=False`、`pending_enqueues=0`。
 
 任何一个 bg task 都不会因为 busy 被误拒——因为 enqueue 不再检查 busy；处理循环也不会重复处理同一份 batch——`request_pending` 只在 batch 间生效，且每次重拉前清零。
+
+### enqueue 串行锁（防并发去重穿透）
+
+`apipeline_enqueue_documents` 内部"读 doc_status 做去重 → 写 `full_docs` / `doc_status`"这一段在 workspace 级 `enqueue_serialize` 锁内串行执行。原因：放开 busy/scan-processing 阶段允许并发 enqueue 之后，两次相同内容、不同文件名的入队（典型场景：scan 处理阶段的 enqueue 与 upload 同时进来）若在没有锁的情况下并发执行——
+
+1. A 读 `doc_status` 查 `content_hash`：未命中。
+2. B 读 `doc_status` 查 `content_hash`：仍未命中（A 还没 upsert）。
+3. A upsert `full_docs` + `doc_status`。
+4. B upsert `full_docs` + `doc_status`。
+
+结果：同 `content_hash` 的两条 `PENDING` 都进入流水线后续处理，原本应当被识别为 `duplicate_kind=content_hash` 的那条**没**被识别。
+
+加上串行锁后第二次 enqueue 一定能在去重读时看到第一次已 upsert 的行，正常走"无新唯一文档"的早返回路径并把本次记为 `duplicate_kind=content_hash` 的 FAILED 行。锁的作用范围**只覆盖**：
+
+- `filter_keys`（按 doc_id 排除已存在）
+- 文件名 / 内容 hash 去重读
+- 重复 FAILED 行的 upsert
+- `full_docs.upsert` + `doc_status.upsert`
+
+锁**不**覆盖 `request_pending` nudge（在锁外，只取一下 `pipeline_status_lock`），也**不**阻塞处理循环的 `get_docs_by_statuses` 读（处理循环走的是 `doc_status` 自身的并发读，与 enqueue 写是 KV 级原子，不抢同一把锁）。锁顺序：`enqueue_serialize → pipeline_status_lock`，无死锁路径。
 
 ### 移除 `reprocess_existing_non_processed`
 

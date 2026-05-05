@@ -431,201 +431,229 @@ class _PipelineMixin:
             for id_, content_data in contents.items()
         }
 
-        # 3. Filter out already processed documents
-        # Get docs ids
-        all_new_doc_ids = set(new_docs.keys())
-        # Exclude IDs of documents that are already enqueued.  The previous
-        # ``reprocess_existing_non_processed`` flag has been removed: any
-        # same-name record (regardless of status) is treated as a duplicate
-        # here.  Recovering half-processed documents is now the job of the
-        # pipeline's resume logic, which runs in apipeline_process_enqueue_documents
-        # rather than this enqueue path.
-        unique_new_doc_ids = await self.doc_status.filter_keys(all_new_doc_ids)
+        # Serialise the dedup-read-then-upsert critical section across
+        # concurrent enqueue calls within the same workspace.  Without
+        # this, two enqueues for the same content (e.g. /upload during
+        # scan's processing phase, or two uploads via /text + /upload)
+        # can both read doc_status before either upserts, both miss the
+        # content_hash dedup, and both end up writing PENDING rows for
+        # the same content — bypassing the dedup that's supposed to
+        # land one of them as ``duplicate_kind=content_hash`` FAILED.
+        #
+        # The lock is workspace-scoped and only spans steps 3-4 below
+        # (filter_keys → upserts).  It does NOT block concurrent
+        # processing (``apipeline_process_enqueue_documents`` reads
+        # doc_status independently) or scan classification
+        # (``scanning_exclusive`` already gates concurrent enqueue).
+        # Lock order: enqueue_serialize → pipeline_status_lock (the
+        # request_pending nudge inside is fine; no caller holds
+        # pipeline_status_lock first then needs enqueue_serialize).
+        enqueue_serialize_lock = get_namespace_lock(
+            "enqueue_serialize", workspace=self.workspace
+        )
 
-        for doc_id in list(unique_new_doc_ids):
-            content_data = contents[doc_id]
+        async with enqueue_serialize_lock:
+            # 3. Filter out already processed documents
+            # Get docs ids
+            all_new_doc_ids = set(new_docs.keys())
+            # Exclude IDs of documents that are already enqueued.  The previous
+            # ``reprocess_existing_non_processed`` flag has been removed: any
+            # same-name record (regardless of status) is treated as a duplicate
+            # here.  Recovering half-processed documents is now the job of the
+            # pipeline's resume logic, which runs in apipeline_process_enqueue_documents
+            # rather than this enqueue path.
+            unique_new_doc_ids = await self.doc_status.filter_keys(all_new_doc_ids)
 
-            # 3a. Filename-based dedup: same basename always treated as duplicate.
-            match = await get_existing_doc_by_file_basename(
-                self.doc_status, content_data["file_path"]
-            )
-            if match:
-                existing_doc_id, existing_doc = match
-                unique_new_doc_ids.discard(doc_id)
+            for doc_id in list(unique_new_doc_ids):
+                content_data = contents[doc_id]
+
+                # 3a. Filename-based dedup: same basename always treated as duplicate.
+                match = await get_existing_doc_by_file_basename(
+                    self.doc_status, content_data["file_path"]
+                )
+                if match:
+                    existing_doc_id, existing_doc = match
+                    unique_new_doc_ids.discard(doc_id)
+                    duplicate_attempts.append(
+                        {
+                            "doc_id": doc_id,
+                            "original_doc_id": existing_doc_id,
+                            "file_path": content_data["file_path"],
+                            "content_length": new_docs.get(doc_id, {}).get(
+                                "content_length", 0
+                            ),
+                            "existing_status": doc_status_field(
+                                existing_doc, "status", "unknown"
+                            ),
+                            "existing_track_id": doc_status_field(
+                                existing_doc, "track_id", ""
+                            ),
+                            "duplicate_kind": "filename",
+                        }
+                    )
+                    continue
+
+                # 3b. Content-hash dedup: different filename but same body still dupes.
+                content_hash = content_data.get("content_hash")
+                if not content_hash:
+                    continue
+                hash_match = await get_existing_doc_by_content_hash(
+                    self.doc_status, content_hash
+                )
+                if hash_match:
+                    existing_doc_id, existing_doc = hash_match
+                    unique_new_doc_ids.discard(doc_id)
+                    duplicate_attempts.append(
+                        {
+                            "doc_id": doc_id,
+                            "original_doc_id": existing_doc_id,
+                            "file_path": content_data["file_path"],
+                            "content_length": new_docs.get(doc_id, {}).get(
+                                "content_length", 0
+                            ),
+                            "existing_status": doc_status_field(
+                                existing_doc, "status", "unknown"
+                            ),
+                            "existing_track_id": doc_status_field(
+                                existing_doc, "track_id", ""
+                            ),
+                            "duplicate_kind": "content_hash",
+                        }
+                    )
+
+            # Handle duplicate documents - create trackable records with current track_id
+            ignored_ids = list(all_new_doc_ids - unique_new_doc_ids)
+            for doc_id in ignored_ids:
+                if any(
+                    attempt.get("doc_id") == doc_id for attempt in duplicate_attempts
+                ):
+                    continue
+                existing_doc = await self.doc_status.get_by_id(doc_id)
                 duplicate_attempts.append(
                     {
                         "doc_id": doc_id,
-                        "original_doc_id": existing_doc_id,
-                        "file_path": content_data["file_path"],
+                        "original_doc_id": doc_id,
+                        "file_path": new_docs.get(doc_id, {}).get(
+                            "file_path", "unknown_source"
+                        ),
                         "content_length": new_docs.get(doc_id, {}).get(
                             "content_length", 0
                         ),
-                        "existing_status": doc_status_field(
-                            existing_doc, "status", "unknown"
+                        "existing_status": (
+                            existing_doc.get("status", "unknown")
+                            if existing_doc
+                            else "unknown"
                         ),
-                        "existing_track_id": doc_status_field(
-                            existing_doc, "track_id", ""
+                        "existing_track_id": (
+                            existing_doc.get("track_id", "") if existing_doc else ""
                         ),
                         "duplicate_kind": "filename",
                     }
                 )
-                continue
 
-            # 3b. Content-hash dedup: different filename but same body still dupes.
-            content_hash = content_data.get("content_hash")
-            if not content_hash:
-                continue
-            hash_match = await get_existing_doc_by_content_hash(
-                self.doc_status, content_hash
-            )
-            if hash_match:
-                existing_doc_id, existing_doc = hash_match
-                unique_new_doc_ids.discard(doc_id)
-                duplicate_attempts.append(
-                    {
-                        "doc_id": doc_id,
-                        "original_doc_id": existing_doc_id,
-                        "file_path": content_data["file_path"],
-                        "content_length": new_docs.get(doc_id, {}).get(
-                            "content_length", 0
-                        ),
-                        "existing_status": doc_status_field(
-                            existing_doc, "status", "unknown"
-                        ),
-                        "existing_track_id": doc_status_field(
-                            existing_doc, "track_id", ""
-                        ),
-                        "duplicate_kind": "content_hash",
-                    }
-                )
-
-        # Handle duplicate documents - create trackable records with current track_id
-        ignored_ids = list(all_new_doc_ids - unique_new_doc_ids)
-        for doc_id in ignored_ids:
-            if any(attempt.get("doc_id") == doc_id for attempt in duplicate_attempts):
-                continue
-            existing_doc = await self.doc_status.get_by_id(doc_id)
-            duplicate_attempts.append(
-                {
-                    "doc_id": doc_id,
-                    "original_doc_id": doc_id,
-                    "file_path": new_docs.get(doc_id, {}).get(
-                        "file_path", "unknown_source"
-                    ),
-                    "content_length": new_docs.get(doc_id, {}).get("content_length", 0),
-                    "existing_status": (
-                        existing_doc.get("status", "unknown")
-                        if existing_doc
-                        else "unknown"
-                    ),
-                    "existing_track_id": (
-                        existing_doc.get("track_id", "") if existing_doc else ""
-                    ),
-                    "duplicate_kind": "filename",
-                }
-            )
-
-        if duplicate_attempts:
-            duplicate_docs: dict[str, Any] = {}
-            for index, attempt in enumerate(duplicate_attempts):
-                doc_id = attempt["doc_id"]
-                file_path = attempt.get("file_path") or "unknown_source"
-                duplicate_kind = attempt.get("duplicate_kind") or "filename"
-                logger.warning(
-                    f"Duplicate document detected ({duplicate_kind}): "
-                    f"{doc_id} ({file_path})"
-                )
-
-                # Create a new record with unique ID for this duplicate attempt
-                dup_record_id = compute_mdhash_id(
-                    f"{doc_id}-{track_id}-{index}-{file_path}", prefix="dup-"
-                )
-                if duplicate_kind == "content_hash":
-                    error_prefix = (
-                        "Identical content already exists under another filename."
+            if duplicate_attempts:
+                duplicate_docs: dict[str, Any] = {}
+                for index, attempt in enumerate(duplicate_attempts):
+                    doc_id = attempt["doc_id"]
+                    file_path = attempt.get("file_path") or "unknown_source"
+                    duplicate_kind = attempt.get("duplicate_kind") or "filename"
+                    logger.warning(
+                        f"Duplicate document detected ({duplicate_kind}): "
+                        f"{doc_id} ({file_path})"
                     )
-                else:
-                    error_prefix = "File name already exists."
-                duplicate_docs[dup_record_id] = {
-                    "status": DocStatus.FAILED,
-                    "content_summary": (
-                        f"[DUPLICATE:{duplicate_kind}] Original document: "
-                        f"{attempt.get('original_doc_id', doc_id)}"
-                    ),
-                    "content_length": attempt.get("content_length", 0),
-                    "chunks_count": 0,
-                    "chunks_list": [],
-                    "created_at": datetime.now(timezone.utc).isoformat(),
-                    "updated_at": datetime.now(timezone.utc).isoformat(),
-                    "file_path": file_path,
-                    "track_id": track_id,  # Use current track_id for tracking
-                    "error_msg": (
-                        f"{error_prefix} "
-                        f"Original doc_id: {attempt.get('original_doc_id', doc_id)}, "
-                        f"Status: {attempt.get('existing_status', 'unknown')}"
-                    ),
-                    "metadata": {
-                        "is_duplicate": True,
-                        "duplicate_kind": duplicate_kind,
-                        "original_doc_id": attempt.get("original_doc_id", doc_id),
-                        "original_track_id": attempt.get("existing_track_id", ""),
-                    },
-                }
 
-            # Store duplicate records in doc_status
-            if duplicate_docs:
-                await self.doc_status.upsert(duplicate_docs)
-                logger.info(
-                    f"Created {len(duplicate_docs)} duplicate document records with track_id: {track_id}"
-                )
+                    # Create a new record with unique ID for this duplicate attempt
+                    dup_record_id = compute_mdhash_id(
+                        f"{doc_id}-{track_id}-{index}-{file_path}", prefix="dup-"
+                    )
+                    if duplicate_kind == "content_hash":
+                        error_prefix = (
+                            "Identical content already exists under another filename."
+                        )
+                    else:
+                        error_prefix = "File name already exists."
+                    duplicate_docs[dup_record_id] = {
+                        "status": DocStatus.FAILED,
+                        "content_summary": (
+                            f"[DUPLICATE:{duplicate_kind}] Original document: "
+                            f"{attempt.get('original_doc_id', doc_id)}"
+                        ),
+                        "content_length": attempt.get("content_length", 0),
+                        "chunks_count": 0,
+                        "chunks_list": [],
+                        "created_at": datetime.now(timezone.utc).isoformat(),
+                        "updated_at": datetime.now(timezone.utc).isoformat(),
+                        "file_path": file_path,
+                        "track_id": track_id,  # Use current track_id for tracking
+                        "error_msg": (
+                            f"{error_prefix} "
+                            f"Original doc_id: {attempt.get('original_doc_id', doc_id)}, "
+                            f"Status: {attempt.get('existing_status', 'unknown')}"
+                        ),
+                        "metadata": {
+                            "is_duplicate": True,
+                            "duplicate_kind": duplicate_kind,
+                            "original_doc_id": attempt.get("original_doc_id", doc_id),
+                            "original_track_id": attempt.get("existing_track_id", ""),
+                        },
+                    }
 
-        # Filter new_docs to only include documents with unique IDs
-        new_docs = {
-            doc_id: new_docs[doc_id]
-            for doc_id in unique_new_doc_ids
-            if doc_id in new_docs
-        }
+                # Store duplicate records in doc_status
+                if duplicate_docs:
+                    await self.doc_status.upsert(duplicate_docs)
+                    logger.info(
+                        f"Created {len(duplicate_docs)} duplicate document records with track_id: {track_id}"
+                    )
 
-        if not new_docs:
-            logger.warning("No new unique documents were found.")
-            return
-
-        # 4. Store document content in full_docs and status in doc_status
-        full_docs_data = {
-            doc_id: {
-                "content": contents[doc_id].get("content", ""),
-                "file_path": contents[doc_id]["file_path"],
-                "canonical_basename": contents[doc_id].get("canonical_basename"),
-                "format": contents[doc_id].get("format", FULL_DOCS_FORMAT_RAW),
+            # Filter new_docs to only include documents with unique IDs
+            new_docs = {
+                doc_id: new_docs[doc_id]
+                for doc_id in unique_new_doc_ids
+                if doc_id in new_docs
             }
-            for doc_id in new_docs.keys()
-        }
-        for doc_id in new_docs.keys():
-            if contents[doc_id].get("content_hash"):
-                full_docs_data[doc_id]["content_hash"] = contents[doc_id][
-                    "content_hash"
-                ]
-            if contents[doc_id].get("source_path"):
-                full_docs_data[doc_id]["source_path"] = contents[doc_id]["source_path"]
-            if contents[doc_id].get("lightrag_document_path"):
-                full_docs_data[doc_id]["lightrag_document_path"] = contents[doc_id][
-                    "lightrag_document_path"
-                ]
-            if contents[doc_id].get("parsed_engine"):
-                full_docs_data[doc_id]["parsed_engine"] = contents[doc_id][
-                    "parsed_engine"
-                ]
-            if contents[doc_id].get("process_options"):
-                full_docs_data[doc_id]["process_options"] = contents[doc_id][
-                    "process_options"
-                ]
-        await self.full_docs.upsert(full_docs_data)
-        # Persist data to disk immediately
-        await self.full_docs.index_done_callback()
 
-        # Store document status (without content)
-        await self.doc_status.upsert(new_docs)
-        logger.debug(f"Stored {len(new_docs)} new unique documents")
+            if not new_docs:
+                logger.warning("No new unique documents were found.")
+                return
+
+            # 4. Store document content in full_docs and status in doc_status
+            full_docs_data = {
+                doc_id: {
+                    "content": contents[doc_id].get("content", ""),
+                    "file_path": contents[doc_id]["file_path"],
+                    "canonical_basename": contents[doc_id].get("canonical_basename"),
+                    "format": contents[doc_id].get("format", FULL_DOCS_FORMAT_RAW),
+                }
+                for doc_id in new_docs.keys()
+            }
+            for doc_id in new_docs.keys():
+                if contents[doc_id].get("content_hash"):
+                    full_docs_data[doc_id]["content_hash"] = contents[doc_id][
+                        "content_hash"
+                    ]
+                if contents[doc_id].get("source_path"):
+                    full_docs_data[doc_id]["source_path"] = contents[doc_id][
+                        "source_path"
+                    ]
+                if contents[doc_id].get("lightrag_document_path"):
+                    full_docs_data[doc_id]["lightrag_document_path"] = contents[doc_id][
+                        "lightrag_document_path"
+                    ]
+                if contents[doc_id].get("parsed_engine"):
+                    full_docs_data[doc_id]["parsed_engine"] = contents[doc_id][
+                        "parsed_engine"
+                    ]
+                if contents[doc_id].get("process_options"):
+                    full_docs_data[doc_id]["process_options"] = contents[doc_id][
+                        "process_options"
+                    ]
+            await self.full_docs.upsert(full_docs_data)
+            # Persist data to disk immediately
+            await self.full_docs.index_done_callback()
+
+            # Store document status (without content)
+            await self.doc_status.upsert(new_docs)
+            logger.debug(f"Stored {len(new_docs)} new unique documents")
 
         # Notify any in-flight processing loop that new work has arrived.
         # The loop checks ``request_pending`` after each batch and will

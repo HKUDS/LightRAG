@@ -608,6 +608,111 @@ def test_apipeline_enqueue_rejects_when_destructive_busy(tmp_path):
 
 
 @pytest.mark.offline
+def test_concurrent_enqueue_dedupes_same_content_different_filenames(tmp_path):
+    """Two concurrent ``apipeline_enqueue_documents`` calls with the
+    same content but different filenames must not both end up as
+    PENDING.  The dedup-and-upsert critical section is serialised by
+    a workspace-scoped lock so the second call always sees the first's
+    upserted row and is recorded as ``duplicate_kind=content_hash``.
+
+    The race only matters now that concurrent enqueue is permitted
+    (busy=True doesn't block, scan's processing phase doesn't block).
+    Without the lock, two enqueues can both read doc_status before
+    either upserts, both miss the content_hash dedup, and both write
+    PENDING — bypassing the dedup that's supposed to land one of them
+    as FAILED.
+
+    Determinism trick: patch ``get_existing_doc_by_content_hash`` to
+    yield via ``asyncio.sleep(0)`` before reading.  This guarantees the
+    asyncio scheduler interleaves the two coroutines at the dedup
+    read, so without the serialise lock both would miss the existing
+    row.  With the lock, the second coroutine waits until the first
+    has finished upserting, then sees the row.
+    """
+
+    async def _run():
+        import lightrag.pipeline as pipeline_module
+
+        rag = _new_rag(tmp_path)
+        await rag.initialize_storages()
+        try:
+            original = pipeline_module.get_existing_doc_by_content_hash
+
+            async def yielding_get_by_content_hash(doc_status, content_hash):
+                # Yield to the event loop so the SECOND enqueue gets a
+                # chance to run its dedup read before we proceed.  This
+                # is the exact interleaving the lock must defeat.
+                await asyncio.sleep(0)
+                return await original(doc_status, content_hash)
+
+            import unittest.mock
+
+            with unittest.mock.patch.object(
+                pipeline_module,
+                "get_existing_doc_by_content_hash",
+                yielding_get_by_content_hash,
+            ):
+                # Same content, two distinct filenames so the basename
+                # dedup misses and the content_hash dedup is the gate.
+                shared_content = "shared content for dedup race"
+                results = await asyncio.gather(
+                    rag.apipeline_enqueue_documents(
+                        shared_content,
+                        file_paths="first.txt",
+                        track_id="track-first",
+                    ),
+                    rag.apipeline_enqueue_documents(
+                        shared_content,
+                        file_paths="second.txt",
+                        track_id="track-second",
+                    ),
+                )
+                # First call enqueues the doc and returns its track_id.
+                # Second call sees the upserted row inside the
+                # serialised dedup section, finds zero unique docs, and
+                # returns None (the existing "no new unique docs"
+                # early-exit path).  The duplicate record is still
+                # written to doc_status as FAILED.
+                assert results[0] == "track-first"
+                assert results[1] is None
+
+            # Exactly ONE PENDING doc should exist for this content,
+            # not two.  The second enqueue must have been recorded as a
+            # content_hash duplicate (FAILED with metadata).
+            pending_docs = await rag.doc_status.get_docs_by_statuses(
+                [DocStatus.PENDING]
+            )
+            assert len(pending_docs) == 1, (
+                f"Expected exactly 1 PENDING doc after concurrent enqueue, "
+                f"got {len(pending_docs)}: {list(pending_docs.keys())}"
+            )
+
+            # The duplicate record (FAILED + duplicate_kind=content_hash)
+            # carries the second filename and the metadata pointer back
+            # to the original.
+            failed_docs = await rag.doc_status.get_docs_by_statuses([DocStatus.FAILED])
+            duplicate_records = [
+                d
+                for d in failed_docs.values()
+                if (
+                    getattr(d, "metadata", None)
+                    and d.metadata.get("duplicate_kind") == "content_hash"
+                )
+            ]
+            assert len(duplicate_records) == 1, (
+                f"Expected exactly 1 content_hash-duplicate FAILED row, "
+                f"got {len(duplicate_records)}"
+            )
+            dup = duplicate_records[0]
+            assert dup.metadata["is_duplicate"] is True
+            assert dup.metadata["original_doc_id"]
+        finally:
+            await rag.finalize_storages()
+
+    asyncio.run(_run())
+
+
+@pytest.mark.offline
 def test_apipeline_enqueue_from_scan_bypasses_scanning_guard(tmp_path):
     """The scan-owned background task sets ``scanning=True`` itself, so its
     own enqueue calls must be allowed through.  External callers (without
