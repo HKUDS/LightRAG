@@ -1411,11 +1411,10 @@ class _PipelineMixin:
                                 )
                                 chunking_result = interchange_chunks
                                 extraction_meta = {
-                                    "extraction_format": "interchange_jsonl",
-                                    "format_version": interchange_meta.get(
-                                        "format_version"
+                                    "parse_format": FULL_DOCS_FORMAT_LIGHTRAG,
+                                    "parse_engine": interchange_meta.get(
+                                        "parse_engine"
                                     ),
-                                    "parse_engine": interchange_meta.get("parse_engine"),
                                     "chunking_method": interchange_meta.get(
                                         "chunking_method"
                                     ),
@@ -1457,7 +1456,7 @@ class _PipelineMixin:
                                         f"got {type(chunking_result)}"
                                     )
                                 extraction_meta = {
-                                    "extraction_format": "plain_text_chunking",
+                                    "parse_format": FULL_DOCS_FORMAT_RAW,
                                     "parse_engine": "legacy",
                                     "chunking_method": (
                                         "fixed_token_fallback"
@@ -3444,8 +3443,8 @@ class _PipelineMixin:
         """
         from lightrag.parser_routing import parse_process_options
 
-        extraction_format = extraction_meta.get("extraction_format")
-        if extraction_format != "interchange_jsonl":
+        parse_format = extraction_meta.get("parse_format")
+        if parse_format != FULL_DOCS_FORMAT_LIGHTRAG:
             return chunking_result
 
         try:
