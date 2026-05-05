@@ -2574,13 +2574,25 @@ def create_document_routes(
         """
         Trigger the scanning process for new documents.
 
-        Refuses to start a new scan when ``pipeline_status["busy"]`` (indexing
-        or deletion in flight) or ``pipeline_status["scannin"']`` (another
-        scan already running) is set; in that case returns
-        ``status='scanning_skipped_pipeline_busy'`` immediately and does not
-        schedule a background task.  The ``scanning`` flag is acquired
+        Refuses to start a new scan with
+        ``status='scanning_skipped_pipeline_busy'`` (and does not
+        schedule a background task) when any of these is set:
+
+        - ``pipeline_status["busy"]`` — the processing loop or another
+          destructive job is running.
+        - ``pipeline_status["scanning"]`` — another scan is already
+          running (any phase: classification or processing).
+        - ``pipeline_status["pending_enqueues"] > 0`` — an /upload,
+          /text or /texts endpoint has reserved a slot whose bg task
+          has not yet written to doc_status; starting a scan now would
+          race scan's classification reads against that pending write.
+
+        Both ``scanning`` and ``scanning_exclusive`` are acquired
         synchronously here so a subsequent fast-follow request hits the
         guard rather than racing against the not-yet-started task.
+        ``run_scanning_process`` clears ``scanning_exclusive`` once
+        classification is done, allowing concurrent uploads to land
+        while the scan-driven processing finishes.
 
         Returns:
             ScanResponse: A response object containing the scanning status and track_id
@@ -2730,10 +2742,18 @@ def create_document_routes(
         - This design prevents blocking the client during expensive operations
 
         **Concurrency Constraint:**
-        - The endpoint refuses with HTTP 409 while
-          ``pipeline_status["busy"]`` (indexing in flight) or
-          ``pipeline_status["scanning"]`` (a scan is running) is set.
+        - The endpoint refuses with HTTP 409 only while one of the
+          following exclusive-writer states is set:
+          ``pipeline_status["scanning_exclusive"]`` (a scan is in its
+          classification phase, reading and possibly mutating doc_status)
+          or ``pipeline_status["destructive_busy"]`` (``/documents/clear``
+          or per-doc delete is dropping storages / removing input files).
           Wait for the running job to finish before re-submitting.
+        - ``busy=True`` from the processing loop, and a scan in its
+          processing phase (``scanning=True`` with
+          ``scanning_exclusive=False``), do NOT block uploads — uploads
+          are accepted concurrently and the running pipeline picks them
+          up via its ``request_pending`` mechanism.
 
         Args:
             background_tasks: FastAPI BackgroundTasks for async processing
@@ -2744,20 +2764,22 @@ def create_document_routes(
                 - status="success": File accepted and queued for processing
 
         Raises:
-            HTTPException: 400 unsupported file type, 409 same-name conflict
-                or pipeline busy/scanning, 413 file too large, 500 other errors.
+            HTTPException: 400 unsupported file type, 409 same-name
+                conflict or scan-classifying / destructive job in
+                flight, 413 file too large, 500 other errors.
         """
         slot_reserved = False
         try:
-            # Reject upload while a /documents/scan is in progress AND
-            # reserve a pending-enqueue slot so a scan request that
-            # arrives before the bg task runs cannot transition
-            # scanning=True under us — which would force
-            # apipeline_enqueue_documents to reject the work after the
-            # client already received success.  Concurrent processing
-            # (busy=True) is permitted: the running loop's
-            # request_pending mechanism picks up our doc after the
-            # current batch.
+            # Reject upload while a scan is in its CLASSIFICATION
+            # phase or a destructive job (clear / per-doc delete) is
+            # in flight, AND reserve a pending-enqueue slot so a scan
+            # request that arrives before the bg task runs cannot
+            # transition scanning_exclusive=True under us.  Concurrent
+            # processing (``busy=True``) and a scan in its processing
+            # phase (``scanning=True`` with
+            # ``scanning_exclusive=False``) are permitted: the running
+            # loop's ``request_pending`` mechanism picks up our doc
+            # after the current batch.
             slot_reserved = await _reserve_enqueue_slot(rag)
 
             # Sanitize filename to prevent Path Traversal attacks
@@ -2922,6 +2944,15 @@ def create_document_routes(
         This endpoint allows you to insert text data into the RAG system for later retrieval
         and use in generating responses.
 
+        **Concurrency Constraint:**
+        - Refuses with HTTP 409 only while
+          ``pipeline_status["scanning_exclusive"]`` (a scan is in its
+          classification phase) or ``pipeline_status["destructive_busy"]``
+          (clear / per-doc delete is in flight) is set.  ``busy=True``
+          from the processing loop, and a scan in its processing phase,
+          do NOT block — the running pipeline picks up the new doc via
+          ``request_pending``.
+
         Args:
             request (InsertTextRequest): The request body containing the text to be inserted.
             background_tasks: FastAPI BackgroundTasks for async processing
@@ -2930,7 +2961,8 @@ def create_document_routes(
             InsertResponse: A response object containing the status of the operation.
 
         Raises:
-            HTTPException: If an error occurs during text processing (500).
+            HTTPException: 400 invalid file_source, 409 same-name conflict
+                or scan/destructive job in flight, 500 other errors.
         """
         slot_reserved = False
         try:
@@ -3005,6 +3037,15 @@ def create_document_routes(
         This endpoint allows you to insert multiple text entries into the RAG system
         in a single request.
 
+        **Concurrency Constraint:**
+        - Refuses with HTTP 409 only while
+          ``pipeline_status["scanning_exclusive"]`` (a scan is in its
+          classification phase) or ``pipeline_status["destructive_busy"]``
+          (clear / per-doc delete is in flight) is set.  ``busy=True``
+          from the processing loop, and a scan in its processing phase,
+          do NOT block — the running pipeline picks up the new docs via
+          ``request_pending``.
+
         Args:
             request (InsertTextsRequest): The request body containing the list of texts.
             background_tasks: FastAPI BackgroundTasks for async processing
@@ -3013,7 +3054,9 @@ def create_document_routes(
             InsertResponse: A response object containing the status of the operation.
 
         Raises:
-            HTTPException: If an error occurs during text processing (500).
+            HTTPException: 400 invalid file_sources, 409 same-name
+                conflict or scan/destructive job in flight, 500 other
+                errors.
         """
         slot_reserved = False
         try:
@@ -3104,11 +3147,23 @@ def create_document_routes(
         It uses the storage drop methods to properly clean up all data and removes all files
         from the input directory.
 
+        **Concurrency Constraint:**
+        - Atomically reserves the destructive slot (sets ``busy=True``
+          and ``destructive_busy=True``) before dropping anything.
+          Refuses with ``status="busy"`` when ANY of these is set:
+          ``pipeline_status["busy"]`` (processing loop or another
+          destructive job in flight), ``pipeline_status["scanning"]``
+          (a scan is anywhere in its lifecycle), or
+          ``pipeline_status["pending_enqueues"] > 0`` (an /upload,
+          /text or /texts has reserved a slot whose bg task has not
+          yet written to doc_status).
+
         Returns:
             ClearDocumentsResponse: A response object containing the status and message.
                 - status="success":           All documents and files were successfully cleared.
                 - status="partial_success":   Document clear job exit with some errors.
-                - status="busy":              Operation could not be completed because the pipeline is busy.
+                - status="busy":              Operation could not be completed because another
+                  writer (busy / scanning / pending enqueue) holds the pipeline.
                 - status="fail":              All storage drop operations failed, with message
                 - message: Detailed information about the operation results, including counts
                   of deleted files and any errors encountered.
@@ -3525,6 +3580,15 @@ def create_document_routes(
 
         This operation is irreversible and will interact with the pipeline status.
 
+        **Concurrency Constraint:**
+        - Atomically reserves the destructive slot (sets ``busy=True``
+          and ``destructive_busy=True``) **synchronously** before
+          returning ``deletion_started``, so a /scan or /upload that
+          arrives before the bg task runs cannot race the delete.
+          Refuses with ``status="busy"`` when ANY of these is set:
+          ``pipeline_status["busy"]``, ``pipeline_status["scanning"]``,
+          or ``pipeline_status["pending_enqueues"] > 0``.
+
         Args:
             delete_request (DeleteDocRequest): The request containing the document IDs and deletion options.
             background_tasks: FastAPI BackgroundTasks for async processing
@@ -3532,7 +3596,8 @@ def create_document_routes(
         Returns:
             DeleteDocByIdResponse: The result of the deletion operation.
                 - status="deletion_started": The document deletion has been initiated in the background.
-                - status="busy": The pipeline is busy with another operation.
+                - status="busy": Another writer (busy / scanning / pending enqueue) holds the
+                  pipeline; nothing scheduled, retry after the running job finishes.
 
         Raises:
             HTTPException:
