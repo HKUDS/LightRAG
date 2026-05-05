@@ -984,7 +984,7 @@ async def _reserve_enqueue_slot(rag: LightRAG) -> bool:
     idle check, schedules a BackgroundTask that calls
     ``apipeline_enqueue_documents``, and returns success to the client, a
     /documents/scan request that arrived in between would otherwise set
-    ``pipeline_status['scanning']=True`` before the bg task runs — so the
+    ``pipeline_status["scanning"]=True`` before the bg task runs — so the
     enqueue's busy guard would reject the work after the client already
     saw success.  By incrementing ``pending_enqueues`` under the same lock
     that the scan endpoint takes, we guarantee scan refuses with
@@ -1005,8 +1005,8 @@ async def _reserve_enqueue_slot(rag: LightRAG) -> bool:
         bootstrapped and there is no slot to release.
 
     Raises:
-        HTTPException(409): when ``pipeline_status['busy']`` or
-            ``pipeline_status['scanning']`` is set.
+        HTTPException(409): when ``pipeline_status["busy"]`` or
+            ``pipeline_status["scanning"]`` is set.
     """
     from lightrag.exceptions import PipelineNotInitializedError
     from lightrag.kg.shared_storage import get_namespace_data, get_namespace_lock
@@ -1103,8 +1103,7 @@ async def _release_enqueue_slot_and_drain_if_last(rag: LightRAG) -> None:
             await rag.apipeline_process_enqueue_documents()
         except Exception as drain_error:
             logger.error(
-                "Error draining pipeline after final enqueue release: "
-                f"{drain_error}"
+                "Error draining pipeline after final enqueue release: " f"{drain_error}"
             )
             logger.error(traceback.format_exc())
 
@@ -1522,7 +1521,7 @@ async def pipeline_enqueue_file(
         file_path: Path to the saved file
         track_id: Optional tracking ID, if not provided will be generated
         from_scan: True only when invoked by the scan-owned background task,
-            which already holds ``pipeline_status['scanning']``.  Forwarded to
+            which already holds ``pipeline_status["scanning"]``.  Forwarded to
             ``apipeline_enqueue_documents`` so the scan can enqueue the files
             it just discovered without tripping the scanning busy guard.
     Returns:
@@ -2056,7 +2055,7 @@ async def run_scanning_process(
         doc_manager: DocumentManager instance
         track_id: Optional tracking ID to pass to all scanned files
     """
-    # The scan endpoint set ``pipeline_status['scanning']=True`` synchronously
+    # The scan endpoint set ``pipeline_status["scanning"]=True`` synchronously
     # before scheduling this task; we MUST clear it in finally so subsequent
     # uploads / scans can proceed even if the body raises.  When pipeline_status
     # is not initialised (mocked test rigs), the flag was never set so there's
@@ -2479,8 +2478,8 @@ def create_document_routes(
         """
         Trigger the scanning process for new documents.
 
-        Refuses to start a new scan when ``pipeline_status['busy']`` (indexing
-        or deletion in flight) or ``pipeline_status['scanning']`` (another
+        Refuses to start a new scan when ``pipeline_status["busy"]`` (indexing
+        or deletion in flight) or ``pipeline_status["scannin"']`` (another
         scan already running) is set; in that case returns
         ``status='scanning_skipped_pipeline_busy'`` immediately and does not
         schedule a background task.  The ``scanning`` flag is acquired
@@ -2624,8 +2623,8 @@ def create_document_routes(
 
         **Concurrency Constraint:**
         - The endpoint refuses with HTTP 409 while
-          ``pipeline_status['busy']`` (indexing in flight) or
-          ``pipeline_status['scanning']`` (a scan is running) is set.
+          ``pipeline_status["busy"]`` (indexing in flight) or
+          ``pipeline_status["scanning"]`` (a scan is running) is set.
           Wait for the running job to finish before re-submitting.
 
         Args:

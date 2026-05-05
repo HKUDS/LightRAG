@@ -125,7 +125,7 @@ class _PipelineMixin:
                 aligned with ``input``. Stored verbatim on ``full_docs`` and
                 mirrored to ``doc_status.metadata['process_options']``.
             from_scan: when True, the caller is the scan-owned background task
-                that already holds ``pipeline_status['scanning']``.  In that
+                that already holds ``pipeline_status["scanning"]``.  In that
                 case the scanning portion of the busy guard is bypassed so
                 the scan can enqueue the files it just discovered.  External
                 callers must leave this False; the busy guard still rejects
@@ -139,8 +139,8 @@ class _PipelineMixin:
                 progress.  Per the concurrency contract, all writes to
                 ``doc_status`` / ``full_docs`` must wait for the in-flight
                 indexing or scanning to finish.  Callers from HTTP endpoints
-                should pre-check ``pipeline_status['busy']`` /
-                ``pipeline_status['scanning']`` and surface a 409 to clients
+                should pre-check ``pipeline_status["busy"]`` /
+                ``pipeline_status["scanning"]`` and surface a 409 to clients
                 long before reaching this last-line guard.
         """
         # Pipeline-busy guard: refuse to mutate doc_status / full_docs while

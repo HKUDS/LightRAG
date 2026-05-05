@@ -872,7 +872,7 @@ async def test_upload_rejects_parser_hinted_filesystem_duplicate(tmp_path, monke
 
 
 async def test_upload_returns_409_when_pipeline_busy(tmp_path, monkeypatch):
-    """Upload must refuse with 409 while ``pipeline_status['busy']`` is set,
+    """Upload must refuse with 409 while ``pipeline_status["busy"]`` is set,
     independent of any name dedup.  The strict name pre-check happens AFTER
     the busy guard, so the 409 detail is about the pipeline, not the file.
     """
