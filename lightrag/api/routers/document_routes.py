@@ -983,12 +983,19 @@ async def _reserve_enqueue_slot(rag: LightRAG) -> bool:
 
     Concurrent enqueues are permitted while the processing loop is
     running — the loop is notified via ``request_pending`` and picks up
-    newly-enqueued docs after its current batch.  Two states block new
-    uploads/inserts:
+    newly-enqueued docs after its current batch.  This includes the
+    scan task's processing phase: once classification is done, the
+    scan transitions to driving the processing pipeline like any
+    other enqueuer, and uploads can land alongside it.
 
-    - ``scanning``: scan reads doc_status to classify files (PROCESSED
-      → archive, FAILED-without-full_docs → retry-as-new, etc.) and
-      would race with mid-flight writes.
+    Two states block new uploads/inserts:
+
+    - ``scanning_exclusive``: scan task is in its CLASSIFICATION
+      phase — reading doc_status to classify files (PROCESSED →
+      archive, FAILED-without-full_docs → retry-as-new, etc.) and
+      possibly deleting stale stubs.  Concurrent enqueue would race
+      against scan's reads / stub deletions.  ``scanning`` alone
+      (the processing phase) does NOT block uploads.
     - ``destructive_busy``: a /documents/clear or per-doc delete is in
       flight.  These DROP storages and remove input files; an enqueue
       accepted in this window would write to a storage that is being
@@ -1010,7 +1017,8 @@ async def _reserve_enqueue_slot(rag: LightRAG) -> bool:
         bootstrapped.
 
     Raises:
-        HTTPException(409): when ``pipeline_status['scanning']`` or
+        HTTPException(409): when
+            ``pipeline_status['scanning_exclusive']`` or
             ``pipeline_status['destructive_busy']`` is set.
     """
     from lightrag.exceptions import PipelineNotInitializedError
@@ -1026,12 +1034,13 @@ async def _reserve_enqueue_slot(rag: LightRAG) -> bool:
         "pipeline_status", workspace=rag.workspace
     )
     async with pipeline_status_lock:
-        if pipeline_status.get("scanning"):
+        if pipeline_status.get("scanning_exclusive"):
             raise HTTPException(
                 status_code=409,
                 detail=(
-                    "Document scan is in progress. "
-                    "Wait for the scan to complete before submitting new work."
+                    "Document scan is classifying files. "
+                    "Wait for the classification phase to finish before "
+                    "submitting new work."
                 ),
             )
         if pipeline_status.get("destructive_busy"):
@@ -2116,11 +2125,17 @@ async def run_scanning_process(
         doc_manager: DocumentManager instance
         track_id: Optional tracking ID to pass to all scanned files
     """
-    # The scan endpoint set ``pipeline_status["scanning"]=True`` synchronously
-    # before scheduling this task; we MUST clear it in finally so subsequent
-    # uploads / scans can proceed even if the body raises.  When pipeline_status
-    # is not initialised (mocked test rigs), the flag was never set so there's
-    # nothing to clear — track that here to skip the namespace fetch.
+    # The scan endpoint set ``scanning=True`` AND
+    # ``scanning_exclusive=True`` synchronously before scheduling this
+    # task.  ``scanning`` covers the whole lifecycle (refuses
+    # overlapping scans); ``scanning_exclusive`` covers only the
+    # classification phase below — we clear it before invoking
+    # pipeline_index_files so concurrent uploads can land while the
+    # scan-driven processing finishes.  Both MUST be cleared in
+    # finally so subsequent uploads / scans can proceed even if the
+    # body raises.  When pipeline_status is not initialised (mocked
+    # test rigs), the flags were never set so there's nothing to
+    # clear — track that here to skip the namespace fetch.
     from lightrag.exceptions import PipelineNotInitializedError
     from lightrag.kg.shared_storage import get_namespace_data, get_namespace_lock
 
@@ -2270,6 +2285,19 @@ async def run_scanning_process(
                 else:
                     new_files.append(file_path)
 
+            # Classification phase complete — release ``scanning_exclusive``
+            # so concurrent uploads/inserts can land in doc_status while
+            # the scan-driven processing finishes.  ``scanning`` stays
+            # True for the rest of the task lifecycle (releases in
+            # finally) so the /scan endpoint still refuses overlapping
+            # scans.  Any per-file enqueue or duplicate detected during
+            # the processing phase is handled by
+            # apipeline_enqueue_documents' in-batch dedup, identical to
+            # the upload-during-busy case.
+            if pipeline_status is not None and pipeline_status_lock is not None:
+                async with pipeline_status_lock:
+                    pipeline_status["scanning_exclusive"] = False
+
             # New files take the standard enqueue + process path.  When at
             # least one new file is successfully enqueued, pipeline_index_files
             # internally invokes apipeline_process_enqueue_documents, which
@@ -2307,7 +2335,12 @@ async def run_scanning_process(
                     "No files to process after filtering already processed files."
                 )
         else:
-            # No new files to index, check if there are any documents in the queue
+            # No new files to index — classification is trivially done;
+            # release ``scanning_exclusive`` before driving the queue so
+            # concurrent uploads can land while process_enqueue runs.
+            if pipeline_status is not None and pipeline_status_lock is not None:
+                async with pipeline_status_lock:
+                    pipeline_status["scanning_exclusive"] = False
             logger.info(
                 "No upload file found, check if there are any documents in the queue..."
             )
@@ -2317,12 +2350,13 @@ async def run_scanning_process(
         logger.error(f"Error during scanning process: {str(e)}")
         logger.error(traceback.format_exc())
     finally:
-        # Always release the scanning flag so future uploads / scans are
-        # not blocked by a crashed task.  Skip when pipeline_status was
-        # never initialised for this workspace (test rigs).
+        # Always release both scanning flags so future uploads / scans
+        # are not blocked by a crashed task.  Skip when pipeline_status
+        # was never initialised for this workspace (test rigs).
         if pipeline_status is not None and pipeline_status_lock is not None:
             async with pipeline_status_lock:
                 pipeline_status["scanning"] = False
+                pipeline_status["scanning_exclusive"] = False
 
 
 async def background_delete_documents(
@@ -2626,10 +2660,17 @@ def create_document_routes(
                     ),
                     track_id=track_id,
                 )
+            # ``scanning`` covers the whole scan task lifecycle (used by
+            # this endpoint to refuse overlapping scans).
+            # ``scanning_exclusive`` is True only during the
+            # classification phase: run_scanning_process clears it once
+            # classification is done so concurrent uploads can land
+            # while the scan-driven processing finishes.
             pipeline_status["scanning"] = True
+            pipeline_status["scanning_exclusive"] = True
 
         # Start the scanning process in the background with track_id.  The
-        # task is responsible for clearing the flag in its finally block.
+        # task is responsible for clearing both flags in its finally block.
         background_tasks.add_task(run_scanning_process, rag, doc_manager, track_id)
         return ScanResponse(
             status="scanning_started",

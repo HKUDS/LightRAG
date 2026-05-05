@@ -125,12 +125,16 @@ class _PipelineMixin:
                 aligned with ``input``. Stored verbatim on ``full_docs`` and
                 mirrored to ``doc_status.metadata['process_options']``.
             from_scan: when True, the caller is the scan-owned background task
-                that already holds ``pipeline_status["scanning"]``.  Scan does
-                additional doc_status reads (classification, stale-stub
-                deletion) so it must serialise with itself and other writers;
-                ``from_scan=True`` bypasses the scanning guard so the scan
-                can enqueue the files it just discovered.  External callers
-                must leave this False.
+                that already holds ``pipeline_status["scanning"]``.  Scan
+                does additional doc_status reads during its classification
+                phase (PROCESSED detection, FAILED-stub deletion, etc.)
+                so external writers are blocked via
+                ``scanning_exclusive``.  Scan's own enqueues happen in
+                its processing phase, after classification has cleared
+                ``scanning_exclusive``, but ``from_scan=True`` is still
+                forwarded as a defence-in-depth bypass so an unexpected
+                scan-owned write inside the classification window is
+                allowed through.  External callers must leave this False.
 
         Returns:
             str: tracking ID for monitoring processing status
@@ -149,9 +153,13 @@ class _PipelineMixin:
         # (b) the running loop re-queries doc_status by status after each
         # batch and sets ``request_pending`` whenever new work arrives
         # while busy.  Two states still block enqueue:
-        #   * ``scanning`` — scan reads doc_status to classify files and
-        #     would race with mid-flight writes.  ``from_scan=True`` lifts
-        #     this guard for the scan task's own enqueues.
+        #   * ``scanning_exclusive`` — scan task is in its CLASSIFICATION
+        #     phase, reading doc_status to classify files and possibly
+        #     deleting stale stubs.  Concurrent enqueue would race
+        #     against scan's reads / mutations.  ``from_scan=True``
+        #     lifts this guard for the scan task's own enqueues.
+        #     ``scanning`` alone (the processing phase) does NOT block,
+        #     identical to the upload-during-busy case.
         #   * ``destructive_busy`` — clear / delete is dropping storages
         #     or removing input files; a concurrent write would be
         #     silently clobbered.
@@ -162,10 +170,11 @@ class _PipelineMixin:
             "pipeline_status", workspace=self.workspace
         )
         async with pipeline_status_lock:
-            if not from_scan and pipeline_status.get("scanning"):
+            if not from_scan and pipeline_status.get("scanning_exclusive"):
                 raise RuntimeError(
-                    "Cannot enqueue while pipeline is scanning; "
-                    "wait for the running scan to finish before retrying."
+                    "Cannot enqueue while scan is classifying files; "
+                    "wait for the classification phase to finish "
+                    "before retrying."
                 )
             if pipeline_status.get("destructive_busy"):
                 raise RuntimeError(

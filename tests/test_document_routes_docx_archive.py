@@ -920,8 +920,12 @@ async def test_upload_succeeds_concurrent_with_pipeline_busy(tmp_path, monkeypat
     assert len(bg.tasks) == 1
 
 
-async def test_upload_returns_409_when_scanning(tmp_path, monkeypatch):
-    """Upload must refuse with 409 when a scan is in progress."""
+async def test_upload_returns_409_when_scanning_classification(tmp_path, monkeypatch):
+    """Upload must refuse with 409 when scan is in its CLASSIFICATION
+    phase (``scanning_exclusive=True``).  Scan's processing phase
+    (``scanning=True`` but ``scanning_exclusive=False``) is permissive
+    — see ``test_upload_succeeds_during_scan_processing_phase`` below.
+    """
     import importlib
 
     monkeypatch.setattr(
@@ -936,6 +940,7 @@ async def test_upload_returns_409_when_scanning(tmp_path, monkeypatch):
         "pipeline_status", workspace=rag.workspace
     )
     pipeline_status["scanning"] = True
+    pipeline_status["scanning_exclusive"] = True
 
     router = create_document_routes(rag, doc_manager)
     upload_endpoint = [
@@ -951,8 +956,55 @@ async def test_upload_returns_409_when_scanning(tmp_path, monkeypatch):
     with pytest.raises(_document_routes.HTTPException) as excinfo:
         await upload_endpoint(_document_routes.BackgroundTasks(), upload_file)
     assert excinfo.value.status_code == 409
-    assert "scan" in excinfo.value.detail.lower()
+    assert "classifying" in excinfo.value.detail.lower()
     assert not (tmp_path / "while_scanning.docx").exists()
+
+
+async def test_upload_succeeds_during_scan_processing_phase(tmp_path, monkeypatch):
+    """User-reported scenario: while pipeline is doing scan-driven
+    processing (``scanning=True`` but ``scanning_exclusive=False``),
+    new uploads must be accepted.  Scan's processing phase is
+    behaviourally identical to busy=True — uploads coexist via
+    request_pending.
+    """
+    import importlib
+
+    monkeypatch.setattr(
+        _document_routes, "global_args", SimpleNamespace(max_upload_size=None)
+    )
+    doc_manager = DocumentManager(str(tmp_path))
+    rag = _DuplicateUploadRag({})
+
+    shared_storage = importlib.import_module("lightrag.kg.shared_storage")
+    await shared_storage.initialize_pipeline_status(workspace=rag.workspace)
+    pipeline_status = await shared_storage.get_namespace_data(
+        "pipeline_status", workspace=rag.workspace
+    )
+    # Classification done; scan is now driving the processing pipeline.
+    pipeline_status["scanning"] = True
+    pipeline_status["scanning_exclusive"] = False
+    pipeline_status["busy"] = True
+    pipeline_status["pending_enqueues"] = 0
+
+    router = create_document_routes(rag, doc_manager)
+    upload_endpoint = [
+        route.endpoint
+        for route in router.routes
+        if getattr(route, "name", "") == "upload_to_input_dir"
+    ][-1]
+    upload_file = _document_routes.UploadFile(
+        filename="upload_during_scan_processing.docx",
+        file=BytesIO(b"docx bytes"),
+    )
+
+    bg = _document_routes.BackgroundTasks()
+    response = await upload_endpoint(bg, upload_file)
+
+    # Endpoint accepted the upload despite scan in progress.
+    assert response.status == "success"
+    assert (tmp_path / "upload_during_scan_processing.docx").exists()
+    assert pipeline_status["pending_enqueues"] == 1
+    assert len(bg.tasks) == 1
 
 
 async def test_scan_endpoint_returns_skipped_when_pipeline_busy(tmp_path):
@@ -1163,12 +1215,14 @@ async def test_release_enqueue_slot_decrements_per_call(tmp_path):
     )
     pipeline_status["busy"] = False
     pipeline_status["scanning"] = False
+    pipeline_status["scanning_exclusive"] = False
     pipeline_status["pending_enqueues"] = 0
 
     # Two concurrent reservations from /upload + /text — both pass the
-    # idle preflight because scanning=F at reservation time (busy is no
-    # longer a gate; concurrent enqueue with the processing loop is
-    # explicitly allowed).
+    # idle preflight because scanning_exclusive=F at reservation time
+    # (busy and the bare ``scanning`` flag are no longer gates;
+    # concurrent enqueue with the processing loop and scan's
+    # processing phase is explicitly allowed).
     assert await _document_routes._reserve_enqueue_slot(rag) is True
     assert await _document_routes._reserve_enqueue_slot(rag) is True
     assert pipeline_status["pending_enqueues"] == 2
@@ -1237,10 +1291,13 @@ async def test_two_concurrent_uploads_both_succeed_when_pipeline_busy(
     assert len(bg_b.tasks) == 1
 
 
-async def test_reserve_enqueue_slot_allows_busy_rejects_scanning(tmp_path):
-    """Reservation only blocks on ``scanning``; ``busy`` is permitted.
-    Concurrent processing is what makes "upload while pipeline is busy"
-    possible — the running loop notices new docs via request_pending.
+async def test_reserve_enqueue_slot_allows_busy_and_scan_processing_phase(tmp_path):
+    """Reservation only blocks on ``scanning_exclusive`` (scan's
+    classification phase) and ``destructive_busy``.  Plain ``busy=True``
+    (processing loop) and ``scanning=True`` with
+    ``scanning_exclusive=False`` (scan in its processing phase) are
+    BOTH permitted — that's what enables "upload while pipeline is
+    working".
     """
     import importlib
 
@@ -1252,21 +1309,30 @@ async def test_reserve_enqueue_slot_allows_busy_rejects_scanning(tmp_path):
     )
     pipeline_status["busy"] = False
     pipeline_status["scanning"] = False
+    pipeline_status["scanning_exclusive"] = False
     pipeline_status["pending_enqueues"] = 0
 
-    # busy=True does NOT block reservation under the new contract.
+    # busy=True alone does NOT block.
     pipeline_status["busy"] = True
     assert await _document_routes._reserve_enqueue_slot(rag) is True
-    assert pipeline_status["pending_enqueues"] == 1
     await _document_routes._release_enqueue_slot(rag)
-    assert pipeline_status["pending_enqueues"] == 0
     pipeline_status["busy"] = False
 
-    # scanning=True still rejects with 409.
+    # scanning=True (scan processing phase) does NOT block — this is
+    # the user-reported case: upload during scan-driven processing
+    # must succeed.
     pipeline_status["scanning"] = True
+    assert await _document_routes._reserve_enqueue_slot(rag) is True
+    await _document_routes._release_enqueue_slot(rag)
+    pipeline_status["scanning"] = False
+
+    # scanning_exclusive=True (scan classification phase) STILL rejects.
+    pipeline_status["scanning"] = True
+    pipeline_status["scanning_exclusive"] = True
     with pytest.raises(_document_routes.HTTPException) as exc:
         await _document_routes._reserve_enqueue_slot(rag)
     assert exc.value.status_code == 409
+    assert "classifying" in exc.value.detail.lower()
     assert pipeline_status["pending_enqueues"] == 0
 
 
@@ -1286,6 +1352,7 @@ async def test_reserve_enqueue_slot_rejects_destructive_busy(tmp_path):
     )
     pipeline_status["busy"] = False
     pipeline_status["scanning"] = False
+    pipeline_status["scanning_exclusive"] = False
     pipeline_status["pending_enqueues"] = 0
 
     # destructive_busy=True (clear / delete in flight) → 409.

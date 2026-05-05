@@ -1297,7 +1297,17 @@ async def initialize_pipeline_status(workspace: str | None = None):
                 # its own (the processing loop) remains compatible with
                 # concurrent enqueue via request_pending.
                 "destructive_busy": False,
-                "scanning": False,  # /documents/scan in progress (independent of busy)
+                "scanning": False,  # /documents/scan task running (whole lifecycle)
+                # Exclusive subset of ``scanning``: only True during the
+                # scan's *classification* phase, when run_scanning_process
+                # is reading doc_status to classify files (PROCESSED →
+                # archive, FAILED-without-full_docs → retry-as-new, etc.)
+                # and possibly deleting stale stubs.  After classification
+                # the scan transitions to its processing phase (which
+                # behaves like any other busy processing run) and clears
+                # this flag, allowing concurrent uploads to land in
+                # doc_status while the scan-driven processing finishes.
+                "scanning_exclusive": False,
                 # Counter of upload/insert endpoints that have passed the
                 # idle preflight but whose background enqueue has not yet
                 # run.  Closes the preflight-to-background race: scan

@@ -365,16 +365,38 @@ def test_apipeline_enqueue_rejects_when_scanning(tmp_path):
                 "pipeline_status", workspace=rag.workspace
             )
 
-            # Scan in flight rejects.
+            # Scan classification phase rejects.  ``scanning_exclusive``
+            # is the field that gates the enqueue last-line guard, not
+            # plain ``scanning`` (which covers the whole scan lifecycle
+            # including its processing phase, where concurrent enqueue
+            # is allowed).
             async with pipeline_status_lock:
                 pipeline_status["scanning"] = True
+                pipeline_status["scanning_exclusive"] = True
             try:
-                with pytest.raises(RuntimeError, match="scanning"):
+                with pytest.raises(RuntimeError, match="scan is classifying"):
                     await rag.apipeline_enqueue_documents(
                         "should not enqueue",
                         file_paths="scan.txt",
                         track_id="track-scan",
                     )
+            finally:
+                async with pipeline_status_lock:
+                    pipeline_status["scanning"] = False
+                    pipeline_status["scanning_exclusive"] = False
+
+            # Scan processing phase (scanning=True, scanning_exclusive=False)
+            # ALLOWS concurrent enqueue — same as upload-during-busy.
+            async with pipeline_status_lock:
+                pipeline_status["scanning"] = True
+                pipeline_status["scanning_exclusive"] = False
+            try:
+                track_processing = await rag.apipeline_enqueue_documents(
+                    "allowed during scan processing",
+                    file_paths="scan_processing.txt",
+                    track_id="track-scan-processing",
+                )
+                assert track_processing == "track-scan-processing"
             finally:
                 async with pipeline_status_lock:
                     pipeline_status["scanning"] = False
@@ -610,10 +632,13 @@ def test_apipeline_enqueue_from_scan_bypasses_scanning_guard(tmp_path):
                 "pipeline_status", workspace=rag.workspace
             )
 
-            # Scan owner: scanning=True, but the call is from_scan=True so it
-            # passes the guard.  The non-scan caller is still rejected.
+            # Scan classification phase: scanning_exclusive=True, but
+            # ``from_scan=True`` lifts the guard so scan can enqueue
+            # files it just discovered.  Non-scan callers are still
+            # rejected.
             async with pipeline_status_lock:
                 pipeline_status["scanning"] = True
+                pipeline_status["scanning_exclusive"] = True
             try:
                 returned_track_id = await rag.apipeline_enqueue_documents(
                     "scan-owned content",
@@ -623,7 +648,7 @@ def test_apipeline_enqueue_from_scan_bypasses_scanning_guard(tmp_path):
                 )
                 assert returned_track_id == "track-scan-owned"
 
-                with pytest.raises(RuntimeError, match="scanning"):
+                with pytest.raises(RuntimeError, match="scan is classifying"):
                     await rag.apipeline_enqueue_documents(
                         "external content",
                         file_paths="external.txt",
@@ -632,6 +657,7 @@ def test_apipeline_enqueue_from_scan_bypasses_scanning_guard(tmp_path):
             finally:
                 async with pipeline_status_lock:
                     pipeline_status["scanning"] = False
+                    pipeline_status["scanning_exclusive"] = False
         finally:
             await rag.finalize_storages()
 
