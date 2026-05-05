@@ -70,7 +70,7 @@ Mutual-exclusion rules (all checked atomically inside the lock):
 | `apipeline_enqueue_documents` (last-line guard) | (`scanning` and not `from_scan`) or `destructive_busy` | — |
 | Scan endpoint reservation | `busy or scanning or pending_enqueues > 0` | `scanning = True` |
 | `apipeline_process_enqueue_documents` entry | (already busy → set `request_pending`, return) | `busy = True` (NOT `destructive_busy`) |
-| `clear_documents` / `background_delete_documents` | `busy` already True | `busy = True`, `destructive_busy = True` |
+| `clear_documents` / `delete_document` (synchronous reservation) | `busy or scanning or pending_enqueues > 0` | `busy = True`, `destructive_busy = True` |
 
 The contract permits **concurrent enqueue + processing**: a freshly-uploaded doc lands in `doc_status` while the loop is mid-batch, the loop sees `request_pending` after the current batch, re-queries `doc_status`, and picks up the new PENDING row. This is what enables "upload while pipeline is busy".
 

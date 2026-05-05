@@ -1049,6 +1049,92 @@ async def _reserve_enqueue_slot(rag: LightRAG) -> bool:
     return True
 
 
+async def _acquire_destructive_busy(rag: LightRAG) -> tuple[bool, str | None]:
+    """Atomically reserve the destructive busy slot for ``/documents/clear``
+    or ``/documents/delete_document``.
+
+    Both jobs DROP storages and (for clear) remove input files.  They
+    must serialise against:
+
+    - any other ``busy`` work (processing loop, another destructive job),
+    - an in-flight ``scanning`` task that reads/writes doc_status and
+      INPUT/, and
+    - any ``pending_enqueues`` reservation whose bg task has not yet
+      written to doc_status — accepting the destructive job in that
+      window would drop storages while the enqueue is mid-write,
+      losing a document the client already saw success for.
+
+    All three checks happen inside a single ``pipeline_status_lock``
+    critical section together with the flag write, so a concurrent
+    enqueue/scan reservation cannot squeeze past us.
+
+    Caller is responsible for clearing both flags in its finally block.
+
+    Returns:
+        (acquired, reason).  ``acquired=True`` and ``reason=None`` on
+        success.  ``acquired=False`` with a human-readable ``reason``
+        when another writer has the lock; the caller surfaces this to
+        the client (HTTP 200 with status="busy" for these endpoints).
+
+        For test rigs where ``pipeline_status`` was never bootstrapped,
+        returns (True, None) — there is nothing to coordinate against.
+    """
+    from lightrag.exceptions import PipelineNotInitializedError
+    from lightrag.kg.shared_storage import get_namespace_data, get_namespace_lock
+
+    try:
+        pipeline_status = await get_namespace_data(
+            "pipeline_status", workspace=rag.workspace
+        )
+    except PipelineNotInitializedError:
+        return True, None
+    pipeline_status_lock = get_namespace_lock(
+        "pipeline_status", workspace=rag.workspace
+    )
+    async with pipeline_status_lock:
+        if pipeline_status.get("busy"):
+            return False, "Pipeline is busy with another operation."
+        if pipeline_status.get("scanning"):
+            return False, (
+                "Document scan is in progress. "
+                "Wait for the scan to complete before clearing or deleting."
+            )
+        if pipeline_status.get("pending_enqueues", 0) > 0:
+            return False, (
+                "Document upload/insert is being enqueued. "
+                "Wait for in-flight work to complete before clearing or "
+                "deleting."
+            )
+        pipeline_status["busy"] = True
+        pipeline_status["destructive_busy"] = True
+    return True, None
+
+
+async def _release_destructive_busy(rag: LightRAG) -> None:
+    """Release the destructive busy slot acquired by
+    ``_acquire_destructive_busy``.  Never raises.
+
+    Distinct from ``_release_enqueue_slot``: that helper clears
+    ``pending_enqueues`` (the upload/insert reservation), this one
+    clears ``busy + destructive_busy`` (the clear/delete reservation).
+    """
+    from lightrag.exceptions import PipelineNotInitializedError
+    from lightrag.kg.shared_storage import get_namespace_data, get_namespace_lock
+
+    try:
+        pipeline_status = await get_namespace_data(
+            "pipeline_status", workspace=rag.workspace
+        )
+    except PipelineNotInitializedError:
+        return
+    pipeline_status_lock = get_namespace_lock(
+        "pipeline_status", workspace=rag.workspace
+    )
+    async with pipeline_status_lock:
+        pipeline_status["busy"] = False
+        pipeline_status["destructive_busy"] = False
+
+
 async def _release_enqueue_slot(rag: LightRAG) -> None:
     """Release a slot reserved by ``_reserve_enqueue_slot``.
 
@@ -2263,20 +2349,16 @@ async def background_delete_documents(
     successful_deletions = []
     failed_deletions = []
 
-    # Double-check pipeline status before proceeding
+    # The /documents/delete_document endpoint has already reserved the
+    # destructive slot synchronously: ``busy=True`` and
+    # ``destructive_busy=True`` were set before the client got
+    # ``deletion_started``, after checking busy + scanning +
+    # pending_enqueues>0 atomically.  Here we only update the
+    # job-info fields; the busy reservation was acquired by the
+    # endpoint and is released in the finally block below.
     async with pipeline_status_lock:
-        if pipeline_status.get("busy", False):
-            logger.warning("Error: Unexpected pipeline busy state, aborting deletion.")
-            return  # Abort deletion operation
-
-        # Set pipeline status to busy for deletion.  ``destructive_busy``
-        # additionally blocks reservation and the enqueue last-line guard:
-        # delete is dropping per-doc state, so accepting a concurrent
-        # enqueue could clobber storage that delete is still touching.
         pipeline_status.update(
             {
-                "busy": True,
-                "destructive_busy": True,
                 # Job name can not be changed, it's verified in adelete_by_doc_id()
                 "job_name": f"Deleting {total_docs} Documents",
                 "job_start": datetime.now().isoformat(),
@@ -3007,22 +3089,20 @@ def create_document_routes(
             "pipeline_status", workspace=rag.workspace
         )
 
-        # Check and set status with lock
+        # Atomically reserve the destructive slot.  Checks busy +
+        # scanning + pending_enqueues>0 in a single critical section
+        # before flipping busy=True and destructive_busy=True together.
+        # ``destructive_busy`` blocks reservation and the enqueue
+        # last-line guard: clear is about to drop every storage and
+        # remove every input file, so a concurrent upload accepted in
+        # this window would write to storages mid-drop and silently
+        # lose the document.
+        acquired, reason = await _acquire_destructive_busy(rag)
+        if not acquired:
+            return ClearDocumentsResponse(status="busy", message=reason)
         async with pipeline_status_lock:
-            if pipeline_status.get("busy", False):
-                return ClearDocumentsResponse(
-                    status="busy",
-                    message="Cannot clear documents while pipeline is busy",
-                )
-            # Set busy + destructive_busy.  ``destructive_busy`` blocks
-            # reservation and the enqueue last-line guard: clear is about
-            # to drop every storage and remove every input file, so a
-            # concurrent upload accepted in this window would write to
-            # storages mid-drop and silently lose the document.
             pipeline_status.update(
                 {
-                    "busy": True,
-                    "destructive_busy": True,
                     "job_name": "Clearing Documents",
                     "job_start": datetime.now().isoformat(),
                     "docs": 0,
@@ -3419,29 +3499,24 @@ def create_document_routes(
         """
         doc_ids = delete_request.doc_ids
 
+        slot_acquired = False
         try:
-            from lightrag.kg.shared_storage import (
-                get_namespace_data,
-                get_namespace_lock,
-            )
+            # Atomically reserve the destructive slot BEFORE returning
+            # ``deletion_started``.  Without this, the bg task would set
+            # destructive_busy only when it later runs — leaving a
+            # window where a /scan or /upload can race the delete after
+            # the client has already received success.  The check
+            # covers busy + scanning + pending_enqueues>0 in a single
+            # critical section.
+            acquired, reason = await _acquire_destructive_busy(rag)
+            if not acquired:
+                return DeleteDocByIdResponse(
+                    status="busy",
+                    message=reason or "Cannot delete documents while pipeline is busy",
+                    doc_id=", ".join(doc_ids),
+                )
+            slot_acquired = True
 
-            pipeline_status = await get_namespace_data(
-                "pipeline_status", workspace=rag.workspace
-            )
-            pipeline_status_lock = get_namespace_lock(
-                "pipeline_status", workspace=rag.workspace
-            )
-
-            # Check if pipeline is busy with proper lock
-            async with pipeline_status_lock:
-                if pipeline_status.get("busy", False):
-                    return DeleteDocByIdResponse(
-                        status="busy",
-                        message="Cannot delete documents while pipeline is busy",
-                        doc_id=", ".join(doc_ids),
-                    )
-
-            # Add deletion task to background tasks
             background_tasks.add_task(
                 background_delete_documents,
                 rag,
@@ -3450,6 +3525,10 @@ def create_document_routes(
                 delete_request.delete_file,
                 delete_request.delete_llm_cache,
             )
+            # Ownership of the slot transferred to the bg task — it
+            # will release in its finally.  The endpoint's finally
+            # below must NOT release it again.
+            slot_acquired = False
 
             return DeleteDocByIdResponse(
                 status="deletion_started",
@@ -3462,6 +3541,12 @@ def create_document_routes(
             logger.error(error_msg)
             logger.error(traceback.format_exc())
             raise HTTPException(status_code=500, detail=error_msg)
+        finally:
+            # If we reserved but never scheduled the bg task (e.g. an
+            # unexpected error between acquire and add_task), release
+            # so the next reservation / scan / enqueue can proceed.
+            if slot_acquired:
+                await _release_destructive_busy(rag)
 
     @router.post(
         "/clear_cache",

@@ -1380,6 +1380,141 @@ async def test_clear_documents_sets_and_clears_destructive_busy(tmp_path):
     assert pipeline_status.get("busy") is False
 
 
+async def test_clear_documents_refuses_when_scanning_or_pending_enqueues(tmp_path):
+    """``/documents/clear`` must refuse atomically when ANY exclusive
+    or in-flight writer is active — not just ``busy``.  Previously
+    only ``busy`` was checked, so clear could begin dropping storages
+    while a /scan task was running or while an upload bg task had
+    reserved a slot but not yet written its doc to doc_status.
+    """
+    import importlib
+
+    workspace = f"clear-refuse-test-{uuid4().hex}"
+
+    class _StubRag:
+        def __init__(self):
+            self.workspace = workspace
+
+    rag = _StubRag()
+    doc_manager = DocumentManager(str(tmp_path))
+
+    shared_storage = importlib.import_module("lightrag.kg.shared_storage")
+    await shared_storage.initialize_pipeline_status(workspace=rag.workspace)
+    pipeline_status = await shared_storage.get_namespace_data(
+        "pipeline_status", workspace=rag.workspace
+    )
+
+    router = create_document_routes(rag, doc_manager)
+    clear_endpoint = [
+        route.endpoint
+        for route in router.routes
+        if getattr(route, "name", "") == "clear_documents"
+    ][-1]
+
+    # Case 1: scanning=True must refuse.
+    pipeline_status["busy"] = False
+    pipeline_status["scanning"] = True
+    pipeline_status["pending_enqueues"] = 0
+    response = await clear_endpoint()
+    assert response.status == "busy"
+    # Critical: no flag mutation occurred; scanning is still owned.
+    assert pipeline_status["scanning"] is True
+    assert pipeline_status.get("destructive_busy", False) is False
+
+    # Case 2: pending_enqueues>0 must refuse.
+    pipeline_status["scanning"] = False
+    pipeline_status["pending_enqueues"] = 1
+    response = await clear_endpoint()
+    assert response.status == "busy"
+    assert pipeline_status["pending_enqueues"] == 1
+    assert pipeline_status.get("destructive_busy", False) is False
+
+    # Case 3: busy=True (e.g. processing loop or another destructive
+    # job) must refuse — preserves existing behaviour.
+    pipeline_status["pending_enqueues"] = 0
+    pipeline_status["busy"] = True
+    response = await clear_endpoint()
+    assert response.status == "busy"
+    assert pipeline_status.get("destructive_busy", False) is False
+
+
+async def test_delete_document_reserves_destructive_busy_synchronously(tmp_path):
+    """``/documents/delete_document`` must reserve the destructive slot
+    synchronously BEFORE returning ``deletion_started``.  Otherwise
+    a /scan or /upload arriving between the response and the bg task
+    starting could race the destructive job.
+
+    Acceptance criteria: after the endpoint returns success,
+    pipeline_status reflects ``busy=True`` and ``destructive_busy=True``
+    even though the bg task hasn't run yet.  Refusal cases for
+    scanning / pending_enqueues / busy must short-circuit and return
+    ``status="busy"`` without scheduling.
+    """
+    import importlib
+
+    rag = _DeleteRag(DeletionResult(status="success", message="ok", doc_id="doc-1"))
+    doc_manager = DocumentManager(str(tmp_path))
+
+    shared_storage = importlib.import_module("lightrag.kg.shared_storage")
+    await shared_storage.initialize_pipeline_status(workspace=rag.workspace)
+    pipeline_status = await shared_storage.get_namespace_data(
+        "pipeline_status", workspace=rag.workspace
+    )
+
+    router = create_document_routes(rag, doc_manager)
+    delete_endpoint = [
+        route.endpoint
+        for route in router.routes
+        if getattr(route, "name", "") == "delete_document"
+    ][-1]
+
+    # Build the request payload using the model class on the module.
+    DeleteDocRequest = _document_routes.DeleteDocRequest
+
+    # Case 1: reservation acquired synchronously, bg task scheduled.
+    pipeline_status["busy"] = False
+    pipeline_status["scanning"] = False
+    pipeline_status["pending_enqueues"] = 0
+    bg = _document_routes.BackgroundTasks()
+    response = await delete_endpoint(
+        DeleteDocRequest(doc_ids=["doc-1"]),
+        bg,
+    )
+    assert response.status == "deletion_started"
+    # Synchronously reserved BEFORE returning.
+    assert pipeline_status["busy"] is True
+    assert pipeline_status["destructive_busy"] is True
+    assert len(bg.tasks) == 1
+    # Reset for next case.
+    pipeline_status["busy"] = False
+    pipeline_status["destructive_busy"] = False
+
+    # Case 2: scanning=True must refuse without scheduling.
+    pipeline_status["scanning"] = True
+    bg = _document_routes.BackgroundTasks()
+    response = await delete_endpoint(
+        DeleteDocRequest(doc_ids=["doc-1"]),
+        bg,
+    )
+    assert response.status == "busy"
+    assert len(bg.tasks) == 0
+    assert pipeline_status.get("destructive_busy", False) is False
+    pipeline_status["scanning"] = False
+
+    # Case 3: pending_enqueues>0 must refuse without scheduling.
+    pipeline_status["pending_enqueues"] = 1
+    bg = _document_routes.BackgroundTasks()
+    response = await delete_endpoint(
+        DeleteDocRequest(doc_ids=["doc-1"]),
+        bg,
+    )
+    assert response.status == "busy"
+    assert len(bg.tasks) == 0
+    assert pipeline_status["pending_enqueues"] == 1
+    assert pipeline_status.get("destructive_busy", False) is False
+    pipeline_status["pending_enqueues"] = 0
+
+
 def test_delete_file_variants_removes_canonical_hint_variants(tmp_path):
     parsed_dir = tmp_path / PARSED_DIR_NAME
     parsed_dir.mkdir()

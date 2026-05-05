@@ -234,8 +234,8 @@ DOCLING_ENDPOINT=http://localhost:8081/v1/convert/file/async
 | 同上 | 否则（含纯 `busy=True`） | 锁内 `pending_enqueues++` 预留 slot → 严格名字预检 → 保存文件 → schedule bg task；bg task 在 `finally` 释放 slot |
 | `/documents/scan` | `busy=True` 或 `scanning=True` 或 `pending_enqueues>0` | 落 warning 后立即返回 `scanning_skipped_pipeline_busy`，不 schedule 后台任务 |
 | 同上 | 全部 idle | 锁内设 `scanning=True` 后 schedule，task 结束在 `finally` 清旗 |
-| `/documents/clear` / `background_delete_documents` | `busy=True` | 直接拒绝（clear 返回 `status="busy"`；delete 中止） |
-| 同上 | `busy=False` | 锁内同时设 `busy=True` + `destructive_busy=True`；finally 一并清旗 |
+| `/documents/clear` / `/documents/delete_document` | `busy=True` 或 `scanning=True` 或 `pending_enqueues>0` | 端点同步返回 `status="busy"`，不 schedule 后台任务 |
+| 同上 | 全部 idle | 端点**同步**在锁内设 `busy=True` + `destructive_busy=True`（`delete_document` 在返回 `deletion_started` 之前），bg task 的 finally 一并清旗 |
 | `apipeline_enqueue_documents` 内部 (last-line guard) | `scanning=True` 且 `from_scan=False`，或 `destructive_busy=True` | 抛 `RuntimeError("Cannot enqueue while pipeline is scanning / clearing or deleting")` |
 | 同上 | 任何其它情况（含纯 `busy=True`） | 正常入队；写完 `doc_status` 后若 `busy=True` 自动 nudge `request_pending=True` |
 
