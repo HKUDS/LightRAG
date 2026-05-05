@@ -1270,6 +1270,116 @@ async def test_reserve_enqueue_slot_allows_busy_rejects_scanning(tmp_path):
     assert pipeline_status["pending_enqueues"] == 0
 
 
+async def test_reserve_enqueue_slot_rejects_destructive_busy(tmp_path):
+    """``destructive_busy`` (set by /documents/clear and per-doc delete)
+    must reject reservation: those jobs DROP storages and remove input
+    files, so any concurrent enqueue would write to a storage being
+    torn down and silently lose the document after the client saw 200.
+    """
+    import importlib
+
+    rag = _ScanRag({})
+    shared_storage = importlib.import_module("lightrag.kg.shared_storage")
+    await shared_storage.initialize_pipeline_status(workspace=rag.workspace)
+    pipeline_status = await shared_storage.get_namespace_data(
+        "pipeline_status", workspace=rag.workspace
+    )
+    pipeline_status["busy"] = False
+    pipeline_status["scanning"] = False
+    pipeline_status["pending_enqueues"] = 0
+
+    # destructive_busy=True (clear / delete in flight) → 409.
+    pipeline_status["busy"] = True
+    pipeline_status["destructive_busy"] = True
+    with pytest.raises(_document_routes.HTTPException) as exc:
+        await _document_routes._reserve_enqueue_slot(rag)
+    assert exc.value.status_code == 409
+    assert "clearing or deleting" in exc.value.detail.lower()
+    assert pipeline_status["pending_enqueues"] == 0
+
+    # Cleared once the destructive job finishes.
+    pipeline_status["destructive_busy"] = False
+    pipeline_status["busy"] = False
+    assert await _document_routes._reserve_enqueue_slot(rag) is True
+    await _document_routes._release_enqueue_slot(rag)
+
+
+async def test_clear_documents_sets_and_clears_destructive_busy(tmp_path):
+    """``/documents/clear`` must set ``destructive_busy=True`` while it is
+    dropping storages (so concurrent uploads get 409, not silent loss)
+    and clear the flag on completion so the pipeline returns to idle.
+    """
+    import importlib
+
+    workspace = f"clear-test-{uuid4().hex}"
+    observed = {"destructive_busy": None}
+
+    class _DropSpy:
+        """Mid-drop probe: snapshots ``destructive_busy`` when the clear
+        endpoint calls our ``drop()``.  Concurrent reservations during
+        this window MUST see destructive_busy=True.
+        """
+
+        def __init__(self, ws):
+            self.namespace = "spy"
+            self.workspace = ws
+
+        async def drop(self):
+            shared_storage_inner = importlib.import_module("lightrag.kg.shared_storage")
+            ns = await shared_storage_inner.get_namespace_data(
+                "pipeline_status", workspace=self.workspace
+            )
+            observed["destructive_busy"] = ns.get("destructive_busy")
+            return None
+
+    spy = _DropSpy(workspace)
+
+    class _ClearRag:
+        def __init__(self):
+            self.workspace = workspace
+            # Eleven storage attributes the clear endpoint iterates over.
+            # Reusing the same spy is fine — each gets ``.drop()`` called
+            # in turn, all observe the same destructive_busy flag.
+            self.text_chunks = spy
+            self.full_docs = spy
+            self.full_entities = spy
+            self.full_relations = spy
+            self.entity_chunks = spy
+            self.relation_chunks = spy
+            self.entities_vdb = spy
+            self.relationships_vdb = spy
+            self.chunks_vdb = spy
+            self.chunk_entity_relation_graph = spy
+            self.doc_status = spy
+
+        async def aclear_cache(self, modes=None):
+            return None
+
+    doc_manager = DocumentManager(str(tmp_path))
+    rag = _ClearRag()
+
+    shared_storage = importlib.import_module("lightrag.kg.shared_storage")
+    await shared_storage.initialize_pipeline_status(workspace=rag.workspace)
+    pipeline_status = await shared_storage.get_namespace_data(
+        "pipeline_status", workspace=rag.workspace
+    )
+
+    router = create_document_routes(rag, doc_manager)
+    clear_endpoint = [
+        route.endpoint
+        for route in router.routes
+        if getattr(route, "name", "") == "clear_documents"
+    ][-1]
+
+    response = await clear_endpoint()
+    assert response.status == "success"
+    # destructive_busy was True for the duration of the storage drop.
+    assert observed["destructive_busy"] is True
+    # And cleared back to False after completion.
+    assert pipeline_status.get("destructive_busy") is False
+    assert pipeline_status.get("busy") is False
+
+
 def test_delete_file_variants_removes_canonical_hint_variants(tmp_path):
     parsed_dir = tmp_path / PARSED_DIR_NAME
     parsed_dir.mkdir()

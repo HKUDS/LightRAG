@@ -1289,6 +1289,14 @@ async def initialize_pipeline_status(workspace: str | None = None):
             {
                 "autoscanned": False,  # Auto-scan started
                 "busy": False,  # Control concurrent processes
+                # Destructive subset of ``busy``: clear / delete jobs that
+                # DROP storages or remove input files.  Concurrent enqueue
+                # would race against the drop and silently lose the
+                # accepted document, so reservation and the enqueue
+                # last-line guard reject when this is True.  ``busy`` on
+                # its own (the processing loop) remains compatible with
+                # concurrent enqueue via request_pending.
+                "destructive_busy": False,
                 "scanning": False,  # /documents/scan in progress (independent of busy)
                 # Counter of upload/insert endpoints that have passed the
                 # idle preflight but whose background enqueue has not yet

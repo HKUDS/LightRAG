@@ -459,6 +459,61 @@ def test_enqueue_during_busy_sets_request_pending(tmp_path):
 
 
 @pytest.mark.offline
+def test_apipeline_enqueue_rejects_when_destructive_busy(tmp_path):
+    """``destructive_busy`` (set by /documents/clear and per-doc delete)
+    must reject enqueue at the last-line guard.  These jobs DROP
+    storages and remove input files; concurrent enqueue would write to
+    storages mid-drop and silently lose the document.  Note: this is
+    different from plain ``busy=True`` (the processing loop), which is
+    explicitly compatible with concurrent enqueue.
+    """
+
+    async def _run():
+        from lightrag.kg.shared_storage import (
+            get_namespace_data,
+            get_namespace_lock,
+        )
+
+        rag = _new_rag(tmp_path)
+        await rag.initialize_storages()
+        try:
+            pipeline_status = await get_namespace_data(
+                "pipeline_status", workspace=rag.workspace
+            )
+            pipeline_status_lock = get_namespace_lock(
+                "pipeline_status", workspace=rag.workspace
+            )
+
+            async with pipeline_status_lock:
+                pipeline_status["busy"] = True
+                pipeline_status["destructive_busy"] = True
+            try:
+                with pytest.raises(RuntimeError, match="clearing or deleting"):
+                    await rag.apipeline_enqueue_documents(
+                        "should not enqueue",
+                        file_paths="while_clearing.txt",
+                        track_id="track-clearing",
+                    )
+                # ``from_scan`` does NOT bypass destructive_busy: scan
+                # is also a writer and would race with the drop.
+                with pytest.raises(RuntimeError, match="clearing or deleting"):
+                    await rag.apipeline_enqueue_documents(
+                        "should not enqueue",
+                        file_paths="while_clearing_scan.txt",
+                        track_id="track-clearing-scan",
+                        from_scan=True,
+                    )
+            finally:
+                async with pipeline_status_lock:
+                    pipeline_status["busy"] = False
+                    pipeline_status["destructive_busy"] = False
+        finally:
+            await rag.finalize_storages()
+
+    asyncio.run(_run())
+
+
+@pytest.mark.offline
 def test_apipeline_enqueue_from_scan_bypasses_scanning_guard(tmp_path):
     """The scan-owned background task sets ``scanning=True`` itself, so its
     own enqueue calls must be allowed through.  External callers (without

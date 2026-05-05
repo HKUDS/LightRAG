@@ -137,20 +137,24 @@ class _PipelineMixin:
 
         Raises:
             RuntimeError: if a scan is in progress (and ``from_scan`` is
-                False).  Concurrent indexing (``busy=True``) is permitted —
-                the running processing loop is notified via
-                ``request_pending`` and will pick up the newly-enqueued doc
-                in its next iteration after the current batch finishes.
+                False), or if a destructive job (clear / delete) is in
+                flight.  Concurrent indexing (``busy=True`` from the
+                processing loop) is permitted — the running loop is
+                notified via ``request_pending`` and picks up the
+                newly-enqueued doc after its current batch finishes.
         """
         # Concurrency contract: enqueue may proceed concurrently with the
-        # busy processing loop because (a) full_docs is upserted before
+        # processing loop because (a) full_docs is upserted before
         # doc_status, so a consistency check never sees a ghost row, and
         # (b) the running loop re-queries doc_status by status after each
         # batch and sets ``request_pending`` whenever new work arrives
-        # while busy.  Only an in-flight scan blocks enqueue: scan reads
-        # doc_status to make classification decisions and would race with
-        # mid-flight writes.  ``from_scan=True`` lifts that guard for the
-        # scan task's own enqueues.
+        # while busy.  Two states still block enqueue:
+        #   * ``scanning`` — scan reads doc_status to classify files and
+        #     would race with mid-flight writes.  ``from_scan=True`` lifts
+        #     this guard for the scan task's own enqueues.
+        #   * ``destructive_busy`` — clear / delete is dropping storages
+        #     or removing input files; a concurrent write would be
+        #     silently clobbered.
         pipeline_status = await get_namespace_data(
             "pipeline_status", workspace=self.workspace
         )
@@ -162,6 +166,12 @@ class _PipelineMixin:
                 raise RuntimeError(
                     "Cannot enqueue while pipeline is scanning; "
                     "wait for the running scan to finish before retrying."
+                )
+            if pipeline_status.get("destructive_busy"):
+                raise RuntimeError(
+                    "Cannot enqueue while pipeline is clearing or "
+                    "deleting documents; wait for the running job to "
+                    "finish before retrying."
                 )
 
         # Generate track_id if not provided

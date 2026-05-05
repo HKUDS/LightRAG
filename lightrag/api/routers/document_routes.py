@@ -978,16 +978,22 @@ async def get_existing_doc_by_file_path_candidates(
 
 
 async def _reserve_enqueue_slot(rag: LightRAG) -> bool:
-    """Atomically check that no scan is in progress and reserve a
+    """Atomically check exclusive-writer state and reserve a
     pending-enqueue slot.
 
-    Concurrent enqueues are now permitted while the pipeline is busy
-    processing — the running loop is notified via ``request_pending``
-    and picks up newly-enqueued docs after its current batch.  The only
-    state that blocks new uploads/inserts is ``scanning``: scan reads
-    doc_status to classify files (PROCESSED → archive, FAILED-without-
-    full_docs → retry-as-new, etc.) and would race with mid-flight
-    writes.
+    Concurrent enqueues are permitted while the processing loop is
+    running — the loop is notified via ``request_pending`` and picks up
+    newly-enqueued docs after its current batch.  Two states block new
+    uploads/inserts:
+
+    - ``scanning``: scan reads doc_status to classify files (PROCESSED
+      → archive, FAILED-without-full_docs → retry-as-new, etc.) and
+      would race with mid-flight writes.
+    - ``destructive_busy``: a /documents/clear or per-doc delete is in
+      flight.  These DROP storages and remove input files; an enqueue
+      accepted in this window would write to a storage that is being
+      torn down and silently lose the document after the client saw
+      success.
 
     ``pending_enqueues`` is incremented so the scan endpoint can refuse
     while bg tasks are mid-enqueue.  The counter does NOT gate
@@ -1004,7 +1010,8 @@ async def _reserve_enqueue_slot(rag: LightRAG) -> bool:
         bootstrapped.
 
     Raises:
-        HTTPException(409): when ``pipeline_status['scanning']`` is set.
+        HTTPException(409): when ``pipeline_status['scanning']`` or
+            ``pipeline_status['destructive_busy']`` is set.
     """
     from lightrag.exceptions import PipelineNotInitializedError
     from lightrag.kg.shared_storage import get_namespace_data, get_namespace_lock
@@ -1025,6 +1032,15 @@ async def _reserve_enqueue_slot(rag: LightRAG) -> bool:
                 detail=(
                     "Document scan is in progress. "
                     "Wait for the scan to complete before submitting new work."
+                ),
+            )
+        if pipeline_status.get("destructive_busy"):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Pipeline is clearing or deleting documents. "
+                    "Wait for the running job to finish before submitting "
+                    "new work."
                 ),
             )
         pipeline_status["pending_enqueues"] = (
@@ -2253,10 +2269,14 @@ async def background_delete_documents(
             logger.warning("Error: Unexpected pipeline busy state, aborting deletion.")
             return  # Abort deletion operation
 
-        # Set pipeline status to busy for deletion
+        # Set pipeline status to busy for deletion.  ``destructive_busy``
+        # additionally blocks reservation and the enqueue last-line guard:
+        # delete is dropping per-doc state, so accepting a concurrent
+        # enqueue could clobber storage that delete is still touching.
         pipeline_status.update(
             {
                 "busy": True,
+                "destructive_busy": True,
                 # Job name can not be changed, it's verified in adelete_by_doc_id()
                 "job_name": f"Deleting {total_docs} Documents",
                 "job_start": datetime.now().isoformat(),
@@ -2402,6 +2422,7 @@ async def background_delete_documents(
         # Final summary and check for pending requests
         async with pipeline_status_lock:
             pipeline_status["busy"] = False
+            pipeline_status["destructive_busy"] = False
             pipeline_status["pending_requests"] = False  # Reset pending requests flag
             pipeline_status["cancellation_requested"] = (
                 False  # Always reset cancellation flag
@@ -2993,10 +3014,15 @@ def create_document_routes(
                     status="busy",
                     message="Cannot clear documents while pipeline is busy",
                 )
-            # Set busy to true
+            # Set busy + destructive_busy.  ``destructive_busy`` blocks
+            # reservation and the enqueue last-line guard: clear is about
+            # to drop every storage and remove every input file, so a
+            # concurrent upload accepted in this window would write to
+            # storages mid-drop and silently lose the document.
             pipeline_status.update(
                 {
                     "busy": True,
+                    "destructive_busy": True,
                     "job_name": "Clearing Documents",
                     "job_start": datetime.now().isoformat(),
                     "docs": 0,
@@ -3135,9 +3161,11 @@ def create_document_routes(
                 pipeline_status["history_messages"].append(error_msg)
             raise HTTPException(status_code=500, detail=str(e))
         finally:
-            # Reset busy status after completion
+            # Reset busy + destructive_busy after completion so the next
+            # reservation / scan sees an idle pipeline.
             async with pipeline_status_lock:
                 pipeline_status["busy"] = False
+                pipeline_status["destructive_busy"] = False
                 completion_msg = "Document clearing process completed"
                 pipeline_status["latest_message"] = completion_msg
                 if "history_messages" in pipeline_status:

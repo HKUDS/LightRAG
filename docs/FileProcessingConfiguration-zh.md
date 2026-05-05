@@ -220,7 +220,8 @@ DOCLING_ENDPOINT=http://localhost:8081/v1/convert/file/async
 
 | 字段 | 语义 |
 | --- | --- |
-| `busy` | 处理循环 (`apipeline_process_enqueue_documents`) 运行中。**不阻塞 enqueue**——循环按 batch 拉取 `doc_status` 快照处理，每批结束后通过 `request_pending` 检查是否还有新工作。 |
+| `busy` | 流水线繁忙的笼统标志。处理循环和破坏性作业（clear/delete）都会设它。**仅有 `busy=True`（处理循环）不阻塞 enqueue**——循环按 batch 拉取 `doc_status` 快照处理，每批结束后通过 `request_pending` 检查是否还有新工作。 |
+| `destructive_busy` | `busy` 的破坏性子集：`/documents/clear` 或 `/documents/{doc_id}`（删除）正在 drop 存储 / 删源文件。reservation 和 enqueue last-line guard 都会拒绝——并发 enqueue 会写入正被 drop 的存储，已接受的文档会静默丢失。处理循环不会设此字段。 |
 | `scanning` | `/documents/scan` 后台任务运行中。**与所有写者互斥**：scan 会读 `doc_status` 做分类决策（已处理 / 续跑 / 删除残余 stub / 归档），不能与并发写者交错。 |
 | `pending_enqueues` | 已通过 `_reserve_enqueue_slot` 但 bg task 未完成的 upload/insert 数。仅给 scan 端点参考——决定是否能拿独占。bg task 在 `finally` 里释放 slot。 |
 | `request_pending` | 让运行中的处理循环再扫一轮的信号。enqueue 在 `busy=True` 时写完 `doc_status` 后置位；处理循环每个 batch 结束后检查并重新拉快照。 |
@@ -229,12 +230,14 @@ DOCLING_ENDPOINT=http://localhost:8081/v1/convert/file/async
 
 | 入口 | 条件 | 行为 |
 | --- | --- | --- |
-| `/documents/upload` / `/documents/text` / `/documents/texts` | `scanning=True` | 抛 HTTP 409，不写文件、不调入队 |
-| 同上 | 否则（含 `busy=True`） | 锁内 `pending_enqueues++` 预留 slot → 严格名字预检 → 保存文件 → schedule bg task；bg task 在 `finally` 释放 slot |
+| `/documents/upload` / `/documents/text` / `/documents/texts` | `scanning=True` 或 `destructive_busy=True` | 抛 HTTP 409，不写文件、不调入队 |
+| 同上 | 否则（含纯 `busy=True`） | 锁内 `pending_enqueues++` 预留 slot → 严格名字预检 → 保存文件 → schedule bg task；bg task 在 `finally` 释放 slot |
 | `/documents/scan` | `busy=True` 或 `scanning=True` 或 `pending_enqueues>0` | 落 warning 后立即返回 `scanning_skipped_pipeline_busy`，不 schedule 后台任务 |
 | 同上 | 全部 idle | 锁内设 `scanning=True` 后 schedule，task 结束在 `finally` 清旗 |
-| `apipeline_enqueue_documents` 内部 (last-line guard) | `scanning=True` 且 `from_scan=False` | 抛 `RuntimeError("Cannot enqueue while pipeline is scanning")` |
-| 同上 | 任何其它情况（含 `busy=True`） | 正常入队；写完 `doc_status` 后若 `busy=True` 自动 nudge `request_pending=True` |
+| `/documents/clear` / `background_delete_documents` | `busy=True` | 直接拒绝（clear 返回 `status="busy"`；delete 中止） |
+| 同上 | `busy=False` | 锁内同时设 `busy=True` + `destructive_busy=True`；finally 一并清旗 |
+| `apipeline_enqueue_documents` 内部 (last-line guard) | `scanning=True` 且 `from_scan=False`，或 `destructive_busy=True` | 抛 `RuntimeError("Cannot enqueue while pipeline is scanning / clearing or deleting")` |
+| 同上 | 任何其它情况（含纯 `busy=True`） | 正常入队；写完 `doc_status` 后若 `busy=True` 自动 nudge `request_pending=True` |
 
 `from_scan=True` 是 scan 后台任务自身入队时的旁路：scan 已持有 `scanning` 旗标，必须允许它把扫到的文件入队。
 

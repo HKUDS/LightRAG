@@ -56,7 +56,8 @@ Workspace isolation is implemented differently per storage type (subdirectories 
 
 The document ingestion pipeline coordinates concurrent writers through `pipeline_status` (a per-workspace shared dict in `lightrag.kg.shared_storage`). Four fields, all mutated under `get_namespace_lock("pipeline_status", workspace=...)`:
 
-- **`busy`**: the processing loop (`apipeline_process_enqueue_documents`) is running. **Does NOT block enqueue.** The loop processes a snapshot per batch and re-queries `doc_status` between batches via `request_pending`.
+- **`busy`**: any pipeline-busy state. Set by both the processing loop AND destructive jobs (clear / per-doc delete). On its own, `busy=True` does NOT block enqueue — see `destructive_busy` for the exclusive subset.
+- **`destructive_busy`**: the busy job is `/documents/clear` or `/documents/{doc_id}` (delete). These DROP storages and remove input files; a concurrent enqueue accepted in this window would write to storage being torn down and silently lose the document. Reservation and the enqueue last-line guard reject when this is True.
 - **`scanning`**: a `/documents/scan` task is running. Exclusive of everything (uploads, inserts, processing, other scans) because scan reads `doc_status` to make classification decisions and would race with mid-flight writes.
 - **`pending_enqueues`**: count of `/upload`, `/text`, `/texts` endpoints that have reserved a slot (via `_reserve_enqueue_slot`) but whose bg task has not yet completed. Only the scan endpoint reads this — to refuse starting while uploads are mid-flight.
 - **`request_pending`**: a nudge to the running processing loop. Set by either (a) `apipeline_process_enqueue_documents` when called while `busy=True` or (b) `apipeline_enqueue_documents` after writing to `doc_status` while `busy=True`. The loop checks it after each batch and re-queries `doc_status` if set.
@@ -65,10 +66,11 @@ Mutual-exclusion rules (all checked atomically inside the lock):
 
 | Operation | Refuses if | Writes |
 |---|---|---|
-| `_reserve_enqueue_slot` | `scanning` | `pending_enqueues++` |
-| `apipeline_enqueue_documents` (last-line guard) | `scanning` and not `from_scan` | — |
+| `_reserve_enqueue_slot` | `scanning` or `destructive_busy` | `pending_enqueues++` |
+| `apipeline_enqueue_documents` (last-line guard) | (`scanning` and not `from_scan`) or `destructive_busy` | — |
 | Scan endpoint reservation | `busy or scanning or pending_enqueues > 0` | `scanning = True` |
-| `apipeline_process_enqueue_documents` entry | (already busy → set `request_pending`, return) | `busy = True` |
+| `apipeline_process_enqueue_documents` entry | (already busy → set `request_pending`, return) | `busy = True` (NOT `destructive_busy`) |
+| `clear_documents` / `background_delete_documents` | `busy` already True | `busy = True`, `destructive_busy = True` |
 
 The contract permits **concurrent enqueue + processing**: a freshly-uploaded doc lands in `doc_status` while the loop is mid-batch, the loop sees `request_pending` after the current batch, re-queries `doc_status`, and picks up the new PENDING row. This is what enables "upload while pipeline is busy".
 
