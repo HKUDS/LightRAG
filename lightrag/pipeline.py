@@ -104,6 +104,7 @@ class _PipelineMixin:
         lightrag_document_paths: str | list[str] | None = None,
         parsed_engine: str | list[str] | None = None,
         process_options: str | list[str] | None = None,
+        from_scan: bool = False,
     ) -> str:
         """
         Pipeline for Processing Documents
@@ -125,22 +126,45 @@ class _PipelineMixin:
                 accepted as a single string broadcast to every input or as a list
                 aligned with ``input``. Stored verbatim on ``full_docs`` and
                 mirrored to ``doc_status.metadata['process_options']``.
+            from_scan: when True, the caller is the scan-owned background task
+                that already holds ``pipeline_status["scanning"]``.  Scan
+                does additional doc_status reads during its classification
+                phase (PROCESSED detection, FAILED-stub deletion, etc.)
+                so external writers are blocked via
+                ``scanning_exclusive``.  Scan's own enqueues happen in
+                its processing phase, after classification has cleared
+                ``scanning_exclusive``, but ``from_scan=True`` is still
+                forwarded as a defence-in-depth bypass so an unexpected
+                scan-owned write inside the classification window is
+                allowed through.  External callers must leave this False.
 
         Returns:
             str: tracking ID for monitoring processing status
 
         Raises:
-            RuntimeError: if the pipeline is already busy or a scan is in
-                progress.  Per the concurrency contract, all writes to
-                ``doc_status`` / ``full_docs`` must wait for the in-flight
-                indexing or scanning to finish.  Callers from HTTP endpoints
-                should pre-check ``pipeline_status['busy']`` /
-                ``pipeline_status['scanning']`` and surface a 409 to clients
-                long before reaching this last-line guard.
+            RuntimeError: if a scan is in progress (and ``from_scan`` is
+                False), or if a destructive job (clear / delete) is in
+                flight.  Concurrent indexing (``busy=True`` from the
+                processing loop) is permitted — the running loop is
+                notified via ``request_pending`` and picks up the
+                newly-enqueued doc after its current batch finishes.
         """
-        # Pipeline-busy guard: refuse to mutate doc_status / full_docs while
-        # any indexing or scanning job is running.  This is the last line of
-        # defence — endpoints should fail fast with 409 before getting here.
+        # Concurrency contract: enqueue may proceed concurrently with the
+        # processing loop because (a) full_docs is upserted before
+        # doc_status, so a consistency check never sees a ghost row, and
+        # (b) the running loop re-queries doc_status by status after each
+        # batch and sets ``request_pending`` whenever new work arrives
+        # while busy.  Two states still block enqueue:
+        #   * ``scanning_exclusive`` — scan task is in its CLASSIFICATION
+        #     phase, reading doc_status to classify files and possibly
+        #     deleting stale stubs.  Concurrent enqueue would race
+        #     against scan's reads / mutations.  ``from_scan=True``
+        #     lifts this guard for the scan task's own enqueues.
+        #     ``scanning`` alone (the processing phase) does NOT block,
+        #     identical to the upload-during-busy case.
+        #   * ``destructive_busy`` — clear / delete is dropping storages
+        #     or removing input files; a concurrent write would be
+        #     silently clobbered.
         pipeline_status = await get_namespace_data(
             "pipeline_status", workspace=self.workspace
         )
@@ -148,10 +172,17 @@ class _PipelineMixin:
             "pipeline_status", workspace=self.workspace
         )
         async with pipeline_status_lock:
-            if pipeline_status.get("busy") or pipeline_status.get("scanning"):
+            if not from_scan and pipeline_status.get("scanning_exclusive"):
                 raise RuntimeError(
-                    "Cannot enqueue while pipeline is busy or scanning; "
-                    "wait for the running job to finish before retrying."
+                    "Cannot enqueue while scan is classifying files; "
+                    "wait for the classification phase to finish "
+                    "before retrying."
+                )
+            if pipeline_status.get("destructive_busy"):
+                raise RuntimeError(
+                    "Cannot enqueue while pipeline is clearing or "
+                    "deleting documents; wait for the running job to "
+                    "finish before retrying."
                 )
 
         # Generate track_id if not provided
@@ -402,201 +433,240 @@ class _PipelineMixin:
             for id_, content_data in contents.items()
         }
 
-        # 3. Filter out already processed documents
-        # Get docs ids
-        all_new_doc_ids = set(new_docs.keys())
-        # Exclude IDs of documents that are already enqueued.  The previous
-        # ``reprocess_existing_non_processed`` flag has been removed: any
-        # same-name record (regardless of status) is treated as a duplicate
-        # here.  Recovering half-processed documents is now the job of the
-        # pipeline's resume logic, which runs in apipeline_process_enqueue_documents
-        # rather than this enqueue path.
-        unique_new_doc_ids = await self.doc_status.filter_keys(all_new_doc_ids)
+        # Serialise the dedup-read-then-upsert critical section across
+        # concurrent enqueue calls within the same workspace.  Without
+        # this, two enqueues for the same content (e.g. /upload during
+        # scan's processing phase, or two uploads via /text + /upload)
+        # can both read doc_status before either upserts, both miss the
+        # content_hash dedup, and both end up writing PENDING rows for
+        # the same content — bypassing the dedup that's supposed to
+        # land one of them as ``duplicate_kind=content_hash`` FAILED.
+        #
+        # The lock is workspace-scoped and only spans steps 3-4 below
+        # (filter_keys → upserts).  It does NOT block concurrent
+        # processing (``apipeline_process_enqueue_documents`` reads
+        # doc_status independently) or scan classification
+        # (``scanning_exclusive`` already gates concurrent enqueue).
+        # Lock order: enqueue_serialize → pipeline_status_lock (the
+        # request_pending nudge inside is fine; no caller holds
+        # pipeline_status_lock first then needs enqueue_serialize).
+        enqueue_serialize_lock = get_namespace_lock(
+            "enqueue_serialize", workspace=self.workspace
+        )
 
-        for doc_id in list(unique_new_doc_ids):
-            content_data = contents[doc_id]
+        async with enqueue_serialize_lock:
+            # 3. Filter out already processed documents
+            # Get docs ids
+            all_new_doc_ids = set(new_docs.keys())
+            # Exclude IDs of documents that are already enqueued.  The previous
+            # ``reprocess_existing_non_processed`` flag has been removed: any
+            # same-name record (regardless of status) is treated as a duplicate
+            # here.  Recovering half-processed documents is now the job of the
+            # pipeline's resume logic, which runs in apipeline_process_enqueue_documents
+            # rather than this enqueue path.
+            unique_new_doc_ids = await self.doc_status.filter_keys(all_new_doc_ids)
 
-            # 3a. Filename-based dedup: same basename always treated as duplicate.
-            match = await get_existing_doc_by_file_basename(
-                self.doc_status, content_data["file_path"]
-            )
-            if match:
-                existing_doc_id, existing_doc = match
-                unique_new_doc_ids.discard(doc_id)
+            for doc_id in list(unique_new_doc_ids):
+                content_data = contents[doc_id]
+
+                # 3a. Filename-based dedup: same basename always treated as duplicate.
+                match = await get_existing_doc_by_file_basename(
+                    self.doc_status, content_data["file_path"]
+                )
+                if match:
+                    existing_doc_id, existing_doc = match
+                    unique_new_doc_ids.discard(doc_id)
+                    duplicate_attempts.append(
+                        {
+                            "doc_id": doc_id,
+                            "original_doc_id": existing_doc_id,
+                            "file_path": content_data["file_path"],
+                            "content_length": new_docs.get(doc_id, {}).get(
+                                "content_length", 0
+                            ),
+                            "existing_status": doc_status_field(
+                                existing_doc, "status", "unknown"
+                            ),
+                            "existing_track_id": doc_status_field(
+                                existing_doc, "track_id", ""
+                            ),
+                            "duplicate_kind": "filename",
+                        }
+                    )
+                    continue
+
+                # 3b. Content-hash dedup: different filename but same body still dupes.
+                content_hash = content_data.get("content_hash")
+                if not content_hash:
+                    continue
+                hash_match = await get_existing_doc_by_content_hash(
+                    self.doc_status, content_hash
+                )
+                if hash_match:
+                    existing_doc_id, existing_doc = hash_match
+                    unique_new_doc_ids.discard(doc_id)
+                    duplicate_attempts.append(
+                        {
+                            "doc_id": doc_id,
+                            "original_doc_id": existing_doc_id,
+                            "file_path": content_data["file_path"],
+                            "content_length": new_docs.get(doc_id, {}).get(
+                                "content_length", 0
+                            ),
+                            "existing_status": doc_status_field(
+                                existing_doc, "status", "unknown"
+                            ),
+                            "existing_track_id": doc_status_field(
+                                existing_doc, "track_id", ""
+                            ),
+                            "duplicate_kind": "content_hash",
+                        }
+                    )
+
+            # Handle duplicate documents - create trackable records with current track_id
+            ignored_ids = list(all_new_doc_ids - unique_new_doc_ids)
+            for doc_id in ignored_ids:
+                if any(
+                    attempt.get("doc_id") == doc_id for attempt in duplicate_attempts
+                ):
+                    continue
+                existing_doc = await self.doc_status.get_by_id(doc_id)
                 duplicate_attempts.append(
                     {
                         "doc_id": doc_id,
-                        "original_doc_id": existing_doc_id,
-                        "file_path": content_data["file_path"],
+                        "original_doc_id": doc_id,
+                        "file_path": new_docs.get(doc_id, {}).get(
+                            "file_path", "unknown_source"
+                        ),
                         "content_length": new_docs.get(doc_id, {}).get(
                             "content_length", 0
                         ),
-                        "existing_status": doc_status_field(
-                            existing_doc, "status", "unknown"
+                        "existing_status": (
+                            existing_doc.get("status", "unknown")
+                            if existing_doc
+                            else "unknown"
                         ),
-                        "existing_track_id": doc_status_field(
-                            existing_doc, "track_id", ""
+                        "existing_track_id": (
+                            existing_doc.get("track_id", "") if existing_doc else ""
                         ),
                         "duplicate_kind": "filename",
                     }
                 )
-                continue
 
-            # 3b. Content-hash dedup: different filename but same body still dupes.
-            content_hash = content_data.get("content_hash")
-            if not content_hash:
-                continue
-            hash_match = await get_existing_doc_by_content_hash(
-                self.doc_status, content_hash
-            )
-            if hash_match:
-                existing_doc_id, existing_doc = hash_match
-                unique_new_doc_ids.discard(doc_id)
-                duplicate_attempts.append(
-                    {
-                        "doc_id": doc_id,
-                        "original_doc_id": existing_doc_id,
-                        "file_path": content_data["file_path"],
-                        "content_length": new_docs.get(doc_id, {}).get(
-                            "content_length", 0
-                        ),
-                        "existing_status": doc_status_field(
-                            existing_doc, "status", "unknown"
-                        ),
-                        "existing_track_id": doc_status_field(
-                            existing_doc, "track_id", ""
-                        ),
-                        "duplicate_kind": "content_hash",
-                    }
-                )
-
-        # Handle duplicate documents - create trackable records with current track_id
-        ignored_ids = list(all_new_doc_ids - unique_new_doc_ids)
-        for doc_id in ignored_ids:
-            if any(attempt.get("doc_id") == doc_id for attempt in duplicate_attempts):
-                continue
-            existing_doc = await self.doc_status.get_by_id(doc_id)
-            duplicate_attempts.append(
-                {
-                    "doc_id": doc_id,
-                    "original_doc_id": doc_id,
-                    "file_path": new_docs.get(doc_id, {}).get(
-                        "file_path", "unknown_source"
-                    ),
-                    "content_length": new_docs.get(doc_id, {}).get("content_length", 0),
-                    "existing_status": (
-                        existing_doc.get("status", "unknown")
-                        if existing_doc
-                        else "unknown"
-                    ),
-                    "existing_track_id": (
-                        existing_doc.get("track_id", "") if existing_doc else ""
-                    ),
-                    "duplicate_kind": "filename",
-                }
-            )
-
-        if duplicate_attempts:
-            duplicate_docs: dict[str, Any] = {}
-            for index, attempt in enumerate(duplicate_attempts):
-                doc_id = attempt["doc_id"]
-                file_path = attempt.get("file_path") or "unknown_source"
-                duplicate_kind = attempt.get("duplicate_kind") or "filename"
-                logger.warning(
-                    f"Duplicate document detected ({duplicate_kind}): "
-                    f"{doc_id} ({file_path})"
-                )
-
-                # Create a new record with unique ID for this duplicate attempt
-                dup_record_id = compute_mdhash_id(
-                    f"{doc_id}-{track_id}-{index}-{file_path}", prefix="dup-"
-                )
-                if duplicate_kind == "content_hash":
-                    error_prefix = (
-                        "Identical content already exists under another filename."
+            if duplicate_attempts:
+                duplicate_docs: dict[str, Any] = {}
+                for index, attempt in enumerate(duplicate_attempts):
+                    doc_id = attempt["doc_id"]
+                    file_path = attempt.get("file_path") or "unknown_source"
+                    duplicate_kind = attempt.get("duplicate_kind") or "filename"
+                    logger.warning(
+                        f"Duplicate document detected ({duplicate_kind}): "
+                        f"{doc_id} ({file_path})"
                     )
-                else:
-                    error_prefix = "File name already exists."
-                duplicate_docs[dup_record_id] = {
-                    "status": DocStatus.FAILED,
-                    "content_summary": (
-                        f"[DUPLICATE:{duplicate_kind}] Original document: "
-                        f"{attempt.get('original_doc_id', doc_id)}"
-                    ),
-                    "content_length": attempt.get("content_length", 0),
-                    "chunks_count": 0,
-                    "chunks_list": [],
-                    "created_at": datetime.now(timezone.utc).isoformat(),
-                    "updated_at": datetime.now(timezone.utc).isoformat(),
-                    "file_path": file_path,
-                    "track_id": track_id,  # Use current track_id for tracking
-                    "error_msg": (
-                        f"{error_prefix} "
-                        f"Original doc_id: {attempt.get('original_doc_id', doc_id)}, "
-                        f"Status: {attempt.get('existing_status', 'unknown')}"
-                    ),
-                    "metadata": {
-                        "is_duplicate": True,
-                        "duplicate_kind": duplicate_kind,
-                        "original_doc_id": attempt.get("original_doc_id", doc_id),
-                        "original_track_id": attempt.get("existing_track_id", ""),
-                    },
-                }
 
-            # Store duplicate records in doc_status
-            if duplicate_docs:
-                await self.doc_status.upsert(duplicate_docs)
-                logger.info(
-                    f"Created {len(duplicate_docs)} duplicate document records with track_id: {track_id}"
-                )
+                    # Create a new record with unique ID for this duplicate attempt
+                    dup_record_id = compute_mdhash_id(
+                        f"{doc_id}-{track_id}-{index}-{file_path}", prefix="dup-"
+                    )
+                    if duplicate_kind == "content_hash":
+                        error_prefix = (
+                            "Identical content already exists under another filename."
+                        )
+                    else:
+                        error_prefix = "File name already exists."
+                    duplicate_docs[dup_record_id] = {
+                        "status": DocStatus.FAILED,
+                        "content_summary": (
+                            f"[DUPLICATE:{duplicate_kind}] Original document: "
+                            f"{attempt.get('original_doc_id', doc_id)}"
+                        ),
+                        "content_length": attempt.get("content_length", 0),
+                        "chunks_count": 0,
+                        "chunks_list": [],
+                        "created_at": datetime.now(timezone.utc).isoformat(),
+                        "updated_at": datetime.now(timezone.utc).isoformat(),
+                        "file_path": file_path,
+                        "track_id": track_id,  # Use current track_id for tracking
+                        "error_msg": (
+                            f"{error_prefix} "
+                            f"Original doc_id: {attempt.get('original_doc_id', doc_id)}, "
+                            f"Status: {attempt.get('existing_status', 'unknown')}"
+                        ),
+                        "metadata": {
+                            "is_duplicate": True,
+                            "duplicate_kind": duplicate_kind,
+                            "original_doc_id": attempt.get("original_doc_id", doc_id),
+                            "original_track_id": attempt.get("existing_track_id", ""),
+                        },
+                    }
 
-        # Filter new_docs to only include documents with unique IDs
-        new_docs = {
-            doc_id: new_docs[doc_id]
-            for doc_id in unique_new_doc_ids
-            if doc_id in new_docs
-        }
+                # Store duplicate records in doc_status
+                if duplicate_docs:
+                    await self.doc_status.upsert(duplicate_docs)
+                    logger.info(
+                        f"Created {len(duplicate_docs)} duplicate document records with track_id: {track_id}"
+                    )
 
-        if not new_docs:
-            logger.warning("No new unique documents were found.")
-            return
-
-        # 4. Store document content in full_docs and status in doc_status
-        full_docs_data = {
-            doc_id: {
-                "content": contents[doc_id].get("content", ""),
-                "file_path": contents[doc_id]["file_path"],
-                "canonical_basename": contents[doc_id].get("canonical_basename"),
-                "format": contents[doc_id].get("format", FULL_DOCS_FORMAT_RAW),
+            # Filter new_docs to only include documents with unique IDs
+            new_docs = {
+                doc_id: new_docs[doc_id]
+                for doc_id in unique_new_doc_ids
+                if doc_id in new_docs
             }
-            for doc_id in new_docs.keys()
-        }
-        for doc_id in new_docs.keys():
-            if contents[doc_id].get("content_hash"):
-                full_docs_data[doc_id]["content_hash"] = contents[doc_id][
-                    "content_hash"
-                ]
-            if contents[doc_id].get("source_path"):
-                full_docs_data[doc_id]["source_path"] = contents[doc_id]["source_path"]
-            if contents[doc_id].get("lightrag_document_path"):
-                full_docs_data[doc_id]["lightrag_document_path"] = contents[doc_id][
-                    "lightrag_document_path"
-                ]
-            if contents[doc_id].get("parsed_engine"):
-                full_docs_data[doc_id]["parsed_engine"] = contents[doc_id][
-                    "parsed_engine"
-                ]
-            if contents[doc_id].get("process_options"):
-                full_docs_data[doc_id]["process_options"] = contents[doc_id][
-                    "process_options"
-                ]
-        await self.full_docs.upsert(full_docs_data)
-        # Persist data to disk immediately
-        await self.full_docs.index_done_callback()
 
-        # Store document status (without content)
-        await self.doc_status.upsert(new_docs)
-        logger.debug(f"Stored {len(new_docs)} new unique documents")
+            if not new_docs:
+                logger.warning("No new unique documents were found.")
+                return
+
+            # 4. Store document content in full_docs and status in doc_status
+            full_docs_data = {
+                doc_id: {
+                    "content": contents[doc_id].get("content", ""),
+                    "file_path": contents[doc_id]["file_path"],
+                    "canonical_basename": contents[doc_id].get("canonical_basename"),
+                    "format": contents[doc_id].get("format", FULL_DOCS_FORMAT_RAW),
+                }
+                for doc_id in new_docs.keys()
+            }
+            for doc_id in new_docs.keys():
+                if contents[doc_id].get("content_hash"):
+                    full_docs_data[doc_id]["content_hash"] = contents[doc_id][
+                        "content_hash"
+                    ]
+                if contents[doc_id].get("source_path"):
+                    full_docs_data[doc_id]["source_path"] = contents[doc_id][
+                        "source_path"
+                    ]
+                if contents[doc_id].get("lightrag_document_path"):
+                    full_docs_data[doc_id]["lightrag_document_path"] = contents[doc_id][
+                        "lightrag_document_path"
+                    ]
+                if contents[doc_id].get("parsed_engine"):
+                    full_docs_data[doc_id]["parsed_engine"] = contents[doc_id][
+                        "parsed_engine"
+                    ]
+                if contents[doc_id].get("process_options"):
+                    full_docs_data[doc_id]["process_options"] = contents[doc_id][
+                        "process_options"
+                    ]
+            await self.full_docs.upsert(full_docs_data)
+            # Persist data to disk immediately
+            await self.full_docs.index_done_callback()
+
+            # Store document status (without content)
+            await self.doc_status.upsert(new_docs)
+            logger.debug(f"Stored {len(new_docs)} new unique documents")
+
+        # Notify any in-flight processing loop that new work has arrived.
+        # The loop checks ``request_pending`` after each batch and will
+        # re-query doc_status to pick up these PENDING rows.  Without
+        # this nudge a caller that does not subsequently call
+        # ``apipeline_process_enqueue_documents`` (or whose call races
+        # with the loop's just-finished batch) could leave the new docs
+        # stranded until the next unrelated trigger.
+        async with pipeline_status_lock:
+            if pipeline_status.get("busy"):
+                pipeline_status["request_pending"] = True
 
         return track_id
 
@@ -817,6 +887,37 @@ class _PipelineMixin:
 
         return to_process_docs
 
+    async def _atomic_release_busy_or_consume_pending(
+        self,
+        pipeline_status: dict,
+        pipeline_status_lock,
+    ) -> bool:
+        """Atomically decide whether to release ``busy`` or consume a
+        pending request.
+
+        Closes the loop-exit handoff race: a concurrent enqueue that
+        sets ``request_pending`` while the processing loop is on its
+        way out will be observed in the same critical section that
+        releases ``busy``, so the loop sees it and refetches instead
+        of stranding the new doc in PENDING.
+
+        Returns:
+            True when ``busy`` has been cleared under the same lock
+            that observed ``request_pending=False`` — caller must
+            break out of the loop and skip clearing ``busy`` in its
+            finally block.
+
+            False when ``request_pending`` was set: the flag is
+            cleared and the caller must refetch ``doc_status`` and
+            continue the loop.
+        """
+        async with pipeline_status_lock:
+            if pipeline_status.get("request_pending", False):
+                pipeline_status["request_pending"] = False
+                return False
+            pipeline_status["busy"] = False
+            return True
+
     async def apipeline_process_enqueue_documents(
         self,
         split_by_character: str | None = None,
@@ -843,20 +944,23 @@ class _PipelineMixin:
         )
 
         # Check if another process is already processing the queue
+        # Statuses the pipeline considers "in-flight or pending"; used by
+        # both the initial snapshot and every refetch after a
+        # request_pending continuation.
+        _processing_statuses = [
+            DocStatus.PROCESSING,
+            DocStatus.FAILED,
+            DocStatus.PENDING,
+            DocStatus.PARSING,
+            DocStatus.ANALYZING,
+        ]
+
         async with pipeline_status_lock:
             # Ensure only one worker is processing documents
             if not pipeline_status.get("busy", False):
                 to_process_docs: dict[
                     str, DocProcessingStatus
-                ] = await self.doc_status.get_docs_by_statuses(
-                    [
-                        DocStatus.PROCESSING,
-                        DocStatus.FAILED,
-                        DocStatus.PENDING,
-                        DocStatus.PARSING,
-                        DocStatus.ANALYZING,
-                    ]
-                )
+                ] = await self.doc_status.get_docs_by_statuses(_processing_statuses)
 
                 if not to_process_docs:
                     logger.info("No documents to process")
@@ -885,6 +989,30 @@ class _PipelineMixin:
                 )
                 return
 
+        # Tracks whether the loop has already released ``busy`` under
+        # the same critical section that observed request_pending=False.
+        # This makes the exit handoff atomic: a concurrent enqueue can
+        # either set request_pending BEFORE we release (in which case
+        # the loop continues with a fresh snapshot) or AFTER (in which
+        # case it sees busy=False and starts a new loop via its own
+        # process_enqueue call).  Without this, a small window between
+        # "loop reads request_pending=False" and "finally clears busy"
+        # could strand newly-enqueued PENDING docs.
+        busy_released_in_loop = False
+
+        async def _try_atomic_release() -> bool:
+            """Thin wrapper that updates the local
+            ``busy_released_in_loop`` flag based on the result of
+            ``_atomic_release_busy_or_consume_pending``.
+            """
+            nonlocal busy_released_in_loop
+            released = await self._atomic_release_busy_or_consume_pending(
+                pipeline_status, pipeline_status_lock
+            )
+            if released:
+                busy_released_in_loop = True
+            return released
+
         try:
             # Process documents until no more documents or requests
             while True:
@@ -909,7 +1037,12 @@ class _PipelineMixin:
                     logger.info(log_message)
                     pipeline_status["latest_message"] = log_message
                     pipeline_status["history_messages"].append(log_message)
-                    break
+                    if await _try_atomic_release():
+                        break
+                    to_process_docs = await self.doc_status.get_docs_by_statuses(
+                        _processing_statuses
+                    )
+                    continue
 
                 # Validate document data consistency and fix any issues as part of the pipeline
                 to_process_docs = await self._validate_and_fix_document_consistency(
@@ -923,7 +1056,12 @@ class _PipelineMixin:
                     logger.info(log_message)
                     pipeline_status["latest_message"] = log_message
                     pipeline_status["history_messages"].append(log_message)
-                    break
+                    if await _try_atomic_release():
+                        break
+                    to_process_docs = await self.doc_status.get_docs_by_statuses(
+                        _processing_statuses
+                    )
+                    continue
 
                 log_message = f"Processing {len(to_process_docs)} document(s)"
                 logger.info(log_message)
@@ -1936,15 +2074,12 @@ class _PipelineMixin:
                     w.cancel()
                 await asyncio.gather(*workers, return_exceptions=True)
 
-                # Check if there's a pending request to process more documents (with lock)
-                has_pending_request = False
-                async with pipeline_status_lock:
-                    has_pending_request = pipeline_status.get("request_pending", False)
-                    if has_pending_request:
-                        # Clear the request flag before checking for more documents
-                        pipeline_status["request_pending"] = False
-
-                if not has_pending_request:
+                # Atomic exit handoff: if request_pending was set during
+                # this batch (e.g. a concurrent enqueue while busy=True),
+                # clear it and refetch.  Otherwise release ``busy`` under
+                # the SAME lock so a concurrent enqueue cannot squeeze a
+                # request_pending=True past us into a now-stranded state.
+                if await _try_atomic_release():
                     break
 
                 log_message = "Processing additional documents due to pending request"
@@ -1954,21 +2089,20 @@ class _PipelineMixin:
 
                 # Check for pending documents again
                 to_process_docs = await self.doc_status.get_docs_by_statuses(
-                    [
-                        DocStatus.PROCESSING,
-                        DocStatus.FAILED,
-                        DocStatus.PENDING,
-                        DocStatus.PARSING,
-                        DocStatus.ANALYZING,
-                    ]
+                    _processing_statuses
                 )
 
         finally:
             log_message = "Enqueued document processing pipeline stopped"
             logger.info(log_message)
-            # Always reset busy status and cancellation flag when done or if an exception occurs (with lock)
+            # If the loop already released ``busy`` under the atomic exit
+            # check, don't clobber it here — a concurrent enqueue may have
+            # observed busy=False and started a new processing pass that
+            # has set busy=True for itself.  Cancellation flag and log
+            # bookkeeping are always safe to update.
             async with pipeline_status_lock:
-                pipeline_status["busy"] = False
+                if not busy_released_in_loop:
+                    pipeline_status["busy"] = False
                 pipeline_status["cancellation_requested"] = (
                     False  # Always reset cancellation flag
                 )

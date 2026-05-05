@@ -658,11 +658,297 @@ def test_resume_skips_purge_when_chunks_list_empty(tmp_path):
 
 
 @pytest.mark.offline
-def test_apipeline_enqueue_rejects_when_pipeline_busy(tmp_path):
-    """Pipeline busy / scanning state forbids any new enqueue.  This is the
-    last-line guard inside ``apipeline_enqueue_documents``; HTTP endpoints
-    catch this earlier and return 409, but core API callers must surface the
-    invariant violation as a RuntimeError.
+def test_apipeline_enqueue_allows_concurrent_with_busy(tmp_path):
+    """``busy=True`` no longer blocks enqueue.  Concurrent processing is
+    explicitly permitted — the running loop's request_pending mechanism
+    picks up newly-enqueued docs after the current batch.  Enqueue
+    nudges request_pending so a freshly-arrived doc is never stranded
+    when the call site does not subsequently invoke
+    ``apipeline_process_enqueue_documents``.
+    """
+
+    async def _run():
+        from lightrag.kg.shared_storage import (
+            get_namespace_data,
+            get_namespace_lock,
+        )
+
+        rag = _new_rag(tmp_path)
+        await rag.initialize_storages()
+        try:
+            pipeline_status = await get_namespace_data(
+                "pipeline_status", workspace=rag.workspace
+            )
+            pipeline_status_lock = get_namespace_lock(
+                "pipeline_status", workspace=rag.workspace
+            )
+            # Empty set: must return immediately without touching storage.
+            await rag._purge_doc_chunks_and_kg(
+                "doc-empty",
+                set(),
+                pipeline_status=pipeline_status,
+                pipeline_status_lock=pipeline_status_lock,
+            )
+            # No exceptions → success.  Calling twice in a row is also fine
+            # since the helper is idempotent on the empty input.
+            await rag._purge_doc_chunks_and_kg(
+                "doc-empty",
+                set(),
+                pipeline_status=pipeline_status,
+                pipeline_status_lock=pipeline_status_lock,
+            )
+        finally:
+            await rag.finalize_storages()
+
+    asyncio.run(_run())
+
+
+@pytest.mark.offline
+def test_purge_doc_chunks_and_kg_clears_chunks_for_unknown_doc(tmp_path):
+    """When the doc has chunk_ids but no graph contributions yet
+    (full_entities / full_relations empty), the helper must still clear
+    the chunks from chunks_vdb / text_chunks without raising.  This
+    exercises the resume path for documents whose previous run was
+    interrupted between chunking and entity extraction.
+    """
+
+    async def _run():
+        from lightrag.kg.shared_storage import (
+            get_namespace_data,
+            get_namespace_lock,
+        )
+
+        rag = _new_rag(tmp_path)
+        await rag.initialize_storages()
+        try:
+            # Seed text_chunks + chunks_vdb with two stale chunks.
+            await rag.text_chunks.upsert(
+                {
+                    "doc-X-chunk-0": {
+                        "content": "stale chunk 0",
+                        "chunk_order_index": 0,
+                        "full_doc_id": "doc-X",
+                        "tokens": 4,
+                        "file_path": "x.txt",
+                    },
+                    "doc-X-chunk-1": {
+                        "content": "stale chunk 1",
+                        "chunk_order_index": 1,
+                        "full_doc_id": "doc-X",
+                        "tokens": 4,
+                        "file_path": "x.txt",
+                    },
+                }
+            )
+            await rag.chunks_vdb.upsert(
+                {
+                    "doc-X-chunk-0": {
+                        "content": "stale chunk 0",
+                        "chunk_order_index": 0,
+                        "full_doc_id": "doc-X",
+                        "tokens": 4,
+                        "file_path": "x.txt",
+                    },
+                    "doc-X-chunk-1": {
+                        "content": "stale chunk 1",
+                        "chunk_order_index": 1,
+                        "full_doc_id": "doc-X",
+                        "tokens": 4,
+                        "file_path": "x.txt",
+                    },
+                }
+            )
+            await rag.text_chunks.index_done_callback()
+            await rag.chunks_vdb.index_done_callback()
+
+            pipeline_status = await get_namespace_data(
+                "pipeline_status", workspace=rag.workspace
+            )
+            pipeline_status_lock = get_namespace_lock(
+                "pipeline_status", workspace=rag.workspace
+            )
+
+            await rag._purge_doc_chunks_and_kg(
+                "doc-X",
+                {"doc-X-chunk-0", "doc-X-chunk-1"},
+                pipeline_status=pipeline_status,
+                pipeline_status_lock=pipeline_status_lock,
+            )
+
+            # Both chunks gone from text_chunks.
+            remaining = await rag.text_chunks.get_by_ids(
+                ["doc-X-chunk-0", "doc-X-chunk-1"]
+            )
+            assert remaining == [None, None]
+        finally:
+            await rag.finalize_storages()
+
+    asyncio.run(_run())
+
+
+@pytest.mark.offline
+def test_resume_purges_old_chunks_when_content_already_extracted(tmp_path):
+    """When ``apipeline_process_enqueue_documents`` picks up a document
+    whose content is already extracted (full_docs.format=raw with content)
+    and whose doc_status carries a non-empty chunks_list from a previous
+    half-finished run, the resume branch must call
+    ``_purge_doc_chunks_and_kg`` with the old chunk-IDs *before* the
+    chunking and entity-extraction stages run.  This test wraps the
+    helper so we can assert it is invoked exactly once with the expected
+    inputs, then bails out so we don't have to mock the whole VLM /
+    entity-extract stack.
+    """
+
+    async def _run():
+        rag = _new_rag(tmp_path)
+        await rag.initialize_storages()
+        try:
+            doc_id = compute_mdhash_id("resume.txt", prefix="doc-")
+
+            # Seed full_docs as if extraction already completed.
+            await rag.full_docs.upsert(
+                {
+                    doc_id: {
+                        "content": "previously extracted body",
+                        "file_path": "resume.txt",
+                        "canonical_basename": "resume.txt",
+                        "format": "raw",
+                        "parsed_engine": "legacy",
+                        "content_hash": "deadbeef",
+                    }
+                }
+            )
+            # Seed doc_status as PROCESSING with chunks_list from a prior
+            # half-finished run so the resume branch has something to purge.
+            stale_chunks = [f"{doc_id}-chunk-{i:03d}" for i in range(2)]
+            await rag.doc_status.upsert(
+                {
+                    doc_id: {
+                        "status": DocStatus.PROCESSING,
+                        "content_summary": "previously extracted body",
+                        "content_length": len("previously extracted body"),
+                        "created_at": "2026-01-01T00:00:00+00:00",
+                        "updated_at": "2026-01-01T00:00:01+00:00",
+                        "file_path": "resume.txt",
+                        "canonical_basename": "resume.txt",
+                        "track_id": "track-resume",
+                        "content_hash": "deadbeef",
+                        "chunks_list": stale_chunks,
+                        "chunks_count": len(stale_chunks),
+                    }
+                }
+            )
+
+            # Wrap the helper to record invocations, and raise after the call
+            # so the test exits cleanly without exercising downstream stages.
+            calls: list[tuple[str, set[str]]] = []
+            original = rag._purge_doc_chunks_and_kg
+
+            class _ResumePurged(Exception):
+                pass
+
+            async def _wrapped(doc_id_arg, chunk_ids_arg, **kwargs):
+                calls.append((doc_id_arg, set(chunk_ids_arg)))
+                # Run the real helper so the side-effects (chunks gone from
+                # storage) are observable, then short-circuit.
+                await original(doc_id_arg, chunk_ids_arg, **kwargs)
+                raise _ResumePurged()
+
+            rag._purge_doc_chunks_and_kg = _wrapped  # type: ignore[method-assign]
+
+            # Pipeline will pick up the PROCESSING document, hit the resume
+            # branch, call our wrapped purge, and our wrapper raises.
+            await rag.apipeline_process_enqueue_documents()
+
+            # Helper was invoked exactly once with the stale chunk-IDs.
+            assert len(calls) == 1
+            invoked_doc_id, invoked_chunks = calls[0]
+            assert invoked_doc_id == doc_id
+            assert invoked_chunks == set(stale_chunks)
+        finally:
+            await rag.finalize_storages()
+
+    asyncio.run(_run())
+
+
+@pytest.mark.offline
+def test_resume_skips_purge_when_chunks_list_empty(tmp_path):
+    """If the doc was extracted but never chunked (chunks_list empty),
+    the resume branch must NOT call the purge helper — there's nothing
+    to clean up.
+    """
+
+    async def _run():
+        rag = _new_rag(tmp_path)
+        await rag.initialize_storages()
+        try:
+            doc_id = compute_mdhash_id("noskip.txt", prefix="doc-")
+
+            await rag.full_docs.upsert(
+                {
+                    doc_id: {
+                        "content": "fresh body",
+                        "file_path": "noskip.txt",
+                        "canonical_basename": "noskip.txt",
+                        "format": "raw",
+                        "parsed_engine": "legacy",
+                        "content_hash": "fresh",
+                    }
+                }
+            )
+            await rag.doc_status.upsert(
+                {
+                    doc_id: {
+                        "status": DocStatus.PARSING,
+                        "content_summary": "fresh body",
+                        "content_length": len("fresh body"),
+                        "created_at": "2026-01-01T00:00:00+00:00",
+                        "updated_at": "2026-01-01T00:00:01+00:00",
+                        "file_path": "noskip.txt",
+                        "canonical_basename": "noskip.txt",
+                        "track_id": "track-noskip",
+                        "content_hash": "fresh",
+                        "chunks_list": [],
+                        "chunks_count": 0,
+                    }
+                }
+            )
+
+            calls: list[tuple[str, set[str]]] = []
+
+            async def _spy(doc_id_arg, chunk_ids_arg, **kwargs):
+                calls.append((doc_id_arg, set(chunk_ids_arg)))
+                # Don't actually purge; just record the call and let the
+                # pipeline continue past this test boundary.
+                raise RuntimeError("test stop after purge check")
+
+            rag._purge_doc_chunks_and_kg = _spy  # type: ignore[method-assign]
+
+            try:
+                await rag.apipeline_process_enqueue_documents()
+            except Exception:
+                # Whether the pipeline reaches our spy or fails downstream
+                # doesn't matter for this test; we only care that the spy
+                # was NOT called for an empty chunks_list.
+                pass
+
+            assert (
+                calls == []
+            ), "purge helper should not be called when chunks_list is empty"
+        finally:
+            await rag.finalize_storages()
+
+    asyncio.run(_run())
+
+
+@pytest.mark.offline
+def test_apipeline_enqueue_allows_concurrent_with_busy(tmp_path):
+    """``busy=True`` no longer blocks enqueue.  Concurrent processing is
+    explicitly permitted — the running loop's request_pending mechanism
+    picks up newly-enqueued docs after the current batch.  Enqueue
+    nudges request_pending so a freshly-arrived doc is never stranded
+    when the call site does not subsequently invoke
+    ``apipeline_process_enqueue_documents``.
     """
 
     async def _run():
@@ -684,27 +970,84 @@ def test_apipeline_enqueue_rejects_when_pipeline_busy(tmp_path):
             # Simulate an in-flight indexing job.
             async with pipeline_status_lock:
                 pipeline_status["busy"] = True
+                pipeline_status["request_pending"] = False
             try:
-                with pytest.raises(RuntimeError, match="busy"):
-                    await rag.apipeline_enqueue_documents(
-                        "should not enqueue",
-                        file_paths="busy.txt",
-                        track_id="track-busy",
-                    )
+                returned_track_id = await rag.apipeline_enqueue_documents(
+                    "concurrent with busy",
+                    file_paths="concurrent.txt",
+                    track_id="track-concurrent",
+                )
+                assert returned_track_id == "track-concurrent"
+                # Enqueue nudged the running loop.
+                assert pipeline_status.get("request_pending") is True
             finally:
                 async with pipeline_status_lock:
                     pipeline_status["busy"] = False
+                    pipeline_status["request_pending"] = False
+        finally:
+            await rag.finalize_storages()
 
-            # Same guard fires for in-flight scans.
+    asyncio.run(_run())
+
+
+@pytest.mark.offline
+def test_apipeline_enqueue_rejects_when_scanning(tmp_path):
+    """Scan is the only state that blocks new enqueues — scan reads
+    doc_status to make classification decisions and would race with
+    mid-flight writes.  The last-line guard inside
+    ``apipeline_enqueue_documents`` enforces this: HTTP endpoints catch
+    it earlier and return 409, but core API callers must surface the
+    invariant violation as a RuntimeError.
+    """
+
+    async def _run():
+        from lightrag.kg.shared_storage import (
+            get_namespace_data,
+            get_namespace_lock,
+        )
+
+        rag = _new_rag(tmp_path)
+        await rag.initialize_storages()
+        try:
+            pipeline_status = await get_namespace_data(
+                "pipeline_status", workspace=rag.workspace
+            )
+            pipeline_status_lock = get_namespace_lock(
+                "pipeline_status", workspace=rag.workspace
+            )
+
+            # Scan classification phase rejects.  ``scanning_exclusive``
+            # is the field that gates the enqueue last-line guard, not
+            # plain ``scanning`` (which covers the whole scan lifecycle
+            # including its processing phase, where concurrent enqueue
+            # is allowed).
             async with pipeline_status_lock:
                 pipeline_status["scanning"] = True
+                pipeline_status["scanning_exclusive"] = True
             try:
-                with pytest.raises(RuntimeError, match="scanning"):
+                with pytest.raises(RuntimeError, match="scan is classifying"):
                     await rag.apipeline_enqueue_documents(
                         "should not enqueue",
                         file_paths="scan.txt",
                         track_id="track-scan",
                     )
+            finally:
+                async with pipeline_status_lock:
+                    pipeline_status["scanning"] = False
+                    pipeline_status["scanning_exclusive"] = False
+
+            # Scan processing phase (scanning=True, scanning_exclusive=False)
+            # ALLOWS concurrent enqueue — same as upload-during-busy.
+            async with pipeline_status_lock:
+                pipeline_status["scanning"] = True
+                pipeline_status["scanning_exclusive"] = False
+            try:
+                track_processing = await rag.apipeline_enqueue_documents(
+                    "allowed during scan processing",
+                    file_paths="scan_processing.txt",
+                    track_id="track-scan-processing",
+                )
+                assert track_processing == "track-scan-processing"
             finally:
                 async with pipeline_status_lock:
                     pipeline_status["scanning"] = False
@@ -716,6 +1059,361 @@ def test_apipeline_enqueue_rejects_when_pipeline_busy(tmp_path):
                 file_paths="ok.txt",
                 track_id="track-ok",
             )
+        finally:
+            await rag.finalize_storages()
+
+    asyncio.run(_run())
+
+
+@pytest.mark.offline
+def test_enqueue_during_busy_sets_request_pending(tmp_path):
+    """While the processing loop is running (busy=True), a concurrent
+    enqueue must set ``request_pending`` so the loop knows to scan
+    doc_status again after its current batch.  This is the mechanism
+    that makes "upload while pipeline is busy" actually drain the new
+    work — without it, freshly enqueued docs would be stranded until
+    an unrelated trigger.
+    """
+
+    async def _run():
+        from lightrag.kg.shared_storage import (
+            get_namespace_data,
+            get_namespace_lock,
+        )
+
+        rag = _new_rag(tmp_path)
+        await rag.initialize_storages()
+        try:
+            pipeline_status = await get_namespace_data(
+                "pipeline_status", workspace=rag.workspace
+            )
+            pipeline_status_lock = get_namespace_lock(
+                "pipeline_status", workspace=rag.workspace
+            )
+
+            async with pipeline_status_lock:
+                pipeline_status["busy"] = True
+                pipeline_status["request_pending"] = False
+            try:
+                # First enqueue: nudges request_pending.
+                await rag.apipeline_enqueue_documents(
+                    "first while busy",
+                    file_paths="first.txt",
+                    track_id="track-first",
+                )
+                assert pipeline_status.get("request_pending") is True
+
+                # Second enqueue while busy: stays True (idempotent).
+                async with pipeline_status_lock:
+                    pipeline_status["request_pending"] = False
+                await rag.apipeline_enqueue_documents(
+                    "second while busy",
+                    file_paths="second.txt",
+                    track_id="track-second",
+                )
+                assert pipeline_status.get("request_pending") is True
+            finally:
+                async with pipeline_status_lock:
+                    pipeline_status["busy"] = False
+                    pipeline_status["request_pending"] = False
+
+            # When idle, enqueue does NOT set request_pending — there is
+            # no running loop to nudge.
+            await rag.apipeline_enqueue_documents(
+                "while idle",
+                file_paths="idle.txt",
+                track_id="track-idle",
+            )
+            assert pipeline_status.get("request_pending") is False
+        finally:
+            await rag.finalize_storages()
+
+    asyncio.run(_run())
+
+
+@pytest.mark.offline
+def test_atomic_release_busy_or_consume_pending(tmp_path):
+    """The loop-exit handoff is atomic via
+    ``_atomic_release_busy_or_consume_pending``: the same critical
+    section that reads ``request_pending`` also writes ``busy=False``.
+
+    This closes the race where a concurrent enqueue could set
+    ``request_pending=True`` between the loop's read of the flag and
+    the finally block's ``busy=False`` write — leaving newly-enqueued
+    docs stranded in PENDING with no running loop to consume them.
+
+    The helper has two outcomes:
+      * ``request_pending=True`` at entry → flag cleared, return False
+        (caller must continue the loop, refetching doc_status).
+      * ``request_pending=False`` at entry → ``busy`` cleared, return
+        True (caller must break out without re-clearing busy).
+
+    Tested directly because the closure pattern inside
+    ``apipeline_process_enqueue_documents`` is otherwise hard to
+    exercise from a unit test without orchestrating real concurrency.
+    """
+
+    async def _run():
+        from lightrag.kg.shared_storage import (
+            get_namespace_data,
+            get_namespace_lock,
+        )
+
+        rag = _new_rag(tmp_path)
+        await rag.initialize_storages()
+        try:
+            pipeline_status = await get_namespace_data(
+                "pipeline_status", workspace=rag.workspace
+            )
+            pipeline_status_lock = get_namespace_lock(
+                "pipeline_status", workspace=rag.workspace
+            )
+
+            # Case 1: simulate the race — request_pending was set by a
+            # concurrent enqueue while busy=True.  Helper must consume
+            # the flag and return False (continue loop) rather than
+            # silently exit.
+            async with pipeline_status_lock:
+                pipeline_status["busy"] = True
+                pipeline_status["request_pending"] = True
+            released = await rag._atomic_release_busy_or_consume_pending(
+                pipeline_status, pipeline_status_lock
+            )
+            assert released is False
+            assert pipeline_status["busy"] is True  # NOT released
+            assert pipeline_status["request_pending"] is False  # consumed
+
+            # Case 2: clean exit path — no concurrent enqueue.  Helper
+            # releases busy under the SAME lock so any post-call
+            # enqueue can either see busy=False (and trigger its own
+            # process pass) or had to set request_pending BEFORE this
+            # call (handled by Case 1).  No stranded flag possible.
+            async with pipeline_status_lock:
+                pipeline_status["busy"] = True
+                pipeline_status["request_pending"] = False
+            released = await rag._atomic_release_busy_or_consume_pending(
+                pipeline_status, pipeline_status_lock
+            )
+            assert released is True
+            assert pipeline_status["busy"] is False  # released
+            assert pipeline_status["request_pending"] is False
+        finally:
+            await rag.finalize_storages()
+
+    asyncio.run(_run())
+
+
+@pytest.mark.offline
+def test_apipeline_enqueue_rejects_when_destructive_busy(tmp_path):
+    """``destructive_busy`` (set by /documents/clear and per-doc delete)
+    must reject enqueue at the last-line guard.  These jobs DROP
+    storages and remove input files; concurrent enqueue would write to
+    storages mid-drop and silently lose the document.  Note: this is
+    different from plain ``busy=True`` (the processing loop), which is
+    explicitly compatible with concurrent enqueue.
+    """
+
+    async def _run():
+        from lightrag.kg.shared_storage import (
+            get_namespace_data,
+            get_namespace_lock,
+        )
+
+        rag = _new_rag(tmp_path)
+        await rag.initialize_storages()
+        try:
+            pipeline_status = await get_namespace_data(
+                "pipeline_status", workspace=rag.workspace
+            )
+            pipeline_status_lock = get_namespace_lock(
+                "pipeline_status", workspace=rag.workspace
+            )
+
+            async with pipeline_status_lock:
+                pipeline_status["busy"] = True
+                pipeline_status["destructive_busy"] = True
+            try:
+                with pytest.raises(RuntimeError, match="clearing or deleting"):
+                    await rag.apipeline_enqueue_documents(
+                        "should not enqueue",
+                        file_paths="while_clearing.txt",
+                        track_id="track-clearing",
+                    )
+                # ``from_scan`` does NOT bypass destructive_busy: scan
+                # is also a writer and would race with the drop.
+                with pytest.raises(RuntimeError, match="clearing or deleting"):
+                    await rag.apipeline_enqueue_documents(
+                        "should not enqueue",
+                        file_paths="while_clearing_scan.txt",
+                        track_id="track-clearing-scan",
+                        from_scan=True,
+                    )
+            finally:
+                async with pipeline_status_lock:
+                    pipeline_status["busy"] = False
+                    pipeline_status["destructive_busy"] = False
+        finally:
+            await rag.finalize_storages()
+
+    asyncio.run(_run())
+
+
+@pytest.mark.offline
+def test_concurrent_enqueue_dedupes_same_content_different_filenames(tmp_path):
+    """Two concurrent ``apipeline_enqueue_documents`` calls with the
+    same content but different filenames must not both end up as
+    PENDING.  The dedup-and-upsert critical section is serialised by
+    a workspace-scoped lock so the second call always sees the first's
+    upserted row and is recorded as ``duplicate_kind=content_hash``.
+
+    The race only matters now that concurrent enqueue is permitted
+    (busy=True doesn't block, scan's processing phase doesn't block).
+    Without the lock, two enqueues can both read doc_status before
+    either upserts, both miss the content_hash dedup, and both write
+    PENDING — bypassing the dedup that's supposed to land one of them
+    as FAILED.
+
+    Determinism trick: patch ``get_existing_doc_by_content_hash`` to
+    yield via ``asyncio.sleep(0)`` before reading.  This guarantees the
+    asyncio scheduler interleaves the two coroutines at the dedup
+    read, so without the serialise lock both would miss the existing
+    row.  With the lock, the second coroutine waits until the first
+    has finished upserting, then sees the row.
+    """
+
+    async def _run():
+        import lightrag.pipeline as pipeline_module
+
+        rag = _new_rag(tmp_path)
+        await rag.initialize_storages()
+        try:
+            original = pipeline_module.get_existing_doc_by_content_hash
+
+            async def yielding_get_by_content_hash(doc_status, content_hash):
+                # Yield to the event loop so the SECOND enqueue gets a
+                # chance to run its dedup read before we proceed.  This
+                # is the exact interleaving the lock must defeat.
+                await asyncio.sleep(0)
+                return await original(doc_status, content_hash)
+
+            import unittest.mock
+
+            with unittest.mock.patch.object(
+                pipeline_module,
+                "get_existing_doc_by_content_hash",
+                yielding_get_by_content_hash,
+            ):
+                # Same content, two distinct filenames so the basename
+                # dedup misses and the content_hash dedup is the gate.
+                shared_content = "shared content for dedup race"
+                results = await asyncio.gather(
+                    rag.apipeline_enqueue_documents(
+                        shared_content,
+                        file_paths="first.txt",
+                        track_id="track-first",
+                    ),
+                    rag.apipeline_enqueue_documents(
+                        shared_content,
+                        file_paths="second.txt",
+                        track_id="track-second",
+                    ),
+                )
+                # First call enqueues the doc and returns its track_id.
+                # Second call sees the upserted row inside the
+                # serialised dedup section, finds zero unique docs, and
+                # returns None (the existing "no new unique docs"
+                # early-exit path).  The duplicate record is still
+                # written to doc_status as FAILED.
+                assert results[0] == "track-first"
+                assert results[1] is None
+
+            # Exactly ONE PENDING doc should exist for this content,
+            # not two.  The second enqueue must have been recorded as a
+            # content_hash duplicate (FAILED with metadata).
+            pending_docs = await rag.doc_status.get_docs_by_statuses(
+                [DocStatus.PENDING]
+            )
+            assert len(pending_docs) == 1, (
+                f"Expected exactly 1 PENDING doc after concurrent enqueue, "
+                f"got {len(pending_docs)}: {list(pending_docs.keys())}"
+            )
+
+            # The duplicate record (FAILED + duplicate_kind=content_hash)
+            # carries the second filename and the metadata pointer back
+            # to the original.
+            failed_docs = await rag.doc_status.get_docs_by_statuses([DocStatus.FAILED])
+            duplicate_records = [
+                d
+                for d in failed_docs.values()
+                if (
+                    getattr(d, "metadata", None)
+                    and d.metadata.get("duplicate_kind") == "content_hash"
+                )
+            ]
+            assert len(duplicate_records) == 1, (
+                f"Expected exactly 1 content_hash-duplicate FAILED row, "
+                f"got {len(duplicate_records)}"
+            )
+            dup = duplicate_records[0]
+            assert dup.metadata["is_duplicate"] is True
+            assert dup.metadata["original_doc_id"]
+        finally:
+            await rag.finalize_storages()
+
+    asyncio.run(_run())
+
+
+@pytest.mark.offline
+def test_apipeline_enqueue_from_scan_bypasses_scanning_guard(tmp_path):
+    """The scan-owned background task sets ``scanning=True`` itself, so its
+    own enqueue calls must be allowed through.  External callers (without
+    ``from_scan=True``) remain blocked.  ``busy=True`` no longer rejects
+    enqueue (concurrent processing is permitted under the new contract),
+    so it is not exercised here.
+    """
+
+    async def _run():
+        from lightrag.kg.shared_storage import (
+            get_namespace_data,
+            get_namespace_lock,
+        )
+
+        rag = _new_rag(tmp_path)
+        await rag.initialize_storages()
+        try:
+            pipeline_status = await get_namespace_data(
+                "pipeline_status", workspace=rag.workspace
+            )
+            pipeline_status_lock = get_namespace_lock(
+                "pipeline_status", workspace=rag.workspace
+            )
+
+            # Scan classification phase: scanning_exclusive=True, but
+            # ``from_scan=True`` lifts the guard so scan can enqueue
+            # files it just discovered.  Non-scan callers are still
+            # rejected.
+            async with pipeline_status_lock:
+                pipeline_status["scanning"] = True
+                pipeline_status["scanning_exclusive"] = True
+            try:
+                returned_track_id = await rag.apipeline_enqueue_documents(
+                    "scan-owned content",
+                    file_paths="scan_owned.txt",
+                    track_id="track-scan-owned",
+                    from_scan=True,
+                )
+                assert returned_track_id == "track-scan-owned"
+
+                with pytest.raises(RuntimeError, match="scan is classifying"):
+                    await rag.apipeline_enqueue_documents(
+                        "external content",
+                        file_paths="external.txt",
+                        track_id="track-external",
+                    )
+            finally:
+                async with pipeline_status_lock:
+                    pipeline_status["scanning"] = False
+                    pipeline_status["scanning_exclusive"] = False
         finally:
             await rag.finalize_storages()
 
