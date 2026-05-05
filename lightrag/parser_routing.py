@@ -461,7 +461,7 @@ def resolve_stored_document_parser_engine(
             return PARSER_ENGINE_LEGACY
 
         suffix = parser_suffix(file_path)
-        pending_engine = normalize_parser_engine(content_data.get("parsed_engine"))
+        pending_engine = normalize_parser_engine(content_data.get("parse_engine"))
         if pending_engine in SUPPORTED_PARSER_ENGINES and parser_engine_supports_suffix(
             pending_engine, suffix
         ):

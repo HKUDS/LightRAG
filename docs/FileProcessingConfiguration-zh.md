@@ -158,7 +158,7 @@ DOCLING_ENDPOINT=http://localhost:8081/v1/convert/file/async
 | `content` | `raw` 时保存抽取文本；`pending_parse` 时为空字符串；`lightrag` 时固定为以 `{{LRdoc}}`开头的一段内容摘要。 |
 | `content_hash` | 内容 MD5，用于跨文件名查重。`format=raw` 取 `sanitize_text_for_encoding` 后文本的 hash；`format=lightrag` 取 `*.blocks.jsonl` 文件 hash；`format=pending_parse` 不写入，待抽取完成后补上。 |
 | `lightrag_document_path` | `format=lightrag` 时保存结构化 LightRAG Document 的路径；新记录优先保存为相对 `INPUT_DIR` 的路径，例如 `__parsed__/report.docx.parsed/report.blocks.jsonl`。注意路径中的子目录与 blocks 文件名都使用规范化 basename（不含 hint）。 |
-| `parsed_engine` | 实际完成抽取的引擎：`legacy`, `native`, `mineru`, `docling`。对于待抽取文件，也可暂存目标引擎。 |
+| `parse_engine` | 实际完成抽取的引擎：`legacy`, `native`, `mineru`, `docling`。对于待抽取文件，也可暂存目标引擎。 |
 | `process_options` | 入队时记录的原始处理选项串（不含引擎名和分隔 `-`），例如 `"iet"`、`"R!"`、`""`。下游各阶段以此字段为权威源，决定是否启用图像/表格/公式分析（`i`/`t`/`e`）、是否禁止知识图谱构建（`!`）以及分块方式（`F`/`R`/`S`）。空字符串等价于全部默认值。 |
 
 `pending_parse` 表示文件已经入队，但还没有完成抽取。抽取成功后会改写为 `raw` 或 `lightrag`，并补齐 `content_hash`。抽取失败时保留 `pending_parse` 和空 `content`，便于后续排查和重试。
@@ -339,7 +339,7 @@ upload 通过 reservation 后、保存文件前必须双道检查：
 
 | 子步骤 | 行为 |
 | --- | --- |
-| 引擎对比 | 若 `process_options` 隐含的引擎 ≠ `full_docs.parsed_engine`，**仅 warn**，不重新解析。已抽取的内容是不可变事实，重新跑不同引擎会产生不一致。要切换引擎请先 delete 整个文档再重传。 |
+| 引擎对比 | 若 `process_options` 隐含的引擎 ≠ `full_docs.parse_engine`，**仅 warn**，不重新解析。已抽取的内容是不可变事实，重新跑不同引擎会产生不一致。要切换引擎请先 delete 整个文档再重传。 |
 | 旧 chunks 清理 | 读 `doc_status.chunks_list`，从 `chunks_vdb` 与 `text_chunks` 全部 delete。理由：流水线产物中无法可靠区分"普通文本块 vs 多模态附加块"，按 chunk id 一律重新生成最简单也最可靠 |
 | 旧实体 / 关系清理 | 复用 `adelete_by_doc_id` 内部清理逻辑（抽出为 `_purge_doc_chunks_and_kg(doc_id)` helper），删除 `entity_chunks` / `relation_chunks` 中以这些 chunk id 为 source 的条目，并把图谱里因之失去全部源的孤立节点一并删除 |
 | `analyze_multimodal` | **不再看 `meta.analyze_time`**：按新 `process_options.{i,t,e}` 与 sidecar 中各 item 的 `llm_analyze_result` 取交集做增量分析（已分析的 item 跳过，新启用的模态从空状态开始分析）。`analyze_time` 改为"最近一次成功分析时间"语义，仅供观测 |

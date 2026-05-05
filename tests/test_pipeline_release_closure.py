@@ -90,7 +90,7 @@ def test_parse_engine_routing_by_filename_and_env(monkeypatch):
     monkeypatch.setenv("LIGHTRAG_PARSER", "pdf:mineru-iet,*:native")
     assert resolve_stored_document_parser_engine("paper.pdf", {}) == "mineru"
     assert (
-        resolve_stored_document_parser_engine("paper.pdf", {"parsed_engine": "native"})
+        resolve_stored_document_parser_engine("paper.pdf", {"parse_engine": "native"})
         == "legacy"
     )
 
@@ -529,7 +529,7 @@ def test_resume_purges_old_chunks_when_content_already_extracted(tmp_path):
                         "file_path": "resume.txt",
                         "canonical_basename": "resume.txt",
                         "format": "raw",
-                        "parsed_engine": "legacy",
+                        "parse_engine": "legacy",
                         "content_hash": "deadbeef",
                     }
                 }
@@ -607,7 +607,7 @@ def test_resume_skips_purge_when_chunks_list_empty(tmp_path):
                         "file_path": "noskip.txt",
                         "canonical_basename": "noskip.txt",
                         "format": "raw",
-                        "parsed_engine": "legacy",
+                        "parse_engine": "legacy",
                         "content_hash": "fresh",
                     }
                 }
@@ -813,7 +813,7 @@ def test_resume_purges_old_chunks_when_content_already_extracted(tmp_path):
                         "file_path": "resume.txt",
                         "canonical_basename": "resume.txt",
                         "format": "raw",
-                        "parsed_engine": "legacy",
+                        "parse_engine": "legacy",
                         "content_hash": "deadbeef",
                     }
                 }
@@ -891,7 +891,7 @@ def test_resume_skips_purge_when_chunks_list_empty(tmp_path):
                         "file_path": "noskip.txt",
                         "canonical_basename": "noskip.txt",
                         "format": "raw",
-                        "parsed_engine": "legacy",
+                        "parse_engine": "legacy",
                         "content_hash": "fresh",
                     }
                 }
@@ -1641,7 +1641,7 @@ def test_delete_result_preserves_parser_hinted_source_path(tmp_path):
                 "",
                 file_paths=source_path,
                 docs_format=FULL_DOCS_FORMAT_PENDING_PARSE,
-                parsed_engine=PARSER_ENGINE_NATIVE,
+                parse_engine=PARSER_ENGINE_NATIVE,
                 track_id="track-delete-source",
             )
 
@@ -1894,7 +1894,7 @@ def test_persist_parsed_full_docs_syncs_hash_to_doc_status(tmp_path):
                     "content": content,
                     "file_path": "pending.txt",
                     "format": "raw",
-                    "parsed_engine": "native",
+                    "parse_engine": "native",
                 },
             )
 
@@ -1930,7 +1930,7 @@ def test_persist_parsed_full_docs_preserves_pending_metadata(tmp_path):
                 "",
                 file_paths="report.[native-iet!].docx",
                 docs_format=FULL_DOCS_FORMAT_PENDING_PARSE,
-                parsed_engine=PARSER_ENGINE_NATIVE,
+                parse_engine=PARSER_ENGINE_NATIVE,
                 process_options="iet!",
                 track_id="track-merge",
             )
@@ -1951,7 +1951,7 @@ def test_persist_parsed_full_docs_preserves_pending_metadata(tmp_path):
                     "content": "extracted body",
                     "file_path": "report.[native-iet!].docx",
                     "format": "raw",
-                    "parsed_engine": PARSER_ENGINE_NATIVE,
+                    "parse_engine": PARSER_ENGINE_NATIVE,
                     "update_time": 12345,
                 },
             )
@@ -2092,7 +2092,7 @@ def test_pending_parse_duplicate_hash_fails_and_archives_source(tmp_path, monkey
                 "",
                 file_paths=str(original_path),
                 docs_format=FULL_DOCS_FORMAT_PENDING_PARSE,
-                parsed_engine=PARSER_ENGINE_NATIVE,
+                parse_engine=PARSER_ENGINE_NATIVE,
                 track_id="track-original",
             )
             await rag.apipeline_process_enqueue_documents()
@@ -2117,7 +2117,7 @@ def test_pending_parse_duplicate_hash_fails_and_archives_source(tmp_path, monkey
                 "",
                 file_paths=str(source_path),
                 docs_format=FULL_DOCS_FORMAT_PENDING_PARSE,
-                parsed_engine=PARSER_ENGINE_NATIVE,
+                parse_engine=PARSER_ENGINE_NATIVE,
                 track_id="track-dup",
             )
             await rag.apipeline_process_enqueue_documents()

@@ -102,7 +102,7 @@ class _PipelineMixin:
         track_id: str | None = None,
         docs_format: str = FULL_DOCS_FORMAT_RAW,
         lightrag_document_paths: str | list[str] | None = None,
-        parsed_engine: str | list[str] | None = None,
+        parse_engine: str | list[str] | None = None,
         process_options: str | list[str] | None = None,
         from_scan: bool = False,
     ) -> str:
@@ -121,7 +121,7 @@ class _PipelineMixin:
             track_id: tracking ID for monitoring processing status
             docs_format: "raw" (default) or "lightrag"; when "lightrag" content may be empty and content-dedup is skipped
             lightrag_document_paths: paths to LightRAG Document (e.g. .blocks.jsonl dir or base path), when docs_format is lightrag
-            parsed_engine: file extraction engine already used or target engine for pending_parse
+            parse_engine: file extraction engine already used or target engine for pending_parse
             process_options: per-document processing options string (i/t/e/!/F/R/S);
                 accepted as a single string broadcast to every input or as a list
                 aligned with ``input``. Stored verbatim on ``full_docs`` and
@@ -198,8 +198,8 @@ class _PipelineMixin:
             lightrag_document_paths = (
                 [lightrag_document_paths] if lightrag_document_paths else None
             )
-        if isinstance(parsed_engine, str):
-            parsed_engine = [parsed_engine] * len(input)
+        if isinstance(parse_engine, str):
+            parse_engine = [parse_engine] * len(input)
         if isinstance(process_options, str):
             process_options = [process_options] * len(input)
 
@@ -224,19 +224,19 @@ class _PipelineMixin:
                 raise ValueError(
                     "Number of lightrag_document_paths must match the number of documents"
                 )
-        if parsed_engine is not None and len(parsed_engine) != len(input):
+        if parse_engine is not None and len(parse_engine) != len(input):
             raise ValueError(
-                "Number of parsed engines must match the number of documents"
+                "Number of parse engines must match the number of documents"
             )
         if process_options is not None and len(process_options) != len(input):
             raise ValueError(
                 "Number of process options must match the number of documents"
             )
 
-        def _parsed_engine_at(index: int) -> str | None:
-            if parsed_engine is None:
+        def _parse_engine_at(index: int) -> str | None:
+            if parse_engine is None:
                 return None
-            engine = str(parsed_engine[index] or "").strip().lower()
+            engine = str(parse_engine[index] or "").strip().lower()
             return engine or None
 
         def _process_options_at(index: int) -> str:
@@ -350,8 +350,8 @@ class _PipelineMixin:
                 content_data["source_path"] = source_path
             if lightrag_document_path:
                 content_data["lightrag_document_path"] = lightrag_document_path
-            if engine := _parsed_engine_at(index):
-                content_data["parsed_engine"] = engine
+            if engine := _parse_engine_at(index):
+                content_data["parse_engine"] = engine
             options_str = _process_options_at(index)
             if options_str:
                 content_data["process_options"] = options_str
@@ -641,9 +641,9 @@ class _PipelineMixin:
                     full_docs_data[doc_id]["lightrag_document_path"] = contents[doc_id][
                         "lightrag_document_path"
                     ]
-                if contents[doc_id].get("parsed_engine"):
-                    full_docs_data[doc_id]["parsed_engine"] = contents[doc_id][
-                        "parsed_engine"
+                if contents[doc_id].get("parse_engine"):
+                    full_docs_data[doc_id]["parse_engine"] = contents[doc_id][
+                        "parse_engine"
                     ]
                 if contents[doc_id].get("process_options"):
                     full_docs_data[doc_id]["process_options"] = contents[doc_id][
@@ -1348,7 +1348,7 @@ class _PipelineMixin:
                                     file_path
                                 )
                                 stored_engine = (
-                                    content_data.get("parsed_engine") or ""
+                                    content_data.get("parse_engine") or ""
                                 ).lower()
                                 if (
                                     intended_engine
@@ -1359,7 +1359,7 @@ class _PipelineMixin:
                                         f"[resume] {doc_id}: filename hint / "
                                         f"LIGHTRAG_PARSER implies engine="
                                         f"{intended_engine!r} but full_docs "
-                                        f"already has parsed_engine="
+                                        f"already has parse_engine="
                                         f"{stored_engine!r}; keeping the existing "
                                         f"extraction.  Delete + re-upload to "
                                         f"switch engines."
@@ -1415,7 +1415,7 @@ class _PipelineMixin:
                                     "format_version": interchange_meta.get(
                                         "format_version"
                                     ),
-                                    "engine": interchange_meta.get("engine"),
+                                    "parse_engine": interchange_meta.get("parse_engine"),
                                     "chunking_method": interchange_meta.get(
                                         "chunking_method"
                                     ),
@@ -1458,7 +1458,7 @@ class _PipelineMixin:
                                     )
                                 extraction_meta = {
                                     "extraction_format": "plain_text_chunking",
-                                    "engine": "legacy",
+                                    "parse_engine": "legacy",
                                     "chunking_method": (
                                         "fixed_token_fallback"
                                         if doc_process_opts.chunking != "F"
@@ -2640,7 +2640,7 @@ class _PipelineMixin:
         ``full_docs`` upserts overwrite the entire row, so we merge the
         existing record with the new ``record`` payload before upserting:
         fresh fields from ``record`` (``content`` / ``format`` /
-        ``lightrag_document_path`` / ``parsed_engine`` / ``update_time``)
+        ``lightrag_document_path`` / ``parse_engine`` / ``update_time``)
         take precedence, while pre-existing fields are preserved.
         """
         fmt = record.get("format")
@@ -3118,7 +3118,7 @@ class _PipelineMixin:
 
         merged_text = "\n\n".join([x for x in merged_parts if x.strip()])
         doc_hash = hashlib.sha256(merged_text.encode("utf-8")).hexdigest()
-        parsed_time = datetime.now(timezone.utc).isoformat()
+        parse_time = datetime.now(timezone.utc).isoformat()
         meta = {
             "type": "meta",
             "format": "lightrag",
@@ -3133,8 +3133,8 @@ class _PipelineMixin:
             "split_method": "raw_paragraph",
             "blocks": len(blocks_lines),
             "doc_id": doc_id,
-            "parsed_engine": engine,
-            "parsed_time": parsed_time,
+            "parse_engine": engine,
+            "parse_time": parse_time,
             "analyze_time": "",
             "doc_title": Path(source_name).stem or source_name,
         }
@@ -3182,7 +3182,7 @@ class _PipelineMixin:
                 "file_path": file_path,
                 "format": FULL_DOCS_FORMAT_LIGHTRAG,
                 "lightrag_document_path": stored_blocks_path,
-                "parsed_engine": engine,
+                "parse_engine": engine,
                 "update_time": int(time.time()),
             },
         )
@@ -3341,7 +3341,7 @@ class _PipelineMixin:
                 "content": str(result_text),
                 "file_path": file_path,
                 "format": FULL_DOCS_FORMAT_RAW,
-                "parsed_engine": PARSER_ENGINE_MINERU,
+                "parse_engine": PARSER_ENGINE_MINERU,
                 "update_time": int(time.time()),
             },
         )
@@ -3406,7 +3406,7 @@ class _PipelineMixin:
                 "content": str(result_text),
                 "file_path": file_path,
                 "format": FULL_DOCS_FORMAT_RAW,
-                "parsed_engine": PARSER_ENGINE_DOCLING,
+                "parse_engine": PARSER_ENGINE_DOCLING,
                 "update_time": int(time.time()),
             },
         )
@@ -3471,7 +3471,7 @@ class _PipelineMixin:
 
         logger.info(
             f"[multimodal-hook] enabled for d-id: {doc_id}, file: {file_path}, "
-            f"engine={extraction_meta.get('engine')}, opts={sorted(active)}"
+            f"parse_engine={extraction_meta.get('parse_engine')}, opts={sorted(active)}"
         )
 
         # TODO(multimodal pipeline):
